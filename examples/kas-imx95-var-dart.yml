@@ -1,0 +1,87 @@
+# Example topology-only kas YAML for an i.MX95 var-dart build.
+#
+# Copy this file under nxp/ (e.g. nxp/my-build.yml) and edit machine /
+# distro / target / repos to taste. Then run:
+#
+#     varis bitbake-override --apply
+#     varis build nxp/my-build.yml
+#
+# `varis build` automatically layers overlays/varis-tuning-nxp.yml on
+# top, which pulls in the Variscite tuning block (ccache wiring,
+# MIRRORS, PREMIRRORS, FETCHCMD_wget, renderdoc fix, fork PREMIRRORs)
+# and the meta-varis-overrides repo.
+distro: fsl-imx-xwayland
+header:
+  version: 3
+machine: imx95-var-dart
+repos:
+  meta-arm:
+    layers:
+      meta-arm:
+      meta-arm-toolchain:
+    path: sources/meta-arm
+  meta-browser:
+    layers:
+      meta-chromium:
+    path: sources/meta-browser
+  meta-clang:
+    path: sources/meta-clang
+  meta-freescale:
+    path: sources/meta-freescale
+  meta-freescale-3rdparty:
+    path: sources/meta-freescale-3rdparty
+  meta-freescale-distro:
+    path: sources/meta-freescale-distro
+  meta-freescale-ml:
+    path: sources/meta-freescale-ml
+  meta-imx:
+    layers:
+      meta-imx-bsp:
+      meta-imx-ml:
+      meta-imx-sdk:
+      meta-imx-v2x:
+    path: sources/meta-imx
+  meta-nxp-connectivity:
+    layers:
+      meta-nxp-matter-baseline:
+      meta-nxp-openthread:
+    path: sources/meta-nxp-connectivity
+  meta-nxp-demo-experience:
+    path: sources/meta-nxp-demo-experience
+  meta-openembedded:
+    layers:
+      meta-filesystems:
+      meta-gnome:
+      meta-multimedia:
+      meta-networking:
+      meta-oe:
+      meta-perl:
+      meta-python:
+    path: sources/meta-openembedded
+  meta-qt6:
+    path: sources/meta-qt6
+  meta-security:
+    layers:
+      meta-parsec:
+      meta-tpm:
+    path: sources/meta-security
+  meta-swupdate:
+    path: sources/meta-swupdate
+  meta-variscite-bsp-common:
+    path: sources/meta-variscite-bsp-common
+  meta-variscite-bsp-imx:
+    path: sources/meta-variscite-bsp-imx
+  meta-variscite-hab:
+    path: sources/meta-variscite-hab
+  meta-variscite-sdk-common:
+    path: sources/meta-variscite-sdk-common
+  meta-variscite-sdk-imx:
+    path: sources/meta-variscite-sdk-imx
+  meta-virtualization:
+    path: sources/meta-virtualization
+  poky:
+    layers:
+      meta:
+      meta-poky:
+    path: sources/poky
+target: core-image-minimal

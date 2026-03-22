@@ -1,0 +1,103 @@
+[project]
+name = "varis-build"
+version = "0.0.1"
+description = "One-command Variscite BSP build orchestrator with observability"
+authors = [{name = "Javier Tia"}]
+license = "Apache-2.0"
+requires-python = ">=3.11,<3.16"
+readme = "README.md"
+keywords = ["yocto", "bsp", "variscite", "kas", "bitbake", "embedded"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: System :: Operating System Kernels :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+    "pyyaml>=6.0",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit",
+    "ruff",
+    "pytest>=9",
+    "pytest-cov>=6",
+]
+
+[project.scripts]
+varis = "varis_build.cli:app"
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # Pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+]
+ignore = [
+    "SIM102",  # Use single if statement - often reduces readability
+    "SIM105",  # Use contextlib.suppress - adds import for minimal benefit
+    "SIM108",  # Use ternary operator - can reduce readability for complex conditions
+    "SIM110",  # Use any() instead of for loop - sometimes less clear
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["varis_build"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/varis_build/cli.py" = ["B008"]
+
+[tool.coverage.run]
+source = ["varis_build"]
+
+[tool.coverage.report]
+fail_under = 47
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__",
+    "@overload",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = ["-v", "--tb=short"]
+
+[tool.ty.rules]
+# Noisy without full type annotations — project uses gradual typing
+call-non-callable = "ignore"
+invalid-argument-type = "ignore"
+invalid-type-form = "ignore"
+no-matching-overload = "ignore"
+not-subscriptable = "ignore"
+unresolved-attribute = "ignore"

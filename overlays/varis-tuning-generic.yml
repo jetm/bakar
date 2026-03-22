@@ -1,0 +1,63 @@
+# Generic (BSP-agnostic) tuning overlay.
+#
+# Layered on top of any kas YAML that does not classify as Variscite NXP
+# or TI. Carries the optimizations that apply to any bitbake build:
+# ccache wiring, fetch robustness (BB_FETCH_TIMEOUT + MIRRORS +
+# PREMIRRORS for github.com), the FETCHCMD_wget crates.io workaround,
+# and PYTHONMALLOC=malloc to mitigate the 3.14 GIL parser-fork race.
+#
+# Excluded vs. the NXP/TI overlays: ACCEPT_FSL_EULA (NXP-only), the
+# renderdoc CMake-launcher fix (only fires under
+# packagegroup-fsl-tools-gpu-external), per-BSP fork PREMIRRORs (the
+# linux-imx / ti-linux-kernel / ti-u-boot forks are Variscite-specific),
+# and the meta-varis-overrides carry layer (Variscite vendor patches).
+#
+# kas merges local_conf_header.<key> and repos.<name> by name, so the
+# user's machine/distro/target/repos stay intact while these knobs are
+# unioned in.
+
+header:
+  version: 3
+
+# PYTHONMALLOC=malloc is the VARIS-18 round 11 Phase 2 ceiling fix
+# (drops 3.14.4 GIL race rate ~50% -> ~5%). kas auto-appends each
+# declared env var to BB_ENV_PASSTHROUGH_ADDITIONS at libkas.py:507,
+# so bitbake's clean_environment lets it through to parser-pool
+# workers. Host env wins on override.
+env:
+  PYTHONMALLOC: malloc
+
+local_conf_header:
+  varis-tuning: |
+    CCACHE_DIR = "/work/ccache"
+    INHERIT += "ccache"
+    BB_NUMBER_THREADS = "${@os.environ.get('NPROC', '16')}"
+    PARALLEL_MAKE = "-j ${@os.environ.get('NPROC', '16')}"
+    IMAGE_FEATURES:remove = "dev-pkgs dbg-pkgs tools-sdk tools-debug staticdev-pkgs"
+
+    # Fetch robustness: raise the per-URI timeout so transient TLS / DNS
+    # stalls do not trip the default (~45s) and fail the task.
+    BB_FETCH_TIMEOUT = "600"
+
+    # Replace the distro's default MIRRORS table (poky scarthgap hardcodes
+    # the dead sources.openembedded.org host) with a curated catch-all
+    # pointing at the Yocto Project source mirror. Bitbake consults
+    # MIRRORS on the fallback phase if the original URI failed.
+    MIRRORS = " \
+        git://.*/.*     http://downloads.yoctoproject.org/mirror/sources/ \n \
+        http://.*/.*    http://downloads.yoctoproject.org/mirror/sources/ \n \
+        https://.*/.*   http://downloads.yoctoproject.org/mirror/sources/ \n \
+        ftp://.*/.*     http://downloads.yoctoproject.org/mirror/sources/ \n \
+    "
+
+    # Try the yocto mirror BEFORE hitting github.com; this turns github
+    # outages into silent fallbacks instead of build blockers. Falls
+    # through to the original URI on miss.
+    PREMIRRORS:prepend = " \
+        git://github.com/.*/.*    http://downloads.yoctoproject.org/mirror/sources/ \n \
+        http://github.com/.*/.*   http://downloads.yoctoproject.org/mirror/sources/ \n \
+        https://github.com/.*/.*  http://downloads.yoctoproject.org/mirror/sources/ \n \
+    "
+
+    # crates.io 403 workaround (matches NXP/TI overlays).
+    FETCHCMD_wget = "/usr/bin/env wget --tries=2 --timeout=100 -U 'bitbake/2.0'"

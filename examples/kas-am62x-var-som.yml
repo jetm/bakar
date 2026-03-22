@@ -1,0 +1,77 @@
+# Example topology-only kas YAML for an AM62x var-som build.
+#
+# Copy this file under ti/ (e.g. ti/my-build.yml) and edit machine /
+# distro / target / repos to taste. Then run:
+#
+#     varis bitbake-override --apply
+#     varis build ti/my-build.yml
+#
+# `varis build` automatically layers overlays/varis-tuning-ti.yml on
+# top, which pulls in the shared Variscite tuning block (ccache,
+# MIRRORS, PREMIRRORS, FETCHCMD_wget) plus the TI fork PREMIRRORs and
+# the meta-varis-overrides-ti repo.
+distro: arago
+header:
+  version: 3
+machine: am62x-var-som
+repos:
+  meta-arago:
+    layers:
+      meta-arago-distro:
+      meta-arago-extras:
+      meta-arago-test:
+    path: sources/meta-arago
+  meta-arm:
+    layers:
+      meta-arm:
+      meta-arm-toolchain:
+    path: sources/meta-arm
+  meta-browser:
+    layers:
+      meta-chromium:
+    path: sources/meta-browser
+  meta-clang:
+    path: sources/meta-clang
+  meta-openembedded:
+    layers:
+      meta-filesystems:
+      meta-gnome:
+      meta-multimedia:
+      meta-networking:
+      meta-oe:
+      meta-python:
+    path: sources/meta-openembedded
+  meta-qt6:
+    path: sources/meta-qt6
+  meta-security:
+    layers:
+      meta-tpm:
+    path: sources/meta-security
+  meta-swupdate:
+    path: sources/meta-swupdate
+  meta-ti:
+    layers:
+      meta-beagle:
+      meta-ti-bsp:
+      meta-ti-extras:
+    path: sources/meta-ti
+  meta-tisdk:
+    layers:
+      meta-ti-foundational:
+      meta-ti-ml:
+    path: sources/meta-tisdk
+  meta-variscite-bsp-common:
+    path: sources/meta-variscite-bsp-common
+  meta-variscite-bsp-ti:
+    path: sources/meta-variscite-bsp-ti
+  meta-variscite-sdk-common:
+    path: sources/meta-variscite-sdk-common
+  meta-variscite-sdk-ti:
+    path: sources/meta-variscite-sdk-ti
+  meta-virtualization:
+    path: sources/meta-virtualization
+  oe-core:
+    layers:
+      meta:
+    path: sources/oe-core
+target: var-thin-image
