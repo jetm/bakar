@@ -29,8 +29,12 @@ dependencies = [
 dev = [
     "pre-commit",
     "ruff",
+    "ty",
     "pytest>=9",
     "pytest-cov>=6",
+    "pytest-randomly",
+    "pytest-timeout",
+    "bump-my-version",
 ]
 
 [project.scripts]
@@ -78,7 +82,7 @@ known-first-party = ["bspctl"]
 source = ["bspctl"]
 
 [tool.coverage.report]
-fail_under = 47
+fail_under = 60
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",
