@@ -3,7 +3,7 @@
 Covers the BSP-aware path resolution (NXP carries bitbake at
 ``sources/poky/bitbake``; TI carries it at ``sources/bitbake``), the
 relative-symlink computation in ``_swap_to_symlink``, the ``status()``
-state machine for both BSP families, and the ``VARIS_BITBAKE_OVERRIDE=0``
+state machine for both BSP families, and the ``BSPCTL_BITBAKE_OVERRIDE=0``
 disable knob.
 
 Tests build minimal on-disk fixtures under ``tmp_path`` (a real bitbake
@@ -180,8 +180,8 @@ def test_apply_swaps_with_correct_relative_symlink(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """apply() must produce the right relative-symlink depth per BSP."""
-    monkeypatch.delenv("VARIS_BITBAKE_OVERRIDE", raising=False)
-    monkeypatch.delenv("VARIS_BITBAKE_OVERRIDE_BRANCH", raising=False)
+    monkeypatch.delenv("BSPCTL_BITBAKE_OVERRIDE", raising=False)
+    monkeypatch.delenv("BSPCTL_BITBAKE_OVERRIDE_BRANCH", raising=False)
 
     bsp_bitbake = _make_bsp_tree(tmp_path, family, version="2.8.0")
     repo = _make_upstream_repo(tmp_path / "upstream-source", version="2.8.1", branch="br-2.8")
@@ -206,8 +206,8 @@ def test_apply_idempotent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A second apply on an already-correct symlink reports linked-fresh."""
-    monkeypatch.delenv("VARIS_BITBAKE_OVERRIDE", raising=False)
-    monkeypatch.delenv("VARIS_BITBAKE_OVERRIDE_BRANCH", raising=False)
+    monkeypatch.delenv("BSPCTL_BITBAKE_OVERRIDE", raising=False)
+    monkeypatch.delenv("BSPCTL_BITBAKE_OVERRIDE_BRANCH", raising=False)
 
     _make_bsp_tree(tmp_path, family, version="2.8.0")
     repo = _make_upstream_repo(tmp_path / "upstream-source", version="2.8.1", branch="br-2.8")
@@ -255,8 +255,8 @@ def test_status_active_after_apply(
     family: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("VARIS_BITBAKE_OVERRIDE", raising=False)
-    monkeypatch.delenv("VARIS_BITBAKE_OVERRIDE_BRANCH", raising=False)
+    monkeypatch.delenv("BSPCTL_BITBAKE_OVERRIDE", raising=False)
+    monkeypatch.delenv("BSPCTL_BITBAKE_OVERRIDE_BRANCH", raising=False)
 
     _make_bsp_tree(tmp_path, family, version="2.8.0")
     repo = _make_upstream_repo(tmp_path / "upstream-source", version="2.8.1", branch="br-2.8")
@@ -282,8 +282,8 @@ def test_disabled_env_short_circuits_apply(
     family: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """VARIS_BITBAKE_OVERRIDE=0 must skip apply for both BSPs."""
-    monkeypatch.setenv("VARIS_BITBAKE_OVERRIDE", "0")
+    """BSPCTL_BITBAKE_OVERRIDE=0 must skip apply for both BSPs."""
+    monkeypatch.setenv("BSPCTL_BITBAKE_OVERRIDE", "0")
 
     bsp_bitbake = _make_bsp_tree(tmp_path, family, version="2.8.0")
 
