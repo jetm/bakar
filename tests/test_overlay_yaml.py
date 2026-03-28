@@ -15,9 +15,9 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-NXP_OVERLAY = REPO_ROOT / "overlays" / "varis-tuning-nxp.yml"
-TI_OVERLAY = REPO_ROOT / "overlays" / "varis-tuning-ti.yml"
-GENERIC_OVERLAY = REPO_ROOT / "overlays" / "varis-tuning-generic.yml"
+NXP_OVERLAY = REPO_ROOT / "overlays" / "bspctl-tuning-nxp.yml"
+TI_OVERLAY = REPO_ROOT / "overlays" / "bspctl-tuning-ti.yml"
+GENERIC_OVERLAY = REPO_ROOT / "overlays" / "bspctl-tuning-generic.yml"
 
 _SHARED_LINES = (
     'CCACHE_DIR = "/work/ccache"',
