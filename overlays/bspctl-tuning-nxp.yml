@@ -22,7 +22,7 @@ env:
   PYTHONMALLOC: malloc
 
 local_conf_header:
-  varis-tuning: |
+  bspctl-tuning: |
     CCACHE_DIR = "/work/ccache"
     INHERIT += "ccache"
     BB_NUMBER_THREADS = "${@os.environ.get('NPROC', '16')}"
