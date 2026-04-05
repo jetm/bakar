@@ -16,7 +16,7 @@ a small first-match-wins rule set:
 The ``generic`` classification is the BSP-agnostic fallback for kas
 YAMLs that look like real builds but do not target a Variscite SoM
 (e.g. qemuarm64 + poky + meta-arm). Callers layer the
-``varis-tuning-generic.yml`` overlay - which carries only the
+``bspctl-tuning-generic.yml`` overlay - which carries only the
 BSP-agnostic optimizations (ccache, MIRRORS, PREMIRRORS, FETCHCMD_wget,
 PYTHONMALLOC) - onto these YAMLs.
 

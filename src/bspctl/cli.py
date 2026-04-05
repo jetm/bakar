@@ -161,11 +161,11 @@ def _overlay_dir() -> Path:
 def _overlay_for(bsp: BspModel | None) -> Path:
     """Return the absolute path to the static tuning overlay.
 
-    ``bsp=None`` selects ``varis-tuning-generic.yml`` - the BSP-agnostic
+    ``bsp=None`` selects ``bspctl-tuning-generic.yml`` - the BSP-agnostic
     overlay used by the ``bspctl build my.yml`` flow when the YAML does
     not classify as NXP or TI.
     """
-    filename = bsp.tuning_overlay_filename if bsp is not None else "varis-tuning-generic.yml"
+    filename = bsp.tuning_overlay_filename if bsp is not None else "bspctl-tuning-generic.yml"
     path = _overlay_dir() / filename
     if not path.is_file():
         raise typer.BadParameter(f"tuning overlay missing: {path}. Reinstall varis or restore the overlays/ directory.")
@@ -215,7 +215,7 @@ def _dispatch_from_yaml(yaml_path: Path) -> tuple[Literal["nxp", "ti", "generic"
     :func:`bspctl.bsp_detect.detect_bsp_from_yaml`. Returns the
     matching :class:`BspModel` for NXP/TI and ``None`` for generic
     builds (no BspModel applies; the caller layers
-    ``varis-tuning-generic.yml`` and skips Variscite-specific pipeline
+    ``bspctl-tuning-generic.yml`` and skips Variscite-specific pipeline
     steps). Refuses ``"unknown"`` shapes (empty / unparseable YAMLs)
     with a typer.Exit(2).
     """
@@ -377,7 +377,7 @@ def build(
       apply the static tuning overlay, run kas-container. The YAML is
       classified as NXP, TI, or generic (a kas YAML that does not
       target a Variscite SoM). Generic mode picks
-      ``varis-tuning-generic.yml`` and skips the bitbake-override step
+      ``bspctl-tuning-generic.yml`` and skips the bitbake-override step
       since that swaps the Variscite-bundled bitbake.
     * **Manifest-driven**: ``bspctl build -f imx-6.12.49-2.2.0.xml -m imx95-var-dart`` -
       run sync, setup-env, gen-kas (topology-only), then apply overlay
@@ -819,7 +819,7 @@ def gen_kas(
 
     Output is the manifest -> repos topology only. The Variscite tuning
     block and the meta-varis-overrides repo entry live in the static
-    overlay at ``overlays/varis-tuning-<bsp>.yml`` and are layered in
+    overlay at ``overlays/bspctl-tuning-<bsp>.yml`` and are layered in
     by ``bspctl build`` at run time.
 
     Default output path is ``<bsp_root>/kas-<bsp>.yml``; use

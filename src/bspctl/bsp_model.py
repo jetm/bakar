@@ -4,7 +4,7 @@ Variscite ships BSPs for both NXP i.MX and TI Sitara SoM families.
 Each family has its own toolchain (Google ``repo`` + ``var-setup-release.sh``
 for NXP; ``varigit/oe-layersetup`` shell wrapper for TI), its own
 manifest format (``imx-A.B.C-X.Y.Z.xml`` vs ``processor-sdk-...-config_var<N>.txt``),
-its own static tuning overlay (``overlays/varis-tuning-<bsp>.yml``),
+its own static tuning overlay (``overlays/bspctl-tuning-<bsp>.yml``),
 and its own pre-flight checks.
 
 This module exports:
@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from bspctl.vendor_config import load_vendors
@@ -146,7 +146,7 @@ class BspModel:
     family: Literal["nxp", "ti"]
     workspace_subdir: str  # "nxp" or "ti"
     kas_yaml_filename: str  # "kas-nxp.yml" or "kas-ti.yml"
-    tuning_overlay_filename: str  # "varis-tuning-nxp.yml" or "varis-tuning-ti.yml"
+    tuning_overlay_filename: str  # "bspctl-tuning-nxp.yml" or "bspctl-tuning-ti.yml"
     manifest_kind: Literal["repo-xml", "oe-layertool-config"]
     default_machine: str
     default_distro: str
@@ -188,11 +188,11 @@ def get_model(family: Literal["nxp", "ti"]) -> BspModel:
     from bspctl.steps import ti_setup_env as step_ti_setup
 
     if family == "nxp":
-        return BspModel(
+        model = BspModel(
             family="nxp",
             workspace_subdir="nxp",
             kas_yaml_filename="kas-nxp.yml",
-            tuning_overlay_filename="varis-tuning-nxp.yml",
+            tuning_overlay_filename="bspctl-tuning-nxp.yml",
             manifest_kind="repo-xml",
             default_machine=cfg_mod.DEFAULT_NXP_MACHINE,
             default_distro=cfg_mod.DEFAULT_NXP_DISTRO,
@@ -209,12 +209,12 @@ def get_model(family: Literal["nxp", "ti"]) -> BspModel:
                 check_git_object_cache,
             ),
         )
-    if family == "ti":
-        return BspModel(
+    elif family == "ti":
+        model = BspModel(
             family="ti",
             workspace_subdir="ti",
             kas_yaml_filename="kas-ti.yml",
-            tuning_overlay_filename="varis-tuning-ti.yml",
+            tuning_overlay_filename="bspctl-tuning-ti.yml",
             manifest_kind="oe-layertool-config",
             default_machine=cfg_mod.DEFAULT_TI_MACHINE,
             default_distro=cfg_mod.DEFAULT_TI_DISTRO,
@@ -232,4 +232,27 @@ def get_model(family: Literal["nxp", "ti"]) -> BspModel:
                 check_forks_ti_u_boot,
             ),
         )
-    raise ValueError(f"Unknown BSP family: {family!r}")
+    else:
+        raise ValueError(f"Unknown BSP family: {family!r}")
+
+    # Apply optional VendorEntry overrides for the first matching vendor.
+    for entry in load_vendors():
+        if entry.family == family:
+            overrides: dict[str, Any] = {}
+            if entry.default_machine is not None:
+                overrides["default_machine"] = entry.default_machine
+            if entry.default_distro is not None:
+                overrides["default_distro"] = entry.default_distro
+            if entry.default_image is not None:
+                overrides["default_image"] = entry.default_image
+            if entry.default_manifest is not None:
+                overrides["default_manifest"] = entry.default_manifest
+            if entry.default_branch is not None:
+                overrides["default_branch"] = entry.default_branch
+            if entry.tuning_overlay is not None:
+                overrides["tuning_overlay_filename"] = entry.tuning_overlay
+            if overrides:
+                model = replace(model, **overrides)
+            break
+
+    return model

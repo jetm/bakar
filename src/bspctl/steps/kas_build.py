@@ -3,7 +3,7 @@
 The YAML generator lives in :mod:`bspctl.kas`; this step wraps it
 plus the build invocation with the measurement harness (``/usr/bin/time
 -v`` plus a background ``du -sb build/tmp`` sampler), and layers in
-the static Variscite tuning overlay (``overlays/varis-tuning-<bsp>.yml``)
+the static tuning overlay (``overlays/bspctl-tuning-<bsp>.yml``)
 on top of whatever kas YAML the caller passes in.
 
 A pseudo-TTY is allocated for the kas-container subprocess so that

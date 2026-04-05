@@ -8,6 +8,7 @@ need a real workspace.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -112,7 +113,7 @@ def test_get_model_nxp() -> None:
     assert bsp.family == "nxp"
     assert bsp.workspace_subdir == "nxp"
     assert bsp.kas_yaml_filename == "kas-nxp.yml"
-    assert bsp.tuning_overlay_filename == "varis-tuning-nxp.yml"
+    assert bsp.tuning_overlay_filename == "bspctl-tuning-nxp.yml"
     assert bsp.manifest_kind == "repo-xml"
     assert bsp.default_machine == "imx8mp-var-dart"
     assert bsp.default_distro == "fsl-imx-xwayland"
@@ -133,7 +134,7 @@ def test_get_model_ti() -> None:
     assert bsp.family == "ti"
     assert bsp.workspace_subdir == "ti"
     assert bsp.kas_yaml_filename == "kas-ti.yml"
-    assert bsp.tuning_overlay_filename == "varis-tuning-ti.yml"
+    assert bsp.tuning_overlay_filename == "bspctl-tuning-ti.yml"
     assert bsp.manifest_kind == "oe-layertool-config"
     assert bsp.default_machine == "am62x-var-som"
     assert bsp.default_distro == "arago"
@@ -152,3 +153,33 @@ def test_get_model_ti() -> None:
 def test_get_model_unknown_raises() -> None:
     with pytest.raises(ValueError, match="Unknown BSP family"):
         get_model("openbsd")  # type: ignore[arg-type]
+
+
+def test_get_model_applies_vendor_override() -> None:
+    """A matching VendorEntry overrides only its non-None optional fields.
+
+    The vendor sets only default_machine; every other BspModel field must
+    remain equal to the built-in NXP preset value.
+    """
+    from bspctl.vendor_config import VendorEntry
+
+    vendor = VendorEntry(
+        name="myco",
+        family="nxp",
+        manifest_regex=r"^myco-.*\.xml$",
+        default_machine="my-board",
+    )
+
+    with patch("bspctl.bsp_model.load_vendors", return_value=[vendor]):
+        model = get_model("nxp")
+
+    assert model.default_machine == "my-board"
+
+    # All other fields must match the built-in NXP preset.
+    assert model.family == "nxp"
+    assert model.workspace_subdir == "nxp"
+    assert model.kas_yaml_filename == "kas-nxp.yml"
+    assert model.tuning_overlay_filename == "bspctl-tuning-nxp.yml"
+    assert model.manifest_kind == "repo-xml"
+    assert model.default_distro == "fsl-imx-xwayland"
+    assert model.default_image == "core-image-minimal"
