@@ -262,3 +262,28 @@ def test_generic_resolve_user_yaml_relative_to_yaml_parent(tmp_path: Path) -> No
 
     rel = _resolve_user_yaml(cfg, yaml)
     assert rel == Path("kas.yml")
+
+
+# ---------------------------------------------------------------------------
+# Vendor config startup integration
+# ---------------------------------------------------------------------------
+
+
+def test_vendor_config_bad_entry_exits_code_2(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When load_vendors() raises ValueError, the CLI exits with code 2."""
+    from unittest.mock import patch
+
+    from typer.testing import CliRunner
+
+    import bspctl.cli as cli_module
+    from bspctl.cli import app
+
+    # Reset the cached vendors so _get_vendors() runs fresh.
+    cli_module._VENDORS = None
+
+    runner = CliRunner()
+    with patch("bspctl.cli.load_vendors", side_effect=ValueError("bad entry")):
+        result = runner.invoke(app, ["doctor"])
+
+    assert result.exit_code == 2
+    assert "bad entry" in result.output

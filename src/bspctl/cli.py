@@ -53,6 +53,7 @@ from bspctl.steps import bitbake_override as step_override
 from bspctl.steps import kas_build as step_kas
 from bspctl.steps import stress_parse as step_stress_parse
 from bspctl.triage import analyse
+from bspctl.vendor_config import load_vendors
 from bspctl.workspace import detect
 
 app = typer.Typer(
@@ -62,6 +63,19 @@ app = typer.Typer(
     pretty_exceptions_enable=False,
 )
 console = Console()
+
+_VENDORS: list | None = None
+
+
+def _get_vendors() -> list:
+    global _VENDORS
+    if _VENDORS is None:
+        try:
+            _VENDORS = load_vendors()
+        except ValueError as exc:
+            console.print(f"[red]Invalid vendors config:[/] {exc}")
+            raise typer.Exit(code=2) from exc
+    return _VENDORS
 
 
 def _version(value: bool) -> None:
@@ -77,7 +91,7 @@ def _main(
         typer.Option("--version", callback=_version, is_eager=True, help="Show version"),
     ] = False,
 ) -> None:
-    pass
+    _get_vendors()
 
 
 # ---------------------------------------------------------------------------
