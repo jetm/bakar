@@ -149,6 +149,25 @@ def _resolve_user_yaml(cfg: BuildConfig, kas_yaml: Path) -> Path:
         ) from exc
 
 
+def _ccache_args(cfg: BuildConfig) -> list[str]:
+    """Return ``['--runtime-args', '-v host:/work/ccache:rw']`` for container builds.
+
+    ``kas-container`` unconditionally resets ``KAS_RUNTIME_ARGS`` to its own
+    defaults before its option-parsing loop, so injecting the flag via an env
+    var is silently discarded.  The ``--runtime-args`` CLI flag (processed
+    after the reset) is the only reliable injection point.  Returns an empty
+    list for host-mode builds where no container is involved.
+
+    Creates the host-side ccache directory when absent so the Docker
+    bind-mount never targets a missing path.
+    """
+    if cfg.host_mode:
+        return []
+    ccache_host = cfg.workspace / "ccache"
+    ccache_host.mkdir(exist_ok=True)
+    return ["--runtime-args", f"-v {ccache_host}:/work/ccache:rw"]
+
+
 def regenerate_yaml(cfg: BuildConfig, log: RunLogger, *, bsp: BspModel) -> None:
     """Run the topology-only kas YAML generator, writing to ``cfg.default_kas_yaml``."""
     log.step_start("gen_kas", target=cfg.image)
@@ -234,7 +253,7 @@ def run_build(
     cmd: list[str] = []
     if shutil.which("/usr/bin/time"):
         cmd = ["/usr/bin/time", "-v", "-o", str(log.time_log_path), "--"]
-    cmd += ["kas-container", "build", f"{kas_yaml_rel}:{overlay_rel}"]
+    cmd += ["kas-container", *_ccache_args(cfg), "build", f"{kas_yaml_rel}:{overlay_rel}"]
 
     log.info(f"exec: {' '.join(cmd)}")
     # The pump thread writes every line to kas.log for `varis log` to tail,
@@ -467,13 +486,10 @@ def _build_env(cfg: BuildConfig, python_executable: Path | None = None) -> dict[
     byte-identical between NXP and TI, so neither the kas template nor
     any recipe needs to know which BSP it is in.
 
-    KAS_RUNTIME_ARGS adds a workspace-root ccache bind-mount so the
-    in-container ``/work/ccache`` resolves to ``<workspace>/ccache/``
-    on the host, not to the dangling per-BSP ``ccache`` symlinks that
-    point one level above ``/work`` (which kas-container does not
-    mount). NXP and TI share one cache via this mount; ccache's
-    recipe-name keying prevents collisions. If the caller already set
-    ``KAS_RUNTIME_ARGS``, varis appends to it instead of overwriting.
+    The ccache bind-mount (``/work/ccache``) is injected at the call
+    site via ``_ccache_args()`` as a ``--runtime-args`` CLI flag, not
+    here.  ``kas-container`` unconditionally overwrites ``KAS_RUNTIME_ARGS``
+    before its option-parsing loop, making env-var injection unreliable.
 
     ``python_executable`` overrides the host-mode BB_PYTHON3 and PATH
     interpreter. Used by VARIS-19 stress-parse to point bitbake at a
@@ -491,14 +507,6 @@ def _build_env(cfg: BuildConfig, python_executable: Path | None = None) -> dict[
     passthrough.setdefault("PATH", os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"))
     passthrough.setdefault("HOME", os.environ.get("HOME", "/tmp"))
     passthrough["KAS_WORK_DIR"] = str(cfg.bsp_root)
-
-    ccache_host = cfg.workspace / "ccache"
-    ccache_host.mkdir(exist_ok=True)
-    ccache_mount = f"-v {ccache_host}:/work/ccache:rw"
-    existing_runtime_args = passthrough.get("KAS_RUNTIME_ARGS", "").strip()
-    passthrough["KAS_RUNTIME_ARGS"] = (
-        f"{existing_runtime_args} {ccache_mount}".strip() if existing_runtime_args else ccache_mount
-    )
 
     # In host mode, prepend the varis interpreter's bin dir to PATH and
     # set BB_PYTHON3 so bitbake's bin/bitbake re-execs into the same
@@ -543,7 +551,7 @@ def run_shell(
     kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
     overlay_rel = materialize_overlay(cfg, overlay_source)
     exe = "kas" if cfg.host_mode else "kas-container"
-    cmd = [exe, "shell", f"{kas_yaml_rel}:{overlay_rel}"]
+    cmd = [exe, *_ccache_args(cfg), "shell", f"{kas_yaml_rel}:{overlay_rel}"]
     if command is not None:
         cmd.extend(["-c", command])
     cmd.extend(args)
@@ -583,7 +591,7 @@ def run_shell_capture(
     kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
     overlay_rel = materialize_overlay(cfg, overlay_source)
     exe = "kas" if cfg.host_mode else "kas-container"
-    cmd = [exe, "shell", f"{kas_yaml_rel}:{overlay_rel}", "-c", command]
+    cmd = [exe, *_ccache_args(cfg), "shell", f"{kas_yaml_rel}:{overlay_rel}", "-c", command]
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     with stdout_path.open("wb") as fh:
         proc = subprocess.Popen(
