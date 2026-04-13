@@ -99,17 +99,42 @@ class BuildConfig:
         return self.bsp_family
 
     @property
+    def is_meta_avocado(self) -> bool:
+        """True when the kas YAML lives inside a meta-avocado repository.
+
+        Drives the ``init-build``-style build-directory setup in
+        :mod:`bspctl.steps.kas_build`: a build dir is created next to
+        the ``meta-avocado/`` repo with a symlink back to it so kas can
+        resolve all layer paths without cloning meta-avocado again.
+        """
+        if self.bsp_family != "generic" or self.kas_yaml_override is None:
+            return False
+        try:
+            return "meta-avocado" in self.kas_yaml_override.resolve().parts
+        except Exception:
+            return False
+
+    @property
     def bsp_root(self) -> Path:
         """Effective BSP root directory.
 
         For NXP and TI this is ``workspace/<bsp_family>/`` - the
-        per-BSP namespace varis manages. Generic mode (BYO with no
+        per-BSP namespace bspctl manages. Generic mode (BYO with no
         Variscite markers) does not own a workspace subdirectory; the
         user's YAML lives wherever they put it, so ``bsp_root`` falls
         back to the YAML's parent directory. That's where the overlay
         symlink and per-run state land for a generic build.
+
+        meta-avocado is the exception: its kas YAMLs live deep inside the
+        ``meta-avocado/`` source tree, but kas must run from a dedicated
+        build directory that is a sibling of that tree. For those builds
+        ``bsp_root`` is ``workspace/build-<yaml-stem>``
+        (e.g. ``sources/build-qemux86-64``), mirroring what the
+        ``meta-avocado/scripts/init-build`` script produces.
         """
         if self.bsp_family == "generic" and self.kas_yaml_override is not None:
+            if self.is_meta_avocado:
+                return self.workspace / f"build-{self.kas_yaml_override.stem}"
             return self.kas_yaml_override.parent
         return self.workspace / self.bsp_family
 

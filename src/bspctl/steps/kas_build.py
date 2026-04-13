@@ -130,6 +130,79 @@ def materialize_overlay(cfg: BuildConfig, overlay_source: Path) -> Path:
     return dest.relative_to(cfg.bsp_root)
 
 
+def _setup_meta_avocado_build_dir(cfg: BuildConfig) -> None:
+    """Create the build directory for Avocado OS builds.
+
+    Idempotent: safe to call on every build invocation.
+    """
+    cfg.bsp_root.mkdir(parents=True, exist_ok=True)
+
+
+def _write_meta_avocado_wrapper(cfg: BuildConfig, kas_yaml: Path) -> Path:
+    """Write a wrapper YAML that includes the machine YAML via repo reference.
+
+    The wrapper is the single top-level file fed to ``kas dump``. It
+    declares meta-avocado as a local repo so kas can resolve the
+    ``repo: meta-avocado`` include. The overlay is passed separately as
+    the second colon-joined argument to ``kas dump`` (both wrapper and
+    overlay live in ``bsp_root``, which shares the same git root, so
+    the same-repo check passes).
+
+    Returns the wrapper path (``bsp_root/avocado-wrapper.yml``).
+    """
+    abs_yaml = kas_yaml.resolve()
+    for parent in [abs_yaml, *abs_yaml.parents]:
+        if parent.name == "meta-avocado":
+            yaml_in_meta = abs_yaml.relative_to(parent)
+            break
+    else:
+        raise RuntimeError(f"kas YAML {kas_yaml} is not inside a meta-avocado repository")
+    wrapper = cfg.bsp_root / "avocado-wrapper.yml"
+    wrapper.write_text(
+        "header:\n"
+        "  version: 16\n"
+        "  includes:\n"
+        "    - repo: meta-avocado\n"
+        f"      file: {yaml_in_meta.as_posix()}\n"
+        "repos:\n"
+        "  meta-avocado:\n"
+        "    path: meta-avocado\n",
+        encoding="utf-8",
+    )
+    return wrapper
+
+
+def _run_kas_dump(cfg: BuildConfig, wrapper: Path, overlay_rel: Path) -> Path:
+    """Run ``kas dump`` on wrapper + overlay and write the resolved output.
+
+    The overlay is the second colon-joined argument; both wrapper and
+    overlay live in ``bsp_root`` (same git root as the peridio workspace),
+    so kas's same-repo check passes. Runs with ``KAS_WORK_DIR=cfg.workspace``
+    so ``path: meta-avocado`` and sibling repos resolve against ``sources/``.
+
+    The dump output is a self-contained YAML: no ``header.includes``, all
+    repos pinned by commit, overlay content merged in. The container never
+    needs to do include resolution or access overlay files directly.
+
+    Returns the dump file path (``bsp_root/avocado-bspctl.yml``).
+    """
+    env = {**os.environ, "KAS_WORK_DIR": str(cfg.workspace)}
+    kas_files = f"{wrapper.name}:{overlay_rel.as_posix()}"
+    result = subprocess.run(
+        ["kas", "dump", kas_files],
+        cwd=str(cfg.bsp_root),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"kas dump failed (exit {result.returncode}):\n{result.stderr}")
+    dump = cfg.bsp_root / "avocado-bspctl.yml"
+    dump.write_text(result.stdout, encoding="utf-8")
+    return dump
+
+
 def _resolve_user_yaml(cfg: BuildConfig, kas_yaml: Path) -> Path:
     """Return ``kas_yaml`` as a path relative to ``cfg.bsp_root``.
 
@@ -138,11 +211,24 @@ def _resolve_user_yaml(cfg: BuildConfig, kas_yaml: Path) -> Path:
     read from inside the container. Reject those inputs with a clear
     error rather than letting kas-container fail with an opaque
     "config file not found" message.
+
+    meta-avocado exception: the YAML lives inside the ``meta-avocado``
+    source tree, which is accessible from ``bsp_root`` via the
+    ``meta-avocado`` symlink created by :func:`_setup_meta_avocado_build_dir`.
+    For those builds the relative path is derived via that symlink
+    (e.g. ``meta-avocado/kas/machine/qemux86-64.yml``) so kas-container
+    can resolve it inside ``/work``.
     """
     abs_path = kas_yaml.resolve()
     try:
         return abs_path.relative_to(cfg.bsp_root)
     except ValueError as exc:
+        if cfg.is_meta_avocado:
+            # Walk up from the YAML to find the meta-avocado boundary,
+            # then express the path via the symlink in bsp_root.
+            for parent in [abs_path, *abs_path.parents]:
+                if parent.name == "meta-avocado":
+                    return Path("meta-avocado") / abs_path.relative_to(parent)
         raise RuntimeError(
             f"kas YAML {abs_path} is outside bsp_root {cfg.bsp_root}; "
             f"copy it under {cfg.bsp_root}/ (e.g. as {cfg.bsp_root}/my-build.yml) and re-run."
@@ -209,9 +295,16 @@ def run_build(
     """
     log.step_start("kas_build", yaml=str(kas_yaml), overlay=str(overlay_source))
     cfg.measurements_dir.mkdir(parents=True, exist_ok=True)
-
-    kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
-    overlay_rel = materialize_overlay(cfg, overlay_source)
+    if cfg.is_meta_avocado:
+        _setup_meta_avocado_build_dir(cfg)
+        overlay_rel = materialize_overlay(cfg, overlay_source)
+        wrapper = _write_meta_avocado_wrapper(cfg, kas_yaml)
+        dump = _run_kas_dump(cfg, wrapper, overlay_rel)
+        kas_arg = str(dump)
+    else:
+        kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
+        overlay_rel = materialize_overlay(cfg, overlay_source)
+        kas_arg = f"{kas_yaml_rel}:{overlay_rel}"
 
     # Shared state for the pump, du sampler, and heartbeat. Writes from
     # one thread only (pump: last_event_ts; sampler: prev_du_bytes /
@@ -253,7 +346,7 @@ def run_build(
     cmd: list[str] = []
     if shutil.which("/usr/bin/time"):
         cmd = ["/usr/bin/time", "-v", "-o", str(log.time_log_path), "--"]
-    cmd += ["kas-container", *_ccache_args(cfg), "build", f"{kas_yaml_rel}:{overlay_rel}"]
+    cmd += ["kas-container", *_ccache_args(cfg), "build", kas_arg]
 
     log.info(f"exec: {' '.join(cmd)}")
     # The pump thread writes every line to kas.log for `varis log` to tail,
@@ -506,7 +599,11 @@ def _build_env(cfg: BuildConfig, python_executable: Path | None = None) -> dict[
     # exported it without prefix; ensure it is present.
     passthrough.setdefault("PATH", os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"))
     passthrough.setdefault("HOME", os.environ.get("HOME", "/tmp"))
-    passthrough["KAS_WORK_DIR"] = str(cfg.bsp_root)
+    if cfg.is_meta_avocado:
+        passthrough["KAS_WORK_DIR"] = str(cfg.workspace)
+        passthrough["KAS_BUILD_DIR"] = str(cfg.bsp_root / "build")
+    else:
+        passthrough["KAS_WORK_DIR"] = str(cfg.bsp_root)
 
     # In host mode, prepend the varis interpreter's bin dir to PATH and
     # set BB_PYTHON3 so bitbake's bin/bitbake re-execs into the same
@@ -548,10 +645,18 @@ def run_shell(
     bitbake-supported Python on PATH.
     """
     log.step_start("kas_shell", command=command, host_mode=cfg.host_mode)
-    kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
-    overlay_rel = materialize_overlay(cfg, overlay_source)
+    if cfg.is_meta_avocado:
+        _setup_meta_avocado_build_dir(cfg)
+        overlay_rel = materialize_overlay(cfg, overlay_source)
+        wrapper = _write_meta_avocado_wrapper(cfg, kas_yaml)
+        dump = _run_kas_dump(cfg, wrapper, overlay_rel)
+        kas_arg = str(dump)
+    else:
+        kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
+        overlay_rel = materialize_overlay(cfg, overlay_source)
+        kas_arg = f"{kas_yaml_rel}:{overlay_rel}"
     exe = "kas" if cfg.host_mode else "kas-container"
-    cmd = [exe, *_ccache_args(cfg), "shell", f"{kas_yaml_rel}:{overlay_rel}"]
+    cmd = [exe, *_ccache_args(cfg), "shell", kas_arg]
     if command is not None:
         cmd.extend(["-c", command])
     cmd.extend(args)
@@ -588,10 +693,18 @@ def run_shell_capture(
     (VARIS-19 obmalloc-patch validation).
     """
     log.step_start(step, command=command, stdout_path=str(stdout_path), host_mode=cfg.host_mode)
-    kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
-    overlay_rel = materialize_overlay(cfg, overlay_source)
+    if cfg.is_meta_avocado:
+        _setup_meta_avocado_build_dir(cfg)
+        overlay_rel = materialize_overlay(cfg, overlay_source)
+        wrapper = _write_meta_avocado_wrapper(cfg, kas_yaml)
+        dump = _run_kas_dump(cfg, wrapper, overlay_rel)
+        kas_arg = str(dump)
+    else:
+        kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
+        overlay_rel = materialize_overlay(cfg, overlay_source)
+        kas_arg = f"{kas_yaml_rel}:{overlay_rel}"
     exe = "kas" if cfg.host_mode else "kas-container"
-    cmd = [exe, *_ccache_args(cfg), "shell", f"{kas_yaml_rel}:{overlay_rel}", "-c", command]
+    cmd = [exe, *_ccache_args(cfg), "shell", kas_arg, "-c", command]
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     with stdout_path.open("wb") as fh:
         proc = subprocess.Popen(

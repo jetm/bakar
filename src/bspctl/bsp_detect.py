@@ -116,3 +116,39 @@ def detect_bsp_from_yaml(yaml_path: Path) -> Literal["nxp", "ti", "generic", "un
     if has_machine or has_repos:
         return "generic"
     return "unknown"
+
+
+def is_meta_avocado_yaml(yaml_path: Path) -> bool:
+    """Return True if the YAML lives inside a meta-avocado repository.
+
+    Walks the resolved path and checks whether any ancestor directory is
+    named ``meta-avocado``. This is how bspctl detects that a generic kas
+    YAML belongs to the Avocado OS build system and needs the
+    ``init-build``-style build-directory setup before kas can run.
+    """
+    try:
+        return "meta-avocado" in yaml_path.resolve().parts
+    except Exception:
+        return False
+
+
+def detect_kas_workspace(yaml_path: Path) -> Path:
+    """Return the effective workspace root for a generic kas YAML.
+
+    For meta-avocado YAMLs the YAML sits several levels deep inside the
+    ``meta-avocado`` repository (e.g. ``sources/meta-avocado/kas/machine/
+    qemux86-64.yml``). kas must run from a build directory that is a
+    *sibling* of ``meta-avocado/`` (e.g. ``sources/build-qemux86-64/``),
+    not from inside the repo. This function walks up from the YAML to
+    find the ``meta-avocado`` boundary and returns its parent
+    (e.g. ``sources/``) so :func:`bspctl.config.BuildConfig.bsp_root`
+    can derive the correct build-directory path.
+
+    For every other generic kas YAML the workspace is simply the YAML's
+    parent directory (preserving the existing behavior).
+    """
+    resolved = yaml_path.resolve()
+    for parent in resolved.parents:
+        if parent.name == "meta-avocado":
+            return parent.parent
+    return resolved.parent

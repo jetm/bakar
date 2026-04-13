@@ -13,7 +13,12 @@ from pathlib import Path
 import pytest
 
 from bspctl.config import BuildConfig
-from bspctl.steps.kas_build import _resolve_user_yaml, materialize_overlay
+from bspctl.steps.kas_build import (
+    _resolve_user_yaml,
+    _setup_meta_avocado_build_dir,
+    _write_meta_avocado_wrapper,
+    materialize_overlay,
+)
 
 
 def _cfg_at(workspace: Path, *, family: str = "nxp") -> BuildConfig:
@@ -267,6 +272,92 @@ def test_generic_resolve_user_yaml_relative_to_yaml_parent(tmp_path: Path) -> No
 # ---------------------------------------------------------------------------
 # Vendor config startup integration
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# meta-avocado build layout
+# ---------------------------------------------------------------------------
+
+
+def _meta_avocado_cfg(sources: Path) -> BuildConfig:
+    """Create a BuildConfig that mimics a real meta-avocado generic build."""
+    yaml_path = sources / "meta-avocado" / "kas" / "machine" / "qemux86-64.yml"
+    return BuildConfig(
+        workspace=sources,
+        bsp_family="generic",
+        machine="generic",
+        distro="generic",
+        image="generic",
+        manifest="",
+        repo_url="",
+        repo_branch="",
+        container_image="kasproject/kas:latest",
+        kas_yaml_override=yaml_path.resolve(),
+    )
+
+
+def test_meta_avocado_is_detected(tmp_path: Path) -> None:
+    sources = tmp_path / "sources"
+    (sources / "meta-avocado" / "kas" / "machine").mkdir(parents=True)
+    (sources / "meta-avocado" / "kas" / "machine" / "qemux86-64.yml").write_text("machine: avocado-qemux86-64\n")
+    cfg = _meta_avocado_cfg(sources)
+    assert cfg.is_meta_avocado is True
+
+
+def test_meta_avocado_bsp_root_is_build_dir(tmp_path: Path) -> None:
+    sources = tmp_path / "sources"
+    (sources / "meta-avocado" / "kas" / "machine").mkdir(parents=True)
+    (sources / "meta-avocado" / "kas" / "machine" / "qemux86-64.yml").write_text("machine: avocado-qemux86-64\n")
+    cfg = _meta_avocado_cfg(sources)
+    assert cfg.bsp_root == sources / "build-qemux86-64"
+
+
+def test_meta_avocado_resolve_user_yaml_via_symlink(tmp_path: Path) -> None:
+    sources = tmp_path / "sources"
+    (sources / "meta-avocado" / "kas" / "machine").mkdir(parents=True)
+    (sources / "meta-avocado" / "kas" / "machine" / "qemux86-64.yml").write_text("machine: avocado-qemux86-64\n")
+    cfg = _meta_avocado_cfg(sources)
+    yaml = sources / "meta-avocado" / "kas" / "machine" / "qemux86-64.yml"
+    rel = _resolve_user_yaml(cfg, yaml)
+    assert rel == Path("meta-avocado") / "kas" / "machine" / "qemux86-64.yml"
+
+
+def test_setup_meta_avocado_build_dir_creates_dir(tmp_path: Path) -> None:
+    sources = tmp_path / "sources"
+    (sources / "meta-avocado" / "kas" / "machine").mkdir(parents=True)
+    (sources / "meta-avocado" / "kas" / "machine" / "qemux86-64.yml").write_text("machine: avocado-qemux86-64\n")
+    cfg = _meta_avocado_cfg(sources)
+    _setup_meta_avocado_build_dir(cfg)
+    build_dir = sources / "build-qemux86-64"
+    assert build_dir.is_dir()
+
+
+def test_setup_meta_avocado_build_dir_idempotent(tmp_path: Path) -> None:
+    sources = tmp_path / "sources"
+    (sources / "meta-avocado" / "kas" / "machine").mkdir(parents=True)
+    (sources / "meta-avocado" / "kas" / "machine" / "qemux86-64.yml").write_text("machine: avocado-qemux86-64\n")
+    cfg = _meta_avocado_cfg(sources)
+    _setup_meta_avocado_build_dir(cfg)
+    _setup_meta_avocado_build_dir(cfg)  # second call must not raise
+    assert (sources / "build-qemux86-64").is_dir()
+
+
+def test_write_meta_avocado_wrapper(tmp_path: Path) -> None:
+    import yaml as _yaml
+
+    sources = tmp_path / "sources"
+    kas_yaml = sources / "meta-avocado" / "kas" / "machine" / "qemux86-64.yml"
+    kas_yaml.parent.mkdir(parents=True)
+    kas_yaml.write_text("machine: avocado-qemux86-64\n")
+    cfg = _meta_avocado_cfg(sources)
+    _setup_meta_avocado_build_dir(cfg)
+    wrapper = _write_meta_avocado_wrapper(cfg, kas_yaml)
+    assert wrapper == cfg.bsp_root / "avocado-wrapper.yml"
+    data = _yaml.safe_load(wrapper.read_text())
+    includes = data["header"]["includes"]
+    assert includes[0] == {"repo": "meta-avocado", "file": "kas/machine/qemux86-64.yml"}
+    assert len(includes) == 1
+    assert data["repos"]["meta-avocado"]["path"] == "meta-avocado"
 
 
 def test_vendor_config_bad_entry_exits_code_2(monkeypatch: pytest.MonkeyPatch) -> None:

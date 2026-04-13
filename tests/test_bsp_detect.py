@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from bspctl.bsp_detect import detect_bsp_from_yaml
+from bspctl.bsp_detect import detect_bsp_from_yaml, detect_kas_workspace, is_meta_avocado_yaml
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -131,3 +131,55 @@ def test_real_ti_example_classifies_as_ti() -> None:
     example = repo_root / "examples" / "kas-am62x-var-som.yml"
     assert example.is_file(), f"missing fixture: {example}"
     assert detect_bsp_from_yaml(example) == "ti"
+
+
+# ---------------------------------------------------------------------------
+# is_meta_avocado_yaml
+# ---------------------------------------------------------------------------
+
+
+def test_meta_avocado_yaml_detected_when_in_path(tmp_path: Path) -> None:
+    repo = tmp_path / "sources" / "meta-avocado" / "kas" / "machine"
+    repo.mkdir(parents=True)
+    p = repo / "qemux86-64.yml"
+    p.write_text("machine: avocado-qemux86-64\n")
+    assert is_meta_avocado_yaml(p) is True
+
+
+def test_meta_avocado_yaml_not_detected_for_generic_yaml(tmp_path: Path) -> None:
+    p = tmp_path / "build" / "kas.yml"
+    p.parent.mkdir(parents=True)
+    p.write_text("machine: qemuarm64\n")
+    assert is_meta_avocado_yaml(p) is False
+
+
+def test_meta_avocado_yaml_not_detected_for_nxp_yaml(tmp_path: Path) -> None:
+    repo = tmp_path / "nxp" / "sources" / "meta-imx"
+    repo.mkdir(parents=True)
+    p = tmp_path / "nxp" / "kas-nxp.yml"
+    p.write_text("machine: imx95-var-dart\n")
+    assert is_meta_avocado_yaml(p) is False
+
+
+# ---------------------------------------------------------------------------
+# detect_kas_workspace
+# ---------------------------------------------------------------------------
+
+
+def test_detect_kas_workspace_returns_meta_avocado_parent(tmp_path: Path) -> None:
+    """For a YAML inside meta-avocado, the workspace is the meta-avocado parent."""
+    sources = tmp_path / "sources"
+    repo = sources / "meta-avocado" / "kas" / "machine"
+    repo.mkdir(parents=True)
+    p = repo / "qemux86-64.yml"
+    p.write_text("machine: avocado-qemux86-64\n")
+    assert detect_kas_workspace(p) == sources
+
+
+def test_detect_kas_workspace_returns_yaml_parent_for_plain_generic(tmp_path: Path) -> None:
+    """For a non-meta-avocado YAML, the workspace is the YAML's parent."""
+    build = tmp_path / "mybuild"
+    build.mkdir()
+    p = build / "kas.yml"
+    p.write_text("machine: qemuarm64\n")
+    assert detect_kas_workspace(p) == build

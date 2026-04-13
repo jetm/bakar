@@ -37,7 +37,7 @@ from rich.console import Console
 from rich.table import Table
 
 from bspctl import __version__
-from bspctl.bsp_detect import detect_bsp_from_yaml
+from bspctl.bsp_detect import detect_bsp_from_yaml, detect_kas_workspace
 from bspctl.bsp_model import BspModel, detect_bsp_family, get_model
 from bspctl.config import BuildConfig, resolve
 from bspctl.diagnostics import (
@@ -137,7 +137,10 @@ def _resolve_workspace(
     if workspace is not None:
         return workspace
     if family == "generic" and kas_yaml is not None:
-        return kas_yaml.resolve().parent
+        # For meta-avocado YAMLs this returns the parent of the
+        # meta-avocado/ dir (e.g. sources/). For all other generic
+        # YAMLs it returns yaml.parent - same as the old behaviour.
+        return detect_kas_workspace(kas_yaml)
     return _workspace_from_cwd()
 
 
