@@ -51,6 +51,7 @@ from bspctl.kas import KasGenOptions, write_yaml
 from bspctl.observability import RunLogger
 from bspctl.steps import bitbake_override as step_override
 from bspctl.steps import kas_build as step_kas
+from bspctl.steps import run_qemu as step_run
 from bspctl.steps import stress_parse as step_stress_parse
 from bspctl.triage import analyse
 from bspctl.vendor_config import load_vendors
@@ -813,6 +814,60 @@ def shell(
             kas_yaml=cfg.kas_yaml,
             overlay_source=overlay_source,
         )
+    raise typer.Exit(code=rc)
+
+
+@app.command()
+def run(
+    kas_yaml: Annotated[
+        Path,
+        typer.Argument(
+            exists=False,
+            help="kas YAML identifying the target machine (e.g. kas/machine/qemux86-64.yml).",
+        ),
+    ],
+    swtpm: Annotated[
+        bool,
+        typer.Option(
+            "--swtpm/--no-swtpm",
+            help="Run with software TPM via swtpm daemon (default: enabled).",
+        ),
+    ] = True,
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", "-w", help="Workspace root override"),
+    ] = None,
+) -> None:
+    """Boot an avocado-os image in QEMU from the build directory.
+
+    Requires a completed build with stone provisioning. Run
+    ``bspctl build kas/machine/qemux86-64.yml:kas/target/qemu-provision.yml``
+    first to produce the bootable disk image.
+
+    Only supported for meta-avocado builds (avocado-qemux86-64, avocado-qemuarm64).
+    """
+    family, _ = _dispatch_from_yaml(kas_yaml)
+    ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
+    cfg = resolve(
+        workspace=ws,
+        bsp_family=family,
+        kas_yaml=kas_yaml,
+    )
+
+    if not cfg.is_meta_avocado:
+        console.print("[red]bspctl run currently only supports meta-avocado builds[/]")
+        raise typer.Exit(code=2)
+
+    cfg.runs_dir.mkdir(parents=True, exist_ok=True)
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        try:
+            rc = step_run.run_qemu(cfg, log, swtpm=swtpm, kas_yaml=kas_yaml)
+        except FileNotFoundError as exc:
+            console.print(f"[red]{exc}[/]")
+            raise typer.Exit(code=2) from None
+        except RuntimeError as exc:
+            console.print(f"[red]{exc}[/]")
+            raise typer.Exit(code=1) from None
     raise typer.Exit(code=rc)
 
 
