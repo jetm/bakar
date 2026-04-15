@@ -340,10 +340,10 @@ def doctor(
 @app.command()
 def build(
     kas_yaml: Annotated[
-        Path | None,
+        str | None,
         typer.Argument(
-            exists=False,
-            help="Optional kas YAML (BYO form). When set, sync/setup-env/gen-kas are skipped.",
+            help="Optional kas YAML (BYO form). Colon-separated overlays are supported: "
+            "main.yml:overlay.yml. When set, sync/setup-env/gen-kas are skipped.",
         ),
     ] = None,
     machine: Annotated[str | None, typer.Option("--machine", "-m", help="e.g. imx8mp-var-dart, am62x-var-som")] = None,
@@ -410,12 +410,20 @@ def build(
         console.print("[red]choose either a positional kas YAML or --manifest, not both[/]")
         raise typer.Exit(code=2)
 
+    # Parse colon-separated overlay chain (kas native syntax: main.yml:overlay.yml)
+    main_yaml: Path | None = None
+    extra_overlays: list[Path] = []
+    if kas_yaml is not None:
+        parts = kas_yaml.split(":")
+        main_yaml = Path(parts[0])
+        extra_overlays = [Path(p) for p in parts[1:]]
+
     if byo_form:
-        family, bsp = _dispatch_from_yaml(kas_yaml)
+        family, bsp = _dispatch_from_yaml(main_yaml)
     else:
         family, bsp = _dispatch_bsp(manifest)
 
-    ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
+    ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
     cfg: BuildConfig = resolve(
         workspace=ws,
         bsp_family=family,
@@ -424,12 +432,12 @@ def build(
         image=image,
         manifest=manifest,
         repo_branch=branch,
-        kas_yaml=kas_yaml,
+        kas_yaml=main_yaml,
     )
 
     overlay_source = _overlay_for(bsp)
 
-    label = f"BYO {kas_yaml}" if byo_form else f"{cfg.machine} / {cfg.distro} / {cfg.image}"
+    label = f"BYO {kas_yaml}" if byo_form else f"{cfg.machine} / {cfg.distro} / {cfg.image}"  # kas_yaml is str here
     console.print(f"[bold]::[/] bspctl build [{family}] {label}")
 
     if clean:
@@ -520,6 +528,7 @@ def build(
             log,
             kas_yaml=cfg.kas_yaml,
             overlay_source=overlay_source,
+            extra_overlays=extra_overlays,
         )
         if rc != 0:
             console.print(

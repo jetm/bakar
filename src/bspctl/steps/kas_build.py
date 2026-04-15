@@ -172,7 +172,12 @@ def _write_meta_avocado_wrapper(cfg: BuildConfig, kas_yaml: Path) -> Path:
     return wrapper
 
 
-def _run_kas_dump(cfg: BuildConfig, wrapper: Path, overlay_rel: Path) -> Path:
+def _run_kas_dump(
+    cfg: BuildConfig,
+    wrapper: Path,
+    overlay_rel: Path,
+    extra_overlay_rels: list[Path] | None = None,
+) -> Path:
     """Run ``kas dump`` on wrapper + overlay and write the resolved output.
 
     The overlay is the second colon-joined argument; both wrapper and
@@ -188,6 +193,8 @@ def _run_kas_dump(cfg: BuildConfig, wrapper: Path, overlay_rel: Path) -> Path:
     """
     env = {**os.environ, "KAS_WORK_DIR": str(cfg.workspace)}
     kas_files = f"{wrapper.name}:{overlay_rel.as_posix()}"
+    for extra in extra_overlay_rels or []:
+        kas_files += f":{extra.as_posix()}"
     result = subprocess.run(
         ["kas", "dump", kas_files],
         cwd=str(cfg.bsp_root),
@@ -282,6 +289,7 @@ def run_build(
     *,
     kas_yaml: Path,
     overlay_source: Path,
+    extra_overlays: list[Path] | None = None,
 ) -> int:
     """Run `kas-container build <kas_yaml>:<overlay>` with the measurement harness.
 
@@ -292,14 +300,19 @@ def run_build(
     bind mount). ``overlay_source`` is the absolute path to the static
     overlay; this function symlinks it into ``<bsp_root>/.varis/overlays/``
     so it is reachable from inside the container.
+
+    ``extra_overlays`` are additional kas YAML overlays to layer on top
+    (colon-syntax: ``bspctl build main.yml:extra.yml``). Each is materialized
+    into ``.varis/overlays/`` alongside the main tuning overlay.
     """
     log.step_start("kas_build", yaml=str(kas_yaml), overlay=str(overlay_source))
     cfg.measurements_dir.mkdir(parents=True, exist_ok=True)
     if cfg.is_meta_avocado:
         _setup_meta_avocado_build_dir(cfg)
         overlay_rel = materialize_overlay(cfg, overlay_source)
+        extra_overlay_rels = [materialize_overlay(cfg, p) for p in (extra_overlays or [])]
         wrapper = _write_meta_avocado_wrapper(cfg, kas_yaml)
-        dump = _run_kas_dump(cfg, wrapper, overlay_rel)
+        dump = _run_kas_dump(cfg, wrapper, overlay_rel, extra_overlay_rels)
         kas_arg = str(dump)
     else:
         kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
