@@ -61,3 +61,10 @@ local_conf_header:
 
     # crates.io 403 workaround (matches NXP/TI overlays).
     FETCHCMD_wget = "/usr/bin/env wget --tries=2 --timeout=100 -U 'bitbake/2.0'"
+
+    # Disable rm_work entirely. The kas-build-env container enables it by
+    # default (AVOCADO_RM_WORK=1), which cleans recipe-sysroot-native after
+    # each task and breaks any recipe whose later tasks depend on native
+    # binaries (e.g. do_stone_provision needs stone and fwup from a
+    # previously-cleaned sysroot). Work dirs are cheap on a dev machine.
+    INHERIT:remove = "rm_work"
