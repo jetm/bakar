@@ -37,7 +37,7 @@ from rich.console import Console
 from rich.table import Table
 
 from bspctl import __version__
-from bspctl.bsp_detect import detect_bsp_from_yaml, detect_kas_workspace
+from bspctl.bsp_detect import detect_bsp_from_yaml, detect_kas_workspace, is_meta_avocado_yaml
 from bspctl.bsp_model import BspModel, detect_bsp_family, get_model
 from bspctl.config import BuildConfig, resolve
 from bspctl.diagnostics import (
@@ -702,10 +702,15 @@ def triage(
     non-Variscite BYO YAMLs.
     """
     if kas_yaml is not None:
+        resolved = kas_yaml.resolve()
+        if is_meta_avocado_yaml(resolved):
+            build_root = detect_kas_workspace(resolved) / f"build-{resolved.stem}"
+        else:
+            build_root = resolved.parent
         runs_dirs: list[tuple[Path, Literal["nxp", "ti", "generic"]]] = [
-            (kas_yaml.resolve().parent / "build" / "runs", "generic"),
+            (build_root / "build" / "runs", "generic"),
         ]
-        report_root = kas_yaml.resolve().parent
+        report_root = build_root
         not_found_label = f"{runs_dirs[0][0]}"
     else:
         ws = workspace or _workspace_from_cwd()
