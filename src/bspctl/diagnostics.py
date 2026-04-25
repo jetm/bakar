@@ -215,6 +215,33 @@ def check_container_os(cfg: BuildConfig) -> CheckResult:
     return _ok("container-os", Severity.BLOCK, f"{os_line} / {py_line}")
 
 
+def check_container_bitbake(cfg: BuildConfig) -> CheckResult:
+    try:
+        out = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--entrypoint",
+                "bash",
+                cfg.container_image,
+                "-c",
+                "which bitbake && bitbake --version",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return _skip("container-bitbake", Severity.INFO, f"could not inspect: {exc}")
+    if out.returncode != 0:
+        return _skip("container-bitbake", Severity.INFO, "inspection failed")
+    lines = out.stdout.strip().splitlines()
+    path = lines[0].strip() if lines else "unknown"
+    version = lines[1].strip() if len(lines) > 1 else "unknown"
+    return _ok("container-bitbake", Severity.INFO, f"{path} / {version}")
+
+
 def check_cache_dirs(cfg: BuildConfig) -> CheckResult:
     sstate = Path(os.environ.get("SSTATE_DIR", "/mnt/BACKUP_ROOT/yocto-cache/sstate"))
     dl = Path(os.environ.get("DL_DIR", "/mnt/JETM_SATA_9.1T/yocto-cache/downloads"))
@@ -531,6 +558,7 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_docker_daemon,
     check_container_image,
     check_container_os,
+    check_container_bitbake,
     check_cache_dirs,
     check_sysctl,
     check_docker_ulimits,
