@@ -68,3 +68,9 @@ local_conf_header:
     # binaries (e.g. do_stone_provision needs stone and fwup from a
     # previously-cleaned sysroot). Work dirs are cheap on a dev machine.
     INHERIT:remove = "rm_work"
+
+    # nodejs uses a GYP-generated Makefile with fixup_dep() that writes
+    # a .d.raw dependency file via -MF, then immediately reads it back.
+    # ccache with hash_dir=false does not restore the .d.raw file on a
+    # cache hit, causing fixup_dep() to fail with "No such file or directory".
+    CCACHE_DISABLE:pn-nodejs = "1"
