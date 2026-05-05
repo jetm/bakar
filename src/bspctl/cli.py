@@ -167,7 +167,7 @@ def _bsp_from_cwd(workspace: Path) -> Literal["nxp", "ti"] | None:
 
 
 def _overlay_dir() -> Path:
-    """Locate the ``overlays/`` directory at the varis repo root.
+    """Locate the ``overlays/`` directory at the bspctl repo root.
 
     cli.py lives at ``src/bspctl/cli.py``; the repo root is three
     parents up. Editable installs land here; wheel installs would need
@@ -186,7 +186,9 @@ def _overlay_for(bsp: BspModel | None) -> Path:
     filename = bsp.tuning_overlay_filename if bsp is not None else "bspctl-tuning-generic.yml"
     path = _overlay_dir() / filename
     if not path.is_file():
-        raise typer.BadParameter(f"tuning overlay missing: {path}. Reinstall varis or restore the overlays/ directory.")
+        raise typer.BadParameter(
+            f"tuning overlay missing: {path}. Reinstall bspctl or restore the overlays/ directory."
+        )
     return path
 
 
