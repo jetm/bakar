@@ -30,7 +30,7 @@
 #     varis/scripts/blog-ablation-table.py
 set -euo pipefail
 
-VARIS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+BSPCTL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BITBAKE_REPO="${HOME}/repos/personal/yocto/bitbake"
 PY315B1="${HOME}/.local/share/uv/python/cpython-3.15.0b1-linux-x86_64-gnu/bin/python3"
 
@@ -55,7 +55,7 @@ done
 # Sanity checks before any runs.
 [[ -d "${BITBAKE_REPO}" ]] || { echo "missing bitbake repo at ${BITBAKE_REPO}" >&2; exit 2; }
 [[ -x "${PY315B1}" ]] || { echo "missing Python 3.15.0b1 at ${PY315B1}" >&2; exit 2; }
-[[ -x "${VARIS_DIR}/.venv-test/bin/varis" ]] || { echo "missing .venv-test/bin/varis" >&2; exit 2; }
+[[ -x "${BSPCTL_DIR}/.venv-test/bin/bspctl" ]] || { echo "missing .venv-test/bin/bspctl" >&2; exit 2; }
 
 git -C "${BITBAKE_REPO}" rev-parse ablation/baseline >/dev/null \
     || { echo "missing branch ablation/baseline in ${BITBAKE_REPO}" >&2; exit 2; }
@@ -124,7 +124,7 @@ run_cell() {
         # so sys.executable forwards into BB_PYTHON3 inside `kas shell`.
         # uv run installs varis editable into a 3.15.0b1 ephemeral env.
         "${cmd_env[@]}" \
-            uv run --python "${PY315B1}" --with-editable "${VARIS_DIR}" \
+            uv run --python "${PY315B1}" --with-editable "${BSPCTL_DIR}" \
                 varis "${varis_args[@]}" || {
             echo "CELL ${label} FAILED (rc=$?)" >&2
         }
@@ -132,7 +132,7 @@ run_cell() {
         # kas-container mode: varis runs under whatever its venv carries
         # (3.14.4); kas-container's bundled 3.12.10 runs bitbake.
         "${cmd_env[@]}" \
-            "${VARIS_DIR}/.venv-test/bin/varis" "${varis_args[@]}" || {
+            "${BSPCTL_DIR}/.venv-test/bin/bspctl" "${varis_args[@]}" || {
             echo "CELL ${label} FAILED (rc=$?)" >&2
         }
     fi
@@ -166,4 +166,4 @@ fi
 
 echo
 echo "Matrix complete. Aggregate with:"
-echo "    ${VARIS_DIR}/.venv-test/bin/python ${VARIS_DIR}/scripts/blog-ablation-table.py"
+echo "    ${BSPCTL_DIR}/.venv-test/bin/python ${BSPCTL_DIR}/scripts/blog-ablation-table.py"
