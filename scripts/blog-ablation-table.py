@@ -15,9 +15,9 @@ follows that schema; unknown labels sort lexicographically at the end.
 
 Usage::
 
-    python varis/scripts/blog-ablation-table.py
-    python varis/scripts/blog-ablation-table.py --label-prefix blog-
-    python varis/scripts/blog-ablation-table.py --workspace ~/repos/personal/variscite
+    python bspctl/scripts/blog-ablation-table.py
+    python bspctl/scripts/blog-ablation-table.py --label-prefix blog-
+    python bspctl/scripts/blog-ablation-table.py --workspace ~/repos/personal/bspctl
 """
 
 from __future__ import annotations
