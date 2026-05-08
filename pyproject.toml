@@ -1,7 +1,7 @@
 [project]
 name = "bspctl"
 version = "0.0.1"
-description = "One-command Variscite BSP build orchestrator with observability"
+description = "One-command kas-based BSP build orchestrator with observability"
 authors = [{name = "Javier Tia"}]
 license = "Apache-2.0"
 requires-python = ">=3.11,<3.16"
