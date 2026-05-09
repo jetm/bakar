@@ -1,4 +1,4 @@
-"""Tests for the BYO ``varis build my.yml`` surface.
+"""Tests for the ``bspctl build my.yml`` surface.
 
 Focuses on argument-parsing logic and overlay materialization. The
 real ``kas-container build`` invocation is not exercised here - that
@@ -93,17 +93,17 @@ def test_resolve_user_yaml_outside_bsp_root_rejects(tmp_path: Path) -> None:
 
 
 def test_materialize_overlay_copies_file(tmp_path: Path) -> None:
-    """materialize_overlay copies the source under .varis/overlays/."""
+    """materialize_overlay copies the source under .bspctl/overlays/."""
     (tmp_path / "nxp").mkdir()
     overlays_dir = tmp_path / "external-overlays"
     overlays_dir.mkdir()
-    overlay_src = overlays_dir / "varis-tuning-nxp.yml"
+    overlay_src = overlays_dir / "bspctl-tuning-nxp.yml"
     overlay_src.write_text("header:\n  version: 3\n")
 
     cfg = _cfg_at(tmp_path)
     rel = materialize_overlay(cfg, overlay_src)
 
-    assert rel == Path(".varis") / "overlays" / "varis-tuning-nxp.yml"
+    assert rel == Path(".bspctl") / "overlays" / "bspctl-tuning-nxp.yml"
     dest = cfg.bsp_root / rel
     assert dest.is_file()
     assert not dest.is_symlink()
@@ -113,7 +113,7 @@ def test_materialize_overlay_copies_file(tmp_path: Path) -> None:
 def test_materialize_overlay_idempotent(tmp_path: Path) -> None:
     """Calling twice yields the same destination with current content."""
     (tmp_path / "nxp").mkdir()
-    overlay_src = tmp_path / "ext" / "varis-tuning-nxp.yml"
+    overlay_src = tmp_path / "ext" / "bspctl-tuning-nxp.yml"
     overlay_src.parent.mkdir()
     overlay_src.write_text("header:\n  version: 3\n")
 
@@ -129,8 +129,8 @@ def test_materialize_overlay_idempotent(tmp_path: Path) -> None:
 def test_materialize_overlay_refreshes_content(tmp_path: Path) -> None:
     """Subsequent calls overwrite the destination with the latest source."""
     (tmp_path / "nxp").mkdir()
-    overlay_src_a = tmp_path / "a" / "varis-tuning-nxp.yml"
-    overlay_src_b = tmp_path / "b" / "varis-tuning-nxp.yml"
+    overlay_src_a = tmp_path / "a" / "bspctl-tuning-nxp.yml"
+    overlay_src_b = tmp_path / "b" / "bspctl-tuning-nxp.yml"
     overlay_src_a.parent.mkdir()
     overlay_src_b.parent.mkdir()
     overlay_src_a.write_text("header:\n  version: 3\n# from A\n")
@@ -140,27 +140,27 @@ def test_materialize_overlay_refreshes_content(tmp_path: Path) -> None:
     materialize_overlay(cfg, overlay_src_a)
     materialize_overlay(cfg, overlay_src_b)
 
-    dest = cfg.bsp_root / ".varis" / "overlays" / "varis-tuning-nxp.yml"
+    dest = cfg.bsp_root / ".bspctl" / "overlays" / "bspctl-tuning-nxp.yml"
     assert dest.read_text() == overlay_src_b.read_text()
 
 
 def test_materialize_overlay_replaces_existing_symlink(tmp_path: Path) -> None:
     """Stale symlinks from earlier varis versions are replaced with copies."""
     (tmp_path / "nxp").mkdir()
-    overlay_src = tmp_path / "ext" / "varis-tuning-nxp.yml"
+    overlay_src = tmp_path / "ext" / "bspctl-tuning-nxp.yml"
     overlay_src.parent.mkdir()
     overlay_src.write_text("header:\n  version: 3\n")
 
     cfg = _cfg_at(tmp_path)
-    overlay_dir = cfg.bsp_root / ".varis" / "overlays"
+    overlay_dir = cfg.bsp_root / ".bspctl" / "overlays"
     overlay_dir.mkdir(parents=True)
     stale_target = tmp_path / "stale.yml"
     stale_target.write_text("# stale\n")
-    (overlay_dir / "varis-tuning-nxp.yml").symlink_to(stale_target)
+    (overlay_dir / "bspctl-tuning-nxp.yml").symlink_to(stale_target)
 
     materialize_overlay(cfg, overlay_src)
 
-    dest = overlay_dir / "varis-tuning-nxp.yml"
+    dest = overlay_dir / "bspctl-tuning-nxp.yml"
     assert not dest.is_symlink()
     assert dest.read_text() == overlay_src.read_text()
 
@@ -219,7 +219,7 @@ def test_generic_materialize_overlay_under_yaml_parent(tmp_path: Path) -> None:
     yaml = pilots / "kas.yml"
     yaml.write_text("machine: qemuarm64\n")
 
-    overlay_src = tmp_path / "ext" / "varis-tuning-generic.yml"
+    overlay_src = tmp_path / "ext" / "bspctl-tuning-generic.yml"
     overlay_src.parent.mkdir()
     overlay_src.write_text("header:\n  version: 3\n")
 
@@ -238,8 +238,8 @@ def test_generic_materialize_overlay_under_yaml_parent(tmp_path: Path) -> None:
 
     rel = materialize_overlay(cfg, overlay_src)
 
-    assert rel == Path(".varis") / "overlays" / "varis-tuning-generic.yml"
-    dest = pilots / ".varis" / "overlays" / "varis-tuning-generic.yml"
+    assert rel == Path(".bspctl") / "overlays" / "bspctl-tuning-generic.yml"
+    dest = pilots / ".bspctl" / "overlays" / "bspctl-tuning-generic.yml"
     assert dest.is_file()
     assert not dest.is_symlink()
     assert dest.read_text() == overlay_src.read_text()
