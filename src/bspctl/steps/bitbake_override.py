@@ -434,7 +434,7 @@ def status(cfg: BuildConfig) -> OverrideStatus:
     elif poky_bitbake.is_symlink():
         detail = "poky/bitbake is a symlink pointing elsewhere; run apply"
     elif not poky_bitbake.exists():
-        detail = "poky/bitbake missing (run apply or `varis build` to re-sync)"
+        detail = "poky/bitbake missing (run apply or `bspctl build` to re-sync)"
     else:
         detail = "poky/bitbake exists but is neither a directory nor a symlink"
     return OverrideStatus(
@@ -528,7 +528,7 @@ def revert(cfg: BuildConfig, log: RunLogger | None = None) -> None:
     """Remove the symlink so the next ``repo sync --force-sync`` restores
     the BSP-bundled bitbake.
 
-    We do not invoke ``repo sync`` here ourselves - the next ``varis
+    We do not invoke ``repo sync`` here ourselves - the next ``bspctl
     build`` will detect the missing tree and force a re-sync via the
     existing workspace step. Keeping revert minimal avoids surprising
     network/I/O when the user just wanted to disable the override.
@@ -538,7 +538,8 @@ def revert(cfg: BuildConfig, log: RunLogger | None = None) -> None:
         poky_bitbake.unlink()
         if log is not None:
             log.info(
-                f"removed symlink {poky_bitbake}; next `varis build` will restore the BSP-bundled bitbake via repo sync"
+                f"removed symlink {poky_bitbake}; "
+                "next `bspctl build` will restore the BSP-bundled bitbake via repo sync"
             )
     elif log is not None:
         log.info(f"{poky_bitbake} is not a symlink; nothing to revert")

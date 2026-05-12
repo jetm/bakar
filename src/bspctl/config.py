@@ -167,7 +167,7 @@ class BuildConfig:
         """Absolute path to the manifest the dispatched step will consume.
 
         For NXP this is ``nxp/.repo/manifests/<m>.xml`` (managed by
-        Google ``repo``); reading from there keeps varis aligned with
+        reading from there keeps bspctl aligned with
         what ``repo sync`` last produced.
 
         For TI this is ``ti/oe-layertool/configs/variscite/<m>.txt`` -

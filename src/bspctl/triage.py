@@ -60,7 +60,7 @@ def _bitbake_override_summary(events_path: Path) -> str | None:
 
     Scans ``events.jsonl`` for the last ``bitbake_override`` step event
     (ok or skip) and renders it for the triage suggestions block.
-    Returns ``None`` when no event is present (older varis runs, or the
+    Returns ``None`` when no event is present (older bspctl runs, or the
     step never executed in this pipeline).
     """
     if not events_path.is_file():
@@ -247,7 +247,7 @@ def find_runs(workspace: Path) -> list[Path]:
 
     Walks ``<workspace>/nxp/build/runs/`` and ``<workspace>/ti/build/runs/``
     so callers do not need to pre-dispatch a BSP family. Used by
-    ``varis triage`` when no run id is supplied.
+    ``bspctl triage`` when no run id is supplied.
     """
     out: list[Path] = []
     for family in ("nxp", "ti"):

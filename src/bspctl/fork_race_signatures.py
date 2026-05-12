@@ -38,7 +38,7 @@ FORK_RACE_SIGNATURES: list[re.Pattern[str]] = [
 FORK_RACE_SUGGESTION = (
     "bitbake parser worker corrupted by fork-in-multi-threaded-program race "
     "(CPython torn PyType state). Recurring upstream bug; not a recipe "
-    "issue. Manual workaround: re-run `varis build` - the next fork roll "
+    "issue. Manual workaround: re-run `bspctl build` - the next fork roll "
     "usually wins. Architectural fix tracked in VARIS-13. See "
     "kb/reference/bitbake-parser-fork-race.md for the full diagnosis."
 )

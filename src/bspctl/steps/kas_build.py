@@ -113,7 +113,7 @@ def materialize_overlay(cfg: BuildConfig, overlay_source: Path) -> Path:
     ``overlay_source`` byte-for-byte on every invocation. Earlier
     revisions symlinked, but kas resolves symlinks before running its
     "all configs must share a git repo" check, so a YAML in repo A
-    layered with a symlink whose target lives in repo B (the varis
+    layered with a symlink whose target lives in repo B (the bspctl
     install) tripped ``All concatenated config files must belong to
     the same repository or all must be outside of versioning control``.
     Copying drops a real file into the user's tree, putting both
@@ -654,7 +654,7 @@ def _build_env(cfg: BuildConfig, python_executable: Path | None = None) -> dict[
     ``python_executable`` overrides the host-mode BB_PYTHON3 and PATH
     interpreter. Used by VARIS-19 stress-parse to point bitbake at a
     locally-built CPython (e.g. one with the obmalloc atfork patch)
-    without reinstalling varis under it. When None, host mode defaults
+    without reinstalling bspctl under it. When None, host mode defaults
     to ``sys.executable``.
     """
     passthrough = {
@@ -672,9 +672,9 @@ def _build_env(cfg: BuildConfig, python_executable: Path | None = None) -> dict[
     else:
         passthrough["KAS_WORK_DIR"] = str(cfg.bsp_root)
 
-    # In host mode, prepend the varis interpreter's bin dir to PATH and
+    # In host mode, prepend the bspctl interpreter's bin dir to PATH and
     # set BB_PYTHON3 so bitbake's bin/bitbake re-execs into the same
-    # Python varis was installed under (a uv tool venv pinned to 3.12
+    # Python bspctl was installed under (a uv tool venv pinned to 3.12
     # via `uv tool install --python 3.12`). The bitbake-server and
     # bitbake-worker subprocesses inherit the interpreter through
     # sys.executable in bb.server.process._startServer / bb.runqueue,

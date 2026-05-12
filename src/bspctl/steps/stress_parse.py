@@ -165,14 +165,14 @@ def _build_command(
     kas YAML or the host shell exported. Bitbake honours this knob
     directly during the parse phase.
 
-    In host mode, prepend ``BB_PYTHON3=<varis-interpreter>`` so bitbake's
-    bin/bitbake re-execs into the same Python varis was installed under.
+    In host mode, prepend ``BB_PYTHON3=<bspctl-interpreter>`` so bitbake's
+    bin/bitbake re-execs into the same Python bspctl was installed under.
     kas filters environment passthrough at ``kas/context.py``, so a host
     env var would not survive into the kas shell - inlining the
     assignment on the command line goes through verbatim. When
     ``python_executable`` is given, BB_PYTHON3 points at it instead -
     used by the VARIS-19 validation to run a patched obmalloc CPython
-    without reinstalling varis under it.
+    without reinstalling bspctl under it.
 
     When ``postfile`` is given, append ``-R <path>`` so bitbake reads it
     after the standard config files. Used in host mode to apply
@@ -278,7 +278,7 @@ def run(
     ``python_executable`` overrides which Python bitbake re-execs into
     (via BB_PYTHON3) and which interpreter's bin/ leads PATH inside the
     kas-shell. Used by VARIS-19 to validate a patched obmalloc CPython
-    without reinstalling varis under that interpreter. Recorded in
+    without reinstalling bspctl under that interpreter. Recorded in
     ``summary.json["python_executable"]`` for the audit trail.
     """
     out_dir = log.run_dir / "stress-parse"

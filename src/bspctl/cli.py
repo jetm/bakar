@@ -1111,8 +1111,8 @@ def stress_parse(
             help="Override which Python bitbake re-execs into. Sets BB_PYTHON3 and "
             "leads PATH with the interpreter's bin dir, so stress-parse can validate "
             "a locally-built CPython (e.g. one carrying the VARIS-19 obmalloc fork-"
-            "safety patch) without reinstalling varis under that interpreter. Pass "
-            "the absolute path to a python binary; defaults to varis's own interpreter.",
+            "safety patch) without reinstalling bspctl under that interpreter. Pass "
+            "the absolute path to a python binary; defaults to bspctl's own interpreter.",
         ),
     ] = None,
 ) -> None:
