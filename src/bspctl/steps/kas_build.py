@@ -604,8 +604,8 @@ def run_build(
     finally:
         if not terminated:
             # Wrapper crashed before the normal step_ok/step_fail path.  Emit
-        # a terminal event anyway so events.jsonl never dead-ends at
-        # step_start and `bspctl triage` has something to find.
+            # a terminal event anyway so events.jsonl never dead-ends at
+            # step_start and `bspctl triage` has something to find.
             if rc == 0:
                 deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
                 log.step_ok("kas_build", deploy_dir=str(deploy), exit_code=rc)
