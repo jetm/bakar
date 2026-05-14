@@ -145,7 +145,7 @@ def test_materialize_overlay_refreshes_content(tmp_path: Path) -> None:
 
 
 def test_materialize_overlay_replaces_existing_symlink(tmp_path: Path) -> None:
-    """Stale symlinks from earlier varis versions are replaced with copies."""
+    """Stale symlinks from earlier bspctl versions are replaced with copies."""
     (tmp_path / "nxp").mkdir()
     overlay_src = tmp_path / "ext" / "bspctl-tuning-nxp.yml"
     overlay_src.parent.mkdir()
