@@ -62,6 +62,14 @@ local_conf_header:
     # crates.io 403 workaround (matches NXP/TI overlays).
     FETCHCMD_wget = "/usr/bin/env wget --tries=2 --timeout=100 -U 'bitbake/2.0'"
 
+    # meta-erlang's mix.bbclass runs `mix deps.get` during do_configure with
+    # network access enabled. The default Hex HTTP timeout (~60s) is too short
+    # for hex.pm under congestion. HEX_HTTP_CONCURRENCY=1 avoids thundering-herd
+    # on the single connection; HEX_HTTP_TIMEOUT raises the per-request limit.
+    # `export` makes bitbake pass these to the task shell environment.
+    export HEX_HTTP_CONCURRENCY = "1"
+    export HEX_HTTP_TIMEOUT = "120"
+
     # Disable rm_work entirely. The kas-build-env container enables it by
     # default (AVOCADO_RM_WORK=1), which cleans recipe-sysroot-native after
     # each task and breaks any recipe whose later tasks depend on native
