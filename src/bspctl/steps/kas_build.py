@@ -134,8 +134,21 @@ def _setup_meta_avocado_build_dir(cfg: BuildConfig) -> None:
     """Create the build directory for Avocado OS builds.
 
     Idempotent: safe to call on every build invocation.
+
+    When a .bspctl.toml marker file exists in a directory above cfg.workspace
+    (the kas KAS_WORK_DIR), a convenience symlink is created at
+    <marker_dir>/build-<kas_yaml_stem> pointing to cfg.bsp_root. This makes
+    the build directory visible at the peridio workspace root alongside the
+    checked-out layer repos without changing KAS_WORK_DIR or any kas path:
+    entries.
     """
     cfg.bsp_root.mkdir(parents=True, exist_ok=True)
+    for candidate in cfg.workspace.parents:
+        if (candidate / ".bspctl.toml").is_file():
+            link = candidate / cfg.bsp_root.name
+            if not link.exists() and not link.is_symlink():
+                link.symlink_to(cfg.bsp_root)
+            break
 
 
 def _write_meta_avocado_wrapper(cfg: BuildConfig, kas_yaml: Path) -> Path:
