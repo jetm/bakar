@@ -311,38 +311,3 @@ workspace to tail the latest run for the dispatched BSP.
 | `do_fetch: Fetcher failure` for `linux-imx` | Populate `nxp/forks/linux-imx/` so the local PREMIRROR handles the fetch without going external. |
 | `Config file validation Error` from kas | Version skew between host `kas` and the kas-container image. Align both to the same kas release. |
 | General fetch flake | Retry. Transient GitHub timeouts are common; `repo sync` and `do_fetch` are idempotent. |
-
-## Architecture
-
-For maintainers: the package lives under `src/bspctl/`.
-
-- `cli.py` - typer app; defines `build`, `sync`, `doctor`, `triage`, `shell`,
-  `gen-kas`, `clean`, `bitbake-override`, `stress-parse`, `log`. The
-  `_dispatch_bsp` and `_dispatch_from_yaml` helpers route to the right
-  `BspModel` based on either the manifest filename or the BYO YAML.
-- `config.py` - `BuildConfig` dataclass plus `resolve()` which merges CLI
-  flags, `BSPCTL_*` env vars, and defaults. `cfg.kas_yaml` returns the BYO
-  override if set, else `<bsp_root>/kas-<bsp>.yml` (the manifest-flow default).
-- `bsp_model.py` - manifest-filename detection (`detect_bsp_family`) plus
-  the `BspModel` registry. Each model carries the per-BSP defaults,
-  `tuning_overlay_filename`, sync/setup-env steps, and doctor extras.
-- `bsp_detect.py` - YAML-content BSP detection used by the BYO path.
-- `diagnostics.py` - the pre-flight checks plus `Severity` / `Status` enums
-  and `run_all` / `any_blocking_failure` helpers.
-- `kas.py` - topology-only YAML generator: takes a manifest XML + bblayers
-  template and emits a kas config covering machine/distro/target/repos. The
-The BSP tuning lives in `overlays/bspctl-tuning-<bsp>.yml` and is layered
-  in by `bspctl build` at run time.
-- `observability.py` - `RunLogger` context manager that owns the
-  `<bsp>/build/runs/<ts>/` directory and emits structured `step_*` events.
-- `triage.py` - `analyse(run_dir, workspace)` post-mortem; returns a
-  `TriageReport` with tails and keyed suggestions.
-- `workspace.py` - state detection (`needs_repo_sync`, `needs_setup_env`) so
-  `bspctl build` can skip steps that have already run.
-- `steps/repo.py`, `steps/ti_layertool.py`, `steps/setup_env.py`,
-  `steps/ti_setup_env.py`, `steps/kas_build.py`,
-  `steps/bitbake_override.py`, `steps/stress_parse.py` - the pipeline steps.
-- `overlays/bspctl-tuning-nxp.yml`, `overlays/bspctl-tuning-ti.yml` - the
-  static optimization stack layered on top of every build.
-- `examples/kas-imx95-var-dart.yml`, `examples/kas-am62x-var-som.yml` -
-  starter topology-only YAMLs you can copy under `nxp/` or `ti/` and edit.
