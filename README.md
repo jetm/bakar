@@ -1,14 +1,12 @@
 # bspctl
 
-NXP i.MX and TI Sitara BSP build orchestrator powered by kas,
-with a generic fallback for any kas YAML. Layers a static tuning overlay
-(ccache wiring, MIRRORS, PREMIRRORS, FETCHCMD_wget, plus
-fork-PREMIRRORs and the renderdoc CMake-launcher fix on NXP) on top of
-either a user-supplied kas YAML (BYO) or a YAML it generates from the
-repo-tool manifest (NXP) / oe-layertool config (TI). Runs a
-pre-flight diagnosis before every build, captures structured per-run
-telemetry under `<bsp_root>/build/runs/<ts>/`, and ships a `bspctl triage`
-post-mortem that keys suggestions off the failure pattern.
+Practical kas wrapper for Yocto BSP development. Integrates repo tool
+(NXP i.MX manifests) and oe-layertool (TI Sitara) for source sync, then
+drives kas with a static tuning overlay (ccache, MIRRORS, PREMIRRORS,
+fetch robustness) layered on top. Works with any kas YAML in generic
+mode. Runs pre-flight checks before every build, captures structured
+per-run telemetry, and ships `bspctl triage` to diagnose failures from
+the kas log.
 
 ## BSP scope
 

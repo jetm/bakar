@@ -1,3 +1,3 @@
-"""bspctl: NXP i.MX and TI Sitara BSP build orchestrator."""
+"""bspctl: practical kas wrapper for Yocto BSP development."""
 
 __version__ = "0.0.2"
