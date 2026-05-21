@@ -31,19 +31,22 @@ batteries-included path, not a requirement.
 
 ## Installation
 
+Until v0.1.0 lands on PyPI, install from source:
+
+```bash
+git clone https://github.com/jetm/bspctl
+cd bspctl
+uv tool install --editable .
+```
+
+After the first PyPI release:
+
 ```bash
 uv tool install bspctl
 ```
 
 ```bash
 pip install bspctl
-```
-
-```bash
-# From source
-git clone https://github.com/jetm/bspctl
-cd bspctl
-uv tool install --editable .
 ```
 
 Requires Python 3.11+. The bitbake parser compatibility constraint (3.13+

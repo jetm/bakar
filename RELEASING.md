@@ -6,12 +6,13 @@ Complete these once before the first release:
 
 1. **Make the repo public on GitHub** (Settings → Danger Zone). The PyPI Trusted Publisher OIDC flow requires a public repository.
 2. **Set GitHub description and topics.** Description: `NXP i.MX and TI Sitara BSP build orchestrator powered by kas`. Topics: `yocto`, `bsp`, `kas`, `bitbake`, `embedded-linux`, `nxp-imx`, `ti-sitara`, `python`.
-3. **Configure PyPI Trusted Publisher.** On https://pypi.org/manage/account/publishing/ register:
+3. **Create the `release` GitHub Actions environment.** Settings → Environments → New environment → name `release`. Add yourself as a required reviewer so publish jobs pause for manual approval before pushing to PyPI. This scopes the Trusted Publisher OIDC token to a single environment instead of binding it to the whole repo.
+4. **Configure PyPI Trusted Publisher.** On https://pypi.org/manage/account/publishing/ register:
    - PyPI Project Name: `bspctl`
    - Owner: `jetm`
    - Repository name: `bspctl`
-   - workflow name: `publish.yml`
-   - Environment name: (leave blank)
+   - Workflow name: `publish.yml`
+   - Environment name: `release`
 
 ## Per-release checklist
 
