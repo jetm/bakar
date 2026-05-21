@@ -1,10 +1,9 @@
 """Tests for env var precedence rules (spec: env-var-namespace).
 
-Verifies the three-level stack in :func:`bspctl.config.resolve`:
+Verifies the two-level stack in :func:`bspctl.config.resolve`:
 
 1. CLI flag (explicit arg) beats env var.
 2. Env var beats BSP-family default.
-3. Legacy ``VARIS_*`` env vars are silently ignored (task 4.1 complete).
 """
 
 from __future__ import annotations
@@ -118,42 +117,3 @@ def test_no_env_yields_default(tmp_path, monkeypatch):
     cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
 
     assert cfg.machine == DEFAULT_NXP_MACHINE, "Absent env + no CLI flag must fall back to BSP-family default"
-
-
-# ---------------------------------------------------------------------------
-# 3. Legacy VARIS_* env vars are silently ignored
-# ---------------------------------------------------------------------------
-
-
-def test_legacy_varis_machine_is_ignored(tmp_path, monkeypatch):
-    """VARIS_MACHINE must have no effect; source uses BSPCTL_MACHINE."""
-    monkeypatch.setenv("VARIS_MACHINE", "legacy-board")
-    monkeypatch.delenv("BSPCTL_MACHINE", raising=False)
-
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
-
-    assert cfg.machine == DEFAULT_NXP_MACHINE, (
-        "VARIS_MACHINE must be silently ignored; default should be used when BSPCTL_MACHINE is absent"
-    )
-
-
-def test_legacy_varis_manifest_is_ignored(tmp_path, monkeypatch):
-    """VARIS_MANIFEST must have no effect; source uses BSPCTL_MANIFEST."""
-    monkeypatch.setenv("VARIS_MANIFEST", "imx-6.12.49-2.2.0.xml")
-    monkeypatch.delenv("BSPCTL_MANIFEST", raising=False)
-
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
-
-    assert cfg.manifest == DEFAULT_NXP_MANIFEST, (
-        "VARIS_MANIFEST must be silently ignored; default should be used when BSPCTL_MANIFEST is absent"
-    )
-
-
-def test_bspctl_env_wins_over_varis_env(tmp_path, monkeypatch):
-    """When both BSPCTL_MACHINE and VARIS_MACHINE are set, BSPCTL_ wins."""
-    monkeypatch.setenv("BSPCTL_MACHINE", "bspctl-board")
-    monkeypatch.setenv("VARIS_MACHINE", "varis-board")
-
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
-
-    assert cfg.machine == "bspctl-board", "BSPCTL_MACHINE must win over VARIS_MACHINE when both are set"

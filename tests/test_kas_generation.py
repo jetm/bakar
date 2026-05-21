@@ -1,7 +1,7 @@
 """Unit tests for bspctl.kas YAML generation.
 
 The generator is now topology-only: machine, distro, target, and
-repos. The Variscite tuning block (``local_conf_header``) and the
+repos. The BSP tuning block (``local_conf_header``) and the
 meta-varis-overrides repo entry live in the static overlay YAMLs at
 ``overlays/bspctl-tuning-<bsp>.yml`` and are layered on top by ``bspctl
 build`` at run time. These tests pin that contract so a regression

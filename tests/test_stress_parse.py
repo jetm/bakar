@@ -371,7 +371,7 @@ def test_cache_cleared_between_iterations(tmp_path: Path, monkeypatch: pytest.Mo
 
     Both ``build/cache/`` (codeparser/unihash) and ``build/tmp/cache/``
     (per-multiconfig ``bb_cache.dat.<hash>``) must be wiped; missing
-    the latter was the original VARIS-18 cache-clear gap that let the
+    the latter was the original cache-clear gap that let the
     dep-cache count creep up across iterations.
     """
     cfg = _cfg(tmp_path)

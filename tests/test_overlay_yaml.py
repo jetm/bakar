@@ -137,7 +137,7 @@ def test_generic_overlay_omits_ti_specific_knobs(generic_overlay: dict) -> None:
 
 
 def test_generic_overlay_omits_meta_varis_overrides(generic_overlay: dict) -> None:
-    """The Variscite carry layer is irrelevant for non-Variscite builds."""
+    """The vendor carry layer is irrelevant for non-NXP/TI builds."""
     repos = generic_overlay.get("repos") or {}
     assert "meta-varis-overrides" not in repos
     assert "meta-varis-overrides-ti" not in repos

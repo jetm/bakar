@@ -5,8 +5,7 @@ positive fixture (a line we expect to fire) and a negative fixture (a
 line that must NOT fire). The negative cases guard against over-broad
 patterns that would mask real recipe bugs in stress-parse runs.
 
-Positive fixtures are quoted from the symptom variants documented in
-``kb/reference/bitbake-parser-fork-race.md`` and the VARIS-18 task body.
+Positive fixtures are quoted from known symptom variants of this bug.
 """
 
 from __future__ import annotations
@@ -126,11 +125,11 @@ def test_scan_handles_multiple_matches_in_one_text() -> None:
     assert r"SystemError: Type does not define the tp_name field" in patterns
 
 
-def test_suggestion_string_references_varis_13_and_kb() -> None:
-    """The shared suggestion message must point users at the canonical
-    artefacts so triage and stress-parse stay consistent with KB."""
-    assert "VARIS-13" in FORK_RACE_SUGGESTION
-    assert "bitbake-parser-fork-race.md" in FORK_RACE_SUGGESTION
+def test_suggestion_string_describes_root_cause() -> None:
+    """The shared suggestion message must describe the root cause and
+    the manual workaround so triage and stress-parse stay consistent."""
+    assert "fork" in FORK_RACE_SUGGESTION
+    assert "bspctl build" in FORK_RACE_SUGGESTION
 
 
 def test_triage_suggestions_consume_shared_signatures() -> None:

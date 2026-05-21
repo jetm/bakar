@@ -74,13 +74,13 @@ def test_machine_takes_precedence_over_repos(tmp_path: Path) -> None:
 
 
 def test_machine_qemuarm64_classifies_as_generic(tmp_path: Path) -> None:
-    """A non-Variscite machine string falls through to the generic bucket."""
+    """A non-NXP/TI machine string falls through to the generic bucket."""
     p = _write(tmp_path, "machine: qemuarm64\n")
     assert detect_bsp_from_yaml(p) == "generic"
 
 
 def test_poky_meta_arm_classifies_as_generic(tmp_path: Path) -> None:
-    """A poky + meta-arm kas YAML with no Variscite markers is generic."""
+    """A poky + meta-arm kas YAML with no NXP/TI markers is generic."""
     body = "machine: qemuarm64\nrepos:\n  poky:\n    path: sources/poky\n  meta-arm:\n    path: sources/meta-arm\n"
     p = _write(tmp_path, body)
     assert detect_bsp_from_yaml(p) == "generic"

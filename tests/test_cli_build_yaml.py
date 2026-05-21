@@ -166,7 +166,7 @@ def test_materialize_overlay_replaces_existing_symlink(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Generic mode (BYO without Variscite markers)
+# Generic mode (BYO without NXP/TI markers)
 # ---------------------------------------------------------------------------
 
 
