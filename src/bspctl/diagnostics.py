@@ -141,7 +141,7 @@ def check_container_image(cfg: BuildConfig) -> CheckResult:
             Severity.BLOCK,
             f"image `{cfg.container_image}` not found locally",
             fix_hint=(
-                "Build via `cd ~/repos/personal/kas && docker build --target kas -t jetm/kas-build-env:latest .`"
+                "Pull via `docker pull jetm/kas-build-env:latest` or build from https://github.com/jetm/kas-build-env"
             ),
         )
     return _ok("container-image", Severity.BLOCK, f"{cfg.container_image} present")
@@ -151,8 +151,7 @@ _CONTAINER_PY_FIX_HINT = (
     "Override now: `KAS_CONTAINER_IMAGE=jetm/kas-build-env:5.2-ubuntu24.04` "
     "(Python 3.12). Long-term: rebuild jetm/kas-build-env against an oe-core "
     "scarthgap host-validation OS (Fedora 38-40, Ubuntu 22.04/24.04 LTS, "
-    "Debian 11/12). See kb/reference/bitbake-parser-fork-race.md and "
-    "kb/reference/bsp-build-environment.md."
+    "Debian 11/12)."
 )
 
 
@@ -243,12 +242,12 @@ def check_container_bitbake(cfg: BuildConfig) -> CheckResult:
 
 
 def check_cache_dirs(cfg: BuildConfig) -> CheckResult:
-    sstate = Path(os.environ.get("SSTATE_DIR", "/mnt/BACKUP_ROOT/yocto-cache/sstate"))
-    dl = Path(os.environ.get("DL_DIR", "/mnt/JETM_SATA_9.1T/yocto-cache/downloads"))
-    missing = []
-    for path in (sstate, dl):
-        if not path.is_dir() or not os.access(path, os.W_OK):
-            missing.append(str(path))
+    sstate_env = os.environ.get("SSTATE_DIR", "")
+    dl_env = os.environ.get("DL_DIR", "")
+    configured = {k: Path(v) for k, v in (("SSTATE_DIR", sstate_env), ("DL_DIR", dl_env)) if v}
+    if not configured:
+        return _ok("cache-dirs", Severity.BLOCK, "SSTATE_DIR/DL_DIR not set; using kas defaults")
+    missing = [str(p) for p in configured.values() if not p.is_dir() or not os.access(p, os.W_OK)]
     if missing:
         return _fail(
             "cache-dirs",
@@ -256,7 +255,7 @@ def check_cache_dirs(cfg: BuildConfig) -> CheckResult:
             f"missing or not writable: {', '.join(missing)}",
             fix_hint="mkdir -p the paths above and chown them to $USER",
         )
-    return _ok("cache-dirs", Severity.BLOCK, f"sstate {sstate}, dl {dl}")
+    return _ok("cache-dirs", Severity.BLOCK, ", ".join(f"{k}={v}" for k, v in configured.items()))
 
 
 def check_sysctl(cfg: BuildConfig) -> CheckResult:
@@ -303,7 +302,7 @@ def check_docker_ulimits(cfg: BuildConfig) -> CheckResult:
             "docker-ulimits",
             Severity.WARN,
             "/etc/docker/daemon.json missing",
-            fix_hint="See VARIS-07 for the recommended daemon.json template.",
+            fix_hint="See the bspctl README for the recommended daemon.json template.",
         )
     try:
         data = json.loads(daemon_json.read_text())
@@ -326,8 +325,8 @@ def check_disk_free(cfg: BuildConfig) -> CheckResult:
     """Each of the three tiered mounts needs at least 50G free."""
     candidates = [
         ("workspace", cfg.workspace),
-        ("sstate", Path(os.environ.get("SSTATE_DIR", "/mnt/BACKUP_ROOT/yocto-cache/sstate"))),
-        ("downloads", Path(os.environ.get("DL_DIR", "/mnt/JETM_SATA_9.1T/yocto-cache/downloads"))),
+        *([("sstate", Path(os.environ["SSTATE_DIR"]))] if os.environ.get("SSTATE_DIR") else []),
+        *([("downloads", Path(os.environ["DL_DIR"]))] if os.environ.get("DL_DIR") else []),
     ]
     low: list[str] = []
     for label, path in candidates:
@@ -629,7 +628,7 @@ def run_all(cfg: BuildConfig, bsp: BspModel | None = None) -> list[CheckResult]:
     ``SHARED_CHECKS + bsp.doctor_extras``. ``bsp=None`` runs only
     ``SHARED_CHECKS`` - the generic BYO path
     (``cli._dispatch_from_yaml`` returns ``bsp=None`` when the YAML
-    does not target a Variscite SoM); family-specific gates such as
+    does not target an NXP/TI SoM); family-specific gates such as
     ``check_forks_linux_imx`` would always fail in that mode and are
     skipped.
     """

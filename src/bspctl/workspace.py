@@ -303,10 +303,9 @@ def _cache_dirs_ok() -> bool:
     """All three tiered cache paths exist and are writable."""
     import os
 
-    paths = [
-        Path("/mnt/BACKUP_ROOT/yocto-cache/sstate"),
-        Path("/mnt/JETM_SATA_9.1T/yocto-cache/downloads"),
-    ]
+    sstate = os.environ.get("SSTATE_DIR", "")
+    dl = os.environ.get("DL_DIR", "")
+    paths = [Path(p) for p in (sstate, dl) if p]
     for p in paths:
         if not p.is_dir() or not os.access(p, os.W_OK):
             return False
