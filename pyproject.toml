@@ -1,12 +1,12 @@
 [project]
 name = "bspctl"
 version = "0.0.2"
-description = "One-command kas-based BSP build orchestrator with observability"
+description = "kas wrapper for Yocto BSP builds - repo tool sync, pre-flight checks, triage"
 authors = [{name = "Javier Tia"}]
 license = "Apache-2.0"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11"
 readme = "README.md"
-keywords = ["yocto", "bsp", "variscite", "kas", "bitbake", "embedded"]
+keywords = ["yocto", "bsp", "kas", "bitbake", "embedded", "nxp", "imx", "ti-sitara"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -16,6 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
     "typer>=0.12.0",

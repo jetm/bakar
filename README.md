@@ -1,32 +1,33 @@
 # bspctl
 
-Practical kas wrapper for Yocto BSP development. Integrates repo tool
-(NXP i.MX manifests) and oe-layertool (TI Sitara) for source sync, then
-drives kas with a static tuning overlay (ccache, MIRRORS, PREMIRRORS,
-fetch robustness) layered on top. Works with any kas YAML in generic
-mode. Runs pre-flight checks before every build, captures structured
-per-run telemetry, and ships `bspctl triage` to diagnose failures from
-the kas log.
+bspctl is a kas wrapper for Yocto BSP builds. It bridges the gap between
+vendor BSP manifests and kas:
 
-## BSP scope
+Vendor BSPs for NXP i.MX and TI Sitara are distributed as Google repo tool
+XML manifests. kas is the modern Yocto build tool - but it speaks its own
+YAML, not repo XML. These two worlds don't talk to each other out of the box.
 
-`bspctl` supports two BSP families plus a generic mode:
+bspctl bridges them:
 
-- **NXP i.MX** (i.MX6/7, i.MX8, i.MX8M, i.MX9x, i.MX95) - manifest is
-  `imx-A.B.C-X.Y.Z.xml` from `varigit/variscite-bsp-platform`. Layers
-  `bspctl-tuning-nxp.yml` (ccache + MIRRORS + ACCEPT_FSL_EULA + renderdoc
-  fix + linux-imx fork PREMIRROR + meta-varis-overrides).
-- **TI Sitara** (AM62x, AM62Px, ...) - config is
-  `processor-sdk-<poky>-<flavour>-<sdk>-config_var<N>.txt` from
-  `varigit/oe-layersetup`. Layers `bspctl-tuning-ti.yml` (ccache + MIRRORS
-  + ti-linux-kernel + ti-u-boot fork PREMIRRORs + meta-varis-overrides-ti).
-- **Generic** (any non-NXP/TI kas YAML, e.g. `qemuarm64` + `poky` +
-  `meta-arm`) - no manifest, BYO only. Layers `bspctl-tuning-generic.yml`
-  (the BSP-agnostic subset: ccache, MIRRORS, PREMIRRORS, FETCHCMD_wget,
-  PYTHONMALLOC). NXP/TI-specific knobs are deliberately excluded.
+1. Runs repo tool (or oe-layertool for TI) to populate `sources/` from the
+   vendor manifest
+2. Translates the manifest XML into a kas YAML (topology only: repos + layers)
+3. Layers a curated tuning overlay on top at build time (ccache, mirrors, fetch
+   robustness, BSP-specific knobs) without touching your YAML
+4. Wraps `kas-container build` with pre-flight checks, structured per-run logs,
+   and a post-mortem triage command
 
-The dispatched code path branches on the manifest filename (or the BYO YAML's
-machine prefix / repos block) at the top of `bspctl build`.
+| Without bspctl | With bspctl |
+|----------------|-------------|
+| repo tool XML and kas YAML describe the same thing but don't interoperate | `bspctl gen-kas` translates the vendor XML manifest into a kas YAML |
+| Re-run repo tool or oe-layertool by hand on every fresh workspace | `bspctl sync` fetches sources and skips if already current |
+| Add ccache, mirror, fetch, and EULA boilerplate to every project YAML | Curated overlay applied at build time; your YAML stays topology-only |
+| Start a 4-hour build only to fail on a full disk or wrong container Python | `bspctl doctor` catches environment problems before kas starts |
+| Grep through `build/tmp/work/.../temp/log.do_*` to find what failed | `bspctl triage` reads structured run logs, locates the recipe log, and matches against a suggestion table |
+| No build history | Per-run directory: structured event log, kas output, env snapshot, disk usage, timing |
+
+Works with any kas YAML in generic mode - the NXP/TI presets are the
+batteries-included path, not a requirement.
 
 ## Installation
 
@@ -34,278 +35,205 @@ machine prefix / repos block) at the top of `bspctl build`.
 uv tool install bspctl
 ```
 
-Or with pip:
-
 ```bash
 pip install bspctl
 ```
 
-### From source (for contributors)
-
 ```bash
+# From source
 git clone https://github.com/jetm/bspctl
 cd bspctl
 uv tool install --editable .
 ```
 
+Requires Python 3.11+. The bitbake parser compatibility constraint (3.13+
+deadlocks the parser fork) applies to the container image, not the host
+tool - bspctl runs fine on any supported Python including 3.14.
+
 ## Quickstart
-
-Install `bspctl` as a uv tool from this directory:
-
-```bash
-cd ~/repos/personal/bspctl
-uv tool install .
-```
-
-`bspctl` lands on PATH. Re-run with `--reinstall` after local edits.
-
-### Python version pinning
-
-`bspctl` declares `requires-python = ">=3.11,<3.14"`. uv resolves to the
-newest interpreter in that range, which on most hosts means 3.13. Some
-workflows need to match bitbake's effective production floor (3.11/3.12
-on poky walnascar; kas-container ships CPython 3.12.10) - in
-particular, the `bspctl stress-parse --host` mode runs bitbake on the
-host's interpreter, and bitbake's in-tree `test_parser_fork_race`
-auto-skips on 3.14.
-
-Pin the interpreter at install time via `--python <version>`:
-
-```bash
-uv python install 3.12
-cd ~/repos/personal/bspctl
-uv tool install --python 3.12 --reinstall --editable .
-```
-
-Verify the shebang of the installed entry point points at 3.12:
-
-```bash
-head -1 "$(which bspctl)"
-# /home/user/.local/share/uv/tools/bspctl/bin/python3
-"$(head -1 "$(which bspctl)" | sed 's|^#!||')" --version
-# Python 3.12.x
-```
-
-Now jump into the workspace and run a default build:
 
 ```bash
 cd ~/bsp-workspace
-bspctl build
+
+# NXP i.MX - manifest drives everything
+bspctl build -f imx-6.12.49-2.2.0.xml -m imx95-var-dart
+
+# TI Sitara
+bspctl build -f processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt \
+             -m am62x-var-som
+
+# BYO YAML (generic or NXP/TI)
+bspctl build path/to/my-build.yml
 ```
 
-Defaults are `imx8mp-var-dart` / `fsl-imx-xwayland` / `core-image-minimal` off
-the `imx-6.6.52-2.2.2.xml` manifest. On a clean workspace the first run
-populates `nxp/sources/` via `repo sync` and takes hours; subsequent runs
-skip the sync step and go straight to bitbake.
+On a clean workspace, the first run populates `sources/` via repo sync and
+takes hours. Subsequent runs skip sync automatically and go straight to
+bitbake.
 
-## The three forms of `bspctl build`
+## What bspctl adds
 
-`bspctl build` accepts three input shapes that all converge on the same
-`kas-container build <yml>:<overlay>` invocation. The optimization stack
-applied is the BSP-appropriate slice; the topology comes from your YAML
-or from the manifest.
+### Source sync
+
+kas has no concept of fetching BSP sources. NXP i.MX ships a repo tool
+manifest; TI Sitara ships an oe-layertool config. bspctl runs the right
+tool and caches the result - re-running `bspctl build` on a populated
+workspace skips sync entirely.
 
 ```bash
-# Form A: BYO YAML (positional). Skips sync/setup-env/gen-kas.
-cp bspctl/examples/kas-imx95-var-dart.yml nxp/my-build.yml
-# (edit nxp/my-build.yml as you wish)
-bspctl bitbake-override --apply
+bspctl sync --manifest imx-6.12.49-2.2.0.xml   # explicit sync step
+bspctl build -f imx-6.12.49-2.2.0.xml          # sync + build in one shot
+```
+
+### Tuning overlay
+
+Every build - BYO or manifest-driven - layers a static tuning file onto
+your kas YAML at run time. Your YAML is not modified on disk; kas merges
+the overlay in when it parses the build.
+
+What the overlay unions in:
+
+- `CCACHE_DIR` + `INHERIT += "ccache"`
+- `BB_NUMBER_THREADS` / `PARALLEL_MAKE` from `$NPROC`
+- `IMAGE_FEATURES:remove` (strips dev/dbg packages from images)
+- `BB_FETCH_TIMEOUT = "600"` (raise the per-URI timeout)
+- `MIRRORS` (replace scarthgap's dead `sources.openembedded.org` with
+  the Yocto Project mirror)
+- `PREMIRRORS:prepend` for github.com (silent fallback, not a build blocker)
+- `FETCHCMD_wget` (crates.io 403 workaround for Rust recipes)
+- `PYTHONMALLOC=malloc` (reduces bitbake parser fork-race rate on CPython 3.13)
+- **NXP only**: `ACCEPT_FSL_EULA`, renderdoc CMake-launcher fix,
+  linux-imx fork PREMIRROR, `meta-varis-overrides` layer
+- **TI only**: ti-linux-kernel + ti-u-boot fork PREMIRRORs,
+  `meta-varis-overrides-ti` layer
+
+Edit `overlays/bspctl-tuning-<bsp>.yml` to change any knob. The change
+applies to BYO and manifest flows alike, with no risk of drift.
+
+### Pre-flight checks
+
+`bspctl doctor` runs before every build (and standalone). BLOCK failures
+halt before kas starts; WARN prints and continues.
+
+- Docker daemon reachable and ulimits set
+- Container image present locally
+- Container Python version (3.13+ deadlocks the bitbake parser fork)
+- Disk space on workspace, `SSTATE_DIR`, `DL_DIR`
+- NXP: fork repos populated, bitbake override applied
+- TI: oe-layertool cloned, active config matches manifest
+
+```bash
+bspctl doctor               # standalone check, no build
+bspctl build --skip-doctor  # bypass (not recommended)
+```
+
+### Triage
+
+`bspctl triage` turns a failed build from a grep exercise into a
+one-command diagnosis:
+
+1. Reads `events.jsonl` to find the first `step_fail`
+2. Tails `kas.log` around the failure
+3. Extracts the bitbake "Logfile of failure stored in:" path, rewrites
+   the container path to the host path, and tails that recipe log
+4. Matches the combined output against a suggestion table: fetch
+   failures, parser deadlocks, OOM, disk full, GitHub flakes, missing
+   EULA, stale bitbake cache, kas/container version skew
+
+```bash
+bspctl triage                      # most recent run
+bspctl triage 20260423-091014      # specific run by timestamp
+bspctl triage -k path/to/kas.yml  # most recent run for a BYO YAML
+```
+
+### Structured run logs
+
+Each `bspctl build` invocation creates `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/`:
+
+| File | Contents |
+|------|----------|
+| `events.jsonl` | One JSON object per step start/end/error |
+| `console.log` | Same stream, human-readable |
+| `kas.log` | `kas-container build` stdout + stderr |
+| `env.txt` | `BSPCTL_*`, `KAS_*`, `BB_*`, `SSTATE_*`, `DL_*`, `NPROC` at run start |
+| `time.log` | `/usr/bin/time -v` output |
+| `du.tsv` | `<unix-ts>\t<bytes>` samples of `build/tmp/` every 30 s |
+| `diagnosis.txt` | Pre-flight diagnosis as plain text |
+
+## Build forms
+
+```bash
+# Manifest-driven, one shot (NXP/TI only)
+bspctl build -f imx-6.12.49-2.2.0.xml -m imx95-var-dart
+
+# BYO YAML - skips sync and gen-kas
 bspctl build nxp/my-build.yml
 
-# Form A also handles generic kas YAMLs - the YAML's bsp_root is
-# its own parent directory. Generic mode skips bitbake-override.
-bspctl build pilots/0005-hardening/kas.yml
-
-# Form B: manifest-driven, one shot. NXP/TI only.
-bspctl bitbake-override --apply
-bspctl build -f imx-6.12.49-2.2.0.xml -m imx95-var-dart
-# TI equivalent
-bspctl build -f processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt -m am62x-var-som
-
-# Form C: manifest-driven, staged. Useful when you want to inspect the
-# generated YAML before kicking off the build.
+# Staged - review the generated YAML before building
 bspctl sync --manifest imx-6.12.49-2.2.0.xml
 bspctl gen-kas --manifest imx-6.12.49-2.2.0.xml -o nxp/my-build.yml
 bspctl build nxp/my-build.yml
+
+# Generic - any kas YAML, bsp_root is the YAML's parent
+bspctl build path/to/kas.yml
 ```
 
-The user's YAML must live under its `bsp_root` so kas-container can read
-it through the `KAS_WORK_DIR` bind mount. For NXP/TI builds that means
-under `nxp/` or `ti/`; for generic builds the YAML's own parent
-directory is the bsp_root, so any path works. `bspctl build` errors out
-with a clear message if the path is unreachable.
+## BSP presets
 
-## Overlay model
+| Family | Manifest pattern | Source sync | Overlay |
+|--------|-----------------|-------------|---------|
+| **NXP i.MX** | `imx-A.B.C-X.Y.Z.xml` | repo tool | `bspctl-tuning-nxp.yml` |
+| **TI Sitara** | `processor-sdk-*-config_var<N>.txt` | oe-layertool | `bspctl-tuning-ti.yml` |
+| **Generic** | any kas YAML | none | `bspctl-tuning-generic.yml` |
 
-Every `bspctl build` invocation - BYO or manifest-driven - applies the
-BSP tuning by layering a static overlay onto the kas YAML at build
-time. Your YAML file is not modified on disk; kas merges the overlay in
-when it parses the build.
+BSP detection runs on the manifest filename (manifest-driven) or the
+YAML's `machine:` value and `repos:` block (BYO). No NXP/TI markers
+falls through to generic mode.
 
-`bspctl build` copies the overlay shipped under `overlays/` in this
-repo into `<bsp_root>/.bspctl/overlays/bspctl-tuning-<bsp>.yml` (a real
-file, refreshed on every invocation so it tracks the source) and then
-runs:
+## Configuration
 
-```text
-kas-container build <user-yml-rel>:<overlay-rel>
-```
+CLI flags, env vars, and built-in defaults in that precedence order.
 
-The copy lands inside whatever git repo (or no repo) hosts your YAML,
-so kas's "all concatenated config files must share a repo" check is
-satisfied, and kas-container reads it directly through the
-`KAS_WORK_DIR` bind mount with no symlink to dereference.
+| Env var | Flag | Default |
+|---------|------|---------|
+| `BSPCTL_MACHINE` | `--machine` | `imx8mp-var-dart` |
+| `BSPCTL_DISTRO` | `--distro` | `fsl-imx-xwayland` |
+| `BSPCTL_IMAGE` | `--image` | `core-image-minimal` |
+| `BSPCTL_MANIFEST` | `--manifest` | `imx-6.6.52-2.2.2.xml` |
+| `BSPCTL_REPO_URL` | - | `https://github.com/varigit/variscite-bsp-platform.git` |
+| `BSPCTL_REPO_BRANCH` | - | inferred from manifest prefix |
+| `KAS_CONTAINER_IMAGE` | - | `jetm/kas-build-env:latest` |
+| `SSTATE_DIR` | - | kas default (unset = skip check) |
+| `DL_DIR` | - | kas default (unset = skip check) |
 
-kas merges `local_conf_header.<key>` and `repos.<name>` by name, so your
-`machine:`, `distro:`, `target:`, and own `repos:` stay intact while the
-overlay unions in:
-
-- ccache wiring (`CCACHE_DIR`, `INHERIT += "ccache"`)
-- thread/parallelism knobs (`BB_NUMBER_THREADS`, `PARALLEL_MAKE`)
-- `IMAGE_FEATURES:remove` for dev/dbg packages
-- `BB_FETCH_TIMEOUT = "600"` (raise the per-URI timeout)
-- `MIRRORS` (replace scarthgap's dead mirror with the Yocto Project mirror)
-- `PREMIRRORS:prepend` for github.com (silent fallbacks instead of build blockers)
-- `FETCHCMD_wget` (crates.io 403 workaround)
-- NXP-only: `ACCEPT_FSL_EULA`, the renderdoc CMake-launcher fix
-- Per-BSP fork PREMIRRORs (`forks/linux-imx` on NXP; `forks/ti-linux-kernel`
-  + `forks/ti-u-boot` on TI)
-- The `meta-varis-overrides` (NXP) / `meta-varis-overrides-ti` (TI) carry
-  layer
-
-Edit `overlays/bspctl-tuning-<bsp>.yml` directly when you need to tweak the
-optimization stack. The change applies to BYO and manifest flows alike, with
-zero risk of drift between the two outputs.
-
-## BSP detection rules
-
-`bspctl build` classifies the input as NXP, TI, or generic before doing
-any work:
-
-- **Form A (BYO YAML)**: inspect the YAML's `machine:` value first
-  (`imx*` -> NXP; `am*`, `k3-*`, `j7-*` -> TI), then the `repos:` block
-  (`meta-imx`, `meta-freescale*`, `meta-nxp*` -> NXP; `meta-ti-bsp`,
-  `meta-ti`, `meta-arago` -> TI). A parseable YAML with a machine or
-  repos block but no NXP/TI markers falls through to **generic**,
-  which selects `bspctl-tuning-generic.yml` and skips the
-  bitbake-override step.
-- **Form B (manifest)**: regex on the filename (`imx-*.xml` -> NXP;
-  `processor-sdk-*-config_var*.txt` or `arago-*.txt` -> TI). Generic
-  mode does not apply here - it is BYO-only.
-
-A YAML that lacks both `machine:` and `repos:` (empty / unparseable /
-shape-incomplete) exits non-zero with a hint instead of guessing.
+Workspace is resolved by walking up from CWD for a `.bspctl.toml` marker
+or `nxp/`/`ti/` subdirectories. Generic BYO builds skip the walk.
 
 ## Common invocations
 
 ```bash
-bspctl build nxp/my-build.yml             # BYO form (positional YAML)
-bspctl build pilots/0005/kas.yml          # BYO generic mode
-bspctl build --image fsl-image-gui        # heavier image (Wayland, Qt6, Chromium)
-bspctl build --machine imx93-var-dart     # different SoM (still NXP)
-bspctl build --dry-run                    # apply overlay, skip kas-container
-bspctl build --skip-sync                  # don't touch sources/, even if stale
-bspctl build --skip-doctor                # bypass pre-flight (not recommended)
-bspctl sync --manifest imx-6.12.49-2.2.0.xml   # repo init+sync, no build
-bspctl doctor                             # standalone diagnosis, no build
-bspctl triage                             # post-mortem the most recent run (workspace BSPs)
-bspctl triage 20260423-091014             # post-mortem a named run
-bspctl triage -k pilots/0005/kas.yml      # post-mortem latest BYO run for that YAML
-bspctl log                                # tail the latest run's kas.log live
-bspctl log pilots/0005/kas.yml            # tail the latest BYO run for that YAML
-bspctl shell                              # drop into a kas-container shell
-bspctl gen-kas -o nxp/my-build.yml        # write topology-only YAML, do nothing else
-bspctl clean                              # remove <bsp>/build/
+bspctl build --image fsl-image-gui      # heavier image (Wayland, Qt6, Chromium)
+bspctl build --machine imx93-var-dart   # different SoM
+bspctl build --dry-run                  # apply overlay, skip kas-container
+bspctl build --skip-sync                # don't re-sync sources/
+bspctl doctor                           # standalone pre-flight
+bspctl triage                           # post-mortem latest run
+bspctl log                              # tail latest kas.log live
+bspctl shell                            # kas-container interactive shell
+bspctl shell -c "bitbake -e virtual/kernel | grep ^PREFERRED"
+bspctl gen-kas -o nxp/my-build.yml      # write topology YAML only
+bspctl clean                            # remove <bsp>/build/
 ```
-
-`bspctl build` is idempotent. Re-running it after a mid-pipeline failure
-picks up where it left off - repo sync is skipped if `sources/` is
-populated, `setup_env` is skipped if `build/conf/bblayers.conf` exists,
-and the topology YAML is regenerated in case flags changed.
-
-## Environment variables
-
-Every `--flag` has a `BSPCTL_*` env equivalent so CI jobs and shell profiles can
-pin defaults without passing args every invocation. Explicit CLI flags
-override env vars; env vars override built-in defaults.
-
-| Env var | Field (BuildConfig) | Default |
-|---------|---------------------|---------|
-| `BSPCTL_MACHINE` | `machine` | `imx8mp-var-dart` |
-| `BSPCTL_DISTRO` | `distro` | `fsl-imx-xwayland` |
-| `BSPCTL_IMAGE` | `image` | `core-image-minimal` |
-| `BSPCTL_MANIFEST` | `manifest` | `imx-6.6.52-2.2.2.xml` |
-| `BSPCTL_REPO_URL` | `repo_url` | `https://github.com/varigit/variscite-bsp-platform.git` |
-| `BSPCTL_REPO_BRANCH` | `repo_branch` | `scarthgap` |
-| `KAS_CONTAINER_IMAGE` | `container_image` | `jetm/kas-build-env:latest` |
-
-`--workspace` has no env var - it is resolved from the current working
-directory by walking up to find a `.bspctl.toml` marker file or `nxp/`/`ti/`
-subdirectories. The walk is skipped entirely for generic BYO builds
-(`bspctl build my.yml` where the YAML does not target an NXP/TI SoM);
-`bsp_root` falls back to the YAML's own parent directory so generic builds
-run from any location.
-
-Cache locations (`SSTATE_DIR`, `DL_DIR`) are read from the environment and
-should be pinned in your shell profile.
-
-## Pre-flight checks reference
-
-`bspctl doctor` and the automatic pre-flight gate at the top of `bspctl build`
-run the same checks. BLOCK-severity failures halt the build; WARN prints
-and continues; INFO is purely informational. Per-BSP extras
-(`check_forks_linux_imx` on NXP; `check_ti_layertool_*` on TI) load via
-`BspModel.doctor_extras`; the shared set runs unconditionally. Generic
-BYO mode runs only the shared set - the family-specific gates would
-always fail outside an NXP/TI workspace and are skipped.
-
-## Observability
-
-Each `bspctl build` invocation creates `<bsp>/build/runs/<YYYYMMDD-HHMMSS>/`
-containing:
-
-| File | Contents |
-|------|----------|
-| `events.jsonl` | One JSON object per step start/end/error (machine-readable) |
-| `console.log` | The same stream in human-readable lines |
-| `env.txt` | Snapshot of `BSPCTL_*`, `KAS_*`, `BB_*`, `DL_*`, `SSTATE_*`, `NPROC`, `MACHINE`, `DISTRO` at run start |
-| `kas.log` | `kas-container build` stdout + stderr |
-| `time.log` | `/usr/bin/time -v` output (when `time` is available) |
-| `du.tsv` | `<unix-ts>\t<bytes>` samples of `build/tmp/` every 30 s |
-| `diagnosis.txt` | The pre-flight diagnosis as plain text |
-
-Events use the key `event` (not `event_type`), with values like `run_start`,
-`step_start`, `step_ok`, `step_skip`, `step_fail`, `run_end`, `run_error`.
-
-## Triage workflow
-
-By default, `bspctl triage` searches both `nxp/build/runs/` and
-`ti/build/runs/` under the workspace. Pass `-k <my.yml>` (or
-`--kas-yaml`) for a BYO build whose runs live next to the YAML at
-`<yaml-parent>/build/runs/`. In either mode, it finds the named run
-(or the most recent), reads `events.jsonl` to locate the first
-`step_fail` event, tails `kas.log`, extracts the container path of
-bitbake's "Logfile of failure stored in: ..." line and rewrites it to
-the host path, tails that recipe log, and matches the combined output
-against a keyed suggestion table (fetch failure, parser deadlock, OOM,
-disk full, GitHub fetch flake, missing EULA, stale bitbake cache,
-kas/container version skew).
-
-`bspctl log` follows the same convention: pass a positional kas YAML to
-tail the latest run for a BYO build, or run from inside an NXP/TI
-workspace to tail the latest run for the dispatched BSP.
 
 ## Troubleshooting
 
 | Symptom | Resolution |
 |---------|-----------|
-| `Not inside a workspace (no .bspctl.toml found, and no nxp/ or ti/ subdirectory)` | cd into a workspace that contains `nxp/` or `ti/`, or add a `.bspctl.toml` marker file, or pass a positional kas YAML: `bspctl build|log|triage -k pilots/0005/kas.yml` works from anywhere (generic mode treats the YAML's parent as `bsp_root`). |
-| `kas YAML <path> is outside bsp_root <bsp_root>` | NXP/TI builds need the YAML under `nxp/` or `ti/`. Copy `bspctl/examples/kas-*.yml` under `<bsp_root>/` and re-run. Generic BYO is exempt - the YAML's own directory is `bsp_root`. |
-| `Could not parse <path> as a kas build` | YAML lacks both `machine:` and a `repos:` block. Add at least one before re-running. |
-| `All concatenated config files must belong to the same repository ...` (kas) | Pre-fix error from the symlinked-overlay era. Reinstall bspctl at a build that ships the copy-based overlay materializer. |
-| `parser thread killed/died` mid-parse | Container Python is 3.13+, which deadlocks the bitbake parser fork. Rebuild `jetm/kas-build-env` on `ubuntu:24.04` (Python 3.12). `bspctl doctor` flags this. |
-| `wget: sources.openembedded.org: NXDOMAIN` noise | Dead mirror hardcoded by scarthgap's `mirrors.bbclass`. The overlay's `MIRRORS =` line suppresses it. |
-| `No space left on device` | `bspctl doctor` blocks below 50 GiB free on workspace, sstate, and downloads. |
-| `do_fetch: Fetcher failure` for `linux-imx` | Populate `nxp/forks/linux-imx/` so the local PREMIRROR handles the fetch without going external. |
-| `Config file validation Error` from kas | Version skew between host `kas` and the kas-container image. Align both to the same kas release. |
-| General fetch flake | Retry. Transient GitHub timeouts are common; `repo sync` and `do_fetch` are idempotent. |
+| `Not inside a workspace` | cd into a directory with `nxp/` or `ti/`, add a `.bspctl.toml` marker, or pass a positional YAML. |
+| `kas YAML is outside bsp_root` | NXP/TI builds need the YAML under `nxp/` or `ti/`. Copy `examples/kas-*.yml` there. Generic BYO is exempt. |
+| `Could not parse <path> as a kas build` | YAML lacks both `machine:` and a `repos:` block. |
+| `parser thread killed/died` mid-parse | Container Python is 3.13+. Rebuild the kas image on Ubuntu 24.04 (Python 3.12). `bspctl doctor` flags this. |
+| `wget: sources.openembedded.org: NXDOMAIN` | Dead mirror in scarthgap. The overlay's `MIRRORS =` line suppresses it. |
+| `No space left on device` | `bspctl doctor` blocks below 50 GiB free. Check `df` on workspace, `SSTATE_DIR`, and `DL_DIR`. |
+| `do_fetch: Fetcher failure` for `linux-imx` | Populate `nxp/forks/linux-imx/` so the local PREMIRROR serves the fetch. |
+| `Config file validation Error` from kas | kas version skew between host and container. Align both. |
+| General fetch flake | Retry. `repo sync` and `do_fetch` are idempotent. |
