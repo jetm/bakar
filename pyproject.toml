@@ -4,7 +4,7 @@ version = "0.0.1"
 description = "One-command kas-based BSP build orchestrator with observability"
 authors = [{name = "Javier Tia"}]
 license = "Apache-2.0"
-requires-python = ">=3.11,<3.16"
+requires-python = ">=3.11,<3.14"
 readme = "README.md"
 keywords = ["yocto", "bsp", "variscite", "kas", "bitbake", "embedded"]
 classifiers = [
@@ -13,17 +13,23 @@ classifiers = [
     "Topic :: Software Development :: Build Tools",
     "Topic :: System :: Operating System Kernels :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
 ]
-
 dependencies = [
     "typer>=0.12.0",
     "rich>=13.0.0",
     "pyyaml>=6.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jetm/bspctl"
+Repository = "https://github.com/jetm/bspctl"
+"Bug Tracker" = "https://github.com/jetm/bspctl/issues"
+
+[project.scripts]
+bspctl = "bspctl.cli:app"
 
 [dependency-groups]
 dev = [
@@ -36,9 +42,6 @@ dev = [
     "pytest-timeout",
     "bump-my-version",
 ]
-
-[project.scripts]
-bspctl = "bspctl.cli:app"
 
 [build-system]
 requires = ["uv_build"]
@@ -94,11 +97,17 @@ exclude_lines = [
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = ["-v", "--tb=short"]
+timeout = 30
+markers = [
+    "integration: tests requiring external tools or services",
+]
 
 [tool.ty.rules]
-# Noisy without full type annotations — project uses gradual typing
+# Noisy without full type annotations - project uses gradual typing
 call-non-callable = "ignore"
 invalid-argument-type = "ignore"
+invalid-assignment = "ignore"
+invalid-return-type = "ignore"
 invalid-type-form = "ignore"
 no-matching-overload = "ignore"
 not-subscriptable = "ignore"
@@ -122,3 +131,8 @@ replace = "version = \"{new_version}\""
 filename = "src/bspctl/__init__.py"
 search = "__version__ = \"{current_version}\""
 replace = "__version__ = \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "CHANGELOG.md"
+search = "## [Unreleased]"
+replace = "## [Unreleased]\n\n## [{new_version}] - {now:%Y-%m-%d}"
