@@ -1,33 +1,42 @@
 # bspctl
 
-bspctl is a kas wrapper for Yocto BSP builds. It bridges the gap between
-vendor BSP manifests and kas:
+bspctl is a kas wrapper for Yocto BSP builds. kas is the modern Yocto build
+tool that describes a stack as a YAML topology (repos, layers, machine,
+distro) and drives `bitbake` inside a container. bspctl sits above kas and
+adds the rest of the workflow that kas leaves to you:
 
-Vendor BSPs for NXP i.MX and TI Sitara are distributed as Google repo tool
-XML manifests. kas is the modern Yocto build tool - but it speaks its own
-YAML, not repo XML. These two worlds don't talk to each other out of the box.
+1. Layers a curated tuning overlay on top of your kas YAML at build time
+   (ccache, MIRRORS, PREMIRRORS, fetch robustness, BSP-specific knobs)
+   without touching the YAML on disk
+2. Runs pre-flight checks (`bspctl doctor`) before kicking off `kas-container
+   build` so a wrong container Python, full disk, or broken cache fails fast
+   instead of four hours in
+3. Captures structured per-run telemetry under `build/runs/<ts>/` (event log,
+   kas output, env snapshot, timing, disk usage)
+4. Ships `bspctl triage` to read the structured logs, locate the failing
+   recipe log, and match against a suggestion table
 
-bspctl bridges them:
+Works with any kas YAML in generic mode - bring your own.
 
-1. Runs repo tool (or oe-layertool for TI) to populate `sources/` from the
-   vendor manifest
-2. Translates the manifest XML into a kas YAML (topology only: repos + layers)
-3. Layers a curated tuning overlay on top at build time (ccache, mirrors, fetch
-   robustness, BSP-specific knobs) without touching your YAML
-4. Wraps `kas-container build` with pre-flight checks, structured per-run logs,
-   and a post-mortem triage command
+For vendor BSPs that ship as Google repo tool XML manifests (NXP i.MX) or
+oe-layertool configs (TI Sitara) instead of kas YAML, bspctl bridges the gap:
+
+- `bspctl sync` populates `sources/` by running the right tool for the
+  manifest, and skips when sources are already current
+- `bspctl gen-kas` translates the vendor manifest into a kas YAML
+  (topology only: machine + repos + layers), so the rest of the pipeline
+  above applies unchanged
 
 | Without bspctl | With bspctl |
 |----------------|-------------|
-| repo tool XML and kas YAML describe the same thing but don't interoperate | `bspctl gen-kas` translates the vendor XML manifest into a kas YAML |
-| Re-run repo tool or oe-layertool by hand on every fresh workspace | `bspctl sync` fetches sources and skips if already current |
 | Add ccache, mirror, fetch, and EULA boilerplate to every project YAML | Curated overlay applied at build time; your YAML stays topology-only |
 | Start a 4-hour build only to fail on a full disk or wrong container Python | `bspctl doctor` catches environment problems before kas starts |
 | Grep through `build/tmp/work/.../temp/log.do_*` to find what failed | `bspctl triage` reads structured run logs, locates the recipe log, and matches against a suggestion table |
 | No build history | Per-run directory: structured event log, kas output, env snapshot, disk usage, timing |
+| repo tool XML and kas YAML describe the same thing but don't interoperate | `bspctl gen-kas` translates the vendor XML manifest into a kas YAML |
+| Re-run repo tool or oe-layertool by hand on every fresh workspace | `bspctl sync` fetches sources and skips if already current |
 
-Works with any kas YAML in generic mode - the NXP/TI presets are the
-batteries-included path, not a requirement.
+The NXP/TI presets are the batteries-included path, not a requirement.
 
 ## Installation
 
