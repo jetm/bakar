@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `bspctl build --host` flag bypasses `kas-container` and runs plain `kas build` directly on the host.
+
+### Changed
+- Releases are now driven by `scripts/release.sh`, which enforces an atomic bump+push (preconditions and validation gates run first, then `bump-my-version` and `git push --follow-tags` execute back-to-back with no opportunity to interleave commits).
+
 ## [0.0.3] - 2026-05-22
 
 ### Added
