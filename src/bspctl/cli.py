@@ -374,7 +374,7 @@ def build(
         bool, typer.Option("--skip-sync", help="Skip sync (repo init+sync for NXP, oe-layertool for TI)")
     ] = False,
     dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="Regenerate YAML and exit before kas-container build")
+        bool, typer.Option("--dry-run", help="Regenerate YAML and exit before invoking kas/kas-container build")
     ] = False,
     skip_doctor: Annotated[
         bool,
@@ -388,6 +388,16 @@ def build(
         ),
     ] = False,
     workspace: Annotated[Path | None, typer.Option("--workspace", "-w", help="Workspace root override")] = None,
+    host_mode: Annotated[
+        bool,
+        typer.Option(
+            "--host",
+            help=(
+                "Bypass kas-container and run plain kas build directly on the host. "
+                "Requires host bitbake build prereqs."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run the build pipeline idempotently.
 
@@ -434,6 +444,7 @@ def build(
         image=image,
         manifest=manifest,
         repo_branch=branch,
+        host_mode=host_mode,
         kas_yaml=main_yaml,
     )
 
