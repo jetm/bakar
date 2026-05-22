@@ -19,6 +19,8 @@ from bspctl.diagnostics import (
     Severity,
     Status,
     check_container_os,
+    check_host_tools,
+    run_all,
 )
 
 
@@ -147,3 +149,51 @@ def test_unparseable_python_line_passes() -> None:
         result = check_container_os(_cfg())
     assert result.status == Status.PASS
     assert result.severity == Severity.BLOCK
+
+
+def _host_cfg(bsp_family: str = "generic") -> BuildConfig:
+    """Build a BuildConfig with ``host_mode=True`` for host-build checks."""
+    return BuildConfig(
+        workspace=Path("/tmp/fake-workspace"),
+        bsp_family=bsp_family,  # type: ignore[arg-type]
+        machine="qemux86-64",
+        distro="poky",
+        image="core-image-minimal",
+        manifest="generic.yml",
+        repo_url="https://example.invalid/none.git",
+        repo_branch="main",
+        container_image="jetm/kas-build-env:latest",
+        host_mode=True,
+    )
+
+
+def test_run_all_skips_docker_checks_in_host_mode() -> None:
+    """``run_all`` must filter the Docker-dependent checks out of its
+    iteration when ``cfg.host_mode`` is True so plain ``kas`` builds do
+    not trip container-runtime gates."""
+    cfg = _host_cfg()
+    results = run_all(cfg)
+    names = {r.name for r in results}
+    docker_check_names = {
+        "docker-daemon",
+        "container-image",
+        "container-os",
+        "container-bitbake",
+        "docker-ulimits",
+    }
+    assert names.isdisjoint(docker_check_names), (
+        f"host-mode run_all returned Docker-dependent check names: "
+        f"{names & docker_check_names}"
+    )
+
+
+def test_check_host_tools_host_mode_substitutes_kas() -> None:
+    """``check_host_tools`` in host mode reports ``kas`` instead of
+    ``kas-container`` and drops ``docker`` from the required-tools tuple."""
+    cfg = _host_cfg()
+    result = check_host_tools(cfg)
+    hint = result.fix_hint or ""
+    combined = result.message + " " + hint
+    assert "kas" in combined
+    assert "kas-container" not in combined
+    assert "docker" not in combined
