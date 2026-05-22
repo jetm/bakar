@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-05-22
+
 ### Added
 - First release published to PyPI. Install with `uv tool install bspctl` or `pip install bspctl`.
 - Python 3.14 added to the supported version matrix (3.11–3.14).
