@@ -8,3 +8,5 @@ dist/
 .venv/
 .venv-test/
 .ruff_cache/
+
+examples/.bspctl
