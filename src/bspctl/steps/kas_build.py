@@ -413,7 +413,8 @@ def run_build(
     cmd: list[str] = []
     if shutil.which("/usr/bin/time"):
         cmd = ["/usr/bin/time", "-v", "-o", str(log.time_log_path), "--"]
-    cmd += ["kas-container", *_ccache_args(cfg), "build", kas_arg]
+    exe = "kas" if cfg.host_mode else "kas-container"
+    cmd += [exe, *_ccache_args(cfg), "build", kas_arg]
 
     log.info(f"exec: {' '.join(cmd)}")
     # The pump thread writes every line to kas.log for `bspctl log` to tail,
