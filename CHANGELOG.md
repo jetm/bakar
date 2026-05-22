@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-22
+
 ### Added
 - `bspctl build --host` and `bspctl shell --host` flags bypass `kas-container` and run plain `kas`/`kas shell` directly on the host - no Docker required.
 - Auto-detection: when `KAS_CONTAINER_IMAGE` is absent from the environment, host mode activates automatically. Set the variable to opt into container builds.

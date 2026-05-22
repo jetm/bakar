@@ -1,6 +1,6 @@
 [project]
 name = "bspctl"
-version = "0.0.3"
+version = "0.1.0"
 description = "kas wrapper for Yocto BSP builds - repo tool sync, pre-flight checks, triage"
 authors = [{name = "Javier Tia"}]
 license = "Apache-2.0"
@@ -115,7 +115,7 @@ not-subscriptable = "ignore"
 unresolved-attribute = "ignore"
 
 [tool.bumpversion]
-current_version = "0.0.3"
+current_version = "0.1.0"
 commit = true
 tag = true
 tag_name = "v{new_version}"
