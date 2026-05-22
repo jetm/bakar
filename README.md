@@ -226,6 +226,7 @@ bspctl build --image fsl-image-gui      # heavier image (Wayland, Qt6, Chromium)
 bspctl build --machine imx93-var-dart   # different SoM
 bspctl build --dry-run                  # apply overlay, skip kas-container
 bspctl build --skip-sync                # don't re-sync sources/
+bspctl build --host                     # bypass kas-container, run plain kas build on the host
 bspctl doctor                           # standalone pre-flight
 bspctl triage                           # post-mortem latest run
 bspctl log                              # tail latest kas.log live
