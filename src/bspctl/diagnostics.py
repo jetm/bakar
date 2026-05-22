@@ -86,10 +86,17 @@ _REQUIRED_TOOLS_BY_FAMILY: dict[str, tuple[str, ...]] = {
 
 
 def check_host_tools(cfg: BuildConfig) -> CheckResult:
-    required = _REQUIRED_TOOLS_BY_FAMILY.get(
+    base = _REQUIRED_TOOLS_BY_FAMILY.get(
         cfg.bsp_family,
         _REQUIRED_TOOLS_BY_FAMILY["nxp"],
     )
+    if cfg.host_mode:
+        # Host-mode builds run plain `kas` directly; the container runtime
+        # is not exercised so drop `docker` and substitute `kas` for
+        # `kas-container` in the per-family canonical list.
+        required = tuple("kas" if t == "kas-container" else t for t in base if t != "docker")
+    else:
+        required = base
     missing = [t for t in required if shutil.which(t) is None]
     if missing:
         return _fail(
@@ -605,6 +612,11 @@ CheckFunc = Callable[[BuildConfig], CheckResult]
 
 # Checks that run unconditionally for every BSP family. Per-BSP extras
 # are sourced from ``BspModel.doctor_extras`` at dispatch time.
+#
+# NOTE: Any new check that exercises the Docker daemon, the container
+# image, or anything else that does not apply under ``cfg.host_mode``
+# MUST also be added to ``_DOCKER_CHECKS`` below so host-mode runs of
+# :func:`run_all` keep skipping it.
 SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_host_tools,
     check_docker_daemon,
@@ -620,6 +632,18 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_bitbake_locks,
 )
 
+# Docker-dependent checks from ``SHARED_CHECKS``. Filtered out of
+# :func:`run_all` when ``cfg.host_mode`` is True because plain ``kas``
+# does not invoke the container runtime. Keep this list in sync with
+# any new container/Docker check added above.
+_DOCKER_CHECKS: tuple[CheckFunc, ...] = (
+    check_docker_daemon,
+    check_container_image,
+    check_container_os,
+    check_container_bitbake,
+    check_docker_ulimits,
+)
+
 
 def run_all(cfg: BuildConfig, bsp: BspModel | None = None) -> list[CheckResult]:
     """Run every applicable check, return results in order.
@@ -631,11 +655,17 @@ def run_all(cfg: BuildConfig, bsp: BspModel | None = None) -> list[CheckResult]:
     does not target an NXP/TI SoM); family-specific gates such as
     ``check_forks_linux_imx`` would always fail in that mode and are
     skipped.
+
+    When ``cfg.host_mode`` is True, the Docker-dependent checks in
+    ``_DOCKER_CHECKS`` are filtered out (plain ``kas`` does not use the
+    container runtime); the order of the remaining checks is preserved.
     """
     if bsp is None:
         checks: tuple[CheckFunc, ...] = SHARED_CHECKS
     else:
         checks = SHARED_CHECKS + tuple(bsp.doctor_extras)
+    if cfg.host_mode:
+        checks = tuple(c for c in checks if c not in _DOCKER_CHECKS)
     return [check(cfg) for check in checks]
 
 
