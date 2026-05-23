@@ -34,6 +34,7 @@ import re
 import shutil
 import subprocess
 import xml.dom.minidom
+import xml.parsers.expat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
