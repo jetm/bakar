@@ -19,11 +19,15 @@
 #   wrynose requires BB_MIN_VERSION = "2.18.0". The bitbake repo is cloned
 #   with layers: {} so it is not added to bblayers.conf. kas-container checks
 #   out all repos under /work/; oe-init-build-env then finds bitbake at
-#   /work/bitbake/ via its $OEROOT/../bitbake sibling search.
+#   /work/layers/bitbake/ via its $OEROOT/../bitbake sibling search.
 #
 # Usage:
 #   export KAS_CONTAINER_IMAGE=ghcr.io/siemens/kas/kas:5.2
 #   bspctl build examples/kas-qemux86-64-wrynose.yml
+#
+# All repos are cloned under layers/ so a single .gitignore entry covers them:
+#   layers/
+#   build/
 
 header:
   version: 3
@@ -38,6 +42,7 @@ repos:
   bitbake:
     url: https://git.openembedded.org/bitbake
     branch: "2.18"
+    path: layers/bitbake
     # layers: {} clones the repo but adds nothing to bblayers.conf.
     # oe-init-build-env discovers bitbake via its $OEROOT/../bitbake sibling search.
     layers: {}
@@ -45,12 +50,14 @@ repos:
   openembedded-core:
     url: https://git.openembedded.org/openembedded-core
     branch: wrynose
+    path: layers/openembedded-core
     layers:
       meta:
 
   meta-openembedded:
     url: https://git.openembedded.org/meta-openembedded
     branch: wrynose
+    path: layers/meta-openembedded
     layers:
       meta-oe:
       meta-python:
