@@ -10,3 +10,4 @@ dist/
 .ruff_cache/
 
 examples/.bspctl
+examples/layers
