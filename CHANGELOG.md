@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-23
+
 ### Fixed
 - `BB_NUMBER_THREADS` and `PARALLEL_MAKE` defaulted to 16 regardless of the host's CPU count. `_build_env()` now sets `NPROC` to `os.cpu_count()` before invoking kas, so the tuning overlay picks up the actual core count. Set `NPROC` explicitly to override.
 - `bspctl doctor` now reports the effective `NPROC` value at pre-flight time via the new `nproc` INFO check.
