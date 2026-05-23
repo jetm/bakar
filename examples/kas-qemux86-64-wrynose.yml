@@ -1,58 +1,56 @@
 # Example kas YAML for a wrynose (Yocto master) minimal build on qemux86-64.
 #
-# Uses local checkouts from ~/repos/personal/yocto/ - no network access needed.
-# Repos must already be on the wrynose branch before building.
+# Clones all repos from upstream at build time. Requires network access and
+# a kas-container-compatible image with the Yocto build prerequisites.
 #
 # Layer coverage:
 #   - openembedded-core/meta:      core Yocto recipes and classes (wrynose)
 #   - meta-openembedded sub-layers: meta-oe, meta-python, meta-networking,
 #                                   meta-filesystems (wrynose)
 #
-# Repos present in ~/repos/personal/yocto/ but excluded here because their
-# LAYERSERIES_COMPAT does not match wrynose:
-#   - meta-yocto         (meta-poky / meta-yocto-bsp)  -> blacksail (ahead of wrynose)
-#   - meta-raspberrypi                                  -> mickledore
-#   - meta-security                                     -> styhead/walnascar
-#   - meta-virtualization                               -> styhead
-#   - meta-secure-core                                  -> styhead
-#
-# Repos skipped entirely (not layers):
-#   - yocto-docs    (documentation only)
-#   - yocto-kernel-cache  (supplemental kernel config data, no layer.conf)
+# Layers excluded because their LAYERSERIES_COMPAT does not include wrynose
+# at the time of writing:
+#   - meta-yocto / meta-poky   -> currently targets blacksail (ahead of wrynose)
+#   - meta-raspberrypi         -> mickledore
+#   - meta-security            -> styhead/walnascar
+#   - meta-virtualization      -> styhead
 #
 # Bitbake:
-#   wrynose requires BB_MIN_VERSION = "2.18.0". No explicit bitbake repo is
-#   needed: oe-init-build-env looks for bitbake at $OEROOT/../bitbake and
-#   finds ~/repos/personal/yocto/bitbake/ automatically. Ensure that checkout
-#   is on the 2.18 branch before building:
-#     git -C ~/repos/personal/yocto/bitbake checkout origin/2.18
+#   wrynose requires BB_MIN_VERSION = "2.18.0". The bitbake repo is cloned
+#   with layers: {} so it is not added to bblayers.conf. kas-container checks
+#   out all repos under /work/; oe-init-build-env then finds bitbake at
+#   /work/bitbake/ via its $OEROOT/../bitbake sibling search.
 #
 # Usage:
+#   export KAS_CONTAINER_IMAGE=ghcr.io/siemens/kas/kas:5.2
 #   bspctl build examples/kas-qemux86-64-wrynose.yml
-#
-# bspctl auto-detects host mode (plain kas, no Docker) when KAS_CONTAINER_IMAGE
-# is not set. Standard Yocto host build prerequisites apply.
 
 header:
   version: 3
 
 machine: qemux86-64
 # nodistro: oe-core is distro-less; use this until a wrynose meta-poky is
-# available locally. Swap to 'poky' once meta-yocto updates its
-# LAYERSERIES_COMPAT to include wrynose.
+# available. Swap to 'poky' once meta-yocto updates LAYERSERIES_COMPAT.
 distro: nodistro
 target: core-image-minimal
 
 repos:
+  bitbake:
+    url: https://git.openembedded.org/bitbake
+    branch: "2.18"
+    # layers: {} clones the repo but adds nothing to bblayers.conf.
+    # oe-init-build-env discovers bitbake via its $OEROOT/../bitbake sibling search.
+    layers: {}
+
   openembedded-core:
-    url: null
-    path: /home/tiamarin/repos/personal/yocto/openembedded-core
+    url: https://git.openembedded.org/openembedded-core
+    branch: wrynose
     layers:
       meta:
 
   meta-openembedded:
-    url: null
-    path: /home/tiamarin/repos/personal/yocto/meta-openembedded
+    url: https://git.openembedded.org/meta-openembedded
+    branch: wrynose
     layers:
       meta-oe:
       meta-python:

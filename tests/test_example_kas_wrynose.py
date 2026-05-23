@@ -1,8 +1,6 @@
 """Tests for examples/kas-qemux86-64-wrynose.yml.
 
 Validates the YAML structure and expected fields without running a live build.
-The integration test (dry-run) is marked as such and skipped in CI where
-the local yocto repo checkouts are absent.
 """
 
 from __future__ import annotations
@@ -20,14 +18,11 @@ from bspctl.cli import app
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE_YAML = REPO_ROOT / "examples" / "kas-qemux86-64-wrynose.yml"
 
-_REQUIRED_REPOS = ("openembedded-core", "meta-openembedded")
-_OE_CORE_PATH = Path("/home/tiamarin/repos/personal/yocto/openembedded-core")
-_META_OE_PATH = Path("/home/tiamarin/repos/personal/yocto/meta-openembedded")
+_REQUIRED_REPOS = ("bitbake", "openembedded-core", "meta-openembedded")
 
-_local_repos_present = pytest.mark.skipif(
-    not (_OE_CORE_PATH.is_dir() and _META_OE_PATH.is_dir()),
-    reason="local Yocto repos not present",
-)
+_OE_CORE_URL = "https://git.openembedded.org/openembedded-core"
+_META_OE_URL = "https://git.openembedded.org/meta-openembedded"
+_BITBAKE_URL = "https://git.openembedded.org/bitbake"
 
 
 @pytest.fixture(autouse=True)
@@ -63,22 +58,29 @@ def test_example_yaml_has_required_repos(kas_doc: dict) -> None:
         assert name in repos, f"missing repo: {name!r}"
 
 
-def test_example_yaml_no_explicit_bitbake_repo(kas_doc: dict) -> None:
-    """bitbake is found by oe-init-build-env at ../bitbake; no kas repo entry needed."""
-    repos = kas_doc.get("repos") or {}
-    assert "bitbake" not in repos, "bitbake must not be listed as a kas repo"
+def test_example_yaml_bitbake_uses_git_url(kas_doc: dict) -> None:
+    repo = kas_doc["repos"]["bitbake"]
+    assert repo.get("url") == _BITBAKE_URL
+    assert repo.get("branch") == "2.18"
 
 
-def test_example_yaml_oe_core_uses_local_path(kas_doc: dict) -> None:
+def test_example_yaml_bitbake_has_empty_layers(kas_doc: dict) -> None:
+    """bitbake must not be added to bblayers.conf; layers: {} achieves this."""
+    repo = kas_doc["repos"]["bitbake"]
+    layers = repo.get("layers")
+    assert layers == {} or layers is None or layers == [], f"bitbake layers must be empty (got {layers!r})"
+
+
+def test_example_yaml_oe_core_uses_git_url(kas_doc: dict) -> None:
     repo = kas_doc["repos"]["openembedded-core"]
-    assert repo.get("url") is None, "openembedded-core must use a local path (url: null)"
-    assert Path(repo["path"]) == _OE_CORE_PATH
+    assert repo.get("url") == _OE_CORE_URL
+    assert repo.get("branch") == "wrynose"
 
 
-def test_example_yaml_meta_oe_uses_local_path(kas_doc: dict) -> None:
+def test_example_yaml_meta_oe_uses_git_url(kas_doc: dict) -> None:
     repo = kas_doc["repos"]["meta-openembedded"]
-    assert repo.get("url") is None, "meta-openembedded must use a local path (url: null)"
-    assert Path(repo["path"]) == _META_OE_PATH
+    assert repo.get("url") == _META_OE_URL
+    assert repo.get("branch") == "wrynose"
 
 
 def test_example_yaml_oe_core_includes_meta_layer(kas_doc: dict) -> None:
@@ -91,14 +93,13 @@ def test_example_yaml_meta_oe_includes_core_layers(kas_doc: dict) -> None:
     assert "meta-oe" in layers
 
 
-@_local_repos_present
 def test_example_yaml_dry_run_succeeds(tmp_path: Path, monkeypatch) -> None:
     """Dry-run bspctl build with the wrynose example YAML.
 
     Applies the generic tuning overlay and exits before invoking kas.
-    Requires the local Yocto repo checkouts to be present.
+    No network access is performed in dry-run mode.
     """
-    monkeypatch.delenv("KAS_CONTAINER_IMAGE", raising=False)
+    monkeypatch.setenv("KAS_CONTAINER_IMAGE", "ghcr.io/siemens/kas/kas:5.2")
     runner = CliRunner()
     with patch("bspctl.cli.load_vendors", return_value=[]):
         result = runner.invoke(
