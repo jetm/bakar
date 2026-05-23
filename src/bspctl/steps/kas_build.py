@@ -637,7 +637,9 @@ def _build_env(cfg: BuildConfig, python_executable: Path | None = None) -> dict[
     Keeps SSTATE_DIR, DL_DIR, NPROC, and KAS_* from the caller's shell
     (these are the knobs kas-container actually reads) plus a stable
     PATH and HOME so the subprocess behaves the same as an interactive
-    shell run.
+    shell run. NPROC defaults to os.cpu_count() when not set by the
+    caller, so BB_NUMBER_THREADS and PARALLEL_MAKE in the overlay pick
+    up the actual machine core count instead of the hardcoded fallback.
 
     KAS_WORK_DIR is forced to the BSP-specific subtree
     (``cfg.bsp_root`` = ``workspace/<bsp_family>``) so kas-container
@@ -667,6 +669,7 @@ def _build_env(cfg: BuildConfig, python_executable: Path | None = None) -> dict[
     # exported it without prefix; ensure it is present.
     passthrough.setdefault("PATH", os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"))
     passthrough.setdefault("HOME", os.environ.get("HOME", "/tmp"))
+    passthrough.setdefault("NPROC", str(os.cpu_count() or 16))
     if cfg.is_meta_avocado:
         passthrough["KAS_WORK_DIR"] = str(cfg.workspace)
         passthrough["KAS_BUILD_DIR"] = str(cfg.bsp_root / "build")

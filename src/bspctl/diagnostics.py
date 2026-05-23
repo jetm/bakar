@@ -550,6 +550,15 @@ def check_forks_ti_u_boot(cfg: BuildConfig) -> CheckResult:
     return _ok("forks-ti-u-boot", Severity.INFO, "present (PREMIRROR will use it)")
 
 
+def check_nproc(cfg: BuildConfig) -> CheckResult:
+    """Report the NPROC value that will drive BB_NUMBER_THREADS / PARALLEL_MAKE."""
+    env_val = os.environ.get("NPROC")
+    if env_val:
+        return _ok("nproc", Severity.INFO, f"NPROC={env_val} (from environment)")
+    detected = os.cpu_count() or 16
+    return _ok("nproc", Severity.INFO, f"NPROC={detected} (auto-detected; override with $NPROC)")
+
+
 def check_bitbake_locks(cfg: BuildConfig) -> CheckResult:
     """Remove stale bitbake lock and socket files and report the result.
 
@@ -628,6 +637,7 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_docker_ulimits,
     check_disk_free,
     check_memory,
+    check_nproc,
     check_bitbake_override,
     check_bitbake_locks,
 )
