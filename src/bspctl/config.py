@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from bspctl.user_config import UserConfig
+
 # ---------------------------------------------------------------------------
 # NXP defaults (i.MX BSP, scarthgap warmup machine).
 # Any of these can be overridden by BSPCTL_* env vars; CLI flags override env.
@@ -220,11 +222,15 @@ def resolve(
     repo_branch: str | None = None,
     host_mode: bool = False,
     kas_yaml: Path | None = None,
+    user_config: UserConfig | None = None,
 ) -> BuildConfig:
-    """Resolve BuildConfig from CLI flags, env vars, and family-specific defaults.
+    """Resolve BuildConfig from CLI flags, env vars, config, and family defaults.
 
     Precedence, highest to lowest: explicit arg, BSPCTL_* env var,
-    BSP-family default. ``repo_branch`` is special: when neither arg
+    ``user_config`` field, BSP-family default. ``user_config`` carries the
+    values loaded from ``~/.config/bspctl/config.toml``; ``None`` (the
+    default) preserves the pre-config two-tier behavior for direct callers.
+    ``repo_branch`` is special: it has no config field, so when neither arg
     nor env is set, NXP infers it from the manifest filename via
     :data:`BRANCH_BY_MANIFEST_PREFIX`; TI infers it from the
     ``processor-sdk-<poky>-...-<sdk>-config_<var>`` regex via
@@ -242,29 +248,40 @@ def resolve(
     in this mode - the user's kas YAML is the authoritative source.
     """
 
-    def pick(arg: str | None, env_key: str, default: str) -> str:
+    def pick(arg: str | None, env_key: str, user_val: str | None, default: str) -> str:
         if arg is not None:
             return arg
         env_val = os.environ.get(env_key)
         if env_val:
             return env_val
+        if user_val is not None:
+            return user_val
         return default
 
     if bsp_family == "generic":
         d_machine, d_distro, d_image = "generic", "generic", "generic"
         d_manifest, d_branch = "", ""
+        u_machine = u_distro = u_image = u_manifest = None
     elif bsp_family == "ti":
         d_machine, d_distro, d_image = DEFAULT_TI_MACHINE, DEFAULT_TI_DISTRO, DEFAULT_TI_IMAGE
         d_manifest, d_branch = DEFAULT_TI_MANIFEST, DEFAULT_TI_REPO_BRANCH
+        u_machine = user_config.ti_machine if user_config is not None else None
+        u_distro = user_config.ti_distro if user_config is not None else None
+        u_image = user_config.ti_image if user_config is not None else None
+        u_manifest = user_config.ti_manifest if user_config is not None else None
     else:
         d_machine, d_distro, d_image = DEFAULT_NXP_MACHINE, DEFAULT_NXP_DISTRO, DEFAULT_NXP_IMAGE
         d_manifest, d_branch = DEFAULT_NXP_MANIFEST, DEFAULT_NXP_REPO_BRANCH
+        u_machine = user_config.nxp_machine if user_config is not None else None
+        u_distro = user_config.nxp_distro if user_config is not None else None
+        u_image = user_config.nxp_image if user_config is not None else None
+        u_manifest = user_config.nxp_manifest if user_config is not None else None
 
-    resolved_manifest = pick(manifest, "BSPCTL_MANIFEST", d_manifest)
+    resolved_manifest = pick(manifest, "BSPCTL_MANIFEST", u_manifest, d_manifest)
 
     if bsp_family == "generic":
         # No manifest, no branch inference - generic mode bypasses both.
-        resolved_branch = pick(repo_branch, "BSPCTL_REPO_BRANCH", d_branch)
+        resolved_branch = pick(repo_branch, "BSPCTL_REPO_BRANCH", None, d_branch)
     elif bsp_family == "ti":
         # Lazy import: bsp_model has no cyclic deps on config.py, but
         # keeping the import inside resolve() keeps module import order
@@ -274,30 +291,40 @@ def resolve(
         inferred = infer_bsp_branch(resolved_manifest)
         if inferred == "<unknown>":
             inferred = d_branch
-        resolved_branch = pick(repo_branch, "BSPCTL_REPO_BRANCH", inferred)
+        resolved_branch = pick(repo_branch, "BSPCTL_REPO_BRANCH", None, inferred)
     else:
         resolved_branch = pick(
             repo_branch,
             "BSPCTL_REPO_BRANCH",
+            None,
             infer_repo_branch(resolved_manifest, d_branch),
         )
 
     # Auto-detect: when KAS_CONTAINER_IMAGE is absent from env and host_mode was
     # not explicitly requested, fall back to plain kas (no Docker) rather than the
     # hardcoded default container image. This makes bspctl work out of the box on
-    # hosts without a container setup.
-    effective_host_mode = host_mode or ("KAS_CONTAINER_IMAGE" not in os.environ)
+    # hosts without a container setup. A config-supplied container_image counts the
+    # same as the env var: a user who set it has a container setup and wants it used.
+    effective_host_mode = host_mode or (
+        "KAS_CONTAINER_IMAGE" not in os.environ and (user_config is None or user_config.container_image is None)
+    )
 
     return BuildConfig(
         workspace=workspace.resolve(),
         bsp_family=bsp_family,
-        machine=pick(machine, "BSPCTL_MACHINE", d_machine),
-        distro=pick(distro, "BSPCTL_DISTRO", d_distro),
-        image=pick(image, "BSPCTL_IMAGE", d_image),
+        machine=pick(machine, "BSPCTL_MACHINE", u_machine, d_machine),
+        distro=pick(distro, "BSPCTL_DISTRO", u_distro, d_distro),
+        image=pick(image, "BSPCTL_IMAGE", u_image, d_image),
         manifest=resolved_manifest,
-        repo_url=os.environ.get("BSPCTL_REPO_URL", DEFAULT_REPO_URL),
+        repo_url=os.environ.get(
+            "BSPCTL_REPO_URL",
+            (user_config.nxp_repo_url if user_config and user_config.nxp_repo_url else DEFAULT_REPO_URL),
+        ),
         repo_branch=resolved_branch,
-        container_image=os.environ.get("KAS_CONTAINER_IMAGE", DEFAULT_CONTAINER_IMAGE),
+        container_image=os.environ.get(
+            "KAS_CONTAINER_IMAGE",
+            (user_config.container_image if user_config and user_config.container_image else DEFAULT_CONTAINER_IMAGE),
+        ),
         host_mode=effective_host_mode,
         kas_yaml_override=kas_yaml.resolve() if kas_yaml is not None else None,
     )
