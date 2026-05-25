@@ -241,7 +241,12 @@ def check_container_bitbake(cfg: BuildConfig) -> CheckResult:
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return _skip("container-bitbake", Severity.INFO, f"could not inspect: {exc}")
     if out.returncode != 0:
-        return _skip("container-bitbake", Severity.INFO, "inspection failed")
+        detail = (
+            "not in container PATH (workspace-sourced)"
+            if "no bitbake" in out.stderr
+            else f"inspection failed: {out.stderr.strip()}"
+        )
+        return _skip("container-bitbake", Severity.INFO, detail)
     lines = out.stdout.strip().splitlines()
     path = lines[0].strip() if lines else "unknown"
     version = lines[1].strip() if len(lines) > 1 else "unknown"

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -27,6 +27,7 @@ class LayerHash:
     repo: str
     short_hash: str
     branch: str  # empty string for a detached HEAD
+    version: str | None = field(default=None)  # set for the bitbake entry
 
 
 def _resolve_bblayers_paths(bblayers_conf: Path) -> dict[str, Path]:
@@ -70,12 +71,71 @@ def _resolve_bblayers_paths(bblayers_conf: Path) -> dict[str, Path]:
     return result
 
 
+def _find_bitbake_dir(cfg: BuildConfig, layer_roots: list[Path]) -> Path | None:
+    """Locate the bitbake source directory.
+
+    Checks ``cfg.bsp_bitbake_path`` first (NXP/TI builds), then looks for a
+    ``bitbake/`` sibling of the parent directory of any discovered layer root
+    (generic BYO builds where layers sit alongside a standalone bitbake repo).
+    """
+    candidate = cfg.bsp_bitbake_path
+    if (candidate / "lib" / "bb" / "__init__.py").is_file():
+        return candidate
+    seen: set[Path] = set()
+    for root in layer_roots:
+        parent = root.parent
+        if parent in seen:
+            continue
+        seen.add(parent)
+        candidate = parent / "bitbake"
+        if (candidate / "lib" / "bb" / "__init__.py").is_file():
+            return candidate
+    return None
+
+
+def _read_bitbake_version(bitbake_dir: Path) -> str | None:
+    """Extract ``__version__`` from ``bitbake/lib/bb/__init__.py``."""
+    init_py = bitbake_dir / "lib" / "bb" / "__init__.py"
+    try:
+        text = init_py.read_text()
+    except OSError:
+        return None
+    m = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
+    return m.group(1) if m else None
+
+
+def _git_short_hash(path: Path) -> str | None:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
+def _git_branch(path: Path) -> str:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(path), "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+        )
+        return out.stdout.strip() if out.returncode == 0 else ""
+    except OSError:
+        return ""
+
+
 def collect_layer_hashes(cfg: BuildConfig) -> list[LayerHash]:
     """Return a :class:`LayerHash` for each repo in ``bblayers.conf``.
 
     Returns ``[]`` when ``bblayers.conf`` does not exist (pre-first-build).
     The branch is an empty string when the repo is on a detached HEAD.
-    Never raises on git failure. The result is sorted by repo name.
+    Never raises on git failure. The result is sorted by repo name, with
+    a ``bitbake`` entry appended last carrying the version read from
+    ``lib/bb/__init__.py``.
 
     Supports two BBLAYERS path conventions:
 
@@ -100,25 +160,24 @@ def collect_layer_hashes(cfg: BuildConfig) -> list[LayerHash]:
 
     results: list[LayerHash] = []
     for repo, path in repo_paths.items():
-        try:
-            rev = subprocess.run(
-                ["git", "-C", str(path), "rev-parse", "--short", "HEAD"],
-                capture_output=True,
-                text=True,
-            )
-        except OSError:
+        short_hash = _git_short_hash(path)
+        if short_hash is None:
             continue
-        if rev.returncode != 0:
-            continue
-        short_hash = rev.stdout.strip()
-        try:
-            branch_out = subprocess.run(
-                ["git", "-C", str(path), "branch", "--show-current"],
-                capture_output=True,
-                text=True,
+        results.append(LayerHash(repo=repo, short_hash=short_hash, branch=_git_branch(path)))
+    results.sort(key=lambda lh: lh.repo)
+
+    # Append bitbake version entry when the source directory is locatable.
+    bb_dir = _find_bitbake_dir(cfg, list(repo_paths.values()))
+    if bb_dir is not None:
+        short_hash = _git_short_hash(bb_dir)
+        if short_hash is not None:
+            results.append(
+                LayerHash(
+                    repo="bitbake",
+                    short_hash=short_hash,
+                    branch=_git_branch(bb_dir),
+                    version=_read_bitbake_version(bb_dir),
+                )
             )
-            branch = branch_out.stdout.strip() if branch_out.returncode == 0 else ""
-        except OSError:
-            branch = ""
-        results.append(LayerHash(repo=repo, short_hash=short_hash, branch=branch))
-    return sorted(results, key=lambda lh: lh.repo)
+
+    return results
