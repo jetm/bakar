@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Persistent user configuration via `~/.config/bspctl/config.toml` — set default machine, distro, image, manifest, repo URL, and container image without exporting environment variables on every shell session. An absent file falls back to built-in defaults and is never auto-created.
+- `examples/config.toml` reference file with every available key commented out and annotated; copying it to `~/.config/bspctl/config.toml` is inert until a key is uncommented.
+- `--show-layers` flag and `show_hashes` config key to print each layer's git short hash and branch after a build, mirroring what bitbake logs. The layers table now also includes the bitbake version.
+- Layer hash collection now supports generic kas YAML builds that use `${TOPDIR}`-relative layer paths (e.g. `${TOPDIR}/../layers/<repo>`), in addition to the existing NXP/TI `/sources/`-based layout.
+- `doctor` config key to suppress the pre-flight doctor check without passing `--skip-doctor` on every invocation.
+
+### Changed
+
+- Configuration resolution now follows a four-tier precedence chain: CLI flag → environment variable → `config.toml` → built-in default. Setting `container_image` in `config.toml` activates container mode (same behaviour as `KAS_CONTAINER_IMAGE`) and prints a notice so the switch is not silent.
+- The container-bitbake doctor check now bind-mounts the workspace bitbake directory into the container when available, producing a real version string instead of an opaque "inspection failed" / SKIP result. When `which bitbake` returns a not-found message the check now reports "not in container PATH (workspace-sourced)" rather than a generic failure.
+- A config file parse error now exits with code 2 and prints the file path, making misconfigured `config.toml` files immediately identifiable.
+
 ## [0.2.1] - 2026-05-23
 
 ### Fixed
@@ -63,3 +77,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.0.3]: https://github.com/jetm/bspctl/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/jetm/bspctl/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/jetm/bspctl/releases/tag/v0.0.1
+
