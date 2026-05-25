@@ -290,23 +290,31 @@ def translate_bbsetup_config(
     existing kas pipeline can build, reusing the layers bitbake-setup already
     fetched under ``<setup_dir>/layers/``.
 
-    Raises ``ValueError`` if the config lacks a top-level ``data`` key, if a
-    source has no ``git-remote`` (local-path sources are out of scope), or if a
+    Raises ``ValueError`` if either JSON file is malformed, if the config lacks a
+    top-level ``data`` object or a non-empty ``data.sources`` block, if a source
+    has no ``git-remote`` (local-path sources are out of scope), or if a
     ``bb-layers`` entry references an unknown source.
     """
-    cfg = json.loads((setup_dir / "config" / "config-upstream.json").read_text())
-    if "data" not in cfg:
-        raise ValueError(
-            f"{setup_dir}/config/config-upstream.json is missing the top-level "
-            "'data' key; not a valid bitbake-setup config"
-        )
+    config_path = setup_dir / "config" / "config-upstream.json"
+    try:
+        cfg = json.loads(config_path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{config_path} is not valid JSON: {exc}") from exc
+    data = cfg.get("data")
+    if not isinstance(data, dict):
+        raise ValueError(f"{config_path} is missing a top-level 'data' object; not a valid bitbake-setup config")
+    sources = data.get("sources")
+    if not isinstance(sources, dict) or not sources:
+        raise ValueError(f"{config_path} has an empty or absent 'data.sources' block")
 
     sfr_path = setup_dir / "config" / "sources-fixed-revisions.json"
     shas: dict[str, str] = {}
     if sfr_path.exists():
-        shas = json.loads(sfr_path.read_text()).get("sources", {})
+        try:
+            shas = json.loads(sfr_path.read_text()).get("sources", {})
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{sfr_path} is not valid JSON: {exc}") from exc
 
-    sources = cfg["data"]["sources"]
     known_sources = set(sources)
     bb_config = cfg.get("bitbake-config", {})
 
@@ -315,9 +323,7 @@ def translate_bbsetup_config(
     for entry in bb_config.get("bb-layers", []):
         source, _, subdir = entry.partition("/")
         if source not in known_sources:
-            raise ValueError(
-                f"bb-layers entry {entry!r} references unknown source {source!r}"
-            )
+            raise ValueError(f"bb-layers entry {entry!r} references unknown source {source!r}")
         layers_by_source[source][subdir or "."] = None
 
     repos: OrderedDict[str, dict[str, Any]] = OrderedDict()
@@ -328,8 +334,11 @@ def translate_bbsetup_config(
                 f"source {name!r} has no 'git-remote' (local-path sources are out "
                 "of scope); please file a bug if you need this"
             )
+        uri = git_remote.get("uri")
+        if not uri:
+            raise ValueError(f"source {name!r} git-remote has no 'uri'")
         entry: dict[str, Any] = {
-            "url": git_remote["uri"],
+            "url": uri,
             "path": f"layers/{name}",
         }
         branch = git_remote.get("branch")
@@ -350,9 +359,7 @@ def translate_bbsetup_config(
         entry["layers"] = layers_by_source[name]
         repos[name] = entry
 
-    all_fragments = list(bb_config.get("oe-fragment-choices", {}).values()) + bb_config.get(
-        "oe-fragments", []
-    )
+    all_fragments = list(bb_config.get("oe-fragment-choices", {}).values()) + bb_config.get("oe-fragments", [])
     machine = machine_override or _extract_fragment_value(all_fragments, "machine")
     distro = distro_override or _extract_fragment_value(all_fragments, "distro") or "nodistro"
 

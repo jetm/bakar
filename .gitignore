@@ -13,6 +13,9 @@ examples/.bspctl
 examples/layers
 examples/ccache
 
-# bbsetup example fixture: track the init-build-env sentinel (build/ is otherwise ignored)
+# bbsetup example fixture: track only the init-build-env sentinel. Re-include
+# the build dir so git descends, re-ignore its contents, then un-ignore the one
+# file - this keeps generated run logs/tmp under build/ ignored.
 !examples/bbsetup-oe-nodistro-wrynose/build/
+examples/bbsetup-oe-nodistro-wrynose/build/*
 !examples/bbsetup-oe-nodistro-wrynose/build/init-build-env

@@ -188,3 +188,68 @@ def test_write_bbsetup_yaml_is_deterministic(tmp_path):
     second = (ws / "kas-bbsetup.yml").read_bytes()
 
     assert first == second
+
+
+# ---------------------------------------------------------------------------
+# Schema-validation error paths (post-review robustness)
+# ---------------------------------------------------------------------------
+
+
+def _patch_config(ws: Path, mutate) -> None:
+    cfg_path = ws / "config" / "config-upstream.json"
+    cfg = json.loads(cfg_path.read_text())
+    mutate(cfg)
+    cfg_path.write_text(json.dumps(cfg))
+
+
+def test_translate_rejects_empty_sources(tmp_path):
+    ws = _copy_fixture(tmp_path)
+    _patch_config(ws, lambda c: c["data"].update(sources={}))
+
+    with pytest.raises(ValueError, match="data.sources"):
+        translate_bbsetup_config(ws)
+
+
+def test_translate_rejects_non_object_data(tmp_path):
+    ws = _copy_fixture(tmp_path)
+    _patch_config(ws, lambda c: c.update(data="not-an-object"))
+
+    with pytest.raises(ValueError, match="'data' object"):
+        translate_bbsetup_config(ws)
+
+
+def test_translate_rejects_malformed_fixed_revisions(tmp_path):
+    ws = _copy_fixture(tmp_path)
+    (ws / "config" / "sources-fixed-revisions.json").write_text("{ not json")
+
+    with pytest.raises(ValueError, match="not valid JSON"):
+        translate_bbsetup_config(ws)
+
+
+# ---------------------------------------------------------------------------
+# CLI workspace-resolution helpers
+# ---------------------------------------------------------------------------
+
+
+def test_bbsetup_workspace_walks_up_from_subdir(tmp_path, monkeypatch):
+    from bspctl import cli
+
+    ws = _copy_fixture(tmp_path)
+    monkeypatch.chdir(ws / "config")
+
+    assert cli._bbsetup_workspace(None) == ws.resolve()
+
+
+def test_uninitialized_bbsetup_dir_detects_missing_sentinel(tmp_path):
+    from bspctl import cli
+
+    ws = tmp_path / "partial"
+    (ws / "config").mkdir(parents=True)
+    (ws / "config" / "config-upstream.json").write_text(json.dumps({"data": {"sources": {}}, "bitbake-config": {}}))
+    # No build/init-build-env -> recognized signature but not initialized.
+    assert cli._uninitialized_bbsetup_dir(ws) == ws.resolve()
+
+    # Once the sentinel exists, it is considered initialized (not pending).
+    (ws / "build").mkdir()
+    (ws / "build" / "init-build-env").write_text("")
+    assert cli._uninitialized_bbsetup_dir(ws) is None

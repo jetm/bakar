@@ -38,7 +38,12 @@ from rich.console import Console
 from rich.table import Table
 
 from bspctl import __version__
-from bspctl.bsp_detect import detect_bsp_from_yaml, detect_kas_workspace, is_meta_avocado_yaml
+from bspctl.bsp_detect import (
+    detect_bsp_from_yaml,
+    detect_kas_workspace,
+    is_bbsetup_workspace,
+    is_meta_avocado_yaml,
+)
 from bspctl.bsp_model import BspModel, detect_bsp_family, get_model
 from bspctl.config import DEFAULT_CONTAINER_IMAGE, BuildConfig, resolve
 from bspctl.diagnostics import (
@@ -48,7 +53,7 @@ from bspctl.diagnostics import (
     any_blocking_failure,
     run_all,
 )
-from bspctl.kas import KasGenOptions, write_yaml
+from bspctl.kas import KasGenOptions, translate_bbsetup_config, write_bbsetup_yaml, write_yaml
 from bspctl.layers import collect_layer_hashes
 from bspctl.observability import RunLogger
 from bspctl.steps import bitbake_override as step_override
@@ -114,18 +119,57 @@ def _main(
 # ---------------------------------------------------------------------------
 
 
+def _bbsetup_workspace(workspace: Path | None) -> Path | None:
+    """Return the setup dir for an initialized bitbake-setup workspace, else None.
+
+    With an explicit ``-w`` the path is checked as-is. Without it, the cwd and
+    its parents are walked (mirroring ``_workspace_from_cwd``) so the command
+    works from a subdirectory of the workspace.
+    """
+    if workspace is not None:
+        return workspace.resolve() if is_bbsetup_workspace(workspace) else None
+    cur = Path.cwd().resolve()
+    for cand in (cur, *cur.parents):
+        if is_bbsetup_workspace(cand):
+            return cand
+    return None
+
+
+def _uninitialized_bbsetup_dir(workspace: Path | None) -> Path | None:
+    """Return a dir carrying the bitbake-setup signature but not yet initialized.
+
+    A directory with ``config/config-upstream.json`` looks like a bitbake-setup
+    workspace; if it lacks ``build/init-build-env`` it has not been initialized
+    (``bitbake-setup init`` writes that file). Returns the first such directory
+    found (the given workspace, or walking up from cwd), or None when no
+    bitbake-setup signature is present or the workspace is fully initialized.
+    """
+    if workspace is not None:
+        cands: tuple[Path, ...] = (workspace.resolve(),)
+    else:
+        cur = Path.cwd().resolve()
+        cands = (cur, *cur.parents)
+    for cand in cands:
+        if (cand / "config" / "config-upstream.json").exists():
+            return None if is_bbsetup_workspace(cand) else cand
+    return None
+
+
 def _workspace_from_cwd() -> Path:
     """Walk up from CWD to find the BSP workspace root.
 
     Checks in order:
     1. A .bspctl.toml marker file in the candidate directory.
     2. An nxp/ or ti/ subdirectory in the candidate directory.
+    3. A bitbake-setup workspace (config/config-upstream.json + build/init-build-env).
     """
     cur = Path.cwd().resolve()
     for candidate in (cur, *cur.parents):
         if (candidate / ".bspctl.toml").is_file():
             return candidate
         if (candidate / "nxp").is_dir() or (candidate / "ti").is_dir():
+            return candidate
+        if is_bbsetup_workspace(candidate):
             return candidate
     console.print(
         "[red]Not inside a BSP workspace[/] (no .bspctl.toml or nxp/ / ti/ found). "
@@ -349,6 +393,20 @@ def doctor(
         console.print("[red]choose either a positional kas YAML or --manifest, not both[/]")
         raise typer.Exit(code=2)
 
+    # bitbake-setup workspaces dispatch on directory structure, not a manifest.
+    setup_dir = _bbsetup_workspace(workspace) if kas_yaml is None and manifest is None else None
+    if setup_dir is not None:
+        cfg = resolve(
+            workspace=setup_dir,
+            bsp_family="bbsetup",
+            user_config=_USER_CONFIG,
+        )
+        results = run_all(cfg, None)
+        _print_diagnosis(results)
+        if any_blocking_failure(results):
+            raise typer.Exit(code=2)
+        return
+
     if kas_yaml is not None:
         family, bsp = _dispatch_from_yaml(kas_yaml)
     else:
@@ -458,6 +516,125 @@ def build(
     if byo_form and manifest is not None:
         console.print("[red]choose either a positional kas YAML or --manifest, not both[/]")
         raise typer.Exit(code=2)
+
+    # bitbake-setup workspace: translate config-upstream.json to a kas YAML and
+    # run the existing kas pipeline, skipping repo-sync / setup-env /
+    # bitbake-override. Only when -w (or cwd) points at a bbsetup workspace and
+    # the user did not pass a positional YAML or --manifest.
+    setup_dir = _bbsetup_workspace(workspace) if not byo_form and manifest is None else None
+    if setup_dir is not None:
+        cfg = resolve(
+            workspace=setup_dir,
+            bsp_family="bbsetup",
+            machine=machine,
+            distro=distro,
+            image=image,
+            host_mode=host_mode,
+            user_config=_USER_CONFIG,
+        )
+        overlay_source = _overlay_for(None)
+        # Resolve the effective target the same way write_bbsetup_yaml does:
+        # cfg.image is the inert "generic" placeholder for bbsetup, so fall back
+        # to the default image.
+        bb_target = cfg.image if cfg.image not in ("", "generic") else "core-image-minimal"
+
+        # Translate up front so a malformed config or a missing machine fails
+        # fast (before the build) and the resolved machine feeds the deploy-path
+        # message below without a second translation pass.
+        try:
+            translated = translate_bbsetup_config(
+                setup_dir, target=bb_target, machine_override=machine, distro_override=distro
+            )
+        except ValueError as exc:
+            console.print(f"[red]bitbake-setup config error:[/] {exc}")
+            raise typer.Exit(code=2) from exc
+        if translated["machine"] is None:
+            console.print(
+                "[red]no machine selected[/] - pass --machine or add a `machine/<name>` "
+                "fragment to the bitbake-setup config"
+            )
+            raise typer.Exit(code=2)
+
+        if "KAS_CONTAINER_IMAGE" not in os.environ and cfg.container_image != DEFAULT_CONTAINER_IMAGE:
+            console.print(f"[dim]container image from config.toml: {cfg.container_image}[/]")
+
+        console.print(f"[bold]::[/] bspctl build [bbsetup] {setup_dir}")
+
+        if clean:
+            # bitbake-setup owns <setup-dir>/build/ - it holds init-build-env and
+            # conf/. Wipe only the bitbake output tree so the workspace stays
+            # initialized; _clean_build_dir would remove the whole build/ dir.
+            import shutil
+
+            tmp_dir = cfg.bsp_root / "build" / "tmp"
+            if tmp_dir.exists():
+                shutil.rmtree(tmp_dir)
+                console.print(f"[green]removed[/] {tmp_dir}")
+
+        cfg.runs_dir.mkdir(parents=True, exist_ok=True)
+        with RunLogger(runs_dir=cfg.runs_dir) as log:
+            log.info(f"build mode=bbsetup bsp=bbsetup yaml={cfg.kas_yaml} overlay={overlay_source}")
+
+            run_doctor = not skip_doctor and (_USER_CONFIG is None or _USER_CONFIG.doctor)
+            if run_doctor:
+                log.step_start("doctor")
+                results = run_all(cfg, None)
+                diag_path = log.run_dir / "diagnosis.txt"
+                diag_path.write_text(
+                    "\n".join(f"{r.severity.value:5} {r.status.value:4} {r.name:22} {r.message}" for r in results)
+                    + "\n"
+                )
+                _print_diagnosis(results)
+                if any_blocking_failure(results):
+                    log.step_fail("doctor", reason="blocking failure")
+                    raise typer.Exit(code=2)
+                log.step_ok("doctor", checks=len(results))
+
+            # Regenerate kas-bbsetup.yml from the bitbake-setup config.
+            write_bbsetup_yaml(
+                setup_dir,
+                target=bb_target,
+                machine_override=machine,
+                distro_override=distro,
+            )
+
+            if dry_run:
+                log.step_skip("kas_build", reason="dry-run")
+                console.print(
+                    f"[green]dry-run complete[/]: would run kas-container with {cfg.kas_yaml} + {overlay_source}"
+                )
+                return
+
+            rc = step_kas.run_build(
+                cfg,
+                log,
+                kas_yaml=cfg.kas_yaml,
+                overlay_source=overlay_source,
+                extra_overlays=[],
+            )
+            if rc != 0:
+                console.print(
+                    f"[red]kas-container build failed (exit {rc}).[/] Run `bspctl triage {log.run_id}` for details."
+                )
+                raise typer.Exit(code=rc)
+            # cfg.machine is the inert "generic" placeholder; the real machine
+            # comes from the translation resolved before the build.
+            deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / translated["machine"]
+            console.print("[bold green]build succeeded[/]")
+            console.print(f"artifacts: {deploy}")
+        return
+
+    # A directory carrying the bitbake-setup signature but missing
+    # build/init-build-env is recognized but not yet initialized: fail fast
+    # with init guidance instead of falling through to the NXP/TI dispatch.
+    if not byo_form and manifest is None:
+        pending = _uninitialized_bbsetup_dir(workspace)
+        if pending is not None:
+            console.print(
+                f"[red]bitbake-setup workspace at {pending} is not initialized[/] "
+                "- run `bitbake-setup init` first, then retry"
+            )
+            raise typer.Exit(code=2)
 
     # Parse colon-separated overlay chain (kas native syntax: main.yml:overlay.yml)
     main_yaml: Path | None = None
@@ -646,7 +823,18 @@ def sync(
     repo init+sync (NXP) or oe-layertool populate (TI), then var-setup-release
     or local.conf fixup. Useful when you want to refresh ``sources/``
     without kicking off a kas-container build.
+
+    bitbake-setup workspaces are initialized externally via
+    ``bitbake-setup init``; ``bspctl sync`` fails fast for them.
     """
+    # bitbake-setup workspaces are initialized with `bitbake-setup init`,
+    # not by bspctl. Fail fast before _dispatch_bsp(None) would exit anyway.
+    if _bbsetup_workspace(workspace) is not None:
+        console.print(
+            "[red]bitbake-setup workspaces are initialized with `bitbake-setup init`[/] - run that first, then retry"
+        )
+        raise typer.Exit(code=2)
+
     family, bsp = _dispatch_bsp(manifest)
     ws = workspace or _workspace_from_cwd()
     cfg: BuildConfig = resolve(
@@ -785,6 +973,11 @@ def triage(
             (build_root / "build" / "runs", "generic"),
         ]
         report_root = build_root
+        not_found_label = f"{runs_dirs[0][0]}"
+    elif (setup_dir := _bbsetup_workspace(workspace)) is not None:
+        # bitbake-setup workspace: runs live under <setup-dir>/build/runs/.
+        runs_dirs = [(setup_dir / "build" / "runs", "generic")]
+        report_root = setup_dir
         not_found_label = f"{runs_dirs[0][0]}"
     else:
         ws = workspace or _workspace_from_cwd()
@@ -988,7 +1181,25 @@ def gen_kas(
 
     Default output path is ``<bsp_root>/kas-<bsp>.yml``; use
     ``-o my-build.yml`` to write somewhere else.
+
+    For a bitbake-setup workspace (``-w <setup-dir>``) the kas YAML is
+    translated from ``config/config-upstream.json`` and written to
+    ``<setup-dir>/kas-bbsetup.yml``.
     """
+    # bitbake-setup workspaces have no manifest to dispatch on, so resolve
+    # the workspace and take the bbsetup branch before _dispatch_bsp(None).
+    # An explicit --manifest falls through to the manifest-driven generator.
+    setup_dir = _bbsetup_workspace(workspace) if manifest is None else None
+    if setup_dir is not None:
+        out_path = write_bbsetup_yaml(
+            setup_dir,
+            target=image or "core-image-minimal",
+            machine_override=machine,
+            distro_override=distro,
+        )
+        console.print(f"[green]wrote[/] {out_path}")
+        return
+
     family, bsp = _dispatch_bsp(manifest)
     ws = workspace or _workspace_from_cwd()
     cfg = resolve(
