@@ -82,6 +82,10 @@ _REQUIRED_TOOLS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     # Generic mode does not run repo-tool or oe-layertool-setup.sh; kas
     # itself does any cloning the YAML asks for.
     "generic": ("kas-container", "docker", "python3"),
+    # bitbake-setup workspaces are initialized externally; bspctl only
+    # translates their config to a kas YAML and runs kas-container. Same
+    # toolset as generic - no repo/oe-layertool tools.
+    "bbsetup": ("kas-container", "docker", "python3"),
 }
 
 
@@ -634,6 +638,54 @@ def check_bitbake_locks(cfg: BuildConfig) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# bbsetup-only checks
+# ---------------------------------------------------------------------------
+
+
+def check_bbsetup_initialized(cfg: BuildConfig) -> CheckResult:
+    """Confirm the bitbake-setup workspace was initialized.
+
+    A ``bitbake-setup init`` run writes ``config/config-upstream.json``
+    and ``build/init-build-env`` under the setup dir. Either being absent
+    means the workspace is not ready for a bspctl build.
+    """
+    config_json = cfg.bsp_root / "config" / "config-upstream.json"
+    init_env = cfg.bsp_root / "build" / "init-build-env"
+    missing = [str(p) for p in (config_json, init_env) if not p.exists()]
+    if missing:
+        return _fail(
+            "bbsetup-init",
+            Severity.BLOCK,
+            f"workspace not initialized; missing: {', '.join(missing)}",
+            fix_hint="Run `bitbake-setup init` to initialize the workspace, then retry.",
+        )
+    return _ok("bbsetup-init", Severity.BLOCK, "config-upstream.json and build/init-build-env present")
+
+
+def check_bbsetup_config_sources(cfg: BuildConfig) -> CheckResult:
+    """Confirm ``config-upstream.json`` carries a non-empty ``data.sources`` block."""
+    config_json = cfg.bsp_root / "config" / "config-upstream.json"
+    try:
+        data = json.loads(config_json.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        return _fail(
+            "bbsetup-sources",
+            Severity.BLOCK,
+            f"config-upstream.json unreadable: {exc}",
+            fix_hint="Re-run `bitbake-setup init` to regenerate config/config-upstream.json.",
+        )
+    sources = data.get("data", {}).get("sources", {})
+    if not sources:
+        return _fail(
+            "bbsetup-sources",
+            Severity.BLOCK,
+            "config-upstream.json data.sources is empty or absent",
+            fix_hint="Re-run `bitbake-setup init` to regenerate config/config-upstream.json.",
+        )
+    return _ok("bbsetup-sources", Severity.BLOCK, f"{len(sources)} source(s) in data.sources")
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -690,11 +742,18 @@ def run_all(cfg: BuildConfig, bsp: BspModel | None = None) -> list[CheckResult]:
     When ``cfg.host_mode`` is True, the Docker-dependent checks in
     ``_DOCKER_CHECKS`` are filtered out (plain ``kas`` does not use the
     container runtime); the order of the remaining checks is preserved.
+
+    When ``cfg.bsp_family == "bbsetup"`` the bbsetup pre-flight checks
+    are appended after the shared checks (bbsetup has no ``BspModel``,
+    so it cannot carry them via ``doctor_extras``). The host-mode filter
+    still applies to the combined list afterward.
     """
     if bsp is None:
         checks: tuple[CheckFunc, ...] = SHARED_CHECKS
     else:
         checks = SHARED_CHECKS + tuple(bsp.doctor_extras)
+    if cfg.bsp_family == "bbsetup":
+        checks = checks + (check_bbsetup_initialized, check_bbsetup_config_sources)
     if cfg.host_mode:
         checks = tuple(c for c in checks if c not in _DOCKER_CHECKS)
     return [check(cfg) for check in checks]

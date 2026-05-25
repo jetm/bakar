@@ -8,6 +8,7 @@ container Python 3.13.x and 3.14.x, the PASS path on 3.12 and earlier
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -16,8 +17,10 @@ import pytest
 
 from bspctl.config import BuildConfig
 from bspctl.diagnostics import (
+    _REQUIRED_TOOLS_BY_FAMILY,
     Severity,
     Status,
+    check_bbsetup_config_sources,
     check_container_os,
     check_host_tools,
     run_all,
@@ -196,3 +199,71 @@ def test_check_host_tools_host_mode_substitutes_kas() -> None:
     assert "kas" in combined
     assert "kas-container" not in combined
     assert "docker" not in combined
+
+
+# ---------------------------------------------------------------------------
+# bbsetup checks
+# ---------------------------------------------------------------------------
+
+_FIXTURE = Path(__file__).resolve().parent.parent / "examples" / "bbsetup-oe-nodistro-wrynose"
+
+
+def _bbsetup_cfg(workspace: Path, *, host_mode: bool = False) -> BuildConfig:
+    """Build a bbsetup BuildConfig rooted at ``workspace`` (the setup dir)."""
+    return BuildConfig(
+        workspace=workspace,
+        bsp_family="bbsetup",  # type: ignore[arg-type]
+        machine="qemux86-64",
+        distro="nodistro",
+        image="core-image-minimal",
+        manifest="config-upstream.json",
+        repo_url="https://example.invalid/none.git",
+        repo_branch="wrynose",
+        container_image="jetm/kas-build-env:latest",
+        host_mode=host_mode,
+    )
+
+
+def _write_bbsetup_workspace(root: Path, sources: dict) -> None:
+    """Create a minimal bbsetup workspace under ``root`` with the given sources block."""
+    (root / "config").mkdir(parents=True, exist_ok=True)
+    (root / "build").mkdir(parents=True, exist_ok=True)
+    config = {
+        "data": {"sources": sources, "version": "1.0"},
+        "bitbake-config": {"bb-layers": [], "name": "nodistro"},
+        "name": "test-workspace",
+        "type": "registry",
+    }
+    (root / "config" / "config-upstream.json").write_text(json.dumps(config))
+    (root / "build" / "init-build-env").write_text("")
+
+
+def test_required_tools_bbsetup_matches_generic_toolset() -> None:
+    """bbsetup uses the same toolset as generic - no repo/oe-layertool tools."""
+    assert _REQUIRED_TOOLS_BY_FAMILY["bbsetup"] == ("kas-container", "docker", "python3")
+
+
+def test_run_all_bbsetup_includes_both_bbsetup_checks() -> None:
+    """``run_all`` for a bbsetup cfg appends both bbsetup check names."""
+    cfg = _bbsetup_cfg(_FIXTURE)
+    names = {r.name for r in run_all(cfg)}
+    assert "bbsetup-init" in names
+    assert "bbsetup-sources" in names
+
+
+def test_check_bbsetup_config_sources_fails_on_empty_sources(tmp_path: Path) -> None:
+    """An empty ``data.sources`` block is a BLOCK failure."""
+    _write_bbsetup_workspace(tmp_path, sources={})
+    result = check_bbsetup_config_sources(_bbsetup_cfg(tmp_path))
+    assert result.status == Status.FAIL
+    assert result.severity == Severity.BLOCK
+
+
+def test_run_all_bbsetup_host_mode_filters_docker_but_keeps_bbsetup_checks(tmp_path: Path) -> None:
+    """Host-mode still drops the Docker-dependent checks while the bbsetup
+    pre-flight checks remain in the assembled list."""
+    _write_bbsetup_workspace(tmp_path, sources={"bitbake": {"git-remote": {"uri": "x"}}})
+    cfg = _bbsetup_cfg(tmp_path, host_mode=True)
+    names = {r.name for r in run_all(cfg)}
+    assert "docker-daemon" not in names
+    assert "bbsetup-init" in names
