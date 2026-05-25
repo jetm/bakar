@@ -1,0 +1,42 @@
+# bspctl user configuration reference
+#
+# Copy this file to ~/.config/bspctl/config.toml and uncomment the keys you
+# want to override. As shipped, every key is commented out, so copying this
+# file verbatim changes nothing - bspctl behaves exactly as it does with no
+# config file at all.
+#
+# An absent config file (and any absent key) falls back to the built-in
+# default shown next to each key. bspctl never creates this file for you.
+#
+# Resolution precedence (highest wins):
+#
+#     CLI flag  >  BSPCTL_* env var  >  config.toml  >  built-in default
+#
+# So a value set here is overridden by the matching environment variable or
+# command-line flag, but takes effect over the hard-coded default.
+
+# NXP i.MX build defaults. Each key overrides the built-in NXP preset used
+# when the active manifest is an NXP (imx-*.xml) manifest.
+[defaults.nxp]
+# machine  = "imx8mp-var-dart"     # default: imx8mp-var-dart (BSPCTL_MACHINE)
+# distro   = "fsl-imx-xwayland"    # default: fsl-imx-xwayland (BSPCTL_DISTRO)
+# image    = "core-image-minimal"  # default: core-image-minimal (BSPCTL_IMAGE)
+# manifest = "imx-6.6.52-2.2.2.xml"  # default: imx-6.6.52-2.2.2.xml (BSPCTL_MANIFEST)
+# repo_url = "https://github.com/varigit/variscite-bsp-platform.git"  # default: the varigit variscite-bsp-platform repo (BSPCTL_REPO_URL)
+# The repo branch is inferred from the manifest name and has no config key.
+
+# TI Sitara build defaults. Each key overrides the built-in TI preset used
+# when the active manifest is a TI (processor-sdk-*.txt) manifest.
+[defaults.ti]
+# machine  = "am62x-var-som"   # default: am62x-var-som (BSPCTL_MACHINE)
+# distro   = "arago"           # default: arago (BSPCTL_DISTRO)
+# image    = "var-thin-image"  # default: var-thin-image (BSPCTL_IMAGE)
+# manifest = "processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt"  # default: processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt (BSPCTL_MANIFEST)
+# The repo branch is inferred from the manifest name and has no config key.
+
+[build]
+# container_image = "jetm/kas-build-env:latest"  # default: jetm/kas-build-env:latest (KAS_CONTAINER_IMAGE). Setting this enables container builds, the same as setting the env var.
+# doctor = true   # default: true. When false, skip the pre-flight doctor checks on every `build` and `sync` (equivalent to always passing --skip-doctor). The --skip-doctor flag still works as a per-run override.
+
+[layers]
+# show_hashes = false   # default: false. When true, print each layer's repo, short git hash, and branch before `build`/`sync`, the same as passing --show-layers.
