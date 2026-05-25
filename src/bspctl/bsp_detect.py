@@ -27,6 +27,7 @@ a Python traceback.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
@@ -116,6 +117,33 @@ def detect_bsp_from_yaml(yaml_path: Path) -> Literal["nxp", "ti", "generic", "un
     if has_machine or has_repos:
         return "generic"
     return "unknown"
+
+
+def is_bbsetup_workspace(path: Path) -> bool:
+    """Return True if ``path`` is an initialized ``bitbake-setup`` workspace.
+
+    A directory qualifies only when all of the following hold:
+
+    * ``<path>/config/config-upstream.json`` exists and parses as JSON
+      with top-level ``data`` and ``bitbake-config`` keys.
+    * ``<path>/build/init-build-env`` exists (the Yocto environment
+      setup script that ``bitbake-setup init`` writes).
+
+    Detection is structure-based: bitbake-setup workspaces have no
+    manifest filename to match against the regex dispatch used for
+    NXP/TI families. The function never raises - a missing file,
+    unreadable config, or malformed JSON all return False so callers
+    can fall through to the next detection path.
+    """
+    cfg = path / "config" / "config-upstream.json"
+    env = path / "build" / "init-build-env"
+    if not (cfg.exists() and env.exists()):
+        return False
+    try:
+        data = json.loads(cfg.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    return isinstance(data, dict) and "data" in data and "bitbake-config" in data
 
 
 def is_meta_avocado_yaml(yaml_path: Path) -> bool:

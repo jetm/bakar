@@ -8,9 +8,15 @@ parseable YAMLs that have at least one of those anchors.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
-from bspctl.bsp_detect import detect_bsp_from_yaml, detect_kas_workspace, is_meta_avocado_yaml
+from bspctl.bsp_detect import (
+    detect_bsp_from_yaml,
+    detect_kas_workspace,
+    is_bbsetup_workspace,
+    is_meta_avocado_yaml,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -183,3 +189,71 @@ def test_detect_kas_workspace_returns_yaml_parent_for_plain_generic(tmp_path: Pa
     p = build / "kas.yml"
     p.write_text("machine: qemuarm64\n")
     assert detect_kas_workspace(p) == build
+
+
+# ---------------------------------------------------------------------------
+# is_bbsetup_workspace
+# ---------------------------------------------------------------------------
+
+
+_VALID_BBSETUP_CONFIG: dict = {
+    "type": "registry",
+    "name": "oe-nodistro-wrynose",
+    "data": {
+        "sources": {
+            "openembedded-core": {
+                "git-remote": {"uri": "https://git.openembedded.org/openembedded-core", "branch": "wrynose"}
+            }
+        }
+    },
+    "bitbake-config": {
+        "name": "nodistro",
+        "bb-layers": ["openembedded-core/meta"],
+    },
+}
+
+
+def _make_bbsetup_workspace(root: Path, *, config: object | str, with_env: bool = True) -> Path:
+    """Build a bitbake-setup workspace under ``root`` and return ``root``.
+
+    ``config`` is dumped to ``config/config-upstream.json`` as JSON when a
+    dict/list, or written verbatim when a raw string (for malformed-JSON
+    cases). ``with_env`` toggles the ``build/init-build-env`` sentinel.
+    """
+    (root / "config").mkdir(parents=True)
+    cfg_path = root / "config" / "config-upstream.json"
+    if isinstance(config, str):
+        cfg_path.write_text(config, encoding="utf-8")
+    else:
+        cfg_path.write_text(json.dumps(config), encoding="utf-8")
+    if with_env:
+        (root / "build").mkdir(parents=True)
+        (root / "build" / "init-build-env").write_text("", encoding="utf-8")
+    return root
+
+
+def test_bbsetup_fully_initialized_workspace_returns_true(tmp_path: Path) -> None:
+    ws = _make_bbsetup_workspace(tmp_path / "ws", config=_VALID_BBSETUP_CONFIG)
+    assert is_bbsetup_workspace(ws) is True
+
+
+def test_bbsetup_missing_init_build_env_returns_false(tmp_path: Path) -> None:
+    ws = _make_bbsetup_workspace(tmp_path / "ws", config=_VALID_BBSETUP_CONFIG, with_env=False)
+    assert is_bbsetup_workspace(ws) is False
+
+
+def test_bbsetup_malformed_json_returns_false_without_raising(tmp_path: Path) -> None:
+    ws = _make_bbsetup_workspace(tmp_path / "ws", config="{not valid json")
+    assert is_bbsetup_workspace(ws) is False
+
+
+def test_bbsetup_valid_json_missing_data_returns_false(tmp_path: Path) -> None:
+    config = {"bitbake-config": _VALID_BBSETUP_CONFIG["bitbake-config"]}
+    ws = _make_bbsetup_workspace(tmp_path / "ws", config=config)
+    assert is_bbsetup_workspace(ws) is False
+
+
+def test_bbsetup_valid_json_missing_bitbake_config_returns_false(tmp_path: Path) -> None:
+    config = {"data": _VALID_BBSETUP_CONFIG["data"]}
+    ws = _make_bbsetup_workspace(tmp_path / "ws", config=config)
+    assert is_bbsetup_workspace(ws) is False
