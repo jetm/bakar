@@ -343,15 +343,16 @@ def translate_bbsetup_config(
         }
         branch = git_remote.get("branch")
         if name in shas:
+            # Pinned SHA: commit-only, no branch. kas validates commit
+            # reachability from the branch tip after fetching; if the branch
+            # has moved forward the check fails even though the commit exists.
             entry["commit"] = shas[name]
-            if branch:
-                entry["branch"] = branch
         else:
             rev = git_remote.get("rev")
             if rev and _SHA_RE.match(rev):
+                # Same reasoning: a SHA rev without a branch avoids the
+                # reachability check.
                 entry["commit"] = rev
-                if branch:
-                    entry["branch"] = branch
             elif rev:
                 entry["branch"] = rev
             elif branch:

@@ -34,11 +34,14 @@ def _copy_fixture(tmp_path: Path) -> Path:
     ``sources-fixed-revisions.json`` without touching the committed fixture.
     """
     dest = tmp_path / "ws"
-    shutil.copytree(
-        FIXTURE,
-        dest,
-    ignore=shutil.ignore_patterns("kas-bbsetup.yml"),
-    )
+    def _ignore(src: str, names: list[str]) -> set[str]:
+        skip = {"kas-bbsetup.yml", "layers", "ccache", ".bspctl"}
+        if src == str(FIXTURE / "build"):
+            # Keep only init-build-env; skip run logs and build outputs.
+            skip |= {n for n in names if n != "init-build-env"}
+        return skip
+
+    shutil.copytree(FIXTURE, dest, ignore=_ignore)
     return dest
 
 
