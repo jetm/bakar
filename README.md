@@ -19,14 +19,19 @@ adds the rest of the workflow that kas leaves to you:
 
 Works with any kas YAML in generic mode - bring your own.
 
-For vendor BSPs that ship as Google repo tool XML manifests (NXP i.MX) or
-oe-layertool configs (TI Sitara) instead of kas YAML, bspctl bridges the gap:
+For vendor BSPs that ship as Google repo tool XML manifests (NXP i.MX),
+oe-layertool configs (TI Sitara), or bitbake-setup workspaces (Yocto 5.3+)
+instead of kas YAML, bspctl bridges the gap:
 
 - `bspctl sync` populates `sources/` by running the right tool for the
   manifest, and skips when sources are already current
 - `bspctl gen-kas` translates the vendor manifest into a kas YAML
   (topology only: machine + repos + layers), so the rest of the pipeline
   above applies unchanged
+- For bitbake-setup workspaces, `bspctl build` translates
+  `config/config-upstream.json` (and the optional pinned-SHA file) into a
+  deterministic kas YAML on each run - no manifest and no sync step needed
+  because bitbake-setup already fetched the layers
 
 | Without bspctl | With bspctl |
 |----------------|-------------|
@@ -36,6 +41,7 @@ oe-layertool configs (TI Sitara) instead of kas YAML, bspctl bridges the gap:
 | No build history | Per-run directory: structured event log, kas output, env snapshot, disk usage, timing |
 | repo tool XML and kas YAML describe the same thing but don't interoperate | `bspctl gen-kas` translates the vendor XML manifest into a kas YAML |
 | Re-run repo tool or oe-layertool by hand on every fresh workspace | `bspctl sync` fetches sources and skips if already current |
+| bitbake-setup workspace needs a hand-authored kas YAML to build with kas | `bspctl build` translates `config-upstream.json` automatically on each run |
 
 The NXP/TI presets are the batteries-included path, not a requirement.
 
@@ -72,6 +78,10 @@ bspctl build -f imx-6.12.49-2.2.0.xml -m imx95-var-dart
 # TI Sitara
 bspctl build -f processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt \
              -m am62x-var-som
+
+# bitbake-setup workspace (Yocto 5.3+) - auto-detected from CWD
+cd ~/bbsetup-workspace
+bspctl build
 
 # BYO YAML (generic or NXP/TI)
 bspctl build path/to/my-build.yml
@@ -129,6 +139,41 @@ bspctl sync --manifest imx-6.12.49-2.2.0.xml   # explicit sync step
 bspctl build -f imx-6.12.49-2.2.0.xml          # sync + build in one shot
 ```
 
+bitbake-setup workspaces skip this step entirely - `bitbake-setup init`
+already populated `layers/` before bspctl enters the picture.
+
+### bitbake-setup workspaces
+
+[bitbake-setup](https://docs.yoctoproject.org/dev/ref-manual/devtool-reference.html)
+is a Yocto 5.3+ workspace tool that writes a resolved registry config to
+`config/config-upstream.json`. bspctl reads that file and the optional
+pinned-SHA file (`config/sources-fixed-revisions.json`) and translates them
+into a kas YAML on each build run.
+
+Prerequisites before running `bspctl build` from a bitbake-setup workspace:
+
+1. `bitbake-setup init` - fetches `layers/` and writes `build/init-build-env`
+2. The workspace must include a `machine/<name>` fragment in its config, or
+   you must pass `--machine` on the command line
+
+```bash
+# Initialize the workspace once with bitbake-setup
+bitbake-setup init
+
+# Then build from inside the workspace (or any subdirectory)
+cd ~/bbsetup-workspace
+bspctl build                     # machine from config fragment
+bspctl build --machine qemuarm64 # explicit machine override
+bspctl doctor                    # pre-flight checks only
+```
+
+bspctl regenerates `kas-bbsetup.yml` on every `bspctl build` run from the
+live config files. The file is a build artifact - add it to `.gitignore`
+rather than committing it. When `sources-fixed-revisions.json` is present,
+the translated YAML pins each repo to its recorded SHA with no `branch:` key,
+which avoids kas reachability check failures when the upstream branch has
+moved forward.
+
 ### Tuning overlay
 
 Every build - BYO or manifest-driven - layers a static tuning file onto
@@ -171,6 +216,7 @@ halt before kas starts; WARN prints and continues.
 - Disk space on workspace, `SSTATE_DIR`, `DL_DIR`
 - NXP: fork repos populated, bitbake override applied
 - TI: oe-layertool cloned, active config matches manifest
+- bitbake-setup: `config-upstream.json` present and `build/init-build-env` exists
 
 ```bash
 bspctl doctor               # standalone check, no build
@@ -216,6 +262,10 @@ Each `bspctl build` invocation creates `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/
 # Manifest-driven, one shot (NXP/TI only)
 bspctl build -f imx-6.12.49-2.2.0.xml -m imx95-var-dart
 
+# bitbake-setup workspace - auto-detected from CWD or any subdirectory
+cd ~/bbsetup-workspace && bspctl build
+bspctl build --machine qemuarm64   # explicit machine (overrides config fragment)
+
 # BYO YAML - skips sync and gen-kas
 bspctl build nxp/my-build.yml
 
@@ -230,15 +280,17 @@ bspctl build path/to/kas.yml
 
 ## BSP presets
 
-| Family | Manifest pattern | Source sync | Overlay |
-|--------|-----------------|-------------|---------|
-| **NXP i.MX** | `imx-A.B.C-X.Y.Z.xml` | repo tool | `bspctl-tuning-nxp.yml` |
-| **TI Sitara** | `processor-sdk-*-config_var<N>.txt` | oe-layertool | `bspctl-tuning-ti.yml` |
-| **Generic** | any kas YAML | none | `bspctl-tuning-generic.yml` |
+| Family | Detected by | Source sync | kas YAML | Overlay |
+|--------|-------------|-------------|----------|---------|
+| **NXP i.MX** | `imx-A.B.C-X.Y.Z.xml` manifest | repo tool | `bspctl gen-kas` | `bspctl-tuning-nxp.yml` |
+| **TI Sitara** | `processor-sdk-*-config_var<N>.txt` manifest | oe-layertool | `bspctl gen-kas` | `bspctl-tuning-ti.yml` |
+| **bitbake-setup** | `config/config-upstream.json` + `build/init-build-env` | none (layers/ pre-populated) | translated from `config-upstream.json` | `bspctl-tuning-generic.yml` |
+| **Generic** | any kas YAML passed as argument | none | user-supplied | `bspctl-tuning-generic.yml` |
 
-BSP detection runs on the manifest filename (manifest-driven) or the
-YAML's `machine:` value and `repos:` block (BYO). No NXP/TI markers
-falls through to generic mode.
+BSP detection runs on the manifest filename (manifest-driven), the presence of
+`config/config-upstream.json` and `build/init-build-env` (bitbake-setup), or
+the YAML's `machine:` value and `repos:` block (BYO). No NXP/TI markers falls
+through to generic mode.
 
 ## Configuration
 
@@ -343,3 +395,7 @@ bspctl clean                            # remove <bsp>/build/
 | `do_fetch: Fetcher failure` for `linux-imx` | Populate `nxp/forks/linux-imx/` so the local PREMIRROR serves the fetch. |
 | `Config file validation Error` from kas | kas version skew between host and container. Align both. |
 | General fetch flake | Retry. `repo sync` and `do_fetch` are idempotent. |
+| `workspace not initialized; missing: build/init-build-env` | Run `bitbake-setup init` in the workspace first, then retry `bspctl build`. |
+| `no machine selected` in bbsetup mode | Pass `--machine <name>` or add a `machine/<name>` fragment to the bitbake-setup config. |
+| `branch "X" does not contain commit "abc..."` from kas | Old kas YAML with both `branch:` and `commit:` set. Regenerate with the current bspctl (pinned repos emit `commit:` only). |
+| `local-path sources are out of scope` | `config-upstream.json` contains a source with no `git-remote` key. Remove it or file a bug. |
