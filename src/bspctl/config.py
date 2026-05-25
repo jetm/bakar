@@ -80,7 +80,7 @@ class BuildConfig:
     """
 
     workspace: Path
-    bsp_family: Literal["nxp", "ti", "generic"]
+    bsp_family: Literal["nxp", "ti", "generic", "bbsetup"]
     machine: str
     distro: str
     image: str
@@ -136,6 +136,8 @@ class BuildConfig:
             if self.is_meta_avocado:
                 return self.workspace / f"build-{self.kas_yaml_override.stem}"
             return self.kas_yaml_override.parent
+        if self.bsp_family == "bbsetup":
+            return self.workspace
         return self.workspace / self.bsp_family
 
     @property
@@ -214,7 +216,7 @@ class BuildConfig:
 def resolve(
     *,
     workspace: Path,
-    bsp_family: Literal["nxp", "ti", "generic"] = "nxp",
+    bsp_family: Literal["nxp", "ti", "generic", "bbsetup"] = "nxp",
     machine: str | None = None,
     distro: str | None = None,
     image: str | None = None,
@@ -246,6 +248,11 @@ def resolve(
     machine/distro/image/manifest fields all stay as inert
     placeholders since the manifest-flow pipeline never reads them
     in this mode - the user's kas YAML is the authoritative source.
+
+    ``bsp_family="bbsetup"`` behaves like generic for defaults (inert
+    machine/distro/image placeholders, no manifest/branch inference);
+    the real machine/distro come from the bitbake-setup config
+    translation step, not from this resolver.
     """
 
     def pick(arg: str | None, env_key: str, user_val: str | None, default: str) -> str:
@@ -258,7 +265,7 @@ def resolve(
             return user_val
         return default
 
-    if bsp_family == "generic":
+    if bsp_family in ("generic", "bbsetup"):
         d_machine, d_distro, d_image = "generic", "generic", "generic"
         d_manifest, d_branch = "", ""
         u_machine = u_distro = u_image = u_manifest = None
@@ -279,8 +286,9 @@ def resolve(
 
     resolved_manifest = pick(manifest, "BSPCTL_MANIFEST", u_manifest, d_manifest)
 
-    if bsp_family == "generic":
-        # No manifest, no branch inference - generic mode bypasses both.
+    if bsp_family in ("generic", "bbsetup"):
+        # No manifest, no branch inference - generic and bbsetup bypass both
+        # (bbsetup machine/distro come from the config translation step).
         resolved_branch = pick(repo_branch, "BSPCTL_REPO_BRANCH", None, d_branch)
     elif bsp_family == "ti":
         # Lazy import: bsp_model has no cyclic deps on config.py, but
