@@ -2,118 +2,60 @@
 name = "bspctl"
 version = "0.3.0"
 description = "kas wrapper for Yocto BSP builds - repo tool sync, pre-flight checks, triage"
-authors = [{name = "Javier Tia"}]
-license = "Apache-2.0"
-requires-python = ">=3.11"
 readme = "README.md"
-keywords = ["yocto", "bsp", "kas", "bitbake", "embedded", "nxp", "imx", "ti-sitara"]
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{ name = "Javier Tia" }]
+keywords = [
+  "bitbake",
+  "bsp",
+  "embedded",
+  "imx",
+  "kas",
+  "nxp",
+  "ti-sitara",
+  "yocto"
+]
 classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "Topic :: Software Development :: Build Tools",
-    "Topic :: System :: Operating System Kernels :: Linux",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development :: Build Tools",
+  "Topic :: System :: Operating System Kernels :: Linux",
 ]
 dependencies = [
-    "typer>=0.12.0",
-    "rich>=13.0.0",
-    "pyyaml>=6.0",
+  "pyyaml>=6.0",
+  "rich>=13.0.0",
+  "typer>=0.12.0",
 ]
 
 [project.urls]
+"Bug Tracker" = "https://github.com/jetm/bspctl/issues"
 Homepage = "https://github.com/jetm/bspctl"
 Repository = "https://github.com/jetm/bspctl"
-"Bug Tracker" = "https://github.com/jetm/bspctl/issues"
 
 [project.scripts]
 bspctl = "bspctl.cli:app"
 
 [dependency-groups]
 dev = [
-    "pre-commit",
-    "ruff",
-    "ty",
-    "pytest>=9",
-    "pytest-cov>=6",
-    "pytest-randomly",
-    "pytest-timeout",
-    "bump-my-version",
+  "bump-my-version",
+  "pre-commit",
+  "pytest>=9",
+  "pytest-cov>=6",
+  "pytest-randomly",
+  "pytest-timeout",
+  "ruff",
+  "ty",
 ]
 
 [build-system]
 requires = ["uv_build>=0.6,<0.13"]
 build-backend = "uv_build"
-
-[tool.uv.build-backend]
-module-name = "bspctl"
-module-root = "src"
-
-[tool.uv]
-package = true
-
-[tool.ruff]
-target-version = "py312"
-line-length = 120
-
-[tool.ruff.lint]
-select = [
-    "E",    # pycodestyle errors
-    "F",    # Pyflakes
-    "I",    # isort
-    "UP",   # pyupgrade
-    "B",    # flake8-bugbear
-    "SIM",  # flake8-simplify
-    "TCH",  # flake8-type-checking
-]
-ignore = [
-    "SIM102",  # Use single if statement - often reduces readability
-    "SIM105",  # Use contextlib.suppress - adds import for minimal benefit
-    "SIM108",  # Use ternary operator - can reduce readability for complex conditions
-    "SIM110",  # Use any() instead of for loop - sometimes less clear
-]
-
-[tool.ruff.lint.isort]
-known-first-party = ["bspctl"]
-
-[tool.ruff.lint.per-file-ignores]
-"src/bspctl/cli.py" = ["B008"]
-
-[tool.coverage.run]
-source = ["bspctl"]
-
-[tool.coverage.report]
-fail_under = 60
-exclude_lines = [
-    "pragma: no cover",
-    "if TYPE_CHECKING:",
-    "if __name__",
-    "@overload",
-]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
-addopts = ["-v", "--tb=short"]
-timeout = 30
-markers = [
-    "unit: fast hermetic tests with no external tools or services",
-    "integration: tests requiring external tools or services",
-]
-
-[tool.ty.rules]
-# Noisy without full type annotations - project uses gradual typing
-call-non-callable = "ignore"
-invalid-argument-type = "ignore"
-invalid-assignment = "ignore"
-invalid-return-type = "ignore"
-invalid-type-form = "ignore"
-no-matching-overload = "ignore"
-not-subscriptable = "ignore"
-unresolved-attribute = "ignore"
 
 [tool.bumpversion]
 current_version = "0.3.0"
@@ -139,3 +81,70 @@ replace = "__version__ = \"{new_version}\""
 filename = "CHANGELOG.md"
 search = "## [Unreleased]"
 replace = "## [Unreleased]\n\n## [{new_version}] - {now:%Y-%m-%d}"
+
+[tool.coverage.run]
+source = ["bspctl"]
+
+[tool.coverage.report]
+fail_under = 60
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "if __name__",
+  "@overload",
+]
+
+[tool.pytest.ini_options]
+addopts = ["-v", "--tb=short"]
+markers = [
+  "unit: fast hermetic tests with no external tools or services",
+  "integration: tests requiring external tools or services",
+]
+pythonpath = ["src"]
+testpaths = ["tests"]
+timeout = 30
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+  "E",  # pycodestyle errors
+  "F",  # Pyflakes
+  "I",  # isort
+  "UP",  # pyupgrade
+  "B",  # flake8-bugbear
+  "SIM",  # flake8-simplify
+  "TC",  # flake8-type-checking
+]
+ignore = [
+  "SIM102",  # Use single if statement - often reduces readability
+  "SIM105",  # Use contextlib.suppress - adds import for minimal benefit
+  "SIM108",  # Use ternary operator - can reduce readability for complex conditions
+  "SIM110",  # Use any() instead of for loop - sometimes less clear
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["bspctl"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/bspctl/cli.py" = ["B008"]
+
+[tool.ty.rules]
+# Noisy without full type annotations - project uses gradual typing
+call-non-callable = "ignore"
+invalid-argument-type = "ignore"
+invalid-assignment = "ignore"
+invalid-return-type = "ignore"
+invalid-type-form = "ignore"
+no-matching-overload = "ignore"
+not-subscriptable = "ignore"
+unresolved-attribute = "ignore"
+
+[tool.uv]
+package = true
+
+[tool.uv.build-backend]
+module-name = "bspctl"
+module-root = "src"
