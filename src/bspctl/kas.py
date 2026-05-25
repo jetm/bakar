@@ -25,6 +25,7 @@ All the prior bug fixes still apply:
 
 from __future__ import annotations
 
+import json
 import re
 import xml.dom.minidom
 from collections import OrderedDict
@@ -252,3 +253,147 @@ def write_yaml(opts: KasGenOptions) -> None:
     tmp = opts.output.with_suffix(opts.output.suffix + ".tmp")
     tmp.write_text(comment + body)
     tmp.replace(opts.output)
+
+
+# ---------------------------------------------------------------------------
+# bitbake-setup workspace translation
+# ---------------------------------------------------------------------------
+
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _extract_fragment_value(fragments: list[str], prefix: str) -> str | None:
+    """Return the value of the first ``<prefix>/<value>`` fragment, or None.
+
+    Entries with an empty suffix (e.g. a bare ``machine/``) are skipped.
+    """
+    for fragment in fragments:
+        head, sep, value = fragment.partition("/")
+        if head == prefix and sep and value:
+            return value
+    return None
+
+
+def translate_bbsetup_config(
+    setup_dir: Path,
+    *,
+    target: str = "core-image-minimal",
+    machine_override: str | None = None,
+    distro_override: str | None = None,
+) -> dict[str, Any]:
+    """Translate a ``bitbake-setup`` workspace config into a kas YAML dict.
+
+    Reads ``<setup_dir>/config/config-upstream.json`` (the resolved registry
+    config bitbake-setup writes) and the optional
+    ``<setup_dir>/config/sources-fixed-revisions.json`` (pinned SHAs). Produces
+    a kas v3 topology dict (header + machine/distro/target + repos) that the
+    existing kas pipeline can build, reusing the layers bitbake-setup already
+    fetched under ``<setup_dir>/layers/``.
+
+    Raises ``ValueError`` if the config lacks a top-level ``data`` key, if a
+    source has no ``git-remote`` (local-path sources are out of scope), or if a
+    ``bb-layers`` entry references an unknown source.
+    """
+    cfg = json.loads((setup_dir / "config" / "config-upstream.json").read_text())
+    if "data" not in cfg:
+        raise ValueError(
+            f"{setup_dir}/config/config-upstream.json is missing the top-level "
+            "'data' key; not a valid bitbake-setup config"
+        )
+
+    sfr_path = setup_dir / "config" / "sources-fixed-revisions.json"
+    shas: dict[str, str] = {}
+    if sfr_path.exists():
+        shas = json.loads(sfr_path.read_text()).get("sources", {})
+
+    sources = cfg["data"]["sources"]
+    known_sources = set(sources)
+    bb_config = cfg.get("bitbake-config", {})
+
+    # Map each source to the layer subdirs it contributes (bb-layers entries).
+    # Sources never referenced get an empty layers mapping.
+    layers_by_source: dict[str, dict[str, None]] = {name: {} for name in sources}
+    for entry in bb_config.get("bb-layers", []):
+        source, _, subdir = entry.partition("/")
+        if source not in known_sources:
+            raise ValueError(
+                f"bb-layers entry {entry!r} references unknown source {source!r}"
+            )
+        layers_by_source[source][subdir or "."] = None
+
+    repos: OrderedDict[str, dict[str, Any]] = OrderedDict()
+    for name, source in sources.items():
+        git_remote = source.get("git-remote")
+        if git_remote is None:
+            raise ValueError(
+                f"source {name!r} has no 'git-remote' (local-path sources are out "
+                "of scope); please file a bug if you need this"
+            )
+        entry: dict[str, Any] = {
+            "url": git_remote["uri"],
+            "path": f"layers/{name}",
+        }
+        branch = git_remote.get("branch")
+        if name in shas:
+            entry["commit"] = shas[name]
+            if branch:
+                entry["branch"] = branch
+        else:
+            rev = git_remote.get("rev")
+            if rev and _SHA_RE.match(rev):
+                entry["commit"] = rev
+                if branch:
+                    entry["branch"] = branch
+            elif rev:
+                entry["branch"] = rev
+            elif branch:
+                entry["branch"] = branch
+        entry["layers"] = layers_by_source[name]
+        repos[name] = entry
+
+    all_fragments = list(bb_config.get("oe-fragment-choices", {}).values()) + bb_config.get(
+        "oe-fragments", []
+    )
+    machine = machine_override or _extract_fragment_value(all_fragments, "machine")
+    distro = distro_override or _extract_fragment_value(all_fragments, "distro") or "nodistro"
+
+    return {
+        "header": {"version": 3},
+        "distro": distro,
+        "machine": machine,
+        "target": target,
+        "repos": dict(repos),
+    }
+
+
+def write_bbsetup_yaml(
+    setup_dir: Path,
+    *,
+    target: str = "core-image-minimal",
+    machine_override: str | None = None,
+    distro_override: str | None = None,
+) -> Path:
+    """Translate a bitbake-setup workspace and write ``kas-bbsetup.yml``.
+
+    The output is written atomically to ``<setup_dir>/kas-bbsetup.yml`` and the
+    path is returned. ``kas-bbsetup.yml`` is a generated build artifact: it is
+    regenerated on every build and must not be committed to version control.
+    """
+    data = translate_bbsetup_config(
+        setup_dir,
+        target=target,
+        machine_override=machine_override,
+        distro_override=distro_override,
+    )
+    body = yaml.dump(
+        data,
+        Dumper=_Dumper,
+        default_flow_style=False,
+        sort_keys=True,
+        width=120,
+    )
+    output = setup_dir / "kas-bbsetup.yml"
+    tmp = output.with_suffix(output.suffix + ".tmp")
+    tmp.write_text(body)
+    tmp.replace(output)
+    return output
