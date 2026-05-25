@@ -108,10 +108,13 @@ uv run ty check src/
 
 echo "==> uv build"
 uv build
-
 echo "==> uvx twine check dist/*"
 uvx twine check dist/*
 
+echo "==> uv sync --frozen"
+uv sync --frozen
+
+# All gates passed.
 # All gates passed. Bump and push atomically. NO prompt, sleep, or
 # user-interaction step is permitted between these two commands - that
 # window is the v0.0.3 failure mode we exist to prevent.
