@@ -40,7 +40,7 @@ from rich.table import Table
 from bspctl import __version__
 from bspctl.bsp_detect import detect_bsp_from_yaml, detect_kas_workspace, is_meta_avocado_yaml
 from bspctl.bsp_model import BspModel, detect_bsp_family, get_model
-from bspctl.config import BuildConfig, resolve
+from bspctl.config import DEFAULT_CONTAINER_IMAGE, BuildConfig, resolve
 from bspctl.diagnostics import (
     CheckResult,
     Severity,
@@ -49,12 +49,14 @@ from bspctl.diagnostics import (
     run_all,
 )
 from bspctl.kas import KasGenOptions, write_yaml
+from bspctl.layers import collect_layer_hashes
 from bspctl.observability import RunLogger
 from bspctl.steps import bitbake_override as step_override
 from bspctl.steps import kas_build as step_kas
 from bspctl.steps import run_qemu as step_run
 from bspctl.steps import stress_parse as step_stress_parse
 from bspctl.triage import analyse
+from bspctl.user_config import UserConfig, load_user_config
 from bspctl.vendor_config import load_vendors
 from bspctl.workspace import detect
 
@@ -67,6 +69,7 @@ app = typer.Typer(
 console = Console()
 
 _VENDORS: list | None = None
+_USER_CONFIG: UserConfig | None = None
 
 
 def _get_vendors() -> list:
@@ -78,6 +81,14 @@ def _get_vendors() -> list:
             console.print(f"[red]Invalid vendors config:[/] {exc}")
             raise typer.Exit(code=2) from exc
     return _VENDORS
+
+
+def _load_user_config_safe() -> UserConfig:
+    try:
+        return load_user_config()
+    except ValueError as exc:
+        console.print(f"[red]Invalid bspctl config:[/] {exc}")
+        raise typer.Exit(code=2) from exc
 
 
 def _version(value: bool) -> None:
@@ -93,6 +104,8 @@ def _main(
         typer.Option("--version", callback=_version, is_eager=True, help="Show version"),
     ] = False,
 ) -> None:
+    global _USER_CONFIG
+    _USER_CONFIG = _load_user_config_safe()
     _get_vendors()
 
 
@@ -291,6 +304,22 @@ def _print_diagnosis(results: list[CheckResult]) -> None:
             console.print(f"[yellow]fix[/] [bold]{r.name}[/]: {r.fix_hint}")
 
 
+def _print_layer_hashes(cfg: BuildConfig) -> None:
+    """Print a ``layers:`` table of repo, short hash, and branch.
+
+    Prints nothing when no layer hashes are available (no
+    ``bblayers.conf`` yet, or every repo skipped).
+    """
+    hashes = collect_layer_hashes(cfg)
+    if not hashes:
+        return
+    console.print("layers:")
+    width = max(len(h.repo) for h in hashes)
+    for h in hashes:
+        branch = f"  ({h.branch})" if h.branch else ""
+        console.print(f"  {h.repo:<{width}}  {h.short_hash}{branch}")
+
+
 # ---------------------------------------------------------------------------
 # doctor
 # ---------------------------------------------------------------------------
@@ -329,6 +358,7 @@ def doctor(
         bsp_family=family,
         manifest=manifest,
         kas_yaml=kas_yaml,
+        user_config=_USER_CONFIG,
     )
     results = run_all(cfg, bsp)
     _print_diagnosis(results)
@@ -400,6 +430,10 @@ def build(
             ),
         ),
     ] = False,
+    show_layers: Annotated[
+        bool,
+        typer.Option("--show-layers", help="Print layer git hashes before build."),
+    ] = False,
 ) -> None:
     """Run the build pipeline idempotently.
 
@@ -448,9 +482,15 @@ def build(
         repo_branch=branch,
         host_mode=host_mode,
         kas_yaml=main_yaml,
+        user_config=_USER_CONFIG,
     )
 
     overlay_source = _overlay_for(bsp)
+
+    if "KAS_CONTAINER_IMAGE" not in os.environ and cfg.container_image != DEFAULT_CONTAINER_IMAGE:
+        console.print(f"[dim]container image from config.toml: {cfg.container_image}[/]")
+
+    effective_show_layers = show_layers or (_USER_CONFIG is not None and _USER_CONFIG.show_hashes)
 
     label = f"BYO {kas_yaml}" if byo_form else f"{cfg.machine} / {cfg.distro} / {cfg.image}"  # kas_yaml is str here
     console.print(f"[bold]::[/] bspctl build [{family}] {label}")
@@ -467,7 +507,8 @@ def build(
         )
 
         # 0. diagnosis
-        if not skip_doctor:
+        run_doctor = not skip_doctor and (_USER_CONFIG is None or _USER_CONFIG.doctor)
+        if run_doctor:
             log.step_start("doctor")
             results = run_all(cfg, bsp)
             diag_path = log.run_dir / "diagnosis.txt"
@@ -479,6 +520,9 @@ def build(
                 log.step_fail("doctor", reason="blocking failure")
                 raise typer.Exit(code=2)
             log.step_ok("doctor", checks=len(results))
+
+        if effective_show_layers:
+            _print_layer_hashes(cfg)
 
         if byo_form:
             # BYO path: skip sync, setup-env, gen-kas - the YAML is what
@@ -590,6 +634,10 @@ def sync(
         typer.Option("--clean", help="Remove <bsp>/build/ before syncing."),
     ] = False,
     workspace: Annotated[Path | None, typer.Option("--workspace", "-w", help="Workspace root override")] = None,
+    show_layers: Annotated[
+        bool,
+        typer.Option("--show-layers", help="Print layer git hashes after sync."),
+    ] = False,
 ) -> None:
     """Run the manifest-driven sync without building.
 
@@ -608,7 +656,13 @@ def sync(
         image=image,
         manifest=manifest,
         repo_branch=branch,
+        user_config=_USER_CONFIG,
     )
+
+    if "KAS_CONTAINER_IMAGE" not in os.environ and cfg.container_image != DEFAULT_CONTAINER_IMAGE:
+        console.print(f"[dim]container image from config.toml: {cfg.container_image}[/]")
+
+    effective_show_layers = show_layers or (_USER_CONFIG is not None and _USER_CONFIG.show_hashes)
 
     console.print(f"[bold]::[/] bspctl sync [{family}] manifest={cfg.manifest}")
 
@@ -617,7 +671,8 @@ def sync(
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
     with RunLogger(runs_dir=cfg.runs_dir) as log:
-        if not skip_doctor:
+        run_doctor = not skip_doctor and (_USER_CONFIG is None or _USER_CONFIG.doctor)
+        if run_doctor:
             log.step_start("doctor")
             results = run_all(cfg, bsp)
             _print_diagnosis(results)
@@ -651,6 +706,9 @@ def sync(
             bsp.setup_env_step(cfg, log)
         else:
             log.step_skip("setup_env", reason="bblayers.conf present")
+
+        if effective_show_layers:
+            _print_layer_hashes(cfg)
 
     console.print("[bold green]sync complete[/]")
 
@@ -831,6 +889,7 @@ def shell(
         manifest=manifest,
         host_mode=host_mode,
         kas_yaml=kas_yaml,
+        user_config=_USER_CONFIG,
     )
     overlay_source = _overlay_for(bsp)
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
@@ -883,6 +942,7 @@ def run(
         workspace=ws,
         bsp_family=family,
         kas_yaml=main_yaml,
+        user_config=_USER_CONFIG,
     )
 
     if not cfg.is_meta_avocado:
@@ -938,6 +998,7 @@ def gen_kas(
         image=image,
         manifest=manifest,
         repo_branch=branch,
+        user_config=_USER_CONFIG,
     )
     out_path = output.resolve() if output is not None else cfg.default_kas_yaml
     opts = KasGenOptions(
@@ -1018,7 +1079,7 @@ def bitbake_override_cmd(
 
     ws = workspace or _workspace_from_cwd()
     family, _bsp = _dispatch_bsp(manifest)
-    cfg = resolve(workspace=ws, bsp_family=family, manifest=manifest)
+    cfg = resolve(workspace=ws, bsp_family=family, manifest=manifest, user_config=_USER_CONFIG)
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
 
     if revert_flag:
@@ -1164,6 +1225,7 @@ def stress_parse(
         manifest=manifest,
         repo_branch=branch,
         host_mode=host_mode,
+        user_config=_USER_CONFIG,
     )
     overlay_source = _overlay_for(bsp)
 
@@ -1248,7 +1310,7 @@ def clean(
             console.print("[red]could not auto-detect BSP from cwd. Pass --bsp nxp|ti or --manifest <file>.[/]")
             raise typer.Exit(code=2)
 
-    cfg = resolve(workspace=ws, bsp_family=family)
+    cfg = resolve(workspace=ws, bsp_family=family, user_config=_USER_CONFIG)
     _clean_build_dir(cfg)
     if all and cfg.kas_yaml.exists():
         cfg.kas_yaml.unlink()
@@ -1336,7 +1398,7 @@ def log_cmd(
     else:
         family, _bsp = _dispatch_bsp(manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
-    cfg = resolve(workspace=ws, bsp_family=family, manifest=manifest, kas_yaml=kas_yaml)
+    cfg = resolve(workspace=ws, bsp_family=family, manifest=manifest, kas_yaml=kas_yaml, user_config=_USER_CONFIG)
     runs_dir = cfg.runs_dir
     if not runs_dir.is_dir():
         console.print("[red]no runs yet[/]; start one with `bspctl build`")
