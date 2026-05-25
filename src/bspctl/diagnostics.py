@@ -129,7 +129,7 @@ def check_docker_daemon(cfg: BuildConfig) -> CheckResult:
             out.stderr.strip() or "docker info failed",
             fix_hint="sudo systemctl start docker",
         )
-    return _ok("docker-daemon", Severity.BLOCK, f"server {out.stdout.strip()}")
+    return _ok("docker-daemon", Severity.BLOCK, f"server v{out.stdout.strip()}")
 
 
 def check_container_image(cfg: BuildConfig) -> CheckResult:
@@ -182,7 +182,7 @@ def check_container_os(cfg: BuildConfig) -> CheckResult:
                 "bash",
                 cfg.container_image,
                 "-c",
-                '. /etc/os-release && echo "$ID $VERSION_CODENAME" && python3 --version',
+                '. /etc/os-release && echo "$ID ${VERSION_ID:-$VERSION_CODENAME}" && python3 --version',
             ],
             capture_output=True,
             text=True,
@@ -195,17 +195,21 @@ def check_container_os(cfg: BuildConfig) -> CheckResult:
     lines = out.stdout.strip().splitlines()
     if not lines:
         return _skip("container-os", Severity.WARN, "no output from inspection")
-    os_line = lines[0].lower()
-    py_line = lines[1] if len(lines) > 1 else ""
+    parts = lines[0].split()
+    os_line = f"{parts[0].capitalize()} v{parts[1]}" if len(parts) >= 2 else lines[0]
+    raw_py = lines[1] if len(lines) > 1 else ""
     py_minor: int | None = None
-    match = re.search(r"Python 3\.(\d+)\.", py_line)
+    match = re.search(r"Python (3\.\d+\.\d+)", raw_py)
     if match:
-        py_minor = int(match.group(1))
+        py_minor = int(match.group(1).split(".")[1])
+        py_line = f"Python v{match.group(1)}"
+    else:
+        py_line = raw_py
     if py_minor == 13:
         return _fail(
             "container-os",
             Severity.BLOCK,
-            f"Python 3.13 in container ({os_line}; {py_line}); bitbake parser "
+            f"{py_line} in container ({os_line}); bitbake parser "
             "deadlocks under fork-in-multi-thread - build will hang at parsing.",
             fix_hint=_CONTAINER_PY_FIX_HINT,
         )
@@ -213,7 +217,7 @@ def check_container_os(cfg: BuildConfig) -> CheckResult:
         return _fail(
             "container-os",
             Severity.BLOCK,
-            f"Python 3.14 in container ({os_line}; {py_line}); bitbake parser "
+            f"{py_line} in container ({os_line}); bitbake parser "
             "trips _pickle.PicklingError under default forkserver context - "
             "build fails immediately at parsing.",
             fix_hint=_CONTAINER_PY_FIX_HINT,
@@ -221,23 +225,34 @@ def check_container_os(cfg: BuildConfig) -> CheckResult:
     return _ok("container-os", Severity.BLOCK, f"{os_line} / {py_line}")
 
 
+def _find_local_bitbake_dir(cfg: BuildConfig) -> Path | None:
+    """Return the workspace bitbake source directory if present, else None.
+
+    Checks ``cfg.bsp_bitbake_path`` first (NXP/TI builds), then looks for a
+    ``bitbake/`` directory under ``<bsp_root>/layers/`` or
+    ``<bsp_root>/sources/`` (generic BYO builds).
+    """
+    candidate = cfg.bsp_bitbake_path
+    if (candidate / "bin" / "bitbake").is_file():
+        return candidate
+    for subdir in ("layers", "sources"):
+        candidate = cfg.bsp_root / subdir / "bitbake"
+        if (candidate / "bin" / "bitbake").is_file():
+            return candidate
+    return None
+
+
 def check_container_bitbake(cfg: BuildConfig) -> CheckResult:
+    bb_dir = _find_local_bitbake_dir(cfg)
+    cmd = ["docker", "run", "--rm", "--entrypoint", "bash"]
+    if bb_dir is not None:
+        cmd += ["-v", f"{bb_dir}:/tmp/bitbake:ro"]
+        shell = "export PATH=/tmp/bitbake/bin:$PATH && which bitbake && bitbake --version"
+    else:
+        shell = "which bitbake && bitbake --version"
+    cmd += [cfg.container_image, "-c", shell]
     try:
-        out = subprocess.run(
-            [
-                "docker",
-                "run",
-                "--rm",
-                "--entrypoint",
-                "bash",
-                cfg.container_image,
-                "-c",
-                "which bitbake && bitbake --version",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return _skip("container-bitbake", Severity.INFO, f"could not inspect: {exc}")
     if out.returncode != 0:
@@ -248,9 +263,10 @@ def check_container_bitbake(cfg: BuildConfig) -> CheckResult:
         )
         return _skip("container-bitbake", Severity.INFO, detail)
     lines = out.stdout.strip().splitlines()
-    path = lines[0].strip() if lines else "unknown"
-    version = lines[1].strip() if len(lines) > 1 else "unknown"
-    return _ok("container-bitbake", Severity.INFO, f"{path} / {version}")
+    raw_ver = lines[1].strip() if len(lines) > 1 else ""
+    m = re.search(r"(\d+\.\d+[\.\d]*)", raw_ver)
+    version = f"BitBake v{m.group(1)}" if m else raw_ver
+    return _ok("container-bitbake", Severity.INFO, version)
 
 
 def check_cache_dirs(cfg: BuildConfig) -> CheckResult:
