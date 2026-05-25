@@ -1,3 +1,3 @@
 """bspctl: practical kas wrapper for Yocto BSP development."""
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
