@@ -19,7 +19,7 @@ import typer
 if TYPE_CHECKING:
     from pathlib import Path
 
-from bspctl.cli import _resolve_workspace, _workspace_from_cwd
+from bspctl.commands._helpers import _resolve_workspace, _workspace_from_cwd
 
 pytestmark = pytest.mark.unit
 
