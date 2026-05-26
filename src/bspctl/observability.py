@@ -30,7 +30,7 @@ from rich.logging import RichHandler
 if TYPE_CHECKING:
     from pathlib import Path
 
-console = Console()
+console = Console(stderr=True)
 
 
 def _utc_now_iso() -> str:
