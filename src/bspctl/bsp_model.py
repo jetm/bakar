@@ -11,7 +11,9 @@ This module exports:
 
 * :func:`detect_bsp_family` - classify a manifest filename. Pure regex,
   no I/O. The return value drives both the dispatcher in
-  :mod:`bspctl.cli` and the ``check_host_tools`` decision.
+  :mod:`bspctl.cli` and the ``check_host_tools`` decision. For the
+  complementary BYO-yaml classifier (content-based, not filename-based)
+  see :func:`bspctl.bsp_detect.detect_bsp_from_yaml`.
 * :func:`infer_bsp_branch` - synthesize the
   ``meta-variscite-bsp-ti`` branch suffix from a TI config filename.
 * :class:`BspModel` - dataclass + registry that hold every per-BSP

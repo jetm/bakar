@@ -23,6 +23,13 @@ PYTHONMALLOC) - onto these YAMLs.
 The function never raises - I/O on the YAML is wrapped defensively so
 ``bspctl build my.yml`` can fail with a single typer.Exit(2) instead of
 a Python traceback.
+
+See also :func:`bspctl.bsp_model.detect_bsp_family`, which classifies
+by manifest *filename* (no I/O, pure regex). The two classifiers serve
+different entry points: this module handles the BYO-yaml path
+(``bspctl build my.yml``); ``detect_bsp_family`` handles the manifest
+path (``bspctl build -f imx-*.xml``). Both encode NXP/TI family
+markers; if either set of markers changes, update the other.
 """
 
 from __future__ import annotations
