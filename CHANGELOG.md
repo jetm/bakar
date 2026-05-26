@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-26
+
 ### Added
 
 - Added support for **bitbake-setup workspaces** as a new BSP family (`bbsetup`). `bspctl` now auto-detects a bitbake-setup workspace from the current
