@@ -34,6 +34,7 @@ def _copy_fixture(tmp_path: Path) -> Path:
     ``sources-fixed-revisions.json`` without touching the committed fixture.
     """
     dest = tmp_path / "ws"
+
     def _ignore(src: str, names: list[str]) -> set[str]:
         skip = {"kas-bbsetup.yml", "layers", "ccache", ".bspctl"}
         if src == str(FIXTURE / "build"):
