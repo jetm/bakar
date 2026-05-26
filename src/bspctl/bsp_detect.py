@@ -102,7 +102,7 @@ def detect_bsp_from_yaml(yaml_path: Path) -> Literal["nxp", "ti", "generic", "un
     try:
         with yaml_path.open("r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
-    except (OSError, yaml.YAMLError):
+    except OSError, yaml.YAMLError:
         return "unknown"
     if not isinstance(data, dict):
         return "unknown"
@@ -148,7 +148,7 @@ def is_bbsetup_workspace(path: Path) -> bool:
         return False
     try:
         data = json.loads(cfg.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError, OSError:
         return False
     return isinstance(data, dict) and "data" in data and "bitbake-config" in data
 

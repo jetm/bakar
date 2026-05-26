@@ -316,7 +316,7 @@ def clear_stale_bitbake_locks(cfg: BuildConfig) -> list[Path]:
 
     try:
         pid = int(lock.read_text().strip())
-    except (ValueError, OSError):
+    except ValueError, OSError:
         return _remove_all()
 
     try:

@@ -62,7 +62,7 @@ def read_repo_manifest_include(repo_dir: Path) -> str | None:
         return None
     try:
         doc = xml.dom.minidom.parse(str(mfx))
-    except (OSError, xml.parsers.expat.ExpatError):
+    except OSError, xml.parsers.expat.ExpatError:
         return None
     includes = doc.getElementsByTagName("include")
     if not includes:
@@ -100,7 +100,7 @@ def parse_manifest_pins(manifest_path: Path) -> list[tuple[str, str]]:
         return []
     try:
         doc = xml.dom.minidom.parse(str(manifest_path))
-    except (OSError, xml.parsers.expat.ExpatError):
+    except OSError, xml.parsers.expat.ExpatError:
         return []
     pins: list[tuple[str, str]] = []
     for proj in doc.getElementsByTagName("project"):
@@ -123,7 +123,7 @@ def _head_sha(checkout: Path) -> str | None:
             check=False,
             timeout=5,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if out.returncode != 0:
         return None

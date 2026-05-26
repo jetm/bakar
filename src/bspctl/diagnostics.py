@@ -609,7 +609,7 @@ def check_bitbake_locks(cfg: BuildConfig) -> CheckResult:
 
     try:
         pid = int(lock.read_text().strip())
-    except (ValueError, OSError):
+    except ValueError, OSError:
         removed = clear_stale_bitbake_locks(cfg)
         names = ", ".join(p.name for p in removed)
         return _ok("bitbake-locks", Severity.BLOCK, f"unreadable lock and sockets removed: {names}")
@@ -779,7 +779,7 @@ def _read_sysctl(key: str) -> int | None:
     path = Path("/proc/sys") / key.replace(".", "/")
     try:
         return int(path.read_text().strip())
-    except (FileNotFoundError, ValueError):
+    except FileNotFoundError, ValueError:
         return None
 
 
