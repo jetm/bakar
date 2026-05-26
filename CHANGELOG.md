@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added support for **bitbake-setup workspaces** as a new BSP family (`bbsetup`). `bspctl` now auto-detects a bitbake-setup workspace from the current
+directory, translates its `config-upstream.json` and `sources-fixed-revisions.json` into a `kas-bbsetup.yml`, and routes `gen-kas`, `build`, `doctor`, and
+`triage` subcommands accordingly.
+- `bspctl gen-kas` regenerates `kas-bbsetup.yml` from a bitbake-setup workspace's resolved configuration, pinning each layer repository to its fixed-revision
+SHA.
+- `bspctl build` now runs the kas pipeline on bitbake-setup workspaces using the generic tuning overlay without requiring a manifest file or YAML argument.
+- `bspctl doctor` now runs dedicated pre-flight checks for bitbake-setup workspaces, verifying that the workspace is initialized and that sources are present.
+- `bspctl sync` on a bitbake-setup workspace now fails fast with guidance to use `bitbake-setup init` instead of silently attempting an unsupported sync.
+- Generated and committed kas YAML files now declare configuration format version 21 (up from 3), compatible with kas 4.x and newer.
+
+### Fixed
+
+- Fixed a build failure that could occur when kas attempted to verify a pinned commit's reachability against a branch that had moved forward; commit-pinned
+repos in the `bbsetup` kas translation now emit only the SHA, omitting the branch anchor.
+
 ## [0.3.0] - 2026-05-25
 
 ### Added
@@ -79,4 +96,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.0.3]: https://github.com/jetm/bspctl/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/jetm/bspctl/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/jetm/bspctl/releases/tag/v0.0.1
-
