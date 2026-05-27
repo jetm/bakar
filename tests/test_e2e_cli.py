@@ -26,9 +26,12 @@ import json
 import os
 import shutil
 import subprocess
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 pytestmark = pytest.mark.integration
 
@@ -450,3 +453,115 @@ class TestLock:
         lock = kas_yaml_branch.with_suffix(".lock.yml")
         assert lock.exists(), f"expected {lock} to be created"
         assert "commit:" in lock.read_text()
+
+
+# ---------------------------------------------------------------------------
+# 8. triage
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def failure_run_ws(bbsetup_ws: Path) -> Path:
+    """bbsetup workspace with a synthetic failure run."""
+    run_dir = bbsetup_ws / "build" / "runs" / "20260601-100000"
+    run_dir.mkdir(parents=True)
+    (run_dir / "events.jsonl").write_text(
+        '{"ts": "2026-06-01T10:00:00Z", "event": "run_start", "run_id": "20260601-100000"}\n'
+        '{"ts": "2026-06-01T10:05:00Z", "event": "step_fail", "step": "kas_build",'
+        ' "reason": "recipe failed"}\n'
+        '{"ts": "2026-06-01T10:05:00Z", "event": "run_end"}\n'
+    )
+    return bbsetup_ws
+
+
+class TestTriage:
+    def test_failure_run_shows_failing_step(self, failure_run_ws: Path) -> None:
+        result = _run(["triage", "--workspace", str(failure_run_ws)])
+        assert result.returncode == 0
+        assert "kas_build" in result.stderr
+
+    def test_success_run_shows_no_failures(self, success_run_ws: Path) -> None:
+        result = _run(["triage", "--workspace", str(success_run_ws)])
+        assert result.returncode == 0
+        assert "no step_fail events found" in result.stderr
+
+    def test_nonexistent_run_id_exits_nonzero(self, failure_run_ws: Path) -> None:
+        result = _run(["triage", "99991231-000000", "--workspace", str(failure_run_ws)])
+        assert result.returncode != 0
+
+
+# ---------------------------------------------------------------------------
+# 9. log (error paths only -- happy path calls _tail_follow which blocks)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def runs_ws(nxp_ws: Path) -> Path:
+    """NXP workspace with a synthetic run containing a console.log and events.jsonl."""
+    run_dir = nxp_ws / "nxp" / "build" / "runs" / "20260601-090000"
+    run_dir.mkdir(parents=True)
+    (run_dir / "console.log").write_text("step started\nstep ok\n")
+    (run_dir / "events.jsonl").write_text('{"ts": "2026-06-01T09:00:00Z", "event": "run_start"}\n')
+    return nxp_ws
+
+
+class TestLog:
+    def test_invalid_which_exits_2(self, nxp_ws: Path) -> None:
+        result = _run(["log", "--which", "invalid", "--workspace", str(nxp_ws)])
+        assert result.returncode == 2
+
+    def test_no_runs_dir_exits_nonzero(self, nxp_ws: Path) -> None:
+        # nxp_ws has no nxp/build/runs/ - command should bail with exit 1
+        result = _run(["log", "--workspace", str(nxp_ws)])
+        assert result.returncode != 0
+
+    def test_run_id_not_found_exits_nonzero(self, runs_ws: Path) -> None:
+        result = _run(["log", "--run", "99991231-000000", "--workspace", str(runs_ws)])
+        assert result.returncode != 0
+
+    def test_missing_kas_and_console_log_exits_nonzero(self, runs_ws: Path) -> None:
+        # Remove console.log; kas.log is also absent. Both fallbacks gone -> exit 1.
+        (runs_ws / "nxp" / "build" / "runs" / "20260601-090000" / "console.log").unlink()
+        result = _run(["log", "--workspace", str(runs_ws)])
+        assert result.returncode != 0
+
+
+# ---------------------------------------------------------------------------
+# 10. clean
+# ---------------------------------------------------------------------------
+
+
+class TestClean:
+    def test_removes_build_directory(self, nxp_ws: Path) -> None:
+        build_dir = nxp_ws / "nxp" / "build"
+        build_dir.mkdir(parents=True)
+        (build_dir / "conf").mkdir()
+        result = _run(["clean", "--bsp", "nxp", "--workspace", str(nxp_ws)])
+        assert result.returncode == 0
+        assert not build_dir.exists()
+
+    def test_noop_when_no_build_dir(self, nxp_ws: Path) -> None:
+        result = _run(["clean", "--bsp", "nxp", "--workspace", str(nxp_ws)])
+        assert result.returncode == 0
+
+    def test_invalid_bsp_exits_2(self, nxp_ws: Path) -> None:
+        result = _run(["clean", "--bsp", "invalid", "--workspace", str(nxp_ws)])
+        assert result.returncode == 2
+
+
+# ---------------------------------------------------------------------------
+# 11. doctor
+# ---------------------------------------------------------------------------
+
+
+class TestDoctor:
+    def test_exits_0_or_2(self, nxp_ws: Path) -> None:
+        # In a test environment most tool checks will WARN or BLOCK; 0 means all
+        # pass, 2 means at least one BLOCK failure -- any other code is a bug.
+        result = _run(["doctor", "--workspace", str(nxp_ws)])
+        assert result.returncode in (0, 2)
+
+    def test_produces_diagnostic_output(self, nxp_ws: Path) -> None:
+        result = _run(["doctor", "--workspace", str(nxp_ws)])
+        combined = result.stderr + result.stdout
+        assert any(marker in combined for marker in ("PASS", "WARN", "BLOCK", "FAIL", "SKIP", "checks passed"))
