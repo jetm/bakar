@@ -67,9 +67,7 @@ def _patch_repos(monkeypatch: pytest.MonkeyPatch, repos):  # noqa: ANN001
 
 
 @pytest.mark.unit
-def test_runs_once_per_repo(
-    runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_runs_once_per_repo(runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The command invokes the shell once per discovered repo, in each repo's dir."""
     repos = [
         ("poky", nxp_workspace / "sources" / "poky"),
@@ -89,9 +87,7 @@ def test_runs_once_per_repo(
 
 
 @pytest.mark.unit
-def test_all_succeed_exits_zero(
-    runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_all_succeed_exits_zero(runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When every invocation returns zero, the aggregate exit is zero."""
     repos = [
         ("poky", nxp_workspace / "sources" / "poky"),

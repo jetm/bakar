@@ -90,9 +90,7 @@ def test_yaml_and_manifest_mutually_exclusive(
 
 
 @pytest.mark.unit
-def test_outside_workspace_fails(
-    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_outside_workspace_fails(runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No positional YAML and no ``--workspace`` outside a workspace fails."""
     monkeypatch.setattr(layers_module, "collect_layer_hashes", lambda cfg: [])
     # tmp_path carries no .bspctl.toml, nxp/, ti/, or bitbake-setup signature,
