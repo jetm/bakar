@@ -10,42 +10,8 @@ import typer
 
 from bspctl.bsp_detect import detect_kas_workspace, is_meta_avocado_yaml
 from bspctl.commands._app import app, console
-from bspctl.commands._helpers import _bbsetup_workspace, _workspace_from_cwd
+from bspctl.commands._helpers import _bbsetup_workspace, _find_run, _workspace_from_cwd
 from bspctl.triage import analyse
-
-
-def _find_run(
-    runs_dirs: list[tuple[Path, Literal["nxp", "ti", "generic"]]],
-    run_id: str | None,
-) -> tuple[Path, Literal["nxp", "ti", "generic"]] | None:
-    """Locate a run directory by ID across the supplied search roots.
-
-    Each entry is a ``(runs_dir, label)`` pair so the caller can mix
-    the per-BSP roots (``workspace/nxp/build/runs``,
-    ``workspace/ti/build/runs``) with a generic BYO root
-    (``<yaml-parent>/build/runs``). With ``run_id=None`` returns the
-    most recent run across all roots; with an explicit ID, the first
-    matching entry. Returns ``None`` when nothing matches.
-    """
-    candidates: list[tuple[Path, Literal["nxp", "ti", "generic"]]] = []
-    for runs_dir, label in runs_dirs:
-        if not runs_dir.is_dir():
-            continue
-        for entry in runs_dir.iterdir():
-            if entry.is_dir():
-                candidates.append((entry, label))
-
-    if not candidates:
-        return None
-
-    if run_id is None:
-        candidates.sort(key=lambda pair: pair[0].name, reverse=True)
-        return candidates[0]
-
-    for run_dir, label in candidates:
-        if run_dir.name == run_id:
-            return (run_dir, label)
-    return None
 
 
 @app.command()
