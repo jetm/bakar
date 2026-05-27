@@ -299,6 +299,69 @@ bspctl settings set defaults.nxp.machine imx95-var-dart
 bspctl settings unset defaults.nxp.machine
 ```
 
+### BSP maintenance commands
+
+Five commands manage reproducibility, version comparison, prefetching, and
+build inspection without a full build.
+
+`bspctl lock` pins all floating layer SHAs to exact commits and writes a
+reproducibility artifact. NXP manifest builds wrap `repo manifest -r` and
+produce a SHA-pinned manifest XML; BYO and bbsetup builds wrap `kas lock` and
+produce `kas-project.lock.yml`. Required for reproducible CI pipelines. With no
+`--output`, the NXP path writes `pinned-manifest.xml` in the BSP root.
+
+```bash
+bspctl lock                          # pin current workspace state
+bspctl lock --output pinned.xml      # write to explicit path
+```
+
+`bspctl diff <old> <new>` compares two manifest or config versions and shows
+which layer SHAs changed. Nothing in kas, repo, or bitbake-setup does this for
+NXP/TI manifests. NXP diffs two SHA-pinned manifest XMLs directly; BYO and
+bbsetup delegate to `kas diff`. Each NXP row is the layer name, the old and new
+SHA truncated to 8 chars (`-` when absent on a side), a best-effort `+N` commit
+count (blank when the layer checkout is unavailable), and a `changed` or
+`unchanged` marker.
+
+```text
+$ bspctl diff imx-6.12.49-2.2.0.xml imx-6.13.0-1.0.0.xml
+  linux-imx  333cccc1  444dddd2  +87  changed
+  meta-freescale  abc12345  def56789  +12  changed
+  meta-variscite-bsp  111aaaa1  222bbbb2  +3  changed
+  u-boot-imx  555eeee1  555eeee1    unchanged
+```
+
+`bspctl prefetch` pre-fetches all recipe source tarballs to `DL_DIR` without
+building, running `bitbake --runall=fetch` inside `kas-container` (or host kas).
+Useful for separating network access from build execution: fetch on a networked
+machine, copy `DL_DIR` to an air-gapped lab, build offline.
+
+```bash
+bspctl prefetch                      # fetch for default machine/image
+bspctl prefetch -m imx95-var-dart    # explicit machine
+```
+
+`bspctl report [run-id]` is the success-path complement to `bspctl triage`. It
+reads a run directory's `events.jsonl`, `du.tsv`, and layer hashes and emits a
+human-readable or `--json` summary: build status, duration, deploy directory,
+image size, peak build-tmp size, and per-layer SHAs. Kernel version and recipe
+count are best-effort and omitted when unavailable.
+
+```bash
+bspctl report                        # most recent run
+bspctl report 20260527-142301        # specific run
+bspctl report --json                 # machine-readable output
+```
+
+`bspctl dump` flattens the kas YAML and all overlays into a single resolved
+YAML by wrapping `kas dump`. Useful for debugging what kas actually sees after
+include expansion and overlay merging.
+
+```bash
+bspctl dump                          # print resolved YAML to stdout
+bspctl dump --output resolved.yml    # write to file
+```
+
 ## Build forms
 
 ```bash
@@ -426,6 +489,11 @@ bspctl clean                            # remove <bsp>/build/
 bspctl layers                           # show synced layer hashes, branches, versions
 bspctl for-all 'git status --short'     # run a shell command in every source repo
 bspctl settings list                    # show every config.toml key and its value
+bspctl lock                             # pin floating layer SHAs for reproducible CI
+bspctl diff old.xml new.xml             # show which layer SHAs changed between versions
+bspctl prefetch                         # fetch all recipe sources without building
+bspctl report                           # success-path summary of the latest run
+bspctl dump                             # flatten kas YAML + overlays to resolved YAML
 ```
 
 ## Troubleshooting
@@ -457,75 +525,21 @@ on `diff`; `matrix` depends on a stable `build`.
 Delivered: `bspctl layers`, `bspctl for-all`, and `bspctl settings`. See
 [Workspace commands](#workspace-commands) for usage.
 
-### Phase 2 - Version management
+### Phase 2 - Version management (shipped)
 
-**`bspctl lock`**
+Delivered: `bspctl lock` and `bspctl diff <old> <new>`. See
+[BSP maintenance commands](#bsp-maintenance-commands) for usage.
 
-Pin all floating layer SHAs to exact commits and write a reproducibility
-artifact. For NXP manifest builds: wraps `repo manifest -r` (produces a pinned
-manifest XML). For BYO/bbsetup builds: wraps `kas lock` (produces
-`kas-project.lock.yml`). Required for reproducible CI pipelines.
+### Phase 3 - Build workflow extensions (shipped)
 
-```bash
-bspctl lock                          # pin current workspace state
-bspctl lock --output pinned.xml      # write to explicit path
-```
-
-**`bspctl diff <old> <new>`**
-
-Compare two manifest or config versions and show which layer SHAs changed.
-Nothing in kas, repo, or bitbake-setup does this for NXP/TI manifests. For
-BYO/bbsetup builds, delegates to `kas diff`.
-
-```text
-$ bspctl diff imx-6.12.49-2.2.0.xml imx-6.13.0-1.0.0.xml
-
-  layer                   old sha   new sha   commits
-  linux-imx               333cccc   444dddd   +87
-  meta-freescale          abc1234   def5678   +12
-  meta-variscite-bsp      111aaaa   222bbbb    +3
-  u-boot-imx              555eeee   555eeee    =  (unchanged)
-```
-
-### Phase 3 - Build workflow extensions
-
-**`bspctl prefetch`**
-
-Pre-fetch all recipe source tarballs to `DL_DIR` without building. Runs
-`bitbake --runall=fetch` inside `kas-container`. Useful for separating network
-access from build execution - fetch on a networked machine, copy `DL_DIR` to an
-air-gapped lab, build offline.
-
-```bash
-bspctl prefetch                      # fetch for default machine/image
-bspctl prefetch -m imx95-var-dart    # explicit machine
-```
-
-**`bspctl report [run-id]`**
-
-Structured post-build summary. Reads `events.jsonl`, `du.tsv`, and layer hashes
-from a run directory and emits a human-readable or JSON report: image path and
-size, all layer SHAs, kernel version, build duration, recipe count.
-Complements `bspctl triage` (failure path) with a success-path artifact.
-
-```bash
-bspctl report                        # most recent run
-bspctl report 20260527-142301        # specific run
-bspctl report --json                 # machine-readable output
-```
+Delivered: `bspctl prefetch` and `bspctl report [run-id]`. See
+[BSP maintenance commands](#bsp-maintenance-commands) for usage.
 
 ### Phase 4 - Advanced workflows
 
-**`bspctl dump`**
-
-Flatten the kas YAML and all overlays into a single resolved YAML. Wraps
-`kas dump`. Useful for debugging what kas actually sees after include expansion
-and overlay merging.
-
-```bash
-bspctl dump                          # print resolved YAML to stdout
-bspctl dump --output resolved.yml    # write to file
-```
+`bspctl dump` has shipped; see
+[BSP maintenance commands](#bsp-maintenance-commands) for usage. The
+interactive `upgrade` and `init` wizards below remain.
 
 **`bspctl upgrade --to <manifest>`**
 
