@@ -17,8 +17,13 @@ _STR_FIELDS = {
     "ti_image",
     "ti_manifest",
     "container_image",
+    "dl_dir",
+    "sstate_dir",
+    "sstate_mirrors",
+    "scheduler",
 }
 _BOOL_FIELDS = {"doctor", "show_hashes"}
+_INT_FIELDS = {"pressure_max_cpu", "pressure_max_io", "pressure_max_memory"}
 
 
 @dataclass
@@ -37,6 +42,13 @@ class UserConfig:
     # [build]
     container_image: str | None = None
     doctor: bool = True
+    dl_dir: str | None = None
+    sstate_dir: str | None = None
+    sstate_mirrors: str | None = None
+    scheduler: str | None = None
+    pressure_max_cpu: int | None = None
+    pressure_max_io: int | None = None
+    pressure_max_memory: int | None = None
     # [layers]
     show_hashes: bool = False
 
@@ -60,6 +72,13 @@ _TI_KEYS = {
 _BUILD_KEYS = {
     "container_image": "container_image",
     "doctor": "doctor",
+    "dl_dir": "dl_dir",
+    "sstate_dir": "sstate_dir",
+    "sstate_mirrors": "sstate_mirrors",
+    "scheduler": "scheduler",
+    "pressure_max_cpu": "pressure_max_cpu",
+    "pressure_max_io": "pressure_max_io",
+    "pressure_max_memory": "pressure_max_memory",
 }
 _LAYERS_KEYS = {
     "show_hashes": "show_hashes",
@@ -72,6 +91,9 @@ def _check_type(field: str, value: object, path: Path) -> None:
     # bool is a subclass of int; reject ints that are not bools explicitly.
     if field in _BOOL_FIELDS and not isinstance(value, bool):
         raise ValueError(f"{path}: '{field}' must be a boolean, got {type(value).__name__}")
+    # bool is a subclass of int; test isinstance(value, bool) first to reject it.
+    if field in _INT_FIELDS and (not isinstance(value, int) or isinstance(value, bool)):
+        raise ValueError(f"{path}: '{field}' must be an integer, got {type(value).__name__}")
 
 
 def load_user_config(path: Path | None = None) -> UserConfig:
@@ -123,14 +145,15 @@ class _SettingSpec:
     """Where a dotted setting key lives in the TOML tree and its declared type.
 
     ``section`` is the table path (e.g. ``("defaults", "nxp")`` or ``("build",)``)
-    and ``key`` is the leaf key within that table. ``is_bool`` is derived from
-    :data:`_BOOL_FIELDS` so the dotted-key registry shares one source of truth
-    with :func:`load_user_config`.
+    and ``key`` is the leaf key within that table. ``is_bool`` and ``is_int`` are
+    derived from :data:`_BOOL_FIELDS` and :data:`_INT_FIELDS` so the dotted-key
+    registry shares one source of truth with :func:`load_user_config`.
     """
 
     section: tuple[str, ...]
     key: str
     is_bool: bool
+    is_int: bool
 
 
 def _build_settings_schema() -> dict[str, _SettingSpec]:
@@ -151,7 +174,9 @@ def _build_settings_schema() -> dict[str, _SettingSpec]:
     for section, mapping in table_specs:
         for key, field in mapping.items():
             dotted = ".".join((*section, key))
-            schema[dotted] = _SettingSpec(section=section, key=key, is_bool=field in _BOOL_FIELDS)
+            schema[dotted] = _SettingSpec(
+                section=section, key=key, is_bool=field in _BOOL_FIELDS, is_int=field in _INT_FIELDS
+            )
     return schema
 
 
@@ -174,15 +199,20 @@ def _require_known(key: str) -> _SettingSpec:
     return spec
 
 
-def _coerce(spec: _SettingSpec, raw_value: str) -> str | bool:
-    if not spec.is_bool:
-        return raw_value
-    lowered = raw_value.strip().lower()
-    if lowered in _TRUE_LITERALS:
-        return True
-    if lowered in _FALSE_LITERALS:
-        return False
-    raise ValueError(f"value for boolean key must be one of true/false/1/0, got {raw_value!r}")
+def _coerce(spec: _SettingSpec, raw_value: str) -> str | bool | int:
+    if spec.is_bool:
+        lowered = raw_value.strip().lower()
+        if lowered in _TRUE_LITERALS:
+            return True
+        if lowered in _FALSE_LITERALS:
+            return False
+        raise ValueError(f"value for boolean key must be one of true/false/1/0, got {raw_value!r}")
+    if spec.is_int:
+        try:
+            return int(raw_value)
+        except ValueError:
+            raise ValueError(f"value for integer key {spec.key!r} must be a valid integer, got {raw_value!r}") from None
+    return raw_value
 
 
 def _load_raw(path: Path) -> dict[str, object]:
