@@ -22,6 +22,7 @@ from bspctl.layers import collect_layer_hashes
 
 if TYPE_CHECKING:
     from bspctl.config import BuildConfig
+    from bspctl.layers import LayerHash
 
 # ---------------------------------------------------------------------------
 # Workspace detection
@@ -287,15 +288,20 @@ def _print_diagnosis(results: list[CheckResult]) -> None:
             console.print(f"[yellow]fix[/] [bold]{r.name}[/]: {r.fix_hint}")
 
 
-def _print_layer_hashes(cfg: BuildConfig) -> None:
+def _print_layer_hashes(cfg: BuildConfig, hashes: list[LayerHash] | None = None) -> None:
     """Print a ``layers:`` table of repo, short hash, and branch.
+
+    Collects layer hashes via ``collect_layer_hashes(cfg)`` when ``hashes``
+    is ``None``; otherwise reuses the precomputed list so the caller can
+    avoid a second per-repo git query.
 
     Prints nothing when no layer hashes are available (no
     ``bblayers.conf`` yet, or every repo skipped).
     """
     from bspctl.commands import console
 
-    hashes = collect_layer_hashes(cfg)
+    if hashes is None:
+        hashes = collect_layer_hashes(cfg)
     if not hashes:
         return
     console.print("layers:")
