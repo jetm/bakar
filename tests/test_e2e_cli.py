@@ -1,0 +1,452 @@
+"""E2E integration tests that drive bspctl through the real installed CLI binary.
+
+Each test invokes ``bspctl`` as a subprocess and asserts on stdout, stderr, and
+the exit code. No monkey-patching or CliRunner - these tests catch wiring
+mistakes that unit tests cannot: wrong stream routing, missing env vars, broken
+workspace detection.
+
+Run with:
+    uv run pytest tests/test_e2e_cli.py -v
+    uv run pytest -m integration
+
+Notes:
+    - ``console.print()`` routes to stderr because ``_app.py`` uses
+      ``Console(stderr=True)``.  All assertions on human-readable output
+      check ``result.stderr``; only ``report --json`` uses ``result.stdout``.
+    - The ``for-all`` user command's stdout inherits bspctl's stdout
+      (subprocess.run with no redirection), so echo output is in
+      ``result.stdout`` while bspctl headers are in ``result.stderr``.
+    - Dump/lock tests unset ``KAS_CONTAINER_IMAGE`` to force host mode; the
+      ``file://`` repo paths are not bind-mounted inside ``kas-container``.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+pytestmark = pytest.mark.integration
+
+_BSPCTL = shutil.which("bspctl")
+if _BSPCTL is None:
+    pytest.skip("bspctl not installed - run: uv tool install .", allow_module_level=True)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _run(args: list[str], *, env: dict | None = None) -> subprocess.CompletedProcess[str]:
+    """Run bspctl and return the CompletedProcess with text streams."""
+    return subprocess.run(
+        [_BSPCTL, *args],
+        capture_output=True,
+        text=True,
+        env=env if env is not None else os.environ.copy(),
+    )
+
+
+def _git_init(path: Path) -> str:
+    """Create a minimal git repo with one commit at *path*; return HEAD SHA."""
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "-C", str(path), "init", "--initial-branch=main", "-q"], check=True)
+    subprocess.run(["git", "-C", str(path), "config", "user.email", "e2e@test.com"], check=True)
+    subprocess.run(["git", "-C", str(path), "config", "user.name", "E2E Test"], check=True)
+    (path / "README").write_text("test layer\n")
+    subprocess.run(["git", "-C", str(path), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", "init"], check=True)
+    return subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def home_env(tmp_path: Path) -> dict:
+    """Environment with HOME redirected to a temp dir so settings writes there."""
+    env = os.environ.copy()
+    home = tmp_path / "home"
+    home.mkdir()
+    env["HOME"] = str(home)
+    return env
+
+
+@pytest.fixture
+def nxp_ws(tmp_path: Path) -> Path:
+    """Workspace with an ``nxp/`` subdir, which triggers NXP family dispatch."""
+    (tmp_path / "nxp").mkdir()
+    return tmp_path
+
+
+@pytest.fixture
+def bbsetup_ws(tmp_path: Path) -> Path:
+    """Minimal bbsetup workspace with the two required detection markers.
+
+    ``is_bbsetup_workspace()`` checks for ``config/config-upstream.json``
+    (with ``data`` and ``bitbake-config`` top-level keys) and
+    ``build/init-build-env``.
+    """
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config-upstream.json").write_text(
+        '{"data": {"version": "1.0"}, "bitbake-config": {}, "name": "test"}\n'
+    )
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "init-build-env").write_text("#!/bin/sh\n")
+    return tmp_path
+
+
+@pytest.fixture
+def layer_ws(tmp_path: Path) -> Path:
+    """NXP workspace with a real git layer and a bblayers.conf pointing at it.
+
+    Layout::
+
+        workspace/nxp/layers/meta-local/   <- git repo
+        workspace/nxp/build/conf/bblayers.conf
+
+    ``layers`` dispatches through ``_dispatch_bsp`` (no manifest flag), which
+    defaults to ``nxp``, so ``bsp_root = workspace/nxp``.  TOPDIR in
+    bblayers.conf expands to ``workspace/nxp/build``, making
+    ``${TOPDIR}/../layers/meta-local`` resolve to ``workspace/nxp/layers/meta-local``.
+    """
+    layer = tmp_path / "nxp" / "layers" / "meta-local"
+    _git_init(layer)
+    conf_dir = tmp_path / "nxp" / "build" / "conf"
+    conf_dir.mkdir(parents=True)
+    (conf_dir / "bblayers.conf").write_text('BBLAYERS ?= " \\\n    ${TOPDIR}/../layers/meta-local"\n')
+    return tmp_path
+
+
+# ---------------------------------------------------------------------------
+# 1. settings
+# ---------------------------------------------------------------------------
+
+
+class TestSettings:
+    def test_list_shows_all_recognized_keys(self, home_env: dict) -> None:
+        result = _run(["settings", "list"], env=home_env)
+        assert result.returncode == 0
+        assert "defaults.nxp.machine" in result.stderr
+        assert "defaults.ti.machine" in result.stderr
+        assert "build.container_image" in result.stderr
+        assert "layers.show_hashes" in result.stderr
+        assert "(unset)" in result.stderr
+
+    def test_set_get_round_trip(self, home_env: dict) -> None:
+        _run(["settings", "set", "defaults.nxp.machine", "imx8mp-var-dart"], env=home_env)
+        result = _run(["settings", "get", "defaults.nxp.machine"], env=home_env)
+        assert result.returncode == 0
+        assert "imx8mp-var-dart" in result.stderr
+
+    def test_unset_clears_key(self, home_env: dict) -> None:
+        _run(["settings", "set", "defaults.nxp.machine", "imx8mp-var-dart"], env=home_env)
+        _run(["settings", "unset", "defaults.nxp.machine"], env=home_env)
+        result = _run(["settings", "get", "defaults.nxp.machine"], env=home_env)
+        assert "(unset)" in result.stderr
+
+    def test_multiple_keys_survive_independently(self, home_env: dict) -> None:
+        _run(["settings", "set", "defaults.nxp.machine", "imx8mp-var-dart"], env=home_env)
+        _run(["settings", "set", "defaults.nxp.distro", "fsl-imx-xwayland"], env=home_env)
+        _run(["settings", "set", "build.container_image", "jetm/kas-build-env:latest"], env=home_env)
+        result = _run(["settings", "list"], env=home_env)
+        assert "imx8mp-var-dart" in result.stderr
+        assert "fsl-imx-xwayland" in result.stderr
+        assert "jetm/kas-build-env:latest" in result.stderr
+
+    def test_invalid_key_rejected(self, home_env: dict) -> None:
+        result = _run(["settings", "set", "nonexistent.key", "val"], env=home_env)
+        assert result.returncode != 0
+
+
+# ---------------------------------------------------------------------------
+# 2. diff (XML manifests)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def manifest_pair(tmp_path: Path) -> tuple[Path, Path]:
+    v1 = tmp_path / "v1.xml"
+    v2 = tmp_path / "v2.xml"
+    v1.write_text(
+        "<manifest>\n"
+        '  <project path="sources/poky"'
+        ' revision="aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111"/>\n'
+        '  <project path="sources/meta-freescale"'
+        ' revision="bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222"/>\n'
+        "</manifest>\n"
+    )
+    v2.write_text(
+        "<manifest>\n"
+        '  <project path="sources/poky"'
+        ' revision="cccc3333cccc3333cccc3333cccc3333cccc3333"/>\n'
+        '  <project path="sources/meta-freescale"'
+        ' revision="bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222"/>\n'
+        "</manifest>\n"
+    )
+    return v1, v2
+
+
+class TestDiff:
+    def test_changed_and_unchanged_rows(self, manifest_pair: tuple[Path, Path], nxp_ws: Path) -> None:
+        v1, v2 = manifest_pair
+        result = _run(["diff", str(v1), str(v2), "--workspace", str(nxp_ws)])
+        assert result.returncode == 0
+        out = result.stderr
+        assert "poky" in out
+        assert "aaaa1111" in out
+        assert "cccc3333" in out
+        assert "changed" in out
+        assert "meta-freescale" in out
+        assert "bbbb2222" in out
+        assert "unchanged" in out
+
+    def test_identical_manifests_all_unchanged(self, manifest_pair: tuple[Path, Path], nxp_ws: Path) -> None:
+        v1, _ = manifest_pair
+        result = _run(["diff", str(v1), str(v1), "--workspace", str(nxp_ws)])
+        assert result.returncode == 0
+        out = result.stderr
+        assert "unchanged" in out
+        # "unchanged" contains "changed" - strip it before checking no plain "changed"
+        assert "changed" not in out.replace("unchanged", "")
+
+
+# ---------------------------------------------------------------------------
+# 3. report
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def success_run_ws(bbsetup_ws: Path) -> Path:
+    """bbsetup workspace with a synthetic success run."""
+    run_dir = bbsetup_ws / "build" / "runs" / "20260601-120000"
+    run_dir.mkdir(parents=True)
+    (run_dir / "events.jsonl").write_text(
+        '{"ts": "2026-06-01T12:00:00Z", "event": "run_start", "run_id": "20260601-120000"}\n'
+        '{"ts": "2026-06-01T12:30:00Z", "event": "step_ok", "step": "kas_build",'
+        ' "deploy_dir": "/work/deploy"}\n'
+        '{"ts": "2026-06-01T12:30:00Z", "event": "run_end"}\n'
+    )
+    return bbsetup_ws
+
+
+class TestReport:
+    def test_success_run_human_output(self, success_run_ws: Path) -> None:
+        result = _run(["report", "--workspace", str(success_run_ws)])
+        assert result.returncode == 0
+        assert "20260601-120000" in result.stderr
+        assert "success" in result.stderr
+        assert "duration" in result.stderr
+
+    def test_json_output_is_parseable(self, success_run_ws: Path) -> None:
+        result = _run(["report", "--json", "--workspace", str(success_run_ws)])
+        assert result.returncode == 0
+        payload = json.loads(result.stdout)
+        assert payload["run_id"] == "20260601-120000"
+        assert payload["status"] == "success"
+        assert "duration_s" in payload
+        assert "layers" in payload
+
+    def test_latest_run_selects_newest(self, success_run_ws: Path) -> None:
+        fail_dir = success_run_ws / "build" / "runs" / "20260601-130000"
+        fail_dir.mkdir()
+        (fail_dir / "events.jsonl").write_text(
+            '{"ts": "2026-06-01T13:00:00Z", "event": "run_start", "run_id": "20260601-130000"}\n'
+            '{"ts": "2026-06-01T13:05:00Z", "event": "step_fail", "step": "kas_build",'
+            ' "reason": "build error"}\n'
+            '{"ts": "2026-06-01T13:05:00Z", "event": "run_end"}\n'
+        )
+        result = _run(["report", "--workspace", str(success_run_ws)])
+        assert result.returncode == 0
+        assert "20260601-130000" in result.stderr
+        assert "failure" in result.stderr
+
+    def test_explicit_run_id_selects_older_run(self, success_run_ws: Path) -> None:
+        fail_dir = success_run_ws / "build" / "runs" / "20260601-130000"
+        fail_dir.mkdir()
+        (fail_dir / "events.jsonl").write_text(
+            '{"ts": "2026-06-01T13:00:00Z", "event": "run_start", "run_id": "20260601-130000"}\n'
+        )
+        result = _run(["report", "20260601-120000", "--workspace", str(success_run_ws)])
+        assert result.returncode == 0
+        assert "20260601-120000" in result.stderr
+
+    def test_nonexistent_run_id_exits_nonzero(self, success_run_ws: Path) -> None:
+        result = _run(["report", "99991231-000000", "--workspace", str(success_run_ws)])
+        assert result.returncode != 0
+
+
+# ---------------------------------------------------------------------------
+# 4. layers
+# ---------------------------------------------------------------------------
+
+
+class TestLayers:
+    def test_repo_with_git_hash(self, layer_ws: Path) -> None:
+        result = _run(["layers", "--workspace", str(layer_ws)])
+        assert result.returncode == 0
+        assert "layers:" in result.stderr
+        assert "meta-local" in result.stderr
+
+    def test_empty_workspace_shows_guidance(self, nxp_ws: Path) -> None:
+        # nxp_ws has no bblayers.conf yet - collect_layer_hashes returns []
+        result = _run(["layers", "--workspace", str(nxp_ws)])
+        assert result.returncode == 0
+        guidance = result.stderr
+        assert "bspctl build" in guidance or "bspctl sync" in guidance
+
+
+# ---------------------------------------------------------------------------
+# 5. for-all
+# ---------------------------------------------------------------------------
+
+
+class TestForAll:
+    def test_repo_name_injected_into_command(self, layer_ws: Path) -> None:
+        # console headers -> stderr; subprocess echo output -> stdout
+        result = subprocess.run(
+            [_BSPCTL, "for-all", "echo REPO=$BSPCTL_REPO_NAME", "--workspace", str(layer_ws)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "REPO=meta-local" in result.stdout
+
+    def test_repo_commit_env_var_is_non_empty(self, layer_ws: Path) -> None:
+        result = subprocess.run(
+            [_BSPCTL, "for-all", "echo COMMIT=$BSPCTL_REPO_COMMIT", "--workspace", str(layer_ws)],
+            capture_output=True,
+            text=True,
+        )
+        commit_line = next((ln for ln in result.stdout.splitlines() if "COMMIT=" in ln), "")
+        sha = commit_line.split("COMMIT=", 1)[-1].strip()
+        assert sha, "BSPCTL_REPO_COMMIT was empty"
+
+    def test_nonzero_exit_propagates(self, layer_ws: Path) -> None:
+        result = subprocess.run(
+            [_BSPCTL, "for-all", "exit 1", "--workspace", str(layer_ws)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+
+
+# ---------------------------------------------------------------------------
+# 6–7. dump / lock  (require kas on PATH; use host mode via unset KCI)
+# ---------------------------------------------------------------------------
+
+_kas_required = pytest.mark.skipif(shutil.which("kas") is None, reason="kas not installed on this host")
+
+
+@pytest.fixture
+def kas_env() -> dict:
+    """Environment with KAS_CONTAINER_IMAGE unset so bspctl uses plain ``kas``.
+
+    When KAS_CONTAINER_IMAGE is set, bspctl picks ``kas-container``, which
+    runs kas inside Docker and cannot see ``file://`` paths outside its
+    bind-mounted work directory.
+    """
+    env = os.environ.copy()
+    env.pop("KAS_CONTAINER_IMAGE", None)
+    return env
+
+
+@pytest.fixture
+def kas_layer(tmp_path: Path) -> tuple[Path, str]:
+    """A local git layer repo and its HEAD SHA."""
+    layer = tmp_path / "meta-e2e"
+    sha = _git_init(layer)
+    return layer, sha
+
+
+@pytest.fixture
+def kas_yaml_pinned(tmp_path: Path, kas_layer: tuple[Path, str]) -> Path:
+    """kas YAML with a pinned commit so ``kas dump`` needs no clone."""
+    layer, sha = kas_layer
+    config = tmp_path / "kas-e2e.yml"
+    config.write_text(
+        "header:\n"
+        "  version: 21\n"
+        "machine: qemux86-64\n"
+        "distro: nodistro\n"
+        "target: core-image-minimal\n"
+        "repos:\n"
+        "  meta-e2e:\n"
+        f"    url: file://{layer}\n"
+        f"    commit: {sha}\n"
+        "    path: layers/meta-e2e\n"
+        "    layers: {}\n"
+    )
+    return config
+
+
+@pytest.fixture
+def kas_yaml_branch(tmp_path: Path, kas_layer: tuple[Path, str]) -> Path:
+    """kas YAML referencing the local layer by branch (for ``lock`` to resolve)."""
+    layer, _ = kas_layer
+    config = tmp_path / "kas-lock-e2e.yml"
+    config.write_text(
+        "header:\n"
+        "  version: 21\n"
+        "machine: qemux86-64\n"
+        "distro: nodistro\n"
+        "target: core-image-minimal\n"
+        "repos:\n"
+        "  meta-e2e:\n"
+        f"    url: file://{layer}\n"
+        "    branch: main\n"
+        "    path: layers/meta-e2e\n"
+        "    layers: {}\n"
+    )
+    return config
+
+
+@_kas_required
+@pytest.mark.timeout(120)
+class TestDump:
+    def test_output_file_contains_machine(self, kas_yaml_pinned: Path, kas_env: dict, tmp_path: Path) -> None:
+        out = tmp_path / "dump.yml"
+        result = subprocess.run(
+            [_BSPCTL, "dump", str(kas_yaml_pinned), "--output", str(out)],
+            capture_output=True,
+            text=True,
+            env=kas_env,
+        )
+        assert result.returncode == 0, result.stderr
+        assert out.exists()
+        content = out.read_text()
+        assert "machine:" in content
+        assert "qemux86-64" in content
+
+    def test_stdout_contains_machine(self, kas_yaml_pinned: Path, kas_env: dict) -> None:
+        result = subprocess.run(
+            [_BSPCTL, "dump", str(kas_yaml_pinned)],
+            capture_output=True,
+            text=True,
+            env=kas_env,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "machine:" in result.stdout
+
+
+@_kas_required
+@pytest.mark.timeout(120)
+class TestLock:
+    def test_lockfile_written_with_commit_sha(self, kas_yaml_branch: Path, kas_env: dict) -> None:
+        result = subprocess.run(
+            [_BSPCTL, "lock", str(kas_yaml_branch)],
+            capture_output=True,
+            text=True,
+            env=kas_env,
+        )
+        assert result.returncode == 0, result.stderr
+        lock = kas_yaml_branch.with_suffix(".lock.yml")
+        assert lock.exists(), f"expected {lock} to be created"
+        assert "commit:" in lock.read_text()
