@@ -223,3 +223,55 @@ def test_env_container_image_beats_user_config(tmp_path, monkeypatch):
     assert cfg.container_image == "env/kas-image:latest", (
         "KAS_CONTAINER_IMAGE env var must beat user_config.container_image"
     )
+
+
+# ---------------------------------------------------------------------------
+# 5. Build-tuning fields (dl_dir, sstate_dir, pressure_max_*)
+# ---------------------------------------------------------------------------
+
+
+def test_user_config_sstate_dir_reaches_resolved_config(tmp_path, monkeypatch) -> None:
+    """user_config.sstate_dir is threaded onto BuildConfig when the env var is unset."""
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
+    uc = UserConfig(sstate_dir="/data/sstate")
+
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+
+    assert cfg.sstate_dir == "/data/sstate"
+
+
+def test_user_config_dl_dir_reaches_resolved_config(tmp_path, monkeypatch) -> None:
+    """user_config.dl_dir is threaded onto BuildConfig when the env var is unset."""
+    monkeypatch.delenv("DL_DIR", raising=False)
+    uc = UserConfig(dl_dir="/data/dl")
+
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+
+    assert cfg.dl_dir == "/data/dl"
+
+
+def test_user_config_pressure_max_integers_survive_resolution(tmp_path) -> None:
+    """pressure_max_cpu/io/memory ints from user_config are preserved as ints on BuildConfig."""
+    uc = UserConfig(pressure_max_cpu=60, pressure_max_io=45, pressure_max_memory=20)
+
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+
+    assert cfg.pressure_max_cpu == 60
+    assert isinstance(cfg.pressure_max_cpu, int)
+    assert cfg.pressure_max_io == 45
+    assert isinstance(cfg.pressure_max_io, int)
+    assert cfg.pressure_max_memory == 20
+    assert isinstance(cfg.pressure_max_memory, int)
+
+
+def test_no_user_config_yields_none_tuning_fields(tmp_path) -> None:
+    """Without a user_config, all build-tuning fields are None on BuildConfig."""
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+
+    assert cfg.dl_dir is None
+    assert cfg.sstate_dir is None
+    assert cfg.sstate_mirrors is None
+    assert cfg.scheduler is None
+    assert cfg.pressure_max_cpu is None
+    assert cfg.pressure_max_io is None
+    assert cfg.pressure_max_memory is None
