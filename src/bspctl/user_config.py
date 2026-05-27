@@ -23,7 +23,8 @@ _STR_FIELDS = {
     "scheduler",
 }
 _BOOL_FIELDS = {"doctor", "show_hashes"}
-_INT_FIELDS = {"pressure_max_cpu", "pressure_max_io", "pressure_max_memory"}
+_INT_FIELDS: set[str] = set()
+_PSI_FIELDS = {"pressure_max_cpu", "pressure_max_io", "pressure_max_memory"}
 
 
 @dataclass
@@ -46,9 +47,9 @@ class UserConfig:
     sstate_dir: str | None = None
     sstate_mirrors: str | None = None
     scheduler: str | None = None
-    pressure_max_cpu: int | None = None
-    pressure_max_io: int | None = None
-    pressure_max_memory: int | None = None
+    pressure_max_cpu: float | None = None
+    pressure_max_io: float | None = None
+    pressure_max_memory: float | None = None
     # [layers]
     show_hashes: bool = False
 
@@ -94,6 +95,11 @@ def _check_type(field: str, value: object, path: Path) -> None:
     # bool is a subclass of int; test isinstance(value, bool) first to reject it.
     if field in _INT_FIELDS and (not isinstance(value, int) or isinstance(value, bool)):
         raise ValueError(f"{path}: '{field}' must be an integer, got {type(value).__name__}")
+    if field in _PSI_FIELDS:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{path}: '{field}' must be a number, got {type(value).__name__}")
+        if value < 1:
+            raise ValueError(f"{path}: '{field}' must be >= 1 (bitbake minimum), got {value}")
 
 
 def load_user_config(path: Path | None = None) -> UserConfig:
@@ -145,15 +151,16 @@ class _SettingSpec:
     """Where a dotted setting key lives in the TOML tree and its declared type.
 
     ``section`` is the table path (e.g. ``("defaults", "nxp")`` or ``("build",)``)
-    and ``key`` is the leaf key within that table. ``is_bool`` and ``is_int`` are
-    derived from :data:`_BOOL_FIELDS` and :data:`_INT_FIELDS` so the dotted-key
-    registry shares one source of truth with :func:`load_user_config`.
+    and ``key`` is the leaf key within that table. ``is_bool``, ``is_int``, and
+    ``is_float`` are derived from the field-type sets so the dotted-key registry
+    shares one source of truth with :func:`load_user_config`.
     """
 
     section: tuple[str, ...]
     key: str
     is_bool: bool
     is_int: bool
+    is_float: bool = False
 
 
 def _build_settings_schema() -> dict[str, _SettingSpec]:
@@ -175,7 +182,11 @@ def _build_settings_schema() -> dict[str, _SettingSpec]:
         for key, field in mapping.items():
             dotted = ".".join((*section, key))
             schema[dotted] = _SettingSpec(
-                section=section, key=key, is_bool=field in _BOOL_FIELDS, is_int=field in _INT_FIELDS
+                section=section,
+                key=key,
+                is_bool=field in _BOOL_FIELDS,
+                is_int=field in _INT_FIELDS,
+                is_float=field in _PSI_FIELDS,
             )
     return schema
 
@@ -199,7 +210,7 @@ def _require_known(key: str) -> _SettingSpec:
     return spec
 
 
-def _coerce(spec: _SettingSpec, raw_value: str) -> str | bool | int:
+def _coerce(spec: _SettingSpec, raw_value: str) -> str | bool | int | float:
     if spec.is_bool:
         lowered = raw_value.strip().lower()
         if lowered in _TRUE_LITERALS:
@@ -212,6 +223,14 @@ def _coerce(spec: _SettingSpec, raw_value: str) -> str | bool | int:
             return int(raw_value)
         except ValueError:
             raise ValueError(f"value for integer key {spec.key!r} must be a valid integer, got {raw_value!r}") from None
+    if spec.is_float:
+        try:
+            v = float(raw_value)
+        except ValueError:
+            raise ValueError(f"value for {spec.key!r} must be a number >= 1, got {raw_value!r}") from None
+        if v < 1:
+            raise ValueError(f"value for {spec.key!r} must be >= 1 (bitbake minimum), got {v}")
+        return v
     return raw_value
 
 

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bspctl.user_config import UserConfig, load_user_config
+from bspctl.user_config import UserConfig, load_user_config, set_setting
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -134,3 +134,89 @@ def test_type_mismatch_raises_valueerror_with_path(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match=re.escape(str(config_file))):
         load_user_config(config_file)
+
+
+@pytest.mark.unit
+def test_build_tuning_keys_valid_types(tmp_path: Path) -> None:
+    toml_content = textwrap.dedent("""\
+        [build]
+        dl_dir           = "/data/dl"
+        sstate_dir       = "/data/sstate"
+        sstate_mirrors   = "file:///mirror/sstate PATH"
+        scheduler        = "completion"
+        pressure_max_cpu = 60
+        pressure_max_io  = 45
+        pressure_max_memory = 20
+    """)
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(toml_content)
+
+    cfg = load_user_config(config_file)
+
+    assert cfg.dl_dir == "/data/dl"
+    assert isinstance(cfg.dl_dir, str)
+    assert cfg.sstate_dir == "/data/sstate"
+    assert isinstance(cfg.sstate_dir, str)
+    assert cfg.sstate_mirrors == "file:///mirror/sstate PATH"
+    assert isinstance(cfg.sstate_mirrors, str)
+    assert cfg.scheduler == "completion"
+    assert isinstance(cfg.scheduler, str)
+    assert cfg.pressure_max_cpu == 60
+    assert isinstance(cfg.pressure_max_cpu, int)
+    assert cfg.pressure_max_io == 45
+    assert isinstance(cfg.pressure_max_io, int)
+    assert cfg.pressure_max_memory == 20
+    assert isinstance(cfg.pressure_max_memory, int)
+
+
+@pytest.mark.unit
+def test_build_tuning_keys_absent_yields_none_defaults(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("[build]\ndoctor = true\n")
+
+    cfg = load_user_config(config_file)
+
+    assert cfg.dl_dir is None
+    assert cfg.sstate_dir is None
+    assert cfg.sstate_mirrors is None
+    assert cfg.scheduler is None
+    assert cfg.pressure_max_cpu is None
+    assert cfg.pressure_max_io is None
+    assert cfg.pressure_max_memory is None
+
+
+@pytest.mark.unit
+def test_pressure_key_string_value_raises_with_path(tmp_path: Path) -> None:
+    toml_content = textwrap.dedent("""\
+        [build]
+        pressure_max_cpu = "high"
+    """)
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(toml_content)
+
+    with pytest.raises(ValueError, match=re.escape(str(config_file))):
+        load_user_config(config_file)
+
+
+@pytest.mark.unit
+def test_pressure_key_bool_value_raises_with_path(tmp_path: Path) -> None:
+    toml_content = textwrap.dedent("""\
+        [build]
+        pressure_max_cpu = true
+    """)
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(toml_content)
+
+    with pytest.raises(ValueError, match=re.escape(str(config_file))):
+        load_user_config(config_file)
+
+
+@pytest.mark.unit
+def test_set_then_load_pressure_key_round_trip(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    set_setting("build.pressure_max_cpu", "55", path=config_file)
+
+    cfg = load_user_config(config_file)
+
+    assert cfg.pressure_max_cpu == 55
+    assert isinstance(cfg.pressure_max_cpu, (int, float))
