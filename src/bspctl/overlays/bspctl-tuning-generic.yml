@@ -33,6 +33,43 @@ local_conf_header:
     INHERIT += "ccache"
     BB_NUMBER_THREADS = "${@os.environ.get('NPROC', '16')}"
     PARALLEL_MAKE = "-j ${@os.environ.get('NPROC', '16')}"
+    # Parse thread pool: defaults to NPROC, matching the task thread pool.
+    # Separating parse and task threads lets parsing saturate available cores
+    # while tasks are still completing from the previous wave.
+    BB_NUMBER_PARSE_THREADS = "${@os.environ.get('NPROC', '16')}"
+
+    # Abort the build before the disk fills up. STOPTASKS lets in-flight
+    # tasks finish; ABORT halts immediately. Thresholds in MiB.
+    BB_DISKMON_DIRS = " \
+        STOPTASKS,${TMPDIR},1024,100K \
+        ABORT,${TMPDIR},512,50K \
+        STOPTASKS,${DL_DIR},1024,100K \
+        ABORT,${DL_DIR},512,50K \
+    "
+
+    # Renice bitbake tasks so interactive work stays responsive.
+    BB_TASK_NICE_LEVEL = "5"
+    # Class 2 (best-effort) I/O with data value 4: yields to foreground I/O
+    # while still making progress on parallel builds.
+    BB_TASK_IONICE_LEVEL = "2.4"
+
+    # PSI (Pressure Stall Information) throttle thresholds, read from env
+    # so bspctl can inject machine-specific values from config.toml.
+    # Empty string disables the check for that dimension.
+    BB_PRESSURE_MAX_CPU = "${@os.environ.get('BB_PRESSURE_MAX_CPU', '')}"
+    BB_PRESSURE_MAX_IO = "${@os.environ.get('BB_PRESSURE_MAX_IO', '')}"
+    BB_PRESSURE_MAX_MEMORY = "${@os.environ.get('BB_PRESSURE_MAX_MEMORY', '')}"
+
+    # Scheduler selection, injected from config.toml via bspctl.
+    # Options: speed (default), completion (better for HDD / rm_work builds),
+    # basic (deterministic, slowest).
+    BB_SCHEDULER = "${@os.environ.get('BB_SCHEDULER', '')}"
+
+    # Opt-in: pre-seed mirror tarballs for VCS fetches.
+    # When enabled, bitbake creates a .tar.gz of each VCS checkout in DL_DIR
+    # so future fetches can use it as a local mirror. Disabled by default
+    # because it adds time on the first fetch and grows DL_DIR significantly.
+    # BB_GENERATE_MIRROR_TARBALLS = "1"
     IMAGE_FEATURES:remove = "dev-pkgs dbg-pkgs tools-sdk tools-debug staticdev-pkgs"
 
     # Fetch robustness: raise the per-URI timeout so transient TLS / DNS
