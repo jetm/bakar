@@ -181,3 +181,43 @@ def collect_layer_hashes(cfg: BuildConfig) -> list[LayerHash]:
             )
 
     return results
+
+
+def discover_source_repos(cfg: BuildConfig) -> list[tuple[str, Path]]:
+    """Return ``(name, absolute_path)`` for every cloned source repo.
+
+    Scans ``cfg.bsp_root / "sources"`` then ``cfg.bsp_root / "layers"`` for
+    immediate subdirectories that are git repos (contain a ``.git`` entry,
+    either a directory for a normal clone or a file for a worktree/submodule),
+    returning the pairs sorted by name.
+
+    This implements the ``repo forall`` / ``kas for-all-repos`` "every cloned
+    repo" semantic. It is intentionally BROADER than the bblayers-named layer
+    set :func:`collect_layer_hashes` reports: it includes cloned repos absent
+    from ``bblayers.conf`` (tools, inactive layers, poky's bitbake). Do not
+    expect it to equal the ``collect_layer_hashes`` set.
+
+    Never raises: a missing root or an unreadable directory is skipped, and
+    ``[]`` is returned when neither ``sources/`` nor ``layers/`` exists.
+    """
+    results: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for root_name in ("sources", "layers"):
+        root = cfg.bsp_root / root_name
+        if not root.is_dir():
+            continue
+        try:
+            entries = sorted(root.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.is_dir():
+                continue
+            if not (entry / ".git").exists():
+                continue
+            if entry.name in seen:
+                continue
+            seen.add(entry.name)
+            results.append((entry.name, entry.resolve()))
+    results.sort(key=lambda pair: pair[0])
+    return results
