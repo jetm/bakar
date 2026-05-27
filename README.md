@@ -401,3 +401,181 @@ bspctl clean                            # remove <bsp>/build/
 | `no machine selected` in bbsetup mode | Pass `--machine <name>` or add a `machine/<name>` fragment to the bitbake-setup config. |
 | `branch "X" does not contain commit "abc..."` from kas | Old kas YAML with both `branch:` and `commit:` set. Regenerate with the current bspctl (pinned repos emit `commit:` only). |
 | `local-path sources are out of scope` | `config-upstream.json` contains a source with no `git-remote` key. Remove it or file a bug. |
+
+## Roadmap
+
+Features are grouped into phases by value/complexity ratio. Phase 1 delivers
+standalone commands with minimal new code. Later phases build on earlier ones -
+`upgrade` depends on `diff`; `matrix` depends on a stable `build`.
+
+### Phase 1 - Workspace visibility (quick wins)
+
+**`bspctl layers`**
+
+Show each layer's git short-hash, branch, and version without triggering a
+build. `--show-layers` exists during `build`, but there is no way to inspect
+layer state independently. Uses the existing `collect_layer_hashes()` function.
+
+```text
+$ bspctl layers
+  bitbake               abc1234  (walnascar)  2.9.0
+  meta-arm              def5678  (master)
+  meta-freescale        111aaaa  (scarthgap)
+  meta-variscite-bsp    222bbbb  (scarthgap_V1.0)
+  poky                  333cccc  (scarthgap)
+```
+
+**`bspctl for-all <cmd>`**
+
+Run a shell command in every `sources/` layer directory, BSP-family-aware
+(NXP, TI, bbsetup, generic). Exports `BSPCTL_REPO_NAME`, `BSPCTL_REPO_PATH`,
+and `BSPCTL_REPO_COMMIT` per layer, mirroring the `kas for-all-repos`
+convention.
+
+```bash
+bspctl for-all 'git log --oneline -3'
+bspctl for-all 'git status --short'
+bspctl for-all 'grep -rl "my-recipe" . --include="*.bb"'
+```
+
+**`bspctl settings`**
+
+CLI interface for `~/.config/bspctl/config.toml`. Read and write persistent
+defaults without hand-editing TOML.
+
+```bash
+bspctl settings list
+bspctl settings get defaults.nxp.machine
+bspctl settings set defaults.nxp.machine imx95-var-dart
+bspctl settings unset defaults.nxp.machine
+```
+
+### Phase 2 - Version management
+
+**`bspctl lock`**
+
+Pin all floating layer SHAs to exact commits and write a reproducibility
+artifact. For NXP manifest builds: wraps `repo manifest -r` (produces a pinned
+manifest XML). For BYO/bbsetup builds: wraps `kas lock` (produces
+`kas-project.lock.yml`). Required for reproducible CI pipelines.
+
+```bash
+bspctl lock                          # pin current workspace state
+bspctl lock --output pinned.xml      # write to explicit path
+```
+
+**`bspctl diff <old> <new>`**
+
+Compare two manifest or config versions and show which layer SHAs changed.
+Nothing in kas, repo, or bitbake-setup does this for NXP/TI manifests. For
+BYO/bbsetup builds, delegates to `kas diff`.
+
+```text
+$ bspctl diff imx-6.12.49-2.2.0.xml imx-6.13.0-1.0.0.xml
+
+  layer                   old sha   new sha   commits
+  linux-imx               333cccc   444dddd   +87
+  meta-freescale          abc1234   def5678   +12
+  meta-variscite-bsp      111aaaa   222bbbb    +3
+  u-boot-imx              555eeee   555eeee    =  (unchanged)
+```
+
+### Phase 3 - Build workflow extensions
+
+**`bspctl prefetch`**
+
+Pre-fetch all recipe source tarballs to `DL_DIR` without building. Runs
+`bitbake --runall=fetch` inside `kas-container`. Useful for separating network
+access from build execution - fetch on a networked machine, copy `DL_DIR` to an
+air-gapped lab, build offline.
+
+```bash
+bspctl prefetch                      # fetch for default machine/image
+bspctl prefetch -m imx95-var-dart    # explicit machine
+```
+
+**`bspctl report [run-id]`**
+
+Structured post-build summary. Reads `events.jsonl`, `du.tsv`, and layer hashes
+from a run directory and emits a human-readable or JSON report: image path and
+size, all layer SHAs, kernel version, build duration, recipe count.
+Complements `bspctl triage` (failure path) with a success-path artifact.
+
+```bash
+bspctl report                        # most recent run
+bspctl report 20260527-142301        # specific run
+bspctl report --json                 # machine-readable output
+```
+
+### Phase 4 - Advanced workflows
+
+**`bspctl dump`**
+
+Flatten the kas YAML and all overlays into a single resolved YAML. Wraps
+`kas dump`. Useful for debugging what kas actually sees after include expansion
+and overlay merging.
+
+```bash
+bspctl dump                          # print resolved YAML to stdout
+bspctl dump --output resolved.yml    # write to file
+```
+
+**`bspctl upgrade --to <manifest>`**
+
+Guided manifest upgrade. Depends on `bspctl diff` (phase 2). Shows which layers
+will change, checks for locally modified layers that may conflict, then re-syncs
+and rebuilds on confirmation. No existing tool in the Yocto ecosystem provides a
+guided upgrade workflow spanning the manifest-sync and kas-build boundary.
+
+```text
+$ bspctl upgrade --to imx-6.13.0-1.0.0.xml
+
+  manifest change: imx-6.12.49-2.2.0.xml -> imx-6.13.0-1.0.0.xml
+
+  layer changes:
+    linux-imx       +87 commits
+    meta-freescale  +12 commits
+    meta-variscite   +3 commits
+
+  warnings:
+    meta-variscite  local modifications (2 uncommitted files)
+
+  proceed? [y/N]
+```
+
+**`bspctl init`**
+
+Interactive workspace creation wizard. Prompts for BSP family, machine, distro,
+image, and manifest; creates the `.bspctl.toml` marker and optionally runs the
+first sync. Mirrors `bitbake-setup init` for the bspctl workspace model.
+
+```bash
+bspctl init                          # interactive prompts
+bspctl init --family nxp --machine imx8mp-var-dart  # non-interactive
+```
+
+### Phase 5 - Deferred
+
+**`bspctl matrix`**
+
+Build multiple machine/distro/image combinations defined as a matrix in
+`.bspctl.toml`. Iterates sequentially (or with `--jobs N` in parallel) and
+collects per-target `bspctl report` output. Depends on a stable `build` and
+`report`.
+
+```toml
+# .bspctl.toml
+[[matrix]]
+machine = "imx8mp-var-dart"
+image   = "core-image-minimal"
+
+[[matrix]]
+machine = "imx95-var-dart"
+image   = "fsl-image-gui"
+```
+
+**`bspctl menu`**
+
+Kconfig TUI for BSP configuration selection via `kas menu`. Requires a
+`Kconfig` file describing the available BSP variants. Deferred until Kconfig
+adoption in bspctl-based projects is more common.
