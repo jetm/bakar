@@ -96,7 +96,15 @@ def for_all(
         }
         # shell=True is intentional: the user owns the command (parity with
         # `kas for-all-repos`), so pipes, globs, and `&&` work as in a shell.
-        result = subprocess.run(command, shell=True, cwd=path, env=env)  # noqa: S602
+        try:
+            result = subprocess.run(command, shell=True, cwd=path, env=env)  # noqa: S602
+        except OSError as exc:
+            # A repo dir removed between discovery and exec (or a missing shell)
+            # counts as that repo failing - keep visiting the rest, per the
+            # documented "visits every repo even when one invocation fails".
+            console.print(f"[red]failed to run in {name}: {exc}[/]")
+            failed = True
+            continue
         if result.returncode != 0:
             failed = True
 

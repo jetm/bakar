@@ -194,8 +194,13 @@ def _load_raw(path: Path) -> dict[str, object]:
 
 def _dump_raw(path: Path, data: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as f:
+    # Atomic write (tmp + replace): a crash mid-dump would otherwise leave a
+    # truncated config.toml that breaks every command on the next load. Mirrors
+    # the tmp+replace pattern used for config writes in kas.py.
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("wb") as f:
         tomli_w.dump(data, f)
+    tmp.replace(path)
 
 
 def get_setting(key: str, path: Path | None = None) -> str | bool | None:
