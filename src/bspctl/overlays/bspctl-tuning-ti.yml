@@ -23,6 +23,20 @@ local_conf_header:
     INHERIT += "ccache"
     BB_NUMBER_THREADS = "${@os.environ.get('NPROC', '16')}"
     PARALLEL_MAKE = "-j ${@os.environ.get('NPROC', '16')}"
+    BB_NUMBER_PARSE_THREADS = "${@os.environ.get('NPROC', '16')}"
+
+    BB_DISKMON_DIRS = " \
+        STOPTASKS,${TMPDIR},1024,100K \
+        ABORT,${TMPDIR},512,50K \
+        STOPTASKS,${DL_DIR},1024,100K \
+        ABORT,${DL_DIR},512,50K \
+    "
+
+    BB_PRESSURE_MAX_CPU = "${@os.environ.get('BB_PRESSURE_MAX_CPU', '')}"
+    BB_PRESSURE_MAX_IO = "${@os.environ.get('BB_PRESSURE_MAX_IO', '')}"
+    BB_PRESSURE_MAX_MEMORY = "${@os.environ.get('BB_PRESSURE_MAX_MEMORY', '')}"
+
+    BB_SCHEDULER = "${@os.environ.get('BB_SCHEDULER', '')}"
     IMAGE_FEATURES:remove = "dev-pkgs dbg-pkgs tools-sdk tools-debug staticdev-pkgs"
 
     # Fetch robustness: raise the per-URI timeout so transient TLS / DNS
