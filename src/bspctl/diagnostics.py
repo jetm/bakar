@@ -730,14 +730,10 @@ def check_psi_support(cfg: BuildConfig) -> CheckResult:
     if not available:
         return _skip(name, Severity.INFO, "PSI not available on this kernel; throttling disabled")
     if not any_set:
-        return _fail(
+        return _skip(
             name,
             Severity.INFO,
-            "PSI available but no thresholds set in config.toml",
-            fix_hint=(
-                "Run `bspctl doctor --psi-calibrate` during a build to measure peak pressure "
-                "and add pressure_max_cpu/io/memory to ~/.config/bspctl/config.toml"
-            ),
+            "PSI available; no thresholds configured (run --psi-calibrate to tune)",
         )
     active = ", ".join(
         f"{k}={v}"

@@ -307,18 +307,16 @@ def test_psi_available_and_configured_is_pass(monkeypatch) -> None:
     assert "cpu=60" in result.message
 
 
-def test_psi_available_unconfigured_is_fail_info(monkeypatch) -> None:
-    """PSI readable but no thresholds set yields FAIL/INFO with calibrate hint."""
+def test_psi_available_unconfigured_is_skip_info(monkeypatch) -> None:
+    """PSI readable but no thresholds set yields SKIP/INFO (optional tuning, not a failure)."""
     monkeypatch.setattr("bspctl.diagnostics._read_psi_avg10", lambda _r: 0.0)
     cfg = _psi_cfg()
 
     result = check_psi_support(cfg)
 
-    assert result.status == Status.FAIL
+    assert result.status == Status.SKIP
     assert result.severity == Severity.INFO
-    assert result.fix_hint is not None
-    assert "~/.config/bspctl/config.toml" in result.fix_hint
-    assert "--psi-calibrate" in result.fix_hint
+    assert "psi-calibrate" in result.message
 
 
 def test_psi_unavailable_unconfigured_is_skip(monkeypatch) -> None:

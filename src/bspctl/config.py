@@ -99,9 +99,9 @@ class BuildConfig:
     sstate_dir: str | None = field(default=None)
     sstate_mirrors: str | None = field(default=None)
     scheduler: str | None = field(default=None)
-    pressure_max_cpu: int | None = field(default=None)
-    pressure_max_io: int | None = field(default=None)
-    pressure_max_memory: int | None = field(default=None)
+    pressure_max_cpu: float | None = field(default=None)
+    pressure_max_io: float | None = field(default=None)
+    pressure_max_memory: float | None = field(default=None)
 
     @property
     def workspace_subdir(self) -> str:
