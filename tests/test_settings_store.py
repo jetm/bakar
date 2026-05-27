@@ -37,6 +37,13 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "defaults.ti.manifest": "processor-sdk-scarthgap.txt",
         "build.container_image": "jetm/kas-build-env:latest",
         "build.doctor": "false",
+        "build.dl_dir": "/data/dl",
+        "build.sstate_dir": "/data/sstate",
+        "build.sstate_mirrors": "file:///mirror/sstate PATH",
+        "build.scheduler": "completion",
+        "build.pressure_max_cpu": "60",
+        "build.pressure_max_io": "45",
+        "build.pressure_max_memory": "20",
         "layers.show_hashes": "true",
     }
     # Every dotted key in the schema is exercised here.
@@ -58,6 +65,13 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert cfg.ti_manifest == "processor-sdk-scarthgap.txt"
     assert cfg.container_image == "jetm/kas-build-env:latest"
     assert cfg.doctor is False
+    assert cfg.dl_dir == "/data/dl"
+    assert cfg.sstate_dir == "/data/sstate"
+    assert cfg.sstate_mirrors == "file:///mirror/sstate PATH"
+    assert cfg.scheduler == "completion"
+    assert cfg.pressure_max_cpu == 60
+    assert cfg.pressure_max_io == 45
+    assert cfg.pressure_max_memory == 20
     assert cfg.show_hashes is True
 
 

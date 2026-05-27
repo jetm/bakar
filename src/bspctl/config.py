@@ -92,6 +92,16 @@ class BuildConfig:
     # directly on the host to rule out kas-container/Docker as the parser-fork-race environment.
     host_mode: bool = False
     kas_yaml_override: Path | None = field(default=None)
+    # Build-tuning fields sourced from config.toml [build]. These carry the
+    # user-supplied values down to _build_env() which emits them into the
+    # kas-container environment; env-var precedence is applied there, not here.
+    dl_dir: str | None = field(default=None)
+    sstate_dir: str | None = field(default=None)
+    sstate_mirrors: str | None = field(default=None)
+    scheduler: str | None = field(default=None)
+    pressure_max_cpu: int | None = field(default=None)
+    pressure_max_io: int | None = field(default=None)
+    pressure_max_memory: int | None = field(default=None)
 
     @property
     def workspace_subdir(self) -> str:
@@ -335,4 +345,11 @@ def resolve(
         ),
         host_mode=effective_host_mode,
         kas_yaml_override=kas_yaml.resolve() if kas_yaml is not None else None,
+        dl_dir=user_config.dl_dir if user_config else None,
+        sstate_dir=user_config.sstate_dir if user_config else None,
+        sstate_mirrors=user_config.sstate_mirrors if user_config else None,
+        scheduler=user_config.scheduler if user_config else None,
+        pressure_max_cpu=user_config.pressure_max_cpu if user_config else None,
+        pressure_max_io=user_config.pressure_max_io if user_config else None,
+        pressure_max_memory=user_config.pressure_max_memory if user_config else None,
     )
