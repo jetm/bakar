@@ -911,6 +911,51 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
     return _ok(name, Severity.WARN, f"{fstype} (unrecognized, assumed OK)")
 
 
+def check_docker_version(cfg: BuildConfig) -> CheckResult:
+    """Verify Docker server is >= 20.10 so ``--add-host=...:host-gateway`` works.
+
+    A planned hashserv feature relies on ``--add-host`` host-gateway support,
+    which Docker only ships from 20.10 onward. SKIP when the daemon is
+    unreachable so this WARN check does not duplicate the BLOCK signal from
+    :func:`check_docker_daemon`.
+    """
+    name = "docker-version"
+    try:
+        out = subprocess.run(
+            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return _skip(name, Severity.WARN, f"docker not reachable: {exc}")
+    if out.returncode != 0:
+        return _skip(
+            name,
+            Severity.WARN,
+            out.stderr.strip() or "docker info failed",
+        )
+
+    raw = out.stdout.strip()
+    # Strip suffixes like "-ce" or "+azure" before splitting on ".".
+    head = raw.split("-", 1)[0].split("+", 1)[0]
+    parts = head.split(".")
+    try:
+        version = tuple(int(x) for x in parts[:3])
+    except ValueError:
+        return _skip(name, Severity.WARN, f"unparseable docker version: {raw!r}")
+
+    if version >= (20, 10, 0):
+        return _ok(name, Severity.WARN, f"server v{raw}")
+
+    return _fail(
+        name,
+        Severity.WARN,
+        f"server v{raw} lacks --add-host=...:host-gateway (need >= 20.10)",
+        fix_hint="Upgrade Docker, e.g. `sudo apt upgrade docker-ce` (or the equivalent for your distro).",
+    )
+
+
 # Checks that run unconditionally for every BSP family. Per-BSP extras
 # are sourced from ``BspModel.doctor_extras`` at dispatch time.
 #

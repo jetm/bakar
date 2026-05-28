@@ -26,6 +26,7 @@ from bspctl.diagnostics import (
     check_bbsetup_config_sources,
     check_bitbake_locks,
     check_container_os,
+    check_docker_version,
     check_git_global_config,
     check_host_tools,
     check_kas_yaml_syntax,
@@ -713,3 +714,50 @@ def test_check_workspace_filesystem_unreadable(monkeypatch: pytest.MonkeyPatch, 
     assert result.status is Status.SKIP
     assert result.severity is Severity.WARN
     assert "unreadable" in result.message
+
+
+def test_check_docker_version_modern_passes() -> None:
+    """Modern Docker (>= 20.10) -> PASS at WARN severity."""
+    with patch(
+        "bspctl.diagnostics.subprocess.run",
+        return_value=_mock_run("24.0.5\n"),
+    ):
+        result = check_docker_version(_cfg())
+    assert result.status is Status.PASS
+    assert result.severity is Severity.WARN
+    assert "24.0.5" in result.message
+
+
+def test_check_docker_version_old_fails() -> None:
+    """Docker older than 20.10 -> FAIL at WARN severity with fix_hint."""
+    with patch(
+        "bspctl.diagnostics.subprocess.run",
+        return_value=_mock_run("19.03.15\n"),
+    ):
+        result = check_docker_version(_cfg())
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.WARN
+    assert "19.03.15" in result.message
+    assert result.fix_hint is not None
+
+
+def test_check_docker_version_handles_suffix() -> None:
+    """Suffix like ``-ce`` must be stripped before numeric parse."""
+    with patch(
+        "bspctl.diagnostics.subprocess.run",
+        return_value=_mock_run("20.10.21-ce\n"),
+    ):
+        result = check_docker_version(_cfg())
+    assert result.status is Status.PASS
+    assert result.severity is Severity.WARN
+
+
+def test_check_docker_version_skips_when_unreachable() -> None:
+    """``docker`` binary missing -> SKIP at WARN severity (BLOCK is the daemon check's job)."""
+    with patch(
+        "bspctl.diagnostics.subprocess.run",
+        side_effect=FileNotFoundError("docker"),
+    ):
+        result = check_docker_version(_cfg())
+    assert result.status is Status.SKIP
+    assert result.severity is Severity.WARN
