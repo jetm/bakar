@@ -107,6 +107,14 @@ local_conf_header:
     export HEX_HTTP_CONCURRENCY = "1"
     export HEX_HTTP_TIMEOUT = "120"
 
+    # Never peer with the public Yocto hashserv. Connecting to
+    # wss://hashserv.yoctoproject.org/ws from inside the container hangs
+    # task initialisation when the host is unreachable. The local
+    # bspctl-managed hashserv (BB_HASHSERVE) is used instead when running.
+    # :forcevariable wins over any later plain `=` in merged kas YAML so
+    # BSP-specific YAMLs (e.g. meta-avocado vendor/oe.yml) cannot override.
+    BB_HASHSERVE_UPSTREAM:forcevariable = ""
+
     # Disable rm_work entirely. The kas-build-env container enables it by
     # default (AVOCADO_RM_WORK=1), which cleans recipe-sysroot-native after
     # each task and breaks any recipe whose later tasks depend on native

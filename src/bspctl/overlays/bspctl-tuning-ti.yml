@@ -39,6 +39,9 @@ local_conf_header:
     BB_SCHEDULER = "${@os.environ.get('BB_SCHEDULER', '')}"
     IMAGE_FEATURES:remove = "dev-pkgs dbg-pkgs tools-sdk tools-debug staticdev-pkgs"
 
+    # Never peer with the public Yocto hashserv (hangs when unreachable).
+    BB_HASHSERVE_UPSTREAM:forcevariable = ""
+
     # Fetch robustness: raise the per-URI timeout so transient TLS / DNS
     # stalls do not trip the default (~45s) and fail the task.
     BB_FETCH_TIMEOUT = "600"
