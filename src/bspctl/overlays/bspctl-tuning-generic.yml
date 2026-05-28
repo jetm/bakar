@@ -39,12 +39,12 @@ local_conf_header:
     BB_NUMBER_PARSE_THREADS = "${@os.environ.get('NPROC', '16')}"
 
     # Abort the build before the disk fills up. STOPTASKS lets in-flight
-    # tasks finish; ABORT halts immediately. Thresholds in MiB.
+    # tasks finish; HALT halts immediately. Thresholds in MiB.
     BB_DISKMON_DIRS = " \
         STOPTASKS,${TMPDIR},1024,100K \
-        ABORT,${TMPDIR},512,50K \
+        HALT,${TMPDIR},512,50K \
         STOPTASKS,${DL_DIR},1024,100K \
-        ABORT,${DL_DIR},512,50K \
+        HALT,${DL_DIR},512,50K \
     "
 
     # Renice bitbake tasks so interactive work stays responsive.

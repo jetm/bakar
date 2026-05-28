@@ -27,9 +27,9 @@ local_conf_header:
 
     BB_DISKMON_DIRS = " \
         STOPTASKS,${TMPDIR},1024,100K \
-        ABORT,${TMPDIR},512,50K \
+        HALT,${TMPDIR},512,50K \
         STOPTASKS,${DL_DIR},1024,100K \
-        ABORT,${DL_DIR},512,50K \
+        HALT,${DL_DIR},512,50K \
     "
 
     BB_PRESSURE_MAX_CPU = "${@os.environ.get('BB_PRESSURE_MAX_CPU', '')}"
