@@ -53,12 +53,18 @@ def triage(
         not_found_label = f"{runs_dirs[0][0]}"
     else:
         ws = workspace or _workspace_from_cwd()
-        runs_dirs = [
-            (ws / "nxp" / "build" / "runs", "nxp"),
-            (ws / "ti" / "build" / "runs", "ti"),
-        ]
+        # meta-avocado builds land in ws/build-<stem>/build/runs/
+        avocado_dirs = sorted(ws.glob("build-*/build/runs"))
+        if avocado_dirs:
+            runs_dirs = [(d, "generic") for d in avocado_dirs]
+            not_found_label = " or ".join(str(d) for d in avocado_dirs[:2])
+        else:
+            runs_dirs = [
+                (ws / "nxp" / "build" / "runs", "nxp"),
+                (ws / "ti" / "build" / "runs", "ti"),
+            ]
+            not_found_label = "nxp/build/runs/ or ti/build/runs/"
         report_root = ws
-        not_found_label = "nxp/build/runs/ or ti/build/runs/"
 
     found = _find_run(runs_dirs, run_id)
     if found is None:
