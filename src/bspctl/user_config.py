@@ -22,7 +22,7 @@ _STR_FIELDS = {
     "sstate_mirrors",
     "scheduler",
 }
-_BOOL_FIELDS = {"doctor", "show_hashes"}
+_BOOL_FIELDS = {"doctor", "show_hashes", "hashserv"}
 _INT_FIELDS: set[str] = set()
 _PSI_FIELDS = {"pressure_max_cpu", "pressure_max_io", "pressure_max_memory"}
 
@@ -50,6 +50,7 @@ class UserConfig:
     pressure_max_cpu: float | None = None
     pressure_max_io: float | None = None
     pressure_max_memory: float | None = None
+    hashserv: bool = False
     # [layers]
     show_hashes: bool = False
 
@@ -80,6 +81,7 @@ _BUILD_KEYS = {
     "pressure_max_cpu": "pressure_max_cpu",
     "pressure_max_io": "pressure_max_io",
     "pressure_max_memory": "pressure_max_memory",
+    "hashserv": "hashserv",
 }
 _LAYERS_KEYS = {
     "show_hashes": "show_hashes",

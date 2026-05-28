@@ -220,3 +220,53 @@ def test_set_then_load_pressure_key_round_trip(tmp_path: Path) -> None:
 
     assert cfg.pressure_max_cpu == 55
     assert isinstance(cfg.pressure_max_cpu, (int, float))
+
+
+@pytest.mark.unit
+def test_load_user_config_hashserv_default_false(tmp_path: Path) -> None:
+    """`hashserv` defaults to False when the `[build]` table omits it."""
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("[build]\ndoctor = true\n")
+
+    cfg = load_user_config(config_file)
+
+    assert cfg.hashserv is False
+    assert isinstance(cfg.hashserv, bool)
+
+
+@pytest.mark.unit
+def test_load_user_config_hashserv_true_loads(tmp_path: Path) -> None:
+    """`[build] hashserv = true` loads as a real boolean True."""
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("[build]\nhashserv = true\n")
+
+    cfg = load_user_config(config_file)
+
+    assert cfg.hashserv is True
+    assert isinstance(cfg.hashserv, bool)
+
+
+@pytest.mark.unit
+def test_load_user_config_hashserv_type_mismatch_raises(tmp_path: Path) -> None:
+    """A non-bool value for `hashserv` raises ValueError mentioning the field."""
+    toml_content = textwrap.dedent("""\
+        [build]
+        hashserv = "yes"
+    """)
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(toml_content)
+
+    with pytest.raises(ValueError, match="hashserv"):
+        load_user_config(config_file)
+
+
+@pytest.mark.unit
+def test_set_setting_build_hashserv_round_trip(tmp_path: Path) -> None:
+    """`set_setting('build.hashserv', 'true')` round-trips through load_user_config."""
+    config_file = tmp_path / "config.toml"
+    set_setting("build.hashserv", "true", path=config_file)
+
+    cfg = load_user_config(config_file)
+
+    assert cfg.hashserv is True
+    assert isinstance(cfg.hashserv, bool)
