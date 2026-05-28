@@ -32,6 +32,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import yaml
 from rich.progress import (
     BarColumn,
     Progress,
@@ -173,6 +174,30 @@ def _write_meta_avocado_wrapper(cfg: BuildConfig, kas_yaml: Path) -> Path:
     return wrapper
 
 
+def _strip_branch_from_dump(dump_path: Path) -> None:
+    """Remove ``branch:`` from repos that have a pinned ``commit:``.
+
+    When both are present, kas validates that ``origin/<branch>`` contains
+    the commit after a remote fetch inside the container. If the remote was
+    rebased the hash is no longer reachable from the branch, failing the
+    build even though the commit is locally present. Keeping only ``commit:``
+    avoids that validation without changing the checkout target.
+    """
+    data = yaml.safe_load(dump_path.read_text(encoding="utf-8"))
+    if not data or not isinstance(data.get("repos"), dict):
+        return
+    changed = False
+    for repo in data["repos"].values():
+        if isinstance(repo, dict) and repo.get("commit") and "branch" in repo:
+            del repo["branch"]
+            changed = True
+    if changed:
+        dump_path.write_text(
+            yaml.dump(data, default_flow_style=False, sort_keys=False, indent=4),
+            encoding="utf-8",
+        )
+
+
 def _run_kas_dump(
     cfg: BuildConfig,
     wrapper: Path,
@@ -204,9 +229,10 @@ def _run_kas_dump(
         text=True,
         check=False,
     )
+    dump = cfg.bsp_root / "avocado-bspctl.yml"
     if result.returncode == 0:
-        dump = cfg.bsp_root / "avocado-bspctl.yml"
         dump.write_text(result.stdout, encoding="utf-8")
+        _strip_branch_from_dump(dump)
         return dump
 
     # Remote branch was rebased: the commit hash in the YAML is no longer
@@ -224,8 +250,8 @@ def _run_kas_dump(
             check=False,
         )
         if retry.returncode == 0:
-            dump = cfg.bsp_root / "avocado-bspctl.yml"
             dump.write_text(retry.stdout, encoding="utf-8")
+            _strip_branch_from_dump(dump)
             return dump
         raise RuntimeError(f"kas dump --skip repos_checkout failed (exit {retry.returncode}):\n{retry.stderr}")
 
