@@ -81,7 +81,7 @@ def doctor(
         console.print("[bold]Monitoring /proc/pressure/ - run your build now. Press Ctrl+C to stop.[/]")
         try:
             while True:
-                table = Table(title="PSI avg10 (current / peak)", show_header=True)
+                table = Table(title="PSI avg10 (current / peak)", show_header=True, show_edge=False)
                 table.add_column("Dimension")
                 table.add_column("Current")
                 table.add_column("Peak")

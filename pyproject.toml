@@ -38,7 +38,7 @@ Homepage = "https://github.com/jetm/bspctl"
 Repository = "https://github.com/jetm/bspctl"
 
 [project.scripts]
-bspctl = "bspctl.cli:app"
+bspctl = "bspctl.cli:main"
 
 [dependency-groups]
 dev = [
