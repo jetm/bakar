@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added `bspctl layers` command to inspect which git revisions back each synced layer without running a full build.
+- Added `bspctl for-all <cmd>` command to run a shell command across every cloned source repository, exporting `BSPCTL_REPO_NAME`, `BSPCTL_REPO_PATH`, and `BSPCTL_REPO_COMMIT` per invocation; exits non-zero if any repo fails while still visiting all repos.
+- Added `bspctl settings` subcommand (`list`, `get`, `set`, `unset`) for managing `~/.config/bspctl/config.toml` without hand-editing; unknown keys and type mismatches are rejected with a non-zero exit.
+- Added `bspctl diff <old> <new>` to compare layer SHAs between two NXP/TI manifest XMLs or delegate to `kas diff` for BYO/bbsetup configs.
+- Added `bspctl prefetch` to run `bitbake --runall=fetch` through the existing kas environment, enabling offline source population without a full build.
+- Added `bspctl dump` to print or stream the fully resolved kas YAML (after include expansion and overlay merging) to stdout or a file.
+- Added `bspctl lock` to pin floating layer SHAs: wraps `repo manifest -r` for NXP workspaces and `kas lock` for BYO/bbsetup/TI.
+- Added `bspctl report [run-id]` to display a post-build summary (image size, duration, layer state) in human-readable or `--json` form, resolving the latest run when no ID is given.
+- Added `bspctl clean-sstate` for age-based sstate-cache pruning (default 30 days, dry-run by default; `--yes` deletes). Automatically detects `noatime` mounts and falls back to mtime-based pruning with a warning.
+- Added `bspctl hashserv` subcommand (`start`, `stop`, `status`) for explicit lifecycle control of a persistent per-workspace `bitbake-hashserv` daemon; `bspctl build` auto-starts the daemon when `build.hashserv = true` is set in config.
+- Added seven new `[build]` config keys accessible via `bspctl settings`: `dl_dir`, `sstate_dir`, `sstate_mirrors`, `scheduler`, `pressure_max_cpu`, `pressure_max_io`, and `pressure_max_memory`. Integer keys are stored as integers (not strings) in config.toml.
+- Added `--psi-calibrate` flag to `bspctl doctor` to sample CPU/IO/memory pressure at 0.5 s intervals and recommend `pressure_max_*` thresholds at peak + 20% headroom.
+- Added new `bspctl doctor` pre-flight checks: PSI kernel support, git global identity (honoring `includeIf` conditionals), kas YAML syntax, workspace filesystem hardlink safety, Docker version (≥ 20.10) and storage driver (`overlay2`), ccache fill level, and persistent hashserv reachability.
+- Added a `bspctl-tuning-hashequiv.yml` opt-in overlay enabling OEEquivHash with a local `BB_HASHSERVE`; when `build.hashserv = true` is configured, bspctl automatically appends this overlay (deduplicating if the user also passes it explicitly).
+- Added per-command documentation under `docs/` and a navigation index at `docs/index.md`; README condensed to a quickstart with a commands table.
+
+### Changed
+- Raised minimum Python version to 3.14; Python 3.12 and 3.13 are no longer supported.
+- Log output from the Rich console now goes to stderr, keeping stdout clean for commands like `gen-kas` that emit machine-readable text.
+- `bspctl doctor` git identity check now runs from the workspace directory so `includeIf "gitdir:..."` conditionals are honoured; a false BLOCK no longer fires for developers using per-project git identities.
+- `BB_DISKMON_DIRS` in all tuning overlays updated from deprecated `ABORT` keyword to `HALT` (required for Yocto scarthgap and later).
+- All tuning overlays now set `BB_HASHSERVE_UPSTREAM = ""` to prevent silent build hangs when the container cannot reach the public Yocto hash equivalence server.
+- `bspctl clean --all` now gracefully stops the persistent hashserv daemon before wiping the workspace, preventing SQLite WAL corruption.
+- Settings config file is now written atomically (temp file + replace) to prevent truncation on crash.
+- `for-all` now catches `OSError` from subprocess invocation so a removed or inaccessible repo directory counts as a failure and the loop continues to remaining repos.
+
+### Fixed
+- Fixed `bspctl report` crashing with `UnboundLocalError` on NXP/TI workspaces due to the `family` variable being read before assignment.
+- Fixed `bspctl diff` silently treating BYO kas configs as empty NXP manifests; dispatch now keys on file type (`.xml` → structural diff, everything else → `kas diff`).
+- Fixed `bspctl doctor` kas-yaml-syntax check incorrectly returning FAIL for a valid YAML when the remote branch was rebased; the check now returns SKIP so the subsequent sync step can repair git state.
+- Fixed `bspctl doctor` kas-yaml-syntax error message showing an irrelevant INFO log line instead of the actual ERROR message.
+- Fixed exception handling in the disk-usage sampler that was silently swallowing programmer errors; narrowed to `(SubprocessError, OSError, ValueError)` and logs only the first failure instead of flooding the run log.
+- Fixed `triage` not finding run directories for meta-avocado workspaces (builds land in `build-<stem>/build/runs/`).
+
 ## [0.4.0] - 2026-05-26
 
 ### Added
@@ -102,3 +137,4 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 [0.0.3]: https://github.com/jetm/bspctl/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/jetm/bspctl/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/jetm/bspctl/releases/tag/v0.0.1
+

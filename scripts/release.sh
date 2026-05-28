@@ -134,7 +134,7 @@ uv sync --frozen
 # permitted between these two commands - that window is the v0.0.3 failure
 # mode this script exists to prevent.
 echo "==> uv run bump-my-version bump $BUMP_TYPE"
-uv run bump-my-version bump "$BUMP_TYPE"
+TERM=dumb uv run bump-my-version bump "$BUMP_TYPE"
 echo "==> git push origin main --follow-tags"
 git push origin main --follow-tags
 

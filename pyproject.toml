@@ -60,6 +60,7 @@ build-backend = "uv_build"
 current_version = "0.4.0"
 commit = true
 tag = true
+allow_dirty = true
 tag_name = "v{new_version}"
 message = "Bump version: {current_version} → {new_version}"
 pre_commit_hook = "uv sync && git add uv.lock"
