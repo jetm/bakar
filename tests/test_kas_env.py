@@ -260,3 +260,62 @@ def test_build_env_omits_bb_hashserve_when_ensure_running_returns_none(
     env = _build_env(cfg)
 
     assert "BB_HASHSERVE" not in env
+
+
+# ---------------------------------------------------------------------------
+# _ccache_args runtime-args concatenation (host-gateway injection) tests
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_args_host_mode_returns_empty(tmp_path: Path) -> None:
+    """Host mode: no container runtime args at all."""
+    cfg = _hashequiv_cfg(tmp_path, use_hashequiv=True, host_mode=True)
+    assert _ccache_args(cfg) == []
+
+
+def test_runtime_args_container_no_hashserv_returns_ccache_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """use_hashequiv False: single --runtime-args pair, ccache mount only, no --add-host."""
+    cfg = _hashequiv_cfg(tmp_path, use_hashequiv=False, host_mode=False)
+    result = _ccache_args(cfg)
+    assert len(result) == 2
+    assert result[0] == "--runtime-args"
+    assert f"-v {tmp_path / 'ccache'}:/work/ccache:rw" in result[1]
+    assert "host.docker.internal" not in result[1]
+
+
+def test_runtime_args_container_with_hashserv_appends_add_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """use_hashequiv True + daemon running: both ccache mount and --add-host inside same string."""
+    monkeypatch.setattr(
+        "bspctl.steps.kas_build.hashserv.is_running",
+        lambda _root: True,
+    )
+    cfg = _hashequiv_cfg(tmp_path, use_hashequiv=True, host_mode=False)
+    result = _ccache_args(cfg)
+    # Pin the single-flag shape: must be exactly 2 elements, not 4. A two-pair
+    # `[--runtime-args, X, --runtime-args, Y]` shape would let the second
+    # occurrence overwrite the first inside kas-container.
+    assert len(result) == 2
+    assert result[0] == "--runtime-args"
+    assert f"-v {tmp_path / 'ccache'}:/work/ccache:rw" in result[1]
+    assert "--add-host=host.docker.internal:host-gateway" in result[1]
+
+
+def test_runtime_args_container_hashserv_configured_but_not_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """use_hashequiv True but daemon is not running: no --add-host injected."""
+    monkeypatch.setattr(
+        "bspctl.steps.kas_build.hashserv.is_running",
+        lambda _root: False,
+    )
+    cfg = _hashequiv_cfg(tmp_path, use_hashequiv=True, host_mode=False)
+    result = _ccache_args(cfg)
+    assert len(result) == 2
+    assert result[0] == "--runtime-args"
+    assert f"-v {tmp_path / 'ccache'}:/work/ccache:rw" in result[1]
+    assert "host.docker.internal" not in result[1]
+    assert "--add-host" not in result[1]

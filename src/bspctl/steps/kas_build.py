@@ -244,13 +244,25 @@ def _resolve_user_yaml(cfg: BuildConfig, kas_yaml: Path) -> Path:
 
 
 def _ccache_args(cfg: BuildConfig) -> list[str]:
-    """Return ``['--runtime-args', '-v host:/work/ccache:rw']`` for container builds.
+    """Return ``['--runtime-args', '<concatenated string>']`` for container builds.
 
     ``kas-container`` unconditionally resets ``KAS_RUNTIME_ARGS`` to its own
     defaults before its option-parsing loop, so injecting the flag via an env
     var is silently discarded.  The ``--runtime-args`` CLI flag (processed
     after the reset) is the only reliable injection point.  Returns an empty
     list for host-mode builds where no container is involved.
+
+    The returned list is shaped as exactly two elements: ``--runtime-args``
+    followed by a single concatenated string value. kas-container parses
+    ``--runtime-args`` as one string; emitting two ``--runtime-args`` pairs
+    would let the second occurrence overwrite the first.
+
+    The string always contains the workspace ccache bind mount. When
+    ``cfg.use_hashequiv`` is True AND the persistent hashserv daemon is
+    actually running (``hashserv.is_running(cfg.bsp_root)``), a Docker
+    ``--add-host=host.docker.internal:host-gateway`` flag is appended to
+    the SAME string so the container can route ``host.docker.internal``
+    back to the host bridge and reach the daemon.
 
     Creates the host-side ccache directory when absent so the Docker
     bind-mount never targets a missing path.
@@ -259,7 +271,10 @@ def _ccache_args(cfg: BuildConfig) -> list[str]:
         return []
     ccache_host = cfg.workspace / "ccache"
     ccache_host.mkdir(exist_ok=True)
-    return ["--runtime-args", f"-v {ccache_host}:/work/ccache:rw"]
+    runtime_args = f"-v {ccache_host}:/work/ccache:rw"
+    if cfg.use_hashequiv and hashserv.is_running(cfg.bsp_root):
+        runtime_args += " --add-host=host.docker.internal:host-gateway"
+    return ["--runtime-args", runtime_args]
 
 
 def regenerate_yaml(cfg: BuildConfig, log: RunLogger, *, bsp: BspModel) -> None:
