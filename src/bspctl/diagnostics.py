@@ -847,13 +847,15 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
         # problems. Skip so a stale commit reference does not block an
         # otherwise-valid build; the sync step will reconcile the state.
         if "does not contain commit" in first_line or "no such remote ref" in first_line:
-            # Strip kas log prefix "DATE TIME - LEVEL    - " to surface just the message.
+            # Strip kas log prefix "DATE TIME - LEVEL    - " and truncate long commit
+            # hashes to 12 chars so the detail fits in a single table row.
             parts = first_line.strip().split(" - ", 2)
             msg = parts[2] if len(parts) >= 3 else first_line.strip()
+            msg = re.sub(r"\b([0-9a-f]{12})[0-9a-f]{28}\b", r"\1", msg)
             return _skip(
                 name,
                 Severity.BLOCK,
-                f"git-state mismatch (YAML valid, run bspctl sync): {msg}",
+                f"git-state mismatch (run bspctl sync): {msg}",
             )
         return _fail(
             name,
