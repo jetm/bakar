@@ -169,6 +169,23 @@ def _overlay_for(bsp: BspModel | None) -> Path:
     return path
 
 
+def _hashequiv_extra_overlays(cfg: BuildConfig) -> list[Path]:
+    """Return the hashequiv overlay path when ``cfg.use_hashequiv`` is True.
+
+    Returns ``[<overlay-dir>/bspctl-tuning-hashequiv.yml]`` when the user has
+    opted into the hash-equivalence daemon via ``[build] hashserv = true`` AND
+    the overlay file is present in the installed ``overlays/`` directory.
+    Returns ``[]`` otherwise. Callers append the result to ``extra_overlays``
+    so kas layers the hashequiv tuning on top of the per-BSP tuning overlay.
+    """
+    if not cfg.use_hashequiv:
+        return []
+    path = _overlay_dir() / "bspctl-tuning-hashequiv.yml"
+    if not path.is_file():
+        return []
+    return [path]
+
+
 # ---------------------------------------------------------------------------
 # Build-directory cleanup
 # ---------------------------------------------------------------------------
