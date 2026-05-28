@@ -47,8 +47,14 @@ def clean(
         if family is None:
             console.print("[red]could not auto-detect BSP from cwd. Pass --bsp nxp|ti or --manifest <file>.[/]")
             raise typer.Exit(code=2)
-
     cfg = resolve(workspace=ws, bsp_family=family, user_config=_state._USER_CONFIG)
+    if all:
+        # Stop the workspace hashserv daemon before wiping so it isn't
+        # orphaned pointing at a removed working directory. Lazy import to
+        # avoid any future import cycle if hashserv grows transitive deps.
+        from bspctl import hashserv
+
+        hashserv.stop(cfg.bsp_root)
     _clean_build_dir(cfg)
     if all and cfg.kas_yaml.exists():
         cfg.kas_yaml.unlink()
