@@ -114,3 +114,61 @@ def test_stop_when_not_running(runner: _CliRunner, workspace: Path, monkeypatch:
 
     assert result.exit_code == 0, result.output
     assert "not running" in result.output
+
+
+def test_status_accepts_explicit_workspace(
+    runner: _CliRunner,
+    workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``status --workspace WS`` resolves the workspace from the flag, not cwd."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setattr(hashserv_cmd.hashserv, "is_running", lambda _root: False)
+
+    result = runner.invoke(app, ["hashserv", "status", "--workspace", str(workspace)])
+
+    assert result.exit_code == 0, result.output
+    assert "not running" in result.output
+
+
+def test_start_accepts_explicit_workspace(
+    runner: _CliRunner,
+    workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``start --workspace WS`` resolves the workspace from the flag, not cwd."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setattr(
+        hashserv_cmd.hashserv,
+        "ensure_running",
+        lambda _root: "ws://localhost:51847",
+    )
+
+    result = runner.invoke(app, ["hashserv", "start", "--workspace", str(workspace)])
+
+    assert result.exit_code == 0, result.output
+    assert "started:" in result.output
+
+
+def test_stop_accepts_explicit_workspace(
+    runner: _CliRunner,
+    workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``stop --workspace WS`` resolves the workspace from the flag, not cwd."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setattr(hashserv_cmd.hashserv, "stop", lambda _root: True)
+
+    result = runner.invoke(app, ["hashserv", "stop", "--workspace", str(workspace)])
+
+    assert result.exit_code == 0, result.output
+    assert "stopped" in result.output
