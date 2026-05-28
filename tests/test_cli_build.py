@@ -138,9 +138,7 @@ def test_hashequiv_overlay_deduped_when_user_passes_it(
     assert len(recorded) == 1, f"expected exactly one run_build call, got {recorded!r}"
 
     hashequiv_entries = [p for p in recorded[0] if p.name == "bspctl-tuning-hashequiv.yml"]
-    assert len(hashequiv_entries) == 1, (
-        f"expected hashequiv overlay to appear EXACTLY once, got {hashequiv_entries!r}"
-    )
+    assert len(hashequiv_entries) == 1, f"expected hashequiv overlay to appear EXACTLY once, got {hashequiv_entries!r}"
 
 
 def test_hashequiv_overlay_not_appended_when_use_hashequiv_false(
@@ -171,6 +169,4 @@ def test_hashequiv_overlay_not_appended_when_use_hashequiv_false(
     assert len(recorded) == 1, f"expected exactly one run_build call, got {recorded!r}"
 
     hashequiv_entries = [p for p in recorded[0] if p.name == "bspctl-tuning-hashequiv.yml"]
-    assert hashequiv_entries == [], (
-        f"expected no hashequiv overlay when use_hashequiv=False, got {hashequiv_entries!r}"
-    )
+    assert hashequiv_entries == [], f"expected no hashequiv overlay when use_hashequiv=False, got {hashequiv_entries!r}"

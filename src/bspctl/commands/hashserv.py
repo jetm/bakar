@@ -2,21 +2,23 @@
 
 The sub-app exposes three verbs (``start``, ``stop``, ``status``) that drive the
 ``bspctl.hashserv`` module against the current workspace. Workspace resolution
-mirrors the no-manifest read-only commands (``layers``, ``for-all``): walk up
-from CWD via ``_workspace_from_cwd`` and dispatch through ``_dispatch_bsp(None)``
-so the same NXP/TI default applies as elsewhere.
+mirrors the no-manifest read-only commands (``layers``, ``for-all``): each verb
+accepts ``--workspace/-w`` and falls back to walking up from CWD via
+``_resolve_workspace``; dispatch through ``_dispatch_bsp(None)`` so the same
+NXP/TI default applies as elsewhere.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
 import bspctl.commands._app as _state
 from bspctl import hashserv
 from bspctl.commands._app import app, console
-from bspctl.commands._helpers import _dispatch_bsp, _workspace_from_cwd
+from bspctl.commands._helpers import _dispatch_bsp, _resolve_workspace
 from bspctl.config import resolve
 
 hashserv_app = typer.Typer(
@@ -25,18 +27,18 @@ hashserv_app = typer.Typer(
 )
 
 
-def _resolve_bsp_root() -> Path:
+def _resolve_bsp_root(workspace: Path | None = None) -> Path:
     """Resolve the per-family BSP root for the current workspace.
 
-    Mirrors the doctor command's no-manifest path: walk up from CWD to find
-    the workspace, dispatch the BSP family (defaulting to NXP when no
-    manifest argument or env var is set), and return the resolved
-    ``BuildConfig.bsp_root``.
+    Mirrors the doctor command's no-manifest path: walk up from CWD (or
+    use the explicit ``workspace`` when supplied) to find the workspace,
+    dispatch the BSP family (defaulting to NXP when no manifest argument
+    or env var is set), and return the resolved ``BuildConfig.bsp_root``.
     """
-    workspace = _workspace_from_cwd()
     family, _bsp = _dispatch_bsp(None)
+    ws = _resolve_workspace(workspace, family=family)
     cfg = resolve(
-        workspace=workspace,
+        workspace=ws,
         bsp_family=family,
         user_config=_state._USER_CONFIG,
     )
@@ -44,9 +46,14 @@ def _resolve_bsp_root() -> Path:
 
 
 @hashserv_app.command("start")
-def start() -> None:
+def start(
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", "-w", help="Workspace root; auto-detected if omitted"),
+    ] = None,
+) -> None:
     """Start the workspace hashserv daemon (or report the existing URL)."""
-    bsp_root = _resolve_bsp_root()
+    bsp_root = _resolve_bsp_root(workspace)
     url = hashserv.ensure_running(bsp_root)
     if url is None:
         console.print(
@@ -58,9 +65,14 @@ def start() -> None:
 
 
 @hashserv_app.command("stop")
-def stop() -> None:
+def stop(
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", "-w", help="Workspace root; auto-detected if omitted"),
+    ] = None,
+) -> None:
     """Signal the workspace hashserv daemon to stop and clean PID/port files."""
-    bsp_root = _resolve_bsp_root()
+    bsp_root = _resolve_bsp_root(workspace)
     if hashserv.stop(bsp_root):
         console.print("stopped")
     else:
@@ -68,9 +80,14 @@ def stop() -> None:
 
 
 @hashserv_app.command("status")
-def status() -> None:
+def status(
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", "-w", help="Workspace root; auto-detected if omitted"),
+    ] = None,
+) -> None:
     """Print the current daemon state (URL + PID, or ``not running``)."""
-    bsp_root = _resolve_bsp_root()
+    bsp_root = _resolve_bsp_root(workspace)
     if not hashserv.is_running(bsp_root):
         console.print("not running")
         return
