@@ -616,6 +616,39 @@ def test_check_kas_yaml_syntax_invalid(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert str(yaml_path) in result.fix_hint
 
 
+def test_check_kas_yaml_syntax_git_state_mismatch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """kas dump exits 1 with a branch/commit error -> SKIP (not FAIL).
+
+    kas validates git history in addition to YAML syntax. A branch/commit
+    mismatch is a workspace sync issue, not a YAML problem, and must not
+    block the build.
+    """
+    yaml_path = tmp_path / "qemux86-64.yml"
+    yaml_path.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
+    cfg = _kas_yaml_cfg(yaml_path)
+
+    def fake_run(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr=(
+                "2026-05-28 09:58:58 - INFO     - kas 5.2 started on CachyOS Linux n/a\n"
+                "2026-05-28 09:58:59 - INFO     - Repository bitbake updated\n"
+                '2026-05-28 09:58:59 - ERROR    - Branch "2.8-avocado" in repository '
+                '"bitbake" does not contain commit "3cc471212"\n'
+            ),
+        )
+
+    monkeypatch.setattr("bspctl.diagnostics.subprocess.run", fake_run)
+    monkeypatch.setattr("bspctl.diagnostics.shutil.which", lambda _name: "/usr/bin/kas")
+    result = check_kas_yaml_syntax(cfg)
+    assert result.status is Status.SKIP
+    assert result.severity is Severity.BLOCK
+    assert "git-state mismatch" in result.message
+    assert "does not contain commit" in result.message
+
+
 def test_check_kas_yaml_syntax_kas_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Container-mode workspace with no host ``kas`` binary -> SKIP at BLOCK."""
     yaml_path = tmp_path / "kas.yml"
@@ -1054,7 +1087,8 @@ def test_check_hashserv_fail_when_configured_but_not_running(tmp_path: Path, mon
     assert result.status == Status.FAIL
     assert result.severity == Severity.WARN
     assert "not running" in result.message
-    assert result.fix_hint == "bspctl hashserv start"
+    assert result.fix_hint is not None
+    assert "bspctl hashserv start" in result.fix_hint
 
 
 def test_check_hashserv_fail_when_port_unreachable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1099,7 +1133,8 @@ def test_check_hashserv_fail_when_port_file_deleted_mid_check(tmp_path: Path, mo
     assert result.status == Status.FAIL
     assert result.severity == Severity.WARN
     assert "not running" in result.message
-    assert result.fix_hint == "bspctl hashserv start"
+    assert result.fix_hint is not None
+    assert "bspctl hashserv start" in result.fix_hint
 
 
 def test_check_hashserv_in_shared_not_in_docker() -> None:

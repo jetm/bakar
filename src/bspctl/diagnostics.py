@@ -836,14 +836,26 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return _skip(name, Severity.BLOCK, f"kas unavailable: {exc}")
     if out.returncode != 0:
-        first_line = next(
-            (line for line in out.stderr.splitlines() if line.strip()),
+        stderr_lines = out.stderr.splitlines()
+        # kas emits INFO/WARNING lines before ERROR lines; find the first ERROR.
+        error_line = next((line for line in stderr_lines if " - ERROR" in line), None)
+        first_line = error_line or next(
+            (line for line in stderr_lines if line.strip()),
             "kas dump exited non-zero with empty stderr",
         )
+        # Git repo state errors (branch/commit mismatch) are not YAML syntax
+        # problems. Skip so a stale commit reference does not block an
+        # otherwise-valid build; the sync step will reconcile the state.
+        if "does not contain commit" in first_line or "no such remote ref" in first_line:
+            return _skip(
+                name,
+                Severity.BLOCK,
+                f"git-state mismatch (YAML valid, run bspctl sync): {first_line.strip()}",
+            )
         return _fail(
             name,
             Severity.BLOCK,
-            f"{kas_yaml}: {first_line}",
+            f"{kas_yaml}: {first_line.strip()}",
             fix_hint=f"Edit {kas_yaml} and re-run; see `kas dump {kas_yaml}` for the full parser error.",
         )
     return _ok(name, Severity.BLOCK, f"{kas_yaml} parses cleanly")
@@ -954,7 +966,11 @@ def check_docker_version(cfg: BuildConfig) -> CheckResult:
     head = raw.split("-", 1)[0].split("+", 1)[0]
     parts = head.split(".")
     try:
-        version = tuple(int(x) for x in parts[:3])
+        seg = [int(x) for x in parts[:3]]
+        # Pad to 3 segments so (20, 10) >= (20, 10, 0) compares correctly.
+        while len(seg) < 3:
+            seg.append(0)
+        version = tuple(seg)
     except ValueError:
         return _skip(name, Severity.WARN, f"unparseable docker version: {raw!r}")
 
@@ -1040,6 +1056,7 @@ def check_ccache_health(cfg: BuildConfig) -> CheckResult:
             capture_output=True,
             text=True,
             timeout=5,
+            env={**os.environ, "CCACHE_DIR": str(ccache_dir)},
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return _skip(name, Severity.WARN, f"ccache --print-stats failed: {exc}")
@@ -1123,7 +1140,7 @@ def check_hashserv(cfg: BuildConfig) -> CheckResult:
         return _skip(name, Severity.INFO, "hashserv daemon not configured ([build] hashserv = false)")
 
     not_running_msg = "hashserv configured but daemon is not running"
-    not_running_hint = "bspctl hashserv start"
+    not_running_hint = "bspctl hashserv start  (bspctl build will auto-start it)"
 
     if not hashserv.is_running(cfg.bsp_root):
         return _fail(name, Severity.WARN, not_running_msg, fix_hint=not_running_hint)
