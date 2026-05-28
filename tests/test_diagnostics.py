@@ -22,7 +22,9 @@ from bspctl.diagnostics import (
     SHARED_CHECKS,
     Severity,
     Status,
+    _read_sysctl,
     check_bbsetup_config_sources,
+    check_bitbake_locks,
     check_container_os,
     check_host_tools,
     check_psi_support,
@@ -345,3 +347,64 @@ def test_check_psi_support_in_shared_checks_not_docker_checks() -> None:
     """check_psi_support is in SHARED_CHECKS and absent from _DOCKER_CHECKS."""
     assert check_psi_support in SHARED_CHECKS
     assert check_psi_support not in _DOCKER_CHECKS
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the `except A, B:` Python 2 syntax fix
+# ---------------------------------------------------------------------------
+
+
+def test_check_bitbake_locks_handles_oserror(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An OSError reading bitbake.lock must hit the cleanup branch, not crash.
+
+    Before the fix, ``except ValueError, OSError:`` was parsed as Python 2
+    syntax (``except ValueError as OSError:``) so an OSError would propagate
+    as an unhandled exception. The fix is ``except (ValueError, OSError):``.
+    """
+    build_dir = tmp_path / "ti" / "build"
+    build_dir.mkdir(parents=True)
+    lock = build_dir / "bitbake.lock"
+    lock.write_text("12345")
+
+    cfg = BuildConfig(
+        workspace=tmp_path,
+        bsp_family="ti",
+        machine="am62x-var-som",
+        distro="arago",
+        image="var-thin-image",
+        manifest="processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt",
+        repo_url="https://example.invalid/none.git",
+        repo_branch="scarthgap",
+        container_image="jetm/kas-build-env:latest",
+    )
+
+    real_read_text = Path.read_text
+
+    def _raising_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        if self == lock:
+            raise OSError("simulated I/O failure")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _raising_read_text)
+    # Stub the cleanup helper - the parallel bug at kas_build.py:319 would
+    # otherwise propagate the OSError through and mask the diagnostics fix.
+    monkeypatch.setattr(
+        "bspctl.steps.kas_build.clear_stale_bitbake_locks",
+        lambda _cfg: [lock],
+    )
+
+    result = check_bitbake_locks(cfg)
+
+    assert result.status == Status.PASS
+    assert result.severity == Severity.BLOCK
+    assert "unreadable" in result.message
+
+
+def test_read_sysctl_returns_none_on_missing_file() -> None:
+    """``_read_sysctl`` must return ``None`` for a sysctl key with no proc file.
+
+    Before the fix, ``except FileNotFoundError, ValueError:`` was parsed as
+    Python 2 syntax, so only FileNotFoundError was caught and the variable
+    ``ValueError`` was shadowed. The fix is ``except (FileNotFoundError, ValueError):``.
+    """
+    assert _read_sysctl("does.not.exist") is None
