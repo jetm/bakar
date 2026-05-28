@@ -31,6 +31,7 @@ from bspctl.diagnostics import (
     check_kas_yaml_syntax,
     check_psi_support,
     check_sysctl,
+    check_workspace_filesystem,
     run_all,
 )
 
@@ -623,3 +624,92 @@ def test_check_kas_yaml_syntax_kas_missing(monkeypatch: pytest.MonkeyPatch, tmp_
     assert result.status is Status.SKIP
     assert result.severity is Severity.BLOCK
     assert "kas binary not on host PATH" in result.message
+
+
+def _fs_cfg(workspace: Path) -> BuildConfig:
+    """BuildConfig pinning ``workspace`` so ``cfg.workspace.resolve()`` is deterministic."""
+    return BuildConfig(
+        workspace=workspace,
+        bsp_family="generic",
+        machine="qemux86-64",
+        distro="poky",
+        image="core-image-minimal",
+        manifest="kas.yml",
+        repo_url="https://example.invalid/none.git",
+        repo_branch="scarthgap",
+        container_image="jetm/kas-build-env:latest",
+    )
+
+
+def _patch_proc_mounts(monkeypatch: pytest.MonkeyPatch, content: str) -> None:
+    """Patch ``Path.read_text`` so reads of ``/proc/mounts`` return ``content``.
+
+    Other paths in the test (``tmp_path``, kas YAML files, etc.) keep their
+    real ``read_text`` behavior. ``Path.read_text`` is monkeypatched on the
+    class itself, then dispatches on ``self``.
+    """
+    real_read_text = Path.read_text
+
+    def fake_read_text(self: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if str(self) == "/proc/mounts":
+            return content
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+
+def test_check_workspace_filesystem_ext4(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Workspace on ext4 -> PASS at WARN severity, message names the fstype."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    mounts = f"none / overlay rw 0 0\nnone {workspace.resolve()} ext4 rw 0 0\n"
+    _patch_proc_mounts(monkeypatch, mounts)
+    result = check_workspace_filesystem(_fs_cfg(workspace))
+    assert result.status is Status.PASS
+    assert result.severity is Severity.WARN
+    assert "ext4" in result.message
+
+
+def test_check_workspace_filesystem_nfs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Workspace on nfs -> FAIL at WARN severity with a fix_hint."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    mounts = f"none / overlay rw 0 0\nserver:/export {workspace.resolve()} nfs rw 0 0\n"
+    _patch_proc_mounts(monkeypatch, mounts)
+    result = check_workspace_filesystem(_fs_cfg(workspace))
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.WARN
+    assert "nfs" in result.message
+    assert result.fix_hint is not None
+    assert "ext4" in result.fix_hint or "btrfs" in result.fix_hint or "xfs" in result.fix_hint
+
+
+def test_check_workspace_filesystem_unknown_fs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Workspace on tmpfs -> PASS at WARN with an 'unrecognized' message."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    mounts = f"none / overlay rw 0 0\ntmpfs {workspace.resolve()} tmpfs rw 0 0\n"
+    _patch_proc_mounts(monkeypatch, mounts)
+    result = check_workspace_filesystem(_fs_cfg(workspace))
+    assert result.status is Status.PASS
+    assert result.severity is Severity.WARN
+    assert "unrecognized" in result.message
+    assert "tmpfs" in result.message
+
+
+def test_check_workspace_filesystem_unreadable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``/proc/mounts`` raises ``OSError`` -> SKIP at WARN severity."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    real_read_text = Path.read_text
+
+    def fake_read_text(self: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if str(self) == "/proc/mounts":
+            raise OSError("permission denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+    result = check_workspace_filesystem(_fs_cfg(workspace))
+    assert result.status is Status.SKIP
+    assert result.severity is Severity.WARN
+    assert "unreadable" in result.message

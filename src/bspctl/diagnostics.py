@@ -836,6 +836,81 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
     return _ok(name, Severity.BLOCK, f"{kas_yaml} parses cleanly")
 
 
+# Recognized local-disk filesystems where Yocto/BitBake builds run cleanly.
+_FS_ALLOW: frozenset[str] = frozenset({"ext4", "btrfs", "xfs", "zfs", "overlay"})
+
+# Filesystems known to break or severely degrade BitBake builds: case
+# sensitivity, hardlink/permission semantics, or network latency render them
+# unusable as a workspace root.
+_FS_BLOCK: frozenset[str] = frozenset({"vfat", "exfat", "ntfs", "9p", "nfs", "nfs4", "cifs", "smb", "smb3", "smbfs"})
+
+
+def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
+    """Detect the filesystem hosting ``cfg.workspace`` via ``/proc/mounts``.
+
+    Network filesystems and FAT variants silently break BitBake (case
+    folding, missing xattrs, no atomic rename). This WARN check inspects
+    the kernel's authoritative mount table and surfaces the fstype so the
+    user can move the workspace before the build wastes hours.
+
+    PASS when fstype is in :data:`_FS_ALLOW`, FAIL when in :data:`_FS_BLOCK`,
+    PASS with an "unrecognized, assumed OK" message otherwise. Reading
+    ``/proc/mounts`` is portable on Linux and avoids a ``stat`` subprocess.
+    """
+    name = "workspace-filesystem"
+    try:
+        mounts_raw = Path("/proc/mounts").read_text()
+    except OSError as exc:
+        return _skip(name, Severity.WARN, f"/proc/mounts unreadable: {exc}")
+
+    entries: list[tuple[str, str]] = []
+    for line in mounts_raw.splitlines():
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        entries.append((fields[1], fields[2]))
+
+    # Sort by mountpoint length descending so the longest (most specific)
+    # prefix wins - this handles bind/overlay mounts where multiple parent
+    # mountpoints cover the workspace path.
+    entries.sort(key=lambda pair: len(pair[0]), reverse=True)
+
+    workspace = cfg.workspace.resolve()
+    fstype: str | None = None
+    matched_mount: str | None = None
+    for mountpoint, kind in entries:
+        try:
+            mp = Path(mountpoint)
+        except (TypeError, ValueError):
+            continue
+        if workspace == mp or workspace.is_relative_to(mp):
+            fstype = kind
+            matched_mount = mountpoint
+            break
+
+    if fstype is None:
+        return _skip(
+            name,
+            Severity.WARN,
+            f"no mountpoint covers {workspace} in /proc/mounts",
+        )
+
+    if fstype in _FS_ALLOW:
+        return _ok(name, Severity.WARN, f"{fstype} at {matched_mount}")
+
+    if fstype in _FS_BLOCK:
+        return _fail(
+            name,
+            Severity.WARN,
+            f"{fstype} at {matched_mount} cannot host a Yocto build",
+            fix_hint=(
+                "Move the workspace to a local ext4/btrfs/xfs path, e.g. /var/cache/sstate or ~/yocto, then re-run."
+            ),
+        )
+
+    return _ok(name, Severity.WARN, f"{fstype} (unrecognized, assumed OK)")
+
+
 # Checks that run unconditionally for every BSP family. Per-BSP extras
 # are sourced from ``BspModel.doctor_extras`` at dispatch time.
 #
