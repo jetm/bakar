@@ -749,6 +749,47 @@ def check_psi_support(cfg: BuildConfig) -> CheckResult:
     return _ok(name, Severity.INFO, f"PSI throttling active: {active}")
 
 
+def check_git_global_config(cfg: BuildConfig) -> CheckResult:
+    """Verify that ``user.email`` and ``user.name`` are set in the global git config.
+
+    A missing global identity makes ``repo`` and ``oe-layertool`` sync steps
+    fail mid-fetch with opaque errors (``please tell me who you are``). This
+    BLOCK check surfaces the misconfiguration before any sync runs.
+    """
+    name = "git-global-config"
+
+    def _read(key: str) -> str | None:
+        try:
+            out = subprocess.run(
+                ["git", "config", "--global", key],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except FileNotFoundError, subprocess.TimeoutExpired:
+            return None
+        if out.returncode != 0:
+            return None
+        value = out.stdout.strip()
+        return value or None
+
+    email = _read("user.email")
+    user_name = _read("user.name")
+
+    missing = [k for k, v in (("user.email", email), ("user.name", user_name)) if v is None]
+    if missing:
+        hint_lines = [
+            f'git config --global {k} "{"you@example.com" if k == "user.email" else "Your Name"}"' for k in missing
+        ]
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"missing global git identity: {', '.join(missing)}",
+            fix_hint="; ".join(hint_lines),
+        )
+    return _ok(name, Severity.BLOCK, f"user.email={email}")
+
+
 # Checks that run unconditionally for every BSP family. Per-BSP extras
 # are sourced from ``BspModel.doctor_extras`` at dispatch time.
 #

@@ -26,6 +26,7 @@ from bspctl.diagnostics import (
     check_bbsetup_config_sources,
     check_bitbake_locks,
     check_container_os,
+    check_git_global_config,
     check_host_tools,
     check_psi_support,
     check_sysctl,
@@ -472,3 +473,72 @@ def test_check_sysctl_watches_unreadable(monkeypatch: pytest.MonkeyPatch) -> Non
     assert result.severity is Severity.WARN
     assert "unreadable" in result.message
     assert "fs.inotify.max_user_watches" in result.message
+
+
+def test_check_git_global_config_both_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both user.email and user.name configured -> PASS at BLOCK severity."""
+    responses = {
+        "user.email": _mock_run("anon@example.com\n"),
+        "user.name": _mock_run("Anon User\n"),
+    }
+
+    def fake_run(cmd, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return responses[cmd[-1]]
+
+    monkeypatch.setattr("bspctl.diagnostics.subprocess.run", fake_run)
+    result = check_git_global_config(_cfg())
+    assert result.status is Status.PASS
+    assert result.severity is Severity.BLOCK
+    assert "anon@example.com" in result.message
+
+
+def test_check_git_global_config_email_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Empty user.email stdout -> FAIL at BLOCK with email named in message."""
+    responses = {
+        "user.email": _mock_run("\n"),
+        "user.name": _mock_run("Anon User\n"),
+    }
+
+    def fake_run(cmd, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return responses[cmd[-1]]
+
+    monkeypatch.setattr("bspctl.diagnostics.subprocess.run", fake_run)
+    result = check_git_global_config(_cfg())
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert "user.email" in result.message
+    assert result.fix_hint is not None
+    assert "user.email" in result.fix_hint
+
+
+def test_check_git_global_config_name_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-zero return for user.name (git's unset signal) -> FAIL at BLOCK."""
+    responses = {
+        "user.email": _mock_run("anon@example.com\n"),
+        "user.name": _mock_run("", returncode=1),
+    }
+
+    def fake_run(cmd, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return responses[cmd[-1]]
+
+    monkeypatch.setattr("bspctl.diagnostics.subprocess.run", fake_run)
+    result = check_git_global_config(_cfg())
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert "user.name" in result.message
+    assert result.fix_hint is not None
+    assert "user.name" in result.fix_hint
+
+
+def test_check_git_global_config_git_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FileNotFoundError from subprocess.run -> FAIL at BLOCK (git absent)."""
+
+    def fake_run(cmd, *args, **kwargs):  # type: ignore[no-untyped-def]
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr("bspctl.diagnostics.subprocess.run", fake_run)
+    result = check_git_global_config(_cfg())
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert "user.email" in result.message
+    assert "user.name" in result.message
