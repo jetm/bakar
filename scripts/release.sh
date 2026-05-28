@@ -7,11 +7,15 @@
 # one atomic step. No interactive prompt or sleep is permitted between the
 # bump and the push - that window is precisely the failure mode (stale
 # README on PyPI in v0.0.3) this script exists to eliminate.
+#
+# Auto-generates [Unreleased] changelog entries via `devtool changelog --write`
+# when the section is empty, and auto-pushes local commits that have not yet
+# been pushed to origin/main.
 
 set -euo pipefail
 
 usage() {
-    cat >&2 <<'EOF'
+	cat >&2 <<'EOF'
 Usage: scripts/release.sh <patch|minor|major>
 
 Runs preconditions and validations, then bumps and pushes atomically.
@@ -19,23 +23,23 @@ EOF
 }
 
 die() {
-    printf 'release.sh: %s\n' "$1" >&2
-    exit 1
+	printf 'release.sh: %s\n' "$1" >&2
+	exit 1
 }
 
 # (a) Exactly one positional argument in {patch, minor, major}.
 if [ "$#" -ne 1 ]; then
-    usage
-    exit 1
+	usage
+	exit 1
 fi
 
 case "$1" in
-    patch|minor|major) ;;
-    *)
-        printf 'release.sh: invalid bump type %q; must be one of patch, minor, major\n' "$1" >&2
-        usage
-        exit 1
-        ;;
+patch | minor | major) ;;
+*)
+	printf 'release.sh: invalid bump type %q; must be one of patch, minor, major\n' "$1" >&2
+	usage
+	exit 1
+	;;
 esac
 
 BUMP_TYPE="$1"
@@ -46,54 +50,65 @@ cd "$REPO_ROOT"
 
 # (b) Working tree must be clean (no staged, unstaged, or untracked changes).
 if [ -n "$(git status --porcelain)" ]; then
-    die "working tree has uncommitted changes; commit or stash before releasing"
+	die "working tree has uncommitted changes; commit or stash before releasing"
 fi
 
 # (c) Current branch must be main.
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 if [ "$CURRENT_BRANCH" != "main" ]; then
-    die "current branch is '$CURRENT_BRANCH'; releases must be cut from main"
+	die "current branch is '$CURRENT_BRANCH'; releases must be cut from main"
 fi
 
-# (d) Local main must match origin/main exactly (no divergence in either
-#     direction). Fetch first so the comparison sees current remote state.
+# (d) Sync check: local must not be behind or diverged from origin/main.
+#     Being ahead is fine - those commits will be pushed atomically at the end
+#     together with the version bump commit and tag.
 if ! git fetch origin main; then
-    die "git fetch origin main failed; check network and remote access"
+	die "git fetch origin main failed; check network and remote access"
 fi
 
 LOCAL_MAIN="$(git rev-parse main)"
 REMOTE_MAIN="$(git rev-parse origin/main)"
 if [ "$LOCAL_MAIN" != "$REMOTE_MAIN" ]; then
-    # Distinguish ahead vs behind for an actionable message.
-    AHEAD="$(git rev-list --count origin/main..main)"
-    BEHIND="$(git rev-list --count main..origin/main)"
-    if [ "$AHEAD" -gt 0 ] && [ "$BEHIND" -eq 0 ]; then
-        die "local main is ahead of origin/main by $AHEAD commit(s); push first"
-    elif [ "$BEHIND" -gt 0 ] && [ "$AHEAD" -eq 0 ]; then
-        die "local main is behind origin/main by $BEHIND commit(s); pull first"
-    else
-        die "local main has diverged from origin/main (ahead $AHEAD, behind $BEHIND)"
-    fi
+	AHEAD="$(git rev-list --count origin/main..main)"
+	BEHIND="$(git rev-list --count main..origin/main)"
+	if [ "$BEHIND" -gt 0 ] && [ "$AHEAD" -eq 0 ]; then
+		die "local main is behind origin/main by $BEHIND commit(s); pull first"
+	elif [ "$AHEAD" -gt 0 ] && [ "$BEHIND" -gt 0 ]; then
+		die "local main has diverged from origin/main (ahead $AHEAD, behind $BEHIND); resolve before releasing"
+	fi
+	# AHEAD > 0, BEHIND == 0: will be pushed atomically at the end.
+	echo "release.sh: local main is $AHEAD commit(s) ahead of origin/main; will push at end"
 fi
 
-# (e) CHANGELOG.md must have non-empty `## [Unreleased]` content.
-#     Pull lines between `## [Unreleased]` (exclusive) and the next `## [`
-#     (exclusive), drop blank lines and `### ...` subheadings; require >=1
-#     remaining line.
-UNRELEASED_BODY="$(
-    awk '
+# (e) CHANGELOG.md must have non-empty ## [Unreleased] content.
+#     If the section is empty, auto-generate via `devtool changelog --write`.
+#     The generated entry is staged but not committed here; bump-my-version
+#     picks it up and includes it in the version bump commit.
+check_unreleased() {
+	awk '
         /^## \[Unreleased\]/ { in_block = 1; next }
         in_block && /^## \[/ { exit }
         in_block && $0 !~ /^[[:space:]]*$/ && $0 !~ /^[[:space:]]*#/ { print }
     ' CHANGELOG.md
-)"
+}
+
+UNRELEASED_BODY="$(check_unreleased)"
 if [ -z "$UNRELEASED_BODY" ]; then
-    die "CHANGELOG.md has no entries under [Unreleased]; fill the section before releasing"
+	echo "release.sh: [Unreleased] is empty; running devtool changelog --write ..."
+	if ! devtool changelog --write --cwd "$REPO_ROOT"; then
+		die "devtool changelog --write failed; fill [Unreleased] manually before releasing"
+	fi
+	# Stage so bump-my-version includes the generated entry in the bump commit.
+	git add CHANGELOG.md
+	# Re-validate: devtool changelog might find no commits since the last tag.
+	UNRELEASED_BODY="$(check_unreleased)"
+	if [ -z "$UNRELEASED_BODY" ]; then
+		die "devtool changelog produced no entries; fill [Unreleased] manually before releasing"
+	fi
+	echo "release.sh: changelog entry generated and staged"
 fi
 
-# (f) Validation suite. Each step exits non-zero on failure; set -e takes
-#     over from there. Print a header before each so the failure point is
-#     obvious in the terminal.
+# (f) Validation suite. Each step exits non-zero on failure; set -e propagates.
 echo "==> uv run pytest"
 uv run pytest
 
@@ -115,9 +130,9 @@ echo "==> uv sync --frozen"
 uv sync --frozen
 
 # All gates passed.
-# All gates passed. Bump and push atomically. NO prompt, sleep, or
-# user-interaction step is permitted between these two commands - that
-# window is the v0.0.3 failure mode we exist to prevent.
+# Bump and push atomically. NO prompt, sleep, or user-interaction step is
+# permitted between these two commands - that window is the v0.0.3 failure
+# mode this script exists to prevent.
 echo "==> uv run bump-my-version bump $BUMP_TYPE"
 uv run bump-my-version bump "$BUMP_TYPE"
 echo "==> git push origin main --follow-tags"
