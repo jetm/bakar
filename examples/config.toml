@@ -63,5 +63,17 @@
 # pressure_max_io     = 80   # no default; PSI throttling disabled unless set
 # pressure_max_memory = 50   # no default; PSI throttling disabled unless set
 
+# Persistent workspace-scoped bitbake-hashserv daemon. When true, bspctl
+# starts a hash-equivalence server lazily on the first `bspctl build` and
+# reuses it across subsequent builds so OEEquivHash sstate equivalence
+# accumulates instead of being thrown away per build. The daemon binds to
+# a per-workspace port derived from the workspace path so multiple
+# workspaces never collide. Container-mode builds reach the host daemon
+# via Docker's `--add-host=host.docker.internal:host-gateway`, which
+# requires Docker >= 20.10 (`bspctl doctor` warns when this prerequisite
+# is missing). See `bspctl hashserv --help` for explicit lifecycle
+# commands (start/stop/status) outside the build pipeline.
+# hashserv = true   # default: false (transient per-build `auto` daemon)
+
 [layers]
 # show_hashes = false   # default: false. When true, print each layer's repo, short git hash, and branch before `build`/`sync`, the same as passing --show-layers.
