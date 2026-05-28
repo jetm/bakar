@@ -172,3 +172,104 @@ def test_stop_accepts_explicit_workspace(
 
     assert result.exit_code == 0, result.output
     assert "stopped" in result.output
+
+
+def test_status_accepts_positional_kas_yaml(
+    runner: _CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``status`` accepts a positional generic kas YAML and resolves via the YAML's parent."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)  # Outside any workspace
+
+    kas_yaml = tmp_path / "generic.yml"
+    kas_yaml.write_text("header: {version: 21}\n")
+
+    fake_workspace = tmp_path / "ws"
+    fake_workspace.mkdir()
+
+    # Bypass real YAML parsing / cwd walk: route through the stubbed family/workspace.
+    monkeypatch.setattr(
+        "bspctl.commands.hashserv._dispatch_from_yaml",
+        lambda _yaml: ("generic", None),
+    )
+    monkeypatch.setattr(
+        "bspctl.commands.hashserv._resolve_workspace",
+        lambda workspace, kas_yaml=None, family=None: fake_workspace,
+    )
+    monkeypatch.setattr(hashserv_cmd.hashserv, "is_running", lambda _root: False)
+
+    result = runner.invoke(app, ["hashserv", "status", str(kas_yaml)])
+
+    assert result.exit_code == 0, result.output
+    assert "not running" in result.output
+
+
+def test_start_accepts_positional_kas_yaml(
+    runner: _CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``start`` accepts a positional generic kas YAML and resolves via the YAML's parent."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)  # Outside any workspace
+
+    kas_yaml = tmp_path / "generic.yml"
+    kas_yaml.write_text("header: {version: 21}\n")
+
+    fake_workspace = tmp_path / "ws"
+    fake_workspace.mkdir()
+
+    monkeypatch.setattr(
+        "bspctl.commands.hashserv._dispatch_from_yaml",
+        lambda _yaml: ("generic", None),
+    )
+    monkeypatch.setattr(
+        "bspctl.commands.hashserv._resolve_workspace",
+        lambda workspace, kas_yaml=None, family=None: fake_workspace,
+    )
+    monkeypatch.setattr(
+        hashserv_cmd.hashserv,
+        "ensure_running",
+        lambda _root: "ws://localhost:50000",
+    )
+
+    result = runner.invoke(app, ["hashserv", "start", str(kas_yaml)])
+
+    assert result.exit_code == 0, result.output
+    assert "started:" in result.output
+
+
+def test_stop_accepts_positional_kas_yaml(
+    runner: _CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``stop`` accepts a positional generic kas YAML and resolves via the YAML's parent."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)  # Outside any workspace
+
+    kas_yaml = tmp_path / "generic.yml"
+    kas_yaml.write_text("header: {version: 21}\n")
+
+    fake_workspace = tmp_path / "ws"
+    fake_workspace.mkdir()
+
+    monkeypatch.setattr(
+        "bspctl.commands.hashserv._dispatch_from_yaml",
+        lambda _yaml: ("generic", None),
+    )
+    monkeypatch.setattr(
+        "bspctl.commands.hashserv._resolve_workspace",
+        lambda workspace, kas_yaml=None, family=None: fake_workspace,
+    )
+    monkeypatch.setattr(hashserv_cmd.hashserv, "stop", lambda _root: True)
+
+    result = runner.invoke(app, ["hashserv", "stop", str(kas_yaml)])
+
+    assert result.exit_code == 0, result.output
+    assert "stopped" in result.output
