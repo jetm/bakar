@@ -233,17 +233,21 @@ def check_container_os(cfg: BuildConfig) -> CheckResult:
 def _find_local_bitbake_dir(cfg: BuildConfig) -> Path | None:
     """Return the workspace bitbake source directory if present, else None.
 
-    Checks ``cfg.bsp_bitbake_path`` first (NXP/TI builds), then looks for a
-    ``bitbake/`` directory under ``<bsp_root>/layers/`` or
-    ``<bsp_root>/sources/`` (generic BYO builds).
+    Search order mirrors :func:`bspctl.hashserv._find_binary`:
+    1. ``cfg.bsp_bitbake_path``              - NXP (sources/poky/bitbake) / TI (sources/bitbake)
+    2. ``<bsp_root>/layers/bitbake``         - some generic BYO layouts
+    3. ``<bsp_root>/sources/bitbake``        - generic BYO (alternative)
+    4. ``<bsp_root>/bitbake``               - workspace-root bitbake
+    5. ``<bsp_root.parent>/bitbake``         - meta-avocado style (bsp_root = workspace/build-<stem>)
     """
     candidate = cfg.bsp_bitbake_path
     if (candidate / "bin" / "bitbake").is_file():
         return candidate
-    for subdir in ("layers", "sources"):
-        candidate = cfg.bsp_root / subdir / "bitbake"
-        if (candidate / "bin" / "bitbake").is_file():
-            return candidate
+    for root in (cfg.bsp_root, cfg.bsp_root.parent):
+        for subdir in ("layers", "sources", ""):
+            bb = root / subdir / "bitbake" if subdir else root / "bitbake"
+            if (bb / "bin" / "bitbake").is_file():
+                return bb
     return None
 
 
@@ -751,21 +755,29 @@ def check_psi_support(cfg: BuildConfig) -> CheckResult:
 
 
 def check_git_global_config(cfg: BuildConfig) -> CheckResult:
-    """Verify that ``user.email`` and ``user.name`` are set in the global git config.
+    """Verify that ``user.email`` and ``user.name`` are configured for the workspace.
 
-    A missing global identity makes ``repo`` and ``oe-layertool`` sync steps
-    fail mid-fetch with opaque errors (``please tell me who you are``). This
-    BLOCK check surfaces the misconfiguration before any sync runs.
+    A missing identity makes ``repo`` and ``oe-layertool`` sync steps fail
+    mid-fetch with opaque errors (``please tell me who you are``). This BLOCK
+    check surfaces the misconfiguration before any sync runs.
+
+    Runs ``git config <key>`` (without ``--global``) from ``cfg.workspace`` so
+    that ``includeIf "gitdir:..."`` conditionals in ``~/.gitconfig`` are
+    honoured - a developer who keeps separate identities for different project
+    trees (work vs. personal) would otherwise see a false BLOCK even though
+    git itself would resolve the right identity during a build.
     """
     name = "git-global-config"
+    cwd = str(cfg.workspace) if cfg.workspace.is_dir() else None
 
     def _read(key: str) -> str | None:
         try:
             out = subprocess.run(
-                ["git", "config", "--global", key],
+                ["git", "config", key],
                 capture_output=True,
                 text=True,
                 timeout=5,
+                cwd=cwd,
             )
         except FileNotFoundError, subprocess.TimeoutExpired:
             return None

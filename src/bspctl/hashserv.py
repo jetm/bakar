@@ -49,15 +49,27 @@ def _workspace_port(bsp_root: Path) -> int:
 def _find_binary(bsp_root: Path) -> Path | None:
     """Return the workspace ``bitbake-hashserv`` path, or None if absent.
 
-    Only the workspace path is consulted. A host PATH fallback would
-    pull in a binary whose hashserv wire protocol may not match the
-    workspace bitbake the build will use, which silently corrupts the
-    equivalence cache. When the workspace binary is missing, callers
-    fall through to the overlay's ``auto`` fallback.
+    Only workspace paths are consulted - no host PATH fallback. A PATH binary
+    may be from a different bitbake version whose hashserv wire protocol does
+    not match the workspace bitbake, which silently corrupts the equivalence
+    cache.
+
+    Search order:
+    1. ``<bsp_root>/sources/poky/bitbake/``  - NXP (poky umbrella)
+    2. ``<bsp_root>/sources/bitbake/``       - TI (bare oe-core)
+    3. ``<bsp_root>/bitbake/``               - generic workspace-root bitbake
+    4. ``<bsp_root.parent>/bitbake/``        - meta-avocado style (bsp_root is
+                                              ``<workspace>/build-<stem>``; the
+                                              workspace ships bitbake as a sibling)
     """
-    candidate = bsp_root / "sources" / "poky" / "bitbake" / "bin" / "bitbake-hashserv"
-    if candidate.is_file():
-        return candidate
+    for candidate in (
+        bsp_root / "sources" / "poky" / "bitbake" / "bin" / "bitbake-hashserv",
+        bsp_root / "sources" / "bitbake" / "bin" / "bitbake-hashserv",
+        bsp_root / "bitbake" / "bin" / "bitbake-hashserv",
+        bsp_root.parent / "bitbake" / "bin" / "bitbake-hashserv",
+    ):
+        if candidate.is_file():
+            return candidate
     return None
 
 
