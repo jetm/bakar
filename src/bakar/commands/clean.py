@@ -18,6 +18,34 @@ from bakar.commands._helpers import (
 from bakar.config import resolve
 
 
+def _resolve_family(
+    bsp: str | None,
+    manifest: str | None,
+    ws: Path,
+) -> Literal["nxp", "ti"]:
+    """Resolve the BSP family from clean's flag ladder.
+
+    Order: explicit ``--bsp`` value (validated against ``nxp``/``ti``); the
+    ``--manifest`` alias dispatched through :func:`_dispatch_bsp`; cwd
+    auto-detection via :func:`_bsp_from_cwd`. Any unresolvable path raises
+    ``typer.Exit(code=2)`` with the appropriate hint - matching the prior
+    inline behavior so callers do not need to special-case None.
+    """
+    if bsp is not None:
+        if bsp not in ("nxp", "ti"):
+            console.print(f"[red]invalid --bsp value[/]: {bsp!r} (expected 'nxp' or 'ti')")
+            raise typer.Exit(code=2)
+        return bsp  # type: ignore[return-value]
+    if manifest is not None:
+        family, _bsp_model = _dispatch_bsp(manifest)
+        return family
+    family = _bsp_from_cwd(ws)
+    if family is None:
+        console.print("[red]could not auto-detect BSP from cwd. Pass --bsp nxp|ti or --manifest <file>.[/]")
+        raise typer.Exit(code=2)
+    return family
+
+
 @app.command()
 def clean(
     all: Annotated[bool, typer.Option("--all", help="Also remove the generated kas YAML")] = False,
@@ -33,20 +61,7 @@ def clean(
 ) -> None:
     """Remove the BSP-specific build/ directory. Use --all to also drop the kas YAML."""
     ws = workspace or _workspace_from_cwd()
-
-    family: Literal["nxp", "ti"] | None = None
-    if bsp is not None:
-        if bsp not in ("nxp", "ti"):
-            console.print(f"[red]invalid --bsp value[/]: {bsp!r} (expected 'nxp' or 'ti')")
-            raise typer.Exit(code=2)
-        family = bsp  # type: ignore[assignment]
-    elif manifest is not None:
-        family, _bsp_model = _dispatch_bsp(manifest)
-    else:
-        family = _bsp_from_cwd(ws)
-        if family is None:
-            console.print("[red]could not auto-detect BSP from cwd. Pass --bsp nxp|ti or --manifest <file>.[/]")
-            raise typer.Exit(code=2)
+    family = _resolve_family(bsp, manifest, ws)
     cfg = resolve(workspace=ws, bsp_family=family, user_config=_state._USER_CONFIG)
     if all:
         # Stop the workspace hashserv daemon before wiping so it isn't
