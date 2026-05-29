@@ -1,12 +1,12 @@
-"""Tests for the ``bspctl dump`` command.
+"""Tests for the ``bakar dump`` command.
 
 Drives the command through the Typer ``CliRunner``, monkeypatching
 ``run_kas_subcommand`` on the dump module so no real kas invocation happens
 (mock pattern from ``tests/test_cli_layers.py``). ``run_kas_subcommand`` is
 imported into the command module, so it is patched on
-``bspctl.commands.dump`` - where the ``dump`` function looks it up.
+``bakar.commands.dump`` - where the ``dump`` function looks it up.
 
-Importing ``bspctl.cli`` registers every command (including ``dump``) on the
+Importing ``bakar.cli`` registers every command (including ``dump``) on the
 shared ``app``.
 """
 
@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-import bspctl.commands.dump as dump_module
-from bspctl.cli import app
+import bakar.commands.dump as dump_module
+from bakar.cli import app
 
 if TYPE_CHECKING:
     from pathlib import Path

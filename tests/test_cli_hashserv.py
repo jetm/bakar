@@ -1,8 +1,8 @@
-"""Tests for the ``bspctl hashserv`` sub-app.
+"""Tests for the ``bakar hashserv`` sub-app.
 
-Each test sets up a tmp workspace with a ``.bspctl.toml`` marker so
+Each test sets up a tmp workspace with a ``.bakar.toml`` marker so
 ``_workspace_from_cwd`` finds the workspace, then monkeypatches the
-``bspctl.hashserv`` helpers on the command module so no real daemon is
+``bakar.hashserv`` helpers on the command module so no real daemon is
 started or signaled. The command resolves the BSP root via
 ``_dispatch_bsp(None)`` which falls back to the NXP default - so
 ``cfg.bsp_root`` is ``<workspace>/nxp`` in these tests.
@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-import bspctl.commands.hashserv as hashserv_cmd
-from bspctl.cli import app
+import bakar.commands.hashserv as hashserv_cmd
+from bakar.cli import app
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -34,13 +34,13 @@ def runner() -> _CliRunner:
 
 @pytest.fixture
 def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A tmp workspace with a ``.bspctl.toml`` marker; chdir into it.
+    """A tmp workspace with a ``.bakar.toml`` marker; chdir into it.
 
     The marker file is what ``_workspace_from_cwd`` keys off first; an
     ``nxp/`` subdirectory exists so the resolved ``cfg.bsp_root`` points at
     ``<workspace>/nxp/`` (the NXP-default dispatch path).
     """
-    (tmp_path / ".bspctl.toml").write_text("")
+    (tmp_path / ".bakar.toml").write_text("")
     (tmp_path / "nxp").mkdir()
     monkeypatch.chdir(tmp_path)
     return tmp_path
@@ -59,7 +59,7 @@ def test_status_when_not_running(runner: _CliRunner, workspace: Path, monkeypatc
 def test_status_when_running(runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``status`` reads PID/port files and reports the URL when running."""
     bsp_root = workspace / "nxp"
-    state_dir = bsp_root / ".bspctl"
+    state_dir = bsp_root / ".bakar"
     state_dir.mkdir(parents=True)
     (state_dir / "hashserv.pid").write_text("12345\n")
     (state_dir / "hashserv.port").write_text("50000\n")
@@ -192,11 +192,11 @@ def test_status_accepts_positional_kas_yaml(
 
     # Bypass real YAML parsing / cwd walk: route through the stubbed family/workspace.
     monkeypatch.setattr(
-        "bspctl.commands.hashserv._dispatch_from_yaml",
+        "bakar.commands.hashserv._dispatch_from_yaml",
         lambda _yaml: ("generic", None),
     )
     monkeypatch.setattr(
-        "bspctl.commands.hashserv._resolve_workspace",
+        "bakar.commands.hashserv._resolve_workspace",
         lambda workspace, kas_yaml=None, family=None: fake_workspace,
     )
     monkeypatch.setattr(hashserv_cmd.hashserv, "is_running", lambda _root: False)
@@ -224,11 +224,11 @@ def test_start_accepts_positional_kas_yaml(
     fake_workspace.mkdir()
 
     monkeypatch.setattr(
-        "bspctl.commands.hashserv._dispatch_from_yaml",
+        "bakar.commands.hashserv._dispatch_from_yaml",
         lambda _yaml: ("generic", None),
     )
     monkeypatch.setattr(
-        "bspctl.commands.hashserv._resolve_workspace",
+        "bakar.commands.hashserv._resolve_workspace",
         lambda workspace, kas_yaml=None, family=None: fake_workspace,
     )
     monkeypatch.setattr(
@@ -260,11 +260,11 @@ def test_stop_accepts_positional_kas_yaml(
     fake_workspace.mkdir()
 
     monkeypatch.setattr(
-        "bspctl.commands.hashserv._dispatch_from_yaml",
+        "bakar.commands.hashserv._dispatch_from_yaml",
         lambda _yaml: ("generic", None),
     )
     monkeypatch.setattr(
-        "bspctl.commands.hashserv._resolve_workspace",
+        "bakar.commands.hashserv._resolve_workspace",
         lambda workspace, kas_yaml=None, family=None: fake_workspace,
     )
     monkeypatch.setattr(hashserv_cmd.hashserv, "stop", lambda _root: True)

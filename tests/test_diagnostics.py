@@ -1,4 +1,4 @@
-"""Unit tests for bspctl.diagnostics.
+"""Unit tests for bakar.diagnostics.
 
 Focuses on ``check_container_os``: verifies the BLOCK escalation for
 container Python 3.13.x and 3.14.x, the PASS path on 3.12 and earlier
@@ -15,8 +15,8 @@ from unittest.mock import patch
 
 import pytest
 
-from bspctl.config import BuildConfig
-from bspctl.diagnostics import (
+from bakar.config import BuildConfig
+from bakar.diagnostics import (
     _DOCKER_CHECKS,
     _REQUIRED_TOOLS_BY_FAMILY,
     SHARED_CHECKS,
@@ -70,7 +70,7 @@ def _mock_run(stdout: str, returncode: int = 0):
 )
 def test_supported_python_passes_at_block_severity(stdout: str, expected_minor_label: str) -> None:
     """3.12 and earlier pass the check; severity stays BLOCK on success."""
-    with patch("bspctl.diagnostics.subprocess.run", return_value=_mock_run(stdout)):
+    with patch("bakar.diagnostics.subprocess.run", return_value=_mock_run(stdout)):
         result = check_container_os(_cfg())
     assert result.status == Status.PASS
     assert result.severity == Severity.BLOCK
@@ -86,7 +86,7 @@ def test_supported_python_passes_at_block_severity(stdout: str, expected_minor_l
     ],
 )
 def test_python_313_blocks(stdout: str) -> None:
-    with patch("bspctl.diagnostics.subprocess.run", return_value=_mock_run(stdout)):
+    with patch("bakar.diagnostics.subprocess.run", return_value=_mock_run(stdout)):
         result = check_container_os(_cfg())
     assert result.status == Status.FAIL
     assert result.severity == Severity.BLOCK
@@ -105,7 +105,7 @@ def test_python_313_blocks(stdout: str) -> None:
     ],
 )
 def test_python_314_blocks(stdout: str) -> None:
-    with patch("bspctl.diagnostics.subprocess.run", return_value=_mock_run(stdout)):
+    with patch("bakar.diagnostics.subprocess.run", return_value=_mock_run(stdout)):
         result = check_container_os(_cfg())
     assert result.status == Status.FAIL
     assert result.severity == Severity.BLOCK
@@ -118,7 +118,7 @@ def test_python_314_blocks(stdout: str) -> None:
 def test_docker_timeout_skips_at_warn() -> None:
     """A transient docker hiccup must not block the build."""
     with patch(
-        "bspctl.diagnostics.subprocess.run",
+        "bakar.diagnostics.subprocess.run",
         side_effect=subprocess.TimeoutExpired(cmd="docker", timeout=20),
     ):
         result = check_container_os(_cfg())
@@ -128,7 +128,7 @@ def test_docker_timeout_skips_at_warn() -> None:
 
 def test_docker_missing_skips_at_warn() -> None:
     with patch(
-        "bspctl.diagnostics.subprocess.run",
+        "bakar.diagnostics.subprocess.run",
         side_effect=FileNotFoundError("docker"),
     ):
         result = check_container_os(_cfg())
@@ -138,7 +138,7 @@ def test_docker_missing_skips_at_warn() -> None:
 
 def test_nonzero_returncode_skips_at_warn() -> None:
     with patch(
-        "bspctl.diagnostics.subprocess.run",
+        "bakar.diagnostics.subprocess.run",
         return_value=_mock_run("", returncode=1),
     ):
         result = check_container_os(_cfg())
@@ -148,7 +148,7 @@ def test_nonzero_returncode_skips_at_warn() -> None:
 
 def test_empty_output_skips_at_warn() -> None:
     with patch(
-        "bspctl.diagnostics.subprocess.run",
+        "bakar.diagnostics.subprocess.run",
         return_value=_mock_run("\n"),
     ):
         result = check_container_os(_cfg())
@@ -160,7 +160,7 @@ def test_unparseable_python_line_passes() -> None:
     """If the python3 --version line is malformed, fall through to PASS
     rather than producing a false BLOCK."""
     with patch(
-        "bspctl.diagnostics.subprocess.run",
+        "bakar.diagnostics.subprocess.run",
         return_value=_mock_run("ubuntu noble\nweird-output-no-version\n"),
     ):
         result = check_container_os(_cfg())
@@ -306,7 +306,7 @@ def _psi_cfg(**kwargs) -> BuildConfig:
 
 def test_psi_available_and_configured_is_pass(monkeypatch) -> None:
     """PSI readable + at least one threshold set yields PASS/INFO naming the values."""
-    monkeypatch.setattr("bspctl.diagnostics._read_psi_avg10", lambda _r: 12.5)
+    monkeypatch.setattr("bakar.diagnostics._read_psi_avg10", lambda _r: 12.5)
     cfg = _psi_cfg(pressure_max_cpu=60, pressure_max_io=45, pressure_max_memory=20)
 
     result = check_psi_support(cfg)
@@ -318,7 +318,7 @@ def test_psi_available_and_configured_is_pass(monkeypatch) -> None:
 
 def test_psi_available_unconfigured_is_skip_info(monkeypatch) -> None:
     """PSI readable but no thresholds set yields SKIP/INFO (optional tuning, not a failure)."""
-    monkeypatch.setattr("bspctl.diagnostics._read_psi_avg10", lambda _r: 0.0)
+    monkeypatch.setattr("bakar.diagnostics._read_psi_avg10", lambda _r: 0.0)
     cfg = _psi_cfg()
 
     result = check_psi_support(cfg)
@@ -330,7 +330,7 @@ def test_psi_available_unconfigured_is_skip_info(monkeypatch) -> None:
 
 def test_psi_unavailable_unconfigured_is_skip(monkeypatch) -> None:
     """PSI unreadable + no thresholds set yields SKIP/INFO (silent)."""
-    monkeypatch.setattr("bspctl.diagnostics._read_psi_avg10", lambda _r: None)
+    monkeypatch.setattr("bakar.diagnostics._read_psi_avg10", lambda _r: None)
     cfg = _psi_cfg()
 
     result = check_psi_support(cfg)
@@ -341,7 +341,7 @@ def test_psi_unavailable_unconfigured_is_skip(monkeypatch) -> None:
 
 def test_psi_unavailable_configured_is_fail_warn(monkeypatch) -> None:
     """PSI unreadable + threshold set yields FAIL/WARN (misconfigured host)."""
-    monkeypatch.setattr("bspctl.diagnostics._read_psi_avg10", lambda _r: None)
+    monkeypatch.setattr("bakar.diagnostics._read_psi_avg10", lambda _r: None)
     cfg = _psi_cfg(pressure_max_cpu=60)
 
     result = check_psi_support(cfg)
@@ -396,7 +396,7 @@ def test_check_bitbake_locks_handles_oserror(tmp_path: Path, monkeypatch: pytest
     # Stub the cleanup helper - the parallel bug at kas_build.py:319 would
     # otherwise propagate the OSError through and mask the diagnostics fix.
     monkeypatch.setattr(
-        "bspctl.steps.kas_build.clear_stale_bitbake_locks",
+        "bakar.steps.kas_build.clear_stale_bitbake_locks",
         lambda _cfg: [lock],
     )
 
@@ -429,7 +429,7 @@ def _sysctl_stub(values: dict[str, int | None]):
 def test_check_sysctl_watches_meets_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
     """When every sysctl key meets its threshold, ``check_sysctl`` returns PASS."""
     monkeypatch.setattr(
-        "bspctl.diagnostics._read_sysctl",
+        "bakar.diagnostics._read_sysctl",
         _sysctl_stub(
             {
                 "fs.inotify.max_user_instances": 8192,
@@ -445,7 +445,7 @@ def test_check_sysctl_watches_meets_threshold(monkeypatch: pytest.MonkeyPatch) -
 def test_check_sysctl_watches_below_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
     """A watches value below 524288 must surface as FAIL with the value in the message."""
     monkeypatch.setattr(
-        "bspctl.diagnostics._read_sysctl",
+        "bakar.diagnostics._read_sysctl",
         _sysctl_stub(
             {
                 "fs.inotify.max_user_instances": 8192,
@@ -464,7 +464,7 @@ def test_check_sysctl_watches_below_threshold(monkeypatch: pytest.MonkeyPatch) -
 def test_check_sysctl_watches_unreadable(monkeypatch: pytest.MonkeyPatch) -> None:
     """An unreadable watches sysctl must surface as FAIL with ``unreadable`` in the message."""
     monkeypatch.setattr(
-        "bspctl.diagnostics._read_sysctl",
+        "bakar.diagnostics._read_sysctl",
         _sysctl_stub(
             {
                 "fs.inotify.max_user_instances": 8192,
@@ -490,7 +490,7 @@ def test_check_git_global_config_both_set(monkeypatch: pytest.MonkeyPatch) -> No
     def fake_run(cmd, *args, **kwargs):  # type: ignore[no-untyped-def]
         return responses[cmd[-1]]
 
-    monkeypatch.setattr("bspctl.diagnostics.subprocess.run", fake_run)
+    monkeypatch.setattr("bakar.diagnostics.subprocess.run", fake_run)
     result = check_git_global_config(_cfg())
     assert result.status is Status.PASS
     assert result.severity is Severity.BLOCK
@@ -507,7 +507,7 @@ def test_check_git_global_config_email_missing(monkeypatch: pytest.MonkeyPatch) 
     def fake_run(cmd, *args, **kwargs):  # type: ignore[no-untyped-def]
         return responses[cmd[-1]]
 
-    monkeypatch.setattr("bspctl.diagnostics.subprocess.run", fake_run)
+    monkeypatch.setattr("bakar.diagnostics.subprocess.run", fake_run)
     result = check_git_global_config(_cfg())
     assert result.status is Status.FAIL
     assert result.severity is Severity.BLOCK
@@ -526,7 +526,7 @@ def test_check_git_global_config_name_missing(monkeypatch: pytest.MonkeyPatch) -
     def fake_run(cmd, *args, **kwargs):  # type: ignore[no-untyped-def]
         return responses[cmd[-1]]
 
-    monkeypatch.setattr("bspctl.diagnostics.subprocess.run", fake_run)
+    monkeypatch.setattr("bakar.diagnostics.subprocess.run", fake_run)
     result = check_git_global_config(_cfg())
     assert result.status is Status.FAIL
     assert result.severity is Severity.BLOCK
@@ -541,7 +541,7 @@ def test_check_git_global_config_git_missing(monkeypatch: pytest.MonkeyPatch) ->
     def fake_run(cmd, *args, **kwargs):  # type: ignore[no-untyped-def]
         raise FileNotFoundError("git")
 
-    monkeypatch.setattr("bspctl.diagnostics.subprocess.run", fake_run)
+    monkeypatch.setattr("bakar.diagnostics.subprocess.run", fake_run)
     result = check_git_global_config(_cfg())
     assert result.status is Status.FAIL
     assert result.severity is Severity.BLOCK
@@ -582,10 +582,10 @@ def test_check_kas_yaml_syntax_valid(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     yaml_path.write_text("header:\n  version: 14\n")
     cfg = _kas_yaml_cfg(yaml_path)
     monkeypatch.setattr(
-        "bspctl.diagnostics.subprocess.run",
+        "bakar.diagnostics.subprocess.run",
         lambda *a, **kw: _mock_run("", returncode=0),
     )
-    monkeypatch.setattr("bspctl.diagnostics.shutil.which", lambda _name: "/usr/bin/kas")
+    monkeypatch.setattr("bakar.diagnostics.shutil.which", lambda _name: "/usr/bin/kas")
     result = check_kas_yaml_syntax(cfg)
     assert result.status is Status.PASS
     assert result.severity is Severity.BLOCK
@@ -606,8 +606,8 @@ def test_check_kas_yaml_syntax_invalid(monkeypatch: pytest.MonkeyPatch, tmp_path
             stderr="line 5: invalid token\nTraceback dropped\n",
         )
 
-    monkeypatch.setattr("bspctl.diagnostics.subprocess.run", fake_run)
-    monkeypatch.setattr("bspctl.diagnostics.shutil.which", lambda _name: "/usr/bin/kas")
+    monkeypatch.setattr("bakar.diagnostics.subprocess.run", fake_run)
+    monkeypatch.setattr("bakar.diagnostics.shutil.which", lambda _name: "/usr/bin/kas")
     result = check_kas_yaml_syntax(cfg)
     assert result.status is Status.FAIL
     assert result.severity is Severity.BLOCK
@@ -640,8 +640,8 @@ def test_check_kas_yaml_syntax_git_state_mismatch(monkeypatch: pytest.MonkeyPatc
             ),
         )
 
-    monkeypatch.setattr("bspctl.diagnostics.subprocess.run", fake_run)
-    monkeypatch.setattr("bspctl.diagnostics.shutil.which", lambda _name: "/usr/bin/kas")
+    monkeypatch.setattr("bakar.diagnostics.subprocess.run", fake_run)
+    monkeypatch.setattr("bakar.diagnostics.shutil.which", lambda _name: "/usr/bin/kas")
     result = check_kas_yaml_syntax(cfg)
     assert result.status is Status.SKIP
     assert result.severity is Severity.BLOCK
@@ -655,7 +655,7 @@ def test_check_kas_yaml_syntax_kas_missing(monkeypatch: pytest.MonkeyPatch, tmp_
     yaml_path.write_text("header:\n  version: 14\n")
     cfg = _kas_yaml_cfg(yaml_path)
     assert cfg.host_mode is False
-    monkeypatch.setattr("bspctl.diagnostics.shutil.which", lambda _name: None)
+    monkeypatch.setattr("bakar.diagnostics.shutil.which", lambda _name: None)
     result = check_kas_yaml_syntax(cfg)
     assert result.status is Status.SKIP
     assert result.severity is Severity.BLOCK
@@ -754,7 +754,7 @@ def test_check_workspace_filesystem_unreadable(monkeypatch: pytest.MonkeyPatch, 
 def test_check_docker_version_modern_passes() -> None:
     """Modern Docker (>= 20.10) -> PASS at WARN severity."""
     with patch(
-        "bspctl.diagnostics.subprocess.run",
+        "bakar.diagnostics.subprocess.run",
         return_value=_mock_run("24.0.5\n"),
     ):
         result = check_docker_version(_cfg())
@@ -766,7 +766,7 @@ def test_check_docker_version_modern_passes() -> None:
 def test_check_docker_version_old_fails() -> None:
     """Docker older than 20.10 -> FAIL at WARN severity with fix_hint."""
     with patch(
-        "bspctl.diagnostics.subprocess.run",
+        "bakar.diagnostics.subprocess.run",
         return_value=_mock_run("19.03.15\n"),
     ):
         result = check_docker_version(_cfg())
@@ -779,7 +779,7 @@ def test_check_docker_version_old_fails() -> None:
 def test_check_docker_version_handles_suffix() -> None:
     """Suffix like ``-ce`` must be stripped before numeric parse."""
     with patch(
-        "bspctl.diagnostics.subprocess.run",
+        "bakar.diagnostics.subprocess.run",
         return_value=_mock_run("20.10.21-ce\n"),
     ):
         result = check_docker_version(_cfg())
@@ -790,7 +790,7 @@ def test_check_docker_version_handles_suffix() -> None:
 def test_check_docker_version_skips_when_unreachable() -> None:
     """``docker`` binary missing -> SKIP at WARN severity (BLOCK is the daemon check's job)."""
     with patch(
-        "bspctl.diagnostics.subprocess.run",
+        "bakar.diagnostics.subprocess.run",
         side_effect=FileNotFoundError("docker"),
     ):
         result = check_docker_version(_cfg())
@@ -801,7 +801,7 @@ def test_check_docker_version_skips_when_unreachable() -> None:
 def test_check_docker_storage_driver_overlay2_passes() -> None:
     """``overlay2`` driver -> PASS at WARN severity."""
     with patch(
-        "bspctl.diagnostics.subprocess.run",
+        "bakar.diagnostics.subprocess.run",
         return_value=_mock_run("overlay2\n"),
     ):
         result = check_docker_storage_driver(_cfg())
@@ -813,7 +813,7 @@ def test_check_docker_storage_driver_overlay2_passes() -> None:
 def test_check_docker_storage_driver_devicemapper_fails() -> None:
     """``devicemapper`` driver -> FAIL at WARN severity with fix_hint."""
     with patch(
-        "bspctl.diagnostics.subprocess.run",
+        "bakar.diagnostics.subprocess.run",
         return_value=_mock_run("devicemapper\n"),
     ):
         result = check_docker_storage_driver(_cfg())
@@ -827,7 +827,7 @@ def test_check_docker_storage_driver_devicemapper_fails() -> None:
 def test_check_docker_storage_driver_btrfs_fails() -> None:
     """``btrfs`` driver -> FAIL at WARN severity with fix_hint."""
     with patch(
-        "bspctl.diagnostics.subprocess.run",
+        "bakar.diagnostics.subprocess.run",
         return_value=_mock_run("btrfs\n"),
     ):
         result = check_docker_storage_driver(_cfg())
@@ -840,7 +840,7 @@ def test_check_docker_storage_driver_btrfs_fails() -> None:
 def test_check_docker_storage_driver_skips_when_unreachable() -> None:
     """``docker`` binary missing -> SKIP at WARN severity (BLOCK is the daemon check's job)."""
     with patch(
-        "bspctl.diagnostics.subprocess.run",
+        "bakar.diagnostics.subprocess.run",
         side_effect=FileNotFoundError("docker"),
     ):
         result = check_docker_storage_driver(_cfg())
@@ -880,7 +880,7 @@ def test_check_ccache_health_ccache_missing(monkeypatch: pytest.MonkeyPatch, tmp
     workspace = tmp_path / "ws"
     workspace.mkdir()
     (workspace / "ccache").mkdir()
-    monkeypatch.setattr("bspctl.diagnostics.shutil.which", lambda _name: None)
+    monkeypatch.setattr("bakar.diagnostics.shutil.which", lambda _name: None)
     result = check_ccache_health(_ccache_cfg(workspace))
     assert result.status is Status.SKIP
     assert result.severity is Severity.WARN
@@ -891,10 +891,10 @@ def test_check_ccache_health_under_threshold(monkeypatch: pytest.MonkeyPatch, tm
     workspace = tmp_path / "ws"
     workspace.mkdir()
     (workspace / "ccache").mkdir()
-    monkeypatch.setattr("bspctl.diagnostics.shutil.which", lambda _name: "/usr/bin/ccache")
+    monkeypatch.setattr("bakar.diagnostics.shutil.which", lambda _name: "/usr/bin/ccache")
     stats = "cache_size_kibibyte 500000\nmax_size_kibibyte 1000000\n"
     with patch(
-        "bspctl.diagnostics.subprocess.run",
+        "bakar.diagnostics.subprocess.run",
         return_value=_mock_run(stats),
     ):
         result = check_ccache_health(_ccache_cfg(workspace))
@@ -908,10 +908,10 @@ def test_check_ccache_health_at_threshold(monkeypatch: pytest.MonkeyPatch, tmp_p
     workspace = tmp_path / "ws"
     workspace.mkdir()
     (workspace / "ccache").mkdir()
-    monkeypatch.setattr("bspctl.diagnostics.shutil.which", lambda _name: "/usr/bin/ccache")
+    monkeypatch.setattr("bakar.diagnostics.shutil.which", lambda _name: "/usr/bin/ccache")
     stats = "cache_size_kibibyte 950000\nmax_size_kibibyte 1000000\n"
     with patch(
-        "bspctl.diagnostics.subprocess.run",
+        "bakar.diagnostics.subprocess.run",
         return_value=_mock_run(stats),
     ):
         result = check_ccache_health(_ccache_cfg(workspace))
@@ -927,10 +927,10 @@ def test_check_ccache_health_uncapped(monkeypatch: pytest.MonkeyPatch, tmp_path:
     workspace = tmp_path / "ws"
     workspace.mkdir()
     (workspace / "ccache").mkdir()
-    monkeypatch.setattr("bspctl.diagnostics.shutil.which", lambda _name: "/usr/bin/ccache")
+    monkeypatch.setattr("bakar.diagnostics.shutil.which", lambda _name: "/usr/bin/ccache")
     stats = "cache_size_kibibyte 500000\nmax_size_kibibyte 0\n"
     with patch(
-        "bspctl.diagnostics.subprocess.run",
+        "bakar.diagnostics.subprocess.run",
         return_value=_mock_run(stats),
     ):
         result = check_ccache_health(_ccache_cfg(workspace))
@@ -944,10 +944,10 @@ def test_check_ccache_health_old_ccache(monkeypatch: pytest.MonkeyPatch, tmp_pat
     workspace = tmp_path / "ws"
     workspace.mkdir()
     (workspace / "ccache").mkdir()
-    monkeypatch.setattr("bspctl.diagnostics.shutil.which", lambda _name: "/usr/bin/ccache")
+    monkeypatch.setattr("bakar.diagnostics.shutil.which", lambda _name: "/usr/bin/ccache")
     stats = "summary: 0 files\n"
     with patch(
-        "bspctl.diagnostics.subprocess.run",
+        "bakar.diagnostics.subprocess.run",
         return_value=_mock_run(stats),
     ):
         result = check_ccache_health(_ccache_cfg(workspace))
@@ -958,7 +958,7 @@ def test_check_ccache_health_old_ccache(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
 def test_shared_checks_contains_new_checks() -> None:
     """The six new checks must all be registered in SHARED_CHECKS."""
-    from bspctl.diagnostics import (
+    from bakar.diagnostics import (
         SHARED_CHECKS,
         check_ccache_health,
         check_docker_storage_driver,
@@ -984,7 +984,7 @@ def test_docker_checks_membership_invariant() -> None:
     container and host mode, so they must NOT be filtered out in host
     mode.
     """
-    from bspctl.diagnostics import (
+    from bakar.diagnostics import (
         _DOCKER_CHECKS,
         check_ccache_health,
         check_docker_storage_driver,
@@ -1035,7 +1035,7 @@ class _FakeSocket:
 
 def test_check_hashserv_skip_when_disabled(tmp_path: Path) -> None:
     """use_hashequiv=False short-circuits to SKIP / INFO without probing anything."""
-    from bspctl.diagnostics import check_hashserv
+    from bakar.diagnostics import check_hashserv
 
     cfg = _hashserv_cfg(tmp_path, use_hashequiv=False)
     result = check_hashserv(cfg)
@@ -1048,16 +1048,16 @@ def test_check_hashserv_skip_when_disabled(tmp_path: Path) -> None:
 
 def test_check_hashserv_pass_when_running_and_port_listens(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """is_running True + port file present + TCP probe succeeds -> PASS / WARN."""
-    from bspctl import diagnostics
-    from bspctl.diagnostics import check_hashserv
+    from bakar import diagnostics
+    from bakar.diagnostics import check_hashserv
 
     bsp_root = tmp_path / "nxp"
-    state_dir = bsp_root / ".bspctl"
+    state_dir = bsp_root / ".bakar"
     state_dir.mkdir(parents=True)
     (state_dir / "hashserv.pid").write_text("12345\n")
     (state_dir / "hashserv.port").write_text("50001\n")
 
-    monkeypatch.setattr("bspctl.hashserv.is_running", lambda _root: True)
+    monkeypatch.setattr("bakar.hashserv.is_running", lambda _root: True)
     fake_sock = _FakeSocket()
     monkeypatch.setattr(
         diagnostics.socket,
@@ -1077,9 +1077,9 @@ def test_check_hashserv_pass_when_running_and_port_listens(tmp_path: Path, monke
 
 def test_check_hashserv_fail_when_configured_but_not_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """use_hashequiv=True + is_running=False -> FAIL / WARN with not-running message."""
-    from bspctl.diagnostics import check_hashserv
+    from bakar.diagnostics import check_hashserv
 
-    monkeypatch.setattr("bspctl.hashserv.is_running", lambda _root: False)
+    monkeypatch.setattr("bakar.hashserv.is_running", lambda _root: False)
 
     cfg = _hashserv_cfg(tmp_path, use_hashequiv=True)
     result = check_hashserv(cfg)
@@ -1088,21 +1088,21 @@ def test_check_hashserv_fail_when_configured_but_not_running(tmp_path: Path, mon
     assert result.severity == Severity.WARN
     assert "not running" in result.message
     assert result.fix_hint is not None
-    assert "bspctl hashserv start" in result.fix_hint
+    assert "bakar hashserv start" in result.fix_hint
 
 
 def test_check_hashserv_fail_when_port_unreachable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """is_running True but TCP probe raises ConnectionRefusedError -> FAIL / WARN."""
-    from bspctl import diagnostics
-    from bspctl.diagnostics import check_hashserv
+    from bakar import diagnostics
+    from bakar.diagnostics import check_hashserv
 
     bsp_root = tmp_path / "nxp"
-    state_dir = bsp_root / ".bspctl"
+    state_dir = bsp_root / ".bakar"
     state_dir.mkdir(parents=True)
     (state_dir / "hashserv.pid").write_text("99999\n")
     (state_dir / "hashserv.port").write_text("50002\n")
 
-    monkeypatch.setattr("bspctl.hashserv.is_running", lambda _root: True)
+    monkeypatch.setattr("bakar.hashserv.is_running", lambda _root: True)
 
     def _raise(*_args, **_kwargs):  # noqa: ANN002, ANN003
         raise ConnectionRefusedError("nothing on that port")
@@ -1117,14 +1117,14 @@ def test_check_hashserv_fail_when_port_unreachable(tmp_path: Path, monkeypatch: 
     assert "TCP probe failed" in result.message
     assert "ws://localhost:50002" in result.message
     assert "99999" in result.message
-    assert result.fix_hint == "bspctl hashserv stop && bspctl hashserv start"
+    assert result.fix_hint == "bakar hashserv stop && bakar hashserv start"
 
 
 def test_check_hashserv_fail_when_port_file_deleted_mid_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """is_running True but port file absent (concurrent stop) -> FAIL, no exception."""
-    from bspctl.diagnostics import check_hashserv
+    from bakar.diagnostics import check_hashserv
 
-    monkeypatch.setattr("bspctl.hashserv.is_running", lambda _root: True)
+    monkeypatch.setattr("bakar.hashserv.is_running", lambda _root: True)
 
     cfg = _hashserv_cfg(tmp_path, use_hashequiv=True)
     # State dir does not exist; port file read will raise FileNotFoundError.
@@ -1134,12 +1134,12 @@ def test_check_hashserv_fail_when_port_file_deleted_mid_check(tmp_path: Path, mo
     assert result.severity == Severity.WARN
     assert "not running" in result.message
     assert result.fix_hint is not None
-    assert "bspctl hashserv start" in result.fix_hint
+    assert "bakar hashserv start" in result.fix_hint
 
 
 def test_check_hashserv_in_shared_not_in_docker() -> None:
     """check_hashserv runs everywhere - the daemon is host-side in both modes."""
-    from bspctl.diagnostics import (
+    from bakar.diagnostics import (
         _DOCKER_CHECKS,
         SHARED_CHECKS,
         check_hashserv,

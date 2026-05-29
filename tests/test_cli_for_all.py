@@ -1,7 +1,7 @@
-"""Tests for the ``bspctl for-all`` command.
+"""Tests for the ``bakar for-all`` command.
 
 Drives the command through the Typer ``CliRunner`` with ``discover_source_repos``
-and ``subprocess.run`` monkeypatched in ``bspctl.commands.for_all`` so no real
+and ``subprocess.run`` monkeypatched in ``bakar.commands.for_all`` so no real
 git checkout or shell invocation happens. The ``--workspace`` override plus an
 ``nxp/`` subdir lets workspace resolution succeed without a real BSP tree.
 
@@ -15,8 +15,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-import bspctl.commands.for_all as for_all_module
-from bspctl.cli import app
+import bakar.commands.for_all as for_all_module
+from bakar.cli import app
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -47,7 +47,7 @@ def _make_run_mock(repo_returncodes: dict[str, int], calls: list[dict]):
     ``shell`` unset; the command body calls it with the shell command string and
     ``shell=True``. The mock distinguishes the two by the ``shell`` kwarg: git
     HEAD lookups return a canned hash, command invocations record their kwargs
-    into ``calls`` and return the per-repo rc keyed on ``BSPCTL_REPO_NAME``.
+    into ``calls`` and return the per-repo rc keyed on ``BAKAR_REPO_NAME``.
     """
 
     def _run(cmd, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
@@ -56,7 +56,7 @@ def _make_run_mock(repo_returncodes: dict[str, int], calls: list[dict]):
             return subprocess.CompletedProcess(cmd, returncode=0, stdout="deadbeef\n", stderr="")
         env = kwargs.get("env") or {}
         calls.append({"cmd": cmd, "cwd": kwargs.get("cwd"), "env": env})
-        rc = repo_returncodes.get(env.get("BSPCTL_REPO_NAME", ""), 0)
+        rc = repo_returncodes.get(env.get("BAKAR_REPO_NAME", ""), 0)
         return subprocess.CompletedProcess(cmd, returncode=rc, stdout="", stderr="")
 
     return _run
@@ -128,7 +128,7 @@ def test_one_failing_repo_exits_nonzero_and_visits_all(
 def test_per_repo_env_vars_reach_subprocess(
     runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """BSPCTL_REPO_NAME/PATH/COMMIT are set per repo in the subprocess env."""
+    """BAKAR_REPO_NAME/PATH/COMMIT are set per repo in the subprocess env."""
     repos = [
         ("poky", nxp_workspace / "sources" / "poky"),
         ("meta-imx", nxp_workspace / "sources" / "meta-imx"),
@@ -143,10 +143,10 @@ def test_per_repo_env_vars_reach_subprocess(
     assert len(calls) == 2
     for (name, path), call in zip(repos, calls, strict=True):
         env = call["env"]
-        assert env["BSPCTL_REPO_NAME"] == name
-        assert env["BSPCTL_REPO_PATH"] == str(path)
+        assert env["BAKAR_REPO_NAME"] == name
+        assert env["BAKAR_REPO_PATH"] == str(path)
         # _git_head is mocked to return "deadbeef".
-        assert env["BSPCTL_REPO_COMMIT"] == "deadbeef"
+        assert env["BAKAR_REPO_COMMIT"] == "deadbeef"
 
 
 @pytest.mark.unit

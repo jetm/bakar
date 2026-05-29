@@ -1,10 +1,10 @@
-"""Unit tests for bspctl.workspace.WorkspaceState properties.
+"""Unit tests for bakar.workspace.WorkspaceState properties.
 
 Pins the bsp_family-scoped behavior of `repo_broken` / `needs_full_reinit`:
 TI has no `.repo/` manifest semantics, so its manifest-include /
 manifests-branch fields are intentionally None and must not be
 interpreted as repo corruption. Without this scoping, every TI
-`bspctl build` would force_init=True, which makes
+`bakar build` would force_init=True, which makes
 ``oe-layertool-setup.sh -r`` reset every checkout under
 ``ti/sources/`` - clobbering any manual override (e.g. swapping
 the BSP-bundled bitbake for a local fork).
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from bspctl.workspace import WorkspaceState
+from bakar.workspace import WorkspaceState
 
 pytestmark = pytest.mark.unit
 

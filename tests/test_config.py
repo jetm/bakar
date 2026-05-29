@@ -1,4 +1,4 @@
-"""Tests for :class:`bspctl.config.BuildConfig` resolution.
+"""Tests for :class:`bakar.config.BuildConfig` resolution.
 
 Covers fields not exercised by ``tests/test_env_precedence.py`` -- in
 particular the ``use_hashequiv`` flag threaded from ``UserConfig.hashserv``.
@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from bspctl.config import resolve
-from bspctl.user_config import UserConfig
+from bakar.config import resolve
+from bakar.user_config import UserConfig
 
 pytestmark = pytest.mark.unit
 

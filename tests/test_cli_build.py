@@ -1,4 +1,4 @@
-"""Tests for the ``bspctl build`` auto-overlay behavior.
+"""Tests for the ``bakar build`` auto-overlay behavior.
 
 Cover ``_hashequiv_extra_overlays`` as a unit and the build CLI's
 deduplication of the hashequiv overlay against a user-supplied
@@ -13,12 +13,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-import bspctl.commands._app as _state
-from bspctl.cli import app
-from bspctl.commands import build as build_cmd
-from bspctl.commands._helpers import _hashequiv_extra_overlays, _overlay_dir
-from bspctl.config import BuildConfig
-from bspctl.user_config import UserConfig
+import bakar.commands._app as _state
+from bakar.cli import app
+from bakar.commands import build as build_cmd
+from bakar.commands._helpers import _hashequiv_extra_overlays, _overlay_dir
+from bakar.config import BuildConfig
+from bakar.user_config import UserConfig
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -59,7 +59,7 @@ def test_hashequiv_overlay_auto_appended_when_use_hashequiv_true(tmp_path: Path)
     overlays = _hashequiv_extra_overlays(cfg)
 
     assert len(overlays) == 1
-    assert overlays[0].name == "bspctl-tuning-hashequiv.yml"
+    assert overlays[0].name == "bakar-tuning-hashequiv.yml"
 
 
 def test_hashequiv_overlay_empty_when_use_hashequiv_false(tmp_path: Path) -> None:
@@ -83,8 +83,8 @@ def runner() -> _CliRunner:
 
 @pytest.fixture
 def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A tmp workspace with a ``.bspctl.toml`` marker; chdir into it."""
-    (tmp_path / ".bspctl.toml").write_text("")
+    """A tmp workspace with a ``.bakar.toml`` marker; chdir into it."""
+    (tmp_path / ".bakar.toml").write_text("")
     (tmp_path / "nxp").mkdir()
     monkeypatch.chdir(tmp_path)
     return tmp_path
@@ -129,7 +129,7 @@ def test_hashequiv_overlay_deduped_when_user_passes_it(
 
     monkeypatch.setattr(build_cmd.step_kas, "run_build", fake_run_build)
 
-    overlay_path = _overlay_dir() / "bspctl-tuning-hashequiv.yml"
+    overlay_path = _overlay_dir() / "bakar-tuning-hashequiv.yml"
     arg = f"{generic_yaml}:{overlay_path}"
 
     result = runner.invoke(app, ["build", arg, "--skip-doctor"])
@@ -137,7 +137,7 @@ def test_hashequiv_overlay_deduped_when_user_passes_it(
     assert result.exit_code == 0, result.output
     assert len(recorded) == 1, f"expected exactly one run_build call, got {recorded!r}"
 
-    hashequiv_entries = [p for p in recorded[0] if p.name == "bspctl-tuning-hashequiv.yml"]
+    hashequiv_entries = [p for p in recorded[0] if p.name == "bakar-tuning-hashequiv.yml"]
     assert len(hashequiv_entries) == 1, f"expected hashequiv overlay to appear EXACTLY once, got {hashequiv_entries!r}"
 
 
@@ -168,5 +168,5 @@ def test_hashequiv_overlay_not_appended_when_use_hashequiv_false(
     assert result.exit_code == 0, result.output
     assert len(recorded) == 1, f"expected exactly one run_build call, got {recorded!r}"
 
-    hashequiv_entries = [p for p in recorded[0] if p.name == "bspctl-tuning-hashequiv.yml"]
+    hashequiv_entries = [p for p in recorded[0] if p.name == "bakar-tuning-hashequiv.yml"]
     assert hashequiv_entries == [], f"expected no hashequiv overlay when use_hashequiv=False, got {hashequiv_entries!r}"

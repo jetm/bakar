@@ -1,4 +1,4 @@
-"""Tests for the ``bspctl build my.yml`` surface.
+"""Tests for the ``bakar build my.yml`` surface.
 
 Focuses on argument-parsing logic and overlay materialization. The
 real ``kas-container build`` invocation is not exercised here - that
@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from bspctl.config import BuildConfig
-from bspctl.steps.kas_build import (
+from bakar.config import BuildConfig
+from bakar.steps.kas_build import (
     _resolve_user_yaml,
     _setup_meta_avocado_build_dir,
     _write_meta_avocado_wrapper,
@@ -95,17 +95,17 @@ def test_resolve_user_yaml_outside_bsp_root_rejects(tmp_path: Path) -> None:
 
 
 def test_materialize_overlay_copies_file(tmp_path: Path) -> None:
-    """materialize_overlay copies the source under .bspctl/overlays/."""
+    """materialize_overlay copies the source under .bakar/overlays/."""
     (tmp_path / "nxp").mkdir()
     overlays_dir = tmp_path / "external-overlays"
     overlays_dir.mkdir()
-    overlay_src = overlays_dir / "bspctl-tuning-nxp.yml"
+    overlay_src = overlays_dir / "bakar-tuning-nxp.yml"
     overlay_src.write_text("header:\n  version: 21\n")
 
     cfg = _cfg_at(tmp_path)
     rel = materialize_overlay(cfg, overlay_src)
 
-    assert rel == Path(".bspctl") / "overlays" / "bspctl-tuning-nxp.yml"
+    assert rel == Path(".bakar") / "overlays" / "bakar-tuning-nxp.yml"
     dest = cfg.bsp_root / rel
     assert dest.is_file()
     assert not dest.is_symlink()
@@ -115,7 +115,7 @@ def test_materialize_overlay_copies_file(tmp_path: Path) -> None:
 def test_materialize_overlay_idempotent(tmp_path: Path) -> None:
     """Calling twice yields the same destination with current content."""
     (tmp_path / "nxp").mkdir()
-    overlay_src = tmp_path / "ext" / "bspctl-tuning-nxp.yml"
+    overlay_src = tmp_path / "ext" / "bakar-tuning-nxp.yml"
     overlay_src.parent.mkdir()
     overlay_src.write_text("header:\n  version: 21\n")
 
@@ -131,8 +131,8 @@ def test_materialize_overlay_idempotent(tmp_path: Path) -> None:
 def test_materialize_overlay_refreshes_content(tmp_path: Path) -> None:
     """Subsequent calls overwrite the destination with the latest source."""
     (tmp_path / "nxp").mkdir()
-    overlay_src_a = tmp_path / "a" / "bspctl-tuning-nxp.yml"
-    overlay_src_b = tmp_path / "b" / "bspctl-tuning-nxp.yml"
+    overlay_src_a = tmp_path / "a" / "bakar-tuning-nxp.yml"
+    overlay_src_b = tmp_path / "b" / "bakar-tuning-nxp.yml"
     overlay_src_a.parent.mkdir()
     overlay_src_b.parent.mkdir()
     overlay_src_a.write_text("header:\n  version: 21\n# from A\n")
@@ -142,27 +142,27 @@ def test_materialize_overlay_refreshes_content(tmp_path: Path) -> None:
     materialize_overlay(cfg, overlay_src_a)
     materialize_overlay(cfg, overlay_src_b)
 
-    dest = cfg.bsp_root / ".bspctl" / "overlays" / "bspctl-tuning-nxp.yml"
+    dest = cfg.bsp_root / ".bakar" / "overlays" / "bakar-tuning-nxp.yml"
     assert dest.read_text() == overlay_src_b.read_text()
 
 
 def test_materialize_overlay_replaces_existing_symlink(tmp_path: Path) -> None:
-    """Stale symlinks from earlier bspctl versions are replaced with copies."""
+    """Stale symlinks from earlier bakar versions are replaced with copies."""
     (tmp_path / "nxp").mkdir()
-    overlay_src = tmp_path / "ext" / "bspctl-tuning-nxp.yml"
+    overlay_src = tmp_path / "ext" / "bakar-tuning-nxp.yml"
     overlay_src.parent.mkdir()
     overlay_src.write_text("header:\n  version: 21\n")
 
     cfg = _cfg_at(tmp_path)
-    overlay_dir = cfg.bsp_root / ".bspctl" / "overlays"
+    overlay_dir = cfg.bsp_root / ".bakar" / "overlays"
     overlay_dir.mkdir(parents=True)
     stale_target = tmp_path / "stale.yml"
     stale_target.write_text("# stale\n")
-    (overlay_dir / "bspctl-tuning-nxp.yml").symlink_to(stale_target)
+    (overlay_dir / "bakar-tuning-nxp.yml").symlink_to(stale_target)
 
     materialize_overlay(cfg, overlay_src)
 
-    dest = overlay_dir / "bspctl-tuning-nxp.yml"
+    dest = overlay_dir / "bakar-tuning-nxp.yml"
     assert not dest.is_symlink()
     assert dest.read_text() == overlay_src.read_text()
 
@@ -197,7 +197,7 @@ def test_generic_bsp_root_is_yaml_parent(tmp_path: Path) -> None:
 
 def test_generic_resolve_accepts_minimal_args(tmp_path: Path) -> None:
     """resolve() with bsp_family='generic' fills sensible inert defaults."""
-    from bspctl.config import resolve
+    from bakar.config import resolve
 
     pilots = tmp_path / "pilot"
     pilots.mkdir()
@@ -221,7 +221,7 @@ def test_generic_materialize_overlay_under_yaml_parent(tmp_path: Path) -> None:
     yaml = pilots / "kas.yml"
     yaml.write_text("machine: qemuarm64\n")
 
-    overlay_src = tmp_path / "ext" / "bspctl-tuning-generic.yml"
+    overlay_src = tmp_path / "ext" / "bakar-tuning-generic.yml"
     overlay_src.parent.mkdir()
     overlay_src.write_text("header:\n  version: 21\n")
 
@@ -240,8 +240,8 @@ def test_generic_materialize_overlay_under_yaml_parent(tmp_path: Path) -> None:
 
     rel = materialize_overlay(cfg, overlay_src)
 
-    assert rel == Path(".bspctl") / "overlays" / "bspctl-tuning-generic.yml"
-    dest = pilots / ".bspctl" / "overlays" / "bspctl-tuning-generic.yml"
+    assert rel == Path(".bakar") / "overlays" / "bakar-tuning-generic.yml"
+    dest = pilots / ".bakar" / "overlays" / "bakar-tuning-generic.yml"
     assert dest.is_file()
     assert not dest.is_symlink()
     assert dest.read_text() == overlay_src.read_text()
@@ -368,14 +368,14 @@ def test_vendor_config_bad_entry_exits_code_2(monkeypatch: pytest.MonkeyPatch) -
 
     from typer.testing import CliRunner
 
-    import bspctl.commands._app as cli_module
-    from bspctl.cli import app
+    import bakar.commands._app as cli_module
+    from bakar.cli import app
 
     # Reset the cached vendors so _get_vendors() runs fresh.
     cli_module._VENDORS = None
 
     runner = CliRunner()
-    with patch("bspctl.commands._app.load_vendors", side_effect=ValueError("bad entry")):
+    with patch("bakar.commands._app.load_vendors", side_effect=ValueError("bad entry")):
         result = runner.invoke(app, ["doctor"])
 
     assert result.exit_code == 2

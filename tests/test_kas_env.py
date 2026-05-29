@@ -1,4 +1,4 @@
-"""Unit tests for bspctl.steps.kas_build._ccache_args.
+"""Unit tests for bakar.steps.kas_build._ccache_args.
 
 Verifies the workspace-root ccache bind-mount that replaced the dangling
 per-BSP ``ccache`` symlinks.  The mount is injected via the ``--runtime-args``
@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bspctl.config import BuildConfig
-from bspctl.steps.kas_build import _build_env, _ccache_args
+from bakar.config import BuildConfig
+from bakar.steps.kas_build import _build_env, _ccache_args
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -216,7 +216,7 @@ def test_build_env_host_mode_keeps_localhost_url(tmp_path: Path, monkeypatch: py
     """Host mode: ensure_running's localhost URL is set verbatim."""
     monkeypatch.delenv("BB_HASHSERVE", raising=False)
     monkeypatch.setattr(
-        "bspctl.steps.kas_build.hashserv.ensure_running",
+        "bakar.steps.kas_build.hashserv.ensure_running",
         lambda _root: "ws://localhost:50000",
     )
     cfg = _hashequiv_cfg(tmp_path, use_hashequiv=True, host_mode=True)
@@ -232,7 +232,7 @@ def test_build_env_container_mode_rewrites_to_host_docker_internal(
     """Container mode: localhost is rewritten to host.docker.internal so the container can reach it."""
     monkeypatch.delenv("BB_HASHSERVE", raising=False)
     monkeypatch.setattr(
-        "bspctl.steps.kas_build.hashserv.ensure_running",
+        "bakar.steps.kas_build.hashserv.ensure_running",
         lambda _root: "ws://localhost:50000",
     )
     cfg = _hashequiv_cfg(tmp_path, use_hashequiv=True, host_mode=False)
@@ -248,7 +248,7 @@ def test_build_env_omits_bb_hashserve_when_ensure_running_returns_none(
     """When ensure_running returns None, BB_HASHSERVE is not set so the overlay falls back to auto."""
     monkeypatch.delenv("BB_HASHSERVE", raising=False)
     monkeypatch.setattr(
-        "bspctl.steps.kas_build.hashserv.ensure_running",
+        "bakar.steps.kas_build.hashserv.ensure_running",
         lambda _root: None,
     )
     cfg = _hashequiv_cfg(tmp_path, use_hashequiv=True, host_mode=False)
@@ -284,7 +284,7 @@ def test_runtime_args_container_no_hashserv_returns_ccache_only(
 def test_runtime_args_container_with_hashserv_appends_add_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """use_hashequiv True + daemon running: both ccache mount and --add-host inside same string."""
     monkeypatch.setattr(
-        "bspctl.steps.kas_build.hashserv.is_running",
+        "bakar.steps.kas_build.hashserv.is_running",
         lambda _root: True,
     )
     cfg = _hashequiv_cfg(tmp_path, use_hashequiv=True, host_mode=False)
@@ -308,7 +308,7 @@ def test_runtime_args_container_hashserv_configured_but_not_running(
     on the first build. Add it unconditionally when use_hashequiv is True.
     """
     monkeypatch.setattr(
-        "bspctl.steps.kas_build.hashserv.is_running",
+        "bakar.steps.kas_build.hashserv.is_running",
         lambda _root: False,
     )
     cfg = _hashequiv_cfg(tmp_path, use_hashequiv=True, host_mode=False)

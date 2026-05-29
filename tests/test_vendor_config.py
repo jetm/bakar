@@ -1,4 +1,4 @@
-"""Unit tests for bspctl.vendor_config."""
+"""Unit tests for bakar.vendor_config."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bspctl.vendor_config import VendorEntry, load_vendors
+from bakar.vendor_config import VendorEntry, load_vendors
 
 if TYPE_CHECKING:
     from pathlib import Path

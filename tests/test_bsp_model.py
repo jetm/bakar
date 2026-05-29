@@ -1,4 +1,4 @@
-"""Unit tests for bspctl.bsp_model.
+"""Unit tests for bakar.bsp_model.
 
 Covers detection (NXP / TI / unknown manifest filenames) and the
 ``get_model`` factory; both are pure data lookups so the tests do not
@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from bspctl.bsp_model import BspModel, detect_bsp_family, get_model
+from bakar.bsp_model import BspModel, detect_bsp_family, get_model
 
 pytestmark = pytest.mark.unit
 
@@ -96,10 +96,10 @@ def test_vendor_registry_takes_precedence_over_builtin(tmp_path: Path, monkeypat
     (imx-A.B.C-X.Y.Z.xml) but matches the user's regex. The vendor entry
     must win and return its declared family.
     """
-    from bspctl.vendor_config import VendorEntry
+    from bakar.vendor_config import VendorEntry
 
     vendor = VendorEntry(name="myco", family="nxp", manifest_regex=r"^myco-.*\.xml$")
-    monkeypatch.setattr("bspctl.bsp_model.load_vendors", lambda: [vendor])
+    monkeypatch.setattr("bakar.bsp_model.load_vendors", lambda: [vendor])
 
     assert detect_bsp_family(Path("myco-1.0.xml")) == "nxp"
 
@@ -115,7 +115,7 @@ def test_get_model_nxp() -> None:
     assert bsp.family == "nxp"
     assert bsp.workspace_subdir == "nxp"
     assert bsp.kas_yaml_filename == "kas-nxp.yml"
-    assert bsp.tuning_overlay_filename == "bspctl-tuning-nxp.yml"
+    assert bsp.tuning_overlay_filename == "bakar-tuning-nxp.yml"
     assert bsp.manifest_kind == "repo-xml"
     assert bsp.default_machine == "imx8mp-var-dart"
     assert bsp.default_distro == "fsl-imx-xwayland"
@@ -136,7 +136,7 @@ def test_get_model_ti() -> None:
     assert bsp.family == "ti"
     assert bsp.workspace_subdir == "ti"
     assert bsp.kas_yaml_filename == "kas-ti.yml"
-    assert bsp.tuning_overlay_filename == "bspctl-tuning-ti.yml"
+    assert bsp.tuning_overlay_filename == "bakar-tuning-ti.yml"
     assert bsp.manifest_kind == "oe-layertool-config"
     assert bsp.default_machine == "am62x-var-som"
     assert bsp.default_distro == "arago"
@@ -163,7 +163,7 @@ def test_get_model_applies_vendor_override() -> None:
     The vendor sets only default_machine; every other BspModel field must
     remain equal to the built-in NXP preset value.
     """
-    from bspctl.vendor_config import VendorEntry
+    from bakar.vendor_config import VendorEntry
 
     vendor = VendorEntry(
         name="myco",
@@ -172,7 +172,7 @@ def test_get_model_applies_vendor_override() -> None:
         default_machine="my-board",
     )
 
-    with patch("bspctl.bsp_model.load_vendors", return_value=[vendor]):
+    with patch("bakar.bsp_model.load_vendors", return_value=[vendor]):
         model = get_model("nxp")
 
     assert model.default_machine == "my-board"
@@ -181,7 +181,7 @@ def test_get_model_applies_vendor_override() -> None:
     assert model.family == "nxp"
     assert model.workspace_subdir == "nxp"
     assert model.kas_yaml_filename == "kas-nxp.yml"
-    assert model.tuning_overlay_filename == "bspctl-tuning-nxp.yml"
+    assert model.tuning_overlay_filename == "bakar-tuning-nxp.yml"
     assert model.manifest_kind == "repo-xml"
     assert model.default_distro == "fsl-imx-xwayland"
     assert model.default_image == "core-image-minimal"

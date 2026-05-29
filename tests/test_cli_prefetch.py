@@ -1,9 +1,9 @@
-"""Tests for the ``bspctl prefetch`` command.
+"""Tests for the ``bakar prefetch`` command.
 
 Drives the command through the Typer ``CliRunner``, monkeypatching
 ``run_shell`` so no real kas/kas-container invocation happens. The prefetch
 command calls ``step_kas.run_shell(...)`` where ``step_kas`` is the imported
-``bspctl.steps.kas_build`` module, so the stub is installed on
+``bakar.steps.kas_build`` module, so the stub is installed on
 ``prefetch_module.step_kas`` (the attribute the command actually looks up).
 
 The stub captures the ``command=`` kwarg and the resolved ``cfg`` so the tests
@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-import bspctl.commands.prefetch as prefetch_module
-from bspctl.cli import app
+import bakar.commands.prefetch as prefetch_module
+from bakar.cli import app
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -1,4 +1,4 @@
-"""Tests for the ``bspctl lock`` command.
+"""Tests for the ``bakar lock`` command.
 
 Drives the command through the Typer ``CliRunner``. The NXP path wraps
 ``repo manifest -r`` via ``subprocess.run`` (referenced as a module attribute,
@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-import bspctl.commands.lock as lock_module
-from bspctl.cli import app
+import bakar.commands.lock as lock_module
+from bakar.cli import app
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -88,7 +88,7 @@ def test_nxp_path_invokes_repo_manifest_r(
 @pytest.mark.unit
 def test_nxp_default_output_path(runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Without ``--output`` the pinned manifest targets cfg.bsp_root / pinned-manifest.xml."""
-    from bspctl.config import resolve
+    from bakar.config import resolve
 
     cfg = resolve(workspace=nxp_workspace, bsp_family="nxp")
     expected = str(cfg.bsp_root / "pinned-manifest.xml")
@@ -112,7 +112,7 @@ def test_nxp_default_output_path(runner: _CliRunner, nxp_workspace: Path, monkey
 @pytest.mark.unit
 def test_nxp_output_override(runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``--output pinned.xml`` makes the NXP path target that path instead of the default."""
-    from bspctl.config import resolve
+    from bakar.config import resolve
 
     cfg = resolve(workspace=nxp_workspace, bsp_family="nxp")
     default = str(cfg.bsp_root / "pinned-manifest.xml")

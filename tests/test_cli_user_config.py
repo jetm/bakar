@@ -1,4 +1,4 @@
-"""Tests for user-config-driven behavior of the ``bspctl build`` command.
+"""Tests for user-config-driven behavior of the ``bakar build`` command.
 
 Exercises the doctor auto-run gate and the ``--show-layers`` / ``show_hashes``
 layer-table gate through the Typer ``CliRunner`` with ``--dry-run`` so no real
@@ -15,13 +15,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-import bspctl.commands._app as app_module
-import bspctl.commands._helpers as helpers_module
-import bspctl.commands.build as build_module
-from bspctl.cli import app
-from bspctl.layers import LayerHash
-from bspctl.user_config import UserConfig
-from bspctl.workspace import WorkspaceState
+import bakar.commands._app as app_module
+import bakar.commands._helpers as helpers_module
+import bakar.commands.build as build_module
+from bakar.cli import app
+from bakar.layers import LayerHash
+from bakar.user_config import UserConfig
+from bakar.workspace import WorkspaceState
 
 if TYPE_CHECKING:
     from pathlib import Path

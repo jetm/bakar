@@ -2,7 +2,7 @@
 
 Skips when no bitbake-hashserv is available. Run explicitly with:
 
-    BSPCTL_BITBAKE_HASHSERV=/path/to/bitbake-hashserv \
+    BAKAR_BITBAKE_HASHSERV=/path/to/bitbake-hashserv \
         uv run pytest tests/integration/test_hashserv_real_daemon.py -v --no-cov
 """
 
@@ -17,12 +17,12 @@ from pathlib import Path
 
 import pytest
 
-from bspctl import hashserv
+from bakar import hashserv
 
 
 def _find_real_hashserv() -> Path | None:
     candidates: list[Path] = []
-    env_override = os.environ.get("BSPCTL_BITBAKE_HASHSERV")
+    env_override = os.environ.get("BAKAR_BITBAKE_HASHSERV")
     if env_override:
         candidates.append(Path(env_override))
     candidates.append(Path.home() / "repos" / "personal" / "yocto" / "bitbake" / "bin" / "bitbake-hashserv")
@@ -46,7 +46,7 @@ def _install_workspace_binary(workspace: Path, real_binary: Path) -> None:
        symlink's parent, not the real bitbake checkout's, so ``import hashserv``
        fails.
     2. Under ``uv run`` the ``#!/usr/bin/env python3`` shebang resolves to the
-       bspctl venv's interpreter, which lacks the ``websockets`` dependency that
+       bakar venv's interpreter, which lacks the ``websockets`` dependency that
        bitbake's hashserv server pulls in. The system python at
        ``/usr/bin/python3`` has it.
 
@@ -73,7 +73,7 @@ def test_hashserv_real_daemon_lifecycle(tmp_path: Path) -> None:
     real_binary = _find_real_hashserv()
     if real_binary is None:
         pytest.skip(
-            "bitbake-hashserv not available - set BSPCTL_BITBAKE_HASHSERV or install yocto/bitbake "
+            "bitbake-hashserv not available - set BAKAR_BITBAKE_HASHSERV or install yocto/bitbake "
             "at ~/repos/personal/yocto/bitbake/bin/bitbake-hashserv"
         )
 
@@ -85,7 +85,7 @@ def test_hashserv_real_daemon_lifecycle(tmp_path: Path) -> None:
     assert url.startswith("ws://localhost:"), f"unexpected URL shape: {url}"
 
     port = int(url.rsplit(":", 1)[1])
-    state_dir = tmp_path / ".bspctl"
+    state_dir = tmp_path / ".bakar"
     pid_file = state_dir / "hashserv.pid"
     port_file = state_dir / "hashserv.port"
     db_file = state_dir / "hashserv.db"

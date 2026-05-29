@@ -1,11 +1,11 @@
-"""Tests for the ``bspctl report`` command.
+"""Tests for the ``bakar report`` command.
 
 Drives the command through the Typer ``CliRunner`` (pattern from
 ``tests/test_cli_layers.py``), monkeypatching ``_find_run`` and
-``assemble_report`` on ``bspctl.commands.report`` - where the ``report``
+``assemble_report`` on ``bakar.commands.report`` - where the ``report``
 function looks them up - so no real run directory or git state is needed.
 
-Importing ``bspctl.commands.report`` registers the command on the shared
+Importing ``bakar.commands.report`` registers the command on the shared
 ``app``.
 """
 
@@ -16,9 +16,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-import bspctl.commands.report as report_module
-from bspctl.cli import app
-from bspctl.report import ReportSummary
+import bakar.commands.report as report_module
+from bakar.cli import app
+from bakar.report import ReportSummary
 
 if TYPE_CHECKING:
     from pathlib import Path

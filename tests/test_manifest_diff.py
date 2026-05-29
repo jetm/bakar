@@ -1,4 +1,4 @@
-"""Unit tests for bspctl.manifest_diff.diff_manifests.
+"""Unit tests for bakar.manifest_diff.diff_manifests.
 
 Pinned manifests are real XML files written under ``tmp_path``;
 ``parse_manifest_pins`` reads each ``<project>`` element's ``path`` and
@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from bspctl.manifest_diff import diff_manifests
+from bakar.manifest_diff import diff_manifests
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -133,7 +133,7 @@ def test_changed_layer_with_checkout_uses_rev_list(tmp_path: Path) -> None:
         assert f"{_SHA_A}..{_SHA_B}" in argv
         return _Completed(0, "5\n")
 
-    with patch("bspctl.manifest_diff.subprocess.run", side_effect=fake_run) as run:
+    with patch("bakar.manifest_diff.subprocess.run", side_effect=fake_run) as run:
         diffs = _by_layer(diff_manifests(old, new, checkout_root=checkout_root))
 
     assert diffs["sources/poky"].commit_count == 5

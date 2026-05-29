@@ -1,4 +1,4 @@
-"""Unit tests for bspctl.hashserv pure helpers and is_running predicate.
+"""Unit tests for bakar.hashserv pure helpers and is_running predicate.
 
 Covers the deterministic port derivation, the workspace-pinned binary
 lookup (which explicitly must NOT fall through to host PATH), and the
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from bspctl.hashserv import _find_binary, _workspace_port, is_running
+from bakar.hashserv import _find_binary, _workspace_port, is_running
 
 pytestmark = pytest.mark.unit
 
@@ -81,8 +81,8 @@ def test_find_binary_returns_none_when_absent(
 
 
 def _write_pid_file(workspace: Path, pid: int) -> Path:
-    """Helper: write ``<workspace>/.bspctl/hashserv.pid`` with ``pid``."""
-    state_dir = workspace / ".bspctl"
+    """Helper: write ``<workspace>/.bakar/hashserv.pid`` with ``pid``."""
+    state_dir = workspace / ".bakar"
     state_dir.mkdir(parents=True, exist_ok=True)
     pid_file = state_dir / "hashserv.pid"
     pid_file.write_text(f"{pid}\n")
@@ -90,7 +90,7 @@ def _write_pid_file(workspace: Path, pid: int) -> Path:
 
 
 def test_is_running_pid_file_absent(tmp_path: Path) -> None:
-    """No PID file under .bspctl/ - the daemon cannot be running."""
+    """No PID file under .bakar/ - the daemon cannot be running."""
     assert is_running(tmp_path) is False
 
 
@@ -220,10 +220,10 @@ def _create_workspace_binary(workspace: Path) -> Path:
 
 def test_ensure_running_returns_none_when_binary_missing(tmp_path: Path) -> None:
     """No workspace binary - return None and write no state files."""
-    from bspctl.hashserv import ensure_running
+    from bakar.hashserv import ensure_running
 
     assert ensure_running(tmp_path) is None
-    state_dir = tmp_path / ".bspctl"
+    state_dir = tmp_path / ".bakar"
     if state_dir.exists():
         assert not (state_dir / "hashserv.pid").exists()
         assert not (state_dir / "hashserv.port").exists()
@@ -234,9 +234,9 @@ def test_ensure_running_returns_existing_when_alive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Daemon already running - return the recorded URL without spawning."""
-    from bspctl import hashserv as hashserv_mod
+    from bakar import hashserv as hashserv_mod
 
-    state_dir = tmp_path / ".bspctl"
+    state_dir = tmp_path / ".bakar"
     state_dir.mkdir(parents=True)
     (state_dir / "hashserv.port").write_text("54321\n")
 
@@ -256,7 +256,7 @@ def test_ensure_running_starts_process_and_probe_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Fresh spawn, TCP probe succeeds: write PID + port files, return URL."""
-    from bspctl import hashserv as hashserv_mod
+    from bakar import hashserv as hashserv_mod
 
     _create_workspace_binary(tmp_path)
     monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
@@ -281,8 +281,8 @@ def test_ensure_running_starts_process_and_probe_succeeds(
     url = hashserv_mod.ensure_running(tmp_path)
 
     assert url == f"ws://localhost:{expected_port}"
-    pid_file = tmp_path / ".bspctl" / "hashserv.pid"
-    port_file = tmp_path / ".bspctl" / "hashserv.port"
+    pid_file = tmp_path / ".bakar" / "hashserv.pid"
+    port_file = tmp_path / ".bakar" / "hashserv.port"
     assert pid_file.read_text().strip() == "12345"
     assert port_file.read_text().strip() == str(expected_port)
 
@@ -300,7 +300,7 @@ def test_ensure_running_aborts_when_probe_times_out(
     """Probe never succeeds - no PID/port files, stderr captured, None returned."""
     import signal as signal_mod
 
-    from bspctl import hashserv as hashserv_mod
+    from bakar import hashserv as hashserv_mod
 
     _create_workspace_binary(tmp_path)
     monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
@@ -339,10 +339,10 @@ def test_ensure_running_aborts_when_probe_times_out(
     result = hashserv_mod.ensure_running(tmp_path)
 
     assert result is None
-    assert not (tmp_path / ".bspctl" / "hashserv.pid").exists()
-    assert not (tmp_path / ".bspctl" / "hashserv.port").exists()
+    assert not (tmp_path / ".bakar" / "hashserv.pid").exists()
+    assert not (tmp_path / ".bakar" / "hashserv.port").exists()
     # stderr goes directly to the file at spawn time (not via PIPE drain).
-    stderr_file = tmp_path / ".bspctl" / "hashserv.stderr"
+    stderr_file = tmp_path / ".bakar" / "hashserv.stderr"
     assert stderr_file.exists()
     assert sigterm_targets == [12345]
 
@@ -352,7 +352,7 @@ def test_ensure_running_handles_immediate_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Daemon exits before any probe - capture stderr, return None, no PID file."""
-    from bspctl import hashserv as hashserv_mod
+    from bakar import hashserv as hashserv_mod
 
     _create_workspace_binary(tmp_path)
     monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
@@ -373,17 +373,17 @@ def test_ensure_running_handles_immediate_exit(
     result = hashserv_mod.ensure_running(tmp_path)
 
     assert result is None
-    assert not (tmp_path / ".bspctl" / "hashserv.pid").exists()
-    assert not (tmp_path / ".bspctl" / "hashserv.port").exists()
+    assert not (tmp_path / ".bakar" / "hashserv.pid").exists()
+    assert not (tmp_path / ".bakar" / "hashserv.port").exists()
     # stderr now goes directly to the file at spawn time (not via PIPE), so the
     # file exists but is empty in tests (the mock process doesn't write to it).
-    stderr_file = tmp_path / ".bspctl" / "hashserv.stderr"
+    stderr_file = tmp_path / ".bakar" / "hashserv.stderr"
     assert stderr_file.exists()
 
 
 def test_stop_no_pid_file_returns_false(tmp_path: Path) -> None:
-    """No PID file under .bspctl/ - stop is a no-op and returns False."""
-    from bspctl.hashserv import stop
+    """No PID file under .bakar/ - stop is a no-op and returns False."""
+    from bakar.hashserv import stop
 
     assert stop(tmp_path) is False
 
@@ -395,9 +395,9 @@ def test_stop_signals_alive_pid(
     """Live daemon dies on SIGTERM; PID + port files removed, DB stays."""
     import signal as signal_mod
 
-    from bspctl import hashserv as hashserv_mod
+    from bakar import hashserv as hashserv_mod
 
-    state_dir = tmp_path / ".bspctl"
+    state_dir = tmp_path / ".bakar"
     state_dir.mkdir(parents=True)
     pid_file = state_dir / "hashserv.pid"
     pid_file.write_text("12345\n")
@@ -437,9 +437,9 @@ def test_stop_preserves_db_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The SQLite database survives stop() so cache accumulates across cycles."""
-    from bspctl import hashserv as hashserv_mod
+    from bakar import hashserv as hashserv_mod
 
-    state_dir = tmp_path / ".bspctl"
+    state_dir = tmp_path / ".bakar"
     state_dir.mkdir(parents=True)
     (state_dir / "hashserv.pid").write_text("12345\n")
     (state_dir / "hashserv.port").write_text("50000\n")
@@ -465,9 +465,9 @@ def test_stop_force_kills_after_grace(
     """When SIGTERM grace lapses with the daemon still alive, SIGKILL fires."""
     import signal as signal_mod
 
-    from bspctl import hashserv as hashserv_mod
+    from bakar import hashserv as hashserv_mod
 
-    state_dir = tmp_path / ".bspctl"
+    state_dir = tmp_path / ".bakar"
     state_dir.mkdir(parents=True)
     (state_dir / "hashserv.pid").write_text("12345\n")
     (state_dir / "hashserv.port").write_text("50000\n")
@@ -508,9 +508,9 @@ def test_stop_handles_already_dead_pid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Recorded PID is already dead - state files still cleaned, returns True."""
-    from bspctl import hashserv as hashserv_mod
+    from bakar import hashserv as hashserv_mod
 
-    state_dir = tmp_path / ".bspctl"
+    state_dir = tmp_path / ".bakar"
     state_dir.mkdir(parents=True)
     pid_file = state_dir / "hashserv.pid"
     pid_file.write_text("12345\n")

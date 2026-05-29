@@ -12,8 +12,8 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-import bspctl.commands._app as cli_module
-from bspctl.cli import app
+import bakar.commands._app as cli_module
+from bakar.cli import app
 
 pytestmark = pytest.mark.unit
 
@@ -96,14 +96,14 @@ def test_example_yaml_meta_oe_includes_core_layers(kas_doc: dict) -> None:
 
 
 def test_example_yaml_dry_run_succeeds(tmp_path: Path, monkeypatch) -> None:
-    """Dry-run bspctl build with the wrynose example YAML.
+    """Dry-run bakar build with the wrynose example YAML.
 
     Applies the generic tuning overlay and exits before invoking kas.
     No network access is performed in dry-run mode.
     """
     monkeypatch.setenv("KAS_CONTAINER_IMAGE", "ghcr.io/siemens/kas/kas:5.2")
     runner = CliRunner()
-    with patch("bspctl.commands._app.load_vendors", return_value=[]):
+    with patch("bakar.commands._app.load_vendors", return_value=[]):
         result = runner.invoke(
             app,
             ["build", str(EXAMPLE_YAML), "--skip-doctor", "--dry-run"],

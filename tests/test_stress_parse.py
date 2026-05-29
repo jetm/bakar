@@ -1,4 +1,4 @@
-"""Unit tests for bspctl.steps.stress_parse.
+"""Unit tests for bakar.steps.stress_parse.
 
 Mocks ``run_shell_capture`` so the loop logic, signature scanning,
 and ``summary.json`` aggregation can be exercised without a live
@@ -19,9 +19,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from bspctl.config import BuildConfig
-from bspctl.observability import RunLogger
-from bspctl.steps import stress_parse
+from bakar.config import BuildConfig
+from bakar.observability import RunLogger
+from bakar.steps import stress_parse
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -169,7 +169,7 @@ def test_all_iterations_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
             cfg,
             log,
             bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bspctl-tuning-nxp.yml",
+            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
             runs=10,
             target="world",
             parse_threads=None,
@@ -203,7 +203,7 @@ def test_one_iteration_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
             cfg,
             log,
             bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bspctl-tuning-nxp.yml",
+            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
             runs=5,
             target="world",
             parse_threads=None,
@@ -227,7 +227,7 @@ def test_summary_json_persisted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
             cfg,
             log,
             bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bspctl-tuning-nxp.yml",
+            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
             runs=1,
             target="world",
             parse_threads=None,
@@ -256,7 +256,7 @@ def test_parse_threads_prepended_to_command(tmp_path: Path, monkeypatch: pytest.
             cfg,
             log,
             bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bspctl-tuning-nxp.yml",
+            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
             runs=1,
             target="world",
             parse_threads=1,
@@ -281,7 +281,7 @@ def test_custom_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
             cfg,
             log,
             bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bspctl-tuning-nxp.yml",
+            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
             runs=1,
             target="core-image-minimal",
             parse_threads=None,
@@ -305,7 +305,7 @@ def test_per_iteration_logs_written(tmp_path: Path, monkeypatch: pytest.MonkeyPa
             cfg,
             log,
             bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bspctl-tuning-nxp.yml",
+            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
             runs=3,
             target="world",
             parse_threads=None,
@@ -330,7 +330,7 @@ def test_ti_bsp_dispatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
             cfg,
             log,
             bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bspctl-tuning-nxp.yml",
+            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
             runs=1,
             target="world",
             parse_threads=None,
@@ -353,7 +353,7 @@ def test_variant_b_signature_detected(tmp_path: Path, monkeypatch: pytest.Monkey
             cfg,
             log,
             bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bspctl-tuning-nxp.yml",
+            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
             runs=1,
             target="world",
             parse_threads=None,
@@ -419,7 +419,7 @@ def test_cache_cleared_between_iterations(tmp_path: Path, monkeypatch: pytest.Mo
             cfg,
             log,
             bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bspctl-tuning-nxp.yml",
+            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
             runs=3,
             target="world",
             parse_threads=None,
@@ -445,7 +445,7 @@ def test_cache_clear_no_op_on_first_iteration_with_empty_workspace(
             cfg,
             log,
             bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bspctl-tuning-nxp.yml",
+            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
             runs=1,
             target="world",
             parse_threads=None,
@@ -524,7 +524,7 @@ def test_runtime_cleared_between_iterations(tmp_path: Path, monkeypatch: pytest.
             cfg,
             log,
             bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bspctl-tuning-nxp.yml",
+            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
             runs=3,
             target="world",
             parse_threads=None,
@@ -549,7 +549,7 @@ def test_env_payload_records_parse_threads_override(tmp_path: Path, monkeypatch:
             cfg,
             log,
             bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bspctl-tuning-nxp.yml",
+            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
             runs=1,
             target="world",
             parse_threads=8,
@@ -571,7 +571,7 @@ def test_label_propagates_to_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
             cfg,
             log,
             bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bspctl-tuning-nxp.yml",
+            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
             runs=1,
             target="world",
             parse_threads=None,
@@ -598,7 +598,7 @@ def test_label_omitted_when_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
             cfg,
             log,
             bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bspctl-tuning-nxp.yml",
+            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
             runs=1,
             target="world",
             parse_threads=None,
@@ -634,7 +634,7 @@ def test_python_executable_propagates_to_command_and_summary(
             cfg,
             log,
             bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bspctl-tuning-nxp.yml",
+            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
             runs=1,
             target="world",
             parse_threads=None,
@@ -666,7 +666,7 @@ def test_python_executable_omitted_when_unset(
             cfg,
             log,
             bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bspctl-tuning-nxp.yml",
+            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
             runs=1,
             target="world",
             parse_threads=None,

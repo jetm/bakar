@@ -1,9 +1,9 @@
-"""Tests for the ``bspctl clean`` command.
+"""Tests for the ``bakar clean`` command.
 
-Each test sets up a tmp workspace with a ``.bspctl.toml`` marker so
+Each test sets up a tmp workspace with a ``.bakar.toml`` marker so
 ``_workspace_from_cwd`` finds the workspace; the ``nxp/`` subdir makes the
 resolved ``cfg.bsp_root`` point at ``<workspace>/nxp``. Helpers that touch
-the filesystem (``shutil.rmtree``, ``bspctl.hashserv.stop``) are
+the filesystem (``shutil.rmtree``, ``bakar.hashserv.stop``) are
 monkeypatched so no real daemon is signaled and no real directories are
 removed.
 """
@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bspctl.cli import app
+from bakar.cli import app
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -33,12 +33,12 @@ def runner() -> _CliRunner:
 
 @pytest.fixture
 def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A tmp workspace with a ``.bspctl.toml`` marker; chdir into it.
+    """A tmp workspace with a ``.bakar.toml`` marker; chdir into it.
 
     Creates ``nxp/build/`` so ``_clean_build_dir`` follows its rmtree path
     (the helper is a no-op when the build dir is absent).
     """
-    (tmp_path / ".bspctl.toml").write_text("")
+    (tmp_path / ".bakar.toml").write_text("")
     (tmp_path / "nxp" / "build").mkdir(parents=True)
     monkeypatch.chdir(tmp_path)
     return tmp_path
@@ -56,7 +56,7 @@ def test_clean_all_calls_hashserv_stop_before_wipe(
     """
     import shutil
 
-    from bspctl import hashserv
+    from bakar import hashserv
 
     recorded: list[tuple[str, str]] = []
 

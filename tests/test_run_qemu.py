@@ -1,4 +1,4 @@
-"""Tests for bspctl.steps.run_qemu and the `bspctl run` CLI command."""
+"""Tests for bakar.steps.run_qemu and the `bakar run` CLI command."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ if TYPE_CHECKING:
 
 import pytest
 
-from bspctl.config import BuildConfig
-from bspctl.steps.run_qemu import _find_meta_avocado_dir, resolve_run_script
+from bakar.config import BuildConfig
+from bakar.steps.run_qemu import _find_meta_avocado_dir, resolve_run_script
 
 pytestmark = pytest.mark.unit
 
@@ -98,7 +98,7 @@ def test_resolve_run_script_arm64(tmp_path: Path) -> None:
 
 
 def test_run_qemu_raises_when_script_missing(tmp_path: Path) -> None:
-    from bspctl.steps.run_qemu import run_qemu
+    from bakar.steps.run_qemu import run_qemu
 
     sources = tmp_path / "sources"
     kas_yaml = _make_kas_yaml(sources)
@@ -111,7 +111,7 @@ def test_run_qemu_raises_when_script_missing(tmp_path: Path) -> None:
 
 
 def test_run_qemu_raises_when_build_missing(tmp_path: Path) -> None:
-    from bspctl.steps.run_qemu import run_qemu
+    from bakar.steps.run_qemu import run_qemu
 
     sources = tmp_path / "sources"
     kas_yaml = _make_kas_yaml(sources)
@@ -127,7 +127,7 @@ def test_run_qemu_raises_when_build_missing(tmp_path: Path) -> None:
 
 
 def test_run_qemu_restores_termios_on_tty(tmp_path: Path) -> None:
-    from bspctl.steps.run_qemu import run_qemu
+    from bakar.steps.run_qemu import run_qemu
 
     sources = tmp_path / "sources"
     kas_yaml = _make_kas_yaml(sources)
@@ -146,7 +146,7 @@ def test_run_qemu_restores_termios_on_tty(tmp_path: Path) -> None:
     with (
         patch("subprocess.Popen", return_value=mock_proc),
         patch("sys.stdin") as mock_stdin,
-        patch("bspctl.steps.run_qemu.termios") as mock_termios,
+        patch("bakar.steps.run_qemu.termios") as mock_termios,
     ):
         mock_stdin.isatty.return_value = True
         mock_stdin.fileno.return_value = 0
@@ -159,7 +159,7 @@ def test_run_qemu_restores_termios_on_tty(tmp_path: Path) -> None:
 
 
 def test_run_qemu_invokes_script_with_bsp_root_cwd(tmp_path: Path) -> None:
-    from bspctl.steps.run_qemu import run_qemu
+    from bakar.steps.run_qemu import run_qemu
 
     sources = tmp_path / "sources"
     kas_yaml = _make_kas_yaml(sources)
@@ -186,15 +186,15 @@ def test_run_qemu_invokes_script_with_bsp_root_cwd(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# CLI integration: bspctl run
+# CLI integration: bakar run
 # ---------------------------------------------------------------------------
 
 
 def test_cli_run_non_meta_avocado_exits_2(tmp_path: Path) -> None:
     from typer.testing import CliRunner
 
-    import bspctl.commands._app as cli_module
-    from bspctl.cli import app
+    import bakar.commands._app as cli_module
+    from bakar.cli import app
 
     cli_module._VENDORS = None
     runner = CliRunner()
@@ -205,7 +205,7 @@ def test_cli_run_non_meta_avocado_exits_2(tmp_path: Path) -> None:
     kas_yaml = yaml_dir / "imx8.yml"
     kas_yaml.write_text("machine: imx8mp-var-dart\n")
 
-    with patch("bspctl.commands._app.load_vendors", return_value=[]):
+    with patch("bakar.commands._app.load_vendors", return_value=[]):
         result = runner.invoke(app, ["run", str(kas_yaml)])
 
     assert result.exit_code == 2
@@ -214,8 +214,8 @@ def test_cli_run_non_meta_avocado_exits_2(tmp_path: Path) -> None:
 def test_cli_run_missing_script_exits_2(tmp_path: Path) -> None:
     from typer.testing import CliRunner
 
-    import bspctl.commands._app as cli_module
-    from bspctl.cli import app
+    import bakar.commands._app as cli_module
+    from bakar.cli import app
 
     cli_module._VENDORS = None
     runner = CliRunner()
@@ -226,7 +226,7 @@ def test_cli_run_missing_script_exits_2(tmp_path: Path) -> None:
     cfg = _meta_avocado_cfg(sources)
     (cfg.bsp_root / "build").mkdir(parents=True)
 
-    with patch("bspctl.commands._app.load_vendors", return_value=[]):
+    with patch("bakar.commands._app.load_vendors", return_value=[]):
         result = runner.invoke(app, ["run", str(kas_yaml)])
 
     assert result.exit_code == 2

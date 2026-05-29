@@ -1,12 +1,12 @@
-"""Tests for the ``bspctl layers`` command.
+"""Tests for the ``bakar layers`` command.
 
 Drives the command through the Typer ``CliRunner``, monkeypatching
 ``collect_layer_hashes`` so no real git work happens (mock pattern from
 ``tests/test_cli_user_config.py``). ``collect_layer_hashes`` is imported into
-the command module, so it is patched on ``bspctl.commands.layers`` - where the
+the command module, so it is patched on ``bakar.commands.layers`` - where the
 ``layers`` function looks it up.
 
-Importing ``bspctl.commands.layers`` registers the command on the shared
+Importing ``bakar.commands.layers`` registers the command on the shared
 ``app`` (cli.py does not yet import it; that wiring is task 5.1).
 """
 
@@ -16,9 +16,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-import bspctl.commands.layers as layers_module
-from bspctl.cli import app
-from bspctl.layers import LayerHash
+import bakar.commands.layers as layers_module
+from bakar.cli import app
+from bakar.layers import LayerHash
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -64,8 +64,8 @@ def test_empty_workspace_prints_guidance_no_table(
     monkeypatch.setattr(layers_module, "collect_layer_hashes", lambda cfg: [])
     result = runner.invoke(app, ["layers", "--workspace", str(nxp_workspace)])
     assert result.exit_code == 0, result.output
-    assert "bspctl build" in result.output
-    assert "bspctl sync" in result.output
+    assert "bakar build" in result.output
+    assert "bakar sync" in result.output
     assert "layers:" not in result.output
 
 
@@ -93,7 +93,7 @@ def test_yaml_and_manifest_mutually_exclusive(
 def test_outside_workspace_fails(runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No positional YAML and no ``--workspace`` outside a workspace fails."""
     monkeypatch.setattr(layers_module, "collect_layer_hashes", lambda cfg: [])
-    # tmp_path carries no .bspctl.toml, nxp/, ti/, or bitbake-setup signature,
+    # tmp_path carries no .bakar.toml, nxp/, ti/, or bitbake-setup signature,
     # so _workspace_from_cwd raises typer.Exit(2).
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["layers"])

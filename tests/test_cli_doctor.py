@@ -1,12 +1,12 @@
-"""Tests for the bspctl doctor --psi-calibrate flag and recommendation helper."""
+"""Tests for the bakar doctor --psi-calibrate flag and recommendation helper."""
 
 from __future__ import annotations
 
 import pytest
 from typer.testing import CliRunner
 
-from bspctl.commands._app import app
-from bspctl.commands.doctor import _psi_recommendation
+from bakar.commands._app import app
+from bakar.commands.doctor import _psi_recommendation
 
 pytestmark = pytest.mark.unit
 
@@ -54,10 +54,10 @@ def test_psi_recommendation_returns_ints() -> None:
 def test_psi_calibrate_exits_zero_when_psi_unavailable(monkeypatch) -> None:
     """--psi-calibrate exits 0 and prints a message when PSI is unavailable.
 
-    The function is imported via ``from bspctl.diagnostics import _read_psi_avg10``
+    The function is imported via ``from bakar.diagnostics import _read_psi_avg10``
     so patching the local binding in doctor's namespace (not diagnostics) is required.
     """
-    monkeypatch.setattr("bspctl.commands.doctor._read_psi_avg10", lambda _r: None)
+    monkeypatch.setattr("bakar.commands.doctor._read_psi_avg10", lambda _r: None)
 
     result = runner.invoke(app, ["doctor", "--psi-calibrate"])
 

@@ -1,4 +1,4 @@
-"""Unit tests for the settings CRUD functions in bspctl.user_config."""
+"""Unit tests for the settings CRUD functions in bakar.user_config."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bspctl.user_config import (
+from bakar.user_config import (
     SETTINGS_SCHEMA,
     get_setting,
     list_settings,

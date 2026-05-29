@@ -1,4 +1,4 @@
-"""Tests for the bbsetup family in :func:`bspctl.config.resolve`.
+"""Tests for the bbsetup family in :func:`bakar.config.resolve`.
 
 The bbsetup family routes its workspace (the bitbake-setup setup dir)
 straight to ``bsp_root``, so the existing path properties yield
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from bspctl.config import resolve
+from bakar.config import resolve
 
 pytestmark = pytest.mark.unit
 

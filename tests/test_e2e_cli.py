@@ -1,6 +1,6 @@
-"""E2E integration tests that drive bspctl through the real installed CLI binary.
+"""E2E integration tests that drive bakar through the real installed CLI binary.
 
-Each test invokes ``bspctl`` as a subprocess and asserts on stdout, stderr, and
+Each test invokes ``bakar`` as a subprocess and asserts on stdout, stderr, and
 the exit code. No monkey-patching or CliRunner - these tests catch wiring
 mistakes that unit tests cannot: wrong stream routing, missing env vars, broken
 workspace detection.
@@ -13,9 +13,9 @@ Notes:
     - ``console.print()`` routes to stderr because ``_app.py`` uses
       ``Console(stderr=True)``.  All assertions on human-readable output
       check ``result.stderr``; only ``report --json`` uses ``result.stdout``.
-    - The ``for-all`` user command's stdout inherits bspctl's stdout
+    - The ``for-all`` user command's stdout inherits bakar's stdout
       (subprocess.run with no redirection), so echo output is in
-      ``result.stdout`` while bspctl headers are in ``result.stderr``.
+      ``result.stdout`` while bakar headers are in ``result.stderr``.
     - Dump/lock tests unset ``KAS_CONTAINER_IMAGE`` to force host mode; the
       ``file://`` repo paths are not bind-mounted inside ``kas-container``.
 """
@@ -35,9 +35,9 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.integration
 
-_BSPCTL = shutil.which("bspctl")
-if _BSPCTL is None:
-    pytest.skip("bspctl not installed - run: uv tool install .", allow_module_level=True)
+_BAKAR = shutil.which("bakar")
+if _BAKAR is None:
+    pytest.skip("bakar not installed - run: uv tool install .", allow_module_level=True)
 
 
 # ---------------------------------------------------------------------------
@@ -46,9 +46,9 @@ if _BSPCTL is None:
 
 
 def _run(args: list[str], *, env: dict | None = None) -> subprocess.CompletedProcess[str]:
-    """Run bspctl and return the CompletedProcess with text streams."""
+    """Run bakar and return the CompletedProcess with text streams."""
     return subprocess.run(
-        [_BSPCTL, *args],
+        [_BAKAR, *args],
         capture_output=True,
         text=True,
         env=env if env is not None else os.environ.copy(),
@@ -303,7 +303,7 @@ class TestLayers:
         result = _run(["layers", "--workspace", str(nxp_ws)])
         assert result.returncode == 0
         guidance = result.stderr
-        assert "bspctl build" in guidance or "bspctl sync" in guidance
+        assert "bakar build" in guidance or "bakar sync" in guidance
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +315,7 @@ class TestForAll:
     def test_repo_name_injected_into_command(self, layer_ws: Path) -> None:
         # console headers -> stderr; subprocess echo output -> stdout
         result = subprocess.run(
-            [_BSPCTL, "for-all", "echo REPO=$BSPCTL_REPO_NAME", "--workspace", str(layer_ws)],
+            [_BAKAR, "for-all", "echo REPO=$BAKAR_REPO_NAME", "--workspace", str(layer_ws)],
             capture_output=True,
             text=True,
         )
@@ -324,17 +324,17 @@ class TestForAll:
 
     def test_repo_commit_env_var_is_non_empty(self, layer_ws: Path) -> None:
         result = subprocess.run(
-            [_BSPCTL, "for-all", "echo COMMIT=$BSPCTL_REPO_COMMIT", "--workspace", str(layer_ws)],
+            [_BAKAR, "for-all", "echo COMMIT=$BAKAR_REPO_COMMIT", "--workspace", str(layer_ws)],
             capture_output=True,
             text=True,
         )
         commit_line = next((ln for ln in result.stdout.splitlines() if "COMMIT=" in ln), "")
         sha = commit_line.split("COMMIT=", 1)[-1].strip()
-        assert sha, "BSPCTL_REPO_COMMIT was empty"
+        assert sha, "BAKAR_REPO_COMMIT was empty"
 
     def test_nonzero_exit_propagates(self, layer_ws: Path) -> None:
         result = subprocess.run(
-            [_BSPCTL, "for-all", "exit 1", "--workspace", str(layer_ws)],
+            [_BAKAR, "for-all", "exit 1", "--workspace", str(layer_ws)],
             capture_output=True,
             text=True,
         )
@@ -350,9 +350,9 @@ _kas_required = pytest.mark.skipif(shutil.which("kas") is None, reason="kas not 
 
 @pytest.fixture
 def kas_env() -> dict:
-    """Environment with KAS_CONTAINER_IMAGE unset so bspctl uses plain ``kas``.
+    """Environment with KAS_CONTAINER_IMAGE unset so bakar uses plain ``kas``.
 
-    When KAS_CONTAINER_IMAGE is set, bspctl picks ``kas-container``, which
+    When KAS_CONTAINER_IMAGE is set, bakar picks ``kas-container``, which
     runs kas inside Docker and cannot see ``file://`` paths outside its
     bind-mounted work directory.
     """
@@ -417,7 +417,7 @@ class TestDump:
     def test_output_file_contains_machine(self, kas_yaml_pinned: Path, kas_env: dict, tmp_path: Path) -> None:
         out = tmp_path / "dump.yml"
         result = subprocess.run(
-            [_BSPCTL, "dump", str(kas_yaml_pinned), "--output", str(out)],
+            [_BAKAR, "dump", str(kas_yaml_pinned), "--output", str(out)],
             capture_output=True,
             text=True,
             env=kas_env,
@@ -430,7 +430,7 @@ class TestDump:
 
     def test_stdout_contains_machine(self, kas_yaml_pinned: Path, kas_env: dict) -> None:
         result = subprocess.run(
-            [_BSPCTL, "dump", str(kas_yaml_pinned)],
+            [_BAKAR, "dump", str(kas_yaml_pinned)],
             capture_output=True,
             text=True,
             env=kas_env,
@@ -444,7 +444,7 @@ class TestDump:
 class TestLock:
     def test_lockfile_written_with_commit_sha(self, kas_yaml_branch: Path, kas_env: dict) -> None:
         result = subprocess.run(
-            [_BSPCTL, "lock", str(kas_yaml_branch)],
+            [_BAKAR, "lock", str(kas_yaml_branch)],
             capture_output=True,
             text=True,
             env=kas_env,

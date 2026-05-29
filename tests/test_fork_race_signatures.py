@@ -1,4 +1,4 @@
-"""Unit tests for bspctl.fork_race_signatures.
+"""Unit tests for bakar.fork_race_signatures.
 
 Each canonical fork-race regex is exercised against a representative
 positive fixture (a line we expect to fire) and a negative fixture (a
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from bspctl.fork_race_signatures import (
+from bakar.fork_race_signatures import (
     FORK_RACE_SIGNATURES,
     FORK_RACE_SUGGESTION,
     scan,
@@ -131,7 +131,7 @@ def test_suggestion_string_describes_root_cause() -> None:
     """The shared suggestion message must describe the root cause and
     the manual workaround so triage and stress-parse stay consistent."""
     assert "fork" in FORK_RACE_SUGGESTION
-    assert "bspctl build" in FORK_RACE_SUGGESTION
+    assert "bakar build" in FORK_RACE_SUGGESTION
 
 
 def test_triage_suggestions_consume_shared_signatures() -> None:
@@ -140,7 +140,7 @@ def test_triage_suggestions_consume_shared_signatures() -> None:
     Catches a future refactor that re-introduces a hardcoded inline
     pattern next to the suggestion string.
     """
-    from bspctl import triage
+    from bakar import triage
 
     fork_race_entries = [
         (pat, sug)

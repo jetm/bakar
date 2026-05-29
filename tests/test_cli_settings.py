@@ -1,16 +1,16 @@
-"""Tests for the ``bspctl settings`` sub-app driven through Typer ``CliRunner``.
+"""Tests for the ``bakar settings`` sub-app driven through Typer ``CliRunner``.
 
-The CRUD functions in ``bspctl.user_config`` resolve the live config path via
-``_config_path(None)``, which defaults to ``~/.config/bspctl/config.toml``. The
+The CRUD functions in ``bakar.user_config`` resolve the live config path via
+``_config_path(None)``, which defaults to ``~/.config/bakar/config.toml``. The
 sub-app calls them with no path argument, so monkeypatching
-``bspctl.user_config._config_path`` to return a tmp path isolates every test
+``bakar.user_config._config_path`` to return a tmp path isolates every test
 from the real config file.
 
 ``commands/settings.py`` prints via the shared ``Console(stderr=True)`` from
 ``commands/_app.py``; ``CliRunner`` merges stderr into ``result.output``, so all
 output assertions read ``result.output`` rather than ``result.stdout``.
 
-Importing ``bspctl.commands.settings`` registers the sub-app on the shared
+Importing ``bakar.commands.settings`` registers the sub-app on the shared
 ``app`` (``cli.py`` does not import it yet - that wiring lands in task 5.1).
 """
 
@@ -20,9 +20,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-import bspctl.commands.settings  # noqa: F401 - registers the settings sub-app on `app`
-import bspctl.user_config as user_config
-from bspctl.cli import app
+import bakar.commands.settings  # noqa: F401 - registers the settings sub-app on `app`
+import bakar.user_config as user_config
+from bakar.cli import app
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -1,7 +1,7 @@
-"""Unit tests for bspctl.bsp_detect.detect_bsp_from_yaml.
+"""Unit tests for bakar.bsp_detect.detect_bsp_from_yaml.
 
 Pins the rules that classify a kas YAML as NXP, TI, generic, or
-unknown for the BYO ``bspctl build my.yml`` flow. Order: machine
+unknown for the BYO ``bakar build my.yml`` flow. Order: machine
 prefix wins, then repos block names, then a generic fallback for
 parseable YAMLs that have at least one of those anchors.
 """
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from bspctl.bsp_detect import (
+from bakar.bsp_detect import (
     detect_bsp_from_yaml,
     detect_kas_workspace,
     is_bbsetup_workspace,

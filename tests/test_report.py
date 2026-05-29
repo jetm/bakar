@@ -1,7 +1,7 @@
-"""Unit tests for :func:`bspctl.report.assemble_report`.
+"""Unit tests for :func:`bakar.report.assemble_report`.
 
 Builds a real run directory under ``tmp_path`` following the
-:class:`bspctl.observability.RunLogger` event schema
+:class:`bakar.observability.RunLogger` event schema
 (``{"ts": ..., "event": ..., ...}`` with the ``%Y-%m-%dT%H:%M:%SZ`` ts
 format) and a ``du.tsv`` of ``<epoch>\\t<bytes>`` rows, then asserts the
 assembled summary. The ``BuildConfig`` is resolved from a tmp nxp workspace;
@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bspctl.config import resolve
-from bspctl.report import assemble_report
+from bakar.config import resolve
+from bakar.report import assemble_report
 
 if TYPE_CHECKING:
     from pathlib import Path

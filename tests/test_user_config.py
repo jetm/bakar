@@ -1,4 +1,4 @@
-"""Unit tests for bspctl.user_config."""
+"""Unit tests for bakar.user_config."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bspctl.user_config import UserConfig, load_user_config, set_setting
+from bakar.user_config import UserConfig, load_user_config, set_setting
 
 if TYPE_CHECKING:
     from pathlib import Path

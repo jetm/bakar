@@ -1,7 +1,7 @@
-"""Tests for the ``bspctl diff`` command.
+"""Tests for the ``bakar diff`` command.
 
 Drives the command through the Typer ``CliRunner``. The NXP path
-monkeypatches ``diff_manifests`` on ``bspctl.commands.diff`` (where the
+monkeypatches ``diff_manifests`` on ``bakar.commands.diff`` (where the
 ``diff`` function looks it up - mock pattern from
 ``tests/test_cli_layers.py``) so no manifest parsing happens; the BYO
 path monkeypatches ``subprocess.run`` (pattern from
@@ -19,9 +19,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-import bspctl.commands.diff as diff_module
-from bspctl.cli import app
-from bspctl.manifest_diff import LayerDiff
+import bakar.commands.diff as diff_module
+from bakar.cli import app
+from bakar.manifest_diff import LayerDiff
 
 if TYPE_CHECKING:
     from pathlib import Path

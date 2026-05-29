@@ -1,9 +1,9 @@
 """Tests for _workspace_from_cwd() workspace detection logic.
 
 Covers the six cases from spec workspace-detection:
-1. marker-only: .bspctl.toml present, no nxp/ or ti/ -> detected via marker
+1. marker-only: .bakar.toml present, no nxp/ or ti/ -> detected via marker
 2. subdir-only: nxp/ subdir present, no marker -> detected via subdir
-3. both-present: both .bspctl.toml and nxp/ -> marker wins (same dir, either works)
+3. both-present: both .bakar.toml and nxp/ -> marker wins (same dir, either works)
 4. neither: no marker, no nxp/, no ti/ -> exit 2
 5. stray varis/ dir: only varis/ dir present -> NOT detected (ignored)
 6. generic BYO carve-out: --workspace flag bypasses detection
@@ -19,7 +19,7 @@ import typer
 if TYPE_CHECKING:
     from pathlib import Path
 
-from bspctl.commands._helpers import _resolve_workspace, _workspace_from_cwd
+from bakar.commands._helpers import _resolve_workspace, _workspace_from_cwd
 
 pytestmark = pytest.mark.unit
 
@@ -34,13 +34,13 @@ def _chdir(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Case 1: .bspctl.toml marker only
+# Case 1: .bakar.toml marker only
 # ---------------------------------------------------------------------------
 
 
 def test_marker_only_detected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A .bspctl.toml in the cwd is sufficient for detection."""
-    (tmp_path / ".bspctl.toml").write_text("[bspctl]\n")
+    """A .bakar.toml in the cwd is sufficient for detection."""
+    (tmp_path / ".bakar.toml").write_text("[bakar]\n")
     _chdir(monkeypatch, tmp_path)
 
     result = _workspace_from_cwd()
@@ -49,8 +49,8 @@ def test_marker_only_detected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_marker_in_parent_detected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Walking up finds .bspctl.toml in a parent directory."""
-    (tmp_path / ".bspctl.toml").write_text("[bspctl]\n")
+    """Walking up finds .bakar.toml in a parent directory."""
+    (tmp_path / ".bakar.toml").write_text("[bakar]\n")
     nested = tmp_path / "nxp" / "build"
     nested.mkdir(parents=True)
     _chdir(monkeypatch, nested)
@@ -86,19 +86,19 @@ def test_subdir_ti_detected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
 
 
 # ---------------------------------------------------------------------------
-# Case 3: both .bspctl.toml and nxp/ present -> marker wins
+# Case 3: both .bakar.toml and nxp/ present -> marker wins
 # ---------------------------------------------------------------------------
 
 
 def test_marker_wins_over_subdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """When both .bspctl.toml and nxp/ are present, marker path is taken.
+    """When both .bakar.toml and nxp/ are present, marker path is taken.
 
     Because the marker check comes first in the loop body, the marker is
     what triggers detection, but the returned path is the same directory
     in either case. This test confirms both signals coexist without error
     and the correct workspace is returned.
     """
-    (tmp_path / ".bspctl.toml").write_text("[bspctl]\n")
+    (tmp_path / ".bakar.toml").write_text("[bakar]\n")
     (tmp_path / "nxp").mkdir()
     _chdir(monkeypatch, tmp_path)
 
@@ -113,15 +113,15 @@ def test_marker_in_subdir_wins_over_parent_nxp_dir(tmp_path: Path, monkeypatch: 
     Layout:
       tmp/           <- has nxp/
         nxp/
-        inner/       <- has .bspctl.toml; cwd
+        inner/       <- has .bakar.toml; cwd
 
-    The walk starts at tmp/inner/ and finds .bspctl.toml there first,
+    The walk starts at tmp/inner/ and finds .bakar.toml there first,
     returning tmp/inner/ not tmp/.
     """
     (tmp_path / "nxp").mkdir()
     inner = tmp_path / "inner"
     inner.mkdir()
-    (inner / ".bspctl.toml").write_text("[bspctl]\n")
+    (inner / ".bakar.toml").write_text("[bakar]\n")
     _chdir(monkeypatch, inner)
 
     result = _workspace_from_cwd()
@@ -152,8 +152,8 @@ def test_neither_exits_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 def test_stray_varis_dir_ignored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A varis/ directory alone does not satisfy workspace detection.
 
-    bspctl no longer looks for varis/ - it was removed when the tool was
-    renamed. Only .bspctl.toml, nxp/, or ti/ are recognized.
+    bakar no longer looks for varis/ - it was removed when the tool was
+    renamed. Only .bakar.toml, nxp/, or ti/ are recognized.
     """
     (tmp_path / "varis").mkdir()
     _chdir(monkeypatch, tmp_path)
@@ -219,7 +219,7 @@ def test_generic_family_with_yaml_bypasses_detection(tmp_path: Path, monkeypatch
     byo_dir.mkdir()
     kas_yaml = byo_dir / "kas.yml"
     kas_yaml.write_text("machine: qemuarm64\n")
-    _chdir(monkeypatch, tmp_path)  # tmp_path has no bspctl signals
+    _chdir(monkeypatch, tmp_path)  # tmp_path has no bakar signals
 
     result = _resolve_workspace(None, kas_yaml=kas_yaml, family="generic")
 

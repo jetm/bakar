@@ -1,6 +1,6 @@
 """Tests for env var precedence rules (spec: env-var-namespace).
 
-Verifies the resolution stack in :func:`bspctl.config.resolve`:
+Verifies the resolution stack in :func:`bakar.config.resolve`:
 
 1. CLI flag (explicit arg) beats env var.
 2. Env var beats the ``user_config`` field.
@@ -11,20 +11,20 @@ from __future__ import annotations
 
 import pytest
 
-from bspctl.config import (
+from bakar.config import (
     DEFAULT_CONTAINER_IMAGE,
     DEFAULT_NXP_MACHINE,
     DEFAULT_NXP_MANIFEST,
     resolve,
 )
-from bspctl.user_config import UserConfig
+from bakar.user_config import UserConfig
 
 pytestmark = pytest.mark.unit
 
-_MACHINE_VAR = "BSPCTL_MACHINE"
-_MANIFEST_VAR = "BSPCTL_MANIFEST"
-_DISTRO_VAR = "BSPCTL_DISTRO"
-_IMAGE_VAR = "BSPCTL_IMAGE"
+_MACHINE_VAR = "BAKAR_MACHINE"
+_MANIFEST_VAR = "BAKAR_MANIFEST"
+_DISTRO_VAR = "BAKAR_DISTRO"
+_IMAGE_VAR = "BAKAR_IMAGE"
 
 
 # ---------------------------------------------------------------------------

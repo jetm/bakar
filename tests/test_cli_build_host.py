@@ -1,6 +1,6 @@
-"""Tests for the ``bspctl build --host`` flag and KAS_CONTAINER_IMAGE auto-detection.
+"""Tests for the ``bakar build --host`` flag and KAS_CONTAINER_IMAGE auto-detection.
 
-Covers CLI parsing only: invoking ``bspctl build <yaml> --host`` must
+Covers CLI parsing only: invoking ``bakar build <yaml> --host`` must
 flip ``BuildConfig.host_mode`` to ``True``. Without ``--host`` and without
 ``KAS_CONTAINER_IMAGE`` set, ``resolve()`` auto-enables host mode. When
 ``KAS_CONTAINER_IMAGE`` is set, container mode is the default.
@@ -19,10 +19,10 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-import bspctl.commands._app as cli_module
-from bspctl.cli import app
-from bspctl.config import BuildConfig
-from bspctl.config import resolve as real_resolve
+import bakar.commands._app as cli_module
+from bakar.cli import app
+from bakar.config import BuildConfig
+from bakar.config import resolve as real_resolve
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -57,14 +57,14 @@ def _reset_vendors() -> None:
 
 
 def test_build_host_flag_sets_host_mode(tmp_path: Path) -> None:
-    """``bspctl build <yaml> --host`` must produce ``host_mode=True``."""
+    """``bakar build <yaml> --host`` must produce ``host_mode=True``."""
     kas_yaml = _make_generic_yaml(tmp_path)
     captured: list[BuildConfig] = []
     runner = CliRunner()
 
     with (
-        patch("bspctl.commands._app.load_vendors", return_value=[]),
-        patch("bspctl.commands.build.resolve", side_effect=_capturing_resolve(captured)),
+        patch("bakar.commands._app.load_vendors", return_value=[]),
+        patch("bakar.commands.build.resolve", side_effect=_capturing_resolve(captured)),
     ):
         result = runner.invoke(
             app,
@@ -84,8 +84,8 @@ def test_build_no_host_flag_with_container_image_uses_container(tmp_path: Path, 
     runner = CliRunner()
 
     with (
-        patch("bspctl.commands._app.load_vendors", return_value=[]),
-        patch("bspctl.commands.build.resolve", side_effect=_capturing_resolve(captured)),
+        patch("bakar.commands._app.load_vendors", return_value=[]),
+        patch("bakar.commands.build.resolve", side_effect=_capturing_resolve(captured)),
     ):
         result = runner.invoke(
             app,
@@ -105,8 +105,8 @@ def test_build_no_host_flag_without_container_image_auto_enables_host(tmp_path: 
     runner = CliRunner()
 
     with (
-        patch("bspctl.commands._app.load_vendors", return_value=[]),
-        patch("bspctl.commands.build.resolve", side_effect=_capturing_resolve(captured)),
+        patch("bakar.commands._app.load_vendors", return_value=[]),
+        patch("bakar.commands.build.resolve", side_effect=_capturing_resolve(captured)),
     ):
         result = runner.invoke(
             app,

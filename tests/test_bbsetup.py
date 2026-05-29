@@ -1,4 +1,4 @@
-"""Unit tests for the bbsetup translation in :mod:`bspctl.kas`.
+"""Unit tests for the bbsetup translation in :mod:`bakar.kas`.
 
 Covers :func:`translate_bbsetup_config` and :func:`write_bbsetup_yaml` against
 the committed fixture ``examples/bbsetup-oe-nodistro-wrynose``. The override,
@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from bspctl.kas import translate_bbsetup_config, write_bbsetup_yaml
+from bakar.kas import translate_bbsetup_config, write_bbsetup_yaml
 
 pytestmark = pytest.mark.unit
 
@@ -36,7 +36,7 @@ def _copy_fixture(tmp_path: Path) -> Path:
     dest = tmp_path / "ws"
 
     def _ignore(src: str, names: list[str]) -> set[str]:
-        skip = {"kas-bbsetup.yml", "layers", "ccache", ".bspctl"}
+        skip = {"kas-bbsetup.yml", "layers", "ccache", ".bakar"}
         if src == str(FIXTURE / "build"):
             # Keep only init-build-env; skip run logs and build outputs.
             skip |= {n for n in names if n != "init-build-env"}
@@ -237,7 +237,7 @@ def test_translate_rejects_malformed_fixed_revisions(tmp_path):
 
 
 def test_bbsetup_workspace_walks_up_from_subdir(tmp_path, monkeypatch):
-    from bspctl.commands._helpers import _bbsetup_workspace
+    from bakar.commands._helpers import _bbsetup_workspace
 
     ws = _copy_fixture(tmp_path)
     monkeypatch.chdir(ws / "config")
@@ -246,7 +246,7 @@ def test_bbsetup_workspace_walks_up_from_subdir(tmp_path, monkeypatch):
 
 
 def test_uninitialized_bbsetup_dir_detects_missing_sentinel(tmp_path):
-    from bspctl.commands._helpers import _uninitialized_bbsetup_dir
+    from bakar.commands._helpers import _uninitialized_bbsetup_dir
 
     ws = tmp_path / "partial"
     (ws / "config").mkdir(parents=True)

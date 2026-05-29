@@ -1,6 +1,6 @@
 """Unit tests for the host-mode exe selection inside ``run_build``.
 
-``run_build()`` in :mod:`bspctl.steps.kas_build` chooses between ``kas`` and
+``run_build()`` in :mod:`bakar.steps.kas_build` chooses between ``kas`` and
 ``kas-container`` for the spawned child process based on
 ``cfg.host_mode``. Exercising the full ``run_build`` end-to-end is
 impractical: it allocates a PTY, starts a daemon ``du`` sampler thread,
@@ -24,8 +24,8 @@ from pathlib import Path
 
 import pytest
 
-from bspctl.config import BuildConfig
-from bspctl.steps import kas_build
+from bakar.config import BuildConfig
+from bakar.steps import kas_build
 
 pytestmark = pytest.mark.unit
 

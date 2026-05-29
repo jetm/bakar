@@ -1,9 +1,9 @@
-"""Unit tests for bspctl.kas YAML generation.
+"""Unit tests for bakar.kas YAML generation.
 
 The generator is now topology-only: machine, distro, target, and
 repos. The BSP tuning block (``local_conf_header``) and the
 meta-varis-overrides repo entry live in the static overlay YAMLs at
-``overlays/bspctl-tuning-<bsp>.yml`` and are layered on top by ``bspctl
+``overlays/bakar-tuning-<bsp>.yml`` and are layered on top by ``bakar
 build`` at run time. These tests pin that contract so a regression
 that re-injects either piece into the generator output is caught
 immediately.
@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bspctl.kas import (
+from bakar.kas import (
     NXP_KAS_TEMPLATE,
     TI_KAS_TEMPLATE,
     KasGenOptions,
@@ -57,7 +57,7 @@ def test_template_is_workspace_subdir_only() -> None:
 def test_topology_output_has_no_local_conf_header(tmp_path: Path) -> None:
     """The generator must not emit a local_conf_header block.
 
-    The tuning lives in overlays/bspctl-tuning-<bsp>.yml; layering it
+    The tuning lives in overlays/bakar-tuning-<bsp>.yml; layering it
     in at build time is what keeps BYO and manifest flows in sync.
     """
     (tmp_path / "nxp").mkdir()

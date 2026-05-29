@@ -1,10 +1,10 @@
-"""Unit tests for bspctl.bsp_model.infer_bsp_branch."""
+"""Unit tests for bakar.bsp_model.infer_bsp_branch."""
 
 from __future__ import annotations
 
 import pytest
 
-from bspctl.bsp_model import infer_bsp_branch
+from bakar.bsp_model import infer_bsp_branch
 
 pytestmark = pytest.mark.unit
 
