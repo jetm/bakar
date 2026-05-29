@@ -58,83 +58,47 @@ def _scaffold_workspace(
         write_workspace_config(path, "generic", settings)
 
 
-@app.command("init")
-def init(
-    family: Annotated[
-        str | None,
-        typer.Option("--family", "-f", help="BSP family (nxp/ti/bbsetup/generic); enables non-interactive mode"),
-    ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace directory (default: current directory)"),
-    ] = None,
-    manifest: Annotated[
-        str | None,
-        typer.Option("--manifest", help="Manifest filename (nxp/ti only)"),
-    ] = None,
-    machine: Annotated[
-        str | None,
-        typer.Option("--machine", help="Machine name"),
-    ] = None,
-    distro: Annotated[
-        str | None,
-        typer.Option("--distro", help="Distro (nxp/ti only)"),
-    ] = None,
-    image: Annotated[
-        str | None,
-        typer.Option("--image", help="Image (nxp/ti only)"),
-    ] = None,
-    kas_yaml: Annotated[
-        str | None,
-        typer.Option("--kas-yaml", help="KAS YAML filename (generic only)"),
-    ] = None,
-    no_sync: Annotated[
-        bool,
-        typer.Option("--no-sync", help="Skip sync after scaffolding (interactive mode only)"),
-    ] = False,
+def _init_non_interactive(
+    family: str,
+    workspace: Path | None,
+    manifest: str | None,
+    machine: str | None,
+    distro: str | None,
+    image: str | None,
+    kas_yaml: str | None,
 ) -> None:
-    """Scaffold a new bakar workspace.
+    """Run non-interactive init: validate family, build settings, scaffold, report."""
+    if family not in _FAMILIES:
+        console.print(f"[red]unknown family:[/] {family!r} - must be one of {_FAMILIES}")
+        raise typer.Exit(1)
 
-    Without ``--family``: interactive wizard using questionary prompts.
-    Requires a TTY on stdin.
+    path = workspace or Path(".")
 
-    With ``--family``: non-interactive mode - no TTY required. Settings are
-    resolved from the provided flags, falling back to BSP model defaults for
-    nxp/ti. Sync is never run in non-interactive mode.
-    """
-    non_interactive = family is not None
+    settings: dict[str, str] = {}
+    if family in ("nxp", "ti"):
+        model = get_model(family)  # type: ignore[arg-type]
+        settings["manifest"] = manifest or model.default_manifest or ""
+        settings["machine"] = machine or model.default_machine or ""
+        settings["distro"] = distro or model.default_distro or ""
+        settings["image"] = image or model.default_image or ""
+    elif family == "generic":
+        settings["kas_yaml"] = kas_yaml or "kas-generic.yml"
+        settings["machine"] = machine or "qemux86-64"
+    # bbsetup: no settings needed.
 
-    if non_interactive:
-        if family not in _FAMILIES:
-            console.print(f"[red]unknown family:[/] {family!r} - must be one of {_FAMILIES}")
-            raise typer.Exit(1)
+    try:
+        _scaffold_workspace(path, family, settings)  # type: ignore[arg-type]
+    except FileExistsError as exc:
+        console.print(f"[red]workspace already initialized:[/] {exc} already exists")
+        raise typer.Exit(1) from exc
 
-        path = workspace or Path(".")
+    console.print(f"[green]workspace scaffolded[/] at {path}")
+    if family in ("nxp", "ti", "generic"):
+        console.print(f"Next: [bold]bakar sync --workspace {path}[/]")
 
-        settings: dict[str, str] = {}
-        if family in ("nxp", "ti"):
-            model = get_model(family)  # type: ignore[arg-type]
-            settings["manifest"] = manifest or model.default_manifest or ""
-            settings["machine"] = machine or model.default_machine or ""
-            settings["distro"] = distro or model.default_distro or ""
-            settings["image"] = image or model.default_image or ""
-        elif family == "generic":
-            settings["kas_yaml"] = kas_yaml or "kas-generic.yml"
-            settings["machine"] = machine or "qemux86-64"
-        # bbsetup: no settings needed.
 
-        try:
-            _scaffold_workspace(path, family, settings)  # type: ignore[arg-type]
-        except FileExistsError as exc:
-            console.print(f"[red]workspace already initialized:[/] {exc} already exists")
-            raise typer.Exit(1) from exc
-
-        console.print(f"[green]workspace scaffolded[/] at {path}")
-        if family in ("nxp", "ti", "generic"):
-            console.print(f"Next: [bold]bakar sync --workspace {path}[/]")
-        return
-
-    # Interactive mode below - requires a TTY.
+def _init_interactive(no_sync: bool, workspace: Path | None) -> None:
+    """Run interactive init wizard: TTY check, questionary prompts, scaffold, optional sync."""
     if not sys.stdin.isatty():
         console.print(
             "[red]bakar init requires an interactive terminal[/] - stdin is not a TTY. "
@@ -157,7 +121,7 @@ def init(
     )
     path = Path(workspace_str).expanduser()
 
-    settings = {}
+    settings: dict[str, str] = {}
     if family_str in ("nxp", "ti"):
         model = get_model(family_str)  # type: ignore[arg-type]
         settings["manifest"] = _ask(
@@ -225,3 +189,53 @@ def init(
         console.print(
             "Next: run [bold]bitbake-setup init[/] from inside the workspace to populate config/config-upstream.json"
         )
+
+
+@app.command("init")
+def init(
+    family: Annotated[
+        str | None,
+        typer.Option("--family", "-f", help="BSP family (nxp/ti/bbsetup/generic); enables non-interactive mode"),
+    ] = None,
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", "-w", help="Workspace directory (default: current directory)"),
+    ] = None,
+    manifest: Annotated[
+        str | None,
+        typer.Option("--manifest", help="Manifest filename (nxp/ti only)"),
+    ] = None,
+    machine: Annotated[
+        str | None,
+        typer.Option("--machine", help="Machine name"),
+    ] = None,
+    distro: Annotated[
+        str | None,
+        typer.Option("--distro", help="Distro (nxp/ti only)"),
+    ] = None,
+    image: Annotated[
+        str | None,
+        typer.Option("--image", help="Image (nxp/ti only)"),
+    ] = None,
+    kas_yaml: Annotated[
+        str | None,
+        typer.Option("--kas-yaml", help="KAS YAML filename (generic only)"),
+    ] = None,
+    no_sync: Annotated[
+        bool,
+        typer.Option("--no-sync", help="Skip sync after scaffolding (interactive mode only)"),
+    ] = False,
+) -> None:
+    """Scaffold a new bakar workspace.
+
+    Without ``--family``: interactive wizard using questionary prompts.
+    Requires a TTY on stdin.
+
+    With ``--family``: non-interactive mode - no TTY required. Settings are
+    resolved from the provided flags, falling back to BSP model defaults for
+    nxp/ti. Sync is never run in non-interactive mode.
+    """
+    if family is not None:
+        _init_non_interactive(family, workspace, manifest, machine, distro, image, kas_yaml)
+    else:
+        _init_interactive(no_sync, workspace)
