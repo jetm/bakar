@@ -4,6 +4,7 @@
 
 | Command | Doc | One-liner |
 |---------|-----|-----------|
+| `init` | [init.md](init.md) | Interactive wizard: scaffold a new workspace and write `.bakar.toml` |
 | `build` | [build.md](build.md) | Full pipeline: doctor, sync, gen-kas, kas-container build |
 | `sync` | [sync.md](sync.md) | Sync sources without building |
 | `gen-kas` | [gen-kas.md](gen-kas.md) | Regenerate kas YAML from manifest |
