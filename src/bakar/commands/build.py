@@ -132,6 +132,151 @@ def _run_bbsetup_build(
         console.print(f"artifacts: {deploy}")
 
 
+def _run_byo_build(
+    cfg,
+    log,
+    *,
+    overlay_source,
+    extra_overlays,
+    bsp,
+    family,
+    effective_show_layers,
+    dry_run,
+    skip_doctor,
+) -> None:
+    """Build pipeline for BYO (bring-your-own kas YAML) mode.
+
+    Called inside an active RunLogger context from ``build()``.
+    """
+    run_doctor = not skip_doctor and (_state._USER_CONFIG is None or _state._USER_CONFIG.doctor)
+    if run_doctor:
+        log.step_start("doctor")
+        results = run_all(cfg, bsp)
+        diag_path = log.run_dir / "diagnosis.txt"
+        diag_path.write_text(
+            "\n".join(f"{r.severity.value:5} {r.status.value:4} {r.name:22} {r.message}" for r in results) + "\n"
+        )
+        _print_diagnosis(results)
+        if any_blocking_failure(results):
+            log.step_fail("doctor", reason="blocking failure")
+            raise typer.Exit(code=2)
+        log.step_ok("doctor", checks=len(results))
+
+    if effective_show_layers:
+        _print_layer_hashes(cfg)
+
+    if family == "generic":
+        log.step_skip("bitbake_override", reason="generic mode")
+    else:
+        step_override.apply(cfg, log)
+
+    if dry_run:
+        log.step_skip("kas_build", reason="dry-run")
+        console.print(f"[green]dry-run complete[/]: would run kas-container with {cfg.kas_yaml} + {overlay_source}")
+        return
+
+    rc = step_kas.run_build(
+        cfg,
+        log,
+        kas_yaml=cfg.kas_yaml,
+        overlay_source=overlay_source,
+        extra_overlays=extra_overlays,
+    )
+    if rc != 0:
+        console.print(
+            f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details."
+        )
+        raise typer.Exit(code=rc)
+    deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
+    console.print("[bold green]build succeeded[/]")
+    console.print(f"artifacts: {deploy}")
+
+
+def _run_manifest_build(
+    cfg,
+    log,
+    *,
+    bsp,
+    overlay_source,
+    effective_show_layers,
+    dry_run,
+    skip_sync,
+    skip_doctor,
+    family,
+) -> None:
+    """Build pipeline for manifest-driven mode.
+
+    Called inside an active RunLogger context from ``build()``.
+    """
+    run_doctor = not skip_doctor and (_state._USER_CONFIG is None or _state._USER_CONFIG.doctor)
+    if run_doctor:
+        log.step_start("doctor")
+        results = run_all(cfg, bsp)
+        diag_path = log.run_dir / "diagnosis.txt"
+        diag_path.write_text(
+            "\n".join(f"{r.severity.value:5} {r.status.value:4} {r.name:22} {r.message}" for r in results) + "\n"
+        )
+        _print_diagnosis(results)
+        if any_blocking_failure(results):
+            log.step_fail("doctor", reason="blocking failure")
+            raise typer.Exit(code=2)
+        log.step_ok("doctor", checks=len(results))
+
+    if effective_show_layers:
+        _print_layer_hashes(cfg)
+
+    assert bsp is not None
+    state = detect(cfg)
+    if state.needs_repo_sync and not skip_sync:
+        reasons: list[str] = []
+        if state.repo_broken:
+            reasons.append(".repo/ broken")
+        if state.manifest_mismatch:
+            reasons.append(f"manifest {state.repo_manifest_include!r} -> {cfg.manifest!r}")
+        if state.branch_mismatch:
+            reasons.append(f"branch {state.repo_manifests_branch!r} -> {cfg.repo_branch!r}")
+        if state.sha_drift:
+            reasons.append(f"{len(state.sha_drift)} pinned SHA drift")
+        if reasons:
+            console.print("[yellow]manifest drift:[/] " + "; ".join(reasons) + " - forcing full re-sync")
+        bsp.sync_step(cfg, log, force_init=state.needs_full_reinit)
+    else:
+        log.step_skip(
+            "repo_sync" if family == "nxp" else "ti_layertool",
+            reason="already synced" if not skip_sync else "user skipped",
+        )
+
+    state = detect(cfg)
+    if state.needs_setup_env:
+        bsp.setup_env_step(cfg, log)
+    else:
+        log.step_skip("setup_env", reason="bblayers.conf present")
+
+    step_override.apply(cfg, log)
+    step_kas.regenerate_yaml(cfg, log, bsp=bsp)
+
+    if dry_run:
+        log.step_skip("kas_build", reason="dry-run")
+        console.print(f"[green]dry-run complete[/]: would run kas-container with {cfg.kas_yaml} + {overlay_source}")
+        return
+
+    rc = step_kas.run_build(
+        cfg,
+        log,
+        kas_yaml=cfg.kas_yaml,
+        overlay_source=overlay_source,
+        extra_overlays=_hashequiv_extra_overlays(cfg),
+    )
+    if rc != 0:
+        console.print(
+            f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details."
+        )
+        raise typer.Exit(code=rc)
+    deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
+    console.print("[bold green]build succeeded[/]")
+    console.print(f"artifacts: {deploy}")
+
+
 @app.command()
 def build(
     kas_yaml: Annotated[
@@ -295,77 +440,25 @@ def build(
         log.info(
             f"build mode={'byo' if byo_form else 'manifest'} bsp={family} yaml={cfg.kas_yaml} overlay={overlay_source}",
         )
-
-        run_doctor = not skip_doctor and (_state._USER_CONFIG is None or _state._USER_CONFIG.doctor)
-        if run_doctor:
-            log.step_start("doctor")
-            results = run_all(cfg, bsp)
-            diag_path = log.run_dir / "diagnosis.txt"
-            diag_path.write_text(
-                "\n".join(f"{r.severity.value:5} {r.status.value:4} {r.name:22} {r.message}" for r in results) + "\n"
-            )
-            _print_diagnosis(results)
-            if any_blocking_failure(results):
-                log.step_fail("doctor", reason="blocking failure")
-                raise typer.Exit(code=2)
-            log.step_ok("doctor", checks=len(results))
-
-        if effective_show_layers:
-            _print_layer_hashes(cfg)
-
         if byo_form:
-            if family == "generic":
-                log.step_skip("bitbake_override", reason="generic mode")
-            else:
-                step_override.apply(cfg, log)
-        else:
-            assert bsp is not None
-            state = detect(cfg)
-            if state.needs_repo_sync and not skip_sync:
-                reasons: list[str] = []
-                if state.repo_broken:
-                    reasons.append(".repo/ broken")
-                if state.manifest_mismatch:
-                    reasons.append(f"manifest {state.repo_manifest_include!r} -> {cfg.manifest!r}")
-                if state.branch_mismatch:
-                    reasons.append(f"branch {state.repo_manifests_branch!r} -> {cfg.repo_branch!r}")
-                if state.sha_drift:
-                    reasons.append(f"{len(state.sha_drift)} pinned SHA drift")
-                if reasons:
-                    console.print("[yellow]manifest drift:[/] " + "; ".join(reasons) + " - forcing full re-sync")
-                bsp.sync_step(cfg, log, force_init=state.needs_full_reinit)
-            else:
-                log.step_skip(
-                    "repo_sync" if family == "nxp" else "ti_layertool",
-                    reason="already synced" if not skip_sync else "user skipped",
-                )
-
-            state = detect(cfg)
-            if state.needs_setup_env:
-                bsp.setup_env_step(cfg, log)
-            else:
-                log.step_skip("setup_env", reason="bblayers.conf present")
-
-            step_override.apply(cfg, log)
-            step_kas.regenerate_yaml(cfg, log, bsp=bsp)
-
-        if dry_run:
-            log.step_skip("kas_build", reason="dry-run")
-            console.print(f"[green]dry-run complete[/]: would run kas-container with {cfg.kas_yaml} + {overlay_source}")
-            return
-
-        rc = step_kas.run_build(
-            cfg,
-            log,
-            kas_yaml=cfg.kas_yaml,
-            overlay_source=overlay_source,
-            extra_overlays=extra_overlays,
-        )
-        if rc != 0:
-            console.print(
-                f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details."
+            _run_byo_build(
+                cfg, log,
+                overlay_source=overlay_source,
+                extra_overlays=extra_overlays,
+                bsp=bsp,
+                family=family,
+                effective_show_layers=effective_show_layers,
+                dry_run=dry_run,
+                skip_doctor=skip_doctor,
             )
-            raise typer.Exit(code=rc)
-        deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
-        console.print("[bold green]build succeeded[/]")
-        console.print(f"artifacts: {deploy}")
+        else:
+            _run_manifest_build(
+                cfg, log,
+                bsp=bsp,
+                overlay_source=overlay_source,
+                effective_show_layers=effective_show_layers,
+                dry_run=dry_run,
+                skip_sync=skip_sync,
+                skip_doctor=skip_doctor,
+                family=family,
+            )
