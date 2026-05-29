@@ -91,15 +91,24 @@ replace = "[Unreleased]: https://github.com/jetm/bakar/compare/v{new_version}...
 [tool.coverage.run]
 branch = true
 source = ["bakar"]
+omit = [
+  "tests/*",
+  # Steps that exec external Yocto/repo/kas tools directly - integration-test only
+  "src/bakar/steps/kas_build.py",
+  "src/bakar/steps/repo.py",
+  "src/bakar/steps/setup_env.py",
+  "src/bakar/steps/ti_layertool.py",
+  "src/bakar/steps/ti_setup_env.py",
+]
 
 [tool.coverage.report]
-fail_under = 60
-omit = ["tests/*"]
+precision = 2
+fail_under = 63
 show_missing = true
 exclude_lines = [
   "pragma: no cover",
   "if TYPE_CHECKING:",
-  "if __name__",
+  "if __name__ == .__main__.",
   "@overload",
 ]
 

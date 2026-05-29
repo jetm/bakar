@@ -260,7 +260,10 @@ def test_required_tools_bbsetup_matches_generic_toolset() -> None:
 def test_run_all_bbsetup_includes_both_bbsetup_checks() -> None:
     """``run_all`` for a bbsetup cfg appends both bbsetup check names."""
     cfg = _bbsetup_cfg(_FIXTURE)
-    names = {r.name for r in run_all(cfg)}
+    # Patch subprocess.run so Docker/kas checks return immediately rather than
+    # hanging on docker info / image pulls / kas dump in CI environments.
+    with patch("bakar.diagnostics.subprocess.run", return_value=_mock_run("")):
+        names = {r.name for r in run_all(cfg)}
     assert "bbsetup-init" in names
     assert "bbsetup-sources" in names
 
