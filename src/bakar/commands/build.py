@@ -183,9 +183,7 @@ def _run_byo_build(
         extra_overlays=extra_overlays,
     )
     if rc != 0:
-        console.print(
-            f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details."
-        )
+        console.print(f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details.")
         raise typer.Exit(code=rc)
     deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
     console.print("[bold green]build succeeded[/]")
@@ -268,9 +266,7 @@ def _run_manifest_build(
         extra_overlays=_hashequiv_extra_overlays(cfg),
     )
     if rc != 0:
-        console.print(
-            f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details."
-        )
+        console.print(f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details.")
         raise typer.Exit(code=rc)
     deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
     console.print("[bold green]build succeeded[/]")
@@ -413,14 +409,15 @@ def build(
     )
 
     extra_overlays: list[Path] = []
-    if kas_yaml is not None:
-        extra_overlays = [Path(p) for p in kas_yaml.split(":")[1:]]
-    resolved_existing = {p.resolve() for p in extra_overlays}
-    for overlay in _hashequiv_extra_overlays(cfg):
-        resolved_overlay = overlay.resolve()
-        if resolved_overlay not in resolved_existing:
-            extra_overlays.append(overlay)
-            resolved_existing.add(resolved_overlay)
+    if byo_form:
+        if kas_yaml is not None:
+            extra_overlays = [Path(p) for p in kas_yaml.split(":")[1:]]
+        resolved_existing = {p.resolve() for p in extra_overlays}
+        for overlay in _hashequiv_extra_overlays(cfg):
+            resolved_overlay = overlay.resolve()
+            if resolved_overlay not in resolved_existing:
+                extra_overlays.append(overlay)
+                resolved_existing.add(resolved_overlay)
 
     overlay_source = _overlay_for(bsp)
 
@@ -442,7 +439,8 @@ def build(
         )
         if byo_form:
             _run_byo_build(
-                cfg, log,
+                cfg,
+                log,
                 overlay_source=overlay_source,
                 extra_overlays=extra_overlays,
                 bsp=bsp,
@@ -453,7 +451,8 @@ def build(
             )
         else:
             _run_manifest_build(
-                cfg, log,
+                cfg,
+                log,
                 bsp=bsp,
                 overlay_source=overlay_source,
                 effective_show_layers=effective_show_layers,
