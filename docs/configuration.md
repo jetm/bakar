@@ -1,11 +1,31 @@
 # Configuration
 
-bakar resolves configuration from four sources in priority order (highest first):
+bakar resolves configuration from five sources in priority order (highest first):
 
 1. **CLI flags** (e.g. `-m imx8mp-var-dart`)
 2. **`BAKAR_*` environment variables**
-3. **`~/.config/bakar/config.toml`** - persistent per-user defaults
-4. **Built-in BSP defaults** - per-family fallbacks compiled into bakar
+3. **Workspace `.bakar.toml`** - per-workspace defaults written by `bakar init`
+4. **`~/.config/bakar/config.toml`** - persistent per-user defaults
+5. **Built-in BSP defaults** - per-family fallbacks compiled into bakar
+
+The resolution order is: `CLI flag > BAKAR_* env var > workspace .bakar.toml > user config.toml > built-in default`.
+
+## Workspace .bakar.toml
+
+The workspace marker file at `<workspace>/.bakar.toml` may carry per-workspace
+defaults in `[defaults.<family>]` sections that mirror the `config.toml` schema.
+These sit below env vars and above the user `config.toml`, so a workspace value
+overrides the per-user default but yields to a one-shot `BAKAR_*` env var or CLI
+flag.
+
+| Family | Keys |
+|--------|------|
+| `[defaults.nxp]` | `manifest`, `machine`, `distro`, `image` |
+| `[defaults.ti]` | `manifest`, `machine`, `distro`, `image` |
+| `[defaults.generic]` | `kas_yaml`, `machine` |
+
+`bakar init` writes these on workspace creation. See [init.md](init.md) for the
+wizard and [workspace.md](workspace.md) for the full `.bakar.toml` schema.
 
 ## Environment variables
 
