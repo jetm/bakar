@@ -199,3 +199,11 @@ def test_init_noninteractive_already_initialized_exits_1(tmp_path: Path) -> None
     runner.invoke(app, ["init", "--family", "generic", "--workspace", str(tmp_path)])
     result = runner.invoke(app, ["init", "--family", "generic", "--workspace", str(tmp_path)])
     assert result.exit_code == 1
+
+
+@pytest.mark.unit
+def test_init_interactive_mode_exits_on_non_tty() -> None:
+    # CliRunner's stdin is not a TTY; init without --family hits the isatty() guard.
+    result = runner.invoke(app, ["init"])
+    assert result.exit_code == 1
+    assert "requires an interactive terminal" in result.output
