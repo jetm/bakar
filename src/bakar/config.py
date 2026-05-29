@@ -72,6 +72,79 @@ def infer_repo_branch(manifest: str, fallback: str = DEFAULT_NXP_REPO_BRANCH) ->
 
 
 @dataclass(frozen=True)
+class _FamilyDefaults:
+    d_machine: str
+    d_distro: str
+    d_image: str
+    d_manifest: str
+    d_branch: str
+    u_machine: str | None
+    u_distro: str | None
+    u_image: str | None
+    u_manifest: str | None
+    ws_machine: str | None
+    ws_distro: str | None
+    ws_image: str | None
+    ws_manifest: str | None
+
+
+def _family_defaults(
+    bsp_family: Literal["nxp", "ti", "generic", "bbsetup"],
+    user_config: UserConfig | None,
+    workspace_config: WorkspaceConfig,
+) -> _FamilyDefaults:
+    """Return per-family defaults, user-config, and workspace-config values."""
+    if bsp_family in ("generic", "bbsetup"):
+        return _FamilyDefaults(
+            d_machine="generic",
+            d_distro="generic",
+            d_image="generic",
+            d_manifest="",
+            d_branch="",
+            u_machine=None,
+            u_distro=None,
+            u_image=None,
+            u_manifest=None,
+            ws_machine=workspace_config.generic_machine if bsp_family == "generic" else None,
+            ws_distro=None,
+            ws_image=None,
+            ws_manifest=None,
+        )
+    if bsp_family == "ti":
+        return _FamilyDefaults(
+            d_machine=DEFAULT_TI_MACHINE,
+            d_distro=DEFAULT_TI_DISTRO,
+            d_image=DEFAULT_TI_IMAGE,
+            d_manifest=DEFAULT_TI_MANIFEST,
+            d_branch=DEFAULT_TI_REPO_BRANCH,
+            u_machine=user_config.ti_machine if user_config is not None else None,
+            u_distro=user_config.ti_distro if user_config is not None else None,
+            u_image=user_config.ti_image if user_config is not None else None,
+            u_manifest=user_config.ti_manifest if user_config is not None else None,
+            ws_machine=workspace_config.ti_machine if workspace_config is not None else None,
+            ws_distro=workspace_config.ti_distro if workspace_config is not None else None,
+            ws_image=workspace_config.ti_image if workspace_config is not None else None,
+            ws_manifest=workspace_config.ti_manifest if workspace_config is not None else None,
+        )
+    # nxp (default)
+    return _FamilyDefaults(
+        d_machine=DEFAULT_NXP_MACHINE,
+        d_distro=DEFAULT_NXP_DISTRO,
+        d_image=DEFAULT_NXP_IMAGE,
+        d_manifest=DEFAULT_NXP_MANIFEST,
+        d_branch=DEFAULT_NXP_REPO_BRANCH,
+        u_machine=user_config.nxp_machine if user_config is not None else None,
+        u_distro=user_config.nxp_distro if user_config is not None else None,
+        u_image=user_config.nxp_image if user_config is not None else None,
+        u_manifest=user_config.nxp_manifest if user_config is not None else None,
+        ws_machine=workspace_config.nxp_machine if workspace_config is not None else None,
+        ws_distro=workspace_config.nxp_distro if workspace_config is not None else None,
+        ws_image=workspace_config.nxp_image if workspace_config is not None else None,
+        ws_manifest=workspace_config.nxp_manifest if workspace_config is not None else None,
+    )
+
+
+@dataclass(frozen=True)
 class BuildConfig:
     """Resolved settings for a single `bakar build` run.
 
@@ -293,41 +366,14 @@ def resolve(
             return user_val
         return default
 
-    if bsp_family in ("generic", "bbsetup"):
-        d_machine, d_distro, d_image = "generic", "generic", "generic"
-        d_manifest, d_branch = "", ""
-        u_machine = u_distro = u_image = u_manifest = None
-        ws_machine = workspace_config.generic_machine if bsp_family == "generic" else None
-        ws_distro = ws_image = ws_manifest = None
-    elif bsp_family == "ti":
-        d_machine, d_distro, d_image = DEFAULT_TI_MACHINE, DEFAULT_TI_DISTRO, DEFAULT_TI_IMAGE
-        d_manifest, d_branch = DEFAULT_TI_MANIFEST, DEFAULT_TI_REPO_BRANCH
-        u_machine = user_config.ti_machine if user_config is not None else None
-        u_distro = user_config.ti_distro if user_config is not None else None
-        u_image = user_config.ti_image if user_config is not None else None
-        u_manifest = user_config.ti_manifest if user_config is not None else None
-        ws_machine = workspace_config.ti_machine if workspace_config is not None else None
-        ws_distro = workspace_config.ti_distro if workspace_config is not None else None
-        ws_image = workspace_config.ti_image if workspace_config is not None else None
-        ws_manifest = workspace_config.ti_manifest if workspace_config is not None else None
-    else:
-        d_machine, d_distro, d_image = DEFAULT_NXP_MACHINE, DEFAULT_NXP_DISTRO, DEFAULT_NXP_IMAGE
-        d_manifest, d_branch = DEFAULT_NXP_MANIFEST, DEFAULT_NXP_REPO_BRANCH
-        u_machine = user_config.nxp_machine if user_config is not None else None
-        u_distro = user_config.nxp_distro if user_config is not None else None
-        u_image = user_config.nxp_image if user_config is not None else None
-        u_manifest = user_config.nxp_manifest if user_config is not None else None
-        ws_machine = workspace_config.nxp_machine if workspace_config is not None else None
-        ws_distro = workspace_config.nxp_distro if workspace_config is not None else None
-        ws_image = workspace_config.nxp_image if workspace_config is not None else None
-        ws_manifest = workspace_config.nxp_manifest if workspace_config is not None else None
+    fd = _family_defaults(bsp_family, user_config, workspace_config)
 
-    resolved_manifest = pick(manifest, "BAKAR_MANIFEST", ws_manifest, u_manifest, d_manifest)
+    resolved_manifest = pick(manifest, "BAKAR_MANIFEST", fd.ws_manifest, fd.u_manifest, fd.d_manifest)
 
     if bsp_family in ("generic", "bbsetup"):
         # No manifest, no branch inference - generic and bbsetup bypass both
         # (bbsetup machine/distro come from the config translation step).
-        resolved_branch = pick(repo_branch, "BAKAR_REPO_BRANCH", None, None, d_branch)
+        resolved_branch = pick(repo_branch, "BAKAR_REPO_BRANCH", None, None, fd.d_branch)
     elif bsp_family == "ti":
         # Lazy import: bsp_model has no cyclic deps on config.py, but
         # keeping the import inside resolve() keeps module import order
@@ -336,7 +382,7 @@ def resolve(
 
         inferred = infer_bsp_branch(resolved_manifest)
         if inferred == "<unknown>":
-            inferred = d_branch
+            inferred = fd.d_branch
         resolved_branch = pick(repo_branch, "BAKAR_REPO_BRANCH", None, None, inferred)
     else:
         resolved_branch = pick(
@@ -344,7 +390,7 @@ def resolve(
             "BAKAR_REPO_BRANCH",
             None,
             None,
-            infer_repo_branch(resolved_manifest, d_branch),
+            infer_repo_branch(resolved_manifest, fd.d_branch),
         )
 
     # Auto-detect: when KAS_CONTAINER_IMAGE is absent from env and host_mode was
@@ -359,9 +405,9 @@ def resolve(
     return BuildConfig(
         workspace=workspace.resolve(),
         bsp_family=bsp_family,
-        machine=pick(machine, "BAKAR_MACHINE", ws_machine, u_machine, d_machine),
-        distro=pick(distro, "BAKAR_DISTRO", ws_distro, u_distro, d_distro),
-        image=pick(image, "BAKAR_IMAGE", ws_image, u_image, d_image),
+        machine=pick(machine, "BAKAR_MACHINE", fd.ws_machine, fd.u_machine, fd.d_machine),
+        distro=pick(distro, "BAKAR_DISTRO", fd.ws_distro, fd.u_distro, fd.d_distro),
+        image=pick(image, "BAKAR_IMAGE", fd.ws_image, fd.u_image, fd.d_image),
         manifest=resolved_manifest,
         repo_url=os.environ.get(
             "BAKAR_REPO_URL",
