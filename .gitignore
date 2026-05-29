@@ -9,7 +9,7 @@ dist/
 .venv-test/
 .ruff_cache/
 
-examples/.bspctl
+examples/.bakar
 examples/layers
 examples/ccache
 layers/

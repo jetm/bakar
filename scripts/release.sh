@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# release.sh - Atomic bspctl release driver.
+# release.sh - Atomic bakar release driver.
 #
 # Enforces clean-tree, branch, sync, and changelog preconditions; runs the
 # local validation suite; then bumps the version and pushes commit + tag in
