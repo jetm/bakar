@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+import sys
+from pathlib import Path
+from typing import Literal
 
+import questionary
+import typer
+
+from bakar.bsp_model import get_model
+from bakar.commands._app import app, console
 from bakar.workspace_config import write_workspace_config
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _scaffold_workspace(
@@ -42,3 +46,91 @@ def _scaffold_workspace(
         marker.write_text("# bakar workspace root.\n")
     else:
         write_workspace_config(path, "generic", settings)
+
+
+@app.command("init")
+def init() -> None:
+    """Interactively scaffold a new bakar workspace.
+
+    Walks through the BSP family, workspace directory, and family-specific
+    defaults, writes ``.bakar.toml`` (and the family subdirectory for nxp/ti),
+    then optionally kicks off ``bakar sync``.
+
+    Requires an interactive terminal - questionary prompts cannot run without a
+    TTY on stdin. Scriptable workspace creation is still available via
+    ``mkdir <family>/ && touch .bakar.toml``.
+    """
+    if not sys.stdin.isatty():
+        console.print(
+            "[red]bakar init requires an interactive terminal[/] - stdin is not a TTY. "
+            "Create the workspace manually with `mkdir <family>/ && touch .bakar.toml`."
+        )
+        raise typer.Exit(1)
+
+    try:
+        family: str = questionary.select(
+            "BSP family:",
+            choices=["nxp", "ti", "bbsetup", "generic"],
+        ).ask()
+
+        workspace_str: str = questionary.path(
+            "Workspace directory:",
+            default=".",
+        ).ask()
+        path = Path(workspace_str).expanduser()
+
+        settings: dict[str, str] = {}
+        if family in ("nxp", "ti"):
+            model = get_model(family)  # type: ignore[arg-type]
+            settings["manifest"] = questionary.text(
+                "Manifest:",
+                default=model.default_manifest,
+            ).ask()
+            settings["machine"] = questionary.text(
+                "Machine:",
+                default=model.default_machine,
+            ).ask()
+            settings["distro"] = questionary.text(
+                "Distro:",
+                default=model.default_distro,
+            ).ask()
+            settings["image"] = questionary.text(
+                "Image:",
+                default=model.default_image,
+            ).ask()
+        elif family == "generic":
+            settings["kas_yaml"] = questionary.text(
+                "kas YAML filename:",
+                default="kas-generic.yml",
+            ).ask()
+            settings["machine"] = questionary.text(
+                "Machine:",
+                default="qemux86-64",
+            ).ask()
+        # bbsetup: no family-specific prompts.
+
+        try:
+            _scaffold_workspace(path, family, settings)  # type: ignore[arg-type]
+        except FileExistsError as exc:
+            console.print(f"[red]workspace already initialized:[/] {exc} already exists")
+            raise typer.Exit(1) from exc
+
+        console.print(f"[green]workspace scaffolded[/] at {path}")
+
+        console.print("Downloading sources can take a while")
+        run_sync = questionary.confirm("Run `bakar sync` now?", default=False).ask()
+    except KeyboardInterrupt as exc:
+        raise typer.Abort() from exc
+
+    if run_sync:
+        from bakar.commands.sync import sync
+
+        sync(workspace=path)
+        return
+
+    if family in ("nxp", "ti", "generic"):
+        console.print(f"Next: [bold]bakar sync --workspace {path}[/]")
+    else:
+        console.print(
+            "Next: run [bold]bitbake-setup init[/] from inside the workspace to populate config/config-upstream.json"
+        )
