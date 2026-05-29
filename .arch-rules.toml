@@ -1,0 +1,105 @@
+# Six groups by architectural role:
+#  foundation  — pure data/config/parsers, no outward bakar imports
+#  model       — bsp_model.py: central domain model, intentionally used
+#                across layers. The arch checker (ast.walk) treats both
+#                TYPE_CHECKING guards and function-body deferred imports as
+#                real edges, so bsp_model is placed in its own group outside
+#                the layers order to avoid false-positive CRITICAL violations.
+#                Edges to/from model are ungoverned (SUGGESTION) rather than
+#                layer violations. Two explicit forbidden rules still cap the
+#                top of the model's allowed import set.
+#  steps       — subprocess wrappers; import foundation only at module level;
+#                bsp_model.BspModel/BuildConfig used under TYPE_CHECKING
+#  core        — diagnostics.py: pre-flight checks (import foundation + model)
+#  analysis    — triage / report / layers (import foundation; sit below steps in layer order)
+#  commands    — CLI orchestrators (import everything)
+
+[architecture]
+name = "bakar"
+coverage_threshold = 60  # flat project; intra-group imports are intentionally
+# ungoverned; threshold raised when more pairs are covered
+
+[[modules]]
+name = "foundation"
+paths = [
+  "src/bakar/config.py",
+  "src/bakar/observability.py",
+  "src/bakar/fork_race_signatures.py",
+  "src/bakar/user_config.py",
+  "src/bakar/vendor_config.py",
+  "src/bakar/bsp_detect.py",
+  "src/bakar/kas.py",
+  "src/bakar/workspace.py",
+  "src/bakar/workspace_config.py",
+  "src/bakar/manifest_diff.py",
+  "src/bakar/hashserv.py",
+]
+
+[[modules]]
+name = "model"
+paths = ["src/bakar/bsp_model.py"]
+# bsp_model.py is the central domain type (BspModel dataclass, get_model()
+# factory, infer_bsp_branch()). It is used for TYPE_CHECKING annotations by
+# steps/ and for a deferred branch-inference call inside config.py's resolve().
+# Both are intentional and do not create runtime circular dependencies. Because
+# the arch checker does not distinguish TYPE_CHECKING-guarded or function-body
+# deferred imports from module-level runtime imports, classifying bsp_model as
+# "core" (above steps) produced false-positive CRITICAL layer violations. Moved
+# to its own group so those edges are ungoverned (SUGGESTION) rather than
+# CRITICAL - see github.com/anthropics/claude-code for the limitation.
+#
+# bsp_model.py itself uses function-body deferred imports from steps/ to bind
+# sync/setup-env dispatch functions at call time, not at import time.
+
+[[modules]]
+name = "core"
+paths = ["src/bakar/diagnostics.py"]
+# diagnostics.py: all pre-flight check functions; imports foundation + model.
+
+[[modules]]
+name = "analysis"
+paths = [
+  "src/bakar/triage.py",
+  "src/bakar/report.py",
+  "src/bakar/layers.py",
+]
+
+[[modules]]
+name = "steps"
+paths = ["src/bakar/steps/**"]
+
+[[modules]]
+name = "commands"
+paths = [
+  "src/bakar/commands/**",
+  "src/bakar/cli.py",
+]
+
+[[modules]]
+name = "tests"
+paths = ["tests/**"]
+exempt = true  # never a violation source
+
+# Main dependency stack (outermost → innermost):
+# commands may import core, steps, analysis, foundation (and model, ungoverned)
+# core may import steps, analysis, foundation (and model, ungoverned)
+# steps may import analysis, foundation (and model TYPE_CHECKING refs, ungoverned)
+# analysis may import foundation only
+# foundation may not import anything above it (bsp_model ref is deferred, ungoverned)
+[[rules]]
+type = "layers"
+order = ["commands", "core", "steps", "analysis", "foundation"]
+reason = "CLI orchestrators → diagnostics → subprocess wrappers → read/compute layer → pure data/config"
+
+# model: cap the top of its allowed import set
+[[rules]]
+type = "forbidden"
+from = "model"
+to = "commands"
+reason = "bsp_model must not depend on the CLI layer"
+
+[[rules]]
+type = "forbidden"
+from = "model"
+to = "analysis"
+reason = "bsp_model must not depend on triage/report/layers"
