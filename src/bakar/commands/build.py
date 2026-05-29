@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
@@ -31,18 +32,27 @@ from bakar.steps import bitbake_override as step_override
 from bakar.steps import kas_build as step_kas
 from bakar.workspace import detect
 
+if TYPE_CHECKING:
+    from bakar.bsp_model import BspModel
+
+
+@dataclass(frozen=True)
+class _BbsetupCtx:
+    """CLI flags for the bbsetup build path (resolved before cfg is available)."""
+
+    machine: str | None
+    distro: str | None
+    image: str | None
+    host_mode: bool
+    clean: bool
+    skip_doctor: bool
+    dry_run: bool
+    show_layers: bool
+
 
 def _run_bbsetup_build(
     setup_dir: Path,
-    *,
-    machine: str | None,
-    distro: str | None,
-    image: str | None,
-    host_mode: bool,
-    clean: bool,
-    skip_doctor: bool,
-    dry_run: bool,
-    show_layers: bool,
+    ctx: _BbsetupCtx,
 ) -> None:
     """Full build pipeline for a bitbake-setup workspace.
 
@@ -51,10 +61,10 @@ def _run_bbsetup_build(
     cfg = resolve(
         workspace=setup_dir,
         bsp_family="bbsetup",
-        machine=machine,
-        distro=distro,
-        image=image,
-        host_mode=host_mode,
+        machine=ctx.machine,
+        distro=ctx.distro,
+        image=ctx.image,
+        host_mode=ctx.host_mode,
         user_config=_state._USER_CONFIG,
     )
     overlay_source = _overlay_for(None)
@@ -62,7 +72,7 @@ def _run_bbsetup_build(
 
     try:
         translated = translate_bbsetup_config(
-            setup_dir, target=bb_target, machine_override=machine, distro_override=distro
+            setup_dir, target=bb_target, machine_override=ctx.machine, distro_override=ctx.distro
         )
     except ValueError as exc:
         console.print(f"[red]bitbake-setup config error:[/] {exc}")
@@ -79,7 +89,7 @@ def _run_bbsetup_build(
 
     console.print(f"[bold]::[/] bakar build [bbsetup] {setup_dir}")
 
-    if clean:
+    if ctx.clean:
         tmp_dir = cfg.bsp_root / "build" / "tmp"
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir)
@@ -89,7 +99,7 @@ def _run_bbsetup_build(
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         log.info(f"build mode=bbsetup bsp=bbsetup yaml={cfg.kas_yaml} overlay={overlay_source}")
 
-        run_doctor = not skip_doctor and (_state._USER_CONFIG is None or _state._USER_CONFIG.doctor)
+        run_doctor = not ctx.skip_doctor and (_state._USER_CONFIG is None or _state._USER_CONFIG.doctor)
         if run_doctor:
             log.step_start("doctor")
             results = run_all(cfg, None)
@@ -106,11 +116,11 @@ def _run_bbsetup_build(
         write_bbsetup_yaml(
             setup_dir,
             target=bb_target,
-            machine_override=machine,
-            distro_override=distro,
+            machine_override=ctx.machine,
+            distro_override=ctx.distro,
         )
 
-        if dry_run:
+        if ctx.dry_run:
             log.step_skip("kas_build", reason="dry-run")
             console.print(f"[green]dry-run complete[/]: would run kas-container with {cfg.kas_yaml} + {overlay_source}")
             return
@@ -132,26 +142,33 @@ def _run_bbsetup_build(
         console.print(f"artifacts: {deploy}")
 
 
+@dataclass(frozen=True)
+class _BuildCtx:
+    """Resolved build flags for byo and manifest paths (assembled after cfg is available)."""
+
+    overlay_source: Path
+    extra_overlays: list[Path]
+    bsp: BspModel | None
+    family: str
+    effective_show_layers: bool
+    dry_run: bool
+    skip_doctor: bool
+    skip_sync: bool
+
+
 def _run_byo_build(
     cfg,
     log,
-    *,
-    overlay_source,
-    extra_overlays,
-    bsp,
-    family,
-    effective_show_layers,
-    dry_run,
-    skip_doctor,
+    ctx: _BuildCtx,
 ) -> None:
     """Build pipeline for BYO (bring-your-own kas YAML) mode.
 
     Called inside an active RunLogger context from ``build()``.
     """
-    run_doctor = not skip_doctor and (_state._USER_CONFIG is None or _state._USER_CONFIG.doctor)
+    run_doctor = not ctx.skip_doctor and (_state._USER_CONFIG is None or _state._USER_CONFIG.doctor)
     if run_doctor:
         log.step_start("doctor")
-        results = run_all(cfg, bsp)
+        results = run_all(cfg, ctx.bsp)
         diag_path = log.run_dir / "diagnosis.txt"
         diag_path.write_text(
             "\n".join(f"{r.severity.value:5} {r.status.value:4} {r.name:22} {r.message}" for r in results) + "\n"
@@ -162,25 +179,25 @@ def _run_byo_build(
             raise typer.Exit(code=2)
         log.step_ok("doctor", checks=len(results))
 
-    if effective_show_layers:
+    if ctx.effective_show_layers:
         _print_layer_hashes(cfg)
 
-    if family == "generic":
+    if ctx.family == "generic":
         log.step_skip("bitbake_override", reason="generic mode")
     else:
         step_override.apply(cfg, log)
 
-    if dry_run:
+    if ctx.dry_run:
         log.step_skip("kas_build", reason="dry-run")
-        console.print(f"[green]dry-run complete[/]: would run kas-container with {cfg.kas_yaml} + {overlay_source}")
+        console.print(f"[green]dry-run complete[/]: would run kas-container with {cfg.kas_yaml} + {ctx.overlay_source}")
         return
 
     rc = step_kas.run_build(
         cfg,
         log,
         kas_yaml=cfg.kas_yaml,
-        overlay_source=overlay_source,
-        extra_overlays=extra_overlays,
+        overlay_source=ctx.overlay_source,
+        extra_overlays=ctx.extra_overlays,
     )
     if rc != 0:
         console.print(f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details.")
@@ -193,23 +210,16 @@ def _run_byo_build(
 def _run_manifest_build(
     cfg,
     log,
-    *,
-    bsp,
-    overlay_source,
-    effective_show_layers,
-    dry_run,
-    skip_sync,
-    skip_doctor,
-    family,
+    ctx: _BuildCtx,
 ) -> None:
     """Build pipeline for manifest-driven mode.
 
     Called inside an active RunLogger context from ``build()``.
     """
-    run_doctor = not skip_doctor and (_state._USER_CONFIG is None or _state._USER_CONFIG.doctor)
+    run_doctor = not ctx.skip_doctor and (_state._USER_CONFIG is None or _state._USER_CONFIG.doctor)
     if run_doctor:
         log.step_start("doctor")
-        results = run_all(cfg, bsp)
+        results = run_all(cfg, ctx.bsp)
         diag_path = log.run_dir / "diagnosis.txt"
         diag_path.write_text(
             "\n".join(f"{r.severity.value:5} {r.status.value:4} {r.name:22} {r.message}" for r in results) + "\n"
@@ -220,12 +230,12 @@ def _run_manifest_build(
             raise typer.Exit(code=2)
         log.step_ok("doctor", checks=len(results))
 
-    if effective_show_layers:
+    if ctx.effective_show_layers:
         _print_layer_hashes(cfg)
 
-    assert bsp is not None
+    assert ctx.bsp is not None
     state = detect(cfg)
-    if state.needs_repo_sync and not skip_sync:
+    if state.needs_repo_sync and not ctx.skip_sync:
         reasons: list[str] = []
         if state.repo_broken:
             reasons.append(".repo/ broken")
@@ -237,32 +247,32 @@ def _run_manifest_build(
             reasons.append(f"{len(state.sha_drift)} pinned SHA drift")
         if reasons:
             console.print("[yellow]manifest drift:[/] " + "; ".join(reasons) + " - forcing full re-sync")
-        bsp.sync_step(cfg, log, force_init=state.needs_full_reinit)
+        ctx.bsp.sync_step(cfg, log, force_init=state.needs_full_reinit)
     else:
         log.step_skip(
-            "repo_sync" if family == "nxp" else "ti_layertool",
-            reason="already synced" if not skip_sync else "user skipped",
+            "repo_sync" if ctx.family == "nxp" else "ti_layertool",
+            reason="already synced" if not ctx.skip_sync else "user skipped",
         )
 
     state = detect(cfg)
     if state.needs_setup_env:
-        bsp.setup_env_step(cfg, log)
+        ctx.bsp.setup_env_step(cfg, log)
     else:
         log.step_skip("setup_env", reason="bblayers.conf present")
 
     step_override.apply(cfg, log)
-    step_kas.regenerate_yaml(cfg, log, bsp=bsp)
+    step_kas.regenerate_yaml(cfg, log, bsp=ctx.bsp)
 
-    if dry_run:
+    if ctx.dry_run:
         log.step_skip("kas_build", reason="dry-run")
-        console.print(f"[green]dry-run complete[/]: would run kas-container with {cfg.kas_yaml} + {overlay_source}")
+        console.print(f"[green]dry-run complete[/]: would run kas-container with {cfg.kas_yaml} + {ctx.overlay_source}")
         return
 
     rc = step_kas.run_build(
         cfg,
         log,
         kas_yaml=cfg.kas_yaml,
-        overlay_source=overlay_source,
+        overlay_source=ctx.overlay_source,
         extra_overlays=_hashequiv_extra_overlays(cfg),
     )
     if rc != 0:
@@ -364,14 +374,16 @@ def build(
     if setup_dir is not None:
         _run_bbsetup_build(
             setup_dir,
-            machine=machine,
-            distro=distro,
-            image=image,
-            host_mode=host_mode,
-            clean=clean,
-            skip_doctor=skip_doctor,
-            dry_run=dry_run,
-            show_layers=show_layers,
+            _BbsetupCtx(
+                machine=machine,
+                distro=distro,
+                image=image,
+                host_mode=host_mode,
+                clean=clean,
+                skip_doctor=skip_doctor,
+                dry_run=dry_run,
+                show_layers=show_layers,
+            ),
         )
         return
 
@@ -432,32 +444,23 @@ def build(
     if clean:
         _clean_build_dir(cfg)
 
+    ctx = _BuildCtx(
+        overlay_source=overlay_source,
+        extra_overlays=extra_overlays,
+        bsp=bsp,
+        family=family,
+        effective_show_layers=effective_show_layers,
+        dry_run=dry_run,
+        skip_doctor=skip_doctor,
+        skip_sync=skip_sync,
+    )
+
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         log.info(
             f"build mode={'byo' if byo_form else 'manifest'} bsp={family} yaml={cfg.kas_yaml} overlay={overlay_source}",
         )
         if byo_form:
-            _run_byo_build(
-                cfg,
-                log,
-                overlay_source=overlay_source,
-                extra_overlays=extra_overlays,
-                bsp=bsp,
-                family=family,
-                effective_show_layers=effective_show_layers,
-                dry_run=dry_run,
-                skip_doctor=skip_doctor,
-            )
+            _run_byo_build(cfg, log, ctx)
         else:
-            _run_manifest_build(
-                cfg,
-                log,
-                bsp=bsp,
-                overlay_source=overlay_source,
-                effective_show_layers=effective_show_layers,
-                dry_run=dry_run,
-                skip_sync=skip_sync,
-                skip_doctor=skip_doctor,
-                family=family,
-            )
+            _run_manifest_build(cfg, log, ctx)
