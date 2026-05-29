@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from bakar.user_config import UserConfig
+    from bakar.workspace_config import WorkspaceConfig
 
 # ---------------------------------------------------------------------------
 # NXP defaults (i.MX BSP, scarthgap warmup machine).
@@ -236,13 +237,19 @@ def resolve(
     host_mode: bool = False,
     kas_yaml: Path | None = None,
     user_config: UserConfig | None = None,
+    workspace_config: WorkspaceConfig | None = None,
 ) -> BuildConfig:
     """Resolve BuildConfig from CLI flags, env vars, config, and family defaults.
 
-    Precedence, highest to lowest: explicit arg, BAKAR_* env var,
-    ``user_config`` field, BSP-family default. ``user_config`` carries the
-    values loaded from ``~/.config/bakar/config.toml``; ``None`` (the
-    default) preserves the pre-config two-tier behavior for direct callers.
+    Precedence, highest to lowest:
+    ``CLI flag > BAKAR_* env var > workspace .bakar.toml > user config.toml >
+    built-in default``. ``workspace_config`` carries the
+    ``[defaults.<family>]`` values from the workspace's ``.bakar.toml``; when
+    ``None`` (the default) it is auto-loaded from ``workspace`` via
+    :func:`load_workspace_config`, so every existing caller picks up the
+    workspace tier with no signature change at the call site. ``user_config``
+    carries the values loaded from ``~/.config/bakar/config.toml``; ``None``
+    (the default) preserves the pre-config behavior for direct callers.
     ``repo_branch`` is special: it has no config field, so when neither arg
     nor env is set, NXP infers it from the manifest filename via
     :data:`BRANCH_BY_MANIFEST_PREFIX`; TI infers it from the
@@ -266,12 +273,22 @@ def resolve(
     translation step, not from this resolver.
     """
 
-    def pick(arg: str | None, env_key: str, user_val: str | None, default: str) -> str:
+    if workspace_config is None:
+        # Lazy import keeps module load order flexible and avoids a hard
+        # import cycle; centralizing the load here means every existing
+        # caller of resolve() picks up the workspace tier for free.
+        from bakar.workspace_config import load_workspace_config
+
+        workspace_config = load_workspace_config(workspace)
+
+    def pick(arg: str | None, env_key: str, ws_val: str | None, user_val: str | None, default: str) -> str:
         if arg is not None:
             return arg
         env_val = os.environ.get(env_key)
         if env_val:
             return env_val
+        if ws_val is not None:
+            return ws_val
         if user_val is not None:
             return user_val
         return default
@@ -280,6 +297,7 @@ def resolve(
         d_machine, d_distro, d_image = "generic", "generic", "generic"
         d_manifest, d_branch = "", ""
         u_machine = u_distro = u_image = u_manifest = None
+        ws_machine = ws_distro = ws_image = ws_manifest = None
     elif bsp_family == "ti":
         d_machine, d_distro, d_image = DEFAULT_TI_MACHINE, DEFAULT_TI_DISTRO, DEFAULT_TI_IMAGE
         d_manifest, d_branch = DEFAULT_TI_MANIFEST, DEFAULT_TI_REPO_BRANCH
@@ -287,6 +305,10 @@ def resolve(
         u_distro = user_config.ti_distro if user_config is not None else None
         u_image = user_config.ti_image if user_config is not None else None
         u_manifest = user_config.ti_manifest if user_config is not None else None
+        ws_machine = workspace_config.ti_machine if workspace_config is not None else None
+        ws_distro = workspace_config.ti_distro if workspace_config is not None else None
+        ws_image = workspace_config.ti_image if workspace_config is not None else None
+        ws_manifest = workspace_config.ti_manifest if workspace_config is not None else None
     else:
         d_machine, d_distro, d_image = DEFAULT_NXP_MACHINE, DEFAULT_NXP_DISTRO, DEFAULT_NXP_IMAGE
         d_manifest, d_branch = DEFAULT_NXP_MANIFEST, DEFAULT_NXP_REPO_BRANCH
@@ -294,13 +316,17 @@ def resolve(
         u_distro = user_config.nxp_distro if user_config is not None else None
         u_image = user_config.nxp_image if user_config is not None else None
         u_manifest = user_config.nxp_manifest if user_config is not None else None
+        ws_machine = workspace_config.nxp_machine if workspace_config is not None else None
+        ws_distro = workspace_config.nxp_distro if workspace_config is not None else None
+        ws_image = workspace_config.nxp_image if workspace_config is not None else None
+        ws_manifest = workspace_config.nxp_manifest if workspace_config is not None else None
 
-    resolved_manifest = pick(manifest, "BAKAR_MANIFEST", u_manifest, d_manifest)
+    resolved_manifest = pick(manifest, "BAKAR_MANIFEST", ws_manifest, u_manifest, d_manifest)
 
     if bsp_family in ("generic", "bbsetup"):
         # No manifest, no branch inference - generic and bbsetup bypass both
         # (bbsetup machine/distro come from the config translation step).
-        resolved_branch = pick(repo_branch, "BAKAR_REPO_BRANCH", None, d_branch)
+        resolved_branch = pick(repo_branch, "BAKAR_REPO_BRANCH", None, None, d_branch)
     elif bsp_family == "ti":
         # Lazy import: bsp_model has no cyclic deps on config.py, but
         # keeping the import inside resolve() keeps module import order
@@ -310,11 +336,12 @@ def resolve(
         inferred = infer_bsp_branch(resolved_manifest)
         if inferred == "<unknown>":
             inferred = d_branch
-        resolved_branch = pick(repo_branch, "BAKAR_REPO_BRANCH", None, inferred)
+        resolved_branch = pick(repo_branch, "BAKAR_REPO_BRANCH", None, None, inferred)
     else:
         resolved_branch = pick(
             repo_branch,
             "BAKAR_REPO_BRANCH",
+            None,
             None,
             infer_repo_branch(resolved_manifest, d_branch),
         )
@@ -331,9 +358,9 @@ def resolve(
     return BuildConfig(
         workspace=workspace.resolve(),
         bsp_family=bsp_family,
-        machine=pick(machine, "BAKAR_MACHINE", u_machine, d_machine),
-        distro=pick(distro, "BAKAR_DISTRO", u_distro, d_distro),
-        image=pick(image, "BAKAR_IMAGE", u_image, d_image),
+        machine=pick(machine, "BAKAR_MACHINE", ws_machine, u_machine, d_machine),
+        distro=pick(distro, "BAKAR_DISTRO", ws_distro, u_distro, d_distro),
+        image=pick(image, "BAKAR_IMAGE", ws_image, u_image, d_image),
         manifest=resolved_manifest,
         repo_url=os.environ.get(
             "BAKAR_REPO_URL",
