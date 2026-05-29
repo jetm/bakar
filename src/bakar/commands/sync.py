@@ -24,6 +24,48 @@ from bakar.observability import RunLogger
 from bakar.workspace import detect
 
 
+def _run_sync_body(cfg, log, *, bsp, family, effective_show_layers, skip_doctor) -> None:
+    """Execute the sync steps inside an active RunLogger context."""
+    run_doctor = not skip_doctor and (_state._USER_CONFIG is None or _state._USER_CONFIG.doctor)
+    if run_doctor:
+        log.step_start("doctor")
+        results = run_all(cfg, bsp)
+        _print_diagnosis(results)
+        if any_blocking_failure(results):
+            log.step_fail("doctor", reason="blocking failure")
+            raise typer.Exit(code=2)
+        log.step_ok("doctor", checks=len(results))
+
+    state = detect(cfg)
+    if state.needs_repo_sync:
+        reasons: list[str] = []
+        if state.repo_broken:
+            reasons.append(".repo/ broken")
+        if state.manifest_mismatch:
+            reasons.append(f"manifest {state.repo_manifest_include!r} -> {cfg.manifest!r}")
+        if state.branch_mismatch:
+            reasons.append(f"branch {state.repo_manifests_branch!r} -> {cfg.repo_branch!r}")
+        if state.sha_drift:
+            reasons.append(f"{len(state.sha_drift)} pinned SHA drift")
+        if reasons:
+            console.print("[yellow]manifest drift:[/] " + "; ".join(reasons) + " - forcing full re-sync")
+        bsp.sync_step(cfg, log, force_init=state.needs_full_reinit)
+    else:
+        log.step_skip(
+            "repo_sync" if family == "nxp" else "ti_layertool",
+            reason="already synced",
+        )
+
+    state = detect(cfg)
+    if state.needs_setup_env:
+        bsp.setup_env_step(cfg, log)
+    else:
+        log.step_skip("setup_env", reason="bblayers.conf present")
+
+    if effective_show_layers:
+        _print_layer_hashes(cfg)
+
+
 @app.command()
 def sync(
     machine: Annotated[str | None, typer.Option("--machine", "-m")] = None,
@@ -100,43 +142,7 @@ def sync(
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
     with RunLogger(runs_dir=cfg.runs_dir) as log:
-        run_doctor = not skip_doctor and (_state._USER_CONFIG is None or _state._USER_CONFIG.doctor)
-        if run_doctor:
-            log.step_start("doctor")
-            results = run_all(cfg, bsp)
-            _print_diagnosis(results)
-            if any_blocking_failure(results):
-                log.step_fail("doctor", reason="blocking failure")
-                raise typer.Exit(code=2)
-            log.step_ok("doctor", checks=len(results))
-
-        state = detect(cfg)
-        if state.needs_repo_sync:
-            reasons: list[str] = []
-            if state.repo_broken:
-                reasons.append(".repo/ broken")
-            if state.manifest_mismatch:
-                reasons.append(f"manifest {state.repo_manifest_include!r} -> {cfg.manifest!r}")
-            if state.branch_mismatch:
-                reasons.append(f"branch {state.repo_manifests_branch!r} -> {cfg.repo_branch!r}")
-            if state.sha_drift:
-                reasons.append(f"{len(state.sha_drift)} pinned SHA drift")
-            if reasons:
-                console.print("[yellow]manifest drift:[/] " + "; ".join(reasons) + " - forcing full re-sync")
-            bsp.sync_step(cfg, log, force_init=state.needs_full_reinit)
-        else:
-            log.step_skip(
-                "repo_sync" if family == "nxp" else "ti_layertool",
-                reason="already synced",
-            )
-
-        state = detect(cfg)
-        if state.needs_setup_env:
-            bsp.setup_env_step(cfg, log)
-        else:
-            log.step_skip("setup_env", reason="bblayers.conf present")
-
-        if effective_show_layers:
-            _print_layer_hashes(cfg)
-
+        _run_sync_body(cfg, log, bsp=bsp, family=family,
+                       effective_show_layers=effective_show_layers,
+                       skip_doctor=skip_doctor)
     console.print("[bold green]sync complete[/]")
