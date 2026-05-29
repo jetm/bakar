@@ -1,16 +1,16 @@
-# bspctl user configuration reference
+# bakar user configuration reference
 #
-# Copy this file to ~/.config/bspctl/config.toml and uncomment the keys you
+# Copy this file to ~/.config/bakar/config.toml and uncomment the keys you
 # want to override. As shipped, every key is commented out, so copying this
-# file verbatim changes nothing - bspctl behaves exactly as it does with no
+# file verbatim changes nothing - bakar behaves exactly as it does with no
 # config file at all.
 #
 # An absent config file (and any absent key) falls back to the built-in
-# default shown next to each key. bspctl never creates this file for you.
+# default shown next to each key. bakar never creates this file for you.
 #
 # Resolution precedence (highest wins):
 #
-#     CLI flag  >  BSPCTL_* env var  >  config.toml  >  built-in default
+#     CLI flag  >  BAKAR_* env var  >  config.toml  >  built-in default
 #
 # So a value set here is overridden by the matching environment variable or
 # command-line flag, but takes effect over the hard-coded default.
@@ -18,20 +18,20 @@
 # NXP i.MX build defaults. Each key overrides the built-in NXP preset used
 # when the active manifest is an NXP (imx-*.xml) manifest.
 [defaults.nxp]
-# machine  = "imx8mp-var-dart"     # default: imx8mp-var-dart (BSPCTL_MACHINE)
-# distro   = "fsl-imx-xwayland"    # default: fsl-imx-xwayland (BSPCTL_DISTRO)
-# image    = "core-image-minimal"  # default: core-image-minimal (BSPCTL_IMAGE)
-# manifest = "imx-6.6.52-2.2.2.xml"  # default: imx-6.6.52-2.2.2.xml (BSPCTL_MANIFEST)
-# repo_url = "https://github.com/varigit/variscite-bsp-platform.git"  # default: the varigit variscite-bsp-platform repo (BSPCTL_REPO_URL)
+# machine  = "imx8mp-var-dart"     # default: imx8mp-var-dart (BAKAR_MACHINE)
+# distro   = "fsl-imx-xwayland"    # default: fsl-imx-xwayland (BAKAR_DISTRO)
+# image    = "core-image-minimal"  # default: core-image-minimal (BAKAR_IMAGE)
+# manifest = "imx-6.6.52-2.2.2.xml"  # default: imx-6.6.52-2.2.2.xml (BAKAR_MANIFEST)
+# repo_url = "https://github.com/varigit/variscite-bsp-platform.git"  # default: the varigit variscite-bsp-platform repo (BAKAR_REPO_URL)
 # The repo branch is inferred from the manifest name and has no config key.
 
 # TI Sitara build defaults. Each key overrides the built-in TI preset used
 # when the active manifest is a TI (processor-sdk-*.txt) manifest.
 [defaults.ti]
-# machine  = "am62x-var-som"   # default: am62x-var-som (BSPCTL_MACHINE)
-# distro   = "arago"           # default: arago (BSPCTL_DISTRO)
-# image    = "var-thin-image"  # default: var-thin-image (BSPCTL_IMAGE)
-# manifest = "processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt"  # default: processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt (BSPCTL_MANIFEST)
+# machine  = "am62x-var-som"   # default: am62x-var-som (BAKAR_MACHINE)
+# distro   = "arago"           # default: arago (BAKAR_DISTRO)
+# image    = "var-thin-image"  # default: var-thin-image (BAKAR_IMAGE)
+# manifest = "processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt"  # default: processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt (BAKAR_MANIFEST)
 # The repo branch is inferred from the manifest name and has no config key.
 
 [build]
@@ -41,7 +41,7 @@
 # Download and shared-state cache directories. When set here the value is
 # passed as DL_DIR / SSTATE_DIR inside the kas container. An environment
 # variable of the same name takes precedence over these config keys, so
-# per-run overrides (DL_DIR=/fast/ssd bspctl build) still win.
+# per-run overrides (DL_DIR=/fast/ssd bakar build) still win.
 # dl_dir    = "/work/downloads"    # no default; bitbake uses <build>/downloads
 # sstate_dir = "/work/sstate"      # no default; bitbake uses <build>/sstate-cache
 
@@ -58,20 +58,20 @@
 # exceeds the threshold, preventing CPU/IO/memory contention from
 # degrading build performance. The config value overrides any env var so
 # that machine-calibrated thresholds are applied consistently.
-# Run `bspctl doctor --psi-calibrate` to get recommended values for this host.
+# Run `bakar doctor --psi-calibrate` to get recommended values for this host.
 # pressure_max_cpu    = 80   # no default; PSI throttling disabled unless set
 # pressure_max_io     = 80   # no default; PSI throttling disabled unless set
 # pressure_max_memory = 50   # no default; PSI throttling disabled unless set
 
-# Persistent workspace-scoped bitbake-hashserv daemon. When true, bspctl
-# starts a hash-equivalence server lazily on the first `bspctl build` and
+# Persistent workspace-scoped bitbake-hashserv daemon. When true, bakar
+# starts a hash-equivalence server lazily on the first `bakar build` and
 # reuses it across subsequent builds so OEEquivHash sstate equivalence
 # accumulates instead of being thrown away per build. The daemon binds to
 # a per-workspace port derived from the workspace path so multiple
 # workspaces never collide. Container-mode builds reach the host daemon
 # via Docker's `--add-host=host.docker.internal:host-gateway`, which
-# requires Docker >= 20.10 (`bspctl doctor` warns when this prerequisite
-# is missing). See `bspctl hashserv --help` for explicit lifecycle
+# requires Docker >= 20.10 (`bakar doctor` warns when this prerequisite
+# is missing). See `bakar hashserv --help` for explicit lifecycle
 # commands (start/stop/status) outside the build pipeline.
 # hashserv = true   # default: false (transient per-build `auto` daemon)
 

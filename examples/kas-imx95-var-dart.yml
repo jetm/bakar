@@ -3,10 +3,10 @@
 # Copy this file under nxp/ (e.g. nxp/my-build.yml) and edit machine /
 # distro / target / repos to taste. Then run:
 #
-#     bspctl bitbake-override --apply
-#     bspctl build nxp/my-build.yml
+#     bakar bitbake-override --apply
+#     bakar build nxp/my-build.yml
 #
-# `bspctl build` automatically layers overlays/bspctl-tuning-nxp.yml on
+# `bakar build` automatically layers overlays/bakar-tuning-nxp.yml on
 # top, which pulls in the tuning block (ccache wiring, MIRRORS, PREMIRRORS,
 # FETCHCMD_wget, renderdoc fix, fork PREMIRRORs) and meta-varis-overrides.
 distro: fsl-imx-xwayland

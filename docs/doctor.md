@@ -1,11 +1,11 @@
-# bspctl doctor
+# bakar doctor
 
 Run every diagnostic check and report PASS/WARN/BLOCK status. Exits non-zero when any BLOCK-severity check fails.
 
 ## Synopsis
 
 ```text
-bspctl doctor [KAS_YAML] [OPTIONS]
+bakar doctor [KAS_YAML] [OPTIONS]
 ```
 
 ## Options
@@ -20,14 +20,14 @@ bspctl doctor [KAS_YAML] [OPTIONS]
 
 ```bash
 # Run all checks (auto-detect workspace from cwd)
-bspctl doctor
+bakar doctor
 
 # Run checks for a specific BSP
-bspctl doctor -f imx-6.12.49-2.2.0.xml
-bspctl doctor my-project.yml
+bakar doctor -f imx-6.12.49-2.2.0.xml
+bakar doctor my-project.yml
 
 # Calibrate PSI pressure thresholds for config.toml
-bspctl doctor --psi-calibrate
+bakar doctor --psi-calibrate
 # -> Start a build in another terminal, then Ctrl+C to print recommendations
 ```
 
@@ -50,14 +50,14 @@ Checks cover:
 `--psi-calibrate` reads `/proc/pressure/{cpu,io,memory}` every 500 ms while your build runs. When you press Ctrl+C it prints:
 
 ```text
-Recommended [build] block for ~/.config/bspctl/config.toml:
+Recommended [build] block for ~/.config/bakar/config.toml:
 [build]
 pressure_max_cpu = 72
 pressure_max_io = 41
 pressure_max_memory = 20
 ```
 
-Copy those values into `~/.config/bspctl/config.toml` to have bspctl throttle bitbake task scheduling when system pressure exceeds the thresholds.
+Copy those values into `~/.config/bakar/config.toml` to have bakar throttle bitbake task scheduling when system pressure exceeds the thresholds.
 
 ## Exit codes
 

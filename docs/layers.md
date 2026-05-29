@@ -1,11 +1,11 @@
-# bspctl layers
+# bakar layers
 
 Print each synced layer's repo name, git short-hash, and branch. Read-only; never triggers a build, sync, or any workspace write.
 
 ## Synopsis
 
 ```text
-bspctl layers [KAS_YAML] [OPTIONS]
+bakar layers [KAS_YAML] [OPTIONS]
 ```
 
 ## Options
@@ -19,13 +19,13 @@ bspctl layers [KAS_YAML] [OPTIONS]
 
 ```bash
 # List layers for the current workspace (auto-detected from cwd)
-bspctl layers
+bakar layers
 
 # List layers for a specific BSP manifest
-bspctl layers -f imx-6.12.49-2.2.0.xml
+bakar layers -f imx-6.12.49-2.2.0.xml
 
 # List layers for a BYO kas YAML
-bspctl layers my-project.yml
+bakar layers my-project.yml
 ```
 
 ## Output
@@ -41,8 +41,8 @@ meta-openembedded 99aabbcc main
 
 - Layers are discovered by reading the kas YAML repos and checking git state of each cloned repo under `sources/`.
 - When no layers are found (sources not synced yet), the command prints a hint and exits 0.
-- `--show-layers` on `bspctl build` and `bspctl sync` calls the same logic automatically.
-- Enable `layers.show_hashes = true` in `~/.config/bspctl/config.toml` to always print hashes after every build and sync.
+- `--show-layers` on `bakar build` and `bakar sync` calls the same logic automatically.
+- Enable `layers.show_hashes = true` in `~/.config/bakar/config.toml` to always print hashes after every build and sync.
 
 ## See also
 

@@ -1,4 +1,4 @@
-# bspctl dump
+# bakar dump
 
 Flatten the kas YAML plus tuning overlay into a single resolved YAML.
 
@@ -7,7 +7,7 @@ Runs `kas dump` on the build-YAML-plus-overlay argument. Useful for inspecting e
 ## Synopsis
 
 ```text
-bspctl dump [KAS_YAML] [OPTIONS]
+bakar dump [KAS_YAML] [OPTIONS]
 ```
 
 ## Options
@@ -22,24 +22,24 @@ bspctl dump [KAS_YAML] [OPTIONS]
 
 ```bash
 # Dump the resolved config to stdout
-bspctl dump -f imx-6.12.49-2.2.0.xml
+bakar dump -f imx-6.12.49-2.2.0.xml
 
 # Dump for a BYO build
-bspctl dump my-project.yml
+bakar dump my-project.yml
 
 # Save to a file for inspection
-bspctl dump my-project.yml -o /tmp/resolved.yml
+bakar dump my-project.yml -o /tmp/resolved.yml
 cat /tmp/resolved.yml
 
 # Pipe to yq for targeted queries
-bspctl dump my-project.yml | yq '.repos | keys'
+bakar dump my-project.yml | yq '.repos | keys'
 ```
 
 ## Notes
 
 - `dump` uses an ephemeral run directory so it does not pollute `build/runs/`.
-- The output reflects the merged kas YAML plus the bspctl tuning overlay. This is the exact config that `bspctl build` would pass to kas-container.
-- Without `--output`, the resolved YAML is printed to stdout. All other bspctl output (progress lines) goes to stderr, so piping works cleanly.
+- The output reflects the merged kas YAML plus the bakar tuning overlay. This is the exact config that `bakar build` would pass to kas-container.
+- Without `--output`, the resolved YAML is printed to stdout. All other bakar output (progress lines) goes to stderr, so piping works cleanly.
 
 ## See also
 

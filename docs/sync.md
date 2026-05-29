@@ -1,11 +1,11 @@
-# bspctl sync
+# bakar sync
 
-Run manifest-driven source sync without building. Equivalent to the first half of `bspctl build`: doctor, then `repo init+sync` (NXP) or `oe-layertool populate` (TI), then setup-env.
+Run manifest-driven source sync without building. Equivalent to the first half of `bakar build`: doctor, then `repo init+sync` (NXP) or `oe-layertool populate` (TI), then setup-env.
 
 ## Synopsis
 
 ```text
-bspctl sync [OPTIONS]
+bakar sync [OPTIONS]
 ```
 
 ## Options
@@ -26,22 +26,22 @@ bspctl sync [OPTIONS]
 
 ```bash
 # Sync NXP sources to a new manifest version
-bspctl sync -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart
+bakar sync -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart
 
 # Sync and confirm which commits landed
-bspctl sync -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --show-layers
+bakar sync -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --show-layers
 
 # Sync TI sources
-bspctl sync -f processor-sdk-10.1.0.8-config_var1.txt -m am62x-var-som
+bakar sync -f processor-sdk-10.1.0.8-config_var1.txt -m am62x-var-som
 
 # Force a clean re-sync (wipe build/ first)
-bspctl sync -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --clean
+bakar sync -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --clean
 ```
 
 ## Notes
 
-- bitbake-setup workspaces are initialized externally via `bitbake-setup init`; `bspctl sync` exits 2 for them.
-- bspctl detects manifest drift (wrong manifest, wrong branch, SHA drift) and forces a full re-sync when it detects it. Pass `--skip-doctor` to suppress the pre-flight gate, but not the drift check.
+- bitbake-setup workspaces are initialized externally via `bitbake-setup init`; `bakar sync` exits 2 for them.
+- bakar detects manifest drift (wrong manifest, wrong branch, SHA drift) and forces a full re-sync when it detects it. Pass `--skip-doctor` to suppress the pre-flight gate, but not the drift check.
 
 ## See also
 

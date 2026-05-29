@@ -1,13 +1,13 @@
-# bspctl stress-parse
+# bakar stress-parse
 
 Stress-test the bitbake parser fork race with configurable parallelism and iteration count.
 
-Used to reproduce and measure the parser race condition described in the bspctl roadmap. Runs `bitbake -p <target>` N times and collects the failure rate.
+Used to reproduce and measure the parser race condition described in the bakar roadmap. Runs `bitbake -p <target>` N times and collects the failure rate.
 
 ## Synopsis
 
 ```text
-bspctl stress-parse [OPTIONS]
+bakar stress-parse [OPTIONS]
 ```
 
 ## Options
@@ -30,22 +30,22 @@ bspctl stress-parse [OPTIONS]
 
 ```bash
 # Run 10 parse iterations (default)
-bspctl stress-parse -f imx-6.12.49-2.2.0.xml
+bakar stress-parse -f imx-6.12.49-2.2.0.xml
 
 # Run 50 iterations for a reliable failure-rate estimate
-bspctl stress-parse -f imx-6.12.49-2.2.0.xml -n 50
+bakar stress-parse -f imx-6.12.49-2.2.0.xml -n 50
 
 # Parse a specific target instead of world
-bspctl stress-parse -f imx-6.12.49-2.2.0.xml --target linux-imx
+bakar stress-parse -f imx-6.12.49-2.2.0.xml --target linux-imx
 
 # Set explicit parse thread count
-bspctl stress-parse -f imx-6.12.49-2.2.0.xml --parse-threads 8 -n 20
+bakar stress-parse -f imx-6.12.49-2.2.0.xml --parse-threads 8 -n 20
 
 # Label a run for later aggregation
-bspctl stress-parse -f imx-6.12.49-2.2.0.xml -n 50 --label baseline
+bakar stress-parse -f imx-6.12.49-2.2.0.xml -n 50 --label baseline
 
 # Test a locally-built CPython for fork-safety
-bspctl stress-parse -f imx-6.12.49-2.2.0.xml --python ~/src/cpython/build/python
+bakar stress-parse -f imx-6.12.49-2.2.0.xml --python ~/src/cpython/build/python
 ```
 
 ## Output
@@ -70,7 +70,7 @@ Exits 1 when any iteration failed; matched failure signatures are printed after 
 - Diagnostic/research tooling; not part of the normal build workflow.
 - Each run invokes kas-container (or kas in host mode), so total wall time is `N * parse_time`.
 - The failure rate correlates with `BB_NUMBER_PARSE_THREADS` and kernel preempt model.
-- The workspace must already be synced (`bspctl build` or `bspctl sync` first).
+- The workspace must already be synced (`bakar build` or `bakar sync` first).
 - Per-iteration logs and `summary.json` are written to `<bsp>/build/runs/<run-id>/stress-parse/`.
 
 ## See also

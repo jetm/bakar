@@ -23,7 +23,7 @@
 #
 # Usage:
 #   export KAS_CONTAINER_IMAGE=ghcr.io/siemens/kas/kas:5.2
-#   bspctl build examples/kas-qemux86-64-wrynose.yml
+#   bakar build examples/kas-qemux86-64-wrynose.yml
 #
 # All repos are cloned under layers/ so a single .gitignore entry covers them:
 #   layers/

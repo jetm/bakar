@@ -1,4 +1,4 @@
-# bspctl documentation
+# bakar documentation
 
 ## Quick navigation
 
@@ -17,7 +17,7 @@
 | `log` | [log.md](log.md) | Tail a run log live |
 | `layers` | [layers.md](layers.md) | Print layer git hashes and branches |
 | `for-all` | [for-all.md](for-all.md) | Run a shell command in every source repo |
-| `settings` | [settings.md](settings.md) | Read and write `~/.config/bspctl/config.toml` |
+| `settings` | [settings.md](settings.md) | Read and write `~/.config/bakar/config.toml` |
 | `lock` | [lock.md](lock.md) | Pin floating layer SHAs |
 | `diff` | [diff.md](diff.md) | Compare two manifest versions |
 | `prefetch` | [prefetch.md](prefetch.md) | Pre-fetch recipe sources into DL_DIR |
@@ -34,7 +34,7 @@
 
 **Starting a build:**
 - First time with a manifest: [build.md](build.md)
-- Already synced, just want to rebuild: `bspctl build --skip-sync`
+- Already synced, just want to rebuild: `bakar build --skip-sync`
 - Only want to sync sources: [sync.md](sync.md)
 - Only want to regenerate the kas YAML: [gen-kas.md](gen-kas.md)
 
@@ -42,7 +42,7 @@
 - Find what went wrong: [triage.md](triage.md)
 - Watch a running build: [log.md](log.md)
 - Check if the environment is sane: [doctor.md](doctor.md)
-- Force a from-scratch rebuild: [clean.md](clean.md) or `bspctl build --clean`
+- Force a from-scratch rebuild: [clean.md](clean.md) or `bakar build --clean`
 
 **After a successful build:**
 - Summarize timing, image size, layer SHAs: [report.md](report.md)
@@ -77,10 +77,10 @@
 ### Build pipeline
 
 ```text
-bspctl doctor    - pre-flight (runs automatically before build)
-bspctl sync      - fetch/update sources
-bspctl gen-kas   - translate manifest → kas YAML
-bspctl build     - all of the above, then kas-container build
+bakar doctor    - pre-flight (runs automatically before build)
+bakar sync      - fetch/update sources
+bakar gen-kas   - translate manifest → kas YAML
+bakar build     - all of the above, then kas-container build
 ```
 
 Related: [build.md](build.md), [sync.md](sync.md), [gen-kas.md](gen-kas.md), [doctor.md](doctor.md)
@@ -88,10 +88,10 @@ Related: [build.md](build.md), [sync.md](sync.md), [gen-kas.md](gen-kas.md), [do
 ### Observability
 
 ```text
-bspctl log       - tail a live build log
-bspctl triage    - surface the failing step after a build exits non-zero
-bspctl report    - summarize a completed run (timing, image size, layers)
-bspctl layers    - print layer git hashes without running anything
+bakar log       - tail a live build log
+bakar triage    - surface the failing step after a build exits non-zero
+bakar report    - summarize a completed run (timing, image size, layers)
+bakar layers    - print layer git hashes without running anything
 ```
 
 Related: [log.md](log.md), [triage.md](triage.md), [report.md](report.md), [layers.md](layers.md)
@@ -99,10 +99,10 @@ Related: [log.md](log.md), [triage.md](triage.md), [report.md](report.md), [laye
 ### Reproducibility
 
 ```text
-bspctl lock      - pin every floating layer SHA to an exact commit
-bspctl diff      - compare old/new manifest or kas config
-bspctl dump      - flatten kas YAML + overlay into a single resolved file
-bspctl prefetch  - populate DL_DIR for offline builds
+bakar lock      - pin every floating layer SHA to an exact commit
+bakar diff      - compare old/new manifest or kas config
+bakar dump      - flatten kas YAML + overlay into a single resolved file
+bakar prefetch  - populate DL_DIR for offline builds
 ```
 
 Related: [lock.md](lock.md), [diff.md](diff.md), [dump.md](dump.md), [prefetch.md](prefetch.md)
@@ -110,8 +110,8 @@ Related: [lock.md](lock.md), [diff.md](diff.md), [dump.md](dump.md), [prefetch.m
 ### Shell and scripting
 
 ```text
-bspctl shell     - interactive or one-shot kas-container shell
-bspctl for-all   - run a command in every source repo (parity with kas for-all-repos)
+bakar shell     - interactive or one-shot kas-container shell
+bakar for-all   - run a command in every source repo (parity with kas for-all-repos)
 ```
 
 Related: [shell.md](shell.md), [for-all.md](for-all.md)
@@ -119,7 +119,7 @@ Related: [shell.md](shell.md), [for-all.md](for-all.md)
 ### Configuration
 
 ```text
-bspctl settings  - CRUD interface for ~/.config/bspctl/config.toml
+bakar settings  - CRUD interface for ~/.config/bakar/config.toml
 ```
 
 Related: [settings.md](settings.md), [configuration.md](configuration.md), [workspace.md](workspace.md)
@@ -127,12 +127,12 @@ Related: [settings.md](settings.md), [configuration.md](configuration.md), [work
 ### Advanced / specialized
 
 ```text
-bspctl clean             - remove build/ to force a from-scratch build
-bspctl clean-sstate      - prune stale sstate-cache entries by age
-bspctl hashserv          - manage the persistent bitbake-hashserv daemon
-bspctl bitbake-override  - swap BSP-bundled bitbake for upstream
-bspctl run               - boot avocado-os QEMU image (meta-avocado only)
-bspctl stress-parse      - stress-test bitbake parser fork race
+bakar clean             - remove build/ to force a from-scratch build
+bakar clean-sstate      - prune stale sstate-cache entries by age
+bakar hashserv          - manage the persistent bitbake-hashserv daemon
+bakar bitbake-override  - swap BSP-bundled bitbake for upstream
+bakar run               - boot avocado-os QEMU image (meta-avocado only)
+bakar stress-parse      - stress-test bitbake parser fork race
 ```
 
 Related: [clean.md](clean.md), [clean-sstate.md](clean-sstate.md), [hashserv.md](hashserv.md), [bitbake-override.md](bitbake-override.md), [run.md](run.md), [stress-parse.md](stress-parse.md)

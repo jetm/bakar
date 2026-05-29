@@ -1,40 +1,40 @@
-# bspctl build
+# bakar build
 
 Run the full BSP build pipeline: doctor checks, source sync, kas YAML generation, and kas-container build.
 
 ## Synopsis
 
 ```text
-bspctl build [KAS_YAML] [OPTIONS]
+bakar build [KAS_YAML] [OPTIONS]
 ```
 
 ## Forms
 
 ### BYO (bring your own YAML)
 
-Pass a kas YAML directly. Sync, setup-env, and gen-kas are skipped; bspctl applies the static tuning overlay and runs kas-container.
+Pass a kas YAML directly. Sync, setup-env, and gen-kas are skipped; bakar applies the static tuning overlay and runs kas-container.
 
 ```bash
-bspctl build my-board.yml
-bspctl build kas/main.yml:kas/overlay.yml    # colon-separated overlay stack
+bakar build my-board.yml
+bakar build kas/main.yml:kas/overlay.yml    # colon-separated overlay stack
 ```
 
 ### Manifest-driven (NXP / TI)
 
-Supply a manifest filename. bspctl runs `repo init+sync` (NXP) or `oe-layertool populate` (TI), then generates the kas YAML, applies the overlay, and builds.
+Supply a manifest filename. bakar runs `repo init+sync` (NXP) or `oe-layertool populate` (TI), then generates the kas YAML, applies the overlay, and builds.
 
 ```bash
-bspctl build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart
-bspctl build -f processor-sdk-10.1.0.8-config_var1.txt -m am62x-var-som
+bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart
+bakar build -f processor-sdk-10.1.0.8-config_var1.txt -m am62x-var-som
 ```
 
 ### bitbake-setup workspace
 
-When no YAML or manifest is given and the CWD (or `--workspace`) is a bitbake-setup workspace, bspctl auto-detects it and translates `config/config-upstream.json` into a kas YAML before building.
+When no YAML or manifest is given and the CWD (or `--workspace`) is a bitbake-setup workspace, bakar auto-detects it and translates `config/config-upstream.json` into a kas YAML before building.
 
 ```bash
-cd ~/bsp/my-bbsetup-ws && bspctl build
-bspctl build -m imx8mp-var-dart    # machine override in bbsetup workspace
+cd ~/bsp/my-bbsetup-ws && bakar build
+bakar build -m imx8mp-var-dart    # machine override in bbsetup workspace
 ```
 
 ## Options
@@ -58,31 +58,31 @@ bspctl build -m imx8mp-var-dart    # machine override in bbsetup workspace
 
 ```bash
 # Minimal NXP build (machine required, distro/image from defaults or config.toml)
-bspctl build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart
+bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart
 
 # NXP build with explicit image, skip sync (sources already present)
-bspctl build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart -i var-thin-image --skip-sync
+bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart -i var-thin-image --skip-sync
 
 # NXP from-scratch build (wipe build/ first)
-bspctl build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --clean
+bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --clean
 
 # Dry-run: regenerate YAML and show what would run, don't invoke kas-container
-bspctl build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --dry-run
+bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --dry-run
 
 # TI Sitara build
-bspctl build -f processor-sdk-10.1.0.8-config_var1.txt -m am62x-var-som
+bakar build -f processor-sdk-10.1.0.8-config_var1.txt -m am62x-var-som
 
 # BYO: build a hand-crafted kas YAML without any sync
-bspctl build my-project.yml
+bakar build my-project.yml
 
 # BYO with colon-separated overlay
-bspctl build kas/main.yml:kas/sstate-mirror.yml
+bakar build kas/main.yml:kas/sstate-mirror.yml
 
 # Show layer hashes before building (confirm sources are what you expect)
-bspctl build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --show-layers
+bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --show-layers
 
 # Host mode (skip kas-container, run kas directly - requires host Yocto prereqs)
-bspctl build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --host
+bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --host
 ```
 
 ## What happens
@@ -92,7 +92,7 @@ bspctl build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --host
 3. **setup-env** (manifest-driven only) - runs `var-setup-release.sh` or local.conf fixup; skipped if `bblayers.conf` already present
 4. **bitbake-override** - swaps the BSP-bundled bitbake for a local upstream checkout
 5. **gen-kas** (manifest-driven only) - regenerates `kas-<bsp>.yml` from the manifest
-6. **hashserv** - when `[build] hashserv = true`, ensures the workspace-scoped bitbake-hashserv daemon is running, injects `BB_HASHSERVE` into the container env, AND auto-appends `bspctl-tuning-hashequiv.yml` to the overlay list so `BB_SIGNATURE_HANDLER = "OEEquivHash"` takes effect with no extra user wiring. See [hashserv.md](hashserv.md).
+6. **hashserv** - when `[build] hashserv = true`, ensures the workspace-scoped bitbake-hashserv daemon is running, injects `BB_HASHSERVE` into the container env, AND auto-appends `bakar-tuning-hashequiv.yml` to the overlay list so `BB_SIGNATURE_HANDLER = "OEEquivHash"` takes effect with no extra user wiring. See [hashserv.md](hashserv.md).
 7. **kas-container build** - invokes `kas-container build <kas_yaml>:<overlay>` (or `kas build` in host mode)
 
 Run telemetry is written to `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/`.
@@ -100,8 +100,8 @@ Run telemetry is written to `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/`.
 ## On failure
 
 ```bash
-bspctl triage                        # inspect the most recent failed run
-bspctl triage 20260601-143022        # inspect a specific run
+bakar triage                        # inspect the most recent failed run
+bakar triage 20260601-143022        # inspect a specific run
 ```
 
 ## See also

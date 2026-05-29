@@ -1,11 +1,11 @@
-# bspctl log
+# bakar log
 
 Tail a run's log file live (`tail -f` behavior). Shows the last 40 lines of existing content, then streams new writes.
 
 ## Synopsis
 
 ```text
-bspctl log [KAS_YAML] [OPTIONS]
+bakar log [KAS_YAML] [OPTIONS]
 ```
 
 ## Options
@@ -29,28 +29,28 @@ bspctl log [KAS_YAML] [OPTIONS]
 
 ```bash
 # Follow kas.log for the current build (most common - opened mid-build)
-bspctl log
+bakar log
 
 # Follow console.log for high-level step progress
-bspctl log --which console
+bakar log --which console
 
 # Follow events.jsonl for structured output
-bspctl log --which events
+bakar log --which events
 
 # Follow log for a specific past run
-bspctl log --run 20260601-143022
+bakar log --run 20260601-143022
 
 # Follow log for a BYO build
-bspctl log my-project.yml
+bakar log my-project.yml
 
 # Follow events for a BYO build
-bspctl log my-project.yml --which events
+bakar log my-project.yml --which events
 ```
 
 ## Notes
 
 - Press Ctrl+C to stop following.
-- When `kas.log` does not exist yet (build is between steps), `bspctl log` automatically falls back to `console.log` with a note.
+- When `kas.log` does not exist yet (build is between steps), `bakar log` automatically falls back to `console.log` with a note.
 - `--which` accepts exactly `kas`, `console`, or `events`; any other value exits 2.
 
 ## See also

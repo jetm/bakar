@@ -1,11 +1,11 @@
-# bspctl lock
+# bakar lock
 
 Pin every floating layer revision to an exact commit for reproducible builds.
 
 ## Synopsis
 
 ```text
-bspctl lock [KAS_YAML] [OPTIONS]
+bakar lock [KAS_YAML] [OPTIONS]
 ```
 
 ## Options
@@ -20,14 +20,14 @@ bspctl lock [KAS_YAML] [OPTIONS]
 
 ```bash
 # Lock NXP manifest to current HEAD SHAs
-bspctl lock -f imx-6.12.49-2.2.0.xml
+bakar lock -f imx-6.12.49-2.2.0.xml
 
 # Lock to a custom output path
-bspctl lock -f imx-6.12.49-2.2.0.xml -o ~/manifests/pinned-20260601.xml
+bakar lock -f imx-6.12.49-2.2.0.xml -o ~/manifests/pinned-20260601.xml
 
 # Lock a BYO / TI / bbsetup project (produces kas-project.lock.yml)
-bspctl lock my-project.yml
-bspctl lock -f processor-sdk-10.1.0.8-config_var1.txt
+bakar lock my-project.yml
+bakar lock -f processor-sdk-10.1.0.8-config_var1.txt
 
 ```
 
@@ -40,11 +40,11 @@ bspctl lock -f processor-sdk-10.1.0.8-config_var1.txt
 ## Notes
 
 - `lock` uses an ephemeral run directory so it does not pollute `build/runs/` with a bogus entry that `triage` and `report` would surface.
-- After locking, pass the pinned manifest (or lockfile) to `bspctl build` to reproduce the exact source state:
+- After locking, pass the pinned manifest (or lockfile) to `bakar build` to reproduce the exact source state:
 
 ```bash
-bspctl lock -f imx-6.12.49-2.2.0.xml -o pinned.xml
-bspctl build -f pinned.xml -m imx8mp-var-dart
+bakar lock -f imx-6.12.49-2.2.0.xml -o pinned.xml
+bakar build -f pinned.xml -m imx8mp-var-dart
 ```
 
 ## See also

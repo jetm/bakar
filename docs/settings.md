@@ -1,14 +1,14 @@
-# bspctl settings
+# bakar settings
 
-Read and write recognized settings in `~/.config/bspctl/config.toml`.
+Read and write recognized settings in `~/.config/bakar/config.toml`.
 
 ## Synopsis
 
 ```text
-bspctl settings list
-bspctl settings get KEY
-bspctl settings set KEY VALUE
-bspctl settings unset KEY
+bakar settings list
+bakar settings get KEY
+bakar settings set KEY VALUE
+bakar settings unset KEY
 ```
 
 ## Subcommands
@@ -68,30 +68,30 @@ All keys use dotted notation (`section.subsection.key`).
 
 ```bash
 # View all settings
-bspctl settings list
+bakar settings list
 
 # Set a default machine so you don't need -m on every invocation
-bspctl settings set defaults.nxp.machine imx8mp-var-dart
-bspctl settings set defaults.nxp.manifest imx-6.12.49-2.2.0.xml
+bakar settings set defaults.nxp.machine imx8mp-var-dart
+bakar settings set defaults.nxp.manifest imx-6.12.49-2.2.0.xml
 
 # Point builds at a shared download cache
-bspctl settings set build.dl_dir /mnt/yocto-cache/downloads
-bspctl settings set build.sstate_dir /mnt/yocto-cache/sstate
+bakar settings set build.dl_dir /mnt/yocto-cache/downloads
+bakar settings set build.sstate_dir /mnt/yocto-cache/sstate
 
 # Use a sstate mirror
-bspctl settings set build.sstate_mirrors "file:///mnt/sstate/PATH;downloadfilename=PATH"
+bakar settings set build.sstate_mirrors "file:///mnt/sstate/PATH;downloadfilename=PATH"
 
 # Disable automatic doctor (speeds up builds when environment is stable)
-bspctl settings set build.doctor false
+bakar settings set build.doctor false
 
 # Always show layer hashes after sync/build
-bspctl settings set layers.show_hashes true
+bakar settings set layers.show_hashes true
 
 # Check the current value of a key
-bspctl settings get defaults.nxp.machine
+bakar settings get defaults.nxp.machine
 
 # Remove a setting (reverts to built-in default)
-bspctl settings unset defaults.nxp.machine
+bakar settings unset defaults.nxp.machine
 ```
 
 ## Notes
@@ -99,7 +99,7 @@ bspctl settings unset defaults.nxp.machine
 - Boolean keys accept `true`/`false`/`1`/`0`.
 - Unknown keys are rejected immediately (before touching the file).
 - Writes are atomic; a crash mid-write leaves the existing config intact.
-- These settings are the lowest-priority layer in the resolution chain: CLI flags and `BSPCTL_*` env vars override them. See [configuration.md](configuration.md).
+- These settings are the lowest-priority layer in the resolution chain: CLI flags and `BAKAR_*` env vars override them. See [configuration.md](configuration.md).
 
 ## See also
 

@@ -1,11 +1,11 @@
-# bspctl clean-sstate
+# bakar clean-sstate
 
 Prune stale sstate-cache entries by age to reclaim disk space.
 
 ## Synopsis
 
 ```text
-bspctl clean-sstate [OPTIONS]
+bakar clean-sstate [OPTIONS]
 ```
 
 ## Options
@@ -39,7 +39,7 @@ The directory is resolved in this order:
 
 1. `--sstate-dir` flag
 2. `SSTATE_DIR` environment variable
-3. `sstate_dir` key under `[build]` in `~/.config/bspctl/config.toml`
+3. `sstate_dir` key under `[build]` in `~/.config/bakar/config.toml`
 
 The command exits with an error if none of these is set.
 
@@ -77,22 +77,22 @@ matches.
 
 ```bash
 # Scan and prompt (default)
-bspctl clean-sstate
+bakar clean-sstate
 
 # Scan with a 60-day threshold and prompt
-bspctl clean-sstate --older-than 60
+bakar clean-sstate --older-than 60
 
 # Scan only, no prompt, no deletion
-bspctl clean-sstate --dry-run
+bakar clean-sstate --dry-run
 
 # Delete without prompting (for cron jobs or automation)
-bspctl clean-sstate --yes
+bakar clean-sstate --yes
 
 # Combine: 60-day threshold, no prompt
-bspctl clean-sstate --older-than 60 --yes
+bakar clean-sstate --older-than 60 --yes
 
 # Target a non-standard sstate directory
-bspctl clean-sstate --sstate-dir /mnt/shared/sstate --older-than 90
+bakar clean-sstate --sstate-dir /mnt/shared/sstate --older-than 90
 ```
 
 ## Notes

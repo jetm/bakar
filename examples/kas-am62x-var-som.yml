@@ -3,10 +3,10 @@
 # Copy this file under ti/ (e.g. ti/my-build.yml) and edit machine /
 # distro / target / repos to taste. Then run:
 #
-#     bspctl bitbake-override --apply
-#     bspctl build ti/my-build.yml
+#     bakar bitbake-override --apply
+#     bakar build ti/my-build.yml
 #
-# `bspctl build` automatically layers overlays/bspctl-tuning-ti.yml on
+# `bakar build` automatically layers overlays/bakar-tuning-ti.yml on
 # top, which pulls in the shared tuning block (ccache, MIRRORS, PREMIRRORS,
 # FETCHCMD_wget) plus the TI fork PREMIRRORs and meta-varis-overrides-ti.
 distro: arago

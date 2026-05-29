@@ -1,11 +1,11 @@
-# bspctl report
+# bakar report
 
 Summarize a completed build run: status, duration, deploy directory, image size, peak build-tmp size, and per-layer SHAs.
 
 ## Synopsis
 
 ```text
-bspctl report [RUN_ID] [OPTIONS]
+bakar report [RUN_ID] [OPTIONS]
 ```
 
 ## Options
@@ -21,14 +21,14 @@ bspctl report [RUN_ID] [OPTIONS]
 
 ```bash
 # Report on the most recent build
-bspctl report
+bakar report
 
 # Report on a specific run
-bspctl report 20260601-143022
+bakar report 20260601-143022
 
 # Machine-readable JSON output (pipe to jq, etc.)
-bspctl report --json | jq '.duration_s'
-bspctl report 20260601-143022 --json
+bakar report --json | jq '.duration_s'
+bakar report 20260601-143022 --json
 ```
 
 ## Output (human)
@@ -64,7 +64,7 @@ poky             11223344  dunfell
 
 ## Notes
 
-- `--json` writes to stdout; the human-readable output goes to stderr (consistent with all bspctl output).
+- `--json` writes to stdout; the human-readable output goes to stderr (consistent with all bakar output).
 - `image_size`, `peak_tmp_bytes`, and `duration_s` are omitted from JSON when unavailable (build interrupted before deploy, etc.).
 - Kernel version and recipe count are best-effort and omitted when unresolvable.
 

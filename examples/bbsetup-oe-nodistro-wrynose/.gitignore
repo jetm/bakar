@@ -1,7 +1,7 @@
 # Generated and workspace artifacts - not part of the committed fixture
 kas-bbsetup.yml
 layers/
-.bspctl/
+.bakar/
 ccache/
 build/runs/
 build/tmp/

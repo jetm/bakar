@@ -1,11 +1,11 @@
-# bspctl shell
+# bakar shell
 
 Drop into a `kas-container shell` for the project, or run a single command inside it.
 
 ## Synopsis
 
 ```text
-bspctl shell [KAS_YAML] [OPTIONS]
+bakar shell [KAS_YAML] [OPTIONS]
 ```
 
 ## Options
@@ -21,28 +21,28 @@ bspctl shell [KAS_YAML] [OPTIONS]
 
 ```bash
 # Interactive shell - manifest-driven NXP
-bspctl shell -f imx-6.12.49-2.2.0.xml
+bakar shell -f imx-6.12.49-2.2.0.xml
 
 # Interactive shell - BYO kas YAML
-bspctl shell my-project.yml
+bakar shell my-project.yml
 
 # Run a single command: clean sstate for one recipe
-bspctl shell -f imx-6.12.49-2.2.0.xml -c "bitbake -c cleansstate linux-imx"
+bakar shell -f imx-6.12.49-2.2.0.xml -c "bitbake -c cleansstate linux-imx"
 
 # Inspect the bitbake configuration inside the container
-bspctl shell -f imx-6.12.49-2.2.0.xml -c "bitbake -e | grep ^BB_TASKS_SCHEDULER"
+bakar shell -f imx-6.12.49-2.2.0.xml -c "bitbake -e | grep ^BB_TASKS_SCHEDULER"
 
 # Investigate a parse failure (bitbake -p parses all recipes)
-bspctl shell -f imx-6.12.49-2.2.0.xml -c "bitbake -p 2>&1 | tail -30"
+bakar shell -f imx-6.12.49-2.2.0.xml -c "bitbake -p 2>&1 | tail -30"
 
 # Host mode - no Docker, runs kas shell directly
-bspctl shell -f imx-6.12.49-2.2.0.xml --host -c "bitbake -c cleansstate glibc"
+bakar shell -f imx-6.12.49-2.2.0.xml --host -c "bitbake -c cleansstate glibc"
 ```
 
 ## Notes
 
 - Positional YAML and `--manifest` are mutually exclusive.
-- Shell sessions are recorded in `<bsp_root>/build/runs/<ts>/` like builds; use `bspctl log` to inspect them.
+- Shell sessions are recorded in `<bsp_root>/build/runs/<ts>/` like builds; use `bakar log` to inspect them.
 
 ## See also
 

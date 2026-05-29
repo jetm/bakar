@@ -1,4 +1,4 @@
-# bspctl run
+# bakar run
 
 Boot an avocado-os image in QEMU from the build directory.
 
@@ -7,7 +7,7 @@ Requires a completed build with stone provisioning. Only supported for meta-avoc
 ## Synopsis
 
 ```text
-bspctl run KAS_YAML [OPTIONS]
+bakar run KAS_YAML [OPTIONS]
 ```
 
 ## Arguments
@@ -27,24 +27,24 @@ bspctl run KAS_YAML [OPTIONS]
 
 ```bash
 # Build first (with stone provisioning overlay)
-bspctl build kas/machine/qemux86-64.yml:kas/target/qemu-provision.yml
+bakar build kas/machine/qemux86-64.yml:kas/target/qemu-provision.yml
 
 # Boot the image
-bspctl run kas/machine/qemux86-64.yml
+bakar run kas/machine/qemux86-64.yml
 
 # Boot without software TPM
-bspctl run kas/machine/qemux86-64.yml --no-swtpm
+bakar run kas/machine/qemux86-64.yml --no-swtpm
 
 # Boot arm64
-bspctl build kas/machine/qemuarm64.yml:kas/target/qemu-provision.yml
-bspctl run kas/machine/qemuarm64.yml
+bakar build kas/machine/qemuarm64.yml:kas/target/qemu-provision.yml
+bakar run kas/machine/qemuarm64.yml
 ```
 
 ## Notes
 
-- `bspctl run` fails with exit 2 on non-meta-avocado kas YAMLs.
+- `bakar run` fails with exit 2 on non-meta-avocado kas YAMLs.
 - Requires `qemu-system-x86_64` (or `qemu-system-aarch64`) and optionally `swtpm` on the host.
-- Overlays in the `KAS_YAML` argument are stripped before machine resolution; they can be included for command-line consistency with `bspctl build`.
+- Overlays in the `KAS_YAML` argument are stripped before machine resolution; they can be included for command-line consistency with `bakar build`.
 
 ## See also
 

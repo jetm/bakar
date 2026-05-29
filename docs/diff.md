@@ -1,11 +1,11 @@
-# bspctl diff
+# bakar diff
 
 Compare two versions of a manifest or kas config and report per-layer SHA changes.
 
 ## Synopsis
 
 ```text
-bspctl diff OLD NEW [OPTIONS]
+bakar diff OLD NEW [OPTIONS]
 ```
 
 ## Arguments
@@ -26,13 +26,13 @@ bspctl diff OLD NEW [OPTIONS]
 
 ```bash
 # Compare two NXP manifest versions
-bspctl diff imx-6.6.52-2.2.0.xml imx-6.12.49-2.2.0.xml
+bakar diff imx-6.6.52-2.2.0.xml imx-6.12.49-2.2.0.xml
 
 # Compare with a pinned manifest (see what changed since pinning)
-bspctl diff pinned-manifest.xml imx-6.12.49-2.2.0.xml
+bakar diff pinned-manifest.xml imx-6.12.49-2.2.0.xml
 
 # Compare two kas config files (delegates to kas diff / kas-container diff)
-bspctl diff kas-old.yml kas-new.yml
+bakar diff kas-old.yml kas-new.yml
 ```
 
 ## Output (NXP manifest diff)
@@ -47,8 +47,8 @@ Columns: layer name, old SHA (8 chars), new SHA (8 chars), commit count ahead (`
 
 ## Notes
 
-- When both arguments are `.xml` files, bspctl parses the manifests and diffs layer SHAs directly. The commit count requires the layer repos to be checked out under `sources/`.
-- For non-`.xml` files, bspctl delegates to `kas diff` (or `kas-container diff` outside host mode) and passes the exit code through.
+- When both arguments are `.xml` files, bakar parses the manifests and diffs layer SHAs directly. The commit count requires the layer repos to be checked out under `sources/`.
+- For non-`.xml` files, bakar delegates to `kas diff` (or `kas-container diff` outside host mode) and passes the exit code through.
 
 ## See also
 

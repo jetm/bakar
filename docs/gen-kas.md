@@ -1,13 +1,13 @@
-# bspctl gen-kas
+# bakar gen-kas
 
 Regenerate the kas YAML from the current manifest or bitbake-setup config without building.
 
-The output is topology-only (repos and layer paths). The BSP tuning block lives in the static overlay at `overlays/bspctl-tuning-<bsp>.yml` and is applied at build time by `bspctl build`.
+The output is topology-only (repos and layer paths). The BSP tuning block lives in the static overlay at `overlays/bakar-tuning-<bsp>.yml` and is applied at build time by `bakar build`.
 
 ## Synopsis
 
 ```text
-bspctl gen-kas [OPTIONS]
+bakar gen-kas [OPTIONS]
 ```
 
 ## Options
@@ -26,19 +26,19 @@ bspctl gen-kas [OPTIONS]
 
 ```bash
 # Regenerate NXP kas YAML from current manifest and bblayers.conf
-bspctl gen-kas -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart
+bakar gen-kas -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart
 
 # Write to a custom path
-bspctl gen-kas -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart -o /tmp/inspect.yml
+bakar gen-kas -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart -o /tmp/inspect.yml
 
 # Regenerate kas YAML for a bitbake-setup workspace (from config-upstream.json)
-bspctl gen-kas -w ~/bsp/my-bbsetup-ws
+bakar gen-kas -w ~/bsp/my-bbsetup-ws
 ```
 
 ## Notes
 
-- The generated YAML captures the manifest-to-repos mapping. It is not a standalone build config; `bspctl build` layers the tuning overlay on top at run time.
-- For bitbake-setup workspaces, `gen-kas` translates `config/config-upstream.json` into `kas-bbsetup.yml`. Run this to inspect what `bspctl build` would use.
+- The generated YAML captures the manifest-to-repos mapping. It is not a standalone build config; `bakar build` layers the tuning overlay on top at run time.
+- For bitbake-setup workspaces, `gen-kas` translates `config/config-upstream.json` into `kas-bbsetup.yml`. Run this to inspect what `bakar build` would use.
 
 ## See also
 

@@ -1,11 +1,11 @@
-# bspctl triage
+# bakar triage
 
 Surface the last failed step of a build run with the relevant log tail and recipe log.
 
 ## Synopsis
 
 ```text
-bspctl triage [RUN_ID] [OPTIONS]
+bakar triage [RUN_ID] [OPTIONS]
 ```
 
 ## Options
@@ -20,16 +20,16 @@ bspctl triage [RUN_ID] [OPTIONS]
 
 ```bash
 # Triage the most recent failed build
-bspctl triage
+bakar triage
 
 # Triage a specific run by ID
-bspctl triage 20260601-143022
+bakar triage 20260601-143022
 
 # Triage a BYO build
-bspctl triage --kas-yaml my-project.yml
+bakar triage --kas-yaml my-project.yml
 
 # Triage a BYO build from a specific run
-bspctl triage 20260601-143022 --kas-yaml my-project.yml
+bakar triage 20260601-143022 --kas-yaml my-project.yml
 ```
 
 ## Output
@@ -60,11 +60,11 @@ no step_fail events found
 ## Notes
 
 - Without `--kas-yaml`, triage searches both `nxp/build/runs/` and `ti/build/runs/` under the workspace.
-- Run IDs come from the timestamps bspctl assigns at build start (`YYYYMMDD-HHMMSS`). Use `bspctl log` to see what files are in a run directory.
+- Run IDs come from the timestamps bakar assigns at build start (`YYYYMMDD-HHMMSS`). Use `bakar log` to see what files are in a run directory.
 - Suggestions are pattern-matched from the kas.log tail (sstate corruption, missing host tools, disk full, etc.).
 
 ## See also
 
-- [build.md](build.md) - link printed by build on failure: `bspctl triage <run_id>`
+- [build.md](build.md) - link printed by build on failure: `bakar triage <run_id>`
 - [log.md](log.md) - tail run log files directly
 - [report.md](report.md) - summary for successful builds
