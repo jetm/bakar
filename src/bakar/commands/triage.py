@@ -14,27 +14,14 @@ from bakar.commands._helpers import _bbsetup_workspace, _find_run, _workspace_fr
 from bakar.triage import analyse
 
 
-@app.command()
-def triage(
-    run_id: Annotated[str | None, typer.Argument(help="Run ID (YYYYMMDD-HHMMSS). Latest if omitted.")] = None,
-    kas_yaml: Annotated[
-        Path | None,
-        typer.Option(
-            "--kas-yaml",
-            "-k",
-            help="kas YAML for a BYO build; runs live next to it under <yaml-parent>/build/runs/.",
-        ),
-    ] = None,
-    workspace: Annotated[Path | None, typer.Option("--workspace", "-w", help="Workspace root override")] = None,
-) -> None:
-    """Surface the last failed step of the named run (or the most recent).
+def _resolve_triage_dirs(
+    kas_yaml: Path | None,
+    workspace: Path | None,
+) -> tuple[list[tuple[Path, Literal["nxp", "ti", "generic"]]], Path, str]:
+    """Resolve the run directories, report root, and not-found label for triage.
 
-    Without ``--kas-yaml`` searches both ``nxp/build/runs/`` and
-    ``ti/build/runs/`` under the workspace. Pass ``--kas-yaml my.yml``
-    for a BYO build whose runs live next to the YAML
-    (``<yaml-parent>/build/runs/``); the BSP family is inferred from
-    the run directory's location and reported as ``generic`` for
-    generic BYO YAMLs.
+    Handles three workspace shapes: BYO kas YAML, bbsetup workspace, and
+    standard nxp/ti/avocado workspace.
     """
     if kas_yaml is not None:
         resolved = kas_yaml.resolve()
@@ -65,7 +52,32 @@ def triage(
             ]
             not_found_label = "nxp/build/runs/ or ti/build/runs/"
         report_root = ws
+    return runs_dirs, report_root, not_found_label
 
+
+@app.command()
+def triage(
+    run_id: Annotated[str | None, typer.Argument(help="Run ID (YYYYMMDD-HHMMSS). Latest if omitted.")] = None,
+    kas_yaml: Annotated[
+        Path | None,
+        typer.Option(
+            "--kas-yaml",
+            "-k",
+            help="kas YAML for a BYO build; runs live next to it under <yaml-parent>/build/runs/.",
+        ),
+    ] = None,
+    workspace: Annotated[Path | None, typer.Option("--workspace", "-w", help="Workspace root override")] = None,
+) -> None:
+    """Surface the last failed step of the named run (or the most recent).
+
+    Without ``--kas-yaml`` searches both ``nxp/build/runs/`` and
+    ``ti/build/runs/`` under the workspace. Pass ``--kas-yaml my.yml``
+    for a BYO build whose runs live next to the YAML
+    (``<yaml-parent>/build/runs/``); the BSP family is inferred from
+    the run directory's location and reported as ``generic`` for
+    generic BYO YAMLs.
+    """
+    runs_dirs, report_root, not_found_label = _resolve_triage_dirs(kas_yaml, workspace)
     found = _find_run(runs_dirs, run_id)
     if found is None:
         if run_id:
