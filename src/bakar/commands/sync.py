@@ -142,7 +142,7 @@ def sync(
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
     with RunLogger(runs_dir=cfg.runs_dir) as log:
-        _run_sync_body(cfg, log, bsp=bsp, family=family,
-                       effective_show_layers=effective_show_layers,
-                       skip_doctor=skip_doctor)
+        _run_sync_body(
+            cfg, log, bsp=bsp, family=family, effective_show_layers=effective_show_layers, skip_doctor=skip_doctor
+        )
     console.print("[bold green]sync complete[/]")

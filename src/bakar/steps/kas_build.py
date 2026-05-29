@@ -702,6 +702,23 @@ def run_build(
     return rc if rc is not None else -1
 
 
+def _apply_host_mode_env(
+    cfg: BuildConfig,
+    python_executable: Path | None,
+    passthrough: dict[str, str],
+) -> None:
+    """Inject host-mode Python interpreter settings into the env dict (mutates in place)."""
+    if cfg.host_mode:
+        if python_executable is not None:
+            py_path = python_executable.resolve()
+            py_bin = str(py_path.parent)
+            passthrough["BB_PYTHON3"] = str(py_path)
+        else:
+            py_bin = sysconfig.get_path("scripts")
+            passthrough["BB_PYTHON3"] = sys.executable
+        passthrough["PATH"] = py_bin + os.pathsep + passthrough.get("PATH", "")
+
+
 def _build_env(cfg: BuildConfig, python_executable: Path | None = None) -> dict[str, str]:
     """Return the environment to hand to kas-container.
 
@@ -776,22 +793,7 @@ def _build_env(cfg: BuildConfig, python_executable: Path | None = None) -> dict[
     else:
         passthrough["KAS_WORK_DIR"] = str(cfg.bsp_root)
 
-    # In host mode, prepend the bakar interpreter's bin dir to PATH and
-    # set BB_PYTHON3 so bitbake's bin/bitbake re-execs into the same
-    # Python bakar was installed under (a uv tool venv pinned to 3.12
-    # via `uv tool install --python 3.12`). The bitbake-server and
-    # bitbake-worker subprocesses inherit the interpreter through
-    # sys.executable in bb.server.process._startServer / bb.runqueue,
-    # so dispatching the entry-point script is sufficient.
-    if cfg.host_mode:
-        if python_executable is not None:
-            py_path = python_executable.resolve()
-            py_bin = str(py_path.parent)
-            passthrough["BB_PYTHON3"] = str(py_path)
-        else:
-            py_bin = sysconfig.get_path("scripts")
-            passthrough["BB_PYTHON3"] = sys.executable
-        passthrough["PATH"] = py_bin + os.pathsep + passthrough.get("PATH", "")
+    _apply_host_mode_env(cfg, python_executable, passthrough)
     return passthrough
 
 
