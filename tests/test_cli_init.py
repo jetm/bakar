@@ -1,8 +1,7 @@
-"""Unit tests for bakar.commands.init._scaffold_workspace.
+"""Unit tests for bakar.commands.init._scaffold_workspace and init CLI flags.
 
-Covers only the pure scaffold function - no questionary, no wizard prompts,
-no mocking. Each family's directory layout and .bakar.toml content is verified
-against a fresh tmp_path workspace.
+Covers the pure scaffold function (no questionary, no wizard prompts, no mocking)
+and the non-interactive CLI flags added to enable scripted workspace creation.
 """
 
 from __future__ import annotations
@@ -11,13 +10,17 @@ import tomllib
 from typing import TYPE_CHECKING
 
 import pytest
+from typer.testing import CliRunner
 
+from bakar.commands._app import app
 from bakar.commands.init import _scaffold_workspace
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 pytestmark = pytest.mark.unit
+
+runner = CliRunner()
 
 
 def _read_toml(workspace: Path) -> dict:
@@ -104,3 +107,95 @@ def test_second_call_raises_file_exists_error(tmp_path: Path) -> None:
         _scaffold_workspace(tmp_path, "generic", {"kas_yaml": "kas.yml", "machine": "qemux86-64"})
 
     assert type(excinfo.value) is FileExistsError
+
+
+# ---------------------------------------------------------------------------
+# Non-interactive CLI flag tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_init_noninteractive_nxp_creates_workspace(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["init", "--family", "nxp", "--workspace", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "nxp").is_dir()
+    data = _read_toml(tmp_path)
+    assert "nxp" in data["defaults"]
+
+
+@pytest.mark.unit
+def test_init_noninteractive_nxp_custom_settings(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--family",
+            "nxp",
+            "--workspace",
+            str(tmp_path),
+            "--manifest",
+            "imx-6.6.52-2.2.2.xml",
+            "--machine",
+            "imx8mp-var-dart",
+            "--distro",
+            "fsl-imx-xwayland",
+            "--image",
+            "core-image-minimal",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = _read_toml(tmp_path)
+    assert data["defaults"]["nxp"]["manifest"] == "imx-6.6.52-2.2.2.xml"
+    assert data["defaults"]["nxp"]["machine"] == "imx8mp-var-dart"
+
+
+@pytest.mark.unit
+def test_init_noninteractive_generic_creates_workspace(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--family",
+            "generic",
+            "--workspace",
+            str(tmp_path),
+            "--kas-yaml",
+            "avocado-bspctl.yml",
+            "--machine",
+            "qemux86-64",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = _read_toml(tmp_path)
+    assert data["defaults"]["generic"]["kas_yaml"] == "avocado-bspctl.yml"
+    assert data["defaults"]["generic"]["machine"] == "qemux86-64"
+
+
+@pytest.mark.unit
+def test_init_noninteractive_generic_defaults(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["init", "--family", "generic", "--workspace", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    data = _read_toml(tmp_path)
+    assert data["defaults"]["generic"]["kas_yaml"] == "kas-generic.yml"
+    assert data["defaults"]["generic"]["machine"] == "qemux86-64"
+
+
+@pytest.mark.unit
+def test_init_noninteractive_bbsetup_creates_marker(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["init", "--family", "bbsetup", "--workspace", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / ".bakar.toml").is_file()
+    assert not (tmp_path / "nxp").exists()
+
+
+@pytest.mark.unit
+def test_init_noninteractive_invalid_family_exits_1(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["init", "--family", "bogus", "--workspace", str(tmp_path)])
+    assert result.exit_code == 1
+
+
+@pytest.mark.unit
+def test_init_noninteractive_already_initialized_exits_1(tmp_path: Path) -> None:
+    runner.invoke(app, ["init", "--family", "generic", "--workspace", str(tmp_path)])
+    result = runner.invoke(app, ["init", "--family", "generic", "--workspace", str(tmp_path)])
+    assert result.exit_code == 1

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import questionary
 import typer
@@ -12,6 +12,8 @@ import typer
 from bakar.bsp_model import get_model
 from bakar.commands._app import app, console
 from bakar.workspace_config import write_workspace_config
+
+_FAMILIES = ["nxp", "ti", "bbsetup", "generic"]
 
 
 def _ask(question: questionary.Question) -> object:
@@ -57,25 +59,90 @@ def _scaffold_workspace(
 
 
 @app.command("init")
-def init() -> None:
-    """Interactively scaffold a new bakar workspace.
+def init(
+    family: Annotated[
+        str | None,
+        typer.Option("--family", "-f", help="BSP family (nxp/ti/bbsetup/generic); enables non-interactive mode"),
+    ] = None,
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", "-w", help="Workspace directory (default: current directory)"),
+    ] = None,
+    manifest: Annotated[
+        str | None,
+        typer.Option("--manifest", help="Manifest filename (nxp/ti only)"),
+    ] = None,
+    machine: Annotated[
+        str | None,
+        typer.Option("--machine", help="Machine name"),
+    ] = None,
+    distro: Annotated[
+        str | None,
+        typer.Option("--distro", help="Distro (nxp/ti only)"),
+    ] = None,
+    image: Annotated[
+        str | None,
+        typer.Option("--image", help="Image (nxp/ti only)"),
+    ] = None,
+    kas_yaml: Annotated[
+        str | None,
+        typer.Option("--kas-yaml", help="KAS YAML filename (generic only)"),
+    ] = None,
+    no_sync: Annotated[
+        bool,
+        typer.Option("--no-sync", help="Skip sync after scaffolding (interactive mode only)"),
+    ] = False,
+) -> None:
+    """Scaffold a new bakar workspace.
 
-    Walks through the BSP family, workspace directory, and family-specific
-    defaults, writes ``.bakar.toml`` (and the family subdirectory for nxp/ti),
-    then optionally kicks off ``bakar sync``.
+    Without ``--family``: interactive wizard using questionary prompts.
+    Requires a TTY on stdin.
 
-    Requires an interactive terminal - questionary prompts cannot run without a
-    TTY on stdin. Scriptable workspace creation is still available via
-    ``mkdir <family>/ && touch .bakar.toml``.
+    With ``--family``: non-interactive mode - no TTY required. Settings are
+    resolved from the provided flags, falling back to BSP model defaults for
+    nxp/ti. Sync is never run in non-interactive mode.
     """
+    non_interactive = family is not None
+
+    if non_interactive:
+        if family not in _FAMILIES:
+            console.print(f"[red]unknown family:[/] {family!r} - must be one of {_FAMILIES}")
+            raise typer.Exit(1)
+
+        path = workspace or Path(".")
+
+        settings: dict[str, str] = {}
+        if family in ("nxp", "ti"):
+            model = get_model(family)  # type: ignore[arg-type]
+            settings["manifest"] = manifest or model.default_manifest or ""
+            settings["machine"] = machine or model.default_machine or ""
+            settings["distro"] = distro or model.default_distro or ""
+            settings["image"] = image or model.default_image or ""
+        elif family == "generic":
+            settings["kas_yaml"] = kas_yaml or "kas-generic.yml"
+            settings["machine"] = machine or "qemux86-64"
+        # bbsetup: no settings needed.
+
+        try:
+            _scaffold_workspace(path, family, settings)  # type: ignore[arg-type]
+        except FileExistsError as exc:
+            console.print(f"[red]workspace already initialized:[/] {exc} already exists")
+            raise typer.Exit(1) from exc
+
+        console.print(f"[green]workspace scaffolded[/] at {path}")
+        if family in ("nxp", "ti", "generic"):
+            console.print(f"Next: [bold]bakar sync --workspace {path}[/]")
+        return
+
+    # Interactive mode below - requires a TTY.
     if not sys.stdin.isatty():
         console.print(
             "[red]bakar init requires an interactive terminal[/] - stdin is not a TTY. "
-            "Create the workspace manually with `mkdir <family>/ && touch .bakar.toml`."
+            "Use --family to enable non-interactive mode."
         )
         raise typer.Exit(1)
 
-    family: str = _ask(
+    family_str: str = _ask(
         questionary.select(  # type: ignore[assignment]
             "BSP family:",
             choices=["nxp", "ti", "bbsetup", "generic"],
@@ -90,9 +157,9 @@ def init() -> None:
     )
     path = Path(workspace_str).expanduser()
 
-    settings: dict[str, str] = {}
-    if family in ("nxp", "ti"):
-        model = get_model(family)  # type: ignore[arg-type]
+    settings = {}
+    if family_str in ("nxp", "ti"):
+        model = get_model(family_str)  # type: ignore[arg-type]
         settings["manifest"] = _ask(
             questionary.text(  # type: ignore[assignment]
                 "Manifest:",
@@ -117,7 +184,7 @@ def init() -> None:
                 default=model.default_image,
             )
         )
-    elif family == "generic":
+    elif family_str == "generic":
         settings["kas_yaml"] = _ask(
             questionary.text(  # type: ignore[assignment]
                 "kas YAML filename:",
@@ -133,15 +200,18 @@ def init() -> None:
     # bbsetup: no family-specific prompts.
 
     try:
-        _scaffold_workspace(path, family, settings)  # type: ignore[arg-type]
+        _scaffold_workspace(path, family_str, settings)  # type: ignore[arg-type]
     except FileExistsError as exc:
         console.print(f"[red]workspace already initialized:[/] {exc} already exists")
         raise typer.Exit(1) from exc
 
     console.print(f"[green]workspace scaffolded[/] at {path}")
 
-    console.print("Downloading sources can take a while")
-    run_sync = _ask(questionary.confirm("Run `bakar sync` now?", default=False))
+    if no_sync:
+        run_sync = False
+    else:
+        console.print("Downloading sources can take a while")
+        run_sync = _ask(questionary.confirm("Run `bakar sync` now?", default=False))
 
     if run_sync:
         from bakar.commands.sync import sync
@@ -149,7 +219,7 @@ def init() -> None:
         sync(workspace=path)
         return
 
-    if family in ("nxp", "ti", "generic"):
+    if family_str in ("nxp", "ti", "generic"):
         console.print(f"Next: [bold]bakar sync --workspace {path}[/]")
     else:
         console.print(
