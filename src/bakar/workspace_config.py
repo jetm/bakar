@@ -4,6 +4,8 @@ import tomllib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import tomli_w
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -99,3 +101,20 @@ def load_workspace_config(workspace: Path) -> WorkspaceConfig:
                     values[field] = section_data[key]
 
     return WorkspaceConfig(**values)
+
+
+def write_workspace_config(workspace: Path, family: str, settings: dict[str, str]) -> None:
+    """Write ``<workspace>/.bakar.toml`` with one ``[defaults.<family>]`` section.
+
+    Emits a leading comment line, exactly one ``[defaults.<family>]`` table, and
+    one ``key = value`` line per entry in ``settings``. The keys are the bare
+    TOML key names (``manifest``, ``machine``, ``distro``, ``image``,
+    ``kas_yaml``) that :func:`load_workspace_config` reads back, so the file
+    round-trips: writing ``{"machine": "X"}`` for family ``"nxp"`` then loading
+    yields ``WorkspaceConfig(nxp_machine="X")``.
+    """
+    path = workspace / ".bakar.toml"
+    data = {"defaults": {family: dict(settings)}}
+    with path.open("wb") as f:
+        f.write(b"# bakar workspace root.\n\n")
+        tomli_w.dump(data, f)
