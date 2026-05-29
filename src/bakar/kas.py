@@ -274,26 +274,13 @@ def _extract_fragment_value(fragments: list[str], prefix: str) -> str | None:
     return None
 
 
-def translate_bbsetup_config(
+def _load_bbsetup_config(
     setup_dir: Path,
-    *,
-    target: str = "core-image-minimal",
-    machine_override: str | None = None,
-    distro_override: str | None = None,
-) -> dict[str, Any]:
-    """Translate a ``bitbake-setup`` workspace config into a kas YAML dict.
+) -> tuple[dict, dict[str, str], dict, set[str], dict[str, dict[str, None]]]:
+    """Load and validate config-upstream.json + sources-fixed-revisions.json.
 
-    Reads ``<setup_dir>/config/config-upstream.json`` (the resolved registry
-    config bitbake-setup writes) and the optional
-    ``<setup_dir>/config/sources-fixed-revisions.json`` (pinned SHAs). Produces
-    a kas v3 topology dict (header + machine/distro/target + repos) that the
-    existing kas pipeline can build, reusing the layers bitbake-setup already
-    fetched under ``<setup_dir>/layers/``.
-
-    Raises ``ValueError`` if either JSON file is malformed, if the config lacks a
-    top-level ``data`` object or a non-empty ``data.sources`` block, if a source
-    has no ``git-remote`` (local-path sources are out of scope), or if a
-    ``bb-layers`` entry references an unknown source.
+    Returns (sources, shas, bb_config, known_sources, layers_by_source).
+    Raises ValueError on malformed/missing JSON or invalid structure.
     """
     config_path = setup_dir / "config" / "config-upstream.json"
     try:
@@ -326,39 +313,74 @@ def translate_bbsetup_config(
             raise ValueError(f"bb-layers entry {entry!r} references unknown source {source!r}")
         layers_by_source[source][subdir or "."] = None
 
+    return sources, shas, bb_config, known_sources, layers_by_source
+
+
+def _build_repo_entry(
+    name: str,
+    source: dict,
+    shas: dict[str, str],
+    layers_by_source: dict[str, dict[str, None]],
+) -> dict:
+    """Build a single kas v3 repo dict entry for one bitbake-setup source."""
+    git_remote = source.get("git-remote")
+    if git_remote is None:
+        raise ValueError(
+            f"source {name!r} has no 'git-remote' (local-path sources are out "
+            "of scope); please file a bug if you need this"
+        )
+    uri = git_remote.get("uri")
+    if not uri:
+        raise ValueError(f"source {name!r} git-remote has no 'uri'")
+    entry: dict[str, Any] = {
+        "url": uri,
+        "path": f"layers/{name}",
+    }
+    branch = git_remote.get("branch")
+    if name in shas:
+        # Pinned SHA: commit-only, no branch. kas validates commit
+        # reachability from the branch tip after fetching; if the branch
+        # has moved forward the check fails even though the commit exists.
+        entry["commit"] = shas[name]
+    else:
+        rev = git_remote.get("rev")
+        if rev and _SHA_RE.match(rev):
+            # Same reasoning: a SHA rev without a branch avoids the
+            # reachability check.
+            entry["commit"] = rev
+        elif rev:
+            entry["branch"] = rev
+        elif branch:
+            entry["branch"] = branch
+    entry["layers"] = layers_by_source[name]
+    return entry
+
+
+def translate_bbsetup_config(
+    setup_dir: Path,
+    *,
+    target: str = "core-image-minimal",
+    machine_override: str | None = None,
+    distro_override: str | None = None,
+) -> dict[str, Any]:
+    """Translate a ``bitbake-setup`` workspace config into a kas YAML dict.
+
+    Reads ``<setup_dir>/config/config-upstream.json`` (the resolved registry
+    config bitbake-setup writes) and the optional
+    ``<setup_dir>/config/sources-fixed-revisions.json`` (pinned SHAs). Produces
+    a kas v3 topology dict (header + machine/distro/target + repos) that the
+    existing kas pipeline can build, reusing the layers bitbake-setup already
+    fetched under ``<setup_dir>/layers/``.
+
+    Raises ``ValueError`` if either JSON file is malformed, if the config lacks a
+    top-level ``data`` object or a non-empty ``data.sources`` block, if a source
+    has no ``git-remote`` (local-path sources are out of scope), or if a
+    ``bb-layers`` entry references an unknown source.
+    """
+    sources, shas, bb_config, known_sources, layers_by_source = _load_bbsetup_config(setup_dir)
     repos: OrderedDict[str, dict[str, Any]] = OrderedDict()
     for name, source in sources.items():
-        git_remote = source.get("git-remote")
-        if git_remote is None:
-            raise ValueError(
-                f"source {name!r} has no 'git-remote' (local-path sources are out "
-                "of scope); please file a bug if you need this"
-            )
-        uri = git_remote.get("uri")
-        if not uri:
-            raise ValueError(f"source {name!r} git-remote has no 'uri'")
-        entry: dict[str, Any] = {
-            "url": uri,
-            "path": f"layers/{name}",
-        }
-        branch = git_remote.get("branch")
-        if name in shas:
-            # Pinned SHA: commit-only, no branch. kas validates commit
-            # reachability from the branch tip after fetching; if the branch
-            # has moved forward the check fails even though the commit exists.
-            entry["commit"] = shas[name]
-        else:
-            rev = git_remote.get("rev")
-            if rev and _SHA_RE.match(rev):
-                # Same reasoning: a SHA rev without a branch avoids the
-                # reachability check.
-                entry["commit"] = rev
-            elif rev:
-                entry["branch"] = rev
-            elif branch:
-                entry["branch"] = branch
-        entry["layers"] = layers_by_source[name]
-        repos[name] = entry
+        repos[name] = _build_repo_entry(name, source, shas, layers_by_source)
 
     all_fragments = list(bb_config.get("oe-fragment-choices", {}).values()) + bb_config.get("oe-fragments", [])
     machine = machine_override or _extract_fragment_value(all_fragments, "machine")
