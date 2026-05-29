@@ -27,6 +27,8 @@ import subprocess
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from bakar.config import BuildConfig
     from bakar.observability import RunLogger
 
@@ -39,6 +41,55 @@ def _record_active_config(cfg: BuildConfig) -> None:
     tmp = target.with_suffix(target.suffix + ".tmp")
     tmp.write_text(cfg.manifest + "\n")
     tmp.replace(target)
+
+
+def _build_layertool_cmd(cfg: BuildConfig, *, force_init: bool = False) -> list[str]:
+    """Assemble the argv for ``oe-layertool-setup.sh``.
+
+    ``-f`` is the config relative to the ``oe-layertool`` checkout (the
+    script hardcodes ``scriptdir=$(pwd)``), ``-b ..`` redirects the
+    generated ``sources/`` and ``build/`` to live under ``ti/``, and
+    ``-d`` points the script at the tiered downloads cache so it is
+    reused instead of recreated under the layertool checkout.
+
+    ``-r`` is appended when ``force_init`` is True, asking the script to
+    reset every checkout to the SHA pinned by the config file.
+    """
+    ti_root = cfg.workspace / "ti"
+    layertool_dir = ti_root / "oe-layertool"
+    config_path = ti_root / "oe-layertool" / "configs" / "variscite" / cfg.manifest
+    dl_dir = os.environ.get("DL_DIR", "/tmp/yocto-downloads")
+    config_rel = str(config_path.relative_to(layertool_dir))
+    cmd: list[str] = [
+        "bash",
+        "./oe-layertool-setup.sh",
+        "-f",
+        config_rel,
+        "-b",
+        str(ti_root),
+        "-d",
+        dl_dir,
+    ]
+    if force_init:
+        cmd.append("-r")  # reset all checkouts
+    return cmd
+
+
+def _strip_dl_dir(local_conf: Path) -> None:
+    """Remove any ``DL_DIR`` assignment lines from ``local.conf`` in place.
+
+    oe-layertool seeds ``local.conf`` with a ``DL_DIR`` line pointed at
+    its own cache; the kas tuning block is authoritative and the
+    in-container ``DL_DIR`` resolves via env passthrough, not via
+    ``local.conf``. No-op when the file is absent or contains no
+    matching line.
+    """
+    if not local_conf.is_file():
+        return
+    text = local_conf.read_text(encoding="utf-8")
+    new = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("DL_DIR"))
+    if new != text:
+        local_conf.write_text(new + ("\n" if not new.endswith("\n") else ""))
 
 
 def populate(
@@ -78,39 +129,15 @@ def populate(
 
     # oe-layertool-setup.sh hardcodes ``scriptdir=$(pwd)`` at the top
     # and looks for ``$scriptdir/git_retry.sh``, so it MUST be invoked
-    # from its own directory. ``-b ..`` then redirects the generated
-    # ``sources/`` and ``build/`` to live under ``ti/`` (one level
-    # above the oe-layertool checkout), matching the symmetric layout
-    # we use on the NXP side.
+    # from its own directory.
     layertool_dir = ti_root / "oe-layertool"
-    dl_dir = os.environ.get("DL_DIR", "/tmp/yocto-downloads")
-    config_rel = str(config_path.relative_to(layertool_dir))
-    cmd: list[str] = [
-        "bash",
-        "./oe-layertool-setup.sh",
-        "-f",
-        config_rel,
-        "-b",
-        str(ti_root),
-        "-d",
-        dl_dir,
-    ]
-    if force_init:
-        cmd.append("-r")  # reset all checkouts
+    cmd = _build_layertool_cmd(cfg, force_init=force_init)
     subprocess.run(cmd, cwd=layertool_dir, check=True)
 
     if not sources_marker.is_file():
         raise RuntimeError(f"{sources_marker} missing after oe-layertool-setup.sh; check the script output above.")
 
-    # Strip any DL_DIR line oe-layertool wrote to local.conf - the kas
-    # tuning block is authoritative and the in-container DL_DIR resolves
-    # via env passthrough, not via local.conf.
-    local_conf = ti_root / "build" / "conf" / "local.conf"
-    if local_conf.is_file():
-        text = local_conf.read_text(encoding="utf-8")
-        new = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("DL_DIR"))
-        if new != text:
-            local_conf.write_text(new + ("\n" if not new.endswith("\n") else ""))
+    _strip_dl_dir(ti_root / "build" / "conf" / "local.conf")
 
     _record_active_config(cfg)
 
