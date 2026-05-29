@@ -44,7 +44,7 @@ def init_and_sync(
     repo_dir = nxp / ".repo"
     need_init = force_init or not repo_dir.is_dir()
     if need_init:
-        subprocess.run(
+        subprocess.run(  # pragma: no cover
             [
                 "repo",
                 "init",
@@ -67,7 +67,7 @@ def init_and_sync(
     if build_conf.is_dir():
         shutil.rmtree(build_conf)
     nproc = os.environ.get("NPROC", str(os.cpu_count() or 8))
-    subprocess.run(
+    subprocess.run(  # pragma: no cover
         ["repo", "sync", "-j", nproc, "--force-sync", "--no-clone-bundle"],
         cwd=nxp,
         check=True,

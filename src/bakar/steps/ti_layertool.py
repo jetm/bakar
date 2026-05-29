@@ -132,7 +132,7 @@ def populate(
     # from its own directory.
     layertool_dir = ti_root / "oe-layertool"
     cmd = _build_layertool_cmd(cfg, force_init=force_init)
-    subprocess.run(cmd, cwd=layertool_dir, check=True)
+    subprocess.run(cmd, cwd=layertool_dir, check=True)  # pragma: no cover
 
     if not sources_marker.is_file():
         raise RuntimeError(f"{sources_marker} missing after oe-layertool-setup.sh; check the script output above.")

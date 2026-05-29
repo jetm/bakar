@@ -94,12 +94,6 @@ branch = true
 source = ["bakar"]
 omit = [
   "tests/*",
-  # Steps that exec external Yocto/repo/kas tools directly - integration-test only
-  "src/bakar/steps/kas_build.py",
-  "src/bakar/steps/repo.py",
-  "src/bakar/steps/setup_env.py",
-  "src/bakar/steps/ti_layertool.py",
-  "src/bakar/steps/ti_setup_env.py",
 ]
 
 [tool.coverage.report]

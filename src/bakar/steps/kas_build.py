@@ -221,7 +221,7 @@ def _run_kas_dump(
     kas_files = f"{wrapper.name}:{overlay_rel.as_posix()}"
     for extra in extra_overlay_rels or []:
         kas_files += f":{extra.as_posix()}"
-    result = subprocess.run(
+    result = subprocess.run(  # pragma: no cover
         ["kas", "dump", kas_files],
         cwd=str(cfg.bsp_root),
         env=env,
@@ -241,7 +241,7 @@ def _run_kas_dump(
     # fails. Retry skipping that validation - all repos are locally present.
     _git_state_markers = ("does not contain commit", "no such remote ref")
     if any(m in result.stderr for m in _git_state_markers):
-        retry = subprocess.run(
+        retry = subprocess.run(  # pragma: no cover
             ["kas", "dump", "--skip", "repos_checkout", kas_files],
             cwd=str(cfg.bsp_root),
             env=env,
@@ -459,7 +459,7 @@ def run_build(
             if not build_tmp.is_dir():
                 continue
             try:
-                size = subprocess.run(
+                size = subprocess.run(  # pragma: no cover
                     ["du", "-sb", str(build_tmp)],
                     capture_output=True,
                     text=True,
@@ -477,7 +477,7 @@ def run_build(
                     error_logged = True
                 continue
 
-    sampler = threading.Thread(target=du_loop, daemon=True)
+    sampler = threading.Thread(target=du_loop, daemon=True)  # pragma: no cover
     sampler.start()
 
     # Build command - prefer /usr/bin/time -v when available.
@@ -501,10 +501,10 @@ def run_build(
     # \r, \n, or \r\n manually instead of line-iterating.
     rc: int | None = None
     terminated = False
-    master_fd, slave_fd = pty.openpty()
+    master_fd, slave_fd = pty.openpty()  # pragma: no cover
     try:
         with log.kas_log_path.open("w", encoding="utf-8", buffering=1) as kas_log:
-            proc = subprocess.Popen(
+            proc = subprocess.Popen(  # pragma: no cover
                 cmd,
                 cwd=cfg.bsp_root,
                 # stdin must be a TTY too: kas-container sees stdout as a
@@ -544,7 +544,7 @@ def run_build(
                     expansions=0,
                 )
 
-                def _process_line(line: str) -> None:
+                def _process_line(line: str) -> None:  # pragma: no cover
                     nonlocal last_total, last_completed, expansion_count, current_recipe
                     kas_log.write(line + "\n")
                     kas_log.flush()
@@ -605,7 +605,7 @@ def run_build(
                 expansion_count = 0
                 current_recipe = ""
 
-                def _pump() -> None:
+                def _pump() -> None:  # pragma: no cover
                     buf = b""
                     while True:
                         try:
@@ -649,9 +649,9 @@ def run_build(
                             du=_fmt_du(delta),
                         )
 
-                pump = threading.Thread(target=_pump, daemon=True)
+                pump = threading.Thread(target=_pump, daemon=True)  # pragma: no cover
                 pump.start()
-                heartbeat = threading.Thread(target=_heartbeat, daemon=True)
+                heartbeat = threading.Thread(target=_heartbeat, daemon=True)  # pragma: no cover
                 heartbeat.start()
                 try:
                     rc = proc.wait()
@@ -930,9 +930,9 @@ def run_kas_subcommand(
         if capture_to is not None:
             capture_to.parent.mkdir(parents=True, exist_ok=True)
             with capture_to.open("wb") as fh:
-                proc = subprocess.run(cmd, cwd=cfg.bsp_root, env=_build_env(cfg), stdout=fh)
+                proc = subprocess.run(cmd, cwd=cfg.bsp_root, env=_build_env(cfg), stdout=fh)  # pragma: no cover
         else:
-            proc = subprocess.run(cmd, cwd=cfg.bsp_root, env=_build_env(cfg))
+            proc = subprocess.run(cmd, cwd=cfg.bsp_root, env=_build_env(cfg))  # pragma: no cover
     except FileNotFoundError:
         log.step_fail("kas_subcommand", reason=f"{exe} not found")
         raise

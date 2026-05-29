@@ -34,7 +34,7 @@ def run(cfg: BuildConfig, log: RunLogger) -> None:
         "DISTRO": cfg.distro,
         "EULA": "1",
     }
-    subprocess.run(
+    subprocess.run(  # pragma: no cover
         ["bash", "-c", f". {script} build"],
         cwd=nxp,
         env=env,
