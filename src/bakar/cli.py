@@ -24,6 +24,7 @@ import bakar.commands.dump  # noqa: F401
 import bakar.commands.for_all  # noqa: F401
 import bakar.commands.gen_kas  # noqa: F401
 import bakar.commands.hashserv  # noqa: F401
+import bakar.commands.init  # noqa: F401
 import bakar.commands.layers  # noqa: F401
 import bakar.commands.lock  # noqa: F401
 import bakar.commands.log  # noqa: F401
