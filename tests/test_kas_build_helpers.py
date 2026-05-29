@@ -1,0 +1,550 @@
+"""Hermetic unit tests for the standalone helpers in ``bakar.steps.kas_build``.
+
+These tests exercise the pure-logic helpers around ``run_build``: overlay
+materialization, the meta-avocado wrapper writer, the user-YAML
+relative-path resolver, the ccache argv builder, the env-dict builder,
+the dump branch stripper, the ``kas dump`` driver, and the stale
+bitbake lock cleaner. Every test runs entirely against ``tmp_path``
+with no network, no Docker, no real subprocess; bare ``subprocess.run``
+is monkey-patched at the ``bakar.steps.kas_build.subprocess.run``
+attribute so the underlying logic in ``_run_kas_dump`` runs end-to-end
+against in-memory fixtures.
+
+``run_build`` and its ``handle_line`` closure are intentionally NOT
+exercised here - they are kernel-PTY + threading orchestration with no
+testable logic seam and remain ``# pragma: no cover`` in the source.
+"""
+
+from __future__ import annotations
+
+import subprocess
+from typing import TYPE_CHECKING
+from unittest.mock import patch
+
+import pytest
+import yaml
+
+from bakar.config import BuildConfig
+from bakar.steps.kas_build import (
+    _build_env,
+    _ccache_args,
+    _resolve_user_yaml,
+    _run_kas_dump,
+    _strip_branch_from_dump,
+    _write_meta_avocado_wrapper,
+    clear_stale_bitbake_locks,
+    materialize_overlay,
+)
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+pytestmark = pytest.mark.unit
+
+
+# ---------------------------------------------------------------------------
+# Config fixtures
+# ---------------------------------------------------------------------------
+
+
+def _make_nxp_cfg(workspace: Path, *, host_mode: bool = False) -> BuildConfig:
+    """Construct a minimal NXP BuildConfig anchored at ``workspace``.
+
+    The ``nxp`` subdirectory is created so ``cfg.bsp_root`` resolves to
+    a real directory; helpers that ``mkdir(parents=True, exist_ok=True)``
+    or read/write inside ``bsp_root`` can run unchanged.
+    """
+    bsp_root = workspace / "nxp"
+    bsp_root.mkdir(parents=True, exist_ok=True)
+    return BuildConfig(
+        workspace=workspace,
+        bsp_family="nxp",  # type: ignore[arg-type]
+        machine="imx8mp-var-dart",
+        distro="fsl-imx-xwayland",
+        image="core-image-minimal",
+        manifest="imx-6.6.52-2.2.2.xml",
+        repo_url="https://example.invalid/repo.git",
+        repo_branch="scarthgap",
+        container_image="jetm/kas-build-env:latest",
+        host_mode=host_mode,
+    )
+
+
+def _make_meta_avocado_cfg(workspace: Path) -> tuple[BuildConfig, Path]:
+    """Construct a generic BuildConfig pointing at a meta-avocado YAML.
+
+    Returns ``(cfg, kas_yaml)`` where ``kas_yaml`` lives inside a
+    ``meta-avocado`` directory under ``workspace``. ``cfg.is_meta_avocado``
+    is True for this config and ``cfg.bsp_root`` is
+    ``workspace/build-<stem>``.
+    """
+    meta = workspace / "sources" / "meta-avocado"
+    kas_dir = meta / "kas" / "machine"
+    kas_dir.mkdir(parents=True, exist_ok=True)
+    kas_yaml = kas_dir / "qemux86-64.yml"
+    kas_yaml.write_text("header:\n  version: 16\n", encoding="utf-8")
+    cfg = BuildConfig(
+        workspace=workspace,
+        bsp_family="generic",  # type: ignore[arg-type]
+        machine="generic",
+        distro="generic",
+        image="generic",
+        manifest="",
+        repo_url="",
+        repo_branch="",
+        container_image="jetm/kas-build-env:latest",
+        kas_yaml_override=kas_yaml,
+    )
+    cfg.bsp_root.mkdir(parents=True, exist_ok=True)
+    return cfg, kas_yaml
+
+
+# ---------------------------------------------------------------------------
+# materialize_overlay
+# ---------------------------------------------------------------------------
+
+
+def test_materialize_overlay_copies_to_bsp_root(tmp_path: Path) -> None:
+    """The overlay file is copied into ``<bsp_root>/.bakar/overlays/``."""
+    cfg = _make_nxp_cfg(tmp_path)
+    overlay = tmp_path / "src-overlay.yml"
+    overlay.write_text('local_conf_header:\n  bakar: |\n    BB_NUMBER_THREADS = "4"\n', encoding="utf-8")
+
+    rel = materialize_overlay(cfg, overlay)
+
+    dest = cfg.bsp_root / rel
+    assert dest.is_file()
+    assert not dest.is_symlink()
+    assert dest.read_text(encoding="utf-8") == overlay.read_text(encoding="utf-8")
+
+
+def test_materialize_overlay_returns_relative_to_bsp_root(tmp_path: Path) -> None:
+    """The returned path is relative to ``cfg.bsp_root`` (overlay name preserved)."""
+    cfg = _make_nxp_cfg(tmp_path)
+    overlay = tmp_path / "tuning.yml"
+    overlay.write_text("# overlay\n", encoding="utf-8")
+
+    rel = materialize_overlay(cfg, overlay)
+
+    assert rel.is_absolute() is False
+    assert rel.parts[-1] == "tuning.yml"
+    assert rel.parts[0] == ".bakar"
+
+
+def test_materialize_overlay_overwrites_existing_destination(tmp_path: Path) -> None:
+    """Every invocation refreshes the destination file byte-for-byte."""
+    cfg = _make_nxp_cfg(tmp_path)
+    overlay = tmp_path / "overlay.yml"
+    overlay.write_text("first\n", encoding="utf-8")
+    first_rel = materialize_overlay(cfg, overlay)
+    assert (cfg.bsp_root / first_rel).read_text(encoding="utf-8") == "first\n"
+
+    overlay.write_text("second\n", encoding="utf-8")
+    second_rel = materialize_overlay(cfg, overlay)
+
+    assert second_rel == first_rel
+    assert (cfg.bsp_root / second_rel).read_text(encoding="utf-8") == "second\n"
+
+
+# ---------------------------------------------------------------------------
+# _write_meta_avocado_wrapper
+# ---------------------------------------------------------------------------
+
+
+def test_write_meta_avocado_wrapper_returns_bsp_root_wrapper_path(tmp_path: Path) -> None:
+    """Wrapper lands at ``<bsp_root>/avocado-wrapper.yml`` and content is well-formed."""
+    cfg, kas_yaml = _make_meta_avocado_cfg(tmp_path)
+
+    wrapper = _write_meta_avocado_wrapper(cfg, kas_yaml)
+
+    assert wrapper == cfg.bsp_root / "avocado-wrapper.yml"
+    assert wrapper.is_file()
+    parsed = yaml.safe_load(wrapper.read_text(encoding="utf-8"))
+    assert parsed["header"]["version"] == 16
+    assert parsed["repos"]["meta-avocado"]["path"] == "meta-avocado"
+    include = parsed["header"]["includes"][0]
+    assert include["repo"] == "meta-avocado"
+    # The file path is relative to the meta-avocado boundary.
+    assert include["file"] == "kas/machine/qemux86-64.yml"
+
+
+def test_write_meta_avocado_wrapper_raises_outside_meta_avocado(tmp_path: Path) -> None:
+    """A YAML outside any ``meta-avocado`` parent triggers ``RuntimeError``."""
+    cfg = _make_nxp_cfg(tmp_path)
+    stray = tmp_path / "not-meta-avocado" / "yaml.yml"
+    stray.parent.mkdir()
+    stray.write_text("header: {}\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="meta-avocado"):
+        _write_meta_avocado_wrapper(cfg, stray)
+
+
+# ---------------------------------------------------------------------------
+# _resolve_user_yaml
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_user_yaml_returns_relative_when_inside_bsp_root(tmp_path: Path) -> None:
+    """A YAML living inside ``bsp_root`` is returned as a relative path."""
+    cfg = _make_nxp_cfg(tmp_path)
+    kas_yaml = cfg.bsp_root / "kas-nxp.yml"
+    kas_yaml.write_text("# kas\n", encoding="utf-8")
+
+    rel = _resolve_user_yaml(cfg, kas_yaml)
+
+    assert rel == kas_yaml.relative_to(cfg.bsp_root)
+    assert rel.is_absolute() is False
+
+
+def test_resolve_user_yaml_raises_when_outside_bsp_root(tmp_path: Path) -> None:
+    """Non-meta-avocado config: a YAML outside ``bsp_root`` raises ``RuntimeError``."""
+    cfg = _make_nxp_cfg(tmp_path)
+    outside = tmp_path / "elsewhere" / "kas.yml"
+    outside.parent.mkdir()
+    outside.write_text("# kas\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="outside bsp_root"):
+        _resolve_user_yaml(cfg, outside)
+
+
+def test_resolve_user_yaml_meta_avocado_path_via_symlink(tmp_path: Path) -> None:
+    """meta-avocado branch: the path is expressed via the ``meta-avocado`` symlink."""
+    cfg, kas_yaml = _make_meta_avocado_cfg(tmp_path)
+    assert cfg.is_meta_avocado is True
+
+    rel = _resolve_user_yaml(cfg, kas_yaml)
+
+    assert rel.parts[0] == "meta-avocado"
+    assert rel.as_posix().endswith("kas/machine/qemux86-64.yml")
+
+
+# ---------------------------------------------------------------------------
+# _ccache_args
+# ---------------------------------------------------------------------------
+
+
+def test_ccache_args_host_mode_returns_empty(tmp_path: Path) -> None:
+    """Host mode bypasses kas-container so no ``--runtime-args`` is emitted."""
+    cfg = _make_nxp_cfg(tmp_path, host_mode=True)
+    assert _ccache_args(cfg) == []
+
+
+def test_ccache_args_container_mode_returns_two_element_list(tmp_path: Path) -> None:
+    """Container mode emits exactly two elements: the flag and one string value."""
+    cfg = _make_nxp_cfg(tmp_path, host_mode=False)
+    args = _ccache_args(cfg)
+    assert len(args) == 2
+    assert args[0] == "--runtime-args"
+    # The bind-mount string targets the workspace ccache dir.
+    assert f"-v {cfg.workspace / 'ccache'}:/work/ccache:rw" in args[1]
+
+
+# ---------------------------------------------------------------------------
+# _build_env
+# ---------------------------------------------------------------------------
+
+
+def test_build_env_returns_minimum_required_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_build_env`` always populates KAS_WORK_DIR, PATH, HOME, and NPROC."""
+    monkeypatch.delenv("NPROC", raising=False)
+    cfg = _make_nxp_cfg(tmp_path)
+
+    env = _build_env(cfg)
+
+    assert env["KAS_WORK_DIR"] == str(cfg.bsp_root)
+    assert "PATH" in env
+    assert "HOME" in env
+    assert env["NPROC"] != ""
+
+
+def test_build_env_kas_work_dir_points_at_bsp_root(tmp_path: Path) -> None:
+    """For non-meta-avocado builds, KAS_WORK_DIR equals ``cfg.bsp_root``."""
+    cfg = _make_nxp_cfg(tmp_path)
+
+    env = _build_env(cfg)
+
+    assert env["KAS_WORK_DIR"] == str(cfg.bsp_root)
+    assert env["KAS_WORK_DIR"].endswith("/nxp")
+
+
+def test_build_env_nproc_defaults_when_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """NPROC falls back to ``os.cpu_count()`` (or 16) when the env var is absent."""
+    monkeypatch.delenv("NPROC", raising=False)
+    cfg = _make_nxp_cfg(tmp_path)
+
+    env = _build_env(cfg)
+
+    assert int(env["NPROC"]) >= 1
+
+
+# ---------------------------------------------------------------------------
+# _strip_branch_from_dump
+# ---------------------------------------------------------------------------
+
+
+def test_strip_branch_from_dump_removes_branch_when_commit_present(tmp_path: Path) -> None:
+    """When both ``commit:`` and ``branch:`` are present, ``branch:`` is stripped."""
+    dump = tmp_path / "avocado-bakar.yml"
+    dump.write_text(
+        "header:\n"
+        "  version: 16\n"
+        "repos:\n"
+        "  meta-foo:\n"
+        "    url: https://example.invalid/meta-foo.git\n"
+        "    commit: deadbeefcafe1234567890\n"
+        "    branch: scarthgap\n",
+        encoding="utf-8",
+    )
+
+    result = _strip_branch_from_dump(dump)
+
+    assert result is None  # mutates in place; returns None
+    rewritten = dump.read_text(encoding="utf-8")
+    assert "branch:" not in rewritten
+    assert "commit:" in rewritten
+    assert "deadbeefcafe1234567890" in rewritten
+
+
+def test_strip_branch_from_dump_leaves_branch_alone_when_commit_absent(tmp_path: Path) -> None:
+    """A repo with ``branch:`` but no ``commit:`` is untouched."""
+    dump = tmp_path / "avocado-bakar.yml"
+    original = (
+        "header:\n"
+        "  version: 16\n"
+        "repos:\n"
+        "  meta-bar:\n"
+        "    url: https://example.invalid/meta-bar.git\n"
+        "    branch: scarthgap\n"
+    )
+    dump.write_text(original, encoding="utf-8")
+
+    _strip_branch_from_dump(dump)
+
+    # File content equivalent: branch key still present, value unchanged.
+    parsed = yaml.safe_load(dump.read_text(encoding="utf-8"))
+    assert parsed["repos"]["meta-bar"]["branch"] == "scarthgap"
+
+
+def test_strip_branch_from_dump_handles_missing_repos_block(tmp_path: Path) -> None:
+    """A dump without a ``repos:`` mapping is a no-op (no exception)."""
+    dump = tmp_path / "avocado-bakar.yml"
+    dump.write_text("header:\n  version: 16\n", encoding="utf-8")
+
+    _strip_branch_from_dump(dump)
+
+    # Content unchanged after the early-return path.
+    assert yaml.safe_load(dump.read_text(encoding="utf-8")) == {"header": {"version": 16}}
+
+
+# ---------------------------------------------------------------------------
+# _run_kas_dump
+# ---------------------------------------------------------------------------
+
+
+def _completed(returncode: int, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
+    """Build a ``CompletedProcess`` with str output (matches text=True)."""
+    return subprocess.CompletedProcess(args=["kas", "dump"], returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+DUMP_YAML = (
+    "header:\n"
+    "  version: 16\n"
+    "repos:\n"
+    "  meta-foo:\n"
+    "    url: https://example.invalid/meta-foo.git\n"
+    "    commit: deadbeefcafe1234567890\n"
+    "    branch: scarthgap\n"
+)
+
+
+def test_run_kas_dump_success_writes_dump_and_strips_branch(tmp_path: Path) -> None:
+    """First-try success: dump is written, ``_strip_branch_from_dump`` runs."""
+    cfg = _make_nxp_cfg(tmp_path)
+    wrapper = cfg.bsp_root / "avocado-wrapper.yml"
+    wrapper.write_text("header:\n  version: 16\n", encoding="utf-8")
+    overlay_rel = materialize_overlay(cfg, _write_overlay(tmp_path, "overlay.yml"))
+
+    with patch("bakar.steps.kas_build.subprocess.run", return_value=_completed(0, stdout=DUMP_YAML)) as run:
+        dump = _run_kas_dump(cfg, wrapper, overlay_rel)
+
+    assert dump == cfg.bsp_root / "avocado-bakar.yml"
+    assert dump.is_file()
+    # _strip_branch_from_dump ran on the written file.
+    text = dump.read_text(encoding="utf-8")
+    assert "commit:" in text
+    assert "branch:" not in text
+    assert run.call_count == 1
+
+
+def test_run_kas_dump_retries_on_rebased_remote_branch(tmp_path: Path) -> None:
+    """First call fails with the rebase marker; retry with ``--skip repos_checkout`` succeeds."""
+    cfg = _make_nxp_cfg(tmp_path)
+    wrapper = cfg.bsp_root / "avocado-wrapper.yml"
+    wrapper.write_text("header:\n  version: 16\n", encoding="utf-8")
+    overlay_rel = materialize_overlay(cfg, _write_overlay(tmp_path, "overlay.yml"))
+
+    responses = [
+        _completed(1, stderr="error: origin/scarthgap does not contain commit deadbeef"),
+        _completed(0, stdout=DUMP_YAML),
+    ]
+    with patch("bakar.steps.kas_build.subprocess.run", side_effect=responses) as run:
+        dump = _run_kas_dump(cfg, wrapper, overlay_rel)
+
+    assert dump.is_file()
+    assert run.call_count == 2
+    # The retry call must include the --skip repos_checkout flag.
+    retry_argv = run.call_args_list[1].args[0]
+    assert "--skip" in retry_argv
+    assert "repos_checkout" in retry_argv
+    # Stripping ran on the retry output too.
+    assert "branch:" not in dump.read_text(encoding="utf-8")
+
+
+def test_run_kas_dump_raises_when_initial_failure_is_unrecognised(tmp_path: Path) -> None:
+    """A non-zero exit without the rebase marker raises ``RuntimeError`` (no retry)."""
+    cfg = _make_nxp_cfg(tmp_path)
+    wrapper = cfg.bsp_root / "avocado-wrapper.yml"
+    wrapper.write_text("header:\n  version: 16\n", encoding="utf-8")
+    overlay_rel = materialize_overlay(cfg, _write_overlay(tmp_path, "overlay.yml"))
+
+    with (
+        patch(
+            "bakar.steps.kas_build.subprocess.run",
+            return_value=_completed(2, stderr="syntax error in YAML"),
+        ) as run,
+        pytest.raises(RuntimeError, match="kas dump failed"),
+    ):
+        _run_kas_dump(cfg, wrapper, overlay_rel)
+
+    assert run.call_count == 1
+
+
+def _write_overlay(tmp_path: Path, name: str) -> Path:
+    """Write a placeholder overlay file outside any BSP root for materialization tests."""
+    p = tmp_path / name
+    p.write_text('local_conf_header:\n  bakar: |\n    BB_NUMBER_THREADS = "4"\n', encoding="utf-8")
+    return p
+
+
+# ---------------------------------------------------------------------------
+# clear_stale_bitbake_locks
+# ---------------------------------------------------------------------------
+
+
+def _seed_build_dir(cfg: BuildConfig) -> Path:
+    """Create ``<bsp_root>/build/`` and return the path."""
+    build_dir = cfg.bsp_root / "build"
+    build_dir.mkdir(parents=True, exist_ok=True)
+    return build_dir
+
+
+def test_clear_stale_bitbake_locks_dead_pid_lock_is_removed(tmp_path: Path) -> None:
+    """A lock owned by a dead PID is removed and reported."""
+    cfg = _make_nxp_cfg(tmp_path)
+    build = _seed_build_dir(cfg)
+    lock = build / "bitbake.lock"
+    lock.write_text("999999\n", encoding="utf-8")
+
+    def _raise_dead(_pid: int, _sig: int) -> None:
+        raise ProcessLookupError
+
+    with patch("bakar.steps.kas_build.os.kill", side_effect=_raise_dead):
+        removed = clear_stale_bitbake_locks(cfg)
+
+    assert lock in removed
+    assert not lock.exists()
+
+
+def test_clear_stale_bitbake_locks_orphan_sockets_removed_with_no_lock(tmp_path: Path) -> None:
+    """Sockets present without a lock file are removed unconditionally."""
+    cfg = _make_nxp_cfg(tmp_path)
+    build = _seed_build_dir(cfg)
+    bb_sock = build / "bitbake.sock"
+    hs_sock = build / "hashserve.sock"
+    bb_sock.write_text("", encoding="utf-8")
+    hs_sock.write_text("", encoding="utf-8")
+    assert not (build / "bitbake.lock").exists()
+
+    removed = clear_stale_bitbake_locks(cfg)
+
+    assert bb_sock in removed
+    assert hs_sock in removed
+    assert not bb_sock.exists()
+    assert not hs_sock.exists()
+
+
+def test_clear_stale_bitbake_locks_live_bitbake_pid_leaves_lock(tmp_path: Path) -> None:
+    """A live PID whose ``/proc`` cmdline contains ``bitbake`` is left alone."""
+    cfg = _make_nxp_cfg(tmp_path)
+    build = _seed_build_dir(cfg)
+    lock = build / "bitbake.lock"
+    lock.write_text("1234\n", encoding="utf-8")
+
+    # os.kill(pid, 0) must succeed (return None) to signal the PID is alive.
+    # Then the cmdline path is read and 'bitbake' must be detected. The
+    # source reads /proc/<pid>/cmdline via Path.exists / Path.read_bytes,
+    # so patch the Path methods directly rather than mocking the filesystem.
+    real_read_bytes = type(lock).read_bytes
+    real_exists = type(lock).exists
+
+    def fake_exists(self: object) -> bool:
+        if str(self) == "/proc/1234/cmdline":
+            return True
+        return real_exists(self)  # type: ignore[arg-type]
+
+    def fake_read_bytes(self: object) -> bytes:
+        if str(self) == "/proc/1234/cmdline":
+            return b"bitbake-server\x00--server-only\x00"
+        return real_read_bytes(self)  # type: ignore[arg-type]
+
+    with (
+        patch("bakar.steps.kas_build.os.kill", return_value=None),
+        patch("bakar.steps.kas_build.Path.exists", new=fake_exists),
+        patch("bakar.steps.kas_build.Path.read_bytes", new=fake_read_bytes),
+    ):
+        removed = clear_stale_bitbake_locks(cfg)
+
+    assert removed == []
+    assert lock.exists()
+    assert lock.read_text(encoding="utf-8").strip() == "1234"
+
+
+def test_clear_stale_bitbake_locks_live_non_bitbake_pid_removes_lock(tmp_path: Path) -> None:
+    """A live PID whose cmdline is NOT bitbake gets the lock removed."""
+    cfg = _make_nxp_cfg(tmp_path)
+    build = _seed_build_dir(cfg)
+    lock = build / "bitbake.lock"
+    lock.write_text("4321\n", encoding="utf-8")
+
+    real_read_bytes = type(lock).read_bytes
+    real_exists = type(lock).exists
+
+    def fake_exists(self: object) -> bool:
+        if str(self) == "/proc/4321/cmdline":
+            return True
+        return real_exists(self)  # type: ignore[arg-type]
+
+    def fake_read_bytes(self: object) -> bytes:
+        if str(self) == "/proc/4321/cmdline":
+            return b"vim\x00/etc/hosts\x00"
+        return real_read_bytes(self)  # type: ignore[arg-type]
+
+    with (
+        patch("bakar.steps.kas_build.os.kill", return_value=None),
+        patch("bakar.steps.kas_build.Path.exists", new=fake_exists),
+        patch("bakar.steps.kas_build.Path.read_bytes", new=fake_read_bytes),
+    ):
+        removed = clear_stale_bitbake_locks(cfg)
+
+    assert lock in removed
+    assert not lock.exists()
+
+
+def test_clear_stale_bitbake_locks_no_lock_no_sockets_returns_empty(tmp_path: Path) -> None:
+    """When neither lock nor sockets exist, the cleaner returns an empty list."""
+    cfg = _make_nxp_cfg(tmp_path)
+    _seed_build_dir(cfg)
+
+    removed = clear_stale_bitbake_locks(cfg)
+
+    assert removed == []
