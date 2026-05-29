@@ -42,6 +42,41 @@ def _psi_recommendation(peaks: dict[str, float]) -> dict[str, int]:
     return result
 
 
+def _run_psi_calibrate() -> None:
+    """Monitor /proc/pressure/ during a running build and print config recommendations.
+
+    Always raises typer.Exit(0) -- never returns normally.
+    """
+    if _read_psi_avg10("cpu") is None:
+        console.print("[yellow]PSI not available on this kernel (/proc/pressure/ unreadable)[/]")
+        raise typer.Exit(0)
+    dims = ("cpu", "io", "memory")
+    peaks: dict[str, float] = {d: 0.0 for d in dims}
+    console.print("[bold]Monitoring /proc/pressure/ - run your build now. Press Ctrl+C to stop.[/]")
+    try:
+        while True:
+            table = Table(title="PSI avg10 (current / peak)", show_header=True, show_edge=False)
+            table.add_column("Dimension")
+            table.add_column("Current")
+            table.add_column("Peak")
+            for dim in dims:
+                current = _read_psi_avg10(dim)
+                if current is not None and current > peaks[dim]:
+                    peaks[dim] = current
+                table.add_row(dim, f"{current:.2f}" if current is not None else "n/a", f"{peaks[dim]:.2f}")
+            console.clear()
+            console.print(table)
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
+    rec = _psi_recommendation(peaks)
+    console.print("\n[bold]Recommended [build] block for ~/.config/bakar/config.toml:[/]")
+    console.print("[build]")
+    for dim in dims:
+        console.print(f"pressure_max_{dim} = {rec[dim]}")
+    raise typer.Exit(0)
+
+
 @app.command()
 def doctor(
     kas_yaml: Annotated[
@@ -73,34 +108,7 @@ def doctor(
 ) -> None:
     """Run every diagnostic check and exit non-zero on BLOCK failures."""
     if psi_calibrate:
-        if _read_psi_avg10("cpu") is None:
-            console.print("[yellow]PSI not available on this kernel (/proc/pressure/ unreadable)[/]")
-            raise typer.Exit(0)
-        dims = ("cpu", "io", "memory")
-        peaks: dict[str, float] = {d: 0.0 for d in dims}
-        console.print("[bold]Monitoring /proc/pressure/ - run your build now. Press Ctrl+C to stop.[/]")
-        try:
-            while True:
-                table = Table(title="PSI avg10 (current / peak)", show_header=True, show_edge=False)
-                table.add_column("Dimension")
-                table.add_column("Current")
-                table.add_column("Peak")
-                for dim in dims:
-                    current = _read_psi_avg10(dim)
-                    if current is not None and current > peaks[dim]:
-                        peaks[dim] = current
-                    table.add_row(dim, f"{current:.2f}" if current is not None else "n/a", f"{peaks[dim]:.2f}")
-                console.clear()
-                console.print(table)
-                time.sleep(0.5)
-        except KeyboardInterrupt:
-            pass
-        rec = _psi_recommendation(peaks)
-        console.print("\n[bold]Recommended [build] block for ~/.config/bakar/config.toml:[/]")
-        console.print("[build]")
-        for dim in dims:
-            console.print(f"pressure_max_{dim} = {rec[dim]}")
-        raise typer.Exit(0)
+        _run_psi_calibrate()
 
     if kas_yaml is not None and manifest is not None:
         console.print("[red]choose either a positional kas YAML or --manifest, not both[/]")
