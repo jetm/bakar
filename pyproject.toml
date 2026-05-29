@@ -43,6 +43,7 @@ bakar = "bakar.cli:main"
 [dependency-groups]
 dev = [
   "bump-my-version",
+  "hypothesis>=6.0",
   "pre-commit",
   "pytest>=9",
   "pytest-cov>=6",
