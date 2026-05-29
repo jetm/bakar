@@ -4,8 +4,6 @@ import tomllib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import tomli_w
-
 if TYPE_CHECKING:
     from pathlib import Path
 
