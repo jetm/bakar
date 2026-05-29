@@ -13,3 +13,5 @@ examples/.bakar
 examples/layers
 examples/ccache
 layers/
+
+.coverage
