@@ -1,6 +1,6 @@
 # NXP i.MX tuning overlay.
 #
-# Layered on top of a topology-only kas YAML by `bspctl build`. Carries
+# Layered on top of a topology-only kas YAML by `bakar build`. Carries
 # every optimization that used to be baked into the gen-kas output
 # (ccache wiring, fetch robustness, MIRRORS, PREMIRRORS, FETCHCMD_wget,
 # the renderdoc CMake launcher fix) plus the BSP-local override layer
@@ -22,7 +22,7 @@ env:
   PYTHONMALLOC: malloc
 
 local_conf_header:
-  bspctl-tuning: |
+  bakar-tuning: |
     CCACHE_DIR = "/work/ccache"
     INHERIT += "ccache"
     BB_NUMBER_THREADS = "${@os.environ.get('NPROC', '16')}"

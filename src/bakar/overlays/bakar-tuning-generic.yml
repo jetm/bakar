@@ -28,7 +28,7 @@ env:
   PYTHONMALLOC: malloc
 
 local_conf_header:
-  bspctl-tuning: |
+  bakar-tuning: |
     CCACHE_DIR = "/work/ccache"
     INHERIT += "ccache"
     BB_NUMBER_THREADS = "${@os.environ.get('NPROC', '16')}"
@@ -54,13 +54,13 @@ local_conf_header:
     BB_TASK_IONICE_LEVEL = "2.4"
 
     # PSI (Pressure Stall Information) throttle thresholds, read from env
-    # so bspctl can inject machine-specific values from config.toml.
+    # so bakar can inject machine-specific values from config.toml.
     # Empty string disables the check for that dimension.
     BB_PRESSURE_MAX_CPU = "${@os.environ.get('BB_PRESSURE_MAX_CPU', '')}"
     BB_PRESSURE_MAX_IO = "${@os.environ.get('BB_PRESSURE_MAX_IO', '')}"
     BB_PRESSURE_MAX_MEMORY = "${@os.environ.get('BB_PRESSURE_MAX_MEMORY', '')}"
 
-    # Scheduler selection, injected from config.toml via bspctl.
+    # Scheduler selection, injected from config.toml via bakar.
     # Options: speed (default), completion (better for HDD / rm_work builds),
     # basic (deterministic, slowest).
     BB_SCHEDULER = "${@os.environ.get('BB_SCHEDULER', '')}"
@@ -110,7 +110,7 @@ local_conf_header:
     # Never peer with the public Yocto hashserv. Connecting to
     # wss://hashserv.yoctoproject.org/ws from inside the container hangs
     # task initialisation when the host is unreachable. The local
-    # bspctl-managed hashserv (BB_HASHSERVE) is used instead when running.
+    # bakar-managed hashserv (BB_HASHSERVE) is used instead when running.
     # :forcevariable wins over any later plain `=` in merged kas YAML so
     # BSP-specific YAMLs (e.g. meta-avocado vendor/oe.yml) cannot override.
     BB_HASHSERVE_UPSTREAM:forcevariable = ""

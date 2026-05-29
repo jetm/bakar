@@ -4,12 +4,12 @@ The bitbake parser fork-race is probabilistic: a single passing parse
 is not evidence the override holds. This step loops parse-only N times
 inside ``kas-container``, captures each iteration's stdout+stderr to
 its own log file, and scans for any of the canonical fork-race
-signatures from :mod:`bspctl.fork_race_signatures`.
+signatures from :mod:`bakar.fork_race_signatures`.
 
 The aggregate result lands in ``summary.json`` next to the per-run
 logs; both files live under
 ``<bsp>/build/runs/<run-id>/stress-parse/``. The CLI consumer in
-:mod:`bspctl.cli` exits non-zero when any iteration tripped a
+:mod:`bakar.cli` exits non-zero when any iteration tripped a
 signature.
 """
 
@@ -22,16 +22,16 @@ import sys
 import time
 from typing import TYPE_CHECKING
 
-from bspctl.fork_race_signatures import FORK_RACE_SIGNATURES
-from bspctl.steps import bitbake_override as step_override
-from bspctl.steps import kas_build as step_kas
+from bakar.fork_race_signatures import FORK_RACE_SIGNATURES
+from bakar.steps import bitbake_override as step_override
+from bakar.steps import kas_build as step_kas
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from bspctl.bsp_model import BspModel
-    from bspctl.config import BuildConfig
-    from bspctl.observability import RunLogger
+    from bakar.bsp_model import BspModel
+    from bakar.config import BuildConfig
+    from bakar.observability import RunLogger
 
 
 def _clear_parse_cache(cfg: BuildConfig, log: RunLogger, iteration: int) -> bool:
@@ -165,14 +165,14 @@ def _build_command(
     kas YAML or the host shell exported. Bitbake honours this knob
     directly during the parse phase.
 
-    In host mode, prepend ``BB_PYTHON3=<bspctl-interpreter>`` so bitbake's
-    bin/bitbake re-execs into the same Python bspctl was installed under.
+    In host mode, prepend ``BB_PYTHON3=<bakar-interpreter>`` so bitbake's
+    bin/bitbake re-execs into the same Python bakar was installed under.
     kas filters environment passthrough at ``kas/context.py``, so a host
     env var would not survive into the kas shell - inlining the
     assignment on the command line goes through verbatim. When
     ``python_executable`` is given, BB_PYTHON3 points at it instead -
     used to run a patched obmalloc CPython
-    without reinstalling bspctl under it.
+    without reinstalling bakar under it.
 
     When ``postfile`` is given, append ``-R <path>`` so bitbake reads it
     after the standard config files. Used in host mode to apply
@@ -266,7 +266,7 @@ def run(
     (or ``step_fail``) event per iteration via ``log``.
 
     ``overlay_source`` is the path to the static tuning overlay; passed
-    through to :func:`bspctl.steps.kas_build.run_shell_capture`
+    through to :func:`bakar.steps.kas_build.run_shell_capture`
     on every iteration so each parse-only run carries the same tuning
     block as a real build.
 
@@ -278,7 +278,7 @@ def run(
     ``python_executable`` overrides which Python bitbake re-execs into
     (via BB_PYTHON3) and which interpreter's bin/ leads PATH inside the
     kas-shell. Used to validate a patched obmalloc CPython
-    without reinstalling bspctl under that interpreter. Recorded in
+    without reinstalling bakar under that interpreter. Recorded in
     ``summary.json["python_executable"]`` for the audit trail.
     """
     out_dir = log.run_dir / "stress-parse"

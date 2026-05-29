@@ -1,4 +1,4 @@
-"""bspctl sync subcommand - manifest-driven source sync without building."""
+"""bakar sync subcommand - manifest-driven source sync without building."""
 
 from __future__ import annotations
 
@@ -6,10 +6,11 @@ import os
 from pathlib import Path
 from typing import Annotated
 
-import bspctl.commands._app as _state
 import typer
-from bspctl.commands._app import app, console
-from bspctl.commands._helpers import (
+
+import bakar.commands._app as _state
+from bakar.commands._app import app, console
+from bakar.commands._helpers import (
     _bbsetup_workspace,
     _clean_build_dir,
     _dispatch_bsp,
@@ -17,10 +18,10 @@ from bspctl.commands._helpers import (
     _print_layer_hashes,
     _workspace_from_cwd,
 )
-from bspctl.config import DEFAULT_CONTAINER_IMAGE, resolve
-from bspctl.diagnostics import any_blocking_failure, run_all
-from bspctl.observability import RunLogger
-from bspctl.workspace import detect
+from bakar.config import DEFAULT_CONTAINER_IMAGE, resolve
+from bakar.diagnostics import any_blocking_failure, run_all
+from bakar.observability import RunLogger
+from bakar.workspace import detect
 
 
 @app.command()
@@ -60,13 +61,13 @@ def sync(
 ) -> None:
     """Run the manifest-driven sync without building.
 
-    Equivalent to the first half of ``bspctl build``: doctor, then
+    Equivalent to the first half of ``bakar build``: doctor, then
     repo init+sync (NXP) or oe-layertool populate (TI), then var-setup-release
     or local.conf fixup. Useful when you want to refresh ``sources/``
     without kicking off a kas-container build.
 
     bitbake-setup workspaces are initialized externally via
-    ``bitbake-setup init``; ``bspctl sync`` fails fast for them.
+    ``bitbake-setup init``; ``bakar sync`` fails fast for them.
     """
     if _bbsetup_workspace(workspace) is not None:
         console.print(
@@ -92,7 +93,7 @@ def sync(
 
     effective_show_layers = show_layers or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_hashes)
 
-    console.print(f"[bold]::[/] bspctl sync [{family}] manifest={cfg.manifest}")
+    console.print(f"[bold]::[/] bakar sync [{family}] manifest={cfg.manifest}")
 
     if clean:
         _clean_build_dir(cfg)

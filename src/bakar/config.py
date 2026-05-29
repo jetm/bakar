@@ -1,11 +1,11 @@
 """Build configuration: defaults, env overrides, arg resolution.
 
-The :class:`BuildConfig` carries everything `bspctl build` needs to
+The :class:`BuildConfig` carries everything `bakar build` needs to
 dispatch a single run for either BSP family. ``bsp_family`` is fixed
 at construction time (the dispatcher in cli.py inspects the manifest
 filename or the user-supplied YAML and feeds the answer into
 :func:`resolve`); every path property branches on that field so the
-rest of bspctl does not have to know about the workspace layout.
+rest of bakar does not have to know about the workspace layout.
 """
 
 from __future__ import annotations
@@ -17,11 +17,11 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from bspctl.user_config import UserConfig
+    from bakar.user_config import UserConfig
 
 # ---------------------------------------------------------------------------
 # NXP defaults (i.MX BSP, scarthgap warmup machine).
-# Any of these can be overridden by BSPCTL_* env vars; CLI flags override env.
+# Any of these can be overridden by BAKAR_* env vars; CLI flags override env.
 # ---------------------------------------------------------------------------
 
 DEFAULT_NXP_MACHINE = "imx8mp-var-dart"
@@ -72,9 +72,9 @@ def infer_repo_branch(manifest: str, fallback: str = DEFAULT_NXP_REPO_BRANCH) ->
 
 @dataclass(frozen=True)
 class BuildConfig:
-    """Resolved settings for a single `bspctl build` run.
+    """Resolved settings for a single `bakar build` run.
 
-    The BYO ``bspctl build my.yml`` flow sets ``kas_yaml_override`` to
+    The BYO ``bakar build my.yml`` flow sets ``kas_yaml_override`` to
     the user-supplied path; the manifest-driven flow leaves it None and
     falls back to ``default_kas_yaml``.
     """
@@ -114,7 +114,7 @@ class BuildConfig:
         """True when the kas YAML lives inside a meta-avocado repository.
 
         Drives the ``init-build``-style build-directory setup in
-        :mod:`bspctl.steps.kas_build`: a build dir is created next to
+        :mod:`bakar.steps.kas_build`: a build dir is created next to
         the ``meta-avocado/`` repo with a symlink back to it so kas can
         resolve all layer paths without cloning meta-avocado again.
         """
@@ -130,7 +130,7 @@ class BuildConfig:
         """Effective BSP root directory.
 
         For NXP and TI this is ``workspace/<bsp_family>/`` - the
-        per-BSP namespace bspctl manages. Generic mode (BYO with no
+        per-BSP namespace bakar manages. Generic mode (BYO with no
         NXP/TI markers) does not own a workspace subdirectory; the
         user's YAML lives wherever they put it, so ``bsp_root`` falls
         back to the YAML's parent directory. That's where the overlay
@@ -180,7 +180,7 @@ class BuildConfig:
         """Absolute path to the manifest the dispatched step will consume.
 
         For NXP this is ``nxp/.repo/manifests/<m>.xml`` (managed by
-        reading from there keeps bspctl aligned with
+        reading from there keeps bakar aligned with
         what ``repo sync`` last produced.
 
         For TI this is ``ti/oe-layertool/configs/variscite/<m>.txt`` -
@@ -210,7 +210,7 @@ class BuildConfig:
         """Effective kas YAML for this run.
 
         Returns ``kas_yaml_override`` when the user supplied one (BYO
-        ``bspctl build my.yml``); otherwise the manifest-flow default.
+        ``bakar build my.yml``); otherwise the manifest-flow default.
         """
         return self.kas_yaml_override if self.kas_yaml_override is not None else self.default_kas_yaml
 
@@ -239,15 +239,15 @@ def resolve(
 ) -> BuildConfig:
     """Resolve BuildConfig from CLI flags, env vars, config, and family defaults.
 
-    Precedence, highest to lowest: explicit arg, BSPCTL_* env var,
+    Precedence, highest to lowest: explicit arg, BAKAR_* env var,
     ``user_config`` field, BSP-family default. ``user_config`` carries the
-    values loaded from ``~/.config/bspctl/config.toml``; ``None`` (the
+    values loaded from ``~/.config/bakar/config.toml``; ``None`` (the
     default) preserves the pre-config two-tier behavior for direct callers.
     ``repo_branch`` is special: it has no config field, so when neither arg
     nor env is set, NXP infers it from the manifest filename via
     :data:`BRANCH_BY_MANIFEST_PREFIX`; TI infers it from the
     ``processor-sdk-<poky>-...-<sdk>-config_<var>`` regex via
-    :func:`bspctl.bsp_model.infer_bsp_branch`.
+    :func:`bakar.bsp_model.infer_bsp_branch`.
 
     ``kas_yaml`` is the BYO override path. When set, it lands in
     :attr:`BuildConfig.kas_yaml_override` and ``cfg.kas_yaml`` returns
@@ -295,33 +295,33 @@ def resolve(
         u_image = user_config.nxp_image if user_config is not None else None
         u_manifest = user_config.nxp_manifest if user_config is not None else None
 
-    resolved_manifest = pick(manifest, "BSPCTL_MANIFEST", u_manifest, d_manifest)
+    resolved_manifest = pick(manifest, "BAKAR_MANIFEST", u_manifest, d_manifest)
 
     if bsp_family in ("generic", "bbsetup"):
         # No manifest, no branch inference - generic and bbsetup bypass both
         # (bbsetup machine/distro come from the config translation step).
-        resolved_branch = pick(repo_branch, "BSPCTL_REPO_BRANCH", None, d_branch)
+        resolved_branch = pick(repo_branch, "BAKAR_REPO_BRANCH", None, d_branch)
     elif bsp_family == "ti":
         # Lazy import: bsp_model has no cyclic deps on config.py, but
         # keeping the import inside resolve() keeps module import order
         # flexible.
-        from bspctl.bsp_model import infer_bsp_branch
+        from bakar.bsp_model import infer_bsp_branch
 
         inferred = infer_bsp_branch(resolved_manifest)
         if inferred == "<unknown>":
             inferred = d_branch
-        resolved_branch = pick(repo_branch, "BSPCTL_REPO_BRANCH", None, inferred)
+        resolved_branch = pick(repo_branch, "BAKAR_REPO_BRANCH", None, inferred)
     else:
         resolved_branch = pick(
             repo_branch,
-            "BSPCTL_REPO_BRANCH",
+            "BAKAR_REPO_BRANCH",
             None,
             infer_repo_branch(resolved_manifest, d_branch),
         )
 
     # Auto-detect: when KAS_CONTAINER_IMAGE is absent from env and host_mode was
     # not explicitly requested, fall back to plain kas (no Docker) rather than the
-    # hardcoded default container image. This makes bspctl work out of the box on
+    # hardcoded default container image. This makes bakar work out of the box on
     # hosts without a container setup. A config-supplied container_image counts the
     # same as the env var: a user who set it has a container setup and wants it used.
     effective_host_mode = host_mode or (
@@ -331,12 +331,12 @@ def resolve(
     return BuildConfig(
         workspace=workspace.resolve(),
         bsp_family=bsp_family,
-        machine=pick(machine, "BSPCTL_MACHINE", u_machine, d_machine),
-        distro=pick(distro, "BSPCTL_DISTRO", u_distro, d_distro),
-        image=pick(image, "BSPCTL_IMAGE", u_image, d_image),
+        machine=pick(machine, "BAKAR_MACHINE", u_machine, d_machine),
+        distro=pick(distro, "BAKAR_DISTRO", u_distro, d_distro),
+        image=pick(image, "BAKAR_IMAGE", u_image, d_image),
         manifest=resolved_manifest,
         repo_url=os.environ.get(
-            "BSPCTL_REPO_URL",
+            "BAKAR_REPO_URL",
             (user_config.nxp_repo_url if user_config and user_config.nxp_repo_url else DEFAULT_REPO_URL),
         ),
         repo_branch=resolved_branch,

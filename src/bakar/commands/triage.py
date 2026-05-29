@@ -1,4 +1,4 @@
-"""bspctl triage subcommand - post-mortem the last build run."""
+"""bakar triage subcommand - post-mortem the last build run."""
 
 from __future__ import annotations
 
@@ -7,10 +7,11 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import typer
-from bspctl.bsp_detect import detect_kas_workspace, is_meta_avocado_yaml
-from bspctl.commands._app import app, console
-from bspctl.commands._helpers import _bbsetup_workspace, _find_run, _workspace_from_cwd
-from bspctl.triage import analyse
+
+from bakar.bsp_detect import detect_kas_workspace, is_meta_avocado_yaml
+from bakar.commands._app import app, console
+from bakar.commands._helpers import _bbsetup_workspace, _find_run, _workspace_from_cwd
+from bakar.triage import analyse
 
 
 @app.command()

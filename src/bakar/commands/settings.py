@@ -1,19 +1,20 @@
-"""bspctl settings subcommand - read and write ~/.config/bspctl/config.toml."""
+"""bakar settings subcommand - read and write ~/.config/bakar/config.toml."""
 
 from __future__ import annotations
 
 from typing import Annotated
 
 import typer
-from bspctl.commands._app import app, console
-from bspctl.user_config import (
+
+from bakar.commands._app import app, console
+from bakar.user_config import (
     get_setting,
     list_settings,
     set_setting,
     unset_setting,
 )
 
-settings_app = typer.Typer(help="Read and write recognized bspctl settings.", no_args_is_help=True)
+settings_app = typer.Typer(help="Read and write recognized bakar settings.", no_args_is_help=True)
 
 _UNSET_MARKER = "(unset)"
 

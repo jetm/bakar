@@ -1,4 +1,4 @@
-"""bspctl report subcommand - success-path summary of a completed build run."""
+"""bakar report subcommand - success-path summary of a completed build run."""
 
 from __future__ import annotations
 
@@ -7,12 +7,13 @@ import json
 from pathlib import Path
 from typing import Annotated, Literal
 
-import bspctl.commands._app as _state
 import typer
-from bspctl.commands._app import app, console
-from bspctl.commands._helpers import _bbsetup_workspace, _find_run, _print_layer_hashes, _workspace_from_cwd
-from bspctl.config import resolve
-from bspctl.report import assemble_report
+
+import bakar.commands._app as _state
+from bakar.commands._app import app, console
+from bakar.commands._helpers import _bbsetup_workspace, _find_run, _print_layer_hashes, _workspace_from_cwd
+from bakar.config import resolve
+from bakar.report import assemble_report
 
 
 @app.command("report")

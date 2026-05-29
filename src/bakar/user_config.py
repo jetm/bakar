@@ -105,14 +105,14 @@ def _check_type(field: str, value: object, path: Path) -> None:
 
 
 def load_user_config(path: Path | None = None) -> UserConfig:
-    """Load ``~/.config/bspctl/config.toml`` into a :class:`UserConfig`.
+    """Load ``~/.config/bakar/config.toml`` into a :class:`UserConfig`.
 
     Returns an all-defaults ``UserConfig()`` when the file is absent. Raises
     ``ValueError`` (with the config path in the message) on a TOML parse error
     or a type mismatch (e.g. a string field given a non-string value).
     """
     if path is None:
-        path = Path.home() / ".config" / "bspctl" / "config.toml"
+        path = Path.home() / ".config" / "bakar" / "config.toml"
 
     if not path.exists():
         return UserConfig()
@@ -201,7 +201,7 @@ _FALSE_LITERALS = {"false", "0"}
 
 def _config_path(path: Path | None) -> Path:
     if path is None:
-        return Path.home() / ".config" / "bspctl" / "config.toml"
+        return Path.home() / ".config" / "bakar" / "config.toml"
     return path
 
 

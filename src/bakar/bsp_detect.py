@@ -1,8 +1,8 @@
 """Inspect a kas YAML and classify the BSP family.
 
-Used by the BYO (Form A) path of ``bspctl build``: when the user hands
-bspctl a kas YAML directly, we cannot rely on the manifest filename
-regex in :func:`bspctl.bsp_model.detect_bsp_family`. Instead the
+Used by the BYO (Form A) path of ``bakar build``: when the user hands
+bakar a kas YAML directly, we cannot rely on the manifest filename
+regex in :func:`bakar.bsp_model.detect_bsp_family`. Instead the
 classifier reads ``machine:`` and ``repos:`` from the YAML and applies
 a small first-match-wins rule set:
 
@@ -16,19 +16,19 @@ a small first-match-wins rule set:
 The ``generic`` classification is the BSP-agnostic fallback for kas
 YAMLs that look like real builds but do not target an NXP/TI SoM
 (e.g. qemuarm64 + poky + meta-arm). Callers layer the
-``bspctl-tuning-generic.yml`` overlay - which carries only the
+``bakar-tuning-generic.yml`` overlay - which carries only the
 BSP-agnostic optimizations (ccache, MIRRORS, PREMIRRORS, FETCHCMD_wget,
 PYTHONMALLOC) - onto these YAMLs.
 
 The function never raises - I/O on the YAML is wrapped defensively so
-``bspctl build my.yml`` can fail with a single typer.Exit(2) instead of
+``bakar build my.yml`` can fail with a single typer.Exit(2) instead of
 a Python traceback.
 
-See also :func:`bspctl.bsp_model.detect_bsp_family`, which classifies
+See also :func:`bakar.bsp_model.detect_bsp_family`, which classifies
 by manifest *filename* (no I/O, pure regex). The two classifiers serve
 different entry points: this module handles the BYO-yaml path
-(``bspctl build my.yml``); ``detect_bsp_family`` handles the manifest
-path (``bspctl build -f imx-*.xml``). Both encode NXP/TI family
+(``bakar build my.yml``); ``detect_bsp_family`` handles the manifest
+path (``bakar build -f imx-*.xml``). Both encode NXP/TI family
 markers; if either set of markers changes, update the other.
 """
 
@@ -157,7 +157,7 @@ def is_meta_avocado_yaml(yaml_path: Path) -> bool:
     """Return True if the YAML lives inside a meta-avocado repository.
 
     Walks the resolved path and checks whether any ancestor directory is
-    named ``meta-avocado``. This is how bspctl detects that a generic kas
+    named ``meta-avocado``. This is how bakar detects that a generic kas
     YAML belongs to the Avocado OS build system and needs the
     ``init-build``-style build-directory setup before kas can run.
     """
@@ -176,7 +176,7 @@ def detect_kas_workspace(yaml_path: Path) -> Path:
     *sibling* of ``meta-avocado/`` (e.g. ``sources/build-qemux86-64/``),
     not from inside the repo. This function walks up from the YAML to
     find the ``meta-avocado`` boundary and returns its parent
-    (e.g. ``sources/``) so :func:`bspctl.config.BuildConfig.bsp_root`
+    (e.g. ``sources/``) so :func:`bakar.config.BuildConfig.bsp_root`
     can derive the correct build-directory path.
 
     For every other generic kas YAML the workspace is simply the YAML's

@@ -1,4 +1,4 @@
-"""bspctl doctor subcommand - pre-flight checks."""
+"""bakar doctor subcommand - pre-flight checks."""
 
 from __future__ import annotations
 
@@ -7,19 +7,20 @@ import time
 from pathlib import Path
 from typing import Annotated
 
-import bspctl.commands._app as _state
 import typer
-from bspctl.commands._app import app, console
-from bspctl.commands._helpers import (
+from rich.table import Table
+
+import bakar.commands._app as _state
+from bakar.commands._app import app, console
+from bakar.commands._helpers import (
     _bbsetup_workspace,
     _dispatch_bsp,
     _dispatch_from_yaml,
     _print_diagnosis,
     _resolve_workspace,
 )
-from bspctl.config import resolve
-from bspctl.diagnostics import _read_psi_avg10, any_blocking_failure, run_all
-from rich.table import Table
+from bakar.config import resolve
+from bakar.diagnostics import _read_psi_avg10, any_blocking_failure, run_all
 
 _PSI_CLAMP = 95
 _PSI_MEMORY_FLOOR = 20
@@ -95,7 +96,7 @@ def doctor(
         except KeyboardInterrupt:
             pass
         rec = _psi_recommendation(peaks)
-        console.print("\n[bold]Recommended [build] block for ~/.config/bspctl/config.toml:[/]")
+        console.print("\n[bold]Recommended [build] block for ~/.config/bakar/config.toml:[/]")
         console.print("[build]")
         for dim in dims:
             console.print(f"pressure_max_{dim} = {rec[dim]}")

@@ -1,4 +1,4 @@
-"""bspctl build subcommand - full BSP build pipeline."""
+"""bakar build subcommand - full BSP build pipeline."""
 
 from __future__ import annotations
 
@@ -7,10 +7,11 @@ import shutil
 from pathlib import Path
 from typing import Annotated
 
-import bspctl.commands._app as _state
 import typer
-from bspctl.commands._app import app, console
-from bspctl.commands._helpers import (
+
+import bakar.commands._app as _state
+from bakar.commands._app import app, console
+from bakar.commands._helpers import (
     _bbsetup_workspace,
     _clean_build_dir,
     _dispatch_bsp,
@@ -22,13 +23,13 @@ from bspctl.commands._helpers import (
     _resolve_workspace,
     _uninitialized_bbsetup_dir,
 )
-from bspctl.config import DEFAULT_CONTAINER_IMAGE, resolve
-from bspctl.diagnostics import any_blocking_failure, run_all
-from bspctl.kas import translate_bbsetup_config, write_bbsetup_yaml
-from bspctl.observability import RunLogger
-from bspctl.steps import bitbake_override as step_override
-from bspctl.steps import kas_build as step_kas
-from bspctl.workspace import detect
+from bakar.config import DEFAULT_CONTAINER_IMAGE, resolve
+from bakar.diagnostics import any_blocking_failure, run_all
+from bakar.kas import translate_bbsetup_config, write_bbsetup_yaml
+from bakar.observability import RunLogger
+from bakar.steps import bitbake_override as step_override
+from bakar.steps import kas_build as step_kas
+from bakar.workspace import detect
 
 
 def _run_bbsetup_build(
@@ -76,7 +77,7 @@ def _run_bbsetup_build(
     if "KAS_CONTAINER_IMAGE" not in os.environ and cfg.container_image != DEFAULT_CONTAINER_IMAGE:
         console.print(f"[dim]container image from config.toml: {cfg.container_image}[/]")
 
-    console.print(f"[bold]::[/] bspctl build [bbsetup] {setup_dir}")
+    console.print(f"[bold]::[/] bakar build [bbsetup] {setup_dir}")
 
     if clean:
         tmp_dir = cfg.bsp_root / "build" / "tmp"
@@ -123,7 +124,7 @@ def _run_bbsetup_build(
         )
         if rc != 0:
             console.print(
-                f"[red]kas-container build failed (exit {rc}).[/] Run `bspctl triage {log.run_id}` for details."
+                f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details."
             )
             raise typer.Exit(code=rc)
         deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / translated["machine"]
@@ -199,13 +200,13 @@ def build(
 
     Two forms:
 
-    * **BYO**: ``bspctl build my.yml`` - skip sync/setup-env/gen-kas,
+    * **BYO**: ``bakar build my.yml`` - skip sync/setup-env/gen-kas,
       apply the static tuning overlay, run kas-container. The YAML is
       classified as NXP, TI, or generic (a kas YAML that does not
       target an NXP/TI SoM). Generic mode picks
-      ``bspctl-tuning-generic.yml`` and skips the bitbake-override step
+      ``bakar-tuning-generic.yml`` and skips the bitbake-override step
       since that swaps the vendor-bundled bitbake.
-    * **Manifest-driven**: ``bspctl build -f imx-6.12.49-2.2.0.xml -m imx95-var-dart`` -
+    * **Manifest-driven**: ``bakar build -f imx-6.12.49-2.2.0.xml -m imx95-var-dart`` -
       run sync, setup-env, gen-kas (topology-only), then apply overlay
       and build. Same flag surface as before, just with the optimization
       stack moved to the overlay file.
@@ -284,7 +285,7 @@ def build(
     effective_show_layers = show_layers or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_hashes)
 
     label = f"BYO {kas_yaml}" if byo_form else f"{cfg.machine} / {cfg.distro} / {cfg.image}"
-    console.print(f"[bold]::[/] bspctl build [{family}] {label}")
+    console.print(f"[bold]::[/] bakar build [{family}] {label}")
 
     if clean:
         _clean_build_dir(cfg)
@@ -362,7 +363,7 @@ def build(
         )
         if rc != 0:
             console.print(
-                f"[red]kas-container build failed (exit {rc}).[/] Run `bspctl triage {log.run_id}` for details."
+                f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details."
             )
             raise typer.Exit(code=rc)
         deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine

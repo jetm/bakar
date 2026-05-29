@@ -1,20 +1,21 @@
-"""bspctl clean subcommand - wipe the BSP build directory."""
+"""bakar clean subcommand - wipe the BSP build directory."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Annotated, Literal
 
-import bspctl.commands._app as _state
 import typer
-from bspctl.commands._app import app, console
-from bspctl.commands._helpers import (
+
+import bakar.commands._app as _state
+from bakar.commands._app import app, console
+from bakar.commands._helpers import (
     _bsp_from_cwd,
     _clean_build_dir,
     _dispatch_bsp,
     _workspace_from_cwd,
 )
-from bspctl.config import resolve
+from bakar.config import resolve
 
 
 @app.command()
@@ -51,7 +52,7 @@ def clean(
         # Stop the workspace hashserv daemon before wiping so it isn't
         # orphaned pointing at a removed working directory. Lazy import to
         # avoid any future import cycle if hashserv grows transitive deps.
-        from bspctl import hashserv
+        from bakar import hashserv
 
         hashserv.stop(cfg.bsp_root)
     _clean_build_dir(cfg)

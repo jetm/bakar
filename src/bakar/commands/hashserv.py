@@ -1,7 +1,7 @@
-"""bspctl hashserv subcommand - lifecycle for the workspace hashserv daemon.
+"""bakar hashserv subcommand - lifecycle for the workspace hashserv daemon.
 
 The sub-app exposes three verbs (``start``, ``stop``, ``status``) that drive the
-``bspctl.hashserv`` module against the current workspace. Workspace resolution
+``bakar.hashserv`` module against the current workspace. Workspace resolution
 mirrors the no-manifest read-only commands (``layers``, ``for-all``): each verb
 accepts ``--workspace/-w`` and falls back to walking up from CWD via
 ``_resolve_workspace``; dispatch through ``_dispatch_bsp(None)`` so the same
@@ -13,12 +13,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated
 
-import bspctl.commands._app as _state
 import typer
-from bspctl import hashserv
-from bspctl.commands._app import app, console
-from bspctl.commands._helpers import _dispatch_bsp, _dispatch_from_yaml, _resolve_workspace
-from bspctl.config import resolve
+
+import bakar.commands._app as _state
+from bakar import hashserv
+from bakar.commands._app import app, console
+from bakar.commands._helpers import _dispatch_bsp, _dispatch_from_yaml, _resolve_workspace
+from bakar.config import resolve
 
 hashserv_app = typer.Typer(
     help="Manage the workspace bitbake-hashserv daemon (start/stop/status).",
@@ -74,7 +75,7 @@ def start(
     if url is None:
         console.print(
             f"failed to start hashserv: bitbake-hashserv not found or startup probe failed; "
-            f"see {bsp_root}/.bspctl/hashserv.stderr"
+            f"see {bsp_root}/.bakar/hashserv.stderr"
         )
         raise typer.Exit(code=1)
     console.print(f"started: {url}")
@@ -121,7 +122,7 @@ def status(
     if not hashserv.is_running(bsp_root):
         console.print("not running")
         return
-    state_dir = bsp_root / ".bspctl"
+    state_dir = bsp_root / ".bakar"
     try:
         pid = (state_dir / "hashserv.pid").read_text().strip()
         port = (state_dir / "hashserv.port").read_text().strip()

@@ -48,7 +48,7 @@ def load_vendors(path: Path | None = None) -> list[VendorEntry]:
     Returns an empty list if the file does not exist.
     """
     if path is None:
-        path = Path.home() / ".config" / "bspctl" / "vendors.toml"
+        path = Path.home() / ".config" / "bakar" / "vendors.toml"
 
     if not path.exists():
         return []

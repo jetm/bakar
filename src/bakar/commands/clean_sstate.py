@@ -1,4 +1,4 @@
-"""bspctl clean-sstate - prune stale sstate-cache entries by age."""
+"""bakar clean-sstate - prune stale sstate-cache entries by age."""
 
 from __future__ import annotations
 
@@ -7,9 +7,10 @@ import time
 from pathlib import Path
 from typing import Annotated
 
-import bspctl.commands._app as _state
 import typer
-from bspctl.commands._app import app, console
+
+import bakar.commands._app as _state
+from bakar.commands._app import app, console
 
 
 def _resolve_sstate_dir(override: Path | None) -> Path | None:
@@ -90,13 +91,13 @@ def clean_sstate(
     60 days ago but reused yesterday would still be removed.
 
     SSTATE_DIR is resolved from the SSTATE_DIR env var, then from
-    ~/.config/bspctl/config.toml, then from --sstate-dir.
+    ~/.config/bakar/config.toml, then from --sstate-dir.
     """
     effective_dir = _resolve_sstate_dir(sstate_dir)
     if effective_dir is None:
         console.print(
             "[red]SSTATE_DIR not set.[/] Export it as an env var or add "
-            "'sstate_dir = \"/path\"' under [build] in ~/.config/bspctl/config.toml"
+            "'sstate_dir = \"/path\"' under [build] in ~/.config/bakar/config.toml"
         )
         raise typer.Exit(code=2)
     if not effective_dir.is_dir():

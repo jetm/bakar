@@ -6,7 +6,7 @@
 # clean build or when you accept the one-time rebuild cost.
 #
 # Usage: add this file to the `includes:` list of your kas YAML after the
-# standard tuning overlay. It is intentionally never auto-loaded by bspctl.
+# standard tuning overlay. It is intentionally never auto-loaded by bakar.
 #
 # What it does: OEEquivHash lets bitbake treat tasks as equivalent when their
 # outputs match, even if their input hashes differ (e.g. after a minor recipe
@@ -18,7 +18,7 @@ header:
   version: 21
 
 local_conf_header:
-  bspctl-tuning-hashequiv: |
+  bakar-tuning-hashequiv: |
     # Switch the signature handler to equivalence-aware mode.
     BB_SIGNATURE_HANDLER = "OEEquivHash"
     # Run a local hash equivalence server and connect it to the upstream

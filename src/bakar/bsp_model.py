@@ -1,25 +1,25 @@
-"""Per-BSP model for the bspctl CLI.
+"""Per-BSP model for the bakar CLI.
 
 NXP i.MX and TI Sitara BSP families are supported.
 Each family has its own toolchain (Google ``repo`` + ``var-setup-release.sh``
 for NXP; ``varigit/oe-layersetup`` shell wrapper for TI), its own
 manifest format (``imx-A.B.C-X.Y.Z.xml`` vs ``processor-sdk-...-config_var<N>.txt``),
-its own static tuning overlay (``overlays/bspctl-tuning-<bsp>.yml``),
+its own static tuning overlay (``overlays/bakar-tuning-<bsp>.yml``),
 and its own pre-flight checks.
 
 This module exports:
 
 * :func:`detect_bsp_family` - classify a manifest filename. Pure regex,
   no I/O. The return value drives both the dispatcher in
-  :mod:`bspctl.cli` and the ``check_host_tools`` decision. For the
+  :mod:`bakar.cli` and the ``check_host_tools`` decision. For the
   complementary BYO-yaml classifier (content-based, not filename-based)
-  see :func:`bspctl.bsp_detect.detect_bsp_from_yaml`.
+  see :func:`bakar.bsp_detect.detect_bsp_from_yaml`.
 * :func:`infer_bsp_branch` - synthesize the
   ``meta-variscite-bsp-ti`` branch suffix from a TI config filename.
 * :class:`BspModel` - dataclass + registry that hold every per-BSP
   knob: defaults, kas template, sync/setup steps, doctor extras.
 * :func:`get_model` - factory returning the dispatched model. Imports
-  are lazy so :mod:`bspctl.config` (which imports
+  are lazy so :mod:`bakar.config` (which imports
   :func:`infer_bsp_branch` for TI branch fallback) can keep its
   circular dep-free top-level import.
 """
@@ -31,12 +31,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
-from bspctl.vendor_config import load_vendors
+from bakar.vendor_config import load_vendors
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from bspctl.kas import KasTemplate
+    from bakar.kas import KasTemplate
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +148,7 @@ class BspModel:
     family: Literal["nxp", "ti"]
     workspace_subdir: str  # "nxp" or "ti"
     kas_yaml_filename: str  # "kas-nxp.yml" or "kas-ti.yml"
-    tuning_overlay_filename: str  # "bspctl-tuning-nxp.yml" or "bspctl-tuning-ti.yml"
+    tuning_overlay_filename: str  # "bakar-tuning-nxp.yml" or "bakar-tuning-ti.yml"
     manifest_kind: Literal["repo-xml", "oe-layertool-config"]
     default_machine: str
     default_distro: str
@@ -173,8 +173,8 @@ def get_model(family: Literal["nxp", "ti"]) -> BspModel:
     """
     # Lazy: avoid pulling diagnostics/steps/kas into every consumer of
     # detect_bsp_family or infer_bsp_branch.
-    from bspctl import config as cfg_mod
-    from bspctl.diagnostics import (
+    from bakar import config as cfg_mod
+    from bakar.diagnostics import (
         check_forks_linux_imx,
         check_forks_ti_linux_kernel,
         check_forks_ti_u_boot,
@@ -183,18 +183,18 @@ def get_model(family: Literal["nxp", "ti"]) -> BspModel:
         check_ti_layertool_config_consistency,
         check_ti_layertool_present,
     )
-    from bspctl.kas import NXP_KAS_TEMPLATE, TI_KAS_TEMPLATE
-    from bspctl.steps import repo as step_repo
-    from bspctl.steps import setup_env as step_setup
-    from bspctl.steps import ti_layertool as step_ti_layertool
-    from bspctl.steps import ti_setup_env as step_ti_setup
+    from bakar.kas import NXP_KAS_TEMPLATE, TI_KAS_TEMPLATE
+    from bakar.steps import repo as step_repo
+    from bakar.steps import setup_env as step_setup
+    from bakar.steps import ti_layertool as step_ti_layertool
+    from bakar.steps import ti_setup_env as step_ti_setup
 
     if family == "nxp":
         model = BspModel(
             family="nxp",
             workspace_subdir="nxp",
             kas_yaml_filename="kas-nxp.yml",
-            tuning_overlay_filename="bspctl-tuning-nxp.yml",
+            tuning_overlay_filename="bakar-tuning-nxp.yml",
             manifest_kind="repo-xml",
             default_machine=cfg_mod.DEFAULT_NXP_MACHINE,
             default_distro=cfg_mod.DEFAULT_NXP_DISTRO,
@@ -216,7 +216,7 @@ def get_model(family: Literal["nxp", "ti"]) -> BspModel:
             family="ti",
             workspace_subdir="ti",
             kas_yaml_filename="kas-ti.yml",
-            tuning_overlay_filename="bspctl-tuning-ti.yml",
+            tuning_overlay_filename="bakar-tuning-ti.yml",
             manifest_kind="oe-layertool-config",
             default_machine=cfg_mod.DEFAULT_TI_MACHINE,
             default_distro=cfg_mod.DEFAULT_TI_DISTRO,

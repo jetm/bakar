@@ -2,7 +2,7 @@
 
 This module owns the lifecycle of a per-workspace ``bitbake-hashserv``
 daemon. A persistent daemon lets cross-build sstate hash equivalence
-accumulate instead of being rebuilt from scratch on every ``bspctl
+accumulate instead of being rebuilt from scratch on every ``bakar
 build`` (which is what ``BB_HASHSERVE = "auto"`` does).
 
 The daemon binary is sourced exclusively from the synced workspace at
@@ -26,7 +26,7 @@ _PID_FILENAME = "hashserv.pid"
 _PORT_FILENAME = "hashserv.port"
 _DB_FILENAME = "hashserv.db"
 _STDERR_FILENAME = "hashserv.stderr"
-_STATE_SUBDIR = ".bspctl"
+_STATE_SUBDIR = ".bakar"
 _PORT_FLOOR = 49152
 _PORT_SPAN = 16383
 _TERM_GRACE_SECONDS = 5
@@ -74,7 +74,7 @@ def _find_binary(bsp_root: Path) -> Path | None:
 
 
 def _state_dir(bsp_root: Path) -> Path:
-    """Return ``<bsp_root>/.bspctl`` (the workspace state directory)."""
+    """Return ``<bsp_root>/.bakar`` (the workspace state directory)."""
     return bsp_root / _STATE_SUBDIR
 
 
@@ -213,7 +213,7 @@ def stop(bsp_root: Path) -> bool:
     preserved across stop/start cycles. The whole reason to run a
     persistent daemon is to keep the accumulated hash equivalence cache;
     wiping the DB here would defeat that. Workspace teardown
-    (``bspctl clean --all``) is the one path that removes the DB.
+    (``bakar clean --all``) is the one path that removes the DB.
     """
     pid = _read_pid(bsp_root)
     if pid is None:

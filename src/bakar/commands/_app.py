@@ -1,17 +1,18 @@
-"""Typer app, Rich console, and startup state for all bspctl subcommands."""
+"""Typer app, Rich console, and startup state for all bakar subcommands."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated
 
 import typer
-from bspctl import __version__
-from bspctl.user_config import load_user_config
-from bspctl.vendor_config import load_vendors
 from rich.console import Console
 
+from bakar import __version__
+from bakar.user_config import load_user_config
+from bakar.vendor_config import load_vendors
+
 if TYPE_CHECKING:
-    from bspctl.user_config import UserConfig
+    from bakar.user_config import UserConfig
 
 app = typer.Typer(
     help="BSP orchestrator (NXP i.MX + TI Sitara built-in).",
@@ -40,13 +41,13 @@ def _load_user_config_safe() -> UserConfig:
     try:
         return load_user_config()
     except ValueError as exc:
-        console.print(f"[red]Invalid bspctl config:[/] {exc}")
+        console.print(f"[red]Invalid bakar config:[/] {exc}")
         raise typer.Exit(code=2) from exc
 
 
 def _version(value: bool) -> None:
     if value:
-        console.print(f"bspctl {__version__}")
+        console.print(f"bakar {__version__}")
         raise typer.Exit()
 
 

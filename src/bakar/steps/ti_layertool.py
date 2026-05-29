@@ -1,6 +1,6 @@
 """Populate `ti/sources/` via the `oe-layertool-setup.sh` script.
 
-Mirrors the role of :mod:`bspctl.steps.repo` for the NXP side, but
+Mirrors the role of :mod:`bakar.steps.repo` for the NXP side, but
 TI BSP delivery uses the `varigit/oe-layersetup` script (a
 shell wrapper around sequential `git clone` + checkout against pinned
 SHAs in a `processor-sdk-*-config_var<N>.txt` config file) instead of
@@ -15,7 +15,7 @@ tiered downloads cache is reused, and run it from ``cfg.workspace /
 ``ti/oe-layertool/``).
 
 After a successful run we record the active config name in
-``ti/conf/active-config.txt`` so future ``bspctl build`` invocations
+``ti/conf/active-config.txt`` so future ``bakar build`` invocations
 can skip the script when the requested config already matches.
 """
 
@@ -27,8 +27,8 @@ import subprocess
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from bspctl.config import BuildConfig
-    from bspctl.observability import RunLogger
+    from bakar.config import BuildConfig
+    from bakar.observability import RunLogger
 
 
 def _record_active_config(cfg: BuildConfig) -> None:

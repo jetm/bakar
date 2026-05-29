@@ -1,7 +1,7 @@
 """Success-path summary for a completed build run.
 
-Reads a run directory produced by :mod:`bspctl.observability` and assembles a
-:class:`ReportSummary` - the complement to :mod:`bspctl.triage`, which only
+Reads a run directory produced by :mod:`bakar.observability` and assembles a
+:class:`ReportSummary` - the complement to :mod:`bakar.triage`, which only
 handles failures. Every field is best-effort: a missing file, an absent JSON
 field, or an unparseable timestamp yields ``None`` rather than an exception, so
 ``assemble_report`` is safe to call against partial or legacy run directories.
@@ -15,12 +15,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bspctl.layers import collect_layer_hashes
-from bspctl.triage import _last_event_matching
+from bakar.layers import collect_layer_hashes
+from bakar.triage import _last_event_matching
 
 if TYPE_CHECKING:
-    from bspctl.config import BuildConfig
-    from bspctl.layers import LayerHash
+    from bakar.config import BuildConfig
+    from bakar.layers import LayerHash
 
 _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 

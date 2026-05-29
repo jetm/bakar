@@ -2,7 +2,7 @@
 
 Enumerates the repos backing the layers in a build's ``bblayers.conf``
 and reports each repo's short git hash and current branch. Discovery
-reuses :func:`bspctl.kas.parse_bblayers` rather than re-parsing the
+reuses :func:`bakar.kas.parse_bblayers` rather than re-parsing the
 bblayers file. Git invocations never raise: a repo whose checkout is
 missing or whose ``git`` command fails is silently skipped (or, for the
 branch query, reported with an empty branch - a valid detached HEAD).
@@ -16,10 +16,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bspctl.kas import parse_bblayers
+from bakar.kas import parse_bblayers
 
 if TYPE_CHECKING:
-    from bspctl.config import BuildConfig
+    from bakar.config import BuildConfig
 
 
 @dataclass

@@ -1,4 +1,4 @@
-"""bspctl stress-parse subcommand - bitbake parser fork-race stress test."""
+"""bakar stress-parse subcommand - bitbake parser fork-race stress test."""
 
 from __future__ import annotations
 
@@ -6,20 +6,21 @@ import os
 from pathlib import Path
 from typing import Annotated
 
-import bspctl.commands._app as _state
 import typer
-from bspctl.commands._app import app, console
-from bspctl.commands._helpers import (
+from rich.table import Table
+
+import bakar.commands._app as _state
+from bakar.commands._app import app, console
+from bakar.commands._helpers import (
     _dispatch_bsp,
     _overlay_for,
     _workspace_from_cwd,
 )
-from bspctl.config import resolve
-from bspctl.observability import RunLogger
-from bspctl.steps import bitbake_override as step_override
-from bspctl.steps import kas_build as step_kas
-from bspctl.steps import stress_parse as step_stress_parse
-from rich.table import Table
+from bakar.config import resolve
+from bakar.observability import RunLogger
+from bakar.steps import bitbake_override as step_override
+from bakar.steps import kas_build as step_kas
+from bakar.steps import stress_parse as step_stress_parse
 
 
 @app.command("stress-parse")
@@ -78,8 +79,8 @@ def stress_parse(
             help="Override which Python bitbake re-execs into. Sets BB_PYTHON3 and "
             "leads PATH with the interpreter's bin dir, so stress-parse can validate "
             "a locally-built CPython (e.g. one carrying an obmalloc fork-"
-            "safety patch) without reinstalling bspctl under that interpreter. Pass "
-            "the absolute path to a python binary; defaults to bspctl's own interpreter.",
+            "safety patch) without reinstalling bakar under that interpreter. Pass "
+            "the absolute path to a python binary; defaults to bakar's own interpreter.",
         ),
     ] = None,
 ) -> None:
@@ -92,7 +93,7 @@ def stress_parse(
     ``<bsp>/build/runs/<run-id>/stress-parse/``. Exits non-zero if any
     iteration tripped a signature.
 
-    Assumes the workspace is already synced (run ``bspctl build`` once
+    Assumes the workspace is already synced (run ``bakar build`` once
     first); applies the bitbake override and regenerates the kas YAML
     before looping. Skips the doctor pre-flight - the user opts into
     stress-parse explicitly.
@@ -123,7 +124,7 @@ def stress_parse(
     overlay_source = _overlay_for(bsp)
 
     console.print(
-        f"[bold]::[/] bspctl stress-parse [{family}] {cfg.machine} / {cfg.image} "
+        f"[bold]::[/] bakar stress-parse [{family}] {cfg.machine} / {cfg.image} "
         f"target={target} runs={runs}"
         + (f" parse-threads={parse_threads}" if parse_threads is not None else "")
         + (" [host-mode]" if host_mode else "")

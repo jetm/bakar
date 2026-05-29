@@ -1,6 +1,6 @@
-"""Entry point for `python -m bspctl`."""
+"""Entry point for `python -m bakar`."""
 
-from bspctl.cli import app
+from bakar.cli import app
 
 if __name__ == "__main__":
     app()

@@ -1,4 +1,4 @@
-"""bspctl prefetch subcommand - pre-fetch recipe sources without building."""
+"""bakar prefetch subcommand - pre-fetch recipe sources without building."""
 
 from __future__ import annotations
 
@@ -6,18 +6,19 @@ import shlex
 from pathlib import Path
 from typing import Annotated
 
-import bspctl.commands._app as _state
 import typer
-from bspctl.commands._app import app, console
-from bspctl.commands._helpers import (
+
+import bakar.commands._app as _state
+from bakar.commands._app import app, console
+from bakar.commands._helpers import (
     _dispatch_bsp,
     _dispatch_from_yaml,
     _overlay_for,
     _resolve_workspace,
 )
-from bspctl.config import resolve
-from bspctl.observability import RunLogger
-from bspctl.steps import kas_build as step_kas
+from bakar.config import resolve
+from bakar.observability import RunLogger
+from bakar.steps import kas_build as step_kas
 
 
 @app.command()

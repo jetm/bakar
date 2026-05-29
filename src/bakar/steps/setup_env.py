@@ -11,8 +11,8 @@ import subprocess
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from bspctl.config import BuildConfig
-    from bspctl.observability import RunLogger
+    from bakar.config import BuildConfig
+    from bakar.observability import RunLogger
 
 
 def run(cfg: BuildConfig, log: RunLogger) -> None:

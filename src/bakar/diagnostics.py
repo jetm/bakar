@@ -3,15 +3,15 @@
 Each check is a callable returning a :class:`CheckResult`. Checks are
 grouped by severity:
 
-* ``BLOCK`` - halt `bspctl build` before it spawns anything expensive
+* ``BLOCK`` - halt `bakar build` before it spawns anything expensive
 * ``WARN``  - print a warning and continue
 * ``INFO``  - purely informational, never stops or warns the user
 
 The check list is now BSP-aware: ``SHARED_CHECKS`` runs for every BSP,
-and the dispatched :class:`~bspctl.bsp_model.BspModel.doctor_extras`
+and the dispatched :class:`~bakar.bsp_model.BspModel.doctor_extras`
 adds the family-specific gates (``check_forks_linux_imx`` and friends
-for NXP; the four ``check_ti_*`` functions for TI). Both ``bspctl
-doctor`` and the pre-flight gate inside ``bspctl build`` consume the
+for NXP; the four ``check_ti_*`` functions for TI). Both ``bakar
+doctor`` and the pre-flight gate inside ``bakar build`` consume the
 same assembled list via :func:`run_all`.
 """
 
@@ -29,10 +29,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bspctl.config import BuildConfig
+from bakar.config import BuildConfig
 
 if TYPE_CHECKING:
-    from bspctl.bsp_model import BspModel
+    from bakar.bsp_model import BspModel
 
 
 class Severity(StrEnum):
@@ -83,7 +83,7 @@ _REQUIRED_TOOLS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     # Generic mode does not run repo-tool or oe-layertool-setup.sh; kas
     # itself does any cloning the YAML asks for.
     "generic": ("kas-container", "docker", "python3"),
-    # bitbake-setup workspaces are initialized externally; bspctl only
+    # bitbake-setup workspaces are initialized externally; bakar only
     # translates their config to a kas YAML and runs kas-container. Same
     # toolset as generic - no repo/oe-layertool tools.
     "bbsetup": ("kas-container", "docker", "python3"),
@@ -233,7 +233,7 @@ def check_container_os(cfg: BuildConfig) -> CheckResult:
 def _find_local_bitbake_dir(cfg: BuildConfig) -> Path | None:
     """Return the workspace bitbake source directory if present, else None.
 
-    Search order mirrors :func:`bspctl.hashserv._find_binary`:
+    Search order mirrors :func:`bakar.hashserv._find_binary`:
     1. ``cfg.bsp_bitbake_path``              - NXP (sources/poky/bitbake) / TI (sources/bitbake)
     2. ``<bsp_root>/layers/bitbake``         - some generic BYO layouts
     3. ``<bsp_root>/sources/bitbake``        - generic BYO (alternative)
@@ -341,7 +341,7 @@ def check_docker_ulimits(cfg: BuildConfig) -> CheckResult:
             "docker-ulimits",
             Severity.WARN,
             "/etc/docker/daemon.json missing",
-            fix_hint="See the bspctl README for the recommended daemon.json template.",
+            fix_hint="See the bakar README for the recommended daemon.json template.",
         )
     try:
         data = json.loads(daemon_json.read_text())
@@ -412,7 +412,7 @@ def check_bitbake_override(cfg: BuildConfig) -> CheckResult:
     ``cfg.bsp_bitbake_path`` (NXP: ``sources/poky/bitbake``; TI:
     ``sources/bitbake``) and ``cfg.bsp_root / upstream-bitbake``.
     """
-    from bspctl.steps.bitbake_override import status as override_status
+    from bakar.steps.bitbake_override import status as override_status
 
     st = override_status(cfg)
     detail_parts: list[str] = [st.detail]
@@ -431,10 +431,10 @@ def check_bitbake_override(cfg: BuildConfig) -> CheckResult:
             "bitbake-override",
             Severity.INFO,
             detail,
-            fix_hint="Run `bspctl bitbake-override --apply` (or it auto-applies on `bspctl build`).",
+            fix_hint="Run `bakar bitbake-override --apply` (or it auto-applies on `bakar build`).",
         )
     if st.state == "disabled":
-        return _skip("bitbake-override", Severity.INFO, "BSPCTL_BITBAKE_OVERRIDE=0")
+        return _skip("bitbake-override", Severity.INFO, "BAKAR_BITBAKE_OVERRIDE=0")
     return _skip("bitbake-override", Severity.INFO, detail)
 
 
@@ -461,7 +461,7 @@ def check_manifest_consistency(cfg: BuildConfig) -> CheckResult:
     Imported inside the function to keep the workspace/diagnostics
     dependency direction one-way.
     """
-    from bspctl.workspace import detect
+    from bakar.workspace import detect
 
     state = detect(cfg)
     if not state.repo_initialized:
@@ -481,7 +481,7 @@ def check_manifest_consistency(cfg: BuildConfig) -> CheckResult:
             "manifest",
             Severity.INFO,
             "; ".join(issues),
-            fix_hint="`bspctl build` will force a full re-sync to reconcile.",
+            fix_hint="`bakar build` will force a full re-sync to reconcile.",
         )
     return _ok("manifest", Severity.INFO, "matches .repo/ state")
 
@@ -522,7 +522,7 @@ def check_ti_layertool_present(cfg: BuildConfig) -> CheckResult:
         return _fail(
             "ti-layertool",
             Severity.BLOCK,
-            f"{script} missing - bspctl cannot populate ti/sources/ without it",
+            f"{script} missing - bakar cannot populate ti/sources/ without it",
             fix_hint=(
                 "git clone -b master_var01 https://github.com/varigit/oe-layersetup "
                 f"{cfg.workspace / 'ti' / 'oe-layertool'}"
@@ -534,7 +534,7 @@ def check_ti_layertool_present(cfg: BuildConfig) -> CheckResult:
 def check_ti_layertool_config_consistency(cfg: BuildConfig) -> CheckResult:
     """Compare ``ti/conf/active-config.txt`` (last applied) against the
         requested config filename. SKIP on first run before any populate
-    has succeeded; FAIL on drift so ``bspctl build`` knows to force a
+    has succeeded; FAIL on drift so ``bakar build`` knows to force a
         re-populate.
     """
     tracked = cfg.workspace / "ti" / "conf" / "active-config.txt"
@@ -549,7 +549,7 @@ def check_ti_layertool_config_consistency(cfg: BuildConfig) -> CheckResult:
             "ti-config",
             Severity.INFO,
             f"tracked={recorded!r} requested={cfg.manifest!r}",
-            fix_hint="`bspctl build` will re-run oe-layertool-setup.sh to reconcile.",
+            fix_hint="`bakar build` will re-run oe-layertool-setup.sh to reconcile.",
         )
     return _ok("ti-config", Severity.INFO, f"matches {recorded}")
 
@@ -599,7 +599,7 @@ def check_bitbake_locks(cfg: BuildConfig) -> CheckResult:
     are removed. If a live bitbake holds the lock the check fails with BLOCK
     so the user knows a build is in progress.
     """
-    from bspctl.steps.kas_build import clear_stale_bitbake_locks
+    from bakar.steps.kas_build import clear_stale_bitbake_locks
 
     build_dir = cfg.bsp_root / "build"
     lock = build_dir / "bitbake.lock"
@@ -654,7 +654,7 @@ def check_bbsetup_initialized(cfg: BuildConfig) -> CheckResult:
 
     A ``bitbake-setup init`` run writes ``config/config-upstream.json``
     and ``build/init-build-env`` under the setup dir. Either being absent
-    means the workspace is not ready for a bspctl build.
+    means the workspace is not ready for a bakar build.
     """
     config_json = cfg.bsp_root / "config" / "config-upstream.json"
     init_env = cfg.bsp_root / "build" / "init-build-env"
@@ -855,7 +855,7 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
             return _skip(
                 name,
                 Severity.BLOCK,
-                f"git-state mismatch (run bspctl sync): {msg}",
+                f"git-state mismatch (run bakar sync): {msg}",
             )
         return _fail(
             name,
@@ -1131,26 +1131,26 @@ def check_hashserv(cfg: BuildConfig) -> CheckResult:
 
     When configured, the check probes three layers in order: (1) the
     recorded PID is alive AND its cmdline names ``bitbake-hashserv``
-    (delegated to :func:`bspctl.hashserv.is_running`), (2) the port
-    file under ``<bsp_root>/.bspctl/`` is still present (a concurrent
-    ``bspctl hashserv stop`` between the PID-liveness probe and the
+    (delegated to :func:`bakar.hashserv.is_running`), (2) the port
+    file under ``<bsp_root>/.bakar/`` is still present (a concurrent
+    ``bakar hashserv stop`` between the PID-liveness probe and the
     port read is treated as "not running"), and (3) a TCP
     ``create_connection`` to ``127.0.0.1:<port>`` succeeds within 1s.
     Only when all three pass does the check PASS at WARN severity.
     """
-    from bspctl import hashserv
+    from bakar import hashserv
 
     name = "hashserv"
     if not cfg.use_hashequiv:
         return _skip(name, Severity.INFO, "hashserv daemon not configured ([build] hashserv = false)")
 
     not_running_msg = "hashserv configured but daemon is not running"
-    not_running_hint = "bspctl hashserv start  (bspctl build will auto-start it)"
+    not_running_hint = "bakar hashserv start  (bakar build will auto-start it)"
 
     if not hashserv.is_running(cfg.bsp_root):
         return _fail(name, Severity.WARN, not_running_msg, fix_hint=not_running_hint)
 
-    state_dir = cfg.bsp_root / ".bspctl"
+    state_dir = cfg.bsp_root / ".bakar"
     port_file = state_dir / "hashserv.port"
     pid_file = state_dir / "hashserv.pid"
 
@@ -1171,7 +1171,7 @@ def check_hashserv(cfg: BuildConfig) -> CheckResult:
             name,
             Severity.WARN,
             f"daemon configured but unreachable at ws://localhost:{port} (PID {pid} alive, TCP probe failed)",
-            fix_hint="bspctl hashserv stop && bspctl hashserv start",
+            fix_hint="bakar hashserv stop && bakar hashserv start",
         )
     sock.close()
     return _ok(name, Severity.WARN, f"running at ws://localhost:{port} (PID {pid})")

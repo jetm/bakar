@@ -1,4 +1,4 @@
-"""bspctl log subcommand - tail a run's log file."""
+"""bakar log subcommand - tail a run's log file."""
 
 from __future__ import annotations
 
@@ -7,15 +7,16 @@ import time
 from pathlib import Path
 from typing import Annotated
 
-import bspctl.commands._app as _state
 import typer
-from bspctl.commands._app import app, console
-from bspctl.commands._helpers import (
+
+import bakar.commands._app as _state
+from bakar.commands._app import app, console
+from bakar.commands._helpers import (
     _dispatch_bsp,
     _dispatch_from_yaml,
     _resolve_workspace,
 )
-from bspctl.config import resolve
+from bakar.config import resolve
 
 _LOG_FILES: dict[str, str] = {
     "kas": "kas.log",
@@ -30,7 +31,7 @@ def _tail_follow(path: Path, history_lines: int = 40) -> None:
     Seeking straight to EOF hides everything already written to the log,
     so if the build is between writes when the user opens the tail, the
     screen stays blank. Emit a chunk of recent history first (matches
-    `tail -f` default behavior) so `bspctl log` is useful mid-run.
+    `tail -f` default behavior) so `bakar log` is useful mid-run.
     """
     with path.open("r", encoding="utf-8", errors="replace") as fh:
         lines = fh.readlines()
@@ -72,9 +73,9 @@ def log_cmd(
         typer.Option("--workspace", "-w", help="Workspace root override"),
     ] = None,
 ) -> None:
-    """Tail the latest bspctl run's kas.log live. Use --run for a specific run, --which to pick a different log file.
+    """Tail the latest bakar run's kas.log live. Use --run for a specific run, --which to pick a different log file.
 
-    Pass a positional kas YAML for BYO builds (``bspctl log my.yml``);
+    Pass a positional kas YAML for BYO builds (``bakar log my.yml``);
     runs live next to the YAML under ``<yaml-parent>/build/runs/`` and
     the workspace lookup is skipped.
     """
@@ -96,7 +97,7 @@ def log_cmd(
     )
     runs_dir = cfg.runs_dir
     if not runs_dir.is_dir():
-        console.print("[red]no runs yet[/]; start one with `bspctl build`")
+        console.print("[red]no runs yet[/]; start one with `bakar build`")
         raise typer.Exit(code=1)
 
     run_dirs = sorted(
@@ -104,7 +105,7 @@ def log_cmd(
         key=lambda p: p.name,
     )
     if not run_dirs:
-        console.print("[red]no runs yet[/]; start one with `bspctl build`")
+        console.print("[red]no runs yet[/]; start one with `bakar build`")
         raise typer.Exit(code=1)
 
     if run is None:

@@ -1,6 +1,6 @@
 """Post-mortem triage for a failed build run.
 
-Reads a run directory produced by :mod:`bspctl.observability`, locates
+Reads a run directory produced by :mod:`bakar.observability`, locates
 the first ``step_fail`` event, and surfaces the relevant portion of
 ``kas.log`` plus (for bitbake failures) the specific recipe log that
 triggered the stop.
@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from bspctl.fork_race_signatures import (
+from bakar.fork_race_signatures import (
     FORK_RACE_SIGNATURES,
     FORK_RACE_SUGGESTION,
 )
@@ -60,7 +60,7 @@ def _bitbake_override_summary(events_path: Path) -> str | None:
 
     Scans ``events.jsonl`` for the last ``bitbake_override`` step event
     (ok or skip) and renders it for the triage suggestions block.
-    Returns ``None`` when no event is present (older bspctl runs, or the
+    Returns ``None`` when no event is present (older bakar runs, or the
     step never executed in this pipeline).
     """
     if not events_path.is_file():
@@ -156,7 +156,7 @@ _SUGGESTIONS: list[tuple[re.Pattern[str], str]] = [
     (
         # Manifestations of the fork-in-multi-threaded-program race in
         # bitbake's parser. Patterns live in
-        # bspctl.fork_race_signatures so the empirical stress-test
+        # bakar.fork_race_signatures so the empirical stress-test
         # harness in steps/stress_parse.py shares the same set; new
         # variants only need adding once.
         re.compile("|".join(p.pattern for p in FORK_RACE_SIGNATURES)),
@@ -247,7 +247,7 @@ def find_runs(workspace: Path) -> list[Path]:
 
     Walks ``<workspace>/nxp/build/runs/`` and ``<workspace>/ti/build/runs/``
     so callers do not need to pre-dispatch a BSP family. Used by
-    ``bspctl triage`` when no run id is supplied.
+    ``bakar triage`` when no run id is supplied.
     """
     out: list[Path] = []
     for family in ("nxp", "ti"):

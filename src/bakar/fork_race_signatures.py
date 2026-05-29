@@ -1,8 +1,8 @@
 """Canonical bitbake parser fork-race symptom regexes.
 
 Single source of truth for both the post-mortem suggestion engine in
-:mod:`bspctl.triage` and the empirical stress-test harness in
-:mod:`bspctl.steps.stress_parse`. New variants observed in the
+:mod:`bakar.triage` and the empirical stress-test harness in
+:mod:`bakar.steps.stress_parse`. New variants observed in the
 wild get added here once and both consumers pick them up.
 
 Background: the upstream bug is a fork-in-multi-threaded-program race
@@ -37,7 +37,7 @@ FORK_RACE_SIGNATURES: list[re.Pattern[str]] = [
 FORK_RACE_SUGGESTION = (
     "bitbake parser worker corrupted by fork-in-multi-threaded-program race "
     "(CPython torn PyType state). Recurring upstream bug; not a recipe "
-    "Manual workaround: re-run `bspctl build` - the next fork roll "
+    "Manual workaround: re-run `bakar build` - the next fork roll "
     "usually wins."
 )
 

@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from bspctl.config import BuildConfig
-    from bspctl.observability import RunLogger
+    from bakar.config import BuildConfig
+    from bakar.observability import RunLogger
 
 
 def _find_meta_avocado_dir(kas_yaml: Path) -> Path:
@@ -43,8 +43,8 @@ def run_qemu(cfg: BuildConfig, log: RunLogger, *, swtpm: bool, kas_yaml: Path) -
     if not build_dir.exists():
         raise RuntimeError(
             f"Build output not found at {build_dir}. "
-            "Run `bspctl build` first, then provision the disk image with "
-            "`bspctl build kas/machine/qemux86-64.yml:kas/target/qemu-provision.yml`."
+            "Run `bakar build` first, then provision the disk image with "
+            "`bakar build kas/machine/qemux86-64.yml:kas/target/qemu-provision.yml`."
         )
 
     log.step_start("run_qemu", script=str(script), swtpm=swtpm)

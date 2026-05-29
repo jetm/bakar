@@ -1,9 +1,9 @@
 """Regenerate the kas YAML and run `kas-container build`.
 
-The YAML generator lives in :mod:`bspctl.kas`; this step wraps it
+The YAML generator lives in :mod:`bakar.kas`; this step wraps it
 plus the build invocation with the measurement harness (``/usr/bin/time
 -v`` plus a background ``du -sb build/tmp`` sampler), and layers in
-the static tuning overlay (``overlays/bspctl-tuning-<bsp>.yml``)
+the static tuning overlay (``overlays/bakar-tuning-<bsp>.yml``)
 on top of whatever kas YAML the caller passes in.
 
 A pseudo-TTY is allocated for the kas-container subprocess so that
@@ -13,7 +13,7 @@ inside the container, which emits ``Currently N tasks running (X of Y
 complete)`` status lines several times per second - a much livelier
 counter than the per-task-start ``NOTE: Running task`` lines we get in
 non-TTY mode. The PTY also means bitbake's stdout is line-flushed
-rather than block-buffered, so ``bspctl log`` and the progress bar stay
+rather than block-buffered, so ``bakar log`` and the progress bar stay
 responsive during long compile phases.
 """
 
@@ -33,8 +33,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
-from bspctl import hashserv
-from bspctl.kas import KasGenOptions, write_yaml
 from rich.progress import (
     BarColumn,
     Progress,
@@ -42,10 +40,13 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
+from bakar import hashserv
+from bakar.kas import KasGenOptions, write_yaml
+
 if TYPE_CHECKING:
-    from bspctl.bsp_model import BspModel
-    from bspctl.config import BuildConfig
-    from bspctl.observability import RunLogger
+    from bakar.bsp_model import BspModel
+    from bakar.config import BuildConfig
+    from bakar.observability import RunLogger
 
 # Bitbake output patterns.  These drive the progress bar in run_build().
 #
@@ -65,19 +66,19 @@ SEVERITY_PASSTHROUGH = re.compile(r"\b(ERROR|FATAL|WARNING|QA Issue):")
 # knotty in TTY mode emits ANSI CSI escapes to manipulate the cursor and
 # redraw progress lines in place.  We strip both the standard CSI form
 # (ESC [ ... letter) and the less common OSC form (ESC ] ... BEL) before
-# writing to kas.log so downstream tools (triage, grep, bspctl log) see
+# writing to kas.log so downstream tools (triage, grep, bakar log) see
 # clean plain text.  The regex is deliberately conservative; anything
-# exotic gets left as-is.  See ``bspctl log`` for the downstream reader.
+# exotic gets left as-is.  See ``bakar log`` for the downstream reader.
 ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 ANSI_OSC_RE = re.compile(r"\x1b\][^\x07]*\x07")
 LINE_SPLIT_RE = re.compile(rb"\r\n|\n|\r")
 
 # Overlay materialization: the kas-container bind-mount only includes
 # ``KAS_WORK_DIR`` (= bsp_root) as ``/work``. Copying the overlay
-# under ``<bsp_root>/.bspctl/overlays/`` puts it inside that mount so
+# under ``<bsp_root>/.bakar/overlays/`` puts it inside that mount so
 # the ``<user-yml>:<overlay>`` colon-joined arg resolves cleanly from
 # the container's perspective.
-_OVERLAY_DIR_RELPATH = Path(".bspctl") / "overlays"
+_OVERLAY_DIR_RELPATH = Path(".bakar") / "overlays"
 
 
 def _strip_ansi(s: str) -> str:
@@ -104,7 +105,7 @@ def _fmt_du(delta: int) -> str:
 
 
 def materialize_overlay(cfg: BuildConfig, overlay_source: Path) -> Path:
-    """Copy ``overlay_source`` into ``<bsp_root>/.bspctl/overlays/``.
+    """Copy ``overlay_source`` into ``<bsp_root>/.bakar/overlays/``.
 
     Returns the path *relative to* ``cfg.bsp_root`` so callers can
     pass it straight into the ``kas-container build <user>:<overlay>``
@@ -114,7 +115,7 @@ def materialize_overlay(cfg: BuildConfig, overlay_source: Path) -> Path:
     ``overlay_source`` byte-for-byte on every invocation. Earlier
     revisions symlinked, but kas resolves symlinks before running its
     "all configs must share a git repo" check, so a YAML in repo A
-    layered with a symlink whose target lives in repo B (the bspctl
+    layered with a symlink whose target lives in repo B (the bakar
     install) tripped ``All concatenated config files must belong to
     the same repository or all must be outside of versioning control``.
     Copying drops a real file into the user's tree, putting both
@@ -214,7 +215,7 @@ def _run_kas_dump(
     repos pinned by commit, overlay content merged in. The container never
     needs to do include resolution or access overlay files directly.
 
-    Returns the dump file path (``bsp_root/avocado-bspctl.yml``).
+    Returns the dump file path (``bsp_root/avocado-bakar.yml``).
     """
     env = {**os.environ, "KAS_WORK_DIR": str(cfg.workspace)}
     kas_files = f"{wrapper.name}:{overlay_rel.as_posix()}"
@@ -228,7 +229,7 @@ def _run_kas_dump(
         text=True,
         check=False,
     )
-    dump = cfg.bsp_root / "avocado-bspctl.yml"
+    dump = cfg.bsp_root / "avocado-bakar.yml"
     if result.returncode == 0:
         dump.write_text(result.stdout, encoding="utf-8")
         _strip_branch_from_dump(dump)
@@ -414,12 +415,12 @@ def run_build(
     react to a nonzero status.
 
     ``overlay_source`` is the absolute path to the static
-    overlay; this function copies it into ``<bsp_root>/.bspctl/overlays/``
+    overlay; this function copies it into ``<bsp_root>/.bakar/overlays/``
     so it is reachable from inside the container.
 
     ``extra_overlays`` are additional kas YAML overlays to layer on top
-    (colon-syntax: ``bspctl build main.yml:extra.yml``). Each is materialized
-    into ``.bspctl/overlays/`` alongside the main tuning overlay.
+    (colon-syntax: ``bakar build main.yml:extra.yml``). Each is materialized
+    into ``.bakar/overlays/`` alongside the main tuning overlay.
     """
     removed = clear_stale_bitbake_locks(cfg)
     for lock in removed:
@@ -487,7 +488,7 @@ def run_build(
     cmd += [exe, *_ccache_args(cfg), "build", kas_arg]
 
     log.info(f"exec: {' '.join(cmd)}")
-    # The pump thread writes every line to kas.log for `bspctl log` to tail,
+    # The pump thread writes every line to kas.log for `bakar log` to tail,
     # parses bitbake counters into a rich Progress bar, and surfaces
     # ERROR/WARNING/FATAL/QA Issue lines above the bar.  Nothing goes to
     # sys.stdout directly - the Progress instance owns the terminal.
@@ -676,7 +677,7 @@ def run_build(
         if not terminated:
             # Wrapper crashed before the normal step_ok/step_fail path.  Emit
             # a terminal event anyway so events.jsonl never dead-ends at
-            # step_start and `bspctl triage` has something to find.
+            # step_start and `bakar triage` has something to find.
             if rc == 0:
                 deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
                 log.step_ok("kas_build", deploy_dir=str(deploy), exit_code=rc)
@@ -727,7 +728,7 @@ def _build_env(cfg: BuildConfig, python_executable: Path | None = None) -> dict[
     ``python_executable`` overrides the host-mode BB_PYTHON3 and PATH
     interpreter. Lets stress-parse point bitbake at a
     locally-built CPython (e.g. one with the obmalloc atfork patch)
-    without reinstalling bspctl under it. When None, host mode defaults
+    without reinstalling bakar under it. When None, host mode defaults
     to ``sys.executable``.
     """
     passthrough = {
@@ -775,9 +776,9 @@ def _build_env(cfg: BuildConfig, python_executable: Path | None = None) -> dict[
     else:
         passthrough["KAS_WORK_DIR"] = str(cfg.bsp_root)
 
-    # In host mode, prepend the bspctl interpreter's bin dir to PATH and
+    # In host mode, prepend the bakar interpreter's bin dir to PATH and
     # set BB_PYTHON3 so bitbake's bin/bitbake re-execs into the same
-    # Python bspctl was installed under (a uv tool venv pinned to 3.12
+    # Python bakar was installed under (a uv tool venv pinned to 3.12
     # via `uv tool install --python 3.12`). The bitbake-server and
     # bitbake-worker subprocesses inherit the interpreter through
     # sys.executable in bb.server.process._startServer / bb.runqueue,
@@ -854,7 +855,7 @@ def run_shell_capture(
     are merged and redirected to ``stdout_path`` instead of inheriting
     the parent terminal. Returns the kas-container exit code.
 
-    Used by :mod:`bspctl.steps.stress_parse` to capture each
+    Used by :mod:`bakar.steps.stress_parse` to capture each
     ``bitbake -p`` iteration's output to its own log file for offline
     fork-race signature scanning.
 
@@ -903,8 +904,8 @@ def run_kas_subcommand(
 
     Sister to :func:`run_shell`/:func:`run_shell_capture`. Selects ``kas``
     vs ``kas-container`` from ``cfg.host_mode`` and layers the overlay in via
-    the same colon-joined arg as :func:`run_build`. Used by ``bspctl dump``
-    (subcommand ``dump``) and the BYO path of ``bspctl lock`` (subcommand
+    the same colon-joined arg as :func:`run_build`. Used by ``bakar dump``
+    (subcommand ``dump``) and the BYO path of ``bakar lock`` (subcommand
     ``lock``).
 
     When ``capture_to`` is a path, the subprocess stdout is redirected to that

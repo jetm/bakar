@@ -1,17 +1,18 @@
-"""bspctl bitbake-override subcommand - swap the BSP-bundled bitbake."""
+"""bakar bitbake-override subcommand - swap the BSP-bundled bitbake."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Annotated
 
-import bspctl.commands._app as _state
 import typer
-from bspctl.commands._app import app, console
-from bspctl.commands._helpers import _dispatch_bsp, _workspace_from_cwd
-from bspctl.config import resolve
-from bspctl.observability import RunLogger
-from bspctl.steps import bitbake_override as step_override
+
+import bakar.commands._app as _state
+from bakar.commands._app import app, console
+from bakar.commands._helpers import _dispatch_bsp, _workspace_from_cwd
+from bakar.config import resolve
+from bakar.observability import RunLogger
+from bakar.steps import bitbake_override as step_override
 
 
 @app.command("bitbake-override")
@@ -41,7 +42,7 @@ def bitbake_override_cmd(
         typer.Option(
             "--repo",
             help="Path to the upstream bitbake source repo. "
-            "Defaults to ~/repos/personal/yocto/bitbake or BSPCTL_BITBAKE_OVERRIDE_REPO.",
+            "Defaults to ~/repos/personal/yocto/bitbake or BAKAR_BITBAKE_OVERRIDE_REPO.",
         ),
     ] = None,
     manifest: Annotated[
@@ -49,7 +50,7 @@ def bitbake_override_cmd(
         typer.Option(
             "--manifest",
             "-f",
-            help="Manifest filename used to dispatch BSP family. Defaults to BSPCTL_MANIFEST or the NXP default.",
+            help="Manifest filename used to dispatch BSP family. Defaults to BAKAR_MANIFEST or the NXP default.",
         ),
     ] = None,
     workspace: Annotated[Path | None, typer.Option("--workspace", "-w", help="Workspace root override")] = None,
@@ -57,12 +58,12 @@ def bitbake_override_cmd(
     """Swap the BSP-bundled bitbake for a symlink to a local upstream checkout.
 
     Default action with no flags is --status. Use --apply to swap, --revert
-    to remove the symlink (next ``bspctl build`` re-syncs to restore the BSP
-    bitbake). The override is auto-applied as part of ``bspctl build``.
+    to remove the symlink (next ``bakar build`` re-syncs to restore the BSP
+    bitbake). The override is auto-applied as part of ``bakar build``.
 
     The path swapped depends on the dispatched BSP family: NXP swaps
     ``nxp/sources/poky/bitbake``; TI swaps ``ti/sources/bitbake``. Pass
-    ``--manifest`` (or set ``BSPCTL_MANIFEST``) to target TI; without it
+    ``--manifest`` (or set ``BAKAR_MANIFEST``) to target TI; without it
     the command defaults to the NXP family.
     """
     selected = sum(1 for f in (apply_flag, revert_flag, status_flag) if f)

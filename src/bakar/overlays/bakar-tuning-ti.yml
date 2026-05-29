@@ -1,6 +1,6 @@
 # TI Sitara (Arago) tuning overlay.
 #
-# Layered on top of a topology-only kas YAML by `bspctl build`. Carries
+# Layered on top of a topology-only kas YAML by `bakar build`. Carries
 # the shared tuning head (ccache, fetch robustness, MIRRORS,
 # PREMIRRORS, FETCHCMD_wget) plus TI-specific fork PREMIRRORs for
 # ti-linux-kernel and ti-u-boot. ACCEPT_FSL_EULA and the renderdoc
@@ -18,7 +18,7 @@ env:
   PYTHONMALLOC: malloc
 
 local_conf_header:
-  bspctl-tuning: |
+  bakar-tuning: |
     CCACHE_DIR = "/work/ccache"
     INHERIT += "ccache"
     BB_NUMBER_THREADS = "${@os.environ.get('NPROC', '16')}"

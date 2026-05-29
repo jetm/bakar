@@ -1,9 +1,9 @@
 """Per-layer SHA diff between two pinned manifests.
 
-Compares two SHA-pinned ``repo`` manifest XMLs (as produced by ``bspctl
+Compares two SHA-pinned ``repo`` manifest XMLs (as produced by ``bakar
 lock`` / ``repo manifest -r``) and reports, per layer, the old and new
 SHA plus a best-effort commit count between them. The pin parsing reuses
-:func:`bspctl.workspace.parse_manifest_pins`; the commit count is read
+:func:`bakar.workspace.parse_manifest_pins`; the commit count is read
 from ``git rev-list`` only when the layer checkout is present locally and
 both SHAs are known. Git invocations never raise: a missing checkout or a
 failed ``git`` command yields ``commit_count=None`` rather than an error.
@@ -15,7 +15,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from bspctl.workspace import parse_manifest_pins
+from bakar.workspace import parse_manifest_pins
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -28,7 +28,7 @@ Mechanics:
 Branch resolution (first match wins):
 
 1. ``branch`` argument (CLI ``--branch``).
-2. ``BSPCTL_BITBAKE_OVERRIDE_BRANCH`` env var.
+2. ``BAKAR_BITBAKE_OVERRIDE_BRANCH`` env var.
 3. Auto: read ``__version__`` from the BSP-bundled
    ``bitbake/lib/bb/__init__.py`` (e.g. ``2.12.1``) and compute
    ``br-<major>.<minor>`` (e.g. ``br-2.12``). The user maintains one
@@ -50,8 +50,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from bspctl.config import BuildConfig
-    from bspctl.observability import RunLogger
+    from bakar.config import BuildConfig
+    from bakar.observability import RunLogger
 
 
 DEFAULT_OVERRIDE_REPO = Path.home() / "repos" / "personal" / "yocto" / "bitbake"
@@ -66,7 +66,7 @@ class OverrideStatus:
         ``active`` means the BSP-bundled bitbake path is the symlink we
         expect AND the clone is checked out. ``stale`` means a real BSP
         directory is in place (post-resync, or never applied). ``disabled``
-    means the user set ``BSPCTL_BITBAKE_OVERRIDE=0`` and we should leave
+    means the user set ``BAKAR_BITBAKE_OVERRIDE=0`` and we should leave
         it alone.
 
         ``poky_bitbake`` is the BSP-bundled bitbake path. The field name is
@@ -96,12 +96,12 @@ def _upstream_dir(cfg: BuildConfig) -> Path:
 
 
 def _override_repo() -> Path:
-    raw = os.environ.get("BSPCTL_BITBAKE_OVERRIDE_REPO")
+    raw = os.environ.get("BAKAR_BITBAKE_OVERRIDE_REPO")
     return Path(raw).expanduser() if raw else DEFAULT_OVERRIDE_REPO
 
 
 def _disabled() -> bool:
-    return os.environ.get("BSPCTL_BITBAKE_OVERRIDE", "1") == "0"
+    return os.environ.get("BAKAR_BITBAKE_OVERRIDE", "1") == "0"
 
 
 def _read_bb_version(bitbake_dir: Path) -> str | None:
@@ -141,7 +141,7 @@ def _auto_branch(cfg: BuildConfig) -> str | None:
 def resolve_branch(cfg: BuildConfig, override: str | None = None) -> str:
     if override:
         return override
-    env_branch = os.environ.get("BSPCTL_BITBAKE_OVERRIDE_BRANCH")
+    env_branch = os.environ.get("BAKAR_BITBAKE_OVERRIDE_BRANCH")
     if env_branch:
         return env_branch
     auto = _auto_branch(cfg)
@@ -149,7 +149,7 @@ def resolve_branch(cfg: BuildConfig, override: str | None = None) -> str:
         raise RuntimeError(
             "could not auto-detect override branch: "
             f"{_bsp_bitbake(cfg) / 'lib/bb/__init__.py'} unreadable. "
-            "Pass --branch or set BSPCTL_BITBAKE_OVERRIDE_BRANCH."
+            "Pass --branch or set BAKAR_BITBAKE_OVERRIDE_BRANCH."
         )
     return auto
 
@@ -400,7 +400,7 @@ def status(cfg: BuildConfig) -> OverrideStatus:
             bsp_version=_read_bb_version(poky_bitbake) if poky_bitbake.is_dir() else None,
             poky_bitbake=poky_bitbake,
             upstream_dir=upstream_dir,
-            detail="BSPCTL_BITBAKE_OVERRIDE=0",
+            detail="BAKAR_BITBAKE_OVERRIDE=0",
         )
 
     if not poky_bitbake.exists() and not upstream_dir.exists():
@@ -434,7 +434,7 @@ def status(cfg: BuildConfig) -> OverrideStatus:
     elif poky_bitbake.is_symlink():
         detail = "poky/bitbake is a symlink pointing elsewhere; run apply"
     elif not poky_bitbake.exists():
-        detail = "poky/bitbake missing (run apply or `bspctl build` to re-sync)"
+        detail = "poky/bitbake missing (run apply or `bakar build` to re-sync)"
     else:
         detail = "poky/bitbake exists but is neither a directory nor a symlink"
     return OverrideStatus(
@@ -464,7 +464,7 @@ def apply(
     """
     if _disabled():
         if log is not None:
-            log.step_skip("bitbake_override", reason="BSPCTL_BITBAKE_OVERRIDE=0")
+            log.step_skip("bitbake_override", reason="BAKAR_BITBAKE_OVERRIDE=0")
         return status(cfg)
 
     poky_bitbake = _bsp_bitbake(cfg)
@@ -528,7 +528,7 @@ def revert(cfg: BuildConfig, log: RunLogger | None = None) -> None:
     """Remove the symlink so the next ``repo sync --force-sync`` restores
     the BSP-bundled bitbake.
 
-    We do not invoke ``repo sync`` here ourselves - the next ``bspctl
+    We do not invoke ``repo sync`` here ourselves - the next ``bakar
     build`` will detect the missing tree and force a re-sync via the
     existing workspace step. Keeping revert minimal avoids surprising
     network/I/O when the user just wanted to disable the override.
@@ -538,8 +538,7 @@ def revert(cfg: BuildConfig, log: RunLogger | None = None) -> None:
         poky_bitbake.unlink()
         if log is not None:
             log.info(
-                f"removed symlink {poky_bitbake}; "
-                "next `bspctl build` will restore the BSP-bundled bitbake via repo sync"
+                f"removed symlink {poky_bitbake}; next `bakar build` will restore the BSP-bundled bitbake via repo sync"
             )
     elif log is not None:
         log.info(f"{poky_bitbake} is not a symlink; nothing to revert")

@@ -1,4 +1,4 @@
-"""Shared helpers used across bspctl subcommands.
+"""Shared helpers used across bakar subcommands.
 
 Pure functions and display utilities that do not themselves register
 Typer commands. Every subcommand module imports from here rather than
@@ -13,15 +13,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import typer
-from bspctl.bsp_detect import detect_bsp_from_yaml, detect_kas_workspace, is_bbsetup_workspace
-from bspctl.bsp_model import BspModel, detect_bsp_family, get_model
-from bspctl.diagnostics import CheckResult, Severity, Status
-from bspctl.layers import collect_layer_hashes
 from rich.table import Table
 
+from bakar.bsp_detect import detect_bsp_from_yaml, detect_kas_workspace, is_bbsetup_workspace
+from bakar.bsp_model import BspModel, detect_bsp_family, get_model
+from bakar.diagnostics import CheckResult, Severity, Status
+from bakar.layers import collect_layer_hashes
+
 if TYPE_CHECKING:
-    from bspctl.config import BuildConfig
-    from bspctl.layers import LayerHash
+    from bakar.config import BuildConfig
+    from bakar.layers import LayerHash
 
 # ---------------------------------------------------------------------------
 # Workspace detection
@@ -69,24 +70,24 @@ def _workspace_from_cwd() -> Path:
     """Walk up from CWD to find the BSP workspace root.
 
     Checks in order:
-    1. A .bspctl.toml marker file in the candidate directory.
+    1. A .bakar.toml marker file in the candidate directory.
     2. An nxp/ or ti/ subdirectory in the candidate directory.
     3. A bitbake-setup workspace (config/config-upstream.json + build/init-build-env).
     """
-    from bspctl.commands import console
+    from bakar.commands import console
 
     cur = Path.cwd().resolve()
     for candidate in (cur, *cur.parents):
-        if (candidate / ".bspctl.toml").is_file():
+        if (candidate / ".bakar.toml").is_file():
             return candidate
         if (candidate / "nxp").is_dir() or (candidate / "ti").is_dir():
             return candidate
         if is_bbsetup_workspace(candidate):
             return candidate
     console.print(
-        "[red]Not inside a BSP workspace[/] (no .bspctl.toml or nxp/ / ti/ found). "
+        "[red]Not inside a BSP workspace[/] (no .bakar.toml or nxp/ / ti/ found). "
         "cd to the workspace root, pass --workspace, or - for generic kas YAMLs - run "
-        "`bspctl build <kas.yml>` from anywhere."
+        "`bakar build <kas.yml>` from anywhere."
     )
     raise typer.Exit(code=2)
 
@@ -99,7 +100,7 @@ def _resolve_workspace(
 ) -> Path:
     """Resolve the workspace path with a BYO+generic carve-out.
 
-    Generic mode (``bspctl build my.yml`` where ``my.yml`` does not
+    Generic mode (``bakar build my.yml`` where ``my.yml`` does not
     target an NXP/TI SoM) does not own a workspace subtree - the
     overlay symlink and per-run state land next to the user's YAML.
     Skip the cwd walk in that case so generic builds work from any
@@ -146,32 +147,30 @@ def _overlay_dir() -> Path:
 
     Uses ``importlib.resources`` so the lookup works for both editable
     installs (source tree) and wheel installs (site-packages).
-    ``uv_build`` includes all non-``.py`` files under ``src/bspctl/``
-    automatically, so the YAMLs land at ``bspctl/overlays/`` in the wheel.
+    ``uv_build`` includes all non-``.py`` files under ``src/bakar/``
+    automatically, so the YAMLs land at ``bakar/overlays/`` in the wheel.
     """
-    return Path(str(importlib.resources.files("bspctl") / "overlays"))
+    return Path(str(importlib.resources.files("bakar") / "overlays"))
 
 
 def _overlay_for(bsp: BspModel | None) -> Path:
     """Return the absolute path to the static tuning overlay.
 
-    ``bsp=None`` selects ``bspctl-tuning-generic.yml`` - the BSP-agnostic
-    overlay used by the ``bspctl build my.yml`` flow when the YAML does
+    ``bsp=None`` selects ``bakar-tuning-generic.yml`` - the BSP-agnostic
+    overlay used by the ``bakar build my.yml`` flow when the YAML does
     not classify as NXP or TI.
     """
-    filename = bsp.tuning_overlay_filename if bsp is not None else "bspctl-tuning-generic.yml"
+    filename = bsp.tuning_overlay_filename if bsp is not None else "bakar-tuning-generic.yml"
     path = _overlay_dir() / filename
     if not path.is_file():
-        raise typer.BadParameter(
-            f"tuning overlay missing: {path}. Reinstall bspctl or restore the overlays/ directory."
-        )
+        raise typer.BadParameter(f"tuning overlay missing: {path}. Reinstall bakar or restore the overlays/ directory.")
     return path
 
 
 def _hashequiv_extra_overlays(cfg: BuildConfig) -> list[Path]:
     """Return the hashequiv overlay path when ``cfg.use_hashequiv`` is True.
 
-    Returns ``[<overlay-dir>/bspctl-tuning-hashequiv.yml]`` when the user has
+    Returns ``[<overlay-dir>/bakar-tuning-hashequiv.yml]`` when the user has
     opted into the hash-equivalence daemon via ``[build] hashserv = true`` AND
     the overlay file is present in the installed ``overlays/`` directory.
     Returns ``[]`` otherwise. Callers append the result to ``extra_overlays``
@@ -179,7 +178,7 @@ def _hashequiv_extra_overlays(cfg: BuildConfig) -> list[Path]:
     """
     if not cfg.use_hashequiv:
         return []
-    path = _overlay_dir() / "bspctl-tuning-hashequiv.yml"
+    path = _overlay_dir() / "bakar-tuning-hashequiv.yml"
     if not path.is_file():
         return []
     return [path]
@@ -191,12 +190,12 @@ def _hashequiv_extra_overlays(cfg: BuildConfig) -> list[Path]:
 
 
 def _clean_build_dir(cfg: BuildConfig) -> None:
-    """Remove the BSP-specific ``build/`` dir. Shared by ``bspctl clean``
-    and ``bspctl build --clean``. No-op if the dir is already absent.
+    """Remove the BSP-specific ``build/`` dir. Shared by ``bakar clean``
+    and ``bakar build --clean``. No-op if the dir is already absent.
     """
     import shutil
 
-    from bspctl.commands import console
+    from bakar.commands import console
 
     build_dir = cfg.bsp_root / "build"
     if build_dir.exists():
@@ -212,14 +211,14 @@ def _clean_build_dir(cfg: BuildConfig) -> None:
 def _dispatch_bsp(manifest_arg: str | None) -> tuple[Literal["nxp", "ti"], BspModel]:
     """Detect the BSP family from the manifest filename and return ``(family, model)``.
 
-    Inspects ``--manifest`` first, then ``BSPCTL_MANIFEST``, then falls
+    Inspects ``--manifest`` first, then ``BAKAR_MANIFEST``, then falls
     back to the NXP default. Refuses unrecognized shapes with a
     typer.Exit(2) and a hint pointing at the versioning references.
     """
-    from bspctl.commands import console
-    from bspctl.config import DEFAULT_NXP_MANIFEST
+    from bakar.commands import console
+    from bakar.config import DEFAULT_NXP_MANIFEST
 
-    pre = manifest_arg or os.environ.get("BSPCTL_MANIFEST") or DEFAULT_NXP_MANIFEST
+    pre = manifest_arg or os.environ.get("BAKAR_MANIFEST") or DEFAULT_NXP_MANIFEST
     family = detect_bsp_family(Path(pre), config_file=None)
     if family == "unknown":
         console.print(
@@ -236,16 +235,16 @@ def _dispatch_bsp(manifest_arg: str | None) -> tuple[Literal["nxp", "ti"], BspMo
 def _dispatch_from_yaml(yaml_path: Path) -> tuple[Literal["nxp", "ti", "generic"], BspModel | None]:
     """Detect the BSP family from a kas YAML and return ``(family, model)``.
 
-    Used by the BYO ``bspctl build my.yml`` path. Inspects the YAML's
+    Used by the BYO ``bakar build my.yml`` path. Inspects the YAML's
     ``machine:`` and ``repos:`` blocks via
-    :func:`bspctl.bsp_detect.detect_bsp_from_yaml`. Returns the
+    :func:`bakar.bsp_detect.detect_bsp_from_yaml`. Returns the
     matching :class:`BspModel` for NXP/TI and ``None`` for generic
     builds (no BspModel applies; the caller layers
-    ``bspctl-tuning-generic.yml`` and skips vendor-specific pipeline
+    ``bakar-tuning-generic.yml`` and skips vendor-specific pipeline
     steps). Refuses ``"unknown"`` shapes (empty / unparseable YAMLs)
     with a typer.Exit(2).
     """
-    from bspctl.commands import console
+    from bakar.commands import console
 
     if not yaml_path.is_file():
         console.print(f"[red]kas YAML not found:[/red] {yaml_path}")
@@ -270,7 +269,7 @@ def _dispatch_from_yaml(yaml_path: Path) -> tuple[Literal["nxp", "ti", "generic"
 
 
 def _print_diagnosis(results: list[CheckResult]) -> None:
-    from bspctl.commands import console
+    from bakar.commands import console
 
     if all(r.status is Status.PASS for r in results):
         console.print(f"doctor: {len(results)}/{len(results)} checks passed")
@@ -314,7 +313,7 @@ def _print_layer_hashes(cfg: BuildConfig, hashes: list[LayerHash] | None = None)
     Prints nothing when no layer hashes are available (no
     ``bblayers.conf`` yet, or every repo skipped).
     """
-    from bspctl.commands import console
+    from bakar.commands import console
 
     if hashes is None:
         hashes = collect_layer_hashes(cfg)

@@ -1,20 +1,21 @@
-"""bspctl gen-kas subcommand - regenerate kas YAML without building."""
+"""bakar gen-kas subcommand - regenerate kas YAML without building."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Annotated
 
-import bspctl.commands._app as _state
 import typer
-from bspctl.commands._app import app, console
-from bspctl.commands._helpers import (
+
+import bakar.commands._app as _state
+from bakar.commands._app import app, console
+from bakar.commands._helpers import (
     _bbsetup_workspace,
     _dispatch_bsp,
     _workspace_from_cwd,
 )
-from bspctl.config import resolve
-from bspctl.kas import KasGenOptions, write_bbsetup_yaml, write_yaml
+from bakar.config import resolve
+from bakar.kas import KasGenOptions, write_bbsetup_yaml, write_yaml
 
 
 @app.command("gen-kas")
@@ -37,8 +38,8 @@ def gen_kas(
 
     Output is the manifest -> repos topology only. The BSP tuning
     block and the meta-varis-overrides repo entry live in the static
-    overlay at ``overlays/bspctl-tuning-<bsp>.yml`` and are layered in
-    by ``bspctl build`` at run time.
+    overlay at ``overlays/bakar-tuning-<bsp>.yml`` and are layered in
+    by ``bakar build`` at run time.
 
     Default output path is ``<bsp_root>/kas-<bsp>.yml``; use
     ``-o my-build.yml`` to write somewhere else.

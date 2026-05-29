@@ -1,4 +1,4 @@
-"""bspctl for-all subcommand - run a shell command in every source repo."""
+"""bakar for-all subcommand - run a shell command in every source repo."""
 
 from __future__ import annotations
 
@@ -7,23 +7,24 @@ import subprocess
 from pathlib import Path
 from typing import Annotated
 
-import bspctl.commands._app as _state
 import typer
-from bspctl.commands._app import app, console
-from bspctl.commands._helpers import (
+
+import bakar.commands._app as _state
+from bakar.commands._app import app, console
+from bakar.commands._helpers import (
     _dispatch_bsp,
     _dispatch_from_yaml,
     _resolve_workspace,
 )
-from bspctl.config import resolve
-from bspctl.layers import discover_source_repos
+from bakar.config import resolve
+from bakar.layers import discover_source_repos
 
 
 def _git_head(path: Path) -> str:
     """Return the full HEAD commit hash, or an empty string on failure.
 
     Mirrors the git-failure-tolerant style in ``layers.py``: a repo with no
-    commits or a broken ``git`` invocation yields an empty ``BSPCTL_REPO_COMMIT``
+    commits or a broken ``git`` invocation yields an empty ``BAKAR_REPO_COMMIT``
     rather than aborting the whole ``for-all`` run.
     """
     try:
@@ -63,7 +64,7 @@ def for_all(
 
     Visits every repo even when one invocation fails; exits non-zero if any
     invocation exited non-zero, zero only when all succeeded. Each invocation
-    sees ``BSPCTL_REPO_NAME``, ``BSPCTL_REPO_PATH``, and ``BSPCTL_REPO_COMMIT``
+    sees ``BAKAR_REPO_NAME``, ``BAKAR_REPO_PATH``, and ``BAKAR_REPO_COMMIT``
     in its environment.
     """
     if kas_yaml is not None and manifest is not None:
@@ -81,7 +82,7 @@ def for_all(
 
     repos = discover_source_repos(cfg)
     if not repos:
-        console.print("[red]no source repos found[/]; run `bspctl build` or `bspctl sync` first")
+        console.print("[red]no source repos found[/]; run `bakar build` or `bakar sync` first")
         raise typer.Exit(code=1)
 
     failed = False
@@ -89,9 +90,9 @@ def for_all(
         console.print(f"[bold cyan]=== {name} ({path}) ===[/]")
         env = {
             **os.environ,
-            "BSPCTL_REPO_NAME": name,
-            "BSPCTL_REPO_PATH": str(path),
-            "BSPCTL_REPO_COMMIT": _git_head(path),
+            "BAKAR_REPO_NAME": name,
+            "BAKAR_REPO_PATH": str(path),
+            "BAKAR_REPO_COMMIT": _git_head(path),
         }
         # shell=True is intentional: the user owns the command (parity with
         # `kas for-all-repos`), so pipes, globs, and `&&` work as in a shell.

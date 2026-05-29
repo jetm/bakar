@@ -1,4 +1,4 @@
-"""bspctl entry point - imports all command modules to register @app.command() handlers."""
+"""bakar entry point - imports all command modules to register @app.command() handlers."""
 
 from __future__ import annotations
 
@@ -15,34 +15,34 @@ try:
 except ImportError:  # pragma: no cover - typer < 0.26 path
     from click import exceptions as _click_exc
 
-import bspctl.commands.build  # noqa: F401
-import bspctl.commands.clean  # noqa: F401
-import bspctl.commands.clean_sstate  # noqa: F401
-import bspctl.commands.diff  # noqa: F401
-import bspctl.commands.doctor  # noqa: F401
-import bspctl.commands.dump  # noqa: F401
-import bspctl.commands.for_all  # noqa: F401
-import bspctl.commands.gen_kas  # noqa: F401
-import bspctl.commands.hashserv  # noqa: F401
-import bspctl.commands.layers  # noqa: F401
-import bspctl.commands.lock  # noqa: F401
-import bspctl.commands.log  # noqa: F401
-import bspctl.commands.override  # noqa: F401
-import bspctl.commands.prefetch  # noqa: F401
-import bspctl.commands.report  # noqa: F401
-import bspctl.commands.settings  # noqa: F401
-import bspctl.commands.shell  # noqa: F401
-import bspctl.commands.stress_parse  # noqa: F401
-import bspctl.commands.sync  # noqa: F401
-import bspctl.commands.triage  # noqa: F401
-from bspctl.commands import app  # noqa: F401 - re-exported for pyproject.toml entry point
-from bspctl.commands._app import console
+import bakar.commands.build  # noqa: F401
+import bakar.commands.clean  # noqa: F401
+import bakar.commands.clean_sstate  # noqa: F401
+import bakar.commands.diff  # noqa: F401
+import bakar.commands.doctor  # noqa: F401
+import bakar.commands.dump  # noqa: F401
+import bakar.commands.for_all  # noqa: F401
+import bakar.commands.gen_kas  # noqa: F401
+import bakar.commands.hashserv  # noqa: F401
+import bakar.commands.layers  # noqa: F401
+import bakar.commands.lock  # noqa: F401
+import bakar.commands.log  # noqa: F401
+import bakar.commands.override  # noqa: F401
+import bakar.commands.prefetch  # noqa: F401
+import bakar.commands.report  # noqa: F401
+import bakar.commands.settings  # noqa: F401
+import bakar.commands.shell  # noqa: F401
+import bakar.commands.stress_parse  # noqa: F401
+import bakar.commands.sync  # noqa: F401
+import bakar.commands.triage  # noqa: F401
+from bakar.commands import app  # noqa: F401 - re-exported for pyproject.toml entry point
+from bakar.commands._app import console
 
 __all__ = ["app", "main"]
 
 
 def main() -> int:
-    """Run the bspctl CLI with plain (non-Rich-panel) error output."""
+    """Run the bakar CLI with plain (non-Rich-panel) error output."""
     try:
         # standalone_mode=False prevents Click from calling sys.exit AND prevents
         # Typer's rich_utils from rendering UsageError/BadParameter inside a Panel.

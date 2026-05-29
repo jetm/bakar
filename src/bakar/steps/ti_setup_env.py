@@ -1,6 +1,6 @@
 """Reconcile ``ti/build/conf/local.conf`` with the requested machine/distro.
 
-Mirrors the role of :mod:`bspctl.steps.setup_env` for the NXP
+Mirrors the role of :mod:`bakar.steps.setup_env` for the NXP
 side. ``oe-layertool-setup.sh`` writes a ``local.conf`` next to the
 sources tree; this step idempotently overrides ``MACHINE``,
 ``DISTRO``, and strips any leftover ``DL_DIR`` line so the kas tuning
@@ -13,8 +13,8 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from bspctl.config import BuildConfig
-    from bspctl.observability import RunLogger
+    from bakar.config import BuildConfig
+    from bakar.observability import RunLogger
 
 
 _MACHINE_RE = re.compile(r"^\s*MACHINE\s*\??=", re.MULTILINE)

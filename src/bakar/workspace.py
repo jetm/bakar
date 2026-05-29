@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from bspctl.config import BuildConfig
+    from bakar.config import BuildConfig
 
 # -- helpers (used by detect()) ------------------------------------------------
 

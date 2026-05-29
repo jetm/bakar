@@ -1,21 +1,22 @@
-"""bspctl layers subcommand - display synced layer git state."""
+"""bakar layers subcommand - display synced layer git state."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Annotated
 
-import bspctl.commands._app as _state
 import typer
-from bspctl.commands._app import app, console
-from bspctl.commands._helpers import (
+
+import bakar.commands._app as _state
+from bakar.commands._app import app, console
+from bakar.commands._helpers import (
     _dispatch_bsp,
     _dispatch_from_yaml,
     _print_layer_hashes,
     _resolve_workspace,
 )
-from bspctl.config import resolve
-from bspctl.layers import collect_layer_hashes
+from bakar.config import resolve
+from bakar.layers import collect_layer_hashes
 
 
 @app.command("layers")
@@ -56,7 +57,7 @@ def layers(
 
     hashes = collect_layer_hashes(cfg)
     if not hashes:
-        console.print("no layers yet; run `bspctl build` or `bspctl sync` first")
+        console.print("no layers yet; run `bakar build` or `bakar sync` first")
         raise typer.Exit(code=0)
 
     _print_layer_hashes(cfg, hashes=hashes)
