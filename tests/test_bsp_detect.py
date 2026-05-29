@@ -9,7 +9,7 @@ parseable YAMLs that have at least one of those anchors.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
@@ -21,9 +21,6 @@ from bspctl.bsp_detect import (
 )
 
 pytestmark = pytest.mark.unit
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _write(tmp_path: Path, body: str) -> Path:
@@ -125,9 +122,7 @@ def test_missing_file_returns_unknown(tmp_path: Path) -> None:
 
 def test_real_nxp_example_classifies_as_nxp() -> None:
     """Smoke-test the shipped example."""
-    from pathlib import Path as _P
-
-    repo_root = _P(__file__).resolve().parent.parent
+    repo_root = Path(__file__).resolve().parent.parent
     example = repo_root / "examples" / "kas-imx95-var-dart.yml"
     assert example.is_file(), f"missing fixture: {example}"
     assert detect_bsp_from_yaml(example) == "nxp"
@@ -135,9 +130,7 @@ def test_real_nxp_example_classifies_as_nxp() -> None:
 
 def test_real_ti_example_classifies_as_ti() -> None:
     """Smoke-test the shipped example."""
-    from pathlib import Path as _P
-
-    repo_root = _P(__file__).resolve().parent.parent
+    repo_root = Path(__file__).resolve().parent.parent
     example = repo_root / "examples" / "kas-am62x-var-som.yml"
     assert example.is_file(), f"missing fixture: {example}"
     assert detect_bsp_from_yaml(example) == "ti"
