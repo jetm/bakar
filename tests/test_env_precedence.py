@@ -18,6 +18,7 @@ from bakar.config import (
     resolve,
 )
 from bakar.user_config import UserConfig
+from bakar.workspace_config import write_workspace_config
 
 pytestmark = pytest.mark.unit
 
@@ -275,3 +276,70 @@ def test_no_user_config_yields_none_tuning_fields(tmp_path) -> None:
     assert cfg.pressure_max_cpu is None
     assert cfg.pressure_max_io is None
     assert cfg.pressure_max_memory is None
+
+
+# ---------------------------------------------------------------------------
+# 6. Workspace tier (.bakar.toml values)
+#
+# These tests exercise the lazy auto-load path inside resolve(): they write a
+# real .bakar.toml in tmp_path via write_workspace_config() and call resolve()
+# with workspace=tmp_path, without passing workspace_config explicitly. The
+# loader inside resolve() reads the file from the workspace path.
+# ---------------------------------------------------------------------------
+
+
+def test_workspace_machine_beats_user_config(tmp_path, monkeypatch):
+    """A workspace .bakar.toml value must override the matching user_config field."""
+    monkeypatch.delenv(_MACHINE_VAR, raising=False)
+    write_workspace_config(tmp_path, "nxp", {"machine": "workspace-board"})
+    uc = UserConfig(nxp_machine="config-board")
+
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+
+    assert cfg.machine == "workspace-board", "workspace .bakar.toml machine must beat user_config.nxp_machine"
+
+
+def test_env_machine_beats_workspace(tmp_path, monkeypatch):
+    """An env var must override the matching workspace .bakar.toml value."""
+    monkeypatch.setenv(_MACHINE_VAR, "env-board")
+    write_workspace_config(tmp_path, "nxp", {"machine": "workspace-board"})
+
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+
+    assert cfg.machine == "env-board", f"{_MACHINE_VAR} env var must beat the workspace .bakar.toml machine"
+
+
+def test_cli_machine_beats_workspace(tmp_path, monkeypatch):
+    """An explicit CLI arg must override the matching workspace .bakar.toml value."""
+    monkeypatch.delenv(_MACHINE_VAR, raising=False)
+    write_workspace_config(tmp_path, "nxp", {"machine": "workspace-board"})
+
+    cfg = resolve(
+        workspace=_workspace(tmp_path),
+        bsp_family="nxp",
+        machine="cli-board",  # CLI flag
+    )
+
+    assert cfg.machine == "cli-board", "CLI flag 'machine' must beat the workspace .bakar.toml machine"
+
+
+def test_workspace_machine_beats_default(tmp_path, monkeypatch):
+    """A workspace value must override the built-in default when user config is also absent."""
+    monkeypatch.delenv(_MACHINE_VAR, raising=False)
+    write_workspace_config(tmp_path, "nxp", {"machine": "workspace-board"})
+
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+
+    assert cfg.machine == "workspace-board", "workspace .bakar.toml machine must beat the built-in default"
+    assert cfg.machine != DEFAULT_NXP_MACHINE
+
+
+def test_workspace_absent_falls_through_to_user_config(tmp_path, monkeypatch):
+    """With no .bakar.toml present, the user_config field is used."""
+    monkeypatch.delenv(_MACHINE_VAR, raising=False)
+    assert not (tmp_path / ".bakar.toml").exists()
+    uc = UserConfig(nxp_machine="config-board")
+
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+
+    assert cfg.machine == "config-board", "absent workspace .bakar.toml must fall through to user_config.nxp_machine"
