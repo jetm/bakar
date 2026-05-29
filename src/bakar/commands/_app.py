@@ -5,11 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Annotated
 
 import typer
-from rich.console import Console
-
 from bspctl import __version__
 from bspctl.user_config import load_user_config
 from bspctl.vendor_config import load_vendors
+from rich.console import Console
 
 if TYPE_CHECKING:
     from bspctl.user_config import UserConfig

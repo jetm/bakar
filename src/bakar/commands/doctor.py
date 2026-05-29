@@ -7,10 +7,8 @@ import time
 from pathlib import Path
 from typing import Annotated
 
-import typer
-from rich.table import Table
-
 import bspctl.commands._app as _state
+import typer
 from bspctl.commands._app import app, console
 from bspctl.commands._helpers import (
     _bbsetup_workspace,
@@ -21,6 +19,7 @@ from bspctl.commands._helpers import (
 )
 from bspctl.config import resolve
 from bspctl.diagnostics import _read_psi_avg10, any_blocking_failure, run_all
+from rich.table import Table
 
 _PSI_CLAMP = 95
 _PSI_MEMORY_FLOOR = 20

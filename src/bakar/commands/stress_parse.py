@@ -6,10 +6,8 @@ import os
 from pathlib import Path
 from typing import Annotated
 
-import typer
-from rich.table import Table
-
 import bspctl.commands._app as _state
+import typer
 from bspctl.commands._app import app, console
 from bspctl.commands._helpers import (
     _dispatch_bsp,
@@ -21,6 +19,7 @@ from bspctl.observability import RunLogger
 from bspctl.steps import bitbake_override as step_override
 from bspctl.steps import kas_build as step_kas
 from bspctl.steps import stress_parse as step_stress_parse
+from rich.table import Table
 
 
 @app.command("stress-parse")

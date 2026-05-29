@@ -33,15 +33,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
+from bspctl import hashserv
+from bspctl.kas import KasGenOptions, write_yaml
 from rich.progress import (
     BarColumn,
     Progress,
     TextColumn,
     TimeElapsedColumn,
 )
-
-from bspctl import hashserv
-from bspctl.kas import KasGenOptions, write_yaml
 
 if TYPE_CHECKING:
     from bspctl.bsp_model import BspModel

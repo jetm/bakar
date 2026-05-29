@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Annotated
 
 import typer
-
 from bspctl.commands._app import app, console
 from bspctl.user_config import (
     get_setting,

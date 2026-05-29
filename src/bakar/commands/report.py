@@ -7,9 +7,8 @@ import json
 from pathlib import Path
 from typing import Annotated, Literal
 
-import typer
-
 import bspctl.commands._app as _state
+import typer
 from bspctl.commands._app import app, console
 from bspctl.commands._helpers import _bbsetup_workspace, _find_run, _print_layer_hashes, _workspace_from_cwd
 from bspctl.config import resolve

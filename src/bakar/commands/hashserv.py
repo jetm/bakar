@@ -13,9 +13,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated
 
-import typer
-
 import bspctl.commands._app as _state
+import typer
 from bspctl import hashserv
 from bspctl.commands._app import app, console
 from bspctl.commands._helpers import _dispatch_bsp, _dispatch_from_yaml, _resolve_workspace

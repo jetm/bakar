@@ -1,5 +1,5 @@
 [project]
-name = "bspctl"
+name = "bakar"
 version = "0.4.0"
 description = "kas wrapper for Yocto BSP builds - repo tool sync, pre-flight checks, triage"
 readme = "README.md"
@@ -33,12 +33,12 @@ dependencies = [
 ]
 
 [project.urls]
-"Bug Tracker" = "https://github.com/jetm/bspctl/issues"
-Homepage = "https://github.com/jetm/bspctl"
-Repository = "https://github.com/jetm/bspctl"
+"Bug Tracker" = "https://github.com/jetm/bakar/issues"
+Homepage = "https://github.com/jetm/bakar"
+Repository = "https://github.com/jetm/bakar"
 
 [project.scripts]
-bspctl = "bspctl.cli:main"
+bakar = "bakar.cli:main"
 
 [dependency-groups]
 dev = [
@@ -74,7 +74,7 @@ search = "version = \"{current_version}\""
 replace = "version = \"{new_version}\""
 
 [[tool.bumpversion.files]]
-filename = "src/bspctl/__init__.py"
+filename = "src/bakar/__init__.py"
 search = "__version__ = \"{current_version}\""
 replace = "__version__ = \"{new_version}\""
 
@@ -85,12 +85,12 @@ replace = "## [Unreleased]\n\n## [{new_version}] - {now:%Y-%m-%d}"
 
 [[tool.bumpversion.files]]
 filename = "CHANGELOG.md"
-search = "[Unreleased]: https://github.com/jetm/bspctl/compare/v{current_version}...HEAD"
-replace = "[Unreleased]: https://github.com/jetm/bspctl/compare/v{new_version}...HEAD\n[{new_version}]: https://github.com/jetm/bspctl/compare/v{current_version}...v{new_version}"
+search = "[Unreleased]: https://github.com/jetm/bakar/compare/v{current_version}...HEAD"
+replace = "[Unreleased]: https://github.com/jetm/bakar/compare/v{new_version}...HEAD\n[{new_version}]: https://github.com/jetm/bakar/compare/v{current_version}...v{new_version}"
 
 [tool.coverage.run]
 branch = true
-source = ["bspctl"]
+source = ["bakar"]
 
 [tool.coverage.report]
 fail_under = 60
@@ -104,7 +104,7 @@ exclude_lines = [
 ]
 
 [tool.pytest.ini_options]
-addopts = ["-v", "--tb=short", "--cov=bspctl", "--cov-report=term-missing"]
+addopts = ["-v", "--tb=short", "--cov=bakar", "--cov-report=term-missing"]
 markers = [
   "unit: fast hermetic tests with no external tools or services",
   "integration: tests requiring external tools or services",
@@ -137,13 +137,13 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["bspctl"]
+known-first-party = ["bakar"]
 
 [tool.ruff.lint.per-file-ignores]
-"src/bspctl/cli.py" = ["B008"]
+"src/bakar/cli.py" = ["B008"]
 # Typer evaluates annotations at runtime via inspect.signature(eval_str=True);
 # Path and other stdlib types used in command signatures must not be TYPE_CHECKING-guarded.
-"src/bspctl/commands/*.py" = ["TC003"]
+"src/bakar/commands/*.py" = ["TC003"]
 
 [tool.ty.rules]
 # Noisy without full type annotations - project uses gradual typing
@@ -159,5 +159,5 @@ not-subscriptable = "ignore"
 package = true
 
 [tool.uv.build-backend]
-module-name = "bspctl"
+module-name = "bakar"
 module-root = "src"

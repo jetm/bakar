@@ -13,12 +13,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import typer
-from rich.table import Table
-
 from bspctl.bsp_detect import detect_bsp_from_yaml, detect_kas_workspace, is_bbsetup_workspace
 from bspctl.bsp_model import BspModel, detect_bsp_family, get_model
 from bspctl.diagnostics import CheckResult, Severity, Status
 from bspctl.layers import collect_layer_hashes
+from rich.table import Table
 
 if TYPE_CHECKING:
     from bspctl.config import BuildConfig

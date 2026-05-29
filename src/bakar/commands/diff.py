@@ -6,9 +6,8 @@ import subprocess
 from pathlib import Path
 from typing import Annotated
 
-import typer
-
 import bspctl.commands._app as _state
+import typer
 from bspctl.commands._app import app, console
 from bspctl.commands._helpers import _dispatch_bsp, _resolve_workspace
 from bspctl.config import resolve
