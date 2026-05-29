@@ -90,10 +90,42 @@ When neither manifest nor YAML is supplied and the CWD (or `--workspace`) is a b
 Create `.bakar.toml` in any directory to declare it as a workspace root:
 
 ```toml
-# empty file is sufficient; content is reserved for future use
+# empty file is sufficient; optional content sets workspace defaults (see below)
 ```
 
 Then any command run from within that directory tree will use it as the workspace root without the `nxp/`/`ti/` subdirectory heuristic.
+
+## Workspace defaults
+
+Beyond acting as a presence marker, `.bakar.toml` may carry workspace-scoped defaults. These persist the selections that `bakar init` writes, so you do not have to repeat manifest/machine/distro flags on every invocation inside the workspace.
+
+The schema mirrors the user-level `~/.config/bakar/config.toml`: same `[defaults.<family>]` section names, same key names, narrower scope.
+
+| Section | Keys | Applies to |
+|---------|------|------------|
+| `[defaults.nxp]` | `manifest`, `machine`, `distro`, `image` | NXP i.MX builds |
+| `[defaults.ti]` | `manifest`, `machine`, `distro`, `image` | TI Sitara builds |
+| `[defaults.generic]` | `kas_yaml`, `machine` | Generic / BYO kas builds |
+
+- `manifest` - repo/oe-layertool manifest filename
+- `machine` - Yocto `MACHINE`
+- `distro` - Yocto `DISTRO` (nxp/ti only)
+- `image` - target image recipe (nxp/ti only)
+- `kas_yaml` - kas YAML filename for generic workspaces
+
+Workspace defaults sit between `BAKAR_*` env vars and the user `config.toml` in the precedence chain (`CLI flag > BAKAR_* env var > workspace .bakar.toml > user config.toml > built-in default`).
+
+A generic / BYO workspace (Peridio-style) looks like:
+
+```toml
+# bakar workspace root.
+
+[defaults.generic]
+kas_yaml = "avocado-bspctl.yml"
+machine  = "qemux86-64"
+```
+
+`bakar init` writes this file for you. See [init.md](init.md) for the wizard that scaffolds a workspace and populates these defaults.
 
 ## See also
 
