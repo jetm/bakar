@@ -239,8 +239,8 @@ def _run_kas_dump(
     # reachable from origin/<branch> even though it is present locally.
     # kas validates against the remote tracking ref, so the checkout step
     # fails. Retry skipping that validation - all repos are locally present.
-    _GIT_STATE_MARKERS = ("does not contain commit", "no such remote ref")
-    if any(m in result.stderr for m in _GIT_STATE_MARKERS):
+    _git_state_markers = ("does not contain commit", "no such remote ref")
+    if any(m in result.stderr for m in _git_state_markers):
         retry = subprocess.run(
             ["kas", "dump", "--skip", "repos_checkout", kas_files],
             cwd=str(cfg.bsp_root),

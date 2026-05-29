@@ -89,10 +89,13 @@ search = "[Unreleased]: https://github.com/jetm/bspctl/compare/v{current_version
 replace = "[Unreleased]: https://github.com/jetm/bspctl/compare/v{new_version}...HEAD\n[{new_version}]: https://github.com/jetm/bspctl/compare/v{current_version}...v{new_version}"
 
 [tool.coverage.run]
+branch = true
 source = ["bspctl"]
 
 [tool.coverage.report]
 fail_under = 60
+omit = ["tests/*"]
+show_missing = true
 exclude_lines = [
   "pragma: no cover",
   "if TYPE_CHECKING:",
@@ -101,7 +104,7 @@ exclude_lines = [
 ]
 
 [tool.pytest.ini_options]
-addopts = ["-v", "--tb=short"]
+addopts = ["-v", "--tb=short", "--cov=bspctl", "--cov-report=term-missing"]
 markers = [
   "unit: fast hermetic tests with no external tools or services",
   "integration: tests requiring external tools or services",
@@ -119,6 +122,8 @@ select = [
   "E",  # pycodestyle errors
   "F",  # Pyflakes
   "I",  # isort
+  "N",  # pep8-naming
+  "W",  # pycodestyle warnings
   "UP",  # pyupgrade
   "B",  # flake8-bugbear
   "SIM",  # flake8-simplify
