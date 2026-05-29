@@ -1,0 +1,15 @@
+source_roots = ["src"]
+
+# Tach can enforce boundaries between the two sub-packages (steps, commands).
+# The foundation/core/analysis distinction is at the individual-.py-file level
+# within src/bakar/ — tach cannot separate those without sub-packaging them.
+# Use `devspec_mechanical_checks` / `/ds-arch fitness check` with .arch-rules.toml
+# for the full 5-group boundary enforcement.
+
+[[modules]]
+path = "bakar/steps"
+depends_on = []
+
+[[modules]]
+path = "bakar/commands"
+depends_on = []
