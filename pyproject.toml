@@ -98,6 +98,12 @@ omit = [
 
 [tool.coverage.report]
 precision = 2
+# Measured TOTAL after un-omitting steps/ and pragma'ing the irreducible
+# subprocess/PTY/thread core is 80.72% (test-steps-executors task 2.1).
+# Design assumption A2 predicted >=90%; falsified - run_build orchestration
+# (du_loop, _heartbeat, cmd-build/Progress cleanup) plus run_shell /
+# run_shell_capture / run_kas_subcommand bodies cap the testable remainder.
+# Floor stays at 80 (largest multiple of 5 at or below 80.72, not lowered).
 fail_under = 80
 show_missing = true
 exclude_lines = [
