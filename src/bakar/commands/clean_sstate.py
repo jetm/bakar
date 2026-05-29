@@ -61,6 +61,27 @@ def _fmt_size(n_bytes: int) -> str:
     return f"{n_bytes:.1f} PiB"
 
 
+def _scan_stale_files(effective_dir: Path, stat_attr: str, cutoff_ts: float) -> tuple[list[Path], int]:
+    """Return (stale_files, total_stale_bytes) for entries older than cutoff_ts.
+
+    Uses stat_attr ('st_atime' or 'st_mtime') for the age comparison.
+    """
+    stale: list[Path] = []
+    total = 0
+    for f in effective_dir.rglob("*"):
+        if not f.is_file(follow_symlinks=False):
+            continue
+        try:
+            st = f.stat()
+            ts = getattr(st, stat_attr)
+        except OSError:
+            continue
+        if ts < cutoff_ts:
+            stale.append(f)
+            total += st.st_size
+    return stale, total
+
+
 @app.command(name="clean-sstate")
 def clean_sstate(
     older_than: Annotated[
@@ -110,7 +131,6 @@ def clean_sstate(
 
     if use_atime:
         time_label = "atime (last read)"
-        stat_attr = "st_atime"
     else:
         console.print(
             "[yellow]Warning:[/] noatime detected on this filesystem - "
@@ -118,26 +138,14 @@ def clean_sstate(
             "Files created more than N days ago will be removed even if reused recently."
         )
         time_label = "mtime (creation date)"
-        stat_attr = "st_mtime"
 
     console.print(f"Time basis : {time_label}")
     console.print(f"Threshold  : {older_than} days")
     console.print()
 
-    cutoff = time.time() - older_than * 86400
-
-    stale: list[Path] = []
-    total_bytes = 0
-    for f in effective_dir.rglob("*"):
-        if not f.is_file(follow_symlinks=False):
-            continue
-        try:
-            st = f.stat()
-        except OSError:
-            continue
-        if getattr(st, stat_attr) < cutoff:
-            stale.append(f)
-            total_bytes += st.st_size
+    stat_attr = "st_atime" if use_atime else "st_mtime"
+    cutoff_ts = time.time() - older_than * 86_400
+    stale, total_bytes = _scan_stale_files(effective_dir, stat_attr, cutoff_ts)
 
     if not stale:
         console.print(f"[green]Nothing to remove.[/] No files with {time_label} older than {older_than} days.")
