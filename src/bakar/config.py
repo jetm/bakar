@@ -71,6 +71,19 @@ def infer_repo_branch(manifest: str, fallback: str = DEFAULT_NXP_REPO_BRANCH) ->
     return fallback
 
 
+def pick(arg: str | None, env_key: str, ws_val: str | None, user_val: str | None, default: str) -> str:
+    if arg is not None:
+        return arg
+    env_val = os.environ.get(env_key)
+    if env_val:
+        return env_val
+    if ws_val is not None:
+        return ws_val
+    if user_val is not None:
+        return user_val
+    return default
+
+
 @dataclass(frozen=True)
 class _FamilyDefaults:
     d_machine: str
@@ -298,6 +311,32 @@ class BuildConfig:
         return self.bsp_root / "build" / "runs"
 
 
+def _resolve_branch(
+    bsp_family: Literal["nxp", "ti", "generic", "bbsetup"],
+    fd: _FamilyDefaults,
+    repo_branch: str | None,
+    resolved_manifest: str,
+) -> str:
+    """Resolve the effective repo branch from CLI flag, env, and BSP family inference."""
+    if bsp_family in ("generic", "bbsetup"):
+        return pick(repo_branch, "BAKAR_REPO_BRANCH", None, None, fd.d_branch)
+    if bsp_family == "ti":
+        from bakar.bsp_model import infer_bsp_branch
+
+        inferred = infer_bsp_branch(resolved_manifest)
+        if inferred == "<unknown>":
+            inferred = fd.d_branch
+        return pick(repo_branch, "BAKAR_REPO_BRANCH", None, None, inferred)
+    # nxp
+    return pick(
+        repo_branch,
+        "BAKAR_REPO_BRANCH",
+        None,
+        None,
+        infer_repo_branch(resolved_manifest, fd.d_branch),
+    )
+
+
 def resolve(
     *,
     workspace: Path,
@@ -354,44 +393,10 @@ def resolve(
 
         workspace_config = load_workspace_config(workspace)
 
-    def pick(arg: str | None, env_key: str, ws_val: str | None, user_val: str | None, default: str) -> str:
-        if arg is not None:
-            return arg
-        env_val = os.environ.get(env_key)
-        if env_val:
-            return env_val
-        if ws_val is not None:
-            return ws_val
-        if user_val is not None:
-            return user_val
-        return default
-
     fd = _family_defaults(bsp_family, user_config, workspace_config)
 
     resolved_manifest = pick(manifest, "BAKAR_MANIFEST", fd.ws_manifest, fd.u_manifest, fd.d_manifest)
-
-    if bsp_family in ("generic", "bbsetup"):
-        # No manifest, no branch inference - generic and bbsetup bypass both
-        # (bbsetup machine/distro come from the config translation step).
-        resolved_branch = pick(repo_branch, "BAKAR_REPO_BRANCH", None, None, fd.d_branch)
-    elif bsp_family == "ti":
-        # Lazy import: bsp_model has no cyclic deps on config.py, but
-        # keeping the import inside resolve() keeps module import order
-        # flexible.
-        from bakar.bsp_model import infer_bsp_branch
-
-        inferred = infer_bsp_branch(resolved_manifest)
-        if inferred == "<unknown>":
-            inferred = fd.d_branch
-        resolved_branch = pick(repo_branch, "BAKAR_REPO_BRANCH", None, None, inferred)
-    else:
-        resolved_branch = pick(
-            repo_branch,
-            "BAKAR_REPO_BRANCH",
-            None,
-            None,
-            infer_repo_branch(resolved_manifest, fd.d_branch),
-        )
+    resolved_branch = _resolve_branch(bsp_family, fd, repo_branch, resolved_manifest)
 
     # Auto-detect: when KAS_CONTAINER_IMAGE is absent from env and host_mode was
     # not explicitly requested, fall back to plain kas (no Docker) rather than the
