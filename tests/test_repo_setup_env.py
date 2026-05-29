@@ -198,6 +198,36 @@ def test_repo_missing_dir_runs_init(
     assert argv_subcmds == ["init", "sync"], f"unexpected subcommand order: {argv_subcmds!r}"
 
 
+def test_repo_sync_wipes_existing_build_conf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-existing ``nxp/build/conf/`` must be removed before sync.
+
+    The wipe-on-sync invariant documented in ``init_and_sync``'s docstring
+    guards against stale ``bblayers.conf`` from a previous branch
+    surviving a sync that moved layer SHAs out from under it. Without this
+    side effect, ``setup_env`` would not regenerate the file and the
+    subsequent build would fail with confusing layer-resolution errors.
+    """
+    nxp = tmp_path / "nxp"
+    nxp.mkdir()
+    (nxp / ".repo").mkdir()
+    build_conf = nxp / "build" / "conf"
+    build_conf.mkdir(parents=True)
+    (build_conf / "bblayers.conf").write_text("# stale\n", encoding="utf-8")
+
+    cfg = _nxp_cfg(tmp_path)
+    log = _FakeLogger()
+    recorder = _Recorder(returncode=0)
+    monkeypatch.setattr(repo_step.subprocess, "run", recorder)
+
+    repo_step.init_and_sync(cfg, log, force_init=False)
+
+    survivors = sorted(build_conf.iterdir()) if build_conf.exists() else "(absent)"
+    assert not build_conf.exists(), f"expected build/conf/ wiped, but it survived: {survivors!r}"
+
+
 # ---------------------------------------------------------------------------
 # setup_env.run
 # ---------------------------------------------------------------------------
