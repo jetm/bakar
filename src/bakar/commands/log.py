@@ -47,6 +47,27 @@ def _tail_follow(path: Path, history_lines: int = 40) -> None:
                 time.sleep(0.2)
 
 
+def _resolve_run_dir(runs_dir: Path, run: str | None) -> Path:
+    """Return the run directory for the given run ID, or the latest run if None.
+
+    Raises typer.Exit(code=1) when no runs exist or the requested ID is not found.
+    """
+    run_dirs = sorted(
+        (p for p in runs_dir.iterdir() if p.is_dir()),
+        key=lambda p: p.name,
+    )
+    if not run_dirs:
+        console.print("[red]no runs yet[/]; start one with `bakar build`")
+        raise typer.Exit(code=1)
+    if run is None:
+        return run_dirs[-1]
+    run_dir = runs_dir / run
+    if not run_dir.is_dir():
+        console.print(f"[red]run directory not found[/]: {run_dir}")
+        raise typer.Exit(code=1)
+    return run_dir
+
+
 @app.command("log")
 def log_cmd(
     kas_yaml: Annotated[
@@ -100,21 +121,7 @@ def log_cmd(
         console.print("[red]no runs yet[/]; start one with `bakar build`")
         raise typer.Exit(code=1)
 
-    run_dirs = sorted(
-        (p for p in runs_dir.iterdir() if p.is_dir()),
-        key=lambda p: p.name,
-    )
-    if not run_dirs:
-        console.print("[red]no runs yet[/]; start one with `bakar build`")
-        raise typer.Exit(code=1)
-
-    if run is None:
-        run_dir = run_dirs[-1]
-    else:
-        run_dir = runs_dir / run
-        if not run_dir.is_dir():
-            console.print(f"[red]run directory not found[/]: {run_dir}")
-            raise typer.Exit(code=1)
+    run_dir = _resolve_run_dir(runs_dir, run)
 
     log_name = _LOG_FILES[which]
     target = run_dir / log_name
