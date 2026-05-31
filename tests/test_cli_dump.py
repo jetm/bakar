@@ -50,21 +50,18 @@ class _Stub:
 
     def __call__(
         self,
-        cfg: Any,
-        log: Any,
+        ctx: Any,
         subcommand: str,
         extra_args: list[str],
         *,
-        kas_yaml: Any,
-        overlay_source: Any,
         capture_to: Any = None,
     ) -> int:
         self.calls.append(
             {
                 "subcommand": subcommand,
                 "extra_args": extra_args,
-                "kas_yaml": kas_yaml,
-                "overlay_source": overlay_source,
+                "kas_yaml": ctx.kas_yaml,
+                "overlay_source": ctx.overlay_source,
                 "capture_to": capture_to,
             }
         )

@@ -72,13 +72,10 @@ def _patch_run_shell_capture(monkeypatch: pytest.MonkeyPatch, payloads: list[str
     payload_iter = iter(payloads)
 
     def fake_capture(
-        cfg,
-        log,
+        ctx,
         command,
         stdout_path,
         *,
-        kas_yaml=None,
-        overlay_source=None,
         step="kas_shell_capture",
         python_executable=None,
     ):
@@ -90,8 +87,8 @@ def _patch_run_shell_capture(monkeypatch: pytest.MonkeyPatch, payloads: list[str
                 "command": command,
                 "stdout_path": stdout_path,
                 "step": step,
-                "kas_yaml": kas_yaml,
-                "overlay_source": overlay_source,
+                "kas_yaml": ctx.kas_yaml,
+                "overlay_source": ctx.overlay_source,
                 "python_executable": python_executable,
             }
         )
@@ -389,13 +386,10 @@ def test_cache_cleared_between_iterations(tmp_path: Path, monkeypatch: pytest.Mo
     cleared_states: list[tuple[bool, bool]] = []
 
     def fake_capture(
-        cfg_,
-        log,
+        ctx,
         command,
         stdout_path,
         *,
-        kas_yaml=None,
-        overlay_source=None,
         step="kas_shell_capture",
         python_executable=None,
     ):
@@ -488,13 +482,10 @@ def test_runtime_cleared_between_iterations(tmp_path: Path, monkeypatch: pytest.
     observed: list[tuple[bool, bool, bool, bool]] = []
 
     def fake_capture(
-        cfg_,
-        log,
+        ctx,
         command,
         stdout_path,
         *,
-        kas_yaml=None,
-        overlay_source=None,
         step="kas_shell_capture",
         python_executable=None,
     ):

@@ -123,7 +123,7 @@ def test_hashequiv_overlay_deduped_when_user_passes_it(
 
     recorded: list[list] = []
 
-    def fake_run_build(cfg, log, *, kas_yaml, overlay_source, extra_overlays=None):  # type: ignore[no-untyped-def]
+    def fake_run_build(ctx, *, extra_overlays=None):  # type: ignore[no-untyped-def]
         recorded.append(list(extra_overlays or []))
         return 0
 
@@ -157,7 +157,7 @@ def test_hashequiv_overlay_not_appended_when_use_hashequiv_false(
 
     recorded: list[list] = []
 
-    def fake_run_build(cfg, log, *, kas_yaml, overlay_source, extra_overlays=None):  # type: ignore[no-untyped-def]
+    def fake_run_build(ctx, *, extra_overlays=None):  # type: ignore[no-untyped-def]
         recorded.append(list(extra_overlays or []))
         return 0
 

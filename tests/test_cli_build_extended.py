@@ -217,8 +217,8 @@ def _invoke_build_with_overrides(
     """
     captured: list[object] = []
 
-    def record_run_build(cfg, *_args: object, **_kwargs: object) -> int:  # type: ignore[no-untyped-def]
-        captured.append(cfg)
+    def record_run_build(ctx, *_args: object, **_kwargs: object) -> int:  # type: ignore[no-untyped-def]
+        captured.append(ctx.cfg)
         return 0
 
     router = _make_subprocess_router(fake_workspace=nxp_workspace)

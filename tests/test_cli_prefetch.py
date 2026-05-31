@@ -53,9 +53,9 @@ class _ShellStub:
         self.command: str | None = None
         self.called = False
 
-    def __call__(self, cfg, log, args, *, command=None, kas_yaml, overlay_source) -> int:
+    def __call__(self, ctx, args, *, command=None) -> int:
         self.called = True
-        self.cfg = cfg
+        self.cfg = ctx.cfg
         self.command = command
         return self.rc
 

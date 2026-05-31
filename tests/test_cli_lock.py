@@ -162,7 +162,7 @@ def test_byo_path_calls_run_kas_subcommand_lock(
     yaml_path = _byo_yaml(tmp_path)
     calls: list[dict] = []
 
-    def fake_kas(cfg, log, subcommand, extra_args, **kwargs):
+    def fake_kas(ctx, subcommand, extra_args, **kwargs):
         calls.append({"subcommand": subcommand, "extra_args": list(extra_args), "kwargs": kwargs})
         return 0
 
