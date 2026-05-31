@@ -74,7 +74,7 @@ def test_dump_no_output_streams_to_stdout(
 ) -> None:
     """Dump without ``--output`` calls the stub with ``capture_to=None`` and exits 0."""
     stub = _Stub(rc=0)
-    monkeypatch.setattr(dump_module, "run_kas_subcommand", stub)
+    monkeypatch.setattr(dump_module.step_kas, "run_kas_subcommand", stub)
     result = runner.invoke(app, ["dump", "--workspace", str(nxp_workspace)])
     assert result.exit_code == 0, result.output
     assert len(stub.calls) == 1
@@ -88,7 +88,7 @@ def test_dump_output_passes_capture_to_path(
 ) -> None:
     """``--output resolved.yml`` passes ``capture_to`` equal to that path."""
     stub = _Stub(rc=0)
-    monkeypatch.setattr(dump_module, "run_kas_subcommand", stub)
+    monkeypatch.setattr(dump_module.step_kas, "run_kas_subcommand", stub)
     result = runner.invoke(app, ["dump", "--workspace", str(nxp_workspace), "--output", "resolved.yml"])
     assert result.exit_code == 0, result.output
     assert len(stub.calls) == 1
@@ -103,7 +103,7 @@ def test_dump_nonzero_return_propagates(
 ) -> None:
     """A non-zero return from the stub makes the command exit non-zero."""
     stub = _Stub(rc=3)
-    monkeypatch.setattr(dump_module, "run_kas_subcommand", stub)
+    monkeypatch.setattr(dump_module.step_kas, "run_kas_subcommand", stub)
     result = runner.invoke(app, ["dump", "--workspace", str(nxp_workspace)])
     assert result.exit_code != 0, result.output
 
@@ -114,7 +114,7 @@ def test_yaml_and_manifest_mutually_exclusive(
 ) -> None:
     """Passing both a positional kas YAML and ``--manifest`` exits code 2."""
     stub = _Stub(rc=0)
-    monkeypatch.setattr(dump_module, "run_kas_subcommand", stub)
+    monkeypatch.setattr(dump_module.step_kas, "run_kas_subcommand", stub)
     result = runner.invoke(
         app,
         [

@@ -166,7 +166,7 @@ def test_byo_path_calls_run_kas_subcommand_lock(
         calls.append({"subcommand": subcommand, "extra_args": list(extra_args), "kwargs": kwargs})
         return 0
 
-    monkeypatch.setattr(lock_module, "run_kas_subcommand", fake_kas)
+    monkeypatch.setattr(lock_module.step_kas, "run_kas_subcommand", fake_kas)
     result = runner.invoke(app, ["lock", str(yaml_path), "--workspace", str(tmp_path)])
 
     assert result.exit_code == 0, result.output
@@ -179,7 +179,7 @@ def test_byo_nonzero_return_propagates(runner: _CliRunner, tmp_path: Path, monke
     """A non-zero run_kas_subcommand return propagates to a non-zero command exit."""
     yaml_path = _byo_yaml(tmp_path)
 
-    monkeypatch.setattr(lock_module, "run_kas_subcommand", lambda *a, **k: 3)
+    monkeypatch.setattr(lock_module.step_kas, "run_kas_subcommand", lambda *a, **k: 3)
     result = runner.invoke(app, ["lock", str(yaml_path), "--workspace", str(tmp_path)])
 
     assert result.exit_code != 0, result.output

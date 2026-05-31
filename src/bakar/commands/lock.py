@@ -19,7 +19,8 @@ from bakar.commands._helpers import (
 )
 from bakar.config import BSPSpec, resolve
 from bakar.observability import RunLogger
-from bakar.steps.kas_build import KasBuildContext, run_kas_subcommand
+from bakar.steps import kas_build as step_kas
+from bakar.steps.kas_build import KasBuildContext
 
 
 @app.command("lock")
@@ -88,7 +89,7 @@ def lock(
     with tempfile.TemporaryDirectory() as runs_tmp, RunLogger(runs_dir=Path(runs_tmp)) as log:
         kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source)
         try:
-            rc = run_kas_subcommand(
+            rc = step_kas.run_kas_subcommand(
                 kas_ctx,
                 "lock",
                 [],
