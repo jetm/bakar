@@ -141,9 +141,9 @@ select = [
 ]
 extend-select = [
   "PLR0913",  # too-many-arguments
-  "FBT001",   # boolean-typed-positional-argument
-  "FBT002",   # boolean-default-positional-argument
-  "FBT003",   # boolean-positional-value-in-call
+  "FBT001",  # boolean-typed-positional-argument
+  "FBT002",  # boolean-default-positional-argument
+  "FBT003",  # boolean-positional-value-in-call
 ]
 ignore = [
   "SIM102",  # Use single if statement - often reduces readability

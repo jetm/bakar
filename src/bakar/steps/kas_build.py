@@ -374,13 +374,7 @@ def clear_stale_bitbake_locks(cfg: BuildConfig) -> list[Path]:
         return removed
 
     if not lock.exists():
-        # No lock file - remove any orphaned sockets unconditionally.
-        removed = []
-        for sock in sockets:
-            if sock.exists() or sock.is_socket():
-                sock.unlink(missing_ok=True)
-                removed.append(sock)
-        return removed
+        return _remove_all()
 
     try:
         pid = int(lock.read_text().strip())
@@ -410,6 +404,19 @@ class KasBuildContext:
     log: RunLogger
     kas_yaml: Path
     overlay_source: Path
+
+
+def _build_kas_arg(cfg: BuildConfig, kas_yaml: Path, overlay_source: Path) -> str:
+    """Resolve the kas YAML + overlay colon-arg, handling the meta-avocado wrapper path."""
+    if cfg.is_meta_avocado:
+        _setup_meta_avocado_build_dir(cfg)
+        overlay_rel = materialize_overlay(cfg, overlay_source)
+        wrapper = _write_meta_avocado_wrapper(cfg, kas_yaml)
+        dump = _run_kas_dump(cfg, wrapper, overlay_rel)
+        return str(dump)
+    kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
+    overlay_rel = materialize_overlay(cfg, overlay_source)
+    return f"{kas_yaml_rel}:{overlay_rel}"
 
 
 def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None) -> int:
@@ -816,16 +823,7 @@ def run_shell(ctx: KasBuildContext, args: list[str], command: str | None = None)
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
     log.step_start("kas_shell", command=command, host_mode=cfg.host_mode)
-    if cfg.is_meta_avocado:
-        _setup_meta_avocado_build_dir(cfg)
-        overlay_rel = materialize_overlay(cfg, overlay_source)
-        wrapper = _write_meta_avocado_wrapper(cfg, kas_yaml)
-        dump = _run_kas_dump(cfg, wrapper, overlay_rel)
-        kas_arg = str(dump)
-    else:
-        kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
-        overlay_rel = materialize_overlay(cfg, overlay_source)
-        kas_arg = f"{kas_yaml_rel}:{overlay_rel}"
+    kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source)
     exe = "kas" if cfg.host_mode else "kas-container"
     cmd = [exe, *_ccache_args(cfg), "shell", kas_arg]
     if command is not None:
@@ -862,16 +860,7 @@ def run_shell_capture(
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
     log.step_start(step, command=command, stdout_path=str(stdout_path), host_mode=cfg.host_mode)
-    if cfg.is_meta_avocado:
-        _setup_meta_avocado_build_dir(cfg)
-        overlay_rel = materialize_overlay(cfg, overlay_source)
-        wrapper = _write_meta_avocado_wrapper(cfg, kas_yaml)
-        dump = _run_kas_dump(cfg, wrapper, overlay_rel)
-        kas_arg = str(dump)
-    else:
-        kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
-        overlay_rel = materialize_overlay(cfg, overlay_source)
-        kas_arg = f"{kas_yaml_rel}:{overlay_rel}"
+    kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source)
     exe = "kas" if cfg.host_mode else "kas-container"
     cmd = [exe, *_ccache_args(cfg), "shell", kas_arg, "-c", command]
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
@@ -906,16 +895,7 @@ def run_kas_subcommand(
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
     log.step_start("kas_subcommand", subcommand=subcommand, host_mode=cfg.host_mode)
-    if cfg.is_meta_avocado:
-        _setup_meta_avocado_build_dir(cfg)
-        overlay_rel = materialize_overlay(cfg, overlay_source)
-        wrapper = _write_meta_avocado_wrapper(cfg, kas_yaml)
-        dump = _run_kas_dump(cfg, wrapper, overlay_rel)
-        kas_arg = str(dump)
-    else:
-        kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
-        overlay_rel = materialize_overlay(cfg, overlay_source)
-        kas_arg = f"{kas_yaml_rel}:{overlay_rel}"
+    kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source)
     exe = "kas" if cfg.host_mode else "kas-container"
     cmd = [exe, *_ccache_args(cfg), subcommand, kas_arg, *extra_args]
     try:

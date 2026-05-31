@@ -12,10 +12,10 @@ from __future__ import annotations
 import pytest
 
 from bakar.config import (
-    BSPSpec,
     DEFAULT_CONTAINER_IMAGE,
     DEFAULT_NXP_MACHINE,
     DEFAULT_NXP_MANIFEST,
+    BSPSpec,
     resolve,
 )
 from bakar.user_config import UserConfig

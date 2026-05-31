@@ -51,6 +51,24 @@ class _BbsetupCtx:
     show_layers: bool
 
 
+def _run_doctor_gate(cfg, log, bsp, skip_doctor: bool) -> None:
+    """Run pre-flight checks; raise typer.Exit(2) on any blocking failure."""
+    run_doctor = not skip_doctor and (_state._USER_CONFIG is None or _state._USER_CONFIG.doctor)
+    if not run_doctor:
+        return
+    log.step_start("doctor")
+    results = run_all(cfg, bsp)
+    diag_path = log.run_dir / "diagnosis.txt"
+    diag_path.write_text(
+        "\n".join(f"{r.severity.value:5} {r.status.value:4} {r.name:22} {r.message}" for r in results) + "\n"
+    )
+    _print_diagnosis(results)
+    if any_blocking_failure(results):
+        log.step_fail("doctor", reason="blocking failure")
+        raise typer.Exit(code=2)
+    log.step_ok("doctor", checks=len(results))
+
+
 def _run_bbsetup_build(
     setup_dir: Path,
     ctx: _BbsetupCtx,
@@ -97,19 +115,7 @@ def _run_bbsetup_build(
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         log.info(f"build mode=bbsetup bsp=bbsetup yaml={cfg.kas_yaml} overlay={overlay_source}")
 
-        run_doctor = not ctx.skip_doctor and (_state._USER_CONFIG is None or _state._USER_CONFIG.doctor)
-        if run_doctor:
-            log.step_start("doctor")
-            results = run_all(cfg, None)
-            diag_path = log.run_dir / "diagnosis.txt"
-            diag_path.write_text(
-                "\n".join(f"{r.severity.value:5} {r.status.value:4} {r.name:22} {r.message}" for r in results) + "\n"
-            )
-            _print_diagnosis(results)
-            if any_blocking_failure(results):
-                log.step_fail("doctor", reason="blocking failure")
-                raise typer.Exit(code=2)
-            log.step_ok("doctor", checks=len(results))
+        _run_doctor_gate(cfg, log, None, ctx.skip_doctor)
 
         write_bbsetup_yaml(
             setup_dir,
@@ -161,19 +167,7 @@ def _run_byo_build(
 
     Called inside an active RunLogger context from ``build()``.
     """
-    run_doctor = not ctx.skip_doctor and (_state._USER_CONFIG is None or _state._USER_CONFIG.doctor)
-    if run_doctor:
-        log.step_start("doctor")
-        results = run_all(cfg, ctx.bsp)
-        diag_path = log.run_dir / "diagnosis.txt"
-        diag_path.write_text(
-            "\n".join(f"{r.severity.value:5} {r.status.value:4} {r.name:22} {r.message}" for r in results) + "\n"
-        )
-        _print_diagnosis(results)
-        if any_blocking_failure(results):
-            log.step_fail("doctor", reason="blocking failure")
-            raise typer.Exit(code=2)
-        log.step_ok("doctor", checks=len(results))
+    _run_doctor_gate(cfg, log, ctx.bsp, ctx.skip_doctor)
 
     if ctx.effective_show_layers:
         _print_layer_hashes(cfg)
@@ -210,19 +204,7 @@ def _run_manifest_build(
 
     Called inside an active RunLogger context from ``build()``.
     """
-    run_doctor = not ctx.skip_doctor and (_state._USER_CONFIG is None or _state._USER_CONFIG.doctor)
-    if run_doctor:
-        log.step_start("doctor")
-        results = run_all(cfg, ctx.bsp)
-        diag_path = log.run_dir / "diagnosis.txt"
-        diag_path.write_text(
-            "\n".join(f"{r.severity.value:5} {r.status.value:4} {r.name:22} {r.message}" for r in results) + "\n"
-        )
-        _print_diagnosis(results)
-        if any_blocking_failure(results):
-            log.step_fail("doctor", reason="blocking failure")
-            raise typer.Exit(code=2)
-        log.step_ok("doctor", checks=len(results))
+    _run_doctor_gate(cfg, log, ctx.bsp, ctx.skip_doctor)
 
     if ctx.effective_show_layers:
         _print_layer_hashes(cfg)
