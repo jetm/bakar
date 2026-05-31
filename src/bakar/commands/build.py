@@ -30,6 +30,7 @@ from bakar.kas import translate_bbsetup_config, write_bbsetup_yaml
 from bakar.observability import RunLogger
 from bakar.steps import bitbake_override as step_override
 from bakar.steps import kas_build as step_kas
+from bakar.steps.kas_build import KasBuildContext
 from bakar.workspace import detect
 
 if TYPE_CHECKING:
@@ -125,11 +126,9 @@ def _run_bbsetup_build(
             console.print(f"[green]dry-run complete[/]: would run kas-container with {cfg.kas_yaml} + {overlay_source}")
             return
 
+        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source)
         rc = step_kas.run_build(
-            cfg,
-            log,
-            kas_yaml=cfg.kas_yaml,
-            overlay_source=overlay_source,
+            kas_ctx,
             extra_overlays=_hashequiv_extra_overlays(cfg),
         )
         if rc != 0:
@@ -192,11 +191,9 @@ def _run_byo_build(
         console.print(f"[green]dry-run complete[/]: would run kas-container with {cfg.kas_yaml} + {ctx.overlay_source}")
         return
 
+    kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, ctx.overlay_source)
     rc = step_kas.run_build(
-        cfg,
-        log,
-        kas_yaml=cfg.kas_yaml,
-        overlay_source=ctx.overlay_source,
+        kas_ctx,
         extra_overlays=ctx.extra_overlays,
     )
     if rc != 0:
@@ -268,11 +265,9 @@ def _run_manifest_build(
         console.print(f"[green]dry-run complete[/]: would run kas-container with {cfg.kas_yaml} + {ctx.overlay_source}")
         return
 
+    kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, ctx.overlay_source)
     rc = step_kas.run_build(
-        cfg,
-        log,
-        kas_yaml=cfg.kas_yaml,
-        overlay_source=ctx.overlay_source,
+        kas_ctx,
         extra_overlays=_hashequiv_extra_overlays(cfg),
     )
     if rc != 0:

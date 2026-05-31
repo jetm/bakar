@@ -18,6 +18,7 @@ from bakar.commands._helpers import (
 from bakar.config import resolve
 from bakar.observability import RunLogger
 from bakar.steps import kas_build as step_kas
+from bakar.steps.kas_build import KasBuildContext
 from bakar.steps import run_qemu as step_run
 
 
@@ -82,13 +83,11 @@ def shell(
     overlay_source = _overlay_for(bsp)
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
     with RunLogger(runs_dir=cfg.runs_dir) as log:
+        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source)
         rc = step_kas.run_shell(
-            cfg,
-            log,
+            kas_ctx,
             list(extra or []),
             command=command,
-            kas_yaml=cfg.kas_yaml,
-            overlay_source=overlay_source,
         )
     raise typer.Exit(code=rc)
 

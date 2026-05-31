@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 from bakar.fork_race_signatures import FORK_RACE_SIGNATURES
 from bakar.steps import bitbake_override as step_override
 from bakar.steps import kas_build as step_kas
+from bakar.steps.kas_build import KasBuildContext
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -329,13 +330,11 @@ def run(
             runtime_cleared=runtime_was_cleared,
         )
         t0 = time.monotonic()
+        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source)
         rc = step_kas.run_shell_capture(
-            cfg,
-            log,
+            kas_ctx,
             command,
             iter_log,
-            kas_yaml=cfg.kas_yaml,
-            overlay_source=overlay_source,
             step=f"stress_parse_iter_{i:02d}",
             python_executable=python_executable,
         )

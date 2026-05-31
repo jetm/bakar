@@ -29,6 +29,7 @@ import sys
 import sysconfig
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -401,14 +402,17 @@ def clear_stale_bitbake_locks(cfg: BuildConfig) -> list[Path]:
     return []
 
 
-def run_build(
-    cfg: BuildConfig,
-    log: RunLogger,
-    *,
-    kas_yaml: Path,
-    overlay_source: Path,
-    extra_overlays: list[Path] | None = None,
-) -> int:
+@dataclass(slots=True)
+class KasBuildContext:
+    """Bundles the four per-call parameters shared by every kas step function."""
+
+    cfg: BuildConfig
+    log: RunLogger
+    kas_yaml: Path
+    overlay_source: Path
+
+
+def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None) -> int:
     """Run `kas-container build <kas_yaml>:<overlay>` with the measurement harness.
 
     Returns the build exit code. Does not raise - caller decides how to
@@ -422,6 +426,7 @@ def run_build(
     (colon-syntax: ``bakar build main.yml:extra.yml``). Each is materialized
     into ``.bakar/overlays/`` alongside the main tuning overlay.
     """
+    cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
     removed = clear_stale_bitbake_locks(cfg)
     for lock in removed:
         log.warn(f"removed stale bitbake lock: {lock} (owning process was gone)")
@@ -797,15 +802,7 @@ def _build_env(cfg: BuildConfig, python_executable: Path | None = None) -> dict[
     return passthrough
 
 
-def run_shell(
-    cfg: BuildConfig,
-    log: RunLogger,
-    args: list[str],
-    command: str | None = None,
-    *,
-    kas_yaml: Path,
-    overlay_source: Path,
-) -> int:
+def run_shell(ctx: KasBuildContext, args: list[str], command: str | None = None) -> int:
     """Drop into a kas-container shell, passing through extra args.
 
     When ``command`` is provided, kas-container runs it non-interactively
@@ -817,6 +814,7 @@ def run_shell(
     the bitbake build prereqs installed (zstd, git, ...) and a
     bitbake-supported Python on PATH.
     """
+    cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
     log.step_start("kas_shell", command=command, host_mode=cfg.host_mode)
     if cfg.is_meta_avocado:
         _setup_meta_avocado_build_dir(cfg)
@@ -840,13 +838,10 @@ def run_shell(
 
 
 def run_shell_capture(
-    cfg: BuildConfig,
-    log: RunLogger,
+    ctx: KasBuildContext,
     command: str,
     stdout_path: Path,
     *,
-    kas_yaml: Path,
-    overlay_source: Path,
     step: str = "kas_shell_capture",
     python_executable: Path | None = None,
 ) -> int:
@@ -865,6 +860,7 @@ def run_shell_capture(
     kas shell's PATH and BB_PYTHON3 point at a caller-chosen interpreter
     (obmalloc-patch validation).
     """
+    cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
     log.step_start(step, command=command, stdout_path=str(stdout_path), host_mode=cfg.host_mode)
     if cfg.is_meta_avocado:
         _setup_meta_avocado_build_dir(cfg)
@@ -893,14 +889,7 @@ def run_shell_capture(
 
 
 def run_kas_subcommand(
-    cfg: BuildConfig,
-    log: RunLogger,
-    subcommand: str,
-    extra_args: list[str],
-    *,
-    kas_yaml: Path,
-    overlay_source: Path,
-    capture_to: Path | None = None,
+    ctx: KasBuildContext, subcommand: str, extra_args: list[str], *, capture_to: Path | None = None
 ) -> int:
     """Run a kas subcommand (e.g. ``dump``, ``lock``) with overlay assembly.
 
@@ -915,6 +904,7 @@ def run_kas_subcommand(
     memory; when None, stdout inherits the parent terminal. Returns the kas
     exit code.
     """
+    cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
     log.step_start("kas_subcommand", subcommand=subcommand, host_mode=cfg.host_mode)
     if cfg.is_meta_avocado:
         _setup_meta_avocado_build_dir(cfg)

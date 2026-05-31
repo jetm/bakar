@@ -18,7 +18,7 @@ from bakar.commands._helpers import (
 )
 from bakar.config import resolve
 from bakar.observability import RunLogger
-from bakar.steps.kas_build import run_kas_subcommand
+from bakar.steps.kas_build import KasBuildContext, run_kas_subcommand
 
 
 @app.command("dump")
@@ -70,14 +70,12 @@ def dump(
     # dump is not a build: use an ephemeral run dir so it does not leave a
     # bogus build/runs/<ts>/ entry that `report`/`triage` would surface.
     with tempfile.TemporaryDirectory() as runs_tmp, RunLogger(runs_dir=Path(runs_tmp)) as log:
+        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source)
         try:
             rc = run_kas_subcommand(
-                cfg,
-                log,
+                kas_ctx,
                 "dump",
                 [],
-                kas_yaml=cfg.kas_yaml,
-                overlay_source=overlay_source,
                 capture_to=output,
             )
         except FileNotFoundError:
