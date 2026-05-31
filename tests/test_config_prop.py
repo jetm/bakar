@@ -8,7 +8,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from bakar.config import BuildConfig, infer_repo_branch, resolve
+from bakar.config import BSPSpec, BuildConfig, infer_repo_branch, resolve
 from bakar.workspace_config import WorkspaceConfig
 
 # Manifest values fed to resolve land in env vars and dataclass fields; exclude
@@ -51,7 +51,7 @@ def test_resolve_explicit_manifest_beats_env(
     cfg = resolve(
         workspace=Path("/tmp/ws"),
         bsp_family="nxp",
-        manifest=explicit_manifest,
+        spec=BSPSpec(manifest=explicit_manifest),
         workspace_config=WorkspaceConfig(),
     )
     assert isinstance(cfg, BuildConfig)

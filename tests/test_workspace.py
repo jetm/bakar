@@ -21,7 +21,7 @@ from unittest.mock import patch
 import pytest
 
 from bakar import workspace
-from bakar.config import resolve
+from bakar.config import BSPSpec, resolve
 from bakar.workspace import (
     _cache_dirs_ok,
     _detect_nxp,
@@ -274,7 +274,7 @@ def test_detect_nxp_populates_state(fake_workspace: Path) -> None:
     cfg = resolve(
         workspace=fake_workspace,
         bsp_family="nxp",
-        manifest="imx-6.1.55-2.2.0.xml",
+        spec=BSPSpec(manifest="imx-6.1.55-2.2.0.xml"),
     )
 
     with patch.object(workspace.subprocess, "run", return_value=_fake_completed("a" * 40 + "\n")):

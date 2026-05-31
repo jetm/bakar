@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from bakar.config import (
+    BSPSpec,
     DEFAULT_CONTAINER_IMAGE,
     DEFAULT_NXP_MACHINE,
     DEFAULT_NXP_MANIFEST,
@@ -51,7 +52,7 @@ def test_cli_machine_beats_env(tmp_path, monkeypatch):
     cfg = resolve(
         workspace=_workspace(tmp_path),
         bsp_family="nxp",
-        machine="my-board",  # CLI flag
+        spec=BSPSpec(machine="my-board"),  # CLI flag
     )
 
     assert cfg.machine == "my-board", f"CLI flag 'machine' must override {_MACHINE_VAR}"
@@ -64,7 +65,7 @@ def test_cli_manifest_beats_env(tmp_path, monkeypatch):
     cfg = resolve(
         workspace=_workspace(tmp_path),
         bsp_family="nxp",
-        manifest="imx-6.6.52-2.2.2.xml",  # CLI flag
+        spec=BSPSpec(manifest="imx-6.6.52-2.2.2.xml"),  # CLI flag
     )
 
     assert cfg.manifest == "imx-6.6.52-2.2.2.xml", f"CLI flag 'manifest' must override {_MANIFEST_VAR}"
@@ -77,7 +78,7 @@ def test_cli_distro_beats_env(tmp_path, monkeypatch):
     cfg = resolve(
         workspace=_workspace(tmp_path),
         bsp_family="nxp",
-        distro="fsl-imx-xwayland",  # CLI flag
+        spec=BSPSpec(distro="fsl-imx-xwayland"),  # CLI flag
     )
 
     assert cfg.distro == "fsl-imx-xwayland", f"CLI flag 'distro' must override {_DISTRO_VAR}"
@@ -154,7 +155,7 @@ def test_explicit_host_mode_beats_kas_container_image(tmp_path, monkeypatch):
     """Explicit host_mode=True wins even when KAS_CONTAINER_IMAGE is set."""
     monkeypatch.setenv("KAS_CONTAINER_IMAGE", "test/kas-image:latest")
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", host_mode=True)
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", spec=BSPSpec(host_mode=True))
 
     assert cfg.host_mode is True, "Explicit host_mode=True must override KAS_CONTAINER_IMAGE presence"
 
@@ -193,7 +194,7 @@ def test_cli_machine_beats_user_config(tmp_path, monkeypatch):
     cfg = resolve(
         workspace=_workspace(tmp_path),
         bsp_family="nxp",
-        machine="cli-board",  # CLI flag
+        spec=BSPSpec(machine="cli-board"),  # CLI flag
         user_config=uc,
     )
 
@@ -317,7 +318,7 @@ def test_cli_machine_beats_workspace(tmp_path, monkeypatch):
     cfg = resolve(
         workspace=_workspace(tmp_path),
         bsp_family="nxp",
-        machine="cli-board",  # CLI flag
+        spec=BSPSpec(machine="cli-board"),  # CLI flag
     )
 
     assert cfg.machine == "cli-board", "CLI flag 'machine' must beat the workspace .bakar.toml machine"
