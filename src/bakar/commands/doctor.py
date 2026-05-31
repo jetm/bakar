@@ -19,7 +19,7 @@ from bakar.commands._helpers import (
     _print_diagnosis,
     _resolve_workspace,
 )
-from bakar.config import resolve
+from bakar.config import BSPSpec, resolve
 from bakar.diagnostics import _read_psi_avg10, any_blocking_failure, run_all
 
 _PSI_CLAMP = 95
@@ -135,7 +135,7 @@ def doctor(
     cfg = resolve(
         workspace=_resolve_workspace(workspace, kas_yaml=kas_yaml, family=family),
         bsp_family=family,
-        manifest=manifest,
+        spec=BSPSpec(manifest=manifest),
         kas_yaml=kas_yaml,
         user_config=_state._USER_CONFIG,
     )

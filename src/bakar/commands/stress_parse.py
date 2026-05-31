@@ -16,7 +16,7 @@ from bakar.commands._helpers import (
     _overlay_for,
     _workspace_from_cwd,
 )
-from bakar.config import resolve
+from bakar.config import BSPSpec, resolve
 from bakar.observability import RunLogger
 from bakar.steps import bitbake_override as step_override
 from bakar.steps import kas_build as step_kas
@@ -114,11 +114,7 @@ def stress_parse(
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
-        machine=machine,
-        image=image,
-        manifest=manifest,
-        repo_branch=branch,
-        host_mode=host_mode,
+        spec=BSPSpec(machine=machine, image=image, manifest=manifest, repo_branch=branch, host_mode=host_mode),
         user_config=_state._USER_CONFIG,
     )
     overlay_source = _overlay_for(bsp)

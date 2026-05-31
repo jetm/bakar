@@ -16,7 +16,7 @@ from bakar.commands._helpers import (
     _dispatch_from_yaml,
     _resolve_workspace,
 )
-from bakar.config import resolve
+from bakar.config import BSPSpec, resolve
 
 _LOG_FILES: dict[str, str] = {
     "kas": "kas.log",
@@ -114,7 +114,11 @@ def log_cmd(
         family, _bsp = _dispatch_bsp(manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
     cfg = resolve(
-        workspace=ws, bsp_family=family, manifest=manifest, kas_yaml=kas_yaml, user_config=_state._USER_CONFIG
+        workspace=ws,
+        bsp_family=family,
+        spec=BSPSpec(manifest=manifest),
+        kas_yaml=kas_yaml,
+        user_config=_state._USER_CONFIG,
     )
     runs_dir = cfg.runs_dir
     if not runs_dir.is_dir():

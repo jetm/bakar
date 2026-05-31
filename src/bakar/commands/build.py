@@ -24,7 +24,7 @@ from bakar.commands._helpers import (
     _resolve_workspace,
     _uninitialized_bbsetup_dir,
 )
-from bakar.config import DEFAULT_CONTAINER_IMAGE, resolve
+from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, resolve
 from bakar.diagnostics import any_blocking_failure, run_all
 from bakar.kas import translate_bbsetup_config, write_bbsetup_yaml
 from bakar.observability import RunLogger
@@ -62,10 +62,7 @@ def _run_bbsetup_build(
     cfg = resolve(
         workspace=setup_dir,
         bsp_family="bbsetup",
-        machine=ctx.machine,
-        distro=ctx.distro,
-        image=ctx.image,
-        host_mode=ctx.host_mode,
+        spec=BSPSpec(machine=ctx.machine, distro=ctx.distro, image=ctx.image, host_mode=ctx.host_mode),
         user_config=_state._USER_CONFIG,
     )
     overlay_source = _overlay_for(None)
@@ -405,12 +402,9 @@ def build(
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
-        machine=machine,
-        distro=distro,
-        image=image,
-        manifest=manifest,
-        repo_branch=branch,
-        host_mode=host_mode,
+        spec=BSPSpec(
+            machine=machine, distro=distro, image=image, manifest=manifest, repo_branch=branch, host_mode=host_mode
+        ),
         kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
     )

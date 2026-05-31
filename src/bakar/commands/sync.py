@@ -18,7 +18,7 @@ from bakar.commands._helpers import (
     _print_layer_hashes,
     _workspace_from_cwd,
 )
-from bakar.config import DEFAULT_CONTAINER_IMAGE, resolve
+from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, resolve
 from bakar.diagnostics import any_blocking_failure, run_all
 from bakar.observability import RunLogger
 from bakar.workspace import detect
@@ -122,11 +122,7 @@ def sync(
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
-        machine=machine,
-        distro=distro,
-        image=image,
-        manifest=manifest,
-        repo_branch=branch,
+        spec=BSPSpec(machine=machine, distro=distro, image=image, manifest=manifest, repo_branch=branch),
         user_config=_state._USER_CONFIG,
     )
 

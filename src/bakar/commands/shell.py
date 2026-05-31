@@ -15,11 +15,11 @@ from bakar.commands._helpers import (
     _overlay_for,
     _resolve_workspace,
 )
-from bakar.config import resolve
+from bakar.config import BSPSpec, resolve
 from bakar.observability import RunLogger
 from bakar.steps import kas_build as step_kas
-from bakar.steps.kas_build import KasBuildContext
 from bakar.steps import run_qemu as step_run
+from bakar.steps.kas_build import KasBuildContext
 
 
 @app.command()
@@ -75,8 +75,7 @@ def shell(
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
-        manifest=manifest,
-        host_mode=host_mode,
+        spec=BSPSpec(manifest=manifest, host_mode=host_mode),
         kas_yaml=kas_yaml,
         user_config=_state._USER_CONFIG,
     )

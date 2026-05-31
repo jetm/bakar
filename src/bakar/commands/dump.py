@@ -16,7 +16,7 @@ from bakar.commands._helpers import (
     _overlay_for,
     _resolve_workspace,
 )
-from bakar.config import resolve
+from bakar.config import BSPSpec, resolve
 from bakar.observability import RunLogger
 from bakar.steps.kas_build import KasBuildContext, run_kas_subcommand
 
@@ -64,7 +64,11 @@ def dump(
 
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
     cfg = resolve(
-        workspace=ws, bsp_family=family, manifest=manifest, kas_yaml=kas_yaml, user_config=_state._USER_CONFIG
+        workspace=ws,
+        bsp_family=family,
+        spec=BSPSpec(manifest=manifest),
+        kas_yaml=kas_yaml,
+        user_config=_state._USER_CONFIG,
     )
     overlay_source = _overlay_for(bsp)
     # dump is not a build: use an ephemeral run dir so it does not leave a

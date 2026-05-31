@@ -16,7 +16,7 @@ from bakar.commands._helpers import (
     _overlay_for,
     _resolve_workspace,
 )
-from bakar.config import resolve
+from bakar.config import BSPSpec, resolve
 from bakar.observability import RunLogger
 from bakar.steps import kas_build as step_kas
 from bakar.steps.kas_build import KasBuildContext
@@ -61,8 +61,7 @@ def prefetch(
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
-        machine=machine,
-        manifest=manifest,
+        spec=BSPSpec(machine=machine, manifest=manifest),
         kas_yaml=kas_yaml,
         user_config=_state._USER_CONFIG,
     )

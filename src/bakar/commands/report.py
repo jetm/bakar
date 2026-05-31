@@ -12,7 +12,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import _bbsetup_workspace, _find_run, _print_layer_hashes, _workspace_from_cwd
-from bakar.config import resolve
+from bakar.config import BSPSpec, resolve
 from bakar.report import assemble_report
 
 
@@ -73,7 +73,12 @@ def report(
     run_dir, label = found
     if family != "bbsetup":
         family = label
-    cfg = resolve(workspace=ws_for_cfg, bsp_family=family, manifest=manifest, user_config=_state._USER_CONFIG)
+    cfg = resolve(
+        workspace=ws_for_cfg,
+        bsp_family=family,
+        spec=BSPSpec(manifest=manifest),
+        user_config=_state._USER_CONFIG,
+    )
 
     summary = assemble_report(run_dir, cfg)
 
