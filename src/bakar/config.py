@@ -337,16 +337,23 @@ def _resolve_branch(
     )
 
 
+@dataclass(slots=True, kw_only=True)
+class BSPSpec:
+    """BSP target fields passed to :func:`resolve`."""
+
+    machine: str | None = None
+    distro: str | None = None
+    image: str | None = None
+    manifest: str | None = None
+    repo_branch: str | None = None
+    host_mode: bool = False
+
+
 def resolve(
     *,
     workspace: Path,
     bsp_family: Literal["nxp", "ti", "generic", "bbsetup"] = "nxp",
-    machine: str | None = None,
-    distro: str | None = None,
-    image: str | None = None,
-    manifest: str | None = None,
-    repo_branch: str | None = None,
-    host_mode: bool = False,
+    spec: BSPSpec | None = None,
     kas_yaml: Path | None = None,
     user_config: UserConfig | None = None,
     workspace_config: WorkspaceConfig | None = None,
@@ -362,10 +369,13 @@ def resolve(
     workspace tier with no signature change at the call site. ``user_config``
     carries the values loaded from ``~/.config/bakar/config.toml``; ``None``
     (the default) preserves the pre-config behavior for direct callers.
-    ``repo_branch`` is special: it has no config field, so when neither arg
-    nor env is set, NXP infers it from the manifest filename via
-    :data:`BRANCH_BY_MANIFEST_PREFIX`; TI infers it from the
-    ``processor-sdk-<poky>-...-<sdk>-config_<var>`` regex via
+    ``spec`` is a :class:`BSPSpec` carrying the six BSP target fields
+    (``machine``, ``distro``, ``image``, ``manifest``, ``repo_branch``,
+    ``host_mode``). When ``None`` (the default), a :class:`BSPSpec` with all
+    fields at their defaults is used. ``repo_branch`` is special: it has no
+    config field, so when neither arg nor env is set, NXP infers it from the
+    manifest filename via :data:`BRANCH_BY_MANIFEST_PREFIX`; TI infers it from
+    the ``processor-sdk-<poky>-...-<sdk>-config_<var>`` regex via
     :func:`bakar.bsp_model.infer_bsp_branch`.
 
     ``kas_yaml`` is the BYO override path. When set, it lands in
@@ -385,6 +395,9 @@ def resolve(
     translation step, not from this resolver.
     """
 
+    if spec is None:
+        spec = BSPSpec()
+
     if workspace_config is None:
         # Lazy import keeps module load order flexible and avoids a hard
         # import cycle; centralizing the load here means every existing
@@ -395,24 +408,24 @@ def resolve(
 
     fd = _family_defaults(bsp_family, user_config, workspace_config)
 
-    resolved_manifest = pick(manifest, "BAKAR_MANIFEST", fd.ws_manifest, fd.u_manifest, fd.d_manifest)
-    resolved_branch = _resolve_branch(bsp_family, fd, repo_branch, resolved_manifest)
+    resolved_manifest = pick(spec.manifest, "BAKAR_MANIFEST", fd.ws_manifest, fd.u_manifest, fd.d_manifest)
+    resolved_branch = _resolve_branch(bsp_family, fd, spec.repo_branch, resolved_manifest)
 
     # Auto-detect: when KAS_CONTAINER_IMAGE is absent from env and host_mode was
     # not explicitly requested, fall back to plain kas (no Docker) rather than the
     # hardcoded default container image. This makes bakar work out of the box on
     # hosts without a container setup. A config-supplied container_image counts the
     # same as the env var: a user who set it has a container setup and wants it used.
-    effective_host_mode = host_mode or (
+    effective_host_mode = spec.host_mode or (
         "KAS_CONTAINER_IMAGE" not in os.environ and (user_config is None or user_config.container_image is None)
     )
 
     return BuildConfig(
         workspace=workspace.resolve(),
         bsp_family=bsp_family,
-        machine=pick(machine, "BAKAR_MACHINE", fd.ws_machine, fd.u_machine, fd.d_machine),
-        distro=pick(distro, "BAKAR_DISTRO", fd.ws_distro, fd.u_distro, fd.d_distro),
-        image=pick(image, "BAKAR_IMAGE", fd.ws_image, fd.u_image, fd.d_image),
+        machine=pick(spec.machine, "BAKAR_MACHINE", fd.ws_machine, fd.u_machine, fd.d_machine),
+        distro=pick(spec.distro, "BAKAR_DISTRO", fd.ws_distro, fd.u_distro, fd.d_distro),
+        image=pick(spec.image, "BAKAR_IMAGE", fd.ws_image, fd.u_image, fd.d_image),
         manifest=resolved_manifest,
         repo_url=os.environ.get(
             "BAKAR_REPO_URL",
