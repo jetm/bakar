@@ -139,12 +139,21 @@ select = [
   "SIM",  # flake8-simplify
   "TC",  # flake8-type-checking
 ]
+extend-select = [
+  "PLR0913",  # too-many-arguments
+  "FBT001",   # boolean-typed-positional-argument
+  "FBT002",   # boolean-default-positional-argument
+  "FBT003",   # boolean-positional-value-in-call
+]
 ignore = [
   "SIM102",  # Use single if statement - often reduces readability
   "SIM105",  # Use contextlib.suppress - adds import for minimal benefit
   "SIM108",  # Use ternary operator - can reduce readability for complex conditions
   "SIM110",  # Use any() instead of for loop - sometimes less clear
 ]
+
+[tool.ruff.lint.pylint]
+max-args = 5
 
 [tool.ruff.lint.isort]
 known-first-party = ["bakar"]
@@ -153,7 +162,11 @@ known-first-party = ["bakar"]
 "src/bakar/cli.py" = ["B008"]
 # Typer evaluates annotations at runtime via inspect.signature(eval_str=True);
 # Path and other stdlib types used in command signatures must not be TYPE_CHECKING-guarded.
-"src/bakar/commands/*.py" = ["TC003"]
+# Typer CLI commands use boolean Options/Flags (FBT*) and many args (PLR0913) by design.
+"src/bakar/commands/*.py" = ["TC003", "FBT001", "FBT002", "FBT003", "PLR0913"]
+# Internal helpers with many params that are not Typer commands but exceed max-args by design.
+"src/bakar/config.py" = ["PLR0913"]
+"src/bakar/steps/stress_parse.py" = ["PLR0913"]
 
 [tool.ty.rules]
 # Noisy without full type annotations - project uses gradual typing
