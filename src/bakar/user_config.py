@@ -50,6 +50,7 @@ class UserConfig:
     pressure_max_cpu: float | None = None
     pressure_max_io: float | None = None
     pressure_max_memory: float | None = None
+    disk_free_threshold_gb: float = 50.0
     hashserv: bool = False
     # [layers]
     show_hashes: bool = False
@@ -81,6 +82,7 @@ _BUILD_KEYS = {
     "pressure_max_cpu": "pressure_max_cpu",
     "pressure_max_io": "pressure_max_io",
     "pressure_max_memory": "pressure_max_memory",
+    "disk_free_threshold_gb": "disk_free_threshold_gb",
     "hashserv": "hashserv",
 }
 _LAYERS_KEYS = {
@@ -102,6 +104,9 @@ def _check_type(field: str, value: object, path: Path) -> None:
             raise ValueError(f"{path}: '{field}' must be a number, got {type(value).__name__}")
         if value < 1:
             raise ValueError(f"{path}: '{field}' must be >= 1 (bitbake minimum), got {value}")
+    if field == "disk_free_threshold_gb":
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            raise ValueError(f"{path}: '{field}' must be > 0, got {value}")
 
 
 def load_user_config(path: Path | None = None) -> UserConfig:
@@ -188,7 +193,7 @@ def _build_settings_schema() -> dict[str, _SettingSpec]:
                 key=key,
                 is_bool=field in _BOOL_FIELDS,
                 is_int=field in _INT_FIELDS,
-                is_float=field in _PSI_FIELDS,
+                is_float=field in _PSI_FIELDS or field == "disk_free_threshold_gb",
             )
     return schema
 
