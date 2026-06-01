@@ -38,8 +38,7 @@ def _write_bblayers(cfg, repos: list[str]) -> None:
     conf = cfg.bblayers_conf
     conf.parent.mkdir(parents=True, exist_ok=True)
     lines = ['BBLAYERS ?= " \\']
-    for repo in repos:
-        lines.append(f"  /work/sources/{repo}/meta-{repo} \\")
+    lines.extend(f"  /work/sources/{repo}/meta-{repo} \\" for repo in repos)
     lines.append('"')
     conf.write_text("\n".join(lines) + "\n")
 

@@ -211,7 +211,7 @@ def test_translate_rejects_empty_sources(tmp_path):
     ws = _copy_fixture(tmp_path)
     _patch_config(ws, lambda c: c["data"].update(sources={}))
 
-    with pytest.raises(ValueError, match="data.sources"):
+    with pytest.raises(ValueError, match=r"data\.sources"):
         translate_bbsetup_config(ws)
 
 

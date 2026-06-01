@@ -289,7 +289,7 @@ def test_discover_source_repos_finds_two_git_dirs(tmp_path: Path) -> None:
     result = discover_source_repos(cfg)
 
     assert [name for name, _ in result] == ["meta-imx", "poky"]
-    paths = {name: path for name, path in result}
+    paths = dict(result)
     assert paths["poky"] == (sources / "poky").resolve()
     assert paths["meta-imx"] == (sources / "meta-imx").resolve()
 

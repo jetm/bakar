@@ -353,7 +353,7 @@ def test_run_raises_when_local_conf_missing(tmp_path: Path) -> None:
     cfg = _ti_cfg(tmp_path)
     # Do NOT seed the workspace.
 
-    with pytest.raises(FileNotFoundError, match="local.conf"):
+    with pytest.raises(FileNotFoundError, match=r"local\.conf"):
         ti_setup_env.run(cfg, MagicMock())
 
 
@@ -361,7 +361,7 @@ def test_run_raises_when_bblayers_missing(tmp_path: Path) -> None:
     """A successful local.conf rewrite still raises if bblayers.conf is absent."""
     cfg = _seed_ti_workspace(tmp_path, write_bblayers=False)
 
-    with pytest.raises(RuntimeError, match="bblayers.conf"):
+    with pytest.raises(RuntimeError, match=r"bblayers\.conf"):
         ti_setup_env.run(cfg, MagicMock())
 
     # local.conf rewrite still happened before the bblayers check raised.

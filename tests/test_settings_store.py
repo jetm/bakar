@@ -107,7 +107,7 @@ def test_set_bool_key_accepts_all_literals(tmp_path: Path, raw: str, expected: b
 @pytest.mark.unit
 def test_set_unrecognized_key_raises_without_writing(tmp_path: Path) -> None:
     config_file = tmp_path / "config.toml"
-    with pytest.raises(ValueError, match="not.a.real.key"):
+    with pytest.raises(ValueError, match=r"not\.a\.real\.key"):
         set_setting("not.a.real.key", "value", config_file)
     assert not config_file.exists()
 
@@ -135,7 +135,7 @@ def test_get_recognized_but_absent_key_returns_none(tmp_path: Path) -> None:
 @pytest.mark.unit
 def test_get_unrecognized_key_raises(tmp_path: Path) -> None:
     config_file = tmp_path / "config.toml"
-    with pytest.raises(ValueError, match="not.a.real.key"):
+    with pytest.raises(ValueError, match=r"not\.a\.real\.key"):
         get_setting("not.a.real.key", config_file)
 
 
@@ -170,7 +170,7 @@ def test_unset_absent_key_is_noop_leaving_well_formed_file(tmp_path: Path) -> No
 @pytest.mark.unit
 def test_unset_unrecognized_key_raises(tmp_path: Path) -> None:
     config_file = tmp_path / "config.toml"
-    with pytest.raises(ValueError, match="not.a.real.key"):
+    with pytest.raises(ValueError, match=r"not\.a\.real\.key"):
         unset_setting("not.a.real.key", config_file)
 
 

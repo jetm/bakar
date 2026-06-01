@@ -51,6 +51,7 @@ def _run(args: list[str], *, env: dict | None = None) -> subprocess.CompletedPro
         [_BAKAR, *args],
         capture_output=True,
         text=True,
+        check=False,
         env=env if env is not None else os.environ.copy(),
     )
 
@@ -318,6 +319,7 @@ class TestForAll:
             [_BAKAR, "for-all", "echo REPO=$BAKAR_REPO_NAME", "--workspace", str(layer_ws)],
             capture_output=True,
             text=True,
+            check=False,
         )
         assert result.returncode == 0
         assert "REPO=meta-local" in result.stdout
@@ -327,6 +329,7 @@ class TestForAll:
             [_BAKAR, "for-all", "echo COMMIT=$BAKAR_REPO_COMMIT", "--workspace", str(layer_ws)],
             capture_output=True,
             text=True,
+            check=False,
         )
         commit_line = next((ln for ln in result.stdout.splitlines() if "COMMIT=" in ln), "")
         sha = commit_line.split("COMMIT=", 1)[-1].strip()
@@ -337,12 +340,13 @@ class TestForAll:
             [_BAKAR, "for-all", "exit 1", "--workspace", str(layer_ws)],
             capture_output=True,
             text=True,
+            check=False,
         )
         assert result.returncode != 0
 
 
 # ---------------------------------------------------------------------------
-# 6–7. dump / lock  (require kas on PATH; use host mode via unset KCI)
+# 6-7. dump / lock  (require kas on PATH; use host mode via unset KCI)
 # ---------------------------------------------------------------------------
 
 _kas_required = pytest.mark.skipif(shutil.which("kas") is None, reason="kas not installed on this host")
@@ -420,6 +424,7 @@ class TestDump:
             [_BAKAR, "dump", str(kas_yaml_pinned), "--output", str(out)],
             capture_output=True,
             text=True,
+            check=False,
             env=kas_env,
         )
         assert result.returncode == 0, result.stderr
@@ -433,6 +438,7 @@ class TestDump:
             [_BAKAR, "dump", str(kas_yaml_pinned)],
             capture_output=True,
             text=True,
+            check=False,
             env=kas_env,
         )
         assert result.returncode == 0, result.stderr
@@ -447,6 +453,7 @@ class TestLock:
             [_BAKAR, "lock", str(kas_yaml_branch)],
             capture_output=True,
             text=True,
+            check=False,
             env=kas_env,
         )
         assert result.returncode == 0, result.stderr

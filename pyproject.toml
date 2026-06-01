@@ -180,6 +180,10 @@ known-first-party = ["bakar"]
 "src/bakar/steps/stress_parse.py" = ["PLR0913"]
 # permanent: module-level lazy-load singletons (_VENDORS, _USER_CONFIG).
 "src/bakar/commands/_app.py" = ["PLW0603"]
+# Test functions receive bool params from @pytest.mark.parametrize, not from callers.
+"tests/**/*.py" = ["FBT001", "FBT002", "FBT003"]
+# Test helper _make_tuning_cfg mirrors BuildConfig field overrides - many params by design.
+"tests/test_kas_env.py" = ["PLR0913"]
 
 [tool.ty.rules]
 # Noisy without full type annotations - project uses gradual typing

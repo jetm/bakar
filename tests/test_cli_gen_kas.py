@@ -109,7 +109,7 @@ def test_bbsetup_workspace_calls_write_bbsetup_yaml(
         return expected
 
     monkeypatch.setattr(gen_kas_module, "write_bbsetup_yaml", fake_bbsetup)
-    monkeypatch.setattr(gen_kas_module, "write_yaml", lambda opts: main_calls.append(opts))
+    monkeypatch.setattr(gen_kas_module, "write_yaml", main_calls.append)
 
     result = runner.invoke(app, ["gen-kas", "--workspace", str(bbsetup_workspace)])
 
@@ -136,7 +136,7 @@ def test_main_dispatch_calls_write_yaml(
     bbsetup_calls: list[object] = []
 
     monkeypatch.setattr(gen_kas_module, "write_bbsetup_yaml", lambda *a, **kw: bbsetup_calls.append((a, kw)))
-    monkeypatch.setattr(gen_kas_module, "write_yaml", lambda opts: main_calls.append(opts))
+    monkeypatch.setattr(gen_kas_module, "write_yaml", main_calls.append)
 
     result = runner.invoke(
         app,
