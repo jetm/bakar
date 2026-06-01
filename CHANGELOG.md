@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-01
+
+### Added
+
+- Added `bakar init` command for interactive workspace creation, guiding new users through BSP family selection and workspace configuration with family-specific prompts for NXP, TI, bbsetup, and generic targets.
+- Added non-interactive flags (`--family`, `--workspace`, `--manifest`, `--machine`, `--distro`, `--image`, `--kas-yaml`, `--no-sync`) to `bakar init` for scripted or CI-driven workspace creation without a TTY.
+- Added workspace-scoped defaults via `.bakar.toml`: settings written by `bakar init` (machine, distro, image, manifest) are now persisted per-workspace and applied automatically without requiring flags at every invocation.
+- Added a new configuration resolution tier so the full precedence chain is: CLI flag > `BAKAR_*` env var > workspace `.bakar.toml` > `~/.config/bakar/config.toml` > built-in default.
+- Added documentation for `bakar init`, workspace `.bakar.toml` defaults schema, and the updated five-tier precedence table in the configuration reference.
+
+### Fixed
+
+- Fixed `bakar init` cancelling a prompt (Ctrl-C or Escape) causing an uncaught `TypeError` and leaving a partial workspace directory on disk; prompts now abort cleanly.
+- Fixed machine values written by `bakar init` into `[defaults.generic]` being silently ignored when resolving configuration for generic workspaces.
+- Fixed a Python exception-handling bug where catching multiple exception types without parentheses silently caught only `ValueError` instead of both `ValueError` and `OSError`.
+- Fixed `bakar init` not appearing in the CLI help output (`--help`) or quick-navigation table because its module was never imported at startup.
+
 ## [0.5.0] - 2026-05-29
 
 ### Breaking
@@ -150,4 +167,5 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 [0.0.3]: https://github.com/jetm/bakar/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/jetm/bakar/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/jetm/bakar/releases/tag/v0.0.1
+
 
