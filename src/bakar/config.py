@@ -297,7 +297,8 @@ def resolve(
         d_machine, d_distro, d_image = "generic", "generic", "generic"
         d_manifest, d_branch = "", ""
         u_machine = u_distro = u_image = u_manifest = None
-        ws_machine = ws_distro = ws_image = ws_manifest = None
+        ws_machine = workspace_config.generic_machine if bsp_family == "generic" else None
+        ws_distro = ws_image = ws_manifest = None
     elif bsp_family == "ti":
         d_machine, d_distro, d_image = DEFAULT_TI_MACHINE, DEFAULT_TI_DISTRO, DEFAULT_TI_IMAGE
         d_manifest, d_branch = DEFAULT_TI_MANIFEST, DEFAULT_TI_REPO_BRANCH
