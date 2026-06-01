@@ -24,6 +24,25 @@ from bakar.observability import RunLogger
 from bakar.workspace import detect
 
 
+def _print_dry_run(cfg, family) -> None:
+    """Print the sync commands that would run as structured ``key: value`` lines.
+
+    Reflects the actual resolved manifest/branch/paths so the preview matches
+    what a real sync would invoke. NXP emits the ``repo init`` + ``repo sync``
+    pair; TI emits the ``oe-layertool-setup.sh`` invocation.
+    """
+    if family == "nxp":
+        nproc = os.environ.get("NPROC", str(os.cpu_count() or 8))
+        init = f"repo init -u {cfg.repo_url} -b {cfg.repo_branch} -m {cfg.manifest} --config-name"
+        sync_cmd = f"repo sync -j {nproc} --force-sync --no-clone-bundle"
+        command = f"{init} && {sync_cmd}"
+    else:
+        from bakar.steps.ti_layertool import _build_layertool_cmd
+
+        command = " ".join(_build_layertool_cmd(cfg))
+    print(f"command: {command}")
+
+
 def _run_sync_body(cfg, log, *, bsp, family, effective_show_layers, skip_doctor) -> None:
     """Execute the sync steps inside an active RunLogger context."""
     run_doctor = not skip_doctor and (_state._USER_CONFIG is None or _state._USER_CONFIG.doctor)
@@ -100,6 +119,10 @@ def sync(
         bool,
         typer.Option("--show-layers", help="Print layer git hashes after sync."),
     ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", "-n", help="Print the sync commands that would run, then exit without syncing."),
+    ] = False,
 ) -> None:
     """Run the manifest-driven sync without building.
 
@@ -125,6 +148,10 @@ def sync(
         spec=BSPSpec(machine=machine, distro=distro, image=image, manifest=manifest, repo_branch=branch),
         user_config=_state._USER_CONFIG,
     )
+
+    if dry_run:
+        _print_dry_run(cfg, family)
+        raise typer.Exit(code=0)
 
     if "KAS_CONTAINER_IMAGE" not in os.environ and cfg.container_image != DEFAULT_CONTAINER_IMAGE:
         console.print(f"[dim]container image from config.toml: {cfg.container_image}[/]")
