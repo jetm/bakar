@@ -112,6 +112,13 @@ def _run_bbsetup_build(
             shutil.rmtree(tmp_dir)
             console.print(f"[green]removed[/] {tmp_dir}")
 
+    if ctx.dry_run:
+        for line in step_kas.dry_run_preview_lines(
+            cfg, cfg.kas_yaml, overlay_source, _hashequiv_extra_overlays(cfg), keep_going=ctx.keep_going
+        ):
+            print(line)
+        raise typer.Exit(code=0)
+
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         log.info(f"build mode=bbsetup bsp=bbsetup yaml={cfg.kas_yaml} overlay={overlay_source}")
@@ -171,10 +178,11 @@ def _run_byo_build(
     if ctx.effective_show_layers:
         _print_layer_hashes(cfg)
 
-    if ctx.family == "generic":
-        log.step_skip("bitbake_override", reason="generic mode")
-    else:
-        step_override.apply(cfg, log)
+    if not ctx.dry_run:
+        if ctx.family == "generic":
+            log.step_skip("bitbake_override", reason="generic mode")
+        else:
+            step_override.apply(cfg, log)
 
     kas_ctx = KasBuildContext(
         cfg, log, cfg.kas_yaml, ctx.overlay_source, keep_going=ctx.keep_going, dry_run=ctx.dry_run
@@ -232,8 +240,9 @@ def _run_manifest_build(
     else:
         log.step_skip("setup_env", reason="bblayers.conf present")
 
-    step_override.apply(cfg, log)
-    step_kas.regenerate_yaml(cfg, log, bsp=ctx.bsp)
+    if not ctx.dry_run:
+        step_override.apply(cfg, log)
+        step_kas.regenerate_yaml(cfg, log, bsp=ctx.bsp)
 
     kas_ctx = KasBuildContext(
         cfg, log, cfg.kas_yaml, ctx.overlay_source, keep_going=ctx.keep_going, dry_run=ctx.dry_run

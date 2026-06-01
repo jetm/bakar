@@ -29,6 +29,7 @@ from bakar.cli import app
 from bakar.config import BuildConfig
 from bakar.observability import RunLogger
 from bakar.steps import kas_build
+from bakar.steps.kas_build import dry_run_preview_lines
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -169,6 +170,44 @@ def test_build_help_lists_keep_going_flag() -> None:
     import re
 
     assert re.search(r"--keep-going\s+-k", result.output), result.output
+
+
+# ---------------------------------------------------------------------------
+# (d2) dry_run_preview_lines directly verifies keep-going cmd assembly
+# ---------------------------------------------------------------------------
+
+
+def test_dry_run_preview_lines_keep_going_appends_dash_k(tmp_path: Path) -> None:
+    """dry_run_preview_lines includes '-- -k' after the kas arg when keep_going=True.
+
+    This covers the non-dry-run cmd assembly path indirectly: the same
+    cmd-building code runs for both paths; a regression that dropped '-- -k'
+    would fail here without needing to mock the PTY/sampler infrastructure.
+    """
+    cfg, kas_yaml, overlay = _prepare_workspace(tmp_path)
+    lines = dry_run_preview_lines(cfg, kas_yaml, overlay, keep_going=True)
+    command_line = next(ln for ln in lines if ln.startswith("command:"))
+    assert "-- -k" in command_line, command_line
+    # -- -k must come after the kas build arg, not before it
+    assert command_line.index("build ") < command_line.index("-- -k"), command_line
+
+
+def test_dry_run_preview_lines_no_keep_going(tmp_path: Path) -> None:
+    """dry_run_preview_lines omits '-- -k' when keep_going=False."""
+    cfg, kas_yaml, overlay = _prepare_workspace(tmp_path)
+    lines = dry_run_preview_lines(cfg, kas_yaml, overlay, keep_going=False)
+    command_line = next(ln for ln in lines if ln.startswith("command:"))
+    assert "-- -k" not in command_line, command_line
+
+
+def test_dry_run_preview_lines_extra_overlays_included(tmp_path: Path) -> None:
+    """extra_overlays appear in the kas_arg of the preview command."""
+    cfg, kas_yaml, overlay = _prepare_workspace(tmp_path)
+    extra = tmp_path / "extra.yml"
+    extra.write_text("header: {}\n", encoding="utf-8")
+    lines = dry_run_preview_lines(cfg, kas_yaml, overlay, [extra])
+    command_line = next(ln for ln in lines if ln.startswith("command:"))
+    assert "extra.yml" in command_line, command_line
 
 
 # ---------------------------------------------------------------------------

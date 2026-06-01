@@ -423,6 +423,40 @@ def _build_kas_arg(cfg: BuildConfig, kas_yaml: Path, overlay_source: Path) -> st
     return f"{kas_yaml_rel}:{overlay_rel}"
 
 
+def dry_run_preview_lines(
+    cfg: BuildConfig,
+    kas_yaml: Path,
+    overlay_source: Path,
+    extra_overlays: list[Path] | None = None,
+    *,
+    keep_going: bool = False,
+) -> list[str]:
+    """Return structured ``key: value`` preview lines for a dry-run invocation.
+
+    No filesystem side effects. Callers can print the returned list directly.
+    meta-avocado kas_arg requires a kas dump subprocess and shows a placeholder
+    instead of a fully resolved path.
+    """
+    exe = "kas" if cfg.host_mode else "kas-container"
+    if cfg.is_meta_avocado:
+        kas_arg = "<kas-arg: computed by kas dump at build time>"
+    else:
+        kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
+        parts: list[str] = [
+            f"{kas_yaml_rel}:{_OVERLAY_DIR_RELPATH / overlay_source.name}",
+            *[str(_OVERLAY_DIR_RELPATH / p.name) for p in extra_overlays or []],
+        ]
+        kas_arg = ":".join(parts)
+    cmd = [exe, *_ccache_args(cfg, dry_run=True), "build", kas_arg]
+    if keep_going:
+        cmd += ["--", "-k"]
+    lines: list[str] = [f"command: {' '.join(cmd)}", f"overlay: {kas_arg}"]
+    for key, value in _build_env(cfg, ensure_hashserv=False).items():
+        if value is not None:
+            lines.append(f"env.{key}: {value}")
+    return lines
+
+
 def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None) -> int:
     """Run `kas-container build <kas_yaml>:<overlay>` with the measurement harness.
 
@@ -440,27 +474,9 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
 
     if ctx.dry_run:
-        # Pure preview: derive the full command without filesystem side effects.
-        # meta-avocado kas_arg requires a kas dump subprocess; show a placeholder.
-        cmd_preview: list[str] = []
-        if shutil.which("/usr/bin/time"):
-            cmd_preview = ["/usr/bin/time", "-v", "-o", str(log.time_log_path), "--"]
-        exe = "kas" if cfg.host_mode else "kas-container"
-        if cfg.is_meta_avocado:
-            kas_arg_preview = "<kas-arg: computed by kas dump at build time>"
-        else:
-            kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
-            overlay_rel = _OVERLAY_DIR_RELPATH / overlay_source.name
-            kas_arg_preview = f"{kas_yaml_rel}:{overlay_rel}"
-        cmd_preview += [exe, *_ccache_args(cfg, dry_run=True), "build", kas_arg_preview]
-        if ctx.keep_going:
-            cmd_preview += ["--", "-k"]
+        for line in dry_run_preview_lines(cfg, kas_yaml, overlay_source, extra_overlays, keep_going=ctx.keep_going):
+            print(line)
         log.step_skip("kas_build", reason="dry-run")
-        print(f"command: {' '.join(cmd_preview)}")
-        print(f"overlay: {kas_arg_preview}")
-        for key, value in _build_env(cfg, ensure_hashserv=False).items():
-            if value is not None:
-                print(f"env.{key}: {value}")
         return 0
 
     removed = clear_stale_bitbake_locks(cfg)
