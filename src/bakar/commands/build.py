@@ -48,6 +48,7 @@ class _BbsetupCtx:
     clean: bool
     skip_doctor: bool
     dry_run: bool
+    keep_going: bool
     show_layers: bool
 
 
@@ -124,12 +125,9 @@ def _run_bbsetup_build(
             distro_override=ctx.distro,
         )
 
-        if ctx.dry_run:
-            log.step_skip("kas_build", reason="dry-run")
-            console.print(f"[green]dry-run complete[/]: would run kas-container with {cfg.kas_yaml} + {overlay_source}")
-            return
-
-        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source)
+        kas_ctx = KasBuildContext(
+            cfg, log, cfg.kas_yaml, overlay_source, keep_going=ctx.keep_going, dry_run=ctx.dry_run
+        )
         rc = step_kas.run_build(
             kas_ctx,
             extra_overlays=_hashequiv_extra_overlays(cfg),
@@ -154,6 +152,7 @@ class _BuildCtx:
     family: str
     effective_show_layers: bool
     dry_run: bool
+    keep_going: bool
     skip_doctor: bool
     skip_sync: bool
 
@@ -177,12 +176,9 @@ def _run_byo_build(
     else:
         step_override.apply(cfg, log)
 
-    if ctx.dry_run:
-        log.step_skip("kas_build", reason="dry-run")
-        console.print(f"[green]dry-run complete[/]: would run kas-container with {cfg.kas_yaml} + {ctx.overlay_source}")
-        return
-
-    kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, ctx.overlay_source)
+    kas_ctx = KasBuildContext(
+        cfg, log, cfg.kas_yaml, ctx.overlay_source, keep_going=ctx.keep_going, dry_run=ctx.dry_run
+    )
     rc = step_kas.run_build(
         kas_ctx,
         extra_overlays=ctx.extra_overlays,
@@ -239,12 +235,9 @@ def _run_manifest_build(
     step_override.apply(cfg, log)
     step_kas.regenerate_yaml(cfg, log, bsp=ctx.bsp)
 
-    if ctx.dry_run:
-        log.step_skip("kas_build", reason="dry-run")
-        console.print(f"[green]dry-run complete[/]: would run kas-container with {cfg.kas_yaml} + {ctx.overlay_source}")
-        return
-
-    kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, ctx.overlay_source)
+    kas_ctx = KasBuildContext(
+        cfg, log, cfg.kas_yaml, ctx.overlay_source, keep_going=ctx.keep_going, dry_run=ctx.dry_run
+    )
     rc = step_kas.run_build(
         kas_ctx,
         extra_overlays=_hashequiv_extra_overlays(cfg),
@@ -292,7 +285,15 @@ def build(
         bool, typer.Option("--skip-sync", help="Skip sync (repo init+sync for NXP, oe-layertool for TI)")
     ] = False,
     dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="Regenerate YAML and exit before invoking kas/kas-container build")
+        bool, typer.Option("--dry-run", "-n", help="Regenerate YAML and exit before invoking kas/kas-container build")
+    ] = False,
+    keep_going: Annotated[
+        bool,
+        typer.Option(
+            "--keep-going",
+            "-k",
+            help="Pass -k to bitbake: continue building other targets when one fails",
+        ),
     ] = False,
     skip_doctor: Annotated[
         bool,
@@ -356,6 +357,7 @@ def build(
                 clean=clean,
                 skip_doctor=skip_doctor,
                 dry_run=dry_run,
+                keep_going=keep_going,
                 show_layers=show_layers,
             ),
         )
@@ -422,6 +424,7 @@ def build(
         family=family,
         effective_show_layers=effective_show_layers,
         dry_run=dry_run,
+        keep_going=keep_going,
         skip_doctor=skip_doctor,
         skip_sync=skip_sync,
     )
