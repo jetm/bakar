@@ -163,7 +163,7 @@ def clean_sstate(
         confirmed = typer.confirm(f"Delete {len(stale):,} files ({_fmt_size(total_bytes)})?")
         if not confirmed:
             console.print("Aborted.")
-            raise typer.Exit()
+            raise typer.Exit
 
     removed = 0
     freed = 0

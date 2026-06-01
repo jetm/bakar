@@ -56,8 +56,6 @@ def load_vendors(path: Path | None = None) -> list[VendorEntry]:
     with path.open("rb") as f:
         data = tomllib.load(f)
 
-    entries = []
-    for item in data.get("vendors", []):
-        entries.append(VendorEntry(**item))
+    entries = [VendorEntry(**item) for item in data.get("vendors", [])]
 
     return entries

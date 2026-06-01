@@ -32,6 +32,7 @@ def _git_head(path: Path) -> str:
             ["git", "-C", str(path), "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
+            check=False,
         )
     except OSError:
         return ""
@@ -101,7 +102,7 @@ def for_all(
         # shell=True is intentional: the user owns the command (parity with
         # `kas for-all-repos`), so pipes, globs, and `&&` work as in a shell.
         try:
-            result = subprocess.run(command, shell=True, cwd=path, env=env)  # noqa: S602
+            result = subprocess.run(command, shell=True, cwd=path, env=env, check=False)
         except OSError as exc:
             # A repo dir removed between discovery and exec (or a missing shell)
             # counts as that repo failing - keep visiting the rest, per the

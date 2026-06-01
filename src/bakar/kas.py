@@ -94,8 +94,8 @@ def parse_bblayers(path: Path) -> dict[str, set[str]]:
         return {}
     layers_map: dict[str, set[str]] = {}
     for body in matches:
-        for token in body.split():
-            token = token.strip()
+        for raw_token in body.split():
+            token = raw_token.strip()
             if not token:
                 continue
             idx = token.find("/sources/")
@@ -154,7 +154,7 @@ def parse_manifest(manifest_path: Path, bblayers_map: dict[str, set[str]] | None
             continue
         entry: dict[str, Any] = {"path": entry_path}
         if bblayers_map and bblayers_map.get(pname):
-            entry["layers"] = {layer: None for layer in sorted(bblayers_map[pname])}
+            entry["layers"] = dict.fromkeys(sorted(bblayers_map[pname]))
         data[pname] = entry
     # Sort so output is deterministic regardless of manifest ordering.
     return OrderedDict(sorted(data.items()))
@@ -210,7 +210,7 @@ def build_yaml_dict(opts: KasGenOptions) -> dict[str, Any]:
             for repo_name in sorted(bblayers_map):
                 entry: dict[str, Any] = {"path": f"sources/{repo_name}"}
                 if bblayers_map[repo_name]:
-                    entry["layers"] = {layer: None for layer in sorted(bblayers_map[repo_name])}
+                    entry["layers"] = dict.fromkeys(sorted(bblayers_map[repo_name]))
                 repos[repo_name] = entry
     else:
         repos = parse_manifest(opts.manifest, bblayers_map)
@@ -289,7 +289,7 @@ def _load_bbsetup_config(
         raise ValueError(f"{config_path} is not valid JSON: {exc}") from exc
     data = cfg.get("data")
     if not isinstance(data, dict):
-        raise ValueError(f"{config_path} is missing a top-level 'data' object; not a valid bitbake-setup config")
+        raise ValueError(f"{config_path} is missing a top-level 'data' object; not a valid bitbake-setup config")  # noqa: TRY004
     sources = data.get("sources")
     if not isinstance(sources, dict) or not sources:
         raise ValueError(f"{config_path} has an empty or absent 'data.sources' block")
@@ -377,7 +377,7 @@ def translate_bbsetup_config(
     has no ``git-remote`` (local-path sources are out of scope), or if a
     ``bb-layers`` entry references an unknown source.
     """
-    sources, shas, bb_config, known_sources, layers_by_source = _load_bbsetup_config(setup_dir)
+    sources, shas, bb_config, _known_sources, layers_by_source = _load_bbsetup_config(setup_dir)
     repos: OrderedDict[str, dict[str, Any]] = OrderedDict()
     for name, source in sources.items():
         repos[name] = _build_repo_entry(name, source, shas, layers_by_source)

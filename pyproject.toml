@@ -129,27 +129,38 @@ line-length = 120
 
 [tool.ruff.lint]
 select = [
+  "B",  # flake8-bugbear
+  "C4",  # flake8-comprehensions
   "E",  # pycodestyle errors
   "F",  # Pyflakes
   "I",  # isort
+  "LOG",  # flake8-logging
   "N",  # pep8-naming
-  "W",  # pycodestyle warnings
-  "UP",  # pyupgrade
-  "B",  # flake8-bugbear
+  "PERF",  # Perflint
+  "PIE",  # flake8-pie
+  "PLW",  # Pylint warnings
+  "RSE",  # flake8-raise
+  "RUF",  # Ruff-specific rules
   "SIM",  # flake8-simplify
   "TC",  # flake8-type-checking
+  "UP",  # pyupgrade
+  "W",  # pycodestyle warnings
 ]
 extend-select = [
   "PLR0913",  # too-many-arguments
   "FBT001",  # boolean-typed-positional-argument
   "FBT002",  # boolean-default-positional-argument
   "FBT003",  # boolean-positional-value-in-call
+  "N818",  # exception-name (Error suffix)
+  "TRY300",  # try-consider-else
+  "TRY004",  # type-check-without-type-error
 ]
 ignore = [
   "SIM102",  # Use single if statement - often reduces readability
   "SIM105",  # Use contextlib.suppress - adds import for minimal benefit
   "SIM108",  # Use ternary operator - can reduce readability for complex conditions
   "SIM110",  # Use any() instead of for loop - sometimes less clear
+  "TRY003",  # Avoid specifying long messages outside exception class - too opinionated for a CLI tool
 ]
 
 [tool.ruff.lint.pylint]
@@ -167,6 +178,8 @@ known-first-party = ["bakar"]
 # Internal helpers with many params that are not Typer commands but exceed max-args by design.
 "src/bakar/config.py" = ["PLR0913"]
 "src/bakar/steps/stress_parse.py" = ["PLR0913"]
+# permanent: module-level lazy-load singletons (_VENDORS, _USER_CONFIG).
+"src/bakar/commands/_app.py" = ["PLW0603"]
 
 [tool.ty.rules]
 # Noisy without full type annotations - project uses gradual typing

@@ -50,9 +50,7 @@ def scan(text: str) -> list[tuple[re.Pattern[str], str]]:
     pair so the summary preserves the full forensic record; triage
     deduplicates the suggestion string).
     """
-    hits: list[tuple[re.Pattern[str], str]] = []
-    for line in text.splitlines():
-        for pattern in FORK_RACE_SIGNATURES:
-            if pattern.search(line):
-                hits.append((pattern, line))
+    hits: list[tuple[re.Pattern[str], str]] = [
+        (pattern, line) for line in text.splitlines() for pattern in FORK_RACE_SIGNATURES if pattern.search(line)
+    ]
     return hits

@@ -124,6 +124,7 @@ def check_docker_daemon(cfg: BuildConfig) -> CheckResult:
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return _fail("docker-daemon", Severity.BLOCK, f"not reachable: {exc}")
@@ -144,6 +145,7 @@ def check_container_image(cfg: BuildConfig) -> CheckResult:
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
     except FileNotFoundError:
         return _fail("container-image", Severity.BLOCK, "docker missing")
@@ -192,6 +194,7 @@ def check_container_os(cfg: BuildConfig) -> CheckResult:
             capture_output=True,
             text=True,
             timeout=20,
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return _skip("container-os", Severity.WARN, f"could not inspect: {exc}")
@@ -261,7 +264,7 @@ def check_container_bitbake(cfg: BuildConfig) -> CheckResult:
         shell = "which bitbake && bitbake --version"
     cmd += [cfg.container_image, "-c", shell]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=20, check=False)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return _skip("container-bitbake", Severity.INFO, f"could not inspect: {exc}")
     if out.returncode != 0:
@@ -778,6 +781,7 @@ def check_git_global_config(cfg: BuildConfig) -> CheckResult:
                 text=True,
                 timeout=5,
                 cwd=cwd,
+                check=False,
             )
         except FileNotFoundError, subprocess.TimeoutExpired:
             return None
@@ -832,6 +836,7 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
             capture_output=True,
             text=True,
             timeout=15,
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return _skip(name, Severity.BLOCK, f"kas unavailable: {exc}")
@@ -956,6 +961,7 @@ def check_docker_version(cfg: BuildConfig) -> CheckResult:
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return _skip(name, Severity.WARN, f"docker not reachable: {exc}")
@@ -1005,6 +1011,7 @@ def check_docker_storage_driver(cfg: BuildConfig) -> CheckResult:
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return _skip(name, Severity.WARN, f"docker not reachable: {exc}")
@@ -1062,6 +1069,7 @@ def check_ccache_health(cfg: BuildConfig) -> CheckResult:
             text=True,
             timeout=5,
             env={**os.environ, "CCACHE_DIR": str(ccache_dir)},
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return _skip(name, Severity.WARN, f"ccache --print-stats failed: {exc}")
@@ -1258,7 +1266,7 @@ def run_all(cfg: BuildConfig, bsp: BspModel | None = None) -> list[CheckResult]:
     else:
         checks = SHARED_CHECKS + tuple(bsp.doctor_extras)
     if cfg.bsp_family == "bbsetup":
-        checks = checks + (check_bbsetup_initialized, check_bbsetup_config_sources)
+        checks = (*checks, check_bbsetup_initialized, check_bbsetup_config_sources)
     if cfg.host_mode:
         checks = tuple(c for c in checks if c not in _DOCKER_CHECKS)
     return [check(cfg) for check in checks]

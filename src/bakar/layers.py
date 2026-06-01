@@ -46,8 +46,8 @@ def _resolve_bblayers_paths(bblayers_conf: Path) -> dict[str, Path]:
     seen: set[Path] = set()
     result: dict[str, Path] = {}
     for body in matches:
-        for token in body.split():
-            token = token.strip().replace("${TOPDIR}", topdir)
+        for raw_token in body.split():
+            token = raw_token.strip().replace("${TOPDIR}", topdir)
             if not token:
                 continue
             layer_path = Path(token).resolve()
@@ -58,6 +58,7 @@ def _resolve_bblayers_paths(bblayers_conf: Path) -> dict[str, Path]:
                     ["git", "-C", str(layer_path), "rev-parse", "--show-toplevel"],
                     capture_output=True,
                     text=True,
+                    check=False,
                 )
             except OSError:
                 continue
@@ -110,6 +111,7 @@ def _git_short_hash(path: Path) -> str | None:
             ["git", "-C", str(path), "rev-parse", "--short", "HEAD"],
             capture_output=True,
             text=True,
+            check=False,
         )
     except OSError:
         return None
@@ -122,6 +124,7 @@ def _git_branch(path: Path) -> str:
             ["git", "-C", str(path), "branch", "--show-current"],
             capture_output=True,
             text=True,
+            check=False,
         )
         return out.stdout.strip() if out.returncode == 0 else ""
     except OSError:

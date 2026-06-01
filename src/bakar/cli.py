@@ -15,28 +15,28 @@ try:
 except ImportError:  # pragma: no cover - typer < 0.26 path
     from click import exceptions as _click_exc
 
-import bakar.commands.build  # noqa: F401
-import bakar.commands.clean  # noqa: F401
-import bakar.commands.clean_sstate  # noqa: F401
-import bakar.commands.diff  # noqa: F401
-import bakar.commands.doctor  # noqa: F401
-import bakar.commands.dump  # noqa: F401
-import bakar.commands.for_all  # noqa: F401
-import bakar.commands.gen_kas  # noqa: F401
-import bakar.commands.hashserv  # noqa: F401
-import bakar.commands.init  # noqa: F401
-import bakar.commands.layers  # noqa: F401
-import bakar.commands.lock  # noqa: F401
-import bakar.commands.log  # noqa: F401
-import bakar.commands.override  # noqa: F401
-import bakar.commands.prefetch  # noqa: F401
-import bakar.commands.report  # noqa: F401
-import bakar.commands.settings  # noqa: F401
-import bakar.commands.shell  # noqa: F401
-import bakar.commands.stress_parse  # noqa: F401
-import bakar.commands.sync  # noqa: F401
+import bakar.commands.build
+import bakar.commands.clean
+import bakar.commands.clean_sstate
+import bakar.commands.diff
+import bakar.commands.doctor
+import bakar.commands.dump
+import bakar.commands.for_all
+import bakar.commands.gen_kas
+import bakar.commands.hashserv
+import bakar.commands.init
+import bakar.commands.layers
+import bakar.commands.lock
+import bakar.commands.log
+import bakar.commands.override
+import bakar.commands.prefetch
+import bakar.commands.report
+import bakar.commands.settings
+import bakar.commands.shell
+import bakar.commands.stress_parse
+import bakar.commands.sync
 import bakar.commands.triage  # noqa: F401
-from bakar.commands import app  # noqa: F401 - re-exported for pyproject.toml entry point
+from bakar.commands import app
 from bakar.commands._app import console
 
 __all__ = ["app", "main"]

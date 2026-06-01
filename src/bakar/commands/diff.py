@@ -59,5 +59,5 @@ def diff(
         raise typer.Exit(code=0)
 
     exe = "kas" if cfg.host_mode else "kas-container"
-    proc = subprocess.run([exe, "diff", str(old), str(new)], cwd=ws)
+    proc = subprocess.run([exe, "diff", str(old), str(new)], cwd=ws, check=False)
     raise typer.Exit(code=proc.returncode)

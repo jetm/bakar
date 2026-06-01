@@ -143,11 +143,12 @@ def _scan_log(log_path: Path) -> list[dict[str, str]]:
     if not log_path.is_file():
         return []
     text = log_path.read_text(errors="replace")
-    hits: list[dict[str, str]] = []
-    for line in text.splitlines():
-        for pattern in FORK_RACE_SIGNATURES:
-            if pattern.search(line):
-                hits.append({"pattern": pattern.pattern, "match": line})
+    hits: list[dict[str, str]] = [
+        {"pattern": pattern.pattern, "match": line}
+        for line in text.splitlines()
+        for pattern in FORK_RACE_SIGNATURES
+        if pattern.search(line)
+    ]
     return hits
 
 

@@ -80,6 +80,7 @@ def lock(
         proc = subprocess.run(
             ["repo", "manifest", "-r", "-o", str(out)],
             cwd=cfg.workspace / "nxp",
+            check=False,
         )
         raise typer.Exit(code=proc.returncode)
 

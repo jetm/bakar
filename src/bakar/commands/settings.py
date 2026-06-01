@@ -20,8 +20,7 @@ _UNSET_MARKER = "(unset)"
 
 
 @settings_app.command("list")
-def list(  # noqa: A001 - Typer command name shadows the builtin intentionally
-) -> None:
+def list() -> None:
     """Print every recognized setting key with its current value or an unset marker."""
     for key, value in list_settings().items():
         if value is None:
@@ -47,7 +46,7 @@ def get(
 
 
 @settings_app.command("set")
-def set(  # noqa: A001 - Typer command name shadows the builtin intentionally
+def set(
     key: Annotated[str, typer.Argument(help="Dotted setting key, e.g. defaults.nxp.machine")],
     value: Annotated[str, typer.Argument(help="Value to store; bool keys accept true/false/1/0")],
 ) -> None:

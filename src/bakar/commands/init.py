@@ -20,7 +20,7 @@ def _ask(question: questionary.Question) -> object:
     """Call question.ask() and abort cleanly on None (questionary swallows Ctrl-C)."""
     result = question.ask()
     if result is None:
-        raise typer.Abort()
+        raise typer.Abort
     return result
 
 

@@ -48,7 +48,7 @@ def _load_user_config_safe() -> UserConfig:
 def _version(value: bool) -> None:
     if value:
         console.print(f"bakar {__version__}")
-        raise typer.Exit()
+        raise typer.Exit
 
 
 @app.callback()

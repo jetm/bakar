@@ -344,9 +344,7 @@ def _find_run(
     for runs_dir, label in runs_dirs:
         if not runs_dir.is_dir():
             continue
-        for entry in runs_dir.iterdir():
-            if entry.is_dir():
-                candidates.append((entry, label))
+        candidates.extend((entry, label) for entry in runs_dir.iterdir() if entry.is_dir())
 
     if not candidates:
         return None

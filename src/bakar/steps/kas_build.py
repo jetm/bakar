@@ -476,6 +476,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
                     capture_output=True,
                     text=True,
                     timeout=60,
+                    check=False,
                 )
                 if size.returncode == 0:
                     bytes_ = int(size.stdout.split()[0])
@@ -531,7 +532,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
                 stdout=slave_fd,
                 stderr=slave_fd,
                 env=_build_env(cfg),
-                preexec_fn=os.setsid,
+                start_new_session=True,
                 close_fds=True,
             )
             os.close(slave_fd)
@@ -613,7 +614,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
                         progress.console.print(line)
 
                 last_total = 0
-                last_completed = 0  # noqa: F841 - kept for future delta / debugging
+                last_completed = 0
                 expansion_count = 0
                 current_recipe = ""
 
@@ -902,9 +903,11 @@ def run_kas_subcommand(
         if capture_to is not None:
             capture_to.parent.mkdir(parents=True, exist_ok=True)
             with capture_to.open("wb") as fh:
-                proc = subprocess.run(cmd, cwd=cfg.bsp_root, env=_build_env(cfg), stdout=fh)  # pragma: no cover
+                proc = subprocess.run(  # pragma: no cover
+                    cmd, cwd=cfg.bsp_root, env=_build_env(cfg), stdout=fh, check=False
+                )
         else:
-            proc = subprocess.run(cmd, cwd=cfg.bsp_root, env=_build_env(cfg))  # pragma: no cover
+            proc = subprocess.run(cmd, cwd=cfg.bsp_root, env=_build_env(cfg), check=False)  # pragma: no cover
     except FileNotFoundError:
         log.step_fail("kas_subcommand", reason=f"{exe} not found")
         raise

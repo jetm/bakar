@@ -42,6 +42,7 @@ def _rev_list_count(checkout: Path, old: str, new: str) -> int | None:
             ["git", "-C", str(checkout), "rev-list", "--count", f"{old}..{new}"],
             capture_output=True,
             text=True,
+            check=False,
         )
     except OSError:
         return None

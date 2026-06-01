@@ -51,7 +51,7 @@ def _run_psi_calibrate() -> None:
         console.print("[yellow]PSI not available on this kernel (/proc/pressure/ unreadable)[/]")
         raise typer.Exit(0)
     dims = ("cpu", "io", "memory")
-    peaks: dict[str, float] = {d: 0.0 for d in dims}
+    peaks: dict[str, float] = dict.fromkeys(dims, 0.0)
     console.print("[bold]Monitoring /proc/pressure/ - run your build now. Press Ctrl+C to stop.[/]")
     try:
         while True:
