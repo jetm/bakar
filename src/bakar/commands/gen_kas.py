@@ -33,6 +33,10 @@ def gen_kas(
         typer.Option("--output", "-o", help="Output path; defaults to <bsp_root>/kas-<bsp>.yml"),
     ] = None,
     workspace: Annotated[Path | None, typer.Option("--workspace", "-w", help="Workspace root override")] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", "-n", help="Print the resolved output and source paths, then exit without writing"),
+    ] = False,
 ) -> None:
     """Regenerate the topology-only kas YAML from current inputs.
 
@@ -50,6 +54,10 @@ def gen_kas(
     """
     setup_dir = _bbsetup_workspace(workspace) if manifest is None else None
     if setup_dir is not None:
+        if dry_run:
+            print(f"output: {setup_dir / 'kas-bbsetup.yml'}")
+            print(f"source: {setup_dir / 'config' / 'config-upstream.json'}")
+            raise typer.Exit(0)
         out_path = write_bbsetup_yaml(
             setup_dir,
             target=image or "core-image-minimal",
@@ -68,6 +76,10 @@ def gen_kas(
         user_config=_state._USER_CONFIG,
     )
     out_path = output.resolve() if output is not None else cfg.default_kas_yaml
+    if dry_run:
+        print(f"output: {out_path}")
+        print(f"source: {cfg.manifest_path}")
+        raise typer.Exit(0)
     opts = KasGenOptions(
         manifest=cfg.manifest_path,
         bblayers=cfg.bblayers_conf if cfg.bblayers_conf.is_file() else None,
