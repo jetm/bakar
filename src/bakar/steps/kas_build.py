@@ -404,6 +404,8 @@ class KasBuildContext:
     log: RunLogger
     kas_yaml: Path
     overlay_source: Path
+    keep_going: bool = False
+    dry_run: bool = False
 
 
 def _build_kas_arg(cfg: BuildConfig, kas_yaml: Path, overlay_source: Path) -> str:
@@ -491,7 +493,6 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
                 continue
 
     sampler = threading.Thread(target=du_loop, daemon=True)  # pragma: no cover
-    sampler.start()
 
     # Build command - prefer /usr/bin/time -v when available.
     cmd: list[str] = []
@@ -499,6 +500,20 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
         cmd = ["/usr/bin/time", "-v", "-o", str(log.time_log_path), "--"]
     exe = "kas" if cfg.host_mode else "kas-container"
     cmd += [exe, *_ccache_args(cfg), "build", kas_arg]
+    if ctx.keep_going:
+        cmd += ["--", "-k"]
+
+    if ctx.dry_run:
+        log.step_skip("kas_build", reason="dry-run")
+        print(f"command: {' '.join(cmd)}")
+        print(f"overlay: {kas_arg}")
+        for key, value in _build_env(cfg).items():
+            if value is not None:
+                print(f"env.{key}: {value}")
+        stop_event.set()
+        return 0
+
+    sampler.start()
 
     log.info(f"exec: {' '.join(cmd)}")
     # The pump thread writes every line to kas.log for `bakar log` to tail,
