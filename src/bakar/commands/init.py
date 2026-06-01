@@ -14,6 +14,14 @@ from bakar.commands._app import app, console
 from bakar.workspace_config import write_workspace_config
 
 
+def _ask(question: questionary.Question) -> object:
+    """Call question.ask() and abort cleanly on None (questionary swallows Ctrl-C)."""
+    result = question.ask()
+    if result is None:
+        raise typer.Abort()
+    return result
+
+
 def _scaffold_workspace(
     path: Path,
     family: Literal["nxp", "ti", "bbsetup", "generic"],
@@ -67,60 +75,73 @@ def init() -> None:
         )
         raise typer.Exit(1)
 
-    try:
-        family: str = questionary.select(
+    family: str = _ask(
+        questionary.select(  # type: ignore[assignment]
             "BSP family:",
             choices=["nxp", "ti", "bbsetup", "generic"],
-        ).ask()
+        )
+    )
 
-        workspace_str: str = questionary.path(
+    workspace_str: str = _ask(
+        questionary.path(  # type: ignore[assignment]
             "Workspace directory:",
             default=".",
-        ).ask()
-        path = Path(workspace_str).expanduser()
+        )
+    )
+    path = Path(workspace_str).expanduser()
 
-        settings: dict[str, str] = {}
-        if family in ("nxp", "ti"):
-            model = get_model(family)  # type: ignore[arg-type]
-            settings["manifest"] = questionary.text(
+    settings: dict[str, str] = {}
+    if family in ("nxp", "ti"):
+        model = get_model(family)  # type: ignore[arg-type]
+        settings["manifest"] = _ask(
+            questionary.text(  # type: ignore[assignment]
                 "Manifest:",
                 default=model.default_manifest,
-            ).ask()
-            settings["machine"] = questionary.text(
+            )
+        )
+        settings["machine"] = _ask(
+            questionary.text(  # type: ignore[assignment]
                 "Machine:",
                 default=model.default_machine,
-            ).ask()
-            settings["distro"] = questionary.text(
+            )
+        )
+        settings["distro"] = _ask(
+            questionary.text(  # type: ignore[assignment]
                 "Distro:",
                 default=model.default_distro,
-            ).ask()
-            settings["image"] = questionary.text(
+            )
+        )
+        settings["image"] = _ask(
+            questionary.text(  # type: ignore[assignment]
                 "Image:",
                 default=model.default_image,
-            ).ask()
-        elif family == "generic":
-            settings["kas_yaml"] = questionary.text(
+            )
+        )
+    elif family == "generic":
+        settings["kas_yaml"] = _ask(
+            questionary.text(  # type: ignore[assignment]
                 "kas YAML filename:",
                 default="kas-generic.yml",
-            ).ask()
-            settings["machine"] = questionary.text(
+            )
+        )
+        settings["machine"] = _ask(
+            questionary.text(  # type: ignore[assignment]
                 "Machine:",
                 default="qemux86-64",
-            ).ask()
-        # bbsetup: no family-specific prompts.
+            )
+        )
+    # bbsetup: no family-specific prompts.
 
-        try:
-            _scaffold_workspace(path, family, settings)  # type: ignore[arg-type]
-        except FileExistsError as exc:
-            console.print(f"[red]workspace already initialized:[/] {exc} already exists")
-            raise typer.Exit(1) from exc
+    try:
+        _scaffold_workspace(path, family, settings)  # type: ignore[arg-type]
+    except FileExistsError as exc:
+        console.print(f"[red]workspace already initialized:[/] {exc} already exists")
+        raise typer.Exit(1) from exc
 
-        console.print(f"[green]workspace scaffolded[/] at {path}")
+    console.print(f"[green]workspace scaffolded[/] at {path}")
 
-        console.print("Downloading sources can take a while")
-        run_sync = questionary.confirm("Run `bakar sync` now?", default=False).ask()
-    except KeyboardInterrupt as exc:
-        raise typer.Abort() from exc
+    console.print("Downloading sources can take a while")
+    run_sync = _ask(questionary.confirm("Run `bakar sync` now?", default=False))
 
     if run_sync:
         from bakar.commands.sync import sync
