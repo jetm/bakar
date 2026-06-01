@@ -9,6 +9,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from bakar.config import BuildConfig, infer_repo_branch, resolve
+from bakar.workspace_config import WorkspaceConfig
 
 # Manifest values fed to resolve land in env vars and dataclass fields; exclude
 # control characters (notably embedded null bytes) that os.environ rejects.
@@ -47,7 +48,12 @@ def test_resolve_explicit_manifest_beats_env(
 ) -> None:
     """An explicit manifest arg wins over BAKAR_MANIFEST env var."""
     monkeypatch.setenv("BAKAR_MANIFEST", env_manifest)
-    cfg = resolve(workspace=Path("/tmp/ws"), bsp_family="nxp", manifest=explicit_manifest)
+    cfg = resolve(
+        workspace=Path("/tmp/ws"),
+        bsp_family="nxp",
+        manifest=explicit_manifest,
+        workspace_config=WorkspaceConfig(),
+    )
     assert isinstance(cfg, BuildConfig)
     assert cfg.manifest == explicit_manifest
 
@@ -61,5 +67,5 @@ def test_resolve_env_manifest_used_when_no_explicit_arg(
 ) -> None:
     """With no explicit manifest arg, BAKAR_MANIFEST env var is used."""
     monkeypatch.setenv("BAKAR_MANIFEST", env_manifest)
-    cfg = resolve(workspace=Path("/tmp/ws"), bsp_family="nxp")
+    cfg = resolve(workspace=Path("/tmp/ws"), bsp_family="nxp", workspace_config=WorkspaceConfig())
     assert cfg.manifest == env_manifest
