@@ -364,19 +364,35 @@ def check_docker_ulimits(cfg: BuildConfig) -> CheckResult:
 
 
 def check_disk_free(cfg: BuildConfig) -> CheckResult:
-    """Each of the three tiered mounts needs at least 50G free."""
+    """Each checked mount needs at least ``cfg.disk_free_threshold_gb`` free.
+
+    sstate and downloads paths are sourced from ``cfg.sstate_dir`` /
+    ``cfg.dl_dir`` first; ``SSTATE_DIR`` / ``DL_DIR`` env vars are used
+    only as a fallback when the corresponding cfg field is ``None`` (config
+    intent is persistent, env is a transient override). Candidates that do
+    not exist are skipped, and candidates that resolve to a filesystem
+    device already checked (by ``os.stat().st_dev``) are deduplicated so a
+    workspace and sstate dir on the same partition are measured once.
+    """
+    sstate = cfg.sstate_dir if cfg.sstate_dir is not None else os.environ.get("SSTATE_DIR")
+    dl = cfg.dl_dir if cfg.dl_dir is not None else os.environ.get("DL_DIR")
     candidates = [
         ("workspace", cfg.workspace),
-        *([("sstate", Path(os.environ["SSTATE_DIR"]))] if os.environ.get("SSTATE_DIR") else []),
-        *([("downloads", Path(os.environ["DL_DIR"]))] if os.environ.get("DL_DIR") else []),
+        *([("sstate", Path(sstate))] if sstate else []),
+        *([("downloads", Path(dl))] if dl else []),
     ]
     low: list[str] = []
+    seen_devs: set[int] = set()
     for label, path in candidates:
         if not path.exists():
             continue
+        dev = os.stat(path).st_dev
+        if dev in seen_devs:
+            continue
+        seen_devs.add(dev)
         st = shutil.disk_usage(path)
         free_gb = st.free / (1024**3)
-        if free_gb < 50:
+        if free_gb < cfg.disk_free_threshold_gb:
             low.append(f"{label}@{path} free={free_gb:.1f}G")
     if low:
         return _fail(
@@ -385,7 +401,7 @@ def check_disk_free(cfg: BuildConfig) -> CheckResult:
             "; ".join(low),
             fix_hint="Remove stale build artifacts or sstate slices.",
         )
-    return _ok("disk-free", Severity.BLOCK, ">= 50G free on each mount")
+    return _ok("disk-free", Severity.BLOCK, f">= {cfg.disk_free_threshold_gb:.0f}G free on each checked mount")
 
 
 def check_memory(cfg: BuildConfig) -> CheckResult:
