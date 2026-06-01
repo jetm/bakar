@@ -161,7 +161,7 @@ def nxp_workspace(fake_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> Path
 def test_build_pipeline_runs_sync_then_setup_env_then_kas(
     runner: CliRunner,
     nxp_workspace: Path,
-    patched_detect: None,  # noqa: ARG001
+    patched_detect: None,
 ) -> None:
     """Build pipeline must dispatch sync -> setup_env -> kas-container in order.
 
@@ -240,7 +240,7 @@ def _invoke_build_with_overrides(
 def test_build_machine_flag_overrides_default(
     runner: CliRunner,
     nxp_workspace: Path,
-    patched_detect: None,  # noqa: ARG001
+    patched_detect: None,
 ) -> None:
     """``--machine imx95-var-dart`` reaches the BuildConfig handed to run_build."""
     exit_code, captured = _invoke_build_with_overrides(runner, nxp_workspace, ["--machine", "imx95-var-dart"])
@@ -253,7 +253,7 @@ def test_build_machine_flag_overrides_default(
 def test_build_distro_flag_overrides_default(
     runner: CliRunner,
     nxp_workspace: Path,
-    patched_detect: None,  # noqa: ARG001
+    patched_detect: None,
 ) -> None:
     """``--distro fsl-imx-wayland`` reaches the BuildConfig handed to run_build."""
     exit_code, captured = _invoke_build_with_overrides(runner, nxp_workspace, ["--distro", "fsl-imx-wayland"])
@@ -266,7 +266,7 @@ def test_build_distro_flag_overrides_default(
 def test_build_image_flag_overrides_default(
     runner: CliRunner,
     nxp_workspace: Path,
-    patched_detect: None,  # noqa: ARG001
+    patched_detect: None,
 ) -> None:
     """``--image core-image-base`` reaches the BuildConfig handed to run_build."""
     exit_code, captured = _invoke_build_with_overrides(runner, nxp_workspace, ["--image", "core-image-base"])
@@ -284,7 +284,7 @@ def test_build_image_flag_overrides_default(
 def test_build_failing_kas_step_exits_nonzero(
     runner: CliRunner,
     nxp_workspace: Path,
-    patched_detect: None,  # noqa: ARG001
+    patched_detect: None,
 ) -> None:
     """A non-zero ``step_kas.run_build`` return propagates to the CLI exit code.
 
@@ -327,7 +327,7 @@ def _make_block_fail() -> list[CheckResult]:
 def test_build_skip_doctor_bypasses_block_finding(
     runner: CliRunner,
     nxp_workspace: Path,
-    patched_detect: None,  # noqa: ARG001
+    patched_detect: None,
 ) -> None:
     """``--skip-doctor`` short-circuits the doctor pre-flight entirely.
 
@@ -360,7 +360,7 @@ def test_build_skip_doctor_bypasses_block_finding(
 def test_build_without_skip_doctor_aborts_on_block_finding(
     runner: CliRunner,
     nxp_workspace: Path,
-    patched_detect: None,  # noqa: ARG001
+    patched_detect: None,
 ) -> None:
     """Without ``--skip-doctor``, a BLOCK-level FAIL must halt the pipeline.
 

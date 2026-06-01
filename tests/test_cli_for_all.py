@@ -50,7 +50,7 @@ def _make_run_mock(repo_returncodes: dict[str, int], calls: list[dict]):
     into ``calls`` and return the per-repo rc keyed on ``BAKAR_REPO_NAME``.
     """
 
-    def _run(cmd, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+    def _run(cmd, *args, **kwargs):
         if not kwargs.get("shell"):
             # _git_head probe.
             return subprocess.CompletedProcess(cmd, returncode=0, stdout="deadbeef\n", stderr="")
@@ -62,7 +62,7 @@ def _make_run_mock(repo_returncodes: dict[str, int], calls: list[dict]):
     return _run
 
 
-def _patch_repos(monkeypatch: pytest.MonkeyPatch, repos):  # noqa: ANN001
+def _patch_repos(monkeypatch: pytest.MonkeyPatch, repos):
     monkeypatch.setattr(for_all_module, "discover_source_repos", lambda cfg: repos)
 
 

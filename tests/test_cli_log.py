@@ -59,7 +59,7 @@ def nxp_workspace_with_run(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _stub_tail_follow(path, history_lines: int = 40) -> None:  # noqa: ARG001
+def _stub_tail_follow(path, history_lines: int = 40) -> None:
     """Non-blocking stand-in for ``_tail_follow``.
 
     The real helper enters ``while True: time.sleep(0.2)`` after

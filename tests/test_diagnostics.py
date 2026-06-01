@@ -1065,7 +1065,7 @@ def test_check_hashserv_pass_when_running_and_port_listens(tmp_path: Path, monke
     monkeypatch.setattr(
         diagnostics.socket,
         "create_connection",
-        lambda _addr, timeout=None: fake_sock,  # noqa: ARG005
+        lambda _addr, timeout=None: fake_sock,
     )
 
     cfg = _hashserv_cfg(tmp_path, use_hashequiv=True)
@@ -1107,7 +1107,7 @@ def test_check_hashserv_fail_when_port_unreachable(tmp_path: Path, monkeypatch: 
 
     monkeypatch.setattr("bakar.hashserv.is_running", lambda _root: True)
 
-    def _raise(*_args, **_kwargs):  # noqa: ANN002, ANN003
+    def _raise(*_args, **_kwargs):
         raise ConnectionRefusedError("nothing on that port")
 
     monkeypatch.setattr(diagnostics.socket, "create_connection", _raise)
