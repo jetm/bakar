@@ -189,6 +189,7 @@ class BuildConfig:
     pressure_max_cpu: float | None = field(default=None)
     pressure_max_io: float | None = field(default=None)
     pressure_max_memory: float | None = field(default=None)
+    disk_free_threshold_gb: float = 50.0
     use_hashequiv: bool = field(default=False)
 
     @property
@@ -445,5 +446,6 @@ def resolve(
         pressure_max_cpu=user_config.pressure_max_cpu if user_config else None,
         pressure_max_io=user_config.pressure_max_io if user_config else None,
         pressure_max_memory=user_config.pressure_max_memory if user_config else None,
+        disk_free_threshold_gb=user_config.disk_free_threshold_gb if user_config else 50.0,
         use_hashequiv=user_config.hashserv if user_config else False,
     )
