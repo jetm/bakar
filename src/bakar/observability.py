@@ -87,6 +87,10 @@ class RunLogger:
         return self.run_dir / "env.txt"
 
     @property
+    def error_report_path(self) -> Path:
+        return self.run_dir / "error-report.json"
+
+    @property
     def console(self) -> Console:
         """The Rich console the log handler writes to.
 

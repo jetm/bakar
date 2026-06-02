@@ -201,6 +201,39 @@ def _match_suggestions(text: str) -> list[str]:
     return hits
 
 
+def write_error_report(run_dir: Path, cfg, exit_code: int) -> None:
+    """Write a structured failure artifact to ``run_dir/error-report.json``.
+
+    Captures the kas.log tail, recipe-level errors, and matched suggestions
+    at build-failure time so :func:`analyse` can reconstruct a triage report
+    without re-parsing logs on every invocation.
+
+    The write is best-effort: an :exc:`OSError` is silently swallowed so
+    the original build failure exit code is never masked.
+    """
+    kas_log = run_dir / "kas.log"
+    tail_lines = _tail(kas_log, 80)
+    tail_text = "\n".join(tail_lines)
+    recipe_errors = _scan_recipe_errors(kas_log)
+    suggestions = _match_suggestions(tail_text)
+
+    report: dict = {
+        "step": "kas_build",
+        "machine": cfg.machine,
+        "distro": cfg.distro,
+        "bsp_family": cfg.bsp_family,
+        "exit_code": exit_code,
+        "kas_log_tail": tail_lines,
+        "recipe_errors": [{"recipe": e.recipe, "task": e.task, "excerpt": e.excerpt} for e in recipe_errors],
+        "suggestions": suggestions,
+    }
+
+    try:
+        (run_dir / "error-report.json").write_text(json.dumps(report, indent=2))
+    except OSError:
+        return
+
+
 def analyse(run_dir: Path, workspace: Path) -> TriageReport:
     events_path = run_dir / "events.jsonl"
     kas_log = run_dir / "kas.log"
