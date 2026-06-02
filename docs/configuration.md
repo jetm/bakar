@@ -62,10 +62,12 @@ dl_dir = "/mnt/yocto-cache/downloads"
 sstate_dir = "/mnt/yocto-cache/sstate"
 sstate_mirrors = "file:///mnt/sstate/PATH;downloadfilename=PATH"
 
-# HTTP sstate/downloads mirror URL. When set, bakar appends the shared-cache
-# overlay (bakar-tuning-shared-cache.yml) to every build, wiring SSTATE_MIRRORS,
-# PREMIRRORS, and BB_HASHSERVE_UPSTREAM to this URL. Equivalent to passing
-# --sstate-mirror on every bakar build invocation.
+# HTTP sstate mirror URL. When set, bakar appends the shared-cache overlay
+# (bakar-tuning-shared-cache.yml) to every build, wiring SSTATE_MIRRORS to the
+# mirror using the /all/PATH;downloadfilename=PATH layout and BB_HASHSERVE_UPSTREAM
+# for hash equivalence. The official Yocto Project mirror works directly:
+#   sstate_mirror_url = "http://sstate.yoctoproject.org"
+# Equivalent to passing --sstate-mirror on every bakar build invocation.
 # sstate_mirror_url = "https://cache.example.com"
 scheduler = "completion"  # or "speed"
 

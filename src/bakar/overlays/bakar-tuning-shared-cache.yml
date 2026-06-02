@@ -1,18 +1,22 @@
-# Shared sstate/downloads mirror opt-in overlay.
+# Shared sstate mirror opt-in overlay.
 #
 # This overlay is configured by the `sstate_mirror_url` config key (or the
 # `--sstate-mirror` CLI flag). It is never auto-loaded by bakar; bakar appends
 # it automatically only when a mirror URL is set.
 #
-# What it does: points bitbake's sstate and downloads fetches at the configured
-# HTTP mirror before going upstream, and connects to the Yocto Project hash
-# equivalence server so tasks that already ran on other machines can reuse their
-# sstate without rebuilding.
+# What it does: points bitbake's sstate fetches at the configured HTTP mirror
+# before going upstream, and connects to the Yocto Project hash equivalence
+# server so tasks that already ran on other machines can reuse their sstate
+# without rebuilding.
+#
+# The mirror URL must be the base URL of an sstate mirror that serves artifacts
+# under the /all/PATH layout (the Yocto Project autobuilder convention). The
+# official Yocto Project mirror is http://sstate.yoctoproject.org — pass it
+# directly as --sstate-mirror or set sstate_mirror_url in config.toml.
 #
 # The mirror URL is supplied at build time via the BAKAR_SSTATE_MIRROR_URL
 # environment variable, which bakar exports from the configured sstate_mirror_url.
-# If the variable is unset the mirror blocks expand to empty strings and bitbake
-# falls through to upstream fetches unchanged.
+# Source downloads (DL_DIR) are not redirected; this overlay only covers sstate.
 
 header:
   version: 21
@@ -23,10 +27,7 @@ env:
 local_conf_header:
   bakar-tuning-shared-cache: |
     # Redirect sstate fetches to the configured mirror before going upstream.
-    SSTATE_MIRRORS ?= "file://.* ${@os.environ.get('BAKAR_SSTATE_MIRROR_URL', '')}/sstate/PATH"
-    # Redirect source downloads to the configured mirror before going upstream.
-    PREMIRRORS:prepend = "ftp://.*/.* ${@os.environ.get('BAKAR_SSTATE_MIRROR_URL', '')}/downloads/ \n \
-    http://.*/.* ${@os.environ.get('BAKAR_SSTATE_MIRROR_URL', '')}/downloads/ \n \
-    https://.*/.* ${@os.environ.get('BAKAR_SSTATE_MIRROR_URL', '')}/downloads/ \n"
+    # Path layout follows the Yocto Project autobuilder convention (/all/PATH).
+    SSTATE_MIRRORS ?= "file://.* ${@os.environ.get('BAKAR_SSTATE_MIRROR_URL', '')}/all/PATH;downloadfilename=PATH"
     # Connect to the Yocto Project hash equivalence server for cross-machine reuse.
     BB_HASHSERVE_UPSTREAM = "wss://hashserv.yoctoproject.org/ws"

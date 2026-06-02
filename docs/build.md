@@ -97,7 +97,7 @@ bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --sstate-mirror https://
 4. **bitbake-override** - swaps the BSP-bundled bitbake for a local upstream checkout
 5. **gen-kas** (manifest-driven only) - regenerates `kas-<bsp>.yml` from the manifest
 6. **hashserv** - when `[build] hashserv = true`, ensures the workspace-scoped bitbake-hashserv daemon is running, injects `BB_HASHSERVE` into the container env, AND auto-appends `bakar-tuning-hashequiv.yml` to the overlay list so `BB_SIGNATURE_HANDLER = "OEEquivHash"` takes effect with no extra user wiring. See [hashserv.md](hashserv.md).
-7. **shared-cache overlay** - when `--sstate-mirror <URL>` is passed (or `sstate_mirror_url` is set in config.toml), bakar exports `BAKAR_SSTATE_MIRROR_URL` into the container env and appends `bakar-tuning-shared-cache.yml` to the overlay list. That overlay wires `SSTATE_MIRRORS`, `PREMIRRORS`, and `BB_HASHSERVE_UPSTREAM` to the configured URL so Yocto fetches from the team mirror before going upstream. No hand-edited YAML needed.
+7. **shared-cache overlay** - when `--sstate-mirror <URL>` is passed (or `sstate_mirror_url` is set in config.toml), bakar exports `BAKAR_SSTATE_MIRROR_URL` into the container env and appends `bakar-tuning-shared-cache.yml` to the overlay list. That overlay wires `SSTATE_MIRRORS` (using the `/all/PATH;downloadfilename=PATH` layout required by the Yocto Project autobuilder convention) and `BB_HASHSERVE_UPSTREAM` to enable sstate reuse from the mirror. The official Yocto Project mirror is `http://sstate.yoctoproject.org`. No hand-edited YAML needed.
 8. **kas-container build** - invokes `kas-container build <kas_yaml>:<overlay>` (or `kas build` in host mode)
 
 Run telemetry is written to `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/`.
