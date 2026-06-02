@@ -21,6 +21,7 @@ discoverable.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 import pytest
@@ -35,6 +36,18 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 pytestmark = pytest.mark.unit
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """Strip ANSI SGR escapes so help-text assertions survive colored output.
+
+    Typer/rich colorize ``--help`` when the captured stream looks like a
+    terminal (as in CI), inserting escape codes mid-token so a plain
+    ``"--dry-run" in output`` check fails even though the flag is present.
+    """
+    return _ANSI_RE.sub("", text)
 
 
 def _make_cfg(workspace: Path) -> BuildConfig:
@@ -164,12 +177,13 @@ def test_build_help_lists_keep_going_flag() -> None:
 
     result = CliRunner().invoke(app, ["build", "--help"])
     assert result.exit_code == 0, result.output
-    assert "--keep-going" in result.output
+    # Strip ANSI: CI renders the help colored, splitting the flag token with
+    # escape codes so a raw substring check fails.
+    out = _plain(result.output)
+    assert "--keep-going" in out, out
     # Typer renders "  --keep-going   -k   <help>"; match the two together so
     # a lone "-k" substring (e.g. "gen-kas", "Pass -k to bitbake") can't fool us.
-    import re
-
-    assert re.search(r"--keep-going\s+-k", result.output), result.output
+    assert re.search(r"--keep-going\s+-k", out), out
 
 
 # ---------------------------------------------------------------------------
@@ -221,5 +235,7 @@ def test_command_help_lists_dry_run_flag(command: str) -> None:
 
     result = CliRunner().invoke(app, [command, "--help"])
     assert result.exit_code == 0, result.output
-    assert "--dry-run" in result.output
-    assert "-n" in result.output
+    # Strip ANSI: CI colorizes help output, splitting "--dry-run" with escapes.
+    out = _plain(result.output)
+    assert "--dry-run" in out, out
+    assert re.search(r"--dry-run\s+-n", out), out
