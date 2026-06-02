@@ -1,8 +1,24 @@
-[![CI](https://github.com/jetm/bakar/actions/workflows/ci.yml/badge.svg)](https://github.com/jetm/bakar/actions/workflows/ci.yml)
-
 # bakar
 
+[![CI](https://github.com/jetm/bakar/actions/workflows/ci.yml/badge.svg)](https://github.com/jetm/bakar/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/bakar)](https://pypi.org/project/bakar/)
+[![Python](https://img.shields.io/pypi/pyversions/bakar)](https://pypi.org/project/bakar/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 kas-based BSP build orchestrator for Yocto. Wraps `kas-container` with manifest-driven sync, pre-flight checks, structured telemetry, and post-mortem tooling. Works with NXP i.MX (repo XML), TI Sitara (oe-layertool), bitbake-setup workspaces, and any bring-your-own kas YAML.
+
+## Features
+
+- **Multi-BSP, out of the box** - NXP i.MX (`repo` XML), TI Sitara (oe-layertool), bitbake-setup workspaces, meta-avocado, and any bring-your-own kas YAML, with automatic family detection. See [docs/workspace.md](docs/workspace.md).
+- **Idempotent build pipeline** - `doctor` -> `sync` -> `gen-kas` -> `kas-container` build in one command, with dry-run, keep-going, and from-scratch rebuild. See [docs/build.md](docs/build.md), [docs/sync.md](docs/sync.md), [docs/gen-kas.md](docs/gen-kas.md).
+- **Pre-flight diagnostics** - ~30 host/container/workspace checks with PASS/WARN/BLOCK gating and PSI throttle calibration. See [docs/doctor.md](docs/doctor.md).
+- **Observability and post-mortem** - per-run telemetry (`events.jsonl`, logs, timing, disk usage), live progress bar, log tail, failure triage, and success reports. See [docs/triage.md](docs/triage.md), [docs/report.md](docs/report.md), [docs/log.md](docs/log.md).
+- **Reproducibility** - pin floating layer SHAs, diff manifests/configs, flatten the resolved kas YAML, and pre-fetch sources for offline builds. See [docs/lock.md](docs/lock.md), [docs/diff.md](docs/diff.md), [docs/dump.md](docs/dump.md), [docs/prefetch.md](docs/prefetch.md).
+- **Build performance and robustness** - ccache, NPROC-scaled parallelism, PSI throttling, curated mirrors, persistent hash-equivalence server, and sstate cache pruning baked into tuning overlays. See [docs/hashserv.md](docs/hashserv.md), [docs/clean-sstate.md](docs/clean-sstate.md).
+- **Shell and scripting** - interactive/one-shot kas-container shell, run a command in every source repo, boot a QEMU image from the build dir. See [docs/shell.md](docs/shell.md), [docs/for-all.md](docs/for-all.md), [docs/run.md](docs/run.md).
+- **Layered configuration** - CLI > `BAKAR_*` env > workspace `.bakar.toml` > user `config.toml` > BSP default, plus a `settings` CRUD interface and a vendor config layer for custom board families. See [docs/settings.md](docs/settings.md), [docs/configuration.md](docs/configuration.md).
+- **Advanced tooling** - swap the BSP-bundled bitbake for a local upstream checkout, and stress-test the bitbake parser fork race. See [docs/bitbake-override.md](docs/bitbake-override.md), [docs/stress-parse.md](docs/stress-parse.md).
+- **Workspace scaffolding** - `init` wizard (interactive or `--family`) writes `.bakar.toml`. See [docs/init.md](docs/init.md).
 
 ## Install
 
