@@ -959,6 +959,26 @@ def test_check_ccache_health_modern_max_cache_size_key(monkeypatch: pytest.Monke
     assert "50%" in result.message
 
 
+def test_check_ccache_health_default_cap_not_configured(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """No cap configured: max_size is ccache's built-in default -> PASS, no false fail."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "ccache").mkdir()
+    monkeypatch.setattr("bakar.diagnostics.shutil.which", lambda _name: "/usr/bin/ccache")
+    # 9 GiB cached against the 5 GiB built-in default would be 179% "full".
+    stats = "cache_size_kibibyte 9437184\nmax_cache_size_kibibyte 5242880\n"
+    show_config = "(default) max_size = 5.0 GiB\n"
+    with patch(
+        "bakar.diagnostics.subprocess.run",
+        side_effect=[_mock_run(stats), _mock_run(show_config)],
+    ):
+        result = check_ccache_health(_ccache_cfg(workspace))
+    assert result.status is Status.PASS
+    assert result.severity is Severity.WARN
+    assert "not configured" in result.message
+    assert "%" not in result.message
+
+
 def test_check_ccache_health_old_ccache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """ccache <4.0 lacks the kibibyte keys -> SKIP at WARN severity."""
     workspace = tmp_path / "ws"

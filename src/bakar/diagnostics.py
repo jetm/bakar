@@ -1055,6 +1055,35 @@ def check_docker_storage_driver(cfg: BuildConfig) -> CheckResult:
     )
 
 
+def _ccache_max_size_is_default(env: dict[str, str]) -> bool:
+    """Return True when ccache's max_size comes from its built-in default.
+
+    ``ccache --show-config`` annotates each value's origin, e.g.
+    ``(default) max_size = 5.0 GiB`` versus ``(environment) max_size = 50.0 GB``
+    or ``(/path/ccache.conf) max_size = 0``. A ``default`` origin means no cap is
+    actually configured for this cache dir. On any error, return False so the
+    caller falls back to the normal threshold check.
+    """
+    try:
+        out = subprocess.run(
+            ["ccache", "--show-config"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env=env,
+            check=False,
+        )
+    except FileNotFoundError, subprocess.TimeoutExpired:
+        return False
+    if out.returncode != 0:
+        return False
+    for line in out.stdout.splitlines():
+        m = re.match(r"\((?P<origin>[^)]*)\)\s+max_size\s*=", line)
+        if m:
+            return m.group("origin") == "default"
+    return False
+
+
 def check_ccache_health(cfg: BuildConfig) -> CheckResult:
     """Verify the workspace ccache is not at its eviction threshold.
 
@@ -1081,13 +1110,14 @@ def check_ccache_health(cfg: BuildConfig) -> CheckResult:
     if shutil.which("ccache") is None:
         return _skip(name, Severity.WARN, "ccache binary not on PATH")
 
+    env = {**os.environ, "CCACHE_DIR": str(ccache_dir)}
     try:
         out = subprocess.run(
             ["ccache", "--print-stats"],
             capture_output=True,
             text=True,
             timeout=5,
-            env={**os.environ, "CCACHE_DIR": str(ccache_dir)},
+            env=env,
             check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
@@ -1131,6 +1161,19 @@ def check_ccache_health(cfg: BuildConfig) -> CheckResult:
             name,
             Severity.WARN,
             "ccache uncapped (max cache size = 0)",
+        )
+
+    # The build configures ccache via oe-core's CCACHE_CONFIGPATH
+    # (meta/conf/ccache.conf, uncapped). The doctor only sets CCACHE_DIR, so
+    # when no cap is configured for this dir, max_size resolves to ccache's
+    # built-in 5 GiB default that nothing enforces - failing against it is a
+    # false positive. Report the size without the threshold check in that case.
+    if _ccache_max_size_is_default(env):
+        used = _fmt_size(cache_size * 1024)
+        return _ok(
+            name,
+            Severity.WARN,
+            f"{used} cached; max_size not configured here (build sets its own ccache config)",
         )
 
     ratio = cache_size / max_size
