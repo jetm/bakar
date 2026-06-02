@@ -1372,8 +1372,6 @@ def _dir_size(path: Path) -> int:
 
 
 def _fmt_size(num_bytes: float) -> str:
-    for unit in ("B", "K", "M", "G"):
-        if num_bytes < 1024:
-            return f"{num_bytes:.0f}{unit}"
-        num_bytes /= 1024
-    return f"{num_bytes:.0f}T"
+    from bakar.fmt import fmt_bytes
+
+    return fmt_bytes(num_bytes)
