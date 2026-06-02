@@ -28,14 +28,22 @@ def _print_dry_run(cfg, family) -> None:
     """Print the sync commands that would run as structured ``key: value`` lines.
 
     Reflects the actual resolved manifest/branch/paths so the preview matches
-    what a real sync would invoke. NXP emits the ``repo init`` + ``repo sync``
-    pair; TI emits the ``oe-layertool-setup.sh`` invocation.
+    what a real sync would invoke. NXP checks workspace state and emits only
+    the steps that a real sync would execute (``repo init`` is skipped when
+    the workspace is already initialised with the right manifest/branch); TI
+    emits the ``oe-layertool-setup.sh`` invocation unconditionally.
     """
     if family == "nxp":
+        state = detect(cfg)
         nproc = os.environ.get("NPROC", str(os.cpu_count() or 8))
-        init = f"repo init -u {cfg.repo_url} -b {cfg.repo_branch} -m {cfg.manifest} --config-name"
         sync_cmd = f"repo sync -j {nproc} --force-sync --no-clone-bundle"
-        command = f"{init} && {sync_cmd}"
+        if state.needs_full_reinit:
+            init = f"repo init -u {cfg.repo_url} -b {cfg.repo_branch} -m {cfg.manifest} --config-name"
+            command = f"{init} && {sync_cmd}"
+        elif state.needs_repo_sync:
+            command = sync_cmd
+        else:
+            command = "(already synced)"
     else:
         from bakar.steps.ti_layertool import _build_layertool_cmd
 
