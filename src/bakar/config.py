@@ -218,6 +218,10 @@ class BuildConfig:
     # the environment (it overrides the overlay) when sharing widely.
     ccache_shared: bool = field(default=False)
     ccache_dir: str | None = field(default=None)
+    # When True, `bakar build` samples /proc/pressure during the build and writes
+    # the recommended pressure_max_* back to config.toml, so `bakar doctor -C`
+    # never needs to be run by hand.
+    psi_autocalibrate: bool = field(default=False)
 
     @property
     def effective_ccache_dir(self) -> Path:
@@ -490,4 +494,5 @@ def resolve(
         use_hashequiv=user_config.hashserv if user_config else False,
         ccache_shared=user_config.ccache_shared if user_config else False,
         ccache_dir=user_config.ccache_dir if user_config else None,
+        psi_autocalibrate=user_config.psi_autocalibrate if user_config else False,
     )

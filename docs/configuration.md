@@ -68,6 +68,14 @@ pressure_max_cpu = 72
 pressure_max_io = 41
 pressure_max_memory = 20
 
+# Auto-calibrate the PSI thresholds: when true, `bakar build` samples
+# /proc/pressure during the build and writes the recommended pressure_max_*
+# back here afterwards, reporting what changed - so `bakar doctor -C` never has
+# to be run by hand. The first (unthrottled) build bootstraps the values;
+# later builds only re-tune a dimension that was not throttled, so values
+# converge instead of creeping toward the clamp.
+psi_autocalibrate = true
+
 # Persistent hash equivalence daemon (off by default; see hashserv.md).
 # When true, bakar spawns and reuses a workspace-scoped bitbake-hashserv
 # so OEEquivHash sstate equivalence accumulates across builds.

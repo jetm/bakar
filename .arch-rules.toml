@@ -33,6 +33,7 @@ paths = [
   "src/bakar/workspace_config.py",
   "src/bakar/manifest_diff.py",
   "src/bakar/hashserv.py",
+  "src/bakar/psi.py",
 ]
 
 [[modules]]

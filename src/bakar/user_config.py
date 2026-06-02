@@ -23,7 +23,7 @@ _STR_FIELDS = {
     "scheduler",
     "ccache_dir",
 }
-_BOOL_FIELDS = {"doctor", "show_hashes", "hashserv", "ccache_shared"}
+_BOOL_FIELDS = {"doctor", "show_hashes", "hashserv", "ccache_shared", "psi_autocalibrate"}
 _INT_FIELDS: set[str] = set()
 _PSI_FIELDS = {"pressure_max_cpu", "pressure_max_io", "pressure_max_memory"}
 
@@ -55,6 +55,7 @@ class UserConfig:
     hashserv: bool = False
     ccache_shared: bool = False
     ccache_dir: str | None = None
+    psi_autocalibrate: bool = False
     # [layers]
     show_hashes: bool = False
 
@@ -89,6 +90,7 @@ _BUILD_KEYS = {
     "hashserv": "hashserv",
     "ccache_shared": "ccache_shared",
     "ccache_dir": "ccache_dir",
+    "psi_autocalibrate": "psi_autocalibrate",
 }
 _LAYERS_KEYS = {
     "show_hashes": "show_hashes",

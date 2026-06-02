@@ -287,7 +287,7 @@ def test_psi_calibrate_prints_recommendation(monkeypatch: pytest.MonkeyPatch) ->
     def fake_sleep(_seconds: float) -> None:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("bakar.commands.doctor._read_psi_avg10", fake_psi)
+    monkeypatch.setattr("bakar.commands.doctor.read_psi_avg10", fake_psi)
     monkeypatch.setattr("bakar.commands.doctor.time.sleep", fake_sleep)
 
     # Force the availability probe (first call) to return a non-None value

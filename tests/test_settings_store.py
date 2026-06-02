@@ -48,6 +48,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.hashserv": "true",
         "build.ccache_shared": "true",
         "build.ccache_dir": "/data/ccache",
+        "build.psi_autocalibrate": "true",
         "layers.show_hashes": "true",
     }
     # Every dotted key in the schema is exercised here.
@@ -80,6 +81,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert cfg.hashserv is True
     assert cfg.ccache_shared is True
     assert cfg.ccache_dir == "/data/ccache"
+    assert cfg.psi_autocalibrate is True
     assert cfg.show_hashes is True
 
 

@@ -43,6 +43,7 @@ from rich.progress import (
 
 from bakar import hashserv
 from bakar.kas import KasGenOptions, write_yaml
+from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
 
 if TYPE_CHECKING:
     from bakar.bsp_model import BspModel
@@ -537,6 +538,23 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
 
     sampler = threading.Thread(target=du_loop, daemon=True)  # pragma: no cover
 
+    # PSI auto-calibration: sample host /proc/pressure peaks during the build so
+    # the recommended pressure_max_* can be written afterwards (no `doctor -C`).
+    psi_peaks: dict[str, float] = {}
+    psi_sampler: threading.Thread | None = None
+    if cfg.psi_autocalibrate and read_psi_avg10("cpu") is not None:
+        psi_peaks = dict.fromkeys(PSI_DIMS, 0.0)
+
+        def psi_loop() -> None:  # pragma: no cover
+            while not stop_event.wait(timeout=5):
+                for dim in PSI_DIMS:
+                    value = read_psi_avg10(dim)
+                    if value is not None and value > psi_peaks[dim]:
+                        psi_peaks[dim] = value
+
+        psi_sampler = threading.Thread(target=psi_loop, daemon=True)  # pragma: no cover
+        psi_sampler.start()
+
     # Build command - prefer /usr/bin/time -v when available.
     cmd: list[str] = []
     if shutil.which("/usr/bin/time"):
@@ -726,6 +744,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
         if rc == 0:
             deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
             log.step_ok("kas_build", deploy_dir=str(deploy), exit_code=rc)
+            _autocalibrate_psi(cfg, psi_peaks, log)
         else:
             log.step_fail(
                 "kas_build",
@@ -751,6 +770,8 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
                 )
         stop_event.set()
         sampler.join(timeout=5)
+        if psi_sampler is not None:
+            psi_sampler.join(timeout=5)
         if slave_fd != -1:
             try:
                 os.close(slave_fd)
@@ -761,6 +782,33 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
         except OSError:
             pass
     return rc if rc is not None else -1
+
+
+def _autocalibrate_psi(
+    cfg: BuildConfig,
+    peaks: dict[str, float],
+    log: RunLogger,
+    config_path: Path | None = None,
+) -> dict[str, int]:
+    """Write PSI-calibrated pressure_max_* after a successful build and report it.
+
+    No-op (returns {}) when auto-calibration is disabled or no peaks were
+    sampled. Returns the dict of values written so callers/tests can assert.
+    """
+    if not cfg.psi_autocalibrate or not peaks:
+        return {}
+    current: dict[str, float | None] = {
+        "cpu": cfg.pressure_max_cpu,
+        "io": cfg.pressure_max_io,
+        "memory": cfg.pressure_max_memory,
+    }
+    changes = apply_autocalibration(current, peaks, config_path)
+    if changes:
+        summary = ", ".join(f"pressure_max_{dim}={changes[dim]}" for dim in PSI_DIMS if dim in changes)
+        log.info(f"PSI auto-calibrated: {summary} (written to ~/.config/bakar/config.toml)")
+    else:
+        log.info("PSI auto-calibrate: thresholds already optimal, no change")
+    return changes
 
 
 def _apply_host_mode_env(

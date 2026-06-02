@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import time
 from pathlib import Path
 from typing import Annotated
@@ -20,26 +19,8 @@ from bakar.commands._helpers import (
     _resolve_workspace,
 )
 from bakar.config import BSPSpec, resolve
-from bakar.diagnostics import _read_psi_avg10, any_blocking_failure, run_all
-
-_PSI_CLAMP = 95
-_PSI_MEMORY_FLOOR = 20
-_PSI_HEADROOM = 0.20
-
-
-def _psi_recommendation(peaks: dict[str, float]) -> dict[str, int]:
-    """Convert measured peak avg10 values to recommended config.toml thresholds.
-
-    Adds 20% headroom, clamps each dimension to _PSI_CLAMP, and floors the
-    memory recommendation to _PSI_MEMORY_FLOOR so it is never zero.
-    """
-    result: dict[str, int] = {}
-    for dim, peak in peaks.items():
-        value = math.ceil(peak * (1 + _PSI_HEADROOM))
-        value = max(value, _PSI_MEMORY_FLOOR if dim == "memory" else 1)
-        value = min(value, _PSI_CLAMP)
-        result[dim] = value
-    return result
+from bakar.diagnostics import any_blocking_failure, run_all
+from bakar.psi import psi_recommendation, read_psi_avg10
 
 
 def _run_psi_calibrate() -> None:
@@ -47,7 +28,7 @@ def _run_psi_calibrate() -> None:
 
     Always raises typer.Exit(0) -- never returns normally.
     """
-    if _read_psi_avg10("cpu") is None:
+    if read_psi_avg10("cpu") is None:
         console.print("[yellow]PSI not available on this kernel (/proc/pressure/ unreadable)[/]")
         raise typer.Exit(0)
     dims = ("cpu", "io", "memory")
@@ -60,7 +41,7 @@ def _run_psi_calibrate() -> None:
             table.add_column("Current")
             table.add_column("Peak")
             for dim in dims:
-                current = _read_psi_avg10(dim)
+                current = read_psi_avg10(dim)
                 if current is not None and current > peaks[dim]:
                     peaks[dim] = current
                 table.add_row(dim, f"{current:.2f}" if current is not None else "n/a", f"{peaks[dim]:.2f}")
@@ -69,7 +50,7 @@ def _run_psi_calibrate() -> None:
             time.sleep(0.5)
     except KeyboardInterrupt:
         pass
-    rec = _psi_recommendation(peaks)
+    rec = psi_recommendation(peaks)
     console.print("\n[bold]Recommended [build] block for ~/.config/bakar/config.toml:[/]")
     console.print("[build]")
     for dim in dims:

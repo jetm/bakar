@@ -59,6 +59,16 @@ pressure_max_memory = 20
 
 Copy those values into `~/.config/bakar/config.toml` to have bakar throttle bitbake task scheduling when system pressure exceeds the thresholds.
 
+### Auto-calibration
+
+To skip the manual `-C` run entirely, set `psi_autocalibrate = true` under
+`[build]` in `~/.config/bakar/config.toml`. `bakar build` then samples
+`/proc/pressure` during every build and writes the recommended `pressure_max_*`
+back to the config afterwards, reporting what changed. The first (unthrottled)
+build bootstraps the values; later builds only re-tune a dimension that was not
+throttled, so the thresholds converge. See
+[configuration.md](configuration.md).
+
 ## Exit codes
 
 | Code | Meaning |

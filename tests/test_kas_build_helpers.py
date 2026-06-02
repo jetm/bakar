@@ -18,6 +18,7 @@ testable logic seam and remain ``# pragma: no cover`` in the source.
 from __future__ import annotations
 
 import subprocess
+from dataclasses import replace
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -26,6 +27,7 @@ import yaml
 
 from bakar.config import BuildConfig
 from bakar.steps.kas_build import (
+    _autocalibrate_psi,
     _build_env,
     _ccache_args,
     _resolve_user_yaml,
@@ -35,6 +37,7 @@ from bakar.steps.kas_build import (
     clear_stale_bitbake_locks,
     materialize_overlay,
 )
+from bakar.user_config import load_user_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -548,3 +551,52 @@ def test_clear_stale_bitbake_locks_no_lock_no_sockets_returns_empty(tmp_path: Pa
     removed = clear_stale_bitbake_locks(cfg)
 
     assert removed == []
+
+
+# ---------------------------------------------------------------------------
+# _autocalibrate_psi
+# ---------------------------------------------------------------------------
+
+
+class _FakeLog:
+    """Minimal RunLogger stand-in capturing info() messages."""
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def info(self, msg: str, **_fields: object) -> None:
+        self.messages.append(msg)
+
+
+def test_autocalibrate_psi_disabled_is_noop(tmp_path: Path) -> None:
+    """With psi_autocalibrate False, nothing is written and {} is returned."""
+    cfg = _make_nxp_cfg(tmp_path)  # psi_autocalibrate defaults False
+    log = _FakeLog()
+    config_file = tmp_path / "config.toml"
+
+    assert _autocalibrate_psi(cfg, {"cpu": 40.0}, log, config_file) == {}
+    assert not config_file.exists()
+    assert log.messages == []
+
+
+def test_autocalibrate_psi_writes_and_reports(tmp_path: Path) -> None:
+    """When enabled, recommended thresholds are written and the update is reported."""
+    cfg = replace(_make_nxp_cfg(tmp_path), psi_autocalibrate=True)
+    log = _FakeLog()
+    config_file = tmp_path / "config.toml"
+
+    changes = _autocalibrate_psi(cfg, {"cpu": 40.0, "io": 10.0, "memory": 5.0}, log, config_file)
+
+    assert set(changes) == {"cpu", "io", "memory"}
+    assert any("PSI auto-calibrated" in m for m in log.messages)
+    assert load_user_config(config_file).pressure_max_cpu == changes["cpu"]
+
+
+def test_autocalibrate_psi_no_peaks_is_noop(tmp_path: Path) -> None:
+    """Enabled but with no sampled peaks (PSI unavailable): no write, no report."""
+    cfg = replace(_make_nxp_cfg(tmp_path), psi_autocalibrate=True)
+    log = _FakeLog()
+    config_file = tmp_path / "config.toml"
+
+    assert _autocalibrate_psi(cfg, {}, log, config_file) == {}
+    assert not config_file.exists()
