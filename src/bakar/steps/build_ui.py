@@ -170,6 +170,8 @@ class BuildUIState:
         # One-shot message the caller drains via take_pending_log() and emits
         # through its own logger, so it renders like the other run-log lines.
         self._pending_log: str | None = None
+        self.warn_count: int = 0
+        self.error_count: int = 0
 
     def process_line(self, line: str) -> str | None:
         """Parse one line of knotty fallback output and update internal state.
@@ -239,7 +241,13 @@ class BuildUIState:
             return None
 
         # 7. Severity lines surface above the Live display.
-        if SEVERITY_PASSTHROUGH.search(line):
+        m = SEVERITY_PASSTHROUGH.search(line)
+        if m:
+            token = m.group(1)
+            if token == "WARNING":
+                self.warn_count += 1
+            elif token in ("ERROR", "FATAL"):
+                self.error_count += 1
             return line
 
         # 8. Default.
