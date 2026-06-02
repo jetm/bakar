@@ -12,11 +12,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from bakar.user_config import UserConfig
     from bakar.workspace_config import WorkspaceConfig
 
@@ -191,6 +190,30 @@ class BuildConfig:
     pressure_max_memory: float | None = field(default=None)
     disk_free_threshold_gb: float = 50.0
     use_hashequiv: bool = field(default=False)
+    # ccache location. Per-workspace by default; opt into a single shared cache
+    # across all workspaces via [build] ccache_shared, or pin an explicit path
+    # via [build] ccache_dir.
+    ccache_shared: bool = field(default=False)
+    ccache_dir: str | None = field(default=None)
+
+    @property
+    def effective_ccache_dir(self) -> Path:
+        """Host directory bind-mounted to ``/work/ccache``.
+
+        Per-workspace by default (``<workspace>/ccache``), so each BSP keeps an
+        isolated cache. An explicit ``ccache_dir`` is honored verbatim (a shared
+        location of the user's choosing); otherwise ``ccache_shared`` selects a
+        single cache under the XDG cache home (``~/.cache/bakar/ccache``) that
+        every workspace reuses. oe-core sets ``CCACHE_BASEDIR``/``CCACHE_NOHASHDIR``,
+        so a shared cache yields cross-workspace hits without path-keyed misses.
+        """
+        if self.ccache_dir:
+            return Path(self.ccache_dir).expanduser()
+        if self.ccache_shared:
+            cache_home = os.environ.get("XDG_CACHE_HOME")
+            base = Path(cache_home) if cache_home else Path.home() / ".cache"
+            return base / "bakar" / "ccache"
+        return self.workspace / "ccache"
 
     @property
     def workspace_subdir(self) -> str:
@@ -448,4 +471,6 @@ def resolve(
         pressure_max_memory=user_config.pressure_max_memory if user_config else None,
         disk_free_threshold_gb=user_config.disk_free_threshold_gb if user_config else 50.0,
         use_hashequiv=user_config.hashserv if user_config else False,
+        ccache_shared=user_config.ccache_shared if user_config else False,
+        ccache_dir=user_config.ccache_dir if user_config else None,
     )

@@ -73,6 +73,13 @@ pressure_max_memory = 20
 # so OEEquivHash sstate equivalence accumulates across builds.
 hashserv = true
 
+# ccache location. Per-workspace (<workspace>/ccache) by default. Set
+# ccache_shared to reuse one cache across every workspace (cross-BSP hits,
+# less disk), defaulting to ~/.cache/bakar/ccache. ccache_dir pins an explicit
+# shared path and takes precedence over ccache_shared.
+ccache_shared = true
+# ccache_dir = "/mnt/yocto-cache/ccache"
+
 [layers]
 show_hashes = true   # always print layer SHAs after build/sync
 ```

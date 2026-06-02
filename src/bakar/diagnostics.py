@@ -1099,7 +1099,7 @@ def check_ccache_health(cfg: BuildConfig) -> CheckResult:
     output predates the 4.0 machine-readable keys.
     """
     name = "ccache-health"
-    ccache_dir = cfg.workspace / "ccache"
+    ccache_dir = cfg.effective_ccache_dir
     if not ccache_dir.exists():
         return _skip(
             name,

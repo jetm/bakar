@@ -21,8 +21,9 @@ _STR_FIELDS = {
     "sstate_dir",
     "sstate_mirrors",
     "scheduler",
+    "ccache_dir",
 }
-_BOOL_FIELDS = {"doctor", "show_hashes", "hashserv"}
+_BOOL_FIELDS = {"doctor", "show_hashes", "hashserv", "ccache_shared"}
 _INT_FIELDS: set[str] = set()
 _PSI_FIELDS = {"pressure_max_cpu", "pressure_max_io", "pressure_max_memory"}
 
@@ -52,6 +53,8 @@ class UserConfig:
     pressure_max_memory: float | None = None
     disk_free_threshold_gb: float = 50.0
     hashserv: bool = False
+    ccache_shared: bool = False
+    ccache_dir: str | None = None
     # [layers]
     show_hashes: bool = False
 
@@ -84,6 +87,8 @@ _BUILD_KEYS = {
     "pressure_max_memory": "pressure_max_memory",
     "disk_free_threshold_gb": "disk_free_threshold_gb",
     "hashserv": "hashserv",
+    "ccache_shared": "ccache_shared",
+    "ccache_dir": "ccache_dir",
 }
 _LAYERS_KEYS = {
     "show_hashes": "show_hashes",

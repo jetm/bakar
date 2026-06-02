@@ -318,9 +318,9 @@ def _ccache_args(cfg: BuildConfig, *, dry_run: bool = False) -> list[str]:
     """
     if cfg.host_mode:
         return []
-    ccache_host = cfg.workspace / "ccache"
+    ccache_host = cfg.effective_ccache_dir
     if not dry_run:
-        ccache_host.mkdir(exist_ok=True)
+        ccache_host.mkdir(parents=True, exist_ok=True)
     runtime_args = f"-v {ccache_host}:/work/ccache:rw"
     if cfg.use_hashequiv:
         # Always add the host mapping when hashequiv is enabled: _build_env

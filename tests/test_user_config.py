@@ -270,3 +270,24 @@ def test_set_setting_build_hashserv_round_trip(tmp_path: Path) -> None:
 
     assert cfg.hashserv is True
     assert isinstance(cfg.hashserv, bool)
+
+
+def test_set_setting_build_ccache_shared_round_trip(tmp_path: Path) -> None:
+    """`set_setting('build.ccache_shared', 'true')` round-trips as a bool."""
+    config_file = tmp_path / "config.toml"
+    set_setting("build.ccache_shared", "true", path=config_file)
+
+    cfg = load_user_config(config_file)
+
+    assert cfg.ccache_shared is True
+    assert isinstance(cfg.ccache_shared, bool)
+
+
+def test_set_setting_build_ccache_dir_round_trip(tmp_path: Path) -> None:
+    """`set_setting('build.ccache_dir', ...)` round-trips as a string path."""
+    config_file = tmp_path / "config.toml"
+    set_setting("build.ccache_dir", "/mnt/cache/cc", path=config_file)
+
+    cfg = load_user_config(config_file)
+
+    assert cfg.ccache_dir == "/mnt/cache/cc"
