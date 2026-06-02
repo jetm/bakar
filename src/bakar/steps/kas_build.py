@@ -647,6 +647,11 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
             write_error_report(log.run_dir, cfg, rc)
         terminated = True
     finally:
+        warn = ui.warn_count
+        err = ui.error_count
+        w_label = "warning" if warn == 1 else "warnings"
+        e_label = "error" if err == 1 else "errors"
+        log.console.print(f"{warn} {w_label}, {err} {e_label}")
         if not terminated:
             # Wrapper crashed before the normal step_ok/step_fail path.  Emit
             # a terminal event anyway so events.jsonl never dead-ends at
