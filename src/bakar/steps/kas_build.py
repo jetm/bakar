@@ -41,6 +41,7 @@ from bakar import hashserv
 from bakar.kas import KasGenOptions, write_yaml
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
 from bakar.steps.build_ui import BuildUIState
+from bakar.triage import write_error_report
 
 if TYPE_CHECKING:
     from bakar.bsp_model import BspModel
@@ -643,6 +644,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
                 exit_code=rc,
                 kas_log=str(log.kas_log_path),
             )
+            write_error_report(log.run_dir, cfg, rc)
         terminated = True
     finally:
         if not terminated:
@@ -659,6 +661,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
                     exit_code=rc if rc is not None else -1,
                     kas_log=str(log.kas_log_path),
                 )
+                write_error_report(log.run_dir, cfg, rc if rc is not None else -1)
         stop_event.set()
         sampler.join(timeout=5)
         if psi_sampler is not None:
