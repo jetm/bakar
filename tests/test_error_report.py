@@ -24,7 +24,16 @@ if TYPE_CHECKING:
 # Minimal cfg stub: write_error_report only reads .machine, .distro, .bsp_family.
 _CFG = SimpleNamespace(machine="imx8mp-var-dart", distro="fsl-imx-xwayland", bsp_family="nxp")
 
-_REQUIRED_KEYS = {"step", "machine", "distro", "bsp_family", "exit_code", "kas_log_tail", "recipe_errors", "suggestions"}
+_REQUIRED_KEYS = {
+    "step",
+    "machine",
+    "distro",
+    "bsp_family",
+    "exit_code",
+    "kas_log_tail",
+    "recipe_errors",
+    "suggestions",
+}
 
 
 @pytest.mark.unit
@@ -70,9 +79,7 @@ def test_analyse_fast_path_uses_json_recipe(tmp_path: Path) -> None:
 
     # kas.log contains a DIFFERENT recipe from the one in the JSON.
     kas_log = run_dir / "kas.log"
-    kas_log.write_text(
-        "ERROR: test-recipe-log do_compile: Function failed from log\n"
-    )
+    kas_log.write_text("ERROR: test-recipe-log do_compile: Function failed from log\n")
 
     # Write error-report.json with a distinct recipe.
     report = {

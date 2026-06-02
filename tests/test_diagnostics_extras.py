@@ -74,9 +74,7 @@ _NEW_PATTERN_CASES = [
 def test_suggestions_new_patterns_match(description: str, trigger_line: str) -> None:
     """Each new _SUGGESTIONS entry fires on its target line."""
     hits = _match_suggestions(trigger_line)
-    assert len(hits) >= 1, (
-        f"Pattern for '{description}' produced no suggestion for line: {trigger_line!r}"
-    )
+    assert len(hits) >= 1, f"Pattern for '{description}' produced no suggestion for line: {trigger_line!r}"
 
 
 @pytest.mark.unit
@@ -107,11 +105,7 @@ def test_suggestions_clean_log_no_new_pattern_hit() -> None:
     for line in clean_lines:
         hits = set(_match_suggestions(line))
         overlap = hits & new_pattern_suggestions
-        assert not overlap, (
-            f"Clean line triggered new pattern suggestion:\n"
-            f"  line: {line!r}\n"
-            f"  suggestions: {overlap}"
-        )
+        assert not overlap, f"Clean line triggered new pattern suggestion:\n  line: {line!r}\n  suggestions: {overlap}"
 
 
 # ---------------------------------------------------------------------------
@@ -128,9 +122,7 @@ def test_find_runs_byo_subdir(tmp_path: Path) -> None:
 
     runs = find_runs(tmp_path)
 
-    assert any(r == byo_run for r in runs), (
-        f"Expected BYO run {byo_run} in {runs}"
-    )
+    assert any(r == byo_run for r in runs), f"Expected BYO run {byo_run} in {runs}"
 
 
 @pytest.mark.unit
@@ -141,9 +133,7 @@ def test_find_runs_workspace_root_build(tmp_path: Path) -> None:
 
     runs = find_runs(tmp_path)
 
-    assert any(r == root_run for r in runs), (
-        f"Expected root build run {root_run} in {runs}"
-    )
+    assert any(r == root_run for r in runs), f"Expected root build run {root_run} in {runs}"
 
 
 # ---------------------------------------------------------------------------
@@ -183,9 +173,7 @@ def test_build_revision_none_for_empty_layers() -> None:
     # Reproduce the exact condition from report.py:
     # if layers: ... else: build_revision = None
     build_revision = (
-        hashlib.sha1("".join(sorted(la.short_hash for la in layers)).encode()).hexdigest()[:12]
-        if layers
-        else None
+        hashlib.sha1("".join(sorted(la.short_hash for la in layers)).encode()).hexdigest()[:12] if layers else None
     )
     assert build_revision is None
 
@@ -261,10 +249,8 @@ def test_run_logger_step_start_header_not_on_rich_console(tmp_path: Path) -> Non
 
     runs_dir = tmp_path / "runs"
     with RunLogger(runs_dir) as log, patch.object(log.console, "print") as mock_print:
-            log.step_start("doctor")
-            calls = [str(c) for c in mock_print.call_args_list]
+        log.step_start("doctor")
+        calls = [str(c) for c in mock_print.call_args_list]
 
     header_calls = [c for c in calls if "──" in c]
-    assert len(header_calls) == 0, (
-        f"Header marker was emitted to Rich console: {header_calls}"
-    )
+    assert len(header_calls) == 0, f"Header marker was emitted to Rich console: {header_calls}"

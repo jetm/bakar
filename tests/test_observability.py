@@ -90,8 +90,8 @@ def test_header_not_emitted_to_rich_console(tmp_path: Path) -> None:
     """The Rich/stderr console must NOT receive the header line."""
     runs_dir = tmp_path / "runs"
     with RunLogger(runs_dir) as log, patch.object(log.console, "print") as mock_print:
-            log.step_start("kas_build")
-            calls = [str(c) for c in mock_print.call_args_list]
+        log.step_start("kas_build")
+        calls = [str(c) for c in mock_print.call_args_list]
 
     # The Rich console.print should not have been called with the header marker
     header_calls = [c for c in calls if "──" in c]
