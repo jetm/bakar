@@ -148,7 +148,6 @@ def test_find_runs_returns_newest_first(tmp_path: Path) -> None:
     ]
 
 
-
 @pytest.mark.unit
 def test_find_runs_discovers_workspace_root_build(tmp_path: Path) -> None:
     """BYO/bbsetup runs at workspace-root build/runs/ are returned."""
@@ -223,12 +222,8 @@ def test_analyse_fast_path_uses_json_not_kas_log(tmp_path: Path) -> None:
     run.mkdir()
 
     # kas.log has 'kas-log-only-recipe'; JSON has 'json-only-recipe'.
-    (run / "kas.log").write_text(
-        "ERROR: kas-log-only-recipe-1.0-r0 do_compile: Function failed\n"
-    )
-    (run / "events.jsonl").write_text(
-        '{"event": "step_fail", "step": "kas_build", "ts": "2026-06-01T10:00:00Z"}\n'
-    )
+    (run / "kas.log").write_text("ERROR: kas-log-only-recipe-1.0-r0 do_compile: Function failed\n")
+    (run / "events.jsonl").write_text('{"event": "step_fail", "step": "kas_build", "ts": "2026-06-01T10:00:00Z"}\n')
     error_report = {
         "step": "kas_build",
         "machine": "imx8mm-var-som",
@@ -264,9 +259,10 @@ def test_analyse_fast_path_returns_correct_fields(tmp_path: Path) -> None:
         "distro": "fslc-framebuffer",
         "bsp_family": "nxp",
         "exit_code": 2,
-        "kas_log_tail": ["line1", "line2"],
+        # Include an OOM trigger so _match_suggestions fires from the kas_log_tail text.
+        "kas_log_tail": ["line1", "No space left on device"],
         "recipe_errors": [{"recipe": "gstreamer1.0-1.0-r0", "task": "configure", "excerpt": "cmake error"}],
-        "suggestions": ["custom suggestion"],
+        "suggestions": ["stored suggestion - not used by fast path after ordering fix"],
     }
     import json
 
@@ -275,13 +271,14 @@ def test_analyse_fast_path_returns_correct_fields(tmp_path: Path) -> None:
     report = analyse(run, tmp_path)
 
     assert report.failing_step == "kas_build"
-    assert report.kas_log_tail == ["line1", "line2"]
+    assert report.kas_log_tail == ["line1", "No space left on device"]
     assert report.recipe_errors[0].task == "configure"
     assert report.recipe_errors[0].excerpt == "cmake error"
     # recipe-level header is prepended to suggestions
     assert any("recipe-level failures" in s for s in report.suggestions)
     assert any("gstreamer1.0-1.0-r0 do_configure:" in s for s in report.suggestions)
-    assert "custom suggestion" in report.suggestions
+    # Suggestions are now recomputed from the kas_log_tail text (not the stored list).
+    assert any("Disk full" in s for s in report.suggestions)
 
 
 @pytest.mark.unit
@@ -302,12 +299,8 @@ def test_analyse_falls_back_on_corrupt_json(tmp_path: Path) -> None:
     """Corrupted error-report.json falls through to the live-parse path."""
     run = tmp_path / "run"
     run.mkdir()
-    (run / "events.jsonl").write_text(
-        '{"event": "step_fail", "step": "kas_build", "ts": "2026-06-01T10:00:00Z"}\n'
-    )
-    (run / "kas.log").write_text(
-        "ERROR: fallback-recipe-1.0-r0 do_compile: some error\n"
-    )
+    (run / "events.jsonl").write_text('{"event": "step_fail", "step": "kas_build", "ts": "2026-06-01T10:00:00Z"}\n')
+    (run / "kas.log").write_text("ERROR: fallback-recipe-1.0-r0 do_compile: some error\n")
     # Write invalid JSON so the fast path must fall through.
     (run / "error-report.json").write_text("{not valid json}")
 
@@ -324,12 +317,8 @@ def test_analyse_falls_back_on_missing_json_key(tmp_path: Path) -> None:
 
     run = tmp_path / "run"
     run.mkdir()
-    (run / "events.jsonl").write_text(
-        '{"event": "step_fail", "step": "kas_build", "ts": "2026-06-01T10:00:00Z"}\n'
-    )
-    (run / "kas.log").write_text(
-        "ERROR: fallback-recipe-2.0-r0 do_fetch: Fetcher failure: bad url\n"
-    )
+    (run / "events.jsonl").write_text('{"event": "step_fail", "step": "kas_build", "ts": "2026-06-01T10:00:00Z"}\n')
+    (run / "kas.log").write_text("ERROR: fallback-recipe-2.0-r0 do_fetch: Fetcher failure: bad url\n")
     # Missing 'recipe_errors' key - must fall through.
     (run / "error-report.json").write_text(json.dumps({"step": "kas_build"}))
 

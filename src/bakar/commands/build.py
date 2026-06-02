@@ -17,12 +17,11 @@ from bakar.commands._helpers import (
     _clean_build_dir,
     _dispatch_bsp,
     _dispatch_from_yaml,
-    _hashequiv_extra_overlays,
+    _tuning_extra_overlays,
     _overlay_for,
     _print_diagnosis,
     _print_layer_hashes,
     _resolve_workspace,
-    _shared_cache_extra_overlays,
     _uninitialized_bbsetup_dir,
 )
 from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, resolve
@@ -117,7 +116,7 @@ def _run_bbsetup_build(
             console.print(f"[green]removed[/] {tmp_dir}")
 
     if ctx.dry_run:
-        extra_overlays_bbsetup = [*_hashequiv_extra_overlays(cfg), *_shared_cache_extra_overlays(cfg)]
+        extra_overlays_bbsetup = _tuning_extra_overlays(cfg)
         for line in step_kas.dry_run_preview_lines(
             cfg, cfg.kas_yaml, overlay_source, extra_overlays_bbsetup, keep_going=ctx.keep_going
         ):
@@ -142,7 +141,7 @@ def _run_bbsetup_build(
         )
         rc = step_kas.run_build(
             kas_ctx,
-            extra_overlays=[*_hashequiv_extra_overlays(cfg), *_shared_cache_extra_overlays(cfg)],
+            extra_overlays=_tuning_extra_overlays(cfg),
         )
         if rc != 0:
             console.print(
@@ -254,7 +253,7 @@ def _run_manifest_build(
     )
     rc = step_kas.run_build(
         kas_ctx,
-        extra_overlays=[*_hashequiv_extra_overlays(cfg), *_shared_cache_extra_overlays(cfg)],
+        extra_overlays=_tuning_extra_overlays(cfg),
     )
     if rc != 0:
         console.print(f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details.")
@@ -419,7 +418,7 @@ def build(
         if kas_yaml is not None:
             extra_overlays = [Path(p) for p in kas_yaml.split(":")[1:]]
         resolved_existing = {p.resolve() for p in extra_overlays}
-        for overlay in [*_hashequiv_extra_overlays(cfg), *_shared_cache_extra_overlays(cfg)]:
+        for overlay in _tuning_extra_overlays(cfg):
             resolved_overlay = overlay.resolve()
             if resolved_overlay not in resolved_existing:
                 extra_overlays.append(overlay)

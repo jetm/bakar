@@ -240,7 +240,7 @@ class BuildConfig:
     @property
     def use_shared_cache(self) -> bool:
         """True when an sstate mirror URL is configured."""
-        return self.sstate_mirror_url is not None
+        return bool(self.sstate_mirror_url)
 
     @property
     def workspace_subdir(self) -> str:

@@ -199,7 +199,7 @@ _SUGGESTIONS: list[tuple[re.Pattern[str], str]] = [
             r"|c\+\+: fatal error: Killed signal"
         ),
         "Compiler OOM-kill. Lower BB_NUMBER_THREADS and/or PARALLEL_MAKE in the kas YAML's local_conf_header "
-        "(e.g. BB_NUMBER_THREADS = \"4\", PARALLEL_MAKE = \"-j 4\") to reduce peak memory pressure.",
+        '(e.g. BB_NUMBER_THREADS = "4", PARALLEL_MAKE = "-j 4") to reduce peak memory pressure.',
     ),
     (
         re.compile(r"HTTP Error 429|API rate limit exceeded"),
@@ -284,11 +284,10 @@ def analyse(run_dir: Path, workspace: Path) -> TriageReport:
             failing_step: str | None = data["step"]
             kas_log_tail: list[str] = list(data["kas_log_tail"])
             recipe_errors: list[RecipeError] = [
-                RecipeError(recipe=e["recipe"], task=e["task"], excerpt=e["excerpt"])
-                for e in data["recipe_errors"]
+                RecipeError(recipe=e["recipe"], task=e["task"], excerpt=e["excerpt"]) for e in data["recipe_errors"]
             ]
             suggestions: list[str] = list(data["suggestions"])
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except json.JSONDecodeError, KeyError, TypeError:
             pass
         else:
             # Supplement: recipe log data and fail_reason are not stored in
@@ -299,9 +298,9 @@ def analyse(run_dir: Path, workspace: Path) -> TriageReport:
             fail_reason: str | None = fail.get("reason") if fail else None
             recipe_log = _find_recipe_log(kas_log, workspace)
             recipe_log_tail = _tail(recipe_log, 60) if recipe_log else []
-            if recipe_log_tail:
-                extra = _match_suggestions("\n".join(recipe_log_tail))
-                suggestions = suggestions + [s for s in extra if s not in suggestions]
+            # Recompute suggestions over combined text (table order) so the fast
+            # path produces the same ordering as the live-parse path.
+            suggestions = _match_suggestions("\n".join(kas_log_tail + recipe_log_tail))
             suggestions = _prepend_recipe_headers(suggestions, recipe_errors)
             override_line = _bitbake_override_summary(events_path)
             if override_line:

@@ -17,6 +17,9 @@
 header:
   version: 21
 
+env:
+  BAKAR_SSTATE_MIRROR_URL:
+
 local_conf_header:
   bakar-tuning-shared-cache: |
     # Redirect sstate fetches to the configured mirror before going upstream.

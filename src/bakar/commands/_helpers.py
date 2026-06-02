@@ -179,38 +179,27 @@ def _overlay_for(bsp: BspModel | None) -> Path:
     return path
 
 
-def _hashequiv_extra_overlays(cfg: BuildConfig) -> list[Path]:
-    """Return the hashequiv overlay path when ``cfg.use_hashequiv`` is True.
+def _conditional_overlay(flag: bool, filename: str) -> list[Path]:
+    """Return ``[<overlay-dir>/<filename>]`` when *flag* is True and the file exists, else ``[]``."""
+    if not flag:
+        return []
+    path = _overlay_dir() / filename
+    return [path] if path.is_file() else []
 
-    Returns ``[<overlay-dir>/bakar-tuning-hashequiv.yml]`` when the user has
-    opted into the hash-equivalence daemon via ``[build] hashserv = true`` AND
-    the overlay file is present in the installed ``overlays/`` directory.
-    Returns ``[]`` otherwise. Callers append the result to ``extra_overlays``
-    so kas layers the hashequiv tuning on top of the per-BSP tuning overlay.
-    """
-    if not cfg.use_hashequiv:
-        return []
-    path = _overlay_dir() / "bakar-tuning-hashequiv.yml"
-    if not path.is_file():
-        return []
-    return [path]
+
+def _hashequiv_extra_overlays(cfg: BuildConfig) -> list[Path]:
+    """Return the hashequiv overlay path when ``cfg.use_hashequiv`` is True."""
+    return _conditional_overlay(cfg.use_hashequiv, "bakar-tuning-hashequiv.yml")
 
 
 def _shared_cache_extra_overlays(cfg: BuildConfig) -> list[Path]:
-    """Return the shared-cache overlay path when ``cfg.use_shared_cache`` is True.
+    """Return the shared-cache overlay path when ``cfg.use_shared_cache`` is True."""
+    return _conditional_overlay(cfg.use_shared_cache, "bakar-tuning-shared-cache.yml")
 
-    Returns ``[<overlay-dir>/bakar-tuning-shared-cache.yml]`` when the user has
-    configured a sstate mirror URL via ``[build] sstate_mirror_url`` AND the
-    overlay file is present in the installed ``overlays/`` directory.
-    Returns ``[]`` otherwise. Callers append the result to ``extra_overlays``
-    so kas layers the shared-cache tuning on top of the per-BSP tuning overlay.
-    """
-    if not cfg.use_shared_cache:
-        return []
-    path = _overlay_dir() / "bakar-tuning-shared-cache.yml"
-    if not path.is_file():
-        return []
-    return [path]
+
+def _tuning_extra_overlays(cfg: BuildConfig) -> list[Path]:
+    """Return all opt-in tuning overlay paths for cfg (hashequiv + shared-cache)."""
+    return [*_hashequiv_extra_overlays(cfg), *_shared_cache_extra_overlays(cfg)]
 
 
 # ---------------------------------------------------------------------------

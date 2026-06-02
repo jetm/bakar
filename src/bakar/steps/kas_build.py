@@ -776,7 +776,7 @@ def _build_env(
     if cfg.sstate_mirrors is not None:
         passthrough.setdefault("SSTATE_MIRRORS", cfg.sstate_mirrors)
     if cfg.sstate_mirror_url is not None:
-        passthrough["BAKAR_SSTATE_MIRROR_URL"] = cfg.sstate_mirror_url
+        passthrough.setdefault("BAKAR_SSTATE_MIRROR_URL", cfg.sstate_mirror_url)
     # Scheduler and PSI thresholds:
     # only emit when set (empty dimension is disabled in the overlay via the
     # os.environ.get(..., '') expression, so omitting the key is equivalent).

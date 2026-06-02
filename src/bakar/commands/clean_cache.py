@@ -150,18 +150,11 @@ def _ccache_evict(ccache_dir: Path, days: int) -> bool:
 
 def _delete_stale(stale: list[Path], effective_dir: Path) -> tuple[int, int, int]:
     """Delete *stale* files and prune emptied directories. Returns (removed, freed, empty_dirs)."""
-    removed = 0
-    freed = 0
-    candidate_dirs: set[Path] = set()
-    for f in stale:
-        try:
-            sz = f.stat().st_size
-            f.unlink()
-            removed += 1
-            freed += sz
-            candidate_dirs.add(f.parent)
-        except OSError:
-            pass
+    removed, freed = _stage_and_delete(stale, effective_dir)
+
+    # Only consider parents of files that were actually removed; files skipped by
+    # _stage_and_delete (OSError) keep their parent dirs occupied.
+    candidate_dirs: set[Path] = {f.parent for f in stale if not f.exists()}
 
     # Remove directories that became empty after deletion, deepest first.
     # Use a work-list so successfully removed parents are also visited.
@@ -181,7 +174,7 @@ def _delete_stale(stale: list[Path], effective_dir: Path) -> tuple[int, int, int
     return removed, freed, empty_dirs
 
 
-def _stage_and_delete(stale_files: list[Path], effective_dir: Path) -> int:
+def _stage_and_delete(stale_files: list[Path], effective_dir: Path) -> tuple[int, int]:
     """Move *stale_files* into a staging dir inside *effective_dir*, then delete the staging dir.
 
     Creates ``effective_dir / ".bakar-gc-<pid>"`` as a direct child of the sstate root so
@@ -189,21 +182,23 @@ def _stage_and_delete(stale_files: list[Path], effective_dir: Path) -> int:
     name to avoid basename collisions.  After all moves, the staging tree is removed wholesale
     via ``shutil.rmtree``.  Files that fail to move (``OSError``) are skipped, not fatal.
 
-    Returns the total bytes freed (sum of pre-move ``st_size`` values for successfully moved files).
+    Returns ``(removed, freed)`` where *removed* is the count of successfully moved files and
+    *freed* is the sum of pre-move ``st_size`` values for those files.
     """
     staging = effective_dir / f".bakar-gc-{os.getpid()}"
-    staging.mkdir(parents=False, exist_ok=False)
+    staging.mkdir(parents=False, exist_ok=True)
+    removed = 0
     freed = 0
     for i, f in enumerate(stale_files):
         try:
             sz = f.stat().st_size
             os.rename(f, staging / str(i))
+            removed += 1
             freed += sz
         except OSError:
             pass
     shutil.rmtree(staging)
-    return freed
-
+    return removed, freed
 
 
 @app.command(name="clean-cache")
