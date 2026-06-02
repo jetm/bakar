@@ -26,18 +26,41 @@ def test_current_running_updates_progress() -> None:
 
 
 @pytest.mark.unit
-def test_current_running_prunes_stale_slots() -> None:
+def test_current_running_prunes_stale_pids() -> None:
+    # Production knotty order: "Currently N..." footer fires FIRST, then per-task lines.
     ui = BuildUIState()
-    # Seed _running with slots 0, 1, 2 directly
-    ui._running[0] = _RunTask(slot=0, pf="pkg-a-1.0-r0", task="do_compile", elapsed="10s")
-    ui._running[1] = _RunTask(slot=1, pf="pkg-b-2.0-r0", task="do_fetch", elapsed="5s")
-    ui._running[2] = _RunTask(slot=2, pf="pkg-c-3.0-r0", task="do_install", elapsed="2s")
+    # Frame 1: footer opens the frame, tasks follow.
+    ui.process_line("Currently  3 running tasks (200 of 450)  44% |##########|")
+    ui.process_line("0: pkg-a-1.0-r0 do_compile - 10s (pid 100)")
+    ui.process_line("1: pkg-b-2.0-r0 do_fetch - 5s (pid 200)")
+    ui.process_line("2: pkg-c-3.0-r0 do_install - 2s (pid 300)")
+    assert set(ui._running) == {100, 200, 300}
 
-    # running_n=1 means only slot 0 is active
-    ui.process_line("Currently  1 running tasks (200 of 450)  44% |##########|")
+    # Frame 2: footer opens, only pid 100 follows; 200 and 300 must be gone.
+    ui.process_line("Currently  1 running tasks (210 of 450)  46% |##########|")
+    ui.process_line("0: pkg-a-1.0-r0 do_compile - 15s (pid 100)")
 
     assert len(ui._running) == 1
-    assert 0 in ui._running
+    assert 100 in ui._running
+
+
+@pytest.mark.unit
+def test_current_running_prunes_finished_mid_list_task() -> None:
+    # Production ordering: "Currently N..." fires first, then per-task lines.
+    # pid 200 finishes mid-list; knotty renumbers remaining slots to 0,1.
+    ui = BuildUIState()
+    ui.process_line("Currently  3 running tasks (200 of 450)  44% |##########|")
+    ui.process_line("0: pkg-a-1.0-r0 do_compile - 10s (pid 100)")
+    ui.process_line("1: pkg-b-2.0-r0 do_fetch - 5s (pid 200)")
+    ui.process_line("2: pkg-c-3.0-r0 do_install - 2s (pid 300)")
+
+    # pid 200 done: footer opens frame 2, only pids 100 and 300 follow.
+    ui.process_line("Currently  2 running tasks (205 of 450)  45% |##########|")
+    ui.process_line("0: pkg-a-1.0-r0 do_compile - 12s (pid 100)")
+    ui.process_line("1: pkg-c-3.0-r0 do_install - 4s (pid 300)")
+
+    assert set(ui._running) == {100, 300}
+    assert ui._running[300].slot == 1
 
 
 @pytest.mark.unit
@@ -93,9 +116,10 @@ def test_knotty_task_with_elapsed() -> None:
     ui = BuildUIState()
     result = ui.process_line("0: glibc-2.39-r0 do_compile - 1h2m5s (pid 12345)")
     assert result is None
-    assert ui._running[0].pf == "glibc-2.39-r0"
-    assert ui._running[0].task == "do_compile"
-    assert ui._running[0].elapsed == "1h2m5s"
+    assert ui._running[12345].pf == "glibc-2.39-r0"
+    assert ui._running[12345].task == "do_compile"
+    assert ui._running[12345].elapsed == "1h2m5s"
+    assert ui._running[12345].slot == 0
 
 
 @pytest.mark.unit
@@ -103,7 +127,7 @@ def test_knotty_task_no_elapsed() -> None:
     ui = BuildUIState()
     result = ui.process_line("2: python3-3.12.0-r0 do_configure (pid 99)")
     assert result is None
-    assert ui._running[2].elapsed == ""
+    assert ui._running[99].elapsed == ""
 
 
 @pytest.mark.unit
@@ -111,7 +135,7 @@ def test_knotty_task_slot_update() -> None:
     ui = BuildUIState()
     ui.process_line("0: glibc-2.39-r0 do_compile - 10s (pid 12345)")
     ui.process_line("0: glibc-2.39-r0 do_compile - 1m5s (pid 12345)")
-    assert ui._running[0].elapsed == "1m5s"
+    assert ui._running[12345].elapsed == "1m5s"
 
 
 # ---------------------------------------------------------------------------

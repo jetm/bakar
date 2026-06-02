@@ -115,6 +115,7 @@ class BuildUIState:
         self._setscene_task_id = self._setscene.add_task("setscene", total=0)
 
         self._running: dict[int, _RunTask] = {}
+        self._new_frame: bool = False
         self._lock = threading.Lock()
         self._setscene_total = 0
         self._last_total = 0
@@ -130,7 +131,6 @@ class BuildUIState:
         # 1. Main execution progress
         m = CURRENT_RUNNING.search(line)
         if m:
-            running_n = int(m.group(1))
             completed = int(m.group(2))
             total = int(m.group(3))
             self.progress.update(self._task_id, completed=completed, total=total)
@@ -139,8 +139,7 @@ class BuildUIState:
                 self._expansion_count += 1
                 verb = "expanded" if total > self._last_total else "reduced"
                 msg = f"[yellow]task graph {verb}: {self._last_total} -> {total}[/]"
-            with self._lock:
-                self._running = {k: v for k, v in self._running.items() if k < running_n}
+            self._new_frame = True
             self._last_total = total
             return msg
 
@@ -162,8 +161,12 @@ class BuildUIState:
             pf = m.group(2)
             task = m.group(3)
             elapsed = m.group(4) or ""
+            pid = int(m.group(5))
             with self._lock:
-                self._running[slot] = _RunTask(slot=slot, pf=pf, task=task, elapsed=elapsed)
+                if self._new_frame:
+                    self._running.clear()
+                    self._new_frame = False
+                self._running[pid] = _RunTask(slot=slot, pf=pf, task=task, elapsed=elapsed)
             return None
 
         # 4. Parse phase progress
