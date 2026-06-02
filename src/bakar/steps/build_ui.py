@@ -20,6 +20,8 @@ from rich.console import Group
 from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
+from bakar.fmt import fmt_bytes
+
 # Bitbake knotty footer: dominant signal during execution phase.
 # Format: "Currently  N running tasks (X of Y)  PP% |###|"
 CURRENT_RUNNING = re.compile(r"Currently\s+(\d+) running tasks \((\d+) of (\d+)\)")
@@ -65,10 +67,7 @@ def _fmt_stall(seconds: int) -> str:
 def _fmt_du(delta: int) -> str:
     if delta <= 0:
         return "-"
-    mb = delta / (1024 * 1024)
-    if mb < 1024:
-        return f"+{mb:.0f}M"
-    return f"+{mb / 1024:.1f}G"
+    return "+" + fmt_bytes(delta)
 
 
 def _elapsed_secs(s: str) -> int:
@@ -106,7 +105,7 @@ class BuildUIState:
             TextColumn("[dim]{task.fields[stall]}  {task.fields[du]}[/]"),
             TimeElapsedColumn(),
         )
-        self._task_id = self.progress.add_task("build", total=0, stall="", du="")
+        self._task_id = self.progress.add_task("build", total=None, stall="0s", du="-")
 
         self._setscene = Progress(
             TextColumn("[dim]setscene[/]"),
