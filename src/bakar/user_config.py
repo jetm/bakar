@@ -20,6 +20,7 @@ _STR_FIELDS = {
     "dl_dir",
     "sstate_dir",
     "sstate_mirrors",
+    "sstate_mirror_url",
     "scheduler",
     "ccache_dir",
 }
@@ -47,6 +48,7 @@ class UserConfig:
     dl_dir: str | None = None
     sstate_dir: str | None = None
     sstate_mirrors: str | None = None
+    sstate_mirror_url: str | None = None
     scheduler: str | None = None
     pressure_max_cpu: float | None = None
     pressure_max_io: float | None = None
@@ -82,6 +84,7 @@ _BUILD_KEYS = {
     "dl_dir": "dl_dir",
     "sstate_dir": "sstate_dir",
     "sstate_mirrors": "sstate_mirrors",
+    "sstate_mirror_url": "sstate_mirror_url",
     "scheduler": "scheduler",
     "pressure_max_cpu": "pressure_max_cpu",
     "pressure_max_io": "pressure_max_io",

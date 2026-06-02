@@ -39,6 +39,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.doctor": "false",
         "build.dl_dir": "/data/dl",
         "build.sstate_dir": "/data/sstate",
+        "build.sstate_mirror_url": "https://cache.example.com",
         "build.sstate_mirrors": "file:///mirror/sstate PATH",
         "build.scheduler": "completion",
         "build.pressure_max_cpu": "60",
