@@ -190,6 +190,28 @@ _SUGGESTIONS: list[tuple[re.Pattern[str], str]] = [
         "kas YAML schema violation. Verify `kas --version` matches the kas-container "
         "version (mismatch causes obscure schema errors).",
     ),
+    (
+        re.compile(r"Killed signal terminated program cc1plus|cc1plus: out of memory|c\+\+: fatal error: Killed signal"),
+        "Compiler OOM-kill. Lower BB_NUMBER_THREADS and/or PARALLEL_MAKE in the kas YAML's local_conf_header "
+        "(e.g. BB_NUMBER_THREADS = \"4\", PARALLEL_MAKE = \"-j 4\") to reduce peak memory pressure.",
+    ),
+    (
+        re.compile(r"HTTP Error 429|API rate limit exceeded"),
+        "GitHub rate-limit hit. Wait a few minutes and retry, or authenticate by setting "
+        "BB_GIT_SHALLOW_FETCH_EXTRA_OPTIONS with a personal access token to reduce unauthenticated API calls.",
+    ),
+    (
+        re.compile(r"Name or service not known|Temporary failure in name resolution|Connection timed out"),
+        "Network failure. 'Name or service not known' / 'Temporary failure in name resolution' indicates "
+        "a DNS problem - check that the container has a working resolver. 'Connection timed out' indicates "
+        "a routing or firewall issue. In both cases verify your network access and consider setting a "
+        "PREMIRROR to serve sources locally.",
+    ),
+    (
+        re.compile(r"Connection refused"),
+        "PREMIRROR connection refused. The configured PREMIRROR is unreachable - check that the mirror "
+        "server is running and the URL in PREMIRROR (local_conf_header) is correct.",
+    ),
 ]
 
 
