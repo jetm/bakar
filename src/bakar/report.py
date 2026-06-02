@@ -9,6 +9,7 @@ field, or an unparseable timestamp yields ``None`` rather than an exception, so
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -34,6 +35,7 @@ class ReportSummary:
     image_size: int | None = None
     peak_tmp_bytes: int | None = None
     layers: list[LayerHash] = field(default_factory=list)
+    build_revision: str | None = None
 
 
 def _parse_ts(rec: dict | None) -> datetime | None:
@@ -137,6 +139,14 @@ def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
     status = "success" if step_ok is not None else "failure"
     deploy_dir = step_ok.get("deploy_dir") if step_ok else None
 
+    layers = collect_layer_hashes(cfg)
+    if layers:
+        build_revision: str | None = hashlib.sha1("".join(sorted(l.short_hash for l in layers)).encode()).hexdigest()[
+            :12
+        ]
+    else:
+        build_revision = None
+
     return ReportSummary(
         run_id=run_dir.name,
         status=status,
@@ -144,5 +154,6 @@ def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
         deploy_dir=deploy_dir,
         image_size=_largest_image_size(deploy_dir),
         peak_tmp_bytes=_peak_tmp_bytes(run_dir / "du.tsv"),
-        layers=collect_layer_hashes(cfg),
+        layers=layers,
+        build_revision=build_revision,
     )
