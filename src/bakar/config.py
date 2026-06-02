@@ -222,6 +222,7 @@ class BuildConfig:
     # the recommended pressure_max_* back to config.toml, so `bakar doctor -C`
     # never needs to be run by hand.
     psi_autocalibrate: bool = field(default=False)
+    sstate_mirror_url: str | None = field(default=None)
 
     @property
     def effective_ccache_dir(self) -> Path:
@@ -235,6 +236,11 @@ class BuildConfig:
         so a shared cache yields cross-workspace hits without path-keyed misses.
         """
         return shared_ccache_dir(self.ccache_dir, ccache_shared=self.ccache_shared) or self.workspace / "ccache"
+
+    @property
+    def use_shared_cache(self) -> bool:
+        """True when an sstate mirror URL is configured."""
+        return self.sstate_mirror_url is not None
 
     @property
     def workspace_subdir(self) -> str:
@@ -495,4 +501,5 @@ def resolve(
         ccache_shared=user_config.ccache_shared if user_config else False,
         ccache_dir=user_config.ccache_dir if user_config else None,
         psi_autocalibrate=user_config.psi_autocalibrate if user_config else False,
+        sstate_mirror_url=user_config.sstate_mirror_url if user_config else None,
     )
