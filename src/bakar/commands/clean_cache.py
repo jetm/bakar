@@ -181,6 +181,31 @@ def _delete_stale(stale: list[Path], effective_dir: Path) -> tuple[int, int, int
     return removed, freed, empty_dirs
 
 
+def _stage_and_delete(stale_files: list[Path], effective_dir: Path) -> int:
+    """Move *stale_files* into a staging dir inside *effective_dir*, then delete the staging dir.
+
+    Creates ``effective_dir / ".bakar-gc-<pid>"`` as a direct child of the sstate root so
+    ``os.rename`` stays on one device (atomic).  Each file is renamed under a monotonic integer
+    name to avoid basename collisions.  After all moves, the staging tree is removed wholesale
+    via ``shutil.rmtree``.  Files that fail to move (``OSError``) are skipped, not fatal.
+
+    Returns the total bytes freed (sum of pre-move ``st_size`` values for successfully moved files).
+    """
+    staging = effective_dir / f".bakar-gc-{os.getpid()}"
+    staging.mkdir(parents=False, exist_ok=False)
+    freed = 0
+    for i, f in enumerate(stale_files):
+        try:
+            sz = f.stat().st_size
+            os.rename(f, staging / str(i))
+            freed += sz
+        except OSError:
+            pass
+    shutil.rmtree(staging)
+    return freed
+
+
+
 @app.command(name="clean-cache")
 def clean_cache(
     older_than: Annotated[
