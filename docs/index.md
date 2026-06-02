@@ -11,7 +11,7 @@
 | `shell` | [shell.md](shell.md) | Interactive kas-container shell or one-shot command |
 | `run` | [run.md](run.md) | Boot avocado-os image in QEMU (meta-avocado only) |
 | `clean` | [clean.md](clean.md) | Remove the build directory |
-| `clean-sstate` | [clean-sstate.md](clean-sstate.md) | Prune stale sstate-cache entries by age |
+| `clean-cache` | [clean-cache.md](clean-cache.md) | Prune stale sstate and ccache entries by age |
 | `doctor` | [doctor.md](doctor.md) | Run pre-flight checks |
 | `triage` | [triage.md](triage.md) | Post-mortem a failed build |
 | `report` | [report.md](report.md) | Summarize a completed build run |
@@ -129,11 +129,11 @@ Related: [settings.md](settings.md), [configuration.md](configuration.md), [work
 
 ```text
 bakar clean             - remove build/ to force a from-scratch build
-bakar clean-sstate      - prune stale sstate-cache entries by age
+bakar clean-cache       - prune stale sstate and ccache entries by age
 bakar hashserv          - manage the persistent bitbake-hashserv daemon
 bakar bitbake-override  - swap BSP-bundled bitbake for upstream
 bakar run               - boot avocado-os QEMU image (meta-avocado only)
 bakar stress-parse      - stress-test bitbake parser fork race
 ```
 
-Related: [clean.md](clean.md), [clean-sstate.md](clean-sstate.md), [hashserv.md](hashserv.md), [bitbake-override.md](bitbake-override.md), [run.md](run.md), [stress-parse.md](stress-parse.md)
+Related: [clean.md](clean.md), [clean-cache.md](clean-cache.md), [hashserv.md](hashserv.md), [bitbake-override.md](bitbake-override.md), [run.md](run.md), [stress-parse.md](stress-parse.md)

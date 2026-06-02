@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover - typer < 0.26 path
 
 import bakar.commands.build
 import bakar.commands.clean
-import bakar.commands.clean_sstate
+import bakar.commands.clean_cache
 import bakar.commands.diff
 import bakar.commands.doctor
 import bakar.commands.dump

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added `[build] ccache_shared` and `[build] ccache_dir` settings to share one ccache across all workspaces (cross-BSP hits, less disk) instead of the per-workspace default.
+- `clean-cache` now also prunes the ccache via `ccache --evict-older-than`, with `--ccache-dir` and `--sstate`/`--ccache` scoping flags.
+
+### Changed
+
+- Renamed the `clean-sstate` command to `clean-cache`; it now prunes both the sstate cache and the ccache by age. Update any scripts that call `bakar clean-sstate`.
+
 ## [0.6.0] - 2026-06-01
 
 ### Added

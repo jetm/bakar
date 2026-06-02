@@ -70,6 +70,24 @@ def infer_repo_branch(manifest: str, fallback: str = DEFAULT_NXP_REPO_BRANCH) ->
     return fallback
 
 
+def shared_ccache_dir(ccache_dir: str | None, *, ccache_shared: bool) -> Path | None:
+    """Resolve a non-per-workspace ccache directory, or None for per-workspace.
+
+    An explicit ``ccache_dir`` wins; otherwise ``ccache_shared`` selects a single
+    cache under the XDG cache home (``~/.cache/bakar/ccache``). Returns None when
+    neither is set, signalling the caller to use the per-workspace default. Shared
+    by :attr:`BuildConfig.effective_ccache_dir` and the ``clean-cache`` command so
+    both agree on where a shared cache lives.
+    """
+    if ccache_dir:
+        return Path(ccache_dir).expanduser()
+    if ccache_shared:
+        cache_home = os.environ.get("XDG_CACHE_HOME")
+        base = Path(cache_home) if cache_home else Path.home() / ".cache"
+        return base / "bakar" / "ccache"
+    return None
+
+
 def pick(arg: str | None, env_key: str, ws_val: str | None, user_val: str | None, default: str) -> str:
     if arg is not None:
         return arg
@@ -207,13 +225,7 @@ class BuildConfig:
         every workspace reuses. oe-core sets ``CCACHE_BASEDIR``/``CCACHE_NOHASHDIR``,
         so a shared cache yields cross-workspace hits without path-keyed misses.
         """
-        if self.ccache_dir:
-            return Path(self.ccache_dir).expanduser()
-        if self.ccache_shared:
-            cache_home = os.environ.get("XDG_CACHE_HOME")
-            base = Path(cache_home) if cache_home else Path.home() / ".cache"
-            return base / "bakar" / "ccache"
-        return self.workspace / "ccache"
+        return shared_ccache_dir(self.ccache_dir, ccache_shared=self.ccache_shared) or self.workspace / "ccache"
 
     @property
     def workspace_subdir(self) -> str:

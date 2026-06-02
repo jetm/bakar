@@ -66,16 +66,17 @@ def _uninitialized_bbsetup_dir(workspace: Path | None) -> Path | None:
     return None
 
 
-def _workspace_from_cwd() -> Path:
-    """Walk up from CWD to find the BSP workspace root.
+def _find_workspace_from_cwd() -> Path | None:
+    """Walk up from CWD to find the BSP workspace root, or None if none found.
 
     Checks in order:
     1. A .bakar.toml marker file in the candidate directory.
     2. An nxp/ or ti/ subdirectory in the candidate directory.
     3. A bitbake-setup workspace (config/config-upstream.json + build/init-build-env).
-    """
-    from bakar.commands import console
 
+    Non-raising counterpart of :func:`_workspace_from_cwd`, for callers that
+    treat "not in a workspace" as a skip rather than an error.
+    """
     cur = Path.cwd().resolve()
     for candidate in (cur, *cur.parents):
         if (candidate / ".bakar.toml").is_file():
@@ -84,6 +85,17 @@ def _workspace_from_cwd() -> Path:
             return candidate
         if is_bbsetup_workspace(candidate):
             return candidate
+    return None
+
+
+def _workspace_from_cwd() -> Path:
+    """Walk up from CWD to find the BSP workspace root, or exit with a message."""
+    found = _find_workspace_from_cwd()
+    if found is not None:
+        return found
+
+    from bakar.commands import console
+
     console.print(
         "[red]Not inside a BSP workspace[/] (no .bakar.toml or nxp/ / ti/ found). "
         "cd to the workspace root, pass --workspace, or - for generic kas YAMLs - run "
