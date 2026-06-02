@@ -43,8 +43,14 @@ Restrict to one cache with `--no-ccache` (sstate only) or `--no-sstate`
 The two caches are pruned differently because they have different on-disk
 contracts:
 
-- **sstate** is a flat directory of self-contained archives. `clean-cache`
-  removes files older than the threshold and prunes any emptied directories.
+- **sstate** is a flat directory of self-contained archives. `clean-cache` uses
+  a two-phase approach: stale files are first renamed into a `.bakar-gc-<pid>/`
+  staging directory created inside the sstate root (so the rename is atomic and
+  stays on the same filesystem), then the staging tree is removed wholesale. This
+  means a concurrent build can never observe a half-deleted sstate entry. If
+  interrupted between the rename and the rmtree, a `.bakar-gc-<pid>/` directory
+  is left behind inside the sstate root; remove it manually to reclaim the space.
+  Emptied parent directories are pruned after deletion.
 - **ccache** keeps its own index, manifests, and statistics. Deleting files by
   hand would corrupt that bookkeeping, so `clean-cache` delegates to ccache:
   it runs `ccache --evict-older-than Nd` against the resolved cache directory.
@@ -119,8 +125,12 @@ bakar clean-cache --sstate-dir /mnt/shared/sstate --ccache-dir /mnt/shared/ccach
 
 - Empty sstate directories left behind after file removal are deleted
   automatically.
-- sstate files that cannot be stat'd or unlinked (permissions, race) are
-  silently skipped; the command does not abort on partial failures.
+- sstate pruning is safe under concurrent builds: files are staged atomically
+  before deletion, so a build reading an sstate entry never sees it disappear
+  mid-read. See "sstate vs ccache pruning" above for the recovery path if the
+  command is interrupted.
+- sstate files that cannot be moved into the staging directory (permissions,
+  race) are silently skipped; the command does not abort on partial failures.
 - ccache pruning needs the `ccache` binary on PATH; it is skipped with a note
   otherwise.
 

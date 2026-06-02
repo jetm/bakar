@@ -52,6 +52,7 @@ bakar build -m imx8mp-var-dart    # machine override in bbsetup workspace
 | `--clean` | | Remove `<bsp>/build/` before running (forces from-scratch build) |
 | `--host` | | Bypass kas-container, run plain `kas build` on the host |
 | `--show-layers` | | Print layer git hashes before the build starts |
+| `--sstate-mirror` | | HTTP sstate/downloads mirror URL; activates `bakar-tuning-shared-cache.yml` for this build |
 | `--workspace` | `-w` | Workspace root override |
 
 ## Examples
@@ -83,6 +84,9 @@ bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --show-layers
 
 # Host mode (skip kas-container, run kas directly - requires host Yocto prereqs)
 bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --host
+
+# Pull sstate and downloads from a team mirror (activates shared-cache overlay)
+bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --sstate-mirror https://cache.example.com
 ```
 
 ## What happens
@@ -93,7 +97,8 @@ bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --host
 4. **bitbake-override** - swaps the BSP-bundled bitbake for a local upstream checkout
 5. **gen-kas** (manifest-driven only) - regenerates `kas-<bsp>.yml` from the manifest
 6. **hashserv** - when `[build] hashserv = true`, ensures the workspace-scoped bitbake-hashserv daemon is running, injects `BB_HASHSERVE` into the container env, AND auto-appends `bakar-tuning-hashequiv.yml` to the overlay list so `BB_SIGNATURE_HANDLER = "OEEquivHash"` takes effect with no extra user wiring. See [hashserv.md](hashserv.md).
-7. **kas-container build** - invokes `kas-container build <kas_yaml>:<overlay>` (or `kas build` in host mode)
+7. **shared-cache overlay** - when `--sstate-mirror <URL>` is passed (or `sstate_mirror_url` is set in config.toml), bakar exports `BAKAR_SSTATE_MIRROR_URL` into the container env and appends `bakar-tuning-shared-cache.yml` to the overlay list. That overlay wires `SSTATE_MIRRORS`, `PREMIRRORS`, and `BB_HASHSERVE_UPSTREAM` to the configured URL so Yocto fetches from the team mirror before going upstream. No hand-edited YAML needed.
+8. **kas-container build** - invokes `kas-container build <kas_yaml>:<overlay>` (or `kas build` in host mode)
 
 Run telemetry is written to `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/`.
 
