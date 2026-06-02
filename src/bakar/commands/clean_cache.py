@@ -77,11 +77,9 @@ def _atime_tracked(path: Path) -> bool:
 
 
 def _fmt_size(n_bytes: int) -> str:
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
-        if n_bytes < 1024:
-            return f"{n_bytes:.1f} {unit}"
-        n_bytes //= 1024
-    return f"{n_bytes:.1f} PiB"
+    from bakar.fmt import fmt_bytes_iec
+
+    return fmt_bytes_iec(n_bytes)
 
 
 def _scan_stale_files(effective_dir: Path, stat_attr: str, cutoff_ts: float) -> tuple[list[Path], int]:
