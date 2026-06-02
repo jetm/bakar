@@ -44,7 +44,7 @@ PARSE_PROGRESS = re.compile(r"Parsing recipes: (\d+)% \|[^|]*\| (\d+)/(\d+)")
 SEVERITY_PASSTHROUGH = re.compile(r"\b(ERROR|FATAL|WARNING|QA Issue):")
 
 
-@dataclass
+@dataclass(slots=True)
 class _RunTask:
     slot: int
     pf: str
@@ -72,27 +72,17 @@ def _fmt_du(delta: int) -> str:
 
 
 def _elapsed_secs(s: str) -> int:
-    """Parse knotty elapsed strings like ``"1h2m5s"``, ``"2m15s"``, ``"47s"`` to seconds.
-
-    Returns 0 on any parse failure — never raises.
-    """
+    """Parse knotty elapsed strings like ``"1h2m5s"``, ``"2m15s"``, ``"47s"`` to seconds."""
     if not s:
         return 0
-    try:
-        total = 0
-        h_match = re.search(r"(\d+)h", s)
-        m_match = re.search(r"(\d+)m", s)
-        s_match = re.search(r"(\d+)s", s)
-        if h_match:
-            total += int(h_match.group(1)) * 3600
-        if m_match:
-            total += int(m_match.group(1)) * 60
-        if s_match:
-            total += int(s_match.group(1))
-    except Exception:
-        return 0
-    else:
-        return total
+    total = 0
+    if h := re.search(r"(\d+)h", s):
+        total += int(h.group(1)) * 3600
+    if m := re.search(r"(\d+)m", s):
+        total += int(m.group(1)) * 60
+    if sec := re.search(r"(\d+)s", s):
+        total += int(sec.group(1))
+    return total
 
 
 class BuildUIState:
@@ -127,7 +117,6 @@ class BuildUIState:
 
         self._running: dict[int, _RunTask] = {}
         self._lock = threading.Lock()
-        self._setscene_done = 0
         self._setscene_total = 0
         self._last_total = 0
         self._expansion_count = 0
@@ -159,11 +148,10 @@ class BuildUIState:
         # 2. Setscene progress
         m = SETSCENE_RUNNING.search(line)
         if m:
-            self._setscene_done = int(m.group(1))
             self._setscene_total = int(m.group(2))
             self._setscene.update(
                 self._setscene_task_id,
-                completed=self._setscene_done,
+                completed=int(m.group(1)),
                 total=self._setscene_total,
             )
             return None
@@ -179,27 +167,22 @@ class BuildUIState:
                 self._running[slot] = _RunTask(slot=slot, pf=pf, task=task, elapsed=elapsed)
             return None
 
-        # 4. TTY-filtered fallback: non-TTY task start lines
-        m = RUNNING_TASK.search(line)
-        if m:
-            completed = int(m.group(1))
-            total = int(m.group(2))
-            self.progress.update(self._task_id, completed=completed, total=total)
-            return None
-
-        # 5. Parse phase progress
+        # 4. Parse phase progress
         m = PARSE_PROGRESS.search(line)
         if m:
-            completed = int(m.group(2))
-            total = int(m.group(3))
-            self.progress.update(self._task_id, completed=completed, total=total)
+            self.progress.update(self._task_id, completed=int(m.group(2)), total=int(m.group(3)))
             return None
 
-        # 6. Severity lines surface above the Live display
+        # 5. Severity lines surface above the Live display
         if SEVERITY_PASSTHROUGH.search(line):
             return line
 
-        # 7. All other lines are swallowed
+        # 6. TTY-filtered fallback: non-TTY task start lines (dead in interactive mode)
+        m = RUNNING_TASK.search(line)
+        if m:
+            self.progress.update(self._task_id, completed=int(m.group(1)), total=int(m.group(2)))
+            return None
+
         return None
 
     def update_heartbeat(self, stall_secs: int, du_delta: int) -> None:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from bakar.steps.build_ui import BuildUIState, _elapsed_secs
+from bakar.steps.build_ui import BuildUIState, _elapsed_secs, _RunTask
 
 # ---------------------------------------------------------------------------
 # CURRENT_RUNNING regex — progress updates and slot pruning
@@ -29,8 +29,6 @@ def test_current_running_updates_progress() -> None:
 def test_current_running_prunes_stale_slots() -> None:
     ui = BuildUIState()
     # Seed _running with slots 0, 1, 2 directly
-    from bakar.steps.build_ui import _RunTask
-
     ui._running[0] = _RunTask(slot=0, pf="pkg-a-1.0-r0", task="do_compile", elapsed="10s")
     ui._running[1] = _RunTask(slot=1, pf="pkg-b-2.0-r0", task="do_fetch", elapsed="5s")
     ui._running[2] = _RunTask(slot=2, pf="pkg-c-3.0-r0", task="do_install", elapsed="2s")
@@ -81,8 +79,8 @@ def test_setscene_line() -> None:
     ui = BuildUIState()
     result = ui.process_line("Setscene tasks: 89 of 120")
     assert result is None
-    assert ui._setscene_done == 89
     assert ui._setscene_total == 120
+    assert ui._setscene.tasks[0].completed == 89
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +209,6 @@ def test_make_renderable_with_setscene() -> None:
 def test_make_renderable_with_tasks() -> None:
     # 3 running tasks, setscene_total=0 → bar + table (2 components)
     ui = BuildUIState()
-    from bakar.steps.build_ui import _RunTask
 
     ui._running[0] = _RunTask(slot=0, pf="pkg-a-1.0-r0", task="do_compile", elapsed="10s")
     ui._running[1] = _RunTask(slot=1, pf="pkg-b-2.0-r0", task="do_fetch", elapsed="5s")
@@ -225,7 +222,6 @@ def test_make_renderable_with_tasks() -> None:
 @pytest.mark.unit
 def test_make_renderable_task_sort_by_elapsed_desc() -> None:
     ui = BuildUIState()
-    from bakar.steps.build_ui import _RunTask
 
     # Seed in non-sorted order
     ui._running[0] = _RunTask(slot=0, pf="pkg-a-1.0-r0", task="do_compile", elapsed="47s")
@@ -243,7 +239,6 @@ def test_make_renderable_task_sort_by_elapsed_desc() -> None:
 @pytest.mark.unit
 def test_make_renderable_task_removes_do_prefix() -> None:
     ui = BuildUIState()
-    from bakar.steps.build_ui import _RunTask
 
     ui._running[0] = _RunTask(slot=0, pf="glibc-2.39-r0", task="do_compile", elapsed="5s")
 

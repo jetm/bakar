@@ -9,11 +9,12 @@ on top of whatever kas YAML the caller passes in.
 A pseudo-TTY is allocated for the kas-container subprocess so that
 ``kas-container``'s ``[ -t 1 ]`` check passes and it attaches ``-t -i`` on
 the ``docker run`` call. That enables bitbake's knotty interactive UI
-inside the container, which emits ``Currently N tasks running (X of Y
-complete)`` status lines several times per second - a much livelier
-counter than the per-task-start ``NOTE: Running task`` lines we get in
-non-TTY mode. The PTY also means bitbake's stdout is line-flushed
-rather than block-buffered, so ``bakar log`` and the progress bar stay
+inside the container, which emits footer lines including
+``Currently N running tasks (X of Y)`` and per-task lines like
+``N: PF do_task - elapsed (pid P)`` several times per second.
+These are parsed by :mod:`bakar.steps.build_ui` into a Rich Live
+display. The PTY also means bitbake's stdout is line-flushed rather
+than block-buffered, so ``bakar log`` and the progress bar stay
 responsive during long compile phases.
 """
 
@@ -34,36 +35,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
-from rich.progress import (
-    BarColumn,
-    Progress,
-    TextColumn,
-    TimeElapsedColumn,
-)
+from rich.live import Live
 
 from bakar import hashserv
 from bakar.kas import KasGenOptions, write_yaml
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
+from bakar.steps.build_ui import BuildUIState
 
 if TYPE_CHECKING:
     from bakar.bsp_model import BspModel
     from bakar.config import BuildConfig
     from bakar.observability import RunLogger
 
-# Bitbake output patterns.  These drive the progress bar in run_build().
-#
-# CURRENT_RUNNING is the dominant signal during the execution phase when
-# the PTY is active: bitbake's knotty UI reprints it several times per
-# second.  RUNNING_TASK gives us a recipe label for the current task.
-# PARSE_PROGRESS covers the parse phase before execution starts, and
-# SETSCENE_RUNNING covers the setscene (sstate reuse) phase.
-# SEVERITY_PASSTHROUGH is pulled out of the stream and printed above
-# the bar so users see real problems without tailing kas.log.
-CURRENT_RUNNING = re.compile(r"Currently \d+ tasks? running \((\d+) of (\d+) complete\)")
-RUNNING_TASK = re.compile(r"NOTE: Running task (\d+) of (\d+) \(([^)]+)\)")
-PARSE_PROGRESS = re.compile(r"Parsing recipes: (\d+)% \|[^|]*\| (\d+)/(\d+)")
-SETSCENE_RUNNING = re.compile(r"Currently \d+ setscene tasks running \((\d+) of (\d+) complete\)")
-SEVERITY_PASSTHROUGH = re.compile(r"\b(ERROR|FATAL|WARNING|QA Issue):")
 
 # knotty in TTY mode emits ANSI CSI escapes to manipulate the cursor and
 # redraw progress lines in place.  We strip both the standard CSI form
@@ -85,25 +68,6 @@ _OVERLAY_DIR_RELPATH = Path(".bakar") / "overlays"
 
 def _strip_ansi(s: str) -> str:
     return ANSI_OSC_RE.sub("", ANSI_CSI_RE.sub("", s))
-
-
-def _fmt_stall(seconds: int) -> str:
-    if seconds < 60:
-        return f"{seconds}s"
-    m, s = divmod(seconds, 60)
-    if m < 60:
-        return f"{m}m{s:02d}s"
-    h, m = divmod(m, 60)
-    return f"{h}h{m:02d}m"
-
-
-def _fmt_du(delta: int) -> str:
-    if delta <= 0:
-        return "-"
-    mb = delta / (1024 * 1024)
-    if mb < 1024:
-        return f"+{mb:.0f}M"
-    return f"+{mb / 1024:.1f}G"
 
 
 def materialize_overlay(cfg: BuildConfig, overlay_source: Path) -> Path:
@@ -580,6 +544,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
     # \r, \n, or \r\n manually instead of line-iterating.
     rc: int | None = None
     terminated = False
+    ui = BuildUIState()
     master_fd, slave_fd = pty.openpty()  # pragma: no cover
     try:
         with log.kas_log_path.open("w", encoding="utf-8", buffering=1) as kas_log:
@@ -604,130 +569,50 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
             os.close(slave_fd)
             slave_fd = -1
 
-            progress = Progress(
-                TextColumn("[cyan]kas_build[/]"),
-                BarColumn(),
-                TextColumn("{task.completed}/{task.total} tasks"),
-                TextColumn("{task.fields[recipe]}"),
-                TextColumn("[dim]live {task.fields[stall]}  {task.fields[du]}[/]"),
-                TimeElapsedColumn(),
-            )
+            def _process_line(line: str) -> None:  # pragma: no cover
+                kas_log.write(line + "\n")
+                kas_log.flush()
+                state["last_event_ts"] = time.monotonic()
+                msg = ui.process_line(line)
+                if msg:
+                    live.console.print(msg)
 
-            with progress:
-                task_id = progress.add_task(
-                    "kas_build",
-                    total=None,
-                    recipe="",
-                    stall="0s",
-                    du="-",
-                    expansions=0,
-                )
-
-                def _process_line(line: str) -> None:  # pragma: no cover
-                    nonlocal last_total, last_completed, expansion_count, current_recipe
-                    kas_log.write(line + "\n")
-                    kas_log.flush()
-                    state["last_event_ts"] = time.monotonic()
-
-                    m = CURRENT_RUNNING.search(line)
-                    if m:
-                        completed, total = int(m.group(1)), int(m.group(2))
-                        if last_total and abs(total - last_total) / max(last_total, 1) >= 0.05:
-                            expansion_count += 1
-                            verb = "expanded" if total > last_total else "reduced"
-                            progress.console.print(f"[yellow]task graph {verb}: {last_total} -> {total}[/]")
-                        progress.update(
-                            task_id,
-                            completed=completed,
-                            total=total,
-                            recipe=current_recipe,
-                            expansions=expansion_count,
-                        )
-                        last_total, last_completed = total, completed
-                        return
-
-                    m = RUNNING_TASK.search(line)
-                    if m:
-                        completed, total = int(m.group(1)), int(m.group(2))
-                        current_recipe = m.group(3).rsplit("/", 1)[-1]
-                        if last_total and abs(total - last_total) / max(last_total, 1) >= 0.05:
-                            expansion_count += 1
-                            verb = "expanded" if total > last_total else "reduced"
-                            progress.console.print(f"[yellow]task graph {verb}: {last_total} -> {total}[/]")
-                        progress.update(
-                            task_id,
-                            completed=completed,
-                            total=total,
-                            recipe=current_recipe,
-                            expansions=expansion_count,
-                        )
-                        last_total, last_completed = total, completed
-                        return
-
-                    m = PARSE_PROGRESS.search(line)
-                    if m:
-                        done, total = int(m.group(2)), int(m.group(3))
-                        progress.update(task_id, completed=done, total=total, recipe="parsing recipes")
-                        return
-
-                    m = SETSCENE_RUNNING.search(line)
-                    if m:
-                        completed, total = int(m.group(1)), int(m.group(2))
-                        progress.update(task_id, completed=completed, total=total, recipe="setscene")
-                        return
-
-                    if SEVERITY_PASSTHROUGH.search(line):
-                        progress.console.print(line)
-
-                last_total = 0
-                last_completed = 0
-                expansion_count = 0
-                current_recipe = ""
-
-                def _pump() -> None:  # pragma: no cover
-                    buf = b""
+            def _pump() -> None:  # pragma: no cover
+                buf = b""
+                while True:
+                    try:
+                        chunk = os.read(master_fd, 8192)
+                    except OSError:
+                        # EIO fires on Linux when the slave side closes
+                        # (child exited). Treat as EOF.
+                        break
+                    if not chunk:
+                        break
+                    buf += chunk
                     while True:
-                        try:
-                            chunk = os.read(master_fd, 8192)
-                        except OSError:
-                            # EIO fires on Linux when the slave side closes
-                            # (child exited). Treat as EOF.
+                        m = LINE_SPLIT_RE.search(buf)
+                        if m is None:
                             break
-                        if not chunk:
-                            break
-                        buf += chunk
-                        while True:
-                            m = LINE_SPLIT_RE.search(buf)
-                            if m is None:
-                                break
-                            raw = buf[: m.start()]
-                            buf = buf[m.end() :]
-                            if not raw:
-                                continue
-                            line = _strip_ansi(raw.decode("utf-8", errors="replace"))
-                            _process_line(line)
-                    if buf:
-                        tail = _strip_ansi(buf.decode("utf-8", errors="replace"))
-                        if tail:
-                            _process_line(tail)
+                        raw = buf[: m.start()]
+                        buf = buf[m.end() :]
+                        if not raw:
+                            continue
+                        line = _strip_ansi(raw.decode("utf-8", errors="replace"))
+                        _process_line(line)
+                if buf:
+                    tail = _strip_ansi(buf.decode("utf-8", errors="replace"))
+                    if tail:
+                        _process_line(tail)
 
-                def _heartbeat() -> None:
-                    # Tick once per second so the user can see whether the
-                    # build is genuinely wedged ("5m30s live") or just in a
-                    # quiet compile phase ("12s live, +210M"). du-delta is
-                    # the difference between the two most recent 30s
-                    # samples; it lags but confirms actual disk work.
-                    while not stop_event.wait(timeout=1):
-                        if proc.poll() is not None:
-                            break
-                        stall = int(time.monotonic() - state["last_event_ts"])
-                        delta = state["cur_du_bytes"] - state["prev_du_bytes"]
-                        progress.update(
-                            task_id,
-                            stall=_fmt_stall(stall),
-                            du=_fmt_du(delta),
-                        )
+            def _heartbeat() -> None:
+                while not stop_event.wait(timeout=1):
+                    if proc.poll() is not None:
+                        break
+                    stall = int(time.monotonic() - state["last_event_ts"])
+                    delta = state["cur_du_bytes"] - state["prev_du_bytes"]
+                    ui.update_heartbeat(stall, delta)
 
+            with Live(get_renderable=ui.make_renderable, refresh_per_second=8) as live:
                 pump = threading.Thread(target=_pump, daemon=True)  # pragma: no cover
                 pump.start()
                 heartbeat = threading.Thread(target=_heartbeat, daemon=True)  # pragma: no cover
