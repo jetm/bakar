@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-02
+
 ### Added
 
 - Added `[build] ccache_shared` and `[build] ccache_dir` settings to share one ccache across all workspaces (cross-BSP hits, less disk) instead of the per-workspace default.
@@ -167,7 +169,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/jetm/bakar/compare/v0.4.0...v0.7.0
 [0.4.0]: https://github.com/jetm/bakar/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jetm/bakar/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/jetm/bakar/compare/v0.2.0...v0.2.1
