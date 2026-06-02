@@ -196,6 +196,23 @@ def _hashequiv_extra_overlays(cfg: BuildConfig) -> list[Path]:
     return [path]
 
 
+def _shared_cache_extra_overlays(cfg: BuildConfig) -> list[Path]:
+    """Return the shared-cache overlay path when ``cfg.use_shared_cache`` is True.
+
+    Returns ``[<overlay-dir>/bakar-tuning-shared-cache.yml]`` when the user has
+    configured a sstate mirror URL via ``[build] sstate_mirror_url`` AND the
+    overlay file is present in the installed ``overlays/`` directory.
+    Returns ``[]`` otherwise. Callers append the result to ``extra_overlays``
+    so kas layers the shared-cache tuning on top of the per-BSP tuning overlay.
+    """
+    if not cfg.use_shared_cache:
+        return []
+    path = _overlay_dir() / "bakar-tuning-shared-cache.yml"
+    if not path.is_file():
+        return []
+    return [path]
+
+
 # ---------------------------------------------------------------------------
 # Build-directory cleanup
 # ---------------------------------------------------------------------------
