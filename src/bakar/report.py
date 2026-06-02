@@ -140,12 +140,7 @@ def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
     deploy_dir = step_ok.get("deploy_dir") if step_ok else None
 
     layers = collect_layer_hashes(cfg)
-    if layers:
-        build_revision: str | None = hashlib.sha1("".join(sorted(l.short_hash for l in layers)).encode()).hexdigest()[
-            :12
-        ]
-    else:
-        build_revision = None
+    build_revision: str | None = hashlib.sha1("".join(sorted(l.short_hash for l in layers)).encode()).hexdigest()[:12] if layers else None
 
     return ReportSummary(
         run_id=run_dir.name,

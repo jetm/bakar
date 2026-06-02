@@ -21,6 +21,8 @@ from bakar.fork_race_signatures import (
     FORK_RACE_SUGGESTION,
 )
 
+_ERROR_REPORT_FILENAME = "error-report.json"
+
 
 @dataclass(frozen=True)
 class RecipeError:
@@ -234,7 +236,7 @@ def write_error_report(run_dir: Path, cfg, exit_code: int) -> None:
     the original build failure exit code is never masked.
     """
     kas_log = run_dir / "kas.log"
-    tail_lines = _tail(kas_log, 80)
+    tail_lines = _tail(kas_log, 60)
     tail_text = "\n".join(tail_lines)
     recipe_errors = _scan_recipe_errors(kas_log)
     suggestions = _match_suggestions(tail_text)
@@ -251,9 +253,17 @@ def write_error_report(run_dir: Path, cfg, exit_code: int) -> None:
     }
 
     try:
-        (run_dir / "error-report.json").write_text(json.dumps(report, indent=2))
+        (run_dir / _ERROR_REPORT_FILENAME).write_text(json.dumps(report, indent=2))
     except OSError:
         return
+
+
+def _prepend_recipe_headers(suggestions: list[str], recipe_errors: list[RecipeError]) -> list[str]:
+    if not recipe_errors:
+        return suggestions
+    header = "recipe-level failures (unique recipes):"
+    lines = [f"{e.recipe} do_{e.task}: {e.excerpt}" for e in recipe_errors]
+    return [header, *lines, *suggestions]
 
 
 def analyse(run_dir: Path, workspace: Path) -> TriageReport:
@@ -263,41 +273,45 @@ def analyse(run_dir: Path, workspace: Path) -> TriageReport:
     # Avoids re-scanning kas.log on every triage invocation. Falls through to
     # the live-parse path on any parse error or missing file so old run dirs
     # without an error-report.json continue to work unchanged.
-    error_report_path = run_dir / "error-report.json"
+    error_report_path = run_dir / _ERROR_REPORT_FILENAME
     if error_report_path.exists():
         try:
             data = json.loads(error_report_path.read_text())
             failing_step: str | None = data["step"]
-            kas_log_tail: list[str] = data["kas_log_tail"]
+            kas_log_tail: list[str] = list(data["kas_log_tail"])
             recipe_errors: list[RecipeError] = [
                 RecipeError(recipe=e["recipe"], task=e["task"], excerpt=e["excerpt"])
                 for e in data["recipe_errors"]
             ]
             suggestions: list[str] = list(data["suggestions"])
-
-            # Reconstruct the recipe-failure header block so callers get the
-            # same output shape as the live-parse path.
-            if recipe_errors:
-                header = "recipe-level failures (from kas.log, unique recipes):"
-                lines = [f"{e.recipe} do_{e.task}: {e.excerpt}" for e in recipe_errors]
-                suggestions = [header, *lines, *suggestions]
-
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass
+        else:
+            # Supplement: recipe log data and fail_reason are not stored in
+            # error-report.json; derive them the same way the live-parse path
+            # does so the two paths produce equivalent output.
+            kas_log = run_dir / "kas.log"
+            fail = _last_event_matching(events_path, "step_fail")
+            fail_reason: str | None = fail.get("reason") if fail else None
+            recipe_log = _find_recipe_log(kas_log, workspace)
+            recipe_log_tail = _tail(recipe_log, 60) if recipe_log else []
+            if recipe_log_tail:
+                extra = _match_suggestions("\n".join(recipe_log_tail))
+                suggestions = suggestions + [s for s in extra if s not in suggestions]
+            suggestions = _prepend_recipe_headers(suggestions, recipe_errors)
             override_line = _bitbake_override_summary(events_path)
             if override_line:
                 suggestions = [override_line, *suggestions]
-
             return TriageReport(
                 run_dir=run_dir,
                 failing_step=failing_step,
-                fail_reason=None,
+                fail_reason=fail_reason,
                 kas_log_tail=kas_log_tail,
-                recipe_log=None,
-                recipe_log_tail=[],
+                recipe_log=recipe_log,
+                recipe_log_tail=recipe_log_tail,
                 suggestions=suggestions,
                 recipe_errors=recipe_errors,
             )
-        except (json.JSONDecodeError, KeyError):
-            pass
 
     # Live-parse path: used when error-report.json is absent or unreadable
     # (backward compatible with run dirs produced before this feature).
@@ -319,10 +333,7 @@ def analyse(run_dir: Path, workspace: Path) -> TriageReport:
     # section as suggestions (cli.py iterates `suggestions` under the
     # "suggestions:" heading).  Rendering as `<recipe> do_<task>: <excerpt>`
     # mirrors the format the task spec calls out.
-    if recipe_errors:
-        header = "recipe-level failures (from kas.log, unique recipes):"
-        lines = [f"{e.recipe} do_{e.task}: {e.excerpt}" for e in recipe_errors]
-        suggestions = [header, *lines, *suggestions]
+    suggestions = _prepend_recipe_headers(suggestions, recipe_errors)
 
     override_line = _bitbake_override_summary(events_path)
     if override_line:
@@ -341,15 +352,48 @@ def analyse(run_dir: Path, workspace: Path) -> TriageReport:
 
 
 def find_runs(workspace: Path) -> list[Path]:
-    """Return run directories from both BSPs, most-recent first.
+    """Return run directories across all BSP families, most-recent first.
 
-    Walks ``<workspace>/nxp/build/runs/`` and ``<workspace>/ti/build/runs/``
-    so callers do not need to pre-dispatch a BSP family. Used by
-    ``bakar triage`` when no run id is supplied.
+    Discovers run directories from three locations:
+
+    1. ``<workspace>/nxp/build/runs/`` and ``<workspace>/ti/build/runs/``
+       (legacy named-family paths, checked explicitly so they always participate
+       even if the glob below would already pick them up).
+    2. ``<workspace>/build/runs/`` - workspace-root builds (BYO/generic and
+       bbsetup families whose build tree sits directly in the workspace).
+    3. ``<workspace>/*/build/runs/`` - one-level-deep subdirectories other than
+       the named families above (bounded: at most 2 glob depth levels, never
+       rglob).
+
+    Results are deduplicated by resolved path so a directory matched by both
+    an explicit check and the glob does not appear twice.  The final list is
+    sorted by run directory name (``YYYYMMDD-HHMMSS``) in descending order so
+    the most recent run is first.
     """
+    seen: set[Path] = set()
     out: list[Path] = []
+
+    def _collect(runs_dir: Path) -> None:
+        if not runs_dir.is_dir():
+            return
+        for p in runs_dir.iterdir():
+            if not p.is_dir():
+                continue
+            key = p.resolve()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(p)
+
+    # Named-family paths (always checked first).
     for family in ("nxp", "ti"):
-        runs_dir = workspace / family / "build" / "runs"
-        if runs_dir.is_dir():
-            out.extend(p for p in runs_dir.iterdir() if p.is_dir())
+        _collect(workspace / family / "build" / "runs")
+
+    # Workspace-root build tree (BYO/generic, bbsetup).
+    _collect(workspace / "build" / "runs")
+
+    # One-level-deep subdirs not already covered above.
+    for runs_dir in workspace.glob("*/build/runs"):
+        _collect(runs_dir)
+
     return sorted(out, key=lambda p: p.name, reverse=True)

@@ -108,5 +108,5 @@ def report(
     if summary.peak_tmp_bytes is not None:
         console.print(f"peak build/tmp: {summary.peak_tmp_bytes} bytes")
     if summary.build_revision is not None:
-        console.print(f"build_revision  {summary.build_revision}")
+        console.print(f"build_revision: {summary.build_revision}")
     _print_layer_hashes(cfg, hashes=summary.layers)

@@ -158,7 +158,7 @@ class RunLogger:
         Writes directly to the file to avoid routing through the logging
         handlers, which would also emit to the Rich/stderr console.
         """
-        ts = datetime.now(UTC).isoformat()
+        ts = _utc_now_iso()
         line = f"── [{ts}] {step} ──\n"
         with self.console_path.open("a") as fh:
             fh.write(line)
