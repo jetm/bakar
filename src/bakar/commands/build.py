@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -22,6 +22,7 @@ from bakar.commands._helpers import (
     _print_diagnosis,
     _print_layer_hashes,
     _resolve_workspace,
+    _shared_cache_extra_overlays,
     _uninitialized_bbsetup_dir,
 )
 from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, resolve
@@ -50,6 +51,7 @@ class _BbsetupCtx:
     dry_run: bool
     keep_going: bool
     show_layers: bool
+    sstate_mirror: str | None
 
 
 def _run_doctor_gate(cfg, log, bsp, skip_doctor: bool) -> None:
@@ -84,6 +86,8 @@ def _run_bbsetup_build(
         spec=BSPSpec(machine=ctx.machine, distro=ctx.distro, image=ctx.image, host_mode=ctx.host_mode),
         user_config=_state._USER_CONFIG,
     )
+    if ctx.sstate_mirror is not None:
+        cfg = replace(cfg, sstate_mirror_url=ctx.sstate_mirror)
     overlay_source = _overlay_for(None)
     bb_target = cfg.image if cfg.image not in ("", "generic") else "core-image-minimal"
 
@@ -113,8 +117,9 @@ def _run_bbsetup_build(
             console.print(f"[green]removed[/] {tmp_dir}")
 
     if ctx.dry_run:
+        extra_overlays_bbsetup = [*_hashequiv_extra_overlays(cfg), *_shared_cache_extra_overlays(cfg)]
         for line in step_kas.dry_run_preview_lines(
-            cfg, cfg.kas_yaml, overlay_source, _hashequiv_extra_overlays(cfg), keep_going=ctx.keep_going
+            cfg, cfg.kas_yaml, overlay_source, extra_overlays_bbsetup, keep_going=ctx.keep_going
         ):
             print(line)
         raise typer.Exit(code=0)
@@ -137,7 +142,7 @@ def _run_bbsetup_build(
         )
         rc = step_kas.run_build(
             kas_ctx,
-            extra_overlays=_hashequiv_extra_overlays(cfg),
+            extra_overlays=[*_hashequiv_extra_overlays(cfg), *_shared_cache_extra_overlays(cfg)],
         )
         if rc != 0:
             console.print(
@@ -249,7 +254,7 @@ def _run_manifest_build(
     )
     rc = step_kas.run_build(
         kas_ctx,
-        extra_overlays=_hashequiv_extra_overlays(cfg),
+        extra_overlays=[*_hashequiv_extra_overlays(cfg), *_shared_cache_extra_overlays(cfg)],
     )
     if rc != 0:
         console.print(f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details.")
@@ -330,6 +335,10 @@ def build(
         bool,
         typer.Option("--show-layers", help="Print layer git hashes before build."),
     ] = False,
+    sstate_mirror: Annotated[
+        str | None,
+        typer.Option("--sstate-mirror", help="HTTP sstate/downloads mirror URL; enables the shared-cache overlay"),
+    ] = None,
 ) -> None:
     """Run the build pipeline idempotently.
 
@@ -368,6 +377,7 @@ def build(
                 dry_run=dry_run,
                 keep_going=keep_going,
                 show_layers=show_layers,
+                sstate_mirror=sstate_mirror,
             ),
         )
         return
@@ -401,13 +411,15 @@ def build(
         kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
     )
+    if sstate_mirror is not None:
+        cfg = replace(cfg, sstate_mirror_url=sstate_mirror)
 
     extra_overlays: list[Path] = []
     if byo_form:
         if kas_yaml is not None:
             extra_overlays = [Path(p) for p in kas_yaml.split(":")[1:]]
         resolved_existing = {p.resolve() for p in extra_overlays}
-        for overlay in _hashequiv_extra_overlays(cfg):
+        for overlay in [*_hashequiv_extra_overlays(cfg), *_shared_cache_extra_overlays(cfg)]:
             resolved_overlay = overlay.resolve()
             if resolved_overlay not in resolved_existing:
                 extra_overlays.append(overlay)
