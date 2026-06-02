@@ -21,3 +21,24 @@ def fmt_bytes(n: float) -> str:
             return f"{n:.0f}{unit}"
         n /= 1024
     return f"{n:.0f}T"
+
+
+def fmt_bytes_iec(n_bytes: float) -> str:
+    """Format a byte count using IEC binary prefixes.
+
+    Uses IEC suffixes (``"B"``, ``"KiB"``, ``"MiB"``, ``"GiB"``, ``"TiB"``)
+    with one decimal place and a space separator. Float division preserves
+    sub-KiB precision.
+
+    Examples::
+
+        fmt_bytes_iec(500)        # "500.0 B"
+        fmt_bytes_iec(2_048)      # "2.0 KiB"
+        fmt_bytes_iec(5_242_880)  # "5.0 MiB"
+    """
+    n: float = float(n_bytes)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PiB"
