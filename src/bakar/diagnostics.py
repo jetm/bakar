@@ -386,7 +386,10 @@ def check_disk_free(cfg: BuildConfig) -> CheckResult:
     for label, path in candidates:
         if not path.exists():
             continue
-        dev = os.stat(path).st_dev
+        try:
+            dev = os.stat(path).st_dev
+        except OSError:
+            continue
         if dev in seen_devs:
             continue
         seen_devs.add(dev)
