@@ -65,7 +65,7 @@ After scaffolding, `init` prints the warning on its own line:
 Downloading sources can take a while
 ```
 
-Then asks `Run `bakar sync` now?`, defaulting to **no**. NXP and TI source syncs each pull multiple gigabytes, so the warning is shown before the prompt rather than after you answer yes.
+Then asks "Run `bakar sync` now?", defaulting to **no**. NXP and TI source syncs each pull multiple gigabytes, so the warning is shown before the prompt rather than after you answer yes.
 
 - **Yes** - `init` calls the existing sync pipeline in-process against the scaffolded workspace.
 - **No** - `init` prints the manual next step. For nxp/ti/generic that is `bakar sync --workspace <path>`; for bbsetup it is `bitbake-setup init` run from inside the workspace.

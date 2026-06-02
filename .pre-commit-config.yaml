@@ -35,6 +35,16 @@ repos:
         files: \.(sh|bash)$
         exclude: ^claude/
 
+  # Markdown linting
+  - repo: local
+    hooks:
+      - id: mado
+        name: mado
+        entry: mado check
+        language: system
+        types: [markdown]
+        exclude: ^generated/
+
   # Local hooks - TOML and custom validation
   - repo: local
     hooks:

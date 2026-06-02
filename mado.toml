@@ -1,0 +1,43 @@
+[lint]
+exclude = ["**/generated/**"]
+rules = [
+  "MD001",
+  "MD003",
+  "MD004",
+  "MD009",
+  "MD012",
+  "MD014",
+  "MD018",
+  "MD019",
+  "MD020",
+  "MD021",
+  "MD023",
+  "MD024",
+  "MD025",
+  "MD026",
+  "MD027",
+  "MD028",
+  "MD029",
+  "MD030",
+  "MD033",
+  "MD034",
+  "MD035",
+  "MD037",
+  "MD038",
+  "MD039",
+  "MD040",
+  "MD046",
+  "MD047",
+]
+
+# MD002/MD005/MD006/MD007/MD010 dropped: mado bugs/false positives; MD010 has no code_blocks=false option
+# MD013/MD022/MD031/MD032/MD036/MD041 dropped: intentional style (see markdown.md)
+
+[lint.md024]
+allow-different-nesting = true
+
+[lint.md026]
+punctuation = ".,;:!"
+
+[lint.md029]
+style = "ordered"

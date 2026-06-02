@@ -167,5 +167,3 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 [0.0.3]: https://github.com/jetm/bakar/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/jetm/bakar/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/jetm/bakar/releases/tag/v0.0.1
-
-
