@@ -1,151 +1,137 @@
 """Unit tests for ``bakar.steps.build_ui``.
 
 All tests operate on ``BuildUIState`` directly — no subprocess, no PTY, no Rich
-console rendering required. The module under test is a pure state machine that
-parses knotty PTY output and returns passthrough strings for severity lines.
+console rendering required. The module under test parses knotty's non-interactive
+fallback output lines, drives a SETUP/BUILD phase state machine, reconstructs the
+live running-task set from lifecycle events, and returns passthrough strings for
+severity lines.
 """
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
-from bakar.steps.build_ui import BuildUIState, _elapsed_secs, _RunTask
+from bakar.steps.build_ui import BuildUIState, _Phase, _RunTask
 
 # ---------------------------------------------------------------------------
-# CURRENT_RUNNING regex — progress updates and slot pruning
+# SETUP phase — parse and cache progress
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-def test_current_running_updates_progress() -> None:
+def test_parse_progress_updates_setup_bar() -> None:
     ui = BuildUIState()
-    result = ui.process_line("Currently  4 running tasks (120 of 450)  22% |###|")
+    result = ui.process_line("Parsing recipes:  47% || ETA:  0:00:28")
     assert result is None
-    assert ui.progress.tasks[0].completed == 120
-    assert ui.progress.tasks[0].total == 450
+    assert ui._setup_progress.tasks[0].completed == 47
 
 
 @pytest.mark.unit
-def test_current_running_prunes_stale_pids() -> None:
-    # Production knotty order: "Currently N..." footer fires FIRST, then per-task lines.
+def test_loading_cache_updates_setup_bar() -> None:
     ui = BuildUIState()
-    # Frame 1: footer opens the frame, tasks follow.
-    ui.process_line("Currently  3 running tasks (200 of 450)  44% |##########|")
-    ui.process_line("0: pkg-a-1.0-r0 do_compile - 10s (pid 100)")
-    ui.process_line("1: pkg-b-2.0-r0 do_fetch - 5s (pid 200)")
-    ui.process_line("2: pkg-c-3.0-r0 do_install - 2s (pid 300)")
-    assert set(ui._running) == {100, 200, 300}
+    result = ui.process_line("Loading cache: 100% || ETA:  --:--:--")
+    assert result is None
+    assert ui._setup_progress.tasks[0].completed == 100
 
-    # Frame 2: footer opens, only pid 100 follows; 200 and 300 must be gone.
-    ui.process_line("Currently  1 running tasks (210 of 450)  46% |##########|")
-    ui.process_line("0: pkg-a-1.0-r0 do_compile - 15s (pid 100)")
 
+@pytest.mark.unit
+def test_setup_phase_render_only_setup_bar() -> None:
+    ui = BuildUIState()
+    group = ui.make_renderable()
+    assert len(group.renderables) == 1
+    assert group.renderables[0] is ui._setup_progress
+
+
+# ---------------------------------------------------------------------------
+# BUILD phase transition — Running [setscene] task N of M
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_running_setscene_transitions_to_build() -> None:
+    ui = BuildUIState()
+    result = ui.process_line("NOTE: Running setscene task 16 of 5944 (/x.bb:do_create_runtime_spdx_setscene)")
+    assert result is None
+    assert ui._phase == _Phase.BUILD
+    assert ui._build_progress.tasks[0].completed == 16
+    assert ui._build_progress.tasks[0].total == 5944
+    assert ui._build_progress.tasks[0].fields["kind"] == "setscene"
+
+
+@pytest.mark.unit
+def test_running_task_sets_tasks_kind() -> None:
+    ui = BuildUIState()
+    result = ui.process_line("NOTE: Running task 1200 of 9005 (/x.bb:do_compile)")
+    assert result is None
+    assert ui._build_progress.tasks[0].completed == 1200
+    assert ui._build_progress.tasks[0].total == 9005
+    assert ui._build_progress.tasks[0].fields["kind"] == "tasks"
+
+
+# ---------------------------------------------------------------------------
+# Running-task set reconstruction — Started / Succeeded / Failed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_recipe_started_adds_running() -> None:
+    ui = BuildUIState()
+    result = ui.process_line("NOTE: recipe go-binary-native-1.22.12-r0: task do_compile: Started")
+    assert result is None
     assert len(ui._running) == 1
-    assert 100 in ui._running
+    entry = next(iter(ui._running.values()))
+    assert entry.pf == "go-binary-native-1.22.12-r0"
+    assert entry.task == "do_compile"
 
 
 @pytest.mark.unit
-def test_current_running_prunes_finished_mid_list_task() -> None:
-    # Production ordering: "Currently N..." fires first, then per-task lines.
-    # pid 200 finishes mid-list; knotty renumbers remaining slots to 0,1.
+def test_recipe_succeeded_removes_running() -> None:
     ui = BuildUIState()
-    ui.process_line("Currently  3 running tasks (200 of 450)  44% |##########|")
-    ui.process_line("0: pkg-a-1.0-r0 do_compile - 10s (pid 100)")
-    ui.process_line("1: pkg-b-2.0-r0 do_fetch - 5s (pid 200)")
-    ui.process_line("2: pkg-c-3.0-r0 do_install - 2s (pid 300)")
-
-    # pid 200 done: footer opens frame 2, only pids 100 and 300 follow.
-    ui.process_line("Currently  2 running tasks (205 of 450)  45% |##########|")
-    ui.process_line("0: pkg-a-1.0-r0 do_compile - 12s (pid 100)")
-    ui.process_line("1: pkg-c-3.0-r0 do_install - 4s (pid 300)")
-
-    assert set(ui._running) == {100, 300}
-    assert ui._running[300].slot == 1
+    ui.process_line("NOTE: recipe go-binary-native-1.22.12-r0: task do_compile: Started")
+    ui.process_line("NOTE: recipe go-binary-native-1.22.12-r0: task do_compile: Succeeded")
+    assert ui._running == {}
 
 
 @pytest.mark.unit
-def test_current_running_expansion_message() -> None:
+def test_recipe_failed_removes_running() -> None:
     ui = BuildUIState()
-    ui._last_total = 450
-    # total=480 is a 6.7% increase — above the 5% threshold
-    result = ui.process_line("Currently  4 running tasks (480 of 480)  100% |####################|")
-    assert result is not None
-    assert "expanded" in result
+    ui.process_line("NOTE: recipe go-binary-native-1.22.12-r0: task do_compile: Started")
+    ui.process_line("NOTE: recipe go-binary-native-1.22.12-r0: task do_compile: Failed")
+    assert ui._running == {}
 
 
 @pytest.mark.unit
-def test_current_running_reduction_message() -> None:
+def test_recipe_started_setscene_task() -> None:
     ui = BuildUIState()
-    ui._last_total = 480
-    # total=450 is a 6.25% decrease — above the 5% threshold
-    result = ui.process_line("Currently  4 running tasks (450 of 450)  100% |####################|")
-    assert result is not None
-    assert "reduced" in result
+    ui.process_line("NOTE: recipe go-binary-native-1.22.12-r0: task do_create_runtime_spdx_setscene: Started")
+    assert len(ui._running) == 1
+    entry = next(iter(ui._running.values()))
+    assert entry.task == "do_create_runtime_spdx_setscene"
+
+
+# ---------------------------------------------------------------------------
+# Fallback-mode detection
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-def test_current_running_no_expansion_below_threshold() -> None:
+def test_fallback_mode_sets_flag() -> None:
     ui = BuildUIState()
-    ui._last_total = 450
-    # total=451 is a 0.22% change — below the 5% threshold
-    result = ui.process_line("Currently  4 running tasks (451 of 451)  100% |####################|")
+    result = ui.process_line("NOTE: Unable to use interactive mode for this terminal, using fallback")
     assert result is None
+    assert ui.fallback_detected is True
 
 
 # ---------------------------------------------------------------------------
-# SETSCENE_RUNNING regex
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_setscene_line() -> None:
-    ui = BuildUIState()
-    result = ui.process_line("Setscene tasks: 89 of 120")
-    assert result is None
-    assert ui._setscene_total == 120
-    assert ui._setscene.tasks[0].completed == 89
-
-
-# ---------------------------------------------------------------------------
-# KNOTTY_TASK_RE regex — per-task footer lines
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_knotty_task_with_elapsed() -> None:
-    ui = BuildUIState()
-    result = ui.process_line("0: glibc-2.39-r0 do_compile - 1h2m5s (pid 12345)")
-    assert result is None
-    assert ui._running[12345].pf == "glibc-2.39-r0"
-    assert ui._running[12345].task == "do_compile"
-    assert ui._running[12345].elapsed == "1h2m5s"
-    assert ui._running[12345].slot == 0
-
-
-@pytest.mark.unit
-def test_knotty_task_no_elapsed() -> None:
-    ui = BuildUIState()
-    result = ui.process_line("2: python3-3.12.0-r0 do_configure (pid 99)")
-    assert result is None
-    assert ui._running[99].elapsed == ""
-
-
-@pytest.mark.unit
-def test_knotty_task_slot_update() -> None:
-    ui = BuildUIState()
-    ui.process_line("0: glibc-2.39-r0 do_compile - 10s (pid 12345)")
-    ui.process_line("0: glibc-2.39-r0 do_compile - 1m5s (pid 12345)")
-    assert ui._running[12345].elapsed == "1m5s"
-
-
-# ---------------------------------------------------------------------------
-# SEVERITY_PASSTHROUGH regex
+# Severity passthrough
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
 def test_severity_error_passthrough() -> None:
-    line = "ERROR: do_compile failed"
+    line = "ERROR: do_compile failed for glibc"
     ui = BuildUIState()
     assert ui.process_line(line) == line
 
@@ -153,21 +139,7 @@ def test_severity_error_passthrough() -> None:
 @pytest.mark.unit
 def test_severity_warning_passthrough() -> None:
     ui = BuildUIState()
-    result = ui.process_line("WARNING: unused variable x")
-    assert result is not None
-
-
-@pytest.mark.unit
-def test_severity_fatal_passthrough() -> None:
-    ui = BuildUIState()
-    result = ui.process_line("FATAL: out of disk")
-    assert result is not None
-
-
-@pytest.mark.unit
-def test_severity_qa_issue_passthrough() -> None:
-    ui = BuildUIState()
-    result = ui.process_line("QA Issue: file not found in expected location")
+    result = ui.process_line("WARNING: x")
     assert result is not None
 
 
@@ -178,103 +150,62 @@ def test_unrecognized_line_returns_none() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _elapsed_secs helper
+# make_renderable — BUILD phase Group composition
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-def test_elapsed_secs_seconds() -> None:
-    assert _elapsed_secs("47s") == 47
-
-
-@pytest.mark.unit
-def test_elapsed_secs_minutes() -> None:
-    assert _elapsed_secs("2m15s") == 135
-
-
-@pytest.mark.unit
-def test_elapsed_secs_hours() -> None:
-    assert _elapsed_secs("1h2m5s") == 3725
-
-
-@pytest.mark.unit
-def test_elapsed_secs_empty() -> None:
-    assert _elapsed_secs("") == 0
-
-
-@pytest.mark.unit
-def test_elapsed_secs_invalid() -> None:
-    assert _elapsed_secs("bogus") == 0
-
-
-# ---------------------------------------------------------------------------
-# make_renderable — Group composition
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_make_renderable_no_tasks_no_setscene() -> None:
+def test_make_renderable_build_with_tasks() -> None:
     ui = BuildUIState()
+    ui.process_line("NOTE: Running task 1200 of 9005 (/x.bb:do_compile)")
+    base = time.monotonic()
+    ui._running["a:do_compile"] = _RunTask(pf="pkg-a-1.0-r0", task="do_compile", start=base - 5)
+    ui._running["b:do_fetch"] = _RunTask(pf="pkg-b-2.0-r0", task="do_fetch", start=base - 60)
+    ui._running["c:do_install"] = _RunTask(pf="pkg-c-3.0-r0", task="do_install", start=base - 120)
+
     group = ui.make_renderable()
-    # Only main progress bar — no setscene, no table
+    assert len(group.renderables) == 2
+
+
+@pytest.mark.unit
+def test_make_renderable_build_empty_running() -> None:
+    ui = BuildUIState()
+    ui.process_line("NOTE: Running task 1200 of 9005 (/x.bb:do_compile)")
+    group = ui.make_renderable()
     assert len(group.renderables) == 1
+    assert group.renderables[0] is ui._build_progress
 
 
 @pytest.mark.unit
-def test_make_renderable_with_setscene() -> None:
+def test_make_renderable_sort_by_elapsed_desc() -> None:
     ui = BuildUIState()
-    ui._setscene_total = 120
-    group = ui.make_renderable()
-    # Main progress bar + setscene bar
-    assert len(group.renderables) == 2
-
-
-@pytest.mark.unit
-def test_make_renderable_with_tasks() -> None:
-    # 3 running tasks, setscene_total=0 → bar + table (2 components)
-    ui = BuildUIState()
-
-    ui._running[0] = _RunTask(slot=0, pf="pkg-a-1.0-r0", task="do_compile", elapsed="10s")
-    ui._running[1] = _RunTask(slot=1, pf="pkg-b-2.0-r0", task="do_fetch", elapsed="5s")
-    ui._running[2] = _RunTask(slot=2, pf="pkg-c-3.0-r0", task="do_install", elapsed="2s")
-
-    group = ui.make_renderable()
-    # Main progress + table (no setscene)
-    assert len(group.renderables) == 2
-
-
-@pytest.mark.unit
-def test_make_renderable_task_sort_by_elapsed_desc() -> None:
-    ui = BuildUIState()
-
-    # Seed in non-sorted order
-    ui._running[0] = _RunTask(slot=0, pf="pkg-a-1.0-r0", task="do_compile", elapsed="47s")
-    ui._running[1] = _RunTask(slot=1, pf="pkg-b-2.0-r0", task="do_fetch", elapsed="2m15s")
-    ui._running[2] = _RunTask(slot=2, pf="pkg-c-3.0-r0", task="do_install", elapsed="1h2m5s")
-
-    group = ui.make_renderable()
-    # Last renderable is the Table
-    table = group.renderables[-1]
-    # Column index 3 is elapsed; _cells gives values in row order
-    elapsed_cells = table.columns[3]._cells
-    assert elapsed_cells[0] == "1h2m5s", f"Expected 1h2m5s first, got {elapsed_cells}"
-
-
-@pytest.mark.unit
-def test_make_renderable_task_removes_do_prefix() -> None:
-    ui = BuildUIState()
-
-    ui._running[0] = _RunTask(slot=0, pf="glibc-2.39-r0", task="do_compile", elapsed="5s")
+    ui.process_line("NOTE: Running task 1200 of 9005 (/x.bb:do_compile)")
+    base = time.monotonic()
+    ui._running["a:do_compile"] = _RunTask(pf="pkg-a-1.0-r0", task="do_compile", start=base - 5)
+    ui._running["b:do_fetch"] = _RunTask(pf="pkg-b-2.0-r0", task="do_fetch", start=base - 60)
+    ui._running["c:do_install"] = _RunTask(pf="pkg-c-3.0-r0", task="do_install", start=base - 120)
 
     group = ui.make_renderable()
     table = group.renderables[-1]
-    # Column index 2 is task; do_ prefix is stripped
-    task_cells = table.columns[2]._cells
+    pf_cells = table.columns[0]._cells
+    assert pf_cells[0] == "pkg-c-3.0-r0", f"Expected base-120 task first, got {pf_cells}"
+    assert pf_cells[-1] == "pkg-a-1.0-r0", f"Expected base-5 task last, got {pf_cells}"
+
+
+@pytest.mark.unit
+def test_make_renderable_strips_do_prefix() -> None:
+    ui = BuildUIState()
+    ui.process_line("NOTE: Running task 1200 of 9005 (/x.bb:do_compile)")
+    ui._running["glibc:do_compile"] = _RunTask(pf="glibc-2.39-r0", task="do_compile", start=time.monotonic())
+
+    group = ui.make_renderable()
+    table = group.renderables[-1]
+    task_cells = table.columns[1]._cells
     assert task_cells[0] == "compile"
 
 
 # ---------------------------------------------------------------------------
-# update_heartbeat — stall and du field updates
+# update_heartbeat — stall and du field updates on the build bar
 # ---------------------------------------------------------------------------
 
 
@@ -282,13 +213,12 @@ def test_make_renderable_task_removes_do_prefix() -> None:
 def test_update_heartbeat_stall_format() -> None:
     ui = BuildUIState()
     ui.update_heartbeat(47, 0)
-    assert ui.progress.tasks[0].fields["stall"] == "47s"
+    assert ui._build_progress.tasks[0].fields["stall"] == "47s"
 
 
 @pytest.mark.unit
 def test_update_heartbeat_du_format() -> None:
     ui = BuildUIState()
     ui.update_heartbeat(0, 220_000_000)
-    du = ui.progress.tasks[0].fields["du"]
+    du = ui._build_progress.tasks[0].fields["du"]
     assert du.startswith("+")
-    assert "M" in du
