@@ -152,11 +152,24 @@ class RunLogger:
         self._logger.error(msg)
         self._emit("error", message=msg, **fields)
 
+    def _console_header(self, step: str) -> None:
+        """Append a timestamped phase-boundary header to console.log only.
+
+        Writes directly to the file to avoid routing through the logging
+        handlers, which would also emit to the Rich/stderr console.
+        """
+        ts = datetime.now(UTC).isoformat()
+        line = f"── [{ts}] {step} ──\n"
+        with self.console_path.open("a") as fh:
+            fh.write(line)
+
     def step_start(self, step: str, **fields: Any) -> None:
+        self._console_header(step)
         self._logger.info(f"[cyan]→[/] {step}")
         self._emit("step_start", step=step, **fields)
 
     def step_ok(self, step: str, **fields: Any) -> None:
+        self._console_header(step)
         self._logger.info(f"[green]✓[/] {step}")
         self._emit("step_ok", step=step, **fields)
 
@@ -165,5 +178,6 @@ class RunLogger:
         self._emit("step_skip", step=step, reason=reason, **fields)
 
     def step_fail(self, step: str, reason: str, **fields: Any) -> None:
+        self._console_header(step)
         self._logger.error(f"[red]✗[/] {step}: {reason}")
         self._emit("step_fail", step=step, reason=reason, **fields)
