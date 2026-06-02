@@ -89,11 +89,7 @@ def test_events_jsonl_unchanged_by_headers(tmp_path: Path) -> None:
 def test_header_not_emitted_to_rich_console(tmp_path: Path) -> None:
     """The Rich/stderr console must NOT receive the header line."""
     runs_dir = tmp_path / "runs"
-    printed: list[str] = []
-
-    with RunLogger(runs_dir) as log:
-        # Capture what gets printed to the Rich console object
-        with patch.object(log.console, "print") as mock_print:
+    with RunLogger(runs_dir) as log, patch.object(log.console, "print") as mock_print:
             log.step_start("kas_build")
             calls = [str(c) for c in mock_print.call_args_list]
 

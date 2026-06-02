@@ -19,7 +19,6 @@ from bakar.triage import (
     _tail,
     analyse,
     find_runs,
-    write_error_report,
 )
 
 if TYPE_CHECKING:

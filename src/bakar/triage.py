@@ -193,7 +193,11 @@ _SUGGESTIONS: list[tuple[re.Pattern[str], str]] = [
         "version (mismatch causes obscure schema errors).",
     ),
     (
-        re.compile(r"Killed signal terminated program cc1plus|cc1plus: out of memory|c\+\+: fatal error: Killed signal"),
+        re.compile(
+            r"Killed signal terminated program cc1plus"
+            r"|cc1plus: out of memory"
+            r"|c\+\+: fatal error: Killed signal"
+        ),
         "Compiler OOM-kill. Lower BB_NUMBER_THREADS and/or PARALLEL_MAKE in the kas YAML's local_conf_header "
         "(e.g. BB_NUMBER_THREADS = \"4\", PARALLEL_MAKE = \"-j 4\") to reduce peak memory pressure.",
     ),
