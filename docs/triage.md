@@ -57,11 +57,84 @@ When no `step_fail` events are found:
 no step_fail events found
 ```
 
+## How triage sources failure data
+
+When a build fails, bakar writes `error-report.json` into the run directory at
+build time. On the next `bakar triage` call, triage reads that file directly -
+no log re-scanning. If the file is absent (old run directories, or a build
+interrupted before the report could be written), triage falls back to parsing
+`kas.log` live, reproducing the same output.
+
+The fast path is transparent: the output format is identical whether the report
+comes from `error-report.json` or from a live log scan.
+
+## error-report.json artifact
+
+Location: `<run-dir>/error-report.json`
+
+Written by `kas_build` on any non-zero exit, before the run directory is closed.
+A passing build (exit code 0) leaves no `error-report.json`.
+
+Keys:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `step` | string | Always `"kas_build"` |
+| `machine` | string | MACHINE value from the build config |
+| `distro` | string | DISTRO value from the build config |
+| `bsp_family` | string | One of `"nxp"`, `"ti"`, `"bbsetup"`, or the vendor family name |
+| `exit_code` | integer | kas-container exit code |
+| `kas_log_tail` | list of strings | Last 80 lines of `kas.log` |
+| `recipe_errors` | list of objects | Each object has `recipe`, `task`, and `excerpt` keys |
+| `suggestions` | list of strings | Pattern-matched hints from the kas.log tail |
+
+Example:
+
+```json
+{
+  "step": "kas_build",
+  "machine": "imx8mp-var-dart",
+  "distro": "fsl-imx-wayland",
+  "bsp_family": "nxp",
+  "exit_code": 1,
+  "kas_log_tail": ["ERROR: linux-imx-6.12.29+git-r0 do_compile: ..."],
+  "recipe_errors": [
+    {"recipe": "linux-imx", "task": "do_compile", "excerpt": "make[1]: *** Error 2"}
+  ],
+  "suggestions": ["check sstate-cache for a stale artifact: bitbake -c cleansstate linux-imx"]
+}
+```
+
+## Run directory discovery
+
+`bakar triage` (without a `--kas-yaml` or explicit workspace path) searches the
+workspace for run directories across all BSP families:
+
+- `nxp/build/runs/` - NXP i.MX builds
+- `ti/build/runs/` - TI Sitara builds
+- `build/runs/` at the workspace root - BYO and bitbake-setup builds
+- any other `*/build/runs/` subtree found within the workspace
+
+Results are sorted most-recent-first by run ID. The most recent run across all
+families is used when no `RUN_ID` is given.
+
+## Suggestions
+
+Triage pattern-matches the kas.log tail against a table of known failure modes.
+Recognized patterns include:
+
+- sstate corruption - suggests `cleansstate`
+- missing host tools
+- disk full
+- compiler OOM-kill (`cc1plus: out of memory`, killed signal) - suggests lowering `BB_NUMBER_THREADS` / `PARALLEL_MAKE`
+- GitHub rate-limit (`HTTP Error 429`, API rate limit exceeded) - suggests waiting or authenticating
+- network/DNS failure (`Name or service not known`, `Temporary failure in name resolution`, `Connection timed out`)
+- PREMIRROR connection failure (`Connection refused` during a mirror fetch)
+
 ## Notes
 
-- Without `--kas-yaml`, triage searches both `nxp/build/runs/` and `ti/build/runs/` under the workspace.
 - Run IDs come from the timestamps bakar assigns at build start (`YYYYMMDD-HHMMSS`). Use `bakar log` to see what files are in a run directory.
-- Suggestions are pattern-matched from the kas.log tail (sstate corruption, missing host tools, disk full, etc.).
+- Suggestions are printed only when a pattern matches; a clean kas.log prints none.
 
 ## See also
 
