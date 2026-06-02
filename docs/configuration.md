@@ -77,6 +77,12 @@ hashserv = true
 # ccache_shared to reuse one cache across every workspace (cross-BSP hits,
 # less disk), defaulting to ~/.cache/bakar/ccache. ccache_dir pins an explicit
 # shared path and takes precedence over ccache_shared.
+#
+# NOTE: with ccache_shared = true the SAME size cap governs every workspace's
+# builds. bakar caps the build ccache at 50G (CCACHE_MAXSIZE in the tuning
+# overlays); a single shared cache feeding many BSPs may evict under that cap.
+# Raise it by exporting a larger CCACHE_MAXSIZE in your shell before building
+# (it overrides the overlay value) when you share across several workspaces.
 ccache_shared = true
 # ccache_dir = "/mnt/yocto-cache/ccache"
 

@@ -211,6 +211,11 @@ class BuildConfig:
     # ccache location. Per-workspace by default; opt into a single shared cache
     # across all workspaces via [build] ccache_shared, or pin an explicit path
     # via [build] ccache_dir.
+    #
+    # NOTE: when ccache_shared is True the single shared cache is still governed
+    # by the build cap (CCACHE_MAXSIZE = 50G, set in the tuning overlays). One
+    # cache feeding many BSPs may evict under that cap; raise CCACHE_MAXSIZE in
+    # the environment (it overrides the overlay) when sharing widely.
     ccache_shared: bool = field(default=False)
     ccache_dir: str | None = field(default=None)
 

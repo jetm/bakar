@@ -27,7 +27,9 @@ local_conf_header:
     INHERIT += "ccache"
     # Cap the build ccache. oe-core's CCACHE_CONFIGPATH (meta/conf/ccache.conf)
     # leaves max_size=0 (uncapped); exporting CCACHE_MAXSIZE puts it in the
-    # do_compile env, where it overrides that config file.
+    # do_compile env, where it overrides that config file. With [build]
+    # ccache_shared this one cap governs the shared cache for every workspace;
+    # export a larger CCACHE_MAXSIZE (it overrides this) when sharing widely.
     CCACHE_MAXSIZE = "50G"
     export CCACHE_MAXSIZE
     BB_NUMBER_THREADS = "${@os.environ.get('NPROC', '16')}"
