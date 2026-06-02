@@ -91,6 +91,7 @@ def report(
             "image_size": summary.image_size,
             "peak_tmp_bytes": summary.peak_tmp_bytes,
             "layers": [dataclasses.asdict(layer) for layer in summary.layers],
+            "build_revision": summary.build_revision,
         }
         print(json.dumps(payload))
         return
@@ -106,4 +107,6 @@ def report(
         console.print(f"image size: {summary.image_size} bytes")
     if summary.peak_tmp_bytes is not None:
         console.print(f"peak build/tmp: {summary.peak_tmp_bytes} bytes")
+    if summary.build_revision is not None:
+        console.print(f"build_revision  {summary.build_revision}")
     _print_layer_hashes(cfg, hashes=summary.layers)

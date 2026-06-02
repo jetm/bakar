@@ -42,7 +42,7 @@ def nxp_workspace(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _summary() -> ReportSummary:
+def _summary(build_revision: str | None = None) -> ReportSummary:
     return ReportSummary(
         run_id="20260527-100000",
         status="success",
@@ -51,6 +51,7 @@ def _summary() -> ReportSummary:
         image_size=123456,
         peak_tmp_bytes=5000,
         layers=[],
+        build_revision=build_revision,
     )
 
 
@@ -66,7 +67,26 @@ def test_no_matching_run_exits_nonzero(
 
 @pytest.mark.unit
 def test_json_output_is_parseable(runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``--json`` prints a single JSON object containing run_id and status."""
+    """``--json`` prints a single JSON object containing run_id, status, and build_revision."""
+    run_dir = nxp_workspace / "nxp" / "build" / "runs" / "20260527-100000"
+    monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
+    monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: _summary(build_revision="abc123def456"))
+
+    result = runner.invoke(app, ["report", "--json", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 0, result.output
+
+    payload = json.loads(result.stdout)
+    assert payload["run_id"] == "20260527-100000"
+    assert payload["status"] == "success"
+    assert "build_revision" in payload
+    assert payload["build_revision"] == "abc123def456"
+
+
+@pytest.mark.unit
+def test_json_output_build_revision_null_when_none(
+    runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--json`` includes ``build_revision: null`` when layers are empty."""
     run_dir = nxp_workspace / "nxp" / "build" / "runs" / "20260527-100000"
     monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
     monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: _summary())
@@ -75,8 +95,8 @@ def test_json_output_is_parseable(runner: _CliRunner, nxp_workspace: Path, monke
     assert result.exit_code == 0, result.output
 
     payload = json.loads(result.stdout)
-    assert payload["run_id"] == "20260527-100000"
-    assert payload["status"] == "success"
+    assert "build_revision" in payload
+    assert payload["build_revision"] is None
 
 
 @pytest.mark.unit
@@ -90,3 +110,32 @@ def test_default_prints_human_block(runner: _CliRunner, nxp_workspace: Path, mon
     assert result.exit_code == 0, result.output
     assert "20260527-100000" in result.output
     assert "success" in result.output
+
+
+@pytest.mark.unit
+def test_default_shows_build_revision_when_non_none(
+    runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Text output includes the ``build_revision`` line when it is non-None."""
+    run_dir = nxp_workspace / "nxp" / "build" / "runs" / "20260527-100000"
+    monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
+    monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: _summary(build_revision="abc123def456"))
+
+    result = runner.invoke(app, ["report", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 0, result.output
+    assert "build_revision" in result.output
+    assert "abc123def456" in result.output
+
+
+@pytest.mark.unit
+def test_default_omits_build_revision_when_none(
+    runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Text output omits the ``build_revision`` line when it is None."""
+    run_dir = nxp_workspace / "nxp" / "build" / "runs" / "20260527-100000"
+    monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
+    monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: _summary())
+
+    result = runner.invoke(app, ["report", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 0, result.output
+    assert "build_revision" not in result.output
