@@ -942,6 +942,23 @@ def test_check_ccache_health_uncapped(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert "uncapped" in result.message
 
 
+def test_check_ccache_health_modern_max_cache_size_key(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """ccache 4.x renamed max_size_kibibyte -> max_cache_size_kibibyte; both parse."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "ccache").mkdir()
+    monkeypatch.setattr("bakar.diagnostics.shutil.which", lambda _name: "/usr/bin/ccache")
+    stats = "cache_size_kibibyte 500000\nmax_cache_size_kibibyte 1000000\n"
+    with patch(
+        "bakar.diagnostics.subprocess.run",
+        return_value=_mock_run(stats),
+    ):
+        result = check_ccache_health(_ccache_cfg(workspace))
+    assert result.status is Status.PASS
+    assert result.severity is Severity.WARN
+    assert "50%" in result.message
+
+
 def test_check_ccache_health_old_ccache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """ccache <4.0 lacks the kibibyte keys -> SKIP at WARN severity."""
     workspace = tmp_path / "ws"

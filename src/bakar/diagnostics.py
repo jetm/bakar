@@ -1111,7 +1111,9 @@ def check_ccache_health(cfg: BuildConfig) -> CheckResult:
                 cache_size = int(value)
             except ValueError:
                 continue
-        elif key == "max_size_kibibyte":
+        elif key in ("max_cache_size_kibibyte", "max_size_kibibyte"):
+            # ccache 4.x renamed max_size_kibibyte -> max_cache_size_kibibyte;
+            # accept both so the check works across versions.
             try:
                 max_size = int(value)
             except ValueError:
@@ -1121,14 +1123,14 @@ def check_ccache_health(cfg: BuildConfig) -> CheckResult:
         return _skip(
             name,
             Severity.WARN,
-            "ccache --print-stats output missing size keys (ccache < 4.0?)",
+            "ccache --print-stats output missing size keys",
         )
 
     if max_size == 0:
         return _ok(
             name,
             Severity.WARN,
-            "ccache uncapped (max_size_kibibyte=0)",
+            "ccache uncapped (max cache size = 0)",
         )
 
     ratio = cache_size / max_size
