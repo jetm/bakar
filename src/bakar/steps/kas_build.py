@@ -544,7 +544,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
     # \r, \n, or \r\n manually instead of line-iterating.
     rc: int | None = None
     terminated = False
-    ui = BuildUIState()
+    ui = BuildUIState(start_monotonic=log.start_monotonic)
     master_fd, slave_fd = pty.openpty()  # pragma: no cover
     try:
         with log.kas_log_path.open("w", encoding="utf-8", buffering=1) as kas_log:
@@ -576,6 +576,9 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
                 msg = ui.process_line(line)
                 if msg:
                     live.console.print(msg)
+                info = ui.take_pending_log()
+                if info:
+                    log.info(info)
 
             def _pump() -> None:  # pragma: no cover
                 buf = b""
@@ -612,7 +615,10 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
                     delta = state["cur_du_bytes"] - state["prev_du_bytes"]
                     ui.update_heartbeat(stall, delta)
 
-            with Live(get_renderable=ui.make_renderable, refresh_per_second=8) as live:
+            # Share the run logger's console so log.info() (the parse-complete
+            # line) coordinates with the live region instead of printing onto
+            # the same line as the setup bar.
+            with Live(get_renderable=ui.make_renderable, console=log.console, refresh_per_second=8) as live:
                 pump = threading.Thread(target=_pump, daemon=True)  # pragma: no cover
                 pump.start()
                 heartbeat = threading.Thread(target=_heartbeat, daemon=True)  # pragma: no cover

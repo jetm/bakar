@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -51,6 +52,9 @@ class RunLogger:
 
     runs_dir: Path
     run_id: str = field(default_factory=lambda: datetime.now().strftime("%Y%m%d-%H%M%S"))
+    # Monotonic stamp at construction (start of the `bakar` run, before doctor),
+    # so the build UI's global timer can count from the command invocation.
+    start_monotonic: float = field(default_factory=time.monotonic)
     _events_fh: Any = None
     _logger: logging.Logger = field(init=False, repr=False)
 
@@ -81,6 +85,16 @@ class RunLogger:
     @property
     def env_snapshot_path(self) -> Path:
         return self.run_dir / "env.txt"
+
+    @property
+    def console(self) -> Console:
+        """The Rich console the log handler writes to.
+
+        A ``Live`` display should be created on this same console so its
+        in-place renders coordinate with log output (clear, print above,
+        re-render) instead of colliding on the same line.
+        """
+        return console
 
     def __enter__(self) -> RunLogger:
         self.run_dir.mkdir(parents=True, exist_ok=True)
