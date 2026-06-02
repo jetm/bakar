@@ -236,6 +236,49 @@ def write_error_report(run_dir: Path, cfg, exit_code: int) -> None:
 
 def analyse(run_dir: Path, workspace: Path) -> TriageReport:
     events_path = run_dir / "events.jsonl"
+
+    # Fast path: read the pre-structured failure artifact written by run_build.
+    # Avoids re-scanning kas.log on every triage invocation. Falls through to
+    # the live-parse path on any parse error or missing file so old run dirs
+    # without an error-report.json continue to work unchanged.
+    error_report_path = run_dir / "error-report.json"
+    if error_report_path.exists():
+        try:
+            data = json.loads(error_report_path.read_text())
+            failing_step: str | None = data["step"]
+            kas_log_tail: list[str] = data["kas_log_tail"]
+            recipe_errors: list[RecipeError] = [
+                RecipeError(recipe=e["recipe"], task=e["task"], excerpt=e["excerpt"])
+                for e in data["recipe_errors"]
+            ]
+            suggestions: list[str] = list(data["suggestions"])
+
+            # Reconstruct the recipe-failure header block so callers get the
+            # same output shape as the live-parse path.
+            if recipe_errors:
+                header = "recipe-level failures (from kas.log, unique recipes):"
+                lines = [f"{e.recipe} do_{e.task}: {e.excerpt}" for e in recipe_errors]
+                suggestions = [header, *lines, *suggestions]
+
+            override_line = _bitbake_override_summary(events_path)
+            if override_line:
+                suggestions = [override_line, *suggestions]
+
+            return TriageReport(
+                run_dir=run_dir,
+                failing_step=failing_step,
+                fail_reason=None,
+                kas_log_tail=kas_log_tail,
+                recipe_log=None,
+                recipe_log_tail=[],
+                suggestions=suggestions,
+                recipe_errors=recipe_errors,
+            )
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # Live-parse path: used when error-report.json is absent or unreadable
+    # (backward compatible with run dirs produced before this feature).
     kas_log = run_dir / "kas.log"
 
     fail = _last_event_matching(events_path, "step_fail")

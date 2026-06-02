@@ -19,6 +19,7 @@ from bakar.triage import (
     _tail,
     analyse,
     find_runs,
+    write_error_report,
 )
 
 if TYPE_CHECKING:
@@ -146,3 +147,135 @@ def test_find_runs_returns_newest_first(tmp_path: Path) -> None:
         "20260201-000000",
         "20260101-000000",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Fast-path tests: analyse reads error-report.json when present
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_analyse_fast_path_uses_json_not_kas_log(tmp_path: Path) -> None:
+    """Fast path sources recipe errors from the JSON file, not from kas.log.
+
+    The JSON carries a recipe that does NOT appear in kas.log, and kas.log
+    carries a recipe that does NOT appear in the JSON. The report must contain
+    the JSON recipe only, proving the fast path was taken.
+    """
+    run = tmp_path / "run"
+    run.mkdir()
+
+    # kas.log has 'kas-log-only-recipe'; JSON has 'json-only-recipe'.
+    (run / "kas.log").write_text(
+        "ERROR: kas-log-only-recipe-1.0-r0 do_compile: Function failed\n"
+    )
+    (run / "events.jsonl").write_text(
+        '{"event": "step_fail", "step": "kas_build", "ts": "2026-06-01T10:00:00Z"}\n'
+    )
+    error_report = {
+        "step": "kas_build",
+        "machine": "imx8mm-var-som",
+        "distro": "fslc-framebuffer",
+        "bsp_family": "nxp",
+        "exit_code": 1,
+        "kas_log_tail": ["some tail line"],
+        "recipe_errors": [{"recipe": "json-only-recipe-2.0-r0", "task": "fetch", "excerpt": "Fetch failure"}],
+        "suggestions": ["Fetch failure: retry, or add a PREMIRROR for the recipe's upstream URL."],
+    }
+    import json
+
+    (run / "error-report.json").write_text(json.dumps(error_report))
+
+    report = analyse(run, tmp_path)
+
+    assert len(report.recipe_errors) == 1
+    assert report.recipe_errors[0].recipe == "json-only-recipe-2.0-r0"
+    # kas-log-only-recipe must NOT appear (it came from kas.log, not the JSON)
+    assert not any("kas-log-only-recipe" in e.recipe for e in report.recipe_errors)
+
+
+@pytest.mark.unit
+def test_analyse_fast_path_returns_correct_fields(tmp_path: Path) -> None:
+    """Fast-path TriageReport carries all expected field values from the JSON."""
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "kas.log").write_text("")
+    (run / "events.jsonl").write_text("")
+    error_report = {
+        "step": "kas_build",
+        "machine": "imx8mm",
+        "distro": "fslc-framebuffer",
+        "bsp_family": "nxp",
+        "exit_code": 2,
+        "kas_log_tail": ["line1", "line2"],
+        "recipe_errors": [{"recipe": "gstreamer1.0-1.0-r0", "task": "configure", "excerpt": "cmake error"}],
+        "suggestions": ["custom suggestion"],
+    }
+    import json
+
+    (run / "error-report.json").write_text(json.dumps(error_report))
+
+    report = analyse(run, tmp_path)
+
+    assert report.failing_step == "kas_build"
+    assert report.kas_log_tail == ["line1", "line2"]
+    assert report.recipe_errors[0].task == "configure"
+    assert report.recipe_errors[0].excerpt == "cmake error"
+    # recipe-level header is prepended to suggestions
+    assert any("recipe-level failures" in s for s in report.suggestions)
+    assert any("gstreamer1.0-1.0-r0 do_configure:" in s for s in report.suggestions)
+    assert "custom suggestion" in report.suggestions
+
+
+@pytest.mark.unit
+def test_analyse_falls_back_when_json_absent(fake_run_dir: Path, tmp_path: Path) -> None:
+    """Live-parse path is used when error-report.json does not exist."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    assert not (fake_run_dir / "error-report.json").exists()
+
+    report = analyse(fake_run_dir, workspace)
+
+    assert report.failing_step == "kas-build"
+    assert any("linux-imx" in e.recipe for e in report.recipe_errors)
+
+
+@pytest.mark.unit
+def test_analyse_falls_back_on_corrupt_json(tmp_path: Path) -> None:
+    """Corrupted error-report.json falls through to the live-parse path."""
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "events.jsonl").write_text(
+        '{"event": "step_fail", "step": "kas_build", "ts": "2026-06-01T10:00:00Z"}\n'
+    )
+    (run / "kas.log").write_text(
+        "ERROR: fallback-recipe-1.0-r0 do_compile: some error\n"
+    )
+    # Write invalid JSON so the fast path must fall through.
+    (run / "error-report.json").write_text("{not valid json}")
+
+    report = analyse(run, tmp_path)
+
+    # Must have fallen back to live parse and found the kas.log recipe.
+    assert any("fallback-recipe" in e.recipe for e in report.recipe_errors)
+
+
+@pytest.mark.unit
+def test_analyse_falls_back_on_missing_json_key(tmp_path: Path) -> None:
+    """JSON missing a required key falls through to the live-parse path."""
+    import json
+
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "events.jsonl").write_text(
+        '{"event": "step_fail", "step": "kas_build", "ts": "2026-06-01T10:00:00Z"}\n'
+    )
+    (run / "kas.log").write_text(
+        "ERROR: fallback-recipe-2.0-r0 do_fetch: Fetcher failure: bad url\n"
+    )
+    # Missing 'recipe_errors' key - must fall through.
+    (run / "error-report.json").write_text(json.dumps({"step": "kas_build"}))
+
+    report = analyse(run, tmp_path)
+
+    assert any("fallback-recipe-2" in e.recipe for e in report.recipe_errors)
