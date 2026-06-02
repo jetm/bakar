@@ -52,12 +52,7 @@ def _make_cfg(workspace: Path) -> BuildConfig:
 
 
 def _prepare_workspace(tmp_path: Path) -> tuple[BuildConfig, Path, Path]:
-    """Build a cfg plus a kas YAML inside bsp_root and an overlay source.
-
-    ``run_build`` resolves the kas YAML relative to ``cfg.bsp_root`` and
-    copies the overlay into ``bsp_root/.bakar/overlays/``, so both files
-    must exist on disk for the dry-run path to reach cmd assembly.
-    """
+    """Build a cfg plus a kas YAML inside bsp_root and an overlay source."""
     cfg = _make_cfg(tmp_path)
     cfg.bsp_root.mkdir(parents=True, exist_ok=True)
     kas_yaml = cfg.bsp_root / "build.yml"
@@ -169,7 +164,11 @@ def test_build_help_lists_keep_going_flag() -> None:
     result = CliRunner().invoke(app, ["build", "--help"])
     assert result.exit_code == 0, result.output
     assert "--keep-going" in result.output
-    assert "-k" in result.output
+    # Typer renders "  --keep-going   -k   <help>"; match the two together so
+    # a lone "-k" substring (e.g. "gen-kas", "Pass -k to bitbake") can't fool us.
+    import re
+
+    assert re.search(r"--keep-going\s+-k", result.output), result.output
 
 
 # ---------------------------------------------------------------------------

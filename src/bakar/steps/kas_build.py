@@ -291,7 +291,7 @@ def _resolve_user_yaml(cfg: BuildConfig, kas_yaml: Path) -> Path:
         ) from exc
 
 
-def _ccache_args(cfg: BuildConfig) -> list[str]:
+def _ccache_args(cfg: BuildConfig, *, dry_run: bool = False) -> list[str]:
     """Return ``['--runtime-args', '<concatenated string>']`` for container builds.
 
     ``kas-container`` unconditionally resets ``KAS_RUNTIME_ARGS`` to its own
@@ -313,12 +313,14 @@ def _ccache_args(cfg: BuildConfig) -> list[str]:
     back to the host bridge and reach the daemon.
 
     Creates the host-side ccache directory when absent so the Docker
-    bind-mount never targets a missing path.
+    bind-mount never targets a missing path. When ``dry_run`` is True, the
+    directory is not created so a preview invocation has no filesystem effect.
     """
     if cfg.host_mode:
         return []
     ccache_host = cfg.workspace / "ccache"
-    ccache_host.mkdir(exist_ok=True)
+    if not dry_run:
+        ccache_host.mkdir(exist_ok=True)
     runtime_args = f"-v {ccache_host}:/work/ccache:rw"
     if cfg.use_hashequiv:
         # Always add the host mapping when hashequiv is enabled: _build_env
@@ -436,6 +438,31 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
     into ``.bakar/overlays/`` alongside the main tuning overlay.
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
+
+    if ctx.dry_run:
+        # Pure preview: derive the full command without filesystem side effects.
+        # meta-avocado kas_arg requires a kas dump subprocess; show a placeholder.
+        cmd_preview: list[str] = []
+        if shutil.which("/usr/bin/time"):
+            cmd_preview = ["/usr/bin/time", "-v", "-o", str(log.time_log_path), "--"]
+        exe = "kas" if cfg.host_mode else "kas-container"
+        if cfg.is_meta_avocado:
+            kas_arg_preview = "<kas-arg: computed by kas dump at build time>"
+        else:
+            kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
+            overlay_rel = _OVERLAY_DIR_RELPATH / overlay_source.name
+            kas_arg_preview = f"{kas_yaml_rel}:{overlay_rel}"
+        cmd_preview += [exe, *_ccache_args(cfg, dry_run=True), "build", kas_arg_preview]
+        if ctx.keep_going:
+            cmd_preview += ["--", "-k"]
+        log.step_skip("kas_build", reason="dry-run")
+        print(f"command: {' '.join(cmd_preview)}")
+        print(f"overlay: {kas_arg_preview}")
+        for key, value in _build_env(cfg, ensure_hashserv=False).items():
+            if value is not None:
+                print(f"env.{key}: {value}")
+        return 0
+
     removed = clear_stale_bitbake_locks(cfg)
     for lock in removed:
         log.warn(f"removed stale bitbake lock: {lock} (owning process was gone)")
@@ -502,16 +529,6 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
     cmd += [exe, *_ccache_args(cfg), "build", kas_arg]
     if ctx.keep_going:
         cmd += ["--", "-k"]
-
-    if ctx.dry_run:
-        log.step_skip("kas_build", reason="dry-run")
-        print(f"command: {' '.join(cmd)}")
-        print(f"overlay: {kas_arg}")
-        for key, value in _build_env(cfg).items():
-            if value is not None:
-                print(f"env.{key}: {value}")
-        stop_event.set()
-        return 0
 
     sampler.start()
 
@@ -747,7 +764,9 @@ def _apply_host_mode_env(
         passthrough["PATH"] = py_bin + os.pathsep + passthrough.get("PATH", "")
 
 
-def _build_env(cfg: BuildConfig, python_executable: Path | None = None) -> dict[str, str]:
+def _build_env(
+    cfg: BuildConfig, python_executable: Path | None = None, *, ensure_hashserv: bool = True
+) -> dict[str, str]:
     """Return the environment to hand to kas-container.
 
     Keeps SSTATE_DIR, DL_DIR, NPROC, and KAS_* from the caller's shell
@@ -808,7 +827,7 @@ def _build_env(cfg: BuildConfig, python_executable: Path | None = None) -> dict[
     # daemon is running and rewrite the URL for container reachability.
     # The overlay's BB_HASHSERVE = ${@os.environ.get('BB_HASHSERVE', 'auto')}
     # falls through to "auto" when this block omits the key.
-    if cfg.use_hashequiv:
+    if cfg.use_hashequiv and ensure_hashserv:
         url = hashserv.ensure_running(cfg.bsp_root)
         if url is not None:
             if cfg.host_mode:
