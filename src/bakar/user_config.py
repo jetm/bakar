@@ -234,8 +234,11 @@ def _coerce(spec: _SettingSpec, raw_value: str) -> str | bool | int | float:
         try:
             v = float(raw_value)
         except ValueError:
-            raise ValueError(f"value for {spec.key!r} must be a number >= 1, got {raw_value!r}") from None
-        if v < 1:
+            raise ValueError(f"value for {spec.key!r} must be a number, got {raw_value!r}") from None
+        if spec.key == "disk_free_threshold_gb":
+            if v <= 0:
+                raise ValueError(f"value for {spec.key!r} must be > 0, got {v}")
+        elif v < 1:
             raise ValueError(f"value for {spec.key!r} must be >= 1 (bitbake minimum), got {v}")
         return v
     return raw_value
