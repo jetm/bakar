@@ -66,6 +66,7 @@ All keys use dotted notation (`section.subsection.key`).
 | Key | Type | Description |
 |-----|------|-------------|
 | `layers.show_hashes` | bool | Always print layer hashes after build/sync |
+| `layers.show_sstate_summary` | bool | Always show the sstate cache summary in `bakar report` |
 
 ## Examples
 
