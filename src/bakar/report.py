@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +37,13 @@ class ReportSummary:
     peak_tmp_bytes: int | None = None
     layers: list[LayerHash] = field(default_factory=list)
     build_revision: str | None = None
+    sstate_wanted: int | None = None
+    sstate_local: int | None = None
+    sstate_mirrors: int | None = None
+    sstate_missed: int | None = None
+    sstate_current: int | None = None
+    sstate_match_pct: int | None = None
+    sstate_complete_pct: int | None = None
 
 
 def _parse_ts(rec: dict | None) -> datetime | None:
@@ -113,6 +121,50 @@ def _peak_tmp_bytes(du_path: Path) -> int | None:
     return peak
 
 
+# Named sub-patterns scanned individually against the Sstate summary line so a
+# field reorder across Yocto releases still matches each value by its label.
+_SSTATE_FIELDS: dict[str, re.Pattern[str]] = {
+    "sstate_wanted": re.compile(r"Wanted (\d+)"),
+    "sstate_local": re.compile(r"Local (\d+)"),
+    "sstate_mirrors": re.compile(r"Mirrors (\d+)"),
+    "sstate_missed": re.compile(r"Missed (\d+)"),
+    "sstate_current": re.compile(r"Current (\d+)"),
+    "sstate_match_pct": re.compile(r"(\d+)% match"),
+    "sstate_complete_pct": re.compile(r"(\d+)% complete"),
+}
+
+
+def _parse_sstate_summary(kas_log: Path) -> dict[str, int | None]:
+    """Parse the ``Sstate summary:`` line from ``kas_log`` field-by-field.
+
+    Returns a mapping of the seven sstate field names to their integer values.
+    Each field is matched by its own named sub-pattern (``Wanted N``, ``Local
+    N``, ...) rather than positionally, so a field reorder across Yocto releases
+    still resolves each value. A missing file, a missing summary line, or a
+    field absent from the line leaves that field ``None`` without raising.
+    """
+    none_result: dict[str, int | None] = dict.fromkeys(_SSTATE_FIELDS)
+    if not kas_log.is_file():
+        return none_result
+    try:
+        text = kas_log.read_text()
+    except OSError:
+        return none_result
+
+    summary_line: str | None = None
+    for line in text.splitlines():
+        if "Sstate summary:" in line:
+            summary_line = line
+    if summary_line is None:
+        return none_result
+
+    result: dict[str, int | None] = {}
+    for name, pattern in _SSTATE_FIELDS.items():
+        match = pattern.search(summary_line)
+        result[name] = int(match.group(1)) if match else None
+    return result
+
+
 def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
     """Assemble a best-effort summary of the run in ``run_dir``.
 
@@ -146,6 +198,8 @@ def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
         else None
     )
 
+    sstate = _parse_sstate_summary(run_dir / "kas.log")
+
     return ReportSummary(
         run_id=run_dir.name,
         status=status,
@@ -155,4 +209,11 @@ def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
         peak_tmp_bytes=_peak_tmp_bytes(run_dir / "du.tsv"),
         layers=layers,
         build_revision=build_revision,
+        sstate_wanted=sstate["sstate_wanted"],
+        sstate_local=sstate["sstate_local"],
+        sstate_mirrors=sstate["sstate_mirrors"],
+        sstate_missed=sstate["sstate_missed"],
+        sstate_current=sstate["sstate_current"],
+        sstate_match_pct=sstate["sstate_match_pct"],
+        sstate_complete_pct=sstate["sstate_complete_pct"],
     )
