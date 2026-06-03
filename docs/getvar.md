@@ -114,8 +114,8 @@ recipe   string        recipe name (present only when --recipe was given)
 
 ## kas-container requirement
 
-`getvar` always runs inside kas-container. The workspace must be synced (`bakar
-sync`) and the container image must be available. `--history` additionally
+`getvar` always runs inside kas-container. The workspace must be synced
+(`bakar sync`) and the container image must be available. `--history` additionally
 requires bitbake to parse the full recipe environment, which can take longer
 than a plain `bitbake-getvar` call.
 

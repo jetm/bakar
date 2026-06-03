@@ -194,8 +194,8 @@ hashserv_url             string|null  BB_HASHSERV value, null when not configure
 
 ## Container requirement
 
-`bakar layers inspect` and `bakar layers status` run `bitbake-layers
-show-layers` and `bitbake-getvar` inside the kas-container image. Both
+`bakar layers inspect` and `bakar layers status` run
+`bitbake-layers show-layers` and `bitbake-getvar` inside the kas-container image. Both
 sub-verbs require:
 
 - A synced workspace (`sources/` or `layers/` populated via `bakar sync` or
