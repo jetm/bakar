@@ -48,6 +48,7 @@ bakar build -m imx8mp-var-dart    # machine override in bbsetup workspace
 | `--branch` | `-b` | Branch override (inferred from manifest when omitted) |
 | `--skip-sync` | | Skip repo/layertool sync step |
 | `--dry-run` | | Regenerate YAML and exit before invoking kas-container |
+| `--dry-run-script` | | Write a runnable bash script to PATH instead of building; use `-` for stdout. Distinct from `--dry-run`: this produces an executable script, not a preview. |
 | `--skip-doctor` | | Skip pre-flight checks (not recommended) |
 | `--clean` | | Remove `<bsp>/build/` before running (forces from-scratch build) |
 | `--host` | | Bypass kas-container, run plain `kas build` on the host |
@@ -87,6 +88,15 @@ bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --host
 
 # Pull sstate and downloads from a team mirror (activates shared-cache overlay)
 bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --sstate-mirror https://cache.example.com
+
+# Emit a runnable script to stdout (NXP: script contains repo init/sync sync step)
+bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --dry-run-script -
+
+# Write the script to a file instead of stdout
+bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --dry-run-script build.sh
+
+# BYO workspace: script contains kas-container checkout sync step
+bakar build my-board.yml --dry-run-script -
 ```
 
 ## What happens

@@ -20,6 +20,7 @@ bakar sync [OPTIONS]
 | `--skip-doctor` | | Skip pre-flight checks |
 | `--clean` | | Remove `<bsp>/build/` before syncing |
 | `--show-layers` | | Print layer git hashes after sync |
+| `--dry-run-script` | | Write a runnable bash script to PATH instead of syncing; use `-` for stdout. Distinct from the build `--dry-run` flag: this produces an executable script whose sync step matches the workspace family (repo for NXP, oe-layertool for TI, kas-container checkout for bbsetup). |
 | `--workspace` | `-w` | Workspace root override |
 
 ## Examples
@@ -36,6 +37,12 @@ bakar sync -f processor-sdk-10.1.0.8-config_var1.txt -m am62x-var-som
 
 # Force a clean re-sync (wipe build/ first)
 bakar sync -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --clean
+
+# Emit a runnable sync script to stdout without running the sync
+bakar sync -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --dry-run-script -
+
+# Write the sync script to a file
+bakar sync -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --dry-run-script sync.sh
 ```
 
 ## Notes
