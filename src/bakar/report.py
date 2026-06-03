@@ -194,10 +194,11 @@ def _read_imagesize_kib(image_info: Path) -> int | None:
 def _read_top_packages(pkg_sizes: Path, limit: int = 10) -> list[tuple[str, int]]:
     """Return the top ``limit`` ``(package, size_kib)`` rows by size.
 
-    ``installed-package-sizes.txt`` holds ``<size>\\tKiB\\t<pkg>`` rows already
-    sorted descending. Malformed rows (wrong column count or non-integer size)
-    are skipped without aborting. Returns ``[]`` when the file is absent or
-    unreadable.
+    ``installed-package-sizes.txt`` holds ``<size> KiB <pkg>`` rows already
+    sorted descending (tab-separated as written by buildhistory). Columns are
+    split on any whitespace so space-padded variants still parse. Malformed rows
+    (wrong column count or non-integer size) are skipped without aborting.
+    Returns ``[]`` when the file is absent or unreadable.
     """
     try:
         text = pkg_sizes.read_text()
@@ -205,7 +206,7 @@ def _read_top_packages(pkg_sizes: Path, limit: int = 10) -> list[tuple[str, int]
         return []
     rows: list[tuple[str, int]] = []
     for line in text.splitlines():
-        parts = line.split("\t")
+        parts = line.split()
         if len(parts) < 3:
             continue
         try:
