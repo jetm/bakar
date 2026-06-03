@@ -6,6 +6,10 @@ from pathlib import Path
 
 import tomli_w
 
+# Bumped whenever a forward migration is added below. A config.toml without a
+# config_version field is treated as version 0 and migrated to this version.
+CURRENT_CONFIG_VERSION = 1
+
 _STR_FIELDS = {
     "nxp_machine",
     "nxp_distro",
@@ -61,6 +65,8 @@ class UserConfig:
     # [layers]
     show_hashes: bool = False
     show_sstate_summary: bool = False
+    # Schema version of the on-disk config.toml this object was loaded from.
+    config_version: int = CURRENT_CONFIG_VERSION
 
 
 # Maps a (section, key) pair onto a UserConfig field name. The nxp_/ti_ prefixes
@@ -121,12 +127,38 @@ def _check_type(field: str, value: object, path: Path) -> None:
             raise ValueError(f"{path}: '{field}' must be > 0, got {value}")
 
 
+def _migrate_config(raw: dict[str, object], from_version: int) -> dict[str, object]:
+    """Apply incremental forward migrations to a raw config dict.
+
+    Walks one version at a time from ``from_version`` up to
+    :data:`CURRENT_CONFIG_VERSION`, mutating ``raw`` in place per step, and
+    stamps the resulting ``config_version`` on the returned dict. Each future
+    schema bump adds one ``if migrated < N:`` block here.
+
+    Version 0 -> 1 is the baseline: no field reshaping is needed, the migration
+    only records the version, so configs predating the version field load
+    cleanly.
+    """
+    migrated = from_version
+    # Version 0 -> 1: no structural change; the field is simply stamped below.
+    if migrated < 1:
+        migrated = 1
+    raw["config_version"] = migrated
+    return raw
+
+
 def load_user_config(path: Path | None = None) -> UserConfig:
     """Load ``~/.config/bakar/config.toml`` into a :class:`UserConfig`.
 
     Returns an all-defaults ``UserConfig()`` when the file is absent. Raises
     ``ValueError`` (with the config path in the message) on a TOML parse error
     or a type mismatch (e.g. a string field given a non-string value).
+
+    A config without a ``config_version`` field is treated as version 0 and
+    migrated forward to :data:`CURRENT_CONFIG_VERSION`, persisting the migrated
+    form back to disk. A ``config_version`` greater than
+    :data:`CURRENT_CONFIG_VERSION` raises ``ValueError`` naming the unsupported
+    version. A config already at the current version is loaded unchanged.
     """
     if path is None:
         path = Path.home() / ".config" / "bakar" / "config.toml"
@@ -139,6 +171,18 @@ def load_user_config(path: Path | None = None) -> UserConfig:
             data = tomllib.load(f)
     except tomllib.TOMLDecodeError as exc:
         raise ValueError(f"{path}: invalid TOML: {exc}") from exc
+
+    raw_version = data.get("config_version", 0)
+    if isinstance(raw_version, bool) or not isinstance(raw_version, int):
+        raise ValueError(f"{path}: 'config_version' must be an integer, got {type(raw_version).__name__}")  # noqa: TRY004
+    if raw_version > CURRENT_CONFIG_VERSION:
+        raise ValueError(
+            f"{path}: config_version {raw_version} is newer than this bakar supports "
+            f"(max {CURRENT_CONFIG_VERSION}); upgrade bakar to load it"
+        )
+    if raw_version < CURRENT_CONFIG_VERSION:
+        data = _migrate_config(data, raw_version)
+        _dump_raw(path, data)
 
     values: dict[str, object] = {}
 
@@ -162,6 +206,7 @@ def load_user_config(path: Path | None = None) -> UserConfig:
                 _check_type(field, section_data[key], path)
                 values[field] = section_data[key]
 
+    values["config_version"] = CURRENT_CONFIG_VERSION
     return UserConfig(**values)
 
 

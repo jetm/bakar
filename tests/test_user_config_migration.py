@@ -1,0 +1,160 @@
+"""Unit tests for versioned config-schema forward migration in bakar.user_config."""
+
+from __future__ import annotations
+
+import textwrap
+import tomllib
+from typing import TYPE_CHECKING
+
+import pytest
+
+from bakar.user_config import (
+    CURRENT_CONFIG_VERSION,
+    UserConfig,
+    _migrate_config,
+    load_user_config,
+)
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+pytestmark = pytest.mark.unit
+
+
+def _write(path: Path, content: str) -> Path:
+    path.write_text(textwrap.dedent(content))
+    return path
+
+
+@pytest.mark.unit
+def test_missing_file_is_current_version(tmp_path: Path) -> None:
+    cfg = load_user_config(tmp_path / "absent.toml")
+    assert cfg == UserConfig()
+    assert cfg.config_version == CURRENT_CONFIG_VERSION
+
+
+@pytest.mark.unit
+def test_legacy_config_without_version_migrates_to_current(tmp_path: Path) -> None:
+    config_file = _write(
+        tmp_path / "config.toml",
+        """\
+        [defaults.nxp]
+        machine = "imx8mp-var-dart"
+        """,
+    )
+
+    cfg = load_user_config(config_file)
+
+    assert cfg.nxp_machine == "imx8mp-var-dart"
+    assert cfg.config_version == CURRENT_CONFIG_VERSION
+
+
+@pytest.mark.unit
+def test_legacy_config_migration_persists_version_to_disk(tmp_path: Path) -> None:
+    config_file = _write(
+        tmp_path / "config.toml",
+        """\
+        [build]
+        doctor = false
+        """,
+    )
+
+    load_user_config(config_file)
+
+    with config_file.open("rb") as f:
+        on_disk = tomllib.load(f)
+    assert on_disk["config_version"] == CURRENT_CONFIG_VERSION
+    # Pre-existing keys survive the rewrite.
+    assert on_disk["build"]["doctor"] is False
+
+
+@pytest.mark.unit
+def test_current_version_loads_unchanged(tmp_path: Path) -> None:
+    config_file = _write(
+        tmp_path / "config.toml",
+        f"""\
+        config_version = {CURRENT_CONFIG_VERSION}
+
+        [defaults.ti]
+        machine = "am62x-var-som"
+        """,
+    )
+    before = config_file.read_bytes()
+
+    cfg = load_user_config(config_file)
+
+    assert cfg.ti_machine == "am62x-var-som"
+    assert cfg.config_version == CURRENT_CONFIG_VERSION
+    # An already-current config is not rewritten.
+    assert config_file.read_bytes() == before
+
+
+@pytest.mark.unit
+def test_future_version_raises_naming_version(tmp_path: Path) -> None:
+    future = CURRENT_CONFIG_VERSION + 7
+    config_file = _write(
+        tmp_path / "config.toml",
+        f"""\
+        config_version = {future}
+        """,
+    )
+
+    with pytest.raises(ValueError, match=str(future)):
+        load_user_config(config_file)
+
+
+@pytest.mark.unit
+def test_future_version_does_not_rewrite_file(tmp_path: Path) -> None:
+    config_file = _write(
+        tmp_path / "config.toml",
+        f"""\
+        config_version = {CURRENT_CONFIG_VERSION + 1}
+        """,
+    )
+    before = config_file.read_bytes()
+
+    with pytest.raises(ValueError):
+        load_user_config(config_file)
+
+    assert config_file.read_bytes() == before
+
+
+@pytest.mark.unit
+def test_non_integer_version_raises(tmp_path: Path) -> None:
+    config_file = _write(
+        tmp_path / "config.toml",
+        """\
+        config_version = "1"
+        """,
+    )
+
+    with pytest.raises(ValueError, match="config_version"):
+        load_user_config(config_file)
+
+
+@pytest.mark.unit
+def test_bool_version_rejected(tmp_path: Path) -> None:
+    config_file = _write(
+        tmp_path / "config.toml",
+        """\
+        config_version = true
+        """,
+    )
+
+    with pytest.raises(ValueError, match="config_version"):
+        load_user_config(config_file)
+
+
+@pytest.mark.unit
+def test_migrate_config_stamps_current_version_from_zero() -> None:
+    raw: dict[str, object] = {"build": {"doctor": True}}
+    out = _migrate_config(raw, 0)
+    assert out["config_version"] == CURRENT_CONFIG_VERSION
+    assert out["build"] == {"doctor": True}
+
+
+@pytest.mark.unit
+def test_migrate_config_no_op_at_current_version() -> None:
+    raw: dict[str, object] = {"config_version": CURRENT_CONFIG_VERSION}
+    out = _migrate_config(raw, CURRENT_CONFIG_VERSION)
+    assert out["config_version"] == CURRENT_CONFIG_VERSION
