@@ -189,6 +189,11 @@ def graph(
             raise typer.Exit(code=rc_topdir)
 
         topdir = parse_getvar_value(topdir_text, "TOPDIR").strip()
+        if not topdir or "\n" in topdir:
+            console.print(f"[red]could not resolve TOPDIR for recipe '{recipe}'.[/]")
+            if topdir_text.strip():
+                console.print(topdir_text)
+            raise typer.Exit(code=1)
 
         # --- Step 2: generate the dependency graph ---
         graph_out = log.run_dir / "graph-bitbake-g.log"
@@ -208,13 +213,19 @@ def graph(
 
         # --- Step 3: retrieve the two artifacts from ${TOPDIR} ---
         dot_out = log.run_dir / "graph-task-depends.dot"
-        run_shell_capture(
+        rc_dot = run_shell_capture(
             kas_ctx,
             f"cat {shlex.quote(topdir)}/task-depends.dot",
             dot_out,
             step="graph_task_depends",
         )
         dot_text = dot_out.read_text(errors="replace") if dot_out.exists() else ""
+
+        if rc_dot != 0:
+            console.print(f"[red]could not read {topdir}/task-depends.dot (exit {rc_dot}).[/]")
+            if dot_text.strip():
+                console.print(dot_text)
+            raise typer.Exit(code=rc_dot)
 
         # --format dot needs only the raw graph; skip the pn-buildlist
         # retrieval, analysis, and buildhistory read the other formats consume.
@@ -223,13 +234,19 @@ def graph(
             return
 
         buildlist_out = log.run_dir / "graph-pn-buildlist.log"
-        run_shell_capture(
+        rc_buildlist = run_shell_capture(
             kas_ctx,
             f"cat {shlex.quote(topdir)}/pn-buildlist",
             buildlist_out,
             step="graph_pn_buildlist",
         )
         buildlist_text = buildlist_out.read_text(errors="replace") if buildlist_out.exists() else ""
+
+        if rc_buildlist != 0:
+            console.print(f"[red]could not read {topdir}/pn-buildlist (exit {rc_buildlist}).[/]")
+            if buildlist_text.strip():
+                console.print(buildlist_text)
+            raise typer.Exit(code=rc_buildlist)
 
     insights = analyze(dot_text, buildlist_text, recipe, depth=depth)
 

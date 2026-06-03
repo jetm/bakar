@@ -181,6 +181,31 @@ def test_topdir_failure_exits_nonzero(runner: _CliRunner, nxp_workspace: Path) -
     assert len(calls) == 1
 
 
+@pytest.mark.unit
+def test_artifact_retrieval_failure_exits_nonzero(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """A failed ``cat task-depends.dot`` exits non-zero, not a false-success empty report."""
+    calls: list[dict] = []
+    # TOPDIR + bitbake -g succeed, but reading task-depends.dot fails.
+    fake = _make_fake_capture(
+        [
+            (_TOPDIR_OK, 0),
+            (_BITBAKE_G_OK, 0),
+            ("cat: /build/task-depends.dot: No such file or directory\n", 1),
+        ],
+        calls,
+    )
+
+    with patch("bakar.commands.graph.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["graph", _RECIPE, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code != 0
+    # pn-buildlist retrieval must not run after the dot retrieval failed.
+    assert len(calls) == 3
+
+
 # ---------------------------------------------------------------------------
 # --format json
 # ---------------------------------------------------------------------------
