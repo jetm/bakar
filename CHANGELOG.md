@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-06-03
+
+### Added
+
+- Added `bakar show` command that prints the fully-resolved build picture (Config, Overlays, Layers, Sources, and the exact `kas-container` command that would run) without invoking a container. Works on un-built workspaces; supports `--json` and `--format md` for Markdown output.
+- Added `bakar getvar` command that resolves BitBake variable values inside `kas-container`. Supports global lookup, recipe-scoped lookup (`--recipe`/`-r`), unexpanded values (`--unexpanded`/`-u`), and assignment history showing the full include-chain of file:line assignments (`--history`).
+- Added `bakar inspect` command that produces a per-recipe report combining Identity, Paths, Sources, Inherits, Packages, and Dependencies sections from two container calls (`bitbake-layers show-recipes` and `bitbake -e`).
+- Added `bakar diffsigs` command that diagnoses why a recipe task missed sstate cache by running `bitbake -S printdiff` followed by `bitbake-diffsigs`, then rendering structured output: root cause first, an indented rebuild chain with depth count and cross-recipe boundary annotation, and a compact added/removed dependency diff instead of full lists. Use `--raw` to bypass parsed output and receive the full unprocessed capture.
+- Added `bakar layers inspect` sub-command that reports per-layer priority, series compatibility, version, and provides information by combining local `layer.conf` parsing with container-backed `bitbake-layers show-layers`. Accepts `--json`.
+- Added `bakar layers status` sub-command that fetches the effective `MACHINE`, `DISTRO`, `DISTRO_CODENAME`, thread counts, mirror URLs, and hashserv URL for the current project in a single container call. Accepts `--json`.
+
+### Changed
+
+- `bakar layers` is now a sub-app; running it bare continues to print the existing git short-hash and branch listing unchanged.
+- All container-dispatching commands (`show`, `getvar`, `inspect`, `diffsigs`, and existing commands such as `doctor`, `shell`, `diff`) now accept a kas YAML path via the `-f`/`--manifest` flag in addition to a positional argument, routing it correctly through the kas dispatch path instead of treating it as an XML manifest.
+- `bakar inspect` now extracts `WORKDIR`, `S`, `B`, `D`, and `T` paths from the `bitbake -e` environment dump instead of a separate `bitbake-getvar` call, reducing the number of container invocations from three to two per run.
+- `bakar diffsigs` structured output now includes chain depth ("N levels deep"), a cross-recipe boundary note when the root cause originates in a different recipe, a cause count when multiple dependency changes are found, and a count summary on the dependency diff ("N added, N removed").
+
 ## [0.9.0] - 2026-06-03
 
 ### Added
@@ -207,7 +225,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/jetm/bakar/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/jetm/bakar/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jetm/bakar/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jetm/bakar/compare/v0.4.0...v0.7.0
