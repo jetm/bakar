@@ -8,6 +8,8 @@
 | `build` | [build.md](build.md) | Full pipeline: doctor, sync, gen-kas, kas-container build |
 | `sync` | [sync.md](sync.md) | Sync sources without building |
 | `gen-kas` | [gen-kas.md](gen-kas.md) | Regenerate kas YAML from manifest |
+| `bitbake` | [bitbake.md](bitbake.md) | Run a single recipe or task through bitbake, with run logging |
+| `clean-recipe` | [bitbake.md](bitbake.md) | Clean one recipe's sstate (`bitbake -c cleansstate`) |
 | `shell` | [shell.md](shell.md) | Interactive kas-container shell or one-shot command |
 | `run` | [run.md](run.md) | Boot avocado-os image in QEMU (meta-avocado only) |
 | `clean` | [clean.md](clean.md) | Remove the build directory |
@@ -20,12 +22,14 @@
 | `show` | [show.md](show.md) | Print resolved build picture: config, overlays, layers, sources, command |
 | `getvar` | [getvar.md](getvar.md) | Resolve a bitbake variable and show where it was set |
 | `inspect` | [inspect.md](inspect.md) | Deep per-recipe report: identity, sources, paths, inherits, packages, deps |
+| `graph` | [graph.md](graph.md) | Analyze a recipe's dependency graph: blast radius, longest chain, cycles |
 | `diffsigs` | [diffsigs.md](diffsigs.md) | Show what changed in a task signature (why did this rebuild) |
 | `for-all` | [for-all.md](for-all.md) | Run a shell command in every source repo |
 | `settings` | [settings.md](settings.md) | Read and write `~/.config/bakar/config.toml` |
 | `lock` | [lock.md](lock.md) | Pin floating layer SHAs |
 | `diff` | [diff.md](diff.md) | Compare two manifest versions |
 | `prefetch` | [prefetch.md](prefetch.md) | Pre-fetch recipe sources into DL_DIR |
+| `mirror` | [mirror.md](mirror.md) | Seed a premirror `git2_*.tar.gz` tarball from a git URL (host-side) |
 | `dump` | [dump.md](dump.md) | Inspect the resolved kas YAML |
 | `hashserv` | [hashserv.md](hashserv.md) | Manage the persistent bitbake-hashserv daemon |
 | `bitbake-override` | [bitbake-override.md](bitbake-override.md) | Swap BSP-bundled bitbake for upstream |
@@ -47,6 +51,8 @@
 - Find what went wrong: [triage.md](triage.md)
 - Watch a running build: [log.md](log.md)
 - Check if the environment is sane: [doctor.md](doctor.md)
+- Rebuild or re-run a task on one recipe: [bitbake.md](bitbake.md)
+- Wipe one recipe's sstate and rebuild it: [bitbake.md](bitbake.md) (`clean-recipe`)
 - Force a from-scratch rebuild: [clean.md](clean.md) or `bakar build --clean`
 
 **After a successful build:**
@@ -60,11 +66,13 @@
 - Per-layer priority, compat, and provided recipes: [layers.md](layers.md) (`layers inspect`)
 - Project-level MACHINE, DISTRO, thread/mirror config: [layers.md](layers.md) (`layers status`)
 - Why a task missed sstate and rebuilt: [diffsigs.md](diffsigs.md)
+- A recipe's dependency graph (blast radius, longest chain, cycles): [graph.md](graph.md)
 
 **Reproducibility and snapshots:**
 - Pin current SHAs: [lock.md](lock.md)
 - See what changed between manifest versions: [diff.md](diff.md)
 - Pre-fetch sources for an offline build: [prefetch.md](prefetch.md)
+- Seed a premirror tarball from a git URL (host-side): [mirror.md](mirror.md)
 - Inspect the exact config kas will receive: [dump.md](dump.md)
 
 **Exploring the source tree:**
@@ -111,6 +119,16 @@ bakar diffsigs <r> <t>  - why did this task rebuild (bitbake-diffsigs)
 
 Related: [show.md](show.md), [getvar.md](getvar.md), [inspect.md](inspect.md), [layers.md](layers.md), [diffsigs.md](diffsigs.md)
 
+### Recipe operations
+
+```text
+bakar bitbake <target>   - run one recipe/task through bitbake, logged (--task, --keep-going)
+bakar clean-recipe <r>   - clean one recipe's sstate (bitbake -c cleansstate)
+bakar graph <recipe>     - dependency graph analysis: blast radius, longest chain, cycles
+```
+
+Related: [bitbake.md](bitbake.md), [graph.md](graph.md)
+
 ### Observability
 
 ```text
@@ -129,9 +147,10 @@ bakar lock      - pin every floating layer SHA to an exact commit
 bakar diff      - compare old/new manifest or kas config
 bakar dump      - flatten kas YAML + overlay into a single resolved file
 bakar prefetch  - populate DL_DIR for offline builds
+bakar mirror    - seed a premirror git2_*.tar.gz tarball from a git URL (host-side)
 ```
 
-Related: [lock.md](lock.md), [diff.md](diff.md), [dump.md](dump.md), [prefetch.md](prefetch.md)
+Related: [lock.md](lock.md), [diff.md](diff.md), [dump.md](dump.md), [prefetch.md](prefetch.md), [mirror.md](mirror.md)
 
 ### Shell and scripting
 
