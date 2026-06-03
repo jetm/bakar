@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-06-03
+
+### Added
+
+- Added `bakar bitbake <recipe> [-c <task>] [-k]` command to build individual recipes with task targeting, run logging, and live knotty progress display (the same progress bar as `bakar build`). The `devshell` task opens an interactive terminal session and `listtasks` pretty-prints the available task names.
+- Added `bakar clean-recipe <recipe>` alias for running `bitbake -c cleansstate` on a single recipe.
+- Added `bakar graph <recipe>` command to analyze a recipe's BitBake dependency graph. Reports package count, direct dependencies, transitive dependency (blast radius), longest build chain, cycle detection, and most depended-on recipes. Supports `--format {text,dot,json}`, `--depth N`, and an optional buildhistory runtime fan-in section when buildhistory data is present.
+- Added `bakar mirror <git-url>` command to seed an offline `PREMIRROR` from a git URL. Clones bare-and-mirrored, then produces a `git2_<netloc><path>.tar.gz` tarball with `--owner oe:0 --group oe:0` and an mtime fixed to the committer date, making the output byte-stable across re-runs of the same revision. Output goes to `--output-dir`, the configured `DL_DIR` when inside a workspace, or the current directory.
+
+### Fixed
+
+- Fixed `bakar graph` always reporting zero packages, no longest chain, and no critical recipes. Container startup log lines emitted by kas were prepended to the captured `task-depends.dot` content, causing the DOT parser to fail silently and return an empty graph; the log preamble is now stripped before parsing.
+- Fixed `bakar graph` exiting with success and printing empty graph data when artifact retrieval (`cat ${TOPDIR}/task-depends.dot`) failed due to a wrong TOPDIR, missing artifact, or permission error. The command now checks retrieval exit codes and rejects an empty or malformed TOPDIR, exiting non-zero with the captured error message.
+- Fixed `bakar graph --format dot` running the full analysis pipeline (including buildhistory reads and pn-buildlist retrieval) before discarding all results to echo only the raw dot text; the dot path now returns immediately after the dot content is captured.
+
 ## [0.10.0] - 2026-06-03
 
 ### Added
@@ -225,7 +240,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/jetm/bakar/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/jetm/bakar/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/jetm/bakar/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jetm/bakar/compare/v0.7.0...v0.8.0
