@@ -34,12 +34,12 @@ from bakar.steps.kas_build import KasBuildContext, run_shell_capture
 _KAS_LOG_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} - (?:INFO|WARNING|ERROR)\s+-")
 _CHAIN_RE = re.compile(r"^(\s*)Hash for task dependency (\S+) changed")
 _CAUSE_RE = re.compile(r"Dependency on (variable|function) (\S+) was (added|removed|changed)")
-_DEP_LIST_RE = re.compile(r"^\s*(\[(?:'[^']*'(?:,\s*)?)*\])\s*$")
+_BASEHASH_RE = re.compile(r"basehash changed from")
 
 
 def _strip_kas_preamble(lines: list[str]) -> list[str]:
     """Drop kas-container startup log lines (timestamp + level prefix)."""
-    return [l for l in lines if not _KAS_LOG_RE.match(l)]
+    return [line for line in lines if not _KAS_LOG_RE.match(line)]
 
 
 def _extract_dep_diff(lines: list[str]) -> tuple[list[str], list[str]]:
@@ -59,6 +59,11 @@ def _extract_dep_diff(lines: list[str]) -> tuple[list[str], list[str]]:
     return added, removed
 
 
+def _recipe_from_task(task: str) -> str:
+    """Return the recipe portion of a 'recipe:do_task' string."""
+    return task.split(":")[0] if ":" in task else task
+
+
 def _render_diffsigs(text: str) -> None:
     """Parse and render bitbake-diffsigs output: root cause, chain, dep diff."""
     lines = text.splitlines()
@@ -72,36 +77,68 @@ def _render_diffsigs(text: str) -> None:
             chain.append((len(m.group(1)), m.group(2)))
     chain.sort(key=lambda x: x[0])
 
-    # -- Root cause: explicit "Dependency on variable/function X was ..." lines --
+    # -- Root cause: all "Dependency on variable/function X was ..." lines --
     causes: list[str] = []
     for line in clean:
         m = _CAUSE_RE.search(line)
         if m:
             causes.append(line.strip())
 
+    # -- basehash change present? --
+    basehash_changed = any(_BASEHASH_RE.search(line) for line in clean)
+
     # -- Dep-list diff --
     added, removed = _extract_dep_diff(clean)
 
     # -- Render --
+
+    # 1. Root cause with count when multiple
     if causes:
-        console.print("[bold yellow]Root cause:[/]", highlight=False)
+        label = "Root cause" if len(causes) == 1 else f"Root causes ({len(causes)})"
+        console.print(f"[bold yellow]{label}:[/]", highlight=False)
         for c in causes:
             console.print(f"  {c}", highlight=False)
+        if basehash_changed and (added or removed):
+            console.print(
+                "  [dim](basehash changed because the dep list changed above)[/dim]",
+                highlight=False,
+            )
+        elif basehash_changed:
+            console.print(
+                "  [dim](basehash changed independently — task function or referenced code changed)[/dim]",
+                highlight=False,
+            )
         console.print()
 
+    # 2. Chain with depth and cross-recipe boundary note
     if chain:
-        console.print("[bold]Rebuild chain:[/]  (top = requested, bottom = root cause)", highlight=False)
+        depth = len(chain)
+        depth_note = f"{depth} level{'s' if depth != 1 else ''} deep"
+        requested_recipe = _recipe_from_task(chain[0][1])
+        root_recipe = _recipe_from_task(chain[-1][1])
+        cross_note = ""
+        if depth > 1 and root_recipe != requested_recipe:
+            cross_note = f"  [dim]cross-recipe: {root_recipe} → {requested_recipe}[/dim]"
+
+        console.print(f"[bold]Rebuild chain[/]  ({depth_note}){cross_note}:", highlight=False)
         for i, (_, task_name) in enumerate(chain):
             if i == 0:
                 console.print(f"  {task_name}  [dim]← requested[/dim]", highlight=False)
-            elif i == len(chain) - 1:
+            elif i == depth - 1:
                 console.print(f"  {'  ' * i}↳ {task_name}  [bold yellow]← root cause[/bold yellow]", highlight=False)
             else:
                 console.print(f"  {'  ' * i}↳ {task_name}", highlight=False)
         console.print()
 
+    # 3. Dep-list diff with count summary
     if added or removed:
-        console.print("[bold]Dependency list diff:[/]", highlight=False)
+        parts = []
+        if added:
+            parts.append(f"[green]{len(added)} added[/green]")
+        if removed:
+            parts.append(f"[red]{len(removed)} removed[/red]")
+        summary = ", ".join(parts)
+        console.print(f"[bold]Dependency list diff[/]  ({summary}):", highlight=False)
         for a in added:
             console.print(f"  [green]+ {a}[/green]", highlight=False)
         for r in removed:
@@ -198,8 +235,8 @@ def diffsigs(
 
         if rc_diffsigs != 0:
             # Distinguish missing-sigdata from other errors by inspecting output.
-            raw = diffsigs_out.read_text(errors="replace") if diffsigs_out.exists() else ""
-            missing_sigdata = "No such file" in raw or not raw.strip()
+            err_text = diffsigs_out.read_text(errors="replace") if diffsigs_out.exists() else ""
+            missing_sigdata = "No such file" in err_text or not err_text.strip()
             if missing_sigdata:
                 console.print(
                     f"[red]Required sigdata for {recipe}:{task} does not exist.[/]\n"
@@ -207,7 +244,7 @@ def diffsigs(
                     "then re-run: bakar diffsigs"
                 )
             else:
-                console.print(f"[red]bitbake-diffsigs failed (exit {rc_diffsigs}).[/]\n{raw}")
+                console.print(f"[red]bitbake-diffsigs failed (exit {rc_diffsigs}).[/]\n{err_text}")
             raise typer.Exit(code=rc_diffsigs)
 
         diff_text = diffsigs_out.read_text(errors="replace") if diffsigs_out.exists() else ""
