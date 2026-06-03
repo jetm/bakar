@@ -29,16 +29,10 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.unit
 
 _IMAGE_INFO = "DISTRO = poky\nIMAGESIZE = 524288\nMACHINE = imx8mp-var-dart\n"
-_PKG_SIZES = (
-    "8192\tKiB\tlibc6\n"
-    "4096\tKiB\tbusybox\n"
-    "garbage row with no tabs\n"
-    "2048\tKiB\tkernel-modules\n"
-)
+_PKG_SIZES = "8192\tKiB\tlibc6\n4096\tKiB\tbusybox\ngarbage row with no tabs\n2048\tKiB\tkernel-modules\n"
 _PKG_NAMES = "libc6\nbusybox\nkernel-modules\nbase-files\n"
 _METADATA_REVS = (
-    "/work/layers/poky/meta abcdef0123 master\n"
-    "/work/layers/meta-openembedded 4567890abc master -- modified\n"
+    "/work/layers/poky/meta abcdef0123 master\n/work/layers/meta-openembedded 4567890abc master -- modified\n"
 )
 
 
@@ -83,9 +77,7 @@ def test_parse_malformed_size_line_skipped(tmp_path: Path) -> None:
     image_dir = bh / "images" / "mach" / "glibc" / "img"
     image_dir.mkdir(parents=True)
     (image_dir / "image-info.txt").write_text(_IMAGE_INFO)
-    (image_dir / "installed-package-sizes.txt").write_text(
-        "not-a-number\tKiB\tbad\n1000\tKiB\tgood\n"
-    )
+    (image_dir / "installed-package-sizes.txt").write_text("not-a-number\tKiB\tbad\n1000\tKiB\tgood\n")
     (image_dir / "installed-package-names.txt").write_text("good\n")
 
     result = _parse_buildhistory(cfg)

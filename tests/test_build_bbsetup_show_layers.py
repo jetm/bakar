@@ -107,9 +107,7 @@ def _invoke_bbsetup_build(
 
 def test_show_layers_flag_reaches_print_layer_hashes(runner: CliRunner, tmp_path: Path) -> None:
     """``--show-layers`` on the bbsetup path invokes ``_print_layer_hashes(cfg)``."""
-    exit_code, print_layer_hashes, output = _invoke_bbsetup_build(
-        runner, tmp_path, show_layers=True, show_hashes=False
-    )
+    exit_code, print_layer_hashes, output = _invoke_bbsetup_build(runner, tmp_path, show_layers=True, show_hashes=False)
 
     assert exit_code == 0, output
     assert print_layer_hashes.call_count == 1, (

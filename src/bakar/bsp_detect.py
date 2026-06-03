@@ -148,7 +148,7 @@ def is_bbsetup_workspace(path: Path) -> bool:
         return False
     try:
         data = json.loads(cfg.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError, OSError:
         return False
     return isinstance(data, dict) and "data" in data and "bitbake-config" in data
 

@@ -86,15 +86,12 @@ def report(
 
     summary = assemble_report(run_dir, cfg)
 
-    effective_show_sstate = show_sstate or (
-        _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary
-    )
+    effective_show_sstate = show_sstate or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary)
 
     # Presence of the buildhistory dir is the gate - no flag. ``_parse_buildhistory``
     # returns None when the dir is absent, so the section and its JSON fields appear
     # only when the user already opted into buildhistory via their overlay.
     has_buildhistory = _parse_buildhistory(cfg) is not None
-
 
     if json_out:
         payload = {

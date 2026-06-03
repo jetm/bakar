@@ -113,9 +113,7 @@ def _summary() -> ReportSummary:
     )
 
 
-def test_show_sstate_renders_section(
-    runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_show_sstate_renders_section(runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``--show-sstate`` renders the sstate section with all counts and percentages."""
     run_dir = nxp_workspace / "nxp" / "build" / "runs" / "20260527-100000"
     monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))

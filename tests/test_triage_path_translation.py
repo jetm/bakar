@@ -57,10 +57,7 @@ def test_find_recipe_log_returns_translated_host_path(tmp_path: Path) -> None:
     expected.write_text("do_compile failed\n")
 
     kas_log = tmp_path / "kas.log"
-    kas_log.write_text(
-        "NOTE: Executing Tasks\n"
-        f"ERROR: Logfile of failure stored in: {container_path}\n"
-    )
+    kas_log.write_text(f"NOTE: Executing Tasks\nERROR: Logfile of failure stored in: {container_path}\n")
 
     result = _find_recipe_log(kas_log, workspace)
 
