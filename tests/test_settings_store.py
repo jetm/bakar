@@ -51,6 +51,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.ccache_dir": "/data/ccache",
         "build.psi_autocalibrate": "true",
         "layers.show_hashes": "true",
+        "layers.show_sstate_summary": "true",
     }
     # Every dotted key in the schema is exercised here.
     assert set(written) == set(SETTINGS_SCHEMA)
@@ -84,6 +85,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert cfg.ccache_dir == "/data/ccache"
     assert cfg.psi_autocalibrate is True
     assert cfg.show_hashes is True
+    assert cfg.show_sstate_summary is True
 
 
 @pytest.mark.unit
