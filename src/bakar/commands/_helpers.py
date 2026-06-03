@@ -337,12 +337,12 @@ def _print_layer_hashes(cfg: BuildConfig, hashes: list[LayerHash] | None = None)
         hashes = collect_layer_hashes(cfg)
     if not hashes:
         return
-    console.print("layers:")
+    console.print("layers:", highlight=False)
     width = max(len(h.repo) for h in hashes)
     for h in hashes:
         branch = f"  ({h.branch})" if h.branch else ""
         ver = f"  {h.version}" if h.version else ""
-        console.print(f"  {h.repo:<{width}}  {h.short_hash}{branch}{ver}")
+        console.print(f"  {h.repo:<{width}}  {h.short_hash}{branch}{ver}", highlight=False)
 
 
 def _find_run(
