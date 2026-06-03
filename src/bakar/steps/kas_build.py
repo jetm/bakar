@@ -30,6 +30,7 @@ from __future__ import annotations
 import os
 import pty
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -428,6 +429,136 @@ def dry_run_preview_lines(
         if value is not None:
             lines.append(f"env.{key}: {value}")
     return lines
+
+
+def _dry_run_kas_arg(
+    cfg: BuildConfig,
+    kas_yaml: Path,
+    overlay_source: Path,
+    extra_overlays: list[Path] | None = None,
+) -> str:
+    """Return the kas colon-arg without filesystem side effects.
+
+    Mirrors :func:`dry_run_preview_lines`' arg assembly (``_resolve_user_yaml``
+    + ``_OVERLAY_DIR_RELPATH``) rather than calling :func:`_build_kas_arg`,
+    which copies the overlay into the tree and runs ``kas dump`` for
+    meta-avocado. The emitted arg is byte-identical to the preview path.
+    """
+    if cfg.is_meta_avocado:
+        return "<kas-arg: computed by kas dump at build time>"
+    kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
+    parts: list[str] = [
+        f"{kas_yaml_rel}:{_OVERLAY_DIR_RELPATH / overlay_source.name}",
+        *[str(_OVERLAY_DIR_RELPATH / p.name) for p in extra_overlays or []],
+    ]
+    return ":".join(parts)
+
+
+def _shell_export_lines(cfg: BuildConfig) -> list[str]:
+    """Return ``export KEY="value"`` lines for the build environment.
+
+    Mirrors the env :func:`_build_env` hands to kas-container, with
+    ``ensure_hashserv=False`` so generating the script never starts the
+    persistent hashserv daemon. Each value is shell-quoted via
+    :func:`shlex.quote`, which single-quotes the string so ``$`` is already
+    literal and no further escaping is needed.
+    """
+    lines: list[str] = []
+    for key, value in _build_env(cfg, ensure_hashserv=False).items():
+        if value is None:
+            continue
+        quoted = shlex.quote(str(value))
+        lines.append(f"export {key}={quoted}")
+    return lines
+
+
+def _sync_step_lines(cfg: BuildConfig, kas_arg: str) -> list[str]:
+    """Return the family-correct sync-step command lines.
+
+    Branches on ``cfg.bsp_family``: ``repo init`` + ``repo sync`` for nxp,
+    the oe-layertool setup script for ti, and ``kas-container checkout`` for
+    bbsetup/generic (and any other family). The commands match what a real
+    sync would invoke (see :mod:`bakar.commands.sync` and
+    :func:`bakar.steps.ti_layertool._build_layertool_cmd`).
+    """
+    if cfg.bsp_family == "nxp":
+        nproc = shlex.quote(os.environ.get("NPROC", str(os.cpu_count() or 8)))
+        init = (
+            f"repo init -u {shlex.quote(cfg.repo_url)} -b {shlex.quote(cfg.repo_branch)}"
+            f" -m {shlex.quote(cfg.manifest)} --config-name"
+        )
+        sync = f"repo sync -j {nproc} --force-sync --no-clone-bundle"
+        return [f"(cd {shlex.quote(str(cfg.workspace))} && {init} && {sync})"]
+    if cfg.bsp_family == "ti":
+        from bakar.steps.ti_layertool import _build_layertool_cmd
+
+        layertool = " ".join(_build_layertool_cmd(cfg))
+        layertool_dir = cfg.workspace / "ti" / "oe-layertool"
+        return [f"(cd {shlex.quote(str(layertool_dir))} && {layertool})"]
+    return [f"kas-container checkout {shlex.quote(kas_arg)}"]
+
+
+def generate_dry_run_script(
+    cfg: BuildConfig,
+    kas_yaml: Path,
+    overlay_source: Path,
+    extra_overlays: list[Path] | None = None,
+    *,
+    keep_going: bool = False,
+    generating_command: str = "bakar build --dry-run-script",
+) -> str:
+    """Return a runnable bash script reproducing the build invocation.
+
+    The script starts with a ``#!/usr/bin/env bash`` shebang, ``set -euo
+    pipefail``, and provenance comments (the generating command and the
+    resolved ``cfg.bsp_family``). It exports the same env vars
+    :func:`_build_env` produces, runs the family-correct sync step
+    (``repo`` for nxp, oe-layertool for ti, ``kas-container checkout`` for
+    bbsetup/generic), then the family-agnostic ``kas-container build`` step
+    assembled from the same kas colon-arg the preview path shows.
+
+    ``$`` is escaped to ``\\$`` inside emitted env values so the script
+    passes ``bash -n`` and the host environment captured at generation time
+    is reproduced literally rather than re-expanded at run time. No
+    filesystem side effects: unlike :func:`_build_kas_arg`, the overlay is
+    referenced by its destination path without copying it.
+
+    Raises:
+        ValueError: for meta-avocado workspaces, where the kas colon-arg is
+            computed by ``kas dump`` at build time and cannot be represented
+            as a static string without filesystem side effects.
+    """
+    if cfg.is_meta_avocado:
+        raise ValueError(
+            "bakar cannot generate a dry-run script for meta-avocado workspaces: "
+            "the kas colon-arg is computed by 'kas dump' at build time and cannot "
+            "be captured statically. Use 'bakar build --dry-run' for a preview instead."
+        )
+    exe = "kas" if cfg.host_mode else "kas-container"
+    kas_arg = _dry_run_kas_arg(cfg, kas_yaml, overlay_source, extra_overlays)
+    build_cmd = [exe, *_ccache_args(cfg, dry_run=True), "build", kas_arg]
+    if keep_going:
+        build_cmd += ["--", "-k"]
+    build_line = " ".join(shlex.quote(part) if " " in part else part for part in build_cmd)
+
+    lines: list[str] = [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "",
+        f"# Generated by: {generating_command}",
+        f"# bsp_family: {cfg.bsp_family}",
+        "",
+        "# Environment",
+        *_shell_export_lines(cfg),
+        "",
+        "# Sync step",
+        *_sync_step_lines(cfg, kas_arg),
+        "",
+        "# Build step",
+        build_line,
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def _run_pty_with_ui(
