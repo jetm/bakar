@@ -20,6 +20,7 @@ from bakar.commands._helpers import (
     _overlay_for,
     _print_diagnosis,
     _print_layer_hashes,
+    _print_sstate_summary,
     _resolve_workspace,
     _tuning_extra_overlays,
     _uninitialized_bbsetup_dir,
@@ -158,6 +159,8 @@ def _run_bbsetup_build(
         # kas materializes build/conf/bblayers.conf during run_build; print after success.
         if effective_show_layers:
             _print_layer_hashes(cfg)
+        if _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary:
+            _print_sstate_summary(log.run_dir / "kas.log")
         console.print("[bold green]build succeeded[/]")
         console.print(f"artifacts: {deploy}")
 
@@ -214,6 +217,8 @@ def _run_byo_build(
     # A real build only has bblayers.conf on disk after run_build succeeds.
     if ctx.effective_show_layers and not ctx.dry_run:
         _print_layer_hashes(cfg)
+    if _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary:
+        _print_sstate_summary(log.run_dir / "kas.log")
     console.print("[bold green]build succeeded[/]")
     console.print(f"artifacts: {deploy}")
 
@@ -274,6 +279,8 @@ def _run_manifest_build(
         console.print(f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details.")
         raise typer.Exit(code=rc)
     deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
+    if _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary:
+        _print_sstate_summary(log.run_dir / "kas.log")
     console.print("[bold green]build succeeded[/]")
     console.print(f"artifacts: {deploy}")
 

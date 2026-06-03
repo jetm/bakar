@@ -345,6 +345,28 @@ def _print_layer_hashes(cfg: BuildConfig, hashes: list[LayerHash] | None = None)
         console.print(f"  {h.repo:<{width}}  {h.short_hash}{branch}{ver}", highlight=False)
 
 
+def _print_sstate_summary(kas_log: Path) -> None:
+    """Print the sstate summary from ``kas_log`` when the line is present.
+
+    No-op when the summary line is absent (e.g. a dry-run or an interrupted
+    build that never reached the sstate accounting phase).
+    """
+    from bakar.commands import console
+    from bakar.report import _parse_sstate_summary
+
+    sstate = _parse_sstate_summary(kas_log)
+    if sstate.get("sstate_wanted") is None:
+        return
+    console.print("sstate summary:", highlight=False)
+    console.print(f"  wanted: {sstate['sstate_wanted']}", highlight=False)
+    console.print(f"  local: {sstate['sstate_local']}", highlight=False)
+    console.print(f"  mirrors: {sstate['sstate_mirrors']}", highlight=False)
+    console.print(f"  missed: {sstate['sstate_missed']}", highlight=False)
+    console.print(f"  current: {sstate['sstate_current']}", highlight=False)
+    console.print(f"  match: {sstate['sstate_match_pct']}%", highlight=False)
+    console.print(f"  complete: {sstate['sstate_complete_pct']}%", highlight=False)
+
+
 def _find_run(
     runs_dirs: list[tuple[Path, Literal["nxp", "ti", "generic"]]],
     run_id: str | None,

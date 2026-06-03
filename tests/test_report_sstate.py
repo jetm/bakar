@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
 
 import bakar.commands.report as report_module
 from bakar.cli import app
 from bakar.report import ReportSummary, _parse_sstate_summary
+from bakar.user_config import UserConfig
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -135,7 +137,8 @@ def test_without_toggle_no_sstate_section(
     monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
     monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: _summary())
 
-    result = runner.invoke(app, ["report", "--workspace", str(nxp_workspace)])
+    with patch("bakar.commands._app._load_user_config_safe", return_value=UserConfig()):
+        result = runner.invoke(app, ["report", "--workspace", str(nxp_workspace)])
     assert result.exit_code == 0, result.output
     assert "sstate summary" not in result.output
 
@@ -165,7 +168,8 @@ def test_json_omits_sstate_fields_without_toggle(
     monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
     monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: _summary())
 
-    result = runner.invoke(app, ["report", "--json", "--workspace", str(nxp_workspace)])
+    with patch("bakar.commands._app._load_user_config_safe", return_value=UserConfig()):
+        result = runner.invoke(app, ["report", "--json", "--workspace", str(nxp_workspace)])
     assert result.exit_code == 0, result.output
 
     payload = json.loads(result.stdout)
