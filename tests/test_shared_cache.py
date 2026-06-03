@@ -12,11 +12,20 @@ Covers:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
 
 pytestmark = pytest.mark.unit
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """Strip ANSI SGR escapes so help-text assertions survive colored output."""
+    return _ANSI_RE.sub("", text)
+
 
 # ---------------------------------------------------------------------------
 # (a) BuildConfig.use_shared_cache
@@ -186,7 +195,7 @@ def test_build_help_shows_sstate_mirror() -> None:
     result = runner.invoke(app, ["build", "--help"])
 
     assert result.exit_code == 0, result.output
-    assert "--sstate-mirror" in result.output
+    assert "--sstate-mirror" in _plain(result.output)
 
 
 def test_sync_help_does_not_show_sstate_mirror() -> None:
@@ -199,7 +208,7 @@ def test_sync_help_does_not_show_sstate_mirror() -> None:
     result = runner.invoke(app, ["sync", "--help"])
 
     assert result.exit_code == 0, result.output
-    assert "--sstate-mirror" not in result.output
+    assert "--sstate-mirror" not in _plain(result.output)
 
 
 # ---------------------------------------------------------------------------
