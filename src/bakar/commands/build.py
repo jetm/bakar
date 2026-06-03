@@ -116,10 +116,12 @@ def _run_bbsetup_build(
             console.print(f"[green]removed[/] {tmp_dir}")
 
     effective_show_layers = ctx.show_layers or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_hashes)
-    if effective_show_layers:
-        _print_layer_hashes(cfg)
 
     if ctx.dry_run:
+        # Dry-run: kas never writes build/conf/bblayers.conf, so print best-effort
+        # from any pre-existing conf (same as BYO dry-run).
+        if effective_show_layers:
+            _print_layer_hashes(cfg)
         extra_overlays_bbsetup = _tuning_extra_overlays(cfg)
         for line in step_kas.dry_run_preview_lines(
             cfg, cfg.kas_yaml, overlay_source, extra_overlays_bbsetup, keep_going=ctx.keep_going
@@ -153,6 +155,9 @@ def _run_bbsetup_build(
             )
             raise typer.Exit(code=rc)
         deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / translated["machine"]
+        # kas materializes build/conf/bblayers.conf during run_build; print after success.
+        if effective_show_layers:
+            _print_layer_hashes(cfg)
         console.print("[bold green]build succeeded[/]")
         console.print(f"artifacts: {deploy}")
 
