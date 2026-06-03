@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-03
+
+### Added
+
+- `bakar report` now displays an sstate cache summary (hit/miss counts and percentages) when `--show-sstate` is passed or `layers.show_sstate_summary` is set to `true` via `bakar settings set`
+- `bakar report` now displays a buildhistory section (image size, top packages by size, package count, dirty layers) when a `buildhistory` directory is present in the workspace — no flag required, the data's presence is the gate
+- `bakar build` now prints the sstate cache summary after a successful build when `layers.show_sstate_summary` is enabled, mirroring the existing `show_hashes` / `--show-layers` behavior
+- Added `layers.show_sstate_summary` setting, persistable via `bakar settings set layers.show_sstate_summary true`
+- `bakar report` now finds test runs under `build-*/build/runs` (e.g. meta-avocado and custom build-dir BYO workspaces), preventing silent fallback to a stale generic run
+
+### Fixed
+
+- `bakar build --show-layers` (and `show_hashes` config) now correctly prints the layer hash table for bitbake-setup (bbsetup) workspaces; it previously printed nothing
+- `bakar build --show-layers` on a fresh BYO build now shows the correct layer table instead of printing nothing (or showing a stale previous build's state), because the table is now printed after `kas` writes `bblayers.conf`
+- `bakar build --show-layers --dry-run` on bbsetup workspaces now prints the layer table instead of silently skipping it due to an early exit
+- Layer hash table entries containing git short hashes that match scientific-notation patterns (e.g. `25850e97`) are no longer incorrectly highlighted in cyan by Rich
+- Enabling the `hashequiv` overlay no longer arms a connection to the public Yocto hash-equivalence server by default; builds in environments without access to that server no longer hang at startup. Set `BB_HASHSERVE_UPSTREAM` in the environment to opt in
+- Layer hashes are now correctly resolved for bitbake-setup workspaces (the `layers/<repo>` layout); previously the hash table came back empty for bbsetup builds
+- Malformed or unreadable `config-upstream.json` no longer causes the bbsetup workspace detector to propagate an error; it now correctly returns "not a bbsetup workspace"
+- A malformed or incomplete `error-report.json` (missing keys or wrong-typed fields) now correctly falls through to the live-parse path in `bakar triage` instead of propagating an exception
+
 ## [0.8.0] - 2026-06-03
 
 ### Added
@@ -186,7 +207,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/jetm/bakar/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jetm/bakar/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jetm/bakar/compare/v0.4.0...v0.7.0
 [0.4.0]: https://github.com/jetm/bakar/compare/v0.3.0...v0.4.0
@@ -197,4 +219,3 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 [0.0.3]: https://github.com/jetm/bakar/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/jetm/bakar/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/jetm/bakar/releases/tag/v0.0.1
-
