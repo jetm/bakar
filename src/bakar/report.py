@@ -48,6 +48,7 @@ class ReportSummary:
     top_packages: list[tuple[str, int]] = field(default_factory=list)
     pkg_count: int | None = None
     layers_dirty: list[str] = field(default_factory=list)
+    has_buildhistory: bool = False
 
 
 def _parse_ts(rec: dict | None) -> datetime | None:
@@ -326,7 +327,10 @@ def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
     )
 
     sstate = _parse_sstate_summary(run_dir / "kas.log")
-    buildhistory = _parse_buildhistory(cfg) or {}
+    # Parse buildhistory once here; the command derives its display gate from
+    # ``has_buildhistory`` rather than re-parsing the tree. The dict keys match
+    # the ReportSummary field names exactly, so both maps splat directly.
+    buildhistory = _parse_buildhistory(cfg)
 
     return ReportSummary(
         run_id=run_dir.name,
@@ -337,15 +341,7 @@ def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
         peak_tmp_bytes=_peak_tmp_bytes(run_dir / "du.tsv"),
         layers=layers,
         build_revision=build_revision,
-        sstate_wanted=sstate["sstate_wanted"],
-        sstate_local=sstate["sstate_local"],
-        sstate_mirrors=sstate["sstate_mirrors"],
-        sstate_missed=sstate["sstate_missed"],
-        sstate_current=sstate["sstate_current"],
-        sstate_match_pct=sstate["sstate_match_pct"],
-        sstate_complete_pct=sstate["sstate_complete_pct"],
-        buildhistory_imagesize_kib=buildhistory.get("buildhistory_imagesize_kib"),
-        top_packages=buildhistory.get("top_packages", []),
-        pkg_count=buildhistory.get("pkg_count"),
-        layers_dirty=buildhistory.get("layers_dirty", []),
+        has_buildhistory=buildhistory is not None,
+        **sstate,
+        **(buildhistory or {}),
     )

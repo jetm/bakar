@@ -13,7 +13,7 @@ import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import _bbsetup_workspace, _find_run, _print_layer_hashes, _workspace_from_cwd
 from bakar.config import BSPSpec, resolve
-from bakar.report import _parse_buildhistory, assemble_report
+from bakar.report import assemble_report
 
 
 @app.command("report")
@@ -88,10 +88,10 @@ def report(
 
     effective_show_sstate = show_sstate or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary)
 
-    # Presence of the buildhistory dir is the gate - no flag. ``_parse_buildhistory``
-    # returns None when the dir is absent, so the section and its JSON fields appear
-    # only when the user already opted into buildhistory via their overlay.
-    has_buildhistory = _parse_buildhistory(cfg) is not None
+    # Presence of the buildhistory dir is the gate - no flag. ``assemble_report``
+    # already parsed the tree and recorded whether it exists, so the section and
+    # its JSON fields appear only when the user opted into buildhistory.
+    has_buildhistory = summary.has_buildhistory
 
     if json_out:
         payload = {

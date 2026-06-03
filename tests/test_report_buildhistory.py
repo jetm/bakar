@@ -114,7 +114,7 @@ def nxp_workspace(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _summary() -> ReportSummary:
+def _summary(has_buildhistory: bool = False) -> ReportSummary:
     return ReportSummary(
         run_id="20260527-100000",
         status="success",
@@ -128,6 +128,7 @@ def _summary() -> ReportSummary:
         top_packages=[("libc6", 8192), ("busybox", 4096)],
         pkg_count=4,
         layers_dirty=["meta-openembedded"],
+        has_buildhistory=has_buildhistory,
     )
 
 
@@ -136,10 +137,8 @@ def test_report_shows_buildhistory_when_dir_exists(
 ) -> None:
     """The buildhistory section renders when the dir exists under bsp_root."""
     run_dir = nxp_workspace / "nxp" / "build" / "runs" / "20260527-100000"
-    # bsp_root for the nxp family is workspace/nxp.
-    _write_buildhistory(nxp_workspace / "nxp")
     monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
-    monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: _summary())
+    monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: _summary(has_buildhistory=True))
 
     result = runner.invoke(app, ["report", "--workspace", str(nxp_workspace)])
     assert result.exit_code == 0, result.output
