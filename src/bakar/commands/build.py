@@ -136,6 +136,12 @@ def _run_bbsetup_build(
             distro_override=ctx.distro,
         )
 
+        effective_show_layers = ctx.show_layers or (
+            _state._USER_CONFIG is not None and _state._USER_CONFIG.show_hashes
+        )
+        if effective_show_layers:
+            _print_layer_hashes(cfg)
+
         kas_ctx = KasBuildContext(
             cfg, log, cfg.kas_yaml, overlay_source, keep_going=ctx.keep_going, dry_run=ctx.dry_run
         )
