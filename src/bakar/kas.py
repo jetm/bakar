@@ -78,6 +78,19 @@ class KasGenOptions:
 # ---------------------------------------------------------------------------
 
 
+def _bblayers_bodies(bblayers_conf: Path) -> list[str]:
+    """Return the quoted BBLAYERS value bodies from ``bblayers_conf``.
+
+    Strips ``#``-comments from each line, collapses backslash line
+    continuations, and extracts the content of every ``BBLAYERS ?= "..."``
+    assignment (including ``+=``, ``??=``). Returns one string per
+    assignment body; each body may contain space-separated layer tokens.
+    """
+    text = bblayers_conf.read_text()
+    joined = " ".join(line.split("#", 1)[0] for line in text.splitlines()).replace("\\", " ")
+    return re.findall(r'BBLAYERS\s*(?:\?\??|\+)?=\s*"([^"]*)"', joined)
+
+
 def parse_bblayers(path: Path) -> dict[str, set[str]]:
     """Parse a BSP-generated bblayers.conf into ``{repo: {layer, ...}}``.
 
@@ -85,11 +98,7 @@ def parse_bblayers(path: Path) -> dict[str, set[str]]:
     not match ``.../sources/<repo>[/<layer>]``. Returns an empty dict when no
     BBLAYERS assignment is found.
     """
-    text = path.read_text()
-    # Strip `#` comments line-by-line, then join lines and collapse
-    # backslash continuations.
-    joined = " ".join(line.split("#", 1)[0] for line in text.splitlines()).replace("\\", " ")
-    matches = re.findall(r'BBLAYERS\s*(?:\?\??|\+)?=\s*"([^"]*)"', joined)
+    matches = _bblayers_bodies(path)
     if not matches:
         return {}
     layers_map: dict[str, set[str]] = {}

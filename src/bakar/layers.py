@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bakar.kas import parse_bblayers
+from bakar.kas import _bblayers_bodies, parse_bblayers
 
 if TYPE_CHECKING:
     from bakar.config import BuildConfig
@@ -38,12 +38,9 @@ def _parse_bbsetup_layer_repos(bblayers_conf: Path) -> list[str]:
     ``/layers/``) for each such token, deduplicated and order-preserving.
     Returns ``[]`` when no ``/layers/`` token is present.
     """
-    text = bblayers_conf.read_text()
-    joined = " ".join(line.split("#", 1)[0] for line in text.splitlines()).replace("\\", " ")
-    matches = re.findall(r'BBLAYERS\s*(?:\?\??|\+)?=\s*"([^"]*)"', joined)
     repos: list[str] = []
     seen: set[str] = set()
-    for body in matches:
+    for body in _bblayers_bodies(bblayers_conf):
         for raw_token in body.split():
             token = raw_token.strip()
             idx = token.find("/layers/")
@@ -69,9 +66,7 @@ def _resolve_bblayers_paths(bblayers_conf: Path) -> dict[str, Path]:
     """
     build_dir = bblayers_conf.parent.parent  # build/conf/bblayers.conf -> build/
     topdir = str(build_dir)
-    text = bblayers_conf.read_text()
-    joined = " ".join(line.split("#", 1)[0] for line in text.splitlines()).replace("\\", " ")
-    matches = re.findall(r'BBLAYERS\s*(?:\?\??|\+)?=\s*"([^"]*)"', joined)
+    matches = _bblayers_bodies(bblayers_conf)
     seen: set[Path] = set()
     result: dict[str, Path] = {}
     for body in matches:
