@@ -1249,6 +1249,101 @@ def check_hashserv(cfg: BuildConfig) -> CheckResult:
     return _ok(name, Severity.WARN, f"running at ws://localhost:{port} (PID {pid})")
 
 
+# Host-specific variables that, if they feed bitbake task signatures, make
+# sstate hashes vary across builds/hosts. Each must be excluded from
+# signature computation with a ``[vardepsexclude]`` annotation.
+_HASH_LEAK_VARS: tuple[str, ...] = (
+    "DATETIME",
+    "BUILD_REPRODUCIBLE_BINARIES",
+    "PWD",
+    "USER",
+    "HOME",
+    "HOSTNAME",
+)
+
+
+def _scan_hash_leak_conf_files(conf_dir: Path) -> list[Path]:
+    """Return ``local.conf`` plus sibling conf-include/overlay files to scan.
+
+    kas may write the host-variable assignments into ``local.conf`` directly
+    (``local_conf_header``) or into a sibling ``.conf``/``.inc`` include in the
+    same ``build/conf`` directory. Scanning the whole conf dir covers design
+    assumption A2's fallback without parsing every overlay reference.
+    """
+    files: list[Path] = []
+    local_conf = conf_dir / "local.conf"
+    if local_conf.is_file():
+        files.append(local_conf)
+    try:
+        siblings = sorted(conf_dir.glob("*.conf")) + sorted(conf_dir.glob("*.inc"))
+    except OSError:
+        return files
+    for path in siblings:
+        if path == local_conf or not path.is_file():
+            continue
+        files.append(path)
+    return files
+
+
+def check_sstate_hash_leak(cfg: BuildConfig) -> CheckResult:
+    """Warn when host-specific variables can corrupt sstate task signatures.
+
+    Yocto computes sstate hashes from the variables a task depends on. If a
+    host-varying variable (``DATETIME``, ``PWD``, ``USER``, ``HOME``,
+    ``HOSTNAME``, ``BUILD_REPRODUCIBLE_BINARIES``) is assigned in
+    ``build/conf/local.conf`` (or a sibling conf-include/overlay) without a
+    matching ``[vardepsexclude]`` annotation, that variable leaks into the
+    signature and breaks sstate reuse across builds and hosts.
+
+    This is advisory (``WARN``, never ``BLOCK``): it scans config text, not
+    real signatures. It reads only host-side files, so it is NOT a
+    ``_DOCKER_CHECKS`` member - it must run in host mode too. ``_skip`` when
+    ``local.conf`` does not exist yet (pre-sync).
+    """
+    name = "sstate-hash-leak"
+    conf_dir = cfg.bsp_root / "build" / "conf"
+    local_conf = conf_dir / "local.conf"
+    if not local_conf.is_file():
+        return _skip(name, Severity.WARN, f"{local_conf} not present (pre-sync)")
+
+    conf_files = _scan_hash_leak_conf_files(conf_dir)
+    assigned: set[str] = set()
+    excluded: set[str] = set()
+    for path in conf_files:
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        non_comment_lines = "\n".join(line for line in text.splitlines() if not re.match(r"^\s*#", line))
+        for var in _HASH_LEAK_VARS:
+            # Detect assignments: =, ?=, ??=, :=, +=, .=, =. and :override-suffix forms
+            if re.search(
+                rf"^\s*{re.escape(var)}(?::[A-Za-z0-9_-]+)*\s*(?:\?\?=|\?=|:=|\+=|\.=|=\.|=)",
+                non_comment_lines,
+                re.MULTILINE,
+            ):
+                assigned.add(var)
+            # Only count exclusion annotations that are not commented out
+            if re.search(rf"\[\s*vardepsexclude\s*\].*\b{re.escape(var)}\b", non_comment_lines):
+                excluded.add(var)
+
+    leaked = sorted(var for var in assigned if var not in excluded)
+    if not leaked:
+        return _ok(name, Severity.WARN, "no host-specific variables leak into sstate signatures")
+
+    leaked_list = ", ".join(leaked)
+    fix_lines = "\n".join(f'{var}[vardepsexclude] += "{var}"' for var in leaked)
+    return _fail(
+        name,
+        Severity.WARN,
+        f"host-specific variable(s) assigned without [vardepsexclude]: {leaked_list}",
+        fix_hint=(
+            "Add a [vardepsexclude] annotation in local.conf (or an overlay) so these "
+            f"do not corrupt sstate hashes:\n{fix_lines}"
+        ),
+    )
+
+
 # Checks that run unconditionally for every BSP family. Per-BSP extras
 # are sourced from ``BspModel.doctor_extras`` at dispatch time.
 #
@@ -1288,6 +1383,7 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_docker_storage_driver,
     check_ccache_health,
     check_hashserv,
+    check_sstate_hash_leak,
 )
 
 # Docker-dependent checks from ``SHARED_CHECKS``. Filtered out of
