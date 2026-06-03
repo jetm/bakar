@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
@@ -52,6 +53,7 @@ class _BbsetupCtx:
     keep_going: bool
     show_layers: bool
     sstate_mirror: str | None
+    dry_run_script: str | None = None
 
 
 def _run_doctor_gate(cfg, log, bsp, skip_doctor: bool) -> None:
@@ -118,12 +120,27 @@ def _run_bbsetup_build(
 
     effective_show_layers = ctx.show_layers or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_hashes)
 
+    extra_overlays_bbsetup = _tuning_extra_overlays(cfg)
+
+    if ctx.dry_run_script is not None:
+        try:
+            script = step_kas.generate_dry_run_script(
+                cfg, cfg.kas_yaml, overlay_source, extra_overlays_bbsetup, keep_going=ctx.keep_going
+            )
+        except ValueError as exc:
+            console.print(f"[red]Cannot generate dry-run script:[/] {exc}")
+            raise typer.Exit(code=2) from None
+        if ctx.dry_run_script == "-":
+            sys.stdout.write(script)
+        else:
+            Path(ctx.dry_run_script).write_text(script)
+        raise typer.Exit(code=0)
+
     if ctx.dry_run:
         # Dry-run: kas never writes build/conf/bblayers.conf, so print best-effort
         # from any pre-existing conf (same as BYO dry-run).
         if effective_show_layers:
             _print_layer_hashes(cfg)
-        extra_overlays_bbsetup = _tuning_extra_overlays(cfg)
         for line in step_kas.dry_run_preview_lines(
             cfg, cfg.kas_yaml, overlay_source, extra_overlays_bbsetup, keep_going=ctx.keep_going
         ):
@@ -360,6 +377,14 @@ def build(
         str | None,
         typer.Option("--sstate-mirror", help="HTTP sstate/downloads mirror URL; enables the shared-cache overlay"),
     ] = None,
+    dry_run_script: Annotated[
+        str | None,
+        typer.Option(
+            "--dry-run-script",
+            help="Write a runnable bash script reproducing this build to PATH, or to stdout when PATH is '-'. "
+            "Does not build. The existing --dry-run/-n preview behavior is unchanged.",
+        ),
+    ] = None,
 ) -> None:
     """Run the build pipeline idempotently.
 
@@ -399,6 +424,7 @@ def build(
                 keep_going=keep_going,
                 show_layers=show_layers,
                 sstate_mirror=sstate_mirror,
+                dry_run_script=dry_run_script,
             ),
         )
         return
@@ -455,6 +481,20 @@ def build(
 
     label = f"BYO {kas_yaml}" if byo_form else f"{cfg.machine} / {cfg.distro} / {cfg.image}"
     console.print(f"[bold]::[/] bakar build [{family}] {label}")
+
+    if dry_run_script is not None:
+        try:
+            script = step_kas.generate_dry_run_script(
+                cfg, cfg.kas_yaml, overlay_source, extra_overlays, keep_going=keep_going
+            )
+        except ValueError as exc:
+            console.print(f"[red]Cannot generate dry-run script:[/] {exc}")
+            raise typer.Exit(code=2) from None
+        if dry_run_script == "-":
+            sys.stdout.write(script)
+        else:
+            Path(dry_run_script).write_text(script)
+        raise typer.Exit(code=0)
 
     if clean:
         _clean_build_dir(cfg)

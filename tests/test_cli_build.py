@@ -1,10 +1,13 @@
-"""Tests for the ``bakar build`` auto-overlay behavior.
+"""Tests for the ``bakar build`` auto-overlay behavior and --dry-run-script.
 
 Cover ``_hashequiv_extra_overlays`` as a unit and the build CLI's
 deduplication of the hashequiv overlay against a user-supplied
 ``main.yml:overlay.yml`` argument. The dedup case is load-bearing:
 without it, kas would receive the overlay twice and emit duplicate
 ``BB_SIGNATURE_HANDLER`` assignments.
+
+Also covers the ``--dry-run-script`` option: writing to a file and to stdout
+(``-``), and asserting that ``--dry-run`` alone does NOT produce a script file.
 """
 
 from __future__ import annotations
@@ -170,3 +173,104 @@ def test_hashequiv_overlay_not_appended_when_use_hashequiv_false(
 
     hashequiv_entries = [p for p in recorded[0] if p.name == "bakar-tuning-hashequiv.yml"]
     assert hashequiv_entries == [], f"expected no hashequiv overlay when use_hashequiv=False, got {hashequiv_entries!r}"
+
+
+# ---------------------------------------------------------------------------
+# --dry-run-script tests
+# ---------------------------------------------------------------------------
+
+_FAKE_SCRIPT = "#!/usr/bin/env bash\nset -euo pipefail\n# bsp_family: generic\necho done\n"
+
+
+def _stub_generate_script(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace generate_dry_run_script with a fixed stub that returns _FAKE_SCRIPT."""
+    monkeypatch.setattr(build_cmd.step_kas, "generate_dry_run_script", lambda *a, **kw: _FAKE_SCRIPT)
+
+
+def test_dry_run_script_writes_to_file(
+    runner: _CliRunner,
+    workspace: Path,
+    generic_yaml: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """--dry-run-script PATH writes the generated script to PATH and exits 0."""
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    _stub_generate_script(monkeypatch)
+
+    out_file = tmp_path / "build.sh"
+    result = runner.invoke(app, ["build", str(generic_yaml), "--dry-run-script", str(out_file)])
+
+    assert result.exit_code == 0, result.output
+    assert out_file.exists(), "expected output file to be created"
+    assert out_file.read_text() == _FAKE_SCRIPT
+
+
+def test_dry_run_script_stdout(
+    runner: _CliRunner,
+    workspace: Path,
+    generic_yaml: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--dry-run-script - writes the generated script to stdout and exits 0."""
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    _stub_generate_script(monkeypatch)
+
+    result = runner.invoke(app, ["build", str(generic_yaml), "--dry-run-script", "-"])
+
+    assert result.exit_code == 0, result.output
+    assert _FAKE_SCRIPT in result.output, f"expected script in stdout, got: {result.output!r}"
+
+
+def test_dry_run_does_not_write_script(
+    runner: _CliRunner,
+    workspace: Path,
+    generic_yaml: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """--dry-run/-n alone must NOT produce a script file.
+
+    Asserts the generate_dry_run_script function is never called and no
+    unexpected file appears in tmp_path when only --dry-run is used.
+    """
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+
+    script_calls: list[tuple] = []
+    monkeypatch.setattr(
+        build_cmd.step_kas,
+        "generate_dry_run_script",
+        lambda *a, **kw: script_calls.append((a, kw)) or "",
+    )
+    monkeypatch.setattr(build_cmd.step_kas, "dry_run_preview_lines", lambda *a, **kw: ["command: kas-container build"])
+
+    result = runner.invoke(app, ["build", str(generic_yaml), "--dry-run", "--skip-doctor"])
+
+    assert result.exit_code == 0, result.output
+    assert script_calls == [], "generate_dry_run_script must NOT be called for --dry-run alone"
+
+
+def test_dry_run_script_does_not_invoke_run_build(
+    runner: _CliRunner,
+    workspace: Path,
+    generic_yaml: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """--dry-run-script exits before calling run_build (no actual build)."""
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    _stub_generate_script(monkeypatch)
+
+    build_calls: list[object] = []
+
+    def fake_run_build(ctx, *, extra_overlays=None):  # type: ignore[no-untyped-def]
+        build_calls.append(ctx)
+        return 0
+
+    monkeypatch.setattr(build_cmd.step_kas, "run_build", fake_run_build)
+
+    out_file = tmp_path / "script.sh"
+    result = runner.invoke(app, ["build", str(generic_yaml), "--dry-run-script", str(out_file)])
+
+    assert result.exit_code == 0, result.output
+    assert build_calls == [], "run_build must NOT be called when --dry-run-script is used"
