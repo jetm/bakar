@@ -134,6 +134,20 @@ def _scan_recipe_errors(kas_log: Path, cap: int = 10) -> list[RecipeError]:
     return out
 
 
+def _translate_container_path(container_path: str, workspace: Path) -> str:
+    """Rewrite a leading ``/work/`` container prefix to a host path under
+    ``workspace``.
+
+    Only the first occurrence of the prefix is replaced. A path that does
+    not start with ``/work/`` is returned unchanged - the ``/work`` bind
+    mount is the only container-to-host mapping bakar controls, so a path
+    outside it is already a host path and must pass through verbatim.
+    """
+    if not container_path.startswith("/work/"):
+        return container_path
+    return container_path.replace("/work/", str(workspace) + "/", 1)
+
+
 def _find_recipe_log(kas_log: Path, workspace: Path) -> Path | None:
     """Scan kas.log for bitbake's Logfile hint and rewrite the container
     path (/work/...) to a host path under ``workspace``."""
@@ -144,7 +158,7 @@ def _find_recipe_log(kas_log: Path, workspace: Path) -> Path | None:
         if not m:
             continue
         container_path = m.group("path")
-        host_path = Path(container_path.replace("/work/", str(workspace) + "/", 1))
+        host_path = Path(_translate_container_path(container_path, workspace))
         if host_path.is_file():
             return host_path
     return None
