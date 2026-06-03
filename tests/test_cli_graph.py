@@ -256,7 +256,7 @@ def test_text_output_has_package_count_and_cycle_report(runner: _CliRunner, nxp_
         )
 
     assert result.exit_code == 0, result.output
-    assert "package count" in result.output
+    assert "packages in scope" in result.output
     # pn-buildlist has three non-empty lines.
     assert "3" in result.output
     # Acyclic graph: cycle report reads "no cycles".

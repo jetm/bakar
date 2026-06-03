@@ -15,6 +15,8 @@ import networkx as nx
 import pytest
 
 from bakar.graph_analyze import (
+    _is_log_line,
+    _strip_kas_preamble,
     analyze,
     blast_radius,
     collapse_to_pn,
@@ -58,12 +60,48 @@ def buildlist_text() -> str:
 # ===========================================================================
 
 
+class TestStripKasPreamble:
+    def test_strips_log_lines_before_digraph(self) -> None:
+        """kas-container startup log noise before the DOT block is removed."""
+        noisy = "2026-06-03 15:03:32 - INFO - kas 5.2 started on Fedora Linux 40\ndigraph d {\n}\n"
+        assert _strip_kas_preamble(noisy).startswith("digraph")
+
+    def test_clean_dot_unchanged(self) -> None:
+        clean = "digraph d {\n}\n"
+        assert _strip_kas_preamble(clean) == clean
+
+    def test_no_dot_keyword_returns_original(self) -> None:
+        # If there's no digraph/graph, return unchanged (caller will get empty graph).
+        text = "only log noise here\n"
+        assert _strip_kas_preamble(text) == text
+
+
+class TestIsLogLine:
+    def test_timestamp_line_is_log(self) -> None:
+        assert _is_log_line("2026-06-03 15:03:32 - INFO - kas 5.2 started")
+
+    def test_recipe_name_is_not_log(self) -> None:
+        assert not _is_log_line("busybox")
+
+    def test_empty_is_not_log(self) -> None:
+        assert not _is_log_line("")
+
+
 class TestReadGraph:
     def test_fixture_parses_non_empty(self, dot_text: str) -> None:
         """The falsifier: read_dot must parse the fixture into a non-empty graph."""
         graph = read_graph(dot_text)
         assert graph.number_of_nodes() > 0
         assert graph.is_directed()
+
+    def test_kas_preamble_stripped_before_parse(self) -> None:
+        """Log noise prepended by run_shell_capture does not prevent parsing."""
+        noisy_dot = (
+            "2026-06-03 15:03:32 - INFO     - kas 5.2 started on Fedora Linux 40\n"
+            'digraph depends {\n"a.do_compile" -> "b.do_compile"\n}\n'
+        )
+        graph = read_graph(noisy_dot)
+        assert graph.number_of_nodes() > 0
 
     def test_empty_text_returns_empty_graph(self) -> None:
         graph = read_graph("")
@@ -116,6 +154,11 @@ class TestPackageCount:
 
     def test_empty_returns_zero(self) -> None:
         assert package_count("") == 0
+
+    def test_log_lines_excluded_from_count(self) -> None:
+        """kas startup log lines prepended to pn-buildlist are not counted as recipes."""
+        noisy = "2026-06-03 15:03:32 - INFO - kas 5.2 started\nbusybox\nglibc\n"
+        assert package_count(noisy) == 2
 
 
 # ===========================================================================
@@ -236,6 +279,8 @@ class TestAnalyze:
         assert result["blast_radius"] == 3
         assert result["cycle"] == []
         assert result["longest_chain"][0] == "busybox"
+        assert "direct_deps" in result
+        assert isinstance(result["direct_deps"], list)
 
     def test_depth_propagates(self, dot_text: str, buildlist_text: str) -> None:
         result = analyze(dot_text, buildlist_text, "busybox", depth=1)

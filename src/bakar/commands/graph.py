@@ -78,31 +78,36 @@ def _find_buildhistory_depends_dot(bsp_root: Path) -> Path | None:
 def _print_text_report(recipe: str, insights: dict, runtime: list[tuple[str, int]]) -> None:
     """Render the human-readable text report."""
     console.print(f"[bold]Dependency graph for {recipe}[/]", highlight=False)
-    console.print(f"  package count: {insights['package_count']}", highlight=False)
+
+    pkg_count = insights["package_count"]
+    console.print(f"  packages in scope: {pkg_count}", highlight=False)
+
+    direct = insights.get("direct_deps", [])
+    console.print(f"  direct deps: {len(direct)}", highlight=False)
 
     depth = insights.get("depth")
-    radius_label = "blast radius" if depth is None else f"blast radius (depth {depth})"
+    radius_label = "transitive deps" if depth is None else f"transitive deps (depth {depth})"
     console.print(f"  {radius_label}: {insights['blast_radius']}", highlight=False)
 
     chain = insights.get("longest_chain", [])
     console.print("[bold]Longest build chain:[/]", highlight=False)
     if chain:
-        console.print(f"  {' -> '.join(chain)}", highlight=False)
+        console.print(f"  length {len(chain)}: {' -> '.join(chain)}", highlight=False)
     else:
         console.print("  (none)", highlight=False)
 
     cycle = insights.get("cycle", [])
     console.print("[bold]Cycle report:[/]", highlight=False)
     if cycle:
-        console.print(f"  cycle: {' -> '.join(cycle)}", highlight=False)
+        console.print(f"  cycle: {' -> '.join(cycle)} -> ...", highlight=False)
     else:
         console.print("  no cycles", highlight=False)
 
     critical = insights.get("critical", [])
-    console.print("[bold]Critical recipes (most depended-on):[/]", highlight=False)
+    console.print("[bold]Most depended-on recipes:[/]", highlight=False)
     if critical:
         for name, degree in critical:
-            console.print(f"  {name} ({degree})", highlight=False)
+            console.print(f"  {name} ({degree} dependents)", highlight=False)
     else:
         console.print("  (none)", highlight=False)
 

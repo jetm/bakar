@@ -30,6 +30,8 @@ critical_nodes(pn_graph, top_n=5)
     PNs with the highest in-degree (most depended-on).
 top_runtime_packages(depends_dot_text, top_n=5)
     Top runtime packages by fan-in from a buildhistory ``depends.dot``.
+direct_deps(pn_graph, target)
+    Sorted list of packages *target* directly depends on.
 analyze(dot_text, buildlist_text, target, depth=None)
     Assemble every insight into one dict for the command's JSON/text output.
 """
@@ -37,10 +39,41 @@ analyze(dot_text, buildlist_text, target, depth=None)
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 
 import networkx as nx
 from networkx.drawing.nx_pydot import read_dot
+
+
+def _strip_kas_preamble(text: str) -> str:
+    """Strip kas-container startup log lines that precede the DOT graph content.
+
+    ``run_shell_capture`` merges stderr into the captured file, so kas startup
+    messages like ``2026-06-03 15:03:32 - INFO - kas 5.2 started ...`` appear
+    before the ``digraph { ... }`` block.  pydot's parser fails on the first
+    non-DOT token; this function finds the first ``digraph``/``graph``/``strict``
+    keyword and returns the text from that point onward.
+    """
+    m = re.search(r"(?im)^(strict\s+)?(di)?graph\b", text)
+    return text[m.start() :] if m else text
+
+
+def _is_log_line(line: str) -> bool:
+    """Return True for kas-container log lines that appear in captured output.
+
+    Log lines start with a timestamp digit (``2026-...``) or a known log-level
+    keyword.  Yocto recipe names never contain spaces or start with a digit
+    (with the rare exception of packages like ``389-ds-base`` which start with
+    a digit but have no spaces); the space-based check safely distinguishes them.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return False
+    # Log lines always contain at least one space (e.g. "INFO - kas 5.2 started")
+    # while recipe names never contain spaces.
+    return " " in stripped
+
 
 # ---------------------------------------------------------------------------
 # Graph construction
@@ -57,6 +90,9 @@ def read_graph(dot_text: str) -> nx.MultiDiGraph:
     """
     if not dot_text or not dot_text.strip():
         return nx.MultiDiGraph()
+
+    # Strip kas-container startup log noise that precedes the DOT content.
+    dot_text = _strip_kas_preamble(dot_text)
 
     path = None
     try:
@@ -113,10 +149,14 @@ def collapse_to_pn(graph: nx.MultiDiGraph) -> nx.DiGraph:
 
 
 def package_count(buildlist_text: str) -> int:
-    """Count the recipes in ``pn-buildlist`` (non-empty lines)."""
+    """Count the recipes in ``pn-buildlist``, skipping kas-container log lines.
+
+    Recipe names never contain spaces; log lines (timestamps, INFO/WARNING
+    notices) always do, so the space check reliably separates them.
+    """
     if not buildlist_text:
         return 0
-    return sum(1 for line in buildlist_text.splitlines() if line.strip())
+    return sum(1 for line in buildlist_text.splitlines() if line.strip() and not _is_log_line(line))
 
 
 # ---------------------------------------------------------------------------
@@ -248,10 +288,12 @@ def analyze(
     PN graph, so the numeric insights degrade to 0/empty rather than crashing.
     """
     pn_graph = collapse_to_pn(read_graph(dot_text))
+    direct = sorted(pn_graph.successors(target)) if target in pn_graph else []
     return {
         "target": target,
         "depth": depth,
         "package_count": package_count(buildlist_text),
+        "direct_deps": direct,
         "blast_radius": blast_radius(pn_graph, target, depth),
         "longest_chain": longest_chain(pn_graph),
         "cycle": find_cycle(pn_graph),
