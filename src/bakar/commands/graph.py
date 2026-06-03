@@ -216,6 +216,12 @@ def graph(
         )
         dot_text = dot_out.read_text(errors="replace") if dot_out.exists() else ""
 
+        # --format dot needs only the raw graph; skip the pn-buildlist
+        # retrieval, analysis, and buildhistory read the other formats consume.
+        if output_format is GraphFormat.dot:
+            typer.echo(dot_text)
+            return
+
         buildlist_out = log.run_dir / "graph-pn-buildlist.log"
         run_shell_capture(
             kas_ctx,
@@ -232,10 +238,6 @@ def graph(
     bh_dot = _find_buildhistory_depends_dot(cfg.bsp_root)
     if bh_dot is not None:
         runtime = top_runtime_packages(bh_dot.read_text(errors="replace"))
-
-    if output_format is GraphFormat.dot:
-        typer.echo(dot_text)
-        return
 
     if output_format is GraphFormat.json:
         doc = dict(insights)

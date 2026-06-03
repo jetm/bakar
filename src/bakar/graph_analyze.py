@@ -140,7 +140,7 @@ def blast_radius(pn_graph: nx.DiGraph, target: str, depth: int | None = None) ->
 
 def _bounded_descendants(pn_graph: nx.DiGraph, target: str, depth: int) -> set[str]:
     """Descendants of *target* reachable within *depth* edges (BFS)."""
-    if depth <= 0 or target not in pn_graph:
+    if depth <= 0:
         return set()
     seen: set[str] = set()
     frontier = {target}
@@ -226,11 +226,7 @@ def top_runtime_packages(depends_dot_text: str, top_n: int = 5) -> list[tuple[st
     for src, dst in graph.edges():
         if src != dst:
             simple.add_edge(src, dst)
-    ranked = sorted(
-        ((node, deg) for node, deg in simple.in_degree() if deg > 0),
-        key=lambda item: (-item[1], item[0]),
-    )
-    return ranked[:top_n]
+    return critical_nodes(simple, top_n)
 
 
 # ---------------------------------------------------------------------------
