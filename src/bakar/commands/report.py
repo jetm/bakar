@@ -13,7 +13,7 @@ import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import _bbsetup_workspace, _find_run, _print_layer_hashes, _workspace_from_cwd
 from bakar.config import BSPSpec, resolve
-from bakar.report import assemble_report
+from bakar.report import _parse_buildhistory, assemble_report
 
 
 @app.command("report")
@@ -90,6 +90,12 @@ def report(
         _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary
     )
 
+    # Presence of the buildhistory dir is the gate - no flag. ``_parse_buildhistory``
+    # returns None when the dir is absent, so the section and its JSON fields appear
+    # only when the user already opted into buildhistory via their overlay.
+    has_buildhistory = _parse_buildhistory(cfg) is not None
+
+
     if json_out:
         payload = {
             "run_id": summary.run_id,
@@ -111,6 +117,15 @@ def report(
                     "sstate_current": summary.sstate_current,
                     "sstate_match_pct": summary.sstate_match_pct,
                     "sstate_complete_pct": summary.sstate_complete_pct,
+                }
+            )
+        if has_buildhistory:
+            payload.update(
+                {
+                    "buildhistory_imagesize_kib": summary.buildhistory_imagesize_kib,
+                    "top_packages": [list(pkg) for pkg in summary.top_packages],
+                    "pkg_count": summary.pkg_count,
+                    "layers_dirty": summary.layers_dirty,
                 }
             )
         print(json.dumps(payload))
@@ -139,3 +154,15 @@ def report(
         console.print(f"  current: {summary.sstate_current}")
         console.print(f"  match: {summary.sstate_match_pct}%")
         console.print(f"  complete: {summary.sstate_complete_pct}%")
+    if has_buildhistory:
+        console.print("[bold]buildhistory:[/]")
+        if summary.buildhistory_imagesize_kib is not None:
+            console.print(f"  image size: {summary.buildhistory_imagesize_kib} KiB")
+        if summary.pkg_count is not None:
+            console.print(f"  packages: {summary.pkg_count}")
+        if summary.top_packages:
+            console.print("  top packages:")
+            for pkg, size in summary.top_packages:
+                console.print(f"    {pkg}: {size} KiB")
+        if summary.layers_dirty:
+            console.print(f"  dirty layers: {', '.join(summary.layers_dirty)}")
