@@ -183,7 +183,10 @@ def _run_byo_build(
     """
     _run_doctor_gate(cfg, log, ctx.bsp, ctx.skip_doctor)
 
-    if ctx.effective_show_layers:
+    # BYO skips sync/setup-env, so kas generates bblayers.conf during run_build.
+    # Layer hashes are only on disk once the build has run; only --dry-run can
+    # print up front (best effort from any pre-existing conf).
+    if ctx.effective_show_layers and ctx.dry_run:
         _print_layer_hashes(cfg)
 
     if not ctx.dry_run:
@@ -203,6 +206,9 @@ def _run_byo_build(
         console.print(f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details.")
         raise typer.Exit(code=rc)
     deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
+    # A real build only has bblayers.conf on disk after run_build succeeds.
+    if ctx.effective_show_layers and not ctx.dry_run:
+        _print_layer_hashes(cfg)
     console.print("[bold green]build succeeded[/]")
     console.print(f"artifacts: {deploy}")
 
