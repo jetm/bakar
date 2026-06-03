@@ -22,6 +22,7 @@ import bakar.commands.clean_cache
 import bakar.commands.diff
 import bakar.commands.diffsigs
 import bakar.commands.doctor
+import bakar.commands.drift
 import bakar.commands.dump
 import bakar.commands.for_all
 import bakar.commands.gen_kas
