@@ -23,6 +23,7 @@ import pytest
 
 import bakar.commands.diffsigs  # noqa: F401 - registers the command on app
 from bakar.cli import app
+from bakar.commands.diffsigs import _extract_dep_diff, _render_diffsigs, _strip_kas_preamble
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -227,3 +228,67 @@ def test_no_workspace_exits_2(runner: _CliRunner, tmp_path: Path, monkeypatch: p
         ["diffsigs", _RECIPE, _TASK, "--manifest", _MANIFEST],
     )
     assert result.exit_code == 2
+
+
+# ---------------------------------------------------------------------------
+# Parser unit tests
+# ---------------------------------------------------------------------------
+
+_SAMPLE_DIFFSIGS = """\
+2026-06-03 12:59:14 - INFO     - kas 5.2 started on Fedora Linux 40
+2026-06-03 12:59:14 - WARNING  - kas-container (5.3) and kas (5.2) versions do not match
+2026-06-03 12:59:14 - INFO     - Repository bitbake already contains abc1234 as commit
+2026-06-03 12:59:14 - INFO     - Repository bitbake checked out to abc1234
+2026-06-03 12:59:14 - INFO     - To start the default build, run: bitbake -c build avocado-distro
+NOTE: Starting bitbake server...
+Hash for task dependency linux-yocto:do_configure changed from aaa to
+bbb
+    Hash for task dependency kern-tools-native:do_compile changed from ccc to
+ddd
+        Hash for task dependency kern-tools-native:do_configure changed from eee to
+fff
+                                    Task dependencies changed from:
+                                    ['AR', 'AS', 'CC', 'CCACHE_CONFIGPATH']
+                                    to:
+                                    ['AR', 'AS', 'CC', 'CCACHE_CONFIGPATH', 'CCACHE_MAXSIZE']
+                                    basehash changed from eee to fff
+                                    Dependency on variable CCACHE_MAXSIZE was added
+"""
+
+
+@pytest.mark.unit
+def test_strip_kas_preamble_removes_log_lines() -> None:
+    """kas INFO/WARNING lines are filtered; NOTE and Hash lines are kept."""
+    lines = _SAMPLE_DIFFSIGS.splitlines()
+    clean = _strip_kas_preamble(lines)
+    assert not any("INFO" in l and "kas" in l for l in clean)
+    assert any("NOTE:" in l for l in clean)
+    assert any("Hash for task" in l for l in clean)
+
+
+@pytest.mark.unit
+def test_extract_dep_diff_finds_added_variable() -> None:
+    """_extract_dep_diff returns CCACHE_MAXSIZE as added, nothing removed."""
+    lines = _SAMPLE_DIFFSIGS.splitlines()
+    from bakar.commands.diffsigs import _strip_kas_preamble
+
+    clean = _strip_kas_preamble(lines)
+    added, removed = _extract_dep_diff(clean)
+    assert "CCACHE_MAXSIZE" in added
+    assert removed == []
+
+
+@pytest.mark.unit
+def test_render_diffsigs_output_contains_root_cause(capsys) -> None:
+    """Rendered output calls console.print with root cause and chain."""
+    # _render_diffsigs uses Rich console; capture via the printed text in result
+    # We verify it doesn't crash and the root cause line from the fixture appears.
+    from unittest.mock import patch as mpatch
+
+    printed: list[str] = []
+    with mpatch("bakar.commands.diffsigs.console") as mock_console:
+        mock_console.print.side_effect = lambda *a, **kw: printed.append(str(a[0]) if a else "")
+        _render_diffsigs(_SAMPLE_DIFFSIGS)
+    combined = "\n".join(printed)
+    assert "CCACHE_MAXSIZE" in combined
+    assert "kern-tools-native:do_configure" in combined

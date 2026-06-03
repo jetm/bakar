@@ -8,6 +8,8 @@ reference sigdata files exist.
 
 from __future__ import annotations
 
+import ast
+import re
 import shlex
 from pathlib import Path
 from typing import Annotated
@@ -24,6 +26,91 @@ from bakar.commands._helpers import (
 from bakar.config import BSPSpec, resolve
 from bakar.observability import RunLogger
 from bakar.steps.kas_build import KasBuildContext, run_shell_capture
+
+# ---------------------------------------------------------------------------
+# Output parsing helpers
+# ---------------------------------------------------------------------------
+
+_KAS_LOG_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} - (?:INFO|WARNING|ERROR)\s+-")
+_CHAIN_RE = re.compile(r"^(\s*)Hash for task dependency (\S+) changed")
+_CAUSE_RE = re.compile(r"Dependency on (variable|function) (\S+) was (added|removed|changed)")
+_DEP_LIST_RE = re.compile(r"^\s*(\[(?:'[^']*'(?:,\s*)?)*\])\s*$")
+
+
+def _strip_kas_preamble(lines: list[str]) -> list[str]:
+    """Drop kas-container startup log lines (timestamp + level prefix)."""
+    return [l for l in lines if not _KAS_LOG_RE.match(l)]
+
+
+def _extract_dep_diff(lines: list[str]) -> tuple[list[str], list[str]]:
+    """Parse 'Task dependencies changed from: [...] to: [...]' and return (added, removed)."""
+    text = "\n".join(lines)
+    from_match = re.search(r"Task dependencies changed from:\s*(\[.*?\])\s*to:\s*(\[.*?\])", text, re.DOTALL)
+    if not from_match:
+        return [], []
+    try:
+        from_list: list[str] = ast.literal_eval(from_match.group(1))
+        to_list: list[str] = ast.literal_eval(from_match.group(2))
+    except ValueError, SyntaxError:
+        return [], []
+    from_set, to_set = set(from_list), set(to_list)
+    added = sorted(to_set - from_set)
+    removed = sorted(from_set - to_set)
+    return added, removed
+
+
+def _render_diffsigs(text: str) -> None:
+    """Parse and render bitbake-diffsigs output: root cause, chain, dep diff."""
+    lines = text.splitlines()
+    clean = _strip_kas_preamble(lines)
+
+    # -- Causal chain (ordered by indentation depth, shallowest first) --
+    chain: list[tuple[int, str]] = []
+    for line in clean:
+        m = _CHAIN_RE.match(line)
+        if m:
+            chain.append((len(m.group(1)), m.group(2)))
+    chain.sort(key=lambda x: x[0])
+
+    # -- Root cause: explicit "Dependency on variable/function X was ..." lines --
+    causes: list[str] = []
+    for line in clean:
+        m = _CAUSE_RE.search(line)
+        if m:
+            causes.append(line.strip())
+
+    # -- Dep-list diff --
+    added, removed = _extract_dep_diff(clean)
+
+    # -- Render --
+    if causes:
+        console.print("[bold yellow]Root cause:[/]", highlight=False)
+        for c in causes:
+            console.print(f"  {c}", highlight=False)
+        console.print()
+
+    if chain:
+        console.print("[bold]Rebuild chain:[/]  (top = requested, bottom = root cause)", highlight=False)
+        for i, (_, task_name) in enumerate(chain):
+            if i == 0:
+                console.print(f"  {task_name}  [dim]← requested[/dim]", highlight=False)
+            elif i == len(chain) - 1:
+                console.print(f"  {'  ' * i}↳ {task_name}  [bold yellow]← root cause[/bold yellow]", highlight=False)
+            else:
+                console.print(f"  {'  ' * i}↳ {task_name}", highlight=False)
+        console.print()
+
+    if added or removed:
+        console.print("[bold]Dependency list diff:[/]", highlight=False)
+        for a in added:
+            console.print(f"  [green]+ {a}[/green]", highlight=False)
+        for r in removed:
+            console.print(f"  [red]- {r}[/red]", highlight=False)
+        console.print()
+
+    if not causes and not chain:
+        # Fallback: no structure found, print the kas-stripped text
+        console.print("\n".join(clean), highlight=False)
 
 
 @app.command("diffsigs")
@@ -120,5 +207,5 @@ def diffsigs(
             raise typer.Exit(code=rc_diffsigs)
 
         diff_text = diffsigs_out.read_text(errors="replace") if diffsigs_out.exists() else ""
-        console.print(f"[bold]diffsigs:[/] {recipe} {task}")
-        console.print(diff_text)
+        console.print(f"[bold]diffsigs:[/] {recipe} {task}\n")
+        _render_diffsigs(diff_text)
