@@ -21,9 +21,15 @@ in ``src/bakar``:
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import pytest
+
+# Prevent Rich from inserting ANSI escape codes into captured CLI output.
+# Without this, --help text arrives with mid-token color resets (e.g.
+# "--sstate" + ESC[0m + "-mirror"), breaking plain substring assertions.
+os.environ.setdefault("NO_COLOR", "1")
 
 if TYPE_CHECKING:
     from pathlib import Path
