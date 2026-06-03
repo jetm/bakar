@@ -28,6 +28,8 @@
 | `settings` | [settings.md](settings.md) | Read and write `~/.config/bakar/config.toml` |
 | `lock` | [lock.md](lock.md) | Pin floating layer SHAs |
 | `diff` | [diff.md](diff.md) | Compare two manifest versions |
+| `drift` | [drift.md](drift.md) | Compare workspace pinned SHAs against actual checked-out commits |
+| `changelog` | [changelog.md](changelog.md) | Generate release notes between two pinned workspace states |
 | `prefetch` | [prefetch.md](prefetch.md) | Pre-fetch recipe sources into DL_DIR |
 | `mirror` | [mirror.md](mirror.md) | Seed a premirror `git2_*.tar.gz` tarball from a git URL (host-side) |
 | `dump` | [dump.md](dump.md) | Inspect the resolved kas YAML |
@@ -71,6 +73,8 @@
 **Reproducibility and snapshots:**
 - Pin current SHAs: [lock.md](lock.md)
 - See what changed between manifest versions: [diff.md](diff.md)
+- Check how far the workspace has drifted from pinned SHAs: [drift.md](drift.md)
+- Generate release notes between two pinned states: [changelog.md](changelog.md)
 - Pre-fetch sources for an offline build: [prefetch.md](prefetch.md)
 - Seed a premirror tarball from a git URL (host-side): [mirror.md](mirror.md)
 - Inspect the exact config kas will receive: [dump.md](dump.md)
@@ -143,14 +147,16 @@ Related: [log.md](log.md), [triage.md](triage.md), [report.md](report.md), [laye
 ### Reproducibility
 
 ```text
-bakar lock      - pin every floating layer SHA to an exact commit
-bakar diff      - compare old/new manifest or kas config
-bakar dump      - flatten kas YAML + overlay into a single resolved file
-bakar prefetch  - populate DL_DIR for offline builds
-bakar mirror    - seed a premirror git2_*.tar.gz tarball from a git URL (host-side)
+bakar lock       - pin every floating layer SHA to an exact commit
+bakar diff       - compare old/new manifest or kas config
+bakar drift      - compare workspace pinned SHAs against actual checked-out commits
+bakar changelog  - generate release notes between two pinned workspace states
+bakar dump       - flatten kas YAML + overlay into a single resolved file
+bakar prefetch   - populate DL_DIR for offline builds
+bakar mirror     - seed a premirror git2_*.tar.gz tarball from a git URL (host-side)
 ```
 
-Related: [lock.md](lock.md), [diff.md](diff.md), [dump.md](dump.md), [prefetch.md](prefetch.md), [mirror.md](mirror.md)
+Related: [lock.md](lock.md), [diff.md](diff.md), [drift.md](drift.md), [changelog.md](changelog.md), [dump.md](dump.md), [prefetch.md](prefetch.md), [mirror.md](mirror.md)
 
 ### Shell and scripting
 
