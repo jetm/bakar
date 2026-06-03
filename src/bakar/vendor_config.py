@@ -5,7 +5,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-_VALID_FAMILIES = {"nxp", "ti"}
+_VALID_FAMILIES = {"nxp", "ti", "generic", "bbsetup"}
 _MAX_REGEX_LEN = 200
 
 

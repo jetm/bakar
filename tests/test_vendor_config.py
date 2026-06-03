@@ -50,9 +50,23 @@ def test_valid_full_entry() -> None:
     assert entry.branch_by_manifest_prefix == {"ti-11": "main"}
 
 
+@pytest.mark.parametrize("family", ["nxp", "ti", "generic", "bbsetup"])
+def test_family_valid(family: str) -> None:
+    entry = VendorEntry(name="acme", family=family, manifest_regex=r".*\.xml")
+    assert entry.family == family
+
+
 def test_family_invalid() -> None:
     with pytest.raises(ValueError, match="family must be one of"):
         VendorEntry(name="bad", family="rockchip", manifest_regex=r"rk-.*\.xml")
+
+
+def test_family_invalid_message_lists_all_families() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        VendorEntry(name="bad", family="rockchip", manifest_regex=r"rk-.*\.xml")
+    message = str(exc_info.value)
+    for family in ("nxp", "ti", "generic", "bbsetup"):
+        assert family in message
 
 
 def test_regex_invalid() -> None:
