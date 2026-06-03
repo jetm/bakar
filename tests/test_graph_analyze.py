@@ -40,13 +40,7 @@ CYCLE_DOT = (
 )
 
 # A small buildhistory-style runtime graph: libc is depended on by two pkgs.
-RUNTIME_DOT = (
-    "digraph depends {\n"
-    '"busybox" -> "glibc"\n'
-    '"bash" -> "glibc"\n'
-    '"bash" -> "ncurses"\n'
-    "}\n"
-)
+RUNTIME_DOT = 'digraph depends {\n"busybox" -> "glibc"\n"bash" -> "glibc"\n"bash" -> "ncurses"\n}\n'
 
 
 @pytest.fixture(scope="module")
@@ -102,10 +96,7 @@ class TestCollapseToPn:
 
     def test_parallel_edges_merged(self) -> None:
         """Two task edges collapsing to the same PN pair yield one edge."""
-        text = (
-            '"a.do_compile" -> "b.do_compile"\n'
-            '"a.do_install" -> "b.do_populate_sysroot"\n'
-        )
+        text = '"a.do_compile" -> "b.do_compile"\n"a.do_install" -> "b.do_populate_sysroot"\n'
         pn = collapse_to_pn(read_graph("digraph d {\n" + text + "}\n"))
         assert pn.number_of_edges() == 1
 

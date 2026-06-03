@@ -167,9 +167,7 @@ def test_tar_uses_committer_date_and_oe_owner(
 
 
 @pytest.mark.unit
-def test_tempdir_removed_after_success(
-    runner: _CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_tempdir_removed_after_success(runner: _CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """No temporary clone directory remains on disk after a successful run."""
     monkeypatch.chdir(tmp_path)
     created: list[Path] = []
@@ -195,9 +193,7 @@ def test_tempdir_removed_after_success(
 
 
 @pytest.mark.unit
-def test_clone_failure_propagates_nonzero(
-    runner: _CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_clone_failure_propagates_nonzero(runner: _CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A failed git clone exits non-zero rather than reporting success."""
     monkeypatch.chdir(tmp_path)
 
