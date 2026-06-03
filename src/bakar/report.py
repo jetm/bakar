@@ -44,6 +44,10 @@ class ReportSummary:
     sstate_current: int | None = None
     sstate_match_pct: int | None = None
     sstate_complete_pct: int | None = None
+    buildhistory_imagesize_kib: int | None = None
+    top_packages: list[tuple[str, int]] = field(default_factory=list)
+    pkg_count: int | None = None
+    layers_dirty: list[str] = field(default_factory=list)
 
 
 def _parse_ts(rec: dict | None) -> datetime | None:
@@ -165,6 +169,129 @@ def _parse_sstate_summary(kas_log: Path) -> dict[str, int | None]:
     return result
 
 
+def _read_imagesize_kib(image_info: Path) -> int | None:
+    """Return the ``IMAGESIZE`` KiB value from a buildhistory ``image-info.txt``.
+
+    The file holds ``KEY = VALUE`` lines; ``IMAGESIZE`` is the rootfs size in
+    KiB. Returns ``None`` when the file is absent, unreadable, or the value is
+    missing or non-integer.
+    """
+    try:
+        text = image_info.read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "IMAGESIZE":
+            try:
+                return int(value.strip())
+            except ValueError:
+                return None
+    return None
+
+
+def _read_top_packages(pkg_sizes: Path, limit: int = 10) -> list[tuple[str, int]]:
+    """Return the top ``limit`` ``(package, size_kib)`` rows by size.
+
+    ``installed-package-sizes.txt`` holds ``<size>\\tKiB\\t<pkg>`` rows already
+    sorted descending. Malformed rows (wrong column count or non-integer size)
+    are skipped without aborting. Returns ``[]`` when the file is absent or
+    unreadable.
+    """
+    try:
+        text = pkg_sizes.read_text()
+    except OSError:
+        return []
+    rows: list[tuple[str, int]] = []
+    for line in text.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        try:
+            size = int(parts[0].strip())
+        except ValueError:
+            continue
+        pkg = parts[2].strip()
+        if not pkg:
+            continue
+        rows.append((pkg, size))
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _read_pkg_count(pkg_names: Path) -> int | None:
+    """Return the number of non-empty lines in ``installed-package-names.txt``.
+
+    Each line names one installed package. Returns ``None`` when the file is
+    absent or unreadable.
+    """
+    try:
+        text = pkg_names.read_text()
+    except OSError:
+        return None
+    return sum(1 for line in text.splitlines() if line.strip())
+
+
+def _read_dirty_layers(metadata_revs: Path) -> list[str]:
+    """Return the layer names flagged ``-- modified`` in ``metadata-revs``.
+
+    Each row is ``<layer-path> <commit> <branch>`` with a trailing
+    ``-- modified`` marker when the layer's tree is uncommitted. The layer name
+    is the basename of the leading path token. Returns ``[]`` when the file is
+    absent or unreadable.
+    """
+    try:
+        text = metadata_revs.read_text()
+    except OSError:
+        return []
+    dirty: list[str] = []
+    for line in text.splitlines():
+        if not line.rstrip().endswith("-- modified"):
+            continue
+        tokens = line.split()
+        if tokens:
+            dirty.append(Path(tokens[0]).name)
+    return dirty
+
+
+def _parse_buildhistory(cfg: BuildConfig) -> dict | None:
+    """Parse static buildhistory artifacts under ``cfg.bsp_root``.
+
+    Detects ``<bsp_root>/build/buildhistory``, gated on the ``images/``
+    subdirectory or a ``metadata-revs`` file being present. Parses
+    ``image-info.txt``, ``installed-package-sizes.txt``, and
+    ``installed-package-names.txt`` from the per-image directory (globbed under
+    ``images/*/*/*/``), plus the top-level ``metadata-revs``. Returns ``None``
+    when the buildhistory directory is absent or fails the presence gate, so the
+    caller can skip the section entirely. Each parsed field degrades to
+    ``None``/``[]`` on a missing or malformed file without raising.
+    """
+    root = cfg.bsp_root / "build" / "buildhistory"
+    if not root.is_dir():
+        return None
+    images_dir = root / "images"
+    metadata_revs = root / "metadata-revs"
+    if not images_dir.is_dir() and not metadata_revs.is_file():
+        return None
+
+    imagesize_kib: int | None = None
+    top_packages: list[tuple[str, int]] = []
+    pkg_count: int | None = None
+    for image_info in images_dir.glob("*/*/*/image-info.txt"):
+        imagesize_kib = _read_imagesize_kib(image_info)
+        top_packages = _read_top_packages(image_info.parent / "installed-package-sizes.txt")
+        pkg_count = _read_pkg_count(image_info.parent / "installed-package-names.txt")
+        break
+
+    return {
+        "buildhistory_imagesize_kib": imagesize_kib,
+        "top_packages": top_packages,
+        "pkg_count": pkg_count,
+        "layers_dirty": _read_dirty_layers(metadata_revs),
+    }
+
+
 def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
     """Assemble a best-effort summary of the run in ``run_dir``.
 
@@ -199,6 +326,7 @@ def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
     )
 
     sstate = _parse_sstate_summary(run_dir / "kas.log")
+    buildhistory = _parse_buildhistory(cfg) or {}
 
     return ReportSummary(
         run_id=run_dir.name,
@@ -216,4 +344,8 @@ def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
         sstate_current=sstate["sstate_current"],
         sstate_match_pct=sstate["sstate_match_pct"],
         sstate_complete_pct=sstate["sstate_complete_pct"],
+        buildhistory_imagesize_kib=buildhistory.get("buildhistory_imagesize_kib"),
+        top_packages=buildhistory.get("top_packages", []),
+        pkg_count=buildhistory.get("pkg_count"),
+        layers_dirty=buildhistory.get("layers_dirty", []),
     )
