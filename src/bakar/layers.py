@@ -30,6 +30,35 @@ class LayerHash:
     version: str | None = field(default=None)  # set for the bitbake entry
 
 
+def _parse_bbsetup_layer_repos(bblayers_conf: Path) -> list[str]:
+    """Return the repo names referenced under a ``/layers/<repo>`` BBLAYERS path.
+
+    bitbake-setup workspaces lay layers out as ``${TOPDIR}/../layers/<repo>/...``.
+    This extracts the ``<repo>`` segment (the first path component after
+    ``/layers/``) for each such token, deduplicated and order-preserving.
+    Returns ``[]`` when no ``/layers/`` token is present.
+    """
+    text = bblayers_conf.read_text()
+    joined = " ".join(line.split("#", 1)[0] for line in text.splitlines()).replace("\\", " ")
+    matches = re.findall(r'BBLAYERS\s*(?:\?\??|\+)?=\s*"([^"]*)"', joined)
+    repos: list[str] = []
+    seen: set[str] = set()
+    for body in matches:
+        for raw_token in body.split():
+            token = raw_token.strip()
+            idx = token.find("/layers/")
+            if idx == -1:
+                continue
+            rel = token[idx + len("/layers/") :].strip("/")
+            if not rel:
+                continue
+            repo = rel.split("/")[0]
+            if repo and repo not in seen:
+                seen.add(repo)
+                repos.append(repo)
+    return repos
+
+
 def _resolve_bblayers_paths(bblayers_conf: Path) -> dict[str, Path]:
     """Resolve TOPDIR-relative paths in bblayers.conf to {repo_name: git_root}.
 
@@ -140,8 +169,10 @@ def collect_layer_hashes(cfg: BuildConfig) -> list[LayerHash]:
     a ``bitbake`` entry appended last carrying the version read from
     ``lib/bb/__init__.py``.
 
-    Supports two BBLAYERS path conventions:
+    Supports three BBLAYERS path conventions:
 
+    - bitbake-setup workspaces: ``${TOPDIR}/../layers/<repo>/...`` paths where
+      the repo's host path is ``cfg.bsp_root/layers/<repo>``.
     - NXP/TI container builds: ``/work/sources/<repo>/...`` paths where the
       repo's host path is ``cfg.bsp_root/sources/<repo>``.
     - Generic BYO builds: ``${TOPDIR}/../layers/<repo>/...`` paths resolved
@@ -150,12 +181,19 @@ def collect_layer_hashes(cfg: BuildConfig) -> list[LayerHash]:
     if not cfg.bblayers_conf.is_file():
         return []
 
-    # Strategy 1: /sources/ convention (NXP/TI container builds).
+    # Strategy 0: bbsetup layers/ convention (bitbake-setup workspaces).
     repo_paths: dict[str, Path] = {}
-    for repo in parse_bblayers(cfg.bblayers_conf):
-        path = cfg.bsp_root / "sources" / repo
+    for repo in _parse_bbsetup_layer_repos(cfg.bblayers_conf):
+        path = cfg.bsp_root / "layers" / repo
         if path.is_dir():
             repo_paths[repo] = path
+
+    # Strategy 1: /sources/ convention (NXP/TI container builds).
+    if not repo_paths:
+        for repo in parse_bblayers(cfg.bblayers_conf):
+            path = cfg.bsp_root / "sources" / repo
+            if path.is_dir():
+                repo_paths[repo] = path
 
     # Strategy 2: resolve TOPDIR-relative paths (generic/BYO builds).
     if not repo_paths:
