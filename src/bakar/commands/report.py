@@ -34,6 +34,10 @@ def report(
         bool,
         typer.Option("--json", help="Emit the summary as a single JSON object on stdout."),
     ] = False,
+    show_sstate: Annotated[
+        bool,
+        typer.Option("--show-sstate", help="Show the sstate summary section."),
+    ] = False,
 ) -> None:
     """Summarize a completed build run from its structured logs.
 
@@ -82,6 +86,10 @@ def report(
 
     summary = assemble_report(run_dir, cfg)
 
+    effective_show_sstate = show_sstate or (
+        _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary
+    )
+
     if json_out:
         payload = {
             "run_id": summary.run_id,
@@ -93,6 +101,18 @@ def report(
             "layers": [dataclasses.asdict(layer) for layer in summary.layers],
             "build_revision": summary.build_revision,
         }
+        if effective_show_sstate:
+            payload.update(
+                {
+                    "sstate_wanted": summary.sstate_wanted,
+                    "sstate_local": summary.sstate_local,
+                    "sstate_mirrors": summary.sstate_mirrors,
+                    "sstate_missed": summary.sstate_missed,
+                    "sstate_current": summary.sstate_current,
+                    "sstate_match_pct": summary.sstate_match_pct,
+                    "sstate_complete_pct": summary.sstate_complete_pct,
+                }
+            )
         print(json.dumps(payload))
         return
 
@@ -110,3 +130,12 @@ def report(
     if summary.build_revision is not None:
         console.print(f"build_revision: {summary.build_revision}")
     _print_layer_hashes(cfg, hashes=summary.layers)
+    if effective_show_sstate:
+        console.print("[bold]sstate summary:[/]")
+        console.print(f"  wanted: {summary.sstate_wanted}")
+        console.print(f"  local: {summary.sstate_local}")
+        console.print(f"  mirrors: {summary.sstate_mirrors}")
+        console.print(f"  missed: {summary.sstate_missed}")
+        console.print(f"  current: {summary.sstate_current}")
+        console.print(f"  match: {summary.sstate_match_pct}%")
+        console.print(f"  complete: {summary.sstate_complete_pct}%")
