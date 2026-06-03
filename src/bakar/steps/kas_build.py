@@ -16,6 +16,13 @@ These are parsed by :mod:`bakar.steps.build_ui` into a Rich Live
 display. The PTY also means bitbake's stdout is line-flushed rather
 than block-buffered, so ``bakar log`` and the progress bar stay
 responsive during long compile phases.
+
+The live UI never re-displays the in-container recipe-log path
+(``/work/.../log.do_<task>``); raw kas.log lines are streamed through
+unchanged. Container-to-host recipe-log path translation lives in
+:func:`bakar.triage._translate_container_path` and is applied only by
+``bakar triage`` when it surfaces the failing recipe log. No host-path
+rewrite is needed here.
 """
 
 from __future__ import annotations
