@@ -215,3 +215,99 @@ def test_sync_workspace_not_found_exits_nonzero(
     )
 
     assert result.exit_code != 0, f"expected non-zero exit when no workspace marker exists, got 0:\n{result.output}"
+
+
+def test_sync_dry_run_script_stdout(
+    runner: CliRunner,
+    fake_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--dry-run-script -`` writes a bash script to stdout and exits 0.
+
+    The script must start with the shebang line and contain a provenance
+    comment naming the bsp_family. No subprocess calls are made; the
+    command exits before sync.
+    """
+    monkeypatch.chdir(fake_workspace)
+
+    result = runner.invoke(
+        app,
+        ["sync", "--skip-doctor", "--manifest", "imx-6.6.52-2.2.2.xml", "--dry-run-script", "-"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output.startswith("#!/usr/bin/env bash"), (
+        f"expected shebang as first line, got:\n{result.output[:200]}"
+    )
+    assert "# bsp_family: nxp" in result.output, f"expected bsp_family comment in script, got:\n{result.output[:400]}"
+
+
+def test_sync_dry_run_script_file(
+    runner: CliRunner,
+    fake_workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--dry-run-script PATH`` writes the script to a file and exits 0.
+
+    The command must not invoke any sync subprocess and the written file
+    must contain the shebang header.
+    """
+    monkeypatch.chdir(fake_workspace)
+    script_path = tmp_path / "sync.sh"
+
+    result = runner.invoke(
+        app,
+        ["sync", "--skip-doctor", "--manifest", "imx-6.6.52-2.2.2.xml", "--dry-run-script", str(script_path)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert script_path.exists(), "expected script file to be written"
+    content = script_path.read_text()
+    assert content.startswith("#!/usr/bin/env bash"), f"expected shebang, got:\n{content[:200]}"
+
+
+def test_sync_dry_run_script_nxp_contains_repo(
+    runner: CliRunner,
+    fake_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NXP ``--dry-run-script`` output must contain ``repo init``/``repo sync``.
+
+    The sync step in the generated script branches on ``cfg.bsp_family``;
+    for the NXP family the correct tool is ``repo``.
+    """
+    monkeypatch.chdir(fake_workspace)
+
+    result = runner.invoke(
+        app,
+        ["sync", "--skip-doctor", "--manifest", "imx-6.6.52-2.2.2.xml", "--dry-run-script", "-"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "repo init" in result.output, f"expected 'repo init' in script sync step, got:\n{result.output}"
+    assert "repo sync" in result.output, f"expected 'repo sync' in script sync step, got:\n{result.output}"
+
+
+def test_sync_dry_run_without_script_writes_no_file(
+    runner: CliRunner,
+    fake_workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--dry-run`` (without ``--dry-run-script``) must not create a script file.
+
+    The plain ``--dry-run`` flag calls ``_print_dry_run`` and exits; it must
+    never write any file to the workspace.
+    """
+    monkeypatch.chdir(fake_workspace)
+    before = set((fake_workspace).rglob("*.sh"))
+
+    result = runner.invoke(
+        app,
+        ["sync", "--skip-doctor", "--manifest", "imx-6.6.52-2.2.2.xml", "--dry-run"],
+    )
+
+    after = set((fake_workspace).rglob("*.sh"))
+    assert result.exit_code == 0, result.output
+    assert after == before, f"unexpected script file(s) written: {after - before}"

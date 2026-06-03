@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -14,8 +15,10 @@ from bakar.commands._helpers import (
     _bbsetup_workspace,
     _clean_build_dir,
     _dispatch_bsp,
+    _overlay_for,
     _print_diagnosis,
     _print_layer_hashes,
+    _tuning_extra_overlays,
     _workspace_from_cwd,
 )
 from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, resolve
@@ -131,6 +134,14 @@ def sync(
         bool,
         typer.Option("--dry-run", "-n", help="Print the sync commands that would run, then exit without syncing."),
     ] = False,
+    dry_run_script: Annotated[
+        str | None,
+        typer.Option(
+            "--dry-run-script",
+            help="Write a runnable bash script to PATH (or stdout when PATH is '-') and exit without syncing.",
+            metavar="PATH",
+        ),
+    ] = None,
 ) -> None:
     """Run the manifest-driven sync without building.
 
@@ -159,6 +170,28 @@ def sync(
 
     if dry_run:
         _print_dry_run(cfg, family)
+        raise typer.Exit(code=0)
+
+    if dry_run_script is not None:
+        from bakar.steps.kas_build import generate_dry_run_script
+
+        overlay_source = _overlay_for(bsp)
+        extra_overlays = _tuning_extra_overlays(cfg)
+        try:
+            script = generate_dry_run_script(
+                cfg,
+                cfg.kas_yaml,
+                overlay_source,
+                extra_overlays,
+                generating_command="bakar sync --dry-run-script",
+            )
+        except ValueError as exc:
+            console.print(f"[red]Cannot generate dry-run script:[/] {exc}")
+            raise typer.Exit(code=2) from None
+        if dry_run_script == "-":
+            sys.stdout.write(script)
+        else:
+            Path(dry_run_script).write_text(script, encoding="utf-8")
         raise typer.Exit(code=0)
 
     if "KAS_CONTAINER_IMAGE" not in os.environ and cfg.container_image != DEFAULT_CONTAINER_IMAGE:
