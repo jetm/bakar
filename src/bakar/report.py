@@ -237,10 +237,11 @@ def _read_pkg_count(pkg_names: Path) -> int | None:
 def _read_dirty_layers(metadata_revs: Path) -> list[str]:
     """Return the layer names flagged ``-- modified`` in ``metadata-revs``.
 
-    Each row is ``<layer-path> <commit> <branch>`` with a trailing
-    ``-- modified`` marker when the layer's tree is uncommitted. The layer name
-    is the basename of the leading path token. Returns ``[]`` when the file is
-    absent or unreadable.
+    Each row is ``<layer> = <branch>:<sha>`` with a trailing ``-- modified``
+    marker when the layer's tree is uncommitted (oe.buildcfg.get_layer_revisions
+    output). The leading token is already the layer name; ``Path(...).name``
+    leaves it unchanged and also tolerates a path-shaped token. Returns ``[]``
+    when the file is absent or unreadable.
     """
     try:
         text = metadata_revs.read_text()
