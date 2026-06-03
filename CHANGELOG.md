@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-03
+
+### Added
+
+- Added `--sstate-mirror` flag to `bakar build` that configures an HTTP sstate/downloads mirror URL and automatically enables the shared-cache overlay (`SSTATE_MIRRORS`, `BB_HASHSERVE_UPSTREAM`) without requiring manual kas YAML edits.
+- Added `sstate_mirror_url` field to the `[build]` section of `config.toml`, equivalent to passing `--sstate-mirror` on every build invocation.
+- Added a `build_revision` field to report output: a short stable identity hash derived from the current layer checkout SHAs, visible in both human-readable and `--json` report output.
+- Added warning and error tallies printed at the end of every build (e.g. "3 warnings, 1 error"), so build noisiness is visible without grepping `kas.log`.
+- Added extended triage suggestions for compiler OOM kills (`cc1plus` killed by OOM killer), GitHub API rate limits (HTTP 429), DNS/network failures (with PREMIRROR recommendation), and mirror connection refusals.
+- `bakar triage` now discovers run directories across all BSP families and BYO/generic workspaces, not only `nxp/` and `ti/` subdirectories.
+
+### Changed
+
+- `bakar triage` now reads a pre-computed `error-report.json` artifact written at build-failure time instead of re-parsing the full `kas.log` on every invocation, making triage significantly faster for completed failed runs. Run directories produced before this change continue to work via the existing log-parse fallback.
+- `bakar clean-cache` sstate pruning now uses a two-phase move-then-delete strategy: stale files are staged inside a `.bakar-gc-<pid>` directory within the sstate root before deletion. This prevents half-deleted state under concurrent builds and leaves a recoverable staging directory if the process is interrupted.
+- Timestamped phase headers (step start, success, and failure) are now written to `console.log`, making it possible to identify build step boundaries without cross-referencing `events.jsonl`.
+
 ## [0.7.0] - 2026-06-02
 
 ### Added
@@ -169,7 +186,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/jetm/bakar/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jetm/bakar/compare/v0.4.0...v0.7.0
 [0.4.0]: https://github.com/jetm/bakar/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jetm/bakar/compare/v0.2.1...v0.3.0
@@ -179,3 +197,4 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 [0.0.3]: https://github.com/jetm/bakar/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/jetm/bakar/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/jetm/bakar/releases/tag/v0.0.1
+
