@@ -100,7 +100,7 @@ def extract_var_history(env_text: str, var: str) -> list[str]:
 # Matches: VARNAME="value" (possibly with escaped quotes or backslash newlines
 # collapsed to a single logical line by bitbake's emit_var).
 # We capture the raw value between the outer double-quotes.
-_SHELL_VAR_RE = re.compile(r'^([A-Za-z0-9_]+)="(.*)"$', re.MULTILINE)
+_SHELL_VAR_RE = re.compile(r'^([A-Za-z0-9_][A-Za-z0-9_:-]*)="(.*)"$', re.MULTILINE)
 
 
 def parse_env_vars(env_text: str, names: list[str]) -> dict[str, str]:
