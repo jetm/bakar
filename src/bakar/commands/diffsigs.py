@@ -142,6 +142,10 @@ def diffsigs(
         Path | None,
         typer.Option("--workspace", "-w", help="Workspace root override"),
     ] = None,
+    raw: Annotated[
+        bool,
+        typer.Option("--raw", help="Print the full unprocessed bitbake-diffsigs output including kas startup lines"),
+    ] = False,
 ) -> None:
     """Show why a task missed sstate and rebuilt.
 
@@ -208,4 +212,7 @@ def diffsigs(
 
         diff_text = diffsigs_out.read_text(errors="replace") if diffsigs_out.exists() else ""
         console.print(f"[bold]diffsigs:[/] {recipe} {task}\n")
-        _render_diffsigs(diff_text)
+        if raw:
+            console.print(diff_text, highlight=False)
+        else:
+            _render_diffsigs(diff_text)
