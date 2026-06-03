@@ -86,13 +86,24 @@ def report(
     # -> ws/<fam> for nxp/ti, ws/build-<stem>/build/runs/ID -> ws/build-<stem>
     # for meta-avocado, and ws/build/runs/ID -> ws for plain generic.
     bsp_root_from_run = run_dir.parents[2]
-    cfg = resolve(
-        workspace=ws_for_cfg,
-        bsp_family=family,
-        spec=BSPSpec(manifest=manifest),
-        kas_yaml=bsp_root_from_run / "_" if family == "generic" else None,
-        user_config=_state._USER_CONFIG,
-    )
+    if family == "generic":
+        # Resolve with workspace=bsp_root_from_run and bsp_family="bbsetup" so that
+        # BuildConfig.bsp_root = workspace = bsp_root_from_run. Using kas_yaml_override
+        # as a sentinel triggers is_meta_avocado when the workspace path contains
+        # "meta-avocado" as a component, computing the wrong bsp_root.
+        cfg = resolve(
+            workspace=bsp_root_from_run,
+            bsp_family="bbsetup",
+            spec=BSPSpec(manifest=manifest),
+            user_config=_state._USER_CONFIG,
+        )
+    else:
+        cfg = resolve(
+            workspace=ws_for_cfg,
+            bsp_family=family,
+            spec=BSPSpec(manifest=manifest),
+            user_config=_state._USER_CONFIG,
+        )
 
     summary = assemble_report(run_dir, cfg)
 

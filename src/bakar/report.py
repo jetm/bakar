@@ -156,10 +156,7 @@ def _parse_sstate_summary(kas_log: Path) -> dict[str, int | None]:
     except OSError:
         return none_result
 
-    summary_line: str | None = None
-    for line in text.splitlines():
-        if "Sstate summary:" in line:
-            summary_line = line
+    summary_line = next((ln for ln in reversed(text.splitlines()) if "Sstate summary:" in ln), None)
     if summary_line is None:
         return none_result
 
@@ -210,10 +207,10 @@ def _read_top_packages(pkg_sizes: Path, limit: int = 10) -> list[tuple[str, int]
         if len(parts) < 3:
             continue
         try:
-            size = int(parts[0].strip())
+            size = int(parts[0])
         except ValueError:
             continue
-        pkg = parts[2].strip()
+        pkg = parts[2]
         if not pkg:
             continue
         rows.append((pkg, size))
