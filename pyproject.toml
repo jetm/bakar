@@ -148,6 +148,7 @@ known-first-party = ["bakar"]
 # Internal helpers with many params that are not Typer commands but exceed max-args by design.
 "src/bakar/config.py" = ["PLR0913"]
 "src/bakar/steps/stress_parse.py" = ["PLR0913"]
+"src/bakar/steps/kas_build.py" = ["PLR0913"]
 # permanent: module-level lazy-load singletons (_VENDORS, _USER_CONFIG).
 "src/bakar/commands/_app.py" = ["PLW0603"]
 # Test functions receive bool params from @pytest.mark.parametrize, not from callers.

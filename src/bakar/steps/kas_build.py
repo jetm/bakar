@@ -430,6 +430,133 @@ def dry_run_preview_lines(
     return lines
 
 
+def _run_pty_with_ui(
+    cmd: list[str],
+    cfg: BuildConfig,
+    log: RunLogger,
+    ui: BuildUIState,
+    state: dict[str, float | int],
+    stop_event: threading.Event,
+) -> int | None:
+    """Run ``cmd`` under a PTY, pumping its output into ``ui`` live.
+
+    The pump thread writes every line to kas.log for `bakar log` to tail,
+    parses bitbake counters into a rich Progress bar, and surfaces
+    ERROR/WARNING/FATAL/QA Issue lines above the bar.  Nothing goes to
+    sys.stdout directly - the Progress instance owns the terminal.
+
+    PTY plumbing: openpty() gives us a (master, slave) fd pair. We pass
+    slave as the child's stdout/stderr so kas-container's `[ -t 1 ]`
+    check sees a TTY and adds `-t -i` to `docker run`, which in turn
+    makes bitbake's knotty UI interactive. knotty uses CR (no newline)
+    to redraw its status line in place, so we read chunks and split on
+    \\r, \\n, or \\r\\n manually instead of line-iterating.
+
+    Returns the child exit code (``None`` only if the wrapper crashed
+    before ``proc.wait()`` could run). Does not do step logging, warn/err
+    printing, PSI calibration, or sampler management - the caller owns
+    those.
+    """
+    rc: int | None = None
+    master_fd, slave_fd = pty.openpty()  # pragma: no cover
+    try:
+        with log.kas_log_path.open("w", encoding="utf-8", buffering=1) as kas_log:
+            proc = subprocess.Popen(  # pragma: no cover
+                cmd,
+                cwd=cfg.bsp_root,
+                # stdin must be a TTY too: kas-container sees stdout as a
+                # TTY (via slave_fd) and passes -t -i to docker, which
+                # then requires stdin to also be a TTY or it refuses with
+                # "cannot attach stdin to a TTY-enabled container
+                # because stdin is not a terminal". Sharing the same pty
+                # slave across stdin/stdout/stderr satisfies that check.
+                # We never write to master_fd, so the child's stdin reads
+                # block indefinitely - which is fine for a batch build.
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                env=_build_env(cfg),
+                start_new_session=True,
+                close_fds=True,
+            )
+            os.close(slave_fd)
+            slave_fd = -1
+
+            def _process_line(line: str) -> None:  # pragma: no cover
+                kas_log.write(line + "\n")
+                kas_log.flush()
+                state["last_event_ts"] = time.monotonic()
+                msg = ui.process_line(line)
+                if msg:
+                    live.console.print(msg)
+                info = ui.take_pending_log()
+                if info:
+                    log.info(info)
+
+            def _pump() -> None:  # pragma: no cover
+                buf = b""
+                while True:
+                    try:
+                        chunk = os.read(master_fd, 8192)
+                    except OSError:
+                        # EIO fires on Linux when the slave side closes
+                        # (child exited). Treat as EOF.
+                        break
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while True:
+                        m = LINE_SPLIT_RE.search(buf)
+                        if m is None:
+                            break
+                        raw = buf[: m.start()]
+                        buf = buf[m.end() :]
+                        if not raw:
+                            continue
+                        line = _strip_ansi(raw.decode("utf-8", errors="replace"))
+                        _process_line(line)
+                if buf:
+                    tail = _strip_ansi(buf.decode("utf-8", errors="replace"))
+                    if tail:
+                        _process_line(tail)
+
+            def _heartbeat() -> None:
+                while not stop_event.wait(timeout=1):
+                    if proc.poll() is not None:
+                        break
+                    stall = int(time.monotonic() - state["last_event_ts"])
+                    delta = state["cur_du_bytes"] - state["prev_du_bytes"]
+                    ui.update_heartbeat(stall, delta)
+
+            # Share the run logger's console so log.info() (the parse-complete
+            # line) coordinates with the live region instead of printing onto
+            # the same line as the setup bar.
+            with Live(get_renderable=ui.make_renderable, console=log.console, refresh_per_second=8) as live:
+                pump = threading.Thread(target=_pump, daemon=True)  # pragma: no cover
+                pump.start()
+                heartbeat = threading.Thread(target=_heartbeat, daemon=True)  # pragma: no cover
+                heartbeat.start()
+                try:
+                    rc = proc.wait()
+                except KeyboardInterrupt:
+                    os.killpg(proc.pid, signal.SIGINT)
+                    rc = proc.wait()
+                stop_event.set()
+                pump.join(timeout=5)
+                heartbeat.join(timeout=2)
+    finally:
+        if slave_fd != -1:
+            try:
+                os.close(slave_fd)
+            except OSError:
+                pass
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+    return rc
+
+
 def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None) -> int:
     """Run `kas-container build <kas_yaml>:<overlay>` with the measurement harness.
 
@@ -539,107 +666,13 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
     sampler.start()
 
     log.info(f"exec: {' '.join(cmd)}")
-    # The pump thread writes every line to kas.log for `bakar log` to tail,
-    # parses bitbake counters into a rich Progress bar, and surfaces
-    # ERROR/WARNING/FATAL/QA Issue lines above the bar.  Nothing goes to
-    # sys.stdout directly - the Progress instance owns the terminal.
-    #
-    # PTY plumbing: openpty() gives us a (master, slave) fd pair. We pass
-    # slave as the child's stdout/stderr so kas-container's `[ -t 1 ]`
-    # check sees a TTY and adds `-t -i` to `docker run`, which in turn
-    # makes bitbake's knotty UI interactive. knotty uses CR (no newline)
-    # to redraw its status line in place, so we read chunks and split on
-    # \r, \n, or \r\n manually instead of line-iterating.
-    rc: int | None = None
-    terminated = False
+    # ``ui`` is created before the try so the finally block can always read
+    # its warn/error counts even if _run_pty_with_ui raises before returning.
     ui = BuildUIState(start_monotonic=log.start_monotonic)
-    master_fd, slave_fd = pty.openpty()  # pragma: no cover
+    terminated = False
+    rc: int | None = None
     try:
-        with log.kas_log_path.open("w", encoding="utf-8", buffering=1) as kas_log:
-            proc = subprocess.Popen(  # pragma: no cover
-                cmd,
-                cwd=cfg.bsp_root,
-                # stdin must be a TTY too: kas-container sees stdout as a
-                # TTY (via slave_fd) and passes -t -i to docker, which
-                # then requires stdin to also be a TTY or it refuses with
-                # "cannot attach stdin to a TTY-enabled container
-                # because stdin is not a terminal". Sharing the same pty
-                # slave across stdin/stdout/stderr satisfies that check.
-                # We never write to master_fd, so the child's stdin reads
-                # block indefinitely - which is fine for a batch build.
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                env=_build_env(cfg),
-                start_new_session=True,
-                close_fds=True,
-            )
-            os.close(slave_fd)
-            slave_fd = -1
-
-            def _process_line(line: str) -> None:  # pragma: no cover
-                kas_log.write(line + "\n")
-                kas_log.flush()
-                state["last_event_ts"] = time.monotonic()
-                msg = ui.process_line(line)
-                if msg:
-                    live.console.print(msg)
-                info = ui.take_pending_log()
-                if info:
-                    log.info(info)
-
-            def _pump() -> None:  # pragma: no cover
-                buf = b""
-                while True:
-                    try:
-                        chunk = os.read(master_fd, 8192)
-                    except OSError:
-                        # EIO fires on Linux when the slave side closes
-                        # (child exited). Treat as EOF.
-                        break
-                    if not chunk:
-                        break
-                    buf += chunk
-                    while True:
-                        m = LINE_SPLIT_RE.search(buf)
-                        if m is None:
-                            break
-                        raw = buf[: m.start()]
-                        buf = buf[m.end() :]
-                        if not raw:
-                            continue
-                        line = _strip_ansi(raw.decode("utf-8", errors="replace"))
-                        _process_line(line)
-                if buf:
-                    tail = _strip_ansi(buf.decode("utf-8", errors="replace"))
-                    if tail:
-                        _process_line(tail)
-
-            def _heartbeat() -> None:
-                while not stop_event.wait(timeout=1):
-                    if proc.poll() is not None:
-                        break
-                    stall = int(time.monotonic() - state["last_event_ts"])
-                    delta = state["cur_du_bytes"] - state["prev_du_bytes"]
-                    ui.update_heartbeat(stall, delta)
-
-            # Share the run logger's console so log.info() (the parse-complete
-            # line) coordinates with the live region instead of printing onto
-            # the same line as the setup bar.
-            with Live(get_renderable=ui.make_renderable, console=log.console, refresh_per_second=8) as live:
-                pump = threading.Thread(target=_pump, daemon=True)  # pragma: no cover
-                pump.start()
-                heartbeat = threading.Thread(target=_heartbeat, daemon=True)  # pragma: no cover
-                heartbeat.start()
-                try:
-                    rc = proc.wait()
-                except KeyboardInterrupt:
-                    os.killpg(proc.pid, signal.SIGINT)
-                    rc = proc.wait()
-                stop_event.set()
-                pump.join(timeout=5)
-                heartbeat.join(timeout=2)
-
+        rc = _run_pty_with_ui(cmd, cfg, log, ui, state, stop_event)
         if rc == 0:
             deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
             log.step_ok("kas_build", deploy_dir=str(deploy), exit_code=rc)
@@ -678,16 +711,59 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
         sampler.join(timeout=5)
         if psi_sampler is not None:
             psi_sampler.join(timeout=5)
-        if slave_fd != -1:
-            try:
-                os.close(slave_fd)
-            except OSError:
-                pass
-        try:
-            os.close(master_fd)
-        except OSError:
-            pass
     return rc if rc is not None else -1
+
+
+def run_shell_live(ctx: KasBuildContext, command: str) -> int:
+    """Run ``kas-container shell -c <command>`` with the live knotty UI.
+
+    Sister to :func:`run_shell_capture`, but instead of capturing output to
+    a file it pumps the child's PTY through :func:`_run_pty_with_ui` so the
+    user sees knotty's live progress bar. Used for non-interactive
+    ``bakar bitbake`` invocations (anything that is not ``devshell`` or
+    ``listtasks``). Returns the kas-container exit code.
+    """
+    cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
+    log.step_start("kas_shell_live", command=command, host_mode=cfg.host_mode)
+    kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source)
+    exe = "kas" if cfg.host_mode else "kas-container"
+    cmd = [exe, *_ccache_args(cfg), "shell", kas_arg, "-c", command]
+
+    ui = BuildUIState(start_monotonic=log.start_monotonic)
+    state: dict[str, float | int] = {
+        "last_event_ts": time.monotonic(),
+        "cur_du_bytes": 0,
+        "prev_du_bytes": 0,
+    }
+    stop_event = threading.Event()
+
+    # Mirror run_build's terminal-event guarantee: if _run_pty_with_ui raises
+    # before returning (e.g. kas-container missing -> FileNotFoundError), the
+    # finally still sets stop_event (stopping the heartbeat thread), prints the
+    # tally, and emits a step_fail so events.jsonl never dead-ends at step_start
+    # and bakar triage has a terminal event to find.
+    rc: int | None = None
+    completed = False
+    try:
+        rc = _run_pty_with_ui(cmd, cfg, log, ui, state, stop_event)
+        completed = True
+    finally:
+        stop_event.set()
+        warn = ui.warn_count
+        err = ui.error_count
+        w_label = "warning" if warn == 1 else "warnings"
+        e_label = "error" if err == 1 else "errors"
+        log.console.print(f"{warn} {w_label}, {err} {e_label}")
+        actual_rc = rc if rc is not None else -1
+        if completed and actual_rc == 0:
+            log.step_ok("kas_shell_live", exit_code=actual_rc)
+        else:
+            log.step_fail(
+                "kas_shell_live",
+                reason=f"exit_code={actual_rc}" if completed else "wrapper-crash",
+                exit_code=actual_rc,
+            )
+    return actual_rc
 
 
 def _autocalibrate_psi(
