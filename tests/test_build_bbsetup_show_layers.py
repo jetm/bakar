@@ -67,6 +67,7 @@ def _invoke_bbsetup_build(
     *,
     show_layers: bool,
     show_hashes: bool,
+    dry_run: bool = False,
 ) -> tuple[int, MagicMock, str]:
     """Drive ``bakar build`` down the bbsetup path with all collaborators stubbed.
 
@@ -85,6 +86,8 @@ def _invoke_bbsetup_build(
     args = ["build", "--skip-doctor"]
     if show_layers:
         args.append("--show-layers")
+    if dry_run:
+        args.append("--dry-run")
 
     with (
         patch("bakar.commands._app._load_user_config_safe", return_value=user_config),
@@ -99,6 +102,7 @@ def _invoke_bbsetup_build(
         patch("bakar.commands.build._print_layer_hashes", print_layer_hashes),
         patch("bakar.commands.build.RunLogger", _runlogger_cm()),
         patch("bakar.commands.build.step_kas.run_build", return_value=0),
+        patch("bakar.commands.build.step_kas.dry_run_preview_lines", return_value=[]),
     ):
         result = runner.invoke(app, args)
 
@@ -126,4 +130,43 @@ def test_no_flag_no_toggle_skips_print_layer_hashes(runner: CliRunner, tmp_path:
     assert print_layer_hashes.call_count == 0, (
         "expected _print_layer_hashes NOT to be called when neither --show-layers "
         f"nor show_hashes is set, got {print_layer_hashes.call_count} call(s)"
+    )
+
+
+def test_show_layers_flag_dry_run_reaches_print_layer_hashes(runner: CliRunner, tmp_path: Path) -> None:
+    """``--show-layers --dry-run`` on the bbsetup path still invokes ``_print_layer_hashes(cfg)``."""
+    exit_code, print_layer_hashes, output = _invoke_bbsetup_build(
+        runner, tmp_path, show_layers=True, show_hashes=False, dry_run=True
+    )
+
+    assert exit_code == 0, output
+    assert print_layer_hashes.call_count == 1, (
+        f"expected _print_layer_hashes to be called once with --show-layers --dry-run, "
+        f"got {print_layer_hashes.call_count} call(s)"
+    )
+
+
+def test_show_hashes_config_dry_run_reaches_print_layer_hashes(runner: CliRunner, tmp_path: Path) -> None:
+    """The persisted ``show_hashes`` toggle renders the table even in ``--dry-run`` mode."""
+    exit_code, print_layer_hashes, output = _invoke_bbsetup_build(
+        runner, tmp_path, show_layers=False, show_hashes=True, dry_run=True
+    )
+
+    assert exit_code == 0, output
+    assert print_layer_hashes.call_count == 1, (
+        f"expected _print_layer_hashes to be called once with show_hashes config in --dry-run, "
+        f"got {print_layer_hashes.call_count} call(s)"
+    )
+
+
+def test_no_flag_no_toggle_dry_run_skips_print_layer_hashes(runner: CliRunner, tmp_path: Path) -> None:
+    """With neither toggle set, ``--dry-run`` does not render the table."""
+    exit_code, print_layer_hashes, output = _invoke_bbsetup_build(
+        runner, tmp_path, show_layers=False, show_hashes=False, dry_run=True
+    )
+
+    assert exit_code == 0, output
+    assert print_layer_hashes.call_count == 0, (
+        "expected _print_layer_hashes NOT to be called in --dry-run when neither "
+        f"--show-layers nor show_hashes is set, got {print_layer_hashes.call_count} call(s)"
     )
