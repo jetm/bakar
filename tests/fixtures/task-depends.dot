@@ -1,0 +1,11 @@
+digraph depends {
+"busybox.do_compile" -> "glibc.do_populate_sysroot"
+"busybox.do_compile" -> "gcc-cross.do_populate_sysroot"
+"busybox.do_install" -> "busybox.do_compile"
+"busybox.do_package" -> "busybox.do_install"
+"glibc.do_compile" -> "gcc-cross.do_populate_sysroot"
+"glibc.do_populate_sysroot" -> "glibc.do_compile"
+"gcc-cross.do_compile" -> "binutils-cross.do_populate_sysroot"
+"gcc-cross.do_populate_sysroot" -> "gcc-cross.do_compile"
+"binutils-cross.do_populate_sysroot" -> "binutils-cross.do_compile"
+}
