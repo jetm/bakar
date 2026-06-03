@@ -15,7 +15,7 @@ from bakar.cli import app
 
 pytestmark = pytest.mark.unit
 
-REQUIRED_COMMANDS = {"show", "getvar", "inspect", "diffsigs", "layers", "drift"}
+REQUIRED_COMMANDS = {"show", "getvar", "inspect", "diffsigs", "layers", "drift", "changelog"}
 
 
 @pytest.fixture

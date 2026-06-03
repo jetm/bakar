@@ -17,6 +17,7 @@ except ImportError:  # pragma: no cover - typer < 0.26 path
 
 import bakar.commands.bitbake
 import bakar.commands.build
+import bakar.commands.changelog
 import bakar.commands.clean
 import bakar.commands.clean_cache
 import bakar.commands.diff
