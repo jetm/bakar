@@ -261,9 +261,9 @@ def test_strip_kas_preamble_removes_log_lines() -> None:
     """kas INFO/WARNING lines are filtered; NOTE and Hash lines are kept."""
     lines = _SAMPLE_DIFFSIGS.splitlines()
     clean = _strip_kas_preamble(lines)
-    assert not any("INFO" in l and "kas" in l for l in clean)
-    assert any("NOTE:" in l for l in clean)
-    assert any("Hash for task" in l for l in clean)
+    assert not any("INFO" in line and "kas" in line for line in clean)
+    assert any("NOTE:" in line for line in clean)
+    assert any("Hash for task" in line for line in clean)
 
 
 @pytest.mark.unit
