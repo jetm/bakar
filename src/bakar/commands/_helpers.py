@@ -281,6 +281,48 @@ def _dispatch_from_yaml(yaml_path: Path) -> tuple[Literal["nxp", "ti", "generic"
     return (family, get_model(family))
 
 
+def _normalize_dispatch(
+    kas_yaml: Path | None,
+    manifest: str | None,
+) -> tuple[str, BspModel | None, Path | None, str | None]:
+    """Normalize workspace dispatch args and return ``(family, bsp, kas_yaml, manifest)``.
+
+    Call this instead of ``_dispatch_bsp``/``_dispatch_from_yaml`` directly.
+    Handles three cases:
+    - Positional ``kas_yaml`` provided: dispatches via :func:`_dispatch_from_yaml`.
+    - ``-f <path>.yml`` provided: promotes to ``kas_yaml`` and clears ``manifest``,
+      then dispatches via :func:`_dispatch_from_yaml`.  This lets users write
+      ``bakar inspect busybox -f meta-avocado/kas/machine/qemux86-64.yml`` and
+      have the YAML path flow correctly through to ``config.resolve()``.
+    - ``-f <manifest.xml>`` or default: dispatches via :func:`_dispatch_bsp`.
+
+    Returns the *normalized* ``kas_yaml`` and ``manifest`` values alongside
+    ``family`` and ``bsp`` so the caller passes correct values to
+    ``_resolve_workspace()`` and ``config.resolve()``.
+    """
+    from bakar.commands._app import console
+
+    # Promote -f <yaml> to the positional kas_yaml so the path flows downstream.
+    if manifest is not None and manifest.endswith((".yml", ".yaml")):
+        if kas_yaml is not None:
+            console.print("[red]choose either a positional kas YAML or --manifest, not both[/]")
+            raise typer.Exit(code=2)
+        kas_yaml = Path(manifest)
+        manifest = None
+
+    # Standard mutual-exclusion guard.
+    if kas_yaml is not None and manifest is not None:
+        console.print("[red]choose either a positional kas YAML or --manifest, not both[/]")
+        raise typer.Exit(code=2)
+
+    if kas_yaml is not None:
+        family, bsp = _dispatch_from_yaml(kas_yaml)
+    else:
+        family, bsp = _dispatch_bsp(manifest)
+
+    return family, bsp, kas_yaml, manifest
+
+
 # ---------------------------------------------------------------------------
 # Display
 # ---------------------------------------------------------------------------

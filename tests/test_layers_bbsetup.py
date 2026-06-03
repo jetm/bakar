@@ -147,7 +147,7 @@ def test_bare_layers_prints_hash_listing(tmp_path: Path) -> None:
     fake_hash = [type("LH", (), {"repo": "poky", "short_hash": "abc1234", "branch": "main", "version": None})()]
 
     with (
-        patch("bakar.commands.layers._dispatch_bsp", return_value=("nxp", MagicMock())),
+        patch("bakar.commands.layers._normalize_dispatch", return_value=("nxp", MagicMock(), None, None)),
         patch("bakar.commands.layers._resolve_workspace", return_value=tmp_path),
         patch(
             "bakar.commands.layers.resolve",
@@ -168,7 +168,7 @@ def test_bare_layers_prints_hash_listing(tmp_path: Path) -> None:
 def test_bare_layers_no_hashes_prints_hint(tmp_path: Path) -> None:
     """Bare ``bakar layers`` prints a hint when no layers exist yet."""
     with (
-        patch("bakar.commands.layers._dispatch_bsp", return_value=("nxp", MagicMock())),
+        patch("bakar.commands.layers._normalize_dispatch", return_value=("nxp", MagicMock(), None, None)),
         patch("bakar.commands.layers._resolve_workspace", return_value=tmp_path),
         patch(
             "bakar.commands.layers.resolve",

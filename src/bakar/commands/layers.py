@@ -11,8 +11,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
-    _dispatch_bsp,
-    _dispatch_from_yaml,
+    _normalize_dispatch,
     _overlay_for,
     _print_layer_hashes,
     _resolve_workspace,
@@ -49,16 +48,8 @@ def _common_options(
     manifest: str | None,
     workspace: Path | None,
 ) -> tuple:
-    """Validate mutual-exclusion and resolve (family, bsp, ws, cfg)."""
-    if kas_yaml is not None and manifest is not None:
-        console.print("[red]choose either a positional kas YAML or --manifest, not both[/]")
-        raise typer.Exit(code=2)
-
-    if kas_yaml is not None:
-        family, bsp = _dispatch_from_yaml(kas_yaml)
-    else:
-        family, bsp = _dispatch_bsp(manifest)
-
+    """Validate mutual-exclusion, normalize dispatch, and resolve (family, bsp, ws, cfg)."""
+    family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
     cfg = resolve(
         workspace=ws,
@@ -96,12 +87,13 @@ def layers(
         # A sub-verb was given (inspect / status) - let the subcommand run.
         return
 
-    family, _bsp = _dispatch_bsp(manifest)
-    ws = _resolve_workspace(workspace, family=family)
+    family, _bsp, _kas_yaml, manifest = _normalize_dispatch(None, manifest)
+    ws = _resolve_workspace(workspace, kas_yaml=_kas_yaml, family=family)
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
         spec=BSPSpec(manifest=manifest),
+        kas_yaml=_kas_yaml,
         user_config=_state._USER_CONFIG,
     )
 

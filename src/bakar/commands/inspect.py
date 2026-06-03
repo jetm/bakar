@@ -28,8 +28,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
-    _dispatch_bsp,
-    _dispatch_from_yaml,
+    _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
 )
@@ -349,15 +348,7 @@ def inspect(
     Exits non-zero when the recipe is unknown, surfacing the bitbake error
     rather than printing an empty report.
     """
-    if kas_yaml is not None and manifest is not None:
-        console.print("[red]choose either a positional kas YAML or --manifest, not both[/]")
-        raise typer.Exit(code=2)
-
-    if kas_yaml is not None:
-        family, bsp = _dispatch_from_yaml(kas_yaml)
-    else:
-        family, bsp = _dispatch_bsp(manifest)
-
+    family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
     cfg = resolve(
         workspace=ws,

@@ -13,8 +13,7 @@ import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     _bbsetup_workspace,
-    _dispatch_bsp,
-    _dispatch_from_yaml,
+    _normalize_dispatch,
     _print_diagnosis,
     _resolve_workspace,
 )
@@ -91,10 +90,6 @@ def doctor(
     if psi_calibrate:
         _run_psi_calibrate()
 
-    if kas_yaml is not None and manifest is not None:
-        console.print("[red]choose either a positional kas YAML or --manifest, not both[/]")
-        raise typer.Exit(code=2)
-
     setup_dir = _bbsetup_workspace(workspace) if kas_yaml is None and manifest is None else None
     if setup_dir is not None:
         cfg = resolve(
@@ -108,11 +103,7 @@ def doctor(
             raise typer.Exit(code=2)
         return
 
-    if kas_yaml is not None:
-        family, bsp = _dispatch_from_yaml(kas_yaml)
-    else:
-        family, bsp = _dispatch_bsp(manifest)
-
+    family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     cfg = resolve(
         workspace=_resolve_workspace(workspace, kas_yaml=kas_yaml, family=family),
         bsp_family=family,
