@@ -44,6 +44,40 @@ Checks cover:
 - BSP-specific checks (repo manifest validity for NXP)
 - PSI pressure support (kernel feature check, threshold calibration)
 - Persistent hashserv daemon (when `[build] hashserv = true` — PID + TCP probe; see [hashserv.md](hashserv.md))
+- sstate hash leak (host-specific variables that corrupt sstate task signatures)
+
+## sstate hash-leak check
+
+The `sstate-hash-leak` check scans `build/conf/local.conf` (plus sibling
+conf-includes and active overlays) for assignments of host-specific variables
+that leak into bitbake task signatures and break sstate reuse across builds and
+hosts.
+
+Variables scanned:
+
+| Variable | Why it leaks |
+|----------|--------------|
+| `DATETIME` | changes on every build |
+| `BUILD_REPRODUCIBLE_BINARIES` | host-dependent reproducibility flag |
+| `PWD` | absolute build path varies per checkout |
+| `USER` | varies per developer |
+| `HOME` | varies per developer |
+| `HOSTNAME` | varies per machine |
+
+Severity is **WARN**, never BLOCK. It scans config text, not real signatures,
+so it advises rather than stopping a build. The check reads host-side files, so
+it runs in host mode too. It is skipped (no finding) when
+`build/conf/local.conf` does not exist yet (pre-sync).
+
+For each variable assigned without a matching `[vardepsexclude]` annotation, the
+finding's fix hint contains the exact remediation line:
+
+```text
+DATETIME[vardepsexclude] += "DATETIME"
+```
+
+Add that annotation in `local.conf` (or an overlay) so the variable does not
+corrupt sstate hashes.
 
 ## PSI calibration
 
