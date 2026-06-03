@@ -22,6 +22,7 @@ kas-based BSP build orchestrator for Yocto. Wraps `kas-container` with manifest-
 - **Layered configuration** - CLI > `BAKAR_*` env > workspace `.bakar.toml` > user `config.toml` > BSP default, plus a `settings` CRUD interface and a vendor config layer for custom board families. See [docs/settings.md](docs/settings.md), [docs/configuration.md](docs/configuration.md).
 - **Advanced tooling** - swap the BSP-bundled bitbake for a local upstream checkout, and stress-test the bitbake parser fork race. See [docs/bitbake-override.md](docs/bitbake-override.md), [docs/stress-parse.md](docs/stress-parse.md).
 - **Workspace scaffolding** - `init` wizard (interactive or `--family`) writes `.bakar.toml`. See [docs/init.md](docs/init.md).
+- **Read-only inspection** - query any BitBake variable (`getvar`), dump resolved build metadata (`show`), inspect layer stack and override precedence (`layers inspect`/`status`), compare task signatures across builds (`diffsigs`), and walk the full recipe environment (`inspect`). See [docs/getvar.md](docs/getvar.md), [docs/show.md](docs/show.md), [docs/layers.md](docs/layers.md), [docs/inspect.md](docs/inspect.md), [docs/diffsigs.md](docs/diffsigs.md).
 
 ## Install
 

@@ -16,7 +16,11 @@
 | `triage` | [triage.md](triage.md) | Post-mortem a failed build |
 | `report` | [report.md](report.md) | Summarize a completed build run |
 | `log` | [log.md](log.md) | Tail a run log live |
-| `layers` | [layers.md](layers.md) | Print layer git hashes and branches |
+| `layers` | [layers.md](layers.md) | Print layer git hashes, branches, priority, and build status |
+| `show` | [show.md](show.md) | Print resolved build picture: config, overlays, layers, sources, command |
+| `getvar` | [getvar.md](getvar.md) | Resolve a bitbake variable and show where it was set |
+| `inspect` | [inspect.md](inspect.md) | Deep per-recipe report: identity, sources, paths, inherits, packages, deps |
+| `diffsigs` | [diffsigs.md](diffsigs.md) | Show what changed in a task signature (why did this rebuild) |
 | `for-all` | [for-all.md](for-all.md) | Run a shell command in every source repo |
 | `settings` | [settings.md](settings.md) | Read and write `~/.config/bakar/config.toml` |
 | `lock` | [lock.md](lock.md) | Pin floating layer SHAs |
@@ -48,6 +52,14 @@
 **After a successful build:**
 - Summarize timing, image size, layer SHAs: [report.md](report.md)
 - Inspect layer commits: [layers.md](layers.md)
+
+**Inspecting the build before or after:**
+- What machine/distro/image will resolve: [show.md](show.md)
+- What a variable resolves to and where it was set: [getvar.md](getvar.md)
+- What a recipe pulls in (packages, deps, paths): [inspect.md](inspect.md)
+- Per-layer priority, compat, and provided recipes: [layers.md](layers.md) (`layers inspect`)
+- Project-level MACHINE, DISTRO, thread/mirror config: [layers.md](layers.md) (`layers status`)
+- Why a task missed sstate and rebuilt: [diffsigs.md](diffsigs.md)
 
 **Reproducibility and snapshots:**
 - Pin current SHAs: [lock.md](lock.md)
@@ -85,6 +97,19 @@ bakar build     - all of the above, then kas-container build
 ```
 
 Related: [build.md](build.md), [sync.md](sync.md), [gen-kas.md](gen-kas.md), [doctor.md](doctor.md)
+
+### Inspection
+
+```text
+bakar show              - resolved config, overlays, layers, sources (local, no container)
+bakar getvar <VAR>      - variable resolution and provenance via bitbake-getvar / bitbake -e
+bakar inspect <recipe>  - per-recipe report: identity, sources, paths, inherits, packages, deps
+bakar layers inspect    - per-layer priority, compat, version, provides
+bakar layers status     - project summary: MACHINE, DISTRO, threads, mirrors, hashserv
+bakar diffsigs <r> <t>  - why did this task rebuild (bitbake-diffsigs)
+```
+
+Related: [show.md](show.md), [getvar.md](getvar.md), [inspect.md](inspect.md), [layers.md](layers.md), [diffsigs.md](diffsigs.md)
 
 ### Observability
 

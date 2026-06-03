@@ -19,12 +19,15 @@ import bakar.commands.build
 import bakar.commands.clean
 import bakar.commands.clean_cache
 import bakar.commands.diff
+import bakar.commands.diffsigs
 import bakar.commands.doctor
 import bakar.commands.dump
 import bakar.commands.for_all
 import bakar.commands.gen_kas
+import bakar.commands.getvar
 import bakar.commands.hashserv
 import bakar.commands.init
+import bakar.commands.inspect
 import bakar.commands.layers
 import bakar.commands.lock
 import bakar.commands.log
@@ -33,6 +36,7 @@ import bakar.commands.prefetch
 import bakar.commands.report
 import bakar.commands.settings
 import bakar.commands.shell
+import bakar.commands.show
 import bakar.commands.stress_parse
 import bakar.commands.sync
 import bakar.commands.triage  # noqa: F401
