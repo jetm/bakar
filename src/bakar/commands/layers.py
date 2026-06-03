@@ -18,8 +18,9 @@ from bakar.commands._helpers import (
     _resolve_workspace,
 )
 from bakar.config import BSPSpec, resolve
-from bakar.inspect_parse import parse_layer_conf
-from bakar.layers import collect_layer_hashes
+from bakar.inspect_parse import parse_getvar_value, parse_layer_conf
+from bakar.kas import parse_bblayers
+from bakar.layers import _parse_bbsetup_layer_repos, collect_layer_hashes
 from bakar.observability import RunLogger
 from bakar.steps import kas_build as step_kas
 from bakar.steps.kas_build import KasBuildContext
@@ -176,6 +177,7 @@ def layers_inspect(
             "priority": conf_data.get("BBFILE_PRIORITY", ""),
             "compat": conf_data.get("LAYERSERIES_COMPAT", ""),
             "version": conf_data.get("LAYERVERSION", ""),
+            "provides": _detect_provides(layer_path),
         }
         layer_records.append(record)
 
@@ -280,9 +282,9 @@ def layers_status(
                 step=f"layers_status_{var}",
             )
             if rc == 0 and capture_path.is_file():
-                raw = capture_path.read_text().strip()
-                # bitbake-getvar output: "VAR=\"value\""
-                var_values[var] = _extract_getvar_value(raw, var)
+                value = parse_getvar_value(capture_path.read_text(), var)
+                if value:
+                    var_values[var] = value
 
     if output_json:
         summary = _build_status_summary(var_values)
@@ -297,6 +299,29 @@ def layers_status(
 # ---------------------------------------------------------------------------
 
 
+def _detect_provides(layer_path: Path) -> str:
+    """Return a summary of what a layer provides by scanning its conf/ dirs.
+
+    Checks ``conf/machine/*.conf`` and ``conf/distro/*.conf`` under the
+    layer path. Returns a human-readable string like "machines: imx8mp,
+    imx6; distros: fsl-imx-xwayland" or empty string when nothing is found.
+    """
+    parts: list[str] = []
+    try:
+        machines = sorted(p.stem for p in (layer_path / "conf" / "machine").iterdir() if p.suffix == ".conf")
+        if machines:
+            parts.append("machines: " + ", ".join(machines))
+    except OSError:
+        pass
+    try:
+        distros = sorted(p.stem for p in (layer_path / "conf" / "distro").iterdir() if p.suffix == ".conf")
+        if distros:
+            parts.append("distros: " + ", ".join(distros))
+    except OSError:
+        pass
+    return "; ".join(parts)
+
+
 def _collect_bblayer_paths(cfg) -> list[tuple[str, Path]]:
     """Return (layer_name, layer_path) pairs from bblayers.conf.
 
@@ -304,9 +329,6 @@ def _collect_bblayer_paths(cfg) -> list[tuple[str, Path]]:
     strategies as collect_layer_hashes (bbsetup layers/ and sources/).
     Falls back to skipping unresolvable paths silently.
     """
-    from bakar.kas import parse_bblayers
-    from bakar.layers import _parse_bbsetup_layer_repos
-
     if not cfg.bblayers_conf.is_file():
         return []
 
@@ -381,32 +403,15 @@ def _merge_show_layers(text: str, records: list[dict]) -> None:
         else:
             # Layer from container not in our local list - add it
             path_str = parts[1] if len(parts) >= 2 else ""
-            records.append({
+            new_record = {
                 "name": layer_name,
                 "path": path_str,
                 "priority": priority,
                 "compat": "",
                 "version": "",
-            })
-
-
-def _extract_getvar_value(raw: str, var: str) -> str:
-    """Extract the value from ``bitbake-getvar`` output.
-
-    Output format is typically::
-
-        VAR="value"
-
-    or just the value on a line by itself.
-    """
-    import re
-
-    # Try quoted assignment: VAR="value"
-    m = re.search(rf'^{re.escape(var)}="(.*)"$', raw, re.MULTILINE)
-    if m:
-        return m.group(1)
-    # Fallback: return the raw text stripped
-    return raw.strip()
+            }
+            records.append(new_record)
+            name_map[layer_name] = new_record
 
 
 def _build_status_summary(var_values: dict[str, str]) -> dict:

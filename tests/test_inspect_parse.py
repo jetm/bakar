@@ -97,24 +97,12 @@ class TestExtractVarHistory:
 
     def test_inline_fixture(self) -> None:
         """Self-contained inline fixture - not dependent on the file fixture."""
-        text = (
-            "#\n"
-            "# $BB_NUMBER_THREADS\n"
-            "#   set /etc/local.conf:7\n"
-            '#     "8"\n'
-            'BB_NUMBER_THREADS="8"\n'
-        )
+        text = '#\n# $BB_NUMBER_THREADS\n#   set /etc/local.conf:7\n#     "8"\nBB_NUMBER_THREADS="8"\n'
         result = extract_var_history(text, "BB_NUMBER_THREADS")
         assert result == ["/etc/local.conf:7"]
 
     def test_inline_no_history(self) -> None:
-        text = (
-            "#\n"
-            "# $SOME_VAR\n"
-            "#   [no history recorded]\n"
-            '#   "val"\n'
-            'SOME_VAR="val"\n'
-        )
+        text = '#\n# $SOME_VAR\n#   [no history recorded]\n#   "val"\nSOME_VAR="val"\n'
         result = extract_var_history(text, "SOME_VAR")
         assert result == []
 
@@ -235,10 +223,7 @@ class TestParseLayerConf:
 
     def test_partial_conf_no_version(self) -> None:
         """Conf without LAYERVERSION returns PRIORITY and COMPAT only."""
-        text = (
-            'BBFILE_PRIORITY_foo = "5"\n'
-            'LAYERSERIES_COMPAT_foo = "styhead"\n'
-        )
+        text = 'BBFILE_PRIORITY_foo = "5"\nLAYERSERIES_COMPAT_foo = "styhead"\n'
         result = parse_layer_conf(text)
         assert result.get("BBFILE_PRIORITY") == "5"
         assert result.get("LAYERSERIES_COMPAT") == "styhead"
@@ -255,10 +240,7 @@ class TestParseLayerConf:
 
     def test_raspberrypi_layer_style(self) -> None:
         """Match the layer.conf format from meta-raspberrypi."""
-        text = (
-            'BBFILE_PRIORITY_raspberrypi = "9"\n'
-            'LAYERSERIES_COMPAT_raspberrypi = "wrynose"\n'
-        )
+        text = 'BBFILE_PRIORITY_raspberrypi = "9"\nLAYERSERIES_COMPAT_raspberrypi = "wrynose"\n'
         result = parse_layer_conf(text)
         assert result["BBFILE_PRIORITY"] == "9"
         assert result["LAYERSERIES_COMPAT"] == "wrynose"

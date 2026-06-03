@@ -144,17 +144,18 @@ def test_layers_status_is_recognized_subverb() -> None:
 
 def test_bare_layers_prints_hash_listing(tmp_path: Path) -> None:
     """Bare ``bakar layers`` still prints the git short-hash + branch listing."""
-    fake_hash = [
-        type("LH", (), {"repo": "poky", "short_hash": "abc1234", "branch": "main", "version": None})()
-    ]
+    fake_hash = [type("LH", (), {"repo": "poky", "short_hash": "abc1234", "branch": "main", "version": None})()]
 
     with (
         patch("bakar.commands.layers._dispatch_bsp", return_value=("nxp", MagicMock())),
         patch("bakar.commands.layers._resolve_workspace", return_value=tmp_path),
-        patch("bakar.commands.layers.resolve", return_value=MagicMock(
-            bblayers_conf=tmp_path / "build" / "conf" / "bblayers.conf",
-            kas_yaml=None,
-        )),
+        patch(
+            "bakar.commands.layers.resolve",
+            return_value=MagicMock(
+                bblayers_conf=tmp_path / "build" / "conf" / "bblayers.conf",
+                kas_yaml=None,
+            ),
+        ),
         patch("bakar.commands.layers.collect_layer_hashes", return_value=fake_hash),
         patch("bakar.commands.layers._print_layer_hashes") as mock_print,
     ):
@@ -169,10 +170,13 @@ def test_bare_layers_no_hashes_prints_hint(tmp_path: Path) -> None:
     with (
         patch("bakar.commands.layers._dispatch_bsp", return_value=("nxp", MagicMock())),
         patch("bakar.commands.layers._resolve_workspace", return_value=tmp_path),
-        patch("bakar.commands.layers.resolve", return_value=MagicMock(
-            bblayers_conf=tmp_path / "build" / "conf" / "bblayers.conf",
-            kas_yaml=None,
-        )),
+        patch(
+            "bakar.commands.layers.resolve",
+            return_value=MagicMock(
+                bblayers_conf=tmp_path / "build" / "conf" / "bblayers.conf",
+                kas_yaml=None,
+            ),
+        ),
         patch("bakar.commands.layers.collect_layer_hashes", return_value=[]),
     ):
         result = runner.invoke(app, ["layers"])
@@ -279,9 +283,7 @@ def test_layers_inspect_local_layer_conf(tmp_path: Path) -> None:
     conf_dir = layer_dir / "conf"
     conf_dir.mkdir(parents=True)
     (conf_dir / "layer.conf").write_text(
-        'BBFILE_PRIORITY_meta = "5"\n'
-        'LAYERSERIES_COMPAT_meta = "scarthgap"\n'
-        'LAYERVERSION_meta = "16"\n'
+        'BBFILE_PRIORITY_meta = "5"\nLAYERSERIES_COMPAT_meta = "scarthgap"\nLAYERVERSION_meta = "16"\n'
     )
 
     mock_cfg = _make_cfg_mock(tmp_path)

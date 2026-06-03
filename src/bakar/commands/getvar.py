@@ -9,6 +9,7 @@ inside kas-container to resolve a BitBake variable. With ``--history``, runs
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 from typing import Annotated
 
@@ -22,7 +23,7 @@ from bakar.commands._helpers import (
     _resolve_workspace,
 )
 from bakar.config import BSPSpec, resolve
-from bakar.inspect_parse import extract_var_history
+from bakar.inspect_parse import extract_var_history, parse_getvar_value
 from bakar.observability import RunLogger
 from bakar.steps.kas_build import KasBuildContext, run_shell_capture
 
@@ -120,10 +121,10 @@ def _run_getvar(
     # -r <recipe>: scope to recipe parse context.
     parts = ["bitbake-getvar"]
     if unexpanded:
-        parts.append("-e")
+        parts.append("-u")
     if recipe:
-        parts += ["-r", recipe]
-    parts.append(var)
+        parts += ["-r", shlex.quote(recipe)]
+    parts.append(shlex.quote(var))
     command = " ".join(parts)
 
     capture_path = log.run_dir / f"getvar-{var}.log"
@@ -142,7 +143,7 @@ def _run_getvar(
     #   # $MACHINE
     #   #   set /path/to/local.conf:5
     #   MACHINE="imx8mp-lpddr4-evk"
-    value = _parse_getvar_value(raw, var)
+    value = parse_getvar_value(raw, var)
 
     if output_json:
         doc: dict = {"var": var, "value": value}
@@ -163,7 +164,7 @@ def _run_history(
     """Run ``bitbake -e`` and extract the variable's include-chain history."""
     parts = ["bitbake", "-e"]
     if recipe:
-        parts.append(recipe)
+        parts.append(shlex.quote(recipe))
     command = " ".join(parts)
 
     capture_path = log.run_dir / f"getvar-history-{var}.log"
@@ -192,24 +193,3 @@ def _run_history(
         console.print(f"[bold]{var}[/] history (include-chain order):")
         for loc in locations:
             console.print(f"  {loc}", highlight=False)
-
-
-def _parse_getvar_value(raw: str, var: str) -> str:
-    """Extract the variable value from ``bitbake-getvar`` output.
-
-    ``bitbake-getvar`` emits text of the form::
-
-        # $MACHINE
-        #   set /path/to/local.conf:5
-        MACHINE="imx8mp-lpddr4-evk"
-
-    Returns the unquoted value string, or the full raw output when the
-    expected ``VAR="..."`` line is not found (e.g. the variable is unset).
-    """
-    for line in raw.splitlines():
-        stripped = line.strip()
-        prefix = f'{var}="'
-        if stripped.startswith(prefix) and stripped.endswith('"'):
-            return stripped[len(prefix):-1].replace('\\"', '"')
-    # Fallback: return stripped raw output so the caller always gets something.
-    return raw.strip()

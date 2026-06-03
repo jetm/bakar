@@ -19,6 +19,7 @@ error rather than printing an empty report as success.
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 from typing import Annotated
 
@@ -40,52 +41,51 @@ from bakar.steps.kas_build import KasBuildContext, run_shell_capture
 # Parsing helpers
 # ---------------------------------------------------------------------------
 
-def _parse_show_recipes(text: str) -> dict[str, str]:
-    """Parse ``bitbake-layers show-recipes -f <recipe>`` output.
 
-    Returns a dict with keys: ``layer``, ``recipe_file``, ``bbappends``.
+def _parse_show_recipes(text: str) -> dict[str, str]:
+    """Parse ``bitbake-layers show-recipes <recipe>`` output (no -f flag).
+
+    Without -f, show-recipes emits:
+
+        === Available recipes: ===
+
+        <pn>:
+          <layer>                          <version>
+          <layer2>                         <version2>
+
+    Returns a dict with keys: ``layer`` (first layer listed), ``version``,
+    ``recipe_file`` (always empty - read from env FILE variable instead),
+    ``bbappends`` (always empty - not emitted by show-recipes).
+
     All values default to empty string when not found.
     """
-    result: dict[str, str] = {"layer": "", "recipe_file": "", "bbappends": ""}
-    appends: list[str] = []
+    result: dict[str, str] = {"layer": "", "version": "", "recipe_file": "", "bbappends": ""}
+    in_recipe_block = False
 
     for line in text.splitlines():
         stripped = line.strip()
-        # bbappend line: check before generic path so /path/to/x.bbappend is
-        # not consumed as the recipe file.
-        if stripped.endswith(".bbappend"):
-            appends.append(stripped)
-        # Layer line: "  meta-imx:"
-        elif stripped.endswith(":") and not stripped.startswith("/") and not stripped.startswith(".") and not stripped.startswith("NOTE"):
-            result["layer"] = stripped.rstrip(":")
-        # Recipe file line: starts with / or ./ (absolute or relative path)
-        elif stripped.startswith(("/", "./")):
-            if result["recipe_file"] == "":
-                result["recipe_file"] = stripped
+        if not stripped or stripped.startswith("="):
+            in_recipe_block = False
+            continue
+        # Recipe name header: "busybox:"
+        if stripped.endswith(":") and not stripped.startswith(" ") and not stripped.startswith("\t"):
+            in_recipe_block = True
+            continue
+        # Layer + version line: "  meta-oe                          1.36.1"
+        # Lines inside a recipe block are indented
+        if in_recipe_block and line.startswith((" ", "\t")) and stripped:
+            parts = stripped.split()
+            if parts and not result["layer"]:
+                result["layer"] = parts[0]
+                result["version"] = parts[1] if len(parts) > 1 else ""
+            break  # first layer entry is the preferred provider
 
-    result["bbappends"] = "\n".join(appends)
     return result
 
 
 def _parse_getvar_paths(text: str) -> dict[str, str]:
-    """Parse ``bitbake-getvar -r <recipe> WORKDIR S B D T`` output.
-
-    Each variable appears as::
-
-        WORKDIR="/build/tmp/work/..."
-
-    Returns a dict mapping variable name to value.
-    """
-    result: dict[str, str] = {}
-    for raw_line in text.splitlines():
-        stripped_line = raw_line.strip()
-        for var in ("WORKDIR", "S", "B", "D", "T"):
-            prefix = f"{var}="
-            if stripped_line.startswith(prefix):
-                value = stripped_line[len(prefix):].strip().strip('"')
-                result[var] = value
-                break
-    return result
+    """Parse ``bitbake-getvar -r <recipe> WORKDIR S B D T`` output."""
+    return parse_env_vars(text, ["WORKDIR", "S", "B", "D", "T"])
 
 
 def _parse_inherits(env_text: str) -> list[str]:
@@ -142,6 +142,7 @@ def _parse_recursive_deps(text: str) -> dict[str, list[str]]:
 # Report assembly
 # ---------------------------------------------------------------------------
 
+
 def _assemble_report(
     recipe: str,
     show_recipes_text: str,
@@ -152,13 +153,13 @@ def _assemble_report(
     """Assemble the full inspect report dict from raw bitbake outputs."""
     # Identity
     show_info = _parse_show_recipes(show_recipes_text)
-    identity_vars = parse_env_vars(env_text, ["PN", "PV", "PR"])
+    identity_vars = parse_env_vars(env_text, ["PN", "PV", "PR", "FILE"])
     identity: dict[str, str] = {
         "PN": identity_vars.get("PN", recipe),
         "PV": identity_vars.get("PV", ""),
         "PR": identity_vars.get("PR", ""),
         "layer": show_info["layer"],
-        "recipe_file": show_info["recipe_file"],
+        "recipe_file": identity_vars.get("FILE", ""),
         "bbappends": show_info["bbappends"],
     }
 
@@ -297,6 +298,7 @@ def _print_report(recipe: str, report: dict, *, output_json: bool) -> None:
 # Command
 # ---------------------------------------------------------------------------
 
+
 @app.command("inspect")
 def inspect(
     recipe: Annotated[
@@ -357,7 +359,7 @@ def inspect(
         show_recipes_out = log.run_dir / "inspect-show-recipes.log"
         rc_show = run_shell_capture(
             kas_ctx,
-            f"bitbake-layers show-recipes -f {recipe}",
+            f"bitbake-layers show-recipes {shlex.quote(recipe)}",
             show_recipes_out,
             step="inspect_show_recipes",
         )
@@ -374,7 +376,7 @@ def inspect(
         getvar_paths_out = log.run_dir / "inspect-getvar-paths.log"
         rc_paths = run_shell_capture(
             kas_ctx,
-            f"bitbake-getvar -r {recipe} WORKDIR S B D T",
+            f"bitbake-getvar -r {shlex.quote(recipe)} WORKDIR S B D T",
             getvar_paths_out,
             step="inspect_getvar_paths",
         )
@@ -382,8 +384,7 @@ def inspect(
 
         if rc_paths != 0:
             console.print(
-                f"[red]bitbake-getvar failed for recipe '{recipe}' (exit {rc_paths}).[/]\n"
-                f"{getvar_paths_text}"
+                f"[red]bitbake-getvar failed for recipe '{recipe}' (exit {rc_paths}).[/]\n{getvar_paths_text}"
             )
             raise typer.Exit(code=rc_paths)
 
@@ -391,17 +392,14 @@ def inspect(
         env_out = log.run_dir / "inspect-env.log"
         rc_env = run_shell_capture(
             kas_ctx,
-            f"bitbake -e {recipe}",
+            f"bitbake -e {shlex.quote(recipe)}",
             env_out,
             step="inspect_env",
         )
         env_text = env_out.read_text(errors="replace") if env_out.exists() else ""
 
         if rc_env != 0:
-            console.print(
-                f"[red]bitbake -e {recipe} failed (exit {rc_env}).[/]\n"
-                f"{env_text}"
-            )
+            console.print(f"[red]bitbake -e {recipe} failed (exit {rc_env}).[/]\n{env_text}")
             raise typer.Exit(code=rc_env)
 
         # --- Step 4 (optional): transitive deps ---
@@ -410,16 +408,13 @@ def inspect(
             recursive_out = log.run_dir / "inspect-recursive.log"
             rc_rec = run_shell_capture(
                 kas_ctx,
-                f"bitbake -g {recipe}",
+                f"bitbake -g {shlex.quote(recipe)}",
                 recursive_out,
                 step="inspect_recursive",
             )
             recursive_text = recursive_out.read_text(errors="replace") if recursive_out.exists() else ""
             if rc_rec != 0:
-                console.print(
-                    f"[red]bitbake -g {recipe} failed (exit {rc_rec}).[/]\n"
-                    f"{recursive_text}"
-                )
+                console.print(f"[red]bitbake -g {recipe} failed (exit {rc_rec}).[/]\n{recursive_text}")
                 raise typer.Exit(code=rc_rec)
 
     report = _assemble_report(recipe, show_recipes_text, getvar_paths_text, env_text, recursive_text)

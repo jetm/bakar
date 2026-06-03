@@ -79,9 +79,7 @@ def _make_fake_capture(payloads: list[tuple[str, int]], calls: list[dict]):
 
 
 @pytest.mark.unit
-def test_success_prints_diff_and_runs_both_commands(
-    runner: _CliRunner, nxp_workspace: Path
-) -> None:
+def test_success_prints_diff_and_runs_both_commands(runner: _CliRunner, nxp_workspace: Path) -> None:
     """On success both bitbake calls run in order and the diff text is printed."""
     calls: list[dict] = []
     fake = _make_fake_capture(
@@ -112,9 +110,7 @@ def test_success_prints_diff_and_runs_both_commands(
 
 
 @pytest.mark.unit
-def test_missing_sigdata_exits_nonzero_with_message(
-    runner: _CliRunner, nxp_workspace: Path
-) -> None:
+def test_missing_sigdata_exits_nonzero_with_message(runner: _CliRunner, nxp_workspace: Path) -> None:
     """When bitbake-diffsigs exits non-zero with empty output, report missing sigdata."""
     calls: list[dict] = []
     # printdiff succeeds; diffsigs exits 1 with empty output (no prior sigdata).
@@ -140,9 +136,7 @@ def test_missing_sigdata_exits_nonzero_with_message(
 
 
 @pytest.mark.unit
-def test_missing_sigdata_message_explicit_text(
-    runner: _CliRunner, nxp_workspace: Path
-) -> None:
+def test_missing_sigdata_message_explicit_text(runner: _CliRunner, nxp_workspace: Path) -> None:
     """Output explicitly mentions sigdata does not exist when output is empty."""
     calls: list[dict] = []
     fake = _make_fake_capture(
@@ -162,9 +156,7 @@ def test_missing_sigdata_message_explicit_text(
 
 
 @pytest.mark.unit
-def test_missing_sigdata_with_no_such_file_message(
-    runner: _CliRunner, nxp_workspace: Path
-) -> None:
+def test_missing_sigdata_with_no_such_file_message(runner: _CliRunner, nxp_workspace: Path) -> None:
     """Output containing 'No such file' is classified as missing sigdata."""
     calls: list[dict] = []
     fake = _make_fake_capture(
@@ -184,9 +176,7 @@ def test_missing_sigdata_with_no_such_file_message(
 
 
 @pytest.mark.unit
-def test_printdiff_failure_stops_before_diffsigs(
-    runner: _CliRunner, nxp_workspace: Path
-) -> None:
+def test_printdiff_failure_stops_before_diffsigs(runner: _CliRunner, nxp_workspace: Path) -> None:
     """When bitbake -S printdiff fails, the second call must not run."""
     calls: list[dict] = []
     # Only one payload: printdiff fails. diffsigs must not be called.
@@ -208,9 +198,7 @@ def test_printdiff_failure_stops_before_diffsigs(
 
 
 @pytest.mark.unit
-def test_call_order_printdiff_before_diffsigs(
-    runner: _CliRunner, nxp_workspace: Path
-) -> None:
+def test_call_order_printdiff_before_diffsigs(runner: _CliRunner, nxp_workspace: Path) -> None:
     """The printdiff call must always precede the diffsigs call."""
     calls: list[dict] = []
     fake = _make_fake_capture(

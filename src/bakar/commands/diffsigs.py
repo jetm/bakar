@@ -8,6 +8,7 @@ reference sigdata files exist.
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from typing import Annotated
 
@@ -76,7 +77,7 @@ def diffsigs(
         printdiff_out = log.run_dir / "diffsigs-printdiff.log"
         rc_printdiff = run_shell_capture(
             kas_ctx,
-            f"bitbake -S printdiff {recipe}",
+            f"bitbake -S printdiff {shlex.quote(recipe)}",
             printdiff_out,
             step="diffsigs_printdiff",
         )
@@ -91,7 +92,7 @@ def diffsigs(
         diffsigs_out = log.run_dir / "diffsigs-render.log"
         rc_diffsigs = run_shell_capture(
             kas_ctx,
-            f"bitbake-diffsigs -t {recipe} {task}",
+            f"bitbake-diffsigs -t {shlex.quote(recipe)} {shlex.quote(task)}",
             diffsigs_out,
             step="diffsigs_render",
         )
@@ -107,9 +108,7 @@ def diffsigs(
                     "then re-run: bakar diffsigs"
                 )
             else:
-                console.print(
-                    f"[red]bitbake-diffsigs failed (exit {rc_diffsigs}).[/]\n{raw}"
-                )
+                console.print(f"[red]bitbake-diffsigs failed (exit {rc_diffsigs}).[/]\n{raw}")
             raise typer.Exit(code=rc_diffsigs)
 
         diff_text = diffsigs_out.read_text(errors="replace") if diffsigs_out.exists() else ""

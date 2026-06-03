@@ -40,11 +40,10 @@ _RECIPE = "busybox"
 # ---------------------------------------------------------------------------
 
 _SHOW_RECIPES_OK = """\
-NOTE: Starting bitbake server...
-Parsing recipes: 100%
-  meta-core:
-    /path/to/poky/meta/recipes-core/busybox/busybox_1.36.1.bb
-    /path/to/meta-imx/recipes-core/busybox/busybox_%.bbappend
+=== Available recipes: ===
+
+busybox:
+  meta-core                          1.36.1
 """
 
 _GETVAR_PATHS_OK = """\
@@ -59,6 +58,7 @@ _ENV_OK = """\
 PN="busybox"
 PV="1.36.1"
 PR="r0"
+FILE="/path/to/poky/meta/recipes-core/busybox/busybox_1.36.1.bb"
 SRC_URI="https://busybox.net/downloads/busybox-1.36.1.tar.bz2 file://fix.patch"
 LICENSE="GPLv2"
 LIC_FILES_CHKSUM="file://LICENSE;md5=abc123"
@@ -416,11 +416,7 @@ def test_unknown_recipe_surfaces_error(runner: _CliRunner, nxp_workspace: Path) 
     # The bitbake error text must be surfaced, not swallowed.
     combined = (result.output or "") + (result.stderr or "" if hasattr(result, "stderr") else "")
     combined_lower = combined.lower()
-    assert (
-        "no-such-recipe" in combined_lower
-        or "failed" in combined_lower
-        or "nothing provides" in combined_lower
-    )
+    assert "no-such-recipe" in combined_lower or "failed" in combined_lower or "nothing provides" in combined_lower
 
 
 @pytest.mark.unit
@@ -463,8 +459,8 @@ def test_no_workspace_exits_2(runner: _CliRunner, tmp_path: Path, monkeypatch: p
 
 
 @pytest.mark.unit
-def test_bbappend_appears_in_identity(runner: _CliRunner, nxp_workspace: Path) -> None:
-    """bbappend files from show-recipes output appear in the Identity section."""
+def test_recipe_file_from_env_in_identity(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """Recipe file path from the bitbake -e FILE variable appears in the Identity section."""
     calls: list[dict] = []
     fake = _make_fake_capture(list(_DEFAULT_PAYLOADS), calls)
 
@@ -475,7 +471,7 @@ def test_bbappend_appears_in_identity(runner: _CliRunner, nxp_workspace: Path) -
         )
 
     assert result.exit_code == 0, result.output
-    assert ".bbappend" in result.output
+    assert "busybox_1.36.1.bb" in result.output
 
 
 # ---------------------------------------------------------------------------

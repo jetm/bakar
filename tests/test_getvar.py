@@ -208,7 +208,7 @@ def test_getvar_unexpanded_forwards_flag(runner: _CliRunner, nxp_workspace: Path
     assert len(calls) == 1
     # The -e flag must appear in the bitbake-getvar command
     cmd = calls[0]["command"]
-    assert "-e" in cmd
+    assert "-u" in cmd
     # Output contains the unexpanded value
     assert "${CORE_IMAGE_EXTRA_INSTALL}" in result.output
 
@@ -272,9 +272,7 @@ def test_getvar_history_with_recipe(runner: _CliRunner, nxp_workspace: Path) -> 
 
 
 @pytest.mark.unit
-def test_getvar_history_no_history_exits_0_with_message(
-    runner: _CliRunner, nxp_workspace: Path
-) -> None:
+def test_getvar_history_no_history_exits_0_with_message(runner: _CliRunner, nxp_workspace: Path) -> None:
     """When no history comments exist, exits 0 and prints 'no history recorded'."""
     calls: list[dict] = []
     fake = _make_fake_capture([(_BITBAKE_E_NO_HISTORY_OUTPUT, 0)], calls)
@@ -320,9 +318,7 @@ def test_getvar_nonzero_exit_surfaces_error(runner: _CliRunner, nxp_workspace: P
 
 
 @pytest.mark.unit
-def test_getvar_history_nonzero_exit_surfaces_error(
-    runner: _CliRunner, nxp_workspace: Path
-) -> None:
+def test_getvar_history_nonzero_exit_surfaces_error(runner: _CliRunner, nxp_workspace: Path) -> None:
     """When ``bitbake -e`` exits non-zero under --history, the command exits non-zero."""
     calls: list[dict] = []
     fake = _make_fake_capture([("ERROR: bitbake parse failed\n", 2)], calls)
@@ -452,9 +448,7 @@ def test_getvar_json_recipe_key_present(runner: _CliRunner, nxp_workspace: Path)
 
 
 @pytest.mark.unit
-def test_getvar_no_workspace_exits_2(
-    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_getvar_no_workspace_exits_2(runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Running outside a workspace exits with code 2."""
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(

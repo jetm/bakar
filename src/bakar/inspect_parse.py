@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import re
 
-
 # ---------------------------------------------------------------------------
 # extract_var_history
 # ---------------------------------------------------------------------------
@@ -39,7 +38,7 @@ _OP_LINE_RE = re.compile(r"^#\s+\S+\s+(\S+:\d+)\s*(?:\[.*\])?$")
 # Matches the shell-assignment line that closes the history block:
 #   MACHINE="imx8mp-lpddr4-evk"
 # Note: variable names can contain underscores but not spaces.
-_ASSIGN_RE = re.compile(r"^([A-Za-z0-9_]+)=")
+_ASSIGN_RE = re.compile(r"^([A-Za-z0-9_][A-Za-z0-9_:-]*)=")
 
 # Matches the sentinel "[no history recorded]" line.
 _NO_HISTORY_RE = re.compile(r"#\s+\[no history recorded\]")
@@ -131,6 +130,16 @@ def parse_env_vars(env_text: str, names: list[str]) -> dict[str, str]:
     return result
 
 
+def parse_getvar_value(raw: str, var: str) -> str:
+    """Extract and unescape a variable value from ``bitbake-getvar`` output.
+
+    Delegates to :func:`parse_env_vars` which handles the ``VAR="value"``
+    assignment form and ``\\\"``-unescaping.  Returns the raw stripped text
+    when the expected assignment line is not found.
+    """
+    return parse_env_vars(raw, [var]).get(var, raw.strip())
+
+
 # ---------------------------------------------------------------------------
 # parse_layer_conf
 # ---------------------------------------------------------------------------
@@ -160,19 +169,16 @@ def parse_layer_conf(text: str) -> dict[str, str]:
         return {}
 
     result: dict[str, str] = {}
-    try:
-        m = _PRIORITY_RE.search(text)
-        if m:
-            result["BBFILE_PRIORITY"] = m.group(1)
+    m = _PRIORITY_RE.search(text)
+    if m:
+        result["BBFILE_PRIORITY"] = m.group(1)
 
-        m = _COMPAT_RE.search(text)
-        if m:
-            result["LAYERSERIES_COMPAT"] = m.group(1)
+    m = _COMPAT_RE.search(text)
+    if m:
+        result["LAYERSERIES_COMPAT"] = m.group(1)
 
-        m = _VERSION_RE.search(text)
-        if m:
-            result["LAYERVERSION"] = m.group(1)
-    except Exception:
-        return {}
+    m = _VERSION_RE.search(text)
+    if m:
+        result["LAYERVERSION"] = m.group(1)
 
     return result
