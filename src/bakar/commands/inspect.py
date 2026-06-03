@@ -380,23 +380,10 @@ def inspect(
             )
             raise typer.Exit(code=rc_show)
 
-        # --- Step 2: resolved build paths ---
-        getvar_paths_out = log.run_dir / "inspect-getvar-paths.log"
-        rc_paths = run_shell_capture(
-            kas_ctx,
-            f"bitbake-getvar -r {shlex.quote(recipe)} WORKDIR S B D T",
-            getvar_paths_out,
-            step="inspect_getvar_paths",
-        )
-        getvar_paths_text = getvar_paths_out.read_text(errors="replace") if getvar_paths_out.exists() else ""
-
-        if rc_paths != 0:
-            console.print(
-                f"[red]bitbake-getvar failed for recipe '{recipe}' (exit {rc_paths}).[/]\n{getvar_paths_text}"
-            )
-            raise typer.Exit(code=rc_paths)
-
-        # --- Step 3: full environment dump ---
+        # --- Step 2: full environment dump (also provides WORKDIR/S/B/D/T paths) ---
+        # bitbake -e is a superset of bitbake-getvar; paths are extracted from the
+        # same dump rather than making a separate bitbake-getvar call that would
+        # require one call per variable (bitbake-getvar takes exactly one positional).
         env_out = log.run_dir / "inspect-env.log"
         rc_env = run_shell_capture(
             kas_ctx,
@@ -409,7 +396,6 @@ def inspect(
         if rc_env != 0:
             console.print(f"[red]bitbake -e {recipe} failed (exit {rc_env}).[/]\n{env_text}")
             raise typer.Exit(code=rc_env)
-
         # --- Step 4 (optional): transitive deps ---
         recursive_text: str | None = None
         if recursive:
@@ -425,5 +411,5 @@ def inspect(
                 console.print(f"[red]bitbake -g {recipe} failed (exit {rc_rec}).[/]\n{recursive_text}")
                 raise typer.Exit(code=rc_rec)
 
-    report = _assemble_report(recipe, show_recipes_text, getvar_paths_text, env_text, recursive_text)
+    report = _assemble_report(recipe, show_recipes_text, env_text, env_text, recursive_text)
     _print_report(recipe, report, output_json=output_json)

@@ -59,6 +59,11 @@ PN="busybox"
 PV="1.36.1"
 PR="r0"
 FILE="/path/to/poky/meta/recipes-core/busybox/busybox_1.36.1.bb"
+WORKDIR="/build/tmp/work/aarch64-poky-linux/busybox/1.36.1-r0"
+S="/build/tmp/work/aarch64-poky-linux/busybox/1.36.1-r0/busybox-1.36.1"
+B="/build/tmp/work/aarch64-poky-linux/busybox/1.36.1-r0/build"
+D="/build/tmp/work/aarch64-poky-linux/busybox/1.36.1-r0/image"
+T="/build/tmp/work/aarch64-poky-linux/busybox/1.36.1-r0/temp"
 SRC_URI="https://busybox.net/downloads/busybox-1.36.1.tar.bz2 file://fix.patch"
 LICENSE="GPLv2"
 LIC_FILES_CHKSUM="file://LICENSE;md5=abc123"
@@ -120,13 +125,11 @@ def _make_fake_capture(payloads: list[tuple[str, int]], calls: list[dict]):
 
 _DEFAULT_PAYLOADS = [
     (_SHOW_RECIPES_OK, 0),
-    (_GETVAR_PATHS_OK, 0),
     (_ENV_OK, 0),
 ]
 
 _RECURSIVE_PAYLOADS = [
     (_SHOW_RECIPES_OK, 0),
-    (_GETVAR_PATHS_OK, 0),
     (_ENV_OK, 0),
     (_RECURSIVE_OK, 0),
 ]
@@ -254,9 +257,8 @@ def test_three_bitbake_calls_issued(runner: _CliRunner, nxp_workspace: Path) -> 
             ["inspect", _RECIPE, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
         )
 
-    assert len(calls) == 3
+    assert len(calls) == 2
     assert any("show-recipes" in c["command"] for c in calls)
-    assert any("bitbake-getvar" in c["command"] for c in calls)
     assert any("bitbake -e" in c["command"] for c in calls)
 
 
@@ -278,7 +280,7 @@ def test_recursive_adds_fourth_call(runner: _CliRunner, nxp_workspace: Path) -> 
         )
 
     assert result.exit_code == 0, result.output
-    assert len(calls) == 4
+    assert len(calls) == 3
     assert any("bitbake -g" in c["command"] for c in calls)
 
 
@@ -312,7 +314,7 @@ def test_recursive_flag_short_form(runner: _CliRunner, nxp_workspace: Path) -> N
         )
 
     assert result.exit_code == 0, result.output
-    assert len(calls) == 4
+    assert len(calls) == 3
 
 
 # ---------------------------------------------------------------------------
