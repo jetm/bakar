@@ -15,6 +15,7 @@ try:
 except ImportError:  # pragma: no cover - typer < 0.26 path
     from click import exceptions as _click_exc
 
+import bakar.commands.bitbake
 import bakar.commands.build
 import bakar.commands.clean
 import bakar.commands.clean_cache
@@ -25,12 +26,14 @@ import bakar.commands.dump
 import bakar.commands.for_all
 import bakar.commands.gen_kas
 import bakar.commands.getvar
+import bakar.commands.graph
 import bakar.commands.hashserv
 import bakar.commands.init
 import bakar.commands.inspect
 import bakar.commands.layers
 import bakar.commands.lock
 import bakar.commands.log
+import bakar.commands.mirror
 import bakar.commands.override
 import bakar.commands.prefetch
 import bakar.commands.report
