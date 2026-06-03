@@ -24,4 +24,8 @@ local_conf_header:
     # Run a local hash equivalence server and connect it to the upstream
     # Yocto Project server for cross-machine reuse.
     BB_HASHSERVE = "${@os.environ.get('BB_HASHSERVE', 'auto')}"
-    BB_HASHSERVE_UPSTREAM = "wss://hashserv.yoctoproject.org/ws"
+    # Default the upstream to empty. For a private BSP with private sstate and
+    # no public mirror, an armed upstream only causes a startup hang while
+    # bitbake waits on the unreachable server and produces more sstate misses.
+    # Empty is the safe default; opt in by exporting BB_HASHSERVE_UPSTREAM.
+    BB_HASHSERVE_UPSTREAM = "${@os.environ.get('BB_HASHSERVE_UPSTREAM', '')}"
