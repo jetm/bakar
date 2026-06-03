@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tomllib
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -73,8 +74,10 @@ def load_workspace_config(workspace: Path) -> WorkspaceConfig:
     Returns an all-defaults ``WorkspaceConfig()`` when the file is absent or
     carries no ``[defaults.<family>]`` sections (e.g. a comment-only marker
     file). Raises ``ValueError`` (with the file path in the message) on a TOML
-    parse error or a type mismatch. Unknown keys and unknown sections are
-    silently ignored.
+    parse error or a type mismatch. An unrecognized key under a recognized
+    ``[defaults.<family>]`` section emits a :class:`UserWarning` naming the
+    unknown key and the recognized keys, then is ignored; unknown sections are
+    ignored without warning.
     """
     path = workspace / ".bakar.toml"
 
@@ -95,10 +98,16 @@ def load_workspace_config(workspace: Path) -> WorkspaceConfig:
             section_data = defaults.get(section, {})
             if not isinstance(section_data, dict):
                 continue
-            for key, field in mapping.items():
-                if key in section_data:
-                    _check_type(field, section_data[key], path)
-                    values[field] = section_data[key]
+            for key in section_data:
+                if key not in mapping:
+                    recognized = ", ".join(sorted(mapping))
+                    warnings.warn(
+                        f"{path}: unknown key '{key}' in [defaults.{section}]; recognized keys: {recognized}",
+                        stacklevel=2,
+                    )
+                    continue
+                _check_type(mapping[key], section_data[key], path)
+                values[mapping[key]] = section_data[key]
 
     return WorkspaceConfig(**values)
 

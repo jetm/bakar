@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import textwrap
+import warnings
 from typing import TYPE_CHECKING
 
 import pytest
@@ -125,7 +126,7 @@ def test_type_mismatch_raises_valueerror_with_path(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_unknown_key_in_known_section_is_ignored(tmp_path: Path) -> None:
+def test_unknown_key_in_known_section_warns_and_continues(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [defaults.nxp]
         machine = "imx93-var-som"
@@ -133,10 +134,40 @@ def test_unknown_key_in_known_section_is_ignored(tmp_path: Path) -> None:
     """)
     (tmp_path / ".bakar.toml").write_text(toml_content)
 
-    cfg = load_workspace_config(tmp_path)
+    with pytest.warns(UserWarning, match="bogus_key") as record:
+        cfg = load_workspace_config(tmp_path)
 
+    # Recognized keys still load; unknown key is dropped.
     assert cfg.nxp_machine == "imx93-var-som"
     assert not hasattr(cfg, "bogus_key")
+    # The warning names the unknown key and the recognized keys for that section.
+    message = str(record[0].message)
+    assert "bogus_key" in message
+    for recognized in ("manifest", "machine", "distro", "image"):
+        assert recognized in message
+
+
+@pytest.mark.unit
+def test_recognized_keys_do_not_warn(tmp_path: Path) -> None:
+    toml_content = textwrap.dedent("""\
+        [defaults.nxp]
+        manifest = "imx-6.6.52-2.2.2.xml"
+        machine  = "imx8mp-var-dart"
+
+        [defaults.generic]
+        kas_yaml = "avocado.yml"
+        machine  = "qemux86-64"
+    """)
+    (tmp_path / ".bakar.toml").write_text(toml_content)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        cfg = load_workspace_config(tmp_path)
+
+    assert cfg.nxp_manifest == "imx-6.6.52-2.2.2.xml"
+    assert cfg.nxp_machine == "imx8mp-var-dart"
+    assert cfg.generic_kas_yaml == "avocado.yml"
+    assert cfg.generic_machine == "qemux86-64"
 
 
 @pytest.mark.unit
@@ -150,7 +181,11 @@ def test_unknown_section_is_ignored(tmp_path: Path) -> None:
     """)
     (tmp_path / ".bakar.toml").write_text(toml_content)
 
-    cfg = load_workspace_config(tmp_path)
+    # An unrecognized family section is dropped without warning (only unknown
+    # keys under a recognized section warn).
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        cfg = load_workspace_config(tmp_path)
 
     assert cfg.nxp_machine == "imx93-var-som"
     # Nothing from the unknown family leaked in.
