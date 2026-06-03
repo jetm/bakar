@@ -12,9 +12,9 @@ Two task names are special-cased:
 - ``--task listtasks`` captures ``bitbake -c listtasks <target>`` and
   pretty-prints the parsed task names.
 
-Every other invocation captures the bitbake output to a log file under the run
-dir and exits with bitbake's own exit code, surfacing a non-zero result rather
-than reporting success.
+Every other invocation streams bitbake output live through the knotty UI and
+exits with bitbake's own exit code, surfacing a non-zero result rather than
+reporting success.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from bakar.commands._helpers import (
 )
 from bakar.config import BSPSpec, resolve
 from bakar.observability import RunLogger
-from bakar.steps.kas_build import KasBuildContext, run_shell, run_shell_capture
+from bakar.steps.kas_build import KasBuildContext, run_shell, run_shell_capture, run_shell_live
 
 
 def _build_command(target: str, task: str | None, *, keep_going: bool) -> str:
@@ -88,7 +88,8 @@ def _run_task(
     - ``task == "devshell"``: interactive ``run_shell`` (inherited terminal),
       no capture.
     - ``task == "listtasks"``: capture and pretty-print the parsed task names.
-    - otherwise: capture to a log file and exit with bitbake's exit code.
+    - otherwise: stream the live knotty UI via ``run_shell_live`` and exit with
+      bitbake's exit code.
     """
     family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
@@ -113,11 +114,10 @@ def _run_task(
             rc = run_shell(kas_ctx, [], command=command)
             raise typer.Exit(code=rc)
 
-        stdout_path = log.run_dir / f"{step}.log"
-        rc = run_shell_capture(kas_ctx, command, stdout_path, step=step)
-        out_text = stdout_path.read_text(errors="replace") if stdout_path.exists() else ""
-
         if task == "listtasks":
+            stdout_path = log.run_dir / f"{step}.log"
+            rc = run_shell_capture(kas_ctx, command, stdout_path, step=step)
+            out_text = stdout_path.read_text(errors="replace") if stdout_path.exists() else ""
             if rc != 0:
                 console.print(f"[red]bitbake -c listtasks {target} failed (exit {rc}).[/]\n{out_text}")
                 raise typer.Exit(code=rc)
@@ -130,9 +130,10 @@ def _run_task(
                 console.print("  (none)", highlight=False)
             raise typer.Exit(code=0)
 
-    if rc != 0:
-        console.print(f"[red]{command} failed (exit {rc}).[/]\n{out_text}")
-    raise typer.Exit(code=rc)
+        rc = run_shell_live(kas_ctx, command)
+        if rc != 0:
+            console.print(f"[red]{command} failed (exit {rc}).[/]")
+        raise typer.Exit(code=rc)
 
 
 @app.command()
