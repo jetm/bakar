@@ -24,7 +24,7 @@ _STR_FIELDS = {
     "scheduler",
     "ccache_dir",
 }
-_BOOL_FIELDS = {"doctor", "show_hashes", "hashserv", "ccache_shared", "psi_autocalibrate"}
+_BOOL_FIELDS = {"doctor", "show_hashes", "show_sstate_summary", "hashserv", "ccache_shared", "psi_autocalibrate"}
 _INT_FIELDS: set[str] = set()
 _PSI_FIELDS = {"pressure_max_cpu", "pressure_max_io", "pressure_max_memory"}
 
@@ -60,6 +60,7 @@ class UserConfig:
     psi_autocalibrate: bool = False
     # [layers]
     show_hashes: bool = False
+    show_sstate_summary: bool = False
 
 
 # Maps a (section, key) pair onto a UserConfig field name. The nxp_/ti_ prefixes
@@ -97,6 +98,7 @@ _BUILD_KEYS = {
 }
 _LAYERS_KEYS = {
     "show_hashes": "show_hashes",
+    "show_sstate_summary": "show_sstate_summary",
 }
 
 
