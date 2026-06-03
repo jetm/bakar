@@ -19,6 +19,7 @@ import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     _dispatch_bsp,
+    _dispatch_from_yaml,
     _overlay_for,
     _resolve_workspace,
 )
@@ -34,6 +35,13 @@ def getvar(
         str,
         typer.Argument(help="BitBake variable name to resolve (e.g. MACHINE, IMAGE_INSTALL)."),
     ],
+    kas_yaml: Annotated[
+        Path | None,
+        typer.Argument(
+            exists=False,
+            help="Optional kas YAML (BYO/bbsetup); resolves the workspace next to it.",
+        ),
+    ] = None,
     recipe: Annotated[
         str | None,
         typer.Option("--recipe", "-r", help="Resolve the variable within this recipe's parse context."),
@@ -87,12 +95,21 @@ def getvar(
     from a failing bitbake call is surfaced as an error rather than printed
     as success.
     """
-    family, bsp = _dispatch_bsp(manifest)
-    ws = _resolve_workspace(workspace, family=family)
+    if kas_yaml is not None and manifest is not None:
+        console.print("[red]choose either a positional kas YAML or --manifest, not both[/]")
+        raise typer.Exit(code=2)
+
+    if kas_yaml is not None:
+        family, bsp = _dispatch_from_yaml(kas_yaml)
+    else:
+        family, bsp = _dispatch_bsp(manifest)
+
+    ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
         spec=BSPSpec(manifest=manifest, machine=machine),
+        kas_yaml=kas_yaml,
         user_config=_state._USER_CONFIG,
     )
     overlay_source = _overlay_for(bsp)
