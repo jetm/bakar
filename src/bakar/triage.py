@@ -287,7 +287,7 @@ def analyse(run_dir: Path, workspace: Path) -> TriageReport:
                 RecipeError(recipe=e["recipe"], task=e["task"], excerpt=e["excerpt"]) for e in data["recipe_errors"]
             ]
             suggestions: list[str] = list(data["suggestions"])
-        except json.JSONDecodeError, KeyError, TypeError:
+        except (json.JSONDecodeError, KeyError, TypeError):
             pass
         else:
             # Supplement: recipe log data and fail_reason are not stored in
