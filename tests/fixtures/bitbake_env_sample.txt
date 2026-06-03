@@ -1,0 +1,69 @@
+# This is a synthetic excerpt of `bitbake -e` output used by tests/test_inspect_parse.py.
+# The format is produced by bitbake's data_smart.VariableHistory.emit() and data.emit_var().
+
+#
+# $MACHINE [2 operations]
+#   set /path/to/build/conf/local.conf:5
+#     "imx8mp-lpddr4-evk"
+#   set /path/to/meta-imx/conf/machine/imx8mp-lpddr4-evk.conf:1
+#     "imx8mp-lpddr4-evk"
+MACHINE="imx8mp-lpddr4-evk"
+
+#
+# $DISTRO
+#   set /path/to/build/conf/local.conf:10
+#     "fsl-imx-wayland"
+DISTRO="fsl-imx-wayland"
+
+#
+# $PN
+#   set /path/to/meta-imx/recipes-fsl/images/imx-image-multimedia.bb:1
+#     "imx-image-multimedia"
+PN="imx-image-multimedia"
+
+#
+# $PV
+#   set /path/to/meta-imx/recipes-fsl/images/imx-image-multimedia.bb:2
+#     "1.0"
+PV="1.0"
+
+#
+# $SRC_URI [3 operations]
+#   set /path/to/poky/meta/recipes-core/busybox/busybox_1.36.1.bb:15
+#     "https://busybox.net/downloads/busybox-1.36.1.tar.bz2;md5sum=b8cc0a7b9d7d7b..."
+#   append /path/to/meta-imx/recipes-core/busybox/busybox_%.bbappend:1
+#     " file://add-syslog-support.patch"
+#   append /path/to/meta-imx/recipes-core/busybox/busybox_%.bbappend:5
+#     " file://disable-ipv6.patch"
+# pre-expansion value:
+#   "https://busybox.net/downloads/busybox-1.36.1.tar.bz2;md5sum=b8cc0a7b9d7d7b... file://add-syslog-support.patch file://disable-ipv6.patch"
+SRC_URI="https://busybox.net/downloads/busybox-1.36.1.tar.bz2;md5sum=b8cc0a7b9d7d7b file://add-syslog-support.patch file://disable-ipv6.patch"
+
+#
+# $WORKDIR
+#   set [automatic]:1
+#     "${TMPDIR}/work/${MULTIMACH_TARGET_SYS}/${PN}/${EXTENDPE}${PV}-${PR}"
+WORKDIR="/build/tmp/work/aarch64-poky-linux/busybox/1.36.1-r0"
+
+#
+# $PACKAGES
+#   set /path/to/poky/meta/classes/package.bbclass:1
+#     "busybox busybox-dbg busybox-dev busybox-staticdev busybox-locale busybox-doc busybox-src"
+PACKAGES="busybox busybox-dbg busybox-dev busybox-staticdev busybox-locale busybox-doc busybox-src"
+
+#
+# $DEPENDS
+#   set /path/to/poky/meta/recipes-core/busybox/busybox_1.36.1.bb:20
+#     "virtual/libc"
+DEPENDS="virtual/libc"
+
+#
+# $NO_HISTORY_VAR
+#   [no history recorded]
+#   "somevalue"
+NO_HISTORY_VAR="somevalue"
+
+# line: 42, file: /path/to/poky/meta/classes/base.bbclass
+do_configure() {
+oe_runconf
+}
