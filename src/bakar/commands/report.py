@@ -62,6 +62,11 @@ def report(
             (ws / "ti" / "build" / "runs", "ti"),
             (ws / "build" / "runs", "generic"),
         ]
+        # Scan for meta-avocado / custom build-dir runs at ws/build-*/build/runs.
+        for build_dir in sorted(ws.glob("build-*")):
+            if build_dir.is_dir():
+                extra = build_dir / "build" / "runs"
+                runs_dirs.append((extra, "generic"))
         not_found_label = "nxp/build/runs/, ti/build/runs/, or build/runs/"
         ws_for_cfg = ws
         family = "nxp"  # provisional default; overwritten by the resolved run's label below
@@ -77,10 +82,15 @@ def report(
     run_dir, label = found
     if family != "bbsetup":
         family = label
+    # run_dir.parents[2] is always the correct bsp_root: ws/<fam>/build/runs/ID
+    # -> ws/<fam> for nxp/ti, ws/build-<stem>/build/runs/ID -> ws/build-<stem>
+    # for meta-avocado, and ws/build/runs/ID -> ws for plain generic.
+    bsp_root_from_run = run_dir.parents[2]
     cfg = resolve(
         workspace=ws_for_cfg,
         bsp_family=family,
         spec=BSPSpec(manifest=manifest),
+        kas_yaml=bsp_root_from_run / "_" if family == "generic" else None,
         user_config=_state._USER_CONFIG,
     )
 
