@@ -285,6 +285,49 @@ def test_add_bbsetup_prompts_kas_yaml(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "branch" not in preset
 
 
+# ---------------------------------------------------------------------------
+# remove verb
+# ---------------------------------------------------------------------------
+
+
+def test_remove_existing_preset_removes_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """remove an existing preset removes it from config.toml and exits 0."""
+    import bakar.commands.presets as presets_mod
+
+    config_path = _write_config(
+        tmp_path,
+        [
+            {"name": "keep-me", "family": "nxp"},
+            {"name": "delete-me", "family": "ti"},
+        ],
+    )
+    monkeypatch.setattr(presets_mod, "_CONFIG_PATH", config_path)
+
+    result = runner.invoke(app, ["presets", "remove", "delete-me"])
+    assert result.exit_code == 0, result.output
+
+    import tomllib
+
+    with config_path.open("rb") as f:
+        data = tomllib.load(f)
+
+    names = [p["name"] for p in data["presets"]]
+    assert "delete-me" not in names
+    assert "keep-me" in names
+
+
+def test_remove_unknown_preset_exits_nonzero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """remove a preset name not in config.toml exits non-zero and names the preset."""
+    import bakar.commands.presets as presets_mod
+
+    config_path = _write_config(tmp_path, [{"name": "existing", "family": "nxp"}])
+    monkeypatch.setattr(presets_mod, "_CONFIG_PATH", config_path)
+
+    result = runner.invoke(app, ["presets", "remove", "does-not-exist"])
+    assert result.exit_code != 0
+    assert "does-not-exist" in result.output
+
+
 def test_add_appends_to_existing_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """add appends a new preset to an already-populated config.toml."""
     import tomli_w

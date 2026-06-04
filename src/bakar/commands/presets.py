@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-import tomllib
 from pathlib import Path
 
 import questionary
@@ -12,7 +11,7 @@ from rich.markup import escape
 
 from bakar.commands._app import app, console
 from bakar.preset_config import load_presets
-from bakar.user_config import _dump_raw
+from bakar.user_config import _dump_raw, _load_raw
 
 _CONFIG_PATH = Path.home() / ".config" / "bakar" / "config.toml"
 
@@ -35,14 +34,9 @@ def list_presets() -> None:
         console.print("No presets defined.")
         return
 
-    from rich.table import Table
-
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Name")
-    table.add_column("Family")
+    width = max(len(p.name) for p in presets)
     for preset in presets:
-        table.add_row(preset.name, preset.family)
-    console.print(table)
+        console.print(f"{preset.name:<{width}}  {preset.family}")
 
 
 @presets_app.command("show")
@@ -123,12 +117,7 @@ def add_preset() -> None:
         preset_dict["image"] = _ask(questionary.text("Image (e.g. avocado-os):"))
 
     config_path = _CONFIG_PATH
-    if config_path.exists():
-        with config_path.open("rb") as f:
-            raw: dict[str, object] = tomllib.load(f)
-    else:
-        raw = {}
-
+    raw: dict[str, object] = _load_raw(config_path)
     presets_list: list[dict[str, object]] = raw.setdefault("presets", [])  # type: ignore[assignment]
     existing_names = {d.get("name") for d in presets_list}
     if name in existing_names:
@@ -138,6 +127,23 @@ def add_preset() -> None:
 
     _dump_raw(config_path, raw)
     console.print(f"[green]Preset '[bold]{escape(name)}[/bold]' added to {config_path}[/green]")
+
+
+@presets_app.command("remove")
+def remove_preset(name: str = typer.Argument(..., help="Preset name to remove.")) -> None:
+    """Remove a named preset from config.toml."""
+    config_path = _CONFIG_PATH
+    raw: dict[str, object] = _load_raw(config_path)
+    original: list[dict[str, object]] = raw.get("presets", [])  # type: ignore[assignment]
+    new_list = [d for d in original if d.get("name") != name]
+
+    if len(new_list) == len(original):
+        console.print(f"Preset '[bold]{escape(name)}[/bold]' not found in {config_path}.")
+        raise typer.Exit(1)
+
+    raw["presets"] = new_list
+    _dump_raw(config_path, raw)
+    console.print(f"[green]Preset '[bold]{escape(name)}[/bold]' removed from {config_path}[/green]")
 
 
 app.add_typer(presets_app, name="presets")
