@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 app = typer.Typer(
     help="BSP orchestrator (NXP i.MX + TI Sitara built-in).",
     no_args_is_help=True,
-    add_completion=False,
+    add_completion=True,
     pretty_exceptions_enable=False,
 )
 console = Console(stderr=True)

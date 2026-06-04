@@ -33,10 +33,20 @@ from bakar.observability import RunLogger
 from bakar.steps import bitbake_override as step_override
 from bakar.steps import kas_build as step_kas
 from bakar.steps.kas_build import KasBuildContext
+from bakar.preset_config import load_presets
 from bakar.workspace import detect
 
 if TYPE_CHECKING:
     from bakar.bsp_model import BspModel
+
+
+def _preset_completer(incomplete: str) -> list[str]:
+    """Shell completion for --preset: returns preset names starting with incomplete."""
+    try:
+        presets = load_presets()
+    except (ValueError, OSError):
+        return []
+    return [p.name for p in presets if p.name.startswith(incomplete)]
 
 
 @dataclass(frozen=True)

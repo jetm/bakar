@@ -88,7 +88,14 @@ def shared_ccache_dir(ccache_dir: str | None, *, ccache_shared: bool) -> Path | 
     return None
 
 
-def pick(arg: str | None, env_key: str, ws_val: str | None, user_val: str | None, default: str) -> str:
+def pick(
+    arg: str | None,
+    env_key: str,
+    ws_val: str | None,
+    preset_val: str | None = None,
+    user_val: str | None = None,
+    default: str = "",
+) -> str:
     if arg is not None:
         return arg
     env_val = os.environ.get(env_key)
@@ -96,6 +103,8 @@ def pick(arg: str | None, env_key: str, ws_val: str | None, user_val: str | None
         return env_val
     if ws_val is not None:
         return ws_val
+    if preset_val is not None:
+        return preset_val
     if user_val is not None:
         return user_val
     return default
@@ -370,18 +379,19 @@ def _resolve_branch(
 ) -> str:
     """Resolve the effective repo branch from CLI flag, env, and BSP family inference."""
     if bsp_family in ("generic", "bbsetup"):
-        return pick(repo_branch, "BAKAR_REPO_BRANCH", None, None, fd.d_branch)
+        return pick(repo_branch, "BAKAR_REPO_BRANCH", None, None, None, fd.d_branch)
     if bsp_family == "ti":
         from bakar.bsp_model import infer_bsp_branch
 
         inferred = infer_bsp_branch(resolved_manifest)
         if inferred == "<unknown>":
             inferred = fd.d_branch
-        return pick(repo_branch, "BAKAR_REPO_BRANCH", None, None, inferred)
+        return pick(repo_branch, "BAKAR_REPO_BRANCH", None, None, None, inferred)
     # nxp
     return pick(
         repo_branch,
         "BAKAR_REPO_BRANCH",
+        None,
         None,
         None,
         infer_repo_branch(resolved_manifest, fd.d_branch),
@@ -459,7 +469,7 @@ def resolve(
 
     fd = _family_defaults(bsp_family, user_config, workspace_config)
 
-    resolved_manifest = pick(spec.manifest, "BAKAR_MANIFEST", fd.ws_manifest, fd.u_manifest, fd.d_manifest)
+    resolved_manifest = pick(spec.manifest, "BAKAR_MANIFEST", fd.ws_manifest, None, fd.u_manifest, fd.d_manifest)
     resolved_branch = _resolve_branch(bsp_family, fd, spec.repo_branch, resolved_manifest)
 
     # Auto-detect: when KAS_CONTAINER_IMAGE is absent from env and host_mode was
@@ -474,9 +484,9 @@ def resolve(
     return BuildConfig(
         workspace=workspace.resolve(),
         bsp_family=bsp_family,
-        machine=pick(spec.machine, "BAKAR_MACHINE", fd.ws_machine, fd.u_machine, fd.d_machine),
-        distro=pick(spec.distro, "BAKAR_DISTRO", fd.ws_distro, fd.u_distro, fd.d_distro),
-        image=pick(spec.image, "BAKAR_IMAGE", fd.ws_image, fd.u_image, fd.d_image),
+        machine=pick(spec.machine, "BAKAR_MACHINE", fd.ws_machine, None, fd.u_machine, fd.d_machine),
+        distro=pick(spec.distro, "BAKAR_DISTRO", fd.ws_distro, None, fd.u_distro, fd.d_distro),
+        image=pick(spec.image, "BAKAR_IMAGE", fd.ws_image, None, fd.u_image, fd.d_image),
         manifest=resolved_manifest,
         repo_url=os.environ.get(
             "BAKAR_REPO_URL",
