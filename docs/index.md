@@ -37,6 +37,7 @@
 | `bitbake-override` | [bitbake-override.md](bitbake-override.md) | Swap BSP-bundled bitbake for upstream |
 | `stress-parse` | [stress-parse.md](stress-parse.md) | Stress-test bitbake parser fork race |
 | Configuration | [configuration.md](configuration.md) | Env vars, config.toml, vendors.toml, telemetry layout |
+| Config reference | [config-reference.md](config-reference.md) | All options: types, defaults, and descriptions for every config key |
 | Workspace | [workspace.md](workspace.md) | Workspace detection, BSP families, directory layouts |
 
 ---
@@ -86,6 +87,7 @@
 **Configuration:**
 - Persist default machine/image/distro: [settings.md](settings.md)
 - Tune sstate mirrors, DL_DIR, container image: [settings.md](settings.md)
+- All config keys with types and defaults: [config-reference.md](config-reference.md)
 - Understand env vars and priority order: [configuration.md](configuration.md)
 - Workspace layout and BSP family auto-detection: [workspace.md](workspace.md)
 

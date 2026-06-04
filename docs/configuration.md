@@ -111,18 +111,18 @@ show_hashes = true   # always print layer SHAs after build/sync
 For custom board families not covered by the built-in NXP/TI/bbsetup presets. Written to `~/.config/bakar/vendors.toml`.
 
 ```toml
-[[vendor]]
-name = "my-board"
-family = "nxp"                          # base family to inherit from
-manifest_pattern = "my-board-*.xml"     # regex matched against manifest filename
+[[vendors]]
+name           = "my-board"
+family         = "nxp"               # base family: nxp, ti, generic, or bbsetup
+manifest_regex = "my-board-.*\\.xml" # Python regex matched against manifest filename
 
 # Override any BspModel field:
 default_machine = "my-imx8mp-board"
-default_distro = "my-custom-distro"
-default_image = "my-image"
+default_distro  = "my-custom-distro"
+default_image   = "my-image"
 ```
 
-Vendor entries are checked before built-in regexes. `bakar build -f my-board-2.2.0.xml` dispatches to your vendor config automatically.
+Vendor entries are checked before built-in regexes. `bakar build -f my-board-2.2.0.xml` dispatches to your vendor config automatically. See [config-reference.md](config-reference.md) for the full vendors.toml field reference.
 
 ## Build telemetry directories
 
@@ -141,6 +141,7 @@ Every build run writes to:
 
 ## See also
 
+- [config-reference.md](config-reference.md) - complete option reference (all fields, types, defaults)
 - [settings.md](settings.md) - CRUD interface for config.toml
 - [workspace.md](workspace.md) - workspace detection and BSP families
 - [hashserv.md](hashserv.md) - `[build] hashserv` persistent daemon details
