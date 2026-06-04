@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-06-04
+
+### Added
+- Added named preset support: define reusable BSP build configurations (for nxp, ti, bbsetup, and generic families) in `~/.config/bakar/config.toml` under `[[presets]]` tables, or ship presets via `vendors.toml`.
+- Added `bakar presets list` command that displays all configured presets in a table showing name and family.
+- Added `bakar presets show <name>` command that prints full preset details including family, machine/distro/image settings, and per-release build targets.
+- Added `bakar presets add` interactive wizard that guides through family-appropriate fields and writes a new `[[presets]]` entry to `config.toml`.
+- Added `bakar presets remove <name>` command that removes a user-defined preset from `config.toml` (vendor presets cannot be removed).
+- Added `--preset <name>` flag to `bakar build` that selects a named preset, with tab-completion support for preset names.
+- Added multi-release preset fan-out: when a preset defines multiple releases, `bakar build --preset <name>` runs all releases sequentially and prints a summary table (Release, Status, Duration), exiting 1 if any release fails.
+- Named preset fields (machine, distro, image, manifest, kas_yaml) sit between workspace `.bakar.toml` overrides and user `config.toml` defaults in the precedence stack; explicit CLI flags always win.
+- Each preset build writes into a dedicated subdirectory under `build/` named after the preset metadata (e.g. `<distro>-<machine>-<version>` for nxp/ti, `<image>-<machine>` for bbsetup/generic), preventing collisions between releases.
+- Added fish shell completion support via `scripts/gen-fish-completion.py`, which generates a native fish completion file including dynamic `--preset` name completion (Typer's built-in completion does not support fish).
+- Added documentation for the named preset system (`docs/presets.md`) and shell completion setup (`docs/completion.md`).
+
+### Fixed
+- A malformed `[[presets]]` block in `config.toml` now causes any `bakar` subcommand to exit with a clear error message at startup (exit code 2) rather than failing silently or crashing later.
+- Unknown preset names passed to `--preset` now exit with a clear error message (exit code 1) instead of producing a confusing traceback.
+
 ## [0.12.0] - 2026-06-04
 
 ### Added
@@ -258,7 +277,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/jetm/bakar/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/jetm/bakar/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/jetm/bakar/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/jetm/bakar/compare/v0.9.0...v0.10.0
