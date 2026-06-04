@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 from typer.testing import CliRunner
 
 from bakar.commands._app import app
@@ -25,7 +28,8 @@ def _write_config(tmp_path: Path, presets: list[dict]) -> Path:
 
     config = {"presets": presets}
     path = tmp_path / "config.toml"
-    path.write_bytes(tomli_w.dumps(config))
+    with path.open("wb") as _f:
+        tomli_w.dump(config, _f)
     return path
 
 
@@ -160,3 +164,168 @@ def test_show_multi_release_lists_each_release(monkeypatch: pytest.MonkeyPatch) 
     assert "imx-6.6.52-2.2.2.xml" in result.output
     assert "lf-6.1.y" in result.output
     assert "lf-6.6.y" in result.output
+
+
+# ---------------------------------------------------------------------------
+# add verb
+# ---------------------------------------------------------------------------
+
+
+def test_add_no_tty_exits_nonzero() -> None:
+    """add without a TTY exits non-zero without blocking on a prompt."""
+    # CliRunner uses a non-TTY stdin by default (mix_stderr=False, no isatty).
+    result = runner.invoke(app, ["presets", "add"])
+    assert result.exit_code != 0
+
+
+def test_add_nxp_writes_presets_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """add with mocked questionary for nxp writes a [[presets]] entry to config.toml."""
+    import bakar.commands.presets as presets_mod
+
+    config_path = tmp_path / "config.toml"
+
+    # Patch the config path used by add_preset.
+    monkeypatch.setattr(presets_mod, "_CONFIG_PATH", config_path)
+
+    # Bypass the TTY guard.
+    monkeypatch.setattr(presets_mod, "_is_tty", lambda: True)
+
+    # Mock questionary prompts in order: family, name, manifest, branch, machine, distro, image.
+    answers = iter(
+        ["nxp", "my-nxp-preset", "imx-6.6.52-2.2.2.xml", "lf-6.6.y", "imx8mpevk", "fsl-imx-xwayland", "imx-image-full"]
+    )
+
+    class _FakeQuestion:
+        def __init__(self, answer: str) -> None:
+            self._answer = answer
+
+        def ask(self) -> str:
+            return self._answer
+
+    def _fake_select(msg: str, choices: list[str]) -> _FakeQuestion:
+        return _FakeQuestion(next(answers))
+
+    def _fake_text(msg: str, default: str = "") -> _FakeQuestion:
+        return _FakeQuestion(next(answers))
+
+    def _fake_path(msg: str, default: str = "") -> _FakeQuestion:
+        return _FakeQuestion(next(answers))
+
+    monkeypatch.setattr(presets_mod.questionary, "select", _fake_select)
+    monkeypatch.setattr(presets_mod.questionary, "text", _fake_text)
+    monkeypatch.setattr(presets_mod.questionary, "path", _fake_path)
+
+    result = runner.invoke(app, ["presets", "add"])
+    assert result.exit_code == 0, result.output
+
+    # Verify config.toml was written and contains the new preset.
+    import tomllib
+
+    with config_path.open("rb") as f:
+        data = tomllib.load(f)
+
+    assert "presets" in data
+    assert len(data["presets"]) == 1
+    preset = data["presets"][0]
+    assert preset["name"] == "my-nxp-preset"
+    assert preset["family"] == "nxp"
+    assert preset["manifest"] == "imx-6.6.52-2.2.2.xml"
+    assert preset["branch"] == "lf-6.6.y"
+    assert preset["machine"] == "imx8mpevk"
+    assert preset["distro"] == "fsl-imx-xwayland"
+    assert preset["image"] == "imx-image-full"
+
+
+def test_add_bbsetup_prompts_kas_yaml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """add with bbsetup family prompts for kas_yaml, machine, image - not manifest/branch."""
+    import bakar.commands.presets as presets_mod
+
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setattr(presets_mod, "_CONFIG_PATH", config_path)
+    monkeypatch.setattr(presets_mod, "_is_tty", lambda: True)
+
+    # Order: family, name, kas_yaml path, machine, image.
+    answers = iter(["bbsetup", "my-bbsetup-preset", "layers/qemu.yml", "qemux86-64", "avocado-os"])
+
+    class _FakeQuestion:
+        def __init__(self, answer: str) -> None:
+            self._answer = answer
+
+        def ask(self) -> str:
+            return self._answer
+
+    def _fake_select(msg: str, choices: list[str]) -> _FakeQuestion:
+        return _FakeQuestion(next(answers))
+
+    def _fake_text(msg: str, default: str = "") -> _FakeQuestion:
+        return _FakeQuestion(next(answers))
+
+    def _fake_path(msg: str, default: str = "") -> _FakeQuestion:
+        return _FakeQuestion(next(answers))
+
+    monkeypatch.setattr(presets_mod.questionary, "select", _fake_select)
+    monkeypatch.setattr(presets_mod.questionary, "text", _fake_text)
+    monkeypatch.setattr(presets_mod.questionary, "path", _fake_path)
+
+    result = runner.invoke(app, ["presets", "add"])
+    assert result.exit_code == 0, result.output
+
+    import tomllib
+
+    with config_path.open("rb") as f:
+        data = tomllib.load(f)
+
+    preset = data["presets"][0]
+    assert preset["family"] == "bbsetup"
+    assert preset["kas_yaml"] == "layers/qemu.yml"
+    assert preset["machine"] == "qemux86-64"
+    assert preset["image"] == "avocado-os"
+    # nxp-specific keys must not be present.
+    assert "manifest" not in preset
+    assert "branch" not in preset
+
+
+def test_add_appends_to_existing_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """add appends a new preset to an already-populated config.toml."""
+    import tomli_w
+
+    import bakar.commands.presets as presets_mod
+
+    config_path = tmp_path / "config.toml"
+    # Write an existing preset.
+    existing = {
+        "presets": [
+            {"name": "existing-preset", "family": "nxp", "manifest": "imx-6.1.36-2.1.0.xml", "branch": "lf-6.1.y"}
+        ]
+    }
+    with config_path.open("wb") as _f:
+        tomli_w.dump(existing, _f)
+
+    monkeypatch.setattr(presets_mod, "_CONFIG_PATH", config_path)
+    monkeypatch.setattr(presets_mod, "_is_tty", lambda: True)
+
+    answers = iter(["generic", "second-preset", "kas-second.yml", "qemux86-64", "avocado-os"])
+
+    class _FakeQuestion:
+        def __init__(self, answer: str) -> None:
+            self._answer = answer
+
+        def ask(self) -> str:
+            return self._answer
+
+    monkeypatch.setattr(presets_mod.questionary, "select", lambda msg, choices: _FakeQuestion(next(answers)))
+    monkeypatch.setattr(presets_mod.questionary, "text", lambda msg, default="": _FakeQuestion(next(answers)))
+    monkeypatch.setattr(presets_mod.questionary, "path", lambda msg, default="": _FakeQuestion(next(answers)))
+
+    result = runner.invoke(app, ["presets", "add"])
+    assert result.exit_code == 0, result.output
+
+    import tomllib
+
+    with config_path.open("rb") as f:
+        data = tomllib.load(f)
+
+    assert len(data["presets"]) == 2
+    names = {p["name"] for p in data["presets"]}
+    assert "existing-preset" in names
+    assert "second-preset" in names
