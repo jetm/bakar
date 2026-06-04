@@ -17,6 +17,9 @@ that fails if reached, proving the dry-run gate is in place.
 
 The ``--help`` tests confirm the CLI options are wired so the flags are
 discoverable.
+
+The completer tests verify ``_preset_completer`` filters preset names by
+prefix and never calls any sync or network function.
 """
 
 from __future__ import annotations
@@ -239,3 +242,48 @@ def test_command_help_lists_dry_run_flag(command: str) -> None:
     out = _plain(result.output)
     assert "--dry-run" in out, out
     assert re.search(r"--dry-run\s+-n", out), out
+
+
+# ---------------------------------------------------------------------------
+# (f) _preset_completer: prefix filtering and no-sync guarantee
+# ---------------------------------------------------------------------------
+
+
+def test_preset_completer_empty_returns_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Empty incomplete string returns all preset names."""
+    import bakar.commands.build as build_mod
+    from bakar.preset_config import PresetEntry
+
+    fake_presets = [
+        PresetEntry(name="imx8mp-scarthgap", family="nxp", manifest="imx-6.6.52-2.2.2.xml", branch="scarthgap"),
+        PresetEntry(name="avocado-qemux86-64", family="bbsetup", kas_yaml="/path/to/qemux86-64.yml"),
+    ]
+    monkeypatch.setattr(build_mod, "load_presets", lambda: fake_presets)
+
+    result = build_mod._preset_completer("")
+    assert result == ["imx8mp-scarthgap", "avocado-qemux86-64"]
+
+
+def test_preset_completer_prefix_filters(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prefix 'im' returns only names starting with 'im'."""
+    import bakar.commands.build as build_mod
+    from bakar.preset_config import PresetEntry
+
+    fake_presets = [
+        PresetEntry(name="imx8mp-scarthgap", family="nxp", manifest="imx-6.6.52-2.2.2.xml", branch="scarthgap"),
+        PresetEntry(name="avocado-qemux86-64", family="bbsetup", kas_yaml="/path/to/qemux86-64.yml"),
+    ]
+    monkeypatch.setattr(build_mod, "load_presets", lambda: fake_presets)
+
+    result = build_mod._preset_completer("im")
+    assert result == ["imx8mp-scarthgap"]
+
+
+def test_preset_completer_no_presets_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When load_presets returns an empty list, completer returns []."""
+    import bakar.commands.build as build_mod
+
+    monkeypatch.setattr(build_mod, "load_presets", list)
+
+    result = build_mod._preset_completer("")
+    assert result == []
