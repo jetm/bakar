@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from bakar.preset_config import PresetEntry
     from bakar.user_config import UserConfig
     from bakar.workspace_config import WorkspaceConfig
 
@@ -418,6 +419,7 @@ def resolve(
     kas_yaml: Path | None = None,
     user_config: UserConfig | None = None,
     workspace_config: WorkspaceConfig | None = None,
+    preset: PresetEntry | None = None,
 ) -> BuildConfig:
     """Resolve BuildConfig from CLI flags, env vars, config, and family defaults.
 
@@ -459,6 +461,20 @@ def resolve(
     if spec is None:
         spec = BSPSpec()
 
+    # When a preset is active, let it supply the family and branch defaults.
+    # bsp_family: use preset.family when the caller did not explicitly supply it
+    # (detected by comparing against the parameter default "nxp" — callers that
+    # truly want nxp and also pass a preset must explicitly pass bsp_family="nxp").
+    if preset is not None and bsp_family == "nxp" and preset.family != "nxp":
+        bsp_family = preset.family  # type: ignore[assignment]
+
+    # Thread preset branch into spec.repo_branch.  BSPSpec is frozen so we
+    # create a replacement only when the caller left repo_branch unset.
+    if preset is not None and spec.repo_branch is None and preset.branch is not None:
+        from dataclasses import replace as _dc_replace
+
+        spec = _dc_replace(spec, repo_branch=preset.branch)
+
     if workspace_config is None:
         # Lazy import keeps module load order flexible and avoids a hard
         # import cycle; centralizing the load here means every existing
@@ -469,7 +485,14 @@ def resolve(
 
     fd = _family_defaults(bsp_family, user_config, workspace_config)
 
-    resolved_manifest = pick(spec.manifest, "BAKAR_MANIFEST", fd.ws_manifest, None, fd.u_manifest, fd.d_manifest)
+    resolved_manifest = pick(
+        spec.manifest,
+        "BAKAR_MANIFEST",
+        fd.ws_manifest,
+        preset.manifest if preset is not None else None,
+        fd.u_manifest,
+        fd.d_manifest,
+    )
     resolved_branch = _resolve_branch(bsp_family, fd, spec.repo_branch, resolved_manifest)
 
     # Auto-detect: when KAS_CONTAINER_IMAGE is absent from env and host_mode was
@@ -484,9 +507,30 @@ def resolve(
     return BuildConfig(
         workspace=workspace.resolve(),
         bsp_family=bsp_family,
-        machine=pick(spec.machine, "BAKAR_MACHINE", fd.ws_machine, None, fd.u_machine, fd.d_machine),
-        distro=pick(spec.distro, "BAKAR_DISTRO", fd.ws_distro, None, fd.u_distro, fd.d_distro),
-        image=pick(spec.image, "BAKAR_IMAGE", fd.ws_image, None, fd.u_image, fd.d_image),
+        machine=pick(
+            spec.machine,
+            "BAKAR_MACHINE",
+            fd.ws_machine,
+            preset.machine if preset is not None else None,
+            fd.u_machine,
+            fd.d_machine,
+        ),
+        distro=pick(
+            spec.distro,
+            "BAKAR_DISTRO",
+            fd.ws_distro,
+            preset.distro if preset is not None else None,
+            fd.u_distro,
+            fd.d_distro,
+        ),
+        image=pick(
+            spec.image,
+            "BAKAR_IMAGE",
+            fd.ws_image,
+            preset.image if preset is not None else None,
+            fd.u_image,
+            fd.d_image,
+        ),
         manifest=resolved_manifest,
         repo_url=os.environ.get(
             "BAKAR_REPO_URL",
