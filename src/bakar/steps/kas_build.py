@@ -47,6 +47,7 @@ import yaml
 from rich.live import Live
 
 from bakar import hashserv
+from bakar.eventlog import tail_events
 from bakar.kas import KasGenOptions, write_yaml
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
 from bakar.steps.build_ui import BuildUIState
@@ -669,6 +670,16 @@ def _run_pty_with_ui(
                     delta = state["cur_du_bytes"] - state["prev_du_bytes"]
                     ui.update_heartbeat(stall, delta)
 
+            def _event_tail() -> None:  # pragma: no cover
+                # Authoritative feed: drive the live model from bitbake's
+                # structured event log. ui.process_line (regex) stays as the
+                # degraded fallback. A tailer error must never crash the build.
+                try:
+                    for class_name, event in tail_events(log.eventlog_path, stop_event):
+                        ui.process_event(class_name, event)
+                except Exception:
+                    pass
+
             # Share the run logger's console so log.info() (the parse-complete
             # line) coordinates with the live region instead of printing onto
             # the same line as the setup bar.
@@ -677,6 +688,8 @@ def _run_pty_with_ui(
                 pump.start()
                 heartbeat = threading.Thread(target=_heartbeat, daemon=True)  # pragma: no cover
                 heartbeat.start()
+                event_tail = threading.Thread(target=_event_tail, daemon=True)  # pragma: no cover
+                event_tail.start()
                 try:
                     rc = proc.wait()
                 except KeyboardInterrupt:
@@ -685,6 +698,7 @@ def _run_pty_with_ui(
                 stop_event.set()
                 pump.join(timeout=5)
                 heartbeat.join(timeout=2)
+                event_tail.join(timeout=5)
     finally:
         if slave_fd != -1:
             try:
