@@ -119,7 +119,7 @@ def _decode_event(payload: str) -> _EventStub | None:
     """
     try:
         raw = base64.b64decode(payload)
-    except (binascii.Error, ValueError):
+    except binascii.Error, ValueError:
         return None
     try:
         obj = _StubUnpickler(io.BytesIO(raw)).load()
@@ -146,14 +146,17 @@ def _iter_events(raw_path: Path):
     unrecognized, lines that fail to decode, and a truncated/malformed
     trailing line - none of these raise.
     """
-    with raw_path.open("r", encoding="utf-8") as fh:
+    # errors="replace": a non-UTF-8 or truncated-mid-multibyte log (aborted or
+    # concurrent build) must not raise UnicodeDecodeError during line iteration,
+    # which would escape the per-line json guard below and crash the caller.
+    with raw_path.open("r", encoding="utf-8", errors="replace") as fh:
         for raw_line in fh:
             line = raw_line.strip()
             if not line:
                 continue
             try:
                 record = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
+            except json.JSONDecodeError, ValueError:
                 # Truncated/malformed line (e.g. a killed build's final line).
                 continue
             if not isinstance(record, dict):

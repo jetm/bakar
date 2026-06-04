@@ -201,6 +201,12 @@ class RunLogger:
         raw = self.eventlog_path
         if not raw.is_file() or raw.stat().st_size == 0:
             return
-        artifact = eventlog.normalize(raw)
-        self.bitbake_events_path.write_text(json.dumps(artifact, default=str))
+        # Best-effort: a decode/parse error in a corrupt log or a write failure
+        # must not crash an otherwise-completed build at the persistence step.
+        try:
+            artifact = eventlog.normalize(raw)
+            self.bitbake_events_path.write_text(json.dumps(artifact, default=str))
+        except (OSError, ValueError) as exc:
+            self.warn(f"failed to persist bitbake-events.json: {exc}")
+            return
         self.step_ok("bitbake_events", path=str(self.bitbake_events_path))

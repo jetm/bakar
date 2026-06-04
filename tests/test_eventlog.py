@@ -30,15 +30,11 @@ def test_normalize_decodes_task_fields() -> None:
 
     started = tasks[("busybox-1.36.1-r0", "do_compile")]
     assert started["pid"] == 4242
-    assert started["logfile"] == (
-        "/work/build/tmp/work/cortexa53/busybox/1.36.1-r0/temp/log.do_compile.4242"
-    )
+    assert started["logfile"] == ("/work/build/tmp/work/cortexa53/busybox/1.36.1-r0/temp/log.do_compile.4242")
 
     failed = tasks[("linux-imx-6.12-r0", "do_compile")]
     assert failed["outcome"] == "failed"
-    assert failed["logfile"] == (
-        "/work/build/tmp/work/imx95/linux-imx/6.12-r0/temp/log.do_compile.5151"
-    )
+    assert failed["logfile"] == ("/work/build/tmp/work/imx95/linux-imx/6.12-r0/temp/log.do_compile.5151")
 
 
 @pytest.mark.unit
@@ -128,3 +124,16 @@ def test_omitted_optional_field_emitted_as_null() -> None:
     assert failed["started"] is None
     assert "pid" in failed
     assert failed["pid"] is None
+
+
+@pytest.mark.unit
+def test_non_utf8_log_does_not_raise(tmp_path: Path) -> None:
+    """A non-UTF-8 byte in the log (aborted/concurrent build) must not raise
+    UnicodeDecodeError out of normalize - it degrades to skipping that line."""
+    raw = tmp_path / "bitbake_eventlog.json"
+    good = FIXTURE.read_bytes().splitlines()[0]
+    raw.write_bytes(good + b"\n" + b"\xff\xfe not utf-8 \x80\n")
+
+    artifact = eventlog.normalize(raw)
+
+    assert set(artifact) == {"schema_version", "build", "tasks", "setscene", "failures"}
