@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from bakar.preset_config import PresetEntry
+from bakar.preset_config import PresetEntry, PresetSpec
 
 pytestmark = pytest.mark.unit
 
@@ -41,8 +43,11 @@ def _bbsetup_single(**kwargs) -> PresetEntry:
 
 
 def test_valid_families_accepted():
-    for family in ("nxp", "ti", "generic", "bbsetup"):
+    for family in ("nxp", "ti"):
         entry = PresetEntry(name="x", family=family, manifest="any.xml", branch="main")
+        assert entry.family == family
+    for family in ("generic", "bbsetup"):
+        entry = PresetEntry(name="x", family=family, kas_yaml="meta/kas/machine.yml")
         assert entry.family == family
 
 
@@ -213,3 +218,134 @@ def test_generic_kas_yamls_no_branch_check():
         kas_yamls=["x.yml"],
     )
     assert len(entry.kas_yamls) == 1
+
+
+# ---------------------------------------------------------------------------
+# PresetEntry.resolve()
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_nxp_single_returns_one_spec():
+    entry = _nxp_single(machine="imx8mp-var-dart", distro="fsl-imx-xwayland", image="fsl-image-gui")
+    specs = entry.resolve()
+    assert len(specs) == 1
+    spec = specs[0]
+    assert isinstance(spec, PresetSpec)
+    assert spec.family == "nxp"
+    assert spec.manifest == "imx-6.6.52-2.2.2.xml"
+    assert spec.branch == "lf-6.6.y"
+    assert spec.machine == "imx8mp-var-dart"
+    assert spec.distro == "fsl-imx-xwayland"
+    assert spec.image == "fsl-image-gui"
+    assert spec.kas_yaml is None
+
+
+def test_resolve_ti_single_returns_one_spec():
+    entry = PresetEntry(
+        name="ti-single",
+        family="ti",
+        manifest="processor-sdk-09.02.xml",
+        branch="main",
+        machine="am62xx-evm",
+    )
+    specs = entry.resolve()
+    assert len(specs) == 1
+    assert specs[0].manifest == "processor-sdk-09.02.xml"
+    assert specs[0].branch == "main"
+    assert specs[0].machine == "am62xx-evm"
+
+
+def test_resolve_nxp_multi_returns_one_per_release():
+    entry = PresetEntry(
+        name="nxp-multi",
+        family="nxp",
+        manifests=["imx-6.6.52-2.2.2.xml", "imx-6.1.55-2.2.0.xml"],
+        branches=["lf-6.6.y", "lf-6.1.y"],
+        machine="imx8mp-var-dart",
+    )
+    specs = entry.resolve()
+    assert len(specs) == 2
+    assert specs[0].manifest == "imx-6.6.52-2.2.2.xml"
+    assert specs[0].branch == "lf-6.6.y"
+    assert specs[1].manifest == "imx-6.1.55-2.2.0.xml"
+    assert specs[1].branch == "lf-6.1.y"
+    # machine propagates to all
+    assert all(s.machine == "imx8mp-var-dart" for s in specs)
+
+
+def test_resolve_nxp_multi_kas_yaml_is_none():
+    entry = PresetEntry(
+        name="nxp-multi",
+        family="nxp",
+        manifests=["imx-6.6.52-2.2.2.xml", "imx-6.1.55-2.2.0.xml"],
+        branches=["lf-6.6.y", "lf-6.1.y"],
+    )
+    specs = entry.resolve()
+    assert all(s.kas_yaml is None for s in specs)
+
+
+def test_resolve_bbsetup_single_returns_one_spec():
+    entry = _bbsetup_single(machine="qemux86-64", image="avocado-os-dev")
+    specs = entry.resolve()
+    assert len(specs) == 1
+    spec = specs[0]
+    assert spec.family == "bbsetup"
+    assert isinstance(spec.kas_yaml, Path)
+    assert spec.kas_yaml == Path("conf/qemux86-64.yml")
+    assert spec.machine == "qemux86-64"
+    assert spec.image == "avocado-os-dev"
+    assert spec.manifest is None
+
+
+def test_resolve_generic_single_returns_one_spec():
+    entry = PresetEntry(name="gen", family="generic", kas_yaml="my-board.yml", machine="myboard")
+    specs = entry.resolve()
+    assert len(specs) == 1
+    assert specs[0].kas_yaml == Path("my-board.yml")
+    assert specs[0].machine == "myboard"
+
+
+def test_resolve_bbsetup_multi_returns_one_per_yaml():
+    entry = PresetEntry(
+        name="bb-all",
+        family="bbsetup",
+        kas_yamls=["conf/qemux86-64.yml", "conf/raspberrypi4.yml", "conf/beaglebone.yml"],
+        machine="qemux86-64",
+        image="avocado-os",
+    )
+    specs = entry.resolve()
+    assert len(specs) == 3
+    assert specs[0].kas_yaml == Path("conf/qemux86-64.yml")
+    assert specs[1].kas_yaml == Path("conf/raspberrypi4.yml")
+    assert specs[2].kas_yaml == Path("conf/beaglebone.yml")
+    assert all(isinstance(s.kas_yaml, Path) for s in specs)
+
+
+def test_resolve_bbsetup_multi_manifest_is_none():
+    entry = PresetEntry(
+        name="bb-multi",
+        family="bbsetup",
+        kas_yamls=["a.yml", "b.yml"],
+    )
+    specs = entry.resolve()
+    assert all(s.manifest is None for s in specs)
+
+
+def test_resolve_generic_multi_returns_correct_count():
+    entry = PresetEntry(
+        name="gen-multi",
+        family="generic",
+        kas_yamls=["r1.yml", "r2.yml"],
+    )
+    specs = entry.resolve()
+    assert len(specs) == 2
+    assert specs[0].family == "generic"
+    assert specs[1].family == "generic"
+
+
+def test_resolve_nxp_single_fields_none_when_not_set():
+    entry = _nxp_single()
+    spec = entry.resolve()[0]
+    assert spec.machine is None
+    assert spec.distro is None
+    assert spec.image is None
