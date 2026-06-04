@@ -8,6 +8,7 @@ import typer
 from rich.console import Console
 
 from bakar import __version__
+from bakar.preset_config import PresetEntry, load_presets
 from bakar.user_config import load_user_config
 from bakar.vendor_config import load_vendors
 
@@ -24,6 +25,7 @@ console = Console(stderr=True)
 
 _VENDORS: list | None = None
 _USER_CONFIG: UserConfig | None = None
+_PRESETS: list[PresetEntry] | None = None
 
 
 def _get_vendors() -> list:
@@ -45,6 +47,16 @@ def _load_user_config_safe() -> UserConfig:
         raise typer.Exit(code=2) from exc
 
 
+def _load_presets_safe() -> None:
+    global _PRESETS
+    if _PRESETS is None:
+        try:
+            _PRESETS = load_presets()
+        except (ValueError, OSError) as exc:
+            console.print(f"[red]Invalid presets config:[/] {exc}")
+            raise typer.Exit(code=2) from exc
+
+
 def _version(value: bool) -> None:
     if value:
         console.print(f"bakar {__version__}")
@@ -61,3 +73,4 @@ def _main(
     global _USER_CONFIG
     _USER_CONFIG = _load_user_config_safe()
     _get_vendors()
+    _load_presets_safe()

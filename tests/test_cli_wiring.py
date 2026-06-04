@@ -44,3 +44,27 @@ def test_import_succeeds() -> None:
     import bakar.cli  # noqa: F401 - import is the test
 
     assert True
+
+
+def test_malformed_preset_exits_2(runner: CliRunner, monkeypatch) -> None:
+    """A malformed [[presets]] entry in config.toml causes typer.Exit(2) at startup.
+
+    --help is an eager flag that skips the callback body; use a subcommand's
+    --help to trigger the @app.callback() before Click prints help and exits.
+    """
+    import bakar.commands._app as _state
+
+    def _bad_load_presets_safe() -> None:
+        _state.console.print("[red]Invalid presets config:[/] family 'rockchip' is not valid")
+        raise typer.Exit(code=2)
+
+    monkeypatch.setattr(_state, "_load_presets_safe", _bad_load_presets_safe)
+
+    result = runner.invoke(app, ["doctor", "--help"])
+    assert result.exit_code == 2
+
+
+def test_presets_subapp_registered() -> None:
+    """The presets sub-app is registered on the shared Typer app."""
+    click_app = typer.main.get_command(app)
+    assert "presets" in click_app.commands, f"'presets' not in registered groups: {list(click_app.commands.keys())}"
