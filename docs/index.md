@@ -25,6 +25,7 @@
 | `graph` | [graph.md](graph.md) | Analyze a recipe's dependency graph: blast radius, longest chain, cycles |
 | `diffsigs` | [diffsigs.md](diffsigs.md) | Show what changed in a task signature (why did this rebuild) |
 | `for-all` | [for-all.md](for-all.md) | Run a shell command in every source repo |
+| `presets` | [presets.md](presets.md) | Manage named build presets (`list`, `show`, `add`, `remove`) |
 | `settings` | [settings.md](settings.md) | Read and write `~/.config/bakar/config.toml` |
 | `lock` | [lock.md](lock.md) | Pin floating layer SHAs |
 | `diff` | [diff.md](diff.md) | Compare two manifest versions |
@@ -90,6 +91,7 @@
 - All config keys with types and defaults: [config-reference.md](config-reference.md)
 - Understand env vars and priority order: [configuration.md](configuration.md)
 - Workspace layout and BSP family auto-detection: [workspace.md](workspace.md)
+- Name a build configuration and invoke it by name: [presets.md](presets.md)
 
 **Advanced:**
 - Swap BSP bitbake for a local upstream checkout: [bitbake-override.md](bitbake-override.md)
@@ -172,10 +174,14 @@ Related: [shell.md](shell.md), [for-all.md](for-all.md)
 ### Configuration
 
 ```text
-bakar settings  - CRUD interface for ~/.config/bakar/config.toml
+bakar settings        - CRUD interface for ~/.config/bakar/config.toml
+bakar presets list    - list named build presets
+bakar presets show    - show a preset's full details
+bakar presets add     - add a preset interactively
+bakar presets remove  - remove a preset from config.toml
 ```
 
-Related: [settings.md](settings.md), [configuration.md](configuration.md), [workspace.md](workspace.md)
+Related: [settings.md](settings.md), [presets.md](presets.md), [configuration.md](configuration.md), [workspace.md](workspace.md)
 
 ### Advanced / specialized
 
