@@ -37,11 +37,26 @@ import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from rich.console import Group, RenderableType
 from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 from rich.text import Text
+
+from bakar.eventlog import _stat
+
+if TYPE_CHECKING:
+    from bakar.eventlog import _EventStub
+
+# bitbake event class names (the decoded line's ``class`` field) the live feed
+# consumes. Mirrors eventlog.py's naming; classified by string, not isinstance.
+_EVT_PARSE_PROGRESS = "bb.event.ParseProgress"
+_EVT_CACHE_LOAD_PROGRESS = "bb.event.CacheLoadProgress"
+_EVT_RUNQUEUE_TASK_STARTED = "bb.runqueue.runQueueTaskStarted"
+_EVT_TASK_STARTED = "bb.build.TaskStarted"
+_EVT_TASK_SUCCEEDED = "bb.build.TaskSucceeded"
+_EVT_TASK_FAILED = "bb.build.TaskFailed"
 
 # Knotty fallback line formats (non-interactive mode inside the kas container).
 LOADING_CACHE = re.compile(r"Loading cache:\s+(\d+)%")
@@ -162,6 +177,14 @@ class BuildUIState:
         self._kind = ""
         self._running: dict[str, _RunTask] = {}
         self._lock = threading.Lock()
+        # Setscene-reuse counters from runQueueTaskStarted.stats; rendered as a
+        # "from sstate cache" line only when _setscene_total > 0.
+        self._setscene_covered = 0
+        self._setscene_total = 0
+        # Flipped True on the first process_event call. Once set, process_line
+        # stops mutating the progress model (the event feed owns it) but still
+        # does fallback detection, severity passthrough, and warn/error counts.
+        self._event_driven = False
         self.fallback_detected = False
         self._frame = 0
         # Stamped on the first "Parsing recipes" line so the parse->build
@@ -181,64 +204,72 @@ class BuildUIState:
         other lines.
         """
         # 1. Mode detection: record that the fallback parser path is active.
+        # This runs regardless of feed source so degraded-mode reporting holds.
         if FALLBACK_MODE.search(line):
             self.fallback_detected = True
             return None
 
-        # 2. Parse phase progress.
-        m = PARSE_PROGRESS.search(line)
-        if m:
-            self._stage = "parsing recipes"
-            if self._parse_start is None:
-                self._parse_start = time.monotonic()
-            self._setup_progress.update(self._setup_task_id, completed=int(m.group(1)), stage=self._stage)
-            return None
+        # Once the event feed is driving the model, the regex feed stops
+        # mutating parse/cache/build progress -- the structured stream owns it.
+        # Severity passthrough and warn/error counting below still run.
+        with self._lock:
+            event_driven = self._event_driven
+        if not event_driven:
+            # 2. Parse phase progress.
+            m = PARSE_PROGRESS.search(line)
+            if m:
+                self._stage = "parsing recipes"
+                if self._parse_start is None:
+                    self._parse_start = time.monotonic()
+                self._setup_progress.update(self._setup_task_id, completed=int(m.group(1)), stage=self._stage)
+                return None
 
-        # 3. Cache load progress.
-        m = LOADING_CACHE.search(line)
-        if m:
-            self._stage = "loading cache"
-            self._setup_progress.update(self._setup_task_id, completed=int(m.group(1)), stage=self._stage)
-            return None
+            # 3. Cache load progress.
+            m = LOADING_CACHE.search(line)
+            if m:
+                self._stage = "loading cache"
+                self._setup_progress.update(self._setup_task_id, completed=int(m.group(1)), stage=self._stage)
+                return None
 
-        # 4. Task counter -- flips to the BUILD phase.
-        m = RUNNING_TASK.search(line)
-        if m:
-            entering_build = self._phase is _Phase.SETUP
-            self._phase = _Phase.BUILD
-            self._kind = "setscene" if m.group(1) else "tasks"
-            completed, total = int(m.group(2)), int(m.group(3))
-            self._build_progress.update(
-                self._build_task_id,
-                completed=completed,
-                total=total,
-                kind=self._kind,
-            )
-            # Announce parse completion once. Queue it for the caller to emit
-            # through its logger (so it gets the same INFO tag as other run-log
-            # lines), reporting how long parsing took.
-            if entering_build:
-                took = ""
-                if self._parse_start is not None:
-                    took = f" ({_fmt_stall(int(time.monotonic() - self._parse_start))})"
-                self._pending_log = f"[green]✓[/] parsing recipes complete{took}"
-            return None
+            # 4. Task counter -- flips to the BUILD phase.
+            m = RUNNING_TASK.search(line)
+            if m:
+                with self._lock:
+                    entering_build = self._phase is _Phase.SETUP
+                    self._phase = _Phase.BUILD
+                self._kind = "setscene" if m.group(1) else "tasks"
+                completed, total = int(m.group(2)), int(m.group(3))
+                self._build_progress.update(
+                    self._build_task_id,
+                    completed=completed,
+                    total=total,
+                    kind=self._kind,
+                )
+                # Announce parse completion once. Queue it for the caller to emit
+                # through its logger (so it gets the same INFO tag as other run-log
+                # lines), reporting how long parsing took.
+                if entering_build:
+                    took = ""
+                    if self._parse_start is not None:
+                        took = f" ({_fmt_stall(int(time.monotonic() - self._parse_start))})"
+                    self._pending_log = f"[green]✓[/] parsing recipes complete{took}"
+                return None
 
-        # 5. Task started -- add to the running set.
-        m = RECIPE_STARTED.search(line)
-        if m:
-            key = f"{m.group(1)}:{m.group(2)}"
-            with self._lock:
-                self._running[key] = _RunTask(pf=m.group(1), task=m.group(2), start=time.monotonic())
-            return None
+            # 5. Task started -- add to the running set.
+            m = RECIPE_STARTED.search(line)
+            if m:
+                key = f"{m.group(1)}:{m.group(2)}"
+                with self._lock:
+                    self._running[key] = _RunTask(pf=m.group(1), task=m.group(2), start=time.monotonic())
+                return None
 
-        # 6. Task done -- remove from the running set.
-        m = RECIPE_DONE.search(line)
-        if m:
-            key = f"{m.group(1)}:{m.group(2)}"
-            with self._lock:
-                self._running.pop(key, None)
-            return None
+            # 6. Task done -- remove from the running set.
+            m = RECIPE_DONE.search(line)
+            if m:
+                key = f"{m.group(1)}:{m.group(2)}"
+                with self._lock:
+                    self._running.pop(key, None)
+                return None
 
         # 7. Severity lines surface above the Live display.
         m = SEVERITY_PASSTHROUGH.search(line)
@@ -252,6 +283,82 @@ class BuildUIState:
 
         # 8. Default.
         return None
+
+    def process_event(self, class_name: str, event: _EventStub) -> None:
+        """Update the model from one decoded bitbake event.
+
+        ``class_name`` is the event-log line's ``class`` string; ``event`` is the
+        decoded :class:`bakar.eventlog._EventStub` (missing attributes read as
+        ``None``). The render model is input-agnostic, so this drives the same
+        ``_setup_progress``/``_build_progress``/``_running`` state the regex feed
+        does. The first call flips ``_event_driven`` True so ``process_line``
+        stops mutating the model.
+        """
+        with self._lock:
+            self._event_driven = True
+
+        if class_name == _EVT_PARSE_PROGRESS:
+            self._update_setup(event, "parsing recipes")
+            return
+
+        if class_name == _EVT_CACHE_LOAD_PROGRESS:
+            self._update_setup(event, "loading cache")
+            return
+
+        if class_name == _EVT_RUNQUEUE_TASK_STARTED:
+            self._update_build(event)
+            return
+
+        if class_name == _EVT_TASK_STARTED:
+            taskname = getattr(event, "taskname", None) or event._task
+            key = f"{event._package}:{taskname}"
+            with self._lock:
+                self._running[key] = _RunTask(
+                    pf=event._package,
+                    task=taskname,
+                    start=time.monotonic(),
+                )
+            return
+
+        if class_name in (_EVT_TASK_SUCCEEDED, _EVT_TASK_FAILED):
+            taskname = getattr(event, "taskname", None) or event._task
+            key = f"{event._package}:{taskname}"
+            with self._lock:
+                self._running.pop(key, None)
+            return
+
+    def _update_setup(self, event: _EventStub, stage: str) -> None:
+        """Map a parse/cache progress event onto the setup percentage bar."""
+        current = getattr(event, "current", None)
+        total = getattr(event, "total", None)
+        if not total or total <= 0:
+            return
+        pct = int(current / total * 100) if current is not None else 0
+        self._stage = stage
+        self._setup_progress.update(self._setup_task_id, completed=pct, stage=stage)
+
+    def _update_build(self, event: _EventStub) -> None:
+        """Map a runQueueTaskStarted event onto the build bar and setscene line.
+
+        Leaves the build total untouched (no error) when ``stats`` is absent.
+        Transitions SETUP -> BUILD on the first such event.
+        """
+        stats = getattr(event, "stats", None)
+        if stats is None:
+            return
+        with self._lock:
+            self._phase = _Phase.BUILD
+            self._setscene_covered = _stat(stats, "setscene_covered") or 0
+            self._setscene_total = _stat(stats, "setscene_total") or 0
+        total = _stat(stats, "total")
+        completed = (_stat(stats, "completed") or 0) + (_stat(stats, "active") or 0)
+        self._kind = "tasks"
+        self._build_progress.update(
+            self._build_task_id,
+            completed=completed,
+            total=total,
+            kind=self._kind,
+        )
 
     def take_pending_log(self) -> str | None:
         """Return and clear a queued info message (e.g. parse completion).
@@ -276,14 +383,22 @@ class BuildUIState:
         """
         self._frame += 1
 
-        if self._phase is _Phase.SETUP:
+        now = time.monotonic()
+        with self._lock:
+            phase = self._phase
+            setscene_covered = self._setscene_covered
+            setscene_total = self._setscene_total
+            tasks = sorted(self._running.values(), key=lambda t: -(now - t.start))
+
+        if phase is _Phase.SETUP:
             return Group(self._setup_progress)
 
         parts: list[RenderableType] = [self._build_progress]
 
-        now = time.monotonic()
-        with self._lock:
-            tasks = sorted(self._running.values(), key=lambda t: -(now - t.start))
+        # Setscene-reuse line, between the build bar and the per-task table.
+        # Gated on setscene_total > 0 so the zero case leaves parts unchanged.
+        if setscene_total > 0:
+            parts.append(Text(f" {setscene_covered}/{setscene_total} tasks from sstate cache", style="green"))
 
         if tasks:
             els = sorted(now - t.start for t in tasks)
