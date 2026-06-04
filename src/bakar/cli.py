@@ -38,6 +38,7 @@ import bakar.commands.log
 import bakar.commands.mirror
 import bakar.commands.override
 import bakar.commands.prefetch
+import bakar.commands.presets
 import bakar.commands.report
 import bakar.commands.settings
 import bakar.commands.shell
