@@ -44,7 +44,7 @@ from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 from rich.text import Text
 
-from bakar.eventlog import _stat
+from bakar.eventlog import _stat, _task_key
 
 if TYPE_CHECKING:
     from bakar.eventlog import _EventStub
@@ -310,21 +310,19 @@ class BuildUIState:
             return
 
         if class_name == _EVT_TASK_STARTED:
-            taskname = getattr(event, "taskname", None) or event._task
-            key = f"{event._package}:{taskname}"
+            recipe, taskname = _task_key(event)
             with self._lock:
-                self._running[key] = _RunTask(
-                    pf=event._package,
+                self._running[f"{recipe}:{taskname}"] = _RunTask(
+                    pf=recipe,
                     task=taskname,
                     start=time.monotonic(),
                 )
             return
 
         if class_name in (_EVT_TASK_SUCCEEDED, _EVT_TASK_FAILED):
-            taskname = getattr(event, "taskname", None) or event._task
-            key = f"{event._package}:{taskname}"
+            recipe, taskname = _task_key(event)
             with self._lock:
-                self._running.pop(key, None)
+                self._running.pop(f"{recipe}:{taskname}", None)
             return
 
     def _update_setup(self, event: _EventStub, stage: str) -> None:

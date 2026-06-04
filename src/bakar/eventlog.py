@@ -149,32 +149,13 @@ def _iter_events(raw_path: Path):
     """
     # errors="replace": a non-UTF-8 or truncated-mid-multibyte log (aborted or
     # concurrent build) must not raise UnicodeDecodeError during line iteration,
-    # which would escape the per-line json guard below and crash the caller.
+    # which would escape the per-line guard in _decode_line and crash the caller.
     with raw_path.open("r", encoding="utf-8", errors="replace") as fh:
         for raw_line in fh:
-            line = raw_line.strip()
-            if not line:
+            decoded = _decode_line(raw_line.strip())
+            if decoded is None or decoded[0] not in _RECOGNIZED_CLASSES:
                 continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError, ValueError:
-                # Truncated/malformed line (e.g. a killed build's final line).
-                continue
-            if not isinstance(record, dict):
-                continue
-            if "allvariables" in record:
-                # The variable dump is not an event; no consumer yet.
-                continue
-            class_name = record.get("class")
-            payload = record.get("vars")
-            if not isinstance(class_name, str) or not isinstance(payload, str):
-                continue
-            if class_name not in _RECOGNIZED_CLASSES:
-                continue
-            event = _decode_event(payload)
-            if event is None:
-                continue
-            yield class_name, event
+            yield decoded
 
 
 def _decode_line(line: str) -> tuple[str, _EventStub] | None:
