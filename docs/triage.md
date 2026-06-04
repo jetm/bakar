@@ -12,7 +12,10 @@ bakar triage [RUN_ID] [OPTIONS]
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `RUN_ID` | | Run ID (`YYYYMMDD-HHMMSS`). Most recent run if omitted |
+| `RUN_ID` | | Run ID (`YYYYMMDD-HHMMSS`). Most recent failing run if omitted |
+| `--run` | | Run ID to triage; alias for the positional argument and takes precedence |
+| `--preset` | | Restrict run-dir selection to a preset (matches the preset build subdir name) |
+| `--release` | | Restrict run-dir selection to a release (matches the version in the build subdir name) |
 | `--kas-yaml` | `-k` | kas YAML for a BYO build (runs live next to it) |
 | `--workspace` | `-w` | Workspace root override |
 
@@ -22,8 +25,13 @@ bakar triage [RUN_ID] [OPTIONS]
 # Triage the most recent failed build
 bakar triage
 
-# Triage a specific run by ID
+# Triage a specific run by ID (positional or --run, equivalent)
 bakar triage 20260601-143022
+bakar triage --run 20260601-143022
+
+# Under a multi-release preset fan-out, pick which run dir to triage
+bakar triage --release 6.6
+bakar triage --preset imx-multi
 
 # Triage a BYO build
 bakar triage --kas-yaml my-project.yml
@@ -33,6 +41,22 @@ bakar triage 20260601-143022 --kas-yaml my-project.yml
 ```
 
 ## Output
+
+When the run dir holds a `bitbake-events.json` artifact with recorded
+failures, triage names each failing recipe and task and prints a tail of the
+recorded task logfile (resolved from its container `/work/...` path to the
+host path):
+
+```text
+:: triage 20260601-143022
+✗ recipe linux-imx task do_compile failed
+task log: .../work/imx8mp-poky-linux/linux-imx/.../temp/log.do_compile.1234
+log.do_compile.1234 (tail):
+  make[1]: *** [scripts/Makefile.build:480: drivers/net/wireless] Error 2
+```
+
+When no `bitbake-events.json` artifact is present, triage falls back to the
+`kas.log` analysis:
 
 ```text
 :: triage 20260601-143022
@@ -50,7 +74,7 @@ suggestions:
   - check sstate-cache for a stale artifact: bitbake -c cleansstate linux-imx
 ```
 
-When no `step_fail` events are found:
+When no failure is recorded on the fallback path:
 
 ```text
 :: triage 20260601-150000
@@ -59,14 +83,22 @@ no step_fail events found
 
 ## How triage sources failure data
 
-When a build fails, bakar writes `error-report.json` into the run directory at
-build time. On the next `bakar triage` call, triage reads that file directly -
-no log re-scanning. If the file is absent (old run directories, or a build
-interrupted before the report could be written), triage falls back to parsing
-`kas.log` live, reproducing the same output.
+Triage is structured-failure-first. Every `bakar build`, `bakar bitbake`, and
+`bakar clean-recipe` parses bitbake's persisted event log into a normalized
+`bitbake-events.json` in the run directory. When that artifact is present and
+its `failures[]` is non-empty, triage names the failing recipe/task directly
+from it and prints a tail of the `logfile` each failure records - no `kas.log`
+scraping. The recorded `logfile` is a container path (`/work/...`); triage
+resolves it to a host path before reading it.
 
-The fast path is transparent: the output format is identical whether the report
-comes from `error-report.json` or from a live log scan.
+If `bitbake-events.json` is absent (run directories predating the event-log
+capture, or a build interrupted before the artifact could be written), triage
+falls back to the legacy path: it reads `error-report.json` written by
+`kas_build` on failure, or, when that too is absent, parses `kas.log` live.
+Both fallbacks reproduce the same output the structured path would have shown.
+
+For the schema of `bitbake-events.json` and the raw `bitbake_eventlog.json` it
+is parsed from, see [configuration.md](configuration.md#build-telemetry-directories).
 
 ## error-report.json artifact
 
@@ -113,10 +145,15 @@ workspace for run directories across all BSP families:
 - `nxp/build/runs/` - NXP i.MX builds
 - `ti/build/runs/` - TI Sitara builds
 - `build/runs/` at the workspace root - BYO and bitbake-setup builds
+- `build/<preset-subdir>/build/runs/` - per-release run dirs from a multi-release preset fan-out
 - any other `*/build/runs/` subtree found within the workspace
 
-Results are sorted most-recent-first by run ID. The most recent run across all
-families is used when no `RUN_ID` is given.
+When no `RUN_ID` is given and a single run dir candidate exists, that run is
+used (today's single-build behavior). When several candidates exist - the
+typical case under a multi-release preset fan-out - the default is the
+most-recent run dir that recorded a failure. Override the default with `--run`
+(or the positional run ID) for an exact run, or with `--preset`/`--release` to
+restrict selection to the matching preset build subdir.
 
 ## Suggestions
 

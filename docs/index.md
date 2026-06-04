@@ -143,7 +143,7 @@ Related: [bitbake.md](bitbake.md), [graph.md](graph.md)
 
 ```text
 bakar log       - tail a live build log
-bakar triage    - surface the failing step after a build exits non-zero
+bakar triage    - surface the failing recipe/task from bitbake-events.json (--run/--preset/--release select the run dir)
 bakar report    - summarize a completed run (timing, image size, layers)
 bakar layers    - print layer git hashes without running anything
 ```

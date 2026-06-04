@@ -130,14 +130,41 @@ Every build run writes to:
 
 ```text
 <bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/
-  events.jsonl   - structured step events (machine-readable)
-  console.log    - human-readable step progress
-  kas.log        - stdout+stderr from kas-container
-  time.log       - wall-clock timing per step
-  du.tsv         - disk usage snapshot after build
-  env.txt        - environment variables at build time
-  diagnosis.txt  - doctor check results
+  events.jsonl          - structured step events (machine-readable)
+  console.log           - human-readable step progress
+  kas.log               - stdout+stderr from kas-container
+  time.log              - wall-clock timing per step
+  du.tsv                - disk usage snapshot after build
+  env.txt               - environment variables at build time
+  diagnosis.txt         - doctor check results
+  bitbake_eventlog.json - raw bitbake event log (JSON Lines, base64-pickle payloads)
+  bitbake-events.json   - normalized event artifact parsed from the raw log
 ```
+
+`bitbake_eventlog.json` is written by bitbake itself: `bakar` injects
+`BB_DEFAULT_EVENTLOG` (pointing at this path) into the build environment, so
+`bakar build`, `bakar bitbake`, and `bakar clean-recipe` all leave one. It is
+JSON Lines where each event payload is a base64-encoded Python pickle.
+
+`bitbake-events.json` is the normalized artifact `bakar` parses from the raw
+log on the host (without importing bitbake). It is the stable contract triage
+and downstream tooling consume. Top-level shape:
+
+```json
+{
+  "schema_version": 1,
+  "build": {"started": "<iso>", "completed": "<iso|null>", "outcome": "success|failed|unknown",
+            "preset": "<name|null>", "release": "<id|null>", "run_id": "<ts>"},
+  "tasks": [{"recipe": "<PF>", "task": "do_compile", "outcome": "succeeded|failed|failed_silent",
+             "started": "<iso|null>", "completed": "<iso|null>", "pid": 1234, "logfile": "<path|null>"}],
+  "setscene": {"covered": 0, "notcovered": 0, "total": 0,
+               "per_recipe": [{"recipe": "<PF>", "covered": 0, "notcovered": 0}]},
+  "failures": [{"recipe": "<PF>", "task": "do_compile", "logfile": "<path>", "errprinted": true}]
+}
+```
+
+`bakar triage` reads `failures[]` from this artifact to name the failing
+recipe/task and print the recorded logfile excerpt. See [triage.md](triage.md).
 
 ## See also
 
