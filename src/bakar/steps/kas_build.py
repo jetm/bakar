@@ -606,7 +606,7 @@ def _run_pty_with_ui(
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,
-                env=_build_env(cfg),
+                env=_build_env(cfg, eventlog_path=_container_eventlog_path(cfg, log)),
                 start_new_session=True,
                 close_fds=True,
             )
@@ -816,6 +816,9 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
                 kas_log=str(log.kas_log_path),
             )
             write_error_report(log.run_dir, cfg, rc)
+        # Normalize the raw bitbake event log into bitbake-events.json for both
+        # outcomes. Best-effort: a no-op when bitbake wrote no event log.
+        log.persist_bitbake_events()
         terminated = True
     finally:
         warn = ui.warn_count
@@ -942,7 +945,11 @@ def _apply_host_mode_env(
 
 
 def _build_env(
-    cfg: BuildConfig, python_executable: Path | None = None, *, ensure_hashserv: bool = True
+    cfg: BuildConfig,
+    python_executable: Path | None = None,
+    *,
+    ensure_hashserv: bool = True,
+    eventlog_path: str | None = None,
 ) -> dict[str, str]:
     """Return the environment to hand to kas-container.
 
@@ -1020,7 +1027,39 @@ def _build_env(
         passthrough["KAS_WORK_DIR"] = str(cfg.bsp_root)
 
     _apply_host_mode_env(cfg, python_executable, passthrough)
+    # When the caller supplies a container-visible event-log path, point
+    # bitbake at it via BB_DEFAULT_EVENTLOG (cooker.py honors this var literally
+    # via setupEventLog, no datetime substitution). Omit the key when None so
+    # the env-rendering-only sites and the existing _build_env test calls keep
+    # producing the pre-change env.
+    if eventlog_path is not None:
+        passthrough["BB_DEFAULT_EVENTLOG"] = eventlog_path
     return passthrough
+
+
+def _container_eventlog_path(cfg: BuildConfig, log: RunLogger) -> str:
+    """Return the bitbake event-log path as bitbake sees it inside the container.
+
+    bitbake writes the event log from inside kas-container, so BB_DEFAULT_EVENTLOG
+    must name a path valid in the container's filesystem. kas-container bind-mounts
+    KAS_WORK_DIR as ``/work``; ``_build_env`` assigns KAS_WORK_DIR = ``cfg.workspace``
+    for meta-avocado and ``cfg.bsp_root`` otherwise. The host run dir
+    (``cfg.runs_dir/<run_id>`` = ``bsp_root/build/runs/<run_id>``) lives under that
+    mount root, so the container path is ``/work`` + the run dir's path relative to
+    the mount root + the event-log filename. In ``cfg.host_mode`` there is no
+    container, so the host path is used verbatim.
+
+    Fallback if a real build shows the file is not written at this path (the
+    kas-container mount mapping differs from the above): glob
+    ``bitbake_eventlog_*.json`` under the build dir filtered by an mtime watermark
+    captured immediately before the bitbake invocation.
+    """
+    host_path = log.eventlog_path
+    if cfg.host_mode:
+        return str(host_path)
+    mount_root = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
+    rel = host_path.relative_to(mount_root)
+    return str(Path("/work") / rel)
 
 
 def run_shell(ctx: KasBuildContext, args: list[str], command: str | None = None) -> int:
@@ -1043,7 +1082,9 @@ def run_shell(ctx: KasBuildContext, args: list[str], command: str | None = None)
     if command is not None:
         cmd.extend(["-c", command])
     cmd.extend(args)
-    proc = subprocess.Popen(cmd, cwd=cfg.bsp_root, env=_build_env(cfg))
+    proc = subprocess.Popen(
+        cmd, cwd=cfg.bsp_root, env=_build_env(cfg, eventlog_path=_container_eventlog_path(cfg, log))
+    )
     rc = proc.wait()
     log.step_ok("kas_shell", exit_code=rc)
     return rc
@@ -1082,7 +1123,11 @@ def run_shell_capture(
         proc = subprocess.Popen(
             cmd,
             cwd=cfg.bsp_root,
-            env=_build_env(cfg, python_executable=python_executable),
+            env=_build_env(
+                cfg,
+                python_executable=python_executable,
+                eventlog_path=_container_eventlog_path(cfg, log),
+            ),
             stdout=fh,
             stderr=subprocess.STDOUT,
         )
@@ -1117,10 +1162,19 @@ def run_kas_subcommand(
             capture_to.parent.mkdir(parents=True, exist_ok=True)
             with capture_to.open("wb") as fh:
                 proc = subprocess.run(  # pragma: no cover
-                    cmd, cwd=cfg.bsp_root, env=_build_env(cfg), stdout=fh, check=False
+                    cmd,
+                    cwd=cfg.bsp_root,
+                    env=_build_env(cfg, eventlog_path=_container_eventlog_path(cfg, log)),
+                    stdout=fh,
+                    check=False,
                 )
         else:
-            proc = subprocess.run(cmd, cwd=cfg.bsp_root, env=_build_env(cfg), check=False)  # pragma: no cover
+            proc = subprocess.run(  # pragma: no cover
+                cmd,
+                cwd=cfg.bsp_root,
+                env=_build_env(cfg, eventlog_path=_container_eventlog_path(cfg, log)),
+                check=False,
+            )
     except FileNotFoundError:
         log.step_fail("kas_subcommand", reason=f"{exe} not found")
         raise
