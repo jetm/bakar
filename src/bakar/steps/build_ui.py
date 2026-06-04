@@ -319,10 +319,11 @@ class BuildUIState:
             return
 
         if class_name == _EVT_PARSE_COMPLETED:
-            took = ""
-            if self._parse_start is not None:
-                took = f" ({_fmt_stall(int(time.monotonic() - self._parse_start))})"
-            self._pending_log = f"[green]✓[/] parsing recipes complete{took}"
+            with self._lock:
+                took = ""
+                if self._parse_start is not None:
+                    took = f" ({_fmt_stall(int(time.monotonic() - self._parse_start))})"
+                self._pending_log = f"[green]✓[/] parsing recipes complete{took}"
             return
 
         if class_name == _EVT_RUNQUEUE_TASK_STARTED:
@@ -356,9 +357,10 @@ class BuildUIState:
         if not total or total <= 0:
             return
         pct = int(current / total * 100) if current is not None else 0
-        self._stage = stage
-        if stage == "parsing recipes" and self._parse_start is None:
-            self._parse_start = time.monotonic()
+        with self._lock:
+            self._stage = stage
+            if stage == "parsing recipes" and self._parse_start is None:
+                self._parse_start = time.monotonic()
         self._setup_progress.update(self._setup_task_id, completed=pct, stage=stage)
 
     def _update_build(self, event: _EventStub) -> None:

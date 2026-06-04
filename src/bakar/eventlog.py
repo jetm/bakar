@@ -152,10 +152,20 @@ def _iter_events(raw_path: Path):
     # which would escape the per-line guard in _decode_line and crash the caller.
     with raw_path.open("r", encoding="utf-8", errors="replace") as fh:
         for raw_line in fh:
-            decoded = _decode_line(raw_line.strip())
-            if decoded is None or decoded[0] not in _RECOGNIZED_CLASSES:
+            line = raw_line.strip()
+            if not line:
                 continue
-            yield decoded
+            # Filter by class before decoding the payload so unrecognized lines
+            # never reach _decode_event.
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError, ValueError:
+                continue
+            if not isinstance(record, dict) or record.get("class") not in _RECOGNIZED_CLASSES:
+                continue
+            decoded = _decode_line(line)
+            if decoded is not None:
+                yield decoded
 
 
 def _decode_line(line: str) -> tuple[str, _EventStub] | None:
