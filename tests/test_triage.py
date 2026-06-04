@@ -8,10 +8,12 @@ is touched.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 import pytest
 
+from bakar.cli import app
 from bakar.triage import (
     _last_event_matching,
     _match_suggestions,
@@ -20,9 +22,12 @@ from bakar.triage import (
     analyse,
     find_runs,
 )
+from tests.conftest import SAMPLE_EVENTS_JSONL, SAMPLE_KAS_LOG
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from typer.testing import CliRunner
 
 
 @pytest.mark.unit
@@ -234,7 +239,6 @@ def test_analyse_fast_path_uses_json_not_kas_log(tmp_path: Path) -> None:
         "recipe_errors": [{"recipe": "json-only-recipe-2.0-r0", "task": "fetch", "excerpt": "Fetch failure"}],
         "suggestions": ["Fetch failure: retry, or add a PREMIRROR for the recipe's upstream URL."],
     }
-    import json
 
     (run / "error-report.json").write_text(json.dumps(error_report))
 
@@ -264,7 +268,6 @@ def test_analyse_fast_path_returns_correct_fields(tmp_path: Path) -> None:
         "recipe_errors": [{"recipe": "gstreamer1.0-1.0-r0", "task": "configure", "excerpt": "cmake error"}],
         "suggestions": ["stored suggestion - not used by fast path after ordering fix"],
     }
-    import json
 
     (run / "error-report.json").write_text(json.dumps(error_report))
 
@@ -313,7 +316,6 @@ def test_analyse_falls_back_on_corrupt_json(tmp_path: Path) -> None:
 @pytest.mark.unit
 def test_analyse_falls_back_on_missing_json_key(tmp_path: Path) -> None:
     """JSON missing a required key falls through to the live-parse path."""
-    import json
 
     run = tmp_path / "run"
     run.mkdir()
@@ -325,3 +327,178 @@ def test_analyse_falls_back_on_missing_json_key(tmp_path: Path) -> None:
     report = analyse(run, tmp_path)
 
     assert any("fallback-recipe-2" in e.recipe for e in report.recipe_errors)
+
+
+# ---------------------------------------------------------------------------
+# CliRunner tests: structured-failure-first triage, kas.log fallback, and
+# run-dir selection under preset fan-out. These exercise the bakar triage
+# command end to end (mirroring tests/test_cli_triage.py's CliRunner style)
+# against synthetic run dirs and a bitbake-events.json artifact.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def runner() -> CliRunner:
+    from typer.testing import CliRunner
+
+    return CliRunner()
+
+
+def _bbsetup_workspace(tmp_path: Path) -> Path:
+    """Workspace with a ``.bakar.toml`` marker so ``_workspace_from_cwd`` finds it."""
+    (tmp_path / ".bakar.toml").write_text("")
+    return tmp_path
+
+
+def _write_structured_run(
+    workspace: Path,
+    *,
+    ts: str,
+    failures: list[dict],
+    family: str = "nxp",
+    preset_subdir: str | None = None,
+) -> Path:
+    """Create a run dir holding a ``bitbake-events.json`` with the given failures.
+
+    ``preset_subdir`` places the run under ``<ws>/build/<subdir>/build/runs/<ts>``
+    (the preset fan-out layout ``_resolve_triage_dirs`` discovers and that
+    ``--release`` matches against); otherwise it lands under
+    ``<ws>/<family>/build/runs/<ts>``.
+    """
+    if preset_subdir is not None:
+        run = workspace / "build" / preset_subdir / "build" / "runs" / ts
+    else:
+        run = workspace / family / "build" / "runs" / ts
+    run.mkdir(parents=True)
+    artifact = {
+        "schema_version": 1,
+        "build": {"outcome": "failed", "run_id": ts},
+        "tasks": [],
+        "setscene": {},
+        "failures": failures,
+    }
+    (run / "bitbake-events.json").write_text(json.dumps(artifact))
+    return run
+
+
+@pytest.mark.unit
+def test_triage_structured_failure_prints_recipe_task_and_logfile_excerpt(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run dir with bitbake-events.json names the failing recipe/task and
+    prints the translated host logfile excerpt without scraping kas.log."""
+    workspace = _bbsetup_workspace(tmp_path)
+
+    # The logfile is a /work/... container path. report_root for a standard
+    # nxp workspace is the workspace itself, so /work/<rest> translates to
+    # <workspace>/<rest>. Create that host file so the excerpt prints.
+    host_logfile = workspace / "tmp" / "work" / "linux-imx" / "temp" / "log.do_compile.12345"
+    host_logfile.parent.mkdir(parents=True)
+    host_logfile.write_text("configure: error: missing toolchain\nmake[1]: *** [all] Error 2\n")
+
+    _write_structured_run(
+        workspace,
+        ts="20260601-120000",
+        failures=[
+            {
+                "recipe": "linux-imx-6.6.52-r0",
+                "task": "do_compile",
+                "logfile": "/work/tmp/work/linux-imx/temp/log.do_compile.12345",
+                "errprinted": True,
+            }
+        ],
+    )
+    # A kas.log carrying a *different* recipe proves the structured path was
+    # taken rather than the kas.log regex fallback.
+    run = workspace / "nxp" / "build" / "runs" / "20260601-120000"
+    (run / "kas.log").write_text("ERROR: kas-log-only-recipe-1.0-r0 do_fetch: should not appear\n")
+
+    monkeypatch.chdir(workspace)
+    result = runner.invoke(app, ["triage"])
+
+    assert result.exit_code == 0, result.output
+    assert "linux-imx-6.6.52-r0" in result.output
+    assert "do_compile" in result.output
+    assert "configure: error: missing toolchain" in result.output
+    # The kas.log fallback recipe must NOT appear: structured path wins.
+    assert "kas-log-only-recipe" not in result.output
+
+
+@pytest.mark.unit
+def test_triage_falls_back_to_kas_log_without_artifact(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run dir with only kas.log (no bitbake-events.json) triages via the
+    kas.log fallback, exits 0, and does not crash."""
+    workspace = _bbsetup_workspace(tmp_path)
+    run = workspace / "nxp" / "build" / "runs" / "20260601-120000"
+    run.mkdir(parents=True)
+    (run / "events.jsonl").write_text(SAMPLE_EVENTS_JSONL)
+    (run / "kas.log").write_text(SAMPLE_KAS_LOG)
+    assert not (run / "bitbake-events.json").exists()
+
+    monkeypatch.chdir(workspace)
+    result = runner.invoke(app, ["triage"])
+
+    assert result.exit_code == 0, result.output
+    # Fallback path surfaces the kas.log recipe via the regex analysis.
+    assert "linux-imx" in result.output
+
+
+@pytest.mark.unit
+def test_triage_default_selects_most_recent_failing_run(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two preset fan-out run dirs both record failures; the default selects
+    the most-recent one."""
+    workspace = _bbsetup_workspace(tmp_path)
+    _write_structured_run(
+        workspace,
+        ts="20260101-000000",
+        preset_subdir="fslc-imx95-6.6",
+        failures=[{"recipe": "older-recipe-1.0-r0", "task": "do_fetch"}],
+    )
+    _write_structured_run(
+        workspace,
+        ts="20260601-000000",
+        preset_subdir="fslc-imx95-6.12",
+        failures=[{"recipe": "newer-recipe-2.0-r0", "task": "do_compile"}],
+    )
+
+    monkeypatch.chdir(workspace)
+    result = runner.invoke(app, ["triage"])
+
+    assert result.exit_code == 0, result.output
+    assert "20260601-000000" in result.output
+    assert "newer-recipe-2.0-r0" in result.output
+    assert "older-recipe-1.0-r0" not in result.output
+
+
+@pytest.mark.unit
+def test_triage_release_selector_overrides_default(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--release`` overrides the most-recent-failing default by matching the
+    release substring in the preset build subdir name."""
+    workspace = _bbsetup_workspace(tmp_path)
+    _write_structured_run(
+        workspace,
+        ts="20260101-000000",
+        preset_subdir="fslc-imx95-6.6",
+        failures=[{"recipe": "release-66-recipe-1.0-r0", "task": "do_fetch"}],
+    )
+    _write_structured_run(
+        workspace,
+        ts="20260601-000000",
+        preset_subdir="fslc-imx95-6.12",
+        failures=[{"recipe": "release-612-recipe-2.0-r0", "task": "do_compile"}],
+    )
+
+    monkeypatch.chdir(workspace)
+    result = runner.invoke(app, ["triage", "--release", "6.6"])
+
+    assert result.exit_code == 0, result.output
+    # --release 6.6 forces the older run dir despite the newer one being default.
+    assert "20260101-000000" in result.output
+    assert "release-66-recipe-1.0-r0" in result.output
+    assert "release-612-recipe-2.0-r0" not in result.output
