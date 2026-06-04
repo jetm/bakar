@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
 
-from bakar.preset_config import PresetEntry, PresetSpec
+from bakar.preset_config import PresetEntry, PresetSpec, load_presets
 
 pytestmark = pytest.mark.unit
 
@@ -349,3 +350,207 @@ def test_resolve_nxp_single_fields_none_when_not_set():
     assert spec.machine is None
     assert spec.distro is None
     assert spec.image is None
+
+
+# ---------------------------------------------------------------------------
+# load_presets()
+# ---------------------------------------------------------------------------
+
+_NXP_PRESET_TOML = """\
+[[presets]]
+name = "imx8mp-scarthgap"
+family = "nxp"
+manifest = "imx-6.6.52-2.2.2.xml"
+branch = "lf-6.6.y"
+machine = "imx8mp-var-dart"
+"""
+
+_BBSETUP_PRESET_TOML = """\
+[[presets]]
+name = "avocado-qemux86-64"
+family = "bbsetup"
+kas_yaml = "conf/qemux86-64.yml"
+machine = "qemux86-64"
+image = "avocado-os-dev"
+"""
+
+_TWO_PRESET_TOML = _NXP_PRESET_TOML + "\n" + _BBSETUP_PRESET_TOML
+
+
+def test_load_presets_returns_empty_when_no_files(tmp_path):
+    result = load_presets(
+        config_path=tmp_path / "config.toml",
+        vendors_path=tmp_path / "vendors.toml",
+    )
+    assert result == []
+
+
+def test_load_presets_absent_config_returns_empty(tmp_path):
+    vendors = tmp_path / "vendors.toml"
+    vendors.write_text("[vendors]\n")
+    result = load_presets(config_path=tmp_path / "missing.toml", vendors_path=vendors)
+    assert result == []
+
+
+def test_load_presets_config_no_presets_section_returns_empty(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text('[build]\nmachine = "qemux86-64"\n')
+    result = load_presets(config_path=config, vendors_path=tmp_path / "missing.toml")
+    assert result == []
+
+
+def test_load_presets_single_nxp_preset(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_bytes(_NXP_PRESET_TOML.encode())
+    result = load_presets(config_path=config, vendors_path=tmp_path / "missing.toml")
+    assert len(result) == 1
+    assert isinstance(result[0], PresetEntry)
+    assert result[0].name == "imx8mp-scarthgap"
+    assert result[0].family == "nxp"
+
+
+def test_load_presets_single_bbsetup_preset(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_bytes(_BBSETUP_PRESET_TOML.encode())
+    result = load_presets(config_path=config, vendors_path=tmp_path / "missing.toml")
+    assert len(result) == 1
+    assert result[0].family == "bbsetup"
+
+
+def test_load_presets_two_presets_from_config(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_bytes(_TWO_PRESET_TOML.encode())
+    result = load_presets(config_path=config, vendors_path=tmp_path / "missing.toml")
+    assert len(result) == 2
+
+
+def test_load_presets_merges_config_and_vendors(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_bytes(_NXP_PRESET_TOML.encode())
+    vendors = tmp_path / "vendors.toml"
+    vendors.write_bytes(_BBSETUP_PRESET_TOML.encode())
+    result = load_presets(config_path=config, vendors_path=vendors)
+    assert len(result) == 2
+    names = {p.name for p in result}
+    assert "imx8mp-scarthgap" in names
+    assert "avocado-qemux86-64" in names
+
+
+def test_load_presets_duplicate_name_raises(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_bytes(_NXP_PRESET_TOML.encode())
+    vendors = tmp_path / "vendors.toml"
+    vendors.write_bytes(_NXP_PRESET_TOML.encode())
+    with pytest.raises(ValueError) as exc_info:
+        load_presets(config_path=config, vendors_path=vendors)
+    assert "imx8mp-scarthgap" in str(exc_info.value)
+
+
+def test_load_presets_duplicate_name_message_names_preset(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_bytes(_NXP_PRESET_TOML.encode())
+    vendors = tmp_path / "vendors.toml"
+    vendors.write_bytes(_NXP_PRESET_TOML.encode())
+    with pytest.raises(ValueError, match="imx8mp-scarthgap"):
+        load_presets(config_path=config, vendors_path=vendors)
+
+
+def test_load_presets_propagates_invalid_preset_error(tmp_path):
+    bad_toml = """\
+[[presets]]
+name = "bad-family"
+family = "rockchip"
+manifest = "any.xml"
+branch = "main"
+"""
+    config = tmp_path / "config.toml"
+    config.write_bytes(bad_toml.encode())
+    with pytest.raises(ValueError) as exc_info:
+        load_presets(config_path=config, vendors_path=tmp_path / "missing.toml")
+    assert "rockchip" in str(exc_info.value)
+
+
+def test_load_presets_propagates_toml_parse_error(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_bytes(b"[[presets]\nbroken toml [[[")
+    with pytest.raises((tomllib.TOMLDecodeError, ValueError)):
+        load_presets(config_path=config, vendors_path=tmp_path / "missing.toml")
+
+
+def test_load_presets_vendors_only(tmp_path):
+    vendors = tmp_path / "vendors.toml"
+    vendors.write_bytes(_NXP_PRESET_TOML.encode())
+    result = load_presets(config_path=tmp_path / "missing.toml", vendors_path=vendors)
+    assert len(result) == 1
+    assert result[0].name == "imx8mp-scarthgap"
+
+
+def test_load_presets_returns_preset_entry_instances(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_bytes(_TWO_PRESET_TOML.encode())
+    result = load_presets(config_path=config, vendors_path=tmp_path / "missing.toml")
+    assert all(isinstance(p, PresetEntry) for p in result)
+
+
+# ---------------------------------------------------------------------------
+# Family-specific wrong-field raises (lines 68-87)
+# ---------------------------------------------------------------------------
+
+
+def test_nxp_with_kas_yaml_instead_of_manifest_raises():
+    """nxp/ti must use manifest for single-release, not kas_yaml (line 68)."""
+    with pytest.raises(ValueError, match="manifest"):
+        PresetEntry(name="bad-nxp", family="nxp", kas_yaml="conf/board.yml")
+
+
+def test_nxp_with_kas_yamls_instead_of_manifests_raises():
+    """nxp/ti must use manifests for multi-release, not kas_yamls (line 73)."""
+    with pytest.raises(ValueError, match="manifests"):
+        PresetEntry(name="bad-nxp", family="nxp", kas_yamls=["conf/a.yml", "conf/b.yml"])
+
+
+def test_bbsetup_with_manifest_instead_of_kas_yaml_raises():
+    """generic/bbsetup must use kas_yaml for single-release, not manifest (line 79)."""
+    with pytest.raises(ValueError, match="kas_yaml"):
+        PresetEntry(name="bad-bbsetup", family="bbsetup", manifest="any.xml", branch="main")
+
+
+def test_generic_with_manifests_instead_of_kas_yamls_raises():
+    """generic/bbsetup must use kas_yamls for multi-release, not manifests (line 84)."""
+    with pytest.raises(ValueError, match="kas_yamls"):
+        PresetEntry(name="bad-generic", family="generic", manifests=["a.xml", "b.xml"], branches=["b1", "b2"])
+
+
+# ---------------------------------------------------------------------------
+# load_presets() edge cases: missing name field and unknown keys (lines 176, 180)
+# ---------------------------------------------------------------------------
+
+
+def test_load_presets_missing_name_raises(tmp_path):
+    """A preset dict without 'name' raises ValueError (line 176)."""
+    bad_toml = """\
+[[presets]]
+family = "nxp"
+manifest = "imx-6.6.52-2.2.2.xml"
+branch = "lf-6.6.y"
+"""
+    config = tmp_path / "config.toml"
+    config.write_bytes(bad_toml.encode())
+    with pytest.raises(ValueError, match="name"):
+        load_presets(config_path=config, vendors_path=tmp_path / "missing.toml")
+
+
+def test_load_presets_unknown_field_raises(tmp_path):
+    """A preset dict with an unknown key raises ValueError (wraps TypeError, line 180)."""
+    bad_toml = """\
+[[presets]]
+name = "bad-entry"
+family = "nxp"
+manifest = "imx-6.6.52-2.2.2.xml"
+branch = "lf-6.6.y"
+unknown_key = "oops"
+"""
+    config = tmp_path / "config.toml"
+    config.write_bytes(bad_toml.encode())
+    with pytest.raises(ValueError, match="Invalid preset entry"):
+        load_presets(config_path=config, vendors_path=tmp_path / "missing.toml")

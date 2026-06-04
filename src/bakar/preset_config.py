@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -61,18 +62,29 @@ class PresetEntry:
                 " or the plural multi-release equivalents)"
             )
 
-        # Family-specific single-release field check: nxp/ti must use manifest,
-        # bbsetup/generic must use kas_yaml. This prevents Path(None) in resolve().
-        if self.family in {"nxp", "ti"} and self.kas_yaml and not self.manifest:
-            raise ValueError(
-                f"PresetEntry '{self.name}': family '{self.family}' requires"
-                " 'manifest' (not 'kas_yaml') for single-release builds"
-            )
-        if self.family in {"generic", "bbsetup"} and self.manifest and not self.kas_yaml:
-            raise ValueError(
-                f"PresetEntry '{self.name}': family '{self.family}' requires"
-                " 'kas_yaml' (not 'manifest') for single-release builds"
-            )
+        # Family-specific field checks so resolve() never hits Path(None) or manifest=None.
+        if self.family in {"nxp", "ti"}:
+            if self.kas_yaml and not self.manifest:
+                raise ValueError(
+                    f"PresetEntry '{self.name}': family '{self.family}' requires"
+                    " 'manifest' (not 'kas_yaml') for single-release builds"
+                )
+            if self.kas_yamls and not self.manifests:
+                raise ValueError(
+                    f"PresetEntry '{self.name}': family '{self.family}' requires"
+                    " 'manifests' (not 'kas_yamls') for multi-release builds"
+                )
+        if self.family in {"generic", "bbsetup"}:
+            if self.manifest and not self.kas_yaml:
+                raise ValueError(
+                    f"PresetEntry '{self.name}': family '{self.family}' requires"
+                    " 'kas_yaml' (not 'manifest') for single-release builds"
+                )
+            if self.manifests and not self.kas_yamls:
+                raise ValueError(
+                    f"PresetEntry '{self.name}': family '{self.family}' requires"
+                    " 'kas_yamls' (not 'manifests') for multi-release builds"
+                )
 
         if self.family in {"nxp", "ti"} and self.manifests and len(self.manifests) != len(self.branches):
             raise ValueError(
@@ -124,3 +136,46 @@ class PresetEntry:
                 image=self.image,
             )
         ]
+
+
+def load_presets(config_path: Path | None = None, vendors_path: Path | None = None) -> list[PresetEntry]:
+    """Load named presets from config.toml and vendors.toml.
+
+    Reads [[presets]] from ~/.config/bakar/config.toml and [[presets]] from
+    ~/.config/bakar/vendors.toml, merges them, and raises ValueError naming
+    any duplicate preset name across both sources. Returns [] when neither
+    file has a [[presets]] table. Propagates parse errors raw.
+    """
+    if config_path is None:
+        config_path = Path.home() / ".config" / "bakar" / "config.toml"
+    if vendors_path is None:
+        vendors_path = Path.home() / ".config" / "bakar" / "vendors.toml"
+
+    user_dicts: list[dict] = []
+    if config_path.exists():
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        user_dicts = data.get("presets", [])
+
+    vendor_dicts: list[dict] = []
+    if vendors_path.exists():
+        with vendors_path.open("rb") as f:
+            data = tomllib.load(f)
+        vendor_dicts = data.get("presets", [])
+
+    # Duplicate name detection across both sources.
+    user_names = {d["name"] for d in user_dicts if "name" in d}
+    for d in vendor_dicts:
+        vendor_name = d.get("name")
+        if vendor_name and vendor_name in user_names:
+            raise ValueError(f"Duplicate preset name '{vendor_name}' found in both config.toml and vendors.toml")
+
+    entries = []
+    for d in user_dicts + vendor_dicts:
+        if "name" not in d:
+            raise ValueError("Preset entry is missing required 'name' field")
+        try:
+            entries.append(PresetEntry(**d))
+        except TypeError as exc:
+            raise ValueError(f"Invalid preset entry: {exc}") from exc
+    return entries
