@@ -44,7 +44,15 @@ from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 from rich.text import Text
 
-from bakar.eventlog import _stat, _task_key
+from bakar.eventlog import (
+    _RUNQUEUE_TASK_STARTED,
+    _TASK_FAILED,
+    _TASK_FAILED_SILENT,
+    _TASK_STARTED,
+    _TASK_SUCCEEDED,
+    _stat,
+    _task_key,
+)
 
 if TYPE_CHECKING:
     from bakar.eventlog import _EventStub
@@ -53,10 +61,15 @@ if TYPE_CHECKING:
 # consumes. Mirrors eventlog.py's naming; classified by string, not isinstance.
 _EVT_PARSE_PROGRESS = "bb.event.ParseProgress"
 _EVT_CACHE_LOAD_PROGRESS = "bb.event.CacheLoadProgress"
-_EVT_RUNQUEUE_TASK_STARTED = "bb.runqueue.runQueueTaskStarted"
-_EVT_TASK_STARTED = "bb.build.TaskStarted"
-_EVT_TASK_SUCCEEDED = "bb.build.TaskSucceeded"
-_EVT_TASK_FAILED = "bb.build.TaskFailed"
+_EVT_PARSE_COMPLETED = "bb.event.ParseCompleted"
+_EVT_RUNQUEUE_TASK_STARTED = _RUNQUEUE_TASK_STARTED
+_EVT_TASK_STARTED = _TASK_STARTED
+_EVT_TASK_SUCCEEDED = _TASK_SUCCEEDED
+_EVT_TASK_FAILED = _TASK_FAILED
+_EVT_TASK_FAILED_SILENT = _TASK_FAILED_SILENT
+_EVT_SCENE_TASK_STARTED = "bb.runqueue.sceneQueueTaskStarted"
+_EVT_SCENE_TASK_COMPLETED = "bb.runqueue.sceneQueueTaskCompleted"
+_EVT_SCENE_TASK_FAILED = "bb.runqueue.sceneQueueTaskFailed"
 
 # Knotty fallback line formats (non-interactive mode inside the kas container).
 LOADING_CACHE = re.compile(r"Loading cache:\s+(\d+)%")
@@ -305,8 +318,19 @@ class BuildUIState:
             self._update_setup(event, "loading cache")
             return
 
+        if class_name == _EVT_PARSE_COMPLETED:
+            took = ""
+            if self._parse_start is not None:
+                took = f" ({_fmt_stall(int(time.monotonic() - self._parse_start))})"
+            self._pending_log = f"[green]✓[/] parsing recipes complete{took}"
+            return
+
         if class_name == _EVT_RUNQUEUE_TASK_STARTED:
             self._update_build(event)
+            return
+
+        if class_name in (_EVT_SCENE_TASK_STARTED, _EVT_SCENE_TASK_COMPLETED, _EVT_SCENE_TASK_FAILED):
+            self._update_scene(event, class_name)
             return
 
         if class_name == _EVT_TASK_STARTED:
@@ -319,7 +343,7 @@ class BuildUIState:
                 )
             return
 
-        if class_name in (_EVT_TASK_SUCCEEDED, _EVT_TASK_FAILED):
+        if class_name in (_EVT_TASK_SUCCEEDED, _EVT_TASK_FAILED, _EVT_TASK_FAILED_SILENT):
             recipe, taskname = _task_key(event)
             with self._lock:
                 self._running.pop(f"{recipe}:{taskname}", None)
@@ -333,6 +357,8 @@ class BuildUIState:
             return
         pct = int(current / total * 100) if current is not None else 0
         self._stage = stage
+        if stage == "parsing recipes" and self._parse_start is None:
+            self._parse_start = time.monotonic()
         self._setup_progress.update(self._setup_task_id, completed=pct, stage=stage)
 
     def _update_build(self, event: _EventStub) -> None:
@@ -351,12 +377,55 @@ class BuildUIState:
         total = _stat(stats, "total")
         completed = (_stat(stats, "completed") or 0) + (_stat(stats, "active") or 0)
         self._kind = "tasks"
-        self._build_progress.update(
-            self._build_task_id,
-            completed=completed,
-            total=total,
-            kind=self._kind,
-        )
+        if total is not None:
+            self._build_progress.update(self._build_task_id, completed=completed, total=total, kind=self._kind)
+        else:
+            self._build_progress.update(self._build_task_id, completed=completed, kind=self._kind)
+
+    def _update_scene(self, event: _EventStub, class_name: str) -> None:
+        """Map a sceneQueue task event onto the build bar and running set.
+
+        Transitions SETUP -> BUILD on the first setscene task so the display
+        shows setscene progress (the whole setscene phase was previously invisible
+        on the event feed). The bar runs ``setscene_covered + setscene_notcovered``
+        of ``setscene_total``; kind is ``"setscene"``.
+        """
+        taskname = getattr(event, "taskname", None) or ""
+        # sceneQueueEvent carries taskfile (recipe path) instead of _package.
+        taskfile = getattr(event, "taskfile", None) or ""
+        pf = taskfile.rsplit("/", 1)[-1].removesuffix(".bb") if taskfile else taskname
+        key = f"{pf}:{taskname}"
+        stats = getattr(event, "stats", None)
+
+        if class_name == _EVT_SCENE_TASK_STARTED:
+            with self._lock:
+                self._phase = _Phase.BUILD
+                self._running[key] = _RunTask(pf=pf, task=taskname, start=time.monotonic())
+                if stats is not None:
+                    self._setscene_covered = _stat(stats, "setscene_covered") or 0
+                    self._setscene_total = _stat(stats, "setscene_total") or 0
+            if stats is not None:
+                done = (_stat(stats, "setscene_covered") or 0) + (_stat(stats, "setscene_notcovered") or 0)
+                self._build_progress.update(
+                    self._build_task_id,
+                    completed=done,
+                    total=_stat(stats, "setscene_total"),
+                    kind="setscene",
+                )
+        else:
+            with self._lock:
+                self._running.pop(key, None)
+                if stats is not None:
+                    self._setscene_covered = _stat(stats, "setscene_covered") or 0
+                    self._setscene_total = _stat(stats, "setscene_total") or 0
+            if stats is not None:
+                done = (_stat(stats, "setscene_covered") or 0) + (_stat(stats, "setscene_notcovered") or 0)
+                self._build_progress.update(
+                    self._build_task_id,
+                    completed=done,
+                    total=_stat(stats, "setscene_total"),
+                    kind="setscene",
+                )
 
     def take_pending_log(self) -> str | None:
         """Return and clear a queued info message (e.g. parse completion).
