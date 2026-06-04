@@ -533,3 +533,183 @@ def test_nxp_preset_output_path_contains_manifest_version(
     ws_path = resolved_workspaces[0]
     assert ws_path is not None
     assert "6.6.52-2.2.2" in str(ws_path), f"expected manifest version '6.6.52-2.2.2' in workspace path '{ws_path}'"
+
+
+# ---------------------------------------------------------------------------
+# Multi-release fan-out tests (task 3.3)
+# ---------------------------------------------------------------------------
+
+
+def _make_multi_release_nxp_preset() -> object:
+    """Return a two-release NXP PresetEntry with distinct manifests."""
+    from bakar.preset_config import PresetEntry
+
+    return PresetEntry(
+        name="imx8mp-all-releases",
+        family="nxp",
+        machine="imx8mp-var-dart",
+        distro="fsl-imx-xwayland",
+        image="core-image-minimal",
+        manifests=["imx-6.6.52-2.2.2.xml", "imx-6.12.0-1.0.0.xml"],
+        branches=["scarthgap", "styhead"],
+    )
+
+
+def _make_multi_release_bbsetup_preset(tmp_path: Path) -> object:
+    """Return a two-release bbsetup PresetEntry with two distinct kas YAML stems."""
+    from bakar.preset_config import PresetEntry
+
+    yaml_a = tmp_path / "qemux86-64.yml"
+    yaml_b = tmp_path / "qemuarm64.yml"
+    yaml_a.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
+    yaml_b.write_text("header:\n  version: 14\nmachine: qemuarm64\n")
+    return PresetEntry(
+        name="avocado-all-machines",
+        family="generic",
+        machine="qemux86-64",
+        image="avocado-os",
+        kas_yamls=[str(yaml_a), str(yaml_b)],
+    )
+
+
+def _stub_single_release_runner(monkeypatch: pytest.MonkeyPatch, *, fail_index: int | None = None) -> list[int]:
+    """Stub _run_single_preset_release to record calls and optionally fail one release.
+
+    Returns the list of spec_index values passed to the stub so tests can
+    assert sequential execution order.
+    """
+    import bakar.commands.build as build_mod
+
+    call_indices: list[int] = []
+
+    def fake_run_single(preset, spec_index, **kwargs):  # type: ignore[no-untyped-def]
+        call_indices.append(spec_index)
+        return 1 if spec_index == fail_index else 0
+
+    monkeypatch.setattr(build_mod, "_run_single_preset_release", fake_run_single)
+    return call_indices
+
+
+def test_multi_release_nxp_runs_two_builds_sequentially(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A two-release NXP preset triggers exactly two sequential _run_single_preset_release calls."""
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    preset = _make_multi_release_nxp_preset()
+    _stub_preset_loader(monkeypatch, [preset])
+    call_indices = _stub_single_release_runner(monkeypatch)
+
+    result = runner.invoke(app, ["build", "--preset", "imx8mp-all-releases", "--skip-doctor"])
+
+    assert result.exit_code == 0, result.output
+    assert call_indices == [0, 1], f"expected releases [0, 1] in order, got {call_indices!r}"
+
+
+def test_multi_release_all_succeed_exits_zero(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Multi-release preset where all releases pass exits with code 0."""
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    preset = _make_multi_release_nxp_preset()
+    _stub_preset_loader(monkeypatch, [preset])
+    _stub_single_release_runner(monkeypatch, fail_index=None)
+
+    result = runner.invoke(app, ["build", "--preset", "imx8mp-all-releases", "--skip-doctor"])
+
+    assert result.exit_code == 0, (
+        f"expected exit 0 when all releases succeed, got {result.exit_code}; output: {result.output}"
+    )
+
+
+def test_multi_release_one_fails_exits_nonzero(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Multi-release preset where one release fails exits with code 1."""
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    preset = _make_multi_release_nxp_preset()
+    _stub_preset_loader(monkeypatch, [preset])
+    # Release at index 1 (second release) fails.
+    _stub_single_release_runner(monkeypatch, fail_index=1)
+
+    result = runner.invoke(app, ["build", "--preset", "imx8mp-all-releases", "--skip-doctor"])
+
+    assert result.exit_code != 0, f"expected non-zero exit when a release fails, got 0; output: {result.output}"
+    assert result.exit_code == 1, f"expected exit code 1, got {result.exit_code}"
+
+
+def test_multi_release_both_releases_still_run_when_first_fails(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All releases run even when an earlier release fails (fan-out, not fail-fast)."""
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    preset = _make_multi_release_nxp_preset()
+    _stub_preset_loader(monkeypatch, [preset])
+    # Release at index 0 (first release) fails; second must still be attempted.
+    call_indices = _stub_single_release_runner(monkeypatch, fail_index=0)
+
+    result = runner.invoke(app, ["build", "--preset", "imx8mp-all-releases", "--skip-doctor"])
+
+    assert result.exit_code == 1, f"expected exit 1 when first release fails, got {result.exit_code}"
+    assert call_indices == [0, 1], f"expected both releases attempted in order, got {call_indices!r}"
+
+
+def test_multi_release_summary_table_printed(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Rich summary table is printed after a multi-release build with two distinct release IDs."""
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    preset = _make_multi_release_nxp_preset()
+    _stub_preset_loader(monkeypatch, [preset])
+    _stub_single_release_runner(monkeypatch)
+
+    result = runner.invoke(app, ["build", "--preset", "imx8mp-all-releases", "--skip-doctor"])
+
+    assert result.exit_code == 0, result.output
+    # Both manifest-version strings must appear in the summary table output.
+    assert "6.6.52-2.2.2" in result.output, f"expected first release ID in output, got: {result.output!r}"
+    assert "6.12.0-1.0.0" in result.output, f"expected second release ID in output, got: {result.output!r}"
+
+
+def test_multi_release_bbsetup_distinct_output_dirs(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A two-release bbsetup preset produces two distinct output dir names (by kas YAML stem)."""
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    preset = _make_multi_release_bbsetup_preset(tmp_path)
+    _stub_preset_loader(monkeypatch, [preset])
+
+    import bakar.commands.build as build_mod
+    from bakar.config import compose_preset_output_path
+
+    # Capture the output subdirs computed for each release.
+    captured_subdirs: list[str] = []
+
+    def capturing_runner(active_preset, spec_index, **kwargs):  # type: ignore[no-untyped-def]
+        captured_subdirs.append(compose_preset_output_path(active_preset, spec_index))
+        return 0
+
+    monkeypatch.setattr(build_mod, "_run_single_preset_release", capturing_runner)
+
+    result = runner.invoke(app, ["build", "--preset", "avocado-all-machines", "--skip-doctor"])
+
+    assert result.exit_code == 0, result.output
+    assert len(captured_subdirs) == 2, f"expected 2 release output dirs, got {captured_subdirs!r}"
+    assert captured_subdirs[0] != captured_subdirs[1], (
+        f"expected distinct output dirs for two kas YAML stems, got: {captured_subdirs!r}"
+    )
+    # Each stem should appear in the corresponding output dir name.
+    assert "qemux86-64" in captured_subdirs[0], f"expected qemux86-64 stem in first dir: {captured_subdirs[0]!r}"
+    assert "qemuarm64" in captured_subdirs[1], f"expected qemuarm64 stem in second dir: {captured_subdirs[1]!r}"

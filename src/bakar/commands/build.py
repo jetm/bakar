@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 import typer
+from rich.table import Table
 
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
@@ -312,6 +314,126 @@ def _run_manifest_build(
     console.print(f"artifacts: {deploy}")
 
 
+def _is_multi_release(preset: object) -> bool:
+    """Return True when a preset expands to more than one release."""
+    from bakar.preset_config import PresetEntry
+
+    if not isinstance(preset, PresetEntry):
+        return False
+    return len(preset.manifests) > 1 or len(preset.kas_yamls) > 1
+
+
+def _run_single_preset_release(
+    active_preset: object,
+    spec_index: int,
+    *,
+    workspace_root: Path,
+    machine: str | None,
+    distro: str | None,
+    image: str | None,
+    branch: str | None,
+    host_mode: bool,
+    skip_sync: bool,
+    dry_run: bool,
+    keep_going: bool,
+    skip_doctor: bool,
+    clean: bool,
+    show_layers: bool,
+    sstate_mirror: str | None,
+) -> int:
+    """Run the full build pipeline for one PresetSpec and return the exit code.
+
+    Catches typer.Exit so multi-release fan-out can continue after a failed
+    release without terminating the process.  Returns 0 on success, non-zero
+    on failure.
+    """
+    from bakar.preset_config import PresetEntry, PresetSpec
+
+    if not isinstance(active_preset, PresetEntry):
+        return 1
+
+    specs: list[PresetSpec] = active_preset.resolve()
+    if spec_index >= len(specs):
+        return 1
+    spec = specs[spec_index]
+
+    out_subdir = compose_preset_output_path(active_preset, spec_index)
+    ws = workspace_root / "build" / out_subdir
+
+    byo_form = spec.kas_yaml is not None
+    if byo_form:
+        family, bsp = _dispatch_from_yaml(spec.kas_yaml)
+        main_yaml: Path | None = spec.kas_yaml
+    else:
+        family, bsp = _dispatch_bsp(spec.manifest)
+        main_yaml = None
+
+    cfg = resolve(
+        workspace=ws,
+        bsp_family=family,
+        spec=BSPSpec(
+            machine=machine or spec.machine,
+            distro=distro or spec.distro,
+            image=image or spec.image,
+            manifest=spec.manifest,
+            repo_branch=branch or spec.branch,
+            host_mode=host_mode,
+        ),
+        kas_yaml=main_yaml,
+        user_config=_state._USER_CONFIG,
+        preset=active_preset,
+    )
+    if sstate_mirror is not None:
+        cfg = replace(cfg, sstate_mirror_url=sstate_mirror)
+
+    overlay_source = _overlay_for(bsp)
+    extra_overlays: list[Path] = []
+    if byo_form and main_yaml is not None:
+        resolved_existing = set()
+        for overlay in _tuning_extra_overlays(cfg):
+            resolved_overlay = overlay.resolve()
+            if resolved_overlay not in resolved_existing:
+                extra_overlays.append(overlay)
+                resolved_existing.add(resolved_overlay)
+
+    effective_show_layers = show_layers or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_hashes)
+
+    ctx = _BuildCtx(
+        overlay_source=overlay_source,
+        extra_overlays=extra_overlays,
+        bsp=bsp,
+        family=family,
+        effective_show_layers=effective_show_layers,
+        dry_run=dry_run,
+        keep_going=keep_going,
+        skip_doctor=skip_doctor,
+        skip_sync=skip_sync,
+    )
+
+    if clean:
+        _clean_build_dir(cfg)
+
+    cfg.runs_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        with RunLogger(runs_dir=cfg.runs_dir) as log:
+            log.info(
+                f"build mode={'byo' if byo_form else 'manifest'} bsp={family}"
+                f" yaml={cfg.kas_yaml} overlay={overlay_source}"
+                f" release_index={spec_index}",
+            )
+            if byo_form:
+                _run_byo_build(cfg, log, ctx)
+            else:
+                _run_manifest_build(cfg, log, ctx)
+    except typer.Exit as exc:
+        return exc.exit_code if exc.exit_code is not None else 1
+    except Exception as exc:
+        console.print(f"[red]release {spec_index} failed with unexpected error:[/] {exc}")
+        return 1
+    else:
+        return 0
+
+
 @app.command()
 def build(
     kas_yaml: Annotated[
@@ -456,6 +578,63 @@ def build(
                 manifest = active_preset.manifest
             elif active_preset.manifests:
                 manifest = active_preset.manifests[0]
+
+    # Multi-release fan-out: when a preset defines more than one release,
+    # run each release sequentially, collect results, print a summary table,
+    # and exit with code 1 if any release failed.
+    if active_preset is not None and dry_run_script is not None and _is_multi_release(active_preset):
+        console.print("[red]--dry-run-script is not supported for multi-release presets.[/]")
+        raise typer.Exit(1)
+    if active_preset is not None and _is_multi_release(active_preset):
+        specs = active_preset.resolve()
+        # bbsetup is not in _resolve_workspace's Literal type; treat it like
+        # the generic/unknown case which falls back to _workspace_from_cwd().
+        _rw_family = active_preset.family if active_preset.family in {"nxp", "ti", "generic"} else None
+        ws_root = _resolve_workspace(workspace, kas_yaml=None, family=_rw_family)
+        results: list[tuple[str, str, float]] = []
+        for i in range(len(specs)):
+            release_id = compose_preset_output_path(active_preset, i)
+            console.print(
+                f"\n[bold]::[/] bakar build [{active_preset.family}] release {i + 1}/{len(specs)}: {release_id}"
+            )
+            t0 = time.monotonic()
+            rc = _run_single_preset_release(
+                active_preset,
+                i,
+                workspace_root=ws_root,
+                machine=machine,
+                distro=distro,
+                image=image,
+                branch=branch,
+                host_mode=host_mode,
+                skip_sync=skip_sync,
+                dry_run=dry_run,
+                keep_going=keep_going,
+                skip_doctor=skip_doctor,
+                clean=clean,
+                show_layers=show_layers,
+                sstate_mirror=sstate_mirror,
+            )
+            elapsed = time.monotonic() - t0
+            status = "[green]passed[/]" if rc == 0 else "[red]failed[/]"
+            results.append((release_id, status, elapsed))
+
+        # Print summary table.
+        table = Table(title="Multi-release build summary")
+        table.add_column("Release", style="bold")
+        table.add_column("Status")
+        table.add_column("Duration")
+        for release_id, status, elapsed in results:
+            mins, secs = divmod(int(elapsed), 60)
+            duration_str = f"{mins}m {secs:02d}s" if mins else f"{secs}s"
+            table.add_row(release_id, status, duration_str)
+        console.print(table)
+
+        failures = sum(1 for _, status, _ in results if "failed" in status)
+        if failures:
+            console.print(f"[red]{failures} of {len(results)} release(s) failed.[/]")
+            raise typer.Exit(code=1)
+        raise typer.Exit(code=0)
 
     byo_form = kas_yaml is not None
     if byo_form and manifest is not None:
