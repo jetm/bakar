@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-06-04
+
+### Added
+
+- Added `bakar drift` command, which compares each workspace source's pinned revision against its checked-out HEAD and reports per-source pinned SHA, actual SHA, and commit distance for all drifted repositories. Supports `--all` to include clean sources, `--json` for machine-readable output, and `--format md` for markdown output. Exits 0 when no drift is detected.
+- Added `bakar changelog <from> <to>` command, which generates release notes summarising what changed between two workspace states (manifest XML files, kas lockfiles, or git refs). Produces Added, Removed, and Modified sections; Modified layers include a commit count and git log excerpt. Supports `--format md` for headed markdown output.
+- Added `--dry-run-script PATH` option to `bakar build` and `bakar sync`. Writes a self-contained, executable bash script reproducing the full build or sync invocation to the given path, or to stdout when `-` is passed. The existing `--dry-run` preview behaviour is unchanged.
+- Added `check_sstate_hash_leak` doctor check. Scans `build/conf/local.conf` and sibling `.conf`/`.inc` includes for host-specific variables (`DATETIME`, `BUILD_REPRODUCIBLE_BINARIES`, `PWD`, `USER`, `HOME`, `HOSTNAME`) assigned without a `[vardepsexclude]` annotation, which corrupt sstate task signatures and cause unnecessary cache misses. Reports a warning with the exact remediation. Skipped before workspace sync when `local.conf` does not yet exist.
+- Added forward migration for `config.toml`. Older config files without a `config_version` field are automatically migrated to the current schema and saved. A `config_version` higher than the current version raises an error naming the unsupported version.
+- Added `generic` and `bbsetup` as valid vendor families in `vendors.toml`. Previously only `nxp` and `ti` were accepted, preventing declaration of bbsetup or generic vendor boards without patching the source.
+- Added a full configuration reference page (`docs/config-reference.md`) documenting every option across `config.toml`, `.bakar.toml`, and `vendors.toml`, all `BAKAR_*` environment variables, types, defaults, and annotated examples.
+- Added a coverage badge to the README reflecting live Codecov results.
+
+### Changed
+
+- Loading `.bakar.toml` now emits a warning for any unrecognised key, naming both the unknown key and the valid keys for that section. Config loading still succeeds; the warning is never a hard failure.
+- Fixed two errors in `docs/configuration.md`: the `vendors.toml` example used `[[vendor]]` instead of the correct `[[vendors]]`, and `manifest_pattern` instead of the correct `manifest_regex`.
+
 ## [0.11.0] - 2026-06-03
 
 ### Added
@@ -240,7 +258,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/jetm/bakar/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/jetm/bakar/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/jetm/bakar/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/jetm/bakar/compare/v0.8.0...v0.9.0
