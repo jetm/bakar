@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING, Any
 from rich.console import Console
 from rich.logging import RichHandler
 
+from bakar import eventlog
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -89,6 +91,14 @@ class RunLogger:
     @property
     def error_report_path(self) -> Path:
         return self.run_dir / "error-report.json"
+
+    @property
+    def eventlog_path(self) -> Path:
+        return self.run_dir / "bitbake_eventlog.json"
+
+    @property
+    def bitbake_events_path(self) -> Path:
+        return self.run_dir / "bitbake-events.json"
 
     @property
     def console(self) -> Console:
@@ -181,3 +191,16 @@ class RunLogger:
         self._console_header(step)
         self._logger.error(f"[red]✗[/] {step}: {reason}")
         self._emit("step_fail", step=step, reason=reason, **fields)
+
+    def persist_bitbake_events(self) -> None:
+        """Normalize the raw bitbake event log into ``bitbake-events.json``.
+
+        Best-effort: when the raw log is absent or empty, nothing is written
+        and no event is emitted. Never raises.
+        """
+        raw = self.eventlog_path
+        if not raw.is_file() or raw.stat().st_size == 0:
+            return
+        artifact = eventlog.normalize(raw)
+        self.bitbake_events_path.write_text(json.dumps(artifact, default=str))
+        self.step_ok("bitbake_events", path=str(self.bitbake_events_path))
