@@ -30,10 +30,10 @@ from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, resolve
 from bakar.diagnostics import any_blocking_failure, run_all
 from bakar.kas import translate_bbsetup_config, write_bbsetup_yaml
 from bakar.observability import RunLogger
+from bakar.preset_config import load_presets
 from bakar.steps import bitbake_override as step_override
 from bakar.steps import kas_build as step_kas
 from bakar.steps.kas_build import KasBuildContext
-from bakar.preset_config import load_presets
 from bakar.workspace import detect
 
 if TYPE_CHECKING:
@@ -44,7 +44,7 @@ def _preset_completer(incomplete: str) -> list[str]:
     """Shell completion for --preset: returns preset names starting with incomplete."""
     try:
         presets = load_presets()
-    except (ValueError, OSError):
+    except ValueError, OSError:
         return []
     return [p.name for p in presets if p.name.startswith(incomplete)]
 
