@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-06-04
+
+### Added
+
+- Bakar now captures and persists a normalized bitbake event log (`bitbake-events.json`) in each run directory, recording which tasks ran, which failed, and the associated log file paths. This artifact is produced for both full builds and recipe-level (`bakar bitbake`, `bakar clean-recipe`) invocations, regardless of build outcome.
+- The `bakar triage` command now reads structured failure information directly from `bitbake-events.json`, showing the failing recipe, task, and a translated log file excerpt without relying on regex scraping of `kas.log`. Falls back to `kas.log` analysis when the structured artifact is absent.
+- `bakar triage` gained `--run`, `--preset`, and `--release` selectors for builds that produce multiple run directories (e.g. preset fan-out). When no selector is given, triage defaults to the most-recent run directory that contains a failure.
+- The run directory now contains two new files documented in the configuration reference: `bitbake_eventlog.json` (raw bitbake event log) and `bitbake-events.json` (normalized schema with `schema_version`, `build`, `tasks`, `setscene`, and `failures` fields).
+
+### Fixed
+
+- Bitbake's `BB_DEFAULT_EVENTLOG` environment variable was previously dropped by `kas-container`'s allowlist before reaching Docker, so the event log was never written to the run directory. The variable is now injected via `--runtime-args -e` so it survives the container boundary.
+- When `BB_DEFAULT_EVENTLOG` injection failed, the event log written to OE-core's default location (`build/tmp/log/eventlog/`) was not discovered. Bakar now searches that directory for the newest file whose modification time is at or after the build-start timestamp and copies it into the run directory before normalizing.
+- `bakar dump` and `bakar lock` no longer raise an error when deriving the container-side event log path, which previously failed because their temporary run directories lie outside the bind-mount tree.
+- Preset fan-out triage now correctly discovers run directories for NXP/TI targets, which are one subdirectory level deeper than `bbsetup`/`generic` targets and were previously missed by the glob pattern.
+
 ## [0.13.0] - 2026-06-04
 
 ### Added
@@ -277,7 +293,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/jetm/bakar/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/jetm/bakar/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/jetm/bakar/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/jetm/bakar/compare/v0.10.0...v0.11.0
