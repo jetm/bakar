@@ -395,6 +395,14 @@ def build(
             "Does not build. The existing --dry-run/-n preview behavior is unchanged.",
         ),
     ] = None,
+    preset: Annotated[
+        str | None,
+        typer.Option(
+            "--preset",
+            autocompletion=_preset_completer,
+            help="Named preset from config.toml; additive with explicit flags (explicit flags win).",
+        ),
+    ] = None,
 ) -> None:
     """Run the build pipeline idempotently.
 
@@ -414,6 +422,41 @@ def build(
     The two forms are mutually exclusive: passing both a positional
     YAML and ``--manifest`` exits non-zero.
     """
+    # Resolve the active preset (if any) before dispatch.
+    # PresetEntry is used only as a local variable type annotation.
+    from bakar.preset_config import PresetEntry
+
+    active_preset: PresetEntry | None = None
+    if preset is not None:
+        # Use presets already loaded at startup when available; fall back to
+        # loading directly (task 6.2 wires _PRESETS; until then this fallback
+        # keeps this code self-contained).
+        # Check for None explicitly: _PRESETS=[] is a valid "no presets defined"
+        # state and must not trigger a redundant load_presets() call.
+        startup_presets = getattr(_state, "_PRESETS", None)
+        loaded = startup_presets if startup_presets is not None else load_presets()
+        matches = [p for p in loaded if p.name == preset]
+        if not matches:
+            console.print(f"[red]Preset '{preset}' not found.[/] Run `bakar presets list` to see available presets.")
+            raise typer.Exit(code=1)
+        active_preset = matches[0]
+
+        # For bbsetup/generic presets, set kas_yaml from the preset (unless
+        # the caller already supplied one explicitly).
+        if active_preset.family in {"bbsetup", "generic"} and kas_yaml is None:
+            if active_preset.kas_yaml:
+                kas_yaml = active_preset.kas_yaml
+            elif active_preset.kas_yamls:
+                kas_yaml = active_preset.kas_yamls[0]
+
+        # For nxp/ti presets, set manifest from the preset (unless the caller
+        # already supplied one explicitly).
+        if active_preset.family in {"nxp", "ti"} and manifest is None:
+            if active_preset.manifest:
+                manifest = active_preset.manifest
+            elif active_preset.manifests:
+                manifest = active_preset.manifests[0]
+
     byo_form = kas_yaml is not None
     if byo_form and manifest is not None:
         console.print("[red]choose either a positional kas YAML or --manifest, not both[/]")
@@ -467,6 +510,7 @@ def build(
         ),
         kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
+        preset=active_preset,
     )
     if sstate_mirror is not None:
         cfg = replace(cfg, sstate_mirror_url=sstate_mirror)

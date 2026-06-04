@@ -274,3 +274,168 @@ def test_dry_run_script_does_not_invoke_run_build(
 
     assert result.exit_code == 0, result.output
     assert build_calls == [], "run_build must NOT be called when --dry-run-script is used"
+
+
+# ---------------------------------------------------------------------------
+# --preset flag tests
+# ---------------------------------------------------------------------------
+
+
+def _make_nxp_preset() -> object:
+    """Return a minimal NXP PresetEntry-like object with known fields."""
+    from bakar.preset_config import PresetEntry
+
+    return PresetEntry(
+        name="imx8mp-scarthgap",
+        family="nxp",
+        machine="imx8mp-var-dart",
+        distro="fsl-imx-xwayland",
+        image="core-image-minimal",
+        manifest="imx-6.6.52-2.2.2.xml",
+        branch="scarthgap",
+    )
+
+
+def _make_generic_preset(tmp_path: Path) -> object:
+    """Return a minimal generic/bbsetup PresetEntry-like object."""
+    from bakar.preset_config import PresetEntry
+
+    yaml_path = tmp_path / "qemux86-64.yml"
+    yaml_path.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
+    return PresetEntry(
+        name="avocado-qemux86-64",
+        family="generic",
+        machine="qemux86-64",
+        image="avocado-os",
+        kas_yaml=str(yaml_path),
+    )
+
+
+def _stub_dispatchers(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Stub _dispatch_bsp, _dispatch_from_yaml, detect, and run_build.
+
+    Prevents real filesystem / subprocess operations during preset tests.
+    detect() is stubbed to return a fully-populated state so the build pipeline
+    skips all sync/setup-env steps without needing --skip-sync.
+    """
+    from bakar.bsp_model import get_model
+    from bakar.workspace import WorkspaceState
+
+    captured: dict = {"bsp_dispatch": [], "yaml_dispatch": [], "run_build": []}
+
+    def fake_dispatch_bsp(manifest):  # type: ignore[no-untyped-def]
+        captured["bsp_dispatch"].append(manifest)
+        bsp = get_model("nxp")
+        return ("nxp", bsp)
+
+    def fake_dispatch_yaml(yaml_path):  # type: ignore[no-untyped-def]
+        captured["yaml_dispatch"].append(yaml_path)
+        bsp = get_model("generic")
+        return ("generic", bsp)
+
+    def fake_run_build(ctx, *, extra_overlays=None):  # type: ignore[no-untyped-def]
+        captured["run_build"].append(ctx)
+        return 0
+
+    def fake_detect(cfg):  # type: ignore[no-untyped-def]
+        # Return a fully-initialized state so no sync/setup-env/gen-kas steps run.
+        return WorkspaceState(
+            bsp_family="nxp",
+            repo_initialized=True,
+            sources_populated=True,
+            build_dir_exists=True,
+            bblayers_present=True,
+            kas_yaml_present=True,
+            forks_linux_imx=False,
+            cache_dirs_ok=True,
+            repo_manifest_include=cfg.manifest,
+            repo_manifests_branch=cfg.repo_branch,
+            requested_manifest=cfg.manifest,
+            requested_branch=cfg.repo_branch,
+        )
+
+    monkeypatch.setattr(build_cmd, "_dispatch_bsp", fake_dispatch_bsp)
+    monkeypatch.setattr(build_cmd, "_dispatch_from_yaml", fake_dispatch_yaml)
+    monkeypatch.setattr(build_cmd.step_kas, "run_build", fake_run_build)
+    # Patch 'detect' where it's used in the build command module.
+    monkeypatch.setattr("bakar.commands.build.detect", fake_detect)
+    return captured
+
+
+def test_preset_unknown_name_exits_nonzero(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--preset with an unknown name exits non-zero and names the missing preset."""
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    # No presets defined.
+    monkeypatch.setattr(build_cmd, "load_presets", list)
+    monkeypatch.setattr(_state, "_PRESETS", [], raising=False)
+
+    result = runner.invoke(app, ["build", "--preset", "does-not-exist"])
+
+    assert result.exit_code != 0, f"expected non-zero exit, got 0; output: {result.output}"
+    assert "does-not-exist" in result.output, f"expected preset name in output, got: {result.output!r}"
+
+
+def test_preset_known_nxp_uses_preset_manifest(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--preset with a known NXP preset sets manifest and routes via _dispatch_bsp."""
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    nxp_preset = _make_nxp_preset()
+    monkeypatch.setattr(_state, "_PRESETS", [nxp_preset], raising=False)
+    captured = _stub_dispatchers(monkeypatch)
+
+    # --dry-run skips the actual kas-container invocation; detect() is stubbed
+    # so no real sync/setup-env steps run.
+    result = runner.invoke(app, ["build", "--preset", "imx8mp-scarthgap", "--skip-doctor", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    # _dispatch_bsp must have been called with the preset manifest.
+    assert captured["bsp_dispatch"] == ["imx-6.6.52-2.2.2.xml"], (
+        f"expected dispatch with preset manifest, got {captured['bsp_dispatch']!r}"
+    )
+
+
+def test_preset_explicit_image_overrides_preset(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An explicit --image flag wins over the preset image value.
+
+    Verifies the CLI > preset precedence: the resolved BuildConfig must
+    carry the user-supplied image, not the preset image.
+    """
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    nxp_preset = _make_nxp_preset()
+    monkeypatch.setattr(_state, "_PRESETS", [nxp_preset], raising=False)
+
+    resolved_configs: list = []
+
+    import bakar.commands.build as build_mod
+
+    original_resolve = build_mod.resolve
+
+    def capturing_resolve(**kwargs):  # type: ignore[no-untyped-def]
+        cfg = original_resolve(**kwargs)
+        resolved_configs.append(cfg)
+        return cfg
+
+    monkeypatch.setattr(build_mod, "resolve", capturing_resolve)
+    _stub_dispatchers(monkeypatch)
+
+    result = runner.invoke(
+        app,
+        ["build", "--preset", "imx8mp-scarthgap", "--image", "custom-image", "--skip-doctor", "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert resolved_configs, "resolve() was not called"
+    cfg = resolved_configs[0]
+    assert cfg.image == "custom-image", f"expected explicit --image to win over preset, got {cfg.image!r}"
