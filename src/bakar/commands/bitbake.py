@@ -117,6 +117,7 @@ def _run_task(
         if task == "listtasks":
             stdout_path = log.run_dir / f"{step}.log"
             rc = run_shell_capture(kas_ctx, command, stdout_path, step=step)
+            log.persist_bitbake_events()
             out_text = stdout_path.read_text(errors="replace") if stdout_path.exists() else ""
             if rc != 0:
                 console.print(f"[red]bitbake -c listtasks {target} failed (exit {rc}).[/]\n{out_text}")
@@ -131,6 +132,7 @@ def _run_task(
             raise typer.Exit(code=0)
 
         rc = run_shell_live(kas_ctx, command)
+        log.persist_bitbake_events()
         if rc != 0:
             console.print(f"[red]{command} failed (exit {rc}).[/]")
         raise typer.Exit(code=rc)

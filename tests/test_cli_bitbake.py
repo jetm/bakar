@@ -236,3 +236,84 @@ def test_listtasks_pretty_prints_task_names(runner: _CliRunner, nxp_workspace: P
     assert capture_calls[0]["command"] == "bitbake -c listtasks busybox"
     assert "do_compile" in result.output
     assert "do_install" in result.output
+
+
+# ---------------------------------------------------------------------------
+# persist_bitbake_events wiring
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_live_path_persists_bitbake_events(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """The live path calls ``persist_bitbake_events`` after the run completes."""
+    live_calls: list[dict] = []
+    fake = _make_fake_live(0, live_calls)
+
+    with (
+        patch("bakar.commands.bitbake.run_shell_live", fake),
+        patch("bakar.observability.RunLogger.persist_bitbake_events") as persist,
+    ):
+        result = runner.invoke(
+            app,
+            ["bitbake", _TARGET, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code == 0, result.output
+    persist.assert_called_once()
+
+
+@pytest.mark.unit
+def test_live_path_persists_on_nonzero_exit(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """The live path persists the artifact even when bitbake exits non-zero."""
+    live_calls: list[dict] = []
+    fake = _make_fake_live(1, live_calls)
+
+    with (
+        patch("bakar.commands.bitbake.run_shell_live", fake),
+        patch("bakar.observability.RunLogger.persist_bitbake_events") as persist,
+    ):
+        result = runner.invoke(
+            app,
+            ["bitbake", _TARGET, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code != 0, result.output
+    persist.assert_called_once()
+
+
+@pytest.mark.unit
+def test_listtasks_path_persists_bitbake_events(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """The listtasks path calls ``persist_bitbake_events`` after the capture run."""
+    capture_calls: list[dict] = []
+    fake = _make_fake_capture("do_compile\n", 0, capture_calls)
+
+    with (
+        patch("bakar.commands.bitbake.run_shell_capture", fake),
+        patch("bakar.observability.RunLogger.persist_bitbake_events") as persist,
+    ):
+        result = runner.invoke(
+            app,
+            ["bitbake", _TARGET, "-c", "listtasks", "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code == 0, result.output
+    persist.assert_called_once()
+
+
+@pytest.mark.unit
+def test_devshell_path_does_not_persist(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """The interactive devshell path never persists - it has no captured log."""
+    shell_calls: list[dict] = []
+    fake_shell = _make_fake_shell(0, shell_calls)
+
+    with (
+        patch("bakar.commands.bitbake.run_shell", fake_shell),
+        patch("bakar.observability.RunLogger.persist_bitbake_events") as persist,
+    ):
+        result = runner.invoke(
+            app,
+            ["bitbake", _TARGET, "-c", "devshell", "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code == 0, result.output
+    persist.assert_not_called()
