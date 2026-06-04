@@ -39,6 +39,7 @@
 | `stress-parse` | [stress-parse.md](stress-parse.md) | Stress-test bitbake parser fork race |
 | Configuration | [configuration.md](configuration.md) | Env vars, config.toml, vendors.toml, telemetry layout |
 | Config reference | [config-reference.md](config-reference.md) | All options: types, defaults, and descriptions for every config key |
+| Shell completion | [completion.md](completion.md) | Tab-completion setup for bash, zsh, and fish |
 | Workspace | [workspace.md](workspace.md) | Workspace detection, BSP families, directory layouts |
 
 ---
@@ -92,6 +93,7 @@
 - Understand env vars and priority order: [configuration.md](configuration.md)
 - Workspace layout and BSP family auto-detection: [workspace.md](workspace.md)
 - Name a build configuration and invoke it by name: [presets.md](presets.md)
+- Set up tab-completion for bash, zsh, or fish: [completion.md](completion.md)
 
 **Advanced:**
 - Swap BSP bitbake for a local upstream checkout: [bitbake-override.md](bitbake-override.md)

@@ -222,20 +222,14 @@ Vendor-shipped presets (from `vendors.toml`) cannot be removed this way. Exits n
 
 ## Shell completion
 
-Shell completion for `--preset` is available after installing bakar's completion handler. Run the install command once for your shell:
-
-```bash
-bakar --install-completion
-```
-
-After reloading your shell (or opening a new terminal), `--preset` offers tab-completion from your defined presets:
+`--preset` offers tab-completion from your defined presets:
 
 ```bash
 bakar build --preset <TAB>
 # imx8mp-scarthgap    imx8mp-all-releases    avocado-qemux86-64
 ```
 
-Completion reads presets from `config.toml` and `vendors.toml` without triggering a source sync.
+See [completion.md](completion.md) for setup instructions for bash, zsh, and fish.
 
 ## See also
 
