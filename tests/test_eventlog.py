@@ -1,0 +1,130 @@
+"""Tests for :mod:`bakar.eventlog` against the committed hermetic fixture.
+
+The fixture (``tests/fixtures/bitbake_eventlog.json``) mimics bitbake's
+``BB_DEFAULT_EVENTLOG`` output: JSON Lines of ``{"class","vars"}`` where
+``vars`` is base64(pickle(event)), plus one ``{"allvariables": ...}`` line, an
+unrecognized event class, and a deliberately truncated trailing line. These
+tests prove the reader decodes the recognized events without ever importing
+``bb``, skips what it should skip, and produces the schema the downstream
+``bitbake-events.json`` contract depends on.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+from bakar import eventlog
+
+FIXTURE = Path(__file__).parent / "fixtures" / "bitbake_eventlog.json"
+
+
+@pytest.mark.unit
+def test_normalize_decodes_task_fields() -> None:
+    """TaskFailed/TaskStarted decode to recipe/task/logfile from the pickle."""
+    artifact = eventlog.normalize(FIXTURE)
+    tasks = {(t["recipe"], t["task"]): t for t in artifact["tasks"]}
+
+    started = tasks[("busybox-1.36.1-r0", "do_compile")]
+    assert started["pid"] == 4242
+    assert started["logfile"] == (
+        "/work/build/tmp/work/cortexa53/busybox/1.36.1-r0/temp/log.do_compile.4242"
+    )
+
+    failed = tasks[("linux-imx-6.12-r0", "do_compile")]
+    assert failed["outcome"] == "failed"
+    assert failed["logfile"] == (
+        "/work/build/tmp/work/imx95/linux-imx/6.12-r0/temp/log.do_compile.5151"
+    )
+
+
+@pytest.mark.unit
+def test_normalize_does_not_import_bb() -> None:
+    """The no-bitbake-dependency guarantee: ``bb`` must not be imported."""
+    # Guard against a polluted interpreter from an earlier import elsewhere.
+    bb_before = {name for name in sys.modules if name == "bb" or name.startswith("bb.")}
+    assert not bb_before, f"bb already imported before the call: {bb_before}"
+
+    eventlog.normalize(FIXTURE)
+
+    bb_after = {name for name in sys.modules if name == "bb" or name.startswith("bb.")}
+    assert not bb_after, f"normalize() imported bb modules: {bb_after}"
+
+
+@pytest.mark.unit
+def test_unknown_event_class_is_skipped() -> None:
+    """The unrecognized class line contributes no task and raises nothing."""
+    artifact = eventlog.normalize(FIXTURE)
+
+    # The fixture's recognized task lines: busybox (started+succeeded merge to
+    # one row), linux-imx (failed), zlib (failed_silent). The unknown class
+    # and allvariables lines must NOT add rows.
+    assert len(artifact["tasks"]) == 3
+    recipes = {t["recipe"] for t in artifact["tasks"]}
+    assert recipes == {"busybox-1.36.1-r0", "linux-imx-6.12-r0", "zlib-1.3-r0"}
+
+
+@pytest.mark.unit
+def test_allvariables_line_is_not_an_event() -> None:
+    """The variable dump must not be parsed as a task or failure."""
+    artifact = eventlog.normalize(FIXTURE)
+
+    for task in artifact["tasks"]:
+        assert task["recipe"] is not None
+        assert "allvariables" not in (task["recipe"] or "")
+    # No failure should originate from the allvariables dump either.
+    assert all("MACHINE" not in (f["recipe"] or "") for f in artifact["failures"])
+
+
+@pytest.mark.unit
+def test_truncated_trailing_line_is_tolerated() -> None:
+    """A truncated final line is skipped; the artifact still normalizes."""
+    # Confirm the fixture really does end with a truncated (non-JSON) tail so
+    # the test asserts something real.
+    last_line = FIXTURE.read_text(encoding="utf-8").splitlines()[-1]
+    with pytest.raises(ValueError):
+        json.loads(last_line)
+
+    artifact = eventlog.normalize(FIXTURE)
+    assert artifact["schema_version"] == eventlog.SCHEMA_VERSION
+    assert len(artifact["tasks"]) == 3
+
+
+@pytest.mark.unit
+def test_normalize_returns_schema_keys() -> None:
+    """The artifact has exactly the contract's top-level keys."""
+    artifact = eventlog.normalize(FIXTURE)
+    assert artifact["schema_version"] == eventlog.SCHEMA_VERSION
+    assert set(artifact) == {"schema_version", "build", "tasks", "setscene", "failures"}
+
+
+@pytest.mark.unit
+def test_failed_silent_in_tasks_but_not_failures() -> None:
+    """TaskFailedSilent is recorded in tasks but excluded from failures."""
+    artifact = eventlog.normalize(FIXTURE)
+
+    silent = [t for t in artifact["tasks"] if t["outcome"] == "failed_silent"]
+    assert len(silent) == 1
+    assert silent[0]["recipe"] == "zlib-1.3-r0"
+    assert silent[0]["task"] == "do_fetch_setscene"
+
+    failure_recipes = {f["recipe"] for f in artifact["failures"]}
+    assert "zlib-1.3-r0" not in failure_recipes
+    assert failure_recipes == {"linux-imx-6.12-r0"}
+
+
+@pytest.mark.unit
+def test_omitted_optional_field_emitted_as_null() -> None:
+    """An absent optional field surfaces as ``None``, never dropped."""
+    artifact = eventlog.normalize(FIXTURE)
+
+    # The failed task carries no TaskStarted line, so ``started`` is present
+    # but null rather than missing from the row.
+    failed = next(t for t in artifact["tasks"] if t["outcome"] == "failed")
+    assert "started" in failed
+    assert failed["started"] is None
+    assert "pid" in failed
+    assert failed["pid"] is None
