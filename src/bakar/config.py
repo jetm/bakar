@@ -11,6 +11,7 @@ rest of bakar does not have to know about the workspace layout.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -409,6 +410,35 @@ class BSPSpec:
     manifest: str | None = None
     repo_branch: str | None = None
     host_mode: bool = False
+
+
+def compose_preset_output_path(preset: PresetEntry, release_index: int = 0) -> str:
+    """Return a filesystem-safe output path suffix for a preset build.
+
+    nxp/ti: ``<distro>-<machine>-<manifest_version>`` where manifest_version
+    strips the BSP prefix up to the first digit group, e.g.
+    ``imx-6.6.52-2.2.2.xml`` -> ``6.6.52-2.2.2``.
+
+    bbsetup/generic single-release: ``<image>-<machine>``.
+    bbsetup/generic multi-release: ``<image>-<machine>-<kas_yaml_stem>``.
+    """
+    if preset.family in {"nxp", "ti"}:
+        manifest = preset.manifests[release_index] if preset.manifests else preset.manifest or ""
+        stem = Path(manifest).stem
+        m = re.search(r"(\d[\d.\-]+)", stem)
+        version = m.group(1).rstrip("-") if m else stem
+        parts = [p for p in [preset.distro, preset.machine] if p is not None]
+        parts.append(version)
+        return "-".join(parts)
+
+    # bbsetup / generic
+    if preset.kas_yamls:
+        kas_stem = Path(preset.kas_yamls[release_index]).stem
+        parts = [p for p in [preset.image, preset.machine] if p is not None]
+        parts.append(kas_stem)
+        return "-".join(parts)
+    parts = [p for p in [preset.image, preset.machine] if p is not None]
+    return "-".join(parts) if parts else "preset"
 
 
 def resolve(
