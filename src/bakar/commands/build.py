@@ -26,7 +26,7 @@ from bakar.commands._helpers import (
     _tuning_extra_overlays,
     _uninitialized_bbsetup_dir,
 )
-from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, resolve
+from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, compose_preset_output_path, resolve
 from bakar.diagnostics import any_blocking_failure, run_all
 from bakar.kas import translate_bbsetup_config, write_bbsetup_yaml
 from bakar.observability import RunLogger
@@ -502,6 +502,14 @@ def build(
         family, bsp = _dispatch_bsp(manifest)
 
     ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
+
+    # For preset builds, route all output into a composed subdirectory so
+    # different presets and releases coexist without colliding in the same
+    # workspace.  The override is workspace/build/<composed-path>; this lands
+    # inside the existing build/ hierarchy so non-preset runs are unaffected.
+    if active_preset is not None:
+        ws = ws / "build" / compose_preset_output_path(active_preset, 0)
+
     cfg = resolve(
         workspace=ws,
         bsp_family=family,

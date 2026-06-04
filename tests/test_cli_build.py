@@ -311,6 +311,21 @@ def _make_generic_preset(tmp_path: Path) -> object:
     )
 
 
+def _stub_preset_loader(monkeypatch: pytest.MonkeyPatch, presets: list) -> None:
+    """Patch startup preset loading so the app callback uses our test list.
+
+    The app callback calls ``_load_presets_safe()`` which overwrites the
+    module-level ``_PRESETS``.  Patching the function prevents that overwrite
+    and makes ``_state._PRESETS`` hold exactly ``presets`` when ``build()`` runs.
+    """
+
+    def fake_load_presets_safe() -> None:
+        _state._PRESETS = presets  # type: ignore[assignment]
+
+    monkeypatch.setattr(_state, "_load_presets_safe", fake_load_presets_safe)
+    monkeypatch.setattr(_state, "_PRESETS", presets, raising=False)
+
+
 def _stub_dispatchers(monkeypatch: pytest.MonkeyPatch) -> dict:
     """Stub _dispatch_bsp, _dispatch_from_yaml, detect, and run_build.
 
@@ -330,8 +345,7 @@ def _stub_dispatchers(monkeypatch: pytest.MonkeyPatch) -> dict:
 
     def fake_dispatch_yaml(yaml_path):  # type: ignore[no-untyped-def]
         captured["yaml_dispatch"].append(yaml_path)
-        bsp = get_model("generic")
-        return ("generic", bsp)
+        return ("generic", None)
 
     def fake_run_build(ctx, *, extra_overlays=None):  # type: ignore[no-untyped-def]
         captured["run_build"].append(ctx)
@@ -370,8 +384,7 @@ def test_preset_unknown_name_exits_nonzero(
     """--preset with an unknown name exits non-zero and names the missing preset."""
     _stub_user_config_loader(monkeypatch, hashserv=False)
     # No presets defined.
-    monkeypatch.setattr(build_cmd, "load_presets", list)
-    monkeypatch.setattr(_state, "_PRESETS", [], raising=False)
+    _stub_preset_loader(monkeypatch, [])
 
     result = runner.invoke(app, ["build", "--preset", "does-not-exist"])
 
@@ -387,7 +400,7 @@ def test_preset_known_nxp_uses_preset_manifest(
     """--preset with a known NXP preset sets manifest and routes via _dispatch_bsp."""
     _stub_user_config_loader(monkeypatch, hashserv=False)
     nxp_preset = _make_nxp_preset()
-    monkeypatch.setattr(_state, "_PRESETS", [nxp_preset], raising=False)
+    _stub_preset_loader(monkeypatch, [nxp_preset])
     captured = _stub_dispatchers(monkeypatch)
 
     # --dry-run skips the actual kas-container invocation; detect() is stubbed
@@ -414,7 +427,7 @@ def test_preset_explicit_image_overrides_preset(
     """
     _stub_user_config_loader(monkeypatch, hashserv=False)
     nxp_preset = _make_nxp_preset()
-    monkeypatch.setattr(_state, "_PRESETS", [nxp_preset], raising=False)
+    _stub_preset_loader(monkeypatch, [nxp_preset])
 
     resolved_configs: list = []
 
@@ -439,3 +452,84 @@ def test_preset_explicit_image_overrides_preset(
     assert resolved_configs, "resolve() was not called"
     cfg = resolved_configs[0]
     assert cfg.image == "custom-image", f"expected explicit --image to win over preset, got {cfg.image!r}"
+
+
+def test_preset_dispatch_bbsetup_uses_dispatch_from_yaml(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A bbsetup/generic preset must dispatch via _dispatch_from_yaml, not _dispatch_bsp.
+
+    The preset kas_yaml is passed to _dispatch_from_yaml; _dispatch_bsp must
+    not be called at all so a manifest-driven NXP/TI dispatch is never triggered
+    for a kas-YAML preset.
+    """
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    generic_preset = _make_generic_preset(tmp_path)
+    _stub_preset_loader(monkeypatch, [generic_preset])
+
+    import bakar.commands.build as build_mod
+
+    yaml_dispatched: list = []
+    bsp_dispatched: list = []
+
+    def fake_dispatch_yaml(yaml_path):  # type: ignore[no-untyped-def]
+        yaml_dispatched.append(yaml_path)
+        return ("generic", None)
+
+    def fake_dispatch_bsp(manifest):  # type: ignore[no-untyped-def]
+        bsp_dispatched.append(manifest)
+        from bakar.bsp_model import get_model
+
+        return ("nxp", get_model("nxp"))
+
+    monkeypatch.setattr(build_mod, "_dispatch_from_yaml", fake_dispatch_yaml)
+    monkeypatch.setattr(build_mod, "_dispatch_bsp", fake_dispatch_bsp)
+
+    # Also stub run_build to prevent container invocation.
+    monkeypatch.setattr(build_mod.step_kas, "run_build", lambda ctx, *, extra_overlays=None: 0)
+
+    result = runner.invoke(app, ["build", "--preset", "avocado-qemux86-64", "--skip-doctor", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert yaml_dispatched, "_dispatch_from_yaml was not called for a generic/bbsetup preset"
+    assert not bsp_dispatched, f"_dispatch_bsp must not be called for a generic preset, got {bsp_dispatched!r}"
+
+
+def test_nxp_preset_output_path_contains_manifest_version(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An NXP preset build resolves into a directory whose path contains the manifest version.
+
+    The workspace passed to resolve() for preset builds is augmented with
+    compose_preset_output_path(), so the resulting bsp_root (and runs_dir)
+    embed the manifest version string (e.g. "6.6.52-2.2.2") rather than
+    landing in the plain workspace/nxp/ tree that non-preset builds use.
+    """
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    nxp_preset = _make_nxp_preset()
+    _stub_preset_loader(monkeypatch, [nxp_preset])
+
+    import bakar.commands.build as build_mod
+
+    resolved_workspaces: list = []
+    original_resolve = build_mod.resolve
+
+    def capturing_resolve(**kwargs):  # type: ignore[no-untyped-def]
+        resolved_workspaces.append(kwargs.get("workspace"))
+        return original_resolve(**kwargs)
+
+    monkeypatch.setattr(build_mod, "resolve", capturing_resolve)
+    _stub_dispatchers(monkeypatch)
+
+    result = runner.invoke(app, ["build", "--preset", "imx8mp-scarthgap", "--skip-doctor", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert resolved_workspaces, "resolve() was not called"
+    ws_path = resolved_workspaces[0]
+    assert ws_path is not None
+    assert "6.6.52-2.2.2" in str(ws_path), f"expected manifest version '6.6.52-2.2.2' in workspace path '{ws_path}'"
