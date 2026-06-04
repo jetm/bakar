@@ -4,6 +4,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from bakar.vendor_config import load_vendor_presets
+
 _VALID_FAMILIES = {"nxp", "ti", "generic", "bbsetup"}
 
 
@@ -86,55 +88,44 @@ class PresetEntry:
                     " 'kas_yamls' (not 'manifests') for multi-release builds"
                 )
 
-        if self.family in {"nxp", "ti"} and self.manifests and len(self.manifests) != len(self.branches):
-            raise ValueError(
-                f"PresetEntry '{self.name}': manifests and branches must have the same length"
-                f" (got {len(self.manifests)} manifests and {len(self.branches)} branches)"
-            )
+        if self.family in {"nxp", "ti"}:
+            if self.manifests and len(self.manifests) != len(self.branches):
+                raise ValueError(
+                    f"PresetEntry '{self.name}': manifests and branches must have the same length"
+                    f" (got {len(self.manifests)} manifests and {len(self.branches)} branches)"
+                )
+            if self.manifest and self.branches:
+                raise ValueError(
+                    f"PresetEntry '{self.name}': single 'manifest' cannot be paired with plural 'branches'"
+                    " — use 'manifests' and 'branches' together for multi-release builds"
+                )
 
     def resolve(self) -> list[PresetSpec]:
         """Return one PresetSpec per release defined by this entry."""
         if self.family in {"nxp", "ti"}:
-            if self.manifests:
-                return [
-                    PresetSpec(
-                        family=self.family,
-                        manifest=m,
-                        branch=b,
-                        machine=self.machine,
-                        distro=self.distro,
-                        image=self.image,
-                    )
-                    for m, b in zip(self.manifests, self.branches, strict=True)
-                ]
+            manifests = self.manifests or [self.manifest]
+            branches = self.branches or [self.branch]
             return [
                 PresetSpec(
                     family=self.family,
-                    manifest=self.manifest,
-                    branch=self.branch,
+                    manifest=m,
+                    branch=b,
                     machine=self.machine,
                     distro=self.distro,
                     image=self.image,
                 )
+                for m, b in zip(manifests, branches, strict=True)
             ]
         # bbsetup / generic
-        if self.kas_yamls:
-            return [
-                PresetSpec(
-                    family=self.family,
-                    kas_yaml=Path(ky),
-                    machine=self.machine,
-                    image=self.image,
-                )
-                for ky in self.kas_yamls
-            ]
+        kas_yamls = self.kas_yamls or [self.kas_yaml]
         return [
             PresetSpec(
                 family=self.family,
-                kas_yaml=Path(self.kas_yaml),  # type: ignore[arg-type]
+                kas_yaml=Path(ky),  # type: ignore[arg-type]
                 machine=self.machine,
                 image=self.image,
             )
+            for ky in kas_yamls
         ]
 
 
@@ -142,14 +133,13 @@ def load_presets(config_path: Path | None = None, vendors_path: Path | None = No
     """Load named presets from config.toml and vendors.toml.
 
     Reads [[presets]] from ~/.config/bakar/config.toml and [[presets]] from
-    ~/.config/bakar/vendors.toml, merges them, and raises ValueError naming
-    any duplicate preset name across both sources. Returns [] when neither
-    file has a [[presets]] table. Propagates parse errors raw.
+    ~/.config/bakar/vendors.toml (via load_vendor_presets), merges them, and
+    raises ValueError naming any duplicate preset name across both sources.
+    Returns [] when neither file has a [[presets]] table. Propagates parse
+    errors raw.
     """
     if config_path is None:
         config_path = Path.home() / ".config" / "bakar" / "config.toml"
-    if vendors_path is None:
-        vendors_path = Path.home() / ".config" / "bakar" / "vendors.toml"
 
     user_dicts: list[dict] = []
     if config_path.exists():
@@ -157,11 +147,7 @@ def load_presets(config_path: Path | None = None, vendors_path: Path | None = No
             data = tomllib.load(f)
         user_dicts = data.get("presets", [])
 
-    vendor_dicts: list[dict] = []
-    if vendors_path.exists():
-        with vendors_path.open("rb") as f:
-            data = tomllib.load(f)
-        vendor_dicts = data.get("presets", [])
+    vendor_dicts: list[dict] = load_vendor_presets(vendors_path)
 
     # Duplicate name detection across both sources.
     user_names = {d["name"] for d in user_dicts if "name" in d}

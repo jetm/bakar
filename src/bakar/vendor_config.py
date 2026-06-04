@@ -59,3 +59,23 @@ def load_vendors(path: Path | None = None) -> list[VendorEntry]:
     entries = [VendorEntry(**item) for item in data.get("vendors", [])]
 
     return entries
+
+
+def load_vendor_presets(path: Path | None = None) -> list[dict]:
+    """Load vendor-shipped preset dicts from a TOML config file.
+
+    Reads the [[presets]] array-of-tables from vendors.toml and returns
+    raw dicts for further processing by load_presets() in preset_config.py.
+    Returns an empty list if the file does not exist or has no [[presets]]
+    section.
+    """
+    if path is None:
+        path = Path.home() / ".config" / "bakar" / "vendors.toml"
+
+    if not path.exists():
+        return []
+
+    with path.open("rb") as f:
+        data = tomllib.load(f)
+
+    return data.get("presets", [])

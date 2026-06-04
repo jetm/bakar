@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar.vendor_config import VendorEntry, load_vendors
+from bakar.vendor_config import VendorEntry, load_vendor_presets, load_vendors
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -120,3 +120,67 @@ def test_load_vendors_invalid_family_raises(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="family must be one of"):
         load_vendors(config_file)
+
+
+# ---------------------------------------------------------------------------
+# load_vendor_presets
+# ---------------------------------------------------------------------------
+
+
+def test_load_vendor_presets_missing_file(tmp_path: Path) -> None:
+    result = load_vendor_presets(tmp_path / "nonexistent.toml")
+    assert result == []
+
+
+def test_load_vendor_presets_no_presets_section(tmp_path: Path) -> None:
+    config_file = tmp_path / "vendors.toml"
+    config_file.write_text('[[vendors]]\nname = "acme"\nfamily = "nxp"\nmanifest_regex = "imx-.*\\\\.xml"\n')
+    result = load_vendor_presets(config_file)
+    assert result == []
+
+
+def test_load_vendor_presets_returns_raw_dicts(tmp_path: Path) -> None:
+    toml_content = textwrap.dedent("""\
+        [[presets]]
+        name = "imx8mp-scarthgap"
+        family = "nxp"
+        manifest = "imx-6.6.52-2.2.2.xml"
+        branch = "lf-6.6.y"
+        machine = "imx8mp-var-dart"
+    """)
+    config_file = tmp_path / "vendors.toml"
+    config_file.write_text(toml_content)
+    result = load_vendor_presets(config_file)
+    assert len(result) == 1
+    assert isinstance(result[0], dict)
+    assert result[0]["name"] == "imx8mp-scarthgap"
+    assert result[0]["family"] == "nxp"
+    assert result[0]["manifest"] == "imx-6.6.52-2.2.2.xml"
+
+
+def test_load_vendor_presets_multiple_entries(tmp_path: Path) -> None:
+    toml_content = textwrap.dedent("""\
+        [[presets]]
+        name = "preset-a"
+        family = "nxp"
+        manifest = "imx-6.6.52-2.2.2.xml"
+        branch = "lf-6.6.y"
+
+        [[presets]]
+        name = "preset-b"
+        family = "bbsetup"
+        kas_yaml = "conf/qemux86-64.yml"
+    """)
+    config_file = tmp_path / "vendors.toml"
+    config_file.write_text(toml_content)
+    result = load_vendor_presets(config_file)
+    assert len(result) == 2
+    names = {d["name"] for d in result}
+    assert names == {"preset-a", "preset-b"}
+
+
+def test_load_vendor_presets_default_path_missing(monkeypatch, tmp_path: Path) -> None:
+    """When no path given and default file is absent, return []."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    result = load_vendor_presets()
+    assert result == []

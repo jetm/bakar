@@ -554,3 +554,69 @@ unknown_key = "oops"
     config.write_bytes(bad_toml.encode())
     with pytest.raises(ValueError, match="Invalid preset entry"):
         load_presets(config_path=config, vendors_path=tmp_path / "missing.toml")
+
+
+# ---------------------------------------------------------------------------
+# vendor_preset integration with load_presets()
+# ---------------------------------------------------------------------------
+
+
+def test_vendor_preset_absent_section_returns_empty(tmp_path):
+    """vendors.toml with no [[presets]] section: load_presets returns [] for vendor part."""
+    vendors = tmp_path / "vendors.toml"
+    vendors.write_text('[[vendors]]\nname = "acme"\nfamily = "nxp"\nmanifest_regex = "imx-.*\\\\.xml"\n')
+    result = load_presets(config_path=tmp_path / "missing.toml", vendors_path=vendors)
+    assert result == []
+
+
+def test_vendor_preset_loaded_via_load_presets(tmp_path):
+    """vendor_preset in vendors.toml is returned by load_presets()."""
+    vendors = tmp_path / "vendors.toml"
+    vendors.write_bytes(_NXP_PRESET_TOML.encode())
+    result = load_presets(config_path=tmp_path / "missing.toml", vendors_path=vendors)
+    assert len(result) == 1
+    assert result[0].name == "imx8mp-scarthgap"
+    assert isinstance(result[0], PresetEntry)
+
+
+def test_vendor_preset_merged_with_user_presets(tmp_path):
+    """vendor_preset entries merge with user config entries."""
+    config = tmp_path / "config.toml"
+    config.write_bytes(_BBSETUP_PRESET_TOML.encode())
+    vendors = tmp_path / "vendors.toml"
+    vendors.write_bytes(_NXP_PRESET_TOML.encode())
+    result = load_presets(config_path=config, vendors_path=vendors)
+    assert len(result) == 2
+    names = {p.name for p in result}
+    assert "imx8mp-scarthgap" in names
+    assert "avocado-qemux86-64" in names
+
+
+def test_vendor_preset_duplicate_name_raises(tmp_path):
+    """vendor_preset with same name as user preset raises ValueError."""
+    config = tmp_path / "config.toml"
+    config.write_bytes(_NXP_PRESET_TOML.encode())
+    vendors = tmp_path / "vendors.toml"
+    vendors.write_bytes(_NXP_PRESET_TOML.encode())
+    with pytest.raises(ValueError, match="imx8mp-scarthgap"):
+        load_presets(config_path=config, vendors_path=vendors)
+
+
+def test_load_vendor_presets_function_returns_dicts(tmp_path):
+    """load_vendor_presets() directly returns raw dicts, not PresetEntry instances."""
+    from bakar.vendor_config import load_vendor_presets
+
+    vendors = tmp_path / "vendors.toml"
+    vendors.write_bytes(_NXP_PRESET_TOML.encode())
+    result = load_vendor_presets(vendors)
+    assert len(result) == 1
+    assert isinstance(result[0], dict)
+    assert result[0]["name"] == "imx8mp-scarthgap"
+
+
+def test_load_vendor_presets_missing_file_returns_empty(tmp_path):
+    """load_vendor_presets() with nonexistent path returns []."""
+    from bakar.vendor_config import load_vendor_presets
+
+    result = load_vendor_presets(tmp_path / "nonexistent.toml")
+    assert result == []
