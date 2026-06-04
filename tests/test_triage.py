@@ -425,6 +425,42 @@ def test_triage_structured_failure_prints_recipe_task_and_logfile_excerpt(
 
 
 @pytest.mark.unit
+def test_triage_structured_logfile_outside_workspace_not_read(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crafted bitbake-events.json whose logfile resolves outside the
+    workspace must not be read - triage skips it instead of leaking the file."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / ".bakar.toml").write_text("")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOP-SECRET-CONTENTS\n")
+
+    _write_structured_run(
+        workspace,
+        ts="20260601-120000",
+        failures=[
+            {
+                "recipe": "evil-1.0-r0",
+                "task": "do_compile",
+                "logfile": str(secret),
+                "errprinted": True,
+            }
+        ],
+    )
+
+    monkeypatch.chdir(workspace)
+    result = runner.invoke(app, ["triage"])
+
+    assert result.exit_code == 0, result.output
+    # The recipe/task still print (they are not file reads)...
+    assert "evil-1.0-r0" in result.output
+    # ...but the out-of-workspace file is never read.
+    assert "TOP-SECRET-CONTENTS" not in result.output
+    assert "outside workspace" in result.output
+
+
+@pytest.mark.unit
 def test_triage_falls_back_to_kas_log_without_artifact(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -76,6 +76,14 @@ def _print_structured_failures(failures: list[dict], workspace: Path) -> None:
         if not logfile:
             continue
         host_path = Path(_translate_container_path(str(logfile), workspace))
+        # Containment guard: logfile comes from bitbake-events.json, which a
+        # crafted artifact could point at a host file outside the build tree
+        # (e.g. a secret). Only read paths that resolve under the workspace.
+        try:
+            host_path.resolve().relative_to(workspace.resolve())
+        except ValueError, OSError:
+            console.print(f"[dim]logfile outside workspace, not read: {host_path}[/]")
+            continue
         tail = _tail(host_path, _LOGFILE_EXCERPT_LINES)
         if not tail:
             console.print(f"[dim]logfile (unreadable on host): {host_path}[/]")
@@ -90,21 +98,29 @@ def _print_structured_failures(failures: list[dict], workspace: Path) -> None:
 def _resolve_triage_dirs(
     kas_yaml: Path | None,
     workspace: Path | None,
-) -> tuple[list[tuple[Path, Literal["nxp", "ti", "generic"]]], Path, str]:
-    """Resolve the run directories, report root, and not-found label for triage.
+) -> tuple[list[tuple[Path, Literal["nxp", "ti", "generic"]]], Path, str, Path]:
+    """Resolve the run directories, report root, not-found label, and container
+    translation workspace for triage.
 
     Handles three workspace shapes: BYO kas YAML, bbsetup workspace, and
     standard nxp/ti/avocado workspace. The standard shape also discovers
     preset fan-out run dirs (``<ws>/build/<preset-subdir>/build/runs``) so
     triage can select among the per-release run dirs one ``bakar build
     --preset`` produces.
+
+    The fourth element (``translation_workspace``) is the root against which
+    container ``/work/`` paths are translated to host paths. It differs from
+    ``report_root`` only for meta-avocado kas YAMLs, where ``KAS_WORK_DIR``
+    is the yaml's grandparent (workspace root) rather than ``bsp_root``.
     """
     if kas_yaml is not None:
         resolved = kas_yaml.resolve()
         if is_meta_avocado_yaml(resolved):
             build_root = detect_kas_workspace(resolved) / f"build-{resolved.stem}"
+            translation_workspace = build_root.parent
         else:
             build_root = resolved.parent
+            translation_workspace = build_root
         runs_dirs: list[tuple[Path, Literal["nxp", "ti", "generic"]]] = [
             (build_root / "build" / "runs", "generic"),
         ]
@@ -112,7 +128,13 @@ def _resolve_triage_dirs(
         not_found_label = f"{runs_dirs[0][0]}"
     elif (setup_dir := _bbsetup_workspace(workspace)) is not None:
         runs_dirs = [(setup_dir / "build" / "runs", "generic")]
+        # Preset fan-out: bbsetup releases write to
+        # setup_dir/build/<subdir>/build/runs (one subdir deeper than the root
+        # run dir above), so discover those too or a multi-release preset run
+        # is invisible to default selection and --preset/--release.
+        runs_dirs.extend((d, "generic") for d in sorted(setup_dir.glob("build/*/build/runs")))
         report_root = setup_dir
+        translation_workspace = setup_dir
         not_found_label = f"{runs_dirs[0][0]}"
     else:
         ws = workspace or _workspace_from_cwd()
@@ -126,14 +148,19 @@ def _resolve_triage_dirs(
                 (ws / "nxp" / "build" / "runs", "nxp"),
                 (ws / "ti" / "build" / "runs", "ti"),
             ]
-            # Preset fan-out: each release writes to ws/build/<subdir>/build/runs.
-            # compose_preset_output_path() encodes <distro>-<machine>-<version>
-            # in <subdir>, which --preset/--release match against.
-            preset_dirs = sorted(ws.glob("build/*/build/runs"))
-            runs_dirs.extend((d, "generic") for d in preset_dirs)
+            # Preset fan-out: bbsetup/generic releases write to
+            # ws/build/<subdir>/build/runs, while nxp/ti releases nest one
+            # level deeper at ws/build/<subdir>/<family>/build/runs because
+            # their bsp_root is workspace/<family>. compose_preset_output_path()
+            # encodes <distro>-<machine>-<version> in <subdir>, which
+            # --preset/--release match against.
+            runs_dirs.extend((d, "generic") for d in sorted(ws.glob("build/*/build/runs")))
+            runs_dirs.extend((d, "nxp") for d in sorted(ws.glob("build/*/nxp/build/runs")))
+            runs_dirs.extend((d, "ti") for d in sorted(ws.glob("build/*/ti/build/runs")))
             not_found_label = "nxp/build/runs/ or ti/build/runs/"
         report_root = ws
-    return runs_dirs, report_root, not_found_label
+        translation_workspace = ws
+    return runs_dirs, report_root, not_found_label, translation_workspace
 
 
 def _select_run(
@@ -234,7 +261,7 @@ def triage(
     to its ``kas.log`` analysis.
     """
     effective_run_id = run if run is not None else run_id
-    runs_dirs, report_root, not_found_label = _resolve_triage_dirs(kas_yaml, workspace)
+    runs_dirs, report_root, not_found_label, translation_workspace = _resolve_triage_dirs(kas_yaml, workspace)
     found = _select_run(runs_dirs, run_id=effective_run_id, preset=preset, release=release)
     if found is None:
         if effective_run_id:
@@ -252,7 +279,7 @@ def triage(
     # through to the kas.log analysis below.
     structured = _read_structured_failures(run_dir)
     if structured:
-        _print_structured_failures(structured, report_root)
+        _print_structured_failures(structured, translation_workspace)
         return
 
     report = analyse(run_dir, report_root)

@@ -199,11 +199,14 @@ class RunLogger:
         and no event is emitted. Never raises.
         """
         raw = self.eventlog_path
-        if not raw.is_file() or raw.stat().st_size == 0:
-            return
-        # Best-effort: a decode/parse error in a corrupt log or a write failure
-        # must not crash an otherwise-completed build at the persistence step.
+        # Best-effort: a missing/rotated raw log, a decode/parse error in a
+        # corrupt log, or a write failure must not crash an otherwise-completed
+        # build at the persistence step. The is_file()/stat() preflight lives
+        # inside the try so a TOCTOU race (the log removed or rotated between
+        # the check and the stat) is a no-op rather than a crash.
         try:
+            if not raw.is_file() or raw.stat().st_size == 0:
+                return
             artifact = eventlog.normalize(raw)
             self.bitbake_events_path.write_text(json.dumps(artifact, default=str))
         except (OSError, ValueError) as exc:

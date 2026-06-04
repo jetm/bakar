@@ -34,7 +34,13 @@ from bakar.commands._helpers import (
 )
 from bakar.config import BSPSpec, resolve
 from bakar.observability import RunLogger
-from bakar.steps.kas_build import KasBuildContext, run_shell, run_shell_capture, run_shell_live
+from bakar.steps.kas_build import (
+    KasBuildContext,
+    copy_oe_eventlog_to_run_dir,
+    run_shell,
+    run_shell_capture,
+    run_shell_live,
+)
 
 
 def _build_command(target: str, task: str | None, *, keep_going: bool) -> str:
@@ -117,6 +123,7 @@ def _run_task(
         if task == "listtasks":
             stdout_path = log.run_dir / f"{step}.log"
             rc = run_shell_capture(kas_ctx, command, stdout_path, step=step)
+            copy_oe_eventlog_to_run_dir(cfg, log)
             log.persist_bitbake_events()
             out_text = stdout_path.read_text(errors="replace") if stdout_path.exists() else ""
             if rc != 0:
@@ -132,6 +139,7 @@ def _run_task(
             raise typer.Exit(code=0)
 
         rc = run_shell_live(kas_ctx, command)
+        copy_oe_eventlog_to_run_dir(cfg, log)
         log.persist_bitbake_events()
         if rc != 0:
             console.print(f"[red]{command} failed (exit {rc}).[/]")

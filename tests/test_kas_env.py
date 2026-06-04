@@ -317,3 +317,29 @@ def test_runtime_args_container_hashserv_configured_but_not_running(
     assert result[0] == "--runtime-args"
     assert f"-v {tmp_path / 'ccache'}:/work/ccache:rw" in result[1]
     assert "--add-host=host.docker.internal:host-gateway" in result[1]
+
+
+def test_runtime_args_eventlog_path_appended_when_provided(tmp_path: Path) -> None:
+    """eventlog_path appends -e BB_DEFAULT_EVENTLOG=<path> inside the single --runtime-args string.
+
+    kas-container only forwards a fixed env-var allowlist into Docker, so
+    BB_DEFAULT_EVENTLOG must travel via --runtime-args -e, not the subprocess env.
+    """
+    cfg = _hashequiv_cfg(tmp_path, use_hashequiv=False, host_mode=False)
+    result = _ccache_args(cfg, eventlog_path="/work/build/runs/20260604/bitbake_eventlog.json")
+    assert len(result) == 2
+    assert result[0] == "--runtime-args"
+    assert "-e BB_DEFAULT_EVENTLOG=/work/build/runs/20260604/bitbake_eventlog.json" in result[1]
+
+
+def test_runtime_args_eventlog_path_absent_when_none(tmp_path: Path) -> None:
+    """Without eventlog_path, BB_DEFAULT_EVENTLOG is not injected (dry-run callers pass nothing)."""
+    cfg = _hashequiv_cfg(tmp_path, use_hashequiv=False, host_mode=False)
+    result = _ccache_args(cfg)
+    assert "BB_DEFAULT_EVENTLOG" not in result[1]
+
+
+def test_runtime_args_eventlog_path_ignored_in_host_mode(tmp_path: Path) -> None:
+    """Host mode: _ccache_args returns [] even when eventlog_path is supplied."""
+    cfg = _hashequiv_cfg(tmp_path, use_hashequiv=False, host_mode=True)
+    assert _ccache_args(cfg, eventlog_path="/some/path") == []

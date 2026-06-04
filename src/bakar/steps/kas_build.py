@@ -39,6 +39,7 @@ import sysconfig
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -265,7 +266,12 @@ def _resolve_user_yaml(cfg: BuildConfig, kas_yaml: Path) -> Path:
         ) from exc
 
 
-def _ccache_args(cfg: BuildConfig, *, dry_run: bool = False) -> list[str]:
+def _ccache_args(
+    cfg: BuildConfig,
+    *,
+    dry_run: bool = False,
+    eventlog_path: str | None = None,
+) -> list[str]:
     """Return ``['--runtime-args', '<concatenated string>']`` for container builds.
 
     ``kas-container`` unconditionally resets ``KAS_RUNTIME_ARGS`` to its own
@@ -280,11 +286,13 @@ def _ccache_args(cfg: BuildConfig, *, dry_run: bool = False) -> list[str]:
     would let the second occurrence overwrite the first.
 
     The string always contains the workspace ccache bind mount. When
-    ``cfg.use_hashequiv`` is True AND the persistent hashserv daemon is
-    actually running (``hashserv.is_running(cfg.bsp_root)``), a Docker
-    ``--add-host=host.docker.internal:host-gateway`` flag is appended to
-    the SAME string so the container can route ``host.docker.internal``
-    back to the host bridge and reach the daemon.
+    ``cfg.use_hashequiv`` is True, ``--add-host=host.docker.internal:gateway``
+    is appended so the container can reach the hashserv daemon on the host
+    bridge. When ``eventlog_path`` is provided, ``-e BB_DEFAULT_EVENTLOG=<path>``
+    is appended so bitbake inside the container writes its event log to the
+    run-dir path that is bind-mounted under ``/work``. kas-container only
+    forwards a fixed env-var allowlist into Docker, so this is the only
+    reliable way to pass ``BB_DEFAULT_EVENTLOG`` through.
 
     Creates the host-side ccache directory when absent so the Docker
     bind-mount never targets a missing path. When ``dry_run`` is True, the
@@ -302,6 +310,8 @@ def _ccache_args(cfg: BuildConfig, *, dry_run: bool = False) -> list[str]:
         # alive yet on the first build. The flag is harmless when the daemon
         # is absent and mandatory when it is running.
         runtime_args += " --add-host=host.docker.internal:host-gateway"
+    if eventlog_path is not None:
+        runtime_args += f" -e BB_DEFAULT_EVENTLOG={eventlog_path}"
     return ["--runtime-args", runtime_args]
 
 
@@ -790,7 +800,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
     if shutil.which("/usr/bin/time"):
         cmd = ["/usr/bin/time", "-v", "-o", str(log.time_log_path), "--"]
     exe = "kas" if cfg.host_mode else "kas-container"
-    cmd += [exe, *_ccache_args(cfg), "build", kas_arg]
+    cmd += [exe, *_ccache_args(cfg, eventlog_path=_container_eventlog_path(cfg, log)), "build", kas_arg]
     if ctx.keep_going:
         cmd += ["--", "-k"]
 
@@ -818,6 +828,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
             write_error_report(log.run_dir, cfg, rc)
         # Normalize the raw bitbake event log into bitbake-events.json for both
         # outcomes. Best-effort: a no-op when bitbake wrote no event log.
+        copy_oe_eventlog_to_run_dir(cfg, log)
         log.persist_bitbake_events()
         terminated = True
     finally:
@@ -861,7 +872,7 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
     log.step_start("kas_shell_live", command=command, host_mode=cfg.host_mode)
     kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source)
     exe = "kas" if cfg.host_mode else "kas-container"
-    cmd = [exe, *_ccache_args(cfg), "shell", kas_arg, "-c", command]
+    cmd = [exe, *_ccache_args(cfg, eventlog_path=_container_eventlog_path(cfg, log)), "shell", kas_arg, "-c", command]
 
     ui = BuildUIState(start_monotonic=log.start_monotonic)
     state: dict[str, float | int] = {
@@ -1037,6 +1048,63 @@ def _build_env(
     return passthrough
 
 
+def _find_oe_eventlog(cfg: BuildConfig, log: RunLogger) -> Path | None:
+    """Return the bitbake event log from OE-core's default location, or None.
+
+    OE-core's bitbake.conf sets:
+        BB_DEFAULT_EVENTLOG ?= "${LOG_DIR}/eventlog/${DATETIME}.json"
+    so when our BB_DEFAULT_EVENTLOG env injection does not reach bitbake's
+    data store (kas-container only forwards a hardcoded env-var allowlist;
+    BB_ENV_PASSTHROUGH_ADDITIONS is read from the process env before config
+    parse so local_conf_header cannot help), bitbake writes to
+    ``bsp_root/build/tmp/log/eventlog/YYYYMMDDHHMMSS.json`` instead.
+
+    Returns the newest JSON file in that directory whose mtime is at or after
+    the build start time (derived from log.run_id, which is generated at
+    RunLogger construction time before any subprocess is launched). Falls back
+    to run_dir.stat().st_mtime - 60 when the run_id cannot be parsed.
+
+    Using run_id rather than run_dir.stat().st_mtime avoids a race where the
+    run dir's mtime is updated by the final events.jsonl write *after* bitbake
+    finishes writing its event log, making the log appear older than the
+    watermark.
+    """
+    eventlog_dir = cfg.bsp_root / "build" / "tmp" / "log" / "eventlog"
+    if not eventlog_dir.is_dir():
+        return None
+    try:
+        watermark = datetime.strptime(log.run_id, "%Y%m%d-%H%M%S").timestamp()
+    except ValueError, OSError:
+        watermark = log.run_dir.stat().st_mtime - 60
+    entries: list[tuple[float, Path]] = []
+    for p in eventlog_dir.glob("*.json"):
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue
+        if mtime >= watermark:
+            entries.append((mtime, p))
+    if not entries:
+        return None
+    return max(entries)[1]
+
+
+def copy_oe_eventlog_to_run_dir(cfg: BuildConfig, log: RunLogger) -> bool:
+    """Copy the OE-core event log to the run dir when our expected path is absent.
+
+    Returns True when a file was copied, False otherwise.  Callers should call
+    this before ``log.persist_bitbake_events()`` so the normalizer finds the file
+    at the expected path.
+    """
+    if log.eventlog_path.is_file():
+        return False
+    oe_log = _find_oe_eventlog(cfg, log)
+    if oe_log is None:
+        return False
+    shutil.copy2(oe_log, log.eventlog_path)
+    return True
+
+
 def _container_eventlog_path(cfg: BuildConfig, log: RunLogger) -> str:
     """Return the bitbake event-log path as bitbake sees it inside the container.
 
@@ -1058,7 +1126,15 @@ def _container_eventlog_path(cfg: BuildConfig, log: RunLogger) -> str:
     if cfg.host_mode:
         return str(host_path)
     mount_root = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
-    rel = host_path.relative_to(mount_root)
+    try:
+        rel = host_path.relative_to(mount_root)
+    except ValueError:
+        # The run dir is outside the bind-mounted tree - e.g. `bakar dump`
+        # and `bakar lock` use a TemporaryDirectory run dir. bitbake cannot
+        # write into the container at that host path, and those callers do
+        # not persist the artifact, so fall back to the host path rather
+        # than crashing the command.
+        return str(host_path)
     return str(Path("/work") / rel)
 
 

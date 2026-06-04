@@ -17,7 +17,9 @@ testable logic seam and remain ``# pragma: no cover`` in the source.
 
 from __future__ import annotations
 
+import os
 import subprocess
+import time
 from dataclasses import replace
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -26,15 +28,18 @@ import pytest
 import yaml
 
 from bakar.config import BuildConfig
+from bakar.observability import RunLogger
 from bakar.steps.kas_build import (
     _autocalibrate_psi,
     _build_env,
     _ccache_args,
+    _find_oe_eventlog,
     _resolve_user_yaml,
     _run_kas_dump,
     _strip_branch_from_dump,
     _write_meta_avocado_wrapper,
     clear_stale_bitbake_locks,
+    copy_oe_eventlog_to_run_dir,
     materialize_overlay,
 )
 from bakar.user_config import load_user_config
@@ -600,3 +605,79 @@ def test_autocalibrate_psi_no_peaks_is_noop(tmp_path: Path) -> None:
 
     assert _autocalibrate_psi(cfg, {}, log, config_file) == {}
     assert not config_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# _find_oe_eventlog / copy_oe_eventlog_to_run_dir
+# ---------------------------------------------------------------------------
+
+
+def _oe_eventlog_cfg(workspace: Path) -> BuildConfig:
+    return _make_nxp_cfg(workspace)
+
+
+def test_find_oe_eventlog_returns_none_when_dir_absent(tmp_path: Path) -> None:
+    """No eventlog dir -> None, no crash."""
+    cfg = _oe_eventlog_cfg(tmp_path)
+    log = RunLogger(runs_dir=cfg.runs_dir)
+    log.run_dir.mkdir(parents=True, exist_ok=True)
+    assert _find_oe_eventlog(cfg, log) is None
+
+
+def test_find_oe_eventlog_returns_none_when_no_new_files(tmp_path: Path) -> None:
+    """Eventlog dir exists but all files predate the run start -> None."""
+    from datetime import datetime
+
+    cfg = _oe_eventlog_cfg(tmp_path)
+    log = RunLogger(runs_dir=cfg.runs_dir)
+    log.run_dir.mkdir(parents=True, exist_ok=True)
+    elog_dir = cfg.bsp_root / "build" / "tmp" / "log" / "eventlog"
+    elog_dir.mkdir(parents=True)
+    old_file = elog_dir / "20260101120000.json"
+    old_file.write_text("{}")
+    # backdate: set mtime 10 seconds before the run_id-derived watermark
+    watermark = datetime.strptime(log.run_id, "%Y%m%d-%H%M%S").timestamp()
+    os.utime(old_file, (watermark - 10, watermark - 10))
+    assert _find_oe_eventlog(cfg, log) is None
+
+
+def test_find_oe_eventlog_returns_newest_file_after_watermark(tmp_path: Path) -> None:
+    """Two new files -> the newer one is returned."""
+    cfg = _oe_eventlog_cfg(tmp_path)
+    log = RunLogger(runs_dir=cfg.runs_dir)
+    log.run_dir.mkdir(parents=True, exist_ok=True)
+    elog_dir = cfg.bsp_root / "build" / "tmp" / "log" / "eventlog"
+    elog_dir.mkdir(parents=True)
+    time.sleep(0.01)
+    first = elog_dir / "20260604120000.json"
+    first.write_text('{"a":1}')
+    time.sleep(0.02)
+    second = elog_dir / "20260604130000.json"
+    second.write_text('{"b":2}')
+    result = _find_oe_eventlog(cfg, log)
+    assert result == second
+
+
+def test_copy_oe_eventlog_noop_when_primary_exists(tmp_path: Path) -> None:
+    """If log.eventlog_path already exists, nothing is copied and False is returned."""
+    cfg = _oe_eventlog_cfg(tmp_path)
+    log = RunLogger(runs_dir=cfg.runs_dir)
+    log.run_dir.mkdir(parents=True, exist_ok=True)
+    log.eventlog_path.write_text('{"existing":true}')
+    assert copy_oe_eventlog_to_run_dir(cfg, log) is False
+    assert log.eventlog_path.read_text() == '{"existing":true}'
+
+
+def test_copy_oe_eventlog_copies_when_primary_absent(tmp_path: Path) -> None:
+    """When primary path is absent and OE log exists, it is copied and True is returned."""
+    cfg = _oe_eventlog_cfg(tmp_path)
+    log = RunLogger(runs_dir=cfg.runs_dir)
+    log.run_dir.mkdir(parents=True, exist_ok=True)
+    elog_dir = cfg.bsp_root / "build" / "tmp" / "log" / "eventlog"
+    elog_dir.mkdir(parents=True)
+    time.sleep(0.01)
+    oe_file = elog_dir / "20260604145000.json"
+    oe_file.write_text('{"oe":true}')
+    result = copy_oe_eventlog_to_run_dir(cfg, log)
+    assert result is True
+    assert log.eventlog_path.read_text() == '{"oe":true}'

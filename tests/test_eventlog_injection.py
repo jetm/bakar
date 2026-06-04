@@ -81,3 +81,15 @@ def test_container_eventlog_path_host_mode_uses_host_path(tmp_path: Path) -> Non
 
     assert container_path == str(log.eventlog_path)
     assert not container_path.startswith("/work/")
+
+
+def test_container_eventlog_path_run_dir_outside_mount_falls_back(tmp_path: Path) -> None:
+    """A run dir outside the bind-mounted tree (bakar dump/lock use a temp run
+    dir) must fall back to the host path instead of raising ValueError."""
+    cfg = _make_cfg(tmp_path)
+    outside = tmp_path / "elsewhere" / "runs"
+    log = RunLogger(runs_dir=outside)
+
+    container_path = _container_eventlog_path(cfg, log)
+
+    assert container_path == str(log.eventlog_path)
