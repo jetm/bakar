@@ -96,3 +96,43 @@ def test_header_not_emitted_to_rich_console(tmp_path: Path) -> None:
     # The Rich console.print should not have been called with the header marker
     header_calls = [c for c in calls if "──" in c]
     assert len(header_calls) == 0, f"header marker was emitted to Rich console: {calls}"
+
+
+@pytest.mark.unit
+def test_persist_bitbake_events_writes_artifact_and_announces(tmp_path: Path) -> None:
+    """A run dir with a raw event log produces bitbake-events.json plus one announce."""
+    import json
+    from pathlib import Path as _Path
+
+    fixture = _Path(__file__).parent / "fixtures" / "bitbake_eventlog.json"
+    runs_dir = tmp_path / "runs"
+    with RunLogger(runs_dir) as log:
+        log.eventlog_path.write_bytes(fixture.read_bytes())
+        log.persist_bitbake_events()
+
+        assert log.bitbake_events_path.is_file()
+        artifact = json.loads(log.bitbake_events_path.read_text())
+        assert set(artifact) >= {"schema_version", "build", "tasks", "setscene", "failures"}
+
+    events = [json.loads(ln) for ln in log.events_path.read_text().splitlines() if ln]
+    announce = [e for e in events if e.get("step") == "bitbake_events"]
+    assert len(announce) == 1
+    assert announce[0]["event"] == "step_ok"
+    assert announce[0]["path"] == str(log.bitbake_events_path)
+
+
+@pytest.mark.unit
+def test_persist_bitbake_events_noop_without_raw_log(tmp_path: Path) -> None:
+    """No raw log: nothing is written, nothing is announced, no exception raised."""
+    import json
+
+    runs_dir = tmp_path / "runs"
+    with RunLogger(runs_dir) as log:
+        assert not log.eventlog_path.exists()
+        log.persist_bitbake_events()
+
+        assert not log.bitbake_events_path.exists()
+
+    events = [json.loads(ln) for ln in log.events_path.read_text().splitlines() if ln]
+    announce = [e for e in events if e.get("step") == "bitbake_events"]
+    assert announce == []
