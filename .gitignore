@@ -15,5 +15,6 @@ examples/ccache
 layers/
 
 .coverage
+coverage.xml
 
 arch-deps*

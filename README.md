@@ -4,6 +4,7 @@
 [![PyPI](https://img.shields.io/pypi/v/bakar)](https://pypi.org/project/bakar/)
 [![Python](https://img.shields.io/pypi/pyversions/bakar)](https://pypi.org/project/bakar/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Coverage](https://img.shields.io/codecov/c/github/jetm/bakar)](https://codecov.io/gh/jetm/bakar)
 
 kas-based BSP build orchestrator for Yocto. Wraps `kas-container` with manifest-driven sync, pre-flight checks, structured telemetry, and post-mortem tooling. Works with NXP i.MX (repo XML), TI Sitara (oe-layertool), bitbake-setup workspaces, and any bring-your-own kas YAML.
 
