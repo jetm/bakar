@@ -37,6 +37,7 @@ import pickle
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    import threading
     from pathlib import Path
 
 # Bumped when the artifact shape changes so downstream consumers
@@ -174,6 +175,73 @@ def _iter_events(raw_path: Path):
             if event is None:
                 continue
             yield class_name, event
+
+
+def _decode_line(line: str) -> tuple[str, _EventStub] | None:
+    """Decode one stripped JSONL line into ``(class_name, event)`` or ``None``.
+
+    Applies the same per-line guards as :func:`_iter_events` (skip blanks, bad
+    JSON, non-dict records, the ``allvariables`` dump, and records missing a
+    str ``class``/``vars``), but does NOT filter on ``_RECOGNIZED_CLASSES`` -
+    the live feed needs ``bb.event.ParseProgress``/``bb.event.CacheLoadProgress``
+    too. Returns ``None`` for any line that should be skipped.
+    """
+    if not line:
+        return None
+    try:
+        record = json.loads(line)
+    except json.JSONDecodeError, ValueError:
+        return None
+    if not isinstance(record, dict) or "allvariables" in record:
+        return None
+    class_name = record.get("class")
+    payload = record.get("vars")
+    if not isinstance(class_name, str) or not isinstance(payload, str):
+        return None
+    event = _decode_event(payload)
+    if event is None:
+        return None
+    return class_name, event
+
+
+def tail_events(path: Path, stop_event: threading.Event):
+    """Follow a growing bitbake event log and yield decoded events as they land.
+
+    A streaming counterpart to :func:`_iter_events` for the live build display.
+    It waits (short poll) for ``path`` to appear when absent at start, yields
+    every pre-existing event, then keeps following the file: on EOF it sleeps
+    briefly and re-checks, yielding each newly-appended line. Unlike the batch
+    path it yields *every* line that decodes regardless of class (the live feed
+    needs ``ParseProgress``/``CacheLoadProgress``, which are not in
+    ``_RECOGNIZED_CLASSES``); only the ``allvariables`` dump and undecodable
+    lines are skipped.
+
+    Only newline-terminated lines are processed: a partial trailing line (the
+    writer mid-append) is buffered and re-read once complete, mirroring
+    ``normalize``'s truncation tolerance. The reader stops once ``stop_event``
+    is set, draining any remaining complete lines first; if the stop fires
+    before the file is ever created, it returns without yielding. No ``bb``
+    module is imported.
+    """
+    while not path.is_file():
+        if stop_event.wait(0.2):
+            return
+
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        while True:
+            offset = fh.tell()
+            chunk = fh.readline()
+            if chunk.endswith("\n"):
+                decoded = _decode_line(chunk.strip())
+                if decoded is not None:
+                    yield decoded
+                continue
+            # Either EOF or a partial trailing line still being written.
+            # Rewind so the incomplete line is re-read once it completes.
+            fh.seek(offset)
+            if stop_event.is_set():
+                return
+            stop_event.wait(0.2)
 
 
 def _task_key(event: _EventStub) -> tuple[Any, Any]:
