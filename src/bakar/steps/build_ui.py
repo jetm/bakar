@@ -546,16 +546,17 @@ class BuildUIState:
         global timer is the only liveness readout -- so this is a no-op.
         """
 
-    def _render_breadcrumb(self) -> Table:
-        """Render the pipeline header: phase segments left, global timer right.
+    def _render_breadcrumb(self) -> Text:
+        """Render the pipeline header: phase segments, then the global timer.
 
-        ``✓ parse ── ⠹ setscene ── · build      󰦗 12m34s``
+        ``✓ parse ── ⠹ setscene ── · build   󰦗 12m34s``
 
         Completed segments show a green check, the active segment carries the
         animated spinner in bold cyan, future segments are dim dots. The
-        right-aligned timer is the global wall clock counting from bakar
-        start (``_start_monotonic``), so it spans doctor, sync, parse, and
-        build without ever resetting.
+        timer follows the build segment directly, separated by its icon; it
+        is the global wall clock counting from bakar start
+        (``_start_monotonic``), so it spans doctor, sync, parse, and build
+        without ever resetting.
         """
         with self._lock:
             phase = self._phase
@@ -573,21 +574,15 @@ class BuildUIState:
         else:  # BUILD, real_tasks
             parse, setscene, build = done, done, current
 
-        pipeline = Text.assemble(
+        elapsed = _fmt_stall(int(time.monotonic() - self._start_monotonic))
+        return Text.assemble(
             (f"{parse[1]}parse", parse[0]),
             ("  ──  ", "grey30"),
             (f"{setscene[1]}setscene", setscene[0]),
             ("  ──  ", "grey30"),
             (f"{build[1]}build", build[0]),
+            (f"   {_ICON_TIMER} {elapsed}", "dim"),
         )
-        elapsed = _fmt_stall(int(time.monotonic() - self._start_monotonic))
-        timer = Text(f"{_ICON_TIMER} {elapsed}", style="dim")
-
-        header = Table.grid(expand=True)
-        header.add_column()
-        header.add_column(justify="right")
-        header.add_row(pipeline, timer)
-        return header
 
     def make_renderable(self) -> Group:
         """Build the renderable for the current frame.

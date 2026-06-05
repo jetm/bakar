@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 
 import pytest
-from rich.table import Table
+from rich.text import Text
 
 from bakar.steps.build_ui import (
     _ICON_TIMER,
@@ -50,7 +50,7 @@ def test_setup_phase_render_only_setup_bar() -> None:
     inner = ui.make_renderable().renderables
     # The pipeline header is always the first element; the setup bar follows.
     assert len(inner) == 2
-    assert isinstance(inner[0], Table)
+    assert isinstance(inner[0], Text)
     assert inner[1] is ui._setup_progress
 
 
@@ -212,7 +212,7 @@ def test_make_renderable_build_with_tasks() -> None:
     # Group is [header, build_progress, table] in the BUILD phase with tasks.
     inner = ui.make_renderable().renderables
     assert len(inner) == 3
-    assert isinstance(inner[0], Table)
+    assert isinstance(inner[0], Text)
     assert inner[1] is ui._build_progress
 
 
@@ -223,7 +223,7 @@ def test_make_renderable_build_empty_running() -> None:
     # No running tasks: Group is [header, build_progress].
     inner = ui.make_renderable().renderables
     assert len(inner) == 2
-    assert isinstance(inner[0], Table)
+    assert isinstance(inner[0], Text)
     assert inner[1] is ui._build_progress
 
 
