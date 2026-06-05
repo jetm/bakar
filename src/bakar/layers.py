@@ -48,15 +48,16 @@ def layer_hash_table(hashes: list[LayerHash]) -> Group:
     grid = Table.grid(padding=(0, 2))
     grid.add_column()  # repo
     grid.add_column()  # hash
-    grid.add_column()  # branch
-    grid.add_column()  # version (bitbake entry)
+    grid.add_column()  # branch + version, one cell so neither floats right
     for h in hashes:
-        grid.add_row(
-            Text(h.repo, style="bold"),
-            Text(h.short_hash, style="cyan"),
-            Text(f"({h.branch})" if h.branch else "", style="magenta"),
-            Text(f"v{h.version}" if h.version else "", style="dim"),
-        )
+        extra = Text()
+        if h.branch:
+            extra.append(f"({h.branch})", style="magenta")
+        if h.version:
+            if h.branch:
+                extra.append(" ")
+            extra.append(f"v{h.version}", style="dim")
+        grid.add_row(Text(h.repo, style="bold"), Text(h.short_hash, style="cyan"), extra)
     return Group(Text(f"layers ({len(hashes)}):"), Padding(grid, (0, 0, 0, 2)))
 
 
@@ -180,7 +181,26 @@ def _git_branch(path: Path) -> str:
             text=True,
             check=False,
         )
-        return out.stdout.strip() if out.returncode == 0 else ""
+        if out.returncode != 0:
+            return ""
+        if out.stdout.strip():
+            return out.stdout.strip()
+        # Detached HEAD - the normal state for kas-pinned layers. Resolve the
+        # nearest containing remote branch so the row still names where the
+        # commit lives (e.g. "scarthgap" for a commit on origin/scarthgap).
+        out = subprocess.run(
+            ["git", "-C", str(path), "name-rev", "--name-only", "--refs", "refs/remotes/*", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if out.returncode != 0:
+            return ""
+        name = out.stdout.strip()
+        if not name or name == "undefined":
+            return ""
+        name = re.sub(r"^remotes/[^/]+/", "", name)
+        return re.sub(r"[~^].*$", "", name)
     except OSError:
         return ""
 
@@ -189,10 +209,11 @@ def collect_layer_hashes(cfg: BuildConfig) -> list[LayerHash]:
     """Return a :class:`LayerHash` for each repo in ``bblayers.conf``.
 
     Returns ``[]`` when ``bblayers.conf`` does not exist (pre-first-build).
-    The branch is an empty string when the repo is on a detached HEAD.
-    Never raises on git failure. The result is sorted by repo name, with
-    a ``bitbake`` entry appended last carrying the version read from
-    ``lib/bb/__init__.py``.
+    For a detached HEAD (the normal state for kas-pinned layers) the branch
+    is the nearest containing remote branch, or an empty string when none
+    resolves. Never raises on git failure. The result is sorted by repo
+    name, with a ``bitbake`` entry appended last carrying the version read
+    from ``lib/bb/__init__.py``.
 
     Supports three BBLAYERS path conventions:
 

@@ -274,6 +274,30 @@ def test_git_branch_oserror_returns_empty(tmp_path: Path) -> None:
         assert _git_branch(tmp_path) == ""
 
 
+def test_git_branch_detached_resolves_containing_remote_branch(tmp_path: Path) -> None:
+    """Detached HEAD (kas-pinned layer) falls back to the containing remote branch."""
+
+    def fake_run(argv, **kwargs):
+        if "name-rev" in argv:
+            return _Completed(0, "remotes/origin/scarthgap~3\n")
+        return _Completed(0, "\n")  # show-current: detached HEAD
+
+    with patch("bakar.layers.subprocess.run", side_effect=fake_run):
+        assert _git_branch(tmp_path) == "scarthgap"
+
+
+def test_git_branch_detached_unresolvable_returns_empty(tmp_path: Path) -> None:
+    """Detached HEAD with no containing remote branch yields the empty string."""
+
+    def fake_run(argv, **kwargs):
+        if "name-rev" in argv:
+            return _Completed(0, "undefined\n")
+        return _Completed(0, "\n")
+
+    with patch("bakar.layers.subprocess.run", side_effect=fake_run):
+        assert _git_branch(tmp_path) == ""
+
+
 # ---------------------------------------------------------------------------
 # discover_source_repos
 # ---------------------------------------------------------------------------
