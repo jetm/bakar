@@ -40,7 +40,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from rich.console import Group, RenderableType
-from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
+from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.table import Table
 from rich.text import Text
 
@@ -70,6 +70,9 @@ _EVT_TASK_FAILED_SILENT = _TASK_FAILED_SILENT
 _EVT_SCENE_TASK_STARTED = "bb.runqueue.sceneQueueTaskStarted"
 _EVT_SCENE_TASK_COMPLETED = "bb.runqueue.sceneQueueTaskCompleted"
 _EVT_SCENE_TASK_FAILED = "bb.runqueue.sceneQueueTaskFailed"
+_EVT_RUNQUEUE_TASK_COMPLETED = "bb.runqueue.runQueueTaskCompleted"
+_EVT_RUNQUEUE_TASK_FAILED_RQ = "bb.runqueue.runQueueTaskFailed"
+_EVT_RUNQUEUE_TASK_SKIPPED = "bb.runqueue.runQueueTaskSkipped"
 
 # Knotty fallback line formats (non-interactive mode inside the kas container).
 LOADING_CACHE = re.compile(r"Loading cache:\s+(\d+)%")
@@ -179,6 +182,7 @@ class BuildUIState:
             TextColumn("{task.completed}/{task.total} {task.fields[kind]}"),
             TextColumn(f"[dim]{_ICON_TIMER}[/]"),
             TimeElapsedColumn(),
+            TimeRemainingColumn(),
         )
         self._build_task_id = self._build_progress.add_task("build", total=None, kind="")
         if start_monotonic is not None:
@@ -328,6 +332,10 @@ class BuildUIState:
             return
 
         if class_name == _EVT_RUNQUEUE_TASK_STARTED:
+            self._update_build(event)
+            return
+
+        if class_name in (_EVT_RUNQUEUE_TASK_COMPLETED, _EVT_RUNQUEUE_TASK_FAILED_RQ, _EVT_RUNQUEUE_TASK_SKIPPED):
             self._update_build(event)
             return
 
