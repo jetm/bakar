@@ -51,7 +51,7 @@ def test_populated_workspace_prints_layer_row(
     monkeypatch.setattr(layers_module, "collect_layer_hashes", lambda cfg: sentinel)
     result = runner.invoke(app, ["layers", "--workspace", str(nxp_workspace)])
     assert result.exit_code == 0, result.output
-    assert "layers (" in result.output
+    assert "Layers (" in result.output
     assert "poky" in result.output
     assert "deadbee" in result.output
 

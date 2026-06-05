@@ -451,11 +451,13 @@ def test_layer_hash_table_renders_repos_and_hashes() -> None:
     with con.capture() as cap:
         con.print(layer_hash_table(hashes))
     out = cap.get()
-    assert "layers (3):" in out
-    assert "meta-openembedded" in out and "a1b2c3d" in out and "(scarthgap)" in out
+    # Doctor-style table: title, column headers, no outer edge.
+    assert "Layers (3)" in out
+    assert "Layer" in out and "Commit" in out and "Branch" in out and "Version" in out
+    assert "meta-openembedded" in out and "a1b2c3d" in out and "scarthgap" in out
     assert "poky" in out and "0f9e8d7" in out
     # bitbake shows BOTH its branch and the v-prefixed version.
-    assert "(2.8)" in out
+    assert "2.8" in out
     assert "v2.8.0" in out
-    # Frameless: no panel border characters.
-    assert "╭" not in out and "│" not in out
+    # show_edge=False: no outer corner characters.
+    assert "╭" not in out and "┏" not in out

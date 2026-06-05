@@ -16,10 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rich.console import Group
-from rich.padding import Padding
 from rich.table import Table
-from rich.text import Text
 
 from bakar.kas import _bblayers_bodies, parse_bblayers
 
@@ -35,30 +32,26 @@ class LayerHash:
     version: str | None = field(default=None)  # set for the bitbake entry
 
 
-def layer_hash_table(hashes: list[LayerHash]) -> Group:
-    """Render layer hashes as a heading plus an aligned, colored grid.
+def layer_hash_table(hashes: list[LayerHash]) -> Table:
+    """Render layer hashes as a headed table matching the doctor output.
 
-    Frameless on purpose, matching the other command output blocks
-    (``sstate summary:`` etc.). One row per repo: name (bold), short hash
-    (cyan), branch (magenta), and a ``v``-prefixed version (dim) on the
-    bitbake entry. Used by the build commands' layer display and printed
-    above the live build region as soon as ``bblayers.conf`` materializes
-    during a build.
+    Same shape as the ``Pre-flight diagnosis`` table
+    (:func:`bakar.commands._helpers._print_diagnosis`): a titled
+    ``show_edge=False`` table with column headers. One row per repo:
+    name (plain, like the doctor's Check column), short hash (cyan),
+    branch (magenta), and the bitbake
+    entry's ``v``-prefixed version (dim). Used by the build commands'
+    layer display and printed above the live build region as soon as
+    ``bblayers.conf`` materializes during a build.
     """
-    grid = Table.grid(padding=(0, 2))
-    grid.add_column()  # repo
-    grid.add_column()  # hash
-    grid.add_column()  # branch + version, one cell so neither floats right
+    table = Table(title=f"Layers ({len(hashes)})", show_edge=False)
+    table.add_column("Layer", no_wrap=True)
+    table.add_column("Commit", style="cyan")
+    table.add_column("Branch", style="magenta")
+    table.add_column("Version", style="dim")
     for h in hashes:
-        extra = Text()
-        if h.branch:
-            extra.append(f"({h.branch})", style="magenta")
-        if h.version:
-            if h.branch:
-                extra.append(" ")
-            extra.append(f"v{h.version}", style="dim")
-        grid.add_row(Text(h.repo, style="bold"), Text(h.short_hash, style="cyan"), extra)
-    return Group(Text(f"layers ({len(hashes)}):"), Padding(grid, (0, 0, 0, 2)))
+        table.add_row(h.repo, h.short_hash, h.branch, f"v{h.version}" if h.version else "")
+    return table
 
 
 def _parse_bbsetup_layer_repos(bblayers_conf: Path) -> list[str]:
