@@ -109,7 +109,7 @@ def _make_tuning_cfg(
 
 
 def test_all_pressure_keys_set_emits_all_three(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """All three BB_PRESSURE_MAX_* env vars are emitted as strings when all cfg fields are set."""
+    """BB_PRESSURE_MAX_* are emitted converted from avg10 percent to bitbake us/s."""
     monkeypatch.delenv("BB_PRESSURE_MAX_CPU", raising=False)
     monkeypatch.delenv("BB_PRESSURE_MAX_IO", raising=False)
     monkeypatch.delenv("BB_PRESSURE_MAX_MEMORY", raising=False)
@@ -117,9 +117,9 @@ def test_all_pressure_keys_set_emits_all_three(tmp_path: Path, monkeypatch: pyte
 
     env = _build_env(cfg)
 
-    assert env["BB_PRESSURE_MAX_CPU"] == "60"
-    assert env["BB_PRESSURE_MAX_IO"] == "45"
-    assert env["BB_PRESSURE_MAX_MEMORY"] == "20"
+    assert env["BB_PRESSURE_MAX_CPU"] == "600000"
+    assert env["BB_PRESSURE_MAX_IO"] == "450000"
+    assert env["BB_PRESSURE_MAX_MEMORY"] == "200000"
 
 
 def test_partial_pressure_keys_omit_unset_dimensions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -131,9 +131,19 @@ def test_partial_pressure_keys_omit_unset_dimensions(tmp_path: Path, monkeypatch
 
     env = _build_env(cfg)
 
-    assert env["BB_PRESSURE_MAX_CPU"] == "50"
+    assert env["BB_PRESSURE_MAX_CPU"] == "500000"
     assert "BB_PRESSURE_MAX_IO" not in env
     assert "BB_PRESSURE_MAX_MEMORY" not in env
+
+
+def test_fractional_pressure_percent_converts_to_integer_us(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fractional avg10 percent threshold converts to a whole us/s value."""
+    monkeypatch.delenv("BB_PRESSURE_MAX_MEMORY", raising=False)
+    cfg = _make_tuning_cfg(tmp_path, pressure_max_memory=20.5)
+
+    env = _build_env(cfg)
+
+    assert env["BB_PRESSURE_MAX_MEMORY"] == "205000"
 
 
 def test_scheduler_emitted_when_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

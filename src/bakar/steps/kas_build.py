@@ -1064,14 +1064,20 @@ def _build_env(
     # Scheduler and PSI thresholds:
     # only emit when set (empty dimension is disabled in the overlay via the
     # os.environ.get(..., '') expression, so omitting the key is equivalent).
+    # Config stores avg10 percent (0-100, the unit psi.py calibrates from);
+    # bitbake's exceeds_max_pressure() compares against the delta of the
+    # total= stall counter in microseconds per second (0-1,000,000), so
+    # convert percent -> us/s here at the boundary. Without the conversion
+    # a 20% threshold lands as 20 us/s (0.002% stall) and throttles task
+    # launch for nearly the whole build.
     if cfg.scheduler is not None:
         passthrough["BB_SCHEDULER"] = cfg.scheduler
     if cfg.pressure_max_cpu is not None:
-        passthrough["BB_PRESSURE_MAX_CPU"] = str(cfg.pressure_max_cpu)
+        passthrough["BB_PRESSURE_MAX_CPU"] = str(int(cfg.pressure_max_cpu * 10_000))
     if cfg.pressure_max_io is not None:
-        passthrough["BB_PRESSURE_MAX_IO"] = str(cfg.pressure_max_io)
+        passthrough["BB_PRESSURE_MAX_IO"] = str(int(cfg.pressure_max_io * 10_000))
     if cfg.pressure_max_memory is not None:
-        passthrough["BB_PRESSURE_MAX_MEMORY"] = str(cfg.pressure_max_memory)
+        passthrough["BB_PRESSURE_MAX_MEMORY"] = str(int(cfg.pressure_max_memory * 10_000))
     # Persistent hashserv: when enabled, ensure the workspace-scoped
     # daemon is running and rewrite the URL for container reachability.
     # The overlay's BB_HASHSERVE = ${@os.environ.get('BB_HASHSERVE', 'auto')}
