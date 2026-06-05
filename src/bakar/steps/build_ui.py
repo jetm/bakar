@@ -55,6 +55,8 @@ from bakar.eventlog import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from bakar.eventlog import _EventStub
 
 # bitbake event class names (the decoded line's ``class`` field) the live feed
@@ -159,7 +161,11 @@ class BuildUIState:
     ``make_renderable`` is called from the ``Live`` refresh thread.
     """
 
-    def __init__(self, start_monotonic: float | None = None) -> None:
+    def __init__(
+        self,
+        start_monotonic: float | None = None,
+        logfile_translator: Callable[[str], str] | None = None,
+    ) -> None:
         """``start_monotonic`` is the ``time.monotonic()`` stamp of when ``bakar``
         started (RunLogger captures it before doctor). When given, the global
         timer counts from there -- including doctor, sync, and parse -- instead
@@ -213,6 +219,13 @@ class BuildUIState:
         self._pending_log: str | None = None
         self.warn_count: int = 0
         self.error_count: int = 0
+        self._logfile_translator = logfile_translator
+        # Persistent record of (recipe, taskname) for each failed task, rendered
+        # in the build bar. ``_pending_alerts`` queues one-shot alert lines the
+        # caller drains via take_pending_alerts() and prints above the Live.
+        self._failures: list[tuple[str, str]] = []
+        self._pending_alerts: list[str] = []
+        self._task_failed_count: int = 0
 
     def process_line(self, line: str) -> str | None:
         """Parse one line of knotty fallback output and update internal state.
@@ -353,7 +366,22 @@ class BuildUIState:
                 )
             return
 
-        if class_name in (_EVT_TASK_SUCCEEDED, _EVT_TASK_FAILED, _EVT_TASK_FAILED_SILENT):
+        if class_name == _EVT_TASK_FAILED:
+            recipe, taskname = _task_key(event)
+            logfile = getattr(event, "logfile", None)
+            if self._logfile_translator and logfile:
+                logfile = self._logfile_translator(logfile)
+            msg = f"[bold red]✗ FAILED:[/] {recipe} {taskname}"
+            if logfile:
+                msg += f"\n   log: {logfile}"
+            with self._lock:
+                self._running.pop(f"{recipe}:{taskname}", None)
+                self._failures.append((recipe, taskname))
+                self._pending_alerts.append(msg)
+                self._task_failed_count += 1
+            return
+
+        if class_name in (_EVT_TASK_SUCCEEDED, _EVT_TASK_FAILED_SILENT):
             recipe, taskname = _task_key(event)
             with self._lock:
                 self._running.pop(f"{recipe}:{taskname}", None)
@@ -447,6 +475,17 @@ class BuildUIState:
         msg, self._pending_log = self._pending_log, None
         return msg
 
+    def take_pending_alerts(self) -> list[str]:
+        """Return and clear the queued failure-alert lines.
+
+        Mirrors take_pending_log() but drains a list: the caller prints each
+        alert above the Live display so failures stay visible during a ``-k``
+        build.
+        """
+        with self._lock:
+            out, self._pending_alerts = self._pending_alerts, []
+        return out
+
     def update_heartbeat(self, stall_secs: int, du_delta: int) -> None:
         """Retained for caller compatibility.
 
@@ -466,6 +505,7 @@ class BuildUIState:
             phase = self._phase
             setscene_covered = self._setscene_covered
             setscene_total = self._setscene_total
+            failures = list(self._failures)
             tasks = sorted(self._running.values(), key=lambda t: -(now - t.start))
 
         if phase is _Phase.SETUP:
@@ -477,6 +517,14 @@ class BuildUIState:
         # Gated on setscene_total > 0 so the zero case leaves parts unchanged.
         if setscene_total > 0:
             parts.append(Text(f" {setscene_covered}/{setscene_total} tasks from sstate cache", style="green"))
+
+        # Persistent failure summary during -k builds. Gated on a non-empty
+        # failure list so the no-failure case leaves the render unchanged.
+        if failures:
+            n = len(failures)
+            shown = ", ".join(f"{r}:{t}" for r, t in failures[:3])
+            suffix = f" (+{n - 3} more)" if n > 3 else ""
+            parts.append(Text(f" ✗ {n} failed: {shown}{suffix}", style="bold red"))
 
         if tasks:
             els = sorted(now - t.start for t in tasks)
