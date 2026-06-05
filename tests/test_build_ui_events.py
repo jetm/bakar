@@ -16,8 +16,11 @@ import pytest
 from bakar.eventlog import _decode_line, _EventStub
 from bakar.steps.build_ui import (
     _EVT_CACHE_LOAD_PROGRESS,
+    _EVT_PARSE_COMPLETED,
     _EVT_PARSE_PROGRESS,
+    _EVT_RUNQUEUE_TASK_COMPLETED,
     _EVT_RUNQUEUE_TASK_STARTED,
+    _EVT_SCENE_TASK_STARTED,
     _EVT_TASK_FAILED,
     _EVT_TASK_STARTED,
     _EVT_TASK_SUCCEEDED,
@@ -343,3 +346,118 @@ def test_failure_preview_rendered_below_summary(tmp_path: Path) -> None:
 
     texts = [getattr(r, "plain", "") for r in ui.make_renderable().renderables]
     assert any("compile error here" in t for t in texts)
+
+
+# ---------------------------------------------------------------------------
+# ETA routing -- completion events route through _update_build and feed the bar
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_runqueue_completed_feeds_build_bar() -> None:
+    ui = BuildUIState()
+    e = _runqueue_stub({"completed": 100, "total": 1000})
+    ui.process_event(_EVT_RUNQUEUE_TASK_COMPLETED, e)
+    assert ui._build_progress.tasks[0].completed == 100
+
+
+# ---------------------------------------------------------------------------
+# Failure alert -- queued on TaskFailed, drained swap-style
+# ---------------------------------------------------------------------------
+
+
+def _failed_recipe_stub(recipe: str, task: str) -> _EventStub:
+    e = _EventStub()
+    e._package = recipe
+    e.taskname = task
+    e._task = task
+    return e
+
+
+@pytest.mark.unit
+def test_task_failed_queues_alert_and_drains() -> None:
+    ui = BuildUIState()
+    ui.process_event(_EVT_TASK_FAILED, _failed_recipe_stub("glibc", "do_compile"))
+    alerts = ui.take_pending_alerts()
+    assert len(alerts) == 1
+    assert "FAILED" in alerts[0]
+    assert "glibc" in alerts[0]
+    # Swap-drain: a second take returns the empty list.
+    assert ui.take_pending_alerts() == []
+
+
+# ---------------------------------------------------------------------------
+# Failure counter -- _task_failed_count and the "N failed" render
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_task_failed_count_and_render() -> None:
+    ui = BuildUIState()
+    ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, _runqueue_stub({"total": 450}))
+    ui.process_event(_EVT_TASK_FAILED, _failed_recipe_stub("glibc", "do_compile"))
+    ui.process_event(_EVT_TASK_FAILED, _failed_recipe_stub("busybox", "do_compile"))
+    assert ui._task_failed_count == 2
+    assert ui._phase is _Phase.BUILD
+
+    texts = [getattr(r, "plain", "") for r in ui.make_renderable().renderables]
+    assert any("2 failed" in t for t in texts)
+
+
+# ---------------------------------------------------------------------------
+# Parse cache note -- ParseCompleted reports cached vs parsed in the pending log
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_parse_completed_cache_note() -> None:
+    ui = BuildUIState()
+    # Stamp _parse_start via a parse-progress event first.
+    parse = _EventStub()
+    parse.current = 10
+    parse.total = 100
+    ui.process_event(_EVT_PARSE_PROGRESS, parse)
+
+    done = _EventStub()
+    done.cached = 1840
+    done.parsed = 42
+    ui.process_event(_EVT_PARSE_COMPLETED, done)
+    note = ui.take_pending_log()
+    assert note is not None
+    assert "cached" in note
+    assert "42" in note
+
+
+# ---------------------------------------------------------------------------
+# Breadcrumb -- current segment advances parse -> setscene -> build
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_breadcrumb_advances_with_phase() -> None:
+    ui = BuildUIState()
+    # SETUP: parse is the current (highlighted) segment.
+    assert ui._phase is _Phase.SETUP
+    assert "⟳ parse" in ui._render_breadcrumb().plain
+
+    # A setscene task moves the current marker to setscene.
+    scene = _EventStub()
+    scene.taskname = "do_fetch_setscene"
+    scene.taskfile = "/path/to/glibc.bb"
+    ui.process_event(_EVT_SCENE_TASK_STARTED, scene)
+    assert "⟳ setscene" in ui._render_breadcrumb().plain
+
+    # A real runqueue task moves the current marker to build.
+    ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, _runqueue_stub({"total": 450}))
+    assert "⟳ build" in ui._render_breadcrumb().plain
+
+
+# ---------------------------------------------------------------------------
+# Setup timer backdate -- start_monotonic backdates the setup bar's start_time
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_setup_timer_backdated_to_start_monotonic() -> None:
+    ui = BuildUIState(start_monotonic=12345.0)
+    assert ui._setup_progress.tasks[0].start_time == 12345.0
