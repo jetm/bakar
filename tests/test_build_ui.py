@@ -254,6 +254,30 @@ def test_make_renderable_strips_do_prefix() -> None:
     assert task_cells[0] == "compile"
 
 
+@pytest.mark.unit
+def test_make_renderable_column_widths_never_shrink() -> None:
+    """Columns hold a static position when a long-named recipe finishes.
+
+    Widths are high-water marks: after the widest recipe leaves the running
+    set, the pf column must keep its width so the task and elapsed columns
+    do not jump left between frames.
+    """
+    ui = BuildUIState()
+    ui.process_line("NOTE: Running task 1200 of 9005 (/x.bb:do_compile)")
+    base = time.monotonic()
+    long_pf = "lib32-packagegroup-core-x11-base-extended-1.0-r0"
+    ui._running["a:do_compile"] = _RunTask(pf=long_pf, task="do_compile", start=base - 60)
+    ui._running["b:do_fetch"] = _RunTask(pf="tiny-1.0-r0", task="do_fetch", start=base - 5)
+
+    table = ui.make_renderable().renderables[-1]
+    wide = table.columns[2].width
+    assert wide == len(long_pf), "pf column must fit the longest recipe untruncated"
+
+    del ui._running["a:do_compile"]
+    table = ui.make_renderable().renderables[-1]
+    assert table.columns[2].width == wide, "pf column must not shrink after the long recipe finishes"
+
+
 # ---------------------------------------------------------------------------
 # update_heartbeat — retained no-op (must not raise)
 # ---------------------------------------------------------------------------

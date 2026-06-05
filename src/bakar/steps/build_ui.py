@@ -104,9 +104,9 @@ _ICON_COMPILE = ""  # cog
 _ICON_FETCH = ""  # download
 _ICON_CONFIGURE = ""  # wrench
 _ICON_PACKAGE = ""  # package
-_ICON_SETSCENE = ""  # refresh
+_ICON_SETSCENE = ""  # fa-refresh
 _ICON_TIMER = "󰦗"  # md-progress-clock (build elapsed)
-_ICON_DRIFT = ""  # fa-warning (stuck task: time drifted past its reference)
+_ICON_DRIFT = ""  # fa-warning (stuck task: time drifted past its reference)
 
 
 class _Phase(Enum):
@@ -142,7 +142,7 @@ def _task_style(task: str) -> tuple[str, str]:
         return (_ICON_FETCH, "blue")
     if "configure" in task or "patch" in task or "prepare" in task or "cmake" in task:
         return (_ICON_CONFIGURE, "cyan")
-    if any(k in task for k in ("package", "deploy", "image", "rootfs", "spdx", "install")):
+    if any(k in task for k in ("package", "deploy", "image", "rootfs", "spdx", "install", "populate")):
         return (_ICON_PACKAGE, "green")
     return (_ICON_COMPILE, "white")
 
@@ -252,6 +252,13 @@ class BuildUIState:
         # Tail of the most recent failed task's log file, rendered under the
         # failure-list line. Replaced (not appended) on each failure.
         self._failure_preview: list[str] = []
+        # High-water task-table column widths (recipe, task, elapsed). Grow
+        # to the longest cell seen this run and never shrink, so columns hold
+        # a static position frame-to-frame instead of jittering as the set of
+        # running tasks changes.
+        self._w_pf = 0
+        self._w_task = 0
+        self._w_elapsed = 0
         # Historical timing baselines {"recipe:task": (mean, stddev)} from
         # prior builds of THIS context (workspace+machine+mode). Empty on the
         # first build -> estimated stays None and stuck-task detection falls
@@ -650,17 +657,11 @@ class BuildUIState:
             # rows that matter (slow / possibly stuck) always stay visible.
             overflow = len(tasks) - _MAX_TASK_ROWS
             visible = tasks[:_MAX_TASK_ROWS] if overflow > 0 else tasks
-            # Auto-width columns: Rich sizes each to its longest visible cell,
-            # so elapsed hugs the task name instead of sitting across a wide
-            # fixed column. The historical estimate is deliberately NOT
-            # rendered per row - the prediction is too noisy to be useful as
-            # a number; it feeds the stuck-task coloring instead.
-            table = Table(box=None, show_header=False, padding=(0, 1))
-            table.add_column(width=1)  # spinner
-            table.add_column(width=1)  # icon
-            table.add_column(no_wrap=True, max_width=34)  # pf
-            table.add_column()  # task
-            table.add_column()  # elapsed
+            # Build the row cells first so column widths can be derived from
+            # them. The historical estimate is deliberately NOT rendered per
+            # row - the prediction is too noisy to be useful as a number; it
+            # feeds the stuck-task coloring instead.
+            rows: list[tuple[Text, Text, Text, Text, Text]] = []
             for i, t in enumerate(visible):
                 elapsed = now - t.start
                 icon, color = _task_style(t.task)
@@ -675,13 +676,36 @@ class BuildUIState:
                     ref = t.estimated if (t.estimated is not None and t.estimated > 0) else median
                     if ref > 0:
                         elapsed_cell.append(f"  {_ICON_DRIFT} +{_fmt_stall(int(elapsed - ref))}", style="bold red")
-                table.add_row(
-                    Text(spin, style=color),
-                    Text(icon, style=color),
-                    Text(t.pf, style=stuck or "default"),
-                    Text(name, style=color),
-                    elapsed_cell,
+                # Recipe and task share one style so the row reads as a unit:
+                # the task-type color normally, the stuck highlight when the
+                # task has drifted (stuck takes the whole row, not just the pf).
+                row_style = stuck or color
+                rows.append(
+                    (
+                        Text(spin, style=color),
+                        Text(icon, style=color),
+                        Text(t.pf, style=row_style),
+                        Text(name, style=row_style),
+                        elapsed_cell,
+                    )
                 )
+            # High-water column widths: pure auto-width recomputes from the
+            # visible rows each frame, so columns jump left and right as
+            # tasks start and finish. Widths grow to the longest cell seen
+            # this run and never shrink, keeping every column static between
+            # frames (an occasional one-time widening aside) without the
+            # truncation a hardcoded width caused on long recipe names.
+            self._w_pf = max(self._w_pf, *(r[2].cell_len for r in rows))
+            self._w_task = max(self._w_task, *(r[3].cell_len for r in rows))
+            self._w_elapsed = max(self._w_elapsed, *(r[4].cell_len for r in rows))
+            table = Table(box=None, show_header=False, padding=(0, 1))
+            table.add_column(width=1)  # spinner
+            table.add_column(width=1)  # icon
+            table.add_column(width=self._w_pf, no_wrap=True)  # pf
+            table.add_column(width=self._w_task, no_wrap=True)  # task
+            table.add_column(width=self._w_elapsed, no_wrap=True)  # elapsed
+            for row in rows:
+                table.add_row(*row)
             parts.append(table)
             if overflow > 0:
                 parts.append(Text(f"   … +{overflow} more running", style="dim"))
