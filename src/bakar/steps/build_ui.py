@@ -341,7 +341,18 @@ class BuildUIState:
                 took = ""
                 if self._parse_start is not None:
                     took = f" ({_fmt_stall(int(time.monotonic() - self._parse_start))})"
-                self._pending_log = f"[green]✓[/] parsing recipes complete{took}"
+                cached = getattr(event, "cached", None) or 0
+                parsed_count = getattr(event, "parsed", None) or 0
+                if cached + parsed_count > 0:
+                    if parsed_count == 0:
+                        cache_note = "  [all from cache]"
+                    elif cached == 0:
+                        cache_note = f"  [{parsed_count} fresh, cache empty]"
+                    else:
+                        cache_note = f"  [{int(cached / (cached + parsed_count) * 100)}% cached, {parsed_count} fresh]"
+                else:
+                    cache_note = ""
+                self._pending_log = f"[green]✓[/] parsing recipes complete{took}{cache_note}"
             return
 
         if class_name == _EVT_RUNQUEUE_TASK_STARTED:
