@@ -35,6 +35,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -228,6 +229,9 @@ class BuildUIState:
         self._failures: list[tuple[str, str]] = []
         self._pending_alerts: list[str] = []
         self._task_failed_count: int = 0
+        # Tail of the most recent failed task's log file, rendered under the
+        # failure-list line. Replaced (not appended) on each failure.
+        self._failure_preview: list[str] = []
 
     def process_line(self, line: str) -> str | None:
         """Parse one line of knotty fallback output and update internal state.
@@ -392,6 +396,18 @@ class BuildUIState:
                 self._failures.append((recipe, taskname))
                 self._pending_alerts.append(msg)
                 self._task_failed_count += 1
+            # Tail the host log so the most recent failure's last lines render
+            # under the failure summary. OSError (missing/unreadable file) must
+            # not propagate -- it would crash the tailer thread.
+            if self._logfile_translator and logfile:
+                try:
+                    with open(logfile, encoding="utf-8", errors="replace") as fh:
+                        lines = list(deque(fh, maxlen=15))
+                except OSError:
+                    pass
+                else:
+                    with self._lock:
+                        self._failure_preview = [ln.rstrip("\n") for ln in lines]
             return
 
         if class_name in (_EVT_TASK_SUCCEEDED, _EVT_TASK_FAILED_SILENT):
@@ -555,6 +571,7 @@ class BuildUIState:
             setscene_total = self._setscene_total
             setscene_notcovered = self._setscene_notcovered
             failures = list(self._failures)
+            failure_preview = list(self._failure_preview)
             tasks = sorted(self._running.values(), key=lambda t: -(now - t.start))
 
         if phase is _Phase.SETUP:
@@ -580,6 +597,9 @@ class BuildUIState:
             shown = ", ".join(f"{r}:{t}" for r, t in failures[:3])
             suffix = f" (+{n - 3} more)" if n > 3 else ""
             parts.append(Text(f" ✗ {n} failed: {shown}{suffix}", style="bold red"))
+            # Tail of the most recent failure's log, below the summary line.
+            if failure_preview:
+                parts.append(Text("\n".join(failure_preview), style="dim"))
 
         if tasks:
             els = sorted(now - t.start for t in tasks)

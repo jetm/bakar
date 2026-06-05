@@ -274,3 +274,72 @@ def test_setscene_line_absent_when_total_zero() -> None:
     for r in ui.make_renderable().renderables:
         plain = getattr(r, "plain", "")
         assert "sstate cache" not in plain
+
+
+# ---------------------------------------------------------------------------
+# Failure-log preview -- tail of the most recent failed task's log
+# ---------------------------------------------------------------------------
+
+
+def _failed_stub(logfile: str | None) -> _EventStub:
+    e = _EventStub()
+    e._package = "glibc-2.39-r0"
+    e.taskname = "do_compile"
+    e._task = "do_compile"
+    if logfile is not None:
+        e.logfile = logfile
+    return e
+
+
+@pytest.mark.unit
+def test_failure_preview_reads_log_tail(tmp_path: Path) -> None:
+    log = tmp_path / "do_compile.log"
+    log.write_text("\n".join(f"line {i}" for i in range(20)) + "\n")
+    ui = BuildUIState(logfile_translator=lambda p: p)
+    ui.process_event(_EVT_TASK_FAILED, _failed_stub(str(log)))
+    # Only the last 15 lines are kept (deque maxlen=15).
+    assert ui._failure_preview == [f"line {i}" for i in range(5, 20)]
+
+
+@pytest.mark.unit
+def test_failure_preview_replaces_on_second_failure(tmp_path: Path) -> None:
+    first = tmp_path / "first.log"
+    first.write_text("first failure\n")
+    second = tmp_path / "second.log"
+    second.write_text("second failure\n")
+    ui = BuildUIState(logfile_translator=lambda p: p)
+    ui.process_event(_EVT_TASK_FAILED, _failed_stub(str(first)))
+    ui.process_event(_EVT_TASK_FAILED, _failed_stub(str(second)))
+    # The most recent failure's tail replaces the earlier one.
+    assert ui._failure_preview == ["second failure"]
+
+
+@pytest.mark.unit
+def test_failure_preview_missing_file_does_not_raise(tmp_path: Path) -> None:
+    ui = BuildUIState(logfile_translator=lambda p: p)
+    missing = str(tmp_path / "absent.log")
+    # OSError on the unreadable path must be swallowed; preview stays empty.
+    ui.process_event(_EVT_TASK_FAILED, _failed_stub(missing))
+    assert ui._failure_preview == []
+
+
+@pytest.mark.unit
+def test_failure_preview_skipped_without_translator(tmp_path: Path) -> None:
+    log = tmp_path / "do_compile.log"
+    log.write_text("some output\n")
+    ui = BuildUIState()  # no translator
+    ui.process_event(_EVT_TASK_FAILED, _failed_stub(str(log)))
+    assert ui._failure_preview == []
+
+
+@pytest.mark.unit
+def test_failure_preview_rendered_below_summary(tmp_path: Path) -> None:
+    log = tmp_path / "do_compile.log"
+    log.write_text("compile error here\n")
+    ui = BuildUIState(logfile_translator=lambda p: p)
+    ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, _runqueue_stub({"total": 450}))
+    ui.process_event(_EVT_TASK_FAILED, _failed_stub(str(log)))
+    assert ui._phase is _Phase.BUILD
+
+    texts = [getattr(r, "plain", "") for r in ui.make_renderable().renderables]
+    assert any("compile error here" in t for t in texts)
