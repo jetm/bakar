@@ -61,9 +61,12 @@ def load_baselines(path: Path | None = None) -> dict[str, tuple[float, float]]:
             count_i = int(count)
             mean_f = float(mean)
             m2_f = float(m2)
-        except TypeError, ValueError:
+            if not (math.isfinite(mean_f) and math.isfinite(m2_f)):
+                continue
+            variance = m2_f / (count_i - 1) if count_i > 1 else 0.0
+            stddev = math.sqrt(variance) if variance > 0 else 0.0
+        except TypeError, ValueError, OverflowError:
             continue
-        stddev = math.sqrt(m2_f / (count_i - 1)) if count_i > 1 else 0.0
         baselines[name] = (mean_f, stddev)
     return baselines
 
