@@ -41,7 +41,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from rich.console import Group, RenderableType
-from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn, TimeRemainingColumn
+from rich.progress import BarColumn, Progress, TextColumn
 from rich.table import Table
 from rich.text import Text
 
@@ -91,6 +91,11 @@ SEVERITY_PASSTHROUGH = re.compile(r"\b(ERROR|FATAL|WARNING|QA Issue):")
 
 # Braille spinner frames (universal Unicode, not Nerd-Font dependent).
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+# Cap on rendered task-table rows so the Live region fits the terminal even
+# on high-core hosts (BB_NUMBER_THREADS rows otherwise). Longest-elapsed
+# tasks are kept; the remainder collapses into a "+N more running" line.
+_MAX_TASK_ROWS = 16
 
 # Nerd-Font icons (Font Awesome private-use range, confirmed present in
 # IosevkaTerm / CommitMono Nerd Font). Truecolor + Nerd Font assumed.
@@ -183,33 +188,27 @@ class BuildUIState:
     ) -> None:
         """``start_monotonic`` is the ``time.monotonic()`` stamp of when ``bakar``
         started (RunLogger captures it before doctor). When given, the global
-        timer counts from there -- including doctor, sync, and parse -- instead
-        of from this object's construction.
+        timer on the pipeline header counts from there -- including doctor,
+        sync, and parse -- instead of from this object's construction.
         """
+        # The global wall-clock timer lives on the pipeline header (the
+        # parse -> setscene -> build line), not on the bars, so it is in the
+        # same place in every phase and never resets across transitions.
+        self._start_monotonic = start_monotonic if start_monotonic is not None else time.monotonic()
+
         self._setup_progress = Progress(
             TextColumn("[cyan]{task.fields[stage]}[/]"),
             BarColumn(style="grey30", complete_style="cyan", finished_style="green"),
             TextColumn("{task.percentage:>3.0f}%"),
-            TimeElapsedColumn(),
         )
         self._setup_task_id = self._setup_progress.add_task("setup", total=100, stage="starting")
 
-        # The build task's elapsed column is the global wall-clock timer: it
-        # includes parse and is never reset across the parse->build transition.
-        # The timer icon prefixes the elapsed column.
         self._build_progress = Progress(
             TextColumn("[cyan]kas_build[/]"),
             BarColumn(style="grey30", complete_style="cyan", finished_style="green"),
             TextColumn("{task.completed}/{task.total} {task.fields[kind]}"),
-            TextColumn(f"[dim]{_ICON_TIMER}[/]"),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
         )
         self._build_task_id = self._build_progress.add_task("build", total=None, kind="")
-        if start_monotonic is not None:
-            # Backdate the timer to the start of the bakar run.
-            self._build_progress.tasks[0].start_time = start_monotonic
-            self._setup_progress.tasks[0].start_time = start_monotonic
 
         self._phase = _Phase.SETUP
         self._build_sub_phase: str = "setscene"
@@ -547,20 +546,25 @@ class BuildUIState:
         global timer is the only liveness readout -- so this is a no-op.
         """
 
-    def _render_breadcrumb(self) -> Text:
-        """Render the parse -> setscene -> build phase breadcrumb.
+    def _render_breadcrumb(self) -> Table:
+        """Render the pipeline header: phase segments left, global timer right.
 
-        Reflects the current macro phase and (in BUILD) the build sub-phase:
-        the active segment gets a spinner-arrow prefix and bold cyan, completed
-        segments get a check prefix and dim green, future segments are dim.
+        ``✓ parse ── ⠹ setscene ── · build      󰦗 12m34s``
+
+        Completed segments show a green check, the active segment carries the
+        animated spinner in bold cyan, future segments are dim dots. The
+        right-aligned timer is the global wall clock counting from bakar
+        start (``_start_monotonic``), so it spans doctor, sync, parse, and
+        build without ever resetting.
         """
         with self._lock:
             phase = self._phase
             sub_phase = self._build_sub_phase
 
-        current = ("bold cyan", "⟳ ")
-        done = ("dim green", "✓ ")
-        future = ("dim", "")
+        spin = _SPINNER[self._frame % len(_SPINNER)]
+        current = ("bold cyan", f"{spin} ")
+        done = ("green", "✓ ")
+        future = ("grey42", "· ")
 
         if phase is _Phase.SETUP:
             parse, setscene, build = current, future, future
@@ -569,13 +573,21 @@ class BuildUIState:
         else:  # BUILD, real_tasks
             parse, setscene, build = done, done, current
 
-        return Text.assemble(
+        pipeline = Text.assemble(
             (f"{parse[1]}parse", parse[0]),
-            (" → ", "dim"),
+            ("  ──  ", "grey30"),
             (f"{setscene[1]}setscene", setscene[0]),
-            (" → ", "dim"),
+            ("  ──  ", "grey30"),
             (f"{build[1]}build", build[0]),
         )
+        elapsed = _fmt_stall(int(time.monotonic() - self._start_monotonic))
+        timer = Text(f"{_ICON_TIMER} {elapsed}", style="dim")
+
+        header = Table.grid(expand=True)
+        header.add_column()
+        header.add_column(justify="right")
+        header.add_row(pipeline, timer)
+        return header
 
     def make_renderable(self) -> Group:
         """Build the renderable for the current frame.
@@ -624,28 +636,38 @@ class BuildUIState:
         if tasks:
             els = sorted(now - t.start for t in tasks)
             median = els[len(els) // 2]
+            # Cap the table so a high-core build (32+ parallel tasks) cannot
+            # grow the Live region past the terminal height, which makes Rich
+            # redraw glitchy. Tasks are sorted longest-elapsed first, so the
+            # rows that matter (slow / possibly stuck) always stay visible.
+            overflow = len(tasks) - _MAX_TASK_ROWS
+            visible = tasks[:_MAX_TASK_ROWS] if overflow > 0 else tasks
             table = Table(box=None, show_header=False, padding=(0, 1))
             table.add_column(width=1)  # spinner
             table.add_column(width=1)  # icon
             table.add_column(no_wrap=True, max_width=34)  # pf
             table.add_column(width=24)  # task
             table.add_column(justify="right", width=8)  # elapsed
-            for i, t in enumerate(tasks):
+            # Estimated duration gets its own column: appended to the elapsed
+            # cell it overflows the fixed width=8 and Rich wraps every row.
+            table.add_column(justify="right", width=10)  # est (baseline)
+            for i, t in enumerate(visible):
                 elapsed = now - t.start
                 icon, color = _task_style(t.task)
                 spin = _SPINNER[(self._frame + i) % len(_SPINNER)]
                 stuck = _stuck_color(elapsed, median, len(tasks), estimated=t.estimated)
                 name = t.task.removeprefix("do_").removesuffix("_setscene")
-                elapsed_cell = Text(_fmt_stall(int(elapsed)), style=stuck or "dim")
-                if t.estimated is not None:
-                    elapsed_cell.append(f" /est {_fmt_stall(int(t.estimated))}", style="dim")
+                est_cell = Text(f"est {_fmt_stall(int(t.estimated))}" if t.estimated is not None else "", style="dim")
                 table.add_row(
                     Text(spin, style=color),
                     Text(icon, style=color),
                     Text(t.pf, style=stuck or "default"),
                     Text(name, style=color),
-                    elapsed_cell,
+                    Text(_fmt_stall(int(elapsed)), style=stuck or "dim"),
+                    est_cell,
                 )
             parts.append(table)
+            if overflow > 0:
+                parts.append(Text(f"   … +{overflow} more running", style="dim"))
 
         return Group(*parts)

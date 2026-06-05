@@ -140,12 +140,15 @@ def update_from_events(events_json: Path, timings_path: Path) -> None:
 
     timings_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Open r+ when possible so the read and write share one locked handle;
-    # fall back to creating the file when it does not yet exist.
+    # Open r+ when possible so the read and write share one locked handle.
+    # Fall back to "a+" (create-without-truncate) so the fallback handle is
+    # readable (not write-only) and the file creation does not race with the
+    # flock: a+ creates the file but never truncates it, so two concurrent
+    # first-run writers do not discard each other's samples.
     try:
         fh = timings_path.open("r+", encoding="utf-8")
     except OSError:
-        fh = timings_path.open("w", encoding="utf-8")
+        fh = timings_path.open("a+", encoding="utf-8")
 
     with fh:
         fcntl.flock(fh, fcntl.LOCK_EX)

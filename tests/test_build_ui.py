@@ -12,9 +12,10 @@ from __future__ import annotations
 import time
 
 import pytest
-from rich.text import Text
+from rich.table import Table
 
 from bakar.steps.build_ui import (
+    _ICON_TIMER,
     BuildUIState,
     _Phase,
     _RunTask,
@@ -47,9 +48,9 @@ def test_loading_cache_updates_setup_bar() -> None:
 def test_setup_phase_render_only_setup_bar() -> None:
     ui = BuildUIState()
     inner = ui.make_renderable().renderables
-    # The breadcrumb is always the first element; the setup bar follows.
+    # The pipeline header is always the first element; the setup bar follows.
     assert len(inner) == 2
-    assert isinstance(inner[0], Text)
+    assert isinstance(inner[0], Table)
     assert inner[1] is ui._setup_progress
 
 
@@ -100,11 +101,19 @@ def test_parse_complete_queued_with_check_and_duration_once() -> None:
 
 @pytest.mark.unit
 def test_global_timer_backdated_to_bakar_start() -> None:
-    start = time.monotonic() - 100.0
+    from rich.console import Console
+
+    start = time.monotonic() - 154.0
     ui = BuildUIState(start_monotonic=start)
-    # The build task's clock is seeded from the bakar start stamp, so the global
-    # timer includes the pre-build time (doctor, sync, parse), not just the build.
-    assert ui._build_progress.tasks[0].start_time == start
+    # The global timer lives on the pipeline header and counts from the bakar
+    # start stamp, so it includes pre-build time (doctor, sync, parse).
+    assert ui._start_monotonic == start
+    con = Console(width=110, force_terminal=False)
+    with con.capture() as cap:
+        con.print(ui.make_renderable())
+    out = cap.get()
+    assert _ICON_TIMER in out
+    assert "2m34s" in out
 
 
 # ---------------------------------------------------------------------------
@@ -200,10 +209,10 @@ def test_make_renderable_build_with_tasks() -> None:
     ui._running["b:do_fetch"] = _RunTask(pf="pkg-b-2.0-r0", task="do_fetch", start=base - 60)
     ui._running["c:do_install"] = _RunTask(pf="pkg-c-3.0-r0", task="do_install", start=base - 120)
 
-    # Group is [breadcrumb, build_progress, table] in the BUILD phase with tasks.
+    # Group is [header, build_progress, table] in the BUILD phase with tasks.
     inner = ui.make_renderable().renderables
     assert len(inner) == 3
-    assert isinstance(inner[0], Text)
+    assert isinstance(inner[0], Table)
     assert inner[1] is ui._build_progress
 
 
@@ -211,10 +220,10 @@ def test_make_renderable_build_with_tasks() -> None:
 def test_make_renderable_build_empty_running() -> None:
     ui = BuildUIState()
     ui.process_line("NOTE: Running task 1200 of 9005 (/x.bb:do_compile)")
-    # No running tasks: Group is [breadcrumb, build_progress].
+    # No running tasks: Group is [header, build_progress].
     inner = ui.make_renderable().renderables
     assert len(inner) == 2
-    assert isinstance(inner[0], Text)
+    assert isinstance(inner[0], Table)
     assert inner[1] is ui._build_progress
 
 
@@ -301,10 +310,53 @@ def test_stuck_color_estimated_bypasses_count_guard() -> None:
 @pytest.mark.unit
 def test_global_timer_is_continuous_across_transition() -> None:
     ui = BuildUIState()
-    # The global timer is the build task's elapsed column, started at
-    # construction. Its start_time must not be reset across the parse->build
-    # transition, so it spans parse + build.
-    start_time = ui._build_progress.tasks[0].start_time
+    # The global timer derives from one immutable stamp on the header, so it
+    # cannot reset across the parse->build transition.
+    stamp = ui._start_monotonic
     ui.process_line("Parsing recipes:  80% || ETA:  0:00:05")
     ui.process_line("NOTE: Running task 5 of 9005 (/x.bb:do_compile)")
-    assert ui._build_progress.tasks[0].start_time == start_time
+    assert ui._start_monotonic == stamp
+
+
+@pytest.mark.unit
+def test_estimate_renders_in_own_column_single_line() -> None:
+    from rich.console import Console
+
+    ui = BuildUIState()
+    ui._phase = _Phase.BUILD
+    ui._running["glibc-2.39-r0:do_compile"] = _RunTask(
+        pf="glibc-2.39-r0", task="do_compile", start=time.monotonic() - 272, estimated=235.0
+    )
+    con = Console(width=100, force_terminal=False)
+    with con.capture() as cap:
+        con.print(ui.make_renderable())
+    lines = [ln for ln in cap.get().splitlines() if "glibc-2.39-r0" in ln]
+    # One row per task: the estimate must share the task's single line, not
+    # wrap the elapsed cell onto extra lines (the width=8 overflow regression).
+    assert len(lines) == 1
+    assert "4m32s" in lines[0]
+    assert "est 3m55s" in lines[0]
+
+
+@pytest.mark.unit
+def test_task_table_capped_with_overflow_line() -> None:
+    from rich.console import Console
+
+    ui = BuildUIState()
+    ui._phase = _Phase.BUILD
+    base = time.monotonic()
+    for i in range(20):
+        ui._running[f"pkg-{i:02d}:do_compile"] = _RunTask(
+            pf=f"pkg-{i:02d}-1.0-r0", task="do_compile", start=base - (i + 1)
+        )
+    con = Console(width=110, force_terminal=False)
+    with con.capture() as cap:
+        con.print(ui.make_renderable())
+    out = cap.get()
+    rows = [ln for ln in out.splitlines() if "-1.0-r0" in ln]
+    # 20 running tasks render at most _MAX_TASK_ROWS rows plus an overflow line.
+    assert len(rows) == 16
+    assert "+4 more running" in out
+    # Longest-elapsed first: pkg-19 (oldest start) visible, pkg-00 dropped.
+    assert "pkg-19-1.0-r0" in out
+    assert "pkg-00-1.0-r0" not in out

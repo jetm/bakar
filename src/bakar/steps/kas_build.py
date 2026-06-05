@@ -827,7 +827,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
     # its warn/error counts even if _run_pty_with_ui raises before returning.
     ui = BuildUIState(
         start_monotonic=log.start_monotonic,
-        logfile_translator=lambda p: _translate_container_path(p, cfg.bsp_root),
+        logfile_translator=(None if cfg.host_mode else lambda p: _translate_container_path(p, cfg.bsp_root)),
     )
     terminated = False
     rc: int | None = None
@@ -896,7 +896,7 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
 
     ui = BuildUIState(
         start_monotonic=log.start_monotonic,
-        logfile_translator=lambda p: _translate_container_path(p, cfg.bsp_root),
+        logfile_translator=(None if cfg.host_mode else lambda p: _translate_container_path(p, cfg.bsp_root)),
     )
     state: dict[str, float | int] = {
         "last_event_ts": time.monotonic(),

@@ -433,31 +433,51 @@ def test_parse_completed_cache_note() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _header_text(ui: BuildUIState) -> str:
+    from rich.console import Console
+
+    con = Console(width=110, force_terminal=False)
+    with con.capture() as cap:
+        con.print(ui._render_breadcrumb())
+    return cap.get()
+
+
 @pytest.mark.unit
 def test_breadcrumb_advances_with_phase() -> None:
     ui = BuildUIState()
-    # SETUP: parse is the current (highlighted) segment.
+    # SETUP: parse is active (no check yet), setscene/build are future dots.
     assert ui._phase is _Phase.SETUP
-    assert "⟳ parse" in ui._render_breadcrumb().plain
+    out = _header_text(ui)
+    assert "✓" not in out
+    assert "· setscene" in out
+    assert "· build" in out
 
-    # A setscene task moves the current marker to setscene.
+    # A setscene task completes parse and moves the active marker to setscene.
     scene = _EventStub()
     scene.taskname = "do_fetch_setscene"
     scene.taskfile = "/path/to/glibc.bb"
     ui.process_event(_EVT_SCENE_TASK_STARTED, scene)
-    assert "⟳ setscene" in ui._render_breadcrumb().plain
+    out = _header_text(ui)
+    assert "✓ parse" in out
+    assert "· build" in out
 
-    # A real runqueue task moves the current marker to build.
+    # A real runqueue task moves the active marker to build.
     ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, _runqueue_stub({"total": 450}))
-    assert "⟳ build" in ui._render_breadcrumb().plain
+    out = _header_text(ui)
+    assert "✓ parse" in out
+    assert "✓ setscene" in out
+    assert "✓ build" not in out
 
 
 # ---------------------------------------------------------------------------
-# Setup timer backdate -- start_monotonic backdates the setup bar's start_time
+# Global timer -- start_monotonic seeds the pipeline-header wall clock
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-def test_setup_timer_backdated_to_start_monotonic() -> None:
-    ui = BuildUIState(start_monotonic=12345.0)
-    assert ui._setup_progress.tasks[0].start_time == 12345.0
+def test_header_timer_seeded_from_start_monotonic() -> None:
+    import time as _time
+
+    ui = BuildUIState(start_monotonic=_time.monotonic() - 154.0)
+    out = _header_text(ui)
+    assert "2m34s" in out
