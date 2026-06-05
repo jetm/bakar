@@ -8,6 +8,7 @@ container Python 3.13.x and 3.14.x, the PASS path on 3.12 and earlier
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import subprocess
 from pathlib import Path
@@ -1187,3 +1188,78 @@ def test_check_hashserv_in_shared_not_in_docker() -> None:
 
     assert check_hashserv in SHARED_CHECKS
     assert check_hashserv not in _DOCKER_CHECKS
+
+
+_TUNING_LINES = """\
+BB_NUMBER_THREADS = "${@os.environ.get('NPROC', '16')}"
+PARALLEL_MAKE = "-j ${@os.environ.get('NPROC', '16')}"
+BB_NUMBER_PARSE_THREADS = "${@os.environ.get('NPROC', '16')}"
+"""
+
+
+class TestCheckNproc:
+    def _cfg_with_local_conf(self, tmp_path: Path, content: str | None) -> BuildConfig:
+        cfg = dataclasses.replace(_cfg(), workspace=tmp_path)
+        if content is not None:
+            conf_dir = tmp_path / "ti" / "build" / "conf"
+            conf_dir.mkdir(parents=True)
+            (conf_dir / "local.conf").write_text(content)
+        return cfg
+
+    def test_env_value_reports_derived_thread_settings(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from bakar.diagnostics import check_nproc
+
+        monkeypatch.setenv("NPROC", "33")
+        result = check_nproc(self._cfg_with_local_conf(tmp_path, None))
+        assert result.status is Status.PASS
+        assert result.severity is Severity.INFO
+        assert "NPROC=33 (from environment)" in result.message
+        assert "33 bitbake tasks, 33 parse threads, make -j 33" in result.message
+
+    def test_auto_detected_reports_cpu_count(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from bakar.diagnostics import check_nproc
+
+        monkeypatch.delenv("NPROC", raising=False)
+        monkeypatch.setattr("bakar.diagnostics.os.cpu_count", lambda: 8)
+        result = check_nproc(self._cfg_with_local_conf(tmp_path, None))
+        assert "NPROC=8 (auto-detected; override with $NPROC)" in result.message
+        assert "8 bitbake tasks, 8 parse threads, make -j 8" in result.message
+
+    def test_user_override_after_tuning_section_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from bakar.diagnostics import check_nproc
+
+        monkeypatch.setenv("NPROC", "33")
+        conf = _TUNING_LINES + 'BB_NUMBER_THREADS = "8"\nPARALLEL_MAKE = "-j 4"\n'
+        result = check_nproc(self._cfg_with_local_conf(tmp_path, conf))
+        assert "8 (local.conf override) bitbake tasks" in result.message
+        assert "33 parse threads" in result.message
+        assert "make -j 4 (local.conf override)" in result.message
+
+    def test_user_assignment_before_tuning_section_is_not_reported(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from bakar.diagnostics import check_nproc
+
+        monkeypatch.setenv("NPROC", "33")
+        conf = 'BB_NUMBER_THREADS = "8"\n' + _TUNING_LINES
+        result = check_nproc(self._cfg_with_local_conf(tmp_path, conf))
+        assert "override" not in result.message
+        assert "33 bitbake tasks, 33 parse threads, make -j 33" in result.message
+
+    def test_weak_and_append_operators_are_not_overrides(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from bakar.diagnostics import check_nproc
+
+        monkeypatch.setenv("NPROC", "33")
+        conf = _TUNING_LINES + 'BB_NUMBER_THREADS ?= "8"\nPARALLEL_MAKE += "-l 50"\n'
+        result = check_nproc(self._cfg_with_local_conf(tmp_path, conf))
+        assert "override" not in result.message
+
+    def test_commented_assignment_is_not_an_override(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from bakar.diagnostics import check_nproc
+
+        monkeypatch.setenv("NPROC", "33")
+        conf = _TUNING_LINES + '# BB_NUMBER_THREADS = "8"\n'
+        result = check_nproc(self._cfg_with_local_conf(tmp_path, conf))
+        assert "override" not in result.message

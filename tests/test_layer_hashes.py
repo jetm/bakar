@@ -149,7 +149,7 @@ def test_rev_parse_failure_omits_repo(tmp_path: Path) -> None:
 
 
 def test_empty_branch_yields_empty_branch_field(tmp_path: Path) -> None:
-    """A detached-HEAD repo (empty branch --show-current) gets an empty branch."""
+    """Detached HEAD with no containing remote branch gets an empty branch field."""
     cfg = _nxp_cfg(tmp_path)
     _write_bblayers(cfg, ["poky"])
     _make_source_dirs(cfg, ["poky"])
@@ -157,7 +157,9 @@ def test_empty_branch_yields_empty_branch_field(tmp_path: Path) -> None:
     def fake_run(argv, **kwargs):
         if "rev-parse" in argv:
             return _Completed(0, "deadbee\n")
-        return _Completed(0, "\n")  # detached HEAD: no current branch
+        if "name-rev" in argv:
+            return _Completed(0, "undefined\n")  # no remote branch found
+        return _Completed(0, "\n")  # branch --show-current: detached HEAD
 
     with patch("bakar.layers.subprocess.run", side_effect=fake_run):
         result = collect_layer_hashes(cfg)

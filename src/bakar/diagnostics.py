@@ -604,13 +604,73 @@ def check_forks_ti_u_boot(cfg: BuildConfig) -> CheckResult:
     return _ok("forks-ti-u-boot", Severity.INFO, "present (PREMIRROR will use it)")
 
 
+# Bitbake thread knobs the tuning overlay derives from NPROC. A user
+# local_conf_header section can re-assign them; _thread_var_overrides
+# detects when such an assignment wins over the overlay's NPROC line.
+_THREAD_VAR_RE = re.compile(
+    r"^\s*(BB_NUMBER_THREADS|BB_NUMBER_PARSE_THREADS|PARALLEL_MAKE)\s*(\?\?=|\?=|:=|\+=|\.=|=)\s*(.*?)\s*$",
+    re.MULTILINE,
+)
+
+
+def _thread_var_overrides(local_conf: Path) -> dict[str, str]:
+    """Return ``{var: value}`` for thread vars whose winning assignment ignores NPROC.
+
+    kas merges every ``local_conf_header`` section (user yaml and bakar
+    tuning overlay alike) into ``local.conf``, so scanning that file with
+    last-assignment-wins semantics resolves section ordering empirically
+    instead of guessing kas merge order. The tuning overlay's own lines
+    derive from NPROC (``${@os.environ.get('NPROC', ...)}``); when the
+    last assignment of a variable still references NPROC, the overlay
+    won and there is no override to report.
+
+    Weak (``?=``/``??=``) and append (``+=``/``.=``) operators are skipped:
+    a weak assignment never beats the overlay's plain ``=`` regardless of
+    position, and appends to a thread count are malformed config rather
+    than a deliberate override. Returns ``{}`` when ``local.conf`` does
+    not exist yet (pre-first-build).
+    """
+    try:
+        text = local_conf.read_text()
+    except OSError:
+        return {}
+    non_comment = "\n".join(line for line in text.splitlines() if not re.match(r"^\s*#", line))
+    winners: dict[str, str] = {}
+    for m in _THREAD_VAR_RE.finditer(non_comment):
+        var, op, value = m.group(1), m.group(2), m.group(3)
+        if op not in ("=", ":="):
+            continue
+        winners[var] = value.strip().strip('"').strip("'")
+    return {var: value for var, value in winners.items() if "NPROC" not in value and not value.startswith("${@")}
+
+
 def check_nproc(cfg: BuildConfig) -> CheckResult:
-    """Report the NPROC value that will drive BB_NUMBER_THREADS / PARALLEL_MAKE."""
+    """Report the NPROC value and the bitbake thread settings it drives.
+
+    The tuning overlay maps NPROC to BB_NUMBER_THREADS, PARALLEL_MAKE,
+    and BB_NUMBER_PARSE_THREADS (overlays/bakar-tuning-*.yml), and
+    ``_build_env`` always exports NPROC to the build, so the derived
+    values shown here are what bitbake will actually use - unless a user
+    conf section re-assigns one of the knobs after the tuning section,
+    in which case the overriding value is shown with a marker.
+    """
     env_val = os.environ.get("NPROC")
     if env_val:
-        return _ok("nproc", Severity.INFO, f"NPROC={env_val} (from environment)")
-    detected = os.cpu_count() or 16
-    return _ok("nproc", Severity.INFO, f"NPROC={detected} (auto-detected; override with $NPROC)")
+        nproc, source = env_val, "from environment"
+    else:
+        nproc, source = str(os.cpu_count() or 16), "auto-detected; override with $NPROC"
+    overrides = _thread_var_overrides(cfg.bsp_root / "build" / "conf" / "local.conf")
+
+    def knob(var: str, default: str) -> str:
+        if var in overrides:
+            return f"{overrides[var]} (local.conf override)"
+        return default
+
+    tasks = knob("BB_NUMBER_THREADS", nproc)
+    parse = knob("BB_NUMBER_PARSE_THREADS", nproc)
+    make = knob("PARALLEL_MAKE", f"-j {nproc}")
+    threads = f"{tasks} bitbake tasks, {parse} parse threads, make {make}"
+    return _ok("nproc", Severity.INFO, f"NPROC={nproc} ({source}) -> {threads}")
 
 
 def check_bitbake_locks(cfg: BuildConfig) -> CheckResult:

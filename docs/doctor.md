@@ -38,6 +38,7 @@ Checks cover:
 - Container runtime (Docker daemon version >= 20.10, storage driver, kas-container image present)
 - Host tools (`repo`, `kas-container`, `git`, global git identity)
 - Disk space (build root partition, ccache fill ratio)
+- CPU threads (resolved `NPROC` and the bitbake settings it drives: task threads, parse threads, `make -j`; flags `local.conf` assignments that override the NPROC-derived values)
 - Workspace filesystem (rejects vfat/exfat/ntfs/9p/nfs; sstate hardlinks need a local fs)
 - Kernel sysctls (`fs.inotify.max_user_instances`, `fs.inotify.max_user_watches`)
 - Kas YAML syntax (`kas dump` parse check)
