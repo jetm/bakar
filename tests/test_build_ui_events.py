@@ -449,8 +449,8 @@ def test_breadcrumb_advances_with_phase() -> None:
     assert ui._phase is _Phase.SETUP
     out = _header_text(ui)
     assert "✓" not in out
-    assert "· setscene" in out
-    assert "· build" in out
+    assert "○ setscene" in out
+    assert "○ tasks" in out
 
     # A setscene task completes parse and moves the active marker to setscene.
     scene = _EventStub()
@@ -459,14 +459,14 @@ def test_breadcrumb_advances_with_phase() -> None:
     ui.process_event(_EVT_SCENE_TASK_STARTED, scene)
     out = _header_text(ui)
     assert "✓ parse" in out
-    assert "· build" in out
+    assert "○ tasks" in out
 
     # A real runqueue task moves the active marker to build.
     ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, _runqueue_stub({"total": 450}))
     out = _header_text(ui)
     assert "✓ parse" in out
     assert "✓ setscene" in out
-    assert "✓ build" not in out
+    assert "✓ tasks" not in out
 
 
 # ---------------------------------------------------------------------------

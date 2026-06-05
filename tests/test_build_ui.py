@@ -319,23 +319,25 @@ def test_global_timer_is_continuous_across_transition() -> None:
 
 
 @pytest.mark.unit
-def test_estimate_renders_in_own_column_single_line() -> None:
+def test_estimate_never_rendered_but_colors_stuck_tasks() -> None:
     from rich.console import Console
 
     ui = BuildUIState()
     ui._phase = _Phase.BUILD
+    # 540s elapsed vs 235s baseline (>2x) -> stuck coloring fires from the
+    # baseline even with a single running task (median guard bypassed).
     ui._running["glibc-2.39-r0:do_compile"] = _RunTask(
-        pf="glibc-2.39-r0", task="do_compile", start=time.monotonic() - 272, estimated=235.0
+        pf="glibc-2.39-r0", task="do_compile", start=time.monotonic() - 540, estimated=235.0
     )
     con = Console(width=100, force_terminal=False)
     with con.capture() as cap:
         con.print(ui.make_renderable())
     lines = [ln for ln in cap.get().splitlines() if "glibc-2.39-r0" in ln]
-    # One row per task: the estimate must share the task's single line, not
-    # wrap the elapsed cell onto extra lines (the width=8 overflow regression).
+    # One row per task; the noisy per-row estimate is deliberately not shown -
+    # the baseline only feeds the stuck-task coloring.
     assert len(lines) == 1
-    assert "4m32s" in lines[0]
-    assert "est 3m55s" in lines[0]
+    assert "9m00s" in lines[0]
+    assert "est" not in lines[0]
 
 
 @pytest.mark.unit

@@ -549,10 +549,10 @@ class BuildUIState:
     def _render_breadcrumb(self) -> Text:
         """Render the pipeline header: phase segments, then the global timer.
 
-        ``✓ parse ── ⠹ setscene ── · build   󰦗 12m34s``
+        ``✓ parse ── ⠹ setscene ── ○ tasks   󰦗 12m34s``
 
         Completed segments show a green check, the active segment carries the
-        animated spinner in bold cyan, future segments are dim dots. The
+        animated spinner in bold cyan, queued segments a hollow circle. The
         timer follows the build segment directly, separated by its icon; it
         is the global wall clock counting from bakar start
         (``_start_monotonic``), so it spans doctor, sync, parse, and build
@@ -565,7 +565,7 @@ class BuildUIState:
         spin = _SPINNER[self._frame % len(_SPINNER)]
         current = ("bold cyan", f"{spin} ")
         done = ("green", "✓ ")
-        future = ("grey42", "· ")
+        future = ("grey42", "○ ")
 
         if phase is _Phase.SETUP:
             parse, setscene, build = current, future, future
@@ -575,12 +575,16 @@ class BuildUIState:
             parse, setscene, build = done, done, current
 
         elapsed = _fmt_stall(int(time.monotonic() - self._start_monotonic))
+        # The third segment is "tasks", not "build": the whole pipeline is the
+        # build; this phase is the run queue executing the real (non-setscene)
+        # tasks - compile, install, package, image assembly - matching the
+        # bar's own "N/M tasks" vocabulary.
         return Text.assemble(
             (f"{parse[1]}parse", parse[0]),
             ("  ──  ", "grey30"),
             (f"{setscene[1]}setscene", setscene[0]),
             ("  ──  ", "grey30"),
-            (f"{build[1]}build", build[0]),
+            (f"{build[1]}tasks", build[0]),
             (f"   {_ICON_TIMER} {elapsed}", "dim"),
         )
 
@@ -637,29 +641,30 @@ class BuildUIState:
             # rows that matter (slow / possibly stuck) always stay visible.
             overflow = len(tasks) - _MAX_TASK_ROWS
             visible = tasks[:_MAX_TASK_ROWS] if overflow > 0 else tasks
+            # Auto-width columns: Rich sizes each to its longest visible cell,
+            # so elapsed hugs the task name instead of sitting across a wide
+            # fixed column. The historical estimate is deliberately NOT
+            # rendered per row - the prediction is too noisy to be useful as
+            # a number; it feeds the stuck-task coloring instead.
             table = Table(box=None, show_header=False, padding=(0, 1))
             table.add_column(width=1)  # spinner
             table.add_column(width=1)  # icon
             table.add_column(no_wrap=True, max_width=34)  # pf
-            table.add_column(width=24)  # task
-            table.add_column(justify="right", width=8)  # elapsed
-            # Estimated duration gets its own column: appended to the elapsed
-            # cell it overflows the fixed width=8 and Rich wraps every row.
-            table.add_column(justify="right", width=10)  # est (baseline)
+            table.add_column()  # task
+            table.add_column()  # elapsed
             for i, t in enumerate(visible):
                 elapsed = now - t.start
                 icon, color = _task_style(t.task)
                 spin = _SPINNER[(self._frame + i) % len(_SPINNER)]
                 stuck = _stuck_color(elapsed, median, len(tasks), estimated=t.estimated)
                 name = t.task.removeprefix("do_").removesuffix("_setscene")
-                est_cell = Text(f"est {_fmt_stall(int(t.estimated))}" if t.estimated is not None else "", style="dim")
+                elapsed_cell = Text(_fmt_stall(int(elapsed)), style=stuck or "dim")
                 table.add_row(
                     Text(spin, style=color),
                     Text(icon, style=color),
                     Text(t.pf, style=stuck or "default"),
                     Text(name, style=color),
-                    Text(_fmt_stall(int(elapsed)), style=stuck or "dim"),
-                    est_cell,
+                    elapsed_cell,
                 )
             parts.append(table)
             if overflow > 0:
