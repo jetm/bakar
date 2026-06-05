@@ -55,16 +55,21 @@ def psi_recommendation(peaks: dict[str, float]) -> dict[str, int]:
 def plan_autocalibration(peaks: dict[str, float], current: dict[str, float | None]) -> dict[str, int]:
     """Decide which ``pressure_max_*`` values to write after a build.
 
-    Throttle-aware so repeated builds converge instead of creeping toward the
-    clamp:
+    Ratchet-up-only: the thresholds approximate machine tolerance, which does
+    not shrink when a particular build happens to be light (sstate-cached
+    rebuilds, small BSPs sharing the global config). Lowering on such a build
+    would over-throttle the next cold build - and the throttle then caps the
+    very peaks that could correct the value, so a lowered threshold sticks.
 
     - Skip a dimension with no measured pressure (peak <= 0): nothing to learn.
     - Write the recommendation when the threshold is unset (bootstrap).
-    - Otherwise write only when the build was NOT throttled on that dimension
-      (the peak stayed below the configured threshold, so it reflects real
-      demand rather than the ceiling) and the recommendation actually changes.
-      When the peak reached the threshold the build was throttled there, so the
-      measurement is circular and the current value is kept.
+    - Raise when the build was NOT throttled on that dimension (the peak
+      stayed below the configured ceiling, so it reflects real demand rather
+      than the ceiling) and the recommendation exceeds the current value.
+      A throttled build's measurement is circular and is never learned from.
+    - Never lower. To recalibrate from scratch (e.g. after a hardware
+      change), delete the pressure_max_* keys from config.toml; the next
+      build re-bootstraps them.
     """
     rec = psi_recommendation(peaks)
     plan: dict[str, int] = {}
@@ -72,9 +77,7 @@ def plan_autocalibration(peaks: dict[str, float], current: dict[str, float | Non
         if peak <= 0:
             continue
         cur = current.get(dim)
-        # Bootstrap when unset; otherwise only learn from an unthrottled build
-        # (peak below the configured ceiling) whose recommendation differs.
-        if cur is None or (peak < cur and rec[dim] != int(cur)):
+        if cur is None or (peak < cur and rec[dim] > cur):
             plan[dim] = rec[dim]
     return plan
 

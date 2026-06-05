@@ -70,15 +70,21 @@ def test_plan_skips_zero_peak() -> None:
     assert plan_autocalibration({"cpu": 0.0}, {"cpu": None}) == {}
 
 
-def test_plan_updates_unthrottled_skips_throttled() -> None:
-    # cpu: peak 40 < threshold 50 -> not throttled -> update.
-    # io:  peak 60 >= threshold 55 -> throttled -> keep current.
-    plan = plan_autocalibration({"cpu": 40.0, "io": 60.0}, {"cpu": 50.0, "io": 55.0})
-    assert "cpu" in plan
-    assert "io" not in plan
+def test_plan_raises_unthrottled_skips_throttled() -> None:
+    # cpu: peak 45 < threshold 50, rec 54 > 50 -> raise.
+    # io:  peak 60 >= threshold 55 -> throttled (peak capped by the
+    #      ceiling itself) -> keep current.
+    plan = plan_autocalibration({"cpu": 45.0, "io": 60.0}, {"cpu": 50.0, "io": 55.0})
+    assert plan == {"cpu": 54}
 
 
-def test_plan_skips_when_recommendation_unchanged() -> None:
+def test_plan_never_lowers_threshold() -> None:
+    # A cached/light build peaks far below the ceiling (rec 12 < cur 80).
+    # Lowering would over-throttle the next cold build -> keep current.
+    assert plan_autocalibration({"cpu": 10.0}, {"cpu": 80.0}) == {}
+
+
+def test_plan_skips_when_recommendation_not_higher() -> None:
     # peak 40 -> rec 48; current already 48 and unthrottled (40 < 48) -> no change.
     assert plan_autocalibration({"cpu": 40.0}, {"cpu": 48.0}) == {}
 

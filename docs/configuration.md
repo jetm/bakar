@@ -78,9 +78,11 @@ pressure_max_memory = 20
 
 # Auto-calibrate the PSI thresholds: when true, `bakar build` samples
 # /proc/pressure during the build and writes the recommended pressure_max_*
-# back here afterwards, reporting what changed. The first (unthrottled)
-# build bootstraps the values; later builds only re-tune a dimension that
-# was not throttled, so values converge instead of creeping toward the clamp.
+# back here afterwards, reporting what changed. The first build bootstraps
+# the values; later builds only raise a threshold (from an unthrottled
+# measurement), never lower it - a light sstate-cached build must not
+# over-throttle the next cold one. To recalibrate from scratch (e.g. after
+# a hardware change), delete the pressure_max_* lines above.
 psi_autocalibrate = true
 
 # Persistent hash equivalence daemon (off by default; see hashserv.md).

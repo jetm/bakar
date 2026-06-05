@@ -80,10 +80,11 @@ corrupt sstate hashes.
 Set `psi_autocalibrate = true` under `[build]` in
 `~/.config/bakar/config.toml`. `bakar build` then samples `/proc/pressure`
 during every build and writes the recommended `pressure_max_*` back to the
-config afterwards, reporting what changed. The first (unthrottled) build
-bootstraps the values; later builds only re-tune a dimension that was not
-throttled, so the thresholds converge. See
-[configuration.md](configuration.md).
+config afterwards, reporting what changed. The first build bootstraps the
+values; later builds only raise a threshold (from an unthrottled
+measurement), never lower it, so a light sstate-cached build cannot
+over-throttle the next cold one. Delete the `pressure_max_*` keys to
+recalibrate from scratch. See [configuration.md](configuration.md).
 
 ## Exit codes
 
