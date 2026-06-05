@@ -392,7 +392,8 @@ class BuildUIState:
 
         if class_name == _EVT_TASK_STARTED:
             recipe, taskname = _task_key(event)
-            mean = self._task_baselines.get(taskname, (None, None))[0]
+            baseline = task_timings.baseline_key(recipe or "", taskname)
+            mean = self._task_baselines.get(baseline, (None, None))[0]
             with self._lock:
                 self._running[f"{recipe}:{taskname}"] = _RunTask(
                     pf=recipe,

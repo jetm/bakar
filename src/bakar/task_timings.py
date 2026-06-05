@@ -19,23 +19,46 @@ from __future__ import annotations
 import fcntl
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
 DEFAULT_TIMINGS_PATH = Path.home() / ".local/state/bakar/task-timings.json"
 
-SCHEMA_VERSION = 1
+# v2: baselines keyed by "<recipe>:<task>" instead of the bare task name. A
+# bare-task mean blended a 4-hour webkit do_compile with a 3-second one, so
+# the prediction rarely matched the row it annotated. Older-version files are
+# discarded on read (the data is cheap to re-accumulate).
+SCHEMA_VERSION = 2
+
+# Strips the "-<version>-r<rev>" (or bare "-<version>") suffix from a PF like
+# "glibc-2.39-r0" so the baseline key survives recipe version bumps.
+_PF_VERSION_RE = re.compile(r"-\d[^-]*(?:-r\d+)?$")
+
+
+def baseline_key(recipe: str, task: str) -> str:
+    """Return the stable baseline key ``"<recipe-sans-version>:<task>"``.
+
+    ``recipe`` is the PF (``glibc-2.39-r0``); the version/revision suffix is
+    stripped so a version bump keeps the history (``glibc:do_compile``). A PF
+    that does not match the version pattern is used verbatim, which keeps the
+    key deterministic on both the write (``update_from_events``) and lookup
+    (``BuildUIState``) sides.
+    """
+    pn = _PF_VERSION_RE.sub("", recipe) if recipe else ""
+    return f"{pn or recipe}:{task}"
 
 
 def load_baselines(path: Path | None = None) -> dict[str, tuple[float, float]]:
-    """Load the timings file and return ``{taskname: (mean, stddev)}``.
+    """Load the timings file and return ``{"recipe:task": (mean, stddev)}``.
 
     ``stddev`` is the sample standard deviation derived from Welford's
     accumulated ``m2`` and ``count``: ``sqrt(m2 / (count - 1))`` when
     ``count > 1``, else ``0.0``.
 
     Returns ``{}`` on any error (missing file, malformed JSON, missing keys)
-    so callers never need to guard the read.
+    or when the file carries a different ``schema_version``, so callers never
+    need to guard the read.
     """
     timings_path = path if path is not None else DEFAULT_TIMINGS_PATH
     try:
@@ -44,7 +67,7 @@ def load_baselines(path: Path | None = None) -> dict[str, tuple[float, float]]:
     except OSError, ValueError:
         return {}
 
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or data.get("schema_version") != SCHEMA_VERSION:
         return {}
     tasks = data.get("tasks")
     if not isinstance(tasks, dict):
@@ -97,10 +120,11 @@ def update_from_events(events_json: Path, timings_path: Path) -> None:
     """Fold per-task durations from a normalized events artifact into the file.
 
     Reads ``events_json`` (the ``bitbake-events.json`` schema: a top-level
-    ``tasks`` list whose entries carry ``task``, ``started`` and ``completed``
-    epoch-second timestamps). For each task with both timestamps present and a
-    non-negative duration, updates the baseline keyed by the bare ``task`` name
-    via :func:`_welford_update`.
+    ``tasks`` list whose entries carry ``recipe``, ``task``, ``started`` and
+    ``completed`` epoch-second timestamps). For each task with both timestamps
+    present and a non-negative duration, updates the baseline keyed by
+    :func:`baseline_key` (``"<recipe-sans-version>:<task>"``) via
+    :func:`_welford_update`.
 
     The timings file is updated under an exclusive ``flock`` so concurrent
     bakar processes cannot corrupt it. The parent directory is created if
@@ -123,6 +147,7 @@ def update_from_events(events_json: Path, timings_path: Path) -> None:
         if not isinstance(row, dict):
             continue
         name = row.get("task")
+        recipe = row.get("recipe")
         started = row.get("started")
         completed = row.get("completed")
         if not isinstance(name, str) or started is None or completed is None:
@@ -133,7 +158,7 @@ def update_from_events(events_json: Path, timings_path: Path) -> None:
             continue
         if duration < 0:
             continue
-        durations.append((name, duration))
+        durations.append((baseline_key(recipe if isinstance(recipe, str) else "", name), duration))
 
     if not durations:
         return
@@ -158,13 +183,14 @@ def update_from_events(events_json: Path, timings_path: Path) -> None:
             data: Any = json.loads(raw) if raw.strip() else None
         except ValueError:
             data = None
-        if not isinstance(data, dict):
+        # A different schema_version (e.g. v1 bare-task keys) is discarded
+        # wholesale: the keying changed, and re-accumulating is cheap.
+        if not isinstance(data, dict) or data.get("schema_version") != SCHEMA_VERSION:
             data = {"schema_version": SCHEMA_VERSION, "tasks": {}}
         tasks = data.get("tasks")
         if not isinstance(tasks, dict):
             tasks = {}
             data["tasks"] = tasks
-        data.setdefault("schema_version", SCHEMA_VERSION)
 
         for name, duration in durations:
             entry = tasks.get(name)
