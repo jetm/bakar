@@ -254,12 +254,13 @@ def test_severity_passthrough_while_event_driven() -> None:
 @pytest.mark.unit
 def test_setscene_line_rendered_when_covered() -> None:
     ui = BuildUIState()
-    e = _runqueue_stub({"total": 450, "setscene_covered": 300, "setscene_total": 320})
+    e = _runqueue_stub({"total": 450, "setscene_covered": 300, "setscene_total": 320, "setscene_notcovered": 20})
     ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, e)
     assert ui._phase is _Phase.BUILD
 
     texts = [r for r in ui.make_renderable().renderables if hasattr(r, "plain")]
-    assert any("sstate cache" in r.plain for r in texts)
+    # Rendered as a ratio: pct = int(300 / 320 * 100) = 93.
+    assert any("93% sstate (300 cached, 20 will build)" in r.plain for r in texts)
 
 
 @pytest.mark.unit

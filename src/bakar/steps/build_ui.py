@@ -205,6 +205,7 @@ class BuildUIState:
         # "from sstate cache" line only when _setscene_total > 0.
         self._setscene_covered = 0
         self._setscene_total = 0
+        self._setscene_notcovered = 0
         # Flipped True on the first process_event call. Once set, process_line
         # stops mutating the progress model (the event feed owns it) but still
         # does fallback detection, severity passthrough, and warn/error counts.
@@ -424,6 +425,7 @@ class BuildUIState:
             self._phase = _Phase.BUILD
             self._setscene_covered = _stat(stats, "setscene_covered") or 0
             self._setscene_total = _stat(stats, "setscene_total") or 0
+            self._setscene_notcovered = _stat(stats, "setscene_notcovered") or 0
         total = _stat(stats, "total")
         completed = (_stat(stats, "completed") or 0) + (_stat(stats, "active") or 0)
         self._kind = "tasks"
@@ -454,6 +456,7 @@ class BuildUIState:
                 if stats is not None:
                     self._setscene_covered = _stat(stats, "setscene_covered") or 0
                     self._setscene_total = _stat(stats, "setscene_total") or 0
+                    self._setscene_notcovered = _stat(stats, "setscene_notcovered") or 0
             if stats is not None:
                 done = (_stat(stats, "setscene_covered") or 0) + (_stat(stats, "setscene_notcovered") or 0)
                 self._build_progress.update(
@@ -468,6 +471,7 @@ class BuildUIState:
                 if stats is not None:
                     self._setscene_covered = _stat(stats, "setscene_covered") or 0
                     self._setscene_total = _stat(stats, "setscene_total") or 0
+                    self._setscene_notcovered = _stat(stats, "setscene_notcovered") or 0
             if stats is not None:
                 done = (_stat(stats, "setscene_covered") or 0) + (_stat(stats, "setscene_notcovered") or 0)
                 self._build_progress.update(
@@ -516,6 +520,7 @@ class BuildUIState:
             phase = self._phase
             setscene_covered = self._setscene_covered
             setscene_total = self._setscene_total
+            setscene_notcovered = self._setscene_notcovered
             failures = list(self._failures)
             tasks = sorted(self._running.values(), key=lambda t: -(now - t.start))
 
@@ -527,7 +532,13 @@ class BuildUIState:
         # Setscene-reuse line, between the build bar and the per-task table.
         # Gated on setscene_total > 0 so the zero case leaves parts unchanged.
         if setscene_total > 0:
-            parts.append(Text(f" {setscene_covered}/{setscene_total} tasks from sstate cache", style="green"))
+            pct = int(setscene_covered / setscene_total * 100) if setscene_total > 0 else 0
+            parts.append(
+                Text(
+                    f" {pct}% sstate ({setscene_covered} cached, {setscene_notcovered} will build)",
+                    style="green",
+                )
+            )
 
         # Persistent failure summary during -k builds. Gated on a non-empty
         # failure list so the no-failure case leaves the render unchanged.
