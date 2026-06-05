@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-06-05
+
+### Added
+
+- Added a live streaming event reader that follows the growing build event log during a build, so the display receives authoritative bitbake events in real time rather than waiting for the build to finish.
+- Added per-task duration baselines stored in `~/.local/state/bakar/task-timings/` (scoped per workspace, machine, and build mode) that accumulate Welford online statistics across builds, giving the stuck-task detector a historical reference independent of the current run's median.
+- Added a parse-setscene-tasks breadcrumb header that shows which lifecycle phase the build is currently in, with completed phases marked by a check, the active phase highlighted, and future phases dimmed.
+- Added an ETA column to the build progress bar, populated from task-completion events and hidden until enough samples have been collected (below 5% completion the column shows blank rather than an unreliable estimate).
+- Added a log tail preview under each task failure: when a task fails, the last 15 lines of its build log are rendered dimmed below the failure summary.
+- Added a parse cache efficiency note to the parse-complete announcement, reporting the percentage of recipes loaded from cache and how many were re-parsed (e.g. "92% cached, 38 re-parsed") or explicit all-from-cache / cache-empty messages at the extremes.
+- Added real-time failure alerts that print above the live display during `--keep-going` builds as soon as each task failure is detected, including the recipe name, task name, and translated log path.
+
+### Changed
+
+- The live build display is now driven by decoded bitbake events (task counts, setscene reuse, parse progress) instead of regex-scraping the knotty terminal text, providing authoritative progress numbers across bitbake releases. The regex feed remains active as a fallback when no event log is available.
+- Layer hashes are now displayed as a table at the start of the build, as soon as `bblayers.conf` materialises, rather than after the build finishes. All build paths (manifest, BYO, bbsetup) and all layer-related commands (`sync`, `report`, `layers`) use the same table format.
+- The layer table now resolves a containing remote branch name for layers pinned at detached-HEAD commits, so rows show a meaningful branch rather than a blank field.
+- The setscene reuse line now renders as a percentage with a will-build count ("92% sstate (412 cached, 38 will build)") instead of a raw ratio, making remaining work visible at a glance.
+- Stuck-task highlighting now uses per-recipe historical baseline means (yellow past 2×, red past 4×) when available, and shows a drift timer on tasks that exceed 4× their reference. Without a baseline file the previous median-based path is unchanged.
+- Task-timing baselines are now keyed by `<recipe>:<task>` (version/revision suffix stripped) so different recipes never share a baseline, and a version bump retains its history. Files from the previous schema are discarded and re-accumulated in one build.
+- PSI pressure thresholds in `config.toml` are stored as percentages (0–100) and converted to bitbake's microseconds-per-second unit (0–1,000,000) at the environment boundary, correcting a mismatch where a calibrated value of 20 (percent) was passed to bitbake as 20 µs/s instead of 200,000 µs/s.
+- PSI autocalibration is now ratchet-up-only: thresholds are raised when an unthrottled build observes higher peaks, but never lowered. A light or heavily cached build no longer drops thresholds that were trained on a heavier workload. To recalibrate from scratch, delete the `pressure_max_*` keys.
+- The `nproc` doctor check now reports the derived `BB_NUMBER_THREADS`, `PARALLEL_MAKE`, and `BB_NUMBER_PARSE_THREADS` values alongside the raw `NPROC`, and notes any user overrides found in `local.conf`.
+- The global build timer is now rendered inline directly after the build pipeline segment (bold foreground) rather than right-aligned at the far terminal edge in a dim style.
+- Task table columns now grow to the widest cell seen during the run and never shrink, preventing columns from jumping left and right as recipes start and finish.
+- The "tasks" pipeline segment now appears only when real (non-setscene) tasks actually execute; fully sstate-cached builds end at "✓ parse ── ✓ setscene" without an unused queued segment.
+- The setup (parse) progress bar's elapsed clock is now backdated to the bakar start time, matching the build bar, so the parse-phase duration is no longer under-reported.
+- The layer list is now rendered as a headed table (Layer / Commit / Branch / Version columns) matching the style of the doctor pre-flight diagnosis table.
+
+### Removed
+
+- Removed the `--psi-calibrate` flag from the `doctor` command. The `[build] psi_autocalibrate` setting covers the same calibration automatically during every build and writes the converged values back to `config.toml`, making the interactive flag redundant.
+
 ## [0.14.0] - 2026-06-04
 
 ### Added
@@ -293,7 +326,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/jetm/bakar/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/jetm/bakar/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/jetm/bakar/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/jetm/bakar/compare/v0.11.0...v0.12.0
