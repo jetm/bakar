@@ -184,6 +184,7 @@ class BuildUIState:
         if start_monotonic is not None:
             # Backdate the timer to the start of the bakar run.
             self._build_progress.tasks[0].start_time = start_monotonic
+            self._setup_progress.tasks[0].start_time = start_monotonic
 
         self._phase = _Phase.SETUP
         self._stage = "starting"
