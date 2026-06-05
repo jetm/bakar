@@ -12,6 +12,7 @@ from __future__ import annotations
 import time
 
 import pytest
+from rich.text import Text
 
 from bakar.steps.build_ui import (
     BuildUIState,
@@ -46,8 +47,10 @@ def test_loading_cache_updates_setup_bar() -> None:
 def test_setup_phase_render_only_setup_bar() -> None:
     ui = BuildUIState()
     inner = ui.make_renderable().renderables
-    assert len(inner) == 1
-    assert inner[0] is ui._setup_progress
+    # The breadcrumb is always the first element; the setup bar follows.
+    assert len(inner) == 2
+    assert isinstance(inner[0], Text)
+    assert inner[1] is ui._setup_progress
 
 
 # ---------------------------------------------------------------------------
@@ -197,20 +200,22 @@ def test_make_renderable_build_with_tasks() -> None:
     ui._running["b:do_fetch"] = _RunTask(pf="pkg-b-2.0-r0", task="do_fetch", start=base - 60)
     ui._running["c:do_install"] = _RunTask(pf="pkg-c-3.0-r0", task="do_install", start=base - 120)
 
-    # Group is [build_progress, table] in the BUILD phase with tasks.
+    # Group is [breadcrumb, build_progress, table] in the BUILD phase with tasks.
     inner = ui.make_renderable().renderables
-    assert len(inner) == 2
-    assert inner[0] is ui._build_progress
+    assert len(inner) == 3
+    assert isinstance(inner[0], Text)
+    assert inner[1] is ui._build_progress
 
 
 @pytest.mark.unit
 def test_make_renderable_build_empty_running() -> None:
     ui = BuildUIState()
     ui.process_line("NOTE: Running task 1200 of 9005 (/x.bb:do_compile)")
-    # No running tasks: Group is just [build_progress].
+    # No running tasks: Group is [breadcrumb, build_progress].
     inner = ui.make_renderable().renderables
-    assert len(inner) == 1
-    assert inner[0] is ui._build_progress
+    assert len(inner) == 2
+    assert isinstance(inner[0], Text)
+    assert inner[1] is ui._build_progress
 
 
 @pytest.mark.unit

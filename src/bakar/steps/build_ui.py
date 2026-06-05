@@ -197,6 +197,7 @@ class BuildUIState:
             self._setup_progress.tasks[0].start_time = start_monotonic
 
         self._phase = _Phase.SETUP
+        self._build_sub_phase: str = "setscene"
         self._stage = "starting"
         self._kind = ""
         self._running: dict[str, _RunTask] = {}
@@ -423,6 +424,7 @@ class BuildUIState:
             return
         with self._lock:
             self._phase = _Phase.BUILD
+            self._build_sub_phase = "real_tasks"
             self._setscene_covered = _stat(stats, "setscene_covered") or 0
             self._setscene_total = _stat(stats, "setscene_total") or 0
             self._setscene_notcovered = _stat(stats, "setscene_notcovered") or 0
@@ -452,6 +454,7 @@ class BuildUIState:
         if class_name == _EVT_SCENE_TASK_STARTED:
             with self._lock:
                 self._phase = _Phase.BUILD
+                self._build_sub_phase = "setscene"
                 self._running[key] = _RunTask(pf=pf, task=taskname, start=time.monotonic())
                 if stats is not None:
                     self._setscene_covered = _stat(stats, "setscene_covered") or 0
@@ -508,6 +511,36 @@ class BuildUIState:
         global timer is the only liveness readout -- so this is a no-op.
         """
 
+    def _render_breadcrumb(self) -> Text:
+        """Render the parse -> setscene -> build phase breadcrumb.
+
+        Reflects the current macro phase and (in BUILD) the build sub-phase:
+        the active segment gets a spinner-arrow prefix and bold cyan, completed
+        segments get a check prefix and dim green, future segments are dim.
+        """
+        with self._lock:
+            phase = self._phase
+            sub_phase = self._build_sub_phase
+
+        current = ("bold cyan", "⟳ ")
+        done = ("dim green", "✓ ")
+        future = ("dim", "")
+
+        if phase is _Phase.SETUP:
+            parse, setscene, build = current, future, future
+        elif sub_phase == "setscene":
+            parse, setscene, build = done, current, future
+        else:  # BUILD, real_tasks
+            parse, setscene, build = done, done, current
+
+        return Text.assemble(
+            (f"{parse[1]}parse", parse[0]),
+            (" → ", "dim"),
+            (f"{setscene[1]}setscene", setscene[0]),
+            (" → ", "dim"),
+            (f"{build[1]}build", build[0]),
+        )
+
     def make_renderable(self) -> Group:
         """Build the renderable for the current frame.
 
@@ -525,9 +558,9 @@ class BuildUIState:
             tasks = sorted(self._running.values(), key=lambda t: -(now - t.start))
 
         if phase is _Phase.SETUP:
-            return Group(self._setup_progress)
+            return Group(self._render_breadcrumb(), self._setup_progress)
 
-        parts: list[RenderableType] = [self._build_progress]
+        parts: list[RenderableType] = [self._render_breadcrumb(), self._build_progress]
 
         # Setscene-reuse line, between the build bar and the per-task table.
         # Gated on setscene_total > 0 so the zero case leaves parts unchanged.
