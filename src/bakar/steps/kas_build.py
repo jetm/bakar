@@ -51,7 +51,7 @@ from bakar.eventlog import tail_events
 from bakar.kas import KasGenOptions, write_yaml
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
 from bakar.steps.build_ui import BuildUIState
-from bakar.triage import write_error_report
+from bakar.triage import _translate_container_path, write_error_report
 
 if TYPE_CHECKING:
     from bakar.bsp_model import BspModel
@@ -634,6 +634,8 @@ def _run_pty_with_ui(
                 info = ui.take_pending_log()
                 if info:
                     log.info(info)
+                for alert in ui.take_pending_alerts():
+                    live.console.print(alert)
 
             def _pump() -> None:  # pragma: no cover
                 buf = b""
@@ -823,7 +825,10 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
     log.info(f"exec: {' '.join(cmd)}")
     # ``ui`` is created before the try so the finally block can always read
     # its warn/error counts even if _run_pty_with_ui raises before returning.
-    ui = BuildUIState(start_monotonic=log.start_monotonic)
+    ui = BuildUIState(
+        start_monotonic=log.start_monotonic,
+        logfile_translator=lambda p: _translate_container_path(p, cfg.bsp_root),
+    )
     terminated = False
     rc: int | None = None
     try:
@@ -889,7 +894,10 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
     exe = "kas" if cfg.host_mode else "kas-container"
     cmd = [exe, *_ccache_args(cfg, eventlog_path=_container_eventlog_path(cfg, log)), "shell", kas_arg, "-c", command]
 
-    ui = BuildUIState(start_monotonic=log.start_monotonic)
+    ui = BuildUIState(
+        start_monotonic=log.start_monotonic,
+        logfile_translator=lambda p: _translate_container_path(p, cfg.bsp_root),
+    )
     state: dict[str, float | int] = {
         "last_event_ts": time.monotonic(),
         "cur_du_bytes": 0,
