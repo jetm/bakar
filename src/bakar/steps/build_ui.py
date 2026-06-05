@@ -594,7 +594,7 @@ class BuildUIState:
             (f"{setscene[1]}setscene", setscene[0]),
             ("  ──  ", "grey30"),
             (f"{build[1]}tasks", build[0]),
-            (f"   {_ICON_TIMER} {elapsed}", "dim"),
+            (f"   {_ICON_TIMER} {elapsed}", "bold"),
         )
 
     def make_renderable(self) -> Group:
