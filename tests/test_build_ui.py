@@ -285,6 +285,20 @@ def test_stuck_color_thresholds() -> None:
 
 
 @pytest.mark.unit
+def test_stuck_color_estimated_bypasses_count_guard() -> None:
+    # With an estimated baseline, the count/median guard is bypassed: a single
+    # running task still highlights when it overruns its historical mean.
+    assert _stuck_color(50, 0, 1, estimated=10) == "bold red"
+    assert _stuck_color(25, 0, 1, estimated=10) == "yellow"
+    assert _stuck_color(15, 0, 1, estimated=10) is None
+    # A non-positive estimate falls back to the median path (here: guarded out).
+    assert _stuck_color(1000, 10, 2, estimated=0) is None
+    # estimated=None keeps the median-based behavior unchanged.
+    assert _stuck_color(50, 10, 5, estimated=None) == "bold red"
+    assert _stuck_color(1000, 10, 2, estimated=None) is None
+
+
+@pytest.mark.unit
 def test_global_timer_is_continuous_across_transition() -> None:
     ui = BuildUIState()
     # The global timer is the build task's elapsed column, started at

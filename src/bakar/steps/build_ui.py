@@ -45,6 +45,7 @@ from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn, Ti
 from rich.table import Table
 from rich.text import Text
 
+from bakar import task_timings
 from bakar.eventlog import (
     _RUNQUEUE_TASK_STARTED,
     _TASK_FAILED,
@@ -111,6 +112,7 @@ class _RunTask:
     pf: str
     task: str
     start: float  # time.monotonic() at Started
+    estimated: float | None = None  # historical mean seconds for this taskname, if known
 
 
 def _fmt_stall(seconds: int) -> str:
@@ -138,8 +140,20 @@ def _task_style(task: str) -> tuple[str, str]:
     return (_ICON_COMPILE, "white")
 
 
-def _stuck_color(elapsed: float, median: float, count: int) -> str | None:
-    """Return a highlight color when a task runs far longer than the median, else None."""
+def _stuck_color(elapsed: float, median: float, count: int, estimated: float | None = None) -> str | None:
+    """Return a highlight color when a task runs far longer than expected, else None.
+
+    When ``estimated`` (the task's historical mean) is available, compare against
+    it directly -- it is a stable reference even early in a build, so the
+    ``count``/``median`` guard the run-local path needs does not apply. When
+    ``estimated`` is None, fall back to the current-run median.
+    """
+    if estimated is not None and estimated > 0:
+        if elapsed > 4 * estimated:
+            return "bold red"
+        if elapsed > 2 * estimated:
+            return "yellow"
+        return None
     if count < 3 or median <= 0:
         return None
     if elapsed > 4 * median:
@@ -232,6 +246,10 @@ class BuildUIState:
         # Tail of the most recent failed task's log file, rendered under the
         # failure-list line. Replaced (not appended) on each failure.
         self._failure_preview: list[str] = []
+        # Historical per-task timing baselines {taskname: (mean, stddev)} from a
+        # prior build. Empty on the first build -> estimated stays None and
+        # stuck-task detection falls back to the current-run median.
+        self._task_baselines = task_timings.load_baselines()
 
     def process_line(self, line: str) -> str | None:
         """Parse one line of knotty fallback output and update internal state.
@@ -375,11 +393,13 @@ class BuildUIState:
 
         if class_name == _EVT_TASK_STARTED:
             recipe, taskname = _task_key(event)
+            mean = self._task_baselines.get(taskname, (None, None))[0]
             with self._lock:
                 self._running[f"{recipe}:{taskname}"] = _RunTask(
                     pf=recipe,
                     task=taskname,
                     start=time.monotonic(),
+                    estimated=mean,
                 )
             return
 
@@ -614,14 +634,17 @@ class BuildUIState:
                 elapsed = now - t.start
                 icon, color = _task_style(t.task)
                 spin = _SPINNER[(self._frame + i) % len(_SPINNER)]
-                stuck = _stuck_color(elapsed, median, len(tasks))
+                stuck = _stuck_color(elapsed, median, len(tasks), estimated=t.estimated)
                 name = t.task.removeprefix("do_").removesuffix("_setscene")
+                elapsed_cell = Text(_fmt_stall(int(elapsed)), style=stuck or "dim")
+                if t.estimated is not None:
+                    elapsed_cell.append(f" /est {_fmt_stall(int(t.estimated))}", style="dim")
                 table.add_row(
                     Text(spin, style=color),
                     Text(icon, style=color),
                     Text(t.pf, style=stuck or "default"),
                     Text(name, style=color),
-                    Text(_fmt_stall(int(elapsed)), style=stuck or "dim"),
+                    elapsed_cell,
                 )
             parts.append(table)
 
