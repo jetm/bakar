@@ -58,6 +58,7 @@ from bakar.eventlog import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from bakar.eventlog import _EventStub
 
@@ -105,6 +106,7 @@ _ICON_CONFIGURE = ""  # wrench
 _ICON_PACKAGE = ""  # package
 _ICON_SETSCENE = ""  # refresh
 _ICON_TIMER = "󰦗"  # md-progress-clock (build elapsed)
+_ICON_DRIFT = ""  # fa-warning (stuck task: time drifted past its reference)
 
 
 class _Phase(Enum):
@@ -185,11 +187,16 @@ class BuildUIState:
         self,
         start_monotonic: float | None = None,
         logfile_translator: Callable[[str], str] | None = None,
+        timings_path: Path | None = None,
     ) -> None:
         """``start_monotonic`` is the ``time.monotonic()`` stamp of when ``bakar``
         started (RunLogger captures it before doctor). When given, the global
         timer on the pipeline header counts from there -- including doctor,
         sync, and parse -- instead of from this object's construction.
+
+        ``timings_path`` selects the context-scoped baseline file (see
+        ``task_timings.timings_path_for``); ``None`` falls back to the legacy
+        global file.
         """
         # The global wall-clock timer lives on the pipeline header (the
         # parse -> setscene -> build line), not on the bars, so it is in the
@@ -245,10 +252,11 @@ class BuildUIState:
         # Tail of the most recent failed task's log file, rendered under the
         # failure-list line. Replaced (not appended) on each failure.
         self._failure_preview: list[str] = []
-        # Historical per-task timing baselines {taskname: (mean, stddev)} from a
-        # prior build. Empty on the first build -> estimated stays None and
-        # stuck-task detection falls back to the current-run median.
-        self._task_baselines = task_timings.load_baselines()
+        # Historical timing baselines {"recipe:task": (mean, stddev)} from
+        # prior builds of THIS context (workspace+machine+mode). Empty on the
+        # first build -> estimated stays None and stuck-task detection falls
+        # back to the current-run median.
+        self._task_baselines = task_timings.load_baselines(timings_path)
 
     def process_line(self, line: str) -> str | None:
         """Parse one line of knotty fallback output and update internal state.
@@ -660,6 +668,13 @@ class BuildUIState:
                 stuck = _stuck_color(elapsed, median, len(tasks), estimated=t.estimated)
                 name = t.task.removeprefix("do_").removesuffix("_setscene")
                 elapsed_cell = Text(_fmt_stall(int(elapsed)), style=stuck or "dim")
+                if stuck == "bold red":
+                    # Red means >4x the reference; show how far past it the
+                    # task has drifted, against the same reference
+                    # _stuck_color used (baseline mean, else run median).
+                    ref = t.estimated if (t.estimated is not None and t.estimated > 0) else median
+                    if ref > 0:
+                        elapsed_cell.append(f"  {_ICON_DRIFT} +{_fmt_stall(int(elapsed - ref))}", style="bold red")
                 table.add_row(
                     Text(spin, style=color),
                     Text(icon, style=color),

@@ -324,8 +324,9 @@ def test_estimate_never_rendered_but_colors_stuck_tasks() -> None:
 
     ui = BuildUIState()
     ui._phase = _Phase.BUILD
-    # 540s elapsed vs 235s baseline (>2x) -> stuck coloring fires from the
-    # baseline even with a single running task (median guard bypassed).
+    # 540s elapsed vs 235s baseline (>2x, <4x) -> yellow from the baseline
+    # even with a single running task (median guard bypassed). No drift
+    # indicator below red.
     ui._running["glibc-2.39-r0:do_compile"] = _RunTask(
         pf="glibc-2.39-r0", task="do_compile", start=time.monotonic() - 540, estimated=235.0
     )
@@ -338,6 +339,27 @@ def test_estimate_never_rendered_but_colors_stuck_tasks() -> None:
     assert len(lines) == 1
     assert "9m00s" in lines[0]
     assert "est" not in lines[0]
+    assert "+" not in lines[0]
+
+
+@pytest.mark.unit
+def test_red_stuck_task_shows_drift_over_reference() -> None:
+    from rich.console import Console
+
+    ui = BuildUIState()
+    ui._phase = _Phase.BUILD
+    # 1000s elapsed vs 235s baseline (>4x) -> red, with a warning-iconed
+    # second timer showing the overrun: 1000 - 235 = 765s = 12m45s.
+    ui._running["glibc-2.39-r0:do_compile"] = _RunTask(
+        pf="glibc-2.39-r0", task="do_compile", start=time.monotonic() - 1000, estimated=235.0
+    )
+    con = Console(width=100, force_terminal=False)
+    with con.capture() as cap:
+        con.print(ui.make_renderable())
+    lines = [ln for ln in cap.get().splitlines() if "glibc-2.39-r0" in ln]
+    assert len(lines) == 1
+    assert "16m40s" in lines[0]
+    assert "+12m45s" in lines[0]
 
 
 @pytest.mark.unit

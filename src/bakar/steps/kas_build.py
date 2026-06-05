@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING
 import yaml
 from rich.live import Live
 
-from bakar import hashserv
+from bakar import hashserv, task_timings
 from bakar.eventlog import tail_events
 from bakar.kas import KasGenOptions, write_yaml
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
@@ -847,11 +847,15 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     sampler.start()
 
     log.info(f"exec: {' '.join(cmd)}")
+    # Baselines are scoped per (workspace, machine, mode): a different
+    # project's builds must not train the stuck-task thresholds this one reads.
+    timings_path = task_timings.timings_path_for(cfg.bsp_root, cfg.machine, host_mode=cfg.host_mode)
     # ``ui`` is created before the try so the finally block can always read
     # its warn/error counts even if _run_pty_with_ui raises before returning.
     ui = BuildUIState(
         start_monotonic=log.start_monotonic,
         logfile_translator=(None if cfg.host_mode else lambda p: _translate_container_path(p, cfg.bsp_root)),
+        timings_path=timings_path,
     )
     terminated = False
     rc: int | None = None
@@ -873,7 +877,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         # outcomes. Best-effort: a no-op when bitbake wrote no event log.
         copy_oe_eventlog_to_run_dir(cfg, log)
         log.persist_bitbake_events()
-        log.persist_task_timings()
+        log.persist_task_timings(timings_path)
         terminated = True
     finally:
         warn = ui.warn_count
@@ -921,6 +925,7 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
     ui = BuildUIState(
         start_monotonic=log.start_monotonic,
         logfile_translator=(None if cfg.host_mode else lambda p: _translate_container_path(p, cfg.bsp_root)),
+        timings_path=task_timings.timings_path_for(cfg.bsp_root, cfg.machine, host_mode=cfg.host_mode),
     )
     state: dict[str, float | int] = {
         "last_event_ts": time.monotonic(),

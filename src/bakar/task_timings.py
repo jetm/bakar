@@ -17,6 +17,7 @@ No ``bb`` module is imported; this reads only the already-normalized artifact.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import math
 import re
@@ -24,6 +25,27 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_TIMINGS_PATH = Path.home() / ".local/state/bakar/task-timings.json"
+
+# Scoped baseline files live under this directory, one per build context.
+TIMINGS_DIR = Path.home() / ".local/state/bakar/task-timings"
+
+
+def timings_path_for(bsp_root: Path, machine: str, *, host_mode: bool = False) -> Path:
+    """Return the baseline file scoped to one build context.
+
+    Task durations are only comparable within the same workspace (same
+    layers, distro config, patches), the same MACHINE (same target arch and
+    tune), and the same execution mode (container vs host) - a peridio
+    aarch64 container build must not train the baselines a variscite x86
+    host build reads. The scope key is
+    ``<sha256(realpath(bsp_root))[:16]>-<machine>-<container|host>``; the
+    per-sample noise that remains inside one scope (ccache warmth, parallel
+    load) is what the loose 2x/4x stuck thresholds absorb.
+    """
+    root_hash = hashlib.sha256(str(bsp_root.resolve()).encode()).hexdigest()[:16]
+    mode = "host" if host_mode else "container"
+    return TIMINGS_DIR / f"{root_hash}-{machine}-{mode}.json"
+
 
 # v2: baselines keyed by "<recipe>:<task>" instead of the bare task name. A
 # bare-task mean blended a 4-hour webkit do_compile with a 3-second one, so

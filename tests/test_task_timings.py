@@ -206,3 +206,17 @@ def test_update_from_events_discards_old_schema_version(tmp_path: Path) -> None:
     assert data["schema_version"] == 2
     assert set(data["tasks"]) == {"glibc:do_compile"}
     assert data["tasks"]["glibc:do_compile"]["count"] == 1
+
+
+@pytest.mark.unit
+def test_timings_path_scoped_per_workspace_machine_mode(tmp_path: Path) -> None:
+    a = task_timings.timings_path_for(tmp_path / "peridio-ws", "imx8mp-var-dart")
+    b = task_timings.timings_path_for(tmp_path / "variscite-ws", "imx8mp-var-dart")
+    c = task_timings.timings_path_for(tmp_path / "peridio-ws", "qemux86-64")
+    d = task_timings.timings_path_for(tmp_path / "peridio-ws", "imx8mp-var-dart", host_mode=True)
+    # Different workspace, machine, or mode -> different baseline file.
+    assert len({a, b, c, d}) == 4
+    # Same context -> deterministic path.
+    assert a == task_timings.timings_path_for(tmp_path / "peridio-ws", "imx8mp-var-dart")
+    assert a.name.endswith("-imx8mp-var-dart-container.json")
+    assert d.name.endswith("-host.json")
