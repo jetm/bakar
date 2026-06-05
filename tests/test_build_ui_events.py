@@ -445,12 +445,14 @@ def _header_text(ui: BuildUIState) -> str:
 @pytest.mark.unit
 def test_breadcrumb_advances_with_phase() -> None:
     ui = BuildUIState()
-    # SETUP: parse is active (no check yet), setscene/build are future dots.
+    # SETUP: parse is active (no check yet), setscene is a future dot. The
+    # tasks segment is absent until real tasks actually run - an sstate-warm
+    # build never reaches it, so it must not be advertised as queued.
     assert ui._phase is _Phase.SETUP
     out = _header_text(ui)
     assert "✓" not in out
     assert "○ setscene" in out
-    assert "○ tasks" in out
+    assert "tasks" not in out
 
     # A setscene task completes parse and moves the active marker to setscene.
     scene = _EventStub()
@@ -459,14 +461,66 @@ def test_breadcrumb_advances_with_phase() -> None:
     ui.process_event(_EVT_SCENE_TASK_STARTED, scene)
     out = _header_text(ui)
     assert "✓ parse" in out
-    assert "○ tasks" in out
+    assert "tasks" not in out
 
-    # A real runqueue task moves the active marker to build.
+    # A real runqueue task makes the tasks segment appear, active. setscene
+    # keeps its spinner: bitbake's merged run queue interleaves the two, so
+    # both segments spin until sceneQueueComplete reports the queue drained.
     ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, _runqueue_stub({"total": 450}))
     out = _header_text(ui)
     assert "✓ parse" in out
+    assert "✓ setscene" not in out
+    assert "tasks" in out
+    assert "✓ tasks" not in out and "○ tasks" not in out
+
+    # sceneQueueComplete drains the scene queue: setscene checks, tasks spin on.
+    ui.process_event("bb.runqueue.sceneQueueComplete", _EventStub())
+    out = _header_text(ui)
     assert "✓ setscene" in out
     assert "✓ tasks" not in out
+
+
+@pytest.mark.unit
+def test_finish_checks_reached_segments_with_durations() -> None:
+    """finish() freezes the final frame: every reached segment checked, the
+    completed stages carrying their wall-clock duration."""
+    import time as _time
+
+    ui = BuildUIState()
+    with ui._lock:
+        ui._parse_start = _time.monotonic() - 51
+    done = _EventStub()
+    done.cached = 900
+    done.parsed = 10
+    ui.process_event("bb.event.ParseCompleted", done)
+    scene = _EventStub()
+    scene.taskname = "do_fetch_setscene"
+    scene.taskfile = "/path/to/glibc.bb"
+    ui.process_event(_EVT_SCENE_TASK_STARTED, scene)
+    with ui._lock:
+        ui._scene_started_at -= 122
+    ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, _runqueue_stub({"total": 450}))
+    ui.finish()
+    out = _header_text(ui)
+    assert "✓ parse (51s)" in out
+    assert "✓ setscene (2m02s)" in out
+    assert "✓ tasks (" in out
+
+
+@pytest.mark.unit
+def test_finish_cached_build_ends_at_setscene() -> None:
+    """A fully sstate-cached build never runs real tasks: finish() checks
+    setscene with its duration and the tasks segment stays absent."""
+    ui = BuildUIState()
+    scene = _EventStub()
+    scene.taskname = "do_fetch_setscene"
+    scene.taskfile = "/path/to/glibc.bb"
+    ui.process_event(_EVT_SCENE_TASK_STARTED, scene)
+    ui.finish()
+    out = _header_text(ui)
+    assert "✓ parse" in out
+    assert "✓ setscene (" in out
+    assert "tasks" not in out
 
 
 # ---------------------------------------------------------------------------

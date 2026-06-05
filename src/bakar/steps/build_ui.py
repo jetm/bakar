@@ -74,6 +74,7 @@ _EVT_TASK_FAILED = _TASK_FAILED
 _EVT_TASK_FAILED_SILENT = _TASK_FAILED_SILENT
 _EVT_SCENE_TASK_STARTED = "bb.runqueue.sceneQueueTaskStarted"
 _EVT_SCENE_TASK_COMPLETED = "bb.runqueue.sceneQueueTaskCompleted"
+_EVT_SCENE_QUEUE_COMPLETE = "bb.runqueue.sceneQueueComplete"
 _EVT_SCENE_TASK_FAILED = "bb.runqueue.sceneQueueTaskFailed"
 _EVT_RUNQUEUE_TASK_COMPLETED = "bb.runqueue.runQueueTaskCompleted"
 _EVT_RUNQUEUE_TASK_FAILED_RQ = "bb.runqueue.runQueueTaskFailed"
@@ -218,7 +219,6 @@ class BuildUIState:
         self._build_task_id = self._build_progress.add_task("build", total=None, kind="")
 
         self._phase = _Phase.SETUP
-        self._build_sub_phase: str = "setscene"
         self._stage = "starting"
         self._kind = ""
         self._running: dict[str, _RunTask] = {}
@@ -259,6 +259,19 @@ class BuildUIState:
         self._w_pf = 0
         self._w_task = 0
         self._w_elapsed = 0
+        # Per-stage wall-clock durations, rendered next to each completed
+        # pipeline segment ("✓ parse (51s)"). Keyed "parse"/"setscene"/
+        # "tasks". parse closes at ParseCompleted, setscene at bitbake's
+        # sceneQueueComplete event (the scene queue draining - NOT the first
+        # real task, since the two interleave), tasks at finish().
+        # ``_finished`` freezes the breadcrumb with every reached segment
+        # checked - without it the final Live frame keeps a spinner on
+        # whatever stage was current when the build exited.
+        self._seg_durations: dict[str, int] = {}
+        self._scene_started_at: float | None = None
+        self._scene_done_at: float | None = None
+        self._tasks_started_at: float | None = None
+        self._finished = False
         # Historical timing baselines {"recipe:task": (mean, stddev)} from
         # prior builds of THIS context (workspace+machine+mode). Empty on the
         # first build -> estimated stays None and stuck-task detection falls
@@ -306,6 +319,14 @@ class BuildUIState:
                 with self._lock:
                     entering_build = self._phase is _Phase.SETUP
                     self._phase = _Phase.BUILD
+                    # Degraded-mode stage stamps: no sceneQueueComplete is
+                    # observable from knotty lines, so setscene only closes
+                    # at finish(); the segments still advance.
+                    if m.group(1):
+                        if self._scene_started_at is None:
+                            self._scene_started_at = time.monotonic()
+                    elif self._tasks_started_at is None:
+                        self._tasks_started_at = time.monotonic()
                 self._kind = "setscene" if m.group(1) else "tasks"
                 completed, total = int(m.group(2)), int(m.group(3))
                 self._build_progress.update(
@@ -316,11 +337,16 @@ class BuildUIState:
                 )
                 # Announce parse completion once. Queue it for the caller to emit
                 # through its logger (so it gets the same INFO tag as other run-log
-                # lines), reporting how long parsing took.
+                # lines), reporting how long parsing took. Also close the parse
+                # segment's clock - this branch can fire before (or instead of)
+                # the ParseCompleted event when the regex feed wins the race,
+                # and the breadcrumb's "✓ parse (51s)" reads the stored value.
                 if entering_build:
                     took = ""
                     if self._parse_start is not None:
-                        took = f" ({_fmt_stall(int(time.monotonic() - self._parse_start))})"
+                        with self._lock:
+                            self._seg_durations.setdefault("parse", int(time.monotonic() - self._parse_start))
+                            took = f" ({_fmt_stall(self._seg_durations['parse'])})"
                     self._pending_log = f"[green]✓[/] parsing recipes complete{took}"
                 return None
 
@@ -378,7 +404,11 @@ class BuildUIState:
             with self._lock:
                 took = ""
                 if self._parse_start is not None:
-                    took = f" ({_fmt_stall(int(time.monotonic() - self._parse_start))})"
+                    # setdefault: the regex fallback may have already closed
+                    # the parse clock (it can win the race against the event
+                    # tailer); a late replayed event must not inflate it.
+                    self._seg_durations.setdefault("parse", int(time.monotonic() - self._parse_start))
+                    took = f" ({_fmt_stall(self._seg_durations['parse'])})"
                 cached = getattr(event, "cached", None) or 0
                 parsed_count = getattr(event, "parsed", None) or 0
                 if cached + parsed_count > 0:
@@ -399,6 +429,19 @@ class BuildUIState:
 
         if class_name in (_EVT_RUNQUEUE_TASK_COMPLETED, _EVT_RUNQUEUE_TASK_FAILED_RQ, _EVT_RUNQUEUE_TASK_SKIPPED):
             self._update_build(event)
+            return
+
+        if class_name == _EVT_SCENE_QUEUE_COMPLETE:
+            # bitbake's authoritative "scene queue drained" signal
+            # (runqueue.summarise_scenequeue_errors). The setscene segment
+            # stays active until this arrives - real tasks interleave with
+            # setscene stragglers, so the first real task is NOT the end of
+            # setscene.
+            with self._lock:
+                if self._scene_done_at is None:
+                    self._scene_done_at = time.monotonic()
+                    if self._scene_started_at is not None:
+                        self._seg_durations.setdefault("setscene", int(self._scene_done_at - self._scene_started_at))
             return
 
         if class_name in (_EVT_SCENE_TASK_STARTED, _EVT_SCENE_TASK_COMPLETED, _EVT_SCENE_TASK_FAILED):
@@ -475,7 +518,8 @@ class BuildUIState:
             return
         with self._lock:
             self._phase = _Phase.BUILD
-            self._build_sub_phase = "real_tasks"
+            if self._tasks_started_at is None:
+                self._tasks_started_at = time.monotonic()
             self._setscene_covered = _stat(stats, "setscene_covered") or 0
             self._setscene_total = _stat(stats, "setscene_total") or 0
             self._setscene_notcovered = _stat(stats, "setscene_notcovered") or 0
@@ -505,7 +549,8 @@ class BuildUIState:
         if class_name == _EVT_SCENE_TASK_STARTED:
             with self._lock:
                 self._phase = _Phase.BUILD
-                self._build_sub_phase = "setscene"
+                if self._scene_started_at is None:
+                    self._scene_started_at = time.monotonic()
                 self._running[key] = _RunTask(pf=pf, task=taskname, start=time.monotonic())
                 if stats is not None:
                     self._setscene_covered = _stat(stats, "setscene_covered") or 0
@@ -562,47 +607,94 @@ class BuildUIState:
         global timer is the only liveness readout -- so this is a no-op.
         """
 
+    def finish(self) -> None:
+        """Mark the pipeline complete for the final rendered frame.
+
+        Called by the build runner on a successful exit, before the Live
+        region closes. Checks every reached segment and closes the last
+        stage's duration clock; without this the final frame freezes with
+        a spinner on whatever stage was current when kas exited (a fully
+        cached build otherwise ends on "⠙ setscene" forever).
+        """
+        now = time.monotonic()
+        with self._lock:
+            self._finished = True
+            if self._tasks_started_at is not None:
+                self._seg_durations.setdefault("tasks", int(now - self._tasks_started_at))
+            if self._scene_started_at is not None:
+                # No-op when sceneQueueComplete already closed it; covers the
+                # degraded regex path, which never sees that event.
+                self._seg_durations.setdefault("setscene", int(now - self._scene_started_at))
+
     def _render_breadcrumb(self) -> Text:
         """Render the pipeline header: phase segments, then the global timer.
 
-        ``✓ parse ── ⠹ setscene ── ○ tasks   󰦗 12m34s``
+        ``✓ parse (51s) ── ⠹ setscene   󰦗 12m34s`` (setscene running)
+        ``✓ parse (51s) ── ⠹ setscene ── ⠙ tasks   󰦗 12m34s`` (overlap window)
+        ``✓ parse (51s) ── ✓ setscene (2m02s) ── ⠙ tasks   󰦗 12m34s`` (scene drained)
+        ``✓ parse (51s) ── ✓ setscene (2m02s)   󰦗 2m53s`` (finished, fully cached)
 
-        Completed segments show a green check, the active segment carries the
-        animated spinner in bold cyan, queued segments a hollow circle. The
-        timer follows the build segment directly, separated by its icon; it
-        is the global wall clock counting from bakar start
-        (``_start_monotonic``), so it spans doctor, sync, parse, and build
-        without ever resetting.
+        Completed segments show a green check plus the stage's wall-clock
+        duration, active segments the animated spinner in bold cyan, queued
+        segments a hollow circle. Segment states are independent because
+        bitbake's merged run queue interleaves setscene and real tasks:
+        the ``tasks`` segment appears when the first real task starts while
+        ``setscene`` keeps its spinner until bitbake's sceneQueueComplete
+        event reports the scene queue drained - so both can spin during the
+        overlap. The ``tasks`` segment never shows as queued: an sstate-warm
+        build completes entirely inside setscene, and a permanently-queued
+        ``○ tasks`` would advertise a stage that never runs. After
+        ``finish()`` every reached segment renders checked. The timer
+        follows the last segment directly, separated by its icon; it is the
+        global wall clock counting from bakar start (``_start_monotonic``),
+        so it spans doctor, sync, parse, and build without ever resetting.
         """
         with self._lock:
             phase = self._phase
-            sub_phase = self._build_sub_phase
+            durations = dict(self._seg_durations)
+            finished = self._finished
+            scene_started = self._scene_started_at is not None
+            scene_done = self._scene_done_at is not None
+            tasks_started = self._tasks_started_at is not None
 
         spin = _SPINNER[self._frame % len(_SPINNER)]
-        current = ("bold cyan", f"{spin} ")
-        done = ("green", "✓ ")
-        future = ("grey42", "○ ")
 
-        if phase is _Phase.SETUP:
-            parse, setscene, build = current, future, future
-        elif sub_phase == "setscene":
-            parse, setscene, build = done, current, future
-        else:  # BUILD, real_tasks
-            parse, setscene, build = done, done, current
+        def done_seg(name: str) -> tuple[str, str]:
+            dur = durations.get(name)
+            suffix = f" ({_fmt_stall(dur)})" if dur is not None else ""
+            return (f"✓ {name}{suffix}", "green")
 
-        elapsed = _fmt_stall(int(time.monotonic() - self._start_monotonic))
         # The third segment is "tasks", not "build": the whole pipeline is the
         # build; this phase is the run queue executing the real (non-setscene)
         # tasks - compile, install, package, image assembly - matching the
-        # bar's own "N/M tasks" vocabulary.
-        return Text.assemble(
-            (f"{parse[1]}parse", parse[0]),
-            ("  ──  ", "grey30"),
-            (f"{setscene[1]}setscene", setscene[0]),
-            ("  ──  ", "grey30"),
-            (f"{build[1]}tasks", build[0]),
-            (f"   {_ICON_TIMER} {elapsed}", "bold"),
-        )
+        # bar's own "N/M tasks" vocabulary. Segment states are independent,
+        # mirroring bitbake's merged run queue: setscene and real tasks
+        # interleave, so during the overlap window BOTH segments carry a
+        # spinner. setscene closes on sceneQueueComplete, not on the first
+        # real task.
+        segments: list[tuple[str, str]] = []
+        if phase is _Phase.SETUP and not finished:
+            segments.append((f"{spin} parse", "bold cyan"))
+            segments.append(("○ setscene", "grey42"))
+        else:
+            segments.append(done_seg("parse"))
+            if finished or scene_done or (tasks_started and not scene_started):
+                # Checked when drained, at finish, or trivially complete (a
+                # build whose scene queue had nothing to restore).
+                segments.append(done_seg("setscene"))
+            else:
+                segments.append((f"{spin} setscene", "bold cyan"))
+            if tasks_started:
+                segments.append(done_seg("tasks") if finished else (f"{spin} tasks", "bold cyan"))
+
+        elapsed = _fmt_stall(int(time.monotonic() - self._start_monotonic))
+        text = Text()
+        for i, (label, style) in enumerate(segments):
+            if i:
+                text.append("  ──  ", "grey30")
+            text.append(label, style)
+        text.append(f"   {_ICON_TIMER} {elapsed}", "bold")
+        return text
 
     def make_renderable(self) -> Group:
         """Build the renderable for the current frame.

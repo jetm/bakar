@@ -689,15 +689,23 @@ def _run_pty_with_ui(
                     delta = state["cur_du_bytes"] - state["prev_du_bytes"]
                     ui.update_heartbeat(stall, delta)
 
+            event_feed_count = 0
+            event_feed_error = ""
+
             def _event_tail() -> None:  # pragma: no cover
                 # Authoritative feed: drive the live model from bitbake's
                 # structured event log. ui.process_line (regex) stays as the
-                # degraded fallback. A tailer error must never crash the build.
+                # degraded fallback. A tailer error must never crash the
+                # build, but it must not die silently either - the count and
+                # error are reported after the build so a dead feed (live UI
+                # quietly running on the regex fallback) is diagnosable.
+                nonlocal event_feed_count, event_feed_error
                 try:
                     for class_name, event in tail_events(log.eventlog_path, stop_event):
                         ui.process_event(class_name, event)
-                except Exception:
-                    pass
+                        event_feed_count += 1
+                except Exception as exc:
+                    event_feed_error = f"{type(exc).__name__}: {exc}"
 
             # Share the run logger's console so log.info() (the parse-complete
             # line) coordinates with the live region instead of printing onto
@@ -725,6 +733,18 @@ def _run_pty_with_ui(
                         live.console.print(layer_hash_table(hashes))
                         layers_pending = False
                 event_tail.join(timeout=5)
+                if event_feed_error:
+                    log.warn(f"bitbake event feed died ({event_feed_error}); live UI ran on regex fallback")
+                elif event_feed_count == 0:
+                    log.warn(
+                        f"bitbake event feed inactive (0 events from {log.eventlog_path}); "
+                        "live UI ran on regex fallback"
+                    )
+                if rc == 0:
+                    # Freeze the final frame with every reached pipeline
+                    # segment checked (Live renders once more on exit);
+                    # without this the header ends on a spinner forever.
+                    ui.finish()
     finally:
         if slave_fd != -1:
             try:

@@ -100,6 +100,17 @@ def test_parse_complete_queued_with_check_and_duration_once() -> None:
 
 
 @pytest.mark.unit
+def test_fallback_parse_complete_stores_segment_duration() -> None:
+    """The regex path must close the parse segment's clock too: when the
+    event feed is dead (or loses the race), the breadcrumb's "✓ parse (51s)"
+    reads _seg_durations, not the one-shot log message."""
+    ui = BuildUIState()
+    ui.process_line("Parsing recipes:  10% || ETA:  0:00:30")
+    ui.process_line("NOTE: Running setscene task 1 of 5944 (/x.bb:do_x_setscene)")
+    assert "parse" in ui._seg_durations
+
+
+@pytest.mark.unit
 def test_global_timer_backdated_to_bakar_start() -> None:
     from rich.console import Console
 
