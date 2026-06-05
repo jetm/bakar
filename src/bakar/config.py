@@ -230,8 +230,7 @@ class BuildConfig:
     ccache_shared: bool = field(default=False)
     ccache_dir: str | None = field(default=None)
     # When True, `bakar build` samples /proc/pressure during the build and writes
-    # the recommended pressure_max_* back to config.toml, so `bakar doctor -C`
-    # never needs to be run by hand.
+    # the recommended pressure_max_* back to config.toml.
     psi_autocalibrate: bool = field(default=False)
     sstate_mirror_url: str | None = field(default=None)
 

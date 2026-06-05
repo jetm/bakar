@@ -1,9 +1,8 @@
 """PSI (Pressure Stall Information) helpers.
 
 Reads ``/proc/pressure/<resource>`` and turns measured peaks into bitbake
-``BB_PRESSURE_MAX_*`` thresholds - both for the interactive ``bakar doctor -C``
-flow and for ``[build] psi_autocalibrate``, which writes the values after a
-build so the calibration command never has to be run by hand.
+``BB_PRESSURE_MAX_*`` thresholds for ``[build] psi_autocalibrate``, which
+writes the values after each build.
 """
 
 from __future__ import annotations

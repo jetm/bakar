@@ -267,38 +267,3 @@ def test_kas_yaml_and_manifest_are_mutually_exclusive(nxp_workspace: Path, tmp_p
 
     assert result.exit_code == 2
     assert "either a positional kas YAML or --manifest" in result.output
-
-
-def test_psi_calibrate_prints_recommendation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``--psi-calibrate`` samples /proc/pressure, then prints a recommendation.
-
-    Patches ``_read_psi_avg10`` and ``time.sleep`` so the sampling loop
-    runs once, raises KeyboardInterrupt, and prints the recommended
-    ``[build]`` block before exiting 0.
-    """
-    samples = iter([5.0, 1.0, 2.0])  # one (cpu, io, memory) tuple, then stop
-
-    def fake_psi(_resource: str) -> float | None:
-        try:
-            return next(samples)
-        except StopIteration:
-            return 10.0
-
-    def fake_sleep(_seconds: float) -> None:
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr("bakar.commands.doctor.read_psi_avg10", fake_psi)
-    monkeypatch.setattr("bakar.commands.doctor.time.sleep", fake_sleep)
-
-    # Force the availability probe (first call) to return a non-None value
-    # so the calibration loop is reached; then the iterator drives the
-    # per-dimension samples until KeyboardInterrupt fires.
-    result = runner.invoke(app, ["doctor", "--psi-calibrate"])
-
-    assert result.exit_code == 0, result.output
-    # ``[build]`` is consumed by Rich as a markup tag and stripped from
-    # the rendered output; assert on the recommendation body instead.
-    assert "Recommended" in result.output
-    assert "pressure_max_cpu" in result.output
-    assert "pressure_max_io" in result.output
-    assert "pressure_max_memory" in result.output

@@ -819,7 +819,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     sampler = threading.Thread(target=du_loop, daemon=True)  # pragma: no cover
 
     # PSI auto-calibration: sample host /proc/pressure peaks during the build so
-    # the recommended pressure_max_* can be written afterwards (no `doctor -C`).
+    # the recommended pressure_max_* can be written afterwards.
     psi_peaks: dict[str, float] = {}
     psi_sampler: threading.Thread | None = None
     if cfg.psi_autocalibrate and read_psi_avg10("cpu") is not None:

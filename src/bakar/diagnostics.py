@@ -819,10 +819,20 @@ def check_psi_support(cfg: BuildConfig) -> CheckResult:
     if not available:
         return _skip(name, Severity.INFO, "PSI not available on this kernel; throttling disabled")
     if not any_set:
+        # The hint depends on whether auto-calibration is already on: when it
+        # is, the missing thresholds just mean no calibrated build has
+        # completed yet, and suggesting the user set the flag they already
+        # set reads as a contradiction.
+        if cfg.psi_autocalibrate:
+            return _skip(
+                name,
+                Severity.INFO,
+                "PSI available; auto-calibration on, thresholds written after the next successful build",
+            )
         return _skip(
             name,
             Severity.INFO,
-            "PSI available; no thresholds configured (run --psi-calibrate to tune)",
+            "PSI available; no thresholds configured (set [build] psi_autocalibrate = true to tune)",
         )
     active = ", ".join(
         f"{k}={v}"

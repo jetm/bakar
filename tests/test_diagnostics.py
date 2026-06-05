@@ -329,7 +329,20 @@ def test_psi_available_unconfigured_is_skip_info(monkeypatch) -> None:
 
     assert result.status == Status.SKIP
     assert result.severity == Severity.INFO
-    assert "psi-calibrate" in result.message
+    assert "psi_autocalibrate" in result.message
+
+
+def test_psi_available_autocalibrate_on_does_not_suggest_enabling_it(monkeypatch) -> None:
+    """With psi_autocalibrate already on, the SKIP message must not tell the user to set it."""
+    monkeypatch.setattr("bakar.diagnostics._read_psi_avg10", lambda _r: 0.0)
+    cfg = _psi_cfg(psi_autocalibrate=True)
+
+    result = check_psi_support(cfg)
+
+    assert result.status == Status.SKIP
+    assert result.severity == Severity.INFO
+    assert "set [build] psi_autocalibrate" not in result.message
+    assert "auto-calibration on" in result.message
 
 
 def test_psi_unavailable_unconfigured_is_skip(monkeypatch) -> None:

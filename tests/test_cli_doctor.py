@@ -1,16 +1,12 @@
-"""Tests for the bakar doctor --psi-calibrate flag and recommendation helper."""
+"""Tests for the PSI recommendation helper."""
 
 from __future__ import annotations
 
 import pytest
-from typer.testing import CliRunner
 
-from bakar.commands._app import app
 from bakar.psi import psi_recommendation
 
 pytestmark = pytest.mark.unit
-
-runner = CliRunner()
 
 
 # ---------------------------------------------------------------------------
@@ -44,22 +40,3 @@ def test_psi_recommendation_returns_ints() -> None:
     rec = psi_recommendation({"cpu": 34.2, "io": 18.7, "memory": 0.1})
     for v in rec.values():
         assert isinstance(v, int)
-
-
-# ---------------------------------------------------------------------------
-# CLI: unavailable PSI exits cleanly without sampling
-# ---------------------------------------------------------------------------
-
-
-def test_psi_calibrate_exits_zero_when_psi_unavailable(monkeypatch) -> None:
-    """--psi-calibrate exits 0 and prints a message when PSI is unavailable.
-
-    The function is imported via ``from bakar.diagnostics import _read_psi_avg10``
-    so patching the local binding in doctor's namespace (not diagnostics) is required.
-    """
-    monkeypatch.setattr("bakar.commands.doctor.read_psi_avg10", lambda _r: None)
-
-    result = runner.invoke(app, ["doctor", "--psi-calibrate"])
-
-    assert result.exit_code == 0
-    assert "not available" in result.output.lower() or "unreadable" in result.output.lower()
