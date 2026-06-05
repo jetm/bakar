@@ -844,6 +844,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
         # outcomes. Best-effort: a no-op when bitbake wrote no event log.
         copy_oe_eventlog_to_run_dir(cfg, log)
         log.persist_bitbake_events()
+        log.persist_task_timings()
         terminated = True
     finally:
         warn = ui.warn_count

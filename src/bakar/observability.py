@@ -213,3 +213,23 @@ class RunLogger:
             self.warn(f"failed to persist bitbake-events.json: {exc}")
             return
         self.step_ok("bitbake_events", path=str(self.bitbake_events_path))
+
+    def persist_task_timings(self, timings_path: Path | None = None) -> None:
+        """Accumulate this run's task durations into the global baseline store.
+
+        Best-effort: reads the normalized ``bitbake-events.json`` artifact
+        written by :meth:`persist_bitbake_events` and folds its per-task
+        durations into the shared timings file. The ``task_timings`` import is
+        function-local to keep the dependency off the module import path and
+        avoid any cycle. Never raises - a failure here must not break an
+        otherwise-completed build.
+        """
+        from bakar import task_timings
+
+        try:
+            task_timings.update_from_events(
+                self.bitbake_events_path,
+                timings_path or task_timings.DEFAULT_TIMINGS_PATH,
+            )
+        except Exception as exc:  # best-effort, must never break a build
+            self.warn(f"failed to persist task timings: {exc}")
