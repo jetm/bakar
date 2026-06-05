@@ -68,10 +68,10 @@ def _invoke_bbsetup_build(
     show_layers: bool,
     show_hashes: bool,
     dry_run: bool = False,
-) -> tuple[int, MagicMock, str]:
+) -> tuple[int, MagicMock, MagicMock, str]:
     """Drive ``bakar build`` down the bbsetup path with all collaborators stubbed.
 
-    Returns ``(exit_code, print_layer_hashes_mock, output)``. The bbsetup
+    Returns ``(exit_code, print_layer_hashes_mock, run_build_mock, output)``. The bbsetup
     dispatch is forced by patching ``_bbsetup_workspace`` to return a real
     ``tmp_path`` dir; ``resolve``, ``translate_bbsetup_config``,
     ``write_bbsetup_yaml``, ``RunLogger`` and ``step_kas.run_build`` are stubbed
@@ -82,6 +82,7 @@ def _invoke_bbsetup_build(
     setup_dir.mkdir()
 
     print_layer_hashes = MagicMock()
+    run_build = MagicMock(return_value=0)
     user_config = UserConfig(show_hashes=show_hashes)
     args = ["build", "--skip-doctor"]
     if show_layers:
@@ -101,28 +102,29 @@ def _invoke_bbsetup_build(
         patch("bakar.commands.build.write_bbsetup_yaml"),
         patch("bakar.commands.build._print_layer_hashes", print_layer_hashes),
         patch("bakar.commands.build.RunLogger", _runlogger_cm()),
-        patch("bakar.commands.build.step_kas.run_build", return_value=0),
+        patch("bakar.commands.build.step_kas.run_build", run_build),
         patch("bakar.commands.build.step_kas.dry_run_preview_lines", return_value=[]),
     ):
         result = runner.invoke(app, args)
 
-    return result.exit_code, print_layer_hashes, result.output
+    return result.exit_code, print_layer_hashes, run_build, result.output
 
 
 def test_show_layers_flag_reaches_print_layer_hashes(runner: CliRunner, tmp_path: Path) -> None:
-    """``--show-layers`` on the bbsetup path invokes ``_print_layer_hashes(cfg)``."""
-    exit_code, print_layer_hashes, output = _invoke_bbsetup_build(runner, tmp_path, show_layers=True, show_hashes=False)
+    """``--show-layers`` on a real bbsetup build delegates to run_build's live panel."""
+    exit_code, print_layer_hashes, run_build, output = _invoke_bbsetup_build(
+        runner, tmp_path, show_layers=True, show_hashes=False
+    )
 
     assert exit_code == 0, output
-    assert print_layer_hashes.call_count == 1, (
-        f"expected _print_layer_hashes to be called once with --show-layers, "
-        f"got {print_layer_hashes.call_count} call(s)"
-    )
+    # No command-level print: run_build's heartbeat renders the panel live.
+    assert print_layer_hashes.call_count == 0
+    assert run_build.call_args.kwargs.get("show_layers") is True
 
 
 def test_no_flag_no_toggle_skips_print_layer_hashes(runner: CliRunner, tmp_path: Path) -> None:
     """Without ``--show-layers`` and with ``show_hashes`` false, the table is not rendered."""
-    exit_code, print_layer_hashes, output = _invoke_bbsetup_build(
+    exit_code, print_layer_hashes, _run_build, output = _invoke_bbsetup_build(
         runner, tmp_path, show_layers=False, show_hashes=False
     )
 
@@ -135,7 +137,7 @@ def test_no_flag_no_toggle_skips_print_layer_hashes(runner: CliRunner, tmp_path:
 
 def test_show_layers_flag_dry_run_reaches_print_layer_hashes(runner: CliRunner, tmp_path: Path) -> None:
     """``--show-layers --dry-run`` on the bbsetup path still invokes ``_print_layer_hashes(cfg)``."""
-    exit_code, print_layer_hashes, output = _invoke_bbsetup_build(
+    exit_code, print_layer_hashes, _run_build, output = _invoke_bbsetup_build(
         runner, tmp_path, show_layers=True, show_hashes=False, dry_run=True
     )
 
@@ -148,7 +150,7 @@ def test_show_layers_flag_dry_run_reaches_print_layer_hashes(runner: CliRunner, 
 
 def test_show_hashes_config_dry_run_reaches_print_layer_hashes(runner: CliRunner, tmp_path: Path) -> None:
     """The persisted ``show_hashes`` toggle renders the table even in ``--dry-run`` mode."""
-    exit_code, print_layer_hashes, output = _invoke_bbsetup_build(
+    exit_code, print_layer_hashes, _run_build, output = _invoke_bbsetup_build(
         runner, tmp_path, show_layers=False, show_hashes=True, dry_run=True
     )
 
@@ -161,7 +163,7 @@ def test_show_hashes_config_dry_run_reaches_print_layer_hashes(runner: CliRunner
 
 def test_no_flag_no_toggle_dry_run_skips_print_layer_hashes(runner: CliRunner, tmp_path: Path) -> None:
     """With neither toggle set, ``--dry-run`` does not render the table."""
-    exit_code, print_layer_hashes, output = _invoke_bbsetup_build(
+    exit_code, print_layer_hashes, _run_build, output = _invoke_bbsetup_build(
         runner, tmp_path, show_layers=False, show_hashes=False, dry_run=True
     )
 

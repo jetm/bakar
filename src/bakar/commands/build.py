@@ -178,6 +178,7 @@ def _run_bbsetup_build(
         rc = step_kas.run_build(
             kas_ctx,
             extra_overlays=_tuning_extra_overlays(cfg),
+            show_layers=effective_show_layers,
         )
         if rc != 0:
             console.print(
@@ -185,9 +186,6 @@ def _run_bbsetup_build(
             )
             raise typer.Exit(code=rc)
         deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / translated["machine"]
-        # kas materializes build/conf/bblayers.conf during run_build; print after success.
-        if effective_show_layers:
-            _print_layer_hashes(cfg)
         if _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary:
             _print_sstate_summary(log.run_dir / "kas.log")
         console.print("[bold green]build succeeded[/]")
@@ -238,14 +236,12 @@ def _run_byo_build(
     rc = step_kas.run_build(
         kas_ctx,
         extra_overlays=ctx.extra_overlays,
+        show_layers=ctx.effective_show_layers and not ctx.dry_run,
     )
     if rc != 0:
         console.print(f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details.")
         raise typer.Exit(code=rc)
     deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
-    # A real build only has bblayers.conf on disk after run_build succeeds.
-    if ctx.effective_show_layers and not ctx.dry_run:
-        _print_layer_hashes(cfg)
     if _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary:
         _print_sstate_summary(log.run_dir / "kas.log")
     console.print("[bold green]build succeeded[/]")
@@ -262,6 +258,11 @@ def _run_manifest_build(
     Called inside an active RunLogger context from ``build()``.
     """
     _run_doctor_gate(cfg, log, ctx.bsp, ctx.skip_doctor)
+
+    # A dry run never reaches run_build's live layer panel; print best-effort
+    # from any pre-existing bblayers.conf up front (mirrors the BYO path).
+    if ctx.effective_show_layers and ctx.dry_run:
+        _print_layer_hashes(cfg)
 
     assert ctx.bsp is not None
     state = detect(cfg)
@@ -300,14 +301,12 @@ def _run_manifest_build(
     rc = step_kas.run_build(
         kas_ctx,
         extra_overlays=_tuning_extra_overlays(cfg),
+        show_layers=ctx.effective_show_layers and not ctx.dry_run,
     )
     if rc != 0:
         console.print(f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details.")
         raise typer.Exit(code=rc)
     deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
-    # kas materializes build/conf/bblayers.conf during run_build; print after success
-    if ctx.effective_show_layers:
-        _print_layer_hashes(cfg)
     if _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary:
         _print_sstate_summary(log.run_dir / "kas.log")
     console.print("[bold green]build succeeded[/]")

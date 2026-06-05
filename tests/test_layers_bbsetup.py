@@ -434,3 +434,28 @@ def test_layers_status_omits_unset_optional_fields(tmp_path: Path) -> None:
     assert "MACHINE" in result.output
     assert "some-machine" in result.output
     assert "not configured" in result.output  # hashserv line
+
+
+@pytest.mark.unit
+def test_layer_hash_table_renders_repos_and_hashes() -> None:
+    from rich.console import Console
+
+    from bakar.layers import LayerHash, layer_hash_table
+
+    hashes = [
+        LayerHash(repo="meta-openembedded", short_hash="a1b2c3d", branch="scarthgap"),
+        LayerHash(repo="poky", short_hash="0f9e8d7", branch=""),
+        LayerHash(repo="bitbake", short_hash="44556aa", branch="2.8", version="2.8.0"),
+    ]
+    con = Console(width=80, force_terminal=False)
+    with con.capture() as cap:
+        con.print(layer_hash_table(hashes))
+    out = cap.get()
+    assert "layers (3):" in out
+    assert "meta-openembedded" in out and "a1b2c3d" in out and "(scarthgap)" in out
+    assert "poky" in out and "0f9e8d7" in out
+    # bitbake shows BOTH its branch and the v-prefixed version.
+    assert "(2.8)" in out
+    assert "v2.8.0" in out
+    # Frameless: no panel border characters.
+    assert "╭" not in out and "│" not in out

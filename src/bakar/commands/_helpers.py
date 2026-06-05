@@ -374,17 +374,13 @@ def _print_layer_hashes(cfg: BuildConfig, hashes: list[LayerHash] | None = None)
     ``bblayers.conf`` yet, or every repo skipped).
     """
     from bakar.commands import console
+    from bakar.layers import layer_hash_table
 
     if hashes is None:
         hashes = collect_layer_hashes(cfg)
     if not hashes:
         return
-    console.print("layers:", highlight=False)
-    width = max(len(h.repo) for h in hashes)
-    for h in hashes:
-        branch = f"  ({h.branch})" if h.branch else ""
-        ver = f"  {h.version}" if h.version else ""
-        console.print(f"  {h.repo:<{width}}  {h.short_hash}{branch}{ver}", highlight=False)
+    console.print(layer_hash_table(hashes))
 
 
 def _print_sstate_summary(kas_log: Path) -> None:

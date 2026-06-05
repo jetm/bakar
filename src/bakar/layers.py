@@ -16,6 +16,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rich.console import Group
+from rich.padding import Padding
+from rich.table import Table
+from rich.text import Text
+
 from bakar.kas import _bblayers_bodies, parse_bblayers
 
 if TYPE_CHECKING:
@@ -28,6 +33,31 @@ class LayerHash:
     short_hash: str
     branch: str  # empty string for a detached HEAD
     version: str | None = field(default=None)  # set for the bitbake entry
+
+
+def layer_hash_table(hashes: list[LayerHash]) -> Group:
+    """Render layer hashes as a heading plus an aligned, colored grid.
+
+    Frameless on purpose, matching the other command output blocks
+    (``sstate summary:`` etc.). One row per repo: name (bold), short hash
+    (cyan), branch (magenta), and a ``v``-prefixed version (dim) on the
+    bitbake entry. Used by the build commands' layer display and printed
+    above the live build region as soon as ``bblayers.conf`` materializes
+    during a build.
+    """
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column()  # repo
+    grid.add_column()  # hash
+    grid.add_column()  # branch
+    grid.add_column()  # version (bitbake entry)
+    for h in hashes:
+        grid.add_row(
+            Text(h.repo, style="bold"),
+            Text(h.short_hash, style="cyan"),
+            Text(f"({h.branch})" if h.branch else "", style="magenta"),
+            Text(f"v{h.version}" if h.version else "", style="dim"),
+        )
+    return Group(Text(f"layers ({len(hashes)}):"), Padding(grid, (0, 0, 0, 2)))
 
 
 def _parse_bbsetup_layer_repos(bblayers_conf: Path) -> list[str]:

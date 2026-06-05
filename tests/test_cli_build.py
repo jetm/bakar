@@ -126,7 +126,7 @@ def test_hashequiv_overlay_deduped_when_user_passes_it(
 
     recorded: list[list] = []
 
-    def fake_run_build(ctx, *, extra_overlays=None):  # type: ignore[no-untyped-def]
+    def fake_run_build(ctx, *, extra_overlays=None, show_layers=False):  # type: ignore[no-untyped-def]
         recorded.append(list(extra_overlays or []))
         return 0
 
@@ -160,7 +160,7 @@ def test_hashequiv_overlay_not_appended_when_use_hashequiv_false(
 
     recorded: list[list] = []
 
-    def fake_run_build(ctx, *, extra_overlays=None):  # type: ignore[no-untyped-def]
+    def fake_run_build(ctx, *, extra_overlays=None, show_layers=False):  # type: ignore[no-untyped-def]
         recorded.append(list(extra_overlays or []))
         return 0
 
@@ -263,7 +263,7 @@ def test_dry_run_script_does_not_invoke_run_build(
 
     build_calls: list[object] = []
 
-    def fake_run_build(ctx, *, extra_overlays=None):  # type: ignore[no-untyped-def]
+    def fake_run_build(ctx, *, extra_overlays=None, show_layers=False):  # type: ignore[no-untyped-def]
         build_calls.append(ctx)
         return 0
 
@@ -347,7 +347,7 @@ def _stub_dispatchers(monkeypatch: pytest.MonkeyPatch) -> dict:
         captured["yaml_dispatch"].append(yaml_path)
         return ("generic", None)
 
-    def fake_run_build(ctx, *, extra_overlays=None):  # type: ignore[no-untyped-def]
+    def fake_run_build(ctx, *, extra_overlays=None, show_layers=False):  # type: ignore[no-untyped-def]
         captured["run_build"].append(ctx)
         return 0
 
@@ -489,7 +489,7 @@ def test_preset_dispatch_bbsetup_uses_dispatch_from_yaml(
     monkeypatch.setattr(build_mod, "_dispatch_bsp", fake_dispatch_bsp)
 
     # Also stub run_build to prevent container invocation.
-    monkeypatch.setattr(build_mod.step_kas, "run_build", lambda ctx, *, extra_overlays=None: 0)
+    monkeypatch.setattr(build_mod.step_kas, "run_build", lambda ctx, *, extra_overlays=None, show_layers=False: 0)
 
     result = runner.invoke(app, ["build", "--preset", "avocado-qemux86-64", "--skip-doctor", "--dry-run"])
 

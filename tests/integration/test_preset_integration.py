@@ -122,7 +122,7 @@ def _stub_build_infra(monkeypatch: pytest.MonkeyPatch) -> dict:
         captured["yaml_dispatch"].append(yaml_path)
         return ("generic", None)
 
-    def fake_run_build(ctx, *, extra_overlays=None):  # type: ignore[no-untyped-def]
+    def fake_run_build(ctx, *, extra_overlays=None, show_layers=False):  # type: ignore[no-untyped-def]
         captured["run_build"].append(ctx)
         return 0
 

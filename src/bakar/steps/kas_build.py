@@ -579,6 +579,8 @@ def _run_pty_with_ui(
     ui: BuildUIState,
     state: dict[str, float | int],
     stop_event: threading.Event,
+    *,
+    show_layers: bool = False,
 ) -> int | None:
     """Run ``cmd`` under a PTY, pumping its output into ``ui`` live.
 
@@ -664,10 +666,25 @@ def _run_pty_with_ui(
                     if tail:
                         _process_line(tail)
 
+            # One-shot layer display: kas materializes bblayers.conf early in
+            # the build (manifest paths have it even earlier, from setup-env),
+            # so the heartbeat polls for it and prints the panel above the
+            # live region as soon as the data exists - at the START of the
+            # build, where it is useful, instead of after it finishes.
+            layers_pending = show_layers
+
             def _heartbeat() -> None:
+                nonlocal layers_pending
                 while not stop_event.wait(timeout=1):
                     if proc.poll() is not None:
                         break
+                    if layers_pending:  # pragma: no cover - PTY-thread path
+                        from bakar.layers import collect_layer_hashes, layer_hash_table
+
+                        hashes = collect_layer_hashes(cfg)
+                        if hashes:
+                            live.console.print(layer_hash_table(hashes))
+                            layers_pending = False
                     stall = int(time.monotonic() - state["last_event_ts"])
                     delta = state["cur_du_bytes"] - state["prev_du_bytes"]
                     ui.update_heartbeat(stall, delta)
@@ -700,6 +717,13 @@ def _run_pty_with_ui(
                 stop_event.set()
                 pump.join(timeout=5)
                 heartbeat.join(timeout=2)
+                if layers_pending:  # pragma: no cover - fast build finished before first heartbeat tick
+                    from bakar.layers import collect_layer_hashes, layer_hash_table
+
+                    hashes = collect_layer_hashes(cfg)
+                    if hashes:
+                        live.console.print(layer_hash_table(hashes))
+                        layers_pending = False
                 event_tail.join(timeout=5)
     finally:
         if slave_fd != -1:
@@ -714,7 +738,7 @@ def _run_pty_with_ui(
     return rc
 
 
-def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None) -> int:
+def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None, show_layers: bool = False) -> int:
     """Run `kas-container build <kas_yaml>:<overlay>` with the measurement harness.
 
     Returns the build exit code. Does not raise - caller decides how to
@@ -832,7 +856,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None)
     terminated = False
     rc: int | None = None
     try:
-        rc = _run_pty_with_ui(cmd, cfg, log, ui, state, stop_event)
+        rc = _run_pty_with_ui(cmd, cfg, log, ui, state, stop_event, show_layers=show_layers)
         if rc == 0:
             deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
             log.step_ok("kas_build", deploy_dir=str(deploy), exit_code=rc)

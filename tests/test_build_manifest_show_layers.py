@@ -95,22 +95,19 @@ def _ordered_names(parent: MagicMock) -> list[str]:
 
 
 def test_real_build_prints_layers_after_run_build(tmp_path: Path) -> None:
-    """A real build (``dry_run=False``) prints the table once, after ``run_build``."""
-    parent, print_layer_hashes, run_build = _run(show_layers=True, dry_run=False, tmp_path=tmp_path)
+    """A real build delegates the layer display to run_build's live panel."""
+    _parent, print_layer_hashes, run_build = _run(show_layers=True, dry_run=False, tmp_path=tmp_path)
 
-    assert print_layer_hashes.call_count == 1
+    # No pre-sync or post-build print: run_build's heartbeat renders the
+    # panel above the live region once bblayers.conf exists.
+    assert print_layer_hashes.call_count == 0
     assert run_build.call_count == 1
-
-    names = _ordered_names(parent)
-    assert "run_build" in names
-    assert "print_layer_hashes" in names
-    assert names.index("print_layer_hashes") > names.index("run_build"), (
-        f"expected _print_layer_hashes after run_build on a real build, got order {names}"
-    )
+    assert run_build.call_args.kwargs.get("show_layers") is True
 
 
 def test_show_layers_disabled_never_prints(tmp_path: Path) -> None:
     """With ``effective_show_layers`` false, the table is never rendered."""
-    _parent, print_layer_hashes, _run_build = _run(show_layers=False, dry_run=False, tmp_path=tmp_path)
+    _parent, print_layer_hashes, run_build = _run(show_layers=False, dry_run=False, tmp_path=tmp_path)
 
     assert print_layer_hashes.call_count == 0
+    assert run_build.call_args.kwargs.get("show_layers") is False

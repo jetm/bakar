@@ -158,7 +158,7 @@ def test_show_layers_flag_prints_table(
     monkeypatch.setattr(helpers_module, "collect_layer_hashes", lambda cfg: sentinel)
     result = _invoke_build(runner, nxp_workspace, "--show-layers")
     assert result.exit_code == 0, result.output
-    assert "layers:" in result.output
+    assert "layers (" in result.output
     assert "poky" in result.output
 
 
@@ -172,7 +172,7 @@ def test_config_show_hashes_prints_table_without_flag(
     monkeypatch.setattr(helpers_module, "collect_layer_hashes", lambda cfg: sentinel)
     result = _invoke_build(runner, nxp_workspace)
     assert result.exit_code == 0, result.output
-    assert "layers:" in result.output
+    assert "layers (" in result.output
     assert "meta-imx" in result.output
 
 

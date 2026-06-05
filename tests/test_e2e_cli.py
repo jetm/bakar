@@ -296,7 +296,7 @@ class TestLayers:
     def test_repo_with_git_hash(self, layer_ws: Path) -> None:
         result = _run(["layers", "--workspace", str(layer_ws)])
         assert result.returncode == 0
-        assert "layers:" in result.stderr
+        assert "layers (" in result.stderr
         assert "meta-local" in result.stderr
 
     def test_empty_workspace_shows_guidance(self, nxp_ws: Path) -> None:
