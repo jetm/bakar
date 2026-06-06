@@ -349,7 +349,7 @@ def test_failure_preview_rendered_below_summary(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ETA routing -- completion events route through _update_build and feed the bar
+# Counter routing -- completion events route through _update_build and feed the bar
 # ---------------------------------------------------------------------------
 
 
