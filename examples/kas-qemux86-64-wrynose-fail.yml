@@ -1,0 +1,27 @@
+# Failure-injection wrapper over kas-qemux86-64-wrynose.yml for exercising
+# the live UI's failure surfacing: the "✗ FAILED: recipe task" alert above
+# the live region, the persistent "✗ N failed" line, and the dim log-tail
+# preview under it.
+#
+# CC=false changes m4-native's task signatures, so the recipe misses sstate
+# even on a fully warm cache and its tasks actually run; do_configure then
+# dies with "C compiler cannot create executables" - a deterministic runtime
+# TaskFailed event with a real log file. A parse-level injection (e.g.
+# SKIP_RECIPE) would NOT work here: it fails dependency resolution before
+# any task runs, so no TaskFailed event ever fires.
+#
+# Usage:
+#   bakar build examples/kas-qemux86-64-wrynose-fail.yml
+#   bakar build --keep-going examples/kas-qemux86-64-wrynose-fail.yml
+#
+# --keep-going keeps unrelated dependency branches building after the
+# failure, which is the interesting case for the alert-above-live display.
+
+header:
+  version: 21
+  includes:
+    - kas-qemux86-64-wrynose.yml
+
+local_conf_header:
+  bakar-failure-inject: |
+    CC:pn-m4-native = "false"
