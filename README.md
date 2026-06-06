@@ -31,7 +31,9 @@ kas-based BSP build orchestrator for Yocto. Wraps `kas-container` with manifest-
 ## Install
 
 ```bash
-uv tool install git+https://github.com/jetm/bakar.git
+uv tool install bakar
+# or
+pip install bakar
 ```
 
 ## Quickstart
