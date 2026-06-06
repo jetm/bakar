@@ -11,6 +11,7 @@ a small first-match-wins rule set:
 * repos contains ``meta-imx`` / ``meta-freescale*`` / ``meta-nxp*`` -> ``nxp``
 * repos contains ``meta-ti-bsp`` / ``meta-ti`` / ``meta-arago`` -> ``ti``
 * parseable YAML with at least ``machine:`` or ``repos:``      -> ``generic``
+* ``header.includes`` only -> the included file's family, else ``generic``
 * unparseable / empty                                          -> ``unknown``
 
 The ``generic`` classification is the BSP-agnostic fallback for kas
@@ -88,7 +89,12 @@ def _repos_family(repos: dict[str, Any] | None) -> Literal["nxp", "ti", "unknown
     return "unknown"
 
 
-def detect_bsp_from_yaml(yaml_path: Path) -> Literal["nxp", "ti", "generic", "unknown"]:
+# Include-chain recursion guard: covers wrapper-over-wrapper layering while
+# bounding pathological include cycles (A includes B includes A).
+_MAX_INCLUDE_DEPTH = 3
+
+
+def detect_bsp_from_yaml(yaml_path: Path, _depth: int = 0) -> Literal["nxp", "ti", "generic", "unknown"]:
     """Inspect a kas YAML and classify the BSP family.
 
     Pure function over a parsed YAML dict. Returns ``"generic"`` for a
@@ -96,6 +102,14 @@ def detect_bsp_from_yaml(yaml_path: Path) -> Literal["nxp", "ti", "generic", "un
     use that to layer the BSP-agnostic tuning overlay. Returns
     ``"unknown"`` only for unparseable, empty, or shape-incomplete
     YAMLs - those exit with a typer.Exit(2) and a hint.
+
+    A YAML with neither ``machine:`` nor ``repos:`` but a non-empty
+    ``header.includes`` list is a valid kas include-only config (the
+    standard way to layer a tweak on a base YAML). File includes are
+    followed - resolved relative to the YAML's directory - so a wrapper
+    over an NXP/TI YAML inherits its base family's overlay; otherwise
+    the wrapper classifies as ``generic`` and kas itself resolves (or
+    rejects) the includes at build time.
     """
     if yaml_path is None or not yaml_path.is_file():
         return "unknown"
@@ -117,11 +131,25 @@ def detect_bsp_from_yaml(yaml_path: Path) -> Literal["nxp", "ti", "generic", "un
         return repos_hit
 
     # No NXP/TI markers but the YAML has at least a machine string or a
-    # repos block - treat as a generic kas build. Reject only YAMLs
-    # that lack both anchors (typo or empty file).
+    # repos block - treat as a generic kas build.
     has_machine = isinstance(machine, str) and bool(machine.strip())
     has_repos = isinstance(data.get("repos"), dict) and bool(data["repos"])
     if has_machine or has_repos:
+        return "generic"
+
+    # Include-only config: follow string includes to inherit the base
+    # family (dict entries are repo-relative includes kas resolves inside
+    # a cloned repo - unreachable here, skipped). A non-empty include
+    # list is a valid kas build even when no include classifies.
+    header = data.get("header")
+    includes = header.get("includes") if isinstance(header, dict) else None
+    if isinstance(includes, list) and includes:
+        if _depth < _MAX_INCLUDE_DEPTH:
+            for inc in includes:
+                if isinstance(inc, str):
+                    hit = detect_bsp_from_yaml(yaml_path.parent / inc, _depth=_depth + 1)
+                    if hit in ("nxp", "ti"):
+                        return hit
         return "generic"
     return "unknown"
 

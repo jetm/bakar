@@ -271,8 +271,8 @@ def _dispatch_from_yaml(yaml_path: Path) -> tuple[Literal["nxp", "ti", "generic"
     if family == "unknown":
         console.print(
             f"[red]Could not parse {yaml_path} as a kas build.[/red] "
-            "The YAML must declare at least a machine: value or a repos: block. "
-            "See kas's documentation for the schema.",
+            "The YAML must declare at least a machine: value, a repos: block, "
+            "or a header.includes list. See kas's documentation for the schema.",
             markup=True,
         )
         raise typer.Exit(code=2)

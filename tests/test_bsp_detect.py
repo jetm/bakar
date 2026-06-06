@@ -116,6 +116,48 @@ def test_garbage_yaml_returns_unknown(tmp_path: Path) -> None:
     assert detect_bsp_from_yaml(p) == "unknown"
 
 
+def test_include_only_yaml_classifies_as_generic(tmp_path: Path) -> None:
+    """An include-only wrapper (header.includes + local_conf_header) is a
+    valid kas config - the standard way to layer a tweak on a base YAML."""
+    (tmp_path / "base.yml").write_text("header:\n  version: 21\nmachine: qemux86-64\n", encoding="utf-8")
+    body = (
+        "header:\n  version: 21\n  includes:\n    - base.yml\n"
+        'local_conf_header:\n  inject: |\n    PNBLACKLIST[m4-native] = "test"\n'
+    )
+    p = _write(tmp_path, body)
+    assert detect_bsp_from_yaml(p) == "generic"
+
+
+def test_include_wrapper_inherits_nxp_family(tmp_path: Path) -> None:
+    """A wrapper over an NXP YAML must classify as nxp so the family overlay
+    (ACCEPT_FSL_EULA etc.) is layered, not the generic one."""
+    (tmp_path / "base.yml").write_text("header:\n  version: 21\nmachine: imx8mp-var-dart\n", encoding="utf-8")
+    body = "header:\n  version: 21\n  includes:\n    - base.yml\n"
+    p = _write(tmp_path, body)
+    assert detect_bsp_from_yaml(p) == "nxp"
+
+
+def test_include_wrapper_with_missing_base_classifies_as_generic(tmp_path: Path) -> None:
+    """A dangling include still classifies generic; kas reports the missing
+    file with its own clearer error at build time."""
+    body = "header:\n  version: 21\n  includes:\n    - does-not-exist.yml\n"
+    p = _write(tmp_path, body)
+    assert detect_bsp_from_yaml(p) == "generic"
+
+
+def test_include_cycle_terminates_as_generic(tmp_path: Path) -> None:
+    """Mutually-including YAMLs must terminate via the depth cap."""
+    (tmp_path / "a.yml").write_text("header:\n  version: 21\n  includes:\n    - b.yml\n", encoding="utf-8")
+    (tmp_path / "b.yml").write_text("header:\n  version: 21\n  includes:\n    - a.yml\n", encoding="utf-8")
+    assert detect_bsp_from_yaml(tmp_path / "a.yml") == "generic"
+
+
+def test_empty_includes_list_returns_unknown(tmp_path: Path) -> None:
+    """header.includes: [] carries no build anchors - still rejected."""
+    p = _write(tmp_path, "header:\n  version: 21\n  includes: []\n")
+    assert detect_bsp_from_yaml(p) == "unknown"
+
+
 def test_missing_file_returns_unknown(tmp_path: Path) -> None:
     assert detect_bsp_from_yaml(tmp_path / "does-not-exist.yml") == "unknown"
 
