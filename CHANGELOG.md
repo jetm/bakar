@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-06-05
+
+### Added
+
+- Added `BB_DEFAULT_EVENTLOG` passthrough to all BSP tuning overlays, ensuring the live build UI's event tailer reliably follows the per-run event log; previously the variable was scrubbed by bitbake's `clean_environment` and every event-driven UI feature (sstate ratio, parse cache note, failure alerts, log preview) silently fell back to the knotty regex parser.
+- Added support for include-only kas YAML configs (files with `header.includes` but no `machine:` or `repos:`) to BSP family detection; wrapper YAMLs now inherit the base file's NXP or TI family overlay, and any non-empty include list that does not resolve to a known family is accepted as `generic` rather than rejected with an error.
+- Added a failure-injection example config (`examples/kas-qemux86-64-wrynose-fail.yml`) for exercising the live UI's failure-surfacing features; it forces `m4-native` to miss sstate and fail `do_configure` deterministically, including with `--keep-going`.
+
+### Changed
+
+- The live build UI now commits the pipeline header, sstate ratio, and failure count into the scrollback **above** each task failure's output: when bitbake's first error line for a task is detected on the PTY feed, the Live region is stopped before that line prints, streams the failure block as plain output, then restarts — so the log reads top-to-bottom without the status frame landing below the error text.
+- Failure alert blocks now print below the frozen frame as a self-contained group (✗ FAILED line, host log path, last 15 log lines) rather than as a line above the live region; the count is deduplicated so a failure detected via the PTY head line and later confirmed by a `TaskFailed` event does not increment the counter twice.
+- The sstate reuse line in the live build UI was moved from between the build bar and the task table to directly after the pipeline breadcrumb, so the display reads top-to-bottom: pipeline state → cache reuse → progress bar → task table.
+- The error message shown when a kas YAML cannot be classified now mentions `header.includes` as a valid alternative to `machine:` and `repos:`.
+
 ## [0.15.0] - 2026-06-05
 
 ### Added
@@ -325,7 +340,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.15.1...HEAD
+[0.15.1]: https://github.com/jetm/bakar/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/jetm/bakar/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/jetm/bakar/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/jetm/bakar/compare/v0.12.0...v0.13.0
