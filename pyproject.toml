@@ -1,7 +1,7 @@
 [project]
 name = "bakar"
 version = "0.15.1"
-description = "kas wrapper for Yocto BSP builds - repo tool sync, pre-flight checks, triage"
+description = "kas-based Yocto BSP build orchestrator - live build UI, pre-flight checks, telemetry, and failure triage"
 readme = "README.md"
 requires-python = ">=3.14"
 license = "Apache-2.0"
