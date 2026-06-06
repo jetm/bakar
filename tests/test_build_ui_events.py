@@ -284,7 +284,7 @@ def test_setscene_line_absent_when_total_zero() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Failure-log preview -- tail of the most recent failed task's log
+# Failure freeze protocol -- head line freezes the frame, alert resumes it
 # ---------------------------------------------------------------------------
 
 
@@ -298,58 +298,144 @@ def _failed_stub(logfile: str | None) -> _EventStub:
     return e
 
 
+def _render(renderable) -> str:
+    from rich.console import Console
+
+    con = Console(width=200, force_terminal=False)
+    with con.capture() as cap:
+        con.print(renderable)
+    return cap.get()
+
+
+_HEAD_LINE = "ERROR: glibc-2.39-r0 do_compile: compile failed"
+
+
 @pytest.mark.unit
-def test_failure_preview_reads_log_tail(tmp_path: Path) -> None:
+def test_fail_head_line_requests_freeze_once() -> None:
+    ui = BuildUIState()
+    out = ui.process_line(_HEAD_LINE)
+    assert out == _HEAD_LINE  # severity passthrough unchanged
+    assert ui.take_fail_freeze() is True
+    assert ui._failures == [("glibc-2.39-r0", "do_compile")]
+    # Further error lines of the same failure: no second freeze.
+    ui.process_line("ERROR: glibc-2.39-r0 do_compile: Execution of 'x' failed with exit code 1")
+    assert ui.take_fail_freeze() is False
+    assert ui._task_failed_count == 1
+
+
+@pytest.mark.unit
+def test_frozen_frame_collapses_to_status_and_count() -> None:
+    ui = BuildUIState()
+    e = _runqueue_stub({"total": 450, "setscene_covered": 300, "setscene_total": 320, "setscene_notcovered": 20})
+    ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, e)
+    ui.process_line(_HEAD_LINE)
+
+    out = _render(ui.make_renderable())
+    assert "93% sstate (300 cached, 20 will build)" in out
+    assert "1 failed: glibc-2.39-r0:do_compile" in out
+    assert "kas_build" not in out  # bar and task table dropped
+
+
+@pytest.mark.unit
+def test_notify_restarted_restores_full_frame() -> None:
+    ui = BuildUIState()
+    ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, _runqueue_stub({"total": 450}))
+    ui.process_line(_HEAD_LINE)
+    ui.take_fail_freeze()
+    ui.notify_restarted()
+
+    out = _render(ui.make_renderable())
+    assert "kas_build" in out  # bar back
+    assert "1 failed" in out  # persistent failure summary stays
+
+
+@pytest.mark.unit
+def test_regex_fallback_running_line_requests_restart() -> None:
+    ui = BuildUIState()
+    ui.process_line(_HEAD_LINE)
+    assert ui.take_pending_restart() is False
+    ui.process_line("NOTE: Running task 6 of 9005 (/x.bb:do_compile)")
+    assert ui.take_pending_restart() is True
+
+
+@pytest.mark.unit
+def test_alert_block_single_failed_line_with_tail(tmp_path: Path) -> None:
+    """One ✗ FAILED line per failure - the head line dedupe prevents the
+    count from double-incrementing when the event follows the knotty text."""
+    log = tmp_path / "do_compile.log"
+    log.write_text("compile error here\n")
+    ui = BuildUIState(logfile_translator=lambda p: p)
+    ui.process_line(_HEAD_LINE)
+    ui.process_event(_EVT_TASK_FAILED, _failed_stub(str(log)))
+
+    assert ui._task_failed_count == 1
+    assert ui._failures == [("glibc-2.39-r0", "do_compile")]
+    alerts = ui.take_pending_alerts()
+    assert len(alerts) == 1
+    out = _render(alerts[0])
+    assert out.count("✗ FAILED") == 1
+    assert f"log: {log}" in out
+    assert "compile error here" in out
+    assert out.index("✗ FAILED") < out.index("compile error here")
+
+
+@pytest.mark.unit
+def test_alert_tail_keeps_last_15_lines(tmp_path: Path) -> None:
     log = tmp_path / "do_compile.log"
     log.write_text("\n".join(f"line {i}" for i in range(20)) + "\n")
     ui = BuildUIState(logfile_translator=lambda p: p)
     ui.process_event(_EVT_TASK_FAILED, _failed_stub(str(log)))
+    out = _render(ui.take_pending_alerts()[0])
     # Only the last 15 lines are kept (deque maxlen=15).
-    assert ui._failure_preview == [f"line {i}" for i in range(5, 20)]
+    assert "line 5" in out
+    assert "line 4" not in out
+    assert "line 19" in out
 
 
 @pytest.mark.unit
-def test_failure_preview_replaces_on_second_failure(tmp_path: Path) -> None:
-    first = tmp_path / "first.log"
-    first.write_text("first failure\n")
-    second = tmp_path / "second.log"
-    second.write_text("second failure\n")
-    ui = BuildUIState(logfile_translator=lambda p: p)
-    ui.process_event(_EVT_TASK_FAILED, _failed_stub(str(first)))
-    ui.process_event(_EVT_TASK_FAILED, _failed_stub(str(second)))
-    # The most recent failure's tail replaces the earlier one.
-    assert ui._failure_preview == ["second failure"]
-
-
-@pytest.mark.unit
-def test_failure_preview_missing_file_does_not_raise(tmp_path: Path) -> None:
+def test_alert_missing_file_does_not_raise(tmp_path: Path) -> None:
     ui = BuildUIState(logfile_translator=lambda p: p)
     missing = str(tmp_path / "absent.log")
-    # OSError on the unreadable path must be swallowed; preview stays empty.
+    # OSError on the unreadable path must be swallowed; the alert still
+    # queues, just without a tail.
     ui.process_event(_EVT_TASK_FAILED, _failed_stub(missing))
-    assert ui._failure_preview == []
+    out = _render(ui.take_pending_alerts()[0])
+    assert "FAILED" in out
 
 
 @pytest.mark.unit
-def test_failure_preview_skipped_without_translator(tmp_path: Path) -> None:
+def test_alert_tail_skipped_without_translator(tmp_path: Path) -> None:
     log = tmp_path / "do_compile.log"
     log.write_text("some output\n")
     ui = BuildUIState()  # no translator
     ui.process_event(_EVT_TASK_FAILED, _failed_stub(str(log)))
-    assert ui._failure_preview == []
+    out = _render(ui.take_pending_alerts()[0])
+    assert "FAILED" in out
+    assert "some output" not in out
 
 
 @pytest.mark.unit
-def test_failure_preview_rendered_below_summary(tmp_path: Path) -> None:
-    log = tmp_path / "do_compile.log"
-    log.write_text("compile error here\n")
-    ui = BuildUIState(logfile_translator=lambda p: p)
-    ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, _runqueue_stub({"total": 450}))
-    ui.process_event(_EVT_TASK_FAILED, _failed_stub(str(log)))
-    assert ui._phase is _Phase.BUILD
+def test_had_task_failures_property() -> None:
+    ui = BuildUIState()
+    assert ui.had_task_failures is False
+    ui.process_line(_HEAD_LINE)
+    assert ui.had_task_failures is True
 
-    texts = [getattr(r, "plain", "") for r in ui.make_renderable().renderables]
-    assert any("compile error here" in t for t in texts)
+
+@pytest.mark.unit
+def test_failed_final_frame_collapses_to_header_and_sstate(tmp_path: Path) -> None:
+    """finish_failed() keeps only the pipeline header and the sstate line -
+    used when the build fails without a recorded task failure."""
+    ui = BuildUIState()
+    e = _runqueue_stub({"total": 450, "setscene_covered": 300, "setscene_total": 320, "setscene_notcovered": 20})
+    ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, e)
+    ui.finish_failed()
+
+    out = _render(ui.make_renderable())
+    assert "93% sstate (300 cached, 20 will build)" in out
+    assert "parse" in out  # breadcrumb present
+    assert "kas_build" not in out
+    assert "failed" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -384,8 +470,9 @@ def test_task_failed_queues_alert_and_drains() -> None:
     ui.process_event(_EVT_TASK_FAILED, _failed_recipe_stub("glibc", "do_compile"))
     alerts = ui.take_pending_alerts()
     assert len(alerts) == 1
-    assert "FAILED" in alerts[0]
-    assert "glibc" in alerts[0]
+    out = _render(alerts[0])
+    assert "FAILED" in out
+    assert "glibc" in out
     # Swap-drain: a second take returns the empty list.
     assert ui.take_pending_alerts() == []
 

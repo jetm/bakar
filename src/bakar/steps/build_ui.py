@@ -91,6 +91,13 @@ FALLBACK_MODE = re.compile(r"Unable to use interactive mode")
 # Lines to surface above the Live display so users see real problems.
 SEVERITY_PASSTHROUGH = re.compile(r"\b(ERROR|FATAL|WARNING|QA Issue):")
 
+# First knotty line of a task-failure report ("ERROR: <PF> <task>: ...").
+# Detecting it on the PTY feed - BEFORE the line prints - is the only way
+# to commit the live frame above the failure text: the structured
+# TaskFailed event arrives later on the event-log tailer, when the error
+# block has already hit the terminal and lines cannot be reordered.
+TASK_FAIL_HEAD = re.compile(r"^ERROR: (\S+) (do_\S+): ")
+
 # Braille spinner frames (universal Unicode, not Nerd-Font dependent).
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -243,15 +250,25 @@ class BuildUIState:
         self.warn_count: int = 0
         self.error_count: int = 0
         self._logfile_translator = logfile_translator
-        # Persistent record of (recipe, taskname) for each failed task, rendered
-        # in the build bar. ``_pending_alerts`` queues one-shot alert lines the
-        # caller drains via take_pending_alerts() and prints above the Live.
+        # Persistent record of (recipe, taskname) for each failed task,
+        # rendered in the build bar. ``_pending_alerts`` queues one-shot
+        # alert blocks (✗ FAILED line, host log path, log tail) the caller
+        # drains via take_pending_alerts() and prints below the frozen frame.
         self._failures: list[tuple[str, str]] = []
-        self._pending_alerts: list[str] = []
+        self._pending_alerts: list[RenderableType] = []
         self._task_failed_count: int = 0
-        # Tail of the most recent failed task's log file, rendered under the
-        # failure-list line. Replaced (not appended) on each failure.
-        self._failure_preview: list[str] = []
+        # Freeze protocol: the first knotty error line of a task failure
+        # (TASK_FAIL_HEAD) sets ``_pending_freeze``; the build runner drains
+        # it via take_fail_freeze() and stops the Live BEFORE printing that
+        # line, committing the collapsed frame (pipeline, sstate, failure
+        # count) into the scrollback above the failure text. While
+        # ``_fail_frozen`` the failure text streams as plain prints; the
+        # runner restarts the Live after the TaskFailed alert lands (or on
+        # the next Running-task line in regex-fallback mode, drained via
+        # take_pending_restart) and calls notify_restarted().
+        self._fail_frozen = False
+        self._pending_freeze = False
+        self._pending_restart = False
         # High-water task-table column widths (recipe, task, elapsed). Grow
         # to the longest cell seen this run and never shrink, so columns hold
         # a static position frame-to-frame instead of jittering as the set of
@@ -272,6 +289,11 @@ class BuildUIState:
         self._scene_done_at: float | None = None
         self._tasks_started_at: float | None = None
         self._finished = False
+        # Set by finish_failed(): the final frame collapses to the pipeline
+        # header and sstate line. The failure list and log tails print once
+        # via failure_report() after the region closes, so repeating them
+        # in the frozen frame would duplicate.
+        self._failed_final = False
         # Historical timing baselines {"recipe:task": (mean, stddev)} from
         # prior builds of THIS context (workspace+machine+mode). Empty on the
         # first build -> estimated stays None and stuck-task detection falls
@@ -319,6 +341,11 @@ class BuildUIState:
                 with self._lock:
                     entering_build = self._phase is _Phase.SETUP
                     self._phase = _Phase.BUILD
+                    # Regex-fallback restart path: no TaskFailed event will
+                    # arrive to end a failure freeze, so the next task
+                    # counter line signals the runner to resume the Live.
+                    if self._fail_frozen:
+                        self._pending_restart = True
                     # Degraded-mode stage stamps: no sceneQueueComplete is
                     # observable from knotty lines, so setscene only closes
                     # at finish(); the segments still advance.
@@ -374,6 +401,19 @@ class BuildUIState:
                 self.warn_count += 1
             elif token in ("ERROR", "FATAL"):
                 self.error_count += 1
+                # First error line of a task failure: record the failure
+                # and request a freeze so the runner commits the live frame
+                # above this line. Dedupe on (PF, task) - bitbake emits
+                # several "ERROR: <PF> <task>: ..." lines per failure.
+                head = TASK_FAIL_HEAD.match(line)
+                if head:
+                    key = (head.group(1), head.group(2))
+                    with self._lock:
+                        if key not in self._failures:
+                            self._failures.append(key)
+                            self._task_failed_count += 1
+                            self._fail_frozen = True
+                            self._pending_freeze = True
             return line
 
         # 8. Default.
@@ -466,26 +506,35 @@ class BuildUIState:
             logfile = getattr(event, "logfile", None)
             if self._logfile_translator and logfile:
                 logfile = self._logfile_translator(logfile)
-            msg = f"[bold red]✗ FAILED:[/] {recipe} {taskname}"
-            if logfile:
-                msg += f"\n   log: {logfile}"
-            with self._lock:
-                self._running.pop(f"{recipe}:{taskname}", None)
-                self._failures.append((recipe, taskname))
-                self._pending_alerts.append(msg)
-                self._task_failed_count += 1
-            # Tail the host log so the most recent failure's last lines render
-            # under the failure summary. OSError (missing/unreadable file) must
-            # not propagate -- it would crash the tailer thread.
+            # Tail the host log so the alert block carries the failure's
+            # root cause. OSError (missing/unreadable file) must not
+            # propagate -- it would crash the tailer thread.
+            tail: list[str] = []
             if self._logfile_translator and logfile:
                 try:
                     with open(logfile, encoding="utf-8", errors="replace") as fh:
-                        lines = list(deque(fh, maxlen=15))
+                        tail = [ln.rstrip("\n") for ln in deque(fh, maxlen=15)]
                 except OSError:
                     pass
-                else:
-                    with self._lock:
-                        self._failure_preview = [ln.rstrip("\n") for ln in lines]
+            # One self-contained block per failure, printed below the frozen
+            # frame and bitbake's error text. The trailing blank separates
+            # it from whatever follows (resumed live region or the runner's
+            # exit lines). The failures append is deduped against the
+            # TASK_FAIL_HEAD knotty line that usually precedes this event.
+            block: list[RenderableType] = [
+                Text.assemble(("✗ FAILED:", "bold red"), f" {recipe} {taskname}"),
+            ]
+            if logfile:
+                block.append(Text(f"   log: {logfile}"))
+            if tail:
+                block.append(Text("\n".join(tail), style="dim"))
+            block.append(Text(""))
+            with self._lock:
+                self._running.pop(f"{recipe}:{taskname}", None)
+                if (recipe, taskname) not in self._failures:
+                    self._failures.append((recipe, taskname))
+                    self._task_failed_count += 1
+                self._pending_alerts.append(Group(*block))
             return
 
         if class_name in (_EVT_TASK_SUCCEEDED, _EVT_TASK_FAILED_SILENT):
@@ -589,16 +638,52 @@ class BuildUIState:
         msg, self._pending_log = self._pending_log, None
         return msg
 
-    def take_pending_alerts(self) -> list[str]:
-        """Return and clear the queued failure-alert lines.
+    def take_pending_alerts(self) -> list[RenderableType]:
+        """Return and clear the queued failure-alert blocks.
 
         Mirrors take_pending_log() but drains a list: the caller prints each
-        alert above the Live display so failures stay visible during a ``-k``
-        build.
+        block (✗ FAILED line, host log path, log tail) below the frozen
+        frame so the failure's full context lands contiguous with bitbake's
+        own error lines in the chronological scrollback.
         """
         with self._lock:
             out, self._pending_alerts = self._pending_alerts, []
         return out
+
+    def take_fail_freeze(self) -> bool:
+        """Drain the one-shot freeze request set by a task-failure head line.
+
+        The runner checks this after process_line and, when True, stops the
+        Live BEFORE printing the line - committing the collapsed frame
+        (pipeline, sstate, failure count) into the scrollback above the
+        failure text that is about to stream.
+        """
+        with self._lock:
+            out, self._pending_freeze = self._pending_freeze, False
+        return out
+
+    def take_pending_restart(self) -> bool:
+        """Drain the one-shot restart request (regex-fallback mode only).
+
+        Without an event feed no TaskFailed alert will arrive to end a
+        failure freeze, so the next knotty task-counter line requests the
+        Live resume instead.
+        """
+        with self._lock:
+            out, self._pending_restart = self._pending_restart, False
+        return out
+
+    def notify_restarted(self) -> None:
+        """Clear the freeze state after the runner restarted the Live."""
+        with self._lock:
+            self._fail_frozen = False
+            self._pending_restart = False
+
+    @property
+    def had_task_failures(self) -> bool:
+        """True when at least one task failure was recorded this build."""
+        with self._lock:
+            return bool(self._failures)
 
     def update_heartbeat(self, stall_secs: int, du_delta: int) -> None:
         """Retained for caller compatibility.
@@ -625,6 +710,17 @@ class BuildUIState:
                 # No-op when sceneQueueComplete already closed it; covers the
                 # degraded regex path, which never sees that event.
                 self._seg_durations.setdefault("setscene", int(now - self._scene_started_at))
+
+    def finish_failed(self) -> None:
+        """Collapse the final frame to the pipeline header and sstate line.
+
+        Called by the build runner on a nonzero exit, before the Live
+        region closes. The bar and failure list would duplicate what the
+        immediate alerts and the end-of-build failure_report() carry, so
+        the frozen frame keeps only the closing status.
+        """
+        with self._lock:
+            self._failed_final = True
 
     def _render_breadcrumb(self) -> Text:
         """Render the pipeline header: phase segments, then the global timer.
@@ -710,24 +806,53 @@ class BuildUIState:
             setscene_total = self._setscene_total
             setscene_notcovered = self._setscene_notcovered
             failures = list(self._failures)
-            failure_preview = list(self._failure_preview)
+            failed_final = self._failed_final
+            fail_frozen = self._fail_frozen
             tasks = sorted(self._running.values(), key=lambda t: -(now - t.start))
+
+        sstate_line: Text | None = None
+        if setscene_total > 0:
+            pct = int(setscene_covered / setscene_total * 100)
+            sstate_line = Text(
+                f" {pct}% sstate ({setscene_covered} cached, {setscene_notcovered} will build)",
+                style="green",
+            )
+
+        # Failure-freeze frame: committed into the scrollback when the Live
+        # stops on a task-failure head line, right above the failure text.
+        # Pipeline header, sstate line, then the failure count, framed by
+        # blanks so the error block below reads as its own section.
+        parts: list[RenderableType]
+        if fail_frozen and failures:
+            parts = [self._render_breadcrumb()]
+            if sstate_line is not None:
+                parts.append(sstate_line)
+            n = len(failures)
+            shown = ", ".join(f"{r}:{t}" for r, t in failures[:3])
+            suffix = f" (+{n - 3} more)" if n > 3 else ""
+            parts.append(Text(""))
+            parts.append(Text(f" ✗ {n} failed: {shown}{suffix}", style="bold red"))
+            parts.append(Text(""))
+            return Group(*parts)
+
+        # Failed-build final frame: pipeline header and sstate line only.
+        # Each failure's context already printed inline under its frozen
+        # frame, so the closing frame repeats none of it.
+        if failed_final:
+            parts = [self._render_breadcrumb()]
+            if sstate_line is not None:
+                parts.append(sstate_line)
+            return Group(*parts)
 
         if phase is _Phase.SETUP:
             return Group(self._render_breadcrumb(), self._setup_progress)
 
-        parts: list[RenderableType] = [self._render_breadcrumb()]
+        parts = [self._render_breadcrumb()]
 
         # Setscene-reuse line, between the pipeline header and the build bar.
         # Gated on setscene_total > 0 so the zero case leaves parts unchanged.
-        if setscene_total > 0:
-            pct = int(setscene_covered / setscene_total * 100) if setscene_total > 0 else 0
-            parts.append(
-                Text(
-                    f" {pct}% sstate ({setscene_covered} cached, {setscene_notcovered} will build)",
-                    style="green",
-                )
-            )
+        if sstate_line is not None:
+            parts.append(sstate_line)
 
         parts.append(self._build_progress)
 
@@ -738,9 +863,6 @@ class BuildUIState:
             shown = ", ".join(f"{r}:{t}" for r, t in failures[:3])
             suffix = f" (+{n - 3} more)" if n > 3 else ""
             parts.append(Text(f" ✗ {n} failed: {shown}{suffix}", style="bold red"))
-            # Tail of the most recent failure's log, below the summary line.
-            if failure_preview:
-                parts.append(Text("\n".join(failure_preview), style="dim"))
 
         if tasks:
             els = sorted(now - t.start for t in tasks)

@@ -626,18 +626,37 @@ def _run_pty_with_ui(
             os.close(slave_fd)
             slave_fd = -1
 
+            live_frozen = False
+
             def _process_line(line: str) -> None:  # pragma: no cover
+                nonlocal live_frozen
                 kas_log.write(line + "\n")
                 kas_log.flush()
                 state["last_event_ts"] = time.monotonic()
                 msg = ui.process_line(line)
+                # Failure freeze: stop the Live BEFORE printing the first
+                # error line of a task failure, committing the collapsed
+                # frame (pipeline, sstate, failure count) into the
+                # scrollback above the failure text about to stream.
+                if not live_frozen and ui.take_fail_freeze():
+                    live.stop()
+                    live_frozen = True
                 if msg:
                     live.console.print(msg)
                 info = ui.take_pending_log()
                 if info:
                     log.info(info)
-                for alert in ui.take_pending_alerts():
+                alerts = ui.take_pending_alerts()
+                for alert in alerts:
                     live.console.print(alert)
+                # Resume the Live once the failure context has fully landed:
+                # after the TaskFailed alert block (event feed), or on the
+                # next task-counter line (regex fallback, where no event
+                # will arrive).
+                if live_frozen and (alerts or ui.take_pending_restart()):
+                    live.start(refresh=True)
+                    live_frozen = False
+                    ui.notify_restarted()
 
             def _pump() -> None:  # pragma: no cover
                 buf = b""
@@ -745,6 +764,17 @@ def _run_pty_with_ui(
                     # segment checked (Live renders once more on exit);
                     # without this the header ends on a spinner forever.
                     ui.finish()
+                elif ui.had_task_failures:
+                    # Each failure's pipeline status and context already
+                    # committed inline (frozen frame + alert block);
+                    # repeating the frame here would wedge it between the
+                    # failure text and the runner's exit lines. No-op when
+                    # the Live is still frozen (already out of the way).
+                    live.transient = True
+                else:
+                    # Failed without a recorded task failure (parse abort,
+                    # container error): keep a collapsed closing status.
+                    ui.finish_failed()
     finally:
         if slave_fd != -1:
             try:
