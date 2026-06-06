@@ -160,7 +160,23 @@ def test_generic_overlay_omits_meta_varis_overrides(generic_overlay: dict) -> No
 
 def test_generic_overlay_declares_pythonmalloc_env(generic_overlay: dict) -> None:
     """PYTHONMALLOC=malloc is BSP-agnostic; the parser fork race fires on every BSP."""
-    assert generic_overlay.get("env") == {"PYTHONMALLOC": "malloc"}
+    assert generic_overlay.get("env") == {"PYTHONMALLOC": "malloc", "BB_DEFAULT_EVENTLOG": None}
+
+
+def test_all_overlays_whitelist_bb_default_eventlog(nxp_overlay: dict, ti_overlay: dict, generic_overlay: dict) -> None:
+    """Every BSP overlay must declare BB_DEFAULT_EVENTLOG (null = passthrough-only).
+
+    bakar injects the per-run event-log path via ``docker -e``, but bitbake
+    reads BB_DEFAULT_EVENTLOG from its datastore and clean_environment scrubs
+    env vars not in BB_ENV_PASSTHROUGH_ADDITIONS. kas only whitelists vars
+    declared in the ``env:`` section, so dropping this key silently kills the
+    live UI's event feed (setscene line, cache note, failure alerts) and the
+    build degrades to the knotty regex fallback.
+    """
+    for name, overlay in (("nxp", nxp_overlay), ("ti", ti_overlay), ("generic", generic_overlay)):
+        env = overlay.get("env") or {}
+        assert "BB_DEFAULT_EVENTLOG" in env, f"{name} overlay missing BB_DEFAULT_EVENTLOG env declaration"
+        assert env["BB_DEFAULT_EVENTLOG"] is None, f"{name} overlay must declare BB_DEFAULT_EVENTLOG as null"
 
 
 @pytest.fixture

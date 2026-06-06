@@ -1131,10 +1131,13 @@ def _find_oe_eventlog(cfg: BuildConfig, log: RunLogger) -> Path | None:
 
     OE-core's bitbake.conf sets:
         BB_DEFAULT_EVENTLOG ?= "${LOG_DIR}/eventlog/${DATETIME}.json"
-    so when our BB_DEFAULT_EVENTLOG env injection does not reach bitbake's
-    data store (kas-container only forwards a hardcoded env-var allowlist;
-    BB_ENV_PASSTHROUGH_ADDITIONS is read from the process env before config
-    parse so local_conf_header cannot help), bitbake writes to
+    The tuning overlays declare ``BB_DEFAULT_EVENTLOG: null`` in their kas
+    ``env:`` section, which makes kas whitelist the var in
+    BB_ENV_PASSTHROUGH_ADDITIONS so the ``docker -e`` injection reaches
+    bitbake's data store and the log lands at the run-dir path the live
+    tailer follows. When that chain is broken (a build without the bakar
+    overlay, or an older generated YAML), bitbake falls back to the ?=
+    default and writes to
     ``bsp_root/build/tmp/log/eventlog/YYYYMMDDHHMMSS.json`` instead.
 
     Returns the newest JSON file in that directory whose mtime is at or after

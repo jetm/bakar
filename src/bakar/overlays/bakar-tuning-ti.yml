@@ -16,6 +16,13 @@ header:
 # workers. Host env wins on override.
 env:
   PYTHONMALLOC: malloc
+  # Passthrough-only (null = no default): bakar injects the per-run event-log
+  # path via `docker -e`, but bitbake reads BB_DEFAULT_EVENTLOG from its
+  # datastore (cooker.py), and clean_environment scrubs env vars not in
+  # BB_ENV_PASSTHROUGH_ADDITIONS. Declaring it here makes kas whitelist it,
+  # so the live build UI's event tailer finds the log at the run-dir path.
+  # When unset, kas drops the null and OE-core's ?= default applies.
+  BB_DEFAULT_EVENTLOG: null
 
 local_conf_header:
   bakar-tuning: |
