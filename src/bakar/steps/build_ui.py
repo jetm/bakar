@@ -716,9 +716,9 @@ class BuildUIState:
         if phase is _Phase.SETUP:
             return Group(self._render_breadcrumb(), self._setup_progress)
 
-        parts: list[RenderableType] = [self._render_breadcrumb(), self._build_progress]
+        parts: list[RenderableType] = [self._render_breadcrumb()]
 
-        # Setscene-reuse line, between the build bar and the per-task table.
+        # Setscene-reuse line, between the pipeline header and the build bar.
         # Gated on setscene_total > 0 so the zero case leaves parts unchanged.
         if setscene_total > 0:
             pct = int(setscene_covered / setscene_total * 100) if setscene_total > 0 else 0
@@ -728,6 +728,8 @@ class BuildUIState:
                     style="green",
                 )
             )
+
+        parts.append(self._build_progress)
 
         # Persistent failure summary during -k builds. Gated on a non-empty
         # failure list so the no-failure case leaves the render unchanged.

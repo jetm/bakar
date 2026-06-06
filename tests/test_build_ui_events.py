@@ -261,9 +261,13 @@ def test_setscene_line_rendered_when_covered() -> None:
     ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, e)
     assert ui._phase is _Phase.BUILD
 
-    texts = [r for r in ui.make_renderable().renderables if hasattr(r, "plain")]
+    renderables = list(ui.make_renderable().renderables)
+    texts = [r for r in renderables if hasattr(r, "plain")]
     # Rendered as a ratio: pct = int(300 / 320 * 100) = 93.
-    assert any("93% sstate (300 cached, 20 will build)" in r.plain for r in texts)
+    sstate = [r for r in texts if "93% sstate (300 cached, 20 will build)" in r.plain]
+    assert sstate
+    # Order: pipeline header, sstate line, build bar.
+    assert renderables.index(sstate[0]) < renderables.index(ui._build_progress)
 
 
 @pytest.mark.unit
