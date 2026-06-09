@@ -127,6 +127,21 @@ def test_docker_timeout_skips_at_warn() -> None:
     assert result.severity == Severity.WARN
 
 
+def test_docker_transient_timeout_retries_then_passes() -> None:
+    """A single cold-start timeout must not disarm the BLOCK gate; the retry
+    sees the real container and the check still reports its verdict."""
+    with patch(
+        "bakar.diagnostics.subprocess.run",
+        side_effect=[
+            subprocess.TimeoutExpired(cmd="docker", timeout=20),
+            _mock_run("fedora 40\nPython 3.12.10\n"),
+        ],
+    ):
+        result = check_container_os(_cfg())
+    assert result.status == Status.PASS
+    assert result.severity == Severity.BLOCK
+
+
 def test_docker_missing_skips_at_warn() -> None:
     with patch(
         "bakar.diagnostics.subprocess.run",

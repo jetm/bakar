@@ -169,6 +169,22 @@ _CONTAINER_PY_FIX_HINT = (
 )
 
 
+def _docker_run_probe(cmd: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
+    """Run a ``docker run`` probe, retrying once on timeout.
+
+    The first ``docker run`` against an idle or busy daemon can cold-start
+    past ``timeout`` even when the steady-state launch is sub-second. A lone
+    transient stall would otherwise disarm ``check_container_os``: its except
+    arm downgrades the BLOCK gate to a WARN skip, so a broken Python 3.13/3.14
+    container could slip through. One retry absorbs the cold start;
+    ``FileNotFoundError`` (no docker binary) is left to propagate.
+    """
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+
+
 def check_container_os(cfg: BuildConfig) -> CheckResult:
     """Block if container Python is 3.13.x or 3.14.x.
 
@@ -180,7 +196,7 @@ def check_container_os(cfg: BuildConfig) -> CheckResult:
     case (Debian 13 ships Python 3.13).
     """
     try:
-        out = subprocess.run(
+        out = _docker_run_probe(
             [
                 "docker",
                 "run",
@@ -190,11 +206,7 @@ def check_container_os(cfg: BuildConfig) -> CheckResult:
                 cfg.container_image,
                 "-c",
                 '. /etc/os-release && echo "$ID ${VERSION_ID:-$VERSION_CODENAME}" && python3 --version',
-            ],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
+            ]
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return _skip("container-os", Severity.WARN, f"could not inspect: {exc}")
@@ -264,7 +276,7 @@ def check_container_bitbake(cfg: BuildConfig) -> CheckResult:
         shell = "which bitbake && bitbake --version"
     cmd += [cfg.container_image, "-c", shell]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=20, check=False)
+        out = _docker_run_probe(cmd)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return _skip("container-bitbake", Severity.INFO, f"could not inspect: {exc}")
     if out.returncode != 0:
