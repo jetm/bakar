@@ -86,6 +86,7 @@ def _run_task(
     workspace: Path | None,
     kas_yaml: Path | None,
     step: str,
+    command_override: str | None = None,
 ) -> None:
     """Dispatch and run a bitbake task for ``target`` inside kas-container.
 
@@ -96,6 +97,11 @@ def _run_task(
     - ``task == "listtasks"``: capture and pretty-print the parsed task names.
     - otherwise: stream the live knotty UI via ``run_shell_live`` and exit with
       bitbake's exit code.
+
+    ``command_override`` replaces the single-invocation command built from
+    ``target``/``task`` with a prebuilt shell string (e.g. ``rebuild``'s
+    ``cleansstate && build`` chain). Only valid on the live path - callers that
+    pass it leave ``task`` None so the devshell/listtasks branches are skipped.
     """
     family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
@@ -109,7 +115,7 @@ def _run_task(
     overlay_source = _overlay_for(bsp)
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
 
-    command = _build_command(target, task, keep_going=keep_going)
+    command = command_override if command_override is not None else _build_command(target, task, keep_going=keep_going)
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source)
@@ -247,4 +253,57 @@ def clean_recipe(
         workspace=workspace,
         kas_yaml=kas_yaml,
         step="clean-recipe",
+    )
+
+
+@app.command()
+def rebuild(
+    recipe: Annotated[
+        str,
+        typer.Argument(help="Recipe to rebuild from scratch (cleansstate, then build)."),
+    ],
+    kas_yaml: Annotated[
+        Path | None,
+        typer.Argument(
+            exists=False,
+            help="Optional kas YAML (BYO/bbsetup); resolves the workspace next to it.",
+        ),
+    ] = None,
+    keep_going: Annotated[
+        bool,
+        typer.Option("--keep-going", "-k", help="Pass -k to the build phase (keep building after failures)"),
+    ] = False,
+    manifest: Annotated[
+        str | None,
+        typer.Option("--manifest", "-f", help="Manifest filename used to dispatch BSP family"),
+    ] = None,
+    machine: Annotated[
+        str | None,
+        typer.Option("--machine", "-m", help="Override the target machine"),
+    ] = None,
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", "-w", help="Workspace root override"),
+    ] = None,
+) -> None:
+    """Rebuild a recipe from scratch: ``bitbake -c cleansstate <recipe> && bitbake <recipe>``.
+
+    Wipes the recipe's sstate and work directory, then rebuilds it, in one
+    kas-container invocation logged to the run dir. Use when a recipe's cached
+    output is stale or corrupt and a plain ``bakar bitbake`` would pull the bad
+    sstate. The ``&&`` chain short-circuits: a failed cleansstate skips the
+    build. Exits with bitbake's own exit code.
+    """
+    clean = _build_command(recipe, "cleansstate", keep_going=False)
+    build = _build_command(recipe, None, keep_going=keep_going)
+    _run_task(
+        recipe,
+        None,
+        keep_going=keep_going,
+        manifest=manifest,
+        machine=machine,
+        workspace=workspace,
+        kas_yaml=kas_yaml,
+        step="rebuild",
+        command_override=f"{clean} && {build}",
     )

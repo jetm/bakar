@@ -17,6 +17,7 @@ These let the tests verify:
 - ``-c compile`` issues ``bitbake -c compile busybox``.
 - ``-k`` appends ``-k`` to the command.
 - ``clean-recipe busybox`` issues ``bitbake -c cleansstate busybox``.
+- ``rebuild busybox`` chains ``bitbake -c cleansstate busybox && bitbake busybox``.
 - A non-zero live exit propagates.
 - ``--task devshell`` routes through the interactive ``run_shell`` helper and
   not the live helper.
@@ -164,6 +165,58 @@ def test_clean_recipe_issues_cleansstate(runner: _CliRunner, nxp_workspace: Path
 
     assert result.exit_code == 0, result.output
     assert live_calls[0]["command"] == "bitbake -c cleansstate busybox"
+
+
+# ---------------------------------------------------------------------------
+# rebuild
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_rebuild_chains_cleansstate_then_build(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """``rebuild busybox`` issues cleansstate then a plain build, chained with &&."""
+    live_calls: list[dict] = []
+    fake = _make_fake_live(0, live_calls)
+
+    with patch("bakar.commands.bitbake.run_shell_live", fake):
+        result = runner.invoke(
+            app,
+            ["rebuild", _TARGET, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert live_calls[0]["command"] == "bitbake -c cleansstate busybox && bitbake busybox"
+
+
+@pytest.mark.unit
+def test_rebuild_keep_going_applies_to_build_half_only(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """``-k`` adds -k to the build half; the cleansstate half stays unflagged."""
+    live_calls: list[dict] = []
+    fake = _make_fake_live(0, live_calls)
+
+    with patch("bakar.commands.bitbake.run_shell_live", fake):
+        result = runner.invoke(
+            app,
+            ["rebuild", _TARGET, "-k", "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert live_calls[0]["command"] == "bitbake -c cleansstate busybox && bitbake -k busybox"
+
+
+@pytest.mark.unit
+def test_rebuild_nonzero_exit_propagates(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """A failed cleansstate-or-build (nonzero shell exit) propagates as the command code."""
+    live_calls: list[dict] = []
+    fake = _make_fake_live(1, live_calls)
+
+    with patch("bakar.commands.bitbake.run_shell_live", fake):
+        result = runner.invoke(
+            app,
+            ["rebuild", _TARGET, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code != 0, result.output
 
 
 # ---------------------------------------------------------------------------

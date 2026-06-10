@@ -7,6 +7,7 @@ Run a single recipe or image target through bitbake inside kas-container, with t
 ```text
 bakar bitbake <target> [kas_yaml] [OPTIONS]
 bakar clean-recipe <recipe> [kas_yaml] [OPTIONS]
+bakar rebuild <recipe> [kas_yaml] [OPTIONS]
 ```
 
 ## Description
@@ -18,6 +19,12 @@ exits with bitbake's own exit code, surfacing a non-zero result rather than repo
 
 `bakar clean-recipe` is a thin alias for `bitbake -c cleansstate <recipe>` covering the most
 common cleanup task. It shares the same task-execution path, logging, and exit-code behavior.
+
+`bakar rebuild` chains the two into one container invocation:
+`bitbake -c cleansstate <recipe> && bitbake <recipe>`. Use it when a recipe's cached output is
+stale or corrupt and a plain `bakar bitbake` would just pull the bad sstate. The `&&`
+short-circuits, so a failed cleansstate skips the build. `--keep-going/-k` applies to the build
+half only.
 
 Two task names are special-cased:
 
@@ -47,9 +54,9 @@ required. Run `bakar sync` first if the workspace has not been initialized.
 ## Run logging
 
 Each non-interactive invocation writes its captured output to
-`<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/` as `bitbake.log` (for `bakar bitbake`) or
-`clean-recipe.log` (for `bakar clean-recipe`). Use `bakar log` to inspect them. The `devshell`
-path is interactive and produces no captured log.
+`<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/` as `bitbake.log` (for `bakar bitbake`),
+`clean-recipe.log` (for `bakar clean-recipe`), or `rebuild.log` (for `bakar rebuild`). Use
+`bakar log` to inspect them. The `devshell` path is interactive and produces no captured log.
 
 ## Options
 
@@ -72,6 +79,17 @@ path is interactive and produces no captured log.
 | `--workspace` | `-w` | Workspace root override |
 
 `clean-recipe` has no `--task` or `--keep-going`; its task is fixed to `cleansstate`.
+
+### `bakar rebuild`
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--keep-going` | `-k` | Pass `-k` to the build half (keep building after failures); does not affect cleansstate |
+| `--manifest` | `-f` | Manifest filename for BSP family dispatch (NXP `.xml` or TI `.txt`) |
+| `--machine` | `-m` | Override the target machine |
+| `--workspace` | `-w` | Workspace root override |
+
+`rebuild` has no `--task`; it always runs `cleansstate` then the default build.
 
 ## Exit codes
 
@@ -104,6 +122,9 @@ bakar bitbake busybox -f imx-6.12.49-2.2.0.xml
 
 # Clean a recipe's sstate
 bakar clean-recipe busybox meta-avocado/kas/machine/qemux86-64.yml
+
+# Rebuild a recipe from scratch (cleansstate, then build)
+bakar rebuild qtwebengine meta-avocado/kas/machine/rzv2h-rdk.yml
 ```
 
 ## See also

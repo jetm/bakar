@@ -10,6 +10,7 @@
 | `gen-kas` | [gen-kas.md](gen-kas.md) | Regenerate kas YAML from manifest |
 | `bitbake` | [bitbake.md](bitbake.md) | Run a single recipe or task through bitbake, with run logging |
 | `clean-recipe` | [bitbake.md](bitbake.md) | Clean one recipe's sstate (`bitbake -c cleansstate`) |
+| `rebuild` | [bitbake.md](bitbake.md) | Rebuild one recipe from scratch (`cleansstate` then build) |
 | `shell` | [shell.md](shell.md) | Interactive kas-container shell or one-shot command |
 | `run` | [run.md](run.md) | Boot avocado-os image in QEMU (meta-avocado only) |
 | `clean` | [clean.md](clean.md) | Remove the build directory |
@@ -57,7 +58,7 @@
 - Watch a running build: [log.md](log.md)
 - Check if the environment is sane: [doctor.md](doctor.md)
 - Rebuild or re-run a task on one recipe: [bitbake.md](bitbake.md)
-- Wipe one recipe's sstate and rebuild it: [bitbake.md](bitbake.md) (`clean-recipe`)
+- Wipe one recipe's sstate and rebuild it in one go: [bitbake.md](bitbake.md) (`rebuild`)
 - Force a from-scratch rebuild: [clean.md](clean.md) or `bakar build --clean`
 
 **After a successful build:**
@@ -134,6 +135,7 @@ Related: [show.md](show.md), [getvar.md](getvar.md), [inspect.md](inspect.md), [
 ```text
 bakar bitbake <target>   - run one recipe/task through bitbake, logged (--task, --keep-going)
 bakar clean-recipe <r>   - clean one recipe's sstate (bitbake -c cleansstate)
+bakar rebuild <r>        - rebuild one recipe from scratch (cleansstate then build)
 bakar graph <recipe>     - dependency graph analysis: blast radius, longest chain, cycles
 ```
 
