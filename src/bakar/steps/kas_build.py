@@ -1,8 +1,7 @@
 """Regenerate the kas YAML and run `kas-container build`.
 
 The YAML generator lives in :mod:`bakar.kas`; this step wraps it
-plus the build invocation with the measurement harness (``/usr/bin/time
--v``), and layers in
+plus the build invocation, and layers in
 the static tuning overlay (``overlays/bakar-tuning-<bsp>.yml``)
 on top of whatever kas YAML the caller passes in.
 
@@ -841,10 +840,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         psi_sampler = threading.Thread(target=psi_loop, daemon=True)  # pragma: no cover
         psi_sampler.start()
 
-    # Build command - prefer /usr/bin/time -v when available.
     cmd: list[str] = []
-    if shutil.which("/usr/bin/time"):
-        cmd = ["/usr/bin/time", "-v", "-o", str(log.time_log_path), "--"]
     exe = "kas" if cfg.host_mode else "kas-container"
     cmd += [exe, *_ccache_args(cfg, eventlog_path=_container_eventlog_path(cfg, log)), "build", kas_arg]
     if ctx.keep_going:

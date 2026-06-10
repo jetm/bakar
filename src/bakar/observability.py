@@ -7,7 +7,6 @@ containing:
     console.log     the same content in human-readable lines
     env.txt         snapshot of BAKAR_*, KAS_*, NPROC, DL_DIR, SSTATE_DIR at start
     kas.log         stdout+stderr from kas-container build
-    time.log        /usr/bin/time -v output (when available)
 
 This layout lets `bakar triage` post-mortem a failure without re-running
 the build: it grep's events.jsonl for the failing step and surfaces the
@@ -74,10 +73,6 @@ class RunLogger:
     @property
     def kas_log_path(self) -> Path:
         return self.run_dir / "kas.log"
-
-    @property
-    def time_log_path(self) -> Path:
-        return self.run_dir / "time.log"
 
     @property
     def env_snapshot_path(self) -> Path:
