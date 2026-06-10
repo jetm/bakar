@@ -2,7 +2,7 @@
 
 The YAML generator lives in :mod:`bakar.kas`; this step wraps it
 plus the build invocation with the measurement harness (``/usr/bin/time
--v`` plus a background ``du -sb build/tmp`` sampler), and layers in
+-v``), and layers in
 the static tuning overlay (``overlays/bakar-tuning-<bsp>.yml``)
 on top of whatever kas YAML the caller passes in.
 
@@ -37,7 +37,6 @@ import subprocess
 import sys
 import sysconfig
 import threading
-import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -577,7 +576,6 @@ def _run_pty_with_ui(
     cfg: BuildConfig,
     log: RunLogger,
     ui: BuildUIState,
-    state: dict[str, float | int],
     stop_event: threading.Event,
     *,
     show_layers: bool = False,
@@ -632,7 +630,6 @@ def _run_pty_with_ui(
                 nonlocal live_frozen
                 kas_log.write(line + "\n")
                 kas_log.flush()
-                state["last_event_ts"] = time.monotonic()
                 msg = ui.process_line(line)
                 # Failure freeze: stop the Live BEFORE printing the first
                 # error line of a task failure, committing the collapsed
@@ -704,9 +701,6 @@ def _run_pty_with_ui(
                         if hashes:
                             live.console.print(layer_hash_table(hashes))
                             layers_pending = False
-                    stall = int(time.monotonic() - state["last_event_ts"])
-                    delta = state["cur_du_bytes"] - state["prev_du_bytes"]
-                    ui.update_heartbeat(stall, delta)
 
             event_feed_count = 0
             event_feed_error = ""
@@ -828,45 +822,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         overlay_rel = materialize_overlay(cfg, overlay_source)
         kas_arg = f"{kas_yaml_rel}:{overlay_rel}"
 
-    # Shared state for the pump, du sampler, and heartbeat. Writes from
-    # one thread only (pump: last_event_ts; sampler: prev_du_bytes /
-    # cur_du_bytes) plus read-only access from heartbeat means the GIL
-    # suffices - no lock needed for these single-slot updates.
-    state: dict[str, float | int] = {
-        "last_event_ts": time.monotonic(),
-        "cur_du_bytes": 0,
-        "prev_du_bytes": 0,
-    }
     stop_event = threading.Event()
-    du_path = log.du_samples_path
-
-    def du_loop() -> None:
-        error_logged = False
-        while not stop_event.wait(timeout=30):
-            build_tmp = cfg.bsp_root / "build" / "tmp"
-            if not build_tmp.is_dir():
-                continue
-            try:
-                size = subprocess.run(  # pragma: no cover
-                    ["du", "-sb", str(build_tmp)],
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                    check=False,
-                )
-                if size.returncode == 0:
-                    bytes_ = int(size.stdout.split()[0])
-                    with du_path.open("a") as fh:
-                        fh.write(f"{int(time.time())}\t{bytes_}\n")
-                    state["prev_du_bytes"] = state["cur_du_bytes"]
-                    state["cur_du_bytes"] = bytes_
-            except (subprocess.SubprocessError, OSError, ValueError) as exc:
-                if not error_logged:
-                    log.warn(f"du sampler failed, disk-usage tracking disabled: {exc}")
-                    error_logged = True
-                continue
-
-    sampler = threading.Thread(target=du_loop, daemon=True)  # pragma: no cover
 
     # PSI auto-calibration: sample host /proc/pressure peaks during the build so
     # the recommended pressure_max_* can be written afterwards.
@@ -894,8 +850,6 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     if ctx.keep_going:
         cmd += ["--", "-k"]
 
-    sampler.start()
-
     log.info(f"exec: {' '.join(cmd)}")
     # Baselines are scoped per (workspace, machine, mode): a different
     # project's builds must not train the stuck-task thresholds this one reads.
@@ -910,7 +864,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     terminated = False
     rc: int | None = None
     try:
-        rc = _run_pty_with_ui(cmd, cfg, log, ui, state, stop_event, show_layers=show_layers)
+        rc = _run_pty_with_ui(cmd, cfg, log, ui, stop_event, show_layers=show_layers)
         if rc == 0:
             deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
             log.step_ok("kas_build", deploy_dir=str(deploy), exit_code=rc)
@@ -951,7 +905,6 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
                 )
                 write_error_report(log.run_dir, cfg, rc if rc is not None else -1)
         stop_event.set()
-        sampler.join(timeout=5)
         if psi_sampler is not None:
             psi_sampler.join(timeout=5)
     return rc if rc is not None else -1
@@ -977,11 +930,6 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
         logfile_translator=(None if cfg.host_mode else lambda p: _translate_container_path(p, cfg.bsp_root)),
         timings_path=task_timings.timings_path_for(cfg.bsp_root, cfg.machine, host_mode=cfg.host_mode),
     )
-    state: dict[str, float | int] = {
-        "last_event_ts": time.monotonic(),
-        "cur_du_bytes": 0,
-        "prev_du_bytes": 0,
-    }
     stop_event = threading.Event()
 
     # Mirror run_build's terminal-event guarantee: if _run_pty_with_ui raises
@@ -992,7 +940,7 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
     rc: int | None = None
     completed = False
     try:
-        rc = _run_pty_with_ui(cmd, cfg, log, ui, state, stop_event)
+        rc = _run_pty_with_ui(cmd, cfg, log, ui, stop_event)
         completed = True
     finally:
         stop_event.set()

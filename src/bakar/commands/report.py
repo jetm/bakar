@@ -41,11 +41,11 @@ def report(
 ) -> None:
     """Summarize a completed build run from its structured logs.
 
-    Reads the resolved run's ``events.jsonl``, ``du.tsv``, and layer git
-    state and prints the run id, build status, duration, deploy directory and
-    image size, peak build-tmp size, and per-layer SHAs. With ``--json`` the
-    same fields are emitted as one JSON object. Kernel version and recipe
-    count are best-effort and omitted when unavailable.
+    Reads the resolved run's ``events.jsonl`` and layer git state and prints
+    the run id, build status, duration, deploy directory and image size, and
+    per-layer SHAs. With ``--json`` the same fields are emitted as one JSON
+    object. Kernel version and recipe count are best-effort and omitted when
+    unavailable.
     """
     family: Literal["nxp", "ti", "generic", "bbsetup"]
     if (setup_dir := _bbsetup_workspace(workspace)) is not None:
@@ -121,7 +121,6 @@ def report(
             "duration_s": summary.duration_s,
             "deploy_dir": summary.deploy_dir,
             "image_size": summary.image_size,
-            "peak_tmp_bytes": summary.peak_tmp_bytes,
             "layers": [dataclasses.asdict(layer) for layer in summary.layers],
             "build_revision": summary.build_revision,
         }
@@ -158,8 +157,6 @@ def report(
         console.print(f"deploy: {summary.deploy_dir}")
     if summary.image_size is not None:
         console.print(f"image size: {summary.image_size} bytes")
-    if summary.peak_tmp_bytes is not None:
-        console.print(f"peak build/tmp: {summary.peak_tmp_bytes} bytes")
     if summary.build_revision is not None:
         console.print(f"build_revision: {summary.build_revision}")
     _print_layer_hashes(cfg, hashes=summary.layers)

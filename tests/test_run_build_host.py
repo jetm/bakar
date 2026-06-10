@@ -3,7 +3,7 @@
 ``run_build()`` in :mod:`bakar.steps.kas_build` chooses between ``kas`` and
 ``kas-container`` for the spawned child process based on
 ``cfg.host_mode``. Exercising the full ``run_build`` end-to-end is
-impractical: it allocates a PTY, starts a daemon ``du`` sampler thread,
+impractical: it allocates a PTY, starts daemon sampler threads,
 drives a Rich progress UI in the foreground, and depends on
 ``materialize_overlay``/``_resolve_user_yaml`` against a real bsp_root
 tree. Mocking every side effect produces a test whose harness is larger

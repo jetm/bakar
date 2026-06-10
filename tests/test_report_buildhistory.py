@@ -121,7 +121,6 @@ def _summary(has_buildhistory: bool = False) -> ReportSummary:
         duration_s=1845.0,
         deploy_dir="/work/build/tmp/deploy/images/imx8mp-var-dart",
         image_size=123456,
-        peak_tmp_bytes=5000,
         layers=[],
         build_revision=None,
         buildhistory_imagesize_kib=524288,

@@ -290,20 +290,6 @@ def test_make_renderable_column_widths_never_shrink() -> None:
 
 
 # ---------------------------------------------------------------------------
-# update_heartbeat — retained no-op (must not raise)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_update_heartbeat_is_noop() -> None:
-    ui = BuildUIState()
-    # No stall/du fields exist on the build bar anymore; the call must not raise.
-    ui.update_heartbeat(47, 220_000_000)
-    assert "du" not in ui._build_progress.tasks[0].fields
-    assert "stall" not in ui._build_progress.tasks[0].fields
-
-
-# ---------------------------------------------------------------------------
 # Graphics helpers — task styling and stuck detection
 # ---------------------------------------------------------------------------
 

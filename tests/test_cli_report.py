@@ -49,7 +49,6 @@ def _summary(build_revision: str | None = None) -> ReportSummary:
         duration_s=1845.0,
         deploy_dir="/work/build/tmp/deploy/images/imx8mp-var-dart",
         image_size=123456,
-        peak_tmp_bytes=5000,
         layers=[],
         build_revision=build_revision,
     )

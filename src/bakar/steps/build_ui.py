@@ -187,8 +187,8 @@ class BuildUIState:
     start a second internal ``Live`` and corrupt the cursor.
 
     Thread safety: ``_running`` mutations are guarded by ``_lock``. ``process_line``
-    and ``update_heartbeat`` may be called from the pump/heartbeat threads;
-    ``make_renderable`` is called from the ``Live`` refresh thread.
+    may be called from the pump/heartbeat threads; ``make_renderable`` is called
+    from the ``Live`` refresh thread.
     """
 
     def __init__(
@@ -684,13 +684,6 @@ class BuildUIState:
         """True when at least one task failure was recorded this build."""
         with self._lock:
             return bool(self._failures)
-
-    def update_heartbeat(self, stall_secs: int, du_delta: int) -> None:
-        """Retained for caller compatibility.
-
-        The build line no longer shows a stall clock or a disk-usage delta -- the
-        global timer is the only liveness readout -- so this is a no-op.
-        """
 
     def finish(self) -> None:
         """Mark the pipeline complete for the final rendered frame.

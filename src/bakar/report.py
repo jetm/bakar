@@ -34,7 +34,6 @@ class ReportSummary:
     duration_s: float | None = None
     deploy_dir: str | None = None
     image_size: int | None = None
-    peak_tmp_bytes: int | None = None
     layers: list[LayerHash] = field(default_factory=list)
     build_revision: str | None = None
     sstate_wanted: int | None = None
@@ -97,33 +96,6 @@ def _largest_image_size(deploy_dir: str | None) -> int | None:
     except OSError:
         return None
     return largest
-
-
-def _peak_tmp_bytes(du_path: Path) -> int | None:
-    """Return the max of the second TAB-column across ``du.tsv`` rows.
-
-    Each row is ``<epoch>\\t<bytes>``. Rows without a parseable second column
-    are skipped. Returns ``None`` when the file is absent or holds no usable
-    samples.
-    """
-    if not du_path.is_file():
-        return None
-    peak: int | None = None
-    try:
-        text = du_path.read_text()
-    except OSError:
-        return None
-    for line in text.splitlines():
-        parts = line.split("\t")
-        if len(parts) < 2:
-            continue
-        try:
-            value = int(parts[1].strip())
-        except ValueError:
-            continue
-        if peak is None or value > peak:
-            peak = value
-    return peak
 
 
 # Named sub-patterns scanned individually against the Sstate summary line so a
@@ -296,9 +268,9 @@ def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
     """Assemble a best-effort summary of the run in ``run_dir``.
 
     Reads ``events.jsonl`` for the ``run_start``/``run_end`` timestamps and the
-    ``kas_build`` ``step_ok``/``step_fail`` outcome, ``du.tsv`` for the peak
-    build-tmp size, and ``collect_layer_hashes`` for the per-layer SHAs. Status
-    is ``"success"`` when a ``kas_build`` ``step_ok`` exists, else ``"failure"``.
+    ``kas_build`` ``step_ok``/``step_fail`` outcome, and ``collect_layer_hashes``
+    for the per-layer SHAs. Status is ``"success"`` when a ``kas_build``
+    ``step_ok`` exists, else ``"failure"``.
     """
     events_path = run_dir / "events.jsonl"
 
@@ -337,7 +309,6 @@ def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
         duration_s=_duration_s(run_start, run_end),
         deploy_dir=deploy_dir,
         image_size=_largest_image_size(deploy_dir),
-        peak_tmp_bytes=_peak_tmp_bytes(run_dir / "du.tsv"),
         layers=layers,
         build_revision=build_revision,
         has_buildhistory=buildhistory is not None,
