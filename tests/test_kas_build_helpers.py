@@ -32,6 +32,7 @@ from bakar.observability import RunLogger
 from bakar.steps.kas_build import (
     _autocalibrate_psi,
     _build_env,
+    _build_fail_reason,
     _ccache_args,
     _find_oe_eventlog,
     _resolve_user_yaml,
@@ -681,3 +682,22 @@ def test_copy_oe_eventlog_copies_when_primary_absent(tmp_path: Path) -> None:
     result = copy_oe_eventlog_to_run_dir(cfg, log)
     assert result is True
     assert log.eventlog_path.read_text() == '{"oe":true}'
+
+
+@pytest.mark.unit
+def test_build_fail_reason_stall_names_tasks() -> None:
+    """A stall abort reports stall-timeout with the wedged task labels."""
+    reason = _build_fail_reason(-2, ["u-boot:do_compile", "nodejs:do_compile"])
+    assert reason == "stall-timeout: u-boot:do_compile, nodejs:do_compile"
+
+
+@pytest.mark.unit
+def test_build_fail_reason_exit_code_when_no_stall() -> None:
+    """A plain nonzero exit reports the exit code."""
+    assert _build_fail_reason(1, None) == "exit_code=1"
+
+
+@pytest.mark.unit
+def test_build_fail_reason_wrapper_crash_when_rc_none() -> None:
+    """No exit code and no stall is a wrapper crash."""
+    assert _build_fail_reason(None, None) == "wrapper-crash"

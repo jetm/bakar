@@ -48,7 +48,7 @@ from bakar import hashserv, task_timings
 from bakar.eventlog import tail_events
 from bakar.kas import KasGenOptions, write_yaml
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
-from bakar.steps.build_ui import BuildUIState
+from bakar.steps.build_ui import BuildUIState, _fmt_stall
 from bakar.triage import _translate_container_path, write_error_report
 
 if TYPE_CHECKING:
@@ -570,6 +570,32 @@ def generate_dry_run_script(
     return "\n".join(lines)
 
 
+# How often the stall watchdog samples running-task log freshness.
+_STALL_POLL_SECS = 30
+
+
+@dataclass(slots=True)
+class _PtyOutcome:
+    """Result of a PTY-driven run: the child exit code plus stall-abort context.
+
+    ``stall_tasks`` is the list of running task labels at the moment the stall
+    watchdog aborted the build (``None`` for a normal exit), so the caller can
+    record a ``stall-timeout`` step_fail instead of a bare exit code.
+    """
+
+    rc: int | None
+    stall_tasks: list[str] | None = None
+
+
+def _build_fail_reason(rc: int | None, stall_tasks: list[str] | None) -> str:
+    """Compose the step_fail reason for a build, naming stuck tasks on a stall abort."""
+    if stall_tasks:
+        return f"stall-timeout: {', '.join(stall_tasks)}"
+    if rc is not None:
+        return f"exit_code={rc}"
+    return "wrapper-crash"
+
+
 def _run_pty_with_ui(
     cmd: list[str],
     cfg: BuildConfig,
@@ -578,7 +604,7 @@ def _run_pty_with_ui(
     stop_event: threading.Event,
     *,
     show_layers: bool = False,
-) -> int | None:
+) -> _PtyOutcome:
     """Run ``cmd`` under a PTY, pumping its output into ``ui`` live.
 
     The pump thread writes every line to kas.log for `bakar log` to tail,
@@ -593,12 +619,14 @@ def _run_pty_with_ui(
     to redraw its status line in place, so we read chunks and split on
     \\r, \\n, or \\r\\n manually instead of line-iterating.
 
-    Returns the child exit code (``None`` only if the wrapper crashed
-    before ``proc.wait()`` could run). Does not do step logging, warn/err
-    printing, PSI calibration, or sampler management - the caller owns
-    those.
+    Returns a :class:`_PtyOutcome` carrying the child exit code (``rc`` is
+    ``None`` only if the wrapper crashed before ``proc.wait()`` could run) and,
+    when the stall watchdog aborted the build, the wedged task labels. Does not
+    do step logging, warn/err printing, PSI calibration, or sampler management -
+    the caller owns those.
     """
     rc: int | None = None
+    stall_tasks: list[str] | None = None
     master_fd, slave_fd = pty.openpty()  # pragma: no cover
     try:
         with log.kas_log_path.open("w", encoding="utf-8", buffering=1) as kas_log:
@@ -719,6 +747,34 @@ def _run_pty_with_ui(
                 except Exception as exc:
                     event_feed_error = f"{type(exc).__name__}: {exc}"
 
+            def _stall_watchdog() -> None:  # pragma: no cover
+                # Self-guard against a wedged task (e.g. a deadlocked final
+                # link): when every running task's log has been silent past
+                # cfg.stall_abort_secs, SIGINT the build so it fails cleanly
+                # naming the stuck task instead of spinning until the user
+                # Ctrl-C's. bitbake's own keepalive output flows through the
+                # PTY pump, so raw output cannot be the signal - log freshness
+                # is what distinguishes a wedge from a slow-but-alive compile.
+                nonlocal stall_tasks
+                if cfg.stall_abort_secs <= 0:
+                    return
+                while not stop_event.wait(timeout=_STALL_POLL_SECS):
+                    if proc.poll() is not None:
+                        break
+                    report = ui.stall_report()
+                    if report is None:
+                        continue
+                    stalled, labels = report
+                    if stalled >= cfg.stall_abort_secs:
+                        stall_tasks = labels
+                        log.warn(
+                            f"build stalled: no log output for {_fmt_stall(stalled)} from running "
+                            f"task(s) {', '.join(labels)}; aborting. Disable with "
+                            "`bakar settings set build.stall_abort_secs 0`."
+                        )
+                        os.killpg(proc.pid, signal.SIGINT)
+                        break
+
             # Share the run logger's console so log.info() (the parse-complete
             # line) coordinates with the live region instead of printing onto
             # the same line as the setup bar.
@@ -729,6 +785,8 @@ def _run_pty_with_ui(
                 heartbeat.start()
                 event_tail = threading.Thread(target=_event_tail, daemon=True)  # pragma: no cover
                 event_tail.start()
+                watchdog = threading.Thread(target=_stall_watchdog, daemon=True)  # pragma: no cover
+                watchdog.start()
                 try:
                     rc = proc.wait()
                 except KeyboardInterrupt:
@@ -737,6 +795,7 @@ def _run_pty_with_ui(
                 stop_event.set()
                 pump.join(timeout=5)
                 heartbeat.join(timeout=2)
+                watchdog.join(timeout=2)
                 if layers_pending:  # pragma: no cover - fast build finished before first heartbeat tick
                     from bakar.layers import collect_layer_hashes, layer_hash_table
 
@@ -778,7 +837,7 @@ def _run_pty_with_ui(
             os.close(master_fd)
         except OSError:
             pass
-    return rc
+    return _PtyOutcome(rc=rc, stall_tasks=stall_tasks)
 
 
 def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None, show_layers: bool = False) -> int:
@@ -859,8 +918,10 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     )
     terminated = False
     rc: int | None = None
+    stall_tasks: list[str] | None = None
     try:
-        rc = _run_pty_with_ui(cmd, cfg, log, ui, stop_event, show_layers=show_layers)
+        outcome = _run_pty_with_ui(cmd, cfg, log, ui, stop_event, show_layers=show_layers)
+        rc, stall_tasks = outcome.rc, outcome.stall_tasks
         if rc == 0:
             deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
             log.step_ok("kas_build", deploy_dir=str(deploy), exit_code=rc)
@@ -868,7 +929,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         else:
             log.step_fail(
                 "kas_build",
-                reason=f"exit_code={rc}",
+                reason=_build_fail_reason(rc, stall_tasks),
                 exit_code=rc,
                 kas_log=str(log.kas_log_path),
             )
@@ -895,7 +956,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
             else:
                 log.step_fail(
                     "kas_build",
-                    reason=f"exit_code={rc}" if rc is not None else "wrapper-crash",
+                    reason=_build_fail_reason(rc, stall_tasks),
                     exit_code=rc if rc is not None else -1,
                     kas_log=str(log.kas_log_path),
                 )
@@ -936,7 +997,7 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
     rc: int | None = None
     completed = False
     try:
-        rc = _run_pty_with_ui(cmd, cfg, log, ui, stop_event)
+        rc = _run_pty_with_ui(cmd, cfg, log, ui, stop_event).rc
         completed = True
     finally:
         stop_event.set()

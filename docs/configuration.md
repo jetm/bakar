@@ -85,6 +85,13 @@ pressure_max_memory = 20
 # a hardware change), delete the pressure_max_* lines above.
 psi_autocalibrate = true
 
+# Stall self-guard. When every running task's log has been silent this many
+# seconds (a wedged task, e.g. a deadlocked final link), bakar SIGINTs the build
+# so it fails cleanly with a stall-timeout step naming the stuck task instead of
+# spinning until you Ctrl-C. The signal is per-task log freshness, not raw output
+# (bitbake's own keepalive lines would otherwise mask a hang). 0 disables.
+stall_abort_secs = 2700
+
 # Persistent hash equivalence daemon (off by default; see hashserv.md).
 # When true, bakar spawns and reuses a workspace-scoped bitbake-hashserv
 # so OEEquivHash sstate equivalence accumulates across builds.

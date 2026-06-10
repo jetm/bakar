@@ -46,6 +46,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.pressure_max_io": "45",
         "build.pressure_max_memory": "20",
         "build.disk_free_threshold_gb": "75.0",
+        "build.stall_abort_secs": "1800",
         "build.hashserv": "true",
         "build.ccache_shared": "true",
         "build.ccache_dir": "/data/ccache",
@@ -80,6 +81,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert cfg.pressure_max_io == 45
     assert cfg.pressure_max_memory == 20
     assert cfg.disk_free_threshold_gb == 75.0
+    assert cfg.stall_abort_secs == 1800
     assert cfg.hashserv is True
     assert cfg.ccache_shared is True
     assert cfg.ccache_dir == "/data/ccache"
@@ -100,6 +102,27 @@ def test_set_bool_key_stores_boolean_not_string(tmp_path: Path) -> None:
 
     # load_user_config also reads it back as a typed bool, not a string.
     assert load_user_config(config_file).doctor is False
+
+
+@pytest.mark.unit
+def test_set_stall_abort_secs_stores_int_not_string(tmp_path: Path) -> None:
+    """`build.stall_abort_secs 1800` coerces to a real int, including 0 (disabled)."""
+    config_file = tmp_path / "config.toml"
+    set_setting("build.stall_abort_secs", "1800", config_file)
+    stored = get_setting("build.stall_abort_secs", config_file)
+    assert stored == 1800
+    assert isinstance(stored, int) and not isinstance(stored, bool)
+
+    set_setting("build.stall_abort_secs", "0", config_file)
+    assert load_user_config(config_file).stall_abort_secs == 0
+
+
+@pytest.mark.unit
+def test_set_stall_abort_secs_rejects_negative(tmp_path: Path) -> None:
+    """A negative stall timeout is meaningless and rejected at coerce time."""
+    config_file = tmp_path / "config.toml"
+    with pytest.raises(ValueError, match="stall_abort_secs"):
+        set_setting("build.stall_abort_secs", "-1", config_file)
 
 
 @pytest.mark.unit

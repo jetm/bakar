@@ -57,6 +57,7 @@ All keys use dotted notation (`section.subsection.key`).
 | `build.pressure_max_io` | int | PSI io avg10 threshold |
 | `build.pressure_max_memory` | int | PSI memory avg10 threshold |
 | `build.psi_autocalibrate` | bool | Auto-write `pressure_max_*` after each build from sampled PSI peaks (default: `false`) |
+| `build.stall_abort_secs` | int | Abort the build when every running task's log is silent this many seconds, naming the wedged task (default: `2700`; `0` disables) |
 | `build.hashserv` | bool | Persistent workspace-scoped bitbake-hashserv daemon (default: `false`). See [hashserv.md](hashserv.md). |
 | `build.ccache_shared` | bool | Share one ccache across all workspaces instead of per-workspace (default: `false`). Defaults the cache to `~/.cache/bakar/ccache`. |
 | `build.ccache_dir` | string | Explicit ccache directory (a shared location of your choosing); overrides `ccache_shared` and the per-workspace default. |

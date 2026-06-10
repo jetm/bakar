@@ -29,7 +29,7 @@ _STR_FIELDS = {
     "ccache_dir",
 }
 _BOOL_FIELDS = {"doctor", "show_hashes", "show_sstate_summary", "hashserv", "ccache_shared", "psi_autocalibrate"}
-_INT_FIELDS: set[str] = set()
+_INT_FIELDS: set[str] = {"stall_abort_secs"}
 _PSI_FIELDS = {"pressure_max_cpu", "pressure_max_io", "pressure_max_memory"}
 
 
@@ -58,6 +58,9 @@ class UserConfig:
     pressure_max_io: float | None = None
     pressure_max_memory: float | None = None
     disk_free_threshold_gb: float = 50.0
+    # Abort the build when every running task's log has been silent this many
+    # seconds (a wedged task, e.g. a deadlocked final link). 0 disables the guard.
+    stall_abort_secs: int = 2700
     hashserv: bool = False
     ccache_shared: bool = False
     ccache_dir: str | None = None
@@ -97,6 +100,7 @@ _BUILD_KEYS = {
     "pressure_max_io": "pressure_max_io",
     "pressure_max_memory": "pressure_max_memory",
     "disk_free_threshold_gb": "disk_free_threshold_gb",
+    "stall_abort_secs": "stall_abort_secs",
     "hashserv": "hashserv",
     "ccache_shared": "ccache_shared",
     "ccache_dir": "ccache_dir",
@@ -117,6 +121,8 @@ def _check_type(field: str, value: object, path: Path) -> None:
     # bool is a subclass of int; test isinstance(value, bool) first to reject it.
     if field in _INT_FIELDS and (not isinstance(value, int) or isinstance(value, bool)):
         raise ValueError(f"{path}: '{field}' must be an integer, got {type(value).__name__}")
+    if field == "stall_abort_secs" and isinstance(value, int) and not isinstance(value, bool) and value < 0:
+        raise ValueError(f"{path}: '{field}' must be >= 0 (0 disables), got {value}")
     if field in _PSI_FIELDS:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"{path}: '{field}' must be a number, got {type(value).__name__}")
@@ -284,9 +290,12 @@ def _coerce(spec: _SettingSpec, raw_value: str) -> str | bool | int | float:
         raise ValueError(f"value for boolean key must be one of true/false/1/0, got {raw_value!r}")
     if spec.is_int:
         try:
-            return int(raw_value)
+            v = int(raw_value)
         except ValueError:
             raise ValueError(f"value for integer key {spec.key!r} must be a valid integer, got {raw_value!r}") from None
+        if spec.key == "stall_abort_secs" and v < 0:
+            raise ValueError(f"value for {spec.key!r} must be >= 0 (0 disables), got {v}")
+        return v
     if spec.is_float:
         try:
             v = float(raw_value)

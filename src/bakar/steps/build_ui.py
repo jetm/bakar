@@ -32,6 +32,7 @@ console or Live instance.
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 import time
@@ -128,6 +129,7 @@ class _RunTask:
     task: str
     start: float  # time.monotonic() at Started
     estimated: float | None = None  # historical mean seconds for this taskname, if known
+    logfile: str | None = None  # host path to the task's log, when known (for the stall guard)
 
 
 def _fmt_stall(seconds: int) -> str:
@@ -492,12 +494,16 @@ class BuildUIState:
             recipe, taskname = _task_key(event)
             baseline = task_timings.baseline_key(recipe or "", taskname)
             mean = self._task_baselines.get(baseline, (None, None))[0]
+            logfile = getattr(event, "logfile", None)
+            if self._logfile_translator and logfile:
+                logfile = self._logfile_translator(logfile)
             with self._lock:
                 self._running[f"{recipe}:{taskname}"] = _RunTask(
                     pf=recipe,
                     task=taskname,
                     start=time.monotonic(),
                     estimated=mean,
+                    logfile=logfile,
                 )
             return
 
@@ -684,6 +690,35 @@ class BuildUIState:
         """True when at least one task failure was recorded this build."""
         with self._lock:
             return bool(self._failures)
+
+    def stall_report(self) -> tuple[int, list[str]] | None:
+        """Seconds since the most-recently-active running task wrote its log, plus labels.
+
+        Considers only running tasks that carry a readable host logfile. The
+        returned seconds value is ``now - max(mtime)`` across those logs -- how
+        long even the *freshest* running task has been silent. When it exceeds
+        the abort threshold, every running task has been silent at least that
+        long (the wedged-final-link signature). Returns ``None`` when nothing is
+        running or no running task has a readable logfile, so the watchdog never
+        aborts on an unknowable state (setscene phase, regex-fallback feed).
+        """
+        with self._lock:
+            running = list(self._running.values())
+        freshest: float | None = None
+        labels: list[str] = []
+        for t in running:
+            if not t.logfile:
+                continue
+            try:
+                mtime = os.stat(t.logfile).st_mtime
+            except OSError:
+                continue
+            labels.append(f"{t.pf}:{t.task}")
+            if freshest is None or mtime > freshest:
+                freshest = mtime
+        if freshest is None:
+            return None
+        return (int(time.time() - freshest), labels)
 
     def finish(self) -> None:
         """Mark the pipeline complete for the final rendered frame.

@@ -218,6 +218,10 @@ class BuildConfig:
     pressure_max_io: float | None = field(default=None)
     pressure_max_memory: float | None = field(default=None)
     disk_free_threshold_gb: float = 50.0
+    # Abort the build when every running task's log has been silent this many
+    # seconds (a wedged task). 0 disables the stall guard. Read by
+    # _run_pty_with_ui's watchdog in steps/kas_build.py.
+    stall_abort_secs: int = 2700
     use_hashequiv: bool = field(default=False)
     # ccache location. Per-workspace by default; opt into a single shared cache
     # across all workspaces via [build] ccache_shared, or pin an explicit path
@@ -580,6 +584,7 @@ def resolve(
         pressure_max_io=user_config.pressure_max_io if user_config else None,
         pressure_max_memory=user_config.pressure_max_memory if user_config else None,
         disk_free_threshold_gb=user_config.disk_free_threshold_gb if user_config else 50.0,
+        stall_abort_secs=user_config.stall_abort_secs if user_config else 2700,
         use_hashequiv=user_config.hashserv if user_config else False,
         ccache_shared=user_config.ccache_shared if user_config else False,
         ccache_dir=user_config.ccache_dir if user_config else None,

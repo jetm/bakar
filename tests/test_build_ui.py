@@ -9,6 +9,7 @@ severity lines.
 
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -405,3 +406,85 @@ def test_task_table_capped_with_overflow_line() -> None:
     # Longest-elapsed first: pkg-19 (oldest start) visible, pkg-00 dropped.
     assert "pkg-19-1.0-r0" in out
     assert "pkg-00-1.0-r0" not in out
+
+
+# ---------------------------------------------------------------------------
+# stall_report — wedged-task detection via running-task log freshness
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_stall_report_none_when_no_running_tasks() -> None:
+    """Nothing running -> nothing to judge."""
+    assert BuildUIState().stall_report() is None
+
+
+@pytest.mark.unit
+def test_stall_report_none_when_running_task_has_no_logfile() -> None:
+    """A running task without a captured logfile is unjudgeable, not a stall."""
+    ui = BuildUIState()
+    ui._running["u-boot:do_compile"] = _RunTask(pf="u-boot", task="do_compile", start=time.monotonic())
+    assert ui.stall_report() is None
+
+
+@pytest.mark.unit
+def test_stall_report_none_when_logfile_missing(tmp_path) -> None:
+    """An unreadable logfile path is skipped, not treated as infinitely stale."""
+    ui = BuildUIState()
+    ui._running["u-boot:do_compile"] = _RunTask(
+        pf="u-boot", task="do_compile", start=time.monotonic(), logfile=str(tmp_path / "nope.log")
+    )
+    assert ui.stall_report() is None
+
+
+@pytest.mark.unit
+def test_stall_report_fresh_log_reports_small_stall(tmp_path) -> None:
+    """A just-written log yields a near-zero stall and the task label."""
+    log = tmp_path / "log.do_compile"
+    log.write_text("compiling\n")
+    ui = BuildUIState()
+    ui._running["u-boot:do_compile"] = _RunTask(
+        pf="u-boot", task="do_compile", start=time.monotonic(), logfile=str(log)
+    )
+    report = ui.stall_report()
+    assert report is not None
+    stalled, labels = report
+    assert stalled < 5
+    assert labels == ["u-boot:do_compile"]
+
+
+@pytest.mark.unit
+def test_stall_report_stale_log_reports_large_stall(tmp_path) -> None:
+    """A log untouched for 2h reads back as a ~7200s stall (the u-boot signature)."""
+    log = tmp_path / "log.do_compile"
+    log.write_text("Project ERROR: GN build error\n")
+    old = time.time() - 7200
+    os.utime(log, (old, old))
+    ui = BuildUIState()
+    ui._running["u-boot:do_compile"] = _RunTask(
+        pf="u-boot", task="do_compile", start=time.monotonic(), logfile=str(log)
+    )
+    report = ui.stall_report()
+    assert report is not None
+    stalled, labels = report
+    assert 7150 <= stalled <= 7260
+    assert labels == ["u-boot:do_compile"]
+
+
+@pytest.mark.unit
+def test_stall_report_uses_freshest_running_log(tmp_path) -> None:
+    """With one stale and one fresh running task, the freshest log wins (build is alive)."""
+    stale = tmp_path / "stale.log"
+    stale.write_text("x\n")
+    old = time.time() - 7200
+    os.utime(stale, (old, old))
+    fresh = tmp_path / "fresh.log"
+    fresh.write_text("y\n")
+    ui = BuildUIState()
+    ui._running["a:do_compile"] = _RunTask(pf="a", task="do_compile", start=time.monotonic(), logfile=str(stale))
+    ui._running["b:do_compile"] = _RunTask(pf="b", task="do_compile", start=time.monotonic(), logfile=str(fresh))
+    report = ui.stall_report()
+    assert report is not None
+    stalled, labels = report
+    assert stalled < 5
+    assert set(labels) == {"a:do_compile", "b:do_compile"}
