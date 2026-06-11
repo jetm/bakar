@@ -321,9 +321,12 @@ class BuildUIState:
         with self._lock:
             event_driven = self._event_driven
         if not event_driven:
-            # 2. Parse phase progress.
+            # 2. Parse phase progress. A parse line while already building marks
+            # a second bitbake invocation (rebuild's cleansstate && build).
             m = PARSE_PROGRESS.search(line)
             if m:
+                if self._phase is _Phase.BUILD:
+                    self._reset_for_new_build_cycle()
                 self._stage = "parsing recipes"
                 if self._parse_start is None:
                     self._parse_start = time.monotonic()
@@ -333,6 +336,8 @@ class BuildUIState:
             # 3. Cache load progress.
             m = LOADING_CACHE.search(line)
             if m:
+                if self._phase is _Phase.BUILD:
+                    self._reset_for_new_build_cycle()
                 self._stage = "loading cache"
                 self._setup_progress.update(self._setup_task_id, completed=int(m.group(1)), stage=self._stage)
                 return None
@@ -549,12 +554,52 @@ class BuildUIState:
                 self._running.pop(f"{recipe}:{taskname}", None)
             return
 
+    def _reset_for_new_build_cycle(self) -> None:
+        """Clear per-cycle state when a second bitbake invocation re-parses.
+
+        ``bakar rebuild`` chains ``cleansstate && build`` in one PTY/event-feed
+        session. bitbake's server unloads after each invocation (no
+        ``BB_SERVER_TIMEOUT``), so the second ``bitbake`` re-parses from scratch:
+        a parse/cache-load signal arriving while already in the BUILD phase marks
+        a fresh cycle. Without this the build bar keeps the prior run's
+        completed/total (rendering "full") and the pipeline never returns to
+        parse. The global wall clock, failure record, warn/error counts, and
+        column high-water widths persist across the whole command; everything
+        scoped to one parse->setscene->tasks cycle resets.
+        """
+        with self._lock:
+            self._phase = _Phase.SETUP
+            self._stage = "starting"
+            self._kind = ""
+            self._running.clear()
+            self._setscene_covered = 0
+            self._setscene_total = 0
+            self._setscene_notcovered = 0
+            self._parse_start = None
+            self._seg_durations.clear()
+            self._scene_started_at = None
+            self._scene_done_at = None
+            self._tasks_started_at = None
+            self._finished = False
+            self._failed_final = False
+        # Drop the prior cycle's completed count so the bar is not "full". The
+        # stale total is harmless: the build bar only renders once the phase
+        # flips back to BUILD, and that transition (_update_build/_update_scene)
+        # sets the new cycle's total in the same event. Rich treats total=None
+        # as "leave unchanged", so there is no public way to null it here anyway.
+        self._build_progress.update(self._build_task_id, completed=0, kind="")
+        self._setup_progress.update(self._setup_task_id, completed=0, stage="starting")
+
     def _update_setup(self, event: _EventStub, stage: str) -> None:
         """Map a parse/cache progress event onto the setup percentage bar."""
         current = getattr(event, "current", None)
         total = getattr(event, "total", None)
         if not total or total <= 0:
             return
+        # A parse/cache signal while already building marks a second bitbake
+        # invocation (rebuild's cleansstate && build): start a fresh cycle.
+        if self._phase is _Phase.BUILD:
+            self._reset_for_new_build_cycle()
         pct = int(current / total * 100) if current is not None else 0
         with self._lock:
             self._stage = stage

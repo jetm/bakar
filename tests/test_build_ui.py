@@ -488,3 +488,28 @@ def test_stall_report_uses_freshest_running_log(tmp_path) -> None:
     stalled, labels = report
     assert stalled < 5
     assert set(labels) == {"a:do_compile", "b:do_compile"}
+
+
+# ---------------------------------------------------------------------------
+# Regex-fallback: second-invocation re-parse reset
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_regex_reparse_after_build_resets_bar() -> None:
+    """In degraded (regex) mode, a Parsing line after a Running-task line marks a
+    second bitbake invocation and resets the build bar for the new cycle."""
+    ui = BuildUIState()
+    # Cycle 1: a running-task line flips to BUILD and fills the bar.
+    ui.process_line("NOTE: Running task 1 of 1 (/qtwebengine.bb:do_cleansstate)")
+    assert ui._phase is _Phase.BUILD
+    assert ui._build_progress.tasks[0].total == 1
+
+    # Cycle 2: the second bitbake re-parses -> reset back to SETUP, count cleared.
+    ui.process_line("Parsing recipes:  10% || ETA:  0:00:30")
+    assert ui._phase is _Phase.SETUP
+    assert ui._build_progress.tasks[0].completed == 0
+
+    # Cycle 2 tasks: the bar tracks the new, larger total (overwriting the stale 1).
+    ui.process_line("NOTE: Running task 200 of 9005 (/qtwebengine.bb:do_compile)")
+    assert ui._build_progress.tasks[0].total == 9005

@@ -626,3 +626,59 @@ def test_header_timer_seeded_from_start_monotonic() -> None:
     ui = BuildUIState(start_monotonic=_time.monotonic() - 154.0)
     out = _header_text(ui)
     assert "2m34s" in out
+
+
+# ---------------------------------------------------------------------------
+# Second-invocation re-parse reset (rebuild's cleansstate && build)
+# ---------------------------------------------------------------------------
+
+
+def _parse_stub(current: int, total: int) -> _EventStub:
+    e = _EventStub()
+    e.current = current
+    e.total = total
+    return e
+
+
+@pytest.mark.unit
+def test_reparse_while_building_resets_bar_for_new_cycle() -> None:
+    """A parse event arriving in BUILD phase starts a fresh cycle: the build bar
+    drops the prior run's full count and the phase returns to SETUP."""
+    ui = BuildUIState()
+    # Cycle 1 (cleansstate): one task, bar fills to 1/1.
+    ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, _runqueue_stub({"total": 1, "completed": 1, "active": 0}))
+    ui._seg_durations["parse"] = 50  # stale duration that must not carry over
+    assert ui._phase is _Phase.BUILD
+    assert ui._build_progress.tasks[0].total == 1
+    assert ui._build_progress.tasks[0].completed == 1
+
+    # Cycle 2 begins: the second bitbake re-parses while we are still in BUILD.
+    ui.process_event(_EVT_PARSE_PROGRESS, _parse_stub(10, 100))
+    assert ui._phase is _Phase.SETUP
+    # No longer "full": completed dropped to 0 (stale total is overwritten by
+    # the next cycle's first stats event, before the build bar is shown again).
+    assert ui._build_progress.tasks[0].completed == 0
+    assert "parse" not in ui._seg_durations
+
+
+@pytest.mark.unit
+def test_second_cycle_bar_reflects_new_task_total() -> None:
+    """After the re-parse reset, the bar tracks the new cycle's task count."""
+    ui = BuildUIState()
+    ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, _runqueue_stub({"total": 1, "completed": 1, "active": 0}))
+    ui.process_event(_EVT_PARSE_PROGRESS, _parse_stub(10, 100))
+    ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, _runqueue_stub({"total": 450, "completed": 5, "active": 2}))
+    assert ui._phase is _Phase.BUILD
+    assert ui._build_progress.tasks[0].total == 450
+    assert ui._build_progress.tasks[0].completed == 7
+
+
+@pytest.mark.unit
+def test_first_parse_does_not_reset_in_setup_phase() -> None:
+    """A parse event during the initial SETUP phase must not trigger a reset."""
+    ui = BuildUIState()
+    assert ui._phase is _Phase.SETUP
+    ui.process_event(_EVT_PARSE_PROGRESS, _parse_stub(10, 100))
+    # Still SETUP, parse clock started - a normal first parse, no spurious reset.
+    assert ui._phase is _Phase.SETUP
+    assert ui._parse_start is not None
