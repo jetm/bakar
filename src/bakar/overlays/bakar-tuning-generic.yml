@@ -33,6 +33,11 @@ env:
   # so the live build UI's event tailer finds the log at the run-dir path.
   # When unset, kas drops the null and OE-core's ?= default applies.
   BB_DEFAULT_EVENTLOG: null
+  # Passthrough-only (null = no default): forwards the host SDKMACHINE so
+  # `SDKMACHINE=x86_64 bakar build --target avocado-complete` picks the SDK
+  # arch (avocado-complete builds nativesdk/SDK packages). Unset -> bitbake's
+  # SDKMACHINE default (the build host) applies.
+  SDKMACHINE: null
 
 local_conf_header:
   bakar-tuning: |

@@ -176,6 +176,53 @@ def test_hashequiv_overlay_not_appended_when_use_hashequiv_false(
 
 
 # ---------------------------------------------------------------------------
+# --target override threading
+# ---------------------------------------------------------------------------
+
+
+def test_target_option_threads_into_build_context(
+    runner: _CliRunner,
+    workspace: Path,
+    generic_yaml: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--target` reaches the KasBuildContext handed to run_build."""
+    recorded: list[str | None] = []
+
+    def fake_run_build(ctx, *, extra_overlays=None, show_layers=False):  # type: ignore[no-untyped-def]
+        recorded.append(ctx.target)
+        return 0
+
+    monkeypatch.setattr(build_cmd.step_kas, "run_build", fake_run_build)
+
+    result = runner.invoke(app, ["build", str(generic_yaml), "--skip-doctor", "--target", "avocado-complete"])
+
+    assert result.exit_code == 0, result.output
+    assert recorded == ["avocado-complete"]
+
+
+def test_target_absent_defaults_to_none_in_context(
+    runner: _CliRunner,
+    workspace: Path,
+    generic_yaml: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without --target, KasBuildContext.target is None - build the YAML's own target."""
+    recorded: list[str | None] = []
+
+    def fake_run_build(ctx, *, extra_overlays=None, show_layers=False):  # type: ignore[no-untyped-def]
+        recorded.append(ctx.target)
+        return 0
+
+    monkeypatch.setattr(build_cmd.step_kas, "run_build", fake_run_build)
+
+    result = runner.invoke(app, ["build", str(generic_yaml), "--skip-doctor"])
+
+    assert result.exit_code == 0, result.output
+    assert recorded == [None]
+
+
+# ---------------------------------------------------------------------------
 # --dry-run-script tests
 # ---------------------------------------------------------------------------
 

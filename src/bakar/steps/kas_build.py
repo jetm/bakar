@@ -391,6 +391,9 @@ class KasBuildContext:
     overlay_source: Path
     keep_going: bool = False
     dry_run: bool = False
+    # kas target override (kas build --target <TARGET>); None builds the YAML's
+    # own target. Must land before any `-- <bitbake-args>` separator in the argv.
+    target: str | None = None
 
 
 def _build_kas_arg(cfg: BuildConfig, kas_yaml: Path, overlay_source: Path) -> str:
@@ -413,6 +416,7 @@ def dry_run_preview_lines(
     extra_overlays: list[Path] | None = None,
     *,
     keep_going: bool = False,
+    target: str | None = None,
 ) -> list[str]:
     """Return structured ``key: value`` preview lines for a dry-run invocation.
 
@@ -431,6 +435,8 @@ def dry_run_preview_lines(
         ]
         kas_arg = ":".join(parts)
     cmd = [exe, *_ccache_args(cfg, dry_run=True), "build", kas_arg]
+    if target:
+        cmd += ["--target", target]
     if keep_going:
         cmd += ["--", "-k"]
     lines: list[str] = [f"command: {' '.join(cmd)}", f"overlay: {kas_arg}"]
@@ -514,6 +520,7 @@ def generate_dry_run_script(
     extra_overlays: list[Path] | None = None,
     *,
     keep_going: bool = False,
+    target: str | None = None,
     generating_command: str = "bakar build --dry-run-script",
 ) -> str:
     """Return a runnable bash script reproducing the build invocation.
@@ -546,6 +553,8 @@ def generate_dry_run_script(
     exe = "kas" if cfg.host_mode else "kas-container"
     kas_arg = _dry_run_kas_arg(cfg, kas_yaml, overlay_source, extra_overlays)
     build_cmd = [exe, *_ccache_args(cfg, dry_run=True), "build", kas_arg]
+    if target:
+        build_cmd += ["--target", target]
     if keep_going:
         build_cmd += ["--", "-k"]
     build_line = " ".join(shlex.quote(part) if " " in part else part for part in build_cmd)
@@ -857,7 +866,9 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
 
     if ctx.dry_run:
-        for line in dry_run_preview_lines(cfg, kas_yaml, overlay_source, extra_overlays, keep_going=ctx.keep_going):
+        for line in dry_run_preview_lines(
+            cfg, kas_yaml, overlay_source, extra_overlays, keep_going=ctx.keep_going, target=ctx.target
+        ):
             print(line)
         log.step_skip("kas_build", reason="dry-run")
         return 0
@@ -902,6 +913,8 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     cmd: list[str] = []
     exe = "kas" if cfg.host_mode else "kas-container"
     cmd += [exe, *_ccache_args(cfg, eventlog_path=_container_eventlog_path(cfg, log)), "build", kas_arg]
+    if ctx.target:
+        cmd += ["--target", ctx.target]
     if ctx.keep_going:
         cmd += ["--", "-k"]
 
@@ -1100,7 +1113,7 @@ def _build_env(
     passthrough = {
         k: v
         for k, v in os.environ.items()
-        if k.startswith(("KAS_", "BB_", "SSTATE_", "DL_", "NPROC", "PATH", "HOME", "USER"))
+        if k.startswith(("KAS_", "BB_", "SSTATE_", "DL_", "NPROC", "PATH", "HOME", "USER", "SDKMACHINE"))
     }
     # PATH might not have leaked via the startswith rule if the shell
     # exported it without prefix; ensure it is present.

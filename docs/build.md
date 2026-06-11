@@ -44,6 +44,7 @@ bakar build -m imx8mp-var-dart    # machine override in bbsetup workspace
 | `--machine` | `-m` | Target machine (e.g. `imx8mp-var-dart`, `am62x-var-som`) |
 | `--distro` | `-d` | Distro (e.g. `fsl-imx-xwayland`, `arago`) |
 | `--image` | `-i` | Image target (e.g. `core-image-minimal`, `var-thin-image`) |
+| `--target` | `-t` | kas target override (`kas build --target <TARGET>`, e.g. `avocado-complete`); unset builds the YAML's own target. Pair with `SDKMACHINE=<arch>` for SDK targets. |
 | `--manifest` | `-f` | Manifest filename (NXP `.xml` or TI `.txt`) |
 | `--branch` | `-b` | Branch override (inferred from manifest when omitted) |
 | `--skip-sync` | | Skip repo/layertool sync step |
@@ -76,6 +77,10 @@ bakar build -f processor-sdk-10.1.0.8-config_var1.txt -m am62x-var-som
 
 # BYO: build a hand-crafted kas YAML without any sync
 bakar build my-project.yml
+
+# Override the kas target (e.g. build the avocado SDK feed instead of the
+# YAML's default distro target); SDKMACHINE picks the SDK arch
+SDKMACHINE=x86_64 bakar build meta-avocado/kas/machine/qemux86-64.yml --target avocado-complete
 
 # BYO with colon-separated overlay
 bakar build kas/main.yml:kas/sstate-mirror.yml

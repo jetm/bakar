@@ -136,6 +136,22 @@ def test_no_keep_going_omits_dash_k(tmp_path: Path) -> None:
     assert "-- -k" not in script, script
 
 
+def test_target_override_appears_in_build_step(tmp_path: Path) -> None:
+    """A target override emits ``--target <T>`` after the build arg, before any separator."""
+    cfg, kas_yaml, overlay = _prepare(tmp_path, "nxp")
+    script = generate_dry_run_script(cfg, kas_yaml, overlay, keep_going=True, target="avocado-complete")
+    assert "--target avocado-complete" in script, script
+    assert script.index("build") < script.index("--target"), script
+    assert script.index("--target") < script.index("-- -k"), script
+
+
+def test_no_target_omits_override(tmp_path: Path) -> None:
+    """No target override emits no ``--target`` flag."""
+    cfg, kas_yaml, overlay = _prepare(tmp_path, "nxp")
+    script = generate_dry_run_script(cfg, kas_yaml, overlay)
+    assert "--target" not in script, script
+
+
 def test_dollar_in_env_values_is_literal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A ``$`` in an exported env value is reproduced literally via single-quoting.
 

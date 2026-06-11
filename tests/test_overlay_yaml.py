@@ -160,7 +160,11 @@ def test_generic_overlay_omits_meta_varis_overrides(generic_overlay: dict) -> No
 
 def test_generic_overlay_declares_pythonmalloc_env(generic_overlay: dict) -> None:
     """PYTHONMALLOC=malloc is BSP-agnostic; the parser fork race fires on every BSP."""
-    assert generic_overlay.get("env") == {"PYTHONMALLOC": "malloc", "BB_DEFAULT_EVENTLOG": None}
+    assert generic_overlay.get("env") == {
+        "PYTHONMALLOC": "malloc",
+        "BB_DEFAULT_EVENTLOG": None,
+        "SDKMACHINE": None,
+    }
 
 
 def test_all_overlays_whitelist_bb_default_eventlog(nxp_overlay: dict, ti_overlay: dict, generic_overlay: dict) -> None:
@@ -177,6 +181,20 @@ def test_all_overlays_whitelist_bb_default_eventlog(nxp_overlay: dict, ti_overla
         env = overlay.get("env") or {}
         assert "BB_DEFAULT_EVENTLOG" in env, f"{name} overlay missing BB_DEFAULT_EVENTLOG env declaration"
         assert env["BB_DEFAULT_EVENTLOG"] is None, f"{name} overlay must declare BB_DEFAULT_EVENTLOG as null"
+
+
+def test_all_overlays_whitelist_sdkmachine(nxp_overlay: dict, ti_overlay: dict, generic_overlay: dict) -> None:
+    """Every BSP overlay must whitelist SDKMACHINE (null = passthrough-only).
+
+    ``bakar build --target avocado-complete`` (and any SDK target) needs the host
+    SDKMACHINE forwarded so bitbake picks the SDK arch. _build_env carries it into
+    the kas-container process, but bitbake's clean_environment scrubs vars not in
+    BB_ENV_PASSTHROUGH_ADDITIONS; declaring it null here makes kas whitelist it.
+    """
+    for name, overlay in (("nxp", nxp_overlay), ("ti", ti_overlay), ("generic", generic_overlay)):
+        env = overlay.get("env") or {}
+        assert "SDKMACHINE" in env, f"{name} overlay missing SDKMACHINE env declaration"
+        assert env["SDKMACHINE"] is None, f"{name} overlay must declare SDKMACHINE as null"
 
 
 @pytest.fixture

@@ -227,6 +227,31 @@ def test_dry_run_preview_lines_extra_overlays_included(tmp_path: Path) -> None:
     assert "extra.yml" in command_line, command_line
 
 
+def test_dry_run_preview_lines_target_appends_override(tmp_path: Path) -> None:
+    """dry_run_preview_lines includes '--target <T>' after the kas build arg."""
+    cfg, kas_yaml, overlay = _prepare_workspace(tmp_path)
+    lines = dry_run_preview_lines(cfg, kas_yaml, overlay, target="avocado-complete")
+    command_line = next(ln for ln in lines if ln.startswith("command:"))
+    assert "--target avocado-complete" in command_line, command_line
+    assert command_line.index("build ") < command_line.index("--target"), command_line
+
+
+def test_dry_run_preview_lines_no_target(tmp_path: Path) -> None:
+    """dry_run_preview_lines omits '--target' when target is None (default)."""
+    cfg, kas_yaml, overlay = _prepare_workspace(tmp_path)
+    lines = dry_run_preview_lines(cfg, kas_yaml, overlay)
+    command_line = next(ln for ln in lines if ln.startswith("command:"))
+    assert "--target" not in command_line, command_line
+
+
+def test_dry_run_preview_lines_target_before_separator(tmp_path: Path) -> None:
+    """--target must precede the '-- -k' bitbake-args separator (kas requires it)."""
+    cfg, kas_yaml, overlay = _prepare_workspace(tmp_path)
+    lines = dry_run_preview_lines(cfg, kas_yaml, overlay, keep_going=True, target="avocado-complete")
+    command_line = next(ln for ln in lines if ln.startswith("command:"))
+    assert command_line.index("--target") < command_line.index("-- -k"), command_line
+
+
 # ---------------------------------------------------------------------------
 # (e) sync and gen-kas --help each expose --dry-run and -n
 # ---------------------------------------------------------------------------

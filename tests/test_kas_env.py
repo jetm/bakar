@@ -353,3 +353,18 @@ def test_runtime_args_eventlog_path_ignored_in_host_mode(tmp_path: Path) -> None
     """Host mode: _ccache_args returns [] even when eventlog_path is supplied."""
     cfg = _hashequiv_cfg(tmp_path, use_hashequiv=False, host_mode=True)
     assert _ccache_args(cfg, eventlog_path="/some/path") == []
+
+
+def test_build_env_forwards_sdkmachine_when_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A host SDKMACHINE is forwarded into the kas-container env so SDK-target
+    builds (`bakar build --target avocado-complete`) pick the SDK arch."""
+    monkeypatch.setenv("SDKMACHINE", "x86_64")
+    env = _build_env(_make_cfg(tmp_path))
+    assert env["SDKMACHINE"] == "x86_64"
+
+
+def test_build_env_omits_sdkmachine_when_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """SDKMACHINE absent from the host env is not synthesized into the container env."""
+    monkeypatch.delenv("SDKMACHINE", raising=False)
+    env = _build_env(_make_cfg(tmp_path))
+    assert "SDKMACHINE" not in env

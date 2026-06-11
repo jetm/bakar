@@ -65,6 +65,7 @@ class _BbsetupCtx:
     keep_going: bool
     show_layers: bool
     sstate_mirror: str | None
+    target: str | None = None
     dry_run_script: str | None = None
 
 
@@ -137,7 +138,7 @@ def _run_bbsetup_build(
     if ctx.dry_run_script is not None:
         try:
             script = step_kas.generate_dry_run_script(
-                cfg, cfg.kas_yaml, overlay_source, extra_overlays_bbsetup, keep_going=ctx.keep_going
+                cfg, cfg.kas_yaml, overlay_source, extra_overlays_bbsetup, keep_going=ctx.keep_going, target=ctx.target
             )
         except ValueError as exc:
             console.print(f"[red]Cannot generate dry-run script:[/] {exc}")
@@ -154,7 +155,7 @@ def _run_bbsetup_build(
         if effective_show_layers:
             _print_layer_hashes(cfg)
         for line in step_kas.dry_run_preview_lines(
-            cfg, cfg.kas_yaml, overlay_source, extra_overlays_bbsetup, keep_going=ctx.keep_going
+            cfg, cfg.kas_yaml, overlay_source, extra_overlays_bbsetup, keep_going=ctx.keep_going, target=ctx.target
         ):
             print(line)
         raise typer.Exit(code=0)
@@ -173,7 +174,7 @@ def _run_bbsetup_build(
         )
 
         kas_ctx = KasBuildContext(
-            cfg, log, cfg.kas_yaml, overlay_source, keep_going=ctx.keep_going, dry_run=ctx.dry_run
+            cfg, log, cfg.kas_yaml, overlay_source, keep_going=ctx.keep_going, dry_run=ctx.dry_run, target=ctx.target
         )
         rc = step_kas.run_build(
             kas_ctx,
@@ -205,6 +206,7 @@ class _BuildCtx:
     keep_going: bool
     skip_doctor: bool
     skip_sync: bool
+    target: str | None = None
 
 
 def _run_byo_build(
@@ -231,7 +233,7 @@ def _run_byo_build(
             step_override.apply(cfg, log)
 
     kas_ctx = KasBuildContext(
-        cfg, log, cfg.kas_yaml, ctx.overlay_source, keep_going=ctx.keep_going, dry_run=ctx.dry_run
+        cfg, log, cfg.kas_yaml, ctx.overlay_source, keep_going=ctx.keep_going, dry_run=ctx.dry_run, target=ctx.target
     )
     rc = step_kas.run_build(
         kas_ctx,
@@ -296,7 +298,7 @@ def _run_manifest_build(
         step_kas.regenerate_yaml(cfg, log, bsp=ctx.bsp)
 
     kas_ctx = KasBuildContext(
-        cfg, log, cfg.kas_yaml, ctx.overlay_source, keep_going=ctx.keep_going, dry_run=ctx.dry_run
+        cfg, log, cfg.kas_yaml, ctx.overlay_source, keep_going=ctx.keep_going, dry_run=ctx.dry_run, target=ctx.target
     )
     rc = step_kas.run_build(
         kas_ctx,
@@ -339,6 +341,7 @@ def _run_single_preset_release(
     clean: bool,
     show_layers: bool,
     sstate_mirror: str | None,
+    target: str | None = None,
 ) -> int:
     """Run the full build pipeline for one PresetSpec and return the exit code.
 
@@ -407,6 +410,7 @@ def _run_single_preset_release(
         keep_going=keep_going,
         skip_doctor=skip_doctor,
         skip_sync=skip_sync,
+        target=target,
     )
 
     if clean:
@@ -447,6 +451,15 @@ def build(
     image: Annotated[
         str | None,
         typer.Option("--image", "-i", help="e.g. core-image-minimal, var-thin-image"),
+    ] = None,
+    target: Annotated[
+        str | None,
+        typer.Option(
+            "--target",
+            "-t",
+            help="kas target override (kas build --target <TARGET>), e.g. avocado-complete; "
+            "unset builds the YAML's own target",
+        ),
     ] = None,
     manifest: Annotated[
         str | None,
@@ -613,6 +626,7 @@ def build(
                 clean=clean,
                 show_layers=show_layers,
                 sstate_mirror=sstate_mirror,
+                target=target,
             )
             elapsed = time.monotonic() - t0
             status = "[green]passed[/]" if rc == 0 else "[red]failed[/]"
@@ -655,6 +669,7 @@ def build(
                 keep_going=keep_going,
                 show_layers=show_layers,
                 sstate_mirror=sstate_mirror,
+                target=target,
                 dry_run_script=dry_run_script,
             ),
         )
@@ -725,7 +740,7 @@ def build(
     if dry_run_script is not None:
         try:
             script = step_kas.generate_dry_run_script(
-                cfg, cfg.kas_yaml, overlay_source, extra_overlays, keep_going=keep_going
+                cfg, cfg.kas_yaml, overlay_source, extra_overlays, keep_going=keep_going, target=target
             )
         except ValueError as exc:
             console.print(f"[red]Cannot generate dry-run script:[/] {exc}")
@@ -749,6 +764,7 @@ def build(
         keep_going=keep_going,
         skip_doctor=skip_doctor,
         skip_sync=skip_sync,
+        target=target,
     )
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
