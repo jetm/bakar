@@ -15,6 +15,7 @@ from bakar.commands._helpers import (
     _dispatch_from_yaml,
     _overlay_for,
     _resolve_workspace,
+    split_kas_yaml_arg,
 )
 from bakar.config import BSPSpec, resolve
 from bakar.observability import RunLogger
@@ -25,10 +26,9 @@ from bakar.steps.kas_build import KasBuildContext
 @app.command("dump")
 def dump(
     kas_yaml: Annotated[
-        Path | None,
+        str | None,
         typer.Argument(
-            exists=False,
-            help="Optional kas YAML (BYO); resolves the workspace next to it.",
+            help="Optional kas YAML (BYO); supports colon-overlay syntax: machine.yml:overlay.yml.",
         ),
     ] = None,
     manifest: Annotated[
@@ -58,24 +58,26 @@ def dump(
         console.print("[red]choose either a positional kas YAML or --manifest, not both[/]")
         raise typer.Exit(code=2)
 
-    if kas_yaml is not None:
-        family, bsp = _dispatch_from_yaml(kas_yaml)
+    main_yaml, user_extras = split_kas_yaml_arg(kas_yaml)
+
+    if main_yaml is not None:
+        family, bsp = _dispatch_from_yaml(main_yaml)
     else:
         family, bsp = _dispatch_bsp(manifest)
 
-    ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
+    ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
         spec=BSPSpec(manifest=manifest),
-        kas_yaml=kas_yaml,
+        kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
     )
     overlay_source = _overlay_for(bsp)
     # dump is not a build: use an ephemeral run dir so it does not leave a
     # bogus build/runs/<ts>/ entry that `report`/`triage` would surface.
     with tempfile.TemporaryDirectory() as runs_tmp, RunLogger(runs_dir=Path(runs_tmp)) as log:
-        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source)
+        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source, extra_overlays=user_extras)
         try:
             rc = step_kas.run_kas_subcommand(
                 kas_ctx,

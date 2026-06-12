@@ -281,6 +281,28 @@ def _dispatch_from_yaml(yaml_path: Path) -> tuple[Literal["nxp", "ti", "generic"
     return (family, get_model(family))
 
 
+def split_kas_yaml_arg(raw: str | Path | None) -> tuple[Path | None, list[Path]]:
+    """Split a colon-joined kas YAML arg into (head, extras), validating each segment.
+
+    Mirrors kas config.py:53-54: splits on ':', resolves each segment to an
+    absolute path, checks it exists. Returns (None, []) for None input.
+    Exits with code 2 naming any missing segment.
+    """
+    if raw is None:
+        return None, []
+    from bakar.commands._app import console
+
+    parts = str(raw).split(":")
+    resolved: list[Path] = []
+    for part in parts:
+        p = Path(part).resolve()
+        if not p.is_file():
+            console.print(f"[red]kas YAML not found:[/red] {p}")
+            raise typer.Exit(code=2)
+        resolved.append(p)
+    return resolved[0], resolved[1:]
+
+
 def _normalize_dispatch(
     kas_yaml: Path | None,
     manifest: str | None,

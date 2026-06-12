@@ -36,7 +36,7 @@ import subprocess
 import sys
 import sysconfig
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -394,9 +394,17 @@ class KasBuildContext:
     # kas target override (kas build --target <TARGET>); None builds the YAML's
     # own target. Must land before any `-- <bitbake-args>` separator in the argv.
     target: str | None = None
+    # User-supplied overlays from colon syntax (machine.yml:extra.yml:...).
+    # Materialized and appended after the bakar tuning overlay in the kas arg.
+    extra_overlays: list[Path] = field(default_factory=list)
 
 
-def _build_kas_arg(cfg: BuildConfig, kas_yaml: Path, overlay_source: Path) -> str:
+def _build_kas_arg(
+    cfg: BuildConfig,
+    kas_yaml: Path,
+    overlay_source: Path,
+    extra_overlays: list[Path] | None = None,
+) -> str:
     """Resolve the kas YAML + overlay colon-arg, handling the meta-avocado wrapper path."""
     if cfg.is_meta_avocado:
         _setup_meta_avocado_build_dir(cfg)
@@ -406,6 +414,9 @@ def _build_kas_arg(cfg: BuildConfig, kas_yaml: Path, overlay_source: Path) -> st
         return str(dump)
     kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
     overlay_rel = materialize_overlay(cfg, overlay_source)
+    if extra_overlays:
+        extra_rels = [materialize_overlay(cfg, p) for p in extra_overlays]
+        return ":".join([str(kas_yaml_rel), str(overlay_rel), *[str(r) for r in extra_rels]])
     return f"{kas_yaml_rel}:{overlay_rel}"
 
 
@@ -889,7 +900,11 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     else:
         kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
         overlay_rel = materialize_overlay(cfg, overlay_source)
-        kas_arg = f"{kas_yaml_rel}:{overlay_rel}"
+        if extra_overlays:
+            extra_rels = [materialize_overlay(cfg, p) for p in extra_overlays]
+            kas_arg = ":".join([str(kas_yaml_rel), str(overlay_rel), *[str(r) for r in extra_rels]])
+        else:
+            kas_arg = f"{kas_yaml_rel}:{overlay_rel}"
 
     stop_event = threading.Event()
 
@@ -991,7 +1006,7 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
     log.step_start("kas_shell_live", command=command, host_mode=cfg.host_mode)
-    kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source)
+    kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source, ctx.extra_overlays)
     exe = "kas" if cfg.host_mode else "kas-container"
     cmd = [exe, *_ccache_args(cfg, eventlog_path=_container_eventlog_path(cfg, log)), "shell", kas_arg, "-c", command]
 
@@ -1281,7 +1296,7 @@ def run_shell(ctx: KasBuildContext, args: list[str], command: str | None = None)
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
     log.step_start("kas_shell", command=command, host_mode=cfg.host_mode)
-    kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source)
+    kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source, ctx.extra_overlays)
     exe = "kas" if cfg.host_mode else "kas-container"
     cmd = [exe, *_ccache_args(cfg), "shell", kas_arg]
     if command is not None:
@@ -1320,7 +1335,7 @@ def run_shell_capture(
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
     log.step_start(step, command=command, stdout_path=str(stdout_path), host_mode=cfg.host_mode)
-    kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source)
+    kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source, ctx.extra_overlays)
     exe = "kas" if cfg.host_mode else "kas-container"
     cmd = [exe, *_ccache_args(cfg), "shell", kas_arg, "-c", command]
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1359,7 +1374,7 @@ def run_kas_subcommand(
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
     log.step_start("kas_subcommand", subcommand=subcommand, host_mode=cfg.host_mode)
-    kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source)
+    kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source, ctx.extra_overlays)
     exe = "kas" if cfg.host_mode else "kas-container"
     cmd = [exe, *_ccache_args(cfg), subcommand, kas_arg, *extra_args]
     try:

@@ -31,6 +31,7 @@ from bakar.commands._helpers import (
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
+    split_kas_yaml_arg,
 )
 from bakar.config import BSPSpec, resolve
 from bakar.observability import RunLogger
@@ -84,7 +85,7 @@ def _run_task(
     manifest: str | None,
     machine: str | None,
     workspace: Path | None,
-    kas_yaml: Path | None,
+    kas_yaml: str | None,
     step: str,
     command_override: str | None = None,
 ) -> None:
@@ -103,13 +104,14 @@ def _run_task(
     ``cleansstate && build`` chain). Only valid on the live path - callers that
     pass it leave ``task`` None so the devshell/listtasks branches are skipped.
     """
-    family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
-    ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
+    main_yaml, user_extras = split_kas_yaml_arg(kas_yaml)
+    family, bsp, main_yaml, manifest = _normalize_dispatch(main_yaml, manifest)
+    ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
         spec=BSPSpec(manifest=manifest, machine=machine),
-        kas_yaml=kas_yaml,
+        kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
     )
     overlay_source = _overlay_for(bsp)
@@ -118,7 +120,7 @@ def _run_task(
     command = command_override if command_override is not None else _build_command(target, task, keep_going=keep_going)
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
-        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source)
+        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source, extra_overlays=user_extras)
 
         # devshell is interactive and cannot be captured; route through the
         # inherited-terminal path.
@@ -159,10 +161,9 @@ def bitbake(
         typer.Argument(help="Recipe or image target to build (e.g. busybox, core-image-minimal)."),
     ],
     kas_yaml: Annotated[
-        Path | None,
+        str | None,
         typer.Argument(
-            exists=False,
-            help="Optional kas YAML (BYO/bbsetup); resolves the workspace next to it.",
+            help="Optional kas YAML (BYO/bbsetup); supports colon-overlay syntax: machine.yml:overlay.yml.",
         ),
     ] = None,
     task: Annotated[
@@ -219,10 +220,9 @@ def clean_recipe(
         typer.Argument(help="Recipe to clean via bitbake -c cleansstate."),
     ],
     kas_yaml: Annotated[
-        Path | None,
+        str | None,
         typer.Argument(
-            exists=False,
-            help="Optional kas YAML (BYO/bbsetup); resolves the workspace next to it.",
+            help="Optional kas YAML (BYO/bbsetup); supports colon-overlay syntax: machine.yml:overlay.yml.",
         ),
     ] = None,
     manifest: Annotated[
@@ -263,10 +263,9 @@ def rebuild(
         typer.Argument(help="Recipe to rebuild from scratch (cleansstate, then build)."),
     ],
     kas_yaml: Annotated[
-        Path | None,
+        str | None,
         typer.Argument(
-            exists=False,
-            help="Optional kas YAML (BYO/bbsetup); resolves the workspace next to it.",
+            help="Optional kas YAML (BYO/bbsetup); supports colon-overlay syntax: machine.yml:overlay.yml.",
         ),
     ] = None,
     keep_going: Annotated[

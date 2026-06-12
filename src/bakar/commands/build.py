@@ -27,6 +27,7 @@ from bakar.commands._helpers import (
     _resolve_workspace,
     _tuning_extra_overlays,
     _uninitialized_bbsetup_dir,
+    split_kas_yaml_arg,
 )
 from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, compose_preset_output_path, resolve
 from bakar.diagnostics import any_blocking_failure, run_all
@@ -684,10 +685,7 @@ def build(
             )
             raise typer.Exit(code=2)
 
-    main_yaml: Path | None = None
-    if kas_yaml is not None:
-        parts = kas_yaml.split(":")
-        main_yaml = Path(parts[0])
+    main_yaml, user_extras = split_kas_yaml_arg(kas_yaml if byo_form else None)
 
     if byo_form:
         family, bsp = _dispatch_from_yaml(main_yaml)
@@ -718,8 +716,7 @@ def build(
 
     extra_overlays: list[Path] = []
     if byo_form:
-        if kas_yaml is not None:
-            extra_overlays = [Path(p) for p in kas_yaml.split(":")[1:]]
+        extra_overlays = list(user_extras)
         resolved_existing = {p.resolve() for p in extra_overlays}
         for overlay in _tuning_extra_overlays(cfg):
             resolved_overlay = overlay.resolve()
