@@ -175,6 +175,39 @@ def test_hashequiv_overlay_not_appended_when_use_hashequiv_false(
     assert hashequiv_entries == [], f"expected no hashequiv overlay when use_hashequiv=False, got {hashequiv_entries!r}"
 
 
+def test_user_overlay_named_in_build_log(
+    runner: _CliRunner,
+    workspace: Path,
+    generic_yaml: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The build-start line lists the full overlay stack, including the user overlay.
+
+    The line is the single authoritative overlay list (machine yaml + tuning
+    base + user/auto overlays), so the operator can confirm their extra overlay
+    is in the merge. Asserts on the structured events.jsonl message (the Rich
+    console soft-wraps long paths, which would make a console substring match
+    fragile). With hashserv=False the stack is exactly 3: my.yml, the tuning
+    base, and bringup.yml.
+    """
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    monkeypatch.setattr(build_cmd.step_kas, "run_build", lambda ctx, **kw: 0)
+
+    overlay = tmp_path / "bringup.yml"
+    overlay.write_text("header:\n  version: 14\n")
+
+    result = runner.invoke(app, ["build", f"{generic_yaml}:{overlay}", "--skip-doctor"])
+
+    assert result.exit_code == 0, result.output
+
+    events = list(tmp_path.glob("**/events.jsonl"))
+    assert events, "no events.jsonl written"
+    text = "\n".join(p.read_text() for p in events)
+    assert "merging 3 overlays" in text
+    assert "bringup.yml" in text
+
+
 # ---------------------------------------------------------------------------
 # --target override threading
 # ---------------------------------------------------------------------------

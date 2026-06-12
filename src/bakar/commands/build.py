@@ -766,8 +766,10 @@ def build(
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
     with RunLogger(runs_dir=cfg.runs_dir) as log:
+        overlays = [p for p in (cfg.kas_yaml, overlay_source, *extra_overlays) if p is not None]
         log.info(
-            f"build mode={'byo' if byo_form else 'manifest'} bsp={family} yaml={cfg.kas_yaml} overlay={overlay_source}",
+            f"build mode={'byo' if byo_form else 'manifest'} bsp={family}, merging {len(overlays)} overlays:\n"
+            + step_kas.friendly_overlay_lines(overlays, cfg.workspace),
         )
         if byo_form:
             _run_byo_build(cfg, log, ctx)

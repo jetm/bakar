@@ -421,6 +421,36 @@ def _build_kas_arg(
     return f"{kas_yaml_rel}:{overlay_rel}"
 
 
+def _friendly_overlay_path(path: Path, root: Path) -> str:
+    """Shorten an overlay path for human-readable logging.
+
+    Workspace-relative when under ``root`` (e.g.
+    ``meta-avocado/kas/target/bringup.yml``); basename otherwise, which
+    covers bakar's bundled tuning overlays living outside the workspace
+    (``bakar-tuning-generic.yml``).
+    """
+    try:
+        return str(Path(path).resolve().relative_to(root))
+    except ValueError:
+        return Path(path).name
+
+
+def friendly_overlay_lines(overlays: list[Path], root: Path) -> str:
+    """Render an overlay stack as a markup-safe vertical bullet list.
+
+    One overlay per line, each shortened via :func:`_friendly_overlay_path`,
+    because the merged chain is long and a single colon-joined line soft-wraps
+    mid-path. Shared by the build-start summary and the meta-avocado branch so
+    both present the same ordered list.
+
+    The RunLogger console handler renders with ``markup=True``, so the message
+    must contain no ``[`` - a ``[/path]`` substring is parsed as a closing
+    markup tag and raises ``rich.errors.MarkupError``. Bullets use ``-`` and
+    the message carries no brackets.
+    """
+    return "\n".join(f"    - {_friendly_overlay_path(p, root)}" for p in overlays)
+
+
 def dry_run_preview_lines(
     cfg: BuildConfig,
     kas_yaml: Path,
@@ -889,7 +919,12 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     for lock in removed:
         log.warn(f"removed stale bitbake lock: {lock} (owning process was gone)")
 
-    log.step_start("kas_build", yaml=str(kas_yaml), overlay=str(overlay_source))
+    log.step_start(
+        "kas_build",
+        yaml=str(kas_yaml),
+        overlay=str(overlay_source),
+        extra_overlays=[str(p) for p in (extra_overlays or [])],
+    )
     cfg.measurements_dir.mkdir(parents=True, exist_ok=True)
     if cfg.is_meta_avocado:
         _setup_meta_avocado_build_dir(cfg)
@@ -898,6 +933,8 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         wrapper = _write_meta_avocado_wrapper(cfg, kas_yaml)
         dump = _run_kas_dump(cfg, wrapper, overlay_rel, extra_overlay_rels)
         kas_arg = str(dump)
+        n_overlays = len([kas_yaml, overlay_source, *(extra_overlays or [])])
+        log.info(f"kas dump: flattened {n_overlays} overlays -> {_friendly_overlay_path(Path(kas_arg), cfg.workspace)}")
     else:
         kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
         overlay_rel = materialize_overlay(cfg, overlay_source)

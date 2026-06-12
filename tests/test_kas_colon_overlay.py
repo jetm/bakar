@@ -271,6 +271,48 @@ def test_build_kas_arg_meta_avocado_threads_extras_to_kas_dump(tmp_path: Path) -
     assert "bringup.yml" in captured["extra_overlay_rels"][0].name
 
 
+def test_friendly_overlay_lines_is_markup_safe_and_shortened(tmp_path: Path) -> None:
+    """``friendly_overlay_lines`` renders a markup-safe, shortened vertical list.
+
+    Two regressions guarded here:
+
+    1. Markup: the RunLogger console handler renders with ``markup=True``, so a
+       message wrapping absolute paths in ``[...]`` made Rich parse ``[/home/...]``
+       as a closing tag and raised MarkupError, crashing the build right after
+       ``kas dump``. The rendered list must contain no ``[`` and must round-trip
+       through ``Text.from_markup`` (the exact call that raised).
+    2. Readability: each overlay sits on its own line, shortened workspace-relative
+       (in-workspace files) or to a basename (bakar's bundled overlays), so a long
+       merge chain no longer soft-wraps mid-path.
+    """
+    from pathlib import Path as _Path
+
+    from rich.text import Text
+
+    from bakar.steps.kas_build import friendly_overlay_lines
+
+    workspace = tmp_path
+    machine = workspace / "meta-avocado" / "kas" / "machine" / "rzv2h-rdk.yml"
+    user = workspace / "meta-avocado" / "kas" / "target" / "bringup.yml"
+    # A bakar bundled overlay lives OUTSIDE the workspace -> rendered as basename.
+    bakar_overlay = _Path("/opt/bakar/overlays/bakar-tuning-generic.yml")
+
+    msg = friendly_overlay_lines([machine, bakar_overlay, user], workspace)
+
+    assert "[" not in msg, f"data-bearing log line must not contain '[': {msg!r}"
+    Text.from_markup(msg)  # must not raise rich.errors.MarkupError
+
+    # One overlay per line, shortened, order preserved.
+    lines = msg.splitlines()
+    assert lines == [
+        "    - meta-avocado/kas/machine/rzv2h-rdk.yml",
+        "    - bakar-tuning-generic.yml",  # outside workspace -> basename
+        "    - meta-avocado/kas/target/bringup.yml",
+    ]
+    # No absolute bakar path leaks into the rendered list.
+    assert "/opt/bakar" not in msg
+
+
 # ---------------------------------------------------------------------------
 # bakar bitbake with colon arg: CliRunner wiring
 # ---------------------------------------------------------------------------
