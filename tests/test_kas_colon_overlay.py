@@ -220,6 +220,57 @@ def test_build_kas_arg_byo_no_extras_unchanged(tmp_path: Path) -> None:
     assert len(parts) == 2, f"no-extras arg must be two-part, got {parts}"
 
 
+def test_build_kas_arg_meta_avocado_threads_extras_to_kas_dump(tmp_path: Path) -> None:
+    """The meta-avocado branch must pass extra_overlays to _run_kas_dump.
+
+    Regression: _build_kas_arg fixed the BYO path but left the meta-avocado
+    branch calling _run_kas_dump without the extras, so colon overlays were
+    silently dropped for every meta-avocado shell-function path (run_shell_live
+    powers bakar bitbake / dump).
+    """
+    from bakar.config import BuildConfig
+    from bakar.steps.kas_build import _build_kas_arg
+
+    meta = tmp_path / "sources" / "meta-avocado"
+    kas_dir = meta / "kas" / "machine"
+    kas_dir.mkdir(parents=True, exist_ok=True)
+    kas_yaml = kas_dir / "qemux86-64.yml"
+    kas_yaml.write_text("header:\n  version: 16\n", encoding="utf-8")
+    cfg = BuildConfig(
+        workspace=tmp_path,
+        bsp_family="generic",  # type: ignore[arg-type]
+        machine="generic",
+        distro="generic",
+        image="generic",
+        manifest="",
+        repo_url="",
+        repo_branch="",
+        container_image="jetm/kas-build-env:latest",
+        kas_yaml_override=kas_yaml,
+    )
+    cfg.bsp_root.mkdir(parents=True, exist_ok=True)
+    assert cfg.is_meta_avocado
+    overlay_src = meta / "bakar-tuning-generic.yml"
+    overlay_src.write_text("header:\n  version: 16\n", encoding="utf-8")
+    extra_src = meta / "kas" / "target" / "bringup.yml"
+    extra_src.parent.mkdir(parents=True, exist_ok=True)
+    extra_src.write_text("header:\n  version: 16\n", encoding="utf-8")
+
+    captured: dict = {}
+
+    def fake_run_kas_dump(cfg, wrapper, overlay_rel, extra_overlay_rels=None):
+        captured["extra_overlay_rels"] = list(extra_overlay_rels or [])
+        dump = cfg.bsp_root / "avocado-bakar.yml"
+        dump.write_text("header:\n  version: 16\n", encoding="utf-8")
+        return dump
+
+    with patch("bakar.steps.kas_build._run_kas_dump", fake_run_kas_dump):
+        _build_kas_arg(cfg, kas_yaml, overlay_src, [extra_src])
+
+    assert len(captured["extra_overlay_rels"]) == 1, f"meta-avocado branch dropped extras: {captured}"
+    assert "bringup.yml" in captured["extra_overlay_rels"][0].name
+
+
 # ---------------------------------------------------------------------------
 # bakar bitbake with colon arg: CliRunner wiring
 # ---------------------------------------------------------------------------
@@ -316,7 +367,6 @@ def test_bitbake_missing_overlay_exits(
 def test_run_build_byo_extra_overlays_in_dry_run(tmp_path: Path) -> None:
     """run_build dry-run includes extra_overlays in the kas_arg after the tuning overlay."""
     from bakar.config import BuildConfig
-    from bakar.observability import RunLogger
     from bakar.steps import kas_build
 
     cfg = BuildConfig(
@@ -340,15 +390,7 @@ def test_run_build_byo_extra_overlays_in_dry_run(tmp_path: Path) -> None:
     extra = tmp_path / "bringup.yml"
     extra.write_text("header:\n  version: 14\n", encoding="utf-8")
 
-    with RunLogger(runs_dir=cfg.runs_dir) as log:
-        ctx = kas_build.KasBuildContext(
-            cfg=cfg,
-            log=log,
-            kas_yaml=kas_yaml,
-            overlay_source=overlay,
-            dry_run=True,
-        )
-        lines = kas_build.dry_run_preview_lines(cfg, kas_yaml, overlay, [extra])
+    lines = kas_build.dry_run_preview_lines(cfg, kas_yaml, overlay, [extra])
 
     command_line = next(ln for ln in lines if ln.startswith("command:"))
     assert "bringup.yml" in command_line, command_line

@@ -409,8 +409,9 @@ def _build_kas_arg(
     if cfg.is_meta_avocado:
         _setup_meta_avocado_build_dir(cfg)
         overlay_rel = materialize_overlay(cfg, overlay_source)
+        extra_overlay_rels = [materialize_overlay(cfg, p) for p in extra_overlays or []]
         wrapper = _write_meta_avocado_wrapper(cfg, kas_yaml)
-        dump = _run_kas_dump(cfg, wrapper, overlay_rel)
+        dump = _run_kas_dump(cfg, wrapper, overlay_rel, extra_overlay_rels)
         return str(dump)
     kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
     overlay_rel = materialize_overlay(cfg, overlay_source)
