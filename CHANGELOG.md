@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-06-12
+
+### Added
+
+- Added `bakar rebuild <recipe>` command that chains `bitbake -c cleansstate <recipe> && bitbake <recipe>` in a single kas-container invocation with full run logging and exit-code fidelity; `--keep-going`/`-k` applies to the build half only.
+- Added `--target`/`-t` option to `bakar build` that passes `--target <TARGET>` to kas (e.g. `bakar build machine.yml --target avocado-complete`); unset preserves existing behavior of building the YAML's own target.
+- Added support for kas colon-overlay syntax (`machine.yml:overlay.yml`) in `bakar bitbake`, `bakar build`, and `bakar dump`; extra overlays are validated at invocation time and merged after the bakar tuning overlay so user settings win over bakar defaults.
+- Added a stall watchdog (`build.stall_abort_secs`, default `2700`) that SIGINTs the build when every running task's log has been silent past the threshold, then records a `stall-timeout` step_fail naming the wedged task instead of spinning indefinitely. Set to `0` to disable. Configurable via `bakar settings set build.stall_abort_secs <N>`.
+- Added `SDKMACHINE` passthrough to the kas-container environment so SDK-target builds (`SDKMACHINE=x86_64 bakar build ... --target avocado-complete`) pick the correct SDK architecture.
+- Added overlay stack listing to the build-start log line, naming every overlay in the merge chain (including user-supplied colon overlays) so operators can confirm their extra overlay was applied.
+
+### Changed
+
+- Container pre-flight probes (`check_container_os`, `check_container_bitbake`) now retry once on a cold-start timeout so a single slow docker daemon startup no longer silently disarms the BLOCK gate for broken Python 3.13/3.14 containers.
+- `bakar report` no longer reports `peak build/tmp` size; the background `du -sb` sampler that collected it has been removed. The `du.tsv` artifact is no longer written to run directories.
+- The live build UI now correctly resets its progress bar and phase between chained bitbake invocations (e.g. `bakar rebuild`'s `cleansstate && build`), so the second run displays its own parse → setscene → tasks cycle rather than showing a stale "full" bar during parse.
+- Installation instructions updated: `bakar` can now be installed from PyPI with `uv tool install bakar` or `pip install bakar`.
+
+### Removed
+
+- Removed `peak_tmp_bytes` field from `bakar report` output and `--json` output; the `du.tsv` artifact is no longer produced in run directories.
+- Removed the `time.log` artifact (`/usr/bin/time -v` wrapper) from run directories; nothing in bakar read it.
+
 ## [0.15.1] - 2026-06-05
 
 ### Added
@@ -340,7 +363,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/jetm/bakar/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/jetm/bakar/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/jetm/bakar/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/jetm/bakar/compare/v0.13.0...v0.14.0
