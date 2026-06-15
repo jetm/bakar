@@ -312,9 +312,9 @@ def check_cache_dirs(cfg: BuildConfig) -> CheckResult:
 
 def check_sysctl(cfg: BuildConfig) -> CheckResult:
     keys = {
-        "fs.inotify.max_user_instances": (4096, Severity.WARN),
-        "fs.inotify.max_user_watches": (524288, Severity.WARN),
-        "vm.swappiness": (20, Severity.INFO),  # check as "<= threshold"
+        "fs.inotify.max_user_instances": (cfg.host_inotify_instances, Severity.WARN),
+        "fs.inotify.max_user_watches": (cfg.host_inotify_watches, Severity.WARN),
+        "vm.swappiness": (cfg.host_swappiness_max, Severity.INFO),  # check as "<= threshold"
     }
     issues: list[str] = []
     worst_sev = Severity.INFO
@@ -364,11 +364,11 @@ def check_docker_ulimits(cfg: BuildConfig) -> CheckResult:
         return _fail("docker-ulimits", Severity.WARN, f"daemon.json parse error: {exc}")
     nofile = data.get("default-ulimits", {}).get("nofile", {})
     soft = nofile.get("Soft", 0)
-    if soft < 8192:
+    if soft < cfg.host_nofile_soft:
         return _fail(
             "docker-ulimits",
             Severity.WARN,
-            f"default-ulimits.nofile.Soft={soft} (<8192)",
+            f"default-ulimits.nofile.Soft={soft} (<{cfg.host_nofile_soft})",
             fix_hint='Set `"default-ulimits": {"nofile": {"Soft": 65536, "Hard": 2097152}}`'
             " in /etc/docker/daemon.json and `sudo systemctl restart docker`.",
         )
@@ -429,11 +429,11 @@ def check_memory(cfg: BuildConfig) -> CheckResult:
         elif line.startswith("SwapFree:"):
             swap_kb = int(line.split()[1])
     total_mb = (free_kb + swap_kb) / 1024
-    if total_mb < 16 * 1024:
+    if total_mb < cfg.host_mem_min_gb * 1024:
         return _fail(
             "memory",
             Severity.WARN,
-            f"available+swap={total_mb:.0f}M (<16G)",
+            f"available+swap={total_mb:.0f}M (<{cfg.host_mem_min_gb:.0f}G)",
             fix_hint="Close RAM-heavy apps before starting a big bitbake run.",
         )
     return _ok("memory", Severity.WARN, f"available+swap={total_mb:.0f}M")

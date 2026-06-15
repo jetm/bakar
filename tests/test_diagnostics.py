@@ -512,6 +512,164 @@ def test_check_sysctl_watches_unreadable(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "fs.inotify.max_user_watches" in result.message
 
 
+# ---------------------------------------------------------------------------
+# Config-driven host threshold tests (check_sysctl / check_docker_ulimits /
+# check_memory now read cfg.host_* instead of hardcoded literals).
+# ---------------------------------------------------------------------------
+
+
+def test_check_sysctl_default_config_matches_prior_literals(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A default BuildConfig reproduces the old 4096/524288/20 verdicts.
+
+    Values exactly at the old literal floors pass; one tick below the floor
+    (or above the swappiness ceiling) fails, matching the pre-change behavior.
+    """
+    monkeypatch.setattr(
+        "bakar.diagnostics._read_sysctl",
+        _sysctl_stub(
+            {
+                "fs.inotify.max_user_instances": 4096,
+                "fs.inotify.max_user_watches": 524288,
+                "vm.swappiness": 20,
+            }
+        ),
+    )
+    assert check_sysctl(_cfg()).status is Status.PASS
+
+    monkeypatch.setattr(
+        "bakar.diagnostics._read_sysctl",
+        _sysctl_stub(
+            {
+                "fs.inotify.max_user_instances": 4095,
+                "fs.inotify.max_user_watches": 524288,
+                "vm.swappiness": 20,
+            }
+        ),
+    )
+    assert check_sysctl(_cfg()).status is Status.FAIL
+
+    monkeypatch.setattr(
+        "bakar.diagnostics._read_sysctl",
+        _sysctl_stub(
+            {
+                "fs.inotify.max_user_instances": 4096,
+                "fs.inotify.max_user_watches": 524288,
+                "vm.swappiness": 21,
+            }
+        ),
+    )
+    assert check_sysctl(_cfg()).status is Status.FAIL
+
+
+def test_check_sysctl_raised_floor_flips_borderline_to_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A live value that passes the default floor fails once the floor is raised."""
+    live = {
+        "fs.inotify.max_user_instances": 6000,
+        "fs.inotify.max_user_watches": 524288,
+        "vm.swappiness": 20,
+    }
+    monkeypatch.setattr("bakar.diagnostics._read_sysctl", _sysctl_stub(live))
+    assert check_sysctl(_cfg()).status is Status.PASS
+
+    raised = dataclasses.replace(_cfg(), host_inotify_instances=8192)
+    result = check_sysctl(raised)
+    assert result.status is Status.FAIL
+    assert "6000" in result.message
+    assert "<8192" in result.message
+
+
+def test_check_sysctl_raised_swappiness_ceiling_flips_to_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Swappiness stays a ceiling: a value passing the default ceiling fails a lower one."""
+    live = {
+        "fs.inotify.max_user_instances": 4096,
+        "fs.inotify.max_user_watches": 524288,
+        "vm.swappiness": 15,
+    }
+    monkeypatch.setattr("bakar.diagnostics._read_sysctl", _sysctl_stub(live))
+    assert check_sysctl(_cfg()).status is Status.PASS
+
+    lowered = dataclasses.replace(_cfg(), host_swappiness_max=10)
+    result = check_sysctl(lowered)
+    assert result.status is Status.FAIL
+    assert "vm.swappiness=15" in result.message
+    assert "(>10)" in result.message
+
+
+def _write_daemon_json(path: Path, soft: int) -> Path:
+    """Write an /etc/docker/daemon.json-shaped file with the given nofile Soft."""
+    path.write_text(json.dumps({"default-ulimits": {"nofile": {"Soft": soft, "Hard": 2097152}}}))
+    return path
+
+
+def test_check_docker_ulimits_default_config_matches_prior_literal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Default config reproduces the old 8192 floor: 8192 passes, 8191 fails."""
+    from bakar.diagnostics import check_docker_ulimits
+
+    at_floor = _write_daemon_json(tmp_path / "at.json", 8192)
+    monkeypatch.setattr("bakar.diagnostics.Path", lambda _p: at_floor)
+    assert check_docker_ulimits(_cfg()).status is Status.PASS
+
+    below = _write_daemon_json(tmp_path / "below.json", 8191)
+    monkeypatch.setattr("bakar.diagnostics.Path", lambda _p: below)
+    assert check_docker_ulimits(_cfg()).status is Status.FAIL
+
+
+def test_check_docker_ulimits_raised_floor_flips_to_fail(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A nofile Soft passing the default floor fails once the floor is raised."""
+    from bakar.diagnostics import check_docker_ulimits
+
+    daemon = _write_daemon_json(tmp_path / "daemon.json", 10000)
+    monkeypatch.setattr("bakar.diagnostics.Path", lambda _p: daemon)
+    assert check_docker_ulimits(_cfg()).status is Status.PASS
+
+    raised = dataclasses.replace(_cfg(), host_nofile_soft=16384)
+    result = check_docker_ulimits(raised)
+    assert result.status is Status.FAIL
+    assert "10000" in result.message
+    assert "<16384" in result.message
+
+
+def _patch_meminfo(monkeypatch: pytest.MonkeyPatch, mem_avail_kb: int, swap_free_kb: int) -> None:
+    """Patch Path.read_text so /proc/meminfo reports the given MemAvailable/SwapFree."""
+    real_read_text = Path.read_text
+    content = f"MemTotal:       99999999 kB\nMemAvailable: {mem_avail_kb} kB\nSwapFree:     {swap_free_kb} kB\n"
+
+    def fake_read_text(self: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if str(self) == "/proc/meminfo":
+            return content
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+
+def test_check_memory_default_config_matches_prior_literal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default config reproduces the old 16G floor: exactly 16G passes, just under fails."""
+    from bakar.diagnostics import check_memory
+
+    sixteen_g_kb = 16 * 1024 * 1024  # 16 GiB expressed in kB
+    _patch_meminfo(monkeypatch, mem_avail_kb=sixteen_g_kb, swap_free_kb=0)
+    assert check_memory(_cfg()).status is Status.PASS
+
+    _patch_meminfo(monkeypatch, mem_avail_kb=sixteen_g_kb - 1024, swap_free_kb=0)
+    assert check_memory(_cfg()).status is Status.FAIL
+
+
+def test_check_memory_raised_floor_flips_to_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Available+swap passing the default 16G floor fails once the floor is raised."""
+    from bakar.diagnostics import check_memory
+
+    twenty_g_kb = 20 * 1024 * 1024
+    _patch_meminfo(monkeypatch, mem_avail_kb=twenty_g_kb, swap_free_kb=0)
+    assert check_memory(_cfg()).status is Status.PASS
+
+    raised = dataclasses.replace(_cfg(), host_mem_min_gb=32.0)
+    result = check_memory(raised)
+    assert result.status is Status.FAIL
+    assert "<32G" in result.message
+
+
 def test_check_git_global_config_both_set(monkeypatch: pytest.MonkeyPatch) -> None:
     """Both user.email and user.name configured -> PASS at BLOCK severity."""
     responses = {
