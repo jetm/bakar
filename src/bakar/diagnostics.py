@@ -433,7 +433,7 @@ def check_memory(cfg: BuildConfig) -> CheckResult:
         return _fail(
             "memory",
             Severity.WARN,
-            f"available+swap={total_mb:.0f}M (<{cfg.host_mem_min_gb:.0f}G)",
+            f"available+swap={total_mb:.0f}M (<{cfg.host_mem_min_gb:g}G)",
             fix_hint="Close RAM-heavy apps before starting a big bitbake run.",
         )
     return _ok("memory", Severity.WARN, f"available+swap={total_mb:.0f}M")

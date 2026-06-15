@@ -618,5 +618,5 @@ def resolve(
         host_inotify_watches=int(_host("host_inotify_watches", 524288)),
         host_swappiness_max=int(_host("host_swappiness_max", 20)),
         host_nofile_soft=int(_host("host_nofile_soft", 8192)),
-        host_mem_min_gb=_host("host_mem_min_gb", 16.0),
+        host_mem_min_gb=float(_host("host_mem_min_gb", 16.0)),
     )
