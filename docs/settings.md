@@ -62,6 +62,22 @@ All keys use dotted notation (`section.subsection.key`).
 | `build.ccache_shared` | bool | Share one ccache across all workspaces instead of per-workspace (default: `false`). Defaults the cache to `~/.cache/bakar/ccache`. |
 | `build.ccache_dir` | string | Explicit ccache directory (a shared location of your choosing); overrides `ccache_shared` and the per-workspace default. |
 
+### Host thresholds (`host.*`)
+
+Floors and ceilings the `bakar doctor` host-environment checks compare live
+system state against. Defaults equal the values doctor previously hardcoded, so
+the verdicts are unchanged until you set a key. A workspace `.bakar.toml`
+`[host]` table overrides the user `config.toml` `[host]` section, which overrides
+the built-in floor.
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `host.inotify_instances` | int | `fs.inotify.max_user_instances` sysctl floor (default: `4096`) |
+| `host.inotify_watches` | int | `fs.inotify.max_user_watches` sysctl floor (default: `524288`) |
+| `host.swappiness_max` | int | `vm.swappiness` sysctl ceiling (default: `20`) |
+| `host.nofile_soft` | int | Docker `default-ulimits` `nofile` soft floor (default: `8192`) |
+| `host.mem_min_gb` | float | Minimum available+swap memory floor in GB (default: `16.0`) |
+
 ### Layers settings (`layers.*`)
 
 | Key | Type | Description |
@@ -91,6 +107,10 @@ bakar settings set build.doctor false
 
 # Always show layer hashes after sync/build
 bakar settings set layers.show_hashes true
+
+# Raise a doctor host threshold above its built-in floor
+bakar settings set host.inotify_instances 8192
+bakar settings set host.mem_min_gb 32.0
 
 # Check the current value of a key
 bakar settings get defaults.nxp.machine

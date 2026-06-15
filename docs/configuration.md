@@ -24,6 +24,12 @@ flag.
 | `[defaults.ti]` | `manifest`, `machine`, `distro`, `image` |
 | `[defaults.generic]` | `kas_yaml`, `machine` |
 
+The same file may also carry a top-level `[host]` table (not under
+`[defaults]`) overriding the user `config.toml` `[host]` doctor thresholds for
+this workspace: precedence is workspace `.bakar.toml` `[host]` > user
+`config.toml` `[host]` > built-in floor. See
+[config-reference.md](config-reference.md) for the `[host]` keys.
+
 `bakar init` writes these on workspace creation. See [init.md](init.md) for the
 wizard and [workspace.md](workspace.md) for the full `.bakar.toml` schema.
 
@@ -109,6 +115,16 @@ hashserv = true
 # (it overrides the overlay value) when you share across several workspaces.
 ccache_shared = true
 # ccache_dir = "/mnt/yocto-cache/ccache"
+
+# Doctor host-environment thresholds. Defaults equal the values doctor
+# previously hardcoded, so an absent [host] table is a no-op. A workspace
+# .bakar.toml [host] table overrides these; both override the built-in floor.
+[host]
+inotify_instances = 4096   # fs.inotify.max_user_instances floor
+inotify_watches = 524288   # fs.inotify.max_user_watches floor
+swappiness_max = 20        # vm.swappiness ceiling
+nofile_soft = 8192         # docker default-ulimits nofile soft floor
+mem_min_gb = 16.0          # minimum available+swap memory floor (GB)
 
 [layers]
 show_hashes = true   # always print layer SHAs after build/sync

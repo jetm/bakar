@@ -63,6 +63,22 @@ one).
 | `ccache_shared` | bool | `false` | Share one ccache across all workspaces instead of a per-workspace cache. Default shared path: `~/.cache/bakar/ccache`. Cross-BSP compiler cache hits become possible. Note: a shared cache is subject to its own size cap (`CCACHE_MAXSIZE` from the tuning overlay, default 50 GB); raise it with `export CCACHE_MAXSIZE=100G` when sharing across many workspaces. |
 | `ccache_dir` | string | *(not set)* | Explicit ccache directory. Takes precedence over `ccache_shared` and the per-workspace default. Useful for pointing several machines at a shared NFS-mounted cache. |
 
+### `[host]` — doctor host-environment thresholds
+
+Floors and ceilings the `bakar doctor` host-environment checks compare live
+system state against (`check_sysctl`, `check_docker_ulimits`, `check_memory`).
+Each default equals the value doctor previously hardcoded, so an absent `[host]`
+table yields verdicts identical to the pre-config behaviour. Precedence:
+workspace `.bakar.toml` `[host]` > user `config.toml` `[host]` > built-in floor.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `inotify_instances` | int | `4096` | Floor for the `fs.inotify.max_user_instances` sysctl. Must be `> 0`. |
+| `inotify_watches` | int | `524288` | Floor for the `fs.inotify.max_user_watches` sysctl. Must be `> 0`. |
+| `swappiness_max` | int | `20` | Ceiling for the `vm.swappiness` sysctl (the check fails when the live value exceeds this). Must be `> 0`. |
+| `nofile_soft` | int | `8192` | Floor for the Docker daemon's `default-ulimits` `nofile` soft limit. Must be `> 0`. |
+| `mem_min_gb` | float | `16.0` | Minimum available-plus-swap memory floor in GB. Must be `> 0`. |
+
 ### `[layers]` — display preferences
 
 | Key | Type | Default | Description |
@@ -98,6 +114,13 @@ disk_free_threshold_gb = 50.0
 hashserv = true
 ccache_shared = true
 # ccache_dir = "/mnt/yocto-cache/ccache"
+
+[host]
+inotify_instances = 4096
+inotify_watches = 524288
+swappiness_max = 20
+nofile_soft = 8192
+mem_min_gb = 16.0
 
 [layers]
 show_hashes = true
@@ -139,6 +162,21 @@ but does not fail the load. Unknown sections are silently ignored.
 |-----|------|-------------|
 | `kas_yaml` | string | Default kas YAML path for BYO/generic workspaces. |
 | `machine` | string | Default MACHINE for BYO/generic builds. |
+
+### `[host]`
+
+A top-level table (not under `[defaults]`) that overrides the user
+`config.toml` `[host]` thresholds for this workspace. Same keys, types, and
+defaults as the user-config `[host]` section above; precedence is workspace
+`.bakar.toml` `[host]` > user `config.toml` `[host]` > built-in floor.
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `inotify_instances` | int | Workspace override for the `fs.inotify.max_user_instances` floor. |
+| `inotify_watches` | int | Workspace override for the `fs.inotify.max_user_watches` floor. |
+| `swappiness_max` | int | Workspace override for the `vm.swappiness` ceiling. |
+| `nofile_soft` | int | Workspace override for the Docker `default-ulimits` `nofile` soft floor. |
+| `mem_min_gb` | float | Workspace override for the minimum memory floor in GB. |
 
 ### Example
 
