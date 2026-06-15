@@ -193,6 +193,111 @@ def test_unknown_section_is_ignored(tmp_path: Path) -> None:
     assert cfg.ti_machine is None
 
 
+@pytest.mark.unit
+def test_host_table_populates_host_fields(tmp_path: Path) -> None:
+    toml_content = textwrap.dedent("""\
+        # bakar workspace root.
+
+        [host]
+        inotify_instances = 8192
+        inotify_watches   = 600000
+        swappiness_max    = 10
+        nofile_soft       = 16384
+        mem_min_gb        = 32.0
+    """)
+    (tmp_path / ".bakar.toml").write_text(toml_content)
+
+    cfg = load_workspace_config(tmp_path)
+
+    assert cfg.host_inotify_instances == 8192
+    assert cfg.host_inotify_watches == 600000
+    assert cfg.host_swappiness_max == 10
+    assert cfg.host_nofile_soft == 16384
+    assert cfg.host_mem_min_gb == 32.0
+    # Build-target families stay at defaults.
+    assert cfg.nxp_manifest is None
+
+
+@pytest.mark.unit
+def test_absent_host_table_leaves_host_fields_none(tmp_path: Path) -> None:
+    toml_content = textwrap.dedent("""\
+        [defaults.nxp]
+        machine = "imx8mp-var-dart"
+    """)
+    (tmp_path / ".bakar.toml").write_text(toml_content)
+
+    cfg = load_workspace_config(tmp_path)
+
+    assert cfg.host_inotify_instances is None
+    assert cfg.host_inotify_watches is None
+    assert cfg.host_swappiness_max is None
+    assert cfg.host_nofile_soft is None
+    assert cfg.host_mem_min_gb is None
+
+
+@pytest.mark.unit
+def test_host_table_is_top_level_not_under_defaults(tmp_path: Path) -> None:
+    """A [defaults.host] table must NOT populate the host_* fields."""
+    toml_content = textwrap.dedent("""\
+        [defaults.host]
+        inotify_instances = 8192
+    """)
+    (tmp_path / ".bakar.toml").write_text(toml_content)
+
+    # [defaults.host] is an unknown family section under defaults -> ignored
+    # without warning; the top-level host_* fields stay None.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        cfg = load_workspace_config(tmp_path)
+
+    assert cfg.host_inotify_instances is None
+
+
+@pytest.mark.unit
+def test_host_non_numeric_raises_valueerror_naming_field(tmp_path: Path) -> None:
+    toml_content = textwrap.dedent("""\
+        [host]
+        inotify_instances = "lots"
+    """)
+    config_file = tmp_path / ".bakar.toml"
+    config_file.write_text(toml_content)
+
+    with pytest.raises(ValueError, match="host_inotify_instances"):
+        load_workspace_config(tmp_path)
+
+
+@pytest.mark.unit
+def test_host_non_positive_raises_valueerror_naming_field(tmp_path: Path) -> None:
+    toml_content = textwrap.dedent("""\
+        [host]
+        nofile_soft = 0
+    """)
+    config_file = tmp_path / ".bakar.toml"
+    config_file.write_text(toml_content)
+
+    with pytest.raises(ValueError, match="host_nofile_soft"):
+        load_workspace_config(tmp_path)
+
+
+@pytest.mark.unit
+def test_unknown_key_in_host_table_warns_and_continues(tmp_path: Path) -> None:
+    toml_content = textwrap.dedent("""\
+        [host]
+        inotify_instances = 8192
+        bogus_key = 1
+    """)
+    (tmp_path / ".bakar.toml").write_text(toml_content)
+
+    with pytest.warns(UserWarning, match="bogus_key") as record:
+        cfg = load_workspace_config(tmp_path)
+
+    assert cfg.host_inotify_instances == 8192
+    message = str(record[0].message)
+    assert "bogus_key" in message
+    for recognized in ("inotify_instances", "inotify_watches", "swappiness_max", "nofile_soft", "mem_min_gb"):
+        assert recognized in message
+
+
 # Round-trip tests for write_workspace_config (task 1.2). They skip until the
 # writer lands, then verify write -> load preserves every value.
 _has_writer = hasattr(workspace_config, "write_workspace_config")

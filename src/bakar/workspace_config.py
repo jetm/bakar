@@ -23,6 +23,15 @@ _STR_FIELDS = {
     "generic_machine",
 }
 
+# Host-threshold fields are numeric (reject non-numeric, reject non-positive).
+_HOST_FIELDS = {
+    "host_inotify_instances",
+    "host_inotify_watches",
+    "host_swappiness_max",
+    "host_nofile_soft",
+    "host_mem_min_gb",
+}
+
 
 @dataclass
 class WorkspaceConfig:
@@ -39,6 +48,13 @@ class WorkspaceConfig:
     # [defaults.generic]
     generic_kas_yaml: str | None = None
     generic_machine: str | None = None
+    # [host] - workspace-tier override; None means "not set" (falls back to
+    # the user config then the built-in floor in config.resolve()).
+    host_inotify_instances: int | None = None
+    host_inotify_watches: int | None = None
+    host_swappiness_max: int | None = None
+    host_nofile_soft: int | None = None
+    host_mem_min_gb: float | None = None
 
 
 # Maps a (section, key) pair onto a WorkspaceConfig field name. The nxp_/ti_/
@@ -61,23 +77,40 @@ _GENERIC_KEYS = {
     "kas_yaml": "generic_kas_yaml",
     "machine": "generic_machine",
 }
+# Top-level [host] table -> host_* fields. Not under [defaults]; host thresholds
+# are not family-scoped. Mirrors user_config.py's _HOST_KEYS.
+_HOST_KEYS = {
+    "inotify_instances": "host_inotify_instances",
+    "inotify_watches": "host_inotify_watches",
+    "swappiness_max": "host_swappiness_max",
+    "nofile_soft": "host_nofile_soft",
+    "mem_min_gb": "host_mem_min_gb",
+}
 
 
 def _check_type(field: str, value: object, path: Path) -> None:
     if field in _STR_FIELDS and not isinstance(value, str):
         raise ValueError(f"{path}: '{field}' must be a string, got {type(value).__name__}")
+    if field in _HOST_FIELDS:
+        # bool is an int subclass; reject it explicitly so True/False can't pose
+        # as a count.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{path}: '{field}' must be a number, got {type(value).__name__}")
+        if value <= 0:
+            raise ValueError(f"{path}: '{field}' must be positive, got {value}")
 
 
 def load_workspace_config(workspace: Path) -> WorkspaceConfig:
     """Load ``<workspace>/.bakar.toml`` into a :class:`WorkspaceConfig`.
 
     Returns an all-defaults ``WorkspaceConfig()`` when the file is absent or
-    carries no ``[defaults.<family>]`` sections (e.g. a comment-only marker
-    file). Raises ``ValueError`` (with the file path in the message) on a TOML
-    parse error or a type mismatch. An unrecognized key under a recognized
-    ``[defaults.<family>]`` section emits a :class:`UserWarning` naming the
-    unknown key and the recognized keys, then is ignored; unknown sections are
-    ignored without warning.
+    carries no recognized sections (e.g. a comment-only marker file). Raises
+    ``ValueError`` (with the file path in the message) on a TOML parse error or
+    a type mismatch. Reads ``[defaults.<family>]`` build targets and a
+    top-level ``[host]`` table of numeric thresholds. An unrecognized key under
+    a recognized ``[defaults.<family>]`` section or under ``[host]`` emits a
+    :class:`UserWarning` naming the unknown key and the recognized keys, then is
+    ignored; unknown sections are ignored without warning.
     """
     path = workspace / ".bakar.toml"
 
@@ -108,6 +141,19 @@ def load_workspace_config(workspace: Path) -> WorkspaceConfig:
                     continue
                 _check_type(mapping[key], section_data[key], path)
                 values[mapping[key]] = section_data[key]
+
+    host = data.get("host", {})
+    if isinstance(host, dict):
+        for key in host:
+            if key not in _HOST_KEYS:
+                recognized = ", ".join(sorted(_HOST_KEYS))
+                warnings.warn(
+                    f"{path}: unknown key '{key}' in [host]; recognized keys: {recognized}",
+                    stacklevel=2,
+                )
+                continue
+            _check_type(_HOST_KEYS[key], host[key], path)
+            values[_HOST_KEYS[key]] = host[key]
 
     return WorkspaceConfig(**values)
 
