@@ -96,6 +96,10 @@ def _check_type(field: str, value: object, path: Path) -> None:
         # as a count.
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"{path}: '{field}' must be a number, got {type(value).__name__}")
+        if field != "host_mem_min_gb" and not isinstance(value, int):
+            # The four count fields are int-only, matching UserConfig's _INT_FIELDS
+            # rejection; without this a float would silently truncate in resolve().
+            raise ValueError(f"{path}: '{field}' must be an integer, got {type(value).__name__}")
         if value <= 0:
             raise ValueError(f"{path}: '{field}' must be positive, got {value}")
 

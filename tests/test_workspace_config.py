@@ -280,6 +280,21 @@ def test_host_non_positive_raises_valueerror_naming_field(tmp_path: Path) -> Non
 
 
 @pytest.mark.unit
+def test_host_int_field_rejects_float(tmp_path: Path) -> None:
+    """A float for an int count field is rejected, matching UserConfig - otherwise
+    resolve() would silently int()-truncate it."""
+    toml_content = textwrap.dedent("""\
+        [host]
+        inotify_instances = 8.5
+    """)
+    config_file = tmp_path / ".bakar.toml"
+    config_file.write_text(toml_content)
+
+    with pytest.raises(ValueError, match="host_inotify_instances"):
+        load_workspace_config(tmp_path)
+
+
+@pytest.mark.unit
 def test_unknown_key_in_host_table_warns_and_continues(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [host]
