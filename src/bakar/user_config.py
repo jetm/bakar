@@ -29,8 +29,22 @@ _STR_FIELDS = {
     "ccache_dir",
 }
 _BOOL_FIELDS = {"doctor", "show_hashes", "show_sstate_summary", "hashserv", "ccache_shared", "psi_autocalibrate"}
-_INT_FIELDS: set[str] = {"stall_abort_secs"}
+_INT_FIELDS: set[str] = {
+    "stall_abort_secs",
+    "host_inotify_instances",
+    "host_inotify_watches",
+    "host_swappiness_max",
+    "host_nofile_soft",
+}
 _PSI_FIELDS = {"pressure_max_cpu", "pressure_max_io", "pressure_max_memory"}
+# The five [host] threshold fields; all require a strictly positive value.
+_HOST_FIELDS = {
+    "host_inotify_instances",
+    "host_inotify_watches",
+    "host_swappiness_max",
+    "host_nofile_soft",
+    "host_mem_min_gb",
+}
 
 
 @dataclass
@@ -68,6 +82,13 @@ class UserConfig:
     # [layers]
     show_hashes: bool = False
     show_sstate_summary: bool = False
+    # [host] doctor thresholds; defaults equal today's hardcoded literals in
+    # diagnostics.py so verdicts are byte-identical until a value is written.
+    host_inotify_instances: int = 4096
+    host_inotify_watches: int = 524288
+    host_swappiness_max: int = 20
+    host_nofile_soft: int = 8192
+    host_mem_min_gb: float = 16.0
     # Schema version of the on-disk config.toml this object was loaded from.
     config_version: int = CURRENT_CONFIG_VERSION
 
@@ -110,6 +131,15 @@ _LAYERS_KEYS = {
     "show_hashes": "show_hashes",
     "show_sstate_summary": "show_sstate_summary",
 }
+# Top-level [host] table -> host_* fields. Unlike [defaults.<family>] this is
+# not family-scoped, so it parses from the document root, not under [defaults].
+_HOST_KEYS = {
+    "inotify_instances": "host_inotify_instances",
+    "inotify_watches": "host_inotify_watches",
+    "swappiness_max": "host_swappiness_max",
+    "nofile_soft": "host_nofile_soft",
+    "mem_min_gb": "host_mem_min_gb",
+}
 
 
 def _check_type(field: str, value: object, path: Path) -> None:
@@ -130,6 +160,16 @@ def _check_type(field: str, value: object, path: Path) -> None:
             raise ValueError(f"{path}: '{field}' must be >= 1 (bitbake minimum), got {value}")
     if field == "disk_free_threshold_gb":
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            raise ValueError(f"{path}: '{field}' must be > 0, got {value}")
+    if field == "host_mem_min_gb":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{path}: '{field}' must be a number, got {type(value).__name__}")
+        if value <= 0:
+            raise ValueError(f"{path}: '{field}' must be > 0, got {value}")
+    if field in _HOST_FIELDS and field != "host_mem_min_gb":
+        # The four int host fields are already type-checked by _INT_FIELDS above;
+        # this enforces the strictly-positive range guard.
+        if isinstance(value, int) and not isinstance(value, bool) and value <= 0:
             raise ValueError(f"{path}: '{field}' must be > 0, got {value}")
 
 
@@ -203,7 +243,7 @@ def load_user_config(path: Path | None = None) -> UserConfig:
                     _check_type(field, section_data[key], path)
                     values[field] = section_data[key]
 
-    for section, mapping in (("build", _BUILD_KEYS), ("layers", _LAYERS_KEYS)):
+    for section, mapping in (("build", _BUILD_KEYS), ("layers", _LAYERS_KEYS), ("host", _HOST_KEYS)):
         section_data = data.get(section, {})
         if not isinstance(section_data, dict):
             continue
@@ -247,6 +287,7 @@ def _build_settings_schema() -> dict[str, _SettingSpec]:
         (("defaults", "ti"), _TI_KEYS),
         (("build",), _BUILD_KEYS),
         (("layers",), _LAYERS_KEYS),
+        (("host",), _HOST_KEYS),
     )
     for section, mapping in table_specs:
         for key, field in mapping.items():
@@ -256,7 +297,7 @@ def _build_settings_schema() -> dict[str, _SettingSpec]:
                 key=key,
                 is_bool=field in _BOOL_FIELDS,
                 is_int=field in _INT_FIELDS,
-                is_float=field in _PSI_FIELDS or field == "disk_free_threshold_gb",
+                is_float=field in _PSI_FIELDS or field in {"disk_free_threshold_gb", "host_mem_min_gb"},
             )
     return schema
 
@@ -295,13 +336,15 @@ def _coerce(spec: _SettingSpec, raw_value: str) -> str | bool | int | float:
             raise ValueError(f"value for integer key {spec.key!r} must be a valid integer, got {raw_value!r}") from None
         if spec.key == "stall_abort_secs" and v < 0:
             raise ValueError(f"value for {spec.key!r} must be >= 0 (0 disables), got {v}")
+        if spec.key in _HOST_KEYS and v <= 0:
+            raise ValueError(f"value for {spec.key!r} must be > 0, got {v}")
         return v
     if spec.is_float:
         try:
             v = float(raw_value)
         except ValueError:
             raise ValueError(f"value for {spec.key!r} must be a number, got {raw_value!r}") from None
-        if spec.key == "disk_free_threshold_gb":
+        if spec.key in {"disk_free_threshold_gb", "mem_min_gb"}:
             if v <= 0:
                 raise ValueError(f"value for {spec.key!r} must be > 0, got {v}")
         elif v < 1:

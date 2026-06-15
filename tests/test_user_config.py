@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar.user_config import UserConfig, load_user_config, set_setting
+from bakar.user_config import SETTINGS_SCHEMA, UserConfig, load_user_config, set_setting
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -291,3 +291,141 @@ def test_set_setting_build_ccache_dir_round_trip(tmp_path: Path) -> None:
     cfg = load_user_config(config_file)
 
     assert cfg.ccache_dir == "/mnt/cache/cc"
+
+
+@pytest.mark.unit
+def test_host_defaults_equal_diagnostics_literals() -> None:
+    """An unset [host] section yields the exact thresholds diagnostics.py hardcoded."""
+    cfg = UserConfig()
+    assert cfg.host_inotify_instances == 4096
+    assert cfg.host_inotify_watches == 524288
+    assert cfg.host_swappiness_max == 20
+    assert cfg.host_nofile_soft == 8192
+    assert cfg.host_mem_min_gb == 16.0
+    assert isinstance(cfg.host_mem_min_gb, float)
+
+
+@pytest.mark.unit
+def test_host_table_loads_into_fields(tmp_path: Path) -> None:
+    """A top-level [host] table populates the host_* fields with their typed values."""
+    toml_content = textwrap.dedent("""\
+        [host]
+        inotify_instances = 8192
+        inotify_watches   = 1048576
+        swappiness_max    = 10
+        nofile_soft       = 16384
+        mem_min_gb        = 32.0
+    """)
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(toml_content)
+
+    cfg = load_user_config(config_file)
+
+    assert cfg.host_inotify_instances == 8192
+    assert isinstance(cfg.host_inotify_instances, int) and not isinstance(cfg.host_inotify_instances, bool)
+    assert cfg.host_inotify_watches == 1048576
+    assert cfg.host_swappiness_max == 10
+    assert cfg.host_nofile_soft == 16384
+    assert cfg.host_mem_min_gb == 32.0
+    assert isinstance(cfg.host_mem_min_gb, float)
+
+
+@pytest.mark.unit
+def test_host_table_absent_leaves_defaults(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("[build]\ndoctor = true\n")
+
+    cfg = load_user_config(config_file)
+
+    assert cfg.host_inotify_instances == 4096
+    assert cfg.host_mem_min_gb == 16.0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "field",
+    ["inotify_instances", "inotify_watches", "swappiness_max", "nofile_soft"],
+)
+def test_host_int_field_non_integer_raises_naming_field(tmp_path: Path, field: str) -> None:
+    """A non-integer value for an int host field raises ValueError naming the field."""
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(f"[host]\n{field} = 8.5\n")
+
+    with pytest.raises(ValueError, match=f"host_{field}"):
+        load_user_config(config_file)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "field",
+    ["inotify_instances", "inotify_watches", "swappiness_max", "nofile_soft", "mem_min_gb"],
+)
+def test_host_field_non_positive_raises_naming_field(tmp_path: Path, field: str) -> None:
+    """A zero or negative value for any host field raises ValueError naming the field."""
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(f"[host]\n{field} = 0\n")
+
+    with pytest.raises(ValueError, match=f"host_{field}"):
+        load_user_config(config_file)
+
+
+@pytest.mark.unit
+def test_host_mem_min_gb_non_numeric_raises_naming_field(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text('[host]\nmem_min_gb = "lots"\n')
+
+    with pytest.raises(ValueError, match="host_mem_min_gb"):
+        load_user_config(config_file)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "dotted",
+    [
+        "host.inotify_instances",
+        "host.inotify_watches",
+        "host.swappiness_max",
+        "host.nofile_soft",
+        "host.mem_min_gb",
+    ],
+)
+def test_host_keys_present_in_settings_schema(dotted: str) -> None:
+    assert dotted in SETTINGS_SCHEMA
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "dotted",
+    [
+        "host.inotify_instances",
+        "host.swappiness_max",
+        "host.nofile_soft",
+    ],
+)
+def test_set_host_int_key_non_positive_raises(tmp_path: Path, dotted: str) -> None:
+    """settings-set rejects a non-positive value for an int host key naming the key."""
+    config_file = tmp_path / "config.toml"
+    key = dotted.split(".", 1)[1]
+    with pytest.raises(ValueError, match=key):
+        set_setting(dotted, "0", path=config_file)
+    assert not config_file.exists()
+
+
+@pytest.mark.unit
+def test_set_host_mem_min_gb_round_trip(tmp_path: Path) -> None:
+    """settings-set host.mem_min_gb coerces to a float, not a string."""
+    config_file = tmp_path / "config.toml"
+    set_setting("host.mem_min_gb", "24.0", path=config_file)
+
+    cfg = load_user_config(config_file)
+
+    assert cfg.host_mem_min_gb == 24.0
+    assert isinstance(cfg.host_mem_min_gb, float)
+
+
+@pytest.mark.unit
+def test_set_host_mem_min_gb_non_positive_raises(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    with pytest.raises(ValueError, match="mem_min_gb"):
+        set_setting("host.mem_min_gb", "0", path=config_file)
+    assert not config_file.exists()

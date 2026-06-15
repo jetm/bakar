@@ -53,6 +53,11 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.psi_autocalibrate": "true",
         "layers.show_hashes": "true",
         "layers.show_sstate_summary": "true",
+        "host.inotify_instances": "8192",
+        "host.inotify_watches": "1048576",
+        "host.swappiness_max": "10",
+        "host.nofile_soft": "16384",
+        "host.mem_min_gb": "32.0",
     }
     # Every dotted key in the schema is exercised here.
     assert set(written) == set(SETTINGS_SCHEMA)
@@ -88,6 +93,16 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert cfg.psi_autocalibrate is True
     assert cfg.show_hashes is True
     assert cfg.show_sstate_summary is True
+    assert cfg.host_inotify_instances == 8192
+    assert isinstance(cfg.host_inotify_instances, int) and not isinstance(cfg.host_inotify_instances, bool)
+    assert cfg.host_inotify_watches == 1048576
+    assert isinstance(cfg.host_inotify_watches, int) and not isinstance(cfg.host_inotify_watches, bool)
+    assert cfg.host_swappiness_max == 10
+    assert isinstance(cfg.host_swappiness_max, int) and not isinstance(cfg.host_swappiness_max, bool)
+    assert cfg.host_nofile_soft == 16384
+    assert isinstance(cfg.host_nofile_soft, int) and not isinstance(cfg.host_nofile_soft, bool)
+    assert cfg.host_mem_min_gb == 32.0
+    assert isinstance(cfg.host_mem_min_gb, float)
 
 
 @pytest.mark.unit
