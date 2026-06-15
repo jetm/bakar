@@ -237,6 +237,14 @@ class BuildConfig:
     # the recommended pressure_max_* back to config.toml.
     psi_autocalibrate: bool = field(default=False)
     sstate_mirror_url: str | None = field(default=None)
+    # [host] doctor thresholds; defaults equal today's hardcoded literals in
+    # diagnostics.py so verdicts are byte-identical until a value is written.
+    # Resolved with precedence workspace .bakar.toml [host] > user config.toml [host] > default.
+    host_inotify_instances: int = 4096
+    host_inotify_watches: int = 524288
+    host_swappiness_max: int = 20
+    host_nofile_soft: int = 8192
+    host_mem_min_gb: float = 16.0
 
     @property
     def effective_ccache_dir(self) -> Path:
@@ -537,6 +545,22 @@ def resolve(
         "KAS_CONTAINER_IMAGE" not in os.environ and (user_config is None or user_config.container_image is None)
     )
 
+    def _host(field_name: str, default: float) -> float:
+        """Select a host threshold: workspace [host] > user [host] > built-in default.
+
+        Mirrors pick()'s ws-before-user-before-default ordering for the numeric
+        host_* fields. The workspace tier is the only sentinel-bearing source
+        (its host_* fields are None when [host] is absent); UserConfig always
+        carries the literal default, so user_val is never None when present.
+        """
+        ws_val = getattr(workspace_config, field_name) if workspace_config is not None else None
+        if ws_val is not None:
+            return ws_val
+        user_val = getattr(user_config, field_name) if user_config is not None else None
+        if user_val is not None:
+            return user_val
+        return default
+
     return BuildConfig(
         workspace=workspace.resolve(),
         bsp_family=bsp_family,
@@ -590,4 +614,9 @@ def resolve(
         ccache_dir=user_config.ccache_dir if user_config else None,
         psi_autocalibrate=user_config.psi_autocalibrate if user_config else False,
         sstate_mirror_url=user_config.sstate_mirror_url if user_config else None,
+        host_inotify_instances=int(_host("host_inotify_instances", 4096)),
+        host_inotify_watches=int(_host("host_inotify_watches", 524288)),
+        host_swappiness_max=int(_host("host_swappiness_max", 20)),
+        host_nofile_soft=int(_host("host_nofile_soft", 8192)),
+        host_mem_min_gb=_host("host_mem_min_gb", 16.0),
     )

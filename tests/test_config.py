@@ -13,6 +13,7 @@ import pytest
 from bakar.config import compose_preset_output_path, resolve
 from bakar.preset_config import PresetEntry
 from bakar.user_config import UserConfig
+from bakar.workspace_config import WorkspaceConfig
 
 pytestmark = pytest.mark.unit
 
@@ -219,3 +220,63 @@ def test_resolve_explicit_spec_beats_preset(tmp_path) -> None:
     cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", spec=spec, preset=preset)
 
     assert cfg.machine == "cli-machine"
+
+
+def test_resolve_host_threshold_default_without_configs(tmp_path) -> None:
+    """No user or workspace config -> host thresholds resolve to built-in defaults."""
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+
+    assert cfg.host_inotify_instances == 4096
+    assert cfg.host_inotify_watches == 524288
+    assert cfg.host_swappiness_max == 20
+    assert cfg.host_nofile_soft == 8192
+    assert cfg.host_mem_min_gb == 16.0
+
+
+def test_resolve_host_threshold_user_value_used_when_only_user_sets(tmp_path) -> None:
+    """User config sets a host threshold and no workspace tier -> user value wins over default."""
+    uc = UserConfig(host_inotify_instances=5000)
+
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+
+    assert cfg.host_inotify_instances == 5000
+
+
+def test_resolve_host_threshold_workspace_wins_over_user(tmp_path) -> None:
+    """Workspace [host] outranks user config.toml [host] for the same field."""
+    uc = UserConfig(host_inotify_instances=5000)
+    wc = WorkspaceConfig(host_inotify_instances=9000)
+
+    cfg = resolve(
+        workspace=_workspace(tmp_path),
+        bsp_family="nxp",
+        user_config=uc,
+        workspace_config=wc,
+    )
+
+    assert cfg.host_inotify_instances == 9000
+
+
+def test_resolve_host_threshold_user_used_when_workspace_unset(tmp_path) -> None:
+    """A workspace config with the field None falls back to the user value."""
+    uc = UserConfig(host_swappiness_max=10)
+    wc = WorkspaceConfig()
+
+    cfg = resolve(
+        workspace=_workspace(tmp_path),
+        bsp_family="nxp",
+        user_config=uc,
+        workspace_config=wc,
+    )
+
+    assert cfg.host_swappiness_max == 10
+
+
+def test_resolve_host_mem_min_gb_stays_float(tmp_path) -> None:
+    """``host_mem_min_gb`` resolves as a float through the selector."""
+    uc = UserConfig(host_mem_min_gb=24.0)
+
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+
+    assert cfg.host_mem_min_gb == 24.0
+    assert isinstance(cfg.host_mem_min_gb, float)
