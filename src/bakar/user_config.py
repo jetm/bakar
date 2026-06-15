@@ -161,15 +161,13 @@ def _check_type(field: str, value: object, path: Path) -> None:
     if field == "disk_free_threshold_gb":
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
             raise ValueError(f"{path}: '{field}' must be > 0, got {value}")
-    if field == "host_mem_min_gb":
+    if field in _HOST_FIELDS:
+        # All five host thresholds must be a positive number. The four int
+        # fields already passed the _INT_FIELDS type check above, so this number
+        # guard only bites for host_mem_min_gb; the positivity check is shared.
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"{path}: '{field}' must be a number, got {type(value).__name__}")
         if value <= 0:
-            raise ValueError(f"{path}: '{field}' must be > 0, got {value}")
-    if field in _HOST_FIELDS and field != "host_mem_min_gb":
-        # The four int host fields are already type-checked by _INT_FIELDS above;
-        # this enforces the strictly-positive range guard.
-        if isinstance(value, int) and not isinstance(value, bool) and value <= 0:
             raise ValueError(f"{path}: '{field}' must be > 0, got {value}")
 
 
