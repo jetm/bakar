@@ -22,7 +22,9 @@ if TYPE_CHECKING:
 # host that meets them passes ``check_sysctl``.
 RECOMMENDED_INOTIFY_INSTANCES = 8192
 RECOMMENDED_INOTIFY_WATCHES = 1048576
+RECOMMENDED_INOTIFY_QUEUED_EVENTS = 32768
 RECOMMENDED_SWAPPINESS = 10
+RECOMMENDED_FILE_MAX = 2097152
 
 _DROPIN_PATH = "/etc/sysctl.d/99-bakar.conf"
 
@@ -30,7 +32,9 @@ _DROPIN_CONTENT = (
     "# Managed by bakar setup. Remove this file to revert.\n"
     f"fs.inotify.max_user_instances = {RECOMMENDED_INOTIFY_INSTANCES}\n"
     f"fs.inotify.max_user_watches = {RECOMMENDED_INOTIFY_WATCHES}\n"
+    f"fs.inotify.max_queued_events = {RECOMMENDED_INOTIFY_QUEUED_EVENTS}\n"
     f"vm.swappiness = {RECOMMENDED_SWAPPINESS}\n"
+    f"fs.file-max = {RECOMMENDED_FILE_MAX}\n"
 )
 
 
@@ -45,7 +49,9 @@ class SysctlAction:
             f"write {_DROPIN_PATH} "
             f"(fs.inotify.max_user_instances={RECOMMENDED_INOTIFY_INSTANCES}, "
             f"fs.inotify.max_user_watches={RECOMMENDED_INOTIFY_WATCHES}, "
-            f"vm.swappiness={RECOMMENDED_SWAPPINESS}) and run sysctl --system"
+            f"fs.inotify.max_queued_events={RECOMMENDED_INOTIFY_QUEUED_EVENTS}, "
+            f"vm.swappiness={RECOMMENDED_SWAPPINESS}, "
+            f"fs.file-max={RECOMMENDED_FILE_MAX}) and run sysctl --system"
         )
 
     def is_satisfied(self, profile: HostProfile) -> bool:
