@@ -174,6 +174,13 @@ class TestSettings:
         assert result.returncode != 0
         assert "inotify_instances" in result.stderr
 
+    def test_non_positive_host_count_rejected(self, home_env: dict) -> None:
+        result = _run(["settings", "set", "host.inotify_instances", "0"], env=home_env)
+        assert result.returncode != 0
+
+        result = _run(["settings", "set", "host.inotify_instances", "-1"], env=home_env)
+        assert result.returncode != 0
+
 
 # ---------------------------------------------------------------------------
 # 2. diff (XML manifests)
