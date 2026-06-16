@@ -38,7 +38,7 @@ _DAEMON_JSON_BACKUP = "/etc/docker/daemon.json.bakar.bak"
 # Recommended target constants. These exceed the doctor config floor
 # (``host_nofile_soft`` default 8192); 65536 is the recommended value, so
 # applying it satisfies the check.
-_NOFILE_SOFT = 65536
+NOFILE_SOFT = 65536
 _NOFILE_HARD = 2097152
 _STORAGE_DRIVER = "overlay2"
 
@@ -89,19 +89,19 @@ class DockerUlimitsAction:
 
     def describe(self) -> str:
         return (
-            f"merge default-ulimits.nofile Soft={_NOFILE_SOFT}/Hard={_NOFILE_HARD} "
+            f"merge default-ulimits.nofile Soft={NOFILE_SOFT}/Hard={_NOFILE_HARD} "
             f"into {_DAEMON_JSON} (python3 round-trip, backs up {_DAEMON_JSON_BACKUP})"
         )
 
     def is_satisfied(self, profile: HostProfile) -> bool:
         soft = profile.docker_nofile_soft
-        return soft is not None and soft >= _NOFILE_SOFT
+        return soft is not None and soft >= NOFILE_SOFT
 
     def operations(self) -> list[RunCommand | WriteFile]:
         return [
             _merge_command(
                 ["default-ulimits", "nofile"],
-                {"Name": "nofile", "Soft": _NOFILE_SOFT, "Hard": _NOFILE_HARD},
+                {"Name": "nofile", "Soft": NOFILE_SOFT, "Hard": _NOFILE_HARD},
             ),
         ]
 

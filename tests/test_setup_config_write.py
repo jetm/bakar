@@ -149,3 +149,20 @@ def test_is_satisfied_false_when_a_knob_is_missing(monkeypatch) -> None:
 def test_operations_is_empty_persist_happens_in_apply() -> None:
     """No shell primitives: the persist runs via apply(), not operations()."""
     assert ConfigWriteAction().operations() == []
+
+
+def test_docker_only_scope_writes_only_nofile_soft(tmp_path) -> None:
+    """A docker-ulimits-only run persists only host.nofile_soft, not sysctl knobs."""
+    config_path = tmp_path / "config.toml"
+    ConfigWriteAction(applied_checks=frozenset({"docker-ulimits"})).apply(config_path)
+
+    import tomllib
+
+    with config_path.open("rb") as f:
+        data = tomllib.load(f)
+
+    host = data.get("host", {})
+    assert "nofile_soft" in host
+    assert "inotify_instances" not in host
+    assert "inotify_watches" not in host
+    assert "swappiness_max" not in host

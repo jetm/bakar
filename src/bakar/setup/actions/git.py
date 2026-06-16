@@ -56,6 +56,8 @@ class GitConfigAction:
     needs_root = False
 
     def __init__(self, email: str, name: str) -> None:
+        if "\n" in email or "\r" in email or "\n" in name or "\r" in name:
+            raise ValueError(f"git identity values must not contain newlines: email={email!r}, name={name!r}")
         self.email = email
         self.name = name
 

@@ -251,6 +251,13 @@ def test_git_action_omitted_without_identity(monkeypatch: pytest.MonkeyPatch) ->
     assert all(not isinstance(a, GitConfigAction) for a in result.actions)
 
 
+def test_git_identity_absent_produces_advisory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """git-global-config FAIL without email/name emits an advisory, not silence."""
+    _patch_results(monkeypatch, [_fail("git-global-config")])
+    result = plan_mod.build(_profile(), cfg=_CFG)
+    assert any("git-global-config" in a for a in result.advisories)
+
+
 def test_git_action_uses_supplied_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     """A supplied email/name produces a GitConfigAction carrying them."""
     _patch_results(monkeypatch, [_fail("git-global-config")])

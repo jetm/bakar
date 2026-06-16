@@ -35,8 +35,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import typer
+from rich.console import Console
 
-from bakar.commands._app import console
 from bakar.setup.script import render_script
 
 if TYPE_CHECKING:
@@ -86,7 +86,7 @@ def _run_privileged_script(operations: list[RunCommand | WriteFile]) -> None:
     subprocess.run(["sudo", "bash", "-s"], input=script, text=True, check=True)  # pragma: no cover
 
 
-def apply_plan(plan: SetupPlan, *, assume_yes: bool = False) -> None:
+def apply_plan(plan: SetupPlan, *, assume_yes: bool = False, console: Console | None = None) -> None:
     """Apply ``plan`` to the host, escalating privileges exactly once.
 
     Order:
@@ -103,6 +103,7 @@ def apply_plan(plan: SetupPlan, *, assume_yes: bool = False) -> None:
     Raises :class:`typer.Exit` with a non-zero code when ``assume_yes`` is set
     but passwordless sudo is not available.
     """
+    _con = console or Console()
     privileged_ops: list[RunCommand | WriteFile] = []
     for action in plan.actions:
         privileged_ops.extend(op for op in action.operations() if op.needs_root)
@@ -110,7 +111,7 @@ def apply_plan(plan: SetupPlan, *, assume_yes: bool = False) -> None:
     if privileged_ops:
         if assume_yes:
             if not _has_passwordless_sudo():
-                console.print(
+                _con.print(
                     "[red]Passwordless sudo unavailable:[/] --yes needs `sudo -n true` to "
                     "succeed so the privileged setup script can run without prompting. "
                     "Re-run without --yes to confirm interactively, or configure passwordless sudo."
@@ -119,7 +120,7 @@ def apply_plan(plan: SetupPlan, *, assume_yes: bool = False) -> None:
         else:
             confirmed = typer.confirm(f"Apply {len(privileged_ops)} privileged operation(s) via one sudo script?")
             if not confirmed:
-                console.print("Declined - no changes made.")
+                _con.print("Declined - no changes made.")
                 return
         _run_privileged_script(privileged_ops)
 

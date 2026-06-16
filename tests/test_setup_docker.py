@@ -77,7 +77,7 @@ def test_ulimits_merge_preserves_preexisting_keys(tmp_path: Path) -> None:
     result = json.loads(daemon.read_text())
     assert result["bip"] == "172.30.0.1/24"
     assert result["dns"] == ["1.1.1.1"]
-    assert result["default-ulimits"]["nofile"]["Soft"] == docker._NOFILE_SOFT
+    assert result["default-ulimits"]["nofile"]["Soft"] == docker.NOFILE_SOFT
     assert result["default-ulimits"]["nofile"]["Hard"] == docker._NOFILE_HARD
     # A pre-existing file is backed up before the write.
     assert json.loads(backup.read_text()) == {"bip": "172.30.0.1/24", "dns": ["1.1.1.1"]}
@@ -104,7 +104,7 @@ def test_merge_creates_file_when_absent(tmp_path: Path) -> None:
     _run_merge_script(docker.DockerUlimitsAction().operations()[0], daemon, backup)
 
     result = json.loads(daemon.read_text())
-    assert result["default-ulimits"]["nofile"]["Soft"] == docker._NOFILE_SOFT
+    assert result["default-ulimits"]["nofile"]["Soft"] == docker.NOFILE_SOFT
     assert not backup.exists()
 
 
@@ -124,7 +124,7 @@ def test_second_merge_keeps_the_original_backup(tmp_path: Path) -> None:
     # The live daemon.json carries both merges.
     result = json.loads(daemon.read_text())
     assert result["storage-driver"] == "overlay2"
-    assert result["default-ulimits"]["nofile"]["Soft"] == docker._NOFILE_SOFT
+    assert result["default-ulimits"]["nofile"]["Soft"] == docker.NOFILE_SOFT
 
 
 def test_ulimits_is_satisfied_reads_profile_nofile() -> None:

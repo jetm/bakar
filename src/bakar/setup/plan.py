@@ -40,7 +40,6 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import bakar.commands._app as _app
 from bakar import config
 from bakar.diagnostics import Status, run_all
 from bakar.setup.actions.cache import CacheDirsAction
@@ -165,11 +164,12 @@ def build(
     cfg: BuildConfig | None = None,
     git_email: str | None = None,
     git_name: str | None = None,
+    user_config: object = None,
 ) -> SetupPlan:
     """Build the :class:`SetupPlan` for ``profile``.
 
-    ``cfg`` is resolved here when not supplied, mirroring ``commands/doctor.py``:
-    ``config.resolve(workspace=Path.cwd(), user_config=bakar.commands._app._USER_CONFIG)``.
+    ``cfg`` is resolved here when not supplied; ``user_config`` is forwarded to
+    ``config.resolve()`` and should be ``_app._USER_CONFIG`` from the CLI layer.
     The resolved ``container_image`` is passed into the docker-pull action - the
     action never calls ``resolve()`` itself.
 
@@ -177,7 +177,7 @@ def build(
     when either is absent the ``git-global-config`` remediation is omitted.
     """
     if cfg is None:
-        cfg = config.resolve(workspace=Path.cwd(), user_config=_app._USER_CONFIG)
+        cfg = config.resolve(workspace=Path.cwd(), user_config=user_config)
         # setup prepares the container runtime, so it must always evaluate the
         # docker checks. resolve() auto-detects host_mode=True on a stock host
         # (no KAS_CONTAINER_IMAGE env, no configured image), and run_all then
@@ -189,7 +189,7 @@ def build(
 
     actions: list[Action] = []
     advisories: list[str] = []
-    has_value_applying = False
+    applied_value_checks: set[str] = set()
 
     for result in results:
         name = result.name
@@ -203,12 +203,16 @@ def build(
         if result.status is not Status.FAIL:
             # A passing host check needs no remediation.
             continue
+        # git-global-config needs both options to be useful; surface as advisory when absent.
+        if name == "git-global-config" and (git_email is None or git_name is None):
+            advisories.append("git-global-config: pass --git-email and --git-name to configure git identity")
+            continue
         for action in _candidate_actions(name, profile, cfg, git_email, git_name):
             if action.is_satisfied(profile):
                 continue
             actions.append(action)
             if name in _VALUE_APPLYING_CHECKS:
-                has_value_applying = True
+                applied_value_checks.add(name)
 
     # Record the docker-engine install advisory when docker is absent: the
     # engine install is never an applied action (bakar does not own the
@@ -218,8 +222,8 @@ def build(
 
     # When any value-applying action ran, persist the applied host knobs into
     # the global [host] config so a follow-up doctor verifies against them.
-    if has_value_applying:
-        persist = ConfigWriteAction()
+    if applied_value_checks:
+        persist = ConfigWriteAction(applied_checks=frozenset(applied_value_checks))
         if not persist.is_satisfied(profile):
             actions.append(persist)
 

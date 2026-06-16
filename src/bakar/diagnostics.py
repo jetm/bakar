@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bakar.config import BuildConfig
+from bakar.setup.profile import _read_sysctl
 
 if TYPE_CHECKING:
     from bakar.bsp_model import BspModel
@@ -1528,14 +1529,6 @@ _SEV_RANK = {Severity.INFO: 0, Severity.WARN: 1, Severity.BLOCK: 2}
 
 def _max_sev(a: Severity, b: Severity) -> Severity:
     return a if _SEV_RANK[a] >= _SEV_RANK[b] else b
-
-
-def _read_sysctl(key: str) -> int | None:
-    path = Path("/proc/sys") / key.replace(".", "/")
-    try:
-        return int(path.read_text().strip())
-    except FileNotFoundError, ValueError:
-        return None
 
 
 def _dir_size(path: Path) -> int:

@@ -2,13 +2,9 @@
 
 :func:`render_script` turns the ``needs_root`` operations of the planned
 actions into a single ``bakar-host-setup.sh`` string - the audit artifact the
-runner executes under exactly one ``sudo bash``. The script starts with
+runner pipes to ``sudo bash -s`` via stdin. The script starts with
 ``set -euo pipefail`` and contains *only* privileged operations; unprivileged
-operations run inline in the user context and never reach this file.
-
-:func:`write_script` writes that text under an XDG state dir
-(``$XDG_STATE_HOME/bakar/`` when set, else ``~/.local/state/bakar/``) - never
-the workspace or repo, so there is nothing to gitignore - and returns the path.
+operations run inline in the user context and never reach this function.
 
 The renderer understands the two operation primitives from
 :mod:`bakar.setup.actions.base`:
@@ -25,9 +21,7 @@ operations the actions produced.
 
 from __future__ import annotations
 
-import os
 import shlex
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -36,17 +30,6 @@ if TYPE_CHECKING:
 _SCRIPT_NAME = "bakar-host-setup.sh"
 
 _HEREDOC_DELIM = "BAKAR_EOF"
-
-
-def state_dir() -> Path:
-    """The XDG state directory bakar writes the privileged script into.
-
-    Honors ``$XDG_STATE_HOME`` when set; otherwise ``~/.local/state``. Always a
-    ``bakar/`` subdirectory under the base, never the workspace or repo.
-    """
-    base = os.environ.get("XDG_STATE_HOME")
-    root = Path(base) if base else Path.home() / ".local" / "state"
-    return root / "bakar"
 
 
 def _render_run_command(op: RunCommand) -> str:
@@ -85,17 +68,3 @@ def render_script(operations: list[RunCommand | WriteFile]) -> str:
         else:
             body.append(_render_write_file(op))  # type: ignore[arg-type]
     return "\n".join(body) + "\n"
-
-
-def write_script(operations: list[RunCommand | WriteFile]) -> Path:
-    """Render the privileged ``operations`` and write the script to disk.
-
-    The file lands at ``<state_dir>/bakar-host-setup.sh`` (mode ``0o700``) and
-    its path is returned for the runner to ``sudo bash``.
-    """
-    target_dir = state_dir()
-    target_dir.mkdir(parents=True, exist_ok=True)
-    path = target_dir / _SCRIPT_NAME
-    path.write_text(render_script(operations), encoding="utf-8")
-    path.chmod(0o700)
-    return path

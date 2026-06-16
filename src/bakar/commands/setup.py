@@ -13,6 +13,7 @@ from typing import Annotated
 
 import typer
 
+import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.setup import plan as setup_plan
 from bakar.setup import runner as setup_runner
@@ -83,7 +84,7 @@ def setup(
     and changes nothing.
     """
     profile = HostProfile.detect()
-    plan = setup_plan.build(profile, git_email=git_email, git_name=git_name)
+    plan = setup_plan.build(profile, git_email=git_email, git_name=git_name, user_config=_state._USER_CONFIG)
 
     _print_profile(profile)
     script = _print_plan(plan)
@@ -95,4 +96,4 @@ def setup(
         console.print("[yellow]Dry run[/] - nothing was applied.")
         return
 
-    setup_runner.apply_plan(plan, assume_yes=yes)
+    setup_runner.apply_plan(plan, assume_yes=yes, console=console)

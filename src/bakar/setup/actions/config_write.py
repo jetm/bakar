@@ -21,6 +21,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from bakar.setup.actions.docker import NOFILE_SOFT
+from bakar.setup.actions.sysctl import (
+    RECOMMENDED_INOTIFY_INSTANCES,
+    RECOMMENDED_INOTIFY_WATCHES,
+    RECOMMENDED_SWAPPINESS,
+)
 from bakar.user_config import get_setting, set_setting
 
 if TYPE_CHECKING:
@@ -29,20 +35,38 @@ if TYPE_CHECKING:
     from bakar.setup.actions.base import RunCommand, WriteFile
     from bakar.setup.profile import HostProfile
 
-# The four host knobs setup actually applies, mapped to the section-relative
-# dotted setting key (NOT the ``host_*`` field name). These exceed the doctor
-# floors, so persisting them lets the config-reading checks PASS. ``mem_min_gb``
-# is intentionally absent: memory is advisory, never applied, so never recorded.
-APPLIED_HOST_SETTINGS: dict[str, int] = {
-    "host.inotify_instances": 8192,
-    "host.inotify_watches": 1048576,
-    "host.swappiness_max": 10,
-    "host.nofile_soft": 65536,
+# Per-check host knobs: maps each value-applying check name to the settings it
+# controls. ConfigWriteAction uses this to write only the knobs that correspond
+# to the checks that actually ran, so a docker-ulimits-only run does not
+# erroneously write sysctl values (and vice versa).
+_CHECK_SETTINGS: dict[str, dict[str, int]] = {
+    "sysctl": {
+        "host.inotify_instances": RECOMMENDED_INOTIFY_INSTANCES,
+        "host.inotify_watches": RECOMMENDED_INOTIFY_WATCHES,
+        "host.swappiness_max": RECOMMENDED_SWAPPINESS,
+    },
+    "docker-ulimits": {
+        "host.nofile_soft": NOFILE_SOFT,
+    },
 }
+
+# All host knobs across both checks; kept for backward compatibility with tests
+# that reference this dict directly and for is_satisfied on a default instance.
+APPLIED_HOST_SETTINGS: dict[str, int] = {
+    **_CHECK_SETTINGS["sysctl"],
+    **_CHECK_SETTINGS["docker-ulimits"],
+}
+
+_ALL_CHECKS = frozenset(_CHECK_SETTINGS)
 
 
 class ConfigWriteAction:
     """Persist the applied host-knob values to the global ``[host]`` config.
+
+    ``applied_checks`` names the value-applying checks (``sysctl`` and/or
+    ``docker-ulimits``) that ran; only their corresponding knobs are written.
+    Defaults to both checks for backward compatibility with callers that do not
+    track which checks ran.
 
     Carries no doctor-check remediation of its own; ``check_name`` is the
     synthetic ``"host-config-persist"`` the plan builder appends when any
@@ -53,18 +77,24 @@ class ConfigWriteAction:
     check_name = "host-config-persist"
     needs_root = False
 
+    def __init__(self, applied_checks: frozenset[str] = _ALL_CHECKS) -> None:
+        self._settings: dict[str, int] = {}
+        for check in _CHECK_SETTINGS:  # iterate in insertion order for deterministic key sequence
+            if check in applied_checks:
+                self._settings.update(_CHECK_SETTINGS[check])
+
     def describe(self) -> str:
         return "record applied host knobs in the global [host] config"
 
     def is_satisfied(self, _profile: HostProfile) -> bool:
-        """True when every applied knob is already set to its target in config.
+        """True when every applicable knob is already set to its target in config.
 
         Checks the global config (``set_setting``'s default path) for each
-        dotted key. When all four already equal their target, the persist is a
+        dotted key. When all already equal their target, the persist is a
         no-op and the plan builder drops the action - keeping a prepared host's
         plan empty.
         """
-        return all(get_setting(key) == value for key, value in APPLIED_HOST_SETTINGS.items())
+        return all(get_setting(key) == value for key, value in self._settings.items())
 
     def operations(self) -> list[RunCommand | WriteFile]:
         """No shell ops: the persist happens in :meth:`apply`, not via primitives."""
@@ -78,5 +108,5 @@ class ConfigWriteAction:
         ``set_setting`` to the user-global ``~/.config/bakar/config.toml``;
         tests pass an explicit path to assert the global-config target.
         """
-        for key, value in APPLIED_HOST_SETTINGS.items():
+        for key, value in self._settings.items():
             set_setting(key, str(value), path)

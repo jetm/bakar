@@ -4,20 +4,16 @@ Covers that :func:`render_script` begins with ``set -euo pipefail``, emits only
 ``needs_root`` operations (an unprivileged op's command never appears), shell-
 quotes a ``RunCommand`` faithfully (the embedded ``python3 -c`` daemon.json
 merge survives), renders a ``WriteFile`` as a guarded ``cp`` backup plus a
-quoted heredoc, and never emits a ``curl``-piped-to-shell line; and that
-:func:`write_script` honors ``$XDG_STATE_HOME`` and writes outside the repo.
+quoted heredoc, and never emits a ``curl``-piped-to-shell line.
 """
 
 from __future__ import annotations
 
 import shlex
-from pathlib import Path
 
 from bakar.setup import script as script_mod
 from bakar.setup.actions.base import RunCommand, WriteFile
-from bakar.setup.script import render_script, state_dir, write_script
-
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+from bakar.setup.script import render_script
 
 
 def test_script_starts_with_shebang_and_strict_mode() -> None:
@@ -97,41 +93,6 @@ def test_no_curl_piped_to_shell() -> None:
     assert "curl" not in text
 
 
-def test_state_dir_honors_xdg_state_home(monkeypatch, tmp_path) -> None:
-    """state_dir() roots under $XDG_STATE_HOME/bakar when the var is set."""
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    assert state_dir() == tmp_path / "bakar"
-
-
-def test_state_dir_defaults_to_local_state(monkeypatch) -> None:
-    """Without $XDG_STATE_HOME, state_dir() falls back to ~/.local/state/bakar."""
-    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
-    assert state_dir() == Path.home() / ".local" / "state" / "bakar"
-
-
-def test_write_script_writes_outside_the_repo(monkeypatch, tmp_path) -> None:
-    """write_script() writes under the state dir, never into the repo/cwd."""
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    op = RunCommand(argv=["sysctl", "--system"], needs_root=True)
-    path = write_script([op])
-
-    assert path == tmp_path / "bakar" / "bakar-host-setup.sh"
-    assert path.is_file()
-    # The written path is not inside the repository tree.
-    assert _REPO_ROOT not in path.resolve().parents
-    text = path.read_text(encoding="utf-8")
-    assert text.startswith("#!/usr/bin/env bash\nset -euo pipefail\n")
-
-
-def test_write_script_creates_state_dir(monkeypatch, tmp_path) -> None:
-    """write_script() creates the state dir when it does not yet exist."""
-    nested = tmp_path / "fresh"
-    monkeypatch.setenv("XDG_STATE_HOME", str(nested))
-    write_script([RunCommand(argv=["sysctl", "--system"], needs_root=True)])
-    assert (nested / "bakar" / "bakar-host-setup.sh").is_file()
-
-
 def test_script_module_imported_via_package() -> None:
     """The renderer is reachable from the setup package namespace."""
     assert hasattr(script_mod, "render_script")
-    assert hasattr(script_mod, "write_script")
