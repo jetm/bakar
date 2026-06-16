@@ -4,6 +4,7 @@
 
 | Command | Doc | One-liner |
 |---------|-----|-----------|
+| `setup` | [setup.md](setup.md) | Prepare the host once: profile, remediate doctor host checks, persist `[host]` config |
 | `init` | [init.md](init.md) | Interactive wizard: scaffold a new workspace and write `.bakar.toml` |
 | `build` | [build.md](build.md) | Full pipeline: doctor, sync, gen-kas, kas-container build |
 | `sync` | [sync.md](sync.md) | Sync sources without building |
@@ -48,6 +49,7 @@
 ## Which command do I need?
 
 **Starting a build:**
+- First time on this machine, prepare the host: [setup.md](setup.md)
 - First time with a manifest: [build.md](build.md)
 - Already synced, just want to rebuild: `bakar build --skip-sync`
 - Only want to sync sources: [sync.md](sync.md)
