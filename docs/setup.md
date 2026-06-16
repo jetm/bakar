@@ -38,9 +38,10 @@ bakar setup [OPTIONS]
    sstate/dl/ccache `mkdir -p` under `$HOME` run directly in your user context, no
    sudo.
 4. **Applies privileged actions through a single sudo** - every root operation is
-   rendered into `bakar-host-setup.sh` (`set -euo pipefail`) under
-   `~/.local/state/bakar/` and run once via `sudo bash <script>` after one
-   confirmation. There is no per-action sudo and no `curl`-piped-to-shell.
+   assembled into an auditable `set -euo pipefail` script and piped via stdin to
+   `sudo bash -s` after one confirmation. The script is never written to disk;
+   use `--dry-run` to inspect it before running. There is no per-action sudo and
+   no `curl`-piped-to-shell.
 5. **Records applied values into global `[host]`** - the host-knob values it
    applied are written to the `[host]` section of `~/.config/bakar/config.toml`
    via `bakar settings` (`host.inotify_instances`, `host.inotify_watches`,
