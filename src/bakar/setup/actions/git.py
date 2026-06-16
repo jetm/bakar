@@ -37,7 +37,7 @@ def _read_global(key: str) -> str | None:
             timeout=5,
             check=False,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except FileNotFoundError, subprocess.TimeoutExpired:
         return None
     if out.returncode != 0:
         return None

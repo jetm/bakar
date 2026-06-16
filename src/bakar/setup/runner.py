@@ -114,9 +114,7 @@ def apply_plan(plan: SetupPlan, *, assume_yes: bool = False) -> None:
                 )
                 raise typer.Exit(code=1)
         else:
-            confirmed = typer.confirm(
-                f"Apply {len(privileged_ops)} privileged operation(s) via one sudo script?"
-            )
+            confirmed = typer.confirm(f"Apply {len(privileged_ops)} privileged operation(s) via one sudo script?")
             if not confirmed:
                 console.print("Declined - no changes made.")
                 return

@@ -54,11 +54,7 @@ class SysctlAction:
         A ``None`` live value means the knob was unreadable; that is treated as
         not satisfied so the remediation still runs.
         """
-        if (
-            profile.inotify_instances is None
-            or profile.inotify_watches is None
-            or profile.swappiness is None
-        ):
+        if profile.inotify_instances is None or profile.inotify_watches is None or profile.swappiness is None:
             return False
         return (
             profile.inotify_instances >= RECOMMENDED_INOTIFY_INSTANCES
