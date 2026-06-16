@@ -181,6 +181,15 @@ class TestSettings:
         result = _run(["settings", "set", "host.inotify_instances", "-1"], env=home_env)
         assert result.returncode != 0
 
+    def test_host_keys_in_settings_list(self, home_env: dict) -> None:
+        result = _run(["settings", "list"], env=home_env)
+        assert result.returncode == 0
+        assert "host.inotify_instances" in result.stderr
+        assert "host.inotify_watches" in result.stderr
+        assert "host.swappiness_max" in result.stderr
+        assert "host.nofile_soft" in result.stderr
+        assert "host.mem_min_gb" in result.stderr
+
 
 # ---------------------------------------------------------------------------
 # 2. diff (XML manifests)
