@@ -41,6 +41,7 @@ import bakar.commands.prefetch
 import bakar.commands.presets
 import bakar.commands.report
 import bakar.commands.settings
+import bakar.commands.setup
 import bakar.commands.shell
 import bakar.commands.show
 import bakar.commands.stress_parse
