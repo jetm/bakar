@@ -592,6 +592,32 @@ class TestClean:
 
 
 # ---------------------------------------------------------------------------
+# 10b. host threshold config - doctor integration
+# ---------------------------------------------------------------------------
+
+
+class TestHostDoctorThresholds:
+    def test_configured_floor_raises_doctor_bar(self, home_env: dict, nxp_ws: Path) -> None:
+        proc_path = "/proc/sys/fs/inotify/max_user_instances"
+        try:
+            live_value = int(open(proc_path).read().strip())
+        except FileNotFoundError, ValueError:
+            pytest.skip("fs.inotify.max_user_instances not available on this host")
+
+        floor = live_value + 1000
+
+        set_result = _run(
+            ["settings", "set", "host.inotify_instances", str(floor)],
+            env=home_env,
+        )
+        assert set_result.returncode == 0, f"settings set failed: {set_result.stderr}"
+
+        result = _run(["doctor", "--workspace", str(nxp_ws)], env=home_env)
+        combined = result.stderr + result.stdout
+        assert "fs.inotify.max_user_instances" in combined
+
+
+# ---------------------------------------------------------------------------
 # 11. doctor
 # ---------------------------------------------------------------------------
 
