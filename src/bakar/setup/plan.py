@@ -36,7 +36,7 @@ docker-dependent action.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -178,6 +178,12 @@ def build(
     """
     if cfg is None:
         cfg = config.resolve(workspace=Path.cwd(), user_config=_app._USER_CONFIG)
+        # setup prepares the container runtime, so it must always evaluate the
+        # docker checks. resolve() auto-detects host_mode=True on a stock host
+        # (no KAS_CONTAINER_IMAGE env, no configured image), and run_all then
+        # filters out every _DOCKER_CHECKS member - which would silently drop
+        # all docker remediations. Force host_mode off so they are assessed.
+        cfg = replace(cfg, host_mode=False)
 
     results = run_all(cfg, None)
 

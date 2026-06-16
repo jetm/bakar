@@ -19,6 +19,7 @@ the plan logic is tested without touching the live host.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -261,6 +262,19 @@ def test_git_action_uses_supplied_identity(monkeypatch: pytest.MonkeyPatch) -> N
     assert git_actions[0].name == "A B"
 
 
+@dataclass
+class _ResolvedCfg:
+    """A dataclass stand-in for the resolved ``BuildConfig``.
+
+    Must be a real dataclass (not ``SimpleNamespace``) so build()'s
+    ``replace(cfg, host_mode=False)`` works as it does on the frozen
+    ``BuildConfig`` resolve() actually returns.
+    """
+
+    container_image: str
+    host_mode: bool = True
+
+
 def test_build_resolves_cfg_when_not_supplied(monkeypatch: pytest.MonkeyPatch) -> None:
     """When cfg is omitted, build() resolves it via config.resolve like doctor."""
     captured: dict[str, object] = {}
@@ -268,7 +282,7 @@ def test_build_resolves_cfg_when_not_supplied(monkeypatch: pytest.MonkeyPatch) -
     def _fake_resolve(*, workspace, user_config, **_kw):
         captured["workspace"] = workspace
         captured["user_config"] = user_config
-        return SimpleNamespace(container_image="resolved/image:1.0")
+        return _ResolvedCfg(container_image="resolved/image:1.0")
 
     monkeypatch.setattr(plan_mod.config, "resolve", _fake_resolve)
     _patch_results(monkeypatch, [_fail("container-image")])
@@ -277,3 +291,24 @@ def test_build_resolves_cfg_when_not_supplied(monkeypatch: pytest.MonkeyPatch) -
     assert "workspace" in captured
     pulls = [a for a in result.actions if isinstance(a, DockerPullAction)]
     assert pulls and pulls[0].image == "resolved/image:1.0"
+
+
+def test_build_forces_host_mode_off_so_docker_checks_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A self-resolved cfg has host_mode forced False; otherwise run_all filters
+    out every docker check and no docker remediation could ever be produced."""
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        plan_mod.config,
+        "resolve",
+        lambda *, workspace, user_config, **_kw: _ResolvedCfg(container_image="img:1", host_mode=True),
+    )
+
+    def _capturing_run_all(cfg: object, _bsp: object) -> list[CheckResult]:
+        seen["host_mode"] = cfg.host_mode
+        return []
+
+    monkeypatch.setattr(plan_mod, "run_all", _capturing_run_all)
+    plan_mod.build(_profile())
+
+    assert seen["host_mode"] is False

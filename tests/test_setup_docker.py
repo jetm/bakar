@@ -108,6 +108,25 @@ def test_merge_creates_file_when_absent(tmp_path: Path) -> None:
     assert not backup.exists()
 
 
+def test_second_merge_keeps_the_original_backup(tmp_path: Path) -> None:
+    """Two merges in one setup pass must leave the .bak holding the ORIGINAL file,
+    not the version the first merge already modified."""
+    daemon = tmp_path / "daemon.json"
+    backup = tmp_path / "daemon.json.bakar.bak"
+    original = {"bip": "172.30.0.1/24"}
+    daemon.write_text(json.dumps(original))
+
+    _run_merge_script(docker.DockerUlimitsAction().operations()[0], daemon, backup)
+    _run_merge_script(docker.DockerStorageDriverAction().operations()[0], daemon, backup)
+
+    # The backup is the pristine original, not the post-first-merge file.
+    assert json.loads(backup.read_text()) == original
+    # The live daemon.json carries both merges.
+    result = json.loads(daemon.read_text())
+    assert result["storage-driver"] == "overlay2"
+    assert result["default-ulimits"]["nofile"]["Soft"] == docker._NOFILE_SOFT
+
+
 def test_ulimits_is_satisfied_reads_profile_nofile() -> None:
     """is_satisfied reads the live nofile soft from the profile."""
     action = docker.DockerUlimitsAction()

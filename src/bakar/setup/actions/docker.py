@@ -47,8 +47,10 @@ def _merge_command(key_path: list[str], value: object) -> RunCommand:
     """Build the ``python3 -c`` round-trip that merges one daemon.json key.
 
     The embedded script loads the existing JSON (``{}`` when the file is
-    absent), backs the original up to ``daemon.json.bakar.bak`` when present,
-    sets ``key_path`` to ``value`` (creating intermediate dicts), re-parses its
+    absent), backs the original up to ``daemon.json.bakar.bak`` when present and
+    not already backed up (so a second merge in the same run cannot overwrite
+    the original backup with an already-modified file), sets ``key_path`` to
+    ``value`` (creating intermediate dicts), re-parses its
     own dump to prove the result is valid JSON, and only then writes it. The
     merge preserves every pre-existing top-level key because it mutates the
     loaded dict in place rather than rewriting the file from a template.
@@ -61,7 +63,8 @@ def _merge_command(key_path: list[str], value: object) -> RunCommand:
         "if os.path.exists(p):\n"
         "    with open(p) as f:\n"
         "        data = json.load(f)\n"
-        "    shutil.copy2(p, bak)\n"
+        "    if not os.path.exists(bak):\n"
+        "        shutil.copy2(p, bak)\n"
         f"keys = {key_path!r}\n"
         f"value = {value!r}\n"
         "node = data\n"

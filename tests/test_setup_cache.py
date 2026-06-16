@@ -55,26 +55,26 @@ def test_operation_is_a_single_mkdir_p_never_sudo() -> None:
     assert "sudo" not in ops[0].argv
 
 
-def test_default_dirs_live_under_home_cache(monkeypatch) -> None:
-    """With no override, the targets are the XDG-cache-home sstate/dl/ccache."""
-    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
-    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: Path("/home/u")))
+def test_default_dirs_are_the_configured_env_paths(monkeypatch) -> None:
+    """With no override, the targets are the exported SSTATE_DIR / DL_DIR paths -
+    exactly the directories the cache-dirs check inspects, so the remediation can
+    clear it."""
+    monkeypatch.setenv("SSTATE_DIR", "/mnt/build/sstate")
+    monkeypatch.setenv("DL_DIR", "/mnt/build/downloads")
     action = CacheDirsAction()
-    assert action.dirs == [
-        Path("/home/u/.cache/bakar/sstate"),
-        Path("/home/u/.cache/bakar/downloads"),
-        Path("/home/u/.cache/bakar/ccache"),
-    ]
+    assert action.dirs == [Path("/mnt/build/sstate"), Path("/mnt/build/downloads")]
 
 
-def test_default_dirs_honour_xdg_cache_home(monkeypatch) -> None:
-    monkeypatch.setenv("XDG_CACHE_HOME", "/xdg/cache")
+def test_default_dirs_empty_when_env_unset(monkeypatch) -> None:
+    """When neither SSTATE_DIR nor DL_DIR is set, there is nothing to create: the
+    cache-dirs check passes in that case, so the action is trivially satisfied and
+    yields no operation."""
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
+    monkeypatch.delenv("DL_DIR", raising=False)
     action = CacheDirsAction()
-    assert action.dirs == [
-        Path("/xdg/cache/bakar/sstate"),
-        Path("/xdg/cache/bakar/downloads"),
-        Path("/xdg/cache/bakar/ccache"),
-    ]
+    assert action.dirs == []
+    assert action.operations() == []
+    assert action.is_satisfied(_profile()) is True
 
 
 def test_is_satisfied_true_for_existing_writable_dirs(tmp_path) -> None:

@@ -117,10 +117,13 @@ def _available_mem_gb() -> float:
     free_kb = 0
     swap_kb = 0
     for line in meminfo.splitlines():
-        if line.startswith("MemAvailable:"):
-            free_kb = int(line.split()[1])
-        elif line.startswith("SwapFree:"):
-            swap_kb = int(line.split()[1])
+        parts = line.split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            continue
+        if parts[0] == "MemAvailable:":
+            free_kb = int(parts[1])
+        elif parts[0] == "SwapFree:":
+            swap_kb = int(parts[1])
     return (free_kb + swap_kb) / (1024**2)
 
 

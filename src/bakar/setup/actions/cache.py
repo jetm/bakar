@@ -1,15 +1,16 @@
 """The unprivileged cache-directory remediation for ``bakar setup``.
 
-:class:`CacheDirsAction` remediates the ``cache-dirs`` ``doctor`` check by
-``mkdir -p``-ing the sstate / downloads / ccache directories under ``$HOME``.
-These are user-owned paths, so the action is always unprivileged - it never
-runs under the single ``sudo`` script. ``is_satisfied(profile)`` checks the
-filesystem directly (the dirs are not carried on :class:`HostProfile`): True
-only when every target dir already exists and is writable.
-
-The default targets mirror the shared-ccache convention in
-:func:`bakar.config.shared_ccache_dir` (``~/.cache/bakar/ccache``); the plan
-builder may pass explicit paths via the constructor.
+:class:`CacheDirsAction` remediates the ``cache-dirs`` ``doctor`` check, which
+FAILs only when ``SSTATE_DIR`` / ``DL_DIR`` are exported but point at a missing
+or non-writable directory. The action ``mkdir -p``s exactly those configured
+paths - reading the same environment variables as
+:func:`bakar.diagnostics.check_cache_dirs` - so applying it actually clears the
+check it is mapped to. They are user-owned paths, so the action is always
+unprivileged and never runs under the single ``sudo`` script.
+``is_satisfied(profile)`` checks the filesystem directly (the dirs are not
+carried on :class:`HostProfile`): True when every configured dir already exists
+and is writable, and trivially True when neither variable is set (nothing to
+create).
 """
 
 from __future__ import annotations
@@ -24,46 +25,54 @@ if TYPE_CHECKING:
     from bakar.setup.profile import HostProfile
 
 
-def _default_cache_dirs() -> list[Path]:
-    """The default sstate/downloads/ccache directories under ``$HOME``.
+def _configured_cache_dirs() -> list[Path]:
+    """The ``SSTATE_DIR`` / ``DL_DIR`` paths the ``cache-dirs`` check examines.
 
-    Anchored on ``XDG_CACHE_HOME`` (falling back to ``~/.cache``) so the
-    sstate and downloads caches sit alongside the shared ccache that
-    :func:`bakar.config.shared_ccache_dir` already places at
-    ``<cache>/bakar/ccache``.
+    Reads the same environment variables as
+    :func:`bakar.diagnostics.check_cache_dirs`, so the remediation targets
+    exactly the directories whose absence makes that check FAIL. An unset
+    variable contributes nothing - the check passes when neither is set, so
+    there is nothing to create.
     """
-    cache_home = os.environ.get("XDG_CACHE_HOME")
-    base = (Path(cache_home) if cache_home else Path.home() / ".cache") / "bakar"
-    return [base / "sstate", base / "downloads", base / "ccache"]
+    dirs: list[Path] = []
+    for env in ("SSTATE_DIR", "DL_DIR"):
+        value = os.environ.get(env)
+        if value:
+            dirs.append(Path(value))
+    return dirs
 
 
 class CacheDirsAction:
-    """Create the sstate/downloads/ccache directories under ``$HOME``.
+    """Create the configured ``SSTATE_DIR`` / ``DL_DIR`` cache directories.
 
-    Remediates the ``cache-dirs`` check; always unprivileged because the
-    targets live under the user's home. The dirs default to the
-    XDG-cache-home layout but may be overridden by the constructor.
+    Remediates the ``cache-dirs`` check; always unprivileged because the targets
+    live in user-owned space. The dirs default to the exported ``SSTATE_DIR`` /
+    ``DL_DIR`` paths the check inspects but may be overridden by the constructor.
     """
 
     check_name = "cache-dirs"
     needs_root = False
 
     def __init__(self, dirs: list[Path] | None = None) -> None:
-        self.dirs = dirs if dirs is not None else _default_cache_dirs()
+        self.dirs = dirs if dirs is not None else _configured_cache_dirs()
 
     def describe(self) -> str:
-        joined = ", ".join(str(d) for d in self.dirs)
-        return f"mkdir -p the cache directories: {joined}"
+        joined = ", ".join(str(d) for d in self.dirs) or "(none configured)"
+        return f"mkdir -p the configured cache directories: {joined}"
 
     def is_satisfied(self, _profile: HostProfile) -> bool:
-        """True when every target dir already exists and is writable.
+        """True when every configured dir already exists and is writable.
 
         The cache dirs are not carried on :class:`HostProfile`, so this checks
-        the live filesystem directly with ``os.access(..., os.W_OK)``.
+        the live filesystem directly with ``os.access(..., os.W_OK)``. Returns
+        True when no dir is configured (``all`` over an empty list) - there is
+        nothing to create.
         """
         return all(d.is_dir() and os.access(d, os.W_OK) for d in self.dirs)
 
     def operations(self) -> list[RunCommand | WriteFile]:
+        if not self.dirs:
+            return []
         return [
             RunCommand(argv=["mkdir", "-p", *(str(d) for d in self.dirs)], needs_root=False),
         ]
