@@ -169,6 +169,11 @@ class TestSettings:
         result = _run(["settings", "set", "nonexistent.key", "val"], env=home_env)
         assert result.returncode != 0
 
+    def test_non_integer_host_count_rejected(self, home_env: dict) -> None:
+        result = _run(["settings", "set", "host.inotify_instances", "8.5"], env=home_env)
+        assert result.returncode != 0
+        assert "inotify_instances" in result.stderr
+
 
 # ---------------------------------------------------------------------------
 # 2. diff (XML manifests)
