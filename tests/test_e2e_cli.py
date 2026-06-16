@@ -636,6 +636,7 @@ class TestHostDoctorThresholds:
         combined = result.stderr + result.stdout
         assert result.returncode in (0, 2), f"unexpected exit code {result.returncode}: {combined}"
         assert "fs.inotify.max_user_instances" in combined
+        assert f"(<{workspace_floor})" in combined
 
 
 # ---------------------------------------------------------------------------
