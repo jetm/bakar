@@ -36,7 +36,8 @@ _DAEMON_JSON = "/etc/docker/daemon.json"
 _DAEMON_JSON_BACKUP = "/etc/docker/daemon.json.bakar.bak"
 
 # Recommended target constants. These exceed the doctor config floor
-# (``host_nofile_soft`` default 65536) so applying them satisfies the check.
+# (``host_nofile_soft`` default 8192); 65536 is the recommended value, so
+# applying it satisfies the check.
 _NOFILE_SOFT = 65536
 _NOFILE_HARD = 2097152
 _STORAGE_DRIVER = "overlay2"
