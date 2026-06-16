@@ -16,7 +16,6 @@ them is exercised here by monkeypatching ``subprocess.run`` and
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -70,14 +69,16 @@ class _FakeConfigWrite:
 
 
 class _Recorder:
-    """Records every ``subprocess.run`` argv the runner issues."""
+    """Records every ``subprocess.run`` call the runner issues."""
 
     def __init__(self, *, sudo_n_ok: bool = True) -> None:
         self.calls: list[list[str]] = []
+        self._kwargs: list[dict] = []
         self.sudo_n_ok = sudo_n_ok
 
     def __call__(self, argv, *args, **kwargs):
         self.calls.append(list(argv))
+        self._kwargs.append(dict(kwargs))
 
         class _Result:
             returncode = 0 if (argv[:2] != ["sudo", "-n"] or self.sudo_n_ok) else 1
@@ -87,6 +88,13 @@ class _Recorder:
     @property
     def sudo_calls(self) -> list[list[str]]:
         return [c for c in self.calls if c and c[0] == "sudo"]
+
+    def kwargs_for(self, argv: list[str]) -> dict:
+        """Return kwargs for the first call matching argv."""
+        for c, k in zip(self.calls, self._kwargs, strict=False):
+            if c == argv:
+                return k
+        return {}
 
 
 def test_decline_at_confirm_applies_nothing(monkeypatch) -> None:
@@ -125,10 +133,11 @@ def test_yes_with_failing_sudo_n_exits_nonzero(monkeypatch) -> None:
 
 
 def test_yes_with_passing_sudo_n_runs_script_and_persists(monkeypatch) -> None:
-    """--yes with passwordless sudo runs one ``sudo bash`` and persists config."""
+    """--yes with passwordless sudo pipes the script to ``sudo bash -s`` via stdin."""
     recorder = _Recorder(sudo_n_ok=True)
     monkeypatch.setattr(runner.subprocess, "run", recorder)
-    monkeypatch.setattr(runner, "write_script", lambda ops: Path("/tmp/bakar-host-setup.sh"))
+    rendered = "#!/usr/bin/env bash\nset -euo pipefail\nsysctl --system\n"
+    monkeypatch.setattr(runner, "render_script", lambda ops: rendered)
 
     priv = _FakeAction("sysctl", needs_root=True, ops=[RunCommand(argv=["sysctl", "--system"], needs_root=True)])
     cfg = _FakeConfigWrite()
@@ -136,10 +145,13 @@ def test_yes_with_passing_sudo_n_runs_script_and_persists(monkeypatch) -> None:
 
     runner.apply_plan(plan, assume_yes=True)
 
-    # Exactly one sudo escalation of the script, preceded by the precheck.
+    # Precheck first, then exactly one sudo bash -s piped via stdin.
     assert recorder.calls[0] == ["sudo", "-n", "true"]
-    bash_calls = [c for c in recorder.sudo_calls if c[:2] == ["sudo", "bash"]]
-    assert bash_calls == [["sudo", "bash", "/tmp/bakar-host-setup.sh"]]
+    bash_calls = [c for c in recorder.sudo_calls if c[:3] == ["sudo", "bash", "-s"]]
+    assert bash_calls == [["sudo", "bash", "-s"]]
+    stdin_kwargs = recorder.kwargs_for(["sudo", "bash", "-s"])
+    assert stdin_kwargs.get("input") == rendered
+    assert stdin_kwargs.get("text") is True
     assert cfg.applied == 1
 
 

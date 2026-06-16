@@ -3,10 +3,9 @@
 :func:`apply_plan` is the orchestration layer ``bakar setup`` delegates to once
 the plan is built and shown. It enforces the change's escalation model:
 
-- **One sudo, ever.** Every privileged operation across all actions is collected
-  and rendered into a single ``bakar-host-setup.sh`` (see
-  :func:`bakar.setup.script.write_script`). That script runs under exactly one
-  ``sudo bash <path>`` - never a per-action ``sudo``.
+- **One sudo, ever.** Every privileged operation across all actions is collected,
+  rendered to a bash script, and piped to exactly one ``sudo bash -s`` via stdin
+  - never a per-action ``sudo``, never written to disk.
 - **Confirm before escalating (interactive).** When privileged operations exist
   and ``assume_yes`` is False, the user is asked to confirm; declining applies
   *nothing* (no privileged script, no unprivileged op, no config persist) and
@@ -38,7 +37,7 @@ from typing import TYPE_CHECKING
 import typer
 
 from bakar.commands._app import console
-from bakar.setup.script import write_script
+from bakar.setup.script import render_script
 
 if TYPE_CHECKING:
     from bakar.setup.actions.base import Action, RunCommand, WriteFile
@@ -78,9 +77,13 @@ def _run_unprivileged(op: RunCommand | WriteFile) -> None:
 
 
 def _run_privileged_script(operations: list[RunCommand | WriteFile]) -> None:
-    """Render the privileged operations and run them under one ``sudo bash``."""
-    path = write_script(operations)
-    subprocess.run(["sudo", "bash", str(path)], check=True)  # pragma: no cover - bare sudo invocation
+    """Render the privileged operations and pipe them to ``sudo bash -s`` via stdin.
+
+    Passing the script via stdin rather than a path eliminates the TOCTOU window
+    between writing and executing a temporary file.
+    """
+    script = render_script(operations)
+    subprocess.run(["sudo", "bash", "-s"], input=script, text=True, check=True)  # pragma: no cover
 
 
 def apply_plan(plan: SetupPlan, *, assume_yes: bool = False) -> None:
