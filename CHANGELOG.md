@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-06-16
+
+### Added
+
+- Added `bakar setup`, a once-per-machine host preparation command that profiles the host, maps failing `bakar doctor` host-environment checks to remediation actions, and applies them: unprivileged actions (kas install via `uv tool install`, docker image pull, git identity, cache directory creation) run inline; privileged actions (sysctl drop-in, docker `daemon.json` merge, `systemctl enable --now docker`, `usermod -aG docker`) are assembled into a single auditable `set -euo pipefail` script piped to one confirmed `sudo bash -s` via stdin — never written to disk. `--dry-run` prints the host profile and the full generated script without touching anything. `--yes` skips the confirm gate and requires passwordless sudo, exiting non-zero with a clear message if unavailable rather than hanging on a prompt. See [docs/setup.md](docs/setup.md).
+- Added a `[host]` configuration section (in both `~/.config/bakar/config.toml` and workspace `.bakar.toml`) that controls the thresholds `bakar doctor` host-environment checks compare against: `host.inotify_instances`, `host.inotify_watches`, `host.swappiness_max`, `host.nofile_soft`, and `host.mem_min_gb`. Defaults equal the values doctor previously hardcoded, so verdicts are unchanged until a value is written. Precedence is workspace `.bakar.toml` `[host]` > user `config.toml` `[host]` > built-in floor. All five keys are accessible via `bakar settings set/get/unset`. See [docs/settings.md](docs/settings.md), [docs/config-reference.md](docs/config-reference.md).
+- `bakar setup` writes the applied sysctl and docker ulimit values to the global `[host]` config so a follow-up `bakar doctor` verifies the machine against what `setup` applied.
+- `bakar setup` remediates the sysctl check by writing a removable `/etc/sysctl.d/99-bakar.conf` drop-in (never `/etc/sysctl.conf`) covering `fs.inotify.max_user_instances`, `fs.inotify.max_user_watches`, `fs.inotify.max_queued_events`, `vm.swappiness`, and `fs.file-max`, then reloading with `sysctl --system`.
+- `bakar setup` merges `default-ulimits.nofile` and `storage-driver: overlay2` into `/etc/docker/daemon.json` via a `python3` JSON round-trip that preserves all pre-existing keys and backs up the original to `daemon.json.bakar.bak` before the first write.
+
+### Changed
+
+- `bakar doctor` host-environment checks (`check_sysctl`, `check_docker_ulimits`, `check_memory`) now read thresholds from the resolved `[host]` configuration rather than hardcoded literals; failure messages include the configured threshold value. Behavior is identical until a `[host]` value is written.
+
 ## [0.16.0] - 2026-06-12
 
 ### Added
@@ -363,7 +377,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/jetm/bakar/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/jetm/bakar/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/jetm/bakar/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/jetm/bakar/compare/v0.14.0...v0.15.0
