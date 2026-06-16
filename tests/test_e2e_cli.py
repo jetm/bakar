@@ -616,6 +616,34 @@ class TestHostDoctorThresholds:
         combined = result.stderr + result.stdout
         assert "fs.inotify.max_user_instances" in combined
 
+    def test_workspace_host_overrides_user_host(self, home_env: dict, tmp_path: Path) -> None:
+        proc_path = "/proc/sys/fs/inotify/max_user_instances"
+        try:
+            live_value = int(open(proc_path).read().strip())
+        except FileNotFoundError, ValueError:
+            pytest.skip("fs.inotify.max_user_instances not available on this host")
+
+        user_floor = live_value + 1000
+        workspace_floor = live_value + 2000
+
+        set_result = _run(
+            ["settings", "set", "host.inotify_instances", str(user_floor)],
+            env=home_env,
+        )
+        assert set_result.returncode == 0, f"settings set failed: {set_result.stderr}"
+
+        # Build a workspace with .bakar.toml overriding the host threshold and an
+        # nxp/ subdir so bakar recognises it as an NXP workspace.
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        (ws / "nxp").mkdir()
+        (ws / ".bakar.toml").write_text(f"[host]\ninotify_instances = {workspace_floor}\n")
+
+        result = _run(["doctor", "--workspace", str(ws)], env=home_env)
+        combined = result.stderr + result.stdout
+        assert result.returncode in (0, 2), f"unexpected exit code {result.returncode}: {combined}"
+        assert "fs.inotify.max_user_instances" in combined
+
 
 # ---------------------------------------------------------------------------
 # 11. doctor
