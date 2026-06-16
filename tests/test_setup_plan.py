@@ -127,6 +127,7 @@ def test_failing_checks_map_to_their_actions(monkeypatch: pytest.MonkeyPatch) ->
     )
     monkeypatch.setattr(KasInstallAction, "is_satisfied", lambda _self, _p: False)
     monkeypatch.setattr(CacheDirsAction, "is_satisfied", lambda _self, _p: False)
+    monkeypatch.setattr(ConfigWriteAction, "is_satisfied", lambda _self, _p: False)
     result = plan_mod.build(profile, cfg=_CFG, git_email="me@example.com", git_name="Me")
 
     present = _types(result.actions)
