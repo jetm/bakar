@@ -40,6 +40,9 @@ pip install bakar
 ## Quickstart
 
 ```bash
+# First time on this machine: prepare the host (sysctl, docker, kas, git identity)
+bakar setup
+
 # NXP i.MX manifest-driven build
 bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart
 
