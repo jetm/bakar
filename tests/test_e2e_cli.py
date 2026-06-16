@@ -190,6 +190,20 @@ class TestSettings:
         assert "host.nofile_soft" in result.stderr
         assert "host.mem_min_gb" in result.stderr
 
+    def test_host_swappiness_max_round_trip(self, home_env: dict) -> None:
+        result = _run(["settings", "set", "host.swappiness_max", "10"], env=home_env)
+        assert result.returncode == 0
+
+        result = _run(["settings", "get", "host.swappiness_max"], env=home_env)
+        assert result.returncode == 0
+        assert "10" in result.stderr
+
+        result = _run(["settings", "unset", "host.swappiness_max"], env=home_env)
+        assert result.returncode == 0
+
+        result = _run(["settings", "get", "host.swappiness_max"], env=home_env)
+        assert "(unset)" in result.stderr
+
 
 # ---------------------------------------------------------------------------
 # 2. diff (XML manifests)
