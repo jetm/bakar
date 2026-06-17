@@ -6,9 +6,9 @@ flip ``BuildConfig.host_mode`` to ``True``. Without ``--host`` and without
 ``KAS_CONTAINER_IMAGE`` is set, container mode is the default.
 
 The actual kas/kas-container invocation is short-circuited via
-``--dry-run`` plus ``--skip-doctor`` so these tests stay at the
-argument-parsing layer, mirroring the pattern in
-``tests/test_cli_build_yaml.py``.
+``--dry-run`` so these tests stay at the argument-parsing layer, mirroring
+the pattern in ``tests/test_cli_build_yaml.py``. An autouse fixture stubs the
+doctor ``run_all`` to an empty pass list so it never blocks.
 """
 
 from __future__ import annotations
@@ -28,6 +28,14 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _stub_doctor_checks():
+    """Doctor always runs now; stub ``run_all`` to an empty (all-pass) list so these
+    tests stay host-independent - real checks BLOCK on disk-free / git config."""
+    with patch("bakar.commands._helpers.run_all", return_value=[]):
+        yield
 
 
 def _make_generic_yaml(tmp_path: Path) -> Path:
@@ -68,7 +76,7 @@ def test_build_host_flag_sets_host_mode(tmp_path: Path) -> None:
     ):
         result = runner.invoke(
             app,
-            ["build", str(kas_yaml), "--host", "--skip-doctor", "--dry-run"],
+            ["build", str(kas_yaml), "--host", "--dry-run"],
         )
 
     assert result.exit_code == 0, result.output
@@ -89,7 +97,7 @@ def test_build_no_host_flag_with_container_image_uses_container(tmp_path: Path, 
     ):
         result = runner.invoke(
             app,
-            ["build", str(kas_yaml), "--skip-doctor", "--dry-run"],
+            ["build", str(kas_yaml), "--dry-run"],
         )
 
     assert result.exit_code == 0, result.output
@@ -110,7 +118,7 @@ def test_build_no_host_flag_without_container_image_auto_enables_host(tmp_path: 
     ):
         result = runner.invoke(
             app,
-            ["build", str(kas_yaml), "--skip-doctor", "--dry-run"],
+            ["build", str(kas_yaml), "--dry-run"],
         )
 
     assert result.exit_code == 0, result.output

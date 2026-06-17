@@ -29,6 +29,16 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.integration
 
 
+@pytest.fixture(autouse=True)
+def _stub_doctor_checks():
+    """Doctor always runs now; stub ``run_all`` to an empty (all-pass) list so these
+    tests stay host-independent - real checks BLOCK on disk-free / git config."""
+    from unittest.mock import patch
+
+    with patch("bakar.commands._helpers.run_all", return_value=[]):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -187,7 +197,7 @@ def test_nxp_preset_dispatches_via_bsp(
 
     monkeypatch.setattr(build_cmd, "resolve", capturing_resolve)
 
-    result = runner.invoke(app, ["build", "--preset", "imx8mp-scarthgap", "--skip-doctor", "--dry-run"])
+    result = runner.invoke(app, ["build", "--preset", "imx8mp-scarthgap", "--dry-run"])
 
     assert result.exit_code == 0, f"unexpected exit {result.exit_code}; output:\n{result.output}"
 
@@ -227,7 +237,7 @@ def test_bbsetup_preset_dispatches_via_yaml(
     _plant_presets(monkeypatch, presets)
     captured = _stub_build_infra(monkeypatch)
 
-    result = runner.invoke(app, ["build", "--preset", "avocado-qemux86-64", "--skip-doctor", "--dry-run"])
+    result = runner.invoke(app, ["build", "--preset", "avocado-qemux86-64", "--dry-run"])
 
     assert result.exit_code == 0, f"unexpected exit {result.exit_code}; output:\n{result.output}"
 

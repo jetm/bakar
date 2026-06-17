@@ -73,7 +73,7 @@ def test_set_unrecognized_key_exits_nonzero_without_writing(runner: _CliRunner, 
 
 
 def test_set_bool_key_with_bad_value_exits_nonzero(runner: _CliRunner, config_path: Path) -> None:
-    result = runner.invoke(app, ["settings", "set", "build.doctor", "maybe"])
+    result = runner.invoke(app, ["settings", "set", "build.show_doctor_report", "maybe"])
     assert result.exit_code != 0
     assert not config_path.exists()
 

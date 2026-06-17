@@ -45,7 +45,6 @@ def _ctx(*, show_layers: bool, dry_run: bool, tmp_path: Path) -> _BuildCtx:
         effective_show_layers=show_layers,
         dry_run=dry_run,
         keep_going=False,
-        skip_doctor=True,
         skip_sync=True,
     )
 

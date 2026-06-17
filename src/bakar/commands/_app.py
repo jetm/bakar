@@ -26,6 +26,7 @@ console = Console(stderr=True)
 _VENDORS: list | None = None
 _USER_CONFIG: UserConfig | None = None
 _PRESETS: list[PresetEntry] | None = None
+_HIDE_DOCTOR_REPORT: bool = False
 
 
 def _get_vendors() -> list:
@@ -69,8 +70,16 @@ def _main(
         bool,
         typer.Option("--version", callback=_version, is_eager=True, help="Show version"),
     ] = False,
+    hide_doctor_report: Annotated[
+        bool,
+        typer.Option(
+            "--hide-doctor-report",
+            help="Run pre-flight checks but show output only for build-blocking issues.",
+        ),
+    ] = False,
 ) -> None:
-    global _USER_CONFIG
+    global _USER_CONFIG, _HIDE_DOCTOR_REPORT
     _USER_CONFIG = _load_user_config_safe()
+    _HIDE_DOCTOR_REPORT = hide_doctor_report
     _get_vendors()
     _load_presets_safe()

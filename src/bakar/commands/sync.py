@@ -16,13 +16,12 @@ from bakar.commands._helpers import (
     _clean_build_dir,
     _dispatch_bsp,
     _overlay_for,
-    _print_diagnosis,
     _print_layer_hashes,
+    _run_doctor_gate,
     _tuning_extra_overlays,
     _workspace_from_cwd,
 )
 from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, resolve
-from bakar.diagnostics import any_blocking_failure, run_all
 from bakar.observability import RunLogger
 from bakar.workspace import detect
 
@@ -54,17 +53,9 @@ def _print_dry_run(cfg, family) -> None:
     print(f"command: {command}")
 
 
-def _run_sync_body(cfg, log, *, bsp, family, effective_show_layers, skip_doctor) -> None:
+def _run_sync_body(cfg, log, *, bsp, family, effective_show_layers) -> None:
     """Execute the sync steps inside an active RunLogger context."""
-    run_doctor = not skip_doctor and (_state._USER_CONFIG is None or _state._USER_CONFIG.doctor)
-    if run_doctor:
-        log.step_start("doctor")
-        results = run_all(cfg, bsp)
-        _print_diagnosis(results)
-        if any_blocking_failure(results):
-            log.step_fail("doctor", reason="blocking failure")
-            raise typer.Exit(code=2)
-        log.step_ok("doctor", checks=len(results))
+    _run_doctor_gate(cfg, log, bsp)
 
     state = detect(cfg)
     if state.needs_repo_sync:
@@ -117,10 +108,6 @@ def sync(
             help="branch override; inferred from manifest filename when omitted",
         ),
     ] = None,
-    skip_doctor: Annotated[
-        bool,
-        typer.Option("--skip-doctor", help="Skip the pre-flight diagnosis (not recommended)"),
-    ] = False,
     clean: Annotated[
         bool,
         typer.Option("--clean", help="Remove <bsp>/build/ before syncing."),
@@ -206,7 +193,5 @@ def sync(
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
     with RunLogger(runs_dir=cfg.runs_dir) as log:
-        _run_sync_body(
-            cfg, log, bsp=bsp, family=family, effective_show_layers=effective_show_layers, skip_doctor=skip_doctor
-        )
+        _run_sync_body(cfg, log, bsp=bsp, family=family, effective_show_layers=effective_show_layers)
     console.print("[bold green]sync complete[/]")

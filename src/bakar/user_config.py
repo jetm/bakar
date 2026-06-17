@@ -8,7 +8,7 @@ import tomli_w
 
 # Bumped whenever a forward migration is added below. A config.toml without a
 # config_version field is treated as version 0 and migrated to this version.
-CURRENT_CONFIG_VERSION = 1
+CURRENT_CONFIG_VERSION = 2
 
 _STR_FIELDS = {
     "nxp_machine",
@@ -28,7 +28,14 @@ _STR_FIELDS = {
     "scheduler",
     "ccache_dir",
 }
-_BOOL_FIELDS = {"doctor", "show_hashes", "show_sstate_summary", "hashserv", "ccache_shared", "psi_autocalibrate"}
+_BOOL_FIELDS = {
+    "show_doctor_report",
+    "show_hashes",
+    "show_sstate_summary",
+    "hashserv",
+    "ccache_shared",
+    "psi_autocalibrate",
+}
 _INT_FIELDS: set[str] = {
     "stall_abort_secs",
     "host_inotify_instances",
@@ -62,7 +69,7 @@ class UserConfig:
     ti_manifest: str | None = None
     # [build]
     container_image: str | None = None
-    doctor: bool = True
+    show_doctor_report: bool = True
     dl_dir: str | None = None
     sstate_dir: str | None = None
     sstate_mirrors: str | None = None
@@ -111,7 +118,7 @@ _TI_KEYS = {
 }
 _BUILD_KEYS = {
     "container_image": "container_image",
-    "doctor": "doctor",
+    "show_doctor_report": "show_doctor_report",
     "dl_dir": "dl_dir",
     "sstate_dir": "sstate_dir",
     "sstate_mirrors": "sstate_mirrors",
@@ -187,6 +194,15 @@ def _migrate_config(raw: dict[str, object], from_version: int) -> dict[str, obje
     # Version 0 -> 1: no structural change; the field is simply stamped below.
     if migrated < 1:
         migrated = 1
+    # Version 1 -> 2: the legacy [build] doctor toggle (skip doctor entirely) is
+    # replaced by show_doctor_report (always run, hide the report). A user who had
+    # doctor=false wanted a quiet pre-flight, which now maps to show_doctor_report=false.
+    if migrated < 2:
+        build = raw.get("build")
+        if isinstance(build, dict) and "doctor" in build:
+            if build.pop("doctor") is False:
+                build["show_doctor_report"] = False
+        migrated = 2
     raw["config_version"] = migrated
     return raw
 

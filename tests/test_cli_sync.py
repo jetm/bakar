@@ -7,8 +7,8 @@ function references in ``bakar.steps.repo`` (NXP, ``init_and_sync``) and
 on those two step modules is the seam that keeps the dispatched argv
 visible to the test.
 
-The doctor pre-flight is suppressed with ``--skip-doctor`` rather than by
-patching ``run_all`` (less mocking; the same code path the user would take).
+The doctor pre-flight always runs now; an autouse fixture stubs ``run_all`` to
+an empty pass list so these tests stay host-independent.
 ``workspace.detect`` is patched to a state that needs a sync (so the step
 runs) but does not need a setup_env regenerate (so the second-half of
 sync.py is skipped, avoiding the need to patch setup_env too).
@@ -29,6 +29,14 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _stub_doctor_checks():
+    """Doctor always runs now; stub ``run_all`` to an empty (all-pass) list so these
+    tests stay host-independent - real checks BLOCK on disk-free / git config."""
+    with patch("bakar.commands._helpers.run_all", return_value=[]):
+        yield
 
 
 def _state_needing_sync(family: str) -> WorkspaceState:
@@ -97,7 +105,7 @@ def test_sync_nxp_dispatches_to_repo(
     ) as mock_run:
         result = runner.invoke(
             app,
-            ["sync", "--skip-doctor", "--manifest", "imx-6.6.52-2.2.2.xml"],
+            ["sync", "--manifest", "imx-6.6.52-2.2.2.xml"],
         )
 
     assert result.exit_code == 0, result.output
@@ -149,7 +157,7 @@ def test_sync_ti_dispatches_to_oe_layertool(
     with patch("bakar.steps.ti_layertool.subprocess.run", side_effect=_side) as mock_run:
         result = runner.invoke(
             app,
-            ["sync", "--skip-doctor", "--manifest", manifest_name],
+            ["sync", "--manifest", manifest_name],
         )
 
     assert result.exit_code == 0, result.output
@@ -190,7 +198,7 @@ def test_sync_nxp_subprocess_failure_propagates(
     with patch("bakar.steps.repo.subprocess.run", side_effect=_boom):
         result = runner.invoke(
             app,
-            ["sync", "--skip-doctor", "--manifest", "imx-6.6.52-2.2.2.xml"],
+            ["sync", "--manifest", "imx-6.6.52-2.2.2.xml"],
         )
 
     assert result.exit_code != 0, f"expected non-zero exit on subprocess failure, got 0 with output:\n{result.output}"
@@ -211,7 +219,7 @@ def test_sync_workspace_not_found_exits_nonzero(
 
     result = runner.invoke(
         app,
-        ["sync", "--skip-doctor", "--manifest", "imx-6.6.52-2.2.2.xml"],
+        ["sync", "--manifest", "imx-6.6.52-2.2.2.xml"],
     )
 
     assert result.exit_code != 0, f"expected non-zero exit when no workspace marker exists, got 0:\n{result.output}"
@@ -232,7 +240,7 @@ def test_sync_dry_run_script_stdout(
 
     result = runner.invoke(
         app,
-        ["sync", "--skip-doctor", "--manifest", "imx-6.6.52-2.2.2.xml", "--dry-run-script", "-"],
+        ["sync", "--manifest", "imx-6.6.52-2.2.2.xml", "--dry-run-script", "-"],
     )
 
     assert result.exit_code == 0, result.output
@@ -258,7 +266,7 @@ def test_sync_dry_run_script_file(
 
     result = runner.invoke(
         app,
-        ["sync", "--skip-doctor", "--manifest", "imx-6.6.52-2.2.2.xml", "--dry-run-script", str(script_path)],
+        ["sync", "--manifest", "imx-6.6.52-2.2.2.xml", "--dry-run-script", str(script_path)],
     )
 
     assert result.exit_code == 0, result.output
@@ -281,7 +289,7 @@ def test_sync_dry_run_script_nxp_contains_repo(
 
     result = runner.invoke(
         app,
-        ["sync", "--skip-doctor", "--manifest", "imx-6.6.52-2.2.2.xml", "--dry-run-script", "-"],
+        ["sync", "--manifest", "imx-6.6.52-2.2.2.xml", "--dry-run-script", "-"],
     )
 
     assert result.exit_code == 0, result.output
@@ -305,7 +313,7 @@ def test_sync_dry_run_without_script_writes_no_file(
 
     result = runner.invoke(
         app,
-        ["sync", "--skip-doctor", "--manifest", "imx-6.6.52-2.2.2.xml", "--dry-run"],
+        ["sync", "--manifest", "imx-6.6.52-2.2.2.xml", "--dry-run"],
     )
 
     after = set((fake_workspace).rglob("*.sh"))

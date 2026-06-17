@@ -1,6 +1,6 @@
 """Tests for user-config-driven behavior of the ``bakar build`` command.
 
-Exercises the doctor auto-run gate and the ``--show-layers`` / ``show_hashes``
+Exercises the doctor report show/hide gate and the ``--show-layers`` / ``show_hashes``
 layer-table gate through the Typer ``CliRunner`` with ``--dry-run`` so no real
 kas-container invocation, sync, or git work happens. The pieces that would
 touch the real workspace (``run_all``, ``collect_layer_hashes``, the sync /
@@ -82,7 +82,7 @@ def _stub_build_steps(monkeypatch: pytest.MonkeyPatch) -> None:
     steps become no-ops. ``collect_layer_hashes`` is left to individual tests
     to override (default: no layers).
     """
-    monkeypatch.setattr(build_module, "run_all", lambda cfg, bsp: [])
+    monkeypatch.setattr(helpers_module, "run_all", lambda cfg, bsp: [])
     monkeypatch.setattr(build_module, "detect", lambda cfg: _synced_state())
     monkeypatch.setattr(build_module.step_override, "apply", lambda cfg, log=None, **kw: None)
     monkeypatch.setattr(build_module.step_kas, "regenerate_yaml", lambda cfg, log, *, bsp: None)
@@ -105,38 +105,41 @@ def _invoke_build(runner: _CliRunner, workspace: Path, *extra: str):
 
 
 # ---------------------------------------------------------------------------
-# doctor auto-run gate
+# doctor report show/hide gate (checks always run)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-def test_config_doctor_false_skips_doctor(
+def test_config_show_doctor_report_false_hides_report(
     runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``[build] doctor = false`` suppresses the doctor pre-flight."""
-    _set_user_config(monkeypatch, UserConfig(doctor=False))
+    """``[build] show_doctor_report = false`` runs the checks but hides the report."""
+    _set_user_config(monkeypatch, UserConfig(show_doctor_report=False))
     result = _invoke_build(runner, nxp_workspace)
     assert result.exit_code == 0, result.output
     assert "doctor:" not in result.output
 
 
 @pytest.mark.unit
-def test_skip_doctor_flag_overrides_config_doctor_true(
+def test_hide_doctor_report_flag_hides_report(
     runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``--skip-doctor`` skips the pre-flight even when config keeps it on."""
-    _set_user_config(monkeypatch, UserConfig(doctor=True))
-    result = _invoke_build(runner, nxp_workspace, "--skip-doctor")
+    """The global ``--hide-doctor-report`` flag hides the report even with the config on."""
+    _set_user_config(monkeypatch, UserConfig(show_doctor_report=True))
+    result = runner.invoke(
+        app,
+        ["--hide-doctor-report", "build", "--dry-run", "--skip-sync", "--workspace", str(nxp_workspace)],
+    )
     assert result.exit_code == 0, result.output
     assert "doctor:" not in result.output
 
 
 @pytest.mark.unit
-def test_config_doctor_true_runs_doctor(
+def test_show_doctor_report_default_prints_report(
     runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With ``doctor`` on and no ``--skip-doctor``, the pre-flight runs."""
-    _set_user_config(monkeypatch, UserConfig(doctor=True))
+    """With the default ``show_doctor_report`` on and no hide flag, the report prints."""
+    _set_user_config(monkeypatch, UserConfig(show_doctor_report=True))
     result = _invoke_build(runner, nxp_workspace)
     assert result.exit_code == 0, result.output
     # _print_diagnosis([]) prints "doctor: 0/0 checks passed".

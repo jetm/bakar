@@ -23,7 +23,7 @@ def test_missing_file_returns_defaults(tmp_path: Path) -> None:
     assert result.nxp_machine is None
     assert result.ti_manifest is None
     assert result.container_image is None
-    assert result.doctor is True
+    assert result.show_doctor_report is True
     assert result.show_hashes is False
 
 
@@ -45,7 +45,7 @@ def test_full_file_populates_every_field(tmp_path: Path) -> None:
 
         [build]
         container_image = "jetm/kas-build-env:latest"
-        doctor          = false
+        show_doctor_report = false
 
         [layers]
         show_hashes = true
@@ -65,7 +65,7 @@ def test_full_file_populates_every_field(tmp_path: Path) -> None:
     assert cfg.ti_image == "var-thin-image"
     assert cfg.ti_manifest == "processor-sdk-scarthgap.txt"
     assert cfg.container_image == "jetm/kas-build-env:latest"
-    assert cfg.doctor is False
+    assert cfg.show_doctor_report is False
     assert cfg.show_hashes is True
 
 
@@ -89,7 +89,7 @@ def test_partial_file_leaves_unsupplied_fields_at_defaults(tmp_path: Path) -> No
     assert cfg.nxp_distro is None
     assert cfg.ti_machine is None
     assert cfg.container_image is None
-    assert cfg.doctor is True
+    assert cfg.show_doctor_report is True
 
 
 @pytest.mark.unit
@@ -101,7 +101,7 @@ def test_unknown_key_in_known_section_is_ignored(tmp_path: Path) -> None:
 
         [build]
         unknown = 42
-        doctor = false
+        show_doctor_report = false
     """)
     config_file = tmp_path / "config.toml"
     config_file.write_text(toml_content)
@@ -109,7 +109,7 @@ def test_unknown_key_in_known_section_is_ignored(tmp_path: Path) -> None:
     cfg = load_user_config(config_file)
 
     assert cfg.nxp_machine == "imx93-var-som"
-    assert cfg.doctor is False
+    assert cfg.show_doctor_report is False
     assert not hasattr(cfg, "bogus_key")
     assert not hasattr(cfg, "unknown")
 

@@ -55,7 +55,7 @@ def test_legacy_config_migration_persists_version_to_disk(tmp_path: Path) -> Non
         tmp_path / "config.toml",
         """\
         [build]
-        doctor = false
+        container_image = "jetm/kas-build-env:latest"
         """,
     )
 
@@ -65,7 +65,52 @@ def test_legacy_config_migration_persists_version_to_disk(tmp_path: Path) -> Non
         on_disk = tomllib.load(f)
     assert on_disk["config_version"] == CURRENT_CONFIG_VERSION
     # Pre-existing keys survive the rewrite.
-    assert on_disk["build"]["doctor"] is False
+    assert on_disk["build"]["container_image"] == "jetm/kas-build-env:latest"
+
+
+@pytest.mark.unit
+def test_v1_to_v2_migrates_doctor_false_to_show_doctor_report(tmp_path: Path) -> None:
+    config_file = _write(
+        tmp_path / "config.toml",
+        """\
+        config_version = 1
+
+        [build]
+        doctor = false
+        """,
+    )
+
+    cfg = load_user_config(config_file)
+
+    assert cfg.show_doctor_report is False
+    assert cfg.config_version == CURRENT_CONFIG_VERSION
+    with config_file.open("rb") as f:
+        on_disk = tomllib.load(f)
+    assert on_disk["build"]["show_doctor_report"] is False
+    assert "doctor" not in on_disk["build"]
+
+
+@pytest.mark.unit
+def test_v1_to_v2_drops_doctor_true_without_setting_show_doctor_report(tmp_path: Path) -> None:
+    config_file = _write(
+        tmp_path / "config.toml",
+        """\
+        config_version = 1
+
+        [build]
+        doctor = true
+        """,
+    )
+
+    cfg = load_user_config(config_file)
+
+    # doctor=true matched the default-on case; it just drops, leaving show_doctor_report
+    # at its True default rather than writing a redundant key.
+    assert cfg.show_doctor_report is True
+    with config_file.open("rb") as f:
+        on_disk = tomllib.load(f)
+    assert "doctor" not in on_disk.get("build", {})
+    assert "show_doctor_report" not in on_disk.get("build", {})
 
 
 @pytest.mark.unit
@@ -147,10 +192,10 @@ def test_bool_version_rejected(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_migrate_config_stamps_current_version_from_zero() -> None:
-    raw: dict[str, object] = {"build": {"doctor": True}}
+    raw: dict[str, object] = {"build": {"container_image": "x"}}
     out = _migrate_config(raw, 0)
     assert out["config_version"] == CURRENT_CONFIG_VERSION
-    assert out["build"] == {"doctor": True}
+    assert out["build"] == {"container_image": "x"}
 
 
 @pytest.mark.unit

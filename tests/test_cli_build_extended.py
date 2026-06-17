@@ -19,10 +19,10 @@ lets the test assert the dispatched argv directly.
 
 ``workspace.detect`` is monkeypatched to a ``WorkspaceState`` that needs
 both a sync and a setup_env regenerate, so the pipeline runs both step
-seams unconditionally. The doctor pre-flight is suppressed via
-``--skip-doctor`` for the ordering and flag tests (less mocking; same
-code path the user would take); the doctor-gating tests below patch
-``bakar.commands.build.run_all`` directly.
+seams unconditionally. Doctor always runs now; an autouse fixture stubs
+``run_all`` to an empty pass list for the ordering and flag tests, while the
+doctor-gating tests below patch ``bakar.commands._helpers.run_all`` directly
+to inject a BLOCK finding.
 """
 
 from __future__ import annotations
@@ -42,6 +42,15 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _stub_doctor_checks():
+    """Doctor always runs now; stub ``run_all`` to an empty pass list so the
+    ordering/flag tests stay host-independent. The doctor-gating tests below
+    re-patch ``run_all`` inside their own ``with`` block, which takes precedence."""
+    with patch("bakar.commands._helpers.run_all", return_value=[]):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +195,7 @@ def test_build_pipeline_runs_sync_then_setup_env_then_kas(
     ):
         result = runner.invoke(
             app,
-            ["build", "--skip-doctor", "--manifest", "imx-6.6.52-2.2.2.xml"],
+            ["build", "--manifest", "imx-6.6.52-2.2.2.xml"],
         )
 
     assert result.exit_code == 0, result.output
@@ -231,7 +240,7 @@ def _invoke_build_with_overrides(
     ):
         result = runner.invoke(
             app,
-            ["build", "--skip-doctor", "--manifest", "imx-6.6.52-2.2.2.xml", *extra_args],
+            ["build", "--manifest", "imx-6.6.52-2.2.2.xml", *extra_args],
         )
 
     return result.exit_code, captured
@@ -301,7 +310,7 @@ def test_build_failing_kas_step_exits_nonzero(
     ):
         result = runner.invoke(
             app,
-            ["build", "--skip-doctor", "--manifest", "imx-6.6.52-2.2.2.xml"],
+            ["build", "--manifest", "imx-6.6.52-2.2.2.xml"],
         )
 
     assert result.exit_code != 0, f"expected non-zero exit on kas build failure, got 0 with output:\n{result.output}"
@@ -324,37 +333,35 @@ def _make_block_fail() -> list[CheckResult]:
     ]
 
 
-def test_build_skip_doctor_bypasses_block_finding(
+def test_build_hide_doctor_report_does_not_bypass_block_finding(
     runner: CliRunner,
     nxp_workspace: Path,
     patched_detect: None,
 ) -> None:
-    """``--skip-doctor`` short-circuits the doctor pre-flight entirely.
+    """``--hide-doctor-report`` hides the report but never skips the checks.
 
-    Patches ``bakar.commands.build.run_all`` to a Mock returning a BLOCK
-    finding; with ``--skip-doctor`` the code path that calls ``run_all`` is
-    never entered. Asserts both successful exit AND that ``run_all`` was not
-    called (so the BLOCK finding cannot have been consulted).
+    Doctor always runs; a BLOCK finding must still abort the build even when
+    the report is hidden. Patches ``run_all`` to return a BLOCK and asserts the
+    pipeline exits non-zero, that ``run_all`` WAS consulted, and that
+    ``step_kas.run_build`` is never reached.
     """
-    router = _make_subprocess_router(fake_workspace=nxp_workspace)
     run_all_mock = MagicMock(return_value=_make_block_fail())
+    run_build_mock = MagicMock(return_value=0)
 
     with (
-        patch("bakar.commands.build.run_all", run_all_mock),
-        patch("subprocess.run", side_effect=router),
-        patch("bakar.commands.build.step_override.apply", return_value=MagicMock()),
-        patch("bakar.commands.build.step_kas.regenerate_yaml"),
-        patch("bakar.commands.build.step_kas.run_build", return_value=0),
+        patch("bakar.commands._helpers.run_all", run_all_mock),
+        patch("bakar.commands.build.step_kas.run_build", run_build_mock),
     ):
         result = runner.invoke(
             app,
-            ["build", "--skip-doctor", "--manifest", "imx-6.6.52-2.2.2.xml"],
+            ["--hide-doctor-report", "build", "--manifest", "imx-6.6.52-2.2.2.xml"],
         )
 
-    assert result.exit_code == 0, result.output
-    assert run_all_mock.call_count == 0, (
-        f"expected run_all NOT to be called when --skip-doctor is set, got {run_all_mock.call_count} call(s)"
+    assert result.exit_code != 0, (
+        f"a BLOCK finding must abort even with --hide-doctor-report, got 0 with output:\n{result.output}"
     )
+    assert run_all_mock.call_count >= 1, "doctor checks must run even when the report is hidden"
+    assert run_build_mock.call_count == 0, "step_kas.run_build must not run when the doctor gate blocks the build"
 
 
 def test_build_without_skip_doctor_aborts_on_block_finding(
@@ -372,7 +379,7 @@ def test_build_without_skip_doctor_aborts_on_block_finding(
     run_build_mock = MagicMock(return_value=0)
 
     with (
-        patch("bakar.commands.build.run_all", return_value=_make_block_fail()),
+        patch("bakar.commands._helpers.run_all", return_value=_make_block_fail()),
         patch("bakar.commands.build.step_kas.run_build", run_build_mock),
     ):
         result = runner.invoke(

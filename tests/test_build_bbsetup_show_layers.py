@@ -11,7 +11,7 @@ is invoked.
 The dispatch in ``build()`` only routes to ``_run_bbsetup_build`` when no
 positional kas YAML and no ``--manifest`` are given AND ``_bbsetup_workspace``
 returns a non-None setup dir, so that helper is patched to a fake path. The
-doctor pre-flight is suppressed with ``--skip-doctor``. ``_USER_CONFIG`` is
+doctor pre-flight gate is patched to a no-op. ``_USER_CONFIG`` is
 controlled by patching ``_load_user_config_safe`` (the app callback that the
 CliRunner invocation triggers) so the no-flag case has ``show_hashes=False``
 and the toggle case has it True.
@@ -84,7 +84,7 @@ def _invoke_bbsetup_build(
     print_layer_hashes = MagicMock()
     run_build = MagicMock(return_value=0)
     user_config = UserConfig(show_hashes=show_hashes)
-    args = ["build", "--skip-doctor"]
+    args = ["build"]
     if show_layers:
         args.append("--show-layers")
     if dry_run:
@@ -100,6 +100,7 @@ def _invoke_bbsetup_build(
             return_value={"machine": "qemux86-64"},
         ),
         patch("bakar.commands.build.write_bbsetup_yaml"),
+        patch("bakar.commands.build._run_doctor_gate"),
         patch("bakar.commands.build._print_layer_hashes", print_layer_hashes),
         patch("bakar.commands.build.RunLogger", _runlogger_cm()),
         patch("bakar.commands.build.step_kas.run_build", run_build),

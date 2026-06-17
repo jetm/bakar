@@ -21,16 +21,15 @@ from bakar.commands._helpers import (
     _dispatch_bsp,
     _dispatch_from_yaml,
     _overlay_for,
-    _print_diagnosis,
     _print_layer_hashes,
     _print_sstate_summary,
     _resolve_workspace,
+    _run_doctor_gate,
     _tuning_extra_overlays,
     _uninitialized_bbsetup_dir,
     split_kas_yaml_arg,
 )
 from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, compose_preset_output_path, resolve
-from bakar.diagnostics import any_blocking_failure, run_all
 from bakar.kas import translate_bbsetup_config, write_bbsetup_yaml
 from bakar.observability import RunLogger
 from bakar.preset_config import load_presets
@@ -61,31 +60,12 @@ class _BbsetupCtx:
     image: str | None
     host_mode: bool
     clean: bool
-    skip_doctor: bool
     dry_run: bool
     keep_going: bool
     show_layers: bool
     sstate_mirror: str | None
     target: str | None = None
     dry_run_script: str | None = None
-
-
-def _run_doctor_gate(cfg, log, bsp, skip_doctor: bool) -> None:
-    """Run pre-flight checks; raise typer.Exit(2) on any blocking failure."""
-    run_doctor = not skip_doctor and (_state._USER_CONFIG is None or _state._USER_CONFIG.doctor)
-    if not run_doctor:
-        return
-    log.step_start("doctor")
-    results = run_all(cfg, bsp)
-    diag_path = log.run_dir / "diagnosis.txt"
-    diag_path.write_text(
-        "\n".join(f"{r.severity.value:5} {r.status.value:4} {r.name:22} {r.message}" for r in results) + "\n"
-    )
-    _print_diagnosis(results)
-    if any_blocking_failure(results):
-        log.step_fail("doctor", reason="blocking failure")
-        raise typer.Exit(code=2)
-    log.step_ok("doctor", checks=len(results))
 
 
 def _run_bbsetup_build(
@@ -165,7 +145,7 @@ def _run_bbsetup_build(
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         log.info(f"build mode=bbsetup bsp=bbsetup yaml={cfg.kas_yaml} overlay={overlay_source}")
 
-        _run_doctor_gate(cfg, log, None, ctx.skip_doctor)
+        _run_doctor_gate(cfg, log, None)
 
         write_bbsetup_yaml(
             setup_dir,
@@ -205,7 +185,6 @@ class _BuildCtx:
     effective_show_layers: bool
     dry_run: bool
     keep_going: bool
-    skip_doctor: bool
     skip_sync: bool
     target: str | None = None
 
@@ -219,7 +198,7 @@ def _run_byo_build(
 
     Called inside an active RunLogger context from ``build()``.
     """
-    _run_doctor_gate(cfg, log, ctx.bsp, ctx.skip_doctor)
+    _run_doctor_gate(cfg, log, ctx.bsp)
 
     # BYO skips sync/setup-env, so kas generates bblayers.conf during run_build.
     # Layer hashes are only on disk once the build has run; only --dry-run can
@@ -260,7 +239,7 @@ def _run_manifest_build(
 
     Called inside an active RunLogger context from ``build()``.
     """
-    _run_doctor_gate(cfg, log, ctx.bsp, ctx.skip_doctor)
+    _run_doctor_gate(cfg, log, ctx.bsp)
 
     # A dry run never reaches run_build's live layer panel; print best-effort
     # from any pre-existing bblayers.conf up front (mirrors the BYO path).
@@ -338,7 +317,6 @@ def _run_single_preset_release(
     skip_sync: bool,
     dry_run: bool,
     keep_going: bool,
-    skip_doctor: bool,
     clean: bool,
     show_layers: bool,
     sstate_mirror: str | None,
@@ -409,7 +387,6 @@ def _run_single_preset_release(
         effective_show_layers=effective_show_layers,
         dry_run=dry_run,
         keep_going=keep_going,
-        skip_doctor=skip_doctor,
         skip_sync=skip_sync,
         target=target,
     )
@@ -491,10 +468,6 @@ def build(
             "-k",
             help="Pass -k to bitbake: continue building other targets when one fails",
         ),
-    ] = False,
-    skip_doctor: Annotated[
-        bool,
-        typer.Option("--skip-doctor", help="Skip the pre-flight diagnosis (not recommended)"),
     ] = False,
     clean: Annotated[
         bool,
@@ -623,7 +596,6 @@ def build(
                 skip_sync=skip_sync,
                 dry_run=dry_run,
                 keep_going=keep_going,
-                skip_doctor=skip_doctor,
                 clean=clean,
                 show_layers=show_layers,
                 sstate_mirror=sstate_mirror,
@@ -665,7 +637,6 @@ def build(
                 image=image,
                 host_mode=host_mode,
                 clean=clean,
-                skip_doctor=skip_doctor,
                 dry_run=dry_run,
                 keep_going=keep_going,
                 show_layers=show_layers,
@@ -759,7 +730,6 @@ def build(
         effective_show_layers=effective_show_layers,
         dry_run=dry_run,
         keep_going=keep_going,
-        skip_doctor=skip_doctor,
         skip_sync=skip_sync,
         target=target,
     )

@@ -31,6 +31,16 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _stub_doctor_checks():
+    """Doctor always runs now; stub ``run_all`` to an empty (all-pass) list so these
+    tests stay host-independent - real checks BLOCK on disk-free / git config."""
+    from unittest.mock import patch
+
+    with patch("bakar.commands._helpers.run_all", return_value=[]):
+        yield
+
+
 def _make_cfg(workspace: Path, *, use_hashequiv: bool = False) -> BuildConfig:
     return BuildConfig(
         workspace=workspace,
@@ -135,7 +145,7 @@ def test_hashequiv_overlay_deduped_when_user_passes_it(
     overlay_path = _overlay_dir() / "bakar-tuning-hashequiv.yml"
     arg = f"{generic_yaml}:{overlay_path}"
 
-    result = runner.invoke(app, ["build", arg, "--skip-doctor"])
+    result = runner.invoke(app, ["build", arg])
 
     assert result.exit_code == 0, result.output
     assert len(recorded) == 1, f"expected exactly one run_build call, got {recorded!r}"
@@ -166,7 +176,7 @@ def test_hashequiv_overlay_not_appended_when_use_hashequiv_false(
 
     monkeypatch.setattr(build_cmd.step_kas, "run_build", fake_run_build)
 
-    result = runner.invoke(app, ["build", str(generic_yaml), "--skip-doctor"])
+    result = runner.invoke(app, ["build", str(generic_yaml)])
 
     assert result.exit_code == 0, result.output
     assert len(recorded) == 1, f"expected exactly one run_build call, got {recorded!r}"
@@ -197,7 +207,7 @@ def test_user_overlay_named_in_build_log(
     overlay = tmp_path / "bringup.yml"
     overlay.write_text("header:\n  version: 14\n")
 
-    result = runner.invoke(app, ["build", f"{generic_yaml}:{overlay}", "--skip-doctor"])
+    result = runner.invoke(app, ["build", f"{generic_yaml}:{overlay}"])
 
     assert result.exit_code == 0, result.output
 
@@ -228,7 +238,7 @@ def test_target_option_threads_into_build_context(
 
     monkeypatch.setattr(build_cmd.step_kas, "run_build", fake_run_build)
 
-    result = runner.invoke(app, ["build", str(generic_yaml), "--skip-doctor", "--target", "avocado-complete"])
+    result = runner.invoke(app, ["build", str(generic_yaml), "--target", "avocado-complete"])
 
     assert result.exit_code == 0, result.output
     assert recorded == ["avocado-complete"]
@@ -249,7 +259,7 @@ def test_target_absent_defaults_to_none_in_context(
 
     monkeypatch.setattr(build_cmd.step_kas, "run_build", fake_run_build)
 
-    result = runner.invoke(app, ["build", str(generic_yaml), "--skip-doctor"])
+    result = runner.invoke(app, ["build", str(generic_yaml)])
 
     assert result.exit_code == 0, result.output
     assert recorded == [None]
@@ -324,7 +334,7 @@ def test_dry_run_does_not_write_script(
     )
     monkeypatch.setattr(build_cmd.step_kas, "dry_run_preview_lines", lambda *a, **kw: ["command: kas-container build"])
 
-    result = runner.invoke(app, ["build", str(generic_yaml), "--dry-run", "--skip-doctor"])
+    result = runner.invoke(app, ["build", str(generic_yaml), "--dry-run"])
 
     assert result.exit_code == 0, result.output
     assert script_calls == [], "generate_dry_run_script must NOT be called for --dry-run alone"
@@ -485,7 +495,7 @@ def test_preset_known_nxp_uses_preset_manifest(
 
     # --dry-run skips the actual kas-container invocation; detect() is stubbed
     # so no real sync/setup-env steps run.
-    result = runner.invoke(app, ["build", "--preset", "imx8mp-scarthgap", "--skip-doctor", "--dry-run"])
+    result = runner.invoke(app, ["build", "--preset", "imx8mp-scarthgap", "--dry-run"])
 
     assert result.exit_code == 0, result.output
     # _dispatch_bsp must have been called with the preset manifest.
@@ -525,7 +535,7 @@ def test_preset_explicit_image_overrides_preset(
 
     result = runner.invoke(
         app,
-        ["build", "--preset", "imx8mp-scarthgap", "--image", "custom-image", "--skip-doctor", "--dry-run"],
+        ["build", "--preset", "imx8mp-scarthgap", "--image", "custom-image", "--dry-run"],
     )
 
     assert result.exit_code == 0, result.output
@@ -571,7 +581,7 @@ def test_preset_dispatch_bbsetup_uses_dispatch_from_yaml(
     # Also stub run_build to prevent container invocation.
     monkeypatch.setattr(build_mod.step_kas, "run_build", lambda ctx, *, extra_overlays=None, show_layers=False: 0)
 
-    result = runner.invoke(app, ["build", "--preset", "avocado-qemux86-64", "--skip-doctor", "--dry-run"])
+    result = runner.invoke(app, ["build", "--preset", "avocado-qemux86-64", "--dry-run"])
 
     assert result.exit_code == 0, result.output
     assert yaml_dispatched, "_dispatch_from_yaml was not called for a generic/bbsetup preset"
@@ -606,7 +616,7 @@ def test_nxp_preset_output_path_contains_manifest_version(
     monkeypatch.setattr(build_mod, "resolve", capturing_resolve)
     _stub_dispatchers(monkeypatch)
 
-    result = runner.invoke(app, ["build", "--preset", "imx8mp-scarthgap", "--skip-doctor", "--dry-run"])
+    result = runner.invoke(app, ["build", "--preset", "imx8mp-scarthgap", "--dry-run"])
 
     assert result.exit_code == 0, result.output
     assert resolved_workspaces, "resolve() was not called"
@@ -681,7 +691,7 @@ def test_multi_release_nxp_runs_two_builds_sequentially(
     _stub_preset_loader(monkeypatch, [preset])
     call_indices = _stub_single_release_runner(monkeypatch)
 
-    result = runner.invoke(app, ["build", "--preset", "imx8mp-all-releases", "--skip-doctor"])
+    result = runner.invoke(app, ["build", "--preset", "imx8mp-all-releases"])
 
     assert result.exit_code == 0, result.output
     assert call_indices == [0, 1], f"expected releases [0, 1] in order, got {call_indices!r}"
@@ -698,7 +708,7 @@ def test_multi_release_all_succeed_exits_zero(
     _stub_preset_loader(monkeypatch, [preset])
     _stub_single_release_runner(monkeypatch, fail_index=None)
 
-    result = runner.invoke(app, ["build", "--preset", "imx8mp-all-releases", "--skip-doctor"])
+    result = runner.invoke(app, ["build", "--preset", "imx8mp-all-releases"])
 
     assert result.exit_code == 0, (
         f"expected exit 0 when all releases succeed, got {result.exit_code}; output: {result.output}"
@@ -717,7 +727,7 @@ def test_multi_release_one_fails_exits_nonzero(
     # Release at index 1 (second release) fails.
     _stub_single_release_runner(monkeypatch, fail_index=1)
 
-    result = runner.invoke(app, ["build", "--preset", "imx8mp-all-releases", "--skip-doctor"])
+    result = runner.invoke(app, ["build", "--preset", "imx8mp-all-releases"])
 
     assert result.exit_code != 0, f"expected non-zero exit when a release fails, got 0; output: {result.output}"
     assert result.exit_code == 1, f"expected exit code 1, got {result.exit_code}"
@@ -735,7 +745,7 @@ def test_multi_release_both_releases_still_run_when_first_fails(
     # Release at index 0 (first release) fails; second must still be attempted.
     call_indices = _stub_single_release_runner(monkeypatch, fail_index=0)
 
-    result = runner.invoke(app, ["build", "--preset", "imx8mp-all-releases", "--skip-doctor"])
+    result = runner.invoke(app, ["build", "--preset", "imx8mp-all-releases"])
 
     assert result.exit_code == 1, f"expected exit 1 when first release fails, got {result.exit_code}"
     assert call_indices == [0, 1], f"expected both releases attempted in order, got {call_indices!r}"
@@ -752,7 +762,7 @@ def test_multi_release_summary_table_printed(
     _stub_preset_loader(monkeypatch, [preset])
     _stub_single_release_runner(monkeypatch)
 
-    result = runner.invoke(app, ["build", "--preset", "imx8mp-all-releases", "--skip-doctor"])
+    result = runner.invoke(app, ["build", "--preset", "imx8mp-all-releases"])
 
     assert result.exit_code == 0, result.output
     # Both manifest-version strings must appear in the summary table output.
@@ -783,7 +793,7 @@ def test_multi_release_bbsetup_distinct_output_dirs(
 
     monkeypatch.setattr(build_mod, "_run_single_preset_release", capturing_runner)
 
-    result = runner.invoke(app, ["build", "--preset", "avocado-all-machines", "--skip-doctor"])
+    result = runner.invoke(app, ["build", "--preset", "avocado-all-machines"])
 
     assert result.exit_code == 0, result.output
     assert len(captured_subdirs) == 2, f"expected 2 release output dirs, got {captured_subdirs!r}"

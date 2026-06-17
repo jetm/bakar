@@ -17,7 +17,7 @@ from rich.table import Table
 
 from bakar.bsp_detect import detect_bsp_from_yaml, detect_kas_workspace, is_bbsetup_workspace
 from bakar.bsp_model import BspModel, detect_bsp_family, get_model
-from bakar.diagnostics import CheckResult, Severity, Status
+from bakar.diagnostics import CheckResult, Severity, Status, any_blocking_failure, run_all
 from bakar.layers import collect_layer_hashes
 
 if TYPE_CHECKING:
@@ -383,6 +383,37 @@ def _print_diagnosis(results: list[CheckResult]) -> None:
         console.print()
         for r in hints:
             console.print(f"[yellow]fix[/] [bold]{r.name}[/]: {r.fix_hint}")
+
+
+def _run_doctor_gate(cfg: BuildConfig, log, bsp: BspModel | None) -> None:
+    """Run pre-flight checks; raise typer.Exit(2) on any blocking failure.
+
+    Checks always run. The full report is printed unless the report is hidden
+    (the global ``--hide-doctor-report`` flag or ``[build] show_doctor_report =
+    false``), in which case only build-blocking rows are shown. A blocking
+    failure aborts the build regardless of whether the report is hidden.
+    """
+    import bakar.commands._app as _state
+
+    log.step_start("doctor")
+    results = run_all(cfg, bsp)
+    diag_path = log.run_dir / "diagnosis.txt"
+    diag_path.write_text(
+        "\n".join(f"{r.severity.value:5} {r.status.value:4} {r.name:22} {r.message}" for r in results) + "\n"
+    )
+    hide = _state._HIDE_DOCTOR_REPORT or (
+        _state._USER_CONFIG is not None and not _state._USER_CONFIG.show_doctor_report
+    )
+    if hide:
+        blocking = [r for r in results if r.severity is Severity.BLOCK and r.status is Status.FAIL]
+        if blocking:
+            _print_diagnosis(blocking)
+    else:
+        _print_diagnosis(results)
+    if any_blocking_failure(results):
+        log.step_fail("doctor", reason="blocking failure")
+        raise typer.Exit(code=2)
+    log.step_ok("doctor", checks=len(results))
 
 
 def _print_layer_hashes(cfg: BuildConfig, hashes: list[LayerHash] | None = None) -> None:

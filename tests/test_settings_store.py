@@ -36,7 +36,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "defaults.ti.image": "var-thin-image",
         "defaults.ti.manifest": "processor-sdk-scarthgap.txt",
         "build.container_image": "jetm/kas-build-env:latest",
-        "build.doctor": "false",
+        "build.show_doctor_report": "false",
         "build.dl_dir": "/data/dl",
         "build.sstate_dir": "/data/sstate",
         "build.sstate_mirror_url": "https://cache.example.com",
@@ -77,7 +77,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert cfg.ti_image == "var-thin-image"
     assert cfg.ti_manifest == "processor-sdk-scarthgap.txt"
     assert cfg.container_image == "jetm/kas-build-env:latest"
-    assert cfg.doctor is False
+    assert cfg.show_doctor_report is False
     assert cfg.dl_dir == "/data/dl"
     assert cfg.sstate_dir == "/data/sstate"
     assert cfg.sstate_mirrors == "file:///mirror/sstate PATH"
@@ -107,16 +107,16 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_set_bool_key_stores_boolean_not_string(tmp_path: Path) -> None:
-    """`build.doctor false` coerces to a real bool, not the string "false"."""
+    """`build.show_doctor_report false` coerces to a real bool, not the string "false"."""
     config_file = tmp_path / "config.toml"
-    set_setting("build.doctor", "false", config_file)
+    set_setting("build.show_doctor_report", "false", config_file)
 
-    stored = get_setting("build.doctor", config_file)
+    stored = get_setting("build.show_doctor_report", config_file)
     assert stored is False
     assert isinstance(stored, bool)
 
     # load_user_config also reads it back as a typed bool, not a string.
-    assert load_user_config(config_file).doctor is False
+    assert load_user_config(config_file).show_doctor_report is False
 
 
 @pytest.mark.unit
@@ -165,7 +165,7 @@ def test_set_unrecognized_key_raises_without_writing(tmp_path: Path) -> None:
 def test_set_non_bool_value_on_bool_key_raises_without_writing(tmp_path: Path) -> None:
     config_file = tmp_path / "config.toml"
     with pytest.raises(ValueError, match="maybe"):
-        set_setting("build.doctor", "maybe", config_file)
+        set_setting("build.show_doctor_report", "maybe", config_file)
     assert not config_file.exists()
 
 
@@ -227,14 +227,14 @@ def test_unset_unrecognized_key_raises(tmp_path: Path) -> None:
 def test_list_settings_reports_set_and_unset_keys(tmp_path: Path) -> None:
     config_file = tmp_path / "config.toml"
     set_setting("defaults.nxp.machine", "imx8mp-var-dart", config_file)
-    set_setting("build.doctor", "false", config_file)
+    set_setting("build.show_doctor_report", "false", config_file)
 
     settings = list_settings(config_file)
 
     # Every schema key is present in the mapping.
     assert set(settings) == set(SETTINGS_SCHEMA)
     assert settings["defaults.nxp.machine"] == "imx8mp-var-dart"
-    assert settings["build.doctor"] is False
+    assert settings["build.show_doctor_report"] is False
     # An unset key maps to None.
     assert settings["defaults.ti.machine"] is None
 

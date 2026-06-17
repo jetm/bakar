@@ -17,6 +17,15 @@ from bakar.cli import app
 
 pytestmark = pytest.mark.unit
 
+
+@pytest.fixture(autouse=True)
+def _stub_doctor_checks():
+    """Doctor always runs now; stub ``run_all`` to an empty (all-pass) list so these
+    tests stay host-independent - real checks BLOCK on disk-free / git config."""
+    with patch("bakar.commands._helpers.run_all", return_value=[]):
+        yield
+
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE_YAML = REPO_ROOT / "examples" / "kas-qemux86-64-wrynose.yml"
 
@@ -106,6 +115,6 @@ def test_example_yaml_dry_run_succeeds(tmp_path: Path, monkeypatch) -> None:
     with patch("bakar.commands._app.load_vendors", return_value=[]):
         result = runner.invoke(
             app,
-            ["build", str(EXAMPLE_YAML), "--skip-doctor", "--dry-run"],
+            ["build", str(EXAMPLE_YAML), "--dry-run"],
         )
     assert result.exit_code == 0, result.output
