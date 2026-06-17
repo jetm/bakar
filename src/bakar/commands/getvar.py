@@ -21,6 +21,7 @@ from bakar.commands._helpers import (
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
+    split_kas_yaml_arg,
 )
 from bakar.config import BSPSpec, resolve
 from bakar.inspect_parse import extract_var_history, parse_getvar_value
@@ -35,10 +36,9 @@ def getvar(
         typer.Argument(help="BitBake variable name to resolve (e.g. MACHINE, IMAGE_INSTALL)."),
     ],
     kas_yaml: Annotated[
-        Path | None,
+        str | None,
         typer.Argument(
-            exists=False,
-            help="Optional kas YAML (BYO/bbsetup); resolves the workspace next to it.",
+            help="Optional kas YAML (BYO/bbsetup); supports colon-overlay syntax: machine.yml:overlay.yml.",
         ),
     ] = None,
     recipe: Annotated[
@@ -94,20 +94,21 @@ def getvar(
     from a failing bitbake call is surfaced as an error rather than printed
     as success.
     """
-    family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
-    ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
+    main_yaml, user_extras = split_kas_yaml_arg(kas_yaml)
+    family, bsp, main_yaml, manifest = _normalize_dispatch(main_yaml, manifest)
+    ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
         spec=BSPSpec(manifest=manifest, machine=machine),
-        kas_yaml=kas_yaml,
+        kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
     )
     overlay_source = _overlay_for(bsp)
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
-        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source)
+        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source, extra_overlays=user_extras)
 
         if history:
             _run_history(kas_ctx, log, var, recipe, output_json)

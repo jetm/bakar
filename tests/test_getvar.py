@@ -110,6 +110,113 @@ def _make_fake_capture(payloads: list[tuple[str, int]], calls: list[dict]):
     return fake_capture
 
 
+def _make_fake_capture_ctx(payloads: list[tuple[str, int]], calls: list[dict]):
+    """Like ``_make_fake_capture`` but also records ``ctx.extra_overlays`` per call.
+
+    Used by the colon-overlay tests to assert the parsed overlay chain reaches
+    :class:`KasBuildContext`.
+    """
+    payload_iter = iter(payloads)
+
+    def fake_capture(ctx, command, stdout_path, *, step="kas_shell_capture", python_executable=None):
+        text, rc = next(payload_iter)
+        stdout_path.parent.mkdir(parents=True, exist_ok=True)
+        stdout_path.write_text(text)
+        calls.append({"command": command, "extra_overlays": list(ctx.extra_overlays)})
+        return rc
+
+    return fake_capture
+
+
+@pytest.fixture
+def machine_yaml(tmp_path: Path) -> Path:
+    p = tmp_path / "machine.yml"
+    p.write_text("header:\n  version: 14\nmachine: imx8mp-var-dart\n", encoding="utf-8")
+    return p
+
+
+@pytest.fixture
+def overlay_yaml(tmp_path: Path) -> Path:
+    p = tmp_path / "bringup.yml"
+    p.write_text("header:\n  version: 14\n", encoding="utf-8")
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Colon-separated overlays (machine.yml:overlay.yml)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_getvar_colon_overlay_forwarded_to_ctx(
+    runner: _CliRunner,
+    nxp_workspace: Path,
+    machine_yaml: Path,
+    overlay_yaml: Path,
+) -> None:
+    """A colon-joined positional 'machine.yml:overlay.yml' lands in ctx.extra_overlays.
+
+    Regression: getvar took a single Path positional and passed the whole
+    'a.yml:b.yml' string through filesystem resolution, failing with
+    'kas YAML not found'. It must split on ':' like ``bakar build`` and thread
+    the trailing segments through as overlays.
+    """
+    calls: list[dict] = []
+    fake = _make_fake_capture_ctx([(_GETVAR_OUTPUT, 0)], calls)
+    kas_arg = f"{machine_yaml}:{overlay_yaml}"
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", _VAR, kas_arg, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    extras = calls[0]["extra_overlays"]
+    assert len(extras) == 1
+    assert extras[0].resolve() == overlay_yaml.resolve()
+
+
+@pytest.mark.unit
+def test_getvar_single_yaml_no_extras(
+    runner: _CliRunner,
+    nxp_workspace: Path,
+    machine_yaml: Path,
+) -> None:
+    """A bare single positional YAML leaves ctx.extra_overlays empty (no behavior change)."""
+    calls: list[dict] = []
+    fake = _make_fake_capture_ctx([(_GETVAR_OUTPUT, 0)], calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", _VAR, str(machine_yaml), "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert calls[0]["extra_overlays"] == []
+
+
+@pytest.mark.unit
+def test_getvar_colon_missing_overlay_exits(
+    runner: _CliRunner,
+    nxp_workspace: Path,
+    machine_yaml: Path,
+    tmp_path: Path,
+) -> None:
+    """A colon arg naming a missing overlay segment exits non-zero, not a silent drop."""
+    missing = str(tmp_path / "missing-overlay.yml")
+    kas_arg = f"{machine_yaml}:{missing}"
+
+    result = runner.invoke(
+        app,
+        ["getvar", _VAR, kas_arg, "--workspace", str(nxp_workspace)],
+    )
+
+    assert result.exit_code != 0
+
+
 # ---------------------------------------------------------------------------
 # Global getvar (no recipe)
 # ---------------------------------------------------------------------------
