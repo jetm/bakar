@@ -322,6 +322,103 @@ def _collect_layer_paths_for_check(cfg: BuildConfig) -> list[Path]:
     return layer_paths
 
 
+# Compiled regex for deprecated underscore override syntax.
+# Matches assignments like VAR_append, VAR_prepend, VAR_remove, VAR_class-native,
+# VAR_class-nativesdk on a line by itself (any assignment operator).
+# Does NOT match colon-form overrides (those have a different prefix pattern).
+_OVERRIDE_SYNTAX_RE = re.compile(
+    r"^\s*(\w+)_(append|prepend|remove|class-native|class-nativesdk)(\s*(?:\?\?=|\?=|:=|\+=|\.=|=\.|=|\s*\{))",
+    re.MULTILINE,
+)
+
+
+def check_override_syntax(cfg: BuildConfig) -> CheckResult:
+    """Block (or warn) when recipe/conf files use the deprecated underscore override form.
+
+    Scarthgap (bitbake >= 2.8) rejects ``VAR_append``, ``VAR_prepend``,
+    ``VAR_remove``, ``VAR_class-native``, and ``VAR_class-nativesdk`` at
+    parse time with a hard ``bb.fatal``. This check surfaces the problem
+    before the build starts.
+
+    Gated on the local bitbake version: skipped when the workspace is not
+    yet synced, the binary is absent, or the detected version is < 2.8.
+
+    Severity: BLOCK for ``.bb``/``.bbappend``/``.inc``; WARN for ``.conf``.
+    """
+    name = "override-syntax"
+
+    # --- version gate ---
+    bb_dir = _find_local_bitbake_dir(cfg)
+    if bb_dir is None:
+        return _skip(name, Severity.WARN, "bitbake binary not found (workspace not synced?)")
+
+    try:
+        result = subprocess.run(  # pragma: no cover
+            [str(bb_dir / "bin" / "bitbake"), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return _skip(name, Severity.WARN, f"bitbake --version failed: {exc}")
+
+    ver = _parse_bitbake_version(result.stdout)  # pragma: no cover
+    if ver is None or ver < (2, 8):  # pragma: no cover
+        return _skip(  # pragma: no cover
+            name,
+            Severity.WARN,
+            f"bitbake version {ver} < 2.8; override-syntax check not applicable",
+        )
+
+    # --- collect layer paths ---
+    layer_paths = _collect_layer_paths_for_check(cfg)
+    if not layer_paths:
+        return _skip(name, Severity.WARN, "no layer paths found")
+
+    # --- scan recipe files (BLOCK) then conf files (WARN) ---
+    recipe_extensions = ("*.bb", "*.bbappend", "*.inc")
+    conf_extensions = ("*.conf",)
+
+    for layer_path in layer_paths:
+        for glob in recipe_extensions:
+            for file_path in sorted(layer_path.rglob(glob)):
+                try:
+                    content = file_path.read_text(errors="replace")
+                except OSError:
+                    continue
+                m = _OVERRIDE_SYNTAX_RE.search(content)
+                if m:
+                    line_no = content[: m.start()].count("\n") + 1
+                    matched = m.group(0).strip()
+                    return _fail(
+                        name,
+                        Severity.BLOCK,
+                        f"{file_path}:{line_no}: {matched}",
+                        fix_hint="Use colon form: VAR:append, VAR:prepend, VAR:remove",
+                    )
+
+    for layer_path in layer_paths:
+        for glob in conf_extensions:
+            for file_path in sorted(layer_path.rglob(glob)):
+                try:
+                    content = file_path.read_text(errors="replace")
+                except OSError:
+                    continue
+                m = _OVERRIDE_SYNTAX_RE.search(content)
+                if m:
+                    line_no = content[: m.start()].count("\n") + 1
+                    matched = m.group(0).strip()
+                    return _fail(
+                        name,
+                        Severity.WARN,
+                        f"{file_path}:{line_no}: {matched}",
+                        fix_hint="Use colon form: VAR:append, VAR:prepend, VAR:remove",
+                    )
+
+    return _ok(name, Severity.BLOCK, "no deprecated underscore override syntax found")
+
+
 def check_container_bitbake(cfg: BuildConfig) -> CheckResult:
     bb_dir = _find_local_bitbake_dir(cfg)
     cmd = ["docker", "run", "--rm", "--entrypoint", "bash"]
@@ -1522,6 +1619,7 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_ccache_health,
     check_hashserv,
     check_sstate_hash_leak,
+    check_override_syntax,
 )
 
 # Docker-dependent checks from ``SHARED_CHECKS``. Filtered out of
