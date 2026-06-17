@@ -267,3 +267,132 @@ def test_kas_yaml_and_manifest_are_mutually_exclusive(nxp_workspace: Path, tmp_p
 
     assert result.exit_code == 2
     assert "either a positional kas YAML or --manifest" in result.output
+
+
+# ---------------------------------------------------------------------------
+# --json flag
+# ---------------------------------------------------------------------------
+
+
+def test_json_all_pass_exits_zero_and_valid_json(nxp_workspace: Path) -> None:
+    """All-PASS results with --json: valid JSON, version==1, exit 0."""
+    import json
+
+    results = [
+        CheckResult(
+            name="host-tools",
+            severity=Severity.BLOCK,
+            status=Status.PASS,
+            message="all present",
+        ),
+        CheckResult(
+            name="docker-daemon",
+            severity=Severity.BLOCK,
+            status=Status.PASS,
+            message="server v25",
+        ),
+    ]
+    with patch("bakar.commands.doctor.run_all", return_value=results):
+        result = _invoke_doctor(nxp_workspace, "--json")
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["version"] == 1
+    assert isinstance(data["findings"], list)
+    assert len(data["findings"]) == 2
+
+
+def test_json_finding_has_all_five_keys(nxp_workspace: Path) -> None:
+    """Each finding object has exactly the five required keys."""
+    import json
+
+    results = [
+        CheckResult(
+            name="sysctl",
+            severity=Severity.WARN,
+            status=Status.FAIL,
+            message="inotify.max_user_watches low",
+            fix_hint="raise inotify limits",
+        ),
+    ]
+    with patch("bakar.commands.doctor.run_all", return_value=results):
+        result = _invoke_doctor(nxp_workspace, "--json")
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    finding = data["findings"][0]
+    assert set(finding.keys()) == {"check", "severity", "status", "message", "fix_hint"}
+    assert finding["check"] == "sysctl"
+    assert finding["severity"] == "WARN"
+    assert finding["status"] == "FAIL"
+    assert finding["message"] == "inotify.max_user_watches low"
+    assert finding["fix_hint"] == "raise inotify limits"
+
+
+def test_json_fix_hint_null_when_none(nxp_workspace: Path) -> None:
+    """fix_hint is null in JSON (not absent) when CheckResult.fix_hint is None."""
+    import json
+
+    results = [
+        CheckResult(
+            name="host-tools",
+            severity=Severity.BLOCK,
+            status=Status.PASS,
+            message="present",
+            fix_hint=None,
+        ),
+    ]
+    with patch("bakar.commands.doctor.run_all", return_value=results):
+        result = _invoke_doctor(nxp_workspace, "--json")
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    finding = data["findings"][0]
+    # fix_hint key must be present and explicitly null, not absent
+    assert "fix_hint" in finding
+    assert finding["fix_hint"] is None
+
+
+def test_json_block_fail_exits_2(nxp_workspace: Path) -> None:
+    """BLOCK+FAIL result with --json exits 2 and still produces valid JSON."""
+    import json
+
+    results = [
+        CheckResult(
+            name="docker-daemon",
+            severity=Severity.BLOCK,
+            status=Status.FAIL,
+            message="not reachable",
+            fix_hint="sudo systemctl start docker",
+        ),
+    ]
+    with patch("bakar.commands.doctor.run_all", return_value=results):
+        result = _invoke_doctor(nxp_workspace, "--json")
+
+    assert result.exit_code == 2
+    data = json.loads(result.output)
+    assert data["version"] == 1
+    assert len(data["findings"]) == 1
+    assert data["findings"][0]["status"] == "FAIL"
+    assert data["findings"][0]["severity"] == "BLOCK"
+    assert data["findings"][0]["fix_hint"] == "sudo systemctl start docker"
+
+
+def test_json_warn_fail_exits_zero(nxp_workspace: Path) -> None:
+    """WARN+FAIL with --json exits 0 (only BLOCK failures drive exit 2)."""
+    import json
+
+    results = [
+        CheckResult(
+            name="sysctl",
+            severity=Severity.WARN,
+            status=Status.FAIL,
+            message="inotify low",
+        ),
+    ]
+    with patch("bakar.commands.doctor.run_all", return_value=results):
+        result = _invoke_doctor(nxp_workspace, "--json")
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["findings"][0]["fix_hint"] is None
