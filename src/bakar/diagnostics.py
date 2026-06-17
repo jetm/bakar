@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bakar.config import BuildConfig
+from bakar.kas import parse_bblayers
 from bakar.setup.profile import _read_sysctl
 
 if TYPE_CHECKING:
@@ -265,6 +266,60 @@ def _find_local_bitbake_dir(cfg: BuildConfig) -> Path | None:
             if (bb / "bin" / "bitbake").is_file():
                 return bb
     return None
+
+
+def _parse_bitbake_version(output: str) -> tuple[int, ...] | None:
+    """Parse a ``bitbake --version`` stdout string into a version tuple.
+
+    Returns ``None`` when no version number can be extracted.
+
+    Example::
+
+        >>> _parse_bitbake_version("BitBake Build Tool Core version 2.8.0")
+        (2, 8, 0)
+    """
+    m = re.search(r"(\d+(?:\.\d+)+)", output)
+    if not m:
+        return None
+    try:
+        return tuple(int(p) for p in m.group(1).split("."))
+    except ValueError:
+        return None
+
+
+def _collect_layer_paths_for_check(cfg: BuildConfig) -> list[Path]:
+    """Return all layer directories visible to the current kas composition.
+
+    Calls :func:`bakar.kas.parse_bblayers` on ``cfg.bblayers_conf`` to get
+    ``{repo: {layer, ...}}``.  For each repo, the resolved workspace root is
+    tried in order:
+
+    1. ``<bsp_root>/sources/<repo>``  - NXP / TI workspaces
+    2. ``<bsp_root>/layers/<repo>``   - bbsetup workspaces
+
+    Returns every immediate subdirectory of the resolved repo root that
+    contains a ``conf/layer.conf`` file.  When ``cfg.bblayers_conf`` is
+    ``None`` or does not exist, returns an empty list.
+    """
+    if cfg.bblayers_conf is None or not cfg.bblayers_conf.is_file():
+        return []
+
+    layer_paths: list[Path] = []
+    for repo in parse_bblayers(cfg.bblayers_conf):
+        sources_path = cfg.bsp_root / "sources" / repo
+        layers_path = cfg.bsp_root / "layers" / repo
+        if sources_path.is_dir():
+            repo_root = sources_path
+        elif layers_path.is_dir():
+            repo_root = layers_path
+        else:
+            continue
+        layer_paths.extend(
+            child
+            for child in sorted(repo_root.iterdir())
+            if child.is_dir() and (child / "conf" / "layer.conf").is_file()
+        )
+    return layer_paths
 
 
 def check_container_bitbake(cfg: BuildConfig) -> CheckResult:
