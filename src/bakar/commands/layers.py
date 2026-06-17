@@ -473,3 +473,32 @@ def _check_compat_mismatch(layer_records: list[dict], distro_codename: str) -> l
                 f"Layer {name!r} declares compat {compat!r} but active distro codename is {distro_codename!r}"
             )
     return warnings
+
+
+def _check_duplicate_priority(layer_records: list[dict]) -> list[str]:
+    """Return warning strings for layers that share the same BBFILE_PRIORITY value.
+
+    Each layer record must have ``name`` and ``priority`` keys. Records with
+    empty, None, or non-numeric ``priority`` values are skipped.
+
+    Returns one warning per duplicate priority group (sorted by priority value)
+    naming all layers that share it. Returns an empty list when all priorities
+    are unique or when priority data is absent.
+    """
+    groups: dict[int, list[str]] = {}
+    for rec in layer_records:
+        raw = rec.get("priority", "")
+        if not raw:
+            continue
+        try:
+            priority_int = int(raw)
+        except ValueError, TypeError:
+            continue
+        groups.setdefault(priority_int, []).append(rec.get("name", ""))
+
+    warnings: list[str] = []
+    for priority in sorted(groups):
+        names = groups[priority]
+        if len(names) > 1:
+            warnings.append(f"Layers {', '.join(repr(n) for n in names)} share BBFILE_PRIORITY {priority}")
+    return warnings
