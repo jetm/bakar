@@ -149,3 +149,125 @@ def test_triage_explicit_unknown_run_id_exits_nonzero(
 
     assert result.exit_code != 0
     assert "99990101-000000" in result.output
+
+
+# ---------------------------------------------------------------------------
+# --json flag tests
+# ---------------------------------------------------------------------------
+
+
+def _parse_json_output(output: str) -> dict:
+    """Extract the JSON object from triage output.
+
+    ``bakar triage`` always emits a ``:: triage <run_id>`` header line via
+    Rich before the JSON payload. Strip everything up to the first ``{``.
+    """
+    import json
+
+    json_start = output.index("{")
+    return json.loads(output[json_start:])
+
+
+def test_triage_json_unstructured_failing_run(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--json`` on an unstructured failing run emits valid JSON with the failing step."""
+    workspace = _make_workspace(tmp_path)
+    _make_run(workspace, "20260529-120000", SAMPLE_EVENTS_JSONL, SAMPLE_KAS_LOG)
+    monkeypatch.chdir(workspace)
+
+    result = runner.invoke(app, ["triage", "--json"])
+
+    assert result.exit_code == 0, result.output
+    doc = _parse_json_output(result.output)
+    assert doc["version"] == 1
+    assert doc["run_id"] == "20260529-120000"
+    assert doc["failing_step"] is not None
+    assert "suggestions" in doc
+
+
+def test_triage_json_unstructured_clean_run(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--json`` on an unstructured clean run emits JSON with ``failing_step`` null."""
+    workspace = _make_workspace(tmp_path)
+    _make_run(workspace, "20260529-120000", CLEAN_EVENTS_JSONL, "NOTE: clean run\n")
+    monkeypatch.chdir(workspace)
+
+    result = runner.invoke(app, ["triage", "--json"])
+
+    assert result.exit_code == 0, result.output
+    doc = _parse_json_output(result.output)
+    assert doc["version"] == 1
+    assert doc["failing_step"] is None
+    assert doc["fail_reason"] is None
+    assert doc["suggestions"] == []
+
+
+def test_triage_json_structured_failing_run(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--json`` on a run with ``bitbake-events.json`` emits the structured fields."""
+    import json
+
+    workspace = _make_workspace(tmp_path)
+    run = _make_run(workspace, "20260529-120000", SAMPLE_EVENTS_JSONL, SAMPLE_KAS_LOG)
+    (run / "bitbake-events.json").write_text(
+        json.dumps(
+            {
+                "failures": [
+                    {
+                        "recipe": "linux-imx",
+                        "task": "do_compile",
+                        "logfile": "/work/build/tmp/log/linux-imx.log",
+                        "errprinted": True,
+                    }
+                ]
+            }
+        )
+    )
+    monkeypatch.chdir(workspace)
+
+    result = runner.invoke(app, ["triage", "--json"])
+
+    assert result.exit_code == 0, result.output
+    doc = _parse_json_output(result.output)
+    assert doc["version"] == 1
+    assert doc["run_id"] == "20260529-120000"
+    assert doc["failing_step"] == "linux-imx:do_compile"
+    assert doc["fail_reason"] is None
+    assert doc["recipe_log"] == "/work/build/tmp/log/linux-imx.log"
+    assert doc["suggestions"] == []
+
+
+def test_triage_json_structured_clean_run(runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--json`` with an empty ``failures[]`` in bitbake-events.json returns all nulls."""
+    import json
+
+    workspace = _make_workspace(tmp_path)
+    run = _make_run(workspace, "20260529-120000", CLEAN_EVENTS_JSONL, "NOTE: clean\n")
+    (run / "bitbake-events.json").write_text(json.dumps({"failures": []}))
+    monkeypatch.chdir(workspace)
+
+    result = runner.invoke(app, ["triage", "--json"])
+
+    assert result.exit_code == 0, result.output
+    doc = _parse_json_output(result.output)
+    assert doc["version"] == 1
+    assert doc["failing_step"] is None
+    assert doc["fail_reason"] is None
+    assert doc["recipe_log"] is None
+    assert doc["suggestions"] == []
+
+
+def test_triage_json_short_flag(runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``-j`` is accepted as an alias for ``--json``."""
+    workspace = _make_workspace(tmp_path)
+    _make_run(workspace, "20260529-120000", CLEAN_EVENTS_JSONL, "NOTE: clean\n")
+    monkeypatch.chdir(workspace)
+
+    result = runner.invoke(app, ["triage", "-j"])
+
+    assert result.exit_code == 0, result.output
+    doc = _parse_json_output(result.output)
+    assert doc["version"] == 1
