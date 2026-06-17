@@ -241,6 +241,10 @@ def triage(
         ),
     ] = None,
     workspace: Annotated[Path | None, typer.Option("--workspace", "-w", help="Workspace root override")] = None,
+    output_json: Annotated[
+        bool,
+        typer.Option("--json", "-j", help="Output triage result as JSON instead of formatted text."),
+    ] = False,
 ) -> None:
     """Surface the last failed step of the named run (or the most recent).
 
@@ -271,18 +275,54 @@ def triage(
         raise typer.Exit(code=1)
 
     run_dir, _label = found
-    console.print(f"[bold]::[/] triage {run_dir.name}")
+    if not output_json:
+        console.print(f"[bold]::[/] triage {run_dir.name}")
 
     # Structured-failure-first: when the normalized artifact is present, name
     # the failing recipe/task and print the recorded logfile excerpt instead
     # of scraping kas.log. Absent artifact (or no recorded failures) falls
     # through to the kas.log analysis below.
     structured = _read_structured_failures(run_dir)
+    if output_json and structured is not None:
+        if structured:
+            f0 = structured[0]
+            logfile = f0.get("logfile")
+            doc = {
+                "version": 1,
+                "run_id": run_dir.name,
+                "failing_step": f"{f0.get('recipe')}:{f0.get('task')}",
+                "fail_reason": None,
+                "recipe_log": str(logfile) if logfile else None,
+                "suggestions": [],
+            }
+        else:
+            doc = {
+                "version": 1,
+                "run_id": run_dir.name,
+                "failing_step": None,
+                "fail_reason": None,
+                "recipe_log": None,
+                "suggestions": [],
+            }
+        typer.echo(json.dumps(doc, indent=2))
+        return
     if structured:
         _print_structured_failures(structured, translation_workspace)
         return
 
     report = analyse(run_dir, report_root)
+    if output_json:
+        doc = {
+            "version": 1,
+            "run_id": run_dir.name,
+            "failing_step": report.failing_step,
+            "fail_reason": report.fail_reason,
+            "recipe_log": str(report.recipe_log) if report.recipe_log else None,
+            "suggestions": list(report.suggestions),
+        }
+        typer.echo(json.dumps(doc, indent=2))
+        return
+
     if report.failing_step:
         console.print(f"[red]✗[/] step [bold]{report.failing_step}[/] failed: {report.fail_reason}")
     else:
