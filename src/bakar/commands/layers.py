@@ -446,3 +446,30 @@ def _print_status(var_values: dict[str, str]) -> None:
         console.print(f"  hashserv:          {hashserv}", highlight=False)
     else:
         console.print("  hashserv:          not configured", highlight=False)
+
+
+def _check_compat_mismatch(layer_records: list[dict], distro_codename: str) -> list[str]:
+    """Return warning strings for layers whose compat list excludes distro_codename.
+
+    Each layer record must have ``name`` and ``compat`` keys. The ``compat``
+    value is a space-separated list of release codenames (e.g. ``"dunfell kirkstone"``).
+
+    Returns an empty list when ``distro_codename`` is falsy (graceful skip) or
+    when all layers with a non-empty compat value include the active codename.
+    Layers with an empty or absent ``compat`` value are skipped - only explicit
+    declarations that exclude the active codename are flagged.
+    """
+    if not distro_codename:
+        return []
+
+    warnings: list[str] = []
+    for rec in layer_records:
+        name = rec.get("name", "")
+        compat = rec.get("compat", "")
+        if not compat:
+            continue
+        if distro_codename not in compat.split():
+            warnings.append(
+                f"Layer {name!r} declares compat {compat!r} but active distro codename is {distro_codename!r}"
+            )
+    return warnings
