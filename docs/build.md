@@ -50,12 +50,17 @@ bakar build -m imx8mp-var-dart    # machine override in bbsetup workspace
 | `--skip-sync` | | Skip repo/layertool sync step |
 | `--dry-run` | | Regenerate YAML and exit before invoking kas-container |
 | `--dry-run-script` | | Write a runnable bash script to PATH instead of building; use `-` for stdout. Distinct from `--dry-run`: this produces an executable script, not a preview. |
-| `--skip-doctor` | | Skip pre-flight checks (not recommended) |
 | `--clean` | | Remove `<bsp>/build/` before running (forces from-scratch build) |
 | `--host` | | Bypass kas-container, run plain `kas build` on the host |
 | `--show-layers` | | Print layer git hashes before the build starts |
 | `--sstate-mirror` | | HTTP sstate/downloads mirror URL; activates `bakar-tuning-shared-cache.yml` for this build |
 | `--workspace` | `-w` | Workspace root override |
+
+**Global option:** `--hide-doctor-report`, placed before the subcommand
+(`bakar --hide-doctor-report build ...`), runs the doctor checks but prints
+output only for build-blocking issues. Set `[build] show_doctor_report = false`
+for the same effect on every invocation. Doctor checks always run - a blocking
+failure aborts the build whether or not the report is shown.
 
 ## Examples
 
@@ -106,7 +111,7 @@ bakar build my-board.yml --dry-run-script -
 
 ## What happens
 
-1. **Doctor** - runs pre-flight checks unless `--skip-doctor` or `build.doctor = false` in config.toml
+1. **Doctor** - always runs pre-flight checks; `--hide-doctor-report` or `build.show_doctor_report = false` hides the report (only build-blocking issues print). A BLOCK-severity failure still aborts the build.
 2. **Sync** (manifest-driven only) - `repo init+sync` for NXP, `oe-layertool populate` for TI; skipped if already up to date or `--skip-sync`
 3. **setup-env** (manifest-driven only) - runs `var-setup-release.sh` or local.conf fixup; skipped if `bblayers.conf` already present
 4. **bitbake-override** - swaps the BSP-bundled bitbake for a local upstream checkout

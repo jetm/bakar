@@ -63,7 +63,7 @@ manifest = "processor-sdk-10.1.0.8-config_var1.txt"
 
 [build]
 container_image = "ghcr.io/siemens/kas/kas:4.7"  # custom kas-container image
-doctor = true           # run pre-flight checks before every build
+show_doctor_report = true   # show the doctor report (checks always run before every build)
 dl_dir = "/mnt/yocto-cache/downloads"
 sstate_dir = "/mnt/yocto-cache/sstate"
 sstate_mirrors = "file:///mnt/sstate/PATH;downloadfilename=PATH"

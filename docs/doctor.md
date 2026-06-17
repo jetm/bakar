@@ -96,5 +96,5 @@ recalibrate from scratch. See [configuration.md](configuration.md).
 ## See also
 
 - [build.md](build.md) - doctor runs automatically before every build
-- [configuration.md](configuration.md) - `build.doctor` flag to disable auto-doctor
+- [configuration.md](configuration.md) - `build.show_doctor_report` flag and the global `--hide-doctor-report` option to hide the report
 - [hashserv.md](hashserv.md) - what `check_hashserv` actually probes and how to fix its findings

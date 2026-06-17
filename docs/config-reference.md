@@ -46,7 +46,7 @@ one).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `doctor` | bool | `true` | Run pre-flight doctor checks before every build and sync. Set to `false` to skip permanently; use `--skip-doctor` to skip one invocation. |
+| `show_doctor_report` | bool | `true` | Show the pre-flight doctor report before every build and sync. Set to `false` to print only build-blocking issues; the global `--hide-doctor-report` flag does the same for one invocation. Doctor checks always run - a BLOCK-severity failure aborts regardless. |
 | `container_image` | string | `jetm/kas-build-env:latest` | kas-container image tag. Overridden by `KAS_CONTAINER_IMAGE` env var. |
 | `dl_dir` | string | *(not set)* | Override `DL_DIR` (shared download cache path). Passed to kas-container as an env var. |
 | `sstate_dir` | string | *(not set)* | Override `SSTATE_DIR` (sstate cache path). Passed to kas-container as an env var. |
@@ -101,7 +101,7 @@ machine = "am62x-var-som"
 manifest = "processor-sdk-10.1.0.8-config_var1.txt"
 
 [build]
-doctor = true
+show_doctor_report = true
 dl_dir = "/mnt/yocto-cache/downloads"
 sstate_dir = "/mnt/yocto-cache/sstate"
 sstate_mirror_url = "https://cache.example.com"
@@ -287,4 +287,4 @@ built-in defaults.
 - [configuration.md](configuration.md) — resolution order, narrative overview
 - [workspace.md](workspace.md) — workspace detection, BSP families, directory layout
 - [hashserv.md](hashserv.md) — `build.hashserv` persistent daemon details
-- [doctor.md](doctor.md) — `build.doctor` and `pressure_max_*` pre-flight checks
+- [doctor.md](doctor.md) — `build.show_doctor_report` and `pressure_max_*` pre-flight checks

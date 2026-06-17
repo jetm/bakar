@@ -48,7 +48,7 @@ All keys use dotted notation (`section.subsection.key`).
 | Key | Type | Description |
 |-----|------|-------------|
 | `build.container_image` | string | Custom kas-container image tag |
-| `build.doctor` | bool | Run doctor before every build (default: `true`) |
+| `build.show_doctor_report` | bool | Show the doctor report before every build (default: `true`); doctor checks always run regardless |
 | `build.dl_dir` | string | Override `DL_DIR` (shared download cache) |
 | `build.sstate_dir` | string | Override `SSTATE_DIR` (sstate cache) |
 | `build.sstate_mirrors` | string | `SSTATE_MIRRORS` value for remote cache |
@@ -102,8 +102,8 @@ bakar settings set build.sstate_dir /mnt/yocto-cache/sstate
 # Use a sstate mirror
 bakar settings set build.sstate_mirrors "file:///mnt/sstate/PATH;downloadfilename=PATH"
 
-# Disable automatic doctor (speeds up builds when environment is stable)
-bakar settings set build.doctor false
+# Hide the doctor report (checks still run; only build-blocking issues print)
+bakar settings set build.show_doctor_report false
 
 # Always show layer hashes after sync/build
 bakar settings set layers.show_hashes true

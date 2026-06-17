@@ -17,11 +17,15 @@ bakar sync [OPTIONS]
 | `--image` | `-i` | Image target |
 | `--manifest` | `-f` | Manifest filename (NXP `.xml` or TI `.txt`) |
 | `--branch` | `-b` | Branch override |
-| `--skip-doctor` | | Skip pre-flight checks |
 | `--clean` | | Remove `<bsp>/build/` before syncing |
 | `--show-layers` | | Print layer git hashes after sync |
 | `--dry-run-script` | | Write a runnable bash script to PATH instead of syncing; use `-` for stdout. Distinct from the build `--dry-run` flag: this produces an executable script whose sync step matches the workspace family (repo for NXP, oe-layertool for TI, kas-container checkout for bbsetup). |
 | `--workspace` | `-w` | Workspace root override |
+
+**Global option:** `--hide-doctor-report`, placed before the subcommand
+(`bakar --hide-doctor-report sync ...`), runs the doctor checks but prints
+output only for build-blocking issues. Set `[build] show_doctor_report = false`
+for the same effect on every invocation.
 
 ## Examples
 
@@ -48,7 +52,7 @@ bakar sync -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --dry-run-script sync.sh
 ## Notes
 
 - bitbake-setup workspaces are initialized externally via `bitbake-setup init`; `bakar sync` exits 2 for them.
-- bakar detects manifest drift (wrong manifest, wrong branch, SHA drift) and forces a full re-sync when it detects it. Pass `--skip-doctor` to suppress the pre-flight gate, but not the drift check.
+- bakar detects manifest drift (wrong manifest, wrong branch, SHA drift) and forces a full re-sync when it detects it. The drift check is independent of the doctor pre-flight; `--hide-doctor-report` hides the doctor report but never suppresses the drift check.
 
 ## See also
 
