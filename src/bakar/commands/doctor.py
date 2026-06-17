@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Annotated
 
@@ -36,6 +37,10 @@ def doctor(
         Path | None,
         typer.Option("--workspace", "-w", help="Workspace root; auto-detected if omitted"),
     ] = None,
+    output_json: Annotated[
+        bool,
+        typer.Option("--json", "-j", help="Output results as JSON instead of formatted table."),
+    ] = False,
 ) -> None:
     """Run every diagnostic check and exit non-zero on BLOCK failures."""
     setup_dir = _bbsetup_workspace(workspace) if kas_yaml is None and manifest is None else None
@@ -46,7 +51,10 @@ def doctor(
             user_config=_state._USER_CONFIG,
         )
         results = run_all(cfg, None)
-        _print_diagnosis(results)
+        if output_json:
+            _print_json(results)
+        else:
+            _print_diagnosis(results)
         if any_blocking_failure(results):
             raise typer.Exit(code=2)
         return
@@ -60,6 +68,26 @@ def doctor(
         user_config=_state._USER_CONFIG,
     )
     results = run_all(cfg, bsp)
-    _print_diagnosis(results)
+    if output_json:
+        _print_json(results)
+    else:
+        _print_diagnosis(results)
     if any_blocking_failure(results):
         raise typer.Exit(code=2)
+
+
+def _print_json(results: list) -> None:
+    doc = {
+        "version": 1,
+        "findings": [
+            {
+                "check": r.name,
+                "severity": r.severity,
+                "status": r.status,
+                "message": r.message,
+                "fix_hint": r.fix_hint,
+            }
+            for r in results
+        ],
+    }
+    typer.echo(json.dumps(doc, indent=2))
