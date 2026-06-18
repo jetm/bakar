@@ -121,9 +121,7 @@ def read_launch_record(run_dir: Path) -> LaunchRecord:
                 pgid=pgid if isinstance(pgid, int) else None,
                 mode=mode if isinstance(mode, str) else "container",
                 runtime=obj.get("runtime") if isinstance(obj.get("runtime"), str) else None,
-                container_label=(
-                    obj.get("container_label") if isinstance(obj.get("container_label"), str) else None
-                ),
+                container_label=(obj.get("container_label") if isinstance(obj.get("container_label"), str) else None),
             )
 
     pid_file = run_dir / _PID_FILENAME

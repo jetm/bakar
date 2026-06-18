@@ -52,6 +52,7 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_stop_no_args(runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``stop`` with no args exits 0 and calls stop_build once with force=False."""
     calls: list[tuple[Path, bool]] = []
+
     def _rec(bsp_root: Path, force: bool) -> bool:
         calls.append((bsp_root, force))
         return True
@@ -68,6 +69,7 @@ def test_stop_no_args(runner: _CliRunner, workspace: Path, monkeypatch: pytest.M
 def test_stop_force(runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``stop --force`` calls stop_build with force=True."""
     calls: list[tuple[Path, bool]] = []
+
     def _rec(bsp_root: Path, force: bool) -> bool:
         calls.append((bsp_root, force))
         return True
@@ -98,6 +100,7 @@ def test_stop_explicit_workspace(
     monkeypatch.chdir(elsewhere)
 
     calls: list[tuple[Path, bool]] = []
+
     def _rec(bsp_root: Path, force: bool) -> bool:
         calls.append((bsp_root, force))
         return True
@@ -133,6 +136,7 @@ def test_stop_byo_positional_yaml(
     monkeypatch.chdir(elsewhere)
 
     calls: list[tuple[Path, bool]] = []
+
     def _rec(bsp_root: Path, force: bool) -> bool:
         calls.append((bsp_root, force))
         return True
