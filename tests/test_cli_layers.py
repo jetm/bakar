@@ -18,6 +18,11 @@ import pytest
 
 import bakar.commands.layers as layers_module
 from bakar.cli import app
+from bakar.commands.layers import (
+    _check_compat_mismatch,
+    _check_duplicate_priority,
+    _check_orphan_bbappend,
+)
 from bakar.layers import LayerHash
 
 if TYPE_CHECKING:
@@ -104,12 +109,6 @@ def test_outside_workspace_fails(runner: _CliRunner, tmp_path: Path, monkeypatch
 # ---------------------------------------------------------------------------
 # Unit tests for the three cross-validation helper functions
 # ---------------------------------------------------------------------------
-
-from bakar.commands.layers import (
-    _check_compat_mismatch,
-    _check_duplicate_priority,
-    _check_orphan_bbappend,
-)
 
 # --- _check_compat_mismatch -------------------------------------------------
 
