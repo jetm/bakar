@@ -62,6 +62,10 @@ def is_build_running(run_dir: Path) -> tuple[bool, int | None, bool]:
         pgid = int(raw.strip())
     except ValueError:
         return (False, None, False)
+    if pgid <= 0:
+        # A non-positive pgid would make os.killpg signal our own group (0)
+        # or be invalid; treat a corrupted pidfile as not-running.
+        return (False, pgid, False)
 
     try:
         os.killpg(pgid, 0)
@@ -122,6 +126,9 @@ def stop_build(bsp_root: Path, *, force: bool = False) -> None:
     run_dir = run_dirs[-1]
     live, pgid, cmdline_ok = is_build_running(run_dir)
     if not live or not cmdline_ok or pgid is None:
+        # Dead or recycled PGID: clear the stale pidfile so a later build's
+        # check_unclean_stop stops re-warning about it.
+        remove_pid(run_dir)
         print("no running build found")
         return
 
