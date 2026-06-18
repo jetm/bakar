@@ -5,22 +5,31 @@ Gracefully halt a running `bakar build` without corrupting in-flight recipe work
 ## Synopsis
 
 ```text
-bakar stop [OPTIONS]
+bakar stop [OPTIONS] [KAS_YAML]
 ```
+
+## Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `KAS_YAML` | Optional kas YAML for a BYO/generic build; runs live next to it under `<yaml-parent>/build/runs/`, and the workspace lookup is skipped (mirrors `bakar build` / `bakar log`) |
 
 ## Options
 
 | Flag | Description |
 |------|-------------|
 | `--force` | Skip the SIGINT grace period and escalate straight to SIGTERM, then SIGKILL |
-| `--manifest`, `-f` | Manifest filename used to resolve the BSP family (when cwd auto-detection is ambiguous) |
+| `--manifest`, `-f` | Manifest filename used to resolve the BSP family (NXP/TI); mutually exclusive with a positional `KAS_YAML` |
 | `--workspace`, `-w` | Workspace root override |
 
 ## Examples
 
 ```bash
-# Stop the running build for the workspace detected from cwd
+# Stop the running build for the workspace detected from cwd (NXP/TI)
 bakar stop
+
+# Stop a BYO/generic build by pointing at its kas YAML
+bakar stop examples/kas-qemux86-64-wrynose.yml
 
 # Stop a build in a workspace outside the current directory
 bakar stop --workspace ~/bsp/my-workspace --manifest imx-6.12.49-2.2.0.xml

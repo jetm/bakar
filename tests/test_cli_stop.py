@@ -100,3 +100,49 @@ def test_stop_explicit_workspace(
     assert result.exit_code == 0, result.output
     assert len(calls) == 1
     assert calls[0] == (workspace / "nxp", False)
+
+
+def test_stop_byo_positional_yaml(
+    runner: _CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``bakar stop my.yml`` resolves bsp_root from the YAML's dir (BYO/generic).
+
+    A generic kas YAML (no NXP/TI markers) is dispatched via
+    ``_dispatch_from_yaml`` -> ``generic``, and the workspace is the YAML's
+    parent dir - cwd is irrelevant, so this runs from outside any workspace.
+    """
+    yaml = tmp_path / "kas-generic.yml"
+    yaml.write_text("header:\n  version: 21\nmachine: qemux86-64\ndistro: nodistro\ntarget: core-image-minimal\n")
+    (tmp_path / "build" / "runs" / "20260617-120000").mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    calls: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", lambda bsp_root, force: calls.append((bsp_root, force)))
+
+    result = runner.invoke(app, ["stop", str(yaml)])
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0] == (tmp_path, False)
+
+
+def test_stop_yaml_and_manifest_conflict(
+    runner: _CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Passing both a positional YAML and ``--manifest`` is rejected with exit 2."""
+    yaml = tmp_path / "kas-generic.yml"
+    yaml.write_text("header:\n  version: 21\nmachine: qemux86-64\n")
+
+    calls: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", lambda bsp_root, force: calls.append((bsp_root, force)))
+
+    result = runner.invoke(app, ["stop", str(yaml), "--manifest", "imx-6.6.52-2.2.2.xml"])
+
+    assert result.exit_code == 2
+    assert calls == []
