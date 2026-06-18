@@ -924,6 +924,8 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     for lock in removed:
         log.warn(f"removed stale bitbake lock: {lock} (owning process was gone)")
 
+    build_stop.check_unclean_stop(cfg.bsp_root, log.console)
+
     log.step_start(
         "kas_build",
         yaml=str(kas_yaml),
