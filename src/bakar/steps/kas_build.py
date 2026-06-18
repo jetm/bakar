@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING
 import yaml
 from rich.live import Live
 
-from bakar import hashserv, task_timings
+from bakar import build_stop, hashserv, task_timings
 from bakar.eventlog import tail_events
 from bakar.kas import KasGenOptions, write_yaml
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
@@ -701,6 +701,10 @@ def _run_pty_with_ui(
             )
             os.close(slave_fd)
             slave_fd = -1
+            # Persist the build PGID so `bakar stop` can target this run.
+            # proc.pid is the PGID because start_new_session=True above makes
+            # the child a process-group leader.
+            build_stop.write_pid(log.run_dir, proc.pid)
 
             live_frozen = False
 
@@ -879,6 +883,7 @@ def _run_pty_with_ui(
                     # container error): keep a collapsed closing status.
                     ui.finish_failed()
     finally:
+        build_stop.remove_pid(log.run_dir)
         if slave_fd != -1:
             try:
                 os.close(slave_fd)
