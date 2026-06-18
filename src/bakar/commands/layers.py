@@ -541,8 +541,10 @@ def _check_orphan_bbappend(layer_paths: list[tuple[str, Path]]) -> list[str]:
 
     warnings: list[str] = []
     for bbappend in bbappend_files:
-        # Strip version/glob suffix: "foo_1.0.bbappend" -> "foo", "foo_%.bbappend" -> "foo"
-        base = re.sub(r"[_-][^_-]+$", "", bbappend.stem)
+        # Strip version/glob suffix using underscore separator only (Yocto convention).
+        # "foo_1.0.bbappend" -> "foo", "foo_%.bbappend" -> "foo".
+        # Hyphens are part of the package name (e.g. "linux-firmware"), not separators.
+        base = re.sub(r"_[^_]+$", "", bbappend.stem)
         matched = any(s == base or s.startswith((base + "_", base + "-")) for s in all_bb_stems)
         if not matched:
             warnings.append(f"Orphan bbappend: {bbappend} (no matching {base}_*.bb found in active layers)")
