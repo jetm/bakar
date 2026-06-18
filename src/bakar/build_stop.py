@@ -12,15 +12,23 @@ Mirrors the procfs/PID-liveness pattern in :mod:`bakar.hashserv`: liveness via
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+from rich.panel import Panel
+
+if TYPE_CHECKING:
+    from rich.console import Console
 
 _PID_FILENAME = "build.pid"
 _VALID_CMDLINE_TOKENS = ("kas-container", "kas")
 _STOP_GRACE_SECONDS = 60
 _STOP_TERM_SECONDS = 5
+_EVENTS_FILENAME = "events.jsonl"
 
 
 def write_pid(run_dir: Path, pgid: int) -> None:
@@ -71,9 +79,7 @@ def is_build_running(run_dir: Path) -> tuple[bool, int | None, bool]:
         return (True, pgid, False)
 
     fields = cmdline_bytes.split(b"\x00")
-    cmdline_ok = any(
-        token.encode() in field for field in fields for token in _VALID_CMDLINE_TOKENS
-    )
+    cmdline_ok = any(token.encode() in field for field in fields for token in _VALID_CMDLINE_TOKENS)
     return (True, pgid, cmdline_ok)
 
 
@@ -143,3 +149,111 @@ def stop_build(bsp_root: Path, *, force: bool = False) -> None:
         print("stopped")
     finally:
         remove_pid(run_dir)
+
+
+def _interrupted_step(run_dir: Path) -> str | None:
+    """Return the name of an interrupted step from ``run_dir/events.jsonl``.
+
+    Each line is a JSON object with an ``event`` discriminator
+    (``step_start`` / ``step_end``) and a coarse ``step`` label such as
+    ``kas_build`` (NOT a recipe name). A step whose ``step_start`` has no
+    matching ``step_end`` is the interrupted step. Returns ``None`` when the
+    file is absent, unreadable, contains no unmatched ``step_start``, or any
+    line fails to parse.
+    """
+    events_path = run_dir / _EVENTS_FILENAME
+    try:
+        raw = events_path.read_text()
+    except OSError:
+        return None
+
+    started: list[str] = []
+    ended: set[str] = set()
+    for raw_line in raw.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError, TypeError:
+            return None
+        if not isinstance(obj, dict):
+            return None
+        event = obj.get("event")
+        step = obj.get("step")
+        if not isinstance(step, str):
+            continue
+        if event == "step_start":
+            started.append(step)
+        elif event == "step_end":
+            ended.add(step)
+
+    for step in started:
+        if step not in ended:
+            return step
+    return None
+
+
+def check_unclean_stop(bsp_root: Path, console: Console) -> None:
+    """Warn at build start about a build already running or interrupted uncleanly.
+
+    Scans every run dir under ``bsp_root/build/runs`` for a ``build.pid``. If a
+    live build is found (PGID alive and cmdline verified), prints a warning that
+    a build is already running and returns. Otherwise, for each stale pidfile
+    (dead PGID), prints a warning naming the interrupted step (from
+    ``events.jsonl``) and pointing at ``kas.log`` for the in-flight recipe.
+
+    Never raises: the entire body is wrapped in ``try/except`` so a detection
+    bug cannot block a build. Returns ``None`` in all cases.
+    """
+    try:
+        runs_dir = bsp_root / "build" / "runs"
+        try:
+            run_dirs = sorted(runs_dir.iterdir())
+        except OSError:
+            return
+
+        for run_dir in run_dirs:
+            if not (run_dir / _PID_FILENAME).exists():
+                continue
+
+            live, pgid, cmdline_ok = is_build_running(run_dir)
+            if live and cmdline_ok:
+                console.print(
+                    Panel.fit(
+                        f"A build is already running (PGID {pgid}) in\n"
+                        f"  {run_dir}\n\n"
+                        f"Stop it first with [bold]bakar stop[/] before starting a new build.",
+                        title="[bold yellow]build already running[/]",
+                        border_style="yellow",
+                    )
+                )
+                return
+
+            if live:
+                continue
+
+            step = _interrupted_step(run_dir)
+            if step is not None:
+                body = (
+                    f"The previous build in\n"
+                    f"  {run_dir}\n"
+                    f"was interrupted uncleanly during step [bold]{step}[/].\n\n"
+                    f"Check [bold]kas.log[/] in that run dir for the recipe that was building."
+                )
+            else:
+                body = (
+                    f"The previous build in\n"
+                    f"  {run_dir}\n"
+                    f"was interrupted uncleanly.\n\n"
+                    f"Check [bold]kas.log[/] in that run dir for the recipe that was building."
+                )
+            console.print(
+                Panel.fit(
+                    body,
+                    title="[bold yellow]previous build interrupted uncleanly[/]",
+                    border_style="yellow",
+                )
+            )
+    except Exception:
+        return
