@@ -44,6 +44,7 @@ import bakar.commands.settings
 import bakar.commands.setup
 import bakar.commands.shell
 import bakar.commands.show
+import bakar.commands.stop
 import bakar.commands.stress_parse
 import bakar.commands.sync
 import bakar.commands.triage  # noqa: F401
