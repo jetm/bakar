@@ -323,11 +323,12 @@ def _collect_layer_paths_for_check(cfg: BuildConfig) -> list[Path]:
 
 
 # Compiled regex for deprecated underscore override syntax.
-# Matches assignments like VAR_append, VAR_prepend, VAR_remove, VAR_class-native,
-# VAR_class-nativesdk on a line by itself (any assignment operator).
-# Does NOT match colon-form overrides (those have a different prefix pattern).
+# Matches variable assignments (VAR_append = ...) and function definitions
+# (do_install_append() {). Variable names may contain ${...} expansions such
+# as FILES_${PN}_append. Does NOT match colon-form overrides.
 _OVERRIDE_SYNTAX_RE = re.compile(
-    r"^\s*(\w+)_(append|prepend|remove|class-native|class-nativesdk)(\s*(?:\?\?=|\?=|:=|\+=|\.=|=\.|=|\s*\{))",
+    r"^\s*([\w${}]+)_(append|prepend|remove|class-native|class-nativesdk)"
+    r"(\s*(?:\?\?=|\?=|:=|\+=|\.=|=\.|=|\(\s*\)\s*\{|\s*\{))",
     re.MULTILINE,
 )
 

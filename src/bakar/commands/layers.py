@@ -188,6 +188,10 @@ def layers_inspect(
     if rc == 0 and capture_path.is_file():
         _merge_show_layers(capture_path.read_text(), layer_records)
 
+    # distro_codename is intentionally "" here: inspect runs without a container
+    # call so DISTRO_CODENAME is not available. _check_compat_mismatch returns []
+    # on an empty codename (graceful skip). Wire the real codename when inspect
+    # gains access to bitbake-getvar output.
     cross_validation_warnings = (
         _check_compat_mismatch(layer_records, "")
         + _check_duplicate_priority(layer_records)
