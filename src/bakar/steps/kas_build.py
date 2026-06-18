@@ -270,6 +270,7 @@ def _ccache_args(
     *,
     dry_run: bool = False,
     eventlog_path: str | None = None,
+    run_id: str | None = None,
 ) -> list[str]:
     """Return ``['--runtime-args', '<concatenated string>']`` for container builds.
 
@@ -311,6 +312,8 @@ def _ccache_args(
         runtime_args += " --add-host=host.docker.internal:host-gateway"
     if eventlog_path is not None:
         runtime_args += f" -e BB_DEFAULT_EVENTLOG={eventlog_path}"
+    if run_id is not None:
+        runtime_args += f" --label bakar.run_id={run_id}"
     return ["--runtime-args", runtime_args]
 
 
@@ -972,7 +975,8 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
 
     cmd: list[str] = []
     exe = "kas" if cfg.host_mode else "kas-container"
-    cmd += [exe, *_ccache_args(cfg, eventlog_path=_container_eventlog_path(cfg, log)), "build", kas_arg]
+    ccache = _ccache_args(cfg, eventlog_path=_container_eventlog_path(cfg, log), run_id=log.run_id)
+    cmd += [exe, *ccache, "build", kas_arg]
     if ctx.target:
         cmd += ["--target", ctx.target]
     if ctx.keep_going:
