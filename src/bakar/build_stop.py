@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -131,6 +133,118 @@ def read_launch_record(run_dir: Path) -> LaunchRecord:
     except ValueError:
         legacy_pgid = None
     return LaunchRecord(pgid=legacy_pgid, mode="container", container_label=None)
+
+
+def _detect_runtime() -> str:
+    """Resolve the container runtime the way kas-container does.
+
+    Honors ``KAS_CONTAINER_ENGINE`` when set (a name or a full path; only the
+    basename matters), otherwise picks the first of ``docker``/``podman`` found
+    on ``PATH``. Falls back to ``"docker"`` when neither is installed; the
+    caller is responsible for handling an unresolvable runtime.
+    """
+    engine = os.environ.get("KAS_CONTAINER_ENGINE")
+    if engine:
+        return os.path.basename(engine.strip())
+    for candidate in ("docker", "podman"):
+        if shutil.which(candidate):
+            return candidate
+    return "docker"
+
+
+def _container_id(runtime: str, container_label: str) -> str | None:
+    """Resolve the running container id for ``container_label`` via ``runtime``.
+
+    Runs ``<runtime> ps -q -f label=<container_label>`` and returns the first
+    line of stdout (a container id), or ``None`` when the output is empty or the
+    command errors (the container is gone or the runtime is unusable).
+    """
+    try:
+        result = subprocess.run(
+            [runtime, "ps", "-q", "-f", f"label={container_label}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        cid = line.strip()
+        if cid:
+            return cid
+    return None
+
+
+def _run_runtime(args: list[str]) -> None:
+    """Run a runtime subcommand, capturing output and swallowing all errors.
+
+    A missing or already-gone container is not an error here, so a non-zero
+    exit (or the runtime binary being absent) is ignored rather than raised.
+    """
+    try:
+        subprocess.run(args, capture_output=True, text=True, check=False)
+    except OSError:
+        pass
+
+
+def _container_running(runtime: str, cid: str) -> bool:
+    """Return True while ``cid`` reports ``State.Running == true``.
+
+    Anything else (the inspect command erroring, empty output, ``"false"``)
+    means the container is no longer running.
+    """
+    try:
+        result = subprocess.run(
+            [runtime, "inspect", "-f", "{{.State.Running}}", cid],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    if result.returncode != 0:
+        return False
+    return result.stdout.strip() == "true"
+
+
+def _stop_container(
+    runtime: str,
+    cid: str,
+    *,
+    force: bool,
+    grace_secs: int,
+    term_secs: int,
+) -> None:
+    """Stop container ``cid`` via ``runtime`` with graceful escalation.
+
+    When ``force`` is False: send ``kill --signal=SIGINT`` first, poll
+    ``inspect`` once per second for up to ``grace_secs`` (stopping early once the
+    container is no longer running), then ``stop --timeout=<term_secs>`` and
+    finally ``kill --signal=SIGKILL``. When ``force`` is True: skip the SIGINT
+    step and go straight to ``stop`` then ``kill --signal=SIGKILL``.
+
+    Uses ``--timeout`` (docker >= 29 deprecates ``--time``). Every subprocess
+    call captures output and never raises on a non-zero exit.
+    """
+    if not force:
+        print(f"Sent SIGINT to container {cid}...")
+        _run_runtime([runtime, "kill", "--signal=SIGINT", cid])
+        for _ in range(grace_secs):
+            if not _container_running(runtime, cid):
+                print("stopped")
+                return
+            time.sleep(1)
+        print("escalating to SIGTERM")
+    else:
+        print(f"Sending SIGTERM to container {cid}...")
+
+    _run_runtime([runtime, "stop", f"--timeout={term_secs}", cid])
+    if _container_running(runtime, cid):
+        print("escalating to SIGKILL")
+    _run_runtime([runtime, "kill", "--signal=SIGKILL", cid])
+    print("stopped")
 
 
 def is_build_running(run_dir: Path) -> tuple[bool, int | None, bool]:
