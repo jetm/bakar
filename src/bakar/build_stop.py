@@ -16,6 +16,7 @@ import json
 import os
 import signal
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
     from rich.console import Console
 
 _PID_FILENAME = "build.pid"
+_META_FILENAME = "build.meta.json"
 _VALID_CMDLINE_TOKENS = ("kas-container", "kas")
 _STOP_GRACE_SECONDS = 60
 _STOP_TERM_SECONDS = 5
@@ -37,8 +39,98 @@ def write_pid(run_dir: Path, pgid: int) -> None:
 
 
 def remove_pid(run_dir: Path) -> None:
-    """Remove ``run_dir/build.pid``; no-op if it is already absent."""
+    """Remove ``run_dir/build.pid`` and ``build.meta.json``; no-op if absent."""
     (run_dir / _PID_FILENAME).unlink(missing_ok=True)
+    (run_dir / _META_FILENAME).unlink(missing_ok=True)
+
+
+@dataclass(frozen=True)
+class LaunchRecord:
+    """Describes how a build was launched, for ``bakar stop`` to target it.
+
+    ``mode`` is ``"container"`` or ``"host"``. ``pgid`` is the recorded
+    process-group id, or ``None`` for a missing run. ``runtime`` and
+    ``container_label`` are container-targeting hints, both ``None`` when
+    unknown (e.g. a host build or a legacy run with only ``build.pid``).
+    """
+
+    pgid: int | None
+    mode: str
+    runtime: str | None = None
+    container_label: str | None = None
+
+
+def write_launch_record(
+    run_dir: Path,
+    *,
+    pgid: int,
+    mode: str,
+    runtime: str | None = None,
+    container_label: str | None = None,
+) -> None:
+    """Write the ``build.meta.json`` sidecar and the ``build.pid`` back-compat file.
+
+    The JSON sidecar records ``pgid``/``mode``/``runtime``/``container_label`` so
+    ``bakar stop`` can target a container by label. ``write_pid`` is still called
+    so a ``build.pid`` holding the PGID exists for back-compat with tooling that
+    only knows about the pidfile.
+    """
+    payload = {
+        "pgid": pgid,
+        "mode": mode,
+        "runtime": runtime,
+        "container_label": container_label,
+    }
+    (run_dir / _META_FILENAME).write_text(json.dumps(payload) + "\n")
+    write_pid(run_dir, pgid)
+
+
+def read_launch_record(run_dir: Path) -> LaunchRecord:
+    """Read the launch record for ``run_dir``, degrading gracefully.
+
+    Resolution order:
+
+    - If ``build.meta.json`` exists and parses, return its fields.
+    - Else if ``build.pid`` exists (a legacy run predating the sidecar), return
+      a ``"container"`` record with the PGID from the pidfile and no
+      ``container_label`` (so ``stop_build`` can detect it cannot target it).
+    - Else return ``pgid=None, mode="container", container_label=None``.
+
+    Never raises on a missing or malformed run: an unparseable sidecar or
+    pidfile degrades to the legacy/missing path rather than propagating.
+    """
+    meta_path = run_dir / _META_FILENAME
+    try:
+        raw = meta_path.read_text()
+    except OSError:
+        raw = None
+    if raw is not None:
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            obj = None
+        if isinstance(obj, dict):
+            pgid = obj.get("pgid")
+            mode = obj.get("mode")
+            return LaunchRecord(
+                pgid=pgid if isinstance(pgid, int) else None,
+                mode=mode if isinstance(mode, str) else "container",
+                runtime=obj.get("runtime") if isinstance(obj.get("runtime"), str) else None,
+                container_label=(
+                    obj.get("container_label") if isinstance(obj.get("container_label"), str) else None
+                ),
+            )
+
+    pid_file = run_dir / _PID_FILENAME
+    try:
+        pid_raw = pid_file.read_text()
+    except OSError:
+        return LaunchRecord(pgid=None, mode="container", container_label=None)
+    try:
+        legacy_pgid: int | None = int(pid_raw.strip())
+    except ValueError:
+        legacy_pgid = None
+    return LaunchRecord(pgid=legacy_pgid, mode="container", container_label=None)
 
 
 def is_build_running(run_dir: Path) -> tuple[bool, int | None, bool]:
