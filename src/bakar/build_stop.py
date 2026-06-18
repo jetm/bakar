@@ -122,25 +122,18 @@ def stop_build(bsp_root: Path, *, force: bool = False) -> None:
         return
 
     try:
-        if force:
+        if not force:
+            print(f"Sent SIGINT to build PGID {pgid}...")
+            os.killpg(pgid, signal.SIGINT)
+            for _ in range(_STOP_GRACE_SECONDS):
+                if not _pgid_alive(pgid):
+                    print("stopped")
+                    return
+                time.sleep(1)
+            print("escalating to SIGTERM")
+        else:
             print(f"Sent SIGTERM to build PGID {pgid}...")
-            os.killpg(pgid, signal.SIGTERM)
-            time.sleep(_STOP_TERM_SECONDS)
-            if _pgid_alive(pgid):
-                print("escalating to SIGKILL")
-                os.killpg(pgid, signal.SIGKILL)
-            print("stopped")
-            return
 
-        print(f"Sent SIGINT to build PGID {pgid}...")
-        os.killpg(pgid, signal.SIGINT)
-        for _ in range(_STOP_GRACE_SECONDS):
-            if not _pgid_alive(pgid):
-                print("stopped")
-                return
-            time.sleep(1)
-
-        print("escalating to SIGTERM")
         os.killpg(pgid, signal.SIGTERM)
         time.sleep(_STOP_TERM_SECONDS)
         if _pgid_alive(pgid):
@@ -234,20 +227,13 @@ def check_unclean_stop(bsp_root: Path, console: Console) -> None:
                 continue
 
             step = _interrupted_step(run_dir)
-            if step is not None:
-                body = (
-                    f"The previous build in\n"
-                    f"  {run_dir}\n"
-                    f"was interrupted uncleanly during step [bold]{step}[/].\n\n"
-                    f"Check [bold]kas.log[/] in that run dir for the recipe that was building."
-                )
-            else:
-                body = (
-                    f"The previous build in\n"
-                    f"  {run_dir}\n"
-                    f"was interrupted uncleanly.\n\n"
-                    f"Check [bold]kas.log[/] in that run dir for the recipe that was building."
-                )
+            during = f" during step [bold]{step}[/]" if step is not None else ""
+            body = (
+                f"The previous build in\n"
+                f"  {run_dir}\n"
+                f"was interrupted uncleanly{during}.\n\n"
+                f"Check [bold]kas.log[/] in that run dir for the recipe that was building."
+            )
             console.print(
                 Panel.fit(
                     body,
