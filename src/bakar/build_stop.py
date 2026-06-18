@@ -48,7 +48,7 @@ def is_build_running(run_dir: Path) -> tuple[bool, int | None, bool]:
 
     - ``pgid`` is the recorded process-group id, or ``None`` when the pidfile
       is missing or unparseable.
-    - ``live`` is True iff ``os.kill(pgid, 0)`` confirms the PGID exists.
+    - ``live`` is True iff ``os.killpg(pgid, 0)`` confirms the group exists.
     - ``cmdline_ok`` is True iff ``/proc/<pgid>/cmdline`` is readable and any
       null-separated field contains ``kas-container`` or ``kas``. It is False
       when the process is dead or the procfs entry is unreadable.
@@ -64,7 +64,7 @@ def is_build_running(run_dir: Path) -> tuple[bool, int | None, bool]:
         return (False, None, False)
 
     try:
-        os.kill(pgid, 0)
+        os.killpg(pgid, 0)
     except ProcessLookupError:
         return (False, pgid, False)
     except OSError:
@@ -84,9 +84,13 @@ def is_build_running(run_dir: Path) -> tuple[bool, int | None, bool]:
 
 
 def _pgid_alive(pgid: int) -> bool:
-    """Return True while ``pgid`` still exists; signal 0 probes liveness."""
+    """Return True while any member of process group ``pgid`` still exists.
+
+    Uses ``os.killpg(pgid, 0)`` (group semantics) so a build whose leader has
+    exited but whose children are still shutting down counts as alive.
+    """
     try:
-        os.kill(pgid, 0)
+        os.killpg(pgid, 0)
     except ProcessLookupError:
         return False
     except OSError:

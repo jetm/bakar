@@ -61,19 +61,20 @@ def test_remove_pid_absent_is_noop(tmp_path: Path) -> None:
 # --- is_build_running -------------------------------------------------------
 
 
-def test_is_build_running_live_pid_wrong_cmdline(tmp_path: Path) -> None:
-    """A live PID (this test process) is live but its cmdline lacks kas tokens.
+def test_is_build_running_live_pgid_wrong_cmdline(tmp_path: Path) -> None:
+    """A live PGID (this test's process group) is live but its cmdline lacks kas tokens.
 
-    The pytest process cmdline contains ``python``/``pytest``, never
-    ``kas-container`` or ``kas``, so cmdline_ok must be False even though the
-    PID is unmistakably alive.
+    The pytest process-group leader's cmdline contains ``python``/``pytest``,
+    never ``kas-container`` or ``kas``, so cmdline_ok must be False even though
+    the group is unmistakably alive.
     """
-    build_stop.write_pid(tmp_path, os.getpid())
+    pgid = os.getpgrp()
+    build_stop.write_pid(tmp_path, pgid)
 
-    live, pgid, cmdline_ok = build_stop.is_build_running(tmp_path)
+    live, pgid_out, cmdline_ok = build_stop.is_build_running(tmp_path)
 
     assert live is True
-    assert pgid == os.getpid()
+    assert pgid_out == pgid
     assert cmdline_ok is False
 
 
@@ -101,15 +102,16 @@ def test_is_build_running_cmdline_ok_true(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A live PID whose /proc cmdline contains kas-container -> cmdline_ok True.
+    """A live PGID whose /proc cmdline contains kas-container -> cmdline_ok True.
 
     The module reads the cmdline via ``Path.read_bytes()`` on
     ``/proc/<pgid>/cmdline``. Patch that exact seam: return a fake
     null-separated cmdline for the procfs path and defer to the real
     implementation for every other path so the pidfile read still works.
     """
-    build_stop.write_pid(tmp_path, os.getpid())
-    proc_cmdline = Path(f"/proc/{os.getpid()}/cmdline")
+    pgid = os.getpgrp()
+    build_stop.write_pid(tmp_path, pgid)
+    proc_cmdline = Path(f"/proc/{pgid}/cmdline")
     real_read_bytes = Path.read_bytes
 
     def fake_read_bytes(self: Path) -> bytes:
@@ -119,10 +121,10 @@ def test_is_build_running_cmdline_ok_true(
 
     monkeypatch.setattr(Path, "read_bytes", fake_read_bytes)
 
-    live, pgid, cmdline_ok = build_stop.is_build_running(tmp_path)
+    live, pgid_out, cmdline_ok = build_stop.is_build_running(tmp_path)
 
     assert live is True
-    assert pgid == os.getpid()
+    assert pgid_out == pgid
     assert cmdline_ok is True
 
 
