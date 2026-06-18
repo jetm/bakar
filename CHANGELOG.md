@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-06-18
+
 ### Changed
 
 - Doctor pre-flight checks now always run. The `--skip-doctor` flag and the `[build] doctor` config key (both of which skipped the checks entirely) are replaced by the global `--hide-doctor-report` flag and the `[build] show_doctor_report` config key (default `true`). These hide the report but never skip the checks: only build-blocking issues print when hidden, and a BLOCK-severity finding still aborts the build. Existing configs are migrated automatically - `[build] doctor = false` becomes `[build] show_doctor_report = false` (config schema version 1 → 2). See [docs/build.md](docs/build.md), [docs/config-reference.md](docs/config-reference.md).
@@ -381,7 +383,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/jetm/bakar/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/jetm/bakar/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/jetm/bakar/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/jetm/bakar/compare/v0.15.0...v0.15.1
