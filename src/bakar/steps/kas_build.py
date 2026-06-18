@@ -312,7 +312,7 @@ def _ccache_args(
     if eventlog_path is not None:
         runtime_args += f" -e BB_DEFAULT_EVENTLOG={eventlog_path}"
     if run_id is not None:
-        runtime_args += f" --label bakar.run_id={run_id}"
+        runtime_args += f" --label {build_stop.run_id_label(run_id)}"
     return ["--runtime-args", runtime_args]
 
 
@@ -711,7 +711,7 @@ def _run_pty_with_ui(
                 pgid=proc.pid,
                 mode=("host" if cfg.host_mode else "container"),
                 runtime=(None if cfg.host_mode else build_stop._detect_runtime()),
-                container_label=(None if cfg.host_mode else f"bakar.run_id={log.run_id}"),
+                container_label=(None if cfg.host_mode else build_stop.run_id_label(log.run_id)),
             )
 
             live_frozen = False

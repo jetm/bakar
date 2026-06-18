@@ -36,6 +36,17 @@ _VALID_CMDLINE_TOKENS = ("kas-container", "kas")
 _STOP_GRACE_SECONDS = 60
 _STOP_TERM_SECONDS = 5
 _EVENTS_FILENAME = "events.jsonl"
+_RUN_ID_LABEL_KEY = "bakar.run_id"
+
+
+def run_id_label(run_id: str) -> str:
+    """Return the container label (``bakar.run_id=<run_id>``) for a build run.
+
+    Single source of truth shared by the launch-time ``--label`` injection in
+    ``kas_build``, the recorded ``container_label``, and the
+    ``docker|podman ps -f label=`` query, so the three never drift apart.
+    """
+    return f"{_RUN_ID_LABEL_KEY}={run_id}"
 
 
 def write_pid(run_dir: Path, pgid: int) -> None:
@@ -117,11 +128,13 @@ def read_launch_record(run_dir: Path) -> LaunchRecord:
         if isinstance(obj, dict):
             pgid = obj.get("pgid")
             mode = obj.get("mode")
+            runtime = obj.get("runtime")
+            container_label = obj.get("container_label")
             return LaunchRecord(
                 pgid=pgid if isinstance(pgid, int) else None,
                 mode=mode if isinstance(mode, str) else "container",
-                runtime=obj.get("runtime") if isinstance(obj.get("runtime"), str) else None,
-                container_label=(obj.get("container_label") if isinstance(obj.get("container_label"), str) else None),
+                runtime=runtime if isinstance(runtime, str) else None,
+                container_label=container_label if isinstance(container_label, str) else None,
             )
 
     pid_file = run_dir / _PID_FILENAME
@@ -264,7 +277,7 @@ def stop_running_proc(proc: subprocess.Popen, cfg: BuildConfig, log: RunLogger) 
 
     try:
         runtime = _detect_runtime()
-        cid = _container_id(runtime, f"bakar.run_id={log.run_id}")
+        cid = _container_id(runtime, run_id_label(log.run_id))
         if cid is None:
             os.killpg(proc.pid, signal.SIGINT)
             return
