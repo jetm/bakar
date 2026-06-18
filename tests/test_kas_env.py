@@ -355,6 +355,40 @@ def test_runtime_args_eventlog_path_ignored_in_host_mode(tmp_path: Path) -> None
     assert _ccache_args(cfg, eventlog_path="/some/path") == []
 
 
+# ---------------------------------------------------------------------------
+# _ccache_args run_id label injection (bakar.run_id container targeting) tests
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_args_container_run_id_appends_single_label(tmp_path: Path) -> None:
+    """Container mode + run_id: one --runtime-args pair carrying the bakar.run_id label.
+
+    The label lets `bakar stop` resolve the exact container of a run via
+    `docker ps -f label=bakar.run_id=<id>`; it is appended to the single
+    concatenated runtime-args string, never as a second --runtime-args pair.
+    """
+    cfg = _hashequiv_cfg(tmp_path, use_hashequiv=False, host_mode=False)
+    result = _ccache_args(cfg, run_id="20260101-000000")
+    assert len(result) == 2
+    assert result[0] == "--runtime-args"
+    assert "--label bakar.run_id=20260101-000000" in result[1]
+    # The ccache mount must still be present alongside the injected label.
+    assert f"-v {tmp_path / 'ccache'}:/work/ccache:rw" in result[1]
+
+
+def test_runtime_args_host_mode_ignores_run_id(tmp_path: Path) -> None:
+    """Host mode short-circuits to [] regardless of run_id (no container to label)."""
+    cfg = _hashequiv_cfg(tmp_path, use_hashequiv=True, host_mode=True)
+    assert _ccache_args(cfg, run_id="20260101-000000") == []
+
+
+def test_runtime_args_run_id_none_omits_label(tmp_path: Path) -> None:
+    """run_id=None (dry-run/preview callers) injects no bakar.run_id label."""
+    cfg = _hashequiv_cfg(tmp_path, use_hashequiv=False, host_mode=False)
+    result = _ccache_args(cfg, run_id=None)
+    assert "bakar.run_id" not in result[1]
+
+
 def test_build_env_forwards_sdkmachine_when_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A host SDKMACHINE is forwarded into the kas-container env so SDK-target
     builds (`bakar build --target avocado-complete`) pick the SDK arch."""
