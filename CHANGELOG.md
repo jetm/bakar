@@ -9,9 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.18.0] - 2026-06-18
 
+### Added
+
+- Added `bakar stop`, a command that gracefully halts a running `bakar build` without corrupting in-flight recipe workdirs. It dispatches on execution mode: container builds are resolved by a `bakar.run_id` label injected at launch and signalled inside the container so bitbake runs its own graceful shutdown, while host builds receive a process-group SIGINT, then a 60-second grace period, then SIGTERM and SIGKILL. `--force` skips the SIGINT grace wait; a positional kas YAML targets BYO/generic workspaces (mirroring `bakar build`/`bakar log`), and `--manifest`/`--workspace` resolve NXP/TI workspaces. The persistent `bitbake-hashserv` daemon and other workspaces are never touched. See [docs/stop.md](docs/stop.md).
+- Added unclean-stop detection: when a prior build was killed without `bakar stop` (a raw `kill -9`, power loss, or OOM kill), the next `bakar build` detects the stale launch record at startup and prints an advisory warning naming the interrupted step and the run's `kas.log`. The warning never blocks or auto-repairs the build.
+- Added a `check_override_syntax` pre-flight check to `bakar doctor` that flags deprecated Yocto override syntax (`VAR_append`, `VAR_prepend`, `VAR_remove`, including function-definition and `${PN}` forms) in active layers. Recipe files (`.bb`, `.bbappend`, `.inc`) produce a BLOCK finding and `.conf` files a WARN. The check gates on the local bitbake version (the underscore form was dropped in bitbake 2.8 / scarthgap) and skips gracefully when bitbake is absent or older.
+- Added cross-validation checks to `bakar layers inspect` that surface `LAYERSERIES_COMPAT` mismatches against the distro codename, duplicate `BBFILE_PRIORITY` values, and orphaned `.bbappend` files whose base recipe is not provided by any active layer.
+- Added a `--json` flag to `bakar doctor` and `bakar triage` for machine-readable output.
+- Added support for colon-separated kas overlay syntax (`machine.yml:overlay.yml`) in `bakar getvar`, matching the overlay handling already in `bakar build`, `bakar bitbake`, and `bakar dump`.
+- `bakar build` now prints a log hint after the build UI exits, showing the exact `bakar log` command (with the run ID) to follow that run's full build log.
+
 ### Changed
 
 - Doctor pre-flight checks now always run. The `--skip-doctor` flag and the `[build] doctor` config key (both of which skipped the checks entirely) are replaced by the global `--hide-doctor-report` flag and the `[build] show_doctor_report` config key (default `true`). These hide the report but never skip the checks: only build-blocking issues print when hidden, and a BLOCK-severity finding still aborts the build. Existing configs are migrated automatically - `[build] doctor = false` becomes `[build] show_doctor_report = false` (config schema version 1 → 2). See [docs/build.md](docs/build.md), [docs/config-reference.md](docs/config-reference.md).
+- `bakar layers inspect --json` now returns an object with `layers` and `cross_validation_warnings` keys instead of a bare list of layer records; consumers of the JSON output must read the `layers` key.
 
 ## [0.17.0] - 2026-06-16
 
