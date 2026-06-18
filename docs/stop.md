@@ -40,24 +40,45 @@ bakar stop --force
 
 ## What it does
 
-`bakar build` records the build's process-group id in `build.pid` inside the run
-directory (`<bsp_root>/build/runs/<run_id>/build.pid`) the moment kas-container
-starts. `bakar stop` reads that file for the latest run and signals **only** that
-process group:
+`bakar build` records the run's execution mode the moment the build starts:
+`build.pid` holds the kas-container wrapper's process-group id, and
+`build.meta.json` captures the mode (`host` or `container`), the container
+runtime, and the `bakar.run_id=<run_id>` label injected into the container.
+`bakar stop` reads that record for the latest run
+(`<bsp_root>/build/runs/<run_id>/`) and dispatches on mode.
 
-1. Sends `SIGINT` to the build process group. bitbake handles SIGINT with its own
-   graceful shutdown ("waiting for N running tasks to finish"), letting running
-   tasks complete and writing consistent sstate.
+**Container builds** (the default - kas-container under docker/podman): bitbake
+runs under the runtime daemon in a process tree separate from the wrapper, so
+signalling the wrapper PGID would orphan it. `bakar stop` instead:
+
+1. Resolves the container by its label
+   (`docker|podman ps -q -f label=bakar.run_id=<run_id>`).
+2. Sends `SIGINT` to the **main bitbake process inside the container**
+   (`<runtime> exec <cid> pkill -INT -f 'bin/bitbake '`). bitbake runs its
+   graceful shutdown ("Keyboard Interrupt, closing down..."), letting running
+   tasks finish and writing consistent sstate. The container's PID 1 is not
+   signalled: the kas-container entrypoint runs under docker-init and does not
+   forward signals to bitbake, so the SIGINT goes straight to the cooker. If the
+   in-container exec fails, it falls back to a PID-1 SIGINT.
+3. Waits up to 60 seconds for the container to exit, polling once a second.
+4. If still running, escalates to `<runtime> stop --timeout=5` (SIGTERM), then
+   `<runtime> kill --signal=SIGKILL`.
+
+**Host builds** (`bakar build --host` - plain `kas` on the host, no container):
+bitbake is a real descendant of the wrapper, so `bakar stop` signals the recorded
+process group directly:
+
+1. Sends `SIGINT` to the build process group; bitbake runs its graceful shutdown.
 2. Waits up to 60 seconds for the group to exit.
 3. If still alive, escalates to `SIGTERM`, waits 5 seconds, then `SIGKILL`.
 
-`--force` skips step 1 and the grace wait, sending `SIGTERM` immediately followed
-by `SIGKILL`.
+   Before signalling, it verifies the recorded PGID still belongs to a
+   kas-container/kas process (`/proc/<pgid>/cmdline`). A dead or recycled PID
+   prints `no running build found`, clears the stale record, and exits 0 without
+   signalling anything.
 
-Before signalling, `bakar stop` verifies that the recorded PGID belongs to a
-kas-container process (`/proc/<pgid>/cmdline`). If the PID is dead or has been
-recycled to an unrelated process, it prints `no running build found`, clears the
-stale `build.pid`, and exits 0 without signalling anything.
+`--force` skips the SIGINT step in both modes and escalates straight to SIGTERM
+then SIGKILL.
 
 ## Why graceful matters
 
@@ -80,8 +101,11 @@ recipe fails to rebuild with non-self-healing errors, run
 
 ## Scope and safety
 
-- `bakar stop` signals only the process group recorded for the target workspace's
-  latest run. It never uses `pkill` and never matches on process names or paths.
+- `bakar stop` targets only the recorded run for the workspace: container builds
+  by their unique `bakar.run_id` label, host builds by the recorded process
+  group. The `pkill` runs **inside** the resolved container and matches the
+  bitbake UI cmdline there only - it never touches host processes, and the label
+  is per-run so it cannot collide with another build.
 - It leaves the persistent `bitbake-hashserv` daemon untouched - that daemon is
   shared and long-lived. Use [`bakar hashserv stop`](hashserv.md) to stop it
   deliberately.
