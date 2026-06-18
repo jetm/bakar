@@ -13,10 +13,14 @@ Mirrors the procfs/PID-liveness pattern in :mod:`bakar.hashserv`: liveness via
 from __future__ import annotations
 
 import os
+import signal
+import time
 from pathlib import Path
 
 _PID_FILENAME = "build.pid"
 _VALID_CMDLINE_TOKENS = ("kas-container", "kas")
+_STOP_GRACE_SECONDS = 60
+_STOP_TERM_SECONDS = 5
 
 
 def write_pid(run_dir: Path, pgid: int) -> None:
@@ -71,3 +75,71 @@ def is_build_running(run_dir: Path) -> tuple[bool, int | None, bool]:
         token.encode() in field for field in fields for token in _VALID_CMDLINE_TOKENS
     )
     return (True, pgid, cmdline_ok)
+
+
+def _pgid_alive(pgid: int) -> bool:
+    """Return True while ``pgid`` still exists; signal 0 probes liveness."""
+    try:
+        os.kill(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # EPERM: still alive, just owned by someone else.
+        return True
+    return True
+
+
+def stop_build(bsp_root: Path, *, force: bool = False) -> None:
+    """Stop the most recent build by signalling its recorded process group.
+
+    Resolves the lexically-latest run dir under ``bsp_root/build/runs`` and
+    reads its ``build.pid``. When ``force`` is False, sends ``SIGINT`` and waits
+    up to ``_STOP_GRACE_SECONDS`` for a graceful exit before escalating to
+    ``SIGTERM`` then ``SIGKILL``. When ``force`` is True, skips ``SIGINT`` and
+    goes straight to ``SIGTERM`` then ``SIGKILL``. The pidfile is always removed
+    before returning, even if a signal call raises.
+    """
+    runs_dir = bsp_root / "build" / "runs"
+    try:
+        run_dirs = sorted(runs_dir.iterdir())
+    except OSError:
+        print("no running build found")
+        return
+    if not run_dirs:
+        print("no running build found")
+        return
+
+    run_dir = run_dirs[-1]
+    live, pgid, cmdline_ok = is_build_running(run_dir)
+    if not live or not cmdline_ok or pgid is None:
+        print("no running build found")
+        return
+
+    try:
+        if force:
+            print(f"Sent SIGTERM to build PGID {pgid}...")
+            os.killpg(pgid, signal.SIGTERM)
+            time.sleep(_STOP_TERM_SECONDS)
+            if _pgid_alive(pgid):
+                print("escalating to SIGKILL")
+                os.killpg(pgid, signal.SIGKILL)
+            print("stopped")
+            return
+
+        print(f"Sent SIGINT to build PGID {pgid}...")
+        os.killpg(pgid, signal.SIGINT)
+        for _ in range(_STOP_GRACE_SECONDS):
+            if not _pgid_alive(pgid):
+                print("stopped")
+                return
+            time.sleep(1)
+
+        print("escalating to SIGTERM")
+        os.killpg(pgid, signal.SIGTERM)
+        time.sleep(_STOP_TERM_SECONDS)
+        if _pgid_alive(pgid):
+            print("escalating to SIGKILL")
+            os.killpg(pgid, signal.SIGKILL)
+        print("stopped")
+    finally:
+        remove_pid(run_dir)
