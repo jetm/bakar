@@ -59,4 +59,6 @@ def stop(
         kas_yaml=kas_yaml,
         user_config=_state._USER_CONFIG,
     )
-    build_stop.stop_build(cfg.bsp_root, force=force)
+    stopped = build_stop.stop_build(cfg.bsp_root, force=force)
+    if not stopped:
+        raise typer.Exit(code=1)
