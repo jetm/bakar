@@ -14,6 +14,7 @@
 | `rebuild` | [bitbake.md](bitbake.md) | Rebuild one recipe from scratch (`cleansstate` then build) |
 | `shell` | [shell.md](shell.md) | Interactive kas-container shell or one-shot command |
 | `run` | [run.md](run.md) | Boot avocado-os image in QEMU (meta-avocado only) |
+| `stop` | [stop.md](stop.md) | Gracefully halt a running build (SIGINT, then escalate) |
 | `clean` | [clean.md](clean.md) | Remove the build directory |
 | `clean-cache` | [clean-cache.md](clean-cache.md) | Prune stale sstate and ccache entries by age |
 | `doctor` | [doctor.md](doctor.md) | Run pre-flight checks |
@@ -56,6 +57,7 @@
 - Only want to regenerate the kas YAML: [gen-kas.md](gen-kas.md)
 
 **Build failed:**
+- Stop a running build cleanly so it stays resumable: [stop.md](stop.md)
 - Find what went wrong: [triage.md](triage.md)
 - Watch a running build: [log.md](log.md)
 - Check if the environment is sane: [doctor.md](doctor.md)
