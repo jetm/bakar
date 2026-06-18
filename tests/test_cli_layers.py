@@ -99,3 +99,190 @@ def test_outside_workspace_fails(runner: _CliRunner, tmp_path: Path, monkeypatch
     result = runner.invoke(app, ["layers"])
     assert result.exit_code != 0, result.output
     assert "workspace" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for the three cross-validation helper functions
+# ---------------------------------------------------------------------------
+
+from bakar.commands.layers import (
+    _check_compat_mismatch,
+    _check_duplicate_priority,
+    _check_orphan_bbappend,
+)
+
+# --- _check_compat_mismatch -------------------------------------------------
+
+
+@pytest.mark.unit
+def test_compat_mismatch_empty_codename_returns_empty() -> None:
+    """Graceful skip when distro_codename is empty."""
+    records = [{"name": "meta-foo", "compat": "dunfell"}]
+    assert _check_compat_mismatch(records, "") == []
+
+
+@pytest.mark.unit
+def test_compat_mismatch_detected() -> None:
+    """Layer with 'dunfell' compat and active codename 'scarthgap' produces a warning."""
+    records = [{"name": "meta-foo", "compat": "dunfell"}]
+    result = _check_compat_mismatch(records, "scarthgap")
+    assert len(result) == 1
+    assert "meta-foo" in result[0]
+    assert "scarthgap" in result[0]
+
+
+@pytest.mark.unit
+def test_compat_mismatch_no_warning_when_codename_included() -> None:
+    """Layer with 'dunfell scarthgap' compat and active 'scarthgap' is fine."""
+    records = [{"name": "meta-bar", "compat": "dunfell scarthgap"}]
+    assert _check_compat_mismatch(records, "scarthgap") == []
+
+
+@pytest.mark.unit
+def test_compat_mismatch_empty_compat_skipped() -> None:
+    """Layers with empty compat are skipped - no warning emitted."""
+    records = [{"name": "meta-baz", "compat": ""}]
+    assert _check_compat_mismatch(records, "scarthgap") == []
+
+
+@pytest.mark.unit
+def test_compat_mismatch_absent_compat_skipped() -> None:
+    """Layers missing the 'compat' key entirely are skipped."""
+    records = [{"name": "meta-qux"}]
+    assert _check_compat_mismatch(records, "scarthgap") == []
+
+
+@pytest.mark.unit
+def test_compat_mismatch_multiple_layers_partial_warning() -> None:
+    """Only layers whose compat excludes the active codename are flagged."""
+    records = [
+        {"name": "meta-old", "compat": "dunfell"},
+        {"name": "meta-new", "compat": "scarthgap"},
+        {"name": "meta-both", "compat": "dunfell scarthgap"},
+    ]
+    result = _check_compat_mismatch(records, "scarthgap")
+    assert len(result) == 1
+    assert "meta-old" in result[0]
+
+
+# --- _check_duplicate_priority ----------------------------------------------
+
+
+@pytest.mark.unit
+def test_duplicate_priority_detected() -> None:
+    """Two layers sharing priority '10' produce one warning."""
+    records = [
+        {"name": "meta-foo", "priority": "10"},
+        {"name": "meta-bar", "priority": "10"},
+    ]
+    result = _check_duplicate_priority(records)
+    assert len(result) == 1
+    assert "meta-foo" in result[0]
+    assert "meta-bar" in result[0]
+    assert "10" in result[0]
+
+
+@pytest.mark.unit
+def test_duplicate_priority_unique_returns_empty() -> None:
+    """All unique priorities produce no warnings."""
+    records = [
+        {"name": "meta-foo", "priority": "5"},
+        {"name": "meta-bar", "priority": "10"},
+        {"name": "meta-baz", "priority": "15"},
+    ]
+    assert _check_duplicate_priority(records) == []
+
+
+@pytest.mark.unit
+def test_duplicate_priority_empty_priority_skipped() -> None:
+    """Records with empty or absent priority are skipped entirely."""
+    records = [
+        {"name": "meta-foo", "priority": ""},
+        {"name": "meta-bar"},
+        {"name": "meta-baz", "priority": ""},
+    ]
+    assert _check_duplicate_priority(records) == []
+
+
+@pytest.mark.unit
+def test_duplicate_priority_non_numeric_skipped() -> None:
+    """Records with non-numeric priority strings are skipped."""
+    records = [
+        {"name": "meta-foo", "priority": "high"},
+        {"name": "meta-bar", "priority": "high"},
+    ]
+    assert _check_duplicate_priority(records) == []
+
+
+@pytest.mark.unit
+def test_duplicate_priority_three_layers_same_priority() -> None:
+    """Three layers with the same priority produce a single combined warning."""
+    records = [
+        {"name": "meta-a", "priority": "6"},
+        {"name": "meta-b", "priority": "6"},
+        {"name": "meta-c", "priority": "6"},
+    ]
+    result = _check_duplicate_priority(records)
+    assert len(result) == 1
+    assert "meta-a" in result[0]
+    assert "meta-b" in result[0]
+    assert "meta-c" in result[0]
+
+
+# --- _check_orphan_bbappend -------------------------------------------------
+
+
+@pytest.mark.unit
+def test_orphan_bbappend_detected(tmp_path: Path) -> None:
+    """A .bbappend with no matching .bb in any active layer produces a warning."""
+    layer = tmp_path / "meta-foo"
+    layer.mkdir()
+    (layer / "bar_1.0.bbappend").touch()
+
+    result = _check_orphan_bbappend([("meta-foo", layer)])
+    assert len(result) == 1
+    assert "bar_1.0.bbappend" in result[0]
+
+
+@pytest.mark.unit
+def test_orphan_bbappend_glob_pattern_matched(tmp_path: Path) -> None:
+    """A bar_%.bbappend is NOT orphan when bar_1.0.bb exists in another layer."""
+    meta_foo = tmp_path / "meta-foo"
+    meta_foo.mkdir()
+    (meta_foo / "bar_%.bbappend").touch()
+
+    meta_bar = tmp_path / "meta-bar"
+    meta_bar.mkdir()
+    (meta_bar / "bar_1.0.bb").touch()
+
+    result = _check_orphan_bbappend([("meta-foo", meta_foo), ("meta-bar", meta_bar)])
+    assert result == []
+
+
+@pytest.mark.unit
+def test_orphan_bbappend_empty_layer_list_returns_empty() -> None:
+    """An empty layer list returns no warnings."""
+    assert _check_orphan_bbappend([]) == []
+
+
+@pytest.mark.unit
+def test_orphan_bbappend_same_layer_provides_base_recipe(tmp_path: Path) -> None:
+    """A .bbappend matched by a .bb in the same layer is not flagged as orphan."""
+    layer = tmp_path / "meta-foo"
+    layer.mkdir()
+    (layer / "baz_2.0.bbappend").touch()
+    (layer / "baz_2.0.bb").touch()
+
+    result = _check_orphan_bbappend([("meta-foo", layer)])
+    assert result == []
+
+
+@pytest.mark.unit
+def test_orphan_bbappend_no_bbappend_files_returns_empty(tmp_path: Path) -> None:
+    """A layer with only .bb files and no .bbappend files returns no warnings."""
+    layer = tmp_path / "meta-foo"
+    layer.mkdir()
+    (layer / "mypkg_1.0.bb").touch()
+
+    result = _check_orphan_bbappend([("meta-foo", layer)])
+    assert result == []
