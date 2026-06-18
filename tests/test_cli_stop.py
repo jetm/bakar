@@ -52,7 +52,11 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_stop_no_args(runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``stop`` with no args exits 0 and calls stop_build once with force=False."""
     calls: list[tuple[Path, bool]] = []
-    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", lambda bsp_root, force: calls.append((bsp_root, force)))
+    def _rec(bsp_root: Path, force: bool) -> bool:
+        calls.append((bsp_root, force))
+        return True
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", _rec)
 
     result = runner.invoke(app, ["stop"])
 
@@ -64,7 +68,11 @@ def test_stop_no_args(runner: _CliRunner, workspace: Path, monkeypatch: pytest.M
 def test_stop_force(runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``stop --force`` calls stop_build with force=True."""
     calls: list[tuple[Path, bool]] = []
-    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", lambda bsp_root, force: calls.append((bsp_root, force)))
+    def _rec(bsp_root: Path, force: bool) -> bool:
+        calls.append((bsp_root, force))
+        return True
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", _rec)
 
     result = runner.invoke(app, ["stop", "--force"])
 
@@ -90,7 +98,11 @@ def test_stop_explicit_workspace(
     monkeypatch.chdir(elsewhere)
 
     calls: list[tuple[Path, bool]] = []
-    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", lambda bsp_root, force: calls.append((bsp_root, force)))
+    def _rec(bsp_root: Path, force: bool) -> bool:
+        calls.append((bsp_root, force))
+        return True
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", _rec)
 
     result = runner.invoke(
         app,
@@ -121,7 +133,11 @@ def test_stop_byo_positional_yaml(
     monkeypatch.chdir(elsewhere)
 
     calls: list[tuple[Path, bool]] = []
-    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", lambda bsp_root, force: calls.append((bsp_root, force)))
+    def _rec(bsp_root: Path, force: bool) -> bool:
+        calls.append((bsp_root, force))
+        return True
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", _rec)
 
     result = runner.invoke(app, ["stop", str(yaml)])
 
@@ -146,3 +162,43 @@ def test_stop_yaml_and_manifest_conflict(
 
     assert result.exit_code == 2
     assert calls == []
+
+
+def test_stop_returns_false_exits_nonzero(
+    runner: _CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When ``stop_build`` returns False (nothing to stop), the command exits 1."""
+    yaml = tmp_path / "kas-generic.yml"
+    yaml.write_text("header:\n  version: 21\nmachine: qemux86-64\ndistro: nodistro\ntarget: core-image-minimal\n")
+    (tmp_path / "build" / "runs" / "20260617-120000").mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", lambda bsp_root, force: False)
+
+    result = runner.invoke(app, ["stop", str(yaml)])
+
+    assert result.exit_code == 1, result.output
+
+
+def test_stop_returns_true_exits_zero(
+    runner: _CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When ``stop_build`` returns True (a build was signaled), the command exits 0."""
+    yaml = tmp_path / "kas-generic.yml"
+    yaml.write_text("header:\n  version: 21\nmachine: qemux86-64\ndistro: nodistro\ntarget: core-image-minimal\n")
+    (tmp_path / "build" / "runs" / "20260617-120000").mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", lambda bsp_root, force: True)
+
+    result = runner.invoke(app, ["stop", str(yaml)])
+
+    assert result.exit_code == 0, result.output
