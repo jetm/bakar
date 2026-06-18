@@ -309,54 +309,87 @@ def _pgid_alive(pgid: int) -> bool:
     return True
 
 
-def stop_build(bsp_root: Path, *, force: bool = False) -> None:
-    """Stop the most recent build by signalling its recorded process group.
+def stop_build(bsp_root: Path, *, force: bool = False) -> bool:
+    """Stop the most recent build, targeting it by execution mode.
 
     Resolves the lexically-latest run dir under ``bsp_root/build/runs`` and
-    reads its ``build.pid``. When ``force`` is False, sends ``SIGINT`` and waits
-    up to ``_STOP_GRACE_SECONDS`` for a graceful exit before escalating to
-    ``SIGTERM`` then ``SIGKILL``. When ``force`` is True, skips ``SIGINT`` and
-    goes straight to ``SIGTERM`` then ``SIGKILL``. The pidfile is always removed
-    before returning, even if a signal call raises.
+    reads its launch record. Returns ``True`` when a build was targeted (host
+    PGID signalled or container stopped), ``False`` when no build could be
+    targeted (no run dir, or a legacy/unresolvable container run).
+
+    Host mode keeps the existing ``os.killpg`` SIGINT -> SIGTERM -> SIGKILL
+    escalation. Container mode resolves the container via its recorded label and
+    stops it through the runtime daemon, without touching the wrapper PGID. The
+    launch record (``build.pid`` + ``build.meta.json``) is always removed before
+    returning.
     """
     runs_dir = bsp_root / "build" / "runs"
     try:
         run_dirs = sorted(runs_dir.iterdir())
     except OSError:
         print("no running build found")
-        return
+        return False
     if not run_dirs:
         print("no running build found")
-        return
+        return False
 
     run_dir = run_dirs[-1]
-    live, pgid, cmdline_ok = is_build_running(run_dir)
-    if not live or not cmdline_ok or pgid is None:
-        # Dead or recycled PGID: clear the stale pidfile so a later build's
-        # check_unclean_stop stops re-warning about it.
-        remove_pid(run_dir)
-        print("no running build found")
-        return
+    record = read_launch_record(run_dir)
 
+    if record.mode == "host":
+        try:
+            live, pgid, cmdline_ok = is_build_running(run_dir)
+            if not live or not cmdline_ok or pgid is None:
+                print("no running build found")
+                return False
+            if not force:
+                print(f"Sent SIGINT to build PGID {pgid}...")
+                os.killpg(pgid, signal.SIGINT)
+                for _ in range(_STOP_GRACE_SECONDS):
+                    if not _pgid_alive(pgid):
+                        print("stopped")
+                        return True
+                    time.sleep(1)
+                print("escalating to SIGTERM")
+            else:
+                print(f"Sent SIGTERM to build PGID {pgid}...")
+
+            os.killpg(pgid, signal.SIGTERM)
+            time.sleep(_STOP_TERM_SECONDS)
+            if _pgid_alive(pgid):
+                print("escalating to SIGKILL")
+                os.killpg(pgid, signal.SIGKILL)
+            print("stopped")
+            return True
+        finally:
+            remove_pid(run_dir)
+
+    # Container mode: resolve and stop the container via the runtime daemon.
+    # Do NOT gate on is_build_running/PGID liveness; the wrapper may be dead
+    # while the container lives.
     try:
-        if not force:
-            print(f"Sent SIGINT to build PGID {pgid}...")
-            os.killpg(pgid, signal.SIGINT)
-            for _ in range(_STOP_GRACE_SECONDS):
-                if not _pgid_alive(pgid):
-                    print("stopped")
-                    return
-                time.sleep(1)
-            print("escalating to SIGTERM")
-        else:
-            print(f"Sent SIGTERM to build PGID {pgid}...")
+        if record.container_label is None:
+            print("cannot target build: run predates container tracking; stop it manually")
+            return False
 
-        os.killpg(pgid, signal.SIGTERM)
-        time.sleep(_STOP_TERM_SECONDS)
-        if _pgid_alive(pgid):
-            print("escalating to SIGKILL")
-            os.killpg(pgid, signal.SIGKILL)
-        print("stopped")
+        runtime = record.runtime or _detect_runtime()
+        if shutil.which(runtime) is None:
+            print(f"cannot target build: container runtime {runtime!r} is not installed")
+            return False
+
+        cid = _container_id(runtime, record.container_label)
+        if cid is None:
+            print("no running build container found")
+            return False
+
+        _stop_container(
+            runtime,
+            cid,
+            force=force,
+            grace_secs=_STOP_GRACE_SECONDS,
+            term_secs=_STOP_TERM_SECONDS,
+        )
+        return True
     finally:
         remove_pid(run_dir)
 
