@@ -270,9 +270,11 @@ def test_layers_inspect_json_output(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     parsed = json.loads(result.output)
-    assert isinstance(parsed, list)
+    assert isinstance(parsed, dict)
+    assert "layers" in parsed
+    assert "cross_validation_warnings" in parsed
     # The show-layers output adds "meta" entry
-    names = {r["name"] for r in parsed}
+    names = {r["name"] for r in parsed["layers"]}
     assert "meta" in names
 
 

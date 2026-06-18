@@ -188,8 +188,15 @@ def layers_inspect(
     if rc == 0 and capture_path.is_file():
         _merge_show_layers(capture_path.read_text(), layer_records)
 
+    cross_validation_warnings = (
+        _check_compat_mismatch(layer_records, "")
+        + _check_duplicate_priority(layer_records)
+        + _check_orphan_bbappend(layer_paths)
+    )
+
     if output_json:
-        console.print(json.dumps(layer_records, indent=2))
+        out: dict = {"layers": layer_records, "cross_validation_warnings": cross_validation_warnings}
+        console.print(json.dumps(out, indent=2))
         return
 
     if not layer_records:
@@ -209,6 +216,9 @@ def layers_inspect(
         if rec.get("provides"):
             console.print(f"  provides: {rec['provides']}", highlight=False)
         console.print()
+
+    for w in cross_validation_warnings:
+        console.print(f"[yellow]WARN[/] {w}")
 
 
 # ---------------------------------------------------------------------------
