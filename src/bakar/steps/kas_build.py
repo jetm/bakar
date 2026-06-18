@@ -31,7 +31,6 @@ import pty
 import re
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
 import sysconfig
@@ -836,7 +835,7 @@ def _run_pty_with_ui(
                             f"task(s) {', '.join(labels)}; aborting. Disable with "
                             "`bakar settings set build.stall_abort_secs 0`."
                         )
-                        os.killpg(proc.pid, signal.SIGINT)
+                        build_stop.stop_running_proc(proc, cfg, log)
                         break
 
             # Share the run logger's console so log.info() (the parse-complete
@@ -854,7 +853,7 @@ def _run_pty_with_ui(
                 try:
                     rc = proc.wait()
                 except KeyboardInterrupt:
-                    os.killpg(proc.pid, signal.SIGINT)
+                    build_stop.stop_running_proc(proc, cfg, log)
                     rc = proc.wait()
                 stop_event.set()
                 pump.join(timeout=5)

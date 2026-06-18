@@ -27,6 +27,9 @@ from rich.panel import Panel
 if TYPE_CHECKING:
     from rich.console import Console
 
+    from bakar.config import BuildConfig
+    from bakar.observability import RunLogger
+
 _PID_FILENAME = "build.pid"
 _META_FILENAME = "build.meta.json"
 _VALID_CMDLINE_TOKENS = ("kas-container", "kas")
@@ -245,6 +248,37 @@ def _stop_container(
         print("escalating to SIGKILL")
     _run_runtime([runtime, "kill", "--signal=SIGKILL", cid])
     print("stopped")
+
+
+def stop_running_proc(proc: subprocess.Popen, cfg: BuildConfig, log: RunLogger) -> None:
+    """Stop the live build ``proc`` in-process, mode-aware, never raising.
+
+    Shared by the in-process Ctrl-C handler and the stall watchdog. Host mode
+    does the byte-for-byte existing ``os.killpg(proc.pid, signal.SIGINT)`` (the
+    PGID path that is correct when bitbake is a real descendant). Container mode
+    resolves the container by its ``bakar.run_id`` label and sends a graceful
+    SIGINT through the runtime daemon, falling back to the PGID signal when the
+    container cannot be resolved.
+    """
+    if cfg.host_mode:
+        os.killpg(proc.pid, signal.SIGINT)
+        return
+
+    try:
+        runtime = _detect_runtime()
+        cid = _container_id(runtime, f"bakar.run_id={log.run_id}")
+        if cid is None:
+            os.killpg(proc.pid, signal.SIGINT)
+            return
+        _stop_container(
+            runtime,
+            cid,
+            force=False,
+            grace_secs=_STOP_GRACE_SECONDS,
+            term_secs=_STOP_TERM_SECONDS,
+        )
+    except Exception:
+        return
 
 
 def is_build_running(run_dir: Path) -> tuple[bool, int | None, bool]:
