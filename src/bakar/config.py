@@ -282,7 +282,7 @@ class BuildConfig:
             return False
         try:
             return "meta-avocado" in self.kas_yaml_override.resolve().parts
-        except Exception:
+        except OSError:
             return False
 
     @property

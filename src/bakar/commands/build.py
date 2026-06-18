@@ -408,7 +408,7 @@ def _run_single_preset_release(
                 _run_manifest_build(cfg, log, ctx)
     except typer.Exit as exc:
         return exc.exit_code if exc.exit_code is not None else 1
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - last-resort CLI handler; unexpected errors must not crash silently
         console.print(f"[red]release {spec_index} failed with unexpected error:[/] {exc}")
         return 1
     else:

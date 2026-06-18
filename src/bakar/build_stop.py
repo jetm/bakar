@@ -326,7 +326,7 @@ def stop_running_proc(proc: subprocess.Popen, cfg: BuildConfig, log: RunLogger) 
         # the full grace period and hang the UI.
         if not _sigint_bitbake_in_container(runtime, cid):
             os.killpg(proc.pid, signal.SIGINT)
-    except Exception:
+    except OSError:
         return
 
 
@@ -574,5 +574,5 @@ def check_unclean_stop(bsp_root: Path, console: Console) -> None:
                     border_style="yellow",
                 )
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 - safety guard; detection bug must never block a build
         return

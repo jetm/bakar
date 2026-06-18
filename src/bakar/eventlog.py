@@ -124,9 +124,7 @@ def _decode_event(payload: str) -> _EventStub | None:
         return None
     try:
         obj = _StubUnpickler(io.BytesIO(raw)).load()
-    except Exception:
-        # Any pickle error (truncated stream, opcode the stub cannot satisfy,
-        # version drift) degrades to "skip this event", never a crash.
+    except Exception:  # noqa: BLE001 - any pickle error (truncated stream, opcode, version drift) degrades to skip
         return None
     return obj if isinstance(obj, _EventStub) else None
 

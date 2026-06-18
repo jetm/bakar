@@ -100,6 +100,7 @@ line-length = 120
 [tool.ruff.lint]
 select = [
   "B",  # flake8-bugbear
+  "BLE001",  # blind-exception-catch
   "C4",  # flake8-comprehensions
   "E",  # pycodestyle errors
   "F",  # Pyflakes
@@ -122,6 +123,7 @@ extend-select = [
   "FBT002",  # boolean-default-positional-argument
   "FBT003",  # boolean-positional-value-in-call
   "N818",  # exception-name (Error suffix)
+  "S110",  # try-except-pass
   "TRY300",  # try-consider-else
   "TRY004",  # type-check-without-type-error
 ]

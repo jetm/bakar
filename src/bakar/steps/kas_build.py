@@ -807,7 +807,7 @@ def _run_pty_with_ui(
                     for class_name, event in tail_events(log.eventlog_path, stop_event):
                         ui.process_event(class_name, event)
                         event_feed_count += 1
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - event feed errors are captured and reported; must not crash the build thread
                     event_feed_error = f"{type(exc).__name__}: {exc}"
 
             def _stall_watchdog() -> None:  # pragma: no cover

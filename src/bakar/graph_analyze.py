@@ -100,7 +100,7 @@ def read_graph(dot_text: str) -> nx.MultiDiGraph:
         with os.fdopen(fd, "w") as f:
             f.write(dot_text)
         graph = read_dot(path)
-    except Exception:
+    except Exception:  # noqa: BLE001 - graphviz/networkx errors are opaque; fallback to empty graph
         return nx.MultiDiGraph()
     finally:
         if path is not None and os.path.exists(path):

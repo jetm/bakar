@@ -221,5 +221,5 @@ class RunLogger:
                 self.bitbake_events_path,
                 timings_path or task_timings.DEFAULT_TIMINGS_PATH,
             )
-        except Exception as exc:  # best-effort, must never break a build
+        except (OSError, ValueError) as exc:  # best-effort; must never break a build
             self.warn(f"failed to persist task timings: {exc}")

@@ -191,7 +191,7 @@ def is_meta_avocado_yaml(yaml_path: Path) -> bool:
     """
     try:
         return "meta-avocado" in yaml_path.resolve().parts
-    except Exception:
+    except OSError:
         return False
 
 
