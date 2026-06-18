@@ -1449,3 +1449,226 @@ class TestCheckNproc:
         conf = _TUNING_LINES + '# BB_NUMBER_THREADS = "8"\n'
         result = check_nproc(self._cfg_with_local_conf(tmp_path, conf))
         assert "override" not in result.message
+
+
+# ---------------------------------------------------------------------------
+# Override-syntax lint helpers and check
+# ---------------------------------------------------------------------------
+
+
+from bakar.diagnostics import (  # noqa: E402
+    _collect_layer_paths_for_check,
+    check_override_syntax,
+)
+
+
+def _override_cfg(tmp_path: Path) -> BuildConfig:
+    """BuildConfig rooted at ``tmp_path`` for override-syntax tests."""
+    return BuildConfig(
+        workspace=tmp_path,
+        bsp_family="nxp",
+        machine="imx8mp-var-dart",
+        distro="fsl-imx-xwayland",
+        image="core-image-minimal",
+        manifest="imx-6.6.52-2.2.2.xml",
+        repo_url="https://example.invalid/none.git",
+        repo_branch="scarthgap",
+        container_image="jetm/kas-build-env:latest",
+    )
+
+
+# --- _parse_bitbake_version ---
+
+
+def test_parse_bitbake_version_scarthgap() -> None:
+    from bakar.diagnostics import _parse_bitbake_version as parse
+
+    assert parse("BitBake Build Tool Core version 2.8.0") == (2, 8, 0)
+
+
+def test_parse_bitbake_version_old() -> None:
+    from bakar.diagnostics import _parse_bitbake_version as parse
+
+    assert parse("BitBake Build Tool Core version 2.6.0") == (2, 6, 0)
+
+
+def test_parse_bitbake_version_garbage_returns_none() -> None:
+    from bakar.diagnostics import _parse_bitbake_version as parse
+
+    assert parse("no version here at all") is None
+
+
+# --- _collect_layer_paths_for_check ---
+
+
+def _write_bblayers_conf(path: Path, layers: list[str]) -> None:
+    """Write a minimal bblayers.conf listing the given /sources/<x> layer paths."""
+    entries = " \\\n    ".join(f"/workspace/sources/{lay}" for lay in layers)
+    path.write_text(f'BBLAYERS ?= "\\\n    {entries}\n"\n')
+
+
+def test_collect_layer_paths_sources_layout(tmp_path: Path, monkeypatch) -> None:
+    """sources/<repo>/meta-<layer>/conf/layer.conf layout resolves correctly.
+
+    For bsp_family="nxp", bsp_root = workspace/nxp, so layer dirs are
+    under workspace/nxp/sources/<repo>/<layer>/.
+    """
+    # bsp_root for nxp family is workspace/nxp
+    bsp_root = tmp_path / "nxp"
+    layer_dir = bsp_root / "sources" / "meta-foo" / "meta-foo"
+    (layer_dir / "conf").mkdir(parents=True)
+    (layer_dir / "conf" / "layer.conf").write_text("")
+
+    # bblayers_conf = bsp_root / "build" / "conf" / "bblayers.conf"
+    bblayers = bsp_root / "build" / "conf" / "bblayers.conf"
+    bblayers.parent.mkdir(parents=True)
+    _write_bblayers_conf(bblayers, ["meta-foo/meta-foo"])
+
+    # Monkeypatch parse_bblayers to return {repo: {layers}} keyed by repo name
+    monkeypatch.setattr(
+        "bakar.diagnostics.parse_bblayers",
+        lambda _path: {"meta-foo": {"meta-foo"}},
+    )
+
+    cfg = _override_cfg(tmp_path)
+    result = _collect_layer_paths_for_check(cfg)
+    assert layer_dir in result
+
+
+def test_collect_layer_paths_bbsetup_layers_layout(tmp_path: Path, monkeypatch) -> None:
+    """layers/<repo>/meta-<layer>/conf/layer.conf layout (bbsetup) resolves correctly.
+
+    For bsp_family="nxp", bsp_root = workspace/nxp, so layers/ is also there.
+    """
+    bsp_root = tmp_path / "nxp"
+    layer_dir = bsp_root / "layers" / "meta-bar" / "meta-bar"
+    (layer_dir / "conf").mkdir(parents=True)
+    (layer_dir / "conf" / "layer.conf").write_text("")
+
+    bblayers = bsp_root / "build" / "conf" / "bblayers.conf"
+    bblayers.parent.mkdir(parents=True)
+    bblayers.write_text('BBLAYERS ?= "/workspace/layers/meta-bar/meta-bar"\n')
+
+    monkeypatch.setattr(
+        "bakar.diagnostics.parse_bblayers",
+        lambda _path: {"meta-bar": {"meta-bar"}},
+    )
+
+    cfg = _override_cfg(tmp_path)
+    result = _collect_layer_paths_for_check(cfg)
+    assert layer_dir in result
+
+
+def test_collect_layer_paths_no_bblayers_conf_returns_empty(tmp_path: Path) -> None:
+    """When bblayers.conf does not exist, return an empty list."""
+    cfg = _override_cfg(tmp_path)
+    # bblayers_conf points to bsp_root/build/conf/bblayers.conf which does not exist
+    result = _collect_layer_paths_for_check(cfg)
+    assert result == []
+
+
+# --- check_override_syntax ---
+
+
+def _make_layer(tmp_path: Path, subdir: str = "sources/poky/meta") -> Path:
+    """Create a minimal layer directory at ``tmp_path/<subdir>`` and return it."""
+    layer = tmp_path / Path(subdir)
+    (layer / "conf").mkdir(parents=True)
+    (layer / "conf" / "layer.conf").write_text("")
+    return layer
+
+
+def test_override_syntax_skip_when_bitbake_dir_absent(tmp_path: Path, monkeypatch) -> None:
+    """SKIP when _find_local_bitbake_dir returns None (workspace not synced)."""
+    monkeypatch.setattr("bakar.diagnostics._find_local_bitbake_dir", lambda _cfg: None)
+    cfg = _override_cfg(tmp_path)
+    result = check_override_syntax(cfg)
+    assert result.status == Status.SKIP
+
+
+def test_override_syntax_skip_when_version_below_2_8(tmp_path: Path, monkeypatch) -> None:
+    """SKIP when bitbake version tuple is below (2, 8)."""
+    fake_bb_dir = tmp_path / "bitbake"
+    (fake_bb_dir / "bin").mkdir(parents=True)
+    (fake_bb_dir / "bin" / "bitbake").write_text("")
+    monkeypatch.setattr("bakar.diagnostics._find_local_bitbake_dir", lambda _cfg: fake_bb_dir)
+    monkeypatch.setattr("bakar.diagnostics._parse_bitbake_version", lambda _s: (2, 6))
+    monkeypatch.setattr(
+        "bakar.diagnostics.subprocess.run",
+        lambda *_a, **_kw: type("R", (), {"stdout": "BitBake Build Tool Core version 2.6.0", "returncode": 0})(),
+    )
+    cfg = _override_cfg(tmp_path)
+    result = check_override_syntax(cfg)
+    assert result.status == Status.SKIP
+
+
+def test_override_syntax_block_on_append_in_bb_file(tmp_path: Path, monkeypatch) -> None:
+    """BLOCK when a .bb file contains deprecated underscore override syntax."""
+    fake_bb_dir = tmp_path / "bitbake"
+    (fake_bb_dir / "bin").mkdir(parents=True)
+    (fake_bb_dir / "bin" / "bitbake").write_text("")
+
+    layer = _make_layer(tmp_path)
+    recipe = layer / "myrecipe.bb"
+    # Use assignment syntax that the regex matches (not function definition form)
+    recipe.write_text('SRC_URI_append = " file://0001-fix.patch"\n')
+
+    monkeypatch.setattr("bakar.diagnostics._find_local_bitbake_dir", lambda _cfg: fake_bb_dir)
+    monkeypatch.setattr("bakar.diagnostics._parse_bitbake_version", lambda _s: (2, 8, 0))
+    monkeypatch.setattr(
+        "bakar.diagnostics.subprocess.run",
+        lambda *_a, **_kw: type("R", (), {"stdout": "BitBake Build Tool Core version 2.8.0", "returncode": 0})(),
+    )
+    monkeypatch.setattr("bakar.diagnostics._collect_layer_paths_for_check", lambda _cfg: [layer])
+
+    cfg = _override_cfg(tmp_path)
+    result = check_override_syntax(cfg)
+    assert result.status == Status.FAIL
+    assert result.severity == Severity.BLOCK
+
+
+def test_override_syntax_warn_on_append_in_conf_file(tmp_path: Path, monkeypatch) -> None:
+    """WARN (not BLOCK) when a .conf file contains deprecated underscore override syntax."""
+    fake_bb_dir = tmp_path / "bitbake"
+    (fake_bb_dir / "bin").mkdir(parents=True)
+    (fake_bb_dir / "bin" / "bitbake").write_text("")
+
+    layer = _make_layer(tmp_path)
+    conf = layer / "conf" / "machine.conf"
+    conf.write_text('IMAGE_INSTALL_append = " mypackage"\n')
+
+    monkeypatch.setattr("bakar.diagnostics._find_local_bitbake_dir", lambda _cfg: fake_bb_dir)
+    monkeypatch.setattr("bakar.diagnostics._parse_bitbake_version", lambda _s: (2, 8, 0))
+    monkeypatch.setattr(
+        "bakar.diagnostics.subprocess.run",
+        lambda *_a, **_kw: type("R", (), {"stdout": "BitBake Build Tool Core version 2.8.0", "returncode": 0})(),
+    )
+    monkeypatch.setattr("bakar.diagnostics._collect_layer_paths_for_check", lambda _cfg: [layer])
+
+    cfg = _override_cfg(tmp_path)
+    result = check_override_syntax(cfg)
+    assert result.status == Status.FAIL
+    assert result.severity == Severity.WARN
+
+
+def test_override_syntax_pass_on_clean_files(tmp_path: Path, monkeypatch) -> None:
+    """PASS when no deprecated override syntax is found in any layer file."""
+    fake_bb_dir = tmp_path / "bitbake"
+    (fake_bb_dir / "bin").mkdir(parents=True)
+    (fake_bb_dir / "bin" / "bitbake").write_text("")
+
+    layer = _make_layer(tmp_path)
+    recipe = layer / "myrecipe.bb"
+    recipe.write_text("do_install:append() {\n    install -m 0755 foo ${D}/usr/bin/foo\n}\n")
+
+    monkeypatch.setattr("bakar.diagnostics._find_local_bitbake_dir", lambda _cfg: fake_bb_dir)
+    monkeypatch.setattr("bakar.diagnostics._parse_bitbake_version", lambda _s: (2, 8, 0))
+    monkeypatch.setattr(
+        "bakar.diagnostics.subprocess.run",
+        lambda *_a, **_kw: type("R", (), {"stdout": "BitBake Build Tool Core version 2.8.0", "returncode": 0})(),
+    )
+    monkeypatch.setattr("bakar.diagnostics._collect_layer_paths_for_check", lambda _cfg: [layer])
+
+    cfg = _override_cfg(tmp_path)
+    result = check_override_syntax(cfg)
+    assert result.status == Status.PASS
