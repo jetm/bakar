@@ -17,10 +17,13 @@ from typing import TYPE_CHECKING
 import pytest
 
 import bakar.commands._app as _state
+import bakar.steps.kas_build as step_kas
 from bakar.cli import app
 from bakar.commands import build as build_cmd
 from bakar.commands._helpers import _hashequiv_extra_overlays, _overlay_dir
 from bakar.config import BuildConfig
+from bakar.observability import RunLogger
+from bakar.steps.kas_build import KasBuildContext, _PtyOutcome
 from bakar.user_config import UserConfig
 
 if TYPE_CHECKING:
@@ -803,3 +806,103 @@ def test_multi_release_bbsetup_distinct_output_dirs(
     # Each stem should appear in the corresponding output dir name.
     assert "qemux86-64" in captured_subdirs[0], f"expected qemux86-64 stem in first dir: {captured_subdirs[0]!r}"
     assert "qemuarm64" in captured_subdirs[1], f"expected qemuarm64 stem in second dir: {captured_subdirs[1]!r}"
+
+
+# ---------------------------------------------------------------------------
+# build_stop integration (task 4.3)
+#
+# run_build() calls build_stop.check_unclean_stop(cfg.bsp_root, log.console)
+# near the top, and _run_pty_with_ui() writes/removes build.pid around the
+# subprocess. These tests stub the heavy parts (the PTY-driven kas-container
+# invocation) and assert the build_stop wiring fires. Monkeypatching is
+# module-qualified (step_kas.<attr>) to match the established style above.
+# ---------------------------------------------------------------------------
+
+
+def _build_ctx(tmp_path: Path, log: RunLogger) -> KasBuildContext:
+    """A KasBuildContext whose kas YAML lives under bsp_root so the real
+    _resolve_user_yaml / materialize_overlay path runs without stubbing.
+
+    bsp_root for a generic cfg with no kas_yaml_override is workspace/generic,
+    so both the YAML and the overlay are written there.
+    """
+    cfg = _make_cfg(tmp_path)
+    bsp_root = cfg.bsp_root
+    bsp_root.mkdir(parents=True, exist_ok=True)
+    kas_yaml = bsp_root / "build.yml"
+    kas_yaml.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
+    overlay = bsp_root / "overlay.yml"
+    overlay.write_text("header:\n  version: 14\n")
+    return KasBuildContext(cfg=cfg, log=log, kas_yaml=kas_yaml, overlay_source=overlay)
+
+
+def test_run_build_invokes_check_unclean_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_build calls build_stop.check_unclean_stop(cfg.bsp_root, ...) before building.
+
+    The heavy PTY-driven kas-container invocation is stubbed via
+    _run_pty_with_ui so no real subprocess launches; clear_stale_bitbake_locks
+    is stubbed to skip the /proc lock scan. The assertion pins the first
+    positional argument to cfg.bsp_root so a wrong-path regression fails loudly.
+    """
+    recorded: list[Path] = []
+
+    monkeypatch.setattr(step_kas.build_stop, "check_unclean_stop", lambda bsp_root, console: recorded.append(bsp_root))
+    monkeypatch.setattr(step_kas, "clear_stale_bitbake_locks", lambda cfg: [])
+    monkeypatch.setattr(step_kas, "_run_pty_with_ui", lambda *a, **kw: _PtyOutcome(rc=0))
+
+    with RunLogger(runs_dir=tmp_path / "runs") as log:
+        ctx = _build_ctx(tmp_path, log)
+        rc = step_kas.run_build(ctx)
+
+    assert rc == 0
+    assert recorded == [ctx.cfg.bsp_root], f"expected check_unclean_stop called with cfg.bsp_root, got {recorded!r}"
+
+
+def test_run_build_writes_then_removes_build_pid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_run_pty_with_ui writes build.pid after Popen and removes it on exit.
+
+    Drives the REAL _run_pty_with_ui (so the write_pid/remove_pid wiring is
+    exercised, not stubbed) but fakes subprocess.Popen so no kas-container
+    launches: the fake proc exits immediately (wait/poll return 0). Recording
+    write_pid/remove_pid confirms both fire in order; asserting no build.pid
+    remains confirms the success path leaves a clean run dir.
+    """
+    calls: list[tuple[str, int]] = []
+
+    def rec_write(run_dir, pgid):  # type: ignore[no-untyped-def]
+        calls.append(("write", pgid))
+
+    def rec_remove(run_dir):  # type: ignore[no-untyped-def]
+        calls.append(("remove", 0))
+
+    monkeypatch.setattr(step_kas.build_stop, "write_pid", rec_write)
+    monkeypatch.setattr(step_kas.build_stop, "remove_pid", rec_remove)
+    monkeypatch.setattr(step_kas.build_stop, "check_unclean_stop", lambda *a, **kw: None)
+    monkeypatch.setattr(step_kas, "clear_stale_bitbake_locks", lambda cfg: [])
+
+    class _FakeProc:
+        pid = 424242
+
+        def wait(self) -> int:
+            return 0
+
+        def poll(self) -> int:
+            return 0
+
+    monkeypatch.setattr(step_kas.subprocess, "Popen", lambda *a, **kw: _FakeProc())
+
+    with RunLogger(runs_dir=tmp_path / "runs") as log:
+        ctx = _build_ctx(tmp_path, log)
+        rc = step_kas.run_build(ctx)
+        build_pid = log.run_dir / "build.pid"
+        leftover = build_pid.exists()
+
+    assert rc == 0
+    assert calls == [("write", 424242), ("remove", 0)], f"expected write then remove, got {calls!r}"
+    assert not leftover, "build.pid must be removed on the clean-exit path"
