@@ -281,13 +281,14 @@ def stop_running_proc(proc: subprocess.Popen, cfg: BuildConfig, log: RunLogger) 
         if cid is None:
             os.killpg(proc.pid, signal.SIGINT)
             return
-        _stop_container(
-            runtime,
-            cid,
-            force=False,
-            grace_secs=_STOP_GRACE_SECONDS,
-            term_secs=_STOP_TERM_SECONDS,
-        )
+        # Send a single graceful SIGINT to the container and let the caller's
+        # proc.wait() reap the wrapper - mirroring the old non-blocking
+        # os.killpg(SIGINT) semantics. The grace-poll + SIGTERM/SIGKILL
+        # escalation ladder lives in stop_build (the out-of-process
+        # `bakar stop`), which has no proc.wait() backstop; running it here
+        # would block the Ctrl-C handler and stall watchdog for the full grace
+        # period and hang the UI.
+        _run_runtime([runtime, "kill", "--signal=SIGINT", cid])
     except Exception:
         return
 

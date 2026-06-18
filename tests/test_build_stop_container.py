@@ -189,3 +189,62 @@ def test_remove_pid_clears_both_sidecars(tmp_path: Path) -> None:
 
     assert not (tmp_path / "build.pid").exists()
     assert not (tmp_path / "build.meta.json").exists()
+
+
+# --- stop_running_proc (in-process Ctrl-C / stall watchdog) ----------------
+
+
+def test_stop_running_proc_container_sends_single_sigint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Container mode sends ONE non-blocking container SIGINT and neither runs
+    the blocking escalation (_stop_container) nor signals the wrapper PGID."""
+    issued: list[list[str]] = []
+    stop_container_calls: list[object] = []
+    killpg_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(build_stop, "_run_runtime", issued.append)
+    monkeypatch.setattr(build_stop, "_detect_runtime", lambda: "docker")
+    monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: "abc123")
+    monkeypatch.setattr(build_stop, "_stop_container", lambda *a, **k: stop_container_calls.append((a, k)))
+    monkeypatch.setattr(build_stop.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+
+    proc = SimpleNamespace(pid=4242)
+    cfg = SimpleNamespace(host_mode=False)
+    log = SimpleNamespace(run_id="20260101-000000")
+    build_stop.stop_running_proc(proc, cfg, log)  # type: ignore[arg-type]
+
+    assert issued == [["docker", "kill", "--signal=SIGINT", "abc123"]]
+    assert stop_container_calls == []  # must not run the blocking grace/escalation loop
+    assert killpg_calls == []  # wrapper PGID not signalled once the container resolves
+
+
+def test_stop_running_proc_container_falls_back_to_pgid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the container cannot be resolved, fall back to os.killpg(SIGINT)."""
+    issued: list[list[str]] = []
+    killpg_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(build_stop, "_run_runtime", issued.append)
+    monkeypatch.setattr(build_stop, "_detect_runtime", lambda: "docker")
+    monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: None)
+    monkeypatch.setattr(build_stop.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+
+    proc = SimpleNamespace(pid=4242)
+    cfg = SimpleNamespace(host_mode=False)
+    log = SimpleNamespace(run_id="20260101-000000")
+    build_stop.stop_running_proc(proc, cfg, log)  # type: ignore[arg-type]
+
+    assert issued == []  # no runtime call when there is no container to signal
+    assert killpg_calls == [(4242, build_stop.signal.SIGINT)]
+
+
+def test_stop_running_proc_host_signals_pgid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Host mode signals the wrapper PGID with SIGINT and makes no runtime call."""
+    issued: list[list[str]] = []
+    killpg_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(build_stop, "_run_runtime", issued.append)
+    monkeypatch.setattr(build_stop.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+
+    proc = SimpleNamespace(pid=999)
+    cfg = SimpleNamespace(host_mode=True)
+    log = SimpleNamespace(run_id="20260101-000000")
+    build_stop.stop_running_proc(proc, cfg, log)  # type: ignore[arg-type]
+
+    assert issued == []
+    assert killpg_calls == [(999, build_stop.signal.SIGINT)]
