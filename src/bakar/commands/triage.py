@@ -214,6 +214,24 @@ def _select_run(
     return candidates[0]
 
 
+def _emit_triage_json(
+    run_id: str,
+    failing_step: str | None,
+    fail_reason: str | None,
+    recipe_log: str | None,
+    suggestions: list[str],
+) -> None:
+    doc = {
+        "version": 1,
+        "run_id": run_id,
+        "failing_step": failing_step,
+        "fail_reason": fail_reason,
+        "recipe_log": recipe_log,
+        "suggestions": suggestions,
+    }
+    typer.echo(json.dumps(doc, indent=2))
+
+
 @app.command()
 def triage(
     run_id: Annotated[str | None, typer.Argument(help="Run ID (YYYYMMDD-HHMMSS). Latest if omitted.")] = None,
@@ -287,24 +305,11 @@ def triage(
         if structured:
             f0 = structured[0]
             logfile = f0.get("logfile")
-            doc = {
-                "version": 1,
-                "run_id": run_dir.name,
-                "failing_step": f"{f0.get('recipe')}:{f0.get('task')}",
-                "fail_reason": None,
-                "recipe_log": str(logfile) if logfile else None,
-                "suggestions": [],
-            }
+            _emit_triage_json(
+                run_dir.name, f"{f0.get('recipe')}:{f0.get('task')}", None, str(logfile) if logfile else None, []
+            )
         else:
-            doc = {
-                "version": 1,
-                "run_id": run_dir.name,
-                "failing_step": None,
-                "fail_reason": None,
-                "recipe_log": None,
-                "suggestions": [],
-            }
-        typer.echo(json.dumps(doc, indent=2))
+            _emit_triage_json(run_dir.name, None, None, None, [])
         return
     if structured:
         _print_structured_failures(structured, translation_workspace)
@@ -312,15 +317,13 @@ def triage(
 
     report = analyse(run_dir, report_root)
     if output_json:
-        doc = {
-            "version": 1,
-            "run_id": run_dir.name,
-            "failing_step": report.failing_step,
-            "fail_reason": report.fail_reason,
-            "recipe_log": str(report.recipe_log) if report.recipe_log else None,
-            "suggestions": list(report.suggestions),
-        }
-        typer.echo(json.dumps(doc, indent=2))
+        _emit_triage_json(
+            run_dir.name,
+            report.failing_step,
+            report.fail_reason,
+            str(report.recipe_log) if report.recipe_log else None,
+            list(report.suggestions),
+        )
         return
 
     if report.failing_step:

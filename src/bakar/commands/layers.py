@@ -530,27 +530,20 @@ def _check_orphan_bbappend(layer_paths: list[tuple[str, Path]]) -> list[str]:
     if not layer_paths:
         return []
 
-    # Build set of all base recipe names (.bb stems without version suffix)
-    # from every active layer. We take the full stem as-is since recipe files
-    # are named like "foo_1.0.bb" or "busybox_1.36.1.bb". The orphan check
-    # strips the version from the bbappend name to get the bare package name,
-    # then checks if that bare name is a prefix of any known bb stem.
     all_bb_stems: set[str] = set()
+    bbappend_files: list[Path] = []
     for _name, path in layer_paths:
-        for bb_file in path.rglob("*.bb"):
-            all_bb_stems.add(bb_file.stem)
+        for f in path.rglob("*"):
+            if f.suffix == ".bb":
+                all_bb_stems.add(f.stem)
+            elif f.suffix == ".bbappend":
+                bbappend_files.append(f)
 
     warnings: list[str] = []
-    for _name, path in layer_paths:
-        for bbappend in path.rglob("*.bbappend"):
-            # Strip version/glob suffix to get bare base name.
-            # "foo_1.0.bbappend" -> stem "foo_1.0" -> base "foo"
-            # "foo_%.bbappend"   -> stem "foo_%"   -> base "foo"
-            # "busybox.bbappend" -> stem "busybox"  -> base "busybox"
-            base = re.sub(r"[_-][^_-]+$", "", bbappend.stem)
-            # A bbappend matches if any .bb stem equals the base name or starts
-            # with the base name followed by a version separator.
-            matched = any(s == base or s.startswith((base + "_", base + "-")) for s in all_bb_stems)
-            if not matched:
-                warnings.append(f"Orphan bbappend: {bbappend} (no matching {base}_*.bb found in active layers)")
+    for bbappend in bbappend_files:
+        # Strip version/glob suffix: "foo_1.0.bbappend" -> "foo", "foo_%.bbappend" -> "foo"
+        base = re.sub(r"[_-][^_-]+$", "", bbappend.stem)
+        matched = any(s == base or s.startswith((base + "_", base + "-")) for s in all_bb_stems)
+        if not matched:
+            warnings.append(f"Orphan bbappend: {bbappend} (no matching {base}_*.bb found in active layers)")
     return warnings
