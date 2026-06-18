@@ -1,11 +1,12 @@
 """Unit tests for bakar.build_stop lifecycle helpers.
 
 Covers the pidfile round-trip, the procfs-cmdline liveness probe in
-``is_build_running``, the SIGINT->grace->SIGTERM->SIGKILL stop sequence in
-``stop_build`` (plus the ``force`` shortcut), and the unclean-stop scan in
+``is_build_running``, the mode-aware ``stop_build`` dispatch (host PGID
+SIGINT->grace->SIGTERM->SIGKILL escalation, container runtime stop, and the
+legacy/untargetable run that signals nothing), and the unclean-stop scan in
 ``check_unclean_stop``. Every test is hermetic: no signals reach real
-processes, ``time.sleep`` is monkeypatched to a no-op, and ``os.killpg`` is
-recorded rather than executed.
+processes, ``time.sleep`` is monkeypatched to a no-op, and ``os.killpg``,
+``_container_id``, and ``_stop_container`` are recorded rather than executed.
 """
 
 from __future__ import annotations
@@ -146,38 +147,40 @@ def test_stop_build_sigint_then_clean_exit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """force=False sends SIGINT; a quick PGID death stops escalation.
+    """Host-mode force=False sends SIGINT; a quick PGID death stops escalation.
 
+    The run is set up as a host launch record so stop_build takes the PGID path.
     is_build_running is stubbed to report a live, verified build. _pgid_alive
     returns False on the first grace poll so the loop exits before any
     escalation. remove_pid must run regardless.
     """
     run_dir = _make_run_dir(tmp_path)
-    build_stop.write_pid(run_dir, 4242)
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
 
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
     monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     calls = _record_killpg(monkeypatch)
 
-    build_stop.stop_build(tmp_path)
+    assert build_stop.stop_build(tmp_path) is True
 
     assert calls == [(4242, signal.SIGINT)]
     assert not (run_dir / "build.pid").exists()
+    assert not (run_dir / "build.meta.json").exists()
 
 
 def test_stop_build_escalates_through_sigterm_sigkill(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """force=False escalates SIGINT -> SIGTERM -> SIGKILL when the PGID lingers.
+    """Host-mode force=False escalates SIGINT -> SIGTERM -> SIGKILL when the PGID lingers.
 
     _pgid_alive stays True across the grace loop and the post-SIGTERM check,
     forcing the full escalation ladder. Grace is shrunk and sleep neutered to
     keep the test instant.
     """
     run_dir = _make_run_dir(tmp_path)
-    build_stop.write_pid(run_dir, 4242)
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
 
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
     monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: True)
@@ -185,50 +188,186 @@ def test_stop_build_escalates_through_sigterm_sigkill(
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     calls = _record_killpg(monkeypatch)
 
-    build_stop.stop_build(tmp_path)
+    assert build_stop.stop_build(tmp_path) is True
 
     sigs = [sig for _pgid, sig in calls]
     assert sigs == [signal.SIGINT, signal.SIGTERM, signal.SIGKILL]
     assert all(pgid == 4242 for pgid, _sig in calls)
     assert not (run_dir / "build.pid").exists()
+    assert not (run_dir / "build.meta.json").exists()
 
 
 def test_stop_build_force_skips_sigint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """force=True sends SIGTERM first and never sends SIGINT."""
+    """Host-mode force=True sends SIGTERM first and never sends SIGINT."""
     run_dir = _make_run_dir(tmp_path)
-    build_stop.write_pid(run_dir, 4242)
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
 
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
     monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     calls = _record_killpg(monkeypatch)
 
-    build_stop.stop_build(tmp_path, force=True)
+    assert build_stop.stop_build(tmp_path, force=True) is True
 
     sigs = [sig for _pgid, sig in calls]
     assert signal.SIGINT not in sigs
     assert sigs[0] == signal.SIGTERM
     assert not (run_dir / "build.pid").exists()
+    assert not (run_dir / "build.meta.json").exists()
 
 
 def test_stop_build_no_running_build(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A dead/unverified build means no signal is ever sent."""
+    """A host record with a dead/unverified build means no signal is ever sent."""
     run_dir = _make_run_dir(tmp_path)
-    build_stop.write_pid(run_dir, 4242)
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
 
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (False, None, False))
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     calls = _record_killpg(monkeypatch)
 
-    build_stop.stop_build(tmp_path)
+    assert build_stop.stop_build(tmp_path) is False
 
     assert calls == []
+    assert not (run_dir / "build.pid").exists()
+    assert not (run_dir / "build.meta.json").exists()
+
+
+# --- mode-aware stop_build branching ---------------------------------------
+
+
+def test_stop_build_container_mode_stops_container_not_pgid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A container record resolves+stops the container and never touches the PGID."""
+    run_dir = _make_run_dir(tmp_path)
+    build_stop.write_launch_record(
+        run_dir,
+        pgid=4242,
+        mode="container",
+        runtime="docker",
+        container_label="bakar.run_id=20260618-120000",
+    )
+
+    stop_calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(build_stop, "_container_id", lambda _rt, _label: "cafef00d")
+    monkeypatch.setattr(
+        build_stop,
+        "_stop_container",
+        lambda runtime, cid, **_kw: stop_calls.append((runtime, cid)),
+    )
+    monkeypatch.setattr(build_stop.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+    calls = _record_killpg(monkeypatch)
+
+    assert build_stop.stop_build(tmp_path) is True
+
+    assert stop_calls == [("docker", "cafef00d")]
+    assert calls == []
+    assert not (run_dir / "build.pid").exists()
+    assert not (run_dir / "build.meta.json").exists()
+
+
+def test_stop_build_host_mode_signals_pgid_not_container(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host record signals the PGID with SIGINT and never stops a container."""
+    run_dir = _make_run_dir(tmp_path)
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+
+    stop_calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(
+        build_stop,
+        "_stop_container",
+        lambda runtime, cid, **_kw: stop_calls.append((runtime, cid)),
+    )
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+    calls = _record_killpg(monkeypatch)
+
+    assert build_stop.stop_build(tmp_path) is True
+
+    assert calls == [(4242, signal.SIGINT)]
+    assert stop_calls == []
+    assert not (run_dir / "build.pid").exists()
+    assert not (run_dir / "build.meta.json").exists()
+
+
+def test_stop_build_legacy_run_targets_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A legacy run (build.pid only, no build.meta.json) cannot be targeted.
+
+    read_launch_record classifies a bare pidfile as a container run with no
+    label, so stop_build must signal neither the wrapper PGID nor a container,
+    return False, and print no "stopped" success line.
+    """
+    run_dir = _make_run_dir(tmp_path)
+    build_stop.write_pid(run_dir, 4242)  # legacy: no build.meta.json
+
+    stop_calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        build_stop,
+        "_stop_container",
+        lambda runtime, cid, **_kw: stop_calls.append((runtime, cid)),
+    )
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+    calls = _record_killpg(monkeypatch)
+
+    assert build_stop.stop_build(tmp_path) is False
+
+    assert calls == []
+    assert stop_calls == []
+    assert "stopped" not in capsys.readouterr().out
+    assert not (run_dir / "build.pid").exists()
+    assert not (run_dir / "build.meta.json").exists()
+
+
+def test_stop_build_container_id_unresolved_returns_false(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A container record whose label resolves to no live container stops nothing."""
+    run_dir = _make_run_dir(tmp_path)
+    build_stop.write_launch_record(
+        run_dir,
+        pgid=4242,
+        mode="container",
+        runtime="docker",
+        container_label="bakar.run_id=20260618-120000",
+    )
+
+    stop_calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(build_stop, "_container_id", lambda _rt, _label: None)
+    monkeypatch.setattr(
+        build_stop,
+        "_stop_container",
+        lambda runtime, cid, **_kw: stop_calls.append((runtime, cid)),
+    )
+    monkeypatch.setattr(build_stop.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+    calls = _record_killpg(monkeypatch)
+
+    assert build_stop.stop_build(tmp_path) is False
+
+    assert stop_calls == []
+    assert calls == []
+    assert not (run_dir / "build.pid").exists()
+    assert not (run_dir / "build.meta.json").exists()
 
 
 # --- check_unclean_stop -----------------------------------------------------
