@@ -707,7 +707,13 @@ def _run_pty_with_ui(
             # Persist the build PGID so `bakar stop` can target this run.
             # proc.pid is the PGID because start_new_session=True above makes
             # the child a process-group leader.
-            build_stop.write_pid(log.run_dir, proc.pid)
+            build_stop.write_launch_record(
+                log.run_dir,
+                pgid=proc.pid,
+                mode=("host" if cfg.host_mode else "container"),
+                runtime=(None if cfg.host_mode else build_stop._detect_runtime()),
+                container_label=(None if cfg.host_mode else f"bakar.run_id={log.run_id}"),
+            )
 
             live_frozen = False
 
