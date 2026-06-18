@@ -30,51 +30,71 @@ def _patch_runtime_seams(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """Patch the build_stop runtime seams and return the recorded-argv list.
 
     ``_run_runtime`` appends each issued argv to the returned list,
-    ``_container_running`` always reports still-running so the escalation runs
-    to completion, and ``time.sleep`` is a no-op to keep the grace loop fast.
+    ``_sigint_bitbake_in_container`` records a ``["sigint-bitbake", runtime,
+    cid]`` sentinel and reports success (True), ``_container_running`` always
+    reports still-running so the escalation runs to completion, and
+    ``time.sleep`` is a no-op to keep the grace loop fast.
     """
     issued: list[list[str]] = []
 
     def _record(args: list[str]) -> None:
         issued.append(args)
 
+    def _record_sigint(runtime: str, cid: str) -> bool:
+        issued.append(["sigint-bitbake", runtime, cid])
+        return True
+
     monkeypatch.setattr(build_stop, "_run_runtime", _record)
+    monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", _record_sigint)
     monkeypatch.setattr(build_stop, "_container_running", lambda runtime, cid: True)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     return issued
 
 
 def test_stop_container_graceful_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    """force=False issues SIGINT first, then stop --timeout, then SIGKILL."""
+    """force=False signals bitbake inside the container first, then stop, then SIGKILL."""
     issued = _patch_runtime_seams(monkeypatch)
 
     build_stop._stop_container("docker", "abc123", force=False, grace_secs=2, term_secs=5)
 
     assert issued == [
-        ["docker", "kill", "--signal=SIGINT", "abc123"],
+        ["sigint-bitbake", "docker", "abc123"],
         ["docker", "stop", "--timeout=5", "abc123"],
         ["docker", "kill", "--signal=SIGKILL", "abc123"],
     ]
 
 
 def test_stop_container_graceful_sigint_first(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The very first runtime call in the graceful path is the SIGINT kill."""
+    """The very first action in the graceful path is the in-container bitbake SIGINT."""
     issued = _patch_runtime_seams(monkeypatch)
 
     build_stop._stop_container("podman", "cid", force=False, grace_secs=1, term_secs=3)
 
-    assert issued[0] == ["podman", "kill", "--signal=SIGINT", "cid"]
+    assert issued[0] == ["sigint-bitbake", "podman", "cid"]
 
 
 def test_stop_container_force_skips_sigint(monkeypatch: pytest.MonkeyPatch) -> None:
-    """force=True issues no SIGINT kill; the first call is stop --timeout."""
+    """force=True signals no bitbake SIGINT; the first call is stop --timeout."""
     issued = _patch_runtime_seams(monkeypatch)
 
     build_stop._stop_container("docker", "abc", force=True, grace_secs=2, term_secs=7)
 
-    assert ["docker", "kill", "--signal=SIGINT", "abc"] not in issued
+    assert not any(call[0] == "sigint-bitbake" for call in issued)
     assert not any("SIGINT" in arg for call in issued for arg in call)
     assert issued[0] == ["docker", "stop", "--timeout=7", "abc"]
+
+
+def test_stop_container_falls_back_to_pid1_sigint_when_exec_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the in-container SIGINT exec fails, fall back to a container-PID-1 SIGINT."""
+    issued: list[list[str]] = []
+    monkeypatch.setattr(build_stop, "_run_runtime", issued.append)
+    monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", lambda runtime, cid: False)
+    monkeypatch.setattr(build_stop, "_container_running", lambda runtime, cid: True)
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+
+    build_stop._stop_container("docker", "abc", force=False, grace_secs=1, term_secs=4)
+
+    assert issued[0] == ["docker", "kill", "--signal=SIGINT", "abc"]
 
 
 # --- _detect_runtime -------------------------------------------------------
@@ -195,14 +215,18 @@ def test_remove_pid_clears_both_sidecars(tmp_path: Path) -> None:
 
 
 def test_stop_running_proc_container_sends_single_sigint(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Container mode sends ONE non-blocking container SIGINT and neither runs
+    """Container mode SIGINTs bitbake INSIDE the container once and neither runs
     the blocking escalation (_stop_container) nor signals the wrapper PGID."""
-    issued: list[list[str]] = []
+    sigint_calls: list[tuple[str, str]] = []
     stop_container_calls: list[object] = []
     killpg_calls: list[tuple[int, int]] = []
-    monkeypatch.setattr(build_stop, "_run_runtime", issued.append)
     monkeypatch.setattr(build_stop, "_detect_runtime", lambda: "docker")
     monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: "abc123")
+    monkeypatch.setattr(
+        build_stop,
+        "_sigint_bitbake_in_container",
+        lambda runtime, cid: bool(sigint_calls.append((runtime, cid))) or True,
+    )
     monkeypatch.setattr(build_stop, "_stop_container", lambda *a, **k: stop_container_calls.append((a, k)))
     monkeypatch.setattr(build_stop.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
 
@@ -211,9 +235,25 @@ def test_stop_running_proc_container_sends_single_sigint(monkeypatch: pytest.Mon
     log = SimpleNamespace(run_id="20260101-000000")
     build_stop.stop_running_proc(proc, cfg, log)  # type: ignore[arg-type]
 
-    assert issued == [["docker", "kill", "--signal=SIGINT", "abc123"]]
+    assert sigint_calls == [("docker", "abc123")]  # bitbake signalled inside the container
     assert stop_container_calls == []  # must not run the blocking grace/escalation loop
     assert killpg_calls == []  # wrapper PGID not signalled once the container resolves
+
+
+def test_stop_running_proc_container_exec_fail_falls_back_to_pgid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the in-container SIGINT exec fails, fall back to os.killpg(SIGINT)."""
+    killpg_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(build_stop, "_detect_runtime", lambda: "docker")
+    monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: "abc123")
+    monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", lambda runtime, cid: False)
+    monkeypatch.setattr(build_stop.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+
+    proc = SimpleNamespace(pid=4242)
+    cfg = SimpleNamespace(host_mode=False)
+    log = SimpleNamespace(run_id="20260101-000000")
+    build_stop.stop_running_proc(proc, cfg, log)  # type: ignore[arg-type]
+
+    assert killpg_calls == [(4242, build_stop.signal.SIGINT)]
 
 
 def test_stop_running_proc_container_falls_back_to_pgid(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -248,3 +288,42 @@ def test_stop_running_proc_host_signals_pgid(monkeypatch: pytest.MonkeyPatch) ->
 
     assert issued == []
     assert killpg_calls == [(999, build_stop.signal.SIGINT)]
+
+
+# --- _sigint_bitbake_in_container ------------------------------------------
+
+
+def test_sigint_bitbake_in_container_execs_pkill_main_bitbake(monkeypatch: pytest.MonkeyPatch) -> None:
+    """It execs `pkill -INT -f 'bin/bitbake '` (trailing space targets the UI, not workers)."""
+    calls: list[list[str]] = []
+
+    def _fake_run(args: list[str], **_kwargs: object) -> SimpleNamespace:
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(build_stop.subprocess, "run", _fake_run)
+
+    assert build_stop._sigint_bitbake_in_container("docker", "abc123") is True
+    assert calls == [["docker", "exec", "abc123", "pkill", "-INT", "-f", "bin/bitbake "]]
+
+
+def test_sigint_bitbake_in_container_no_match_returns_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    """pkill exit 1 (no bitbake process matched) -> False so the caller can fall back."""
+    monkeypatch.setattr(
+        build_stop.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr=""),
+    )
+
+    assert build_stop._sigint_bitbake_in_container("podman", "cid") is False
+
+
+def test_sigint_bitbake_in_container_oserror_returns_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An OSError from the exec (runtime binary absent) -> False, never raises."""
+
+    def _boom(*_a: object, **_k: object) -> SimpleNamespace:
+        raise OSError("no runtime")
+
+    monkeypatch.setattr(build_stop.subprocess, "run", _boom)
+
+    assert build_stop._sigint_bitbake_in_container("docker", "abc") is False

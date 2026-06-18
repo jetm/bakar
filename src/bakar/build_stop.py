@@ -223,6 +223,37 @@ def _container_running(runtime: str, cid: str) -> bool:
     return result.stdout.strip() == "true"
 
 
+def _sigint_bitbake_in_container(runtime: str, cid: str) -> bool:
+    """Send SIGINT to the main bitbake process INSIDE container ``cid``.
+
+    The kas-container entrypoint runs under ``docker-init`` and does NOT forward
+    SIGINT/SIGTERM to its bitbake child, so signalling the container's PID 1
+    (``kill --signal=SIGINT <cid>``) never reaches the cooker. Exec into the
+    container and signal the bitbake UI process directly so its handler runs the
+    graceful "waiting for N running tasks to finish" shutdown.
+
+    The ``bin/bitbake `` pattern (note the trailing space) matches the UI
+    process cmdline (``.../bin/bitbake -c build ...``) but NOT ``bitbake-server``
+    or ``bitbake-worker`` - signalling a worker would SIGINT its running compile
+    and abort the task instead of letting it finish, which is the opposite of
+    graceful (mirrors how a terminal Ctrl-C hits only the foreground bitbake,
+    not the setsid'd task subprocess).
+
+    Returns True when ``pkill`` signalled at least one process (exit 0), False
+    when nothing matched, ``pkill`` is absent, or the exec errored.
+    """
+    try:
+        result = subprocess.run(
+            [runtime, "exec", cid, "pkill", "-INT", "-f", "bin/bitbake "],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
 def _stop_container(
     runtime: str,
     cid: str,
@@ -233,18 +264,21 @@ def _stop_container(
 ) -> None:
     """Stop container ``cid`` via ``runtime`` with graceful escalation.
 
-    When ``force`` is False: send ``kill --signal=SIGINT`` first, poll
-    ``inspect`` once per second for up to ``grace_secs`` (stopping early once the
-    container is no longer running), then ``stop --timeout=<term_secs>`` and
-    finally ``kill --signal=SIGKILL``. When ``force`` is True: skip the SIGINT
-    step and go straight to ``stop`` then ``kill --signal=SIGKILL``.
+    When ``force`` is False: send SIGINT to bitbake inside the container first
+    (via :func:`_sigint_bitbake_in_container`, falling back to a container-PID-1
+    SIGINT if the exec fails), poll ``inspect`` once per second for up to
+    ``grace_secs`` (stopping early once the container is no longer running),
+    then ``stop --timeout=<term_secs>`` and finally ``kill --signal=SIGKILL``.
+    When ``force`` is True: skip the SIGINT step and go straight to ``stop``
+    then ``kill --signal=SIGKILL``.
 
     Uses ``--timeout`` (docker >= 29 deprecates ``--time``). Every subprocess
     call captures output and never raises on a non-zero exit.
     """
     if not force:
-        print(f"Sent SIGINT to container {cid}...")
-        _run_runtime([runtime, "kill", "--signal=SIGINT", cid])
+        print(f"Sent SIGINT to bitbake in container {cid}...")
+        if not _sigint_bitbake_in_container(runtime, cid):
+            _run_runtime([runtime, "kill", "--signal=SIGINT", cid])
         for _ in range(grace_secs):
             if not _container_running(runtime, cid):
                 print("stopped")
@@ -268,8 +302,8 @@ def stop_running_proc(proc: subprocess.Popen, cfg: BuildConfig, log: RunLogger) 
     does the byte-for-byte existing ``os.killpg(proc.pid, signal.SIGINT)`` (the
     PGID path that is correct when bitbake is a real descendant). Container mode
     resolves the container by its ``bakar.run_id`` label and sends a graceful
-    SIGINT through the runtime daemon, falling back to the PGID signal when the
-    container cannot be resolved.
+    SIGINT to bitbake inside the container, falling back to the PGID signal when
+    the container cannot be resolved or the exec fails.
     """
     if cfg.host_mode:
         os.killpg(proc.pid, signal.SIGINT)
@@ -281,14 +315,17 @@ def stop_running_proc(proc: subprocess.Popen, cfg: BuildConfig, log: RunLogger) 
         if cid is None:
             os.killpg(proc.pid, signal.SIGINT)
             return
-        # Send a single graceful SIGINT to the container and let the caller's
-        # proc.wait() reap the wrapper - mirroring the old non-blocking
-        # os.killpg(SIGINT) semantics. The grace-poll + SIGTERM/SIGKILL
-        # escalation ladder lives in stop_build (the out-of-process
-        # `bakar stop`), which has no proc.wait() backstop; running it here
-        # would block the Ctrl-C handler and stall watchdog for the full grace
-        # period and hang the UI.
-        _run_runtime([runtime, "kill", "--signal=SIGINT", cid])
+        # Send a single graceful SIGINT to bitbake inside the container and let
+        # the caller's proc.wait() reap the wrapper - mirroring the old
+        # non-blocking semantics. Signalling the container PID 1 does not reach
+        # bitbake (the entrypoint does not forward signals), so signal bitbake
+        # directly; fall back to the PGID signal if the exec fails. The
+        # grace-poll + SIGTERM/SIGKILL escalation ladder lives in stop_build
+        # (the out-of-process `bakar stop`), which has no proc.wait() backstop;
+        # running it here would block the Ctrl-C handler / stall watchdog for
+        # the full grace period and hang the UI.
+        if not _sigint_bitbake_in_container(runtime, cid):
+            os.killpg(proc.pid, signal.SIGINT)
     except Exception:
         return
 
