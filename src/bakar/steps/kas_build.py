@@ -106,6 +106,31 @@ def materialize_overlay(cfg: BuildConfig, overlay_source: Path) -> Path:
     return dest.relative_to(cfg.bsp_root)
 
 
+# The bakar-provided sccache layer (classes/sccache.bbclass) is materialized
+# next to the overlays under ``.bakar/`` so kas can add it via the sccache
+# overlay's ``repos:`` entry. The relative repos path ``.bakar/<name>`` resolves
+# against ``bsp_root`` in both host mode (build CWD) and container mode
+# (KAS_WORK_DIR = /work), mirroring :func:`materialize_overlay`.
+_SCCACHE_LAYER_NAME = "meta-bakar-sccache"
+
+
+def materialize_sccache_layer(cfg: BuildConfig) -> Path:
+    """Copy the bundled ``meta-bakar-sccache`` layer into ``<bsp_root>/.bakar/``.
+
+    Returns the destination directory. Overwrites on every call so the layer
+    tracks the packaged source byte-for-byte. The sccache tuning overlay
+    references it by the relative path ``.bakar/meta-bakar-sccache``.
+    """
+    from bakar.commands._helpers import _overlay_dir
+
+    source = _overlay_dir() / _SCCACHE_LAYER_NAME
+    dest = cfg.bsp_root / ".bakar" / _SCCACHE_LAYER_NAME
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(source, dest)
+    return dest
+
+
 def _setup_meta_avocado_build_dir(cfg: BuildConfig) -> None:
     """Create the build directory for Avocado OS builds.
 
@@ -424,6 +449,10 @@ def _build_kas_arg(
     extra_overlays: list[Path] | None = None,
 ) -> str:
     """Resolve the kas YAML + overlay colon-arg, handling the meta-avocado wrapper path."""
+    # The sccache overlay references the meta-bakar-sccache layer by a relative
+    # repos path; materialize it under .bakar/ so kas can resolve and inherit it.
+    if cfg.use_sccache_dist:
+        materialize_sccache_layer(cfg)
     if cfg.is_meta_avocado:
         _setup_meta_avocado_build_dir(cfg)
         overlay_rel = materialize_overlay(cfg, overlay_source)
@@ -957,6 +986,10 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         extra_overlays=[str(p) for p in (extra_overlays or [])],
     )
     cfg.measurements_dir.mkdir(parents=True, exist_ok=True)
+    # The sccache overlay references the meta-bakar-sccache layer by a relative
+    # repos path; materialize it under .bakar/ so kas can resolve and inherit it.
+    if cfg.use_sccache_dist:
+        materialize_sccache_layer(cfg)
     if cfg.is_meta_avocado:
         _setup_meta_avocado_build_dir(cfg)
         overlay_rel = materialize_overlay(cfg, overlay_source)

@@ -1,25 +1,23 @@
 # Distributed-compile opt-in overlay (sccache-dist).
 #
-# This overlay is configured by the `sccache_dist` config key (or the
-# `--sccache-dist` CLI flag). It is never auto-loaded by bakar; bakar appends
-# it automatically only when sccache-dist is enabled.
+# Configured by the `sccache_dist` config key (or the `--sccache-dist` CLI
+# flag). Never auto-loaded; bakar appends it only when sccache-dist is enabled.
 #
-# What it does: swaps OE's compiler launcher from ccache to sccache. OE expands
-# `${CCACHE}` into `CC` (CC = "${CCACHE}${HOST_PREFIX}gcc ..."), so setting
-# CCACHE = "sccache " routes every C/C++ compile through sccache, which on Linux
-# auto-packages the in-use cross-compiler and ships do_compile jobs to the
-# sccache-dist scheduler/build-server fleet.
+# What it does: adds the bakar-provided meta-bakar-sccache layer (materialized
+# into <bsp_root>/.bakar/meta-bakar-sccache) and inherits its sccache.bbclass,
+# which routes eligible target compiles through sccache instead of ccache. All
+# the policy - which recipes distribute, keeping the build/host compiler local,
+# HOSTTOOLS, task network, the scheduler-URL export - lives in the class; see
+# classes/sccache.bbclass for the rationale.
 #
-# ccache and sccache are mutually-exclusive launchers: both take the compiler as
-# their next argument, so chaining them double-wraps CC and breaks caching. The
-# generic tuning overlay inherits ccache (INHERIT += "ccache"); this overlay
-# removes that inherit so only sccache wraps the compiler.
+# ccache and sccache are mutually-exclusive launchers (both take the compiler as
+# their next argument), so this overlay removes the ccache inherit the generic
+# tuning overlay adds and inherits sccache in its place.
 #
-# The scheduler URL is supplied at build time via the BAKAR_SCCACHE_SCHEDULER_URL
-# environment variable, which bakar exports from the configured
-# sccache_scheduler_url (host-mode path). Declaring it in the env block makes kas
-# whitelist it through BB_ENV_PASSTHROUGH_ADDITIONS so the in-build sccache
-# client can read it.
+# The scheduler URL is supplied at build time via BAKAR_SCCACHE_SCHEDULER_URL,
+# which bakar exports from the configured sccache_scheduler_url (host-mode path).
+# Declaring it in the env block makes kas whitelist it through
+# BB_ENV_PASSTHROUGH_ADDITIONS so the in-build sccache client can read it.
 
 header:
   version: 21
@@ -30,54 +28,19 @@ env:
   # back to its own config (SCCACHE_CONF) or local-cache-only mode.
   BAKAR_SCCACHE_SCHEDULER_URL: null
 
+repos:
+  # bakar materializes this layer next to the overlay under .bakar/; the relative
+  # path resolves against KAS_WORK_DIR (= bsp_root) in container mode and the
+  # build CWD (= bsp_root) in host mode. No url/commit: kas treats it as an
+  # unmanaged local layer (same pattern as the nxp meta-varis-overrides repo).
+  meta-bakar-sccache:
+    path: .bakar/meta-bakar-sccache
+    layers:
+      .:
+
 local_conf_header:
   bakar-tuning-sccache: |
-    # Route OE's compiler launcher through sccache instead of ccache.
-    CCACHE = "sccache "
     # ccache and sccache are mutually-exclusive launchers; drop the ccache
-    # inherit added by the generic tuning overlay so only sccache wraps CC.
+    # inherit added by the generic tuning overlay and inherit sccache instead.
     INHERIT:remove = "ccache"
-    # Scope sccache to target recipes only. sccache packages the in-use compiler
-    # by resolving `gcc -print-prog-name=as`; the host gcc on a non-relocatable
-    # toolchain (e.g. Arch) returns a bare, PATH-relative `as` that sccache cannot
-    # package, so the build-server's gcc dies with "cannot execute 'as'" on every
-    # native/cross/SDK recipe. Only the target cross-gcc is relocatable and
-    # packages cleanly. Blanking CCACHE on the toolchain classes keeps those
-    # recipes on the local compiler (mirrors icecc.bbclass's ICECC_CLASS_DISABLE)
-    # so only target compiles distribute.
-    CCACHE:class-native = ""
-    CCACHE:class-cross = ""
-    CCACHE:class-nativesdk = ""
-    CCACHE:class-crosssdk = ""
-    CCACHE:class-cross-canadian = ""
-    # Keep the build/host compiler local. OE prepends ${CCACHE} to BUILD_CC and
-    # BUILD_CXX (gcc-native.bbclass) as well as the target CC. Target recipes
-    # still compile host helper tools with the build compiler - e.g.
-    # linux-libc-headers do_install runs `make HOSTCC="${BUILD_CC}"` to build
-    # fixdep - so a leaked sccache on BUILD_CC ships those host-tool compiles to
-    # the build-server, where they hit the same unpackageable-`as` failure and
-    # need network do_install does not have. Strip ${CCACHE} from the build
-    # compiler (definitions copied from gcc-native.bbclass minus the prefix) so
-    # only the target CC distributes. :forcevariable, not a plain `=`:
-    # gcc-native.bbclass re-assigns BUILD_CC with `=` and is parsed after
-    # local.conf, so a plain override loses on parse order. forcevariable is
-    # bitbake's highest-priority override and the only form that wins here.
-    BUILD_CC:forcevariable = "${BUILD_PREFIX}gcc ${BUILD_CC_ARCH}"
-    BUILD_CXX:forcevariable = "${BUILD_PREFIX}g++ ${BUILD_CC_ARCH}"
-    # Put sccache on bitbake's task PATH. OE restricts each task's PATH to
-    # sysroot bins plus the HOSTTOOLS allowlist (tmp/hosttools/), so the host
-    # /usr/bin/sccache is invisible to recipes unless allowlisted. Without this,
-    # CC = "sccache gcc" fails with "sccache: command not found" in every
-    # do_configure/do_compile (host and container alike).
-    HOSTTOOLS += "sccache"
-    # Let the compiler reach the sccache-dist scheduler. bitbake runs each task
-    # in a fresh network namespace (loopback down) via unshare(CLONE_NEWNET)
-    # unless the task sets [network] = "1" - only do_fetch opts in by default.
-    # The sccache client ships jobs over the network from inside do_configure
-    # (configure compiler tests) and do_compile, so both need network access or
-    # every compile dies with "sccache: error: Network is unreachable".
-    do_configure[network] = "1"
-    do_compile[network] = "1"
-    # Point the in-build sccache client at the configured scheduler. Empty when
-    # unset, which leaves the client on its own config / local-cache mode.
-    export SCCACHE_DIST_SCHEDULER_URL = "${@os.environ.get('BAKAR_SCCACHE_SCHEDULER_URL', '')}"
+    INHERIT += "sccache"

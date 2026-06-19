@@ -381,9 +381,16 @@ def test_overlay_absent_from_tuning_stack_when_disabled() -> None:
     assert "bakar-tuning-sccache.yml" not in names
 
 
+def _sccache_bbclass_text() -> str:
+    """Return the packaged sccache.bbclass source text."""
+    from bakar.commands._helpers import _overlay_dir
+
+    return (_overlay_dir() / "meta-bakar-sccache" / "classes" / "sccache.bbclass").read_text()
+
+
 @pytest.mark.unit
-def test_overlay_swaps_launcher_and_removes_ccache_inherit() -> None:
-    """The overlay routes CC through sccache and drops the ccache inherit.
+def test_overlay_inherits_sccache_class_and_removes_ccache() -> None:
+    """The overlay swaps the ccache inherit for the sccache class.
 
     ccache and sccache are mutually-exclusive launchers; chaining them
     double-wraps the compiler and breaks caching. This is the task's
@@ -395,19 +402,18 @@ def test_overlay_swaps_launcher_and_removes_ccache_inherit() -> None:
     overlay = _sccache_extra_overlays(cfg)[0]  # type: ignore[arg-type]
     text = overlay.read_text()
 
-    assert 'CCACHE = "sccache "' in text
     assert 'INHERIT:remove = "ccache"' in text
+    assert 'INHERIT += "sccache"' in text
 
 
 @pytest.mark.unit
-def test_overlay_adds_sccache_to_hosttools() -> None:
-    """The overlay puts sccache on bitbake's task PATH via HOSTTOOLS.
+def test_overlay_adds_sccache_layer_repo() -> None:
+    """The overlay adds the meta-bakar-sccache layer via a relative repos path.
 
-    OE restricts each task's PATH to sysroot bins + the HOSTTOOLS allowlist
-    (tmp/hosttools/); /usr/bin is not in it. Without HOSTTOOLS += "sccache",
-    every recipe's CC="sccache gcc" fails with "sccache: command not found" -
-    caught by a real qemuarm64 zlib-native do_configure, invisible to the
-    trivial compile which runs under the host shell PATH.
+    sccache.bbclass lives in a bakar-shipped layer (no bbclass can sit in
+    local.conf). bakar materializes the layer under <bsp_root>/.bakar/, and the
+    relative repos path resolves against bsp_root in both host and container
+    modes. Without the repo entry, `INHERIT += "sccache"` cannot find the class.
     """
     from bakar.commands._helpers import _sccache_extra_overlays
 
@@ -415,82 +421,133 @@ def test_overlay_adds_sccache_to_hosttools() -> None:
     overlay = _sccache_extra_overlays(cfg)[0]  # type: ignore[arg-type]
     text = overlay.read_text()
 
-    assert 'HOSTTOOLS += "sccache"' in text
+    assert "meta-bakar-sccache:" in text
+    assert "path: .bakar/meta-bakar-sccache" in text
 
 
 @pytest.mark.unit
-def test_overlay_grants_network_to_compile_tasks() -> None:
-    """The overlay grants network access to the compiler-invoking tasks.
+def test_sccache_class_sets_launcher_per_recipe() -> None:
+    """sccache.bbclass sets CCACHE='sccache ' through a per-recipe python gate.
 
-    bitbake runs every task in a fresh network namespace (loopback down) via
-    unshare(CLONE_NEWNET) unless the task sets [network] = "1" - only do_fetch
-    opts in by default. sccache-dist's client must reach the scheduler from
-    inside do_configure/do_compile, so without this the compiler fails with
-    "sccache: error: Network is unreachable". Caught by a real qemuarm64
-    zlib-native do_configure.
+    Mirrors ccache.bbclass: CCACHE is not set globally (that ignores per-recipe
+    CCACHE_DISABLE); the anonymous python function sets it only for eligible
+    recipes.
     """
-    from bakar.commands._helpers import _sccache_extra_overlays
+    text = _sccache_bbclass_text()
 
-    cfg = _overlay_cfg(sccache_dist=True)
-    overlay = _sccache_extra_overlays(cfg)[0]  # type: ignore[arg-type]
-    text = overlay.read_text()
-
-    assert 'do_configure[network] = "1"' in text
-    assert 'do_compile[network] = "1"' in text
+    assert "python () {" in text
+    assert "d.setVar('CCACHE', 'sccache ')" in text
 
 
 @pytest.mark.unit
-def test_overlay_scopes_sccache_to_target_recipes() -> None:
-    """The overlay disables sccache for native/cross/SDK toolchain classes.
+def test_sccache_class_excludes_toolchain_and_kernel() -> None:
+    """The class excludes native/cross/SDK toolchain recipes and the kernel.
 
-    sccache packages the in-use compiler by resolving `gcc -print-prog-name=as`.
-    Arch's host gcc returns a bare, PATH-relative `as`, which sccache cannot
-    package, so the build-server's gcc dies with "cannot execute 'as'" on every
-    native/cross/toolchain recipe. Only the target cross-gcc is relocatable and
-    packages cleanly. Empty CCACHE on the toolchain classes keeps those recipes
-    on the local compiler (mirrors icecc.bbclass's ICECC_CLASS_DISABLE) so only
-    target compiles distribute. Caught by a real qemuarm64 zlib-native
-    do_configure failing with the `as` error.
+    sccache packages the in-use compiler via `gcc -print-prog-name=as`; a host
+    gcc with a PATH-relative `as` (Arch) cannot be packaged, so native/cross/SDK
+    recipes - whose CC is the host compiler - must compile locally. The kernel is
+    excluded too: wrapping its compiler breaks kconfig detection
+    (`sccache aarch64-...-gcc: unknown C compiler`) and its config step has no
+    network. Caught by a real qemuarm64 build (zlib-native `as`, linux-yocto
+    do_kernel_configme).
     """
-    from bakar.commands._helpers import _sccache_extra_overlays
+    text = _sccache_bbclass_text()
 
-    cfg = _overlay_cfg(sccache_dist=True)
-    overlay = _sccache_extra_overlays(cfg)[0]  # type: ignore[arg-type]
-    text = overlay.read_text()
-
-    assert 'CCACHE:class-native = ""' in text
-    assert 'CCACHE:class-cross = ""' in text
-    assert 'CCACHE:class-nativesdk = ""' in text
-    assert 'CCACHE:class-crosssdk = ""' in text
-    assert 'CCACHE:class-cross-canadian = ""' in text
+    for cls in ("native", "cross", "crosssdk", "nativesdk", "cross-canadian", "kernel"):
+        assert cls in text.split("SCCACHE_EXCLUDED_CLASSES")[1].split("\n")[0]
+    assert "inherits_class(cls, d)" in text
 
 
 @pytest.mark.unit
-def test_overlay_keeps_build_compiler_local() -> None:
-    """The overlay strips sccache from the build/host compiler (BUILD_CC/CXX).
+def test_sccache_class_honors_disable_flags() -> None:
+    """The class honors per-recipe CCACHE_DISABLE and a new SCCACHE_DISABLE.
+
+    Several oe-core recipes (webkitgtk, babeltrace2, make-mod-scripts, go-cross,
+    piglit) ship CCACHE_DISABLE; the global-set approach ignored them. The python
+    gate returns early for any recipe that sets either flag.
+    """
+    text = _sccache_bbclass_text()
+
+    assert "SCCACHE_DISABLE" in text
+    assert "CCACHE_DISABLE" in text
+
+
+@pytest.mark.unit
+def test_sccache_class_keeps_build_compiler_local() -> None:
+    """The class strips sccache from the build/host compiler (BUILD_CC/CXX).
 
     OE prepends ${CCACHE} to both the target CC (gcc.bbclass) and the build
-    BUILD_CC/BUILD_CXX (gcc-native.bbclass). Target recipes still compile host
-    helper tools with the build compiler - e.g. linux-libc-headers do_install
-    runs `make HOSTCC="${BUILD_CC}"` to build fixdep - so a leaked sccache on
-    BUILD_CC ships those host-tool compiles to the build-server, where they hit
-    the same unpackageable-`as` failure and need network the install task lacks.
-    Blanking ${CCACHE} from BUILD_CC/BUILD_CXX keeps host/build compiles local
-    while the target CC keeps distributing. Caught by a real qemuarm64
-    linux-libc-headers do_install failing with "Network is unreachable".
+    BUILD_CC/BUILD_CXX (gcc-native.bbclass). Eligible target recipes still
+    compile host helper tools with the build compiler - e.g. linux-libc-headers
+    do_install runs `make HOSTCC="${BUILD_CC}"` to build fixdep - so a leaked
+    sccache on BUILD_CC ships those host-tool compiles to the build-server,
+    where they need network the install task lacks and hit the unpackageable
+    host `as`. :forcevariable beats gcc-native.bbclass's `=` regardless of
+    inherit order. Caught by a real qemuarm64 linux-libc-headers do_install
+    failing with "Network is unreachable".
     """
-    from bakar.commands._helpers import _sccache_extra_overlays
+    text = _sccache_bbclass_text()
 
-    cfg = _overlay_cfg(sccache_dist=True)
-    overlay = _sccache_extra_overlays(cfg)[0]  # type: ignore[arg-type]
-    text = overlay.read_text()
-
-    # :forcevariable, not a plain `=`: gcc-native.bbclass re-assigns BUILD_CC
-    # with `=` and is parsed after local.conf, so a plain override loses on
-    # parse order. forcevariable is bitbake's highest-priority override and the
-    # only form that beats a class assignment from local.conf.
     assert 'BUILD_CC:forcevariable = "${BUILD_PREFIX}gcc ${BUILD_CC_ARCH}"' in text
     assert 'BUILD_CXX:forcevariable = "${BUILD_PREFIX}g++ ${BUILD_CC_ARCH}"' in text
+
+
+@pytest.mark.unit
+def test_sccache_class_adds_hosttools_and_network() -> None:
+    """The class puts sccache on the task PATH and grants compile tasks network.
+
+    OE restricts each task's PATH to sysroot bins + HOSTTOOLS; without
+    HOSTTOOLS += "sccache" every CC="sccache gcc" fails "command not found".
+    bitbake also isolates each task's network namespace unless [network] = "1",
+    so without it the client fails "Network is unreachable". The compiler runs in
+    do_configure (compiler tests), do_compile (main build), and do_install (e.g.
+    glibc links format.lds with the target gcc), so all three need network. Caught
+    by a real qemuarm64 zlib-native do_configure and glibc do_install.
+    """
+    text = _sccache_bbclass_text()
+
+    assert 'HOSTTOOLS += "sccache"' in text
+    assert 'do_configure[network] = "1"' in text
+    assert 'do_compile[network] = "1"' in text
+    assert 'do_install[network] = "1"' in text
+
+
+@pytest.mark.unit
+def test_materialize_sccache_layer_copies_class_into_bsp_root(tmp_path: object) -> None:
+    """materialize_sccache_layer drops the layer under <bsp_root>/.bakar/.
+
+    The sccache overlay references the layer by the relative repos path
+    .bakar/meta-bakar-sccache; the layer must exist there (with its bbclass) for
+    kas to resolve it and `INHERIT += "sccache"` to find the class. Overwrites on
+    every call so the materialized copy tracks the packaged source.
+    """
+    from pathlib import Path
+
+    from bakar.config import BuildConfig
+    from bakar.steps.kas_build import materialize_sccache_layer
+
+    root = Path(str(tmp_path))
+    cfg = BuildConfig(
+        workspace=root,
+        bsp_family="generic",  # type: ignore[arg-type]
+        machine="m",
+        distro="d",
+        image="i",
+        manifest="x.xml",
+        repo_url="https://example.com",
+        repo_branch="main",
+        container_image="img:latest",
+        kas_yaml_override=root / "my.yml",
+        sccache_dist=True,
+    )
+
+    dest = materialize_sccache_layer(cfg)
+
+    assert dest == cfg.bsp_root / ".bakar" / "meta-bakar-sccache"
+    assert (dest / "conf" / "layer.conf").is_file()
+    bbclass = dest / "classes" / "sccache.bbclass"
+    assert bbclass.is_file()
+    assert "d.setVar('CCACHE', 'sccache ')" in bbclass.read_text()
 
 
 @pytest.mark.unit
