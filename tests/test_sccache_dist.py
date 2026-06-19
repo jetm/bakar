@@ -400,6 +400,25 @@ def test_overlay_swaps_launcher_and_removes_ccache_inherit() -> None:
 
 
 @pytest.mark.unit
+def test_overlay_adds_sccache_to_hosttools() -> None:
+    """The overlay puts sccache on bitbake's task PATH via HOSTTOOLS.
+
+    OE restricts each task's PATH to sysroot bins + the HOSTTOOLS allowlist
+    (tmp/hosttools/); /usr/bin is not in it. Without HOSTTOOLS += "sccache",
+    every recipe's CC="sccache gcc" fails with "sccache: command not found" -
+    caught by a real qemuarm64 zlib-native do_configure, invisible to the
+    trivial compile which runs under the host shell PATH.
+    """
+    from bakar.commands._helpers import _sccache_extra_overlays
+
+    cfg = _overlay_cfg(sccache_dist=True)
+    overlay = _sccache_extra_overlays(cfg)[0]  # type: ignore[arg-type]
+    text = overlay.read_text()
+
+    assert 'HOSTTOOLS += "sccache"' in text
+
+
+@pytest.mark.unit
 def test_overlay_exports_sccache_scheduler_env() -> None:
     """The overlay declares the scheduler-URL passthrough env var so kas whitelists it."""
     from bakar.commands._helpers import _sccache_extra_overlays

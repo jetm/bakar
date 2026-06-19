@@ -37,6 +37,12 @@ local_conf_header:
     # ccache and sccache are mutually-exclusive launchers; drop the ccache
     # inherit added by the generic tuning overlay so only sccache wraps CC.
     INHERIT:remove = "ccache"
+    # Put sccache on bitbake's task PATH. OE restricts each task's PATH to
+    # sysroot bins plus the HOSTTOOLS allowlist (tmp/hosttools/), so the host
+    # /usr/bin/sccache is invisible to recipes unless allowlisted. Without this,
+    # CC = "sccache gcc" fails with "sccache: command not found" in every
+    # do_configure/do_compile (host and container alike).
+    HOSTTOOLS += "sccache"
     # Point the in-build sccache client at the configured scheduler. Empty when
     # unset, which leaves the client on its own config / local-cache mode.
     export SCCACHE_DIST_SCHEDULER_URL = "${@os.environ.get('BAKAR_SCCACHE_SCHEDULER_URL', '')}"
