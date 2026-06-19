@@ -440,6 +440,32 @@ def test_overlay_grants_network_to_compile_tasks() -> None:
 
 
 @pytest.mark.unit
+def test_overlay_scopes_sccache_to_target_recipes() -> None:
+    """The overlay disables sccache for native/cross/SDK toolchain classes.
+
+    sccache packages the in-use compiler by resolving `gcc -print-prog-name=as`.
+    Arch's host gcc returns a bare, PATH-relative `as`, which sccache cannot
+    package, so the build-server's gcc dies with "cannot execute 'as'" on every
+    native/cross/toolchain recipe. Only the target cross-gcc is relocatable and
+    packages cleanly. Empty CCACHE on the toolchain classes keeps those recipes
+    on the local compiler (mirrors icecc.bbclass's ICECC_CLASS_DISABLE) so only
+    target compiles distribute. Caught by a real qemuarm64 zlib-native
+    do_configure failing with the `as` error.
+    """
+    from bakar.commands._helpers import _sccache_extra_overlays
+
+    cfg = _overlay_cfg(sccache_dist=True)
+    overlay = _sccache_extra_overlays(cfg)[0]  # type: ignore[arg-type]
+    text = overlay.read_text()
+
+    assert 'CCACHE:class-native = ""' in text
+    assert 'CCACHE:class-cross = ""' in text
+    assert 'CCACHE:class-nativesdk = ""' in text
+    assert 'CCACHE:class-crosssdk = ""' in text
+    assert 'CCACHE:class-cross-canadian = ""' in text
+
+
+@pytest.mark.unit
 def test_overlay_exports_sccache_scheduler_env() -> None:
     """The overlay declares the scheduler-URL passthrough env var so kas whitelists it."""
     from bakar.commands._helpers import _sccache_extra_overlays

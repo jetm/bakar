@@ -37,6 +37,19 @@ local_conf_header:
     # ccache and sccache are mutually-exclusive launchers; drop the ccache
     # inherit added by the generic tuning overlay so only sccache wraps CC.
     INHERIT:remove = "ccache"
+    # Scope sccache to target recipes only. sccache packages the in-use compiler
+    # by resolving `gcc -print-prog-name=as`; the host gcc on a non-relocatable
+    # toolchain (e.g. Arch) returns a bare, PATH-relative `as` that sccache cannot
+    # package, so the build-server's gcc dies with "cannot execute 'as'" on every
+    # native/cross/SDK recipe. Only the target cross-gcc is relocatable and
+    # packages cleanly. Blanking CCACHE on the toolchain classes keeps those
+    # recipes on the local compiler (mirrors icecc.bbclass's ICECC_CLASS_DISABLE)
+    # so only target compiles distribute.
+    CCACHE:class-native = ""
+    CCACHE:class-cross = ""
+    CCACHE:class-nativesdk = ""
+    CCACHE:class-crosssdk = ""
+    CCACHE:class-cross-canadian = ""
     # Put sccache on bitbake's task PATH. OE restricts each task's PATH to
     # sysroot bins plus the HOSTTOOLS allowlist (tmp/hosttools/), so the host
     # /usr/bin/sccache is invisible to recipes unless allowlisted. Without this,
