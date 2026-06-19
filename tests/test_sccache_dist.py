@@ -466,6 +466,34 @@ def test_overlay_scopes_sccache_to_target_recipes() -> None:
 
 
 @pytest.mark.unit
+def test_overlay_keeps_build_compiler_local() -> None:
+    """The overlay strips sccache from the build/host compiler (BUILD_CC/CXX).
+
+    OE prepends ${CCACHE} to both the target CC (gcc.bbclass) and the build
+    BUILD_CC/BUILD_CXX (gcc-native.bbclass). Target recipes still compile host
+    helper tools with the build compiler - e.g. linux-libc-headers do_install
+    runs `make HOSTCC="${BUILD_CC}"` to build fixdep - so a leaked sccache on
+    BUILD_CC ships those host-tool compiles to the build-server, where they hit
+    the same unpackageable-`as` failure and need network the install task lacks.
+    Blanking ${CCACHE} from BUILD_CC/BUILD_CXX keeps host/build compiles local
+    while the target CC keeps distributing. Caught by a real qemuarm64
+    linux-libc-headers do_install failing with "Network is unreachable".
+    """
+    from bakar.commands._helpers import _sccache_extra_overlays
+
+    cfg = _overlay_cfg(sccache_dist=True)
+    overlay = _sccache_extra_overlays(cfg)[0]  # type: ignore[arg-type]
+    text = overlay.read_text()
+
+    # :forcevariable, not a plain `=`: gcc-native.bbclass re-assigns BUILD_CC
+    # with `=` and is parsed after local.conf, so a plain override loses on
+    # parse order. forcevariable is bitbake's highest-priority override and the
+    # only form that beats a class assignment from local.conf.
+    assert 'BUILD_CC:forcevariable = "${BUILD_PREFIX}gcc ${BUILD_CC_ARCH}"' in text
+    assert 'BUILD_CXX:forcevariable = "${BUILD_PREFIX}g++ ${BUILD_CC_ARCH}"' in text
+
+
+@pytest.mark.unit
 def test_overlay_exports_sccache_scheduler_env() -> None:
     """The overlay declares the scheduler-URL passthrough env var so kas whitelists it."""
     from bakar.commands._helpers import _sccache_extra_overlays

@@ -50,6 +50,20 @@ local_conf_header:
     CCACHE:class-nativesdk = ""
     CCACHE:class-crosssdk = ""
     CCACHE:class-cross-canadian = ""
+    # Keep the build/host compiler local. OE prepends ${CCACHE} to BUILD_CC and
+    # BUILD_CXX (gcc-native.bbclass) as well as the target CC. Target recipes
+    # still compile host helper tools with the build compiler - e.g.
+    # linux-libc-headers do_install runs `make HOSTCC="${BUILD_CC}"` to build
+    # fixdep - so a leaked sccache on BUILD_CC ships those host-tool compiles to
+    # the build-server, where they hit the same unpackageable-`as` failure and
+    # need network do_install does not have. Strip ${CCACHE} from the build
+    # compiler (definitions copied from gcc-native.bbclass minus the prefix) so
+    # only the target CC distributes. :forcevariable, not a plain `=`:
+    # gcc-native.bbclass re-assigns BUILD_CC with `=` and is parsed after
+    # local.conf, so a plain override loses on parse order. forcevariable is
+    # bitbake's highest-priority override and the only form that wins here.
+    BUILD_CC:forcevariable = "${BUILD_PREFIX}gcc ${BUILD_CC_ARCH}"
+    BUILD_CXX:forcevariable = "${BUILD_PREFIX}g++ ${BUILD_CC_ARCH}"
     # Put sccache on bitbake's task PATH. OE restricts each task's PATH to
     # sysroot bins plus the HOSTTOOLS allowlist (tmp/hosttools/), so the host
     # /usr/bin/sccache is invisible to recipes unless allowlisted. Without this,
