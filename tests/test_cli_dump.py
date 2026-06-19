@@ -62,6 +62,7 @@ class _Stub:
                 "extra_args": extra_args,
                 "kas_yaml": ctx.kas_yaml,
                 "overlay_source": ctx.overlay_source,
+                "extra_overlays": ctx.extra_overlays,
                 "capture_to": capture_to,
             }
         )
@@ -128,3 +129,29 @@ def test_yaml_and_manifest_mutually_exclusive(
     )
     assert result.exit_code == 2, result.output
     assert len(stub.calls) == 0
+
+
+@pytest.mark.unit
+def test_dump_applies_sccache_tuning_overlay_when_enabled(
+    runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """dump must apply the sccache tuning overlay so the flattened YAML matches the build.
+
+    ``dump`` exists to show the resolved YAML a build would run. If it omits the
+    opt-in tuning overlays, ``CCACHE = "sccache "`` never appears and the runbook's
+    A1 check cannot observe the launcher swap. Mirrors the overlay set the build
+    path assembles via ``_tuning_extra_overlays``.
+    """
+    from bakar.user_config import UserConfig
+
+    stub = _Stub(rc=0)
+    monkeypatch.setattr(dump_module.step_kas, "run_kas_subcommand", stub)
+    uc = UserConfig(sccache_dist=True, sccache_scheduler_url="http://localhost:10600")
+    monkeypatch.setattr("bakar.commands._app._load_user_config_safe", lambda: uc)
+
+    result = runner.invoke(app, ["dump", "--workspace", str(nxp_workspace)])
+
+    assert result.exit_code == 0, result.output
+    assert len(stub.calls) == 1
+    names = [p.name for p in stub.calls[0]["extra_overlays"]]
+    assert "bakar-tuning-sccache.yml" in names, names

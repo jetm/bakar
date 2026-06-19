@@ -11,6 +11,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
+    _combine_overlays_with_tuning,
     _dispatch_bsp,
     _dispatch_from_yaml,
     _overlay_for,
@@ -74,10 +75,11 @@ def dump(
         user_config=_state._USER_CONFIG,
     )
     overlay_source = _overlay_for(bsp)
+    extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
     # dump is not a build: use an ephemeral run dir so it does not leave a
     # bogus build/runs/<ts>/ entry that `report`/`triage` would surface.
     with tempfile.TemporaryDirectory() as runs_tmp, RunLogger(runs_dir=Path(runs_tmp)) as log:
-        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source, extra_overlays=user_extras)
+        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source, extra_overlays=extra_overlays)
         try:
             rc = step_kas.run_kas_subcommand(
                 kas_ctx,

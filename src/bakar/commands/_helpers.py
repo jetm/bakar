@@ -211,6 +211,25 @@ def _tuning_extra_overlays(cfg: BuildConfig) -> list[Path]:
     ]
 
 
+def _combine_overlays_with_tuning(user_extras: list[Path], cfg: BuildConfig) -> list[Path]:
+    """Append cfg's opt-in tuning overlays to user_extras, deduping by resolved path.
+
+    User-supplied colon overlays come first; tuning overlays land last so they win
+    in kas merge order (the sccache/hashequiv overlays do ``INHERIT:remove`` after
+    the base config's ``INHERIT +=``). Mirrors the BYO combine in ``build.py`` so
+    inspection commands (``dump``, ``getvar``) flatten the same overlay set the
+    build actually runs.
+    """
+    combined = list(user_extras)
+    seen = {p.resolve() for p in combined}
+    for overlay in _tuning_extra_overlays(cfg):
+        resolved = overlay.resolve()
+        if resolved not in seen:
+            combined.append(overlay)
+            seen.add(resolved)
+    return combined
+
+
 # ---------------------------------------------------------------------------
 # Build-directory cleanup
 # ---------------------------------------------------------------------------

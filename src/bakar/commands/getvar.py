@@ -18,6 +18,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
+    _combine_overlays_with_tuning,
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
@@ -105,10 +106,11 @@ def getvar(
         user_config=_state._USER_CONFIG,
     )
     overlay_source = _overlay_for(bsp)
+    extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
-        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source, extra_overlays=user_extras)
+        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source, extra_overlays=extra_overlays)
 
         if history:
             _run_history(kas_ctx, log, var, recipe, output_json)

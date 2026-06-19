@@ -153,6 +153,7 @@ def test_getvar_colon_overlay_forwarded_to_ctx(
     nxp_workspace: Path,
     machine_yaml: Path,
     overlay_yaml: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A colon-joined positional 'machine.yml:overlay.yml' lands in ctx.extra_overlays.
 
@@ -160,7 +161,13 @@ def test_getvar_colon_overlay_forwarded_to_ctx(
     'a.yml:b.yml' string through filesystem resolution, failing with
     'kas YAML not found'. It must split on ':' like ``bakar build`` and thread
     the trailing segments through as overlays.
+
+    Pins a default ``UserConfig`` so no opt-in tuning overlays are appended,
+    isolating this assertion to the user-supplied colon overlay.
     """
+    from bakar.user_config import UserConfig
+
+    monkeypatch.setattr("bakar.commands._app._load_user_config_safe", UserConfig)
     calls: list[dict] = []
     fake = _make_fake_capture_ctx([(_GETVAR_OUTPUT, 0)], calls)
     kas_arg = f"{machine_yaml}:{overlay_yaml}"
@@ -183,8 +190,16 @@ def test_getvar_single_yaml_no_extras(
     runner: _CliRunner,
     nxp_workspace: Path,
     machine_yaml: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A bare single positional YAML leaves ctx.extra_overlays empty (no behavior change)."""
+    """A bare single positional YAML and a default config leave ctx.extra_overlays empty.
+
+    Pins a default ``UserConfig`` (no tuning enabled) so neither a user overlay
+    nor an opt-in tuning overlay appears.
+    """
+    from bakar.user_config import UserConfig
+
+    monkeypatch.setattr("bakar.commands._app._load_user_config_safe", UserConfig)
     calls: list[dict] = []
     fake = _make_fake_capture_ctx([(_GETVAR_OUTPUT, 0)], calls)
 
@@ -563,3 +578,32 @@ def test_getvar_no_workspace_exits_2(runner: _CliRunner, tmp_path: Path, monkeyp
         ["getvar", _VAR, "--manifest", _MANIFEST],
     )
     assert result.exit_code == 2
+
+
+@pytest.mark.unit
+def test_getvar_applies_sccache_tuning_overlay_when_enabled(
+    runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """getvar must apply the sccache tuning overlay so ``bakar getvar CC`` can show the prefix.
+
+    The runbook's A1 check runs ``bakar getvar CC`` to confirm ``CCACHE = "sccache "``
+    reached ``CC``. If getvar omits the opt-in tuning overlays, the launcher swap is
+    invisible and the documented check is a false negative.
+    """
+    from bakar.user_config import UserConfig
+
+    calls: list[dict] = []
+    fake = _make_fake_capture_ctx([(_GETVAR_OUTPUT, 0)], calls)
+    uc = UserConfig(sccache_dist=True, sccache_scheduler_url="http://localhost:10600")
+    monkeypatch.setattr("bakar.commands._app._load_user_config_safe", lambda: uc)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", _VAR, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    names = [p.name for p in calls[0]["extra_overlays"]]
+    assert "bakar-tuning-sccache.yml" in names, names
