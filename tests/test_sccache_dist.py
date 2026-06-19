@@ -235,3 +235,70 @@ def test_resolve_build_help_shows_sccache_options() -> None:
     plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
     assert "--sccache-dist" in plain
     assert "--sccache-scheduler" in plain
+
+
+# ---------------------------------------------------------------------------
+# Task 3.1: host-mode build-env passthrough. When cfg.use_sccache_dist, the
+# scheduler URL is exported into the build env (BAKAR_SCCACHE_SCHEDULER_URL,
+# mirroring BAKAR_SSTATE_MIRROR_URL) for the sccache overlay to consume; no key
+# is emitted when disabled. This is the host-mode path only - no container
+# mounts or host-gateway rewrite here. The ``host_env`` keyword groups these
+# tests for the task's verify command.
+# ---------------------------------------------------------------------------
+
+
+def _sccache_build_cfg(
+    workspace: Path,
+    *,
+    sccache_dist: bool = False,
+    sccache_scheduler_url: str | None = None,
+) -> object:
+    """Return a host-mode BuildConfig with the sccache knobs set."""
+    from bakar.config import BuildConfig
+
+    return BuildConfig(
+        workspace=workspace,
+        bsp_family="nxp",  # type: ignore[arg-type]
+        machine="imx8mp-var-dart",
+        distro="fsl-imx-xwayland",
+        image="core-image-minimal",
+        manifest="imx-6.6.52-2.2.2.xml",
+        repo_url="https://example.invalid/repo.git",
+        repo_branch="imx-6.6.52-2.2.2",
+        container_image="jetm/kas-build-env:5.2-f40",
+        host_mode=True,
+        sccache_dist=sccache_dist,
+        sccache_scheduler_url=sccache_scheduler_url,
+    )
+
+
+@pytest.mark.unit
+def test_host_env_carries_scheduler_when_enabled(tmp_path: Path) -> None:
+    """When sccache_dist is enabled, the scheduler URL lands in the build env."""
+    from bakar.steps.kas_build import _build_env
+
+    cfg = _sccache_build_cfg(
+        tmp_path,
+        sccache_dist=True,
+        sccache_scheduler_url="http://localhost:10600",
+    )
+
+    env = _build_env(cfg, ensure_hashserv=False)
+
+    assert env["BAKAR_SCCACHE_SCHEDULER_URL"] == "http://localhost:10600"
+
+
+@pytest.mark.unit
+def test_host_env_omits_sccache_when_disabled(tmp_path: Path) -> None:
+    """When sccache_dist is disabled, no sccache key is emitted (falsifier guard)."""
+    from bakar.steps.kas_build import _build_env
+
+    cfg = _sccache_build_cfg(
+        tmp_path,
+        sccache_dist=False,
+        sccache_scheduler_url="http://localhost:10600",
+    )
+
+    env = _build_env(cfg, ensure_hashserv=False)
+
+    assert "BAKAR_SCCACHE_SCHEDULER_URL" not in env

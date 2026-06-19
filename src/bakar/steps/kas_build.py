@@ -1199,6 +1199,12 @@ def _build_env(
         passthrough.setdefault("SSTATE_MIRRORS", cfg.sstate_mirrors)
     if cfg.sstate_mirror_url is not None:
         passthrough.setdefault("BAKAR_SSTATE_MIRROR_URL", cfg.sstate_mirror_url)
+    # sccache-dist scheduler: exported only when distributed-compile is enabled,
+    # so a disabled build is byte-for-byte unchanged. The sccache overlay reads
+    # this var (like BAKAR_SSTATE_MIRROR_URL above). Host-mode only - the
+    # container path adds the binary mount and host-gateway rewrite separately.
+    if cfg.use_sccache_dist and cfg.sccache_scheduler_url is not None:
+        passthrough.setdefault("BAKAR_SCCACHE_SCHEDULER_URL", cfg.sccache_scheduler_url)
     # Scheduler and PSI thresholds:
     # only emit when set (empty dimension is disabled in the overlay via the
     # os.environ.get(..., '') expression, so omitting the key is equivalent).
