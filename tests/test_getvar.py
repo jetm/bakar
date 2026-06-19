@@ -607,3 +607,29 @@ def test_getvar_applies_sccache_tuning_overlay_when_enabled(
     assert len(calls) == 1
     names = [p.name for p in calls[0]["extra_overlays"]]
     assert "bakar-tuning-sccache.yml" in names, names
+
+
+@pytest.mark.unit
+def test_getvar_sccache_dist_flag_applies_overlay(
+    runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``--sccache-dist`` flag enables the overlay without a UserConfig entry.
+
+    --sccache-dist is a global flag, not build-only: it lets ``bakar getvar
+    CC --recipe <target> --sccache-dist`` resolve the same value a
+    --sccache-dist build runs, so the launcher swap can be verified by
+    inspection. No UserConfig is set here, proving the flag alone enables it.
+    """
+    calls: list[dict] = []
+    fake = _make_fake_capture_ctx([(_GETVAR_OUTPUT, 0)], calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", _VAR, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace), "--sccache-dist"],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    names = [p.name for p in calls[0]["extra_overlays"]]
+    assert "bakar-tuning-sccache.yml" in names, names

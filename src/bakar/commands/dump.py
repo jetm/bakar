@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated
 
@@ -48,6 +49,17 @@ def dump(
             help="Write the resolved YAML to this path instead of stdout.",
         ),
     ] = None,
+    sccache_dist: Annotated[
+        bool,
+        typer.Option(
+            "--sccache-dist",
+            help="Apply the sccache-dist overlay so the flattened YAML matches a --sccache-dist build.",
+        ),
+    ] = False,
+    sccache_scheduler: Annotated[
+        str | None,
+        typer.Option("--sccache-scheduler", help="sccache-dist scheduler URL, e.g. http://localhost:10600"),
+    ] = None,
 ) -> None:
     """Flatten the build kas YAML plus tuning overlay into a single resolved YAML.
 
@@ -74,6 +86,10 @@ def dump(
         kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
     )
+    if sccache_dist:
+        cfg = replace(cfg, sccache_dist=True)
+    if sccache_scheduler is not None:
+        cfg = replace(cfg, sccache_scheduler_url=sccache_scheduler)
     overlay_source = _overlay_for(bsp)
     extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
     # dump is not a build: use an ephemeral run dir so it does not leave a

@@ -155,3 +155,24 @@ def test_dump_applies_sccache_tuning_overlay_when_enabled(
     assert len(stub.calls) == 1
     names = [p.name for p in stub.calls[0]["extra_overlays"]]
     assert "bakar-tuning-sccache.yml" in names, names
+
+
+@pytest.mark.unit
+def test_dump_sccache_dist_flag_applies_overlay(
+    runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``--sccache-dist`` flag enables the overlay without a UserConfig entry.
+
+    --sccache-dist is a global flag, not build-only: ``bakar dump --sccache-dist``
+    must flatten the same overlay set a --sccache-dist build runs. No UserConfig
+    is set here, proving the flag alone enables it.
+    """
+    stub = _Stub(rc=0)
+    monkeypatch.setattr(dump_module.step_kas, "run_kas_subcommand", stub)
+
+    result = runner.invoke(app, ["dump", "--workspace", str(nxp_workspace), "--sccache-dist"])
+
+    assert result.exit_code == 0, result.output
+    assert len(stub.calls) == 1
+    names = [p.name for p in stub.calls[0]["extra_overlays"]]
+    assert "bakar-tuning-sccache.yml" in names, names

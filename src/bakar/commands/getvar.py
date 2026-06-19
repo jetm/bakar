@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import shlex
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated
 
@@ -77,6 +78,17 @@ def getvar(
         bool,
         typer.Option("--json", help="Emit a JSON document with keys var, recipe, value/history."),
     ] = False,
+    sccache_dist: Annotated[
+        bool,
+        typer.Option(
+            "--sccache-dist",
+            help="Apply the sccache-dist overlay so the resolved value matches a --sccache-dist build.",
+        ),
+    ] = False,
+    sccache_scheduler: Annotated[
+        str | None,
+        typer.Option("--sccache-scheduler", help="sccache-dist scheduler URL, e.g. http://localhost:10600"),
+    ] = None,
 ) -> None:
     """Resolve a BitBake variable inside kas-container.
 
@@ -105,6 +117,10 @@ def getvar(
         kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
     )
+    if sccache_dist:
+        cfg = replace(cfg, sccache_dist=True)
+    if sccache_scheduler is not None:
+        cfg = replace(cfg, sccache_scheduler_url=sccache_scheduler)
     overlay_source = _overlay_for(bsp)
     extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
