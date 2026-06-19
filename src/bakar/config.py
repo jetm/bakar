@@ -237,6 +237,12 @@ class BuildConfig:
     # the recommended pressure_max_* back to config.toml.
     psi_autocalibrate: bool = field(default=False)
     sstate_mirror_url: str | None = field(default=None)
+    # Distributed-compile via sccache-dist. When sccache_dist is True the tuning
+    # stack swaps OE's compiler launcher to sccache and the client points at
+    # sccache_scheduler_url. Both default to their unset values, so a build is
+    # byte-for-byte unchanged (ccache stays) until the user opts in.
+    sccache_dist: bool = field(default=False)
+    sccache_scheduler_url: str | None = field(default=None)
     # [host] doctor thresholds; defaults equal today's hardcoded literals in
     # diagnostics.py so verdicts are byte-identical until a value is written.
     # Resolved with precedence workspace .bakar.toml [host] > user config.toml [host] > default.
@@ -263,6 +269,11 @@ class BuildConfig:
     def use_shared_cache(self) -> bool:
         """True when an sstate mirror URL is configured."""
         return bool(self.sstate_mirror_url)
+
+    @property
+    def use_sccache_dist(self) -> bool:
+        """True when distributed-compile via sccache-dist is enabled."""
+        return bool(self.sccache_dist)
 
     @property
     def workspace_subdir(self) -> str:
@@ -614,6 +625,8 @@ def resolve(
         ccache_dir=user_config.ccache_dir if user_config else None,
         psi_autocalibrate=user_config.psi_autocalibrate if user_config else False,
         sstate_mirror_url=user_config.sstate_mirror_url if user_config else None,
+        sccache_dist=user_config.sccache_dist if user_config else False,
+        sccache_scheduler_url=user_config.sccache_scheduler_url if user_config else None,
         host_inotify_instances=int(_host("host_inotify_instances", 4096)),
         host_inotify_watches=int(_host("host_inotify_watches", 524288)),
         host_swappiness_max=int(_host("host_swappiness_max", 20)),

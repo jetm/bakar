@@ -64,6 +64,8 @@ class _BbsetupCtx:
     keep_going: bool
     show_layers: bool
     sstate_mirror: str | None
+    sccache_dist: bool = False
+    sccache_scheduler: str | None = None
     target: str | None = None
     dry_run_script: str | None = None
 
@@ -84,6 +86,10 @@ def _run_bbsetup_build(
     )
     if ctx.sstate_mirror is not None:
         cfg = replace(cfg, sstate_mirror_url=ctx.sstate_mirror)
+    if ctx.sccache_dist:
+        cfg = replace(cfg, sccache_dist=True)
+    if ctx.sccache_scheduler is not None:
+        cfg = replace(cfg, sccache_scheduler_url=ctx.sccache_scheduler)
     overlay_source = _overlay_for(None)
     bb_target = cfg.image if cfg.image not in ("", "generic") else "core-image-minimal"
 
@@ -320,6 +326,8 @@ def _run_single_preset_release(
     clean: bool,
     show_layers: bool,
     sstate_mirror: str | None,
+    sccache_dist: bool = False,
+    sccache_scheduler: str | None = None,
     target: str | None = None,
 ) -> int:
     """Run the full build pipeline for one PresetSpec and return the exit code.
@@ -366,6 +374,10 @@ def _run_single_preset_release(
     )
     if sstate_mirror is not None:
         cfg = replace(cfg, sstate_mirror_url=sstate_mirror)
+    if sccache_dist:
+        cfg = replace(cfg, sccache_dist=True)
+    if sccache_scheduler is not None:
+        cfg = replace(cfg, sccache_scheduler_url=sccache_scheduler)
 
     overlay_source = _overlay_for(bsp)
     extra_overlays: list[Path] = []
@@ -495,6 +507,14 @@ def build(
         str | None,
         typer.Option("--sstate-mirror", help="HTTP sstate/downloads mirror URL; enables the shared-cache overlay"),
     ] = None,
+    sccache_dist: Annotated[
+        bool,
+        typer.Option("--sccache-dist", help="Route do_compile through sccache-dist; enables the sccache overlay"),
+    ] = False,
+    sccache_scheduler: Annotated[
+        str | None,
+        typer.Option("--sccache-scheduler", help="sccache-dist scheduler URL, e.g. http://localhost:10600"),
+    ] = None,
     dry_run_script: Annotated[
         str | None,
         typer.Option(
@@ -599,6 +619,8 @@ def build(
                 clean=clean,
                 show_layers=show_layers,
                 sstate_mirror=sstate_mirror,
+                sccache_dist=sccache_dist,
+                sccache_scheduler=sccache_scheduler,
                 target=target,
             )
             elapsed = time.monotonic() - t0
@@ -641,6 +663,8 @@ def build(
                 keep_going=keep_going,
                 show_layers=show_layers,
                 sstate_mirror=sstate_mirror,
+                sccache_dist=sccache_dist,
+                sccache_scheduler=sccache_scheduler,
                 target=target,
                 dry_run_script=dry_run_script,
             ),
@@ -684,6 +708,10 @@ def build(
     )
     if sstate_mirror is not None:
         cfg = replace(cfg, sstate_mirror_url=sstate_mirror)
+    if sccache_dist:
+        cfg = replace(cfg, sccache_dist=True)
+    if sccache_scheduler is not None:
+        cfg = replace(cfg, sccache_scheduler_url=sccache_scheduler)
 
     extra_overlays: list[Path] = []
     if byo_form:

@@ -114,3 +114,124 @@ def test_config_sccache_keys_present_in_settings_schema() -> None:
     assert "build.sccache_scheduler_url" in SETTINGS_SCHEMA
     assert SETTINGS_SCHEMA["build.sccache_dist"].is_bool is True
     assert SETTINGS_SCHEMA["build.sccache_scheduler_url"].is_bool is False
+
+
+# ---------------------------------------------------------------------------
+# Task 1.2: BuildConfig fields, resolution, use_sccache_dist property, and
+# the --sccache-dist / --sccache-scheduler CLI options. The ``resolve``
+# keyword groups these tests for the task's verify command.
+# ---------------------------------------------------------------------------
+
+
+def _nxp_workspace(tmp_path: Path) -> Path:
+    """Return a workspace path with the nxp subdir present (resolve() needs it)."""
+    (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
+    return tmp_path
+
+
+@pytest.mark.unit
+def test_resolve_use_sccache_dist_true_when_dist_set() -> None:
+    """use_sccache_dist is True when sccache_dist is set (mirrors use_shared_cache)."""
+    from pathlib import Path
+
+    from bakar.config import BuildConfig
+
+    cfg = BuildConfig(
+        workspace=Path("/tmp"),
+        bsp_family="nxp",
+        machine="m",
+        distro="d",
+        image="i",
+        manifest="x.xml",
+        repo_url="https://example.com",
+        repo_branch="main",
+        container_image="img:latest",
+        sccache_dist=True,
+    )
+    assert cfg.use_sccache_dist is True
+
+
+@pytest.mark.unit
+def test_resolve_use_sccache_dist_false_by_default() -> None:
+    """use_sccache_dist is False when sccache_dist defaults to False (falsifier)."""
+    from pathlib import Path
+
+    from bakar.config import BuildConfig
+
+    cfg = BuildConfig(
+        workspace=Path("/tmp"),
+        bsp_family="nxp",
+        machine="m",
+        distro="d",
+        image="i",
+        manifest="x.xml",
+        repo_url="https://example.com",
+        repo_branch="main",
+        container_image="img:latest",
+    )
+    assert cfg.use_sccache_dist is False
+
+
+@pytest.mark.unit
+def test_resolve_threads_sccache_dist_from_user_config_true(tmp_path: Path) -> None:
+    """UserConfig(sccache_dist=True) threads to cfg.sccache_dist is True."""
+    from bakar.config import resolve
+
+    uc = UserConfig(sccache_dist=True, sccache_scheduler_url="http://localhost:10600")
+
+    cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+
+    assert cfg.sccache_dist is True
+    assert cfg.sccache_scheduler_url == "http://localhost:10600"
+    assert cfg.use_sccache_dist is True
+
+
+@pytest.mark.unit
+def test_resolve_sccache_dist_default_false_without_user_config(tmp_path: Path) -> None:
+    """Without a user_config, sccache_dist resolves to False and url to None."""
+    from bakar.config import resolve
+
+    cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp")
+
+    assert cfg.sccache_dist is False
+    assert cfg.sccache_scheduler_url is None
+    assert cfg.use_sccache_dist is False
+
+
+@pytest.mark.unit
+def test_resolve_cli_scheduler_overrides_config(tmp_path: Path) -> None:
+    """The --sccache-scheduler CLI value overrides a config-set scheduler URL.
+
+    Mirrors the replace(cfg, sccache_scheduler_url=...) sites in build.py: the
+    CLI flag wins over the value resolved from UserConfig. This is the task's
+    falsifier guard - a config-set scheduler URL must NOT survive a CLI flag.
+    """
+    from dataclasses import replace
+
+    from bakar.config import resolve
+
+    uc = UserConfig(sccache_dist=True, sccache_scheduler_url="http://config-host:10600")
+    cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+
+    cli_scheduler = "http://cli-host:10600"
+    cfg = replace(cfg, sccache_scheduler_url=cli_scheduler)
+
+    assert cfg.sccache_scheduler_url == cli_scheduler
+
+
+@pytest.mark.unit
+def test_resolve_build_help_shows_sccache_options() -> None:
+    """`bakar build --help` must expose --sccache-dist and --sccache-scheduler."""
+    import re
+
+    from typer.testing import CliRunner
+
+    from bakar.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["build", "--help"])
+
+    assert result.exit_code == 0, result.output
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "--sccache-dist" in plain
+    assert "--sccache-scheduler" in plain

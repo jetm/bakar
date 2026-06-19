@@ -51,6 +51,8 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.ccache_shared": "true",
         "build.ccache_dir": "/data/ccache",
         "build.psi_autocalibrate": "true",
+        "build.sccache_dist": "true",
+        "build.sccache_scheduler_url": "http://localhost:10600",
         "layers.show_hashes": "true",
         "layers.show_sstate_summary": "true",
         "host.inotify_instances": "8192",
@@ -91,6 +93,9 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert cfg.ccache_shared is True
     assert cfg.ccache_dir == "/data/ccache"
     assert cfg.psi_autocalibrate is True
+    assert cfg.sccache_dist is True
+    assert isinstance(cfg.sccache_dist, bool)
+    assert cfg.sccache_scheduler_url == "http://localhost:10600"
     assert cfg.show_hashes is True
     assert cfg.show_sstate_summary is True
     assert cfg.host_inotify_instances == 8192
