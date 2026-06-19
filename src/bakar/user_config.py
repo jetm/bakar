@@ -27,6 +27,7 @@ _STR_FIELDS = {
     "sstate_mirror_url",
     "scheduler",
     "ccache_dir",
+    "sccache_scheduler_url",
 }
 _BOOL_FIELDS = {
     "show_doctor_report",
@@ -35,6 +36,7 @@ _BOOL_FIELDS = {
     "hashserv",
     "ccache_shared",
     "psi_autocalibrate",
+    "sccache_dist",
 }
 _INT_FIELDS: set[str] = {
     "stall_abort_secs",
@@ -75,6 +77,8 @@ class UserConfig:
     sstate_mirrors: str | None = None
     sstate_mirror_url: str | None = None
     scheduler: str | None = None
+    sccache_dist: bool = False
+    sccache_scheduler_url: str | None = None
     pressure_max_cpu: float | None = None
     pressure_max_io: float | None = None
     pressure_max_memory: float | None = None
@@ -124,6 +128,8 @@ _BUILD_KEYS = {
     "sstate_mirrors": "sstate_mirrors",
     "sstate_mirror_url": "sstate_mirror_url",
     "scheduler": "scheduler",
+    "sccache_dist": "sccache_dist",
+    "sccache_scheduler_url": "sccache_scheduler_url",
     "pressure_max_cpu": "pressure_max_cpu",
     "pressure_max_io": "pressure_max_io",
     "pressure_max_memory": "pressure_max_memory",
