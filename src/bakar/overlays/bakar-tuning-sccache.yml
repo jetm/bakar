@@ -1,0 +1,42 @@
+# Distributed-compile opt-in overlay (sccache-dist).
+#
+# This overlay is configured by the `sccache_dist` config key (or the
+# `--sccache-dist` CLI flag). It is never auto-loaded by bakar; bakar appends
+# it automatically only when sccache-dist is enabled.
+#
+# What it does: swaps OE's compiler launcher from ccache to sccache. OE expands
+# `${CCACHE}` into `CC` (CC = "${CCACHE}${HOST_PREFIX}gcc ..."), so setting
+# CCACHE = "sccache " routes every C/C++ compile through sccache, which on Linux
+# auto-packages the in-use cross-compiler and ships do_compile jobs to the
+# sccache-dist scheduler/build-server fleet.
+#
+# ccache and sccache are mutually-exclusive launchers: both take the compiler as
+# their next argument, so chaining them double-wraps CC and breaks caching. The
+# generic tuning overlay inherits ccache (INHERIT += "ccache"); this overlay
+# removes that inherit so only sccache wraps the compiler.
+#
+# The scheduler URL is supplied at build time via the BAKAR_SCCACHE_SCHEDULER_URL
+# environment variable, which bakar exports from the configured
+# sccache_scheduler_url (host-mode path). Declaring it in the env block makes kas
+# whitelist it through BB_ENV_PASSTHROUGH_ADDITIONS so the in-build sccache
+# client can read it.
+
+header:
+  version: 21
+
+env:
+  # Passthrough-only (null = no default): bakar exports the scheduler target from
+  # the configured sccache_scheduler_url. When unset, the sccache client falls
+  # back to its own config (SCCACHE_CONF) or local-cache-only mode.
+  BAKAR_SCCACHE_SCHEDULER_URL: null
+
+local_conf_header:
+  bakar-tuning-sccache: |
+    # Route OE's compiler launcher through sccache instead of ccache.
+    CCACHE = "sccache "
+    # ccache and sccache are mutually-exclusive launchers; drop the ccache
+    # inherit added by the generic tuning overlay so only sccache wraps CC.
+    INHERIT:remove = "ccache"
+    # Point the in-build sccache client at the configured scheduler. Empty when
+    # unset, which leaves the client on its own config / local-cache mode.
+    export SCCACHE_DIST_SCHEDULER_URL = "${@os.environ.get('BAKAR_SCCACHE_SCHEDULER_URL', '')}"

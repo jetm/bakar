@@ -302,3 +302,110 @@ def test_host_env_omits_sccache_when_disabled(tmp_path: Path) -> None:
     env = _build_env(cfg, ensure_hashserv=False)
 
     assert "BAKAR_SCCACHE_SCHEDULER_URL" not in env
+
+
+# ---------------------------------------------------------------------------
+# Task 2.1: the sccache tuning overlay and its append helper. When
+# cfg.use_sccache_dist, _sccache_extra_overlays() returns the
+# bakar-tuning-sccache.yml path and _tuning_extra_overlays() includes it;
+# both yield nothing when disabled. The overlay swaps the compiler launcher
+# (CCACHE = "sccache ") and removes the mutually-exclusive ccache inherit
+# (INHERIT:remove = "ccache"). The ``overlay`` keyword groups these tests for
+# the task's verify command.
+# ---------------------------------------------------------------------------
+
+
+def _overlay_cfg(*, sccache_dist: bool = False) -> object:
+    """Return a minimal BuildConfig for the overlay helper tests."""
+    from pathlib import Path
+
+    from bakar.config import BuildConfig
+
+    return BuildConfig(
+        workspace=Path("/tmp"),
+        bsp_family="nxp",  # type: ignore[arg-type]
+        machine="m",
+        distro="d",
+        image="i",
+        manifest="x.xml",
+        repo_url="https://example.com",
+        repo_branch="main",
+        container_image="img:latest",
+        sccache_dist=sccache_dist,
+    )
+
+
+@pytest.mark.unit
+def test_overlay_sccache_extra_overlays_returns_path_when_enabled() -> None:
+    """When use_sccache_dist is True the helper returns the sccache overlay path."""
+    from bakar.commands._helpers import _sccache_extra_overlays
+
+    cfg = _overlay_cfg(sccache_dist=True)
+    result = _sccache_extra_overlays(cfg)  # type: ignore[arg-type]
+
+    assert len(result) == 1
+    assert result[0].name == "bakar-tuning-sccache.yml"
+    assert result[0].is_file(), "overlay file must exist in the installed overlays/ dir"
+
+
+@pytest.mark.unit
+def test_overlay_sccache_extra_overlays_returns_empty_when_disabled() -> None:
+    """When use_sccache_dist is False the helper returns an empty list (falsifier)."""
+    from bakar.commands._helpers import _sccache_extra_overlays
+
+    cfg = _overlay_cfg(sccache_dist=False)
+    result = _sccache_extra_overlays(cfg)  # type: ignore[arg-type]
+
+    assert result == []
+
+
+@pytest.mark.unit
+def test_overlay_in_tuning_stack_when_enabled() -> None:
+    """_tuning_extra_overlays includes the sccache overlay when enabled."""
+    from bakar.commands._helpers import _tuning_extra_overlays
+
+    cfg = _overlay_cfg(sccache_dist=True)
+    names = [p.name for p in _tuning_extra_overlays(cfg)]  # type: ignore[arg-type]
+
+    assert "bakar-tuning-sccache.yml" in names
+
+
+@pytest.mark.unit
+def test_overlay_absent_from_tuning_stack_when_disabled() -> None:
+    """_tuning_extra_overlays omits the sccache overlay when disabled (falsifier)."""
+    from bakar.commands._helpers import _tuning_extra_overlays
+
+    cfg = _overlay_cfg(sccache_dist=False)
+    names = [p.name for p in _tuning_extra_overlays(cfg)]  # type: ignore[arg-type]
+
+    assert "bakar-tuning-sccache.yml" not in names
+
+
+@pytest.mark.unit
+def test_overlay_swaps_launcher_and_removes_ccache_inherit() -> None:
+    """The overlay routes CC through sccache and drops the ccache inherit.
+
+    ccache and sccache are mutually-exclusive launchers; chaining them
+    double-wraps the compiler and breaks caching. This is the task's
+    falsifier guard - the overlay MUST remove ccache when enabling sccache.
+    """
+    from bakar.commands._helpers import _sccache_extra_overlays
+
+    cfg = _overlay_cfg(sccache_dist=True)
+    overlay = _sccache_extra_overlays(cfg)[0]  # type: ignore[arg-type]
+    text = overlay.read_text()
+
+    assert 'CCACHE = "sccache "' in text
+    assert 'INHERIT:remove = "ccache"' in text
+
+
+@pytest.mark.unit
+def test_overlay_exports_sccache_scheduler_env() -> None:
+    """The overlay declares the scheduler-URL passthrough env var so kas whitelists it."""
+    from bakar.commands._helpers import _sccache_extra_overlays
+
+    cfg = _overlay_cfg(sccache_dist=True)
+    overlay = _sccache_extra_overlays(cfg)[0]  # type: ignore[arg-type]
+    text = overlay.read_text()
+
+    assert "BAKAR_SCCACHE_SCHEDULER_URL" in text

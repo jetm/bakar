@@ -197,9 +197,18 @@ def _shared_cache_extra_overlays(cfg: BuildConfig) -> list[Path]:
     return _conditional_overlay(cfg.use_shared_cache, "bakar-tuning-shared-cache.yml")
 
 
+def _sccache_extra_overlays(cfg: BuildConfig) -> list[Path]:
+    """Return the sccache overlay path when ``cfg.use_sccache_dist`` is True."""
+    return _conditional_overlay(cfg.use_sccache_dist, "bakar-tuning-sccache.yml")
+
+
 def _tuning_extra_overlays(cfg: BuildConfig) -> list[Path]:
-    """Return all opt-in tuning overlay paths for cfg (hashequiv + shared-cache)."""
-    return [*_hashequiv_extra_overlays(cfg), *_shared_cache_extra_overlays(cfg)]
+    """Return all opt-in tuning overlay paths for cfg (hashequiv + shared-cache + sccache)."""
+    return [
+        *_hashequiv_extra_overlays(cfg),
+        *_shared_cache_extra_overlays(cfg),
+        *_sccache_extra_overlays(cfg),
+    ]
 
 
 # ---------------------------------------------------------------------------
