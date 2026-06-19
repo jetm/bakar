@@ -1438,7 +1438,7 @@ def check_sccache_dist(cfg: BuildConfig) -> CheckResult:
     did not opt into distributed compilation so there is nothing to verify and
     the build is byte-for-byte unchanged.
 
-    When enabled, the check enforces two prerequisites so a missing one fails
+    When enabled, the check enforces three prerequisites so a missing one fails
     fast at BLOCK severity instead of silently degrading to a local-only
     compile:
 
@@ -1447,6 +1447,10 @@ def check_sccache_dist(cfg: BuildConfig) -> CheckResult:
        ``cfg.sccache_scheduler_url`` is parsed and a 1-second TCP
        ``create_connection`` to it succeeds (mirroring :func:`check_hashserv`).
        An unset URL fails too - there is nothing to distribute to.
+    3. The running client has distributed compile enabled: ``sccache
+       --dist-status`` does not report ``Disabled``. A reachable scheduler with
+       a client whose ``~/.config/sccache/config`` lacks the auth token still
+       compiles local-only, which the TCP probe alone cannot catch.
     """
     name = "sccache-dist"
     if not cfg.use_sccache_dist:
@@ -1490,7 +1494,41 @@ def check_sccache_dist(cfg: BuildConfig) -> CheckResult:
             fix_hint="Start the sccache-dist scheduler and confirm the URL/port.",
         )
     sock.close()
-    return _ok(name, Severity.BLOCK, f"sccache present; scheduler reachable at {host}:{port}")
+
+    # A reachable scheduler is necessary but not sufficient: if the running
+    # sccache client never loaded its dist config (e.g. ~/.config/sccache/config
+    # lacks the auth token) it reports "Disabled" and every compile silently
+    # runs local-only. `sccache --dist-status` is the only signal that reflects
+    # the client's real runtime state, so probe it rather than trust the TCP
+    # connect alone. A CLI hiccup must not block - the scheduler is reachable.
+    try:
+        status = subprocess.run(
+            ["sccache", "--dist-status"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except OSError, subprocess.SubprocessError:
+        return _ok(name, Severity.BLOCK, f"sccache present; scheduler reachable at {host}:{port}")
+
+    if "Disabled" in status.stdout:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            "sccache client reports distributed compile disabled",
+            fix_hint=(
+                "Set [dist] scheduler_url and [dist.auth] token in ~/.config/sccache/config, "
+                "then restart the client: sccache --stop-server && "
+                "SCCACHE_CONF=~/.config/sccache/config sccache --start-server."
+            ),
+        )
+
+    return _ok(
+        name,
+        Severity.BLOCK,
+        f"sccache present; scheduler reachable at {host}:{port}; client dist enabled",
+    )
 
 
 def check_hashserv(cfg: BuildConfig) -> CheckResult:

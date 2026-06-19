@@ -513,9 +513,11 @@ def test_doctor_sccache_fails_when_scheduler_unreachable(monkeypatch: pytest.Mon
 
 @pytest.mark.unit
 def test_doctor_sccache_passes_when_binary_and_scheduler_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The check PASSes when the binary is on PATH and the scheduler responds."""
+    """The check PASSes when binary is on PATH, scheduler responds, and client dist is enabled."""
     import shutil
     import socket
+    import subprocess
+    import types
 
     from bakar.diagnostics import Status, check_sccache_dist
 
@@ -526,11 +528,58 @@ def test_doctor_sccache_passes_when_binary_and_scheduler_present(monkeypatch: py
             pass
 
     monkeypatch.setattr(socket, "create_connection", lambda *a, **k: _FakeSock())
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(
+            stdout='{"SchedulerStatus":["http://localhost:10600/",{"num_servers":1}]}',
+            stderr="",
+            returncode=0,
+        ),
+    )
 
     cfg = _doctor_cfg(sccache_dist=True, sccache_scheduler_url="http://localhost:10600")
     result = check_sccache_dist(cfg)  # type: ignore[arg-type]
 
     assert result.status is Status.PASS
+
+
+@pytest.mark.unit
+def test_doctor_sccache_fails_when_client_dist_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reachable scheduler but a Disabled client must BLOCK, not pass to local-only.
+
+    Falsifier guard for the silent-degradation the check exists to prevent: when
+    ``~/.config/sccache/config`` lacks the dist auth token the running client
+    reports ``{"Disabled":"disabled"}`` and every compile runs local-only, yet a
+    bare TCP probe to the scheduler still succeeds. ``sccache --dist-status`` is
+    the only signal that reflects the client's real runtime state.
+    """
+    import shutil
+    import socket
+    import subprocess
+    import types
+
+    from bakar.diagnostics import Severity, Status, check_sccache_dist
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/sccache")
+
+    class _FakeSock:
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: _FakeSock())
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(stdout='{"Disabled":"disabled"}', stderr="", returncode=0),
+    )
+
+    cfg = _doctor_cfg(sccache_dist=True, sccache_scheduler_url="http://localhost:10600")
+    result = check_sccache_dist(cfg)  # type: ignore[arg-type]
+
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert "disabled" in result.message.lower()
 
 
 @pytest.mark.unit
