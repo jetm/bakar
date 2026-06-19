@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING
 import yaml
 from rich.live import Live
 
-from bakar import build_stop, hashserv, task_timings
+from bakar import build_stop, hashserv, sccache_server, task_timings
 from bakar.eventlog import tail_events
 from bakar.kas import KasGenOptions, write_yaml
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
@@ -1290,6 +1290,14 @@ def _build_env(
                 passthrough["BB_HASHSERVE"] = url
             else:
                 passthrough["BB_HASHSERVE"] = url.replace("localhost", "host.docker.internal")
+    # Persistent sccache server: in host mode, pre-start one detached server so
+    # it survives bitbake's per-task process-group teardown. Without it the
+    # first task's auto-started server dies with that task, churning fallbacks
+    # and poisoning the cache with truncated objects. Host mode only - in
+    # container mode sccache runs inside the container. ``ensure_hashserv``
+    # doubles as the side-effect guard, so dry-run/script-gen never spawn it.
+    if cfg.use_sccache_dist and cfg.host_mode and ensure_hashserv:
+        sccache_server.ensure_running(cfg.sccache_scheduler_url)
     if cfg.is_meta_avocado:
         passthrough["KAS_WORK_DIR"] = str(cfg.workspace)
         passthrough["KAS_BUILD_DIR"] = str(cfg.bsp_root / "build")

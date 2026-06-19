@@ -308,6 +308,57 @@ def test_host_env_omits_sccache_when_disabled(tmp_path: Path) -> None:
     assert "BAKAR_SCCACHE_SCHEDULER_URL" not in env
 
 
+@pytest.mark.unit
+def test_host_sccache_build_starts_persistent_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A real host-mode sccache build pre-starts the persistent server with the scheduler.
+
+    Without it the first bitbake task's auto-started server dies with that task,
+    churning fallbacks and poisoning the cache (the recurring -fPIC link error).
+    """
+    from bakar.steps import kas_build
+
+    calls: list[str | None] = []
+    monkeypatch.setattr(kas_build.sccache_server, "ensure_running", lambda url=None: calls.append(url) or True)
+    cfg = _sccache_build_cfg(tmp_path, sccache_dist=True, sccache_scheduler_url="http://localhost:10600")
+
+    kas_build._build_env(cfg, ensure_hashserv=True)  # type: ignore[arg-type]
+
+    assert calls == ["http://localhost:10600"]
+
+
+@pytest.mark.unit
+def test_dry_run_env_does_not_start_sccache_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Script-gen / dry-run (ensure_hashserv=False) never spawns a daemon (falsifier)."""
+    from bakar.steps import kas_build
+
+    calls: list[str | None] = []
+    monkeypatch.setattr(kas_build.sccache_server, "ensure_running", lambda url=None: calls.append(url) or True)
+    cfg = _sccache_build_cfg(tmp_path, sccache_dist=True, sccache_scheduler_url="http://localhost:10600")
+
+    kas_build._build_env(cfg, ensure_hashserv=False)  # type: ignore[arg-type]
+
+    assert calls == []
+
+
+@pytest.mark.unit
+def test_container_sccache_build_does_not_start_host_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Container mode runs sccache inside the container; no host server is pre-started."""
+    from dataclasses import replace
+
+    from bakar.steps import kas_build
+
+    calls: list[str | None] = []
+    monkeypatch.setattr(kas_build.sccache_server, "ensure_running", lambda url=None: calls.append(url) or True)
+    cfg = replace(
+        _sccache_build_cfg(tmp_path, sccache_dist=True, sccache_scheduler_url="http://localhost:10600"),
+        host_mode=False,
+    )
+
+    kas_build._build_env(cfg, ensure_hashserv=True)  # type: ignore[arg-type]
+
+    assert calls == []
+
+
 # ---------------------------------------------------------------------------
 # Task 2.1: the sccache tuning overlay and its append helper. When
 # cfg.use_sccache_dist, _sccache_extra_overlays() returns the
