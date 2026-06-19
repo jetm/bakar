@@ -419,6 +419,27 @@ def test_overlay_adds_sccache_to_hosttools() -> None:
 
 
 @pytest.mark.unit
+def test_overlay_grants_network_to_compile_tasks() -> None:
+    """The overlay grants network access to the compiler-invoking tasks.
+
+    bitbake runs every task in a fresh network namespace (loopback down) via
+    unshare(CLONE_NEWNET) unless the task sets [network] = "1" - only do_fetch
+    opts in by default. sccache-dist's client must reach the scheduler from
+    inside do_configure/do_compile, so without this the compiler fails with
+    "sccache: error: Network is unreachable". Caught by a real qemuarm64
+    zlib-native do_configure.
+    """
+    from bakar.commands._helpers import _sccache_extra_overlays
+
+    cfg = _overlay_cfg(sccache_dist=True)
+    overlay = _sccache_extra_overlays(cfg)[0]  # type: ignore[arg-type]
+    text = overlay.read_text()
+
+    assert 'do_configure[network] = "1"' in text
+    assert 'do_compile[network] = "1"' in text
+
+
+@pytest.mark.unit
 def test_overlay_exports_sccache_scheduler_env() -> None:
     """The overlay declares the scheduler-URL passthrough env var so kas whitelists it."""
     from bakar.commands._helpers import _sccache_extra_overlays
