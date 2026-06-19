@@ -1,0 +1,70 @@
+# Example kas YAML for a wrynose (Yocto master) minimal build on qemuarm64.
+#
+# aarch64 sibling of kas-qemux86-64-wrynose.yml. Only the machine differs;
+# the distro, target, and layer stack are architecture-agnostic. This variant
+# drives a true cross-compile (aarch64 target on an x86_64 host), which is the
+# case sccache-dist must auto-package and ship a cross-toolchain for.
+#
+# Clones all repos from upstream at build time. Requires network access and
+# a kas-container-compatible image with the Yocto build prerequisites.
+#
+# Layer coverage:
+#   - openembedded-core/meta:      core Yocto recipes and classes (wrynose)
+#   - meta-openembedded sub-layers: meta-oe, meta-python, meta-networking,
+#                                   meta-filesystems (wrynose)
+#
+# Layers excluded because their LAYERSERIES_COMPAT does not include wrynose
+# at the time of writing:
+#   - meta-yocto / meta-poky   -> currently targets blacksail (ahead of wrynose)
+#   - meta-raspberrypi         -> mickledore
+#   - meta-security            -> styhead/walnascar
+#   - meta-virtualization      -> styhead
+#
+# Bitbake:
+#   wrynose requires BB_MIN_VERSION = "2.18.0". The bitbake repo is cloned
+#   with layers: {} so it is not added to bblayers.conf. kas-container checks
+#   out all repos under /work/; oe-init-build-env then finds bitbake at
+#   /work/layers/bitbake/ via its $OEROOT/../bitbake sibling search.
+#
+# Usage:
+#   export KAS_CONTAINER_IMAGE=ghcr.io/siemens/kas/kas:5.2
+#   bakar build examples/kas-qemuarm64-wrynose.yml
+#
+# All repos are cloned under layers/ so a single .gitignore entry covers them:
+#   layers/
+#   build/
+
+header:
+  version: 21
+
+machine: qemuarm64
+# nodistro: oe-core is distro-less; use this until a wrynose meta-poky is
+# available. Swap to 'poky' once meta-yocto updates LAYERSERIES_COMPAT.
+distro: nodistro
+target: core-image-minimal
+
+repos:
+  bitbake:
+    url: https://git.openembedded.org/bitbake
+    branch: "2.18"
+    path: layers/bitbake
+    # layers: {} clones the repo but adds nothing to bblayers.conf.
+    # oe-init-build-env discovers bitbake via its $OEROOT/../bitbake sibling search.
+    layers: {}
+
+  openembedded-core:
+    url: https://git.openembedded.org/openembedded-core
+    branch: wrynose
+    path: layers/openembedded-core
+    layers:
+      meta:
+
+  meta-openembedded:
+    url: https://git.openembedded.org/meta-openembedded
+    branch: wrynose
+    path: layers/meta-openembedded
+    layers:
+      meta-oe:
+      meta-python:
+      meta-networking:
+      meta-filesystems:
