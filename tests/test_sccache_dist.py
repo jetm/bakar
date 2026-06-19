@@ -409,3 +409,141 @@ def test_overlay_exports_sccache_scheduler_env() -> None:
     text = overlay.read_text()
 
     assert "BAKAR_SCCACHE_SCHEDULER_URL" in text
+
+
+# ---------------------------------------------------------------------------
+# Task 3.2: the doctor/preflight gate. When cfg.use_sccache_dist, the gate
+# fails with an actionable message if the `sccache` binary is absent from PATH
+# or the configured scheduler URL does not respond, and passes when both are
+# present. SKIP when sccache_dist is disabled. The ``doctor`` keyword groups
+# these tests for the task's verify command.
+# ---------------------------------------------------------------------------
+
+
+def _doctor_cfg(
+    *,
+    sccache_dist: bool = False,
+    sccache_scheduler_url: str | None = None,
+) -> object:
+    """Return a host-mode BuildConfig for the sccache doctor-check tests."""
+    from pathlib import Path
+
+    from bakar.config import BuildConfig
+
+    return BuildConfig(
+        workspace=Path("/tmp"),
+        bsp_family="nxp",  # type: ignore[arg-type]
+        machine="m",
+        distro="d",
+        image="i",
+        manifest="x.xml",
+        repo_url="https://example.com",
+        repo_branch="main",
+        container_image="img:latest",
+        host_mode=True,
+        sccache_dist=sccache_dist,
+        sccache_scheduler_url=sccache_scheduler_url,
+    )
+
+
+@pytest.mark.unit
+def test_doctor_sccache_skips_when_disabled() -> None:
+    """The check SKIPs (does not fail) when sccache_dist is disabled."""
+    from bakar.diagnostics import Status, check_sccache_dist
+
+    cfg = _doctor_cfg(sccache_dist=False)
+    result = check_sccache_dist(cfg)  # type: ignore[arg-type]
+
+    assert result.status is Status.SKIP
+
+
+@pytest.mark.unit
+def test_doctor_sccache_in_shared_checks() -> None:
+    """The sccache check is wired into the shared check list so the gate runs it."""
+    from bakar.diagnostics import SHARED_CHECKS, check_sccache_dist
+
+    assert check_sccache_dist in SHARED_CHECKS
+
+
+@pytest.mark.unit
+def test_doctor_sccache_fails_when_binary_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the sccache binary is absent from PATH the check FAILs and BLOCKs.
+
+    This is the task's falsifier guard - a missing prerequisite must NOT
+    silently fall through to a local-only compile.
+    """
+    import shutil
+
+    from bakar.diagnostics import Severity, Status, check_sccache_dist
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    cfg = _doctor_cfg(sccache_dist=True, sccache_scheduler_url="http://localhost:10600")
+    result = check_sccache_dist(cfg)  # type: ignore[arg-type]
+
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert "sccache" in result.message
+
+
+@pytest.mark.unit
+def test_doctor_sccache_fails_when_scheduler_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the scheduler URL does not respond the check FAILs and BLOCKs.
+
+    Falsifier guard: the gate must NOT pass when the scheduler is down.
+    """
+    import shutil
+    import socket
+
+    from bakar.diagnostics import Severity, Status, check_sccache_dist
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/sccache")
+
+    def _refuse(*args: object, **kwargs: object) -> object:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(socket, "create_connection", _refuse)
+
+    cfg = _doctor_cfg(sccache_dist=True, sccache_scheduler_url="http://localhost:10600")
+    result = check_sccache_dist(cfg)  # type: ignore[arg-type]
+
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+
+
+@pytest.mark.unit
+def test_doctor_sccache_passes_when_binary_and_scheduler_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The check PASSes when the binary is on PATH and the scheduler responds."""
+    import shutil
+    import socket
+
+    from bakar.diagnostics import Status, check_sccache_dist
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/sccache")
+
+    class _FakeSock:
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: _FakeSock())
+
+    cfg = _doctor_cfg(sccache_dist=True, sccache_scheduler_url="http://localhost:10600")
+    result = check_sccache_dist(cfg)  # type: ignore[arg-type]
+
+    assert result.status is Status.PASS
+
+
+@pytest.mark.unit
+def test_doctor_sccache_fails_when_scheduler_url_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """sccache enabled but no scheduler URL configured FAILs (nothing to reach)."""
+    import shutil
+
+    from bakar.diagnostics import Severity, Status, check_sccache_dist
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/sccache")
+
+    cfg = _doctor_cfg(sccache_dist=True, sccache_scheduler_url=None)
+    result = check_sccache_dist(cfg)  # type: ignore[arg-type]
+
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK

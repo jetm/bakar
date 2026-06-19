@@ -23,6 +23,7 @@ import re
 import shutil
 import socket
 import subprocess
+import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -1430,6 +1431,68 @@ def check_ccache_health(cfg: BuildConfig) -> CheckResult:
     )
 
 
+def check_sccache_dist(cfg: BuildConfig) -> CheckResult:
+    """Verify the sccache client + scheduler are usable when distributed compile is on.
+
+    SKIP at INFO severity when ``cfg.use_sccache_dist`` is False - the user
+    did not opt into distributed compilation so there is nothing to verify and
+    the build is byte-for-byte unchanged.
+
+    When enabled, the check enforces two prerequisites so a missing one fails
+    fast at BLOCK severity instead of silently degrading to a local-only
+    compile:
+
+    1. The ``sccache`` binary is on PATH (the overlay routes ``CC`` through it).
+    2. The configured scheduler URL responds: the host/port from
+       ``cfg.sccache_scheduler_url`` is parsed and a 1-second TCP
+       ``create_connection`` to it succeeds (mirroring :func:`check_hashserv`).
+       An unset URL fails too - there is nothing to distribute to.
+    """
+    name = "sccache-dist"
+    if not cfg.use_sccache_dist:
+        return _skip(name, Severity.INFO, "distributed compile not configured ([build] sccache_dist = false)")
+
+    if shutil.which("sccache") is None:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            "sccache binary not found on PATH",
+            fix_hint="Install sccache (e.g. `cargo install sccache` or your package manager).",
+        )
+
+    url = cfg.sccache_scheduler_url
+    if not url:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            "sccache_dist is enabled but no scheduler URL is set",
+            fix_hint="Set [build] sccache_scheduler_url or pass --sccache-scheduler URL.",
+        )
+
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname
+    port = parsed.port
+    if host is None or port is None:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"scheduler URL `{url}` has no host:port to probe",
+            fix_hint="Use a URL like http://localhost:10600 with an explicit port.",
+        )
+
+    try:
+        sock = socket.create_connection((host, port), timeout=1.0)
+    except OSError:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"scheduler unreachable at {host}:{port}",
+            fix_hint="Start the sccache-dist scheduler and confirm the URL/port.",
+        )
+    sock.close()
+    return _ok(name, Severity.BLOCK, f"sccache present; scheduler reachable at {host}:{port}")
+
+
 def check_hashserv(cfg: BuildConfig) -> CheckResult:
     """Verify the workspace hashserv daemon is reachable when configured.
 
@@ -1619,6 +1682,7 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_docker_storage_driver,
     check_ccache_health,
     check_hashserv,
+    check_sccache_dist,
     check_sstate_hash_leak,
     check_override_syntax,
 )
