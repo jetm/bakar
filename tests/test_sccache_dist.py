@@ -596,3 +596,97 @@ def test_doctor_sccache_fails_when_scheduler_url_unset(monkeypatch: pytest.Monke
 
     assert result.status is Status.FAIL
     assert result.severity is Severity.BLOCK
+
+
+# ---------------------------------------------------------------------------
+# Container path (task 5.1): _ccache_args bind-mounts the sccache binary and
+# client config and adds the host-gateway when the scheduler targets localhost;
+# _build_env rewrites a localhost scheduler URL to host.docker.internal for the
+# in-container client (mirroring the hashequiv rewrite). The ``runtime_args``
+# keyword groups the _ccache_args tests for the task's verify command.
+# ---------------------------------------------------------------------------
+
+
+def _container_sccache_cfg(workspace: Path, *, scheduler_url: str = "http://localhost:10600") -> object:
+    """A container-mode (host_mode=False) BuildConfig with sccache enabled."""
+    from dataclasses import replace
+
+    cfg = _sccache_build_cfg(workspace, sccache_dist=True, sccache_scheduler_url=scheduler_url)
+    return replace(cfg, host_mode=False)  # type: ignore[arg-type]
+
+
+def _container_cfg_no_sccache(workspace: Path) -> object:
+    """A container-mode BuildConfig with sccache and hashequiv both off."""
+    from dataclasses import replace
+
+    cfg = _sccache_build_cfg(workspace, sccache_dist=False)
+    return replace(cfg, host_mode=False)  # type: ignore[arg-type]
+
+
+@pytest.mark.unit
+def test_runtime_args_container_mounts_sccache_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Container runtime-args bind-mount the sccache binary + client config and add host-gateway.
+
+    The in-container compiler launcher needs the host ``sccache`` binary and the
+    auth-bearing ``~/.config/sccache/config`` (the overlay exports only the
+    scheduler URL, not the token), and a route to the host where the scheduler
+    runs. HOME inside the container is the host HOME, so the config mounted at its
+    own absolute path resolves as ``~/.config/sccache/config`` for the client.
+    """
+    import shutil
+
+    from bakar.steps.kas_build import _ccache_args
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    conf = tmp_path / ".config" / "sccache" / "config"
+    conf.parent.mkdir(parents=True)
+    conf.write_text('[dist]\nscheduler_url = "http://localhost:10600"\n')
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/sccache" if name == "sccache" else None)
+
+    cfg = _container_sccache_cfg(tmp_path)
+    args = _ccache_args(cfg)  # type: ignore[arg-type]
+
+    assert args[0] == "--runtime-args"
+    s = args[1]
+    assert "-v /usr/bin/sccache:/usr/local/bin/sccache:ro" in s, s
+    assert f"-v {conf}:{conf}:ro" in s, s
+    assert "--add-host=host.docker.internal:host-gateway" in s, s
+
+
+@pytest.mark.unit
+def test_runtime_args_container_omits_sccache_when_disabled(tmp_path: Path) -> None:
+    """With sccache disabled, no sccache mount and no host-gateway appear (falsifier guard)."""
+    from bakar.steps.kas_build import _ccache_args
+
+    cfg = _container_cfg_no_sccache(tmp_path)
+    args = _ccache_args(cfg)  # type: ignore[arg-type]
+
+    s = args[1]
+    assert "sccache" not in s, s
+    assert "--add-host" not in s, s
+
+
+@pytest.mark.unit
+def test_container_env_rewrites_scheduler_to_host_docker_internal(tmp_path: Path) -> None:
+    """In container mode the exported scheduler URL swaps localhost for host.docker.internal.
+
+    localhost inside the container is the container itself; the scheduler runs on
+    the host, reachable via the host-gateway alias. Mirrors the hashequiv rewrite.
+    """
+    from bakar.steps.kas_build import _build_env
+
+    cfg = _container_sccache_cfg(tmp_path)
+    env = _build_env(cfg, ensure_hashserv=False)  # type: ignore[arg-type]
+
+    assert env["BAKAR_SCCACHE_SCHEDULER_URL"] == "http://host.docker.internal:10600"
+
+
+@pytest.mark.unit
+def test_host_env_keeps_localhost_scheduler(tmp_path: Path) -> None:
+    """Host mode leaves the scheduler URL untouched (no container rewrite)."""
+    from bakar.steps.kas_build import _build_env
+
+    cfg = _sccache_build_cfg(tmp_path, sccache_dist=True, sccache_scheduler_url="http://localhost:10600")
+    env = _build_env(cfg, ensure_hashserv=False)  # type: ignore[arg-type]
+
+    assert env["BAKAR_SCCACHE_SCHEDULER_URL"] == "http://localhost:10600"

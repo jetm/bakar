@@ -303,11 +303,27 @@ def _ccache_args(
     if not dry_run:
         ccache_host.mkdir(parents=True, exist_ok=True)
     runtime_args = f"-v {ccache_host}:/work/ccache:rw"
-    if cfg.use_hashequiv:
-        # Always add the host mapping when hashequiv is enabled: _build_env
-        # calls ensure_running() after _ccache_args, so the daemon may not be
-        # alive yet on the first build. The flag is harmless when the daemon
-        # is absent and mandatory when it is running.
+    # Always add the host mapping when hashequiv is enabled: _build_env calls
+    # ensure_running() after _ccache_args, so the daemon may not be alive yet on
+    # the first build. The flag is harmless when the daemon is absent and
+    # mandatory when it is running. sccache-dist needs the same route when its
+    # scheduler is on the host (localhost), reached via the gateway alias.
+    need_host_gateway = cfg.use_hashequiv
+    if cfg.use_sccache_dist:
+        # The in-container compiler launcher is the host sccache binary, and it
+        # reads its auth token from ~/.config/sccache/config (the overlay exports
+        # only the scheduler URL). HOME inside the container is the host HOME, so
+        # mounting the config at its own absolute path resolves as the client's
+        # default config path. Skip a mount whose source is absent.
+        sccache_bin = shutil.which("sccache")
+        if sccache_bin is not None:
+            runtime_args += f" -v {sccache_bin}:/usr/local/bin/sccache:ro"
+        sccache_conf = Path.home() / ".config" / "sccache" / "config"
+        if sccache_conf.is_file():
+            runtime_args += f" -v {sccache_conf}:{sccache_conf}:ro"
+        if cfg.sccache_scheduler_url and "localhost" in cfg.sccache_scheduler_url:
+            need_host_gateway = True
+    if need_host_gateway:
         runtime_args += " --add-host=host.docker.internal:host-gateway"
     if eventlog_path is not None:
         runtime_args += f" -e BB_DEFAULT_EVENTLOG={eventlog_path}"
@@ -1201,10 +1217,18 @@ def _build_env(
         passthrough.setdefault("BAKAR_SSTATE_MIRROR_URL", cfg.sstate_mirror_url)
     # sccache-dist scheduler: exported only when distributed-compile is enabled,
     # so a disabled build is byte-for-byte unchanged. The sccache overlay reads
-    # this var (like BAKAR_SSTATE_MIRROR_URL above). Host-mode only - the
-    # container path adds the binary mount and host-gateway rewrite separately.
+    # this var (like BAKAR_SSTATE_MIRROR_URL above). In container mode localhost
+    # is the container itself, so rewrite it to the host-gateway alias exactly as
+    # the hashserv URL is rewritten below; the binary/config mounts live in
+    # _ccache_args.
     if cfg.use_sccache_dist and cfg.sccache_scheduler_url is not None:
-        passthrough.setdefault("BAKAR_SCCACHE_SCHEDULER_URL", cfg.sccache_scheduler_url)
+        if cfg.host_mode:
+            passthrough.setdefault("BAKAR_SCCACHE_SCHEDULER_URL", cfg.sccache_scheduler_url)
+        else:
+            passthrough.setdefault(
+                "BAKAR_SCCACHE_SCHEDULER_URL",
+                cfg.sccache_scheduler_url.replace("localhost", "host.docker.internal"),
+            )
     # Scheduler and PSI thresholds:
     # only emit when set (empty dimension is disabled in the overlay via the
     # os.environ.get(..., '') expression, so omitting the key is equivalent).
