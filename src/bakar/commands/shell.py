@@ -14,6 +14,7 @@ from bakar.commands._helpers import (
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
+    global_host_mode,
 )
 from bakar.config import BSPSpec, resolve
 from bakar.observability import RunLogger
@@ -48,26 +49,19 @@ def shell(
         typer.Argument(help="Extra args passed through to kas-container shell"),
     ] = None,
     workspace: Annotated[Path | None, typer.Option("--workspace", "-w", help="Workspace root override")] = None,
-    host_mode: Annotated[
-        bool,
-        typer.Option(
-            "--host",
-            help="Bypass kas-container and run plain `kas shell` directly on the host.",
-        ),
-    ] = False,
 ) -> None:
     """Drop into a `kas-container shell` for this project, or run a single command via -c.
 
-    Pass ``--host`` to invoke plain ``kas shell`` directly on the host
-    (no kas-container wrapper, no Docker). Requires host bitbake build
-    prereqs.
+    Pass the global ``--host`` (``bakar --host shell ...``) to invoke plain
+    ``kas shell`` directly on the host (no kas-container wrapper, no Docker).
+    Requires host bitbake build prereqs.
     """
     family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
-        spec=BSPSpec(manifest=manifest, host_mode=host_mode),
+        spec=BSPSpec(manifest=manifest, host_mode=global_host_mode()),
         kas_yaml=kas_yaml,
         user_config=_state._USER_CONFIG,
     )

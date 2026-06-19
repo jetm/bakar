@@ -27,6 +27,7 @@ from bakar.commands._helpers import (
     _run_doctor_gate,
     _tuning_extra_overlays,
     _uninitialized_bbsetup_dir,
+    global_host_mode,
     split_kas_yaml_arg,
 )
 from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, compose_preset_output_path, resolve
@@ -489,16 +490,6 @@ def build(
         ),
     ] = False,
     workspace: Annotated[Path | None, typer.Option("--workspace", "-w", help="Workspace root override")] = None,
-    host_mode: Annotated[
-        bool,
-        typer.Option(
-            "--host",
-            help=(
-                "Bypass kas-container and run plain kas build directly on the host. "
-                "Requires host bitbake build prereqs."
-            ),
-        ),
-    ] = False,
     show_layers: Annotated[
         bool,
         typer.Option("--show-layers", help="Print layer git hashes before build."),
@@ -506,14 +497,6 @@ def build(
     sstate_mirror: Annotated[
         str | None,
         typer.Option("--sstate-mirror", help="HTTP sstate/downloads mirror URL; enables the shared-cache overlay"),
-    ] = None,
-    sccache_dist: Annotated[
-        bool,
-        typer.Option("--sccache-dist", help="Route do_compile through sccache-dist; enables the sccache overlay"),
-    ] = False,
-    sccache_scheduler: Annotated[
-        str | None,
-        typer.Option("--sccache-scheduler", help="sccache-dist scheduler URL, e.g. http://localhost:10600"),
     ] = None,
     dry_run_script: Annotated[
         str | None,
@@ -550,6 +533,11 @@ def build(
     The two forms are mutually exclusive: passing both a positional
     YAML and ``--manifest`` exits non-zero.
     """
+    # --host / --sccache-dist / --sccache-scheduler are global callback options;
+    # read them into the local names the body threads through.
+    host_mode = global_host_mode()
+    sccache_dist = _state._SCCACHE_DIST
+    sccache_scheduler = _state._SCCACHE_SCHEDULER
     # Resolve the active preset (if any) before dispatch.
     # PresetEntry is used only as a local variable type annotation.
     from bakar.preset_config import PresetEntry

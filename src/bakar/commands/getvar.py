@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import shlex
-from dataclasses import replace
 from pathlib import Path
 from typing import Annotated
 
@@ -23,6 +22,8 @@ from bakar.commands._helpers import (
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
+    apply_sccache_overrides,
+    global_host_mode,
     split_kas_yaml_arg,
 )
 from bakar.config import BSPSpec, resolve
@@ -78,17 +79,6 @@ def getvar(
         bool,
         typer.Option("--json", help="Emit a JSON document with keys var, recipe, value/history."),
     ] = False,
-    sccache_dist: Annotated[
-        bool,
-        typer.Option(
-            "--sccache-dist",
-            help="Apply the sccache-dist overlay so the resolved value matches a --sccache-dist build.",
-        ),
-    ] = False,
-    sccache_scheduler: Annotated[
-        str | None,
-        typer.Option("--sccache-scheduler", help="sccache-dist scheduler URL, e.g. http://localhost:10600"),
-    ] = None,
 ) -> None:
     """Resolve a BitBake variable inside kas-container.
 
@@ -113,14 +103,11 @@ def getvar(
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
-        spec=BSPSpec(manifest=manifest, machine=machine),
+        spec=BSPSpec(manifest=manifest, machine=machine, host_mode=global_host_mode()),
         kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
     )
-    if sccache_dist:
-        cfg = replace(cfg, sccache_dist=True)
-    if sccache_scheduler is not None:
-        cfg = replace(cfg, sccache_scheduler_url=sccache_scheduler)
+    cfg = apply_sccache_overrides(cfg)
     overlay_source = _overlay_for(bsp)
     extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)

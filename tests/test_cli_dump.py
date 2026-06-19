@@ -170,7 +170,7 @@ def test_dump_sccache_dist_flag_applies_overlay(
     stub = _Stub(rc=0)
     monkeypatch.setattr(dump_module.step_kas, "run_kas_subcommand", stub)
 
-    result = runner.invoke(app, ["dump", "--workspace", str(nxp_workspace), "--sccache-dist"])
+    result = runner.invoke(app, ["--sccache-dist", "dump", "--workspace", str(nxp_workspace)])
 
     assert result.exit_code == 0, result.output
     assert len(stub.calls) == 1

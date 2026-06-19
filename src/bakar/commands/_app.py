@@ -28,6 +28,15 @@ _USER_CONFIG: UserConfig | None = None
 _PRESETS: list[PresetEntry] | None = None
 _HIDE_DOCTOR_REPORT: bool = False
 
+# Global build-mode overrides, set from the top-level callback and read by every
+# command that resolves a BuildConfig. They are global (callback) options - passed
+# before the subcommand, e.g. ``bakar --host --sccache-dist build my.yml`` - so a
+# single flag set applies uniformly to build and the inspection/maintenance
+# commands (getvar, dump, bitbake, clean-recipe, rebuild, ...).
+_HOST_MODE: bool = False
+_SCCACHE_DIST: bool = False
+_SCCACHE_SCHEDULER: str | None = None
+
 
 def _get_vendors() -> list:
     global _VENDORS
@@ -77,9 +86,27 @@ def _main(
             help="Run pre-flight checks but show output only for build-blocking issues.",
         ),
     ] = False,
+    host: Annotated[
+        bool,
+        typer.Option(
+            "--host",
+            help="Run kas on the host instead of kas-container (applies to build and all kas subcommands).",
+        ),
+    ] = False,
+    sccache_dist: Annotated[
+        bool,
+        typer.Option("--sccache-dist", help="Enable the sccache-dist overlay for build and kas subcommands."),
+    ] = False,
+    sccache_scheduler: Annotated[
+        str | None,
+        typer.Option("--sccache-scheduler", help="sccache-dist scheduler URL, e.g. http://localhost:10600"),
+    ] = None,
 ) -> None:
-    global _USER_CONFIG, _HIDE_DOCTOR_REPORT
+    global _USER_CONFIG, _HIDE_DOCTOR_REPORT, _HOST_MODE, _SCCACHE_DIST, _SCCACHE_SCHEDULER
     _USER_CONFIG = _load_user_config_safe()
     _HIDE_DOCTOR_REPORT = hide_doctor_report
+    _HOST_MODE = host
+    _SCCACHE_DIST = sccache_dist
+    _SCCACHE_SCHEDULER = sccache_scheduler
     _get_vendors()
     _load_presets_safe()

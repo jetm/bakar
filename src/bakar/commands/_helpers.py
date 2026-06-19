@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.resources
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -209,6 +210,32 @@ def _tuning_extra_overlays(cfg: BuildConfig) -> list[Path]:
         *_shared_cache_extra_overlays(cfg),
         *_sccache_extra_overlays(cfg),
     ]
+
+
+def global_host_mode() -> bool:
+    """Return the global ``--host`` flag set on the top-level callback.
+
+    A late import avoids a circular dependency between ``_helpers`` and ``_app``.
+    """
+    import bakar.commands._app as _state
+
+    return _state._HOST_MODE
+
+
+def apply_sccache_overrides(cfg: BuildConfig) -> BuildConfig:
+    """Apply the global ``--sccache-dist`` / ``--sccache-scheduler`` flags to cfg.
+
+    Mirrors the per-command threading build used before these became global
+    callback options: enable the sccache overlay and, when given, point the
+    client at the scheduler URL. A no-op when neither global flag is set.
+    """
+    import bakar.commands._app as _state
+
+    if _state._SCCACHE_DIST:
+        cfg = replace(cfg, sccache_dist=True)
+    if _state._SCCACHE_SCHEDULER is not None:
+        cfg = replace(cfg, sccache_scheduler_url=_state._SCCACHE_SCHEDULER)
+    return cfg
 
 
 def _combine_overlays_with_tuning(user_extras: list[Path], cfg: BuildConfig) -> list[Path]:

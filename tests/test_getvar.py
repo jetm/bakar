@@ -626,7 +626,7 @@ def test_getvar_sccache_dist_flag_applies_overlay(
     with patch("bakar.commands.getvar.run_shell_capture", fake):
         result = runner.invoke(
             app,
-            ["getvar", _VAR, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace), "--sccache-dist"],
+            ["--sccache-dist", "getvar", _VAR, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
         )
 
     assert result.exit_code == 0, result.output

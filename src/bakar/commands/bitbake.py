@@ -28,9 +28,12 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
+    _combine_overlays_with_tuning,
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
+    apply_sccache_overrides,
+    global_host_mode,
     split_kas_yaml_arg,
 )
 from bakar.config import BSPSpec, resolve
@@ -38,6 +41,7 @@ from bakar.observability import RunLogger
 from bakar.steps.kas_build import (
     KasBuildContext,
     copy_oe_eventlog_to_run_dir,
+    materialize_sccache_layer,
     run_shell,
     run_shell_capture,
     run_shell_live,
@@ -110,17 +114,23 @@ def _run_task(
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
-        spec=BSPSpec(manifest=manifest, machine=machine),
+        spec=BSPSpec(manifest=manifest, machine=machine, host_mode=global_host_mode()),
         kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
     )
+    cfg = apply_sccache_overrides(cfg)
     overlay_source = _overlay_for(bsp)
+    if cfg.use_sccache_dist:
+        materialize_sccache_layer(cfg)
+        extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
+    else:
+        extra_overlays = user_extras
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
 
     command = command_override if command_override is not None else _build_command(target, task, keep_going=keep_going)
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
-        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source, extra_overlays=user_extras)
+        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source, extra_overlays=extra_overlays)
 
         # devshell is interactive and cannot be captured; route through the
         # inherited-terminal path.

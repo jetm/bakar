@@ -220,8 +220,12 @@ def test_resolve_cli_scheduler_overrides_config(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_resolve_build_help_shows_sccache_options() -> None:
-    """`bakar build --help` must expose --sccache-dist and --sccache-scheduler."""
+def test_resolve_top_level_help_shows_sccache_options() -> None:
+    """`bakar --help` must expose the global --sccache-dist and --sccache-scheduler.
+
+    These are global callback options (passed before the subcommand), so they
+    appear on the top-level help, not on `bakar build --help`.
+    """
     import re
 
     from typer.testing import CliRunner
@@ -229,7 +233,7 @@ def test_resolve_build_help_shows_sccache_options() -> None:
     from bakar.cli import app
 
     runner = CliRunner()
-    result = runner.invoke(app, ["build", "--help"])
+    result = runner.invoke(app, ["--help"])
 
     assert result.exit_code == 0, result.output
     plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)

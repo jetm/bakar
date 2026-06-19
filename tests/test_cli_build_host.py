@@ -76,7 +76,7 @@ def test_build_host_flag_sets_host_mode(tmp_path: Path) -> None:
     ):
         result = runner.invoke(
             app,
-            ["build", str(kas_yaml), "--host", "--dry-run"],
+            ["--host", "build", str(kas_yaml), "--dry-run"],
         )
 
     assert result.exit_code == 0, result.output

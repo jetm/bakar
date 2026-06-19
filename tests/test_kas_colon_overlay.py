@@ -334,10 +334,16 @@ def test_bitbake_colon_arg_extra_overlay_in_ctx(
     nxp_workspace: Path,
     machine_yaml: Path,
     overlay_yaml: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """bakar bitbake with 'machine.yml:overlay.yml' parses the overlay into ctx.extra_overlays."""
     import bakar.commands.bitbake  # noqa: F401 - register commands
     from bakar.cli import app
+    from bakar.user_config import UserConfig
+
+    # Pin a clean config so the ambient (sccache/hashequiv-enabled) user config
+    # does not add tuning overlays the bitbake passthrough would otherwise pull.
+    monkeypatch.setattr("bakar.commands._app._load_user_config_safe", UserConfig)
 
     calls: list[dict] = []
     fake = _make_fake_live_ctx(calls)
@@ -361,10 +367,14 @@ def test_bitbake_single_yaml_no_extras(
     runner: _CliRunner,
     nxp_workspace: Path,
     machine_yaml: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """bakar bitbake with a bare single YAML has empty extra_overlays (no behavior change)."""
     import bakar.commands.bitbake  # noqa: F401
     from bakar.cli import app
+    from bakar.user_config import UserConfig
+
+    monkeypatch.setattr("bakar.commands._app._load_user_config_safe", UserConfig)
 
     calls: list[dict] = []
     fake = _make_fake_live_ctx(calls)

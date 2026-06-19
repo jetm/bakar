@@ -15,6 +15,7 @@ from bakar.commands._helpers import (
     _dispatch_bsp,
     _overlay_for,
     _workspace_from_cwd,
+    global_host_mode,
 )
 from bakar.config import BSPSpec, resolve
 from bakar.observability import RunLogger
@@ -55,15 +56,6 @@ def stress_parse(
         typer.Option("--branch", "-b", help="Branch override; inferred from manifest when omitted."),
     ] = None,
     workspace: Annotated[Path | None, typer.Option("--workspace", "-w")] = None,
-    host_mode: Annotated[
-        bool,
-        typer.Option(
-            "--host",
-            help="Bypass kas-container and run plain `kas shell` directly on the host. "
-            "Runs plain `kas shell` directly on the host to rule out kas-container/Docker as the "
-            "parser-fork-race environment. Requires host bitbake build prereqs.",
-        ),
-    ] = False,
     label: Annotated[
         str | None,
         typer.Option(
@@ -101,6 +93,9 @@ def stress_parse(
     if runs < 1:
         console.print("[red]--runs must be >= 1[/]")
         raise typer.Exit(code=2)
+
+    # --host is a global callback option; read it into the local name used below.
+    host_mode = global_host_mode()
 
     python_executable: Path | None = None
     if python is not None:
