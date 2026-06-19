@@ -50,6 +50,25 @@ python () {
 BUILD_CC:forcevariable = "${BUILD_PREFIX}gcc ${BUILD_CC_ARCH}"
 BUILD_CXX:forcevariable = "${BUILD_PREFIX}g++ ${BUILD_CC_ARCH}"
 
+# cmake.bbclass's oecmake_map_compiler splits the compiler launcher out of CC,
+# but only recognizes the literal "ccache" - with CC="sccache <gcc>" it makes
+# sccache itself the compiler, so cmake's compiler check runs `sccache <flags>`
+# and dies "unexpected argument '-m'". Re-derive the OECMAKE compiler/launcher
+# split with a helper that recognizes sccache too. cmake.bbclass uses ?= for
+# these, so this plain assignment wins; its :allarch = "" override still wins for
+# allarch recipes (which do not compile). The NATIVE_* launchers read BUILD_CC,
+# already stripped above, so they need no override.
+def sccache_map_compiler(varname, d):
+    args = (d.getVar(varname) or "").split()
+    if args and args[0] in ('ccache', 'sccache'):
+        return args[1], args[0]
+    return (args[0] if args else ''), ''
+
+OECMAKE_C_COMPILER = "${@sccache_map_compiler('CC', d)[0]}"
+OECMAKE_C_COMPILER_LAUNCHER = "${@sccache_map_compiler('CC', d)[1]}"
+OECMAKE_CXX_COMPILER = "${@sccache_map_compiler('CXX', d)[0]}"
+OECMAKE_CXX_COMPILER_LAUNCHER = "${@sccache_map_compiler('CXX', d)[1]}"
+
 # Put sccache on bitbake's task PATH. OE restricts each task's PATH to sysroot
 # bins plus the HOSTTOOLS allowlist (tmp/hosttools/); the host /usr/bin/sccache
 # is invisible to recipes unless allowlisted.
@@ -58,12 +77,17 @@ HOSTTOOLS += "sccache"
 # Let the compiler reach the scheduler. bitbake runs each task in a fresh
 # network namespace (loopback down) via unshare(CLONE_NEWNET) unless the task
 # sets [network] = "1" - only do_fetch opts in by default. The sccache client
-# ships jobs from inside do_configure (compiler tests), do_compile, and
-# do_install - some recipes run the target compiler at install time (e.g. glibc
-# links format.lds with the target gcc, locale recipes generate at install).
+# ships jobs from every task that runs the compiler: do_configure (compiler
+# tests), do_compile, do_install (some recipes link with the target gcc at
+# install, e.g. glibc's format.lds), and the ptest.bbclass mirrors of all three
+# (do_compile_ptest_base builds the test binaries). A [network] flag on a task a
+# recipe does not define is harmless.
 do_configure[network] = "1"
 do_compile[network] = "1"
 do_install[network] = "1"
+do_configure_ptest_base[network] = "1"
+do_compile_ptest_base[network] = "1"
+do_install_ptest_base[network] = "1"
 
 # Point the in-build sccache client at the configured scheduler. Empty when
 # unset, which leaves the client on its own config / local-cache mode. bakar

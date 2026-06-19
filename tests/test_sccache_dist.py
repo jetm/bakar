@@ -507,9 +507,34 @@ def test_sccache_class_adds_hosttools_and_network() -> None:
     text = _sccache_bbclass_text()
 
     assert 'HOSTTOOLS += "sccache"' in text
-    assert 'do_configure[network] = "1"' in text
-    assert 'do_compile[network] = "1"' in text
-    assert 'do_install[network] = "1"' in text
+    for task in (
+        "do_configure",
+        "do_compile",
+        "do_install",
+        "do_configure_ptest_base",
+        "do_compile_ptest_base",
+        "do_install_ptest_base",
+    ):
+        assert f'{task}[network] = "1"' in text
+
+
+@pytest.mark.unit
+def test_sccache_class_fixes_cmake_launcher_split() -> None:
+    """The class re-derives the cmake compiler/launcher split to recognize sccache.
+
+    cmake.bbclass's oecmake_map_compiler only treats the literal "ccache" as a
+    launcher, so with CC="sccache <gcc>" it makes sccache itself the compiler and
+    the configure-time compiler check fails ("sccache: unexpected argument '-m'").
+    The class overrides OECMAKE_C/CXX_COMPILER and *_LAUNCHER with a helper that
+    splits sccache too. Caught by a real qemuarm64 expat/json-c do_configure.
+    """
+    text = _sccache_bbclass_text()
+
+    assert "OECMAKE_C_COMPILER = " in text
+    assert "OECMAKE_C_COMPILER_LAUNCHER = " in text
+    assert "OECMAKE_CXX_COMPILER = " in text
+    assert "OECMAKE_CXX_COMPILER_LAUNCHER = " in text
+    assert "'sccache'" in text
 
 
 @pytest.mark.unit
