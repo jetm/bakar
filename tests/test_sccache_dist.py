@@ -495,21 +495,22 @@ def test_sccache_class_sets_launcher_per_recipe() -> None:
 
 
 @pytest.mark.unit
-def test_sccache_class_excludes_toolchain_and_kernel() -> None:
-    """The class excludes native/cross/SDK toolchain recipes and the kernel.
+def test_sccache_class_excludes_toolchain_classes() -> None:
+    """The class excludes native/cross/SDK toolchain recipes from distribution.
 
     sccache packages the in-use compiler via `gcc -print-prog-name=as`; a host
     gcc with a PATH-relative `as` (Arch) cannot be packaged, so native/cross/SDK
     recipes - whose CC is the host compiler - must compile locally. The kernel is
-    excluded too: wrapping its compiler breaks kconfig detection
-    (`sccache aarch64-...-gcc: unknown C compiler`) and its config step has no
-    network. Caught by a real qemuarm64 build (zlib-native `as`, linux-yocto
-    do_kernel_configme).
+    NOT excluded: it distributes like any other target recipe, and its few
+    .incbin objects (vdso/config/dtb wrappers) that fail remotely fall back to a
+    local recompile via sccache's distributed-failure fallback.
     """
     text = _sccache_bbclass_text()
 
-    for cls in ("native", "cross", "crosssdk", "nativesdk", "cross-canadian", "kernel"):
-        assert cls in text.split("SCCACHE_EXCLUDED_CLASSES")[1].split("\n")[0]
+    excluded_line = text.split("SCCACHE_EXCLUDED_CLASSES")[1].split("\n")[0]
+    for cls in ("native", "cross", "crosssdk", "nativesdk", "cross-canadian"):
+        assert cls in excluded_line
+    assert "kernel" not in excluded_line
     assert "inherits_class(cls, d)" in text
 
 
@@ -650,8 +651,9 @@ def test_bbclass_excludes_gcc_runtime_recipes_from_dist(tmp_path: Path) -> None:
     preprocessing strips the comments that suppress -Wimplicit-fallthrough (their
     soft-float files build with -Werror), and glibc fails because its side `.o.dt`
     dependency files are not captured when zipping remote outputs. They must
-    compile locally, so the per-PN gate skips them before setting CCACHE -
-    mirroring the kernel class carve-out.
+    compile locally, so the per-PN gate skips them before setting CCACHE. Unlike
+    the kernel (a few stragglers that the local fallback salvages), nearly every
+    compile here fails, so excluding avoids an always-failing remote round-trip.
     """
     from pathlib import Path
 

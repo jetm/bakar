@@ -22,18 +22,18 @@
 #  2. It cannot package a host gcc whose assembler is PATH-relative (Arch's host
 #     gcc reports a bare `as`), so native/cross/SDK toolchain recipes - whose CC
 #     IS the host compiler - must compile locally. The class gate excludes them.
-#  3. Wrapping even the target compiler breaks the kernel's kconfig compiler
-#     detection (`sccache aarch64-...-gcc: unknown C compiler`), and the kernel's
-#     config step has no network for its host kconfig tools. The kernel is
-#     excluded entirely; its do_compile stays local for now.
+#  3. The kernel distributes like any other target recipe. A few of its objects
+#     .incbin a binary the inputs packager cannot ship (the vdso, embedded
+#     config, and dtb wrappers) and fail to assemble remotely; sccache falls
+#     back to a local recompile for those, so the kernel needs no wholesale
+#     exclusion (1124 of 1128 kernel compiles distribute).
 
 # Per-recipe opt-out, mirrors CCACHE_DISABLE.
 SCCACHE_DISABLE ??= ""
 
 # Recipe classes that compile with the host/build compiler (the unpackageable
-# `as` case) or that break under a wrapped compiler (kernel). Excluded from
-# distribution; they fall back to the local compiler.
-SCCACHE_EXCLUDED_CLASSES ?= "native cross crosssdk nativesdk cross-canadian kernel"
+# `as` case). Excluded from distribution; they compile locally.
+SCCACHE_EXCLUDED_CLASSES ?= "native cross crosssdk nativesdk cross-canadian"
 
 # Target recipes that must compile locally even though their class is eligible.
 # These are the gcc/glibc bootstrap recipes, which build with the cross compiler
@@ -46,8 +46,10 @@ SCCACHE_EXCLUDED_CLASSES ?= "native cross crosssdk nativesdk cross-canadian kern
 #   - glibc: its makefiles emit a side `.o.dt` dependency file per object, which
 #     sccache-dist does not capture, so the remote job fails to zip up the
 #     compiler outputs ("failed to open file `...o.dt`").
-# They build once and are a tiny fraction of the build, so compile them locally,
-# mirroring the kernel class carve-out above.
+# Nearly every compile in these recipes fails distribution, so - unlike the
+# kernel, where the local fallback salvages a few stragglers - excluding them
+# avoids a remote round-trip that would always fall back. They build once and
+# are a tiny fraction of the build.
 SCCACHE_EXCLUDED_PN ?= "libgcc-initial libgcc gcc-runtime gcc-sanitizers glibc glibc-initial"
 
 python () {
