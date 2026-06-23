@@ -171,6 +171,19 @@ _CONTAINER_PY_FIX_HINT = (
     "Debian 11/12)."
 )
 
+# The jetm/kas-build-env image is the supported build environment: it is
+# maintained to ship a complete, mutually-compatible Yocto toolchain. Its
+# bitbake release and container Python are matched by design (the 5.3-f44 tag
+# pairs bitbake 5.3, which forces the "fork" multiprocessing context, with
+# Python 3.14), so its Python version is trusted unconditionally and exempt
+# from the 3.13 parser block below.
+_SUPPORTED_IMAGE_REPO = "jetm/kas-build-env"
+
+
+def _image_repo(image: str) -> str:
+    """Return the repository of a container image ref with tag/digest stripped."""
+    return image.split("@", 1)[0].rsplit(":", 1)[0]
+
 
 def _docker_run_probe(cmd: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
     """Run a ``docker run`` probe, retrying once on timeout.
@@ -178,7 +191,7 @@ def _docker_run_probe(cmd: list[str], timeout: int = 20) -> subprocess.Completed
     The first ``docker run`` against an idle or busy daemon can cold-start
     past ``timeout`` even when the steady-state launch is sub-second. A lone
     transient stall would otherwise disarm ``check_container_os``: its except
-    arm downgrades the BLOCK gate to a WARN skip, so a broken Python 3.13/3.14
+    arm downgrades the BLOCK gate to a WARN skip, so a broken Python 3.13
     container could slip through. One retry absorbs the cold start;
     ``FileNotFoundError`` (no docker binary) is left to propagate.
     """
@@ -189,15 +202,18 @@ def _docker_run_probe(cmd: list[str], timeout: int = 20) -> subprocess.Completed
 
 
 def check_container_os(cfg: BuildConfig) -> CheckResult:
-    """Block if container Python is 3.13.x or 3.14.x.
+    """Block if container Python is 3.13.x.
 
-    bitbake's parser is broken on both: 3.13 deadlocks under the
-    fork-in-multi-thread tightening; 3.14 fails immediately with
-    ``_pickle.PicklingError`` on ``CoreRecipeInfo.init_cacheData``'s
-    lambda because the default multiprocessing context flipped to
-    ``forkserver``. The ``trixie`` codename collapses into the 3.13
-    case (Debian 13 ships Python 3.13).
+    bitbake's parser deadlocks on 3.13 under the fork-in-multi-thread
+    tightening. The ``trixie`` codename collapses into this case (Debian 13
+    ships Python 3.13).
+
+    The supported ``jetm/kas-build-env`` image is exempt from the version
+    block: it is maintained to ship everything Yocto needs, with the bitbake
+    release and the container Python matched by design.
     """
+    if _image_repo(cfg.container_image) == _SUPPORTED_IMAGE_REPO:
+        return _ok("container-os", Severity.BLOCK, f"{cfg.container_image} (supported image)")
     try:
         out = _docker_run_probe(
             [
@@ -234,15 +250,6 @@ def check_container_os(cfg: BuildConfig) -> CheckResult:
             Severity.BLOCK,
             f"{py_line} in container ({os_line}); bitbake parser "
             "deadlocks under fork-in-multi-thread - build will hang at parsing.",
-            fix_hint=_CONTAINER_PY_FIX_HINT,
-        )
-    if py_minor == 14:
-        return _fail(
-            "container-os",
-            Severity.BLOCK,
-            f"{py_line} in container ({os_line}); bitbake parser "
-            "trips _pickle.PicklingError under default forkserver context - "
-            "build fails immediately at parsing.",
             fix_hint=_CONTAINER_PY_FIX_HINT,
         )
     return _ok("container-os", Severity.BLOCK, f"{os_line} / {py_line}")
@@ -1455,6 +1462,13 @@ def check_sccache_dist(cfg: BuildConfig) -> CheckResult:
     name = "sccache-dist"
     if not cfg.use_sccache_dist:
         return _skip(name, Severity.INFO, "distributed compile not configured ([build] sccache_dist = false)")
+
+    # The reachability probe below is host-side; it cannot speak for the
+    # in-container client, which reaches the scheduler via host.docker.internal
+    # in its own network namespace. Scope the preflight to host mode so a
+    # container build does not fail on a probe that does not reflect its path.
+    if not cfg.host_mode:
+        return _skip(name, Severity.INFO, "sccache-dist preflight runs in host mode only")
 
     if shutil.which("sccache") is None:
         return _fail(

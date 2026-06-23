@@ -56,6 +56,15 @@ def _cfg() -> BuildConfig:
     )
 
 
+def _byo_cfg() -> BuildConfig:
+    """A config whose container image is NOT the supported jetm/kas-build-env.
+
+    The container-os Python-version block only applies to unrecognized images;
+    the supported image is trusted unconditionally.
+    """
+    return dataclasses.replace(_cfg(), container_image="custom/byo-build:latest")
+
+
 def _mock_run(stdout: str, returncode: int = 0):
     """Return a CompletedProcess-shaped object with the given stdout."""
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
@@ -72,10 +81,21 @@ def _mock_run(stdout: str, returncode: int = 0):
 def test_supported_python_passes_at_block_severity(stdout: str, expected_minor_label: str) -> None:
     """3.12 and earlier pass the check; severity stays BLOCK on success."""
     with patch("bakar.diagnostics.subprocess.run", return_value=_mock_run(stdout)):
-        result = check_container_os(_cfg())
+        result = check_container_os(_byo_cfg())
     assert result.status == Status.PASS
     assert result.severity == Severity.BLOCK
     assert expected_minor_label in result.message
+
+
+def test_supported_image_passes_without_probe() -> None:
+    """The jetm/kas-build-env image is trusted unconditionally: no docker probe
+    runs and the Python version is never inspected, whatever the tag."""
+    with patch("bakar.diagnostics.subprocess.run") as run:
+        result = check_container_os(_cfg())
+    run.assert_not_called()
+    assert result.status == Status.PASS
+    assert result.severity == Severity.BLOCK
+    assert "jetm/kas-build-env" in result.message
 
 
 @pytest.mark.parametrize(
@@ -88,7 +108,7 @@ def test_supported_python_passes_at_block_severity(stdout: str, expected_minor_l
 )
 def test_python_313_blocks(stdout: str) -> None:
     with patch("bakar.diagnostics.subprocess.run", return_value=_mock_run(stdout)):
-        result = check_container_os(_cfg())
+        result = check_container_os(_byo_cfg())
     assert result.status == Status.FAIL
     assert result.severity == Severity.BLOCK
     assert "3.13" in result.message
@@ -105,15 +125,14 @@ def test_python_313_blocks(stdout: str) -> None:
         "ubuntu questing\nPython 3.14.0\n",
     ],
 )
-def test_python_314_blocks(stdout: str) -> None:
+def test_python_314_passes(stdout: str) -> None:
+    """3.14 is no longer blocked: bitbake 5.3+ forces the fork multiprocessing
+    context, so the old _pickle.PicklingError gate is gone."""
     with patch("bakar.diagnostics.subprocess.run", return_value=_mock_run(stdout)):
-        result = check_container_os(_cfg())
-    assert result.status == Status.FAIL
+        result = check_container_os(_byo_cfg())
+    assert result.status == Status.PASS
     assert result.severity == Severity.BLOCK
     assert "3.14" in result.message
-    assert "PicklingError" in result.message or "forkserver" in result.message
-    assert result.fix_hint is not None
-    assert "5.2-ubuntu24.04" in result.fix_hint
 
 
 def test_docker_timeout_skips_at_warn() -> None:
@@ -122,7 +141,7 @@ def test_docker_timeout_skips_at_warn() -> None:
         "bakar.diagnostics.subprocess.run",
         side_effect=subprocess.TimeoutExpired(cmd="docker", timeout=20),
     ):
-        result = check_container_os(_cfg())
+        result = check_container_os(_byo_cfg())
     assert result.status == Status.SKIP
     assert result.severity == Severity.WARN
 
@@ -137,7 +156,7 @@ def test_docker_transient_timeout_retries_then_passes() -> None:
             _mock_run("fedora 40\nPython 3.12.10\n"),
         ],
     ):
-        result = check_container_os(_cfg())
+        result = check_container_os(_byo_cfg())
     assert result.status == Status.PASS
     assert result.severity == Severity.BLOCK
 
@@ -147,7 +166,7 @@ def test_docker_missing_skips_at_warn() -> None:
         "bakar.diagnostics.subprocess.run",
         side_effect=FileNotFoundError("docker"),
     ):
-        result = check_container_os(_cfg())
+        result = check_container_os(_byo_cfg())
     assert result.status == Status.SKIP
     assert result.severity == Severity.WARN
 
@@ -157,7 +176,7 @@ def test_nonzero_returncode_skips_at_warn() -> None:
         "bakar.diagnostics.subprocess.run",
         return_value=_mock_run("", returncode=1),
     ):
-        result = check_container_os(_cfg())
+        result = check_container_os(_byo_cfg())
     assert result.status == Status.SKIP
     assert result.severity == Severity.WARN
 
@@ -167,7 +186,7 @@ def test_empty_output_skips_at_warn() -> None:
         "bakar.diagnostics.subprocess.run",
         return_value=_mock_run("\n"),
     ):
-        result = check_container_os(_cfg())
+        result = check_container_os(_byo_cfg())
     assert result.status == Status.SKIP
     assert result.severity == Severity.WARN
 
@@ -179,7 +198,7 @@ def test_unparseable_python_line_passes() -> None:
         "bakar.diagnostics.subprocess.run",
         return_value=_mock_run("ubuntu noble\nweird-output-no-version\n"),
     ):
-        result = check_container_os(_cfg())
+        result = check_container_os(_byo_cfg())
     assert result.status == Status.PASS
     assert result.severity == Severity.BLOCK
 
