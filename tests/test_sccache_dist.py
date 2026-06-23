@@ -829,6 +829,33 @@ def test_doctor_sccache_fails_when_scheduler_url_unset(monkeypatch: pytest.Monke
     assert result.severity is Severity.BLOCK
 
 
+@pytest.mark.unit
+def test_doctor_sccache_skips_in_container_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sccache preflight runs in host mode only; container mode SKIPs it.
+
+    The check's reachability probe is host-side and does not reflect the
+    in-container client's path to the scheduler (it connects via
+    host.docker.internal), so the gate is scoped to host_mode + use_sccache_dist.
+    The host_mode gate must short-circuit before the binary check: with the
+    binary monkeypatched absent, the pre-gate behaviour would FAIL, so a SKIP
+    proves the gate fired first.
+    """
+    import shutil
+    from dataclasses import replace
+
+    from bakar.diagnostics import Status, check_sccache_dist
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    cfg = replace(
+        _doctor_cfg(sccache_dist=True, sccache_scheduler_url="http://localhost:10600"),
+        host_mode=False,
+    )
+    result = check_sccache_dist(cfg)  # type: ignore[arg-type]
+
+    assert result.status is Status.SKIP
+
+
 # ---------------------------------------------------------------------------
 # Container path (task 5.1): _ccache_args bind-mounts the sccache binary and
 # client config and adds the host-gateway when the scheduler targets localhost;
