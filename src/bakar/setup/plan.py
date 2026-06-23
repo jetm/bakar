@@ -26,7 +26,7 @@ container-image, docker-ulimits, docker-storage-driver, sysctl,
 git-global-config, cache-dirs); workspace/runtime checks (manifest, forks-*,
 ti-*, bbsetup-*, kas-yaml-syntax, hashserv, bitbake-locks, bitbake-override,
 sstate-hash-leak) are never mapped. The memory / disk-free /
-workspace-filesystem / container-os / docker-version checks stay advisory: they
+workspace-filesystem / docker-version checks stay advisory: they
 are reported as text, never turned into an applied action.
 
 The docker *engine* install is advisory too: when docker is absent the plan
@@ -88,7 +88,6 @@ _ADVISORY_CHECKS: frozenset[str] = frozenset(
         "memory",
         "disk-free",
         "workspace-filesystem",
-        "container-os",
         "docker-version",
     }
 )

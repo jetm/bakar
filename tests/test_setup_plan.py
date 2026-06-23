@@ -169,14 +169,13 @@ def test_advisory_checks_are_reported_never_actions(monkeypatch: pytest.MonkeyPa
         _fail("memory"),
         _fail("disk-free"),
         _fail("workspace-filesystem"),
-        _fail("container-os"),
         _fail("docker-version"),
     ]
     _patch_results(monkeypatch, results)
     result = plan_mod.build(_profile(), cfg=_CFG)
     assert result.actions == []
     joined = " ".join(result.advisories)
-    for advisory in ("memory", "disk-free", "workspace-filesystem", "container-os", "docker-version"):
+    for advisory in ("memory", "disk-free", "workspace-filesystem", "docker-version"):
         assert advisory in joined
 
 

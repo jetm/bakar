@@ -42,18 +42,6 @@ Checks cover:
 - Persistent hashserv daemon (when `[build] hashserv = true` — PID + TCP probe; see [hashserv.md](hashserv.md))
 - sstate hash leak (host-specific variables that corrupt sstate task signatures)
 
-## Container OS check
-
-The `container-os` check inspects the build container's Python version because
-bitbake's parser deadlocks on Python 3.13 under the fork-in-multi-thread
-tightening. For an unrecognized container image, the check probes the image and
-BLOCKs on Python 3.13.
-
-The supported `jetm/kas-build-env` image (any tag) is exempt and trusted
-unconditionally: it is maintained to ship everything Yocto needs, with the
-bitbake release and the container Python matched by design. The check
-short-circuits to PASS for it without running a probe.
-
 ## sstate hash-leak check
 
 The `sstate-hash-leak` check scans `build/conf/local.conf` (plus sibling

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- Removed the `container-os` doctor check that BLOCKed builds on container Python 3.13/3.14. The parser failures it guarded against (the 3.13 fork-in-multi-thread deadlock and the 3.14 forkserver `_pickle.PicklingError`) are handled by the `PYTHONMALLOC=malloc` mitigation in the bakar tuning overlays and by bitbake 5.3+ forcing the `fork` multiprocessing context, so the version gate was a false positive against working images such as `jetm/kas-build-env:5.3-f44`.
+
 ## [0.18.0] - 2026-06-18
 
 ### Added
