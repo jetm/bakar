@@ -35,9 +35,26 @@ SCCACHE_DISABLE ??= ""
 # distribution; they fall back to the local compiler.
 SCCACHE_EXCLUDED_CLASSES ?= "native cross crosssdk nativesdk cross-canadian kernel"
 
+# Target recipes that must compile locally even though their class is eligible.
+# These are the gcc/glibc bootstrap recipes, which build with the cross compiler
+# but break under sccache-dist in two distinct ways:
+#   - libgcc (initial+final) and gcc runtime: sccache-dist ships *preprocessed*
+#     source to the build-server, and preprocessing strips the comments that
+#     suppress -Wimplicit-fallthrough. The soft-float files (e.g. divtf3.c,
+#     multf3.c) rely on those comments and build with -Werror, so the remote
+#     compile errors where a local one (original source, comments intact) does not.
+#   - glibc: its makefiles emit a side `.o.dt` dependency file per object, which
+#     sccache-dist does not capture, so the remote job fails to zip up the
+#     compiler outputs ("failed to open file `...o.dt`").
+# They build once and are a tiny fraction of the build, so compile them locally,
+# mirroring the kernel class carve-out above.
+SCCACHE_EXCLUDED_PN ?= "libgcc-initial libgcc gcc-runtime gcc-sanitizers glibc glibc-initial"
+
 python () {
     if (bb.utils.to_boolean(d.getVar('SCCACHE_DISABLE')) or
             bb.utils.to_boolean(d.getVar('CCACHE_DISABLE'))):
+        return
+    if d.getVar('PN') in d.getVar('SCCACHE_EXCLUDED_PN').split():
         return
     for cls in d.getVar('SCCACHE_EXCLUDED_CLASSES').split():
         if bb.data.inherits_class(cls, d):
@@ -94,3 +111,18 @@ do_install_ptest_base[network] = "1"
 # exports BAKAR_SCCACHE_SCHEDULER_URL and the tuning overlay whitelists it
 # through kas's BB_ENV_PASSTHROUGH_ADDITIONS.
 export SCCACHE_DIST_SCHEDULER_URL = "${@os.environ.get('BAKAR_SCCACHE_SCHEDULER_URL', '')}"
+
+# Container mode only: deliver the auth config path and a writable disk cache to
+# the in-container client (bakar sets BAKAR_SCCACHE_CONF/BAKAR_SCCACHE_DIR there;
+# host mode leaves them unset, where the pre-started server already reads
+# ~/.config/sccache/config and the configured cache dir). Export only when set -
+# an empty SCCACHE_CONF would point the client at "" and lose the host-mode auth
+# token, so this must not mirror the always-exported scheduler line above.
+python () {
+    for envname, taskvar in (('BAKAR_SCCACHE_CONF', 'SCCACHE_CONF'),
+                             ('BAKAR_SCCACHE_DIR', 'SCCACHE_DIR')):
+        value = os.environ.get(envname)
+        if value:
+            d.setVar(taskvar, value)
+            d.setVarFlag(taskvar, 'export', '1')
+}

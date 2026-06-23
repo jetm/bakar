@@ -23,6 +23,7 @@ import re
 import shutil
 import socket
 import subprocess
+import tomllib
 import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -1362,6 +1363,37 @@ def check_ccache_health(cfg: BuildConfig) -> CheckResult:
     )
 
 
+def _container_sccache_scheduler_check(name: str) -> CheckResult:
+    """Warn when the sccache config names a localhost scheduler in container mode.
+
+    The in-container client reads its scheduler URL from ``~/.config/sccache/config``;
+    localhost there resolves to the container itself, so distribution silently
+    fails over to local compiles. Return WARN when the config names a loopback
+    scheduler, INFO-SKIP when the config is absent/unparseable or names a routable
+    address (nothing else is host-side checkable for the container path).
+    """
+    skip_msg = "sccache-dist preflight runs in host mode only"
+    conf = Path.home() / ".config" / "sccache" / "config"
+    if not conf.is_file():
+        return _skip(name, Severity.INFO, skip_msg)
+    try:
+        sched = (tomllib.loads(conf.read_text()).get("dist") or {}).get("scheduler_url", "")
+    except OSError, tomllib.TOMLDecodeError:
+        return _skip(name, Severity.INFO, skip_msg)
+    hostname = urllib.parse.urlparse(sched).hostname if sched else None
+    if hostname in ("localhost", "127.0.0.1", "::1"):
+        return _fail(
+            name,
+            Severity.WARN,
+            f"sccache config scheduler_url `{sched}` is localhost; the in-container client cannot reach it",
+            fix_hint=(
+                "Set [dist] scheduler_url to the host LAN address (e.g. http://<host-ip>:10600) "
+                "in ~/.config/sccache/config so container builds can reach the scheduler."
+            ),
+        )
+    return _skip(name, Severity.INFO, skip_msg)
+
+
 def check_sccache_dist(cfg: BuildConfig) -> CheckResult:
     """Verify the sccache client + scheduler are usable when distributed compile is on.
 
@@ -1388,11 +1420,13 @@ def check_sccache_dist(cfg: BuildConfig) -> CheckResult:
         return _skip(name, Severity.INFO, "distributed compile not configured ([build] sccache_dist = false)")
 
     # The reachability probe below is host-side; it cannot speak for the
-    # in-container client, which reaches the scheduler via host.docker.internal
-    # in its own network namespace. Scope the preflight to host mode so a
-    # container build does not fail on a probe that does not reflect its path.
+    # in-container client, which reaches the scheduler in its own network
+    # namespace. Scope that probe to host mode. The one container precondition
+    # checkable here is the config's scheduler address: localhost resolves to the
+    # container itself, so a localhost scheduler_url silently forces every compile
+    # local. Read the config and warn when it names one; otherwise skip.
     if not cfg.host_mode:
-        return _skip(name, Severity.INFO, "sccache-dist preflight runs in host mode only")
+        return _container_sccache_scheduler_check(name)
 
     if shutil.which("sccache") is None:
         return _fail(

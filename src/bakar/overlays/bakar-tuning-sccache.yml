@@ -27,6 +27,13 @@ env:
   # the configured sccache_scheduler_url. When unset, the sccache client falls
   # back to its own config (SCCACHE_CONF) or local-cache-only mode.
   BAKAR_SCCACHE_SCHEDULER_URL: null
+  # Container-mode only: the auth config path and a writable disk-cache dir. The
+  # token lives only in the config file (no env override) and HOME inside the
+  # container is not the host HOME, so the client needs SCCACHE_CONF to find it;
+  # the config's cache dir is absent in the container, so SCCACHE_DIR redirects
+  # it under /work. Both unset (null passthrough) in host mode. See sccache.bbclass.
+  BAKAR_SCCACHE_CONF: null
+  BAKAR_SCCACHE_DIR: null
 
 repos:
   # bakar materializes this layer next to the overlay under .bakar/; the relative

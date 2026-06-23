@@ -642,6 +642,46 @@ def test_overlay_exports_sccache_scheduler_env() -> None:
     assert "BAKAR_SCCACHE_SCHEDULER_URL" in text
 
 
+@pytest.mark.unit
+def test_bbclass_excludes_gcc_runtime_recipes_from_dist(tmp_path: Path) -> None:
+    """The bbclass excludes the gcc/glibc bootstrap recipes from distribution.
+
+    sccache-dist breaks two ways on these: libgcc/gcc-runtime fail because
+    preprocessing strips the comments that suppress -Wimplicit-fallthrough (their
+    soft-float files build with -Werror), and glibc fails because its side `.o.dt`
+    dependency files are not captured when zipping remote outputs. They must
+    compile locally, so the per-PN gate skips them before setting CCACHE -
+    mirroring the kernel class carve-out.
+    """
+    from pathlib import Path
+
+    from bakar.config import BuildConfig
+    from bakar.steps.kas_build import materialize_sccache_layer
+
+    root = Path(str(tmp_path))
+    cfg = BuildConfig(
+        workspace=root,
+        bsp_family="generic",  # type: ignore[arg-type]
+        machine="m",
+        distro="d",
+        image="i",
+        manifest="x.xml",
+        repo_url="https://example.com",
+        repo_branch="main",
+        container_image="img:latest",
+        kas_yaml_override=root / "my.yml",
+        sccache_dist=True,
+    )
+
+    bbclass = (materialize_sccache_layer(cfg) / "classes" / "sccache.bbclass").read_text()
+
+    for pn in ("libgcc-initial", "libgcc", "gcc-runtime", "glibc", "glibc-initial"):
+        assert pn in bbclass, pn
+    assert "SCCACHE_EXCLUDED_PN" in bbclass
+    # The gate must return before assigning CCACHE for an excluded PN.
+    assert "d.getVar('PN') in" in bbclass
+
+
 # ---------------------------------------------------------------------------
 # Task 3.2: the doctor/preflight gate. When cfg.use_sccache_dist, the gate
 # fails with an actionable message if the `sccache` binary is absent from PATH
@@ -830,21 +870,22 @@ def test_doctor_sccache_fails_when_scheduler_url_unset(monkeypatch: pytest.Monke
 
 
 @pytest.mark.unit
-def test_doctor_sccache_skips_in_container_mode(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The sccache preflight runs in host mode only; container mode SKIPs it.
+def test_doctor_sccache_skips_in_container_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The host-side preflight is skipped in container mode when the config is sane.
 
-    The check's reachability probe is host-side and does not reflect the
-    in-container client's path to the scheduler (it connects via
-    host.docker.internal), so the gate is scoped to host_mode + use_sccache_dist.
-    The host_mode gate must short-circuit before the binary check: with the
-    binary monkeypatched absent, the pre-gate behaviour would FAIL, so a SKIP
-    proves the gate fired first.
+    The reachability probe is host-side and does not reflect the in-container
+    client's path to the scheduler, so the gate is scoped to host_mode. With no
+    sccache config present (HOME points at an empty dir), there is nothing
+    container-specific to flag, so the check SKIPs. The gate must short-circuit
+    before the binary check: with the binary monkeypatched absent, the pre-gate
+    behaviour would FAIL, so a SKIP proves the gate fired first.
     """
     import shutil
     from dataclasses import replace
 
     from bakar.diagnostics import Status, check_sccache_dist
 
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(shutil, "which", lambda name: None)
 
     cfg = replace(
@@ -854,6 +895,35 @@ def test_doctor_sccache_skips_in_container_mode(monkeypatch: pytest.MonkeyPatch)
     result = check_sccache_dist(cfg)  # type: ignore[arg-type]
 
     assert result.status is Status.SKIP
+
+
+@pytest.mark.unit
+def test_doctor_sccache_warns_localhost_scheduler_in_container(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Container mode warns when the sccache config names a localhost scheduler.
+
+    localhost inside the container is the container itself, so a localhost
+    scheduler_url silently forces every compile local. The host-side probe cannot
+    catch this, so the check reads the config and warns, making the precondition
+    (a host LAN scheduler address) discoverable.
+    """
+    from dataclasses import replace
+
+    from bakar.diagnostics import Severity, Status, check_sccache_dist
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    conf = tmp_path / ".config" / "sccache" / "config"
+    conf.parent.mkdir(parents=True)
+    conf.write_text('[dist]\nscheduler_url = "http://localhost:10600"\n')
+
+    cfg = replace(
+        _doctor_cfg(sccache_dist=True, sccache_scheduler_url="http://localhost:10600"),
+        host_mode=False,
+    )
+    result = check_sccache_dist(cfg)  # type: ignore[arg-type]
+
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.WARN
+    assert "localhost" in result.message
 
 
 # ---------------------------------------------------------------------------
@@ -883,13 +953,15 @@ def _container_cfg_no_sccache(workspace: Path) -> object:
 
 @pytest.mark.unit
 def test_runtime_args_container_mounts_sccache_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Container runtime-args bind-mount the sccache binary + client config and add host-gateway.
+    """Container runtime-args mount the sccache binary + config and inject SCCACHE_CONF/DIR.
 
-    The in-container compiler launcher needs the host ``sccache`` binary and the
-    auth-bearing ``~/.config/sccache/config`` (the overlay exports only the
-    scheduler URL, not the token), and a route to the host where the scheduler
-    runs. HOME inside the container is the host HOME, so the config mounted at its
-    own absolute path resolves as ``~/.config/sccache/config`` for the client.
+    sccache reads its scheduler URL and auth token only from the config file, so
+    the config is mounted read-only and SCCACHE_CONF points at it (kas gives the
+    container a throwaway HOME, so XDG discovery would miss it). SCCACHE_DIR
+    redirects the disk cache under /work because the config's ~/.cache/sccache is
+    absent in the container. The binary lands in /usr/bin (kas sanitizes bitbake's
+    PATH and drops /usr/local/bin). No host-gateway is needed: the config names a
+    host LAN scheduler reachable from the container as-is.
     """
     import shutil
 
@@ -898,7 +970,7 @@ def test_runtime_args_container_mounts_sccache_when_enabled(tmp_path: Path, monk
     monkeypatch.setenv("HOME", str(tmp_path))
     conf = tmp_path / ".config" / "sccache" / "config"
     conf.parent.mkdir(parents=True)
-    conf.write_text('[dist]\nscheduler_url = "http://localhost:10600"\n')
+    conf.write_text('[dist]\nscheduler_url = "http://192.168.8.174:10600"\n')
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/sccache" if name == "sccache" else None)
 
     cfg = _container_sccache_cfg(tmp_path)
@@ -906,9 +978,13 @@ def test_runtime_args_container_mounts_sccache_when_enabled(tmp_path: Path, monk
 
     assert args[0] == "--runtime-args"
     s = args[1]
-    assert "-v /usr/bin/sccache:/usr/local/bin/sccache:ro" in s, s
+    assert "-v /usr/bin/sccache:/usr/bin/sccache:ro" in s, s
     assert f"-v {conf}:{conf}:ro" in s, s
-    assert "--add-host=host.docker.internal:host-gateway" in s, s
+    assert f"-e BAKAR_SCCACHE_CONF={conf}" in s, s
+    assert "-e BAKAR_SCCACHE_DIR=/work/.sccache-cache" in s, s
+    # sccache reaches the scheduler via the config's LAN address, so it needs no
+    # host-gateway (and this cfg leaves hashequiv off).
+    assert "--add-host" not in s, s
 
 
 @pytest.mark.unit
@@ -948,3 +1024,25 @@ def test_host_env_keeps_localhost_scheduler(tmp_path: Path) -> None:
     env = _build_env(cfg, ensure_hashserv=False)  # type: ignore[arg-type]
 
     assert env["BAKAR_SCCACHE_SCHEDULER_URL"] == "http://localhost:10600"
+
+
+@pytest.mark.unit
+def test_host_env_omits_sccache_conf_and_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Host mode never sets the container-only config/cache overrides (falsifier guard).
+
+    In host mode the pre-started server already reads ~/.config/sccache/config and
+    the configured disk cache, so emitting these keys would override the host
+    cache dir for no reason. They must stay absent to keep host builds unchanged.
+    """
+    from bakar.steps.kas_build import _build_env
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    conf = tmp_path / ".config" / "sccache" / "config"
+    conf.parent.mkdir(parents=True)
+    conf.write_text('[dist]\nscheduler_url = "http://localhost:10600"\n')
+
+    cfg = _sccache_build_cfg(tmp_path, sccache_dist=True, sccache_scheduler_url="http://localhost:10600")
+    env = _build_env(cfg, ensure_hashserv=False)  # type: ignore[arg-type]
+
+    assert "BAKAR_SCCACHE_CONF" not in env
+    assert "BAKAR_SCCACHE_DIR" not in env

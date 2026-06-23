@@ -335,19 +335,35 @@ def _ccache_args(
     # scheduler is on the host (localhost), reached via the gateway alias.
     need_host_gateway = cfg.use_hashequiv
     if cfg.use_sccache_dist:
-        # The in-container compiler launcher is the host sccache binary, and it
-        # reads its auth token from ~/.config/sccache/config (the overlay exports
-        # only the scheduler URL). HOME inside the container is the host HOME, so
-        # mounting the config at its own absolute path resolves as the client's
-        # default config path. Skip a mount whose source is absent.
+        # The in-container compiler launcher is the host sccache binary, mounted
+        # below. sccache reads its scheduler URL and auth token only from the
+        # config file (no env override exists for either), so the config must be
+        # both readable in the container and name a scheduler the container can
+        # reach. kas-container forwards only a fixed env allowlist and drops
+        # BAKAR_*, so the two vars sccache *does* read from the environment
+        # (SCCACHE_CONF, SCCACHE_DIR) are injected via `-e` here, then whitelisted
+        # by the sccache overlay's env block and re-exported into the compile
+        # tasks by its bbclass. The config's scheduler_url must be a host LAN
+        # address, not localhost (localhost inside the container is the container
+        # itself); the doctor check warns when it is not.
         sccache_bin = shutil.which("sccache")
         if sccache_bin is not None:
-            runtime_args += f" -v {sccache_bin}:/usr/local/bin/sccache:ro"
+            # kas runs bitbake with a sanitized PATH (/usr/sbin:/usr/bin:/sbin:/bin,
+            # see kas libkas.py) that excludes /usr/local/bin, so mount into /usr/bin
+            # or bitbake's HOSTTOOLS check fails to find sccache inside the container.
+            runtime_args += f" -v {sccache_bin}:/usr/bin/sccache:ro"
         sccache_conf = Path.home() / ".config" / "sccache" / "config"
         if sccache_conf.is_file():
+            # kas sets HOME to a throwaway temp dir, so XDG discovery misses the
+            # config; mount it at its own absolute path and point SCCACHE_CONF
+            # straight at it so the scheduler URL and token resolve regardless of
+            # HOME.
             runtime_args += f" -v {sccache_conf}:{sccache_conf}:ro"
-        if cfg.sccache_scheduler_url and "localhost" in cfg.sccache_scheduler_url:
-            need_host_gateway = True
+            runtime_args += f" -e BAKAR_SCCACHE_CONF={sccache_conf}"
+        # The config's [cache.disk] dir (~/.cache/sccache) is absent and unwritable
+        # in the container; without an override sccache fails to start its server
+        # and every compile falls back to local. Redirect it under the /work mount.
+        runtime_args += " -e BAKAR_SCCACHE_DIR=/work/.sccache-cache"
     if need_host_gateway:
         runtime_args += " --add-host=host.docker.internal:host-gateway"
     if eventlog_path is not None:
