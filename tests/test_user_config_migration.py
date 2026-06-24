@@ -55,7 +55,7 @@ def test_legacy_config_migration_persists_version_to_disk(tmp_path: Path) -> Non
         tmp_path / "config.toml",
         """\
         [build]
-        container_image = "jetm/kas-build-env:latest"
+        kas_container_image = "jetm/kas-build-env:latest"
         """,
     )
 
@@ -65,7 +65,7 @@ def test_legacy_config_migration_persists_version_to_disk(tmp_path: Path) -> Non
         on_disk = tomllib.load(f)
     assert on_disk["config_version"] == CURRENT_CONFIG_VERSION
     # Pre-existing keys survive the rewrite.
-    assert on_disk["build"]["container_image"] == "jetm/kas-build-env:latest"
+    assert on_disk["build"]["kas_container_image"] == "jetm/kas-build-env:latest"
 
 
 @pytest.mark.unit
@@ -192,10 +192,34 @@ def test_bool_version_rejected(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_migrate_config_stamps_current_version_from_zero() -> None:
-    raw: dict[str, object] = {"build": {"container_image": "x"}}
+    raw: dict[str, object] = {"build": {"kas_container_image": "x"}}
     out = _migrate_config(raw, 0)
     assert out["config_version"] == CURRENT_CONFIG_VERSION
-    assert out["build"] == {"container_image": "x"}
+    assert out["build"] == {"kas_container_image": "x"}
+
+
+@pytest.mark.unit
+def test_v2_to_v3_renames_container_image_to_kas_container_image() -> None:
+    raw: dict[str, object] = {"build": {"container_image": "custom/kas:4.7"}}
+    out = _migrate_config(raw, 2)
+    assert out["config_version"] == CURRENT_CONFIG_VERSION
+    assert out["build"] == {"kas_container_image": "custom/kas:4.7"}
+
+
+@pytest.mark.unit
+def test_v2_to_v3_no_op_when_container_image_absent() -> None:
+    raw: dict[str, object] = {"build": {"dl_dir": "/data/dl"}}
+    out = _migrate_config(raw, 2)
+    assert out["config_version"] == CURRENT_CONFIG_VERSION
+    assert out["build"] == {"dl_dir": "/data/dl"}
+
+
+@pytest.mark.unit
+def test_v2_to_v3_preserves_kas_container_image_when_both_keys_present() -> None:
+    raw: dict[str, object] = {"build": {"container_image": "old/kas:1.0", "kas_container_image": "new/kas:2.0"}}
+    out = _migrate_config(raw, 2)
+    assert out["config_version"] == CURRENT_CONFIG_VERSION
+    assert out["build"] == {"kas_container_image": "new/kas:2.0"}
 
 
 @pytest.mark.unit

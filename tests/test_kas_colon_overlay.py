@@ -167,7 +167,7 @@ def test_build_kas_arg_byo_extra_overlays_appended(tmp_path: Path) -> None:
         manifest="",
         repo_url="",
         repo_branch="",
-        container_image="kas-build-env:latest",
+        kas_container_image="kas-build-env:latest",
     )
     bsp_root = cfg.bsp_root
     bsp_root.mkdir(parents=True, exist_ok=True)
@@ -205,7 +205,7 @@ def test_build_kas_arg_byo_no_extras_unchanged(tmp_path: Path) -> None:
         manifest="",
         repo_url="",
         repo_branch="",
-        container_image="kas-build-env:latest",
+        kas_container_image="kas-build-env:latest",
     )
     bsp_root = cfg.bsp_root
     bsp_root.mkdir(parents=True, exist_ok=True)
@@ -245,7 +245,7 @@ def test_build_kas_arg_meta_avocado_threads_extras_to_kas_dump(tmp_path: Path) -
         manifest="",
         repo_url="",
         repo_branch="",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
         kas_yaml_override=kas_yaml,
     )
     cfg.bsp_root.mkdir(parents=True, exist_ok=True)
@@ -430,7 +430,7 @@ def test_run_build_byo_extra_overlays_in_dry_run(tmp_path: Path) -> None:
         manifest="",
         repo_url="",
         repo_branch="",
-        container_image="kas-build-env:latest",
+        kas_container_image="kas-build-env:latest",
     )
     bsp_root = cfg.bsp_root
     bsp_root.mkdir(parents=True, exist_ok=True)

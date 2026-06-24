@@ -35,7 +35,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "defaults.ti.distro": "arago",
         "defaults.ti.image": "var-thin-image",
         "defaults.ti.manifest": "processor-sdk-scarthgap.txt",
-        "build.container_image": "jetm/kas-build-env:latest",
+        "build.kas_container_image": "jetm/kas-build-env:latest",
         "build.show_doctor_report": "false",
         "build.dl_dir": "/data/dl",
         "build.sstate_dir": "/data/sstate",
@@ -78,7 +78,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert cfg.ti_distro == "arago"
     assert cfg.ti_image == "var-thin-image"
     assert cfg.ti_manifest == "processor-sdk-scarthgap.txt"
-    assert cfg.container_image == "jetm/kas-build-env:latest"
+    assert cfg.kas_container_image == "jetm/kas-build-env:latest"
     assert cfg.show_doctor_report is False
     assert cfg.dl_dir == "/data/dl"
     assert cfg.sstate_dir == "/data/sstate"

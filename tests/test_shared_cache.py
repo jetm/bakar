@@ -45,7 +45,7 @@ def test_use_shared_cache_true_when_url_set() -> None:
         manifest="x.xml",
         repo_url="https://example.com",
         repo_branch="main",
-        container_image="img:latest",
+        kas_container_image="img:latest",
         sstate_mirror_url="https://cache.example.com",
     )
     assert cfg.use_shared_cache is True
@@ -64,7 +64,7 @@ def test_use_shared_cache_false_when_url_not_set() -> None:
         manifest="x.xml",
         repo_url="https://example.com",
         repo_branch="main",
-        container_image="img:latest",
+        kas_container_image="img:latest",
     )
     assert cfg.use_shared_cache is False
 
@@ -87,7 +87,7 @@ def _make_cfg(*, sstate_mirror_url: str | None = None) -> object:
         manifest="x.xml",
         repo_url="https://example.com",
         repo_branch="main",
-        container_image="img:latest",
+        kas_container_image="img:latest",
         sstate_mirror_url=sstate_mirror_url,
     )
 
@@ -136,7 +136,7 @@ def test_build_env_includes_sstate_mirror_url_when_set(
         manifest="x.xml",
         repo_url="https://example.com",
         repo_branch="main",
-        container_image="img:latest",
+        kas_container_image="img:latest",
         sstate_mirror_url="https://cache.example.com",
     )
 
@@ -166,7 +166,7 @@ def test_build_env_omits_sstate_mirror_url_when_none(
         manifest="x.xml",
         repo_url="https://example.com",
         repo_branch="main",
-        container_image="img:latest",
+        kas_container_image="img:latest",
     )
 
     monkeypatch.setattr(kas_build_mod.hashserv, "ensure_running", lambda _root: None)

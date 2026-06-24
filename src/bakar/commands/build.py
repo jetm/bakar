@@ -108,8 +108,8 @@ def _run_bbsetup_build(
         )
         raise typer.Exit(code=2)
 
-    if "KAS_CONTAINER_IMAGE" not in os.environ and cfg.container_image != DEFAULT_CONTAINER_IMAGE:
-        console.print(f"[dim]container image from config.toml: {cfg.container_image}[/]")
+    if "KAS_CONTAINER_IMAGE" not in os.environ and cfg.kas_container_image != DEFAULT_CONTAINER_IMAGE:
+        console.print(f"[dim]container image from config.toml: {cfg.kas_container_image}[/]")
 
     console.print(f"[bold]::[/] bakar build [bbsetup] {setup_dir}")
 
@@ -712,9 +712,8 @@ def build(
                 resolved_existing.add(resolved_overlay)
 
     overlay_source = _overlay_for(bsp)
-
-    if "KAS_CONTAINER_IMAGE" not in os.environ and cfg.container_image != DEFAULT_CONTAINER_IMAGE:
-        console.print(f"[dim]container image from config.toml: {cfg.container_image}[/]")
+    if "KAS_CONTAINER_IMAGE" not in os.environ and cfg.kas_container_image != DEFAULT_CONTAINER_IMAGE:
+        console.print(f"[dim]container image from config.toml: {cfg.kas_container_image}[/]")
 
     effective_show_layers = show_layers or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_hashes)
 

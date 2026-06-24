@@ -140,7 +140,7 @@ class TestSettings:
         assert result.returncode == 0
         assert "defaults.nxp.machine" in result.stderr
         assert "defaults.ti.machine" in result.stderr
-        assert "build.container_image" in result.stderr
+        assert "build.kas_container_image" in result.stderr
         assert "layers.show_hashes" in result.stderr
         assert "(unset)" in result.stderr
 
@@ -159,7 +159,7 @@ class TestSettings:
     def test_multiple_keys_survive_independently(self, home_env: dict) -> None:
         _run(["settings", "set", "defaults.nxp.machine", "imx8mp-var-dart"], env=home_env)
         _run(["settings", "set", "defaults.nxp.distro", "fsl-imx-xwayland"], env=home_env)
-        _run(["settings", "set", "build.container_image", "jetm/kas-build-env:latest"], env=home_env)
+        _run(["settings", "set", "build.kas_container_image", "jetm/kas-build-env:latest"], env=home_env)
         result = _run(["settings", "list"], env=home_env)
         assert "imx8mp-var-dart" in result.stderr
         assert "fsl-imx-xwayland" in result.stderr

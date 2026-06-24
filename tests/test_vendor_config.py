@@ -36,7 +36,7 @@ def test_valid_full_entry() -> None:
         family="ti",
         manifest_regex=r"am62x-.*\.xml",
         repo_url="https://github.com/example/bsp",
-        container_image="example/kas:latest",
+        kas_container_image="example/kas:latest",
         default_machine="am62x-var-som",
         default_distro="arago",
         default_image="arago-base-tisdk-image",
@@ -106,6 +106,22 @@ def test_load_vendors_valid(tmp_path: Path) -> None:
     assert entries[0].name == "nxp-variscite"
     assert entries[0].family == "nxp"
     assert entries[0].default_machine == "imx93-var-som"
+
+
+def test_load_vendors_legacy_container_image_key_accepted(tmp_path: Path) -> None:
+    toml_content = textwrap.dedent("""\
+        [[vendors]]
+        name = "acme"
+        family = "nxp"
+        manifest_regex = "imx-.*\\\\.xml"
+        container_image = "legacy/kas:4.0"
+    """)
+    config_file = tmp_path / "vendors.toml"
+    config_file.write_text(toml_content)
+
+    entries = load_vendors(config_file)
+    assert len(entries) == 1
+    assert entries[0].kas_container_image == "legacy/kas:4.0"
 
 
 def test_load_vendors_invalid_family_raises(tmp_path: Path) -> None:

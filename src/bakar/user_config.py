@@ -8,7 +8,7 @@ import tomli_w
 
 # Bumped whenever a forward migration is added below. A config.toml without a
 # config_version field is treated as version 0 and migrated to this version.
-CURRENT_CONFIG_VERSION = 2
+CURRENT_CONFIG_VERSION = 3
 
 _STR_FIELDS = {
     "nxp_machine",
@@ -20,7 +20,7 @@ _STR_FIELDS = {
     "ti_distro",
     "ti_image",
     "ti_manifest",
-    "container_image",
+    "kas_container_image",
     "dl_dir",
     "sstate_dir",
     "sstate_mirrors",
@@ -70,7 +70,7 @@ class UserConfig:
     ti_image: str | None = None
     ti_manifest: str | None = None
     # [build]
-    container_image: str | None = None
+    kas_container_image: str | None = None
     show_doctor_report: bool = True
     dl_dir: str | None = None
     sstate_dir: str | None = None
@@ -121,7 +121,7 @@ _TI_KEYS = {
     "manifest": "ti_manifest",
 }
 _BUILD_KEYS = {
-    "container_image": "container_image",
+    "kas_container_image": "kas_container_image",
     "show_doctor_report": "show_doctor_report",
     "dl_dir": "dl_dir",
     "sstate_dir": "sstate_dir",
@@ -209,6 +209,16 @@ def _migrate_config(raw: dict[str, object], from_version: int) -> dict[str, obje
             if build.pop("doctor") is False:
                 build["show_doctor_report"] = False
         migrated = 2
+    # Version 2 -> 3: [build] container_image renamed to kas_container_image to match
+    # the KAS_CONTAINER_IMAGE env var it mirrors.
+    if migrated < 3:
+        build = raw.get("build")
+        if isinstance(build, dict) and "container_image" in build:
+            if "kas_container_image" not in build:
+                build["kas_container_image"] = build.pop("container_image")
+            else:
+                build.pop("container_image")
+        migrated = 3
     raw["config_version"] = migrated
     return raw
 

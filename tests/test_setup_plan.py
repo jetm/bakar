@@ -79,7 +79,7 @@ def _patch_results(monkeypatch: pytest.MonkeyPatch, results: Iterable[CheckResul
     monkeypatch.setattr(plan_mod, "run_all", lambda _cfg, _bsp: list(results))
 
 
-_CFG = SimpleNamespace(container_image="jetm/kas-build-env:latest")
+_CFG = SimpleNamespace(kas_container_image="jetm/kas-build-env:latest")
 
 
 def _types(actions: list) -> set[type]:
@@ -212,7 +212,7 @@ def test_no_persist_without_a_value_applying_action(monkeypatch: pytest.MonkeyPa
 def test_container_image_action_gets_cfg_image(monkeypatch: pytest.MonkeyPatch) -> None:
     """The docker-pull action is constructed with cfg.container_image."""
     _patch_results(monkeypatch, [_fail("container-image")])
-    cfg = SimpleNamespace(container_image="example/image:9.9")
+    cfg = SimpleNamespace(kas_container_image="example/image:9.9")
     result = plan_mod.build(_profile(), cfg=cfg)
     pulls = [a for a in result.actions if isinstance(a, DockerPullAction)]
     assert len(pulls) == 1
@@ -278,7 +278,7 @@ class _ResolvedCfg:
     ``BuildConfig`` resolve() actually returns.
     """
 
-    container_image: str
+    kas_container_image: str
     host_mode: bool = True
 
 
@@ -289,7 +289,7 @@ def test_build_resolves_cfg_when_not_supplied(monkeypatch: pytest.MonkeyPatch) -
     def _fake_resolve(*, workspace, user_config, **_kw):
         captured["workspace"] = workspace
         captured["user_config"] = user_config
-        return _ResolvedCfg(container_image="resolved/image:1.0")
+        return _ResolvedCfg(kas_container_image="resolved/image:1.0")
 
     monkeypatch.setattr(plan_mod.config, "resolve", _fake_resolve)
     _patch_results(monkeypatch, [_fail("container-image")])
@@ -308,7 +308,7 @@ def test_build_forces_host_mode_off_so_docker_checks_run(monkeypatch: pytest.Mon
     monkeypatch.setattr(
         plan_mod.config,
         "resolve",
-        lambda *, workspace, user_config, **_kw: _ResolvedCfg(container_image="img:1", host_mode=True),
+        lambda *, workspace, user_config, **_kw: _ResolvedCfg(kas_container_image="img:1", host_mode=True),
     )
 
     def _capturing_run_all(cfg: object, _bsp: object) -> list[CheckResult]:

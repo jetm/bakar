@@ -38,7 +38,7 @@ def _make_cfg(workspace: Path, bsp_family: str = "nxp", *, host_mode: bool = Fal
         manifest="imx-6.6.52-2.2.2.xml",
         repo_url="https://example.invalid/repo.git",
         repo_branch="imx-6.6.52-2.2.2",
-        container_image="jetm/kas-build-env:5.2-f40",
+        kas_container_image="jetm/kas-build-env:5.2-f40",
         host_mode=host_mode,
     )
 

@@ -54,7 +54,7 @@ def _make_cfg(workspace: Path, *, use_hashequiv: bool = False) -> BuildConfig:
         manifest="",
         repo_url="https://example.invalid/repo.git",
         repo_branch="",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
         use_hashequiv=use_hashequiv,
     )
 

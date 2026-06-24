@@ -15,7 +15,7 @@ class VendorEntry:
     family: str
     manifest_regex: str
     repo_url: str | None = None
-    container_image: str | None = None
+    kas_container_image: str | None = None
     default_machine: str | None = None
     default_distro: str | None = None
     default_image: str | None = None
@@ -56,7 +56,10 @@ def load_vendors(path: Path | None = None) -> list[VendorEntry]:
     with path.open("rb") as f:
         data = tomllib.load(f)
 
-    entries = [VendorEntry(**item) for item in data.get("vendors", [])]
+    entries = [
+        VendorEntry(**{("kas_container_image" if k == "container_image" else k): v for k, v in item.items()})
+        for item in data.get("vendors", [])
+    ]
 
     return entries
 

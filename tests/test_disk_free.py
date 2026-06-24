@@ -45,7 +45,7 @@ def _build_cfg(workspace: Path, **overrides: object) -> BuildConfig:
         "manifest": "imx-6.6.52-2.2.2.xml",
         "repo_url": "https://example.com/bsp.git",
         "repo_branch": "main",
-        "container_image": "jetm/kas-build-env:latest",
+        "kas_container_image": "jetm/kas-build-env:latest",
     }
     base.update(overrides)
     return BuildConfig(**base)

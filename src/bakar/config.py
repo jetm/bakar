@@ -202,7 +202,7 @@ class BuildConfig:
     manifest: str
     repo_url: str
     repo_branch: str
-    container_image: str
+    kas_container_image: str
     # When True, kas-container is bypassed and plain `kas shell` is invoked
     # directly on the host to rule out kas-container/Docker as the parser-fork-race environment.
     host_mode: bool = False
@@ -553,7 +553,7 @@ def resolve(
     # hosts without a container setup. A config-supplied container_image counts the
     # same as the env var: a user who set it has a container setup and wants it used.
     effective_host_mode = spec.host_mode or (
-        "KAS_CONTAINER_IMAGE" not in os.environ and (user_config is None or user_config.container_image is None)
+        "KAS_CONTAINER_IMAGE" not in os.environ and (user_config is None or user_config.kas_container_image is None)
     )
 
     def _host(field_name: str, default: float) -> float:
@@ -605,9 +605,13 @@ def resolve(
             (user_config.nxp_repo_url if user_config and user_config.nxp_repo_url else DEFAULT_REPO_URL),
         ),
         repo_branch=resolved_branch,
-        container_image=os.environ.get(
+        kas_container_image=os.environ.get(
             "KAS_CONTAINER_IMAGE",
-            (user_config.container_image if user_config and user_config.container_image else DEFAULT_CONTAINER_IMAGE),
+            (
+                user_config.kas_container_image
+                if user_config and user_config.kas_container_image
+                else DEFAULT_CONTAINER_IMAGE
+            ),
         ),
         host_mode=effective_host_mode,
         kas_yaml_override=kas_yaml.resolve() if kas_yaml is not None else None,

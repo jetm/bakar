@@ -38,7 +38,7 @@ def _cfg(workspace: Path) -> BuildConfig:
         manifest="config-upstream.json",
         repo_url="https://example.invalid/none.git",
         repo_branch="wrynose",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
     )
 
 

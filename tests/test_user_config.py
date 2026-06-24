@@ -22,7 +22,7 @@ def test_missing_file_returns_defaults(tmp_path: Path) -> None:
     assert result == UserConfig()
     assert result.nxp_machine is None
     assert result.ti_manifest is None
-    assert result.container_image is None
+    assert result.kas_container_image is None
     assert result.show_doctor_report is True
     assert result.show_hashes is False
 
@@ -44,7 +44,7 @@ def test_full_file_populates_every_field(tmp_path: Path) -> None:
         manifest = "processor-sdk-scarthgap.txt"
 
         [build]
-        container_image = "jetm/kas-build-env:latest"
+        kas_container_image = "jetm/kas-build-env:latest"
         show_doctor_report = false
 
         [layers]
@@ -64,7 +64,7 @@ def test_full_file_populates_every_field(tmp_path: Path) -> None:
     assert cfg.ti_distro == "arago"
     assert cfg.ti_image == "var-thin-image"
     assert cfg.ti_manifest == "processor-sdk-scarthgap.txt"
-    assert cfg.container_image == "jetm/kas-build-env:latest"
+    assert cfg.kas_container_image == "jetm/kas-build-env:latest"
     assert cfg.show_doctor_report is False
     assert cfg.show_hashes is True
 
@@ -88,7 +88,7 @@ def test_partial_file_leaves_unsupplied_fields_at_defaults(tmp_path: Path) -> No
     # Everything else stays at the dataclass defaults.
     assert cfg.nxp_distro is None
     assert cfg.ti_machine is None
-    assert cfg.container_image is None
+    assert cfg.kas_container_image is None
     assert cfg.show_doctor_report is True
 
 

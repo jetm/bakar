@@ -31,7 +31,7 @@ def _meta_avocado_cfg(sources: Path) -> BuildConfig:
         manifest="",
         repo_url="",
         repo_branch="",
-        container_image="kasproject/kas:latest",
+        kas_container_image="kasproject/kas:latest",
         kas_yaml_override=yaml_path.resolve(),
     )
 

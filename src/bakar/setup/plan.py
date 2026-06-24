@@ -149,7 +149,7 @@ def _candidate_actions(
     if check_name == "docker-daemon":
         return [DockerDaemonAction(), DockerGroupAction()]
     if check_name == "container-image":
-        return [DockerPullAction(image=cfg.container_image)]
+        return [DockerPullAction(image=cfg.kas_container_image)]
     if check_name == "docker-ulimits":
         return [DockerUlimitsAction()]
     if check_name == "docker-storage-driver":

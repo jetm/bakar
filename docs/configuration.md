@@ -43,7 +43,7 @@ wizard and [workspace.md](workspace.md) for the full `.bakar.toml` schema.
 | `BAKAR_MANIFEST` | `--manifest` | `export BAKAR_MANIFEST=imx-6.12.49-2.2.0.xml` |
 | `BAKAR_REPO_BRANCH` | `--branch` | `export BAKAR_REPO_BRANCH=lf-6.12.y-var01` |
 | `BAKAR_REPO_URL` | (repo manifest URL) | `export BAKAR_REPO_URL=https://github.com/Variscite/...` |
-| `KAS_CONTAINER_IMAGE` | `build.container_image` | `export KAS_CONTAINER_IMAGE=ghcr.io/siemens/kas/kas:4.7` |
+| `KAS_CONTAINER_IMAGE` | `build.kas_container_image` | `export KAS_CONTAINER_IMAGE=ghcr.io/siemens/kas/kas:4.7` |
 | `BAKAR_BITBAKE_OVERRIDE_REPO` | `--repo` in `bitbake-override` | `export BAKAR_BITBAKE_OVERRIDE_REPO=~/src/bitbake` |
 
 ## config.toml
@@ -62,7 +62,7 @@ machine = "am62x-var-som"
 manifest = "processor-sdk-10.1.0.8-config_var1.txt"
 
 [build]
-container_image = "ghcr.io/siemens/kas/kas:4.7"  # custom kas-container image
+kas_container_image = "ghcr.io/siemens/kas/kas:4.7"  # custom kas-container image
 show_doctor_report = true   # show the doctor report (checks always run before every build)
 dl_dir = "/mnt/yocto-cache/downloads"
 sstate_dir = "/mnt/yocto-cache/sstate"

@@ -209,7 +209,7 @@ def test_show_json_config_subkeys(
     assert "distro" in cfg
     assert "image" in cfg
     assert "bsp_family" in cfg
-    assert "container_image" in cfg
+    assert "kas_container_image" in cfg
 
 
 def test_show_json_layers_populated(

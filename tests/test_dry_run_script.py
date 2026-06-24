@@ -44,7 +44,7 @@ def _make_cfg(workspace: Path, family: str, manifest: str = "imx-6.12.49-2.2.0.x
         manifest=manifest,
         repo_url="https://example.invalid/none.git",
         repo_branch="walnascar",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
     )
 
 

@@ -50,7 +50,7 @@ def _ti_cfg(
         manifest=manifest,
         repo_url="https://example.invalid/none.git",
         repo_branch="scarthgap_11.00.09.04_var01",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
     )
 
 

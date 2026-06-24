@@ -31,7 +31,7 @@ def _make_cfg(workspace: Path, bsp_family: str = "nxp", *, host_mode: bool = Fal
         manifest="imx-6.6.52-2.2.2.xml",
         repo_url="https://example.invalid/repo.git",
         repo_branch="imx-6.6.52-2.2.2",
-        container_image="jetm/kas-build-env:5.2-f40",
+        kas_container_image="jetm/kas-build-env:5.2-f40",
         host_mode=host_mode,
     )
 
@@ -98,7 +98,7 @@ def _make_tuning_cfg(
         manifest="imx-6.6.52-2.2.2.xml",
         repo_url="https://example.invalid/repo.git",
         repo_branch="scarthgap",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
         pressure_max_cpu=pressure_max_cpu,
         pressure_max_io=pressure_max_io,
         pressure_max_memory=pressure_max_memory,
@@ -206,7 +206,7 @@ def _hashequiv_cfg(
         manifest="imx-6.6.52-2.2.2.xml",
         repo_url="https://example.invalid/repo.git",
         repo_branch="imx-6.6.52-2.2.2",
-        container_image="jetm/kas-build-env:5.2-f40",
+        kas_container_image="jetm/kas-build-env:5.2-f40",
         host_mode=host_mode,
         use_hashequiv=use_hashequiv,
     )
@@ -402,3 +402,33 @@ def test_build_env_omits_sdkmachine_when_unset(tmp_path: Path, monkeypatch: pyte
     monkeypatch.delenv("SDKMACHINE", raising=False)
     env = _build_env(_make_cfg(tmp_path))
     assert "SDKMACHINE" not in env
+
+
+def test_cfg_kas_container_image_exported_to_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """cfg.kas_container_image reaches KAS_CONTAINER_IMAGE when the env var is absent."""
+    monkeypatch.delenv("KAS_CONTAINER_IMAGE", raising=False)
+    cfg = _make_cfg(tmp_path)
+
+    env = _build_env(cfg)
+
+    assert env["KAS_CONTAINER_IMAGE"] == "jetm/kas-build-env:5.2-f40"
+
+
+def test_env_kas_container_image_beats_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pre-set KAS_CONTAINER_IMAGE env var wins over cfg.kas_container_image."""
+    monkeypatch.setenv("KAS_CONTAINER_IMAGE", "override/image:1.0")
+    cfg = _make_cfg(tmp_path)
+
+    env = _build_env(cfg)
+
+    assert env["KAS_CONTAINER_IMAGE"] == "override/image:1.0"
+
+
+def test_host_mode_omits_kas_container_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """In host mode, KAS_CONTAINER_IMAGE is not injected (kas runs directly, no container)."""
+    monkeypatch.delenv("KAS_CONTAINER_IMAGE", raising=False)
+    cfg = _make_cfg(tmp_path, host_mode=True)
+
+    env = _build_env(cfg)
+
+    assert "KAS_CONTAINER_IMAGE" not in env

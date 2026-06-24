@@ -145,7 +145,7 @@ def test_resolve_use_sccache_dist_true_when_dist_set() -> None:
         manifest="x.xml",
         repo_url="https://example.com",
         repo_branch="main",
-        container_image="img:latest",
+        kas_container_image="img:latest",
         sccache_dist=True,
     )
     assert cfg.use_sccache_dist is True
@@ -167,7 +167,7 @@ def test_resolve_use_sccache_dist_false_by_default() -> None:
         manifest="x.xml",
         repo_url="https://example.com",
         repo_branch="main",
-        container_image="img:latest",
+        kas_container_image="img:latest",
     )
     assert cfg.use_sccache_dist is False
 
@@ -269,7 +269,7 @@ def _sccache_build_cfg(
         manifest="imx-6.6.52-2.2.2.xml",
         repo_url="https://example.invalid/repo.git",
         repo_branch="imx-6.6.52-2.2.2",
-        container_image="jetm/kas-build-env:5.2-f40",
+        kas_container_image="jetm/kas-build-env:5.2-f40",
         host_mode=True,
         sccache_dist=sccache_dist,
         sccache_scheduler_url=sccache_scheduler_url,
@@ -385,7 +385,7 @@ def _overlay_cfg(*, sccache_dist: bool = False) -> object:
         manifest="x.xml",
         repo_url="https://example.com",
         repo_branch="main",
-        container_image="img:latest",
+        kas_container_image="img:latest",
         sccache_dist=sccache_dist,
     )
 
@@ -617,7 +617,7 @@ def test_materialize_sccache_layer_copies_class_into_bsp_root(tmp_path: object) 
         manifest="x.xml",
         repo_url="https://example.com",
         repo_branch="main",
-        container_image="img:latest",
+        kas_container_image="img:latest",
         kas_yaml_override=root / "my.yml",
         sccache_dist=True,
     )
@@ -670,7 +670,7 @@ def test_bbclass_excludes_gcc_runtime_recipes_from_dist(tmp_path: Path) -> None:
         manifest="x.xml",
         repo_url="https://example.com",
         repo_branch="main",
-        container_image="img:latest",
+        kas_container_image="img:latest",
         kas_yaml_override=root / "my.yml",
         sccache_dist=True,
     )
@@ -712,7 +712,7 @@ def _doctor_cfg(
         manifest="x.xml",
         repo_url="https://example.com",
         repo_branch="main",
-        container_image="img:latest",
+        kas_container_image="img:latest",
         host_mode=True,
         sccache_dist=sccache_dist,
         sccache_scheduler_url=sccache_scheduler_url,

@@ -46,7 +46,7 @@ def _fake_resolve(setup_dir: Path) -> MagicMock:
     cfg.kas_yaml = setup_dir / "kas.yml"
     cfg.bsp_root = setup_dir
     cfg.runs_dir = setup_dir / "build" / "runs"
-    cfg.container_image = "ghcr.io/example/kas:latest"
+    cfg.kas_container_image = "ghcr.io/example/kas:latest"
     cfg.sstate_mirror_url = None
     return cfg
 

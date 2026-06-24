@@ -1255,6 +1255,13 @@ def _build_env(
     passthrough.setdefault("PATH", os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"))
     passthrough.setdefault("HOME", os.environ.get("HOME", "/tmp"))
     passthrough.setdefault("NPROC", str(os.cpu_count() or 16))
+    # Container image: config value is a fallback; a live env var wins via setdefault.
+    # This is what actually passes the image to kas-container; resolve() already
+    # handles the env-beats-config precedence when building cfg, but kas-container
+    # reads KAS_CONTAINER_IMAGE directly from its own environment, so we must
+    # re-export it here. setdefault keeps a caller-supplied env var in place.
+    if not cfg.host_mode:
+        passthrough.setdefault("KAS_CONTAINER_IMAGE", cfg.kas_container_image)
     # Cache dirs: config value is a fallback; a live env var wins via setdefault.
     if cfg.dl_dir is not None:
         passthrough.setdefault("DL_DIR", cfg.dl_dir)

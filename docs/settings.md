@@ -47,7 +47,7 @@ All keys use dotted notation (`section.subsection.key`).
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `build.container_image` | string | Custom kas-container image tag |
+| `build.kas_container_image` | string | Custom kas-container image tag |
 | `build.show_doctor_report` | bool | Show the doctor report before every build (default: `true`); doctor checks always run regardless |
 | `build.dl_dir` | string | Override `DL_DIR` (shared download cache) |
 | `build.sstate_dir` | string | Override `SSTATE_DIR` (sstate cache) |

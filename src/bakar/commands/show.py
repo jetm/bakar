@@ -105,7 +105,7 @@ def show(
         "distro": cfg.distro,
         "image": cfg.image,
         "bsp_family": cfg.bsp_family,
-        "container_image": cfg.container_image,
+        "kas_container_image": cfg.kas_container_image,
         "dl_dir": cfg.dl_dir or "",
         "sstate_dir": cfg.sstate_dir or "",
     }

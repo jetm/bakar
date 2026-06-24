@@ -204,26 +204,25 @@ def test_cli_machine_beats_user_config(tmp_path, monkeypatch):
 def test_user_config_container_image_used_when_env_absent(tmp_path, monkeypatch):
     """user_config.container_image is used when KAS_CONTAINER_IMAGE is unset."""
     monkeypatch.delenv("KAS_CONTAINER_IMAGE", raising=False)
-    uc = UserConfig(container_image="config/kas-image:latest")
-
+    uc = UserConfig(kas_container_image="config/kas-image:latest")
     cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
 
-    assert cfg.container_image == "config/kas-image:latest", (
-        "user_config.container_image must be used when KAS_CONTAINER_IMAGE is unset"
+    assert cfg.kas_container_image == "config/kas-image:latest", (
+        "user_config.kas_container_image must be used when KAS_CONTAINER_IMAGE is unset"
     )
-    assert cfg.container_image != DEFAULT_CONTAINER_IMAGE
-    assert cfg.host_mode is False, "A config-supplied container_image must disable host_mode auto-enable"
+    assert cfg.kas_container_image != DEFAULT_CONTAINER_IMAGE
+    assert cfg.host_mode is False, "A config-supplied kas_container_image must disable host_mode auto-enable"
 
 
 def test_env_container_image_beats_user_config(tmp_path, monkeypatch):
     """KAS_CONTAINER_IMAGE env var must override user_config.container_image."""
     monkeypatch.setenv("KAS_CONTAINER_IMAGE", "env/kas-image:latest")
-    uc = UserConfig(container_image="config/kas-image:latest")
+    uc = UserConfig(kas_container_image="config/kas-image:latest")
 
     cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
 
-    assert cfg.container_image == "env/kas-image:latest", (
-        "KAS_CONTAINER_IMAGE env var must beat user_config.container_image"
+    assert cfg.kas_container_image == "env/kas-image:latest", (
+        "KAS_CONTAINER_IMAGE env var must beat user_config.kas_container_image"
     )
 
 

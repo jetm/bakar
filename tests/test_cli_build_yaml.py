@@ -33,7 +33,7 @@ def _cfg_at(workspace: Path, *, family: str = "nxp") -> BuildConfig:
         manifest="imx-6.12.49-2.2.0.xml",
         repo_url="https://example.invalid/repo.git",
         repo_branch="walnascar",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
     )
 
 
@@ -51,7 +51,7 @@ def test_kas_yaml_override_resolves_through_property(tmp_path: Path) -> None:
         manifest="imx-6.12.49-2.2.0.xml",
         repo_url="https://example.invalid/repo.git",
         repo_branch="walnascar",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
         kas_yaml_override=user_yaml,
     )
     assert cfg.kas_yaml == user_yaml
@@ -188,7 +188,7 @@ def test_generic_bsp_root_is_yaml_parent(tmp_path: Path) -> None:
         manifest="",
         repo_url="",
         repo_branch="",
-        container_image="kasproject/kas:latest",
+        kas_container_image="kasproject/kas:latest",
         kas_yaml_override=user_yaml,
     )
     assert cfg.bsp_root == pilots
@@ -234,7 +234,7 @@ def test_generic_materialize_overlay_under_yaml_parent(tmp_path: Path) -> None:
         manifest="",
         repo_url="",
         repo_branch="",
-        container_image="kasproject/kas:latest",
+        kas_container_image="kasproject/kas:latest",
         kas_yaml_override=yaml,
     )
 
@@ -263,7 +263,7 @@ def test_generic_resolve_user_yaml_relative_to_yaml_parent(tmp_path: Path) -> No
         manifest="",
         repo_url="",
         repo_branch="",
-        container_image="kasproject/kas:latest",
+        kas_container_image="kasproject/kas:latest",
         kas_yaml_override=yaml,
     )
 
@@ -293,7 +293,7 @@ def _meta_avocado_cfg(sources: Path) -> BuildConfig:
         manifest="",
         repo_url="",
         repo_branch="",
-        container_image="kasproject/kas:latest",
+        kas_container_image="kasproject/kas:latest",
         kas_yaml_override=yaml_path.resolve(),
     )
 

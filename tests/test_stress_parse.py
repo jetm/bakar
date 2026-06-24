@@ -40,7 +40,7 @@ def _cfg(workspace: Path, family: str = "nxp") -> BuildConfig:
             manifest="processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt",
             repo_url="https://example.invalid/none.git",
             repo_branch="scarthgap",
-            container_image="jetm/kas-build-env:latest",
+            kas_container_image="jetm/kas-build-env:latest",
         )
     return BuildConfig(
         workspace=workspace,
@@ -51,7 +51,7 @@ def _cfg(workspace: Path, family: str = "nxp") -> BuildConfig:
         manifest="imx-6.12.49-2.2.0.xml",
         repo_url="https://example.invalid/none.git",
         repo_branch="walnascar",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
     )
 
 

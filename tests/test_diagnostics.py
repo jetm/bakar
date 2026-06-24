@@ -48,7 +48,7 @@ def _cfg() -> BuildConfig:
         manifest="processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt",
         repo_url="https://example.invalid/none.git",
         repo_branch="scarthgap",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
     )
 
 
@@ -68,7 +68,7 @@ def _host_cfg(bsp_family: str = "generic") -> BuildConfig:
         manifest="generic.yml",
         repo_url="https://example.invalid/none.git",
         repo_branch="main",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
         host_mode=True,
     )
 
@@ -121,7 +121,7 @@ def _bbsetup_cfg(workspace: Path, *, host_mode: bool = False) -> BuildConfig:
         manifest="config-upstream.json",
         repo_url="https://example.invalid/none.git",
         repo_branch="wrynose",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
         host_mode=host_mode,
     )
 
@@ -190,7 +190,7 @@ def _psi_cfg(**kwargs) -> BuildConfig:
         manifest="imx-6.6.52-2.2.2.xml",
         repo_url="https://example.invalid/none.git",
         repo_branch="scarthgap",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
         **kwargs,
     )
 
@@ -286,7 +286,7 @@ def test_check_bitbake_locks_handles_oserror(tmp_path: Path, monkeypatch: pytest
         manifest="processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt",
         repo_url="https://example.invalid/none.git",
         repo_branch="scarthgap",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
     )
 
     real_read_text = Path.read_text
@@ -622,7 +622,7 @@ def _kas_yaml_cfg(yaml_path: Path) -> BuildConfig:
         manifest="kas.yml",
         repo_url="https://example.invalid/none.git",
         repo_branch="scarthgap",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
         kas_yaml_override=yaml_path,
     )
 
@@ -735,7 +735,7 @@ def _fs_cfg(workspace: Path) -> BuildConfig:
         manifest="kas.yml",
         repo_url="https://example.invalid/none.git",
         repo_branch="scarthgap",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
     )
 
 
@@ -921,7 +921,7 @@ def _ccache_cfg(workspace: Path) -> BuildConfig:
         manifest="kas.yml",
         repo_url="https://example.invalid/none.git",
         repo_branch="scarthgap",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
     )
 
 
@@ -1117,7 +1117,7 @@ def _hashserv_cfg(workspace: Path, *, use_hashequiv: bool = True) -> BuildConfig
         manifest="imx-6.6.52-2.2.2.xml",
         repo_url="https://example.invalid/repo.git",
         repo_branch="imx-6.6.52-2.2.2",
-        container_image="jetm/kas-build-env:5.2-f40",
+        kas_container_image="jetm/kas-build-env:5.2-f40",
         use_hashequiv=use_hashequiv,
     )
 
@@ -1345,7 +1345,7 @@ def _override_cfg(tmp_path: Path) -> BuildConfig:
         manifest="imx-6.6.52-2.2.2.xml",
         repo_url="https://example.invalid/none.git",
         repo_branch="scarthgap",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
     )
 
 

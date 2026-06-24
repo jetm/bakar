@@ -59,7 +59,7 @@ class DockerPullAction:
     """Pull the build container image into the local docker store.
 
     The image string is supplied by the plan builder, which resolves
-    ``config.resolve(...).container_image`` once and passes it in; this action
+    ``config.resolve(...).kas_container_image`` once and passes it in; this action
     never calls ``resolve()`` itself. Remediates the ``container-image`` check;
     unprivileged (the user needs only docker-group membership, not root).
     """

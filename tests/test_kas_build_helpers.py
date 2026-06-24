@@ -74,7 +74,7 @@ def _make_nxp_cfg(workspace: Path, *, host_mode: bool = False) -> BuildConfig:
         manifest="imx-6.6.52-2.2.2.xml",
         repo_url="https://example.invalid/repo.git",
         repo_branch="scarthgap",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
         host_mode=host_mode,
     )
 
@@ -101,7 +101,7 @@ def _make_meta_avocado_cfg(workspace: Path) -> tuple[BuildConfig, Path]:
         manifest="",
         repo_url="",
         repo_branch="",
-        container_image="jetm/kas-build-env:latest",
+        kas_container_image="jetm/kas-build-env:latest",
         kas_yaml_override=kas_yaml,
     )
     cfg.bsp_root.mkdir(parents=True, exist_ok=True)

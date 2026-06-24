@@ -47,7 +47,7 @@ one).
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `show_doctor_report` | bool | `true` | Show the pre-flight doctor report before every build and sync. Set to `false` to print only build-blocking issues; the global `--hide-doctor-report` flag does the same for one invocation. Doctor checks always run - a BLOCK-severity failure aborts regardless. |
-| `container_image` | string | `jetm/kas-build-env:latest` | kas-container image tag. Overridden by `KAS_CONTAINER_IMAGE` env var. |
+| `kas_container_image` | string | `jetm/kas-build-env:latest` | kas-container image tag. Overridden by `KAS_CONTAINER_IMAGE` env var. |
 | `dl_dir` | string | *(not set)* | Override `DL_DIR` (shared download cache path). Passed to kas-container as an env var. |
 | `sstate_dir` | string | *(not set)* | Override `SSTATE_DIR` (sstate cache path). Passed to kas-container as an env var. |
 | `sstate_mirrors` | string | *(not set)* | Raw `SSTATE_MIRRORS` value passed to the build. Use `sstate_mirror_url` unless you need full control over the mirror syntax. |
@@ -204,7 +204,7 @@ An absent file produces an empty vendor list.
 | `family` | string | yes | Base BSP family to inherit from: `nxp`, `ti`, `generic`, or `bbsetup`. |
 | `manifest_regex` | string | yes | Python regex matched against the manifest filename (not the full path). Max 200 characters. Must compile. |
 | `repo_url` | string | no | Override the repo manifest URL for this vendor. |
-| `container_image` | string | no | Override the kas-container image for this vendor. |
+| `kas_container_image` | string | no | Override the kas-container image for this vendor. |
 | `default_machine` | string | no | Default MACHINE when none is specified. |
 | `default_distro` | string | no | Default DISTRO. |
 | `default_image` | string | no | Default image target. |
@@ -254,7 +254,7 @@ still take precedence over env vars.
 
 | Variable | Description |
 |----------|-------------|
-| `KAS_CONTAINER_IMAGE` | Override the kas-container image for one invocation. Takes precedence over `build.container_image`. |
+| `KAS_CONTAINER_IMAGE` | Override the kas-container image for one invocation. Takes precedence over `build.kas_container_image`. |
 
 ### bitbake-override
 

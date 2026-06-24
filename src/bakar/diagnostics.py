@@ -145,7 +145,7 @@ def check_docker_daemon(cfg: BuildConfig) -> CheckResult:
 def check_container_image(cfg: BuildConfig) -> CheckResult:
     try:
         out = subprocess.run(
-            ["docker", "image", "inspect", cfg.container_image, "--format", "{{.Id}}"],
+            ["docker", "image", "inspect", cfg.kas_container_image, "--format", "{{.Id}}"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -157,12 +157,12 @@ def check_container_image(cfg: BuildConfig) -> CheckResult:
         return _fail(
             "container-image",
             Severity.BLOCK,
-            f"image `{cfg.container_image}` not found locally",
+            f"image `{cfg.kas_container_image}` not found locally",
             fix_hint=(
                 "Pull via `docker pull jetm/kas-build-env:latest` or build from https://github.com/jetm/kas-build-env"
             ),
         )
-    return _ok("container-image", Severity.BLOCK, f"{cfg.container_image} present")
+    return _ok("container-image", Severity.BLOCK, f"{cfg.kas_container_image} present")
 
 
 def _docker_run_probe(cmd: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
@@ -361,7 +361,7 @@ def check_container_bitbake(cfg: BuildConfig) -> CheckResult:
         shell = "export PATH=/tmp/bitbake/bin:$PATH && which bitbake && bitbake --version"
     else:
         shell = "which bitbake && bitbake --version"
-    cmd += [cfg.container_image, "-c", shell]
+    cmd += [cfg.kas_container_image, "-c", shell]
     try:
         out = _docker_run_probe(cmd)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
