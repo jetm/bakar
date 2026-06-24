@@ -53,6 +53,9 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.psi_autocalibrate": "true",
         "build.sccache_dist": "true",
         "build.sccache_scheduler_url": "http://localhost:10600",
+        "build.nproc": "96",
+        "build.parallel_make": "256",
+        "build.bb_number_threads": "24",
         "layers.show_hashes": "true",
         "layers.show_sstate_summary": "true",
         "host.inotify_instances": "8192",
@@ -96,6 +99,10 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert cfg.sccache_dist is True
     assert isinstance(cfg.sccache_dist, bool)
     assert cfg.sccache_scheduler_url == "http://localhost:10600"
+    assert cfg.nproc == 96
+    assert isinstance(cfg.nproc, int) and not isinstance(cfg.nproc, bool)
+    assert cfg.parallel_make == 256
+    assert cfg.bb_number_threads == 24
     assert cfg.show_hashes is True
     assert cfg.show_sstate_summary is True
     assert cfg.host_inotify_instances == 8192

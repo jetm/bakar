@@ -1254,7 +1254,13 @@ def _build_env(
     # exported it without prefix; ensure it is present.
     passthrough.setdefault("PATH", os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"))
     passthrough.setdefault("HOME", os.environ.get("HOME", "/tmp"))
-    passthrough.setdefault("NPROC", str(os.cpu_count() or 16))
+    # NPROC precedence: a non-empty live env var wins, then cfg.nproc, then the
+    # cpu_count auto-detect. An exported-but-empty NPROC ("") is treated as unset
+    # so the overlays never expand BB_NUMBER_THREADS to "" or PARALLEL_MAKE to
+    # "-j ". This truthiness check matches check_nproc, so the doctor and the
+    # build agree on the empty case.
+    if not passthrough.get("NPROC"):
+        passthrough["NPROC"] = str(cfg.nproc if cfg.nproc is not None else (os.cpu_count() or 16))
     # Container image: config value is a fallback; a live env var wins via setdefault.
     # This is what actually passes the image to kas-container; resolve() already
     # handles the env-beats-config precedence when building cfg, but kas-container
@@ -1302,6 +1308,14 @@ def _build_env(
         passthrough["BB_PRESSURE_MAX_IO"] = str(int(cfg.pressure_max_io * 10_000))
     if cfg.pressure_max_memory is not None:
         passthrough["BB_PRESSURE_MAX_MEMORY"] = str(int(cfg.pressure_max_memory * 10_000))
+    # Decoupled parallelism overrides: the overlay reads these (with an NPROC
+    # fallback) only when present, so omitting the key keeps today's behavior.
+    # parallel_make sizes compile -j to a distributed cluster; bb_number_threads
+    # sizes recipe concurrency to local RAM.
+    if cfg.parallel_make is not None:
+        passthrough["BAKAR_PARALLEL_MAKE"] = str(cfg.parallel_make)
+    if cfg.bb_number_threads is not None:
+        passthrough["BAKAR_BB_NUMBER_THREADS"] = str(cfg.bb_number_threads)
     # Persistent hashserv: when enabled, ensure the workspace-scoped
     # daemon is running and rewrite the URL for container reachability.
     # The overlay's BB_HASHSERVE = ${@os.environ.get('BB_HASHSERVE', 'auto')}

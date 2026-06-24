@@ -744,30 +744,39 @@ def _thread_var_overrides(local_conf: Path) -> dict[str, str]:
 
 
 def check_nproc(cfg: BuildConfig) -> CheckResult:
-    """Report the NPROC value and the bitbake thread settings it drives.
+    """Report the NPROC base and the effective bitbake thread settings.
 
-    The tuning overlay maps NPROC to BB_NUMBER_THREADS, PARALLEL_MAKE,
-    and BB_NUMBER_PARSE_THREADS (overlays/bakar-tuning-*.yml), and
-    ``_build_env`` always exports NPROC to the build, so the derived
-    values shown here are what bitbake will actually use - unless a user
-    conf section re-assigns one of the knobs after the tuning section,
-    in which case the overriding value is shown with a marker.
+    The tuning overlay maps the build threads to NPROC unless a config.toml
+    [build] override is set: ``bb_number_threads`` drives BB_NUMBER_THREADS and
+    BB_NUMBER_PARSE_THREADS (exported as BAKAR_BB_NUMBER_THREADS), and
+    ``parallel_make`` drives PARALLEL_MAKE (exported as BAKAR_PARALLEL_MAKE),
+    decoupled from NPROC. ``cfg.nproc`` overrides the auto-detected NPROC base.
+    The effective values shown here are what bitbake will actually use - unless
+    a user conf section re-assigns one of the knobs after the tuning section, in
+    which case the local.conf value wins and is shown with a marker.
     """
-    env_val = os.environ.get("NPROC")
-    if env_val:
-        nproc, source = env_val, "from environment"
+    # Match _build_env's NPROC precedence: a non-empty live env var wins over
+    # cfg.nproc, which wins over the cpu_count auto-detect. The truthiness check
+    # treats an exported-but-empty NPROC ("") as unset, exactly as _build_env
+    # does, so the doctor and the build never disagree on the value bitbake uses.
+    if os.environ.get("NPROC"):
+        nproc, source = os.environ["NPROC"], "from environment"
+    elif cfg.nproc is not None:
+        nproc, source = str(cfg.nproc), "from config.toml"
     else:
         nproc, source = str(os.cpu_count() or 16), "auto-detected; override with $NPROC"
     overrides = _thread_var_overrides(cfg.bsp_root / "build" / "conf" / "local.conf")
+    threads_default = str(cfg.bb_number_threads) if cfg.bb_number_threads is not None else nproc
+    make_default = f"-j {cfg.parallel_make}" if cfg.parallel_make is not None else f"-j {nproc}"
 
     def knob(var: str, default: str) -> str:
         if var in overrides:
             return f"{overrides[var]} (local.conf override)"
         return default
 
-    tasks = knob("BB_NUMBER_THREADS", nproc)
-    parse = knob("BB_NUMBER_PARSE_THREADS", nproc)
-    make = knob("PARALLEL_MAKE", f"-j {nproc}")
+    tasks = knob("BB_NUMBER_THREADS", threads_default)
+    parse = knob("BB_NUMBER_PARSE_THREADS", threads_default)
+    make = knob("PARALLEL_MAKE", make_default)
     threads = f"{tasks} bitbake tasks, {parse} parse threads, make {make}"
     return _ok("nproc", Severity.INFO, f"NPROC={nproc} ({source}) -> {threads}")
 

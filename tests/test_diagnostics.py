@@ -1322,6 +1322,19 @@ class TestCheckNproc:
         result = check_nproc(self._cfg_with_local_conf(tmp_path, conf))
         assert "override" not in result.message
 
+    def test_env_nproc_wins_over_cfg_nproc(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """When both NPROC env and cfg.nproc are set, the doctor reports the env
+        value, matching _build_env's setdefault precedence (env beats cfg)."""
+        import dataclasses
+
+        from bakar.diagnostics import check_nproc
+
+        monkeypatch.setenv("NPROC", "33")
+        cfg = dataclasses.replace(self._cfg_with_local_conf(tmp_path, None), nproc=96)
+        result = check_nproc(cfg)
+        assert "NPROC=33 (from environment)" in result.message
+        assert "96" not in result.message
+
 
 # ---------------------------------------------------------------------------
 # Override-syntax lint helpers and check

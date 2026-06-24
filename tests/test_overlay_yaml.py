@@ -164,6 +164,8 @@ def test_generic_overlay_declares_pythonmalloc_env(generic_overlay: dict) -> Non
         "PYTHONMALLOC": "malloc",
         "BB_DEFAULT_EVENTLOG": None,
         "SDKMACHINE": None,
+        "BAKAR_PARALLEL_MAKE": None,
+        "BAKAR_BB_NUMBER_THREADS": None,
     }
 
 
@@ -218,6 +220,28 @@ def test_generic_overlay_carries_perf_tuning(generic_overlay: dict) -> None:
     body = generic_overlay["local_conf_header"]["bakar-tuning"]
     for needle in _TUNING_PERF_LINES:
         assert needle in body, f"generic overlay missing: {needle!r}"
+
+
+def test_all_overlays_decouple_parallelism(nxp_overlay: dict, ti_overlay: dict, generic_overlay: dict) -> None:
+    """Every BSP overlay must read the decoupled BAKAR_* parallelism vars and
+    whitelist them in its env: block.
+
+    The three overlays (nxp, ti, generic) are mutually exclusive, so the
+    decoupling only takes effect on a given build if THAT overlay carries it.
+    Reading BAKAR_PARALLEL_MAKE / BAKAR_BB_NUMBER_THREADS in local_conf_header
+    is inert in container mode unless the same vars are declared null in env:,
+    because bitbake's clean_environment scrubs vars absent from
+    BB_ENV_PASSTHROUGH_ADDITIONS - kas only whitelists env: keys.
+    """
+    for name, overlay in (("nxp", nxp_overlay), ("ti", ti_overlay), ("generic", generic_overlay)):
+        body = overlay["local_conf_header"]["bakar-tuning"]
+        assert "BAKAR_PARALLEL_MAKE" in body, f"{name} overlay does not read BAKAR_PARALLEL_MAKE"
+        assert "BAKAR_BB_NUMBER_THREADS" in body, f"{name} overlay does not read BAKAR_BB_NUMBER_THREADS"
+        env = overlay.get("env") or {}
+        assert "BAKAR_PARALLEL_MAKE" in env, f"{name} overlay missing BAKAR_PARALLEL_MAKE env declaration"
+        assert env["BAKAR_PARALLEL_MAKE"] is None, f"{name} overlay must declare BAKAR_PARALLEL_MAKE as null"
+        assert "BAKAR_BB_NUMBER_THREADS" in env, f"{name} overlay missing BAKAR_BB_NUMBER_THREADS env declaration"
+        assert env["BAKAR_BB_NUMBER_THREADS"] is None, f"{name} overlay must declare BAKAR_BB_NUMBER_THREADS as null"
 
 
 def test_generic_overlay_carries_nice_ionice(generic_overlay: dict) -> None:

@@ -237,6 +237,13 @@ class BuildConfig:
     # the recommended pressure_max_* back to config.toml.
     psi_autocalibrate: bool = field(default=False)
     sstate_mirror_url: str | None = field(default=None)
+    # Decoupled build parallelism sourced from config.toml [build]. All None ->
+    # the existing NPROC-derived behavior. _build_env() exports NPROC from nproc
+    # (cpu_count fallback when None), and BAKAR_PARALLEL_MAKE / BAKAR_BB_NUMBER_THREADS
+    # only when their override is set.
+    nproc: int | None = field(default=None)
+    parallel_make: int | None = field(default=None)
+    bb_number_threads: int | None = field(default=None)
     # Distributed-compile via sccache-dist. When sccache_dist is True the tuning
     # stack swaps OE's compiler launcher to sccache and the client points at
     # sccache_scheduler_url. Both default to their unset values, so a build is
@@ -631,6 +638,9 @@ def resolve(
         sstate_mirror_url=user_config.sstate_mirror_url if user_config else None,
         sccache_dist=user_config.sccache_dist if user_config else False,
         sccache_scheduler_url=user_config.sccache_scheduler_url if user_config else None,
+        nproc=user_config.nproc if user_config else None,
+        parallel_make=user_config.parallel_make if user_config else None,
+        bb_number_threads=user_config.bb_number_threads if user_config else None,
         host_inotify_instances=int(_host("host_inotify_instances", 4096)),
         host_inotify_watches=int(_host("host_inotify_watches", 524288)),
         host_swappiness_max=int(_host("host_swappiness_max", 20)),

@@ -38,6 +38,13 @@ env:
   # arch (avocado-complete builds nativesdk/SDK packages). Unset -> bitbake's
   # SDKMACHINE default (the build host) applies.
   SDKMACHINE: null
+  # Passthrough-only (null = no default): bakar exports these from config.toml
+  # [build] parallel_make / bb_number_threads so the thread lines below can
+  # decouple compile -j from recipe concurrency. clean_environment scrubs vars
+  # absent from BB_ENV_PASSTHROUGH_ADDITIONS, so they must be whitelisted here
+  # to survive into the container. Unset -> the os.environ.get falls back to NPROC.
+  BAKAR_PARALLEL_MAKE: null
+  BAKAR_BB_NUMBER_THREADS: null
 
 local_conf_header:
   bakar-tuning: |
@@ -50,12 +57,18 @@ local_conf_header:
     # export a larger CCACHE_MAXSIZE (it overrides this) when sharing widely.
     CCACHE_MAXSIZE = "50G"
     export CCACHE_MAXSIZE
-    BB_NUMBER_THREADS = "${@os.environ.get('NPROC', '16')}"
-    PARALLEL_MAKE = "-j ${@os.environ.get('NPROC', '16')}"
-    # Parse thread pool: defaults to NPROC, matching the task thread pool.
-    # Separating parse and task threads lets parsing saturate available cores
-    # while tasks are still completing from the previous wave.
-    BB_NUMBER_PARSE_THREADS = "${@os.environ.get('NPROC', '16')}"
+    # Decoupled parallelism: recipe concurrency (task + parse threads) is sized
+    # to local RAM, compile -j to a distributed-compile cluster. bakar injects
+    # BAKAR_BB_NUMBER_THREADS / BAKAR_PARALLEL_MAKE from config.toml [build] when
+    # the user sets them; each falls back to NPROC (then 16) when absent, so a
+    # config without the overrides reproduces the old NPROC-coupled behavior.
+    BB_NUMBER_THREADS = "${@os.environ.get('BAKAR_BB_NUMBER_THREADS') or os.environ.get('NPROC', '16')}"
+    PARALLEL_MAKE = "-j ${@os.environ.get('BAKAR_PARALLEL_MAKE') or os.environ.get('NPROC', '16')}"
+    # Parse thread pool follows the task thread count (BB_NUMBER_THREADS), so the
+    # bb_number_threads override governs both. Separating parse and task threads
+    # lets parsing saturate available cores while tasks are still completing from
+    # the previous wave.
+    BB_NUMBER_PARSE_THREADS = "${@os.environ.get('BAKAR_BB_NUMBER_THREADS') or os.environ.get('NPROC', '16')}"
 
     # Abort the build before the disk fills up. STOPTASKS lets in-flight
     # tasks finish; HALT halts immediately. Thresholds in MiB.

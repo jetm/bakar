@@ -44,7 +44,12 @@ _INT_FIELDS: set[str] = {
     "host_inotify_watches",
     "host_swappiness_max",
     "host_nofile_soft",
+    "nproc",
+    "parallel_make",
+    "bb_number_threads",
 }
+# The three [build] parallelism knobs; all require a strictly positive value.
+_PARALLELISM_FIELDS = {"nproc", "parallel_make", "bb_number_threads"}
 _PSI_FIELDS = {"pressure_max_cpu", "pressure_max_io", "pressure_max_memory"}
 # The five [host] threshold fields; all require a strictly positive value.
 _HOST_FIELDS = {
@@ -90,6 +95,14 @@ class UserConfig:
     ccache_shared: bool = False
     ccache_dir: str | None = None
     psi_autocalibrate: bool = False
+    # Decoupled build parallelism. All optional; absent -> None -> the existing
+    # NPROC-derived behavior (nproc auto-detected via os.cpu_count). nproc sets
+    # the NPROC base; parallel_make overrides compile -j independently (sized to
+    # a distributed-compile cluster); bb_number_threads overrides recipe
+    # concurrency (sized to local RAM, parse threads follow it).
+    nproc: int | None = None
+    parallel_make: int | None = None
+    bb_number_threads: int | None = None
     # [layers]
     show_hashes: bool = False
     show_sstate_summary: bool = False
@@ -139,6 +152,9 @@ _BUILD_KEYS = {
     "ccache_shared": "ccache_shared",
     "ccache_dir": "ccache_dir",
     "psi_autocalibrate": "psi_autocalibrate",
+    "nproc": "nproc",
+    "parallel_make": "parallel_make",
+    "bb_number_threads": "bb_number_threads",
 }
 _LAYERS_KEYS = {
     "show_hashes": "show_hashes",
@@ -166,6 +182,10 @@ def _check_type(field: str, value: object, path: Path) -> None:
         raise ValueError(f"{path}: '{field}' must be an integer, got {type(value).__name__}")
     if field == "stall_abort_secs" and isinstance(value, int) and not isinstance(value, bool) and value < 0:
         raise ValueError(f"{path}: '{field}' must be >= 0 (0 disables), got {value}")
+    # The three parallelism knobs already passed the _INT_FIELDS bool/int guard
+    # above; this only adds the strictly-positive requirement.
+    if field in _PARALLELISM_FIELDS and isinstance(value, int) and not isinstance(value, bool) and value <= 0:
+        raise ValueError(f"{path}: '{field}' must be > 0, got {value}")
     if field in _PSI_FIELDS:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"{path}: '{field}' must be a number, got {type(value).__name__}")
@@ -366,7 +386,7 @@ def _coerce(spec: _SettingSpec, raw_value: str) -> str | bool | int | float:
             raise ValueError(f"value for integer key {spec.key!r} must be a valid integer, got {raw_value!r}") from None
         if spec.key == "stall_abort_secs" and v < 0:
             raise ValueError(f"value for {spec.key!r} must be >= 0 (0 disables), got {v}")
-        if spec.key in _HOST_KEYS and v <= 0:
+        if (spec.key in _HOST_KEYS or spec.key in _PARALLELISM_FIELDS) and v <= 0:
             raise ValueError(f"value for {spec.key!r} must be > 0, got {v}")
         return v
     if spec.is_float:

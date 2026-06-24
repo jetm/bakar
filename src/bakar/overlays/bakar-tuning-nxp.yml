@@ -31,6 +31,13 @@ env:
   # SDK target build (`SDKMACHINE=x86_64 bakar build ... --target ...`) picks
   # the SDK arch. Unset -> bitbake's SDKMACHINE default (the build host).
   SDKMACHINE: null
+  # Passthrough-only (null = no default): bakar exports these from config.toml
+  # [build] parallel_make / bb_number_threads so the thread lines below can
+  # decouple compile -j from recipe concurrency. clean_environment scrubs vars
+  # absent from BB_ENV_PASSTHROUGH_ADDITIONS, so they must be whitelisted here
+  # to survive into the container. Unset -> the os.environ.get falls back to NPROC.
+  BAKAR_PARALLEL_MAKE: null
+  BAKAR_BB_NUMBER_THREADS: null
 
 local_conf_header:
   bakar-tuning: |
@@ -43,9 +50,15 @@ local_conf_header:
     # export a larger CCACHE_MAXSIZE (it overrides this) when sharing widely.
     CCACHE_MAXSIZE = "50G"
     export CCACHE_MAXSIZE
-    BB_NUMBER_THREADS = "${@os.environ.get('NPROC', '16')}"
-    PARALLEL_MAKE = "-j ${@os.environ.get('NPROC', '16')}"
-    BB_NUMBER_PARSE_THREADS = "${@os.environ.get('NPROC', '16')}"
+    # Decoupled parallelism: recipe concurrency (task + parse threads) is sized
+    # to local RAM, compile -j to a distributed-compile cluster. bakar injects
+    # BAKAR_BB_NUMBER_THREADS / BAKAR_PARALLEL_MAKE from config.toml [build] when
+    # set; each falls back to NPROC (then 16) when absent, so a config without
+    # the overrides reproduces the old NPROC-coupled behavior. Parse threads
+    # follow the task thread count.
+    BB_NUMBER_THREADS = "${@os.environ.get('BAKAR_BB_NUMBER_THREADS') or os.environ.get('NPROC', '16')}"
+    PARALLEL_MAKE = "-j ${@os.environ.get('BAKAR_PARALLEL_MAKE') or os.environ.get('NPROC', '16')}"
+    BB_NUMBER_PARSE_THREADS = "${@os.environ.get('BAKAR_BB_NUMBER_THREADS') or os.environ.get('NPROC', '16')}"
 
     BB_DISKMON_DIRS = " \
         STOPTASKS,${TMPDIR},1024,100K \
