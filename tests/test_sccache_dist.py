@@ -575,6 +575,34 @@ def test_sccache_class_adds_hosttools_and_network() -> None:
 
 
 @pytest.mark.unit
+def test_sccache_class_grants_kernel_compiler_task_network() -> None:
+    """Every kernel-specific task that runs the compiler needs task network.
+
+    Beyond the generic do_configure/do_compile/do_install grants, linux-yocto
+    defines extra tasks that invoke CC="sccache <gcc>" - directly via oe_runmake
+    (do_compile_kernelmodules, do_bundle_initramfs -> kernel_do_compile) or via
+    the kconfig probe in scripts/Kconfig.include (do_kernel_configme through
+    `make alldefconfig`, do_kernel_configcheck through symbol_why.py ->
+    kconfiglib; every kernel make also re-runs the syncconfig probe). Without
+    their own [network] = "1" the task runs with loopback down and the client
+    cannot reach its 127.0.0.1 daemon, failing "Network is unreachable (os error
+    101)" -> "Sorry, this C compiler is not supported." Caught by a real
+    qemuarm64 linux-yocto host build (configme, then configcheck, then
+    compile_kernelmodules). bundle_initramfs runs the same kernel_do_compile and
+    is covered for the initramfs-bundle case.
+    """
+    text = _sccache_bbclass_text()
+
+    for task in (
+        "do_kernel_configme",
+        "do_kernel_configcheck",
+        "do_compile_kernelmodules",
+        "do_bundle_initramfs",
+    ):
+        assert f'{task}[network] = "1"' in text
+
+
+@pytest.mark.unit
 def test_sccache_class_fixes_cmake_launcher_split() -> None:
     """The class re-derives the cmake compiler/launcher split to recognize sccache.
 

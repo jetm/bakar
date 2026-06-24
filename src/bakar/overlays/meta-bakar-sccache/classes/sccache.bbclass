@@ -107,6 +107,18 @@ do_install[network] = "1"
 do_configure_ptest_base[network] = "1"
 do_compile_ptest_base[network] = "1"
 do_install_ptest_base[network] = "1"
+# linux-yocto defines extra compiler-bearing tasks beyond do_compile that the
+# generic grants above miss. They invoke CC="sccache <gcc>" either directly via
+# oe_runmake (do_compile_kernelmodules; do_bundle_initramfs via kernel_do_compile,
+# only when bundling an initramfs) or via the kconfig probe in
+# scripts/Kconfig.include that every kernel make re-runs (do_kernel_configme via
+# `make alldefconfig`, do_kernel_configcheck via symbol_why.py -> kconfiglib).
+# Without network the client cannot reach its 127.0.0.1 daemon and the probe
+# fails "Network is unreachable" -> "Sorry, this C compiler is not supported".
+do_kernel_configme[network] = "1"
+do_kernel_configcheck[network] = "1"
+do_compile_kernelmodules[network] = "1"
+do_bundle_initramfs[network] = "1"
 
 # Point the in-build sccache client at the configured scheduler. Empty when
 # unset, which leaves the client on its own config / local-cache mode. bakar
