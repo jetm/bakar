@@ -78,6 +78,61 @@ def _strip_ansi(s: str) -> str:
     return ANSI_OSC_RE.sub("", ANSI_CSI_RE.sub("", s))
 
 
+# The bakar tuning overlays size build parallelism through a bitbake expression
+# `${@os.environ.get('BAKAR_PARALLEL_MAKE') or os.environ.get('NPROC', '16')}`.
+# bitbake only honors that env lookup when the var survives clean_environment
+# (i.e. is in BB_ENV_PASSTHROUGH_ADDITIONS), which is unreliable across kas
+# subcommands - kas build silently dropped it, so every build ran the `16`
+# default regardless of config. Resolving the value here and writing a literal
+# `-j N` into the materialized overlay makes the figure immune to env scrubbing.
+_PARALLELISM_LINE_RE = re.compile(
+    r"^(?P<indent>[ \t]*)"
+    r"(?P<key>BB_NUMBER_PARSE_THREADS|BB_NUMBER_THREADS|PARALLEL_MAKE)"
+    r'\s*=\s*"[^"]*os\.environ\.get[^"]*"',
+    re.MULTILINE,
+)
+
+
+def _resolve_nproc_base(cfg: BuildConfig) -> int:
+    """Concrete NPROC base, mirroring :func:`_build_env`'s precedence: a
+    non-empty live ``NPROC`` env var wins, then ``cfg.nproc``, then
+    ``os.cpu_count()``."""
+    live = os.environ.get("NPROC")
+    if live and live.strip().isdigit():
+        return int(live)
+    if cfg.nproc is not None:
+        return cfg.nproc
+    return os.cpu_count() or 16
+
+
+def _resolve_parallelism(cfg: BuildConfig) -> tuple[int, int]:
+    """Resolve ``(PARALLEL_MAKE -j, BB_NUMBER_THREADS)`` to concrete ints,
+    mirroring the overlay's ``BAKAR_* or NPROC or 16`` precedence with the
+    NPROC base from :func:`_resolve_nproc_base`."""
+    base = _resolve_nproc_base(cfg)
+    parallel_make = cfg.parallel_make if cfg.parallel_make is not None else base
+    bb_number_threads = cfg.bb_number_threads if cfg.bb_number_threads is not None else base
+    return parallel_make, bb_number_threads
+
+
+def _inject_literal_parallelism(cfg: BuildConfig, text: str) -> str:
+    """Replace the overlay's ``os.environ``-based PARALLEL_MAKE/BB_NUMBER_THREADS
+    expressions with the resolved literal values. Lines without the env lookup
+    (and overlays without these keys) are returned unchanged."""
+    parallel_make, bb_number_threads = _resolve_parallelism(cfg)
+    values = {
+        "BB_NUMBER_THREADS": str(bb_number_threads),
+        "BB_NUMBER_PARSE_THREADS": str(bb_number_threads),
+        "PARALLEL_MAKE": f"-j {parallel_make}",
+    }
+
+    def _sub(match: re.Match[str]) -> str:
+        key = match.group("key")
+        return f'{match.group("indent")}{key} = "{values[key]}"'
+
+    return _PARALLELISM_LINE_RE.sub(_sub, text)
+
+
 def materialize_overlay(cfg: BuildConfig, overlay_source: Path) -> Path:
     """Copy ``overlay_source`` into ``<bsp_root>/.bakar/overlays/``.
 
@@ -103,6 +158,13 @@ def materialize_overlay(cfg: BuildConfig, overlay_source: Path) -> Path:
     if dest.is_symlink() or dest.is_file():
         dest.unlink()
     shutil.copy2(overlay_source, dest)
+    # Bake the resolved parallelism into the bakar tuning overlays so the figure
+    # cannot be lost to bitbake's clean_environment (see _inject_literal_parallelism).
+    if overlay_source.name.startswith("bakar-tuning-"):
+        original = dest.read_text(encoding="utf-8")
+        injected = _inject_literal_parallelism(cfg, original)
+        if injected != original:
+            dest.write_text(injected, encoding="utf-8")
     return dest.relative_to(cfg.bsp_root)
 
 

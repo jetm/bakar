@@ -17,7 +17,12 @@ from typing import TYPE_CHECKING
 import pytest
 
 from bakar.config import BuildConfig
-from bakar.steps.kas_build import _build_env
+from bakar.steps.kas_build import (
+    _build_env,
+    _inject_literal_parallelism,
+    _resolve_parallelism,
+    materialize_overlay,
+)
 from bakar.user_config import SETTINGS_SCHEMA, load_user_config, set_setting
 
 if TYPE_CHECKING:
@@ -350,3 +355,105 @@ def test_build_env_and_check_nproc_agree_on_empty_nproc(tmp_path: Path, monkeypa
 
     assert env["NPROC"] == "8"
     assert "NPROC=8 (from config.toml)" in result.message
+
+
+# ---------------------------------------------------------------------------
+# Literal parallelism injection into the materialized overlay
+# ---------------------------------------------------------------------------
+
+_OVERLAY_PARALLELISM = textwrap.dedent(
+    """\
+    local_conf_header:
+      bakar-tuning: |
+        CCACHE_DIR = "/work/ccache"
+        BB_NUMBER_THREADS = "${@os.environ.get('BAKAR_BB_NUMBER_THREADS') or os.environ.get('NPROC', '16')}"
+        PARALLEL_MAKE = "-j ${@os.environ.get('BAKAR_PARALLEL_MAKE') or os.environ.get('NPROC', '16')}"
+        BB_NUMBER_PARSE_THREADS = "${@os.environ.get('BAKAR_BB_NUMBER_THREADS') or os.environ.get('NPROC', '16')}"
+    """
+)
+
+
+def test_resolve_parallelism_uses_cfg_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_parallelism_env(monkeypatch)
+    cfg = _make_cfg(tmp_path, nproc=48, parallel_make=64, bb_number_threads=16)
+
+    assert _resolve_parallelism(cfg) == (64, 16)
+
+
+def test_resolve_parallelism_falls_back_to_nproc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """parallel_make/bb_number_threads unset -> both resolve to the NPROC base."""
+    _clear_parallelism_env(monkeypatch)
+    cfg = _make_cfg(tmp_path, nproc=20)
+
+    assert _resolve_parallelism(cfg) == (20, 20)
+
+
+def test_resolve_parallelism_falls_back_to_cpu_count(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_parallelism_env(monkeypatch)
+    monkeypatch.setattr("bakar.steps.kas_build.os.cpu_count", lambda: 12)
+    cfg = _make_cfg(tmp_path)
+
+    assert _resolve_parallelism(cfg) == (12, 12)
+
+
+def test_resolve_parallelism_live_nproc_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-empty numeric live NPROC env wins over cfg.nproc, matching _build_env."""
+    monkeypatch.delenv("BAKAR_PARALLEL_MAKE", raising=False)
+    monkeypatch.delenv("BAKAR_BB_NUMBER_THREADS", raising=False)
+    monkeypatch.setenv("NPROC", "7")
+    cfg = _make_cfg(tmp_path, nproc=96)
+
+    assert _resolve_parallelism(cfg) == (7, 7)
+
+
+def test_inject_literal_parallelism_substitutes_resolved_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_parallelism_env(monkeypatch)
+    cfg = _make_cfg(tmp_path, nproc=48, parallel_make=64, bb_number_threads=16)
+
+    out = _inject_literal_parallelism(cfg, _OVERLAY_PARALLELISM)
+
+    assert 'PARALLEL_MAKE = "-j 64"' in out
+    assert 'BB_NUMBER_THREADS = "16"' in out
+    assert 'BB_NUMBER_PARSE_THREADS = "16"' in out
+    # No env lookup remains: the materialized value cannot be scrubbed by
+    # bitbake's clean_environment.
+    assert "os.environ.get" not in out
+
+
+def test_inject_literal_parallelism_leaves_unrelated_lines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_parallelism_env(monkeypatch)
+    cfg = _make_cfg(tmp_path, parallel_make=64, bb_number_threads=16)
+
+    out = _inject_literal_parallelism(cfg, _OVERLAY_PARALLELISM)
+
+    assert 'CCACHE_DIR = "/work/ccache"' in out
+
+
+def test_materialize_overlay_writes_literal_parallelism(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The materialized bakar-tuning overlay carries a literal -j N, not the
+    os.environ.get expression that bitbake's clean_environment can scrub."""
+    _clear_parallelism_env(monkeypatch)
+    src = tmp_path / "bakar-tuning-generic.yml"
+    src.write_text(_OVERLAY_PARALLELISM, encoding="utf-8")
+    cfg = _make_cfg(tmp_path, parallel_make=64, bb_number_threads=16)
+
+    rel = materialize_overlay(cfg, src)
+    written = (cfg.bsp_root / rel).read_text(encoding="utf-8")
+
+    assert 'PARALLEL_MAKE = "-j 64"' in written
+    assert "os.environ.get" not in written
+
+
+def test_materialize_overlay_skips_non_tuning_overlays(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A user extra overlay that happens to use os.environ.get is copied verbatim."""
+    _clear_parallelism_env(monkeypatch)
+    src = tmp_path / "my-extra.yml"
+    src.write_text(_OVERLAY_PARALLELISM, encoding="utf-8")
+    cfg = _make_cfg(tmp_path, parallel_make=64)
+
+    rel = materialize_overlay(cfg, src)
+    written = (cfg.bsp_root / rel).read_text(encoding="utf-8")
+
+    assert "os.environ.get('BAKAR_PARALLEL_MAKE')" in written
