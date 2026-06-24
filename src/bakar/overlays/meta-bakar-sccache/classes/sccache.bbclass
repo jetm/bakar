@@ -36,21 +36,19 @@ SCCACHE_DISABLE ??= ""
 SCCACHE_EXCLUDED_CLASSES ?= "native cross crosssdk nativesdk cross-canadian"
 
 # Target recipes that must compile locally even though their class is eligible.
-# These are the gcc/glibc bootstrap recipes, which build with the cross compiler
-# but break under sccache-dist in two distinct ways:
-#   - libgcc (initial+final) and gcc runtime: sccache-dist ships *preprocessed*
-#     source to the build-server, and preprocessing strips the comments that
-#     suppress -Wimplicit-fallthrough. The soft-float files (e.g. divtf3.c,
-#     multf3.c) rely on those comments and build with -Werror, so the remote
-#     compile errors where a local one (original source, comments intact) does not.
-#   - glibc: its makefiles emit a side `.o.dt` dependency file per object, which
-#     sccache-dist does not capture, so the remote job fails to zip up the
-#     compiler outputs ("failed to open file `...o.dt`").
-# Nearly every compile in these recipes fails distribution, so - unlike the
-# kernel, where the local fallback salvages a few stragglers - excluding them
-# avoids a remote round-trip that would always fall back. They build once and
-# are a tiny fraction of the build.
-SCCACHE_EXCLUDED_PN ?= "libgcc-initial libgcc gcc-runtime gcc-sanitizers glibc glibc-initial"
+# Empty: the gcc/glibc bootstrap recipes (glibc, glibc-initial, libgcc,
+# libgcc-initial, gcc-runtime, gcc-sanitizers) used to be listed here, but they
+# distribute cleanly now that the sccache-dist client falls back to a local
+# recompile on any dist-infra failure. The fallback covers the two failure points
+# these recipes hit: glibc's per-object `.o.dt` dependency file, which the server
+# drops from the returned output set, and the libgcc/gcc-sanitizers soft-float
+# files whose -Wimplicit-fallthrough suppressing comments preprocessing strips, so
+# the remote -Werror compile errors where a local one (comments intact) does not.
+# Both fall back and the local recompile succeeds; the vast majority of objects in
+# these recipes still distribute (glibc 6427/6429, libgcc 604/608, gcc-runtime
+# 1026/1026, gcc-sanitizers ~960/1066). Add a PN here to force a recipe local when
+# its dist round-trips never pay off.
+SCCACHE_EXCLUDED_PN ?= ""
 
 python () {
     if (bb.utils.to_boolean(d.getVar('SCCACHE_DISABLE')) or

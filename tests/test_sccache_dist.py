@@ -672,16 +672,18 @@ def test_overlay_exports_sccache_scheduler_env() -> None:
 
 
 @pytest.mark.unit
-def test_bbclass_excludes_gcc_runtime_recipes_from_dist(tmp_path: Path) -> None:
-    """The bbclass excludes the gcc/glibc bootstrap recipes from distribution.
+def test_bbclass_distributes_gcc_runtime_recipes(tmp_path: Path) -> None:
+    """The bbclass no longer force-excludes the gcc/glibc bootstrap recipes.
 
-    sccache-dist breaks two ways on these: libgcc/gcc-runtime fail because
-    preprocessing strips the comments that suppress -Wimplicit-fallthrough (their
-    soft-float files build with -Werror), and glibc fails because its side `.o.dt`
-    dependency files are not captured when zipping remote outputs. They must
-    compile locally, so the per-PN gate skips them before setting CCACHE. Unlike
-    the kernel (a few stragglers that the local fallback salvages), nearly every
-    compile here fails, so excluding avoids an always-failing remote round-trip.
+    sccache-dist used to break two ways on these - glibc's side `.o.dt`
+    dependency files were not captured when zipping remote outputs, and the
+    libgcc/gcc-sanitizers soft-float files errored on -Wimplicit-fallthrough once
+    preprocessing stripped the suppressing comments - so they were listed in
+    SCCACHE_EXCLUDED_PN. The client now falls back to a local recompile on any
+    dist-infra failure, so the overwhelming majority of their objects distribute
+    and the rest fall back safely; the exclusion list is empty. This is the
+    falsifier guard: re-adding any PN to the list fails the empty-list assertion.
+    The per-PN gate is kept as a documented escape hatch.
     """
     from pathlib import Path
 
@@ -705,11 +707,11 @@ def test_bbclass_excludes_gcc_runtime_recipes_from_dist(tmp_path: Path) -> None:
 
     bbclass = (materialize_sccache_layer(cfg) / "classes" / "sccache.bbclass").read_text()
 
-    for pn in ("libgcc-initial", "libgcc", "gcc-runtime", "glibc", "glibc-initial"):
-        assert pn in bbclass, pn
-    assert "SCCACHE_EXCLUDED_PN" in bbclass
-    # The gate must return before assigning CCACHE for an excluded PN.
+    pn_assignment = bbclass.split("SCCACHE_EXCLUDED_PN ?= ")[1].split("\n")[0]
+    assert pn_assignment == '""', pn_assignment
+    # The per-PN escape-hatch gate must survive so a recipe can still be forced local.
     assert "d.getVar('PN') in" in bbclass
+    assert "d.getVar('SCCACHE_EXCLUDED_PN').split()" in bbclass
 
 
 # ---------------------------------------------------------------------------
