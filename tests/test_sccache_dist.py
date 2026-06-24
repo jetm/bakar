@@ -622,6 +622,46 @@ def test_sccache_class_fixes_cmake_launcher_split() -> None:
 
 
 @pytest.mark.unit
+def test_sccache_class_emits_dist_summary_at_build_completed() -> None:
+    """The class registers a BuildCompleted handler that prints a per-node dist summary.
+
+    sccache schedules per compile job, not per recipe, so the only honest
+    build-end view is aggregate per-server counts. The handler reads the client
+    daemon's `sccache --show-stats --stats-format=json` (the `dist_compiles`
+    address->count map and `dist_errors` fallback count) and emits one
+    `bb.plain` line. It is gated on dist being enabled via the BuildStarted/
+    BuildCompleted dispatch so non-dist builds stay silent.
+    """
+    text = _sccache_bbclass_text()
+
+    assert "addhandler sccache_dist_summary" in text
+    assert 'sccache_dist_summary[eventmask] = "bb.event.BuildStarted bb.event.BuildCompleted"' in text
+    assert "isinstance(e, bb.event.BuildCompleted)" in text
+    assert "--show-stats" in text
+    assert "--stats-format=json" in text
+    assert "dist_compiles" in text
+    assert "dist_errors" in text
+    assert "bb.plain(" in text
+
+
+@pytest.mark.unit
+def test_sccache_class_zeroes_stats_at_build_started() -> None:
+    """The handler zeroes the daemon's stats at BuildStarted for per-build accuracy.
+
+    `--show-stats` reports the daemon's cumulative counters since the last
+    `--zero-stats`. In host mode the daemon is pre-started and persists across
+    builds, so without a reset the BuildCompleted summary would report every
+    build since the daemon came up. Zeroing at BuildStarted scopes the numbers to
+    the current build. This is the falsifier guard: drop the reset and the
+    summary stops being per-build.
+    """
+    text = _sccache_bbclass_text()
+
+    assert "isinstance(e, bb.event.BuildStarted)" in text
+    assert "--zero-stats" in text
+
+
+@pytest.mark.unit
 def test_materialize_sccache_layer_copies_class_into_bsp_root(tmp_path: object) -> None:
     """materialize_sccache_layer drops the layer under <bsp_root>/.bakar/.
 

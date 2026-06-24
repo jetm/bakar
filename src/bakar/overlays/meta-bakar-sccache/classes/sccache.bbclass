@@ -138,3 +138,53 @@ python () {
             d.setVar(taskvar, value)
             d.setVarFlag(taskvar, 'export', '1')
 }
+
+# Build-end diagnostic: print one aggregate per-server distribution summary.
+# sccache schedules per compile job, not per recipe, so per-recipe->node
+# attribution is not well-defined; the honest build-end view is per-server
+# counts. --show-stats reports the client daemon's counters cumulatively since
+# the last --zero-stats, and in host mode the daemon persists across builds, so
+# zero at BuildStarted to scope the summary to this build. Silent unless dist is
+# enabled (SCCACHE_DIST_SCHEDULER_URL set) and the daemon reports activity.
+python sccache_dist_summary () {
+    import bb.event
+    import json
+    import shutil
+    import subprocess
+
+    if not d.getVar('SCCACHE_DIST_SCHEDULER_URL'):
+        return
+    sccache = shutil.which('sccache')
+    if not sccache:
+        return
+
+    if isinstance(e, bb.event.BuildStarted):
+        subprocess.run([sccache, '--zero-stats'],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
+    if not isinstance(e, bb.event.BuildCompleted):
+        return
+
+    try:
+        proc = subprocess.run([sccache, '--show-stats', '--stats-format=json'],
+                              capture_output=True, text=True, timeout=15)
+        stats = json.loads(proc.stdout)['stats']
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+        return
+
+    dist = stats.get('dist_compiles', {})
+    distributed = sum(dist.values())
+    fell_back = stats.get('dist_errors', 0)
+    if not distributed and not fell_back:
+        return
+
+    hits = sum(stats.get('cache_hits', {}).get('counts', {}).values())
+    misses = sum(stats.get('cache_misses', {}).get('counts', {}).values())
+    hit_rate = 100.0 * hits / (hits + misses) if hits + misses else 0.0
+
+    per_node = ', '.join('%s %d' % (addr, n) for addr, n in sorted(dist.items()))
+    bb.plain('sccache-dist: %d distributed (%s), %d fell back to local, cache %.1f%% hit'
+             % (distributed, per_node or 'none', fell_back, hit_rate))
+}
+addhandler sccache_dist_summary
+sccache_dist_summary[eventmask] = "bb.event.BuildStarted bb.event.BuildCompleted"
