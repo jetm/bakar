@@ -20,6 +20,7 @@ import bakar.commands.build
 import bakar.commands.changelog
 import bakar.commands.clean
 import bakar.commands.clean_cache
+import bakar.commands.cluster_info
 import bakar.commands.diff
 import bakar.commands.diffsigs
 import bakar.commands.doctor

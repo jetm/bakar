@@ -1237,3 +1237,165 @@ def test_host_env_omits_sccache_conf_and_dir(tmp_path: Path, monkeypatch: pytest
 
     assert "BAKAR_SCCACHE_CONF" not in env
     assert "BAKAR_SCCACHE_DIR" not in env
+
+
+# ---------------------------------------------------------------------------
+# Cluster status parsing and probe (WS2: bakar cluster-info backing helpers)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_parse_cluster_status_reads_aggregate() -> None:
+    from bakar.diagnostics import _parse_cluster_status
+
+    cap = _parse_cluster_status(
+        '{"SchedulerStatus":["http://h:10600/",{"num_servers":2,"num_cpus":64,"in_progress":7}]}'
+    )
+
+    assert cap is not None
+    assert cap.num_servers == 2
+    assert cap.num_cpus == 64
+    assert cap.in_progress == 7
+    assert cap.servers is None
+
+
+@pytest.mark.unit
+def test_parse_cluster_status_returns_none_on_garbage() -> None:
+    from bakar.diagnostics import _parse_cluster_status
+
+    assert _parse_cluster_status("not json") is None
+    assert _parse_cluster_status('{"unexpected":true}') is None
+
+
+@pytest.mark.unit
+def test_parse_cluster_status_picks_up_servers_when_present() -> None:
+    """A forked scheduler may add a per-server array; parse it so the node table
+    lights up without a bakar change."""
+    from bakar.diagnostics import _parse_cluster_status
+
+    cap = _parse_cluster_status(
+        '{"SchedulerStatus":["http://h:10600/",{"num_servers":1,"num_cpus":32,"in_progress":0,"servers":[{"id":"a"}]}]}'
+    )
+
+    assert cap is not None
+    assert cap.servers == [{"id": "a"}]
+
+
+@pytest.mark.unit
+def test_parse_cluster_capacity_string_is_unchanged() -> None:
+    """The doctor preflight message bytes must not drift when the parser is
+    refactored onto _parse_cluster_status."""
+    from bakar.diagnostics import _parse_cluster_capacity
+
+    msg = _parse_cluster_capacity(
+        '{"SchedulerStatus":["http://h:10600/",{"num_servers":2,"num_cpus":64,"in_progress":3}]}'
+    )
+
+    assert msg == "2 build server(s), 64 cpus, 3 job(s) in progress"
+
+
+@pytest.mark.unit
+def test_probe_cluster_reachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+    import types
+
+    from bakar import diagnostics
+
+    monkeypatch.setattr(
+        diagnostics.subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(
+            stdout='{"SchedulerStatus":["http://h:10600/",{"num_servers":2,"num_cpus":64,"in_progress":1}]}',
+            stderr="",
+            returncode=0,
+        ),
+    )
+    _ = subprocess  # keep the import meaningful for readers
+
+    report = diagnostics.probe_cluster("http://h:10600")
+
+    assert report.reachable is True
+    assert report.capacity is not None
+    assert report.capacity.num_servers == 2
+
+
+@pytest.mark.unit
+def test_probe_cluster_unreachable_on_garbage(monkeypatch: pytest.MonkeyPatch) -> None:
+    import types
+
+    from bakar import diagnostics
+
+    monkeypatch.setattr(
+        diagnostics.subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(stdout="connection refused", stderr="", returncode=1),
+    )
+
+    report = diagnostics.probe_cluster(None)
+
+    assert report.reachable is False
+    assert report.capacity is None
+    assert report.error
+
+
+@pytest.mark.unit
+def test_probe_cluster_surfaces_nonzero_exit_and_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed `sccache --dist-status` invocation is reported unreachable with its
+    stderr surfaced, not silently treated as parseable output."""
+    import types
+
+    from bakar import diagnostics
+
+    monkeypatch.setattr(
+        diagnostics.subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(stdout="", stderr="no scheduler configured", returncode=2),
+    )
+
+    report = diagnostics.probe_cluster(None)
+
+    assert report.reachable is False
+    assert report.capacity is None
+    assert "no scheduler configured" in (report.error or "")
+
+
+@pytest.mark.unit
+def test_probe_cluster_reports_sccache_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    from bakar import diagnostics
+
+    def _raise(*_a: object, **_k: object) -> None:
+        raise FileNotFoundError("sccache")
+
+    monkeypatch.setattr(diagnostics.subprocess, "run", _raise)
+
+    report = diagnostics.probe_cluster(None)
+
+    assert report.reachable is False
+    assert "not found" in (report.error or "")
+
+
+@pytest.mark.unit
+def test_probe_cluster_threads_scheduler_url_into_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A supplied scheduler URL is forwarded to the subprocess so
+    `sccache --dist-status` queries the requested cluster, not the configured one."""
+    import types
+
+    from bakar import diagnostics
+
+    captured: dict[str, object] = {}
+
+    def _capture(*_a: object, **k: object) -> object:
+        captured["env"] = k.get("env")
+        return types.SimpleNamespace(
+            stdout='{"SchedulerStatus":["http://x/",{"num_servers":1,"num_cpus":1,"in_progress":0}]}',
+            stderr="",
+            returncode=0,
+        )
+
+    monkeypatch.setattr(diagnostics.subprocess, "run", _capture)
+
+    diagnostics.probe_cluster("http://override:10600")
+
+    env = captured["env"]
+    assert env is not None
+    assert env["SCCACHE_DIST_SCHEDULER_URL"] == "http://override:10600"

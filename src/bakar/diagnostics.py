@@ -1383,21 +1383,103 @@ def check_ccache_health(cfg: BuildConfig) -> CheckResult:
     )
 
 
+@dataclass
+class ClusterCapacity:
+    """Aggregate scheduler capacity from ``sccache --dist-status``.
+
+    ``servers`` is None against the current upstream scheduler, which serializes
+    only the aggregate counts. It is parsed opportunistically so a forked
+    scheduler that adds a per-server array lights up the node table without a
+    bakar-side change.
+    """
+
+    num_servers: int
+    num_cpus: int
+    in_progress: int
+    servers: list | None = None
+
+
+@dataclass
+class ClusterReport:
+    """Result of probing the dist scheduler.
+
+    ``reachable`` is True only when ``sccache --dist-status`` returned parseable
+    capacity; ``error`` carries a short human reason otherwise.
+    """
+
+    reachable: bool
+    capacity: ClusterCapacity | None = None
+    error: str | None = None
+
+
+def _parse_cluster_status(stdout: str) -> ClusterCapacity | None:
+    """Parse `sccache --dist-status` JSON into a :class:`ClusterCapacity`.
+
+    Returns None on any parse failure or unexpected shape - cluster status is
+    informational and must never raise into a caller's gate.
+    """
+    try:
+        info = json.loads(stdout)["SchedulerStatus"][1]
+        return ClusterCapacity(
+            num_servers=info["num_servers"],
+            num_cpus=info["num_cpus"],
+            in_progress=info["in_progress"],
+            servers=info.get("servers"),
+        )
+    except ValueError, KeyError, IndexError, TypeError:
+        return None
+
+
+def _format_capacity(cap: ClusterCapacity) -> str:
+    """Render a :class:`ClusterCapacity` as the one-line preflight summary."""
+    return f"{cap.num_servers} build server(s), {cap.num_cpus} cpus, {cap.in_progress} job(s) in progress"
+
+
 def _parse_cluster_capacity(stdout: str) -> str | None:
     """Summarize `sccache --dist-status` JSON for the preflight message.
 
     Returns a string like "2 build server(s), 64 cpus, 0 job(s) in progress" so
     the user sees the live cluster size before the build, or None on any parse
-    failure or unexpected shape - the capacity line is informational and must
-    never fail the gate.
+    failure - the capacity line is informational and must never fail the gate.
     """
+    cap = _parse_cluster_status(stdout)
+    return None if cap is None else _format_capacity(cap)
+
+
+def probe_cluster(scheduler_url: str | None = None) -> ClusterReport:
+    """Query the dist scheduler via ``sccache --dist-status`` and report capacity.
+
+    When ``scheduler_url`` is given it is forwarded as ``SCCACHE_DIST_SCHEDULER_URL``
+    so the probe targets that cluster instead of the one in sccache's own config.
+    Never raises: a missing binary, a failed subprocess, or an unparseable
+    response all return an unreachable :class:`ClusterReport` carrying the reason.
+    """
+    env = None
+    if scheduler_url:
+        env = {**os.environ, "SCCACHE_DIST_SCHEDULER_URL": scheduler_url}
     try:
-        info = json.loads(stdout)["SchedulerStatus"][1]
-        return (
-            f"{info['num_servers']} build server(s), {info['num_cpus']} cpus, {info['in_progress']} job(s) in progress"
+        status = subprocess.run(
+            ["sccache", "--dist-status"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            env=env,
         )
-    except ValueError, KeyError, IndexError, TypeError:
-        return None
+    except FileNotFoundError:
+        return ClusterReport(reachable=False, error="sccache binary not found on PATH")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return ClusterReport(reachable=False, error=f"sccache --dist-status failed: {exc}")
+    if status.returncode != 0:
+        detail = status.stderr.strip() or status.stdout.strip()
+        msg = f"sccache --dist-status exited {status.returncode}"
+        return ClusterReport(reachable=False, error=f"{msg}: {detail}" if detail else msg)
+    cap = _parse_cluster_status(status.stdout)
+    if cap is None:
+        detail = status.stderr.strip()
+        base = "scheduler unreachable or returned no capacity"
+        return ClusterReport(reachable=False, error=f"{base}: {detail}" if detail else base)
+    return ClusterReport(reachable=True, capacity=cap)
 
 
 def _query_cluster_capacity() -> str | None:
@@ -1406,17 +1488,8 @@ def _query_cluster_capacity() -> str | None:
     Used by the container path, which has no host-side reachability probe of its
     own; the scheduler's capacity is global, so the host can still report it.
     """
-    try:
-        status = subprocess.run(
-            ["sccache", "--dist-status"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except OSError, subprocess.SubprocessError:
-        return None
-    return _parse_cluster_capacity(status.stdout)
+    report = probe_cluster()
+    return None if report.capacity is None else _format_capacity(report.capacity)
 
 
 def _container_sccache_scheduler_check(name: str) -> CheckResult:

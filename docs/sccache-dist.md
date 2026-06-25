@@ -245,6 +245,23 @@ Record `do_compile` CPU-time as a fraction of total build CPU-time. If compile i
 
 The reachability probe is a 1-second TCP `create_connection` to the host:port parsed from `sccache_scheduler_url`, mirroring the hashserv probe. A missing prerequisite fails fast at BLOCK severity rather than silently degrading to a local-only compile.
 
+## Checking cluster capacity
+
+`bakar cluster-info` queries the scheduler and prints its live capacity, so you can confirm the cluster is up and sized as expected before kicking off a build:
+
+```bash
+bakar cluster-info
+# sccache-dist cluster:
+#   scheduler: http://localhost:10600
+#   build servers: 2
+#   cpus: 64
+#   jobs in progress: 3
+```
+
+The scheduler URL resolves from `--scheduler`, then the global `--sccache-scheduler`, then `sccache_scheduler_url` in config. `--json` emits a machine-readable document (`reachable`, `scheduler_url`, `error`, `capacity`); the command exits 1 when the scheduler is unreachable or `sccache` is not installed.
+
+The scheduler exposes only aggregate counts (server count, total CPUs, jobs in progress) — there is no per-build-server breakdown. When a build-server array becomes available from the scheduler, `cluster-info` prints it as a node list with no further change.
+
 ## Configuration
 
 ```toml
