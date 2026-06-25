@@ -103,6 +103,67 @@ def test_check_host_tools_host_mode_substitutes_kas() -> None:
     assert "docker" not in combined
 
 
+def _avocado_host_cfg() -> BuildConfig:
+    """A host-mode meta-avocado BuildConfig (generic family + a meta-avocado YAML)."""
+    return dataclasses.replace(
+        _host_cfg("generic"),
+        kas_yaml_override=Path("/tmp/fake-workspace/meta-avocado/kas/machine/qemux86-64.yml"),
+    )
+
+
+def test_check_host_tools_avocado_host_mode_requires_extra_hosttools(monkeypatch: pytest.MonkeyPatch) -> None:
+    """meta-avocado host builds require gfortran + git-lfs on the host PATH.
+
+    The avocado distro declares them as HOSTTOOLS (gfortran in kas/base.yml,
+    git-lfs in kas/extra/atecc.yml); the kas container image ships them, so a
+    host-mode build that lacks them dies at bitbake parse ("required tools ...
+    unavailable in PATH"). The doctor must catch that before the build runs. This
+    is the falsifier guard: drop the avocado branch and this FAIL becomes a PASS.
+    """
+    import shutil
+
+    from bakar.diagnostics import Severity, Status, check_host_tools
+
+    absent = {"gfortran", "git-lfs"}
+    monkeypatch.setattr(shutil, "which", lambda name: None if name in absent else f"/usr/bin/{name}")
+
+    result = check_host_tools(_avocado_host_cfg())
+
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert "gfortran" in result.message
+    assert "git-lfs" in result.message
+
+
+def test_check_host_tools_non_avocado_host_mode_omits_extra_hosttools(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-avocado host build does not require gfortran/git-lfs (falsifier guard)."""
+    import shutil
+
+    from bakar.diagnostics import Status, check_host_tools
+
+    absent = {"gfortran", "git-lfs"}
+    monkeypatch.setattr(shutil, "which", lambda name: None if name in absent else f"/usr/bin/{name}")
+
+    result = check_host_tools(_host_cfg("generic"))
+
+    assert result.status is Status.PASS
+
+
+def test_check_host_tools_avocado_container_omits_extra_hosttools(monkeypatch: pytest.MonkeyPatch) -> None:
+    """In container mode the kas image provides gfortran/git-lfs, so they are not host-required."""
+    import shutil
+
+    from bakar.diagnostics import Status, check_host_tools
+
+    cfg = dataclasses.replace(_avocado_host_cfg(), host_mode=False)
+    absent = {"gfortran", "git-lfs"}
+    monkeypatch.setattr(shutil, "which", lambda name: None if name in absent else f"/usr/bin/{name}")
+
+    result = check_host_tools(cfg)
+
+    assert result.status is Status.PASS
+
+
 # ---------------------------------------------------------------------------
 # bbsetup checks
 # ---------------------------------------------------------------------------

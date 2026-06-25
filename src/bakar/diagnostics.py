@@ -94,6 +94,12 @@ _REQUIRED_TOOLS_BY_FAMILY: dict[str, tuple[str, ...]] = {
 }
 
 
+# Extra HOSTTOOLS the avocado distro declares (gfortran in meta-avocado
+# kas/base.yml, git-lfs in kas/extra/atecc.yml). The kas container image ships
+# them, so they only need checking on the host PATH in host mode.
+_AVOCADO_HOST_TOOLS: tuple[str, ...] = ("gfortran", "git-lfs")
+
+
 def check_host_tools(cfg: BuildConfig) -> CheckResult:
     base = _REQUIRED_TOOLS_BY_FAMILY.get(
         cfg.bsp_family,
@@ -104,6 +110,11 @@ def check_host_tools(cfg: BuildConfig) -> CheckResult:
         # is not exercised so drop `docker` and substitute `kas` for
         # `kas-container` in the per-family canonical list.
         required = tuple("kas" if t == "kas-container" else t for t in base if t != "docker")
+        # Avocado declares extra HOSTTOOLS the kas image normally provides; a
+        # host-mode build needs them on the host PATH or bitbake aborts at parse
+        # ("required tools ... unavailable in PATH").
+        if cfg.is_meta_avocado:
+            required += _AVOCADO_HOST_TOOLS
     else:
         required = base
     missing = [t for t in required if shutil.which(t) is None]
