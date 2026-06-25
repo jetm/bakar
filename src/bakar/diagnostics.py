@@ -1880,6 +1880,10 @@ def check_sstate_hash_leak(cfg: BuildConfig) -> CheckResult:
 # host-side resources (git config, host kas binary, host /proc/mounts,
 # host ccache, host hashserv daemon) reachable in both container and
 # host mode.
+#
+# NOTE: this tuple is the run registry; its order does not matter (checks are
+# independent). The pre-flight REPORT is sorted by group via ``CHECK_GROUPS``
+# below - when adding a check here, also list it in the matching group there.
 SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_host_tools,
     check_docker_daemon,
@@ -1918,6 +1922,65 @@ _DOCKER_CHECKS: tuple[CheckFunc, ...] = (
     check_docker_version,
     check_docker_storage_driver,
 )
+
+
+# Single source of the pre-flight report's grouping and sort order. Each check
+# runs independently (run_all passes only cfg, so SHARED_CHECKS order never
+# affects results); this table alone decides how the printed report is sorted
+# by group. KEEP THE CHECKS SORTED BY GROUP: assign every new check to exactly
+# one group here, beside its siblings - a check name absent from every group
+# renders under a trailing "Other" section so it is never dropped, but it will
+# not be grouped with its peers until listed.
+CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Compute & parallelism",
+        ("nproc", "sccache-dist", "memory"),
+    ),
+    (
+        "Tools & container runtime",
+        (
+            "host-tools",
+            "docker-daemon",
+            "docker-version",
+            "docker-storage-driver",
+            "docker-ulimits",
+            "container-image",
+            "container-bitbake",
+        ),
+    ),
+    (
+        "Caches & storage",
+        ("cache-dirs", "ccache-health", "hashserv", "sstate-hash-leak", "disk-free"),
+    ),
+    (
+        "Host tuning",
+        ("sysctl", "workspace-filesystem", "psi_support"),
+    ),
+    (
+        "Workspace & build config",
+        ("git-global-config", "kas-yaml-syntax", "override-syntax", "bitbake-override", "bitbake-locks"),
+    ),
+)
+
+
+def group_results(results: list[CheckResult]) -> list[tuple[str, list[CheckResult]]]:
+    """Order check results into display groups for the pre-flight report.
+
+    Returns ``(group_name, rows)`` pairs in ``CHECK_GROUPS`` order, each group's
+    rows kept in the order they were produced. A result whose name is not listed
+    in ``CHECK_GROUPS`` is collected into a trailing ``"Other"`` group so a newly
+    added check still appears. Groups with no rows are omitted.
+    """
+    by_name: dict[str, str] = {n: g for g, names in CHECK_GROUPS for n in names}
+    buckets: dict[str, list[CheckResult]] = {g: [] for g, _ in CHECK_GROUPS}
+    other: list[CheckResult] = []
+    for r in results:
+        group = by_name.get(r.name)
+        (buckets[group] if group is not None else other).append(r)
+    grouped = [(g, buckets[g]) for g, _ in CHECK_GROUPS if buckets[g]]
+    if other:
+        grouped.append(("Other", other))
+    return grouped
 
 
 def run_all(cfg: BuildConfig, bsp: BspModel | None = None) -> list[CheckResult]:

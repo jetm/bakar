@@ -18,7 +18,7 @@ from rich.table import Table
 
 from bakar.bsp_detect import detect_bsp_from_yaml, detect_kas_workspace, is_bbsetup_workspace
 from bakar.bsp_model import BspModel, detect_bsp_family, get_model
-from bakar.diagnostics import CheckResult, Severity, Status, any_blocking_failure, run_all
+from bakar.diagnostics import CheckResult, Severity, Status, any_blocking_failure, group_results, run_all
 from bakar.layers import collect_layer_hashes
 
 if TYPE_CHECKING:
@@ -416,22 +416,26 @@ def _print_diagnosis(results: list[CheckResult]) -> None:
     table.add_column("Sev")
     table.add_column("Status")
     table.add_column("Detail")
-    for r in results:
-        status_colour = {
-            Status.PASS: "green",
-            Status.FAIL: {
-                Severity.BLOCK: "red",
-                Severity.WARN: "yellow",
-                Severity.INFO: "cyan",
-            }[r.severity],
-            Status.SKIP: "dim",
-        }[r.status]
-        table.add_row(
-            r.name,
-            r.severity.value,
-            f"[{status_colour}]{r.status.value}[/]",
-            r.message,
-        )
+    for gi, (group_name, group_rows) in enumerate(group_results(results)):
+        if gi > 0:
+            table.add_section()
+        table.add_row(f"[bold cyan]{group_name}[/]", "", "", "")
+        for r in group_rows:
+            status_colour = {
+                Status.PASS: "green",
+                Status.FAIL: {
+                    Severity.BLOCK: "red",
+                    Severity.WARN: "yellow",
+                    Severity.INFO: "cyan",
+                }[r.severity],
+                Status.SKIP: "dim",
+            }[r.status]
+            table.add_row(
+                f"  {r.name}",
+                r.severity.value,
+                f"[{status_colour}]{r.status.value}[/]",
+                r.message,
+            )
     console.print(table)
     hints = [r for r in results if r.status is Status.FAIL and r.fix_hint]
     if hints:
