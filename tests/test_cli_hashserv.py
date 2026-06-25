@@ -42,6 +42,10 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """
     (tmp_path / ".bakar.toml").write_text("")
     (tmp_path / "nxp").mkdir()
+    # No shared SSTATE_DIR: the daemon keys to bsp_root (<workspace>/nxp), which
+    # is what these per-workspace state-file assertions expect. A shared sstate
+    # is covered in test_config.py's hashserv_state_key tests.
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -77,7 +81,7 @@ def test_start_success(runner: _CliRunner, workspace: Path, monkeypatch: pytest.
     monkeypatch.setattr(
         hashserv_cmd.hashserv,
         "ensure_running",
-        lambda _root: "ws://localhost:50000",
+        lambda _state_key, **_kw: "ws://localhost:50000",
     )
 
     result = runner.invoke(app, ["hashserv", "start"])
@@ -88,7 +92,7 @@ def test_start_success(runner: _CliRunner, workspace: Path, monkeypatch: pytest.
 
 def test_start_failure(runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``start`` exits 1 and surfaces the spec-pinned error string on None."""
-    monkeypatch.setattr(hashserv_cmd.hashserv, "ensure_running", lambda _root: None)
+    monkeypatch.setattr(hashserv_cmd.hashserv, "ensure_running", lambda _state_key, **_kw: None)
 
     result = runner.invoke(app, ["hashserv", "start"])
 
@@ -147,7 +151,7 @@ def test_start_accepts_explicit_workspace(
     monkeypatch.setattr(
         hashserv_cmd.hashserv,
         "ensure_running",
-        lambda _root: "ws://localhost:51847",
+        lambda _state_key, **_kw: "ws://localhost:51847",
     )
 
     result = runner.invoke(app, ["hashserv", "start", "--workspace", str(workspace)])
@@ -234,7 +238,7 @@ def test_start_accepts_positional_kas_yaml(
     monkeypatch.setattr(
         hashserv_cmd.hashserv,
         "ensure_running",
-        lambda _root: "ws://localhost:50000",
+        lambda _state_key, **_kw: "ws://localhost:50000",
     )
 
     result = runner.invoke(app, ["hashserv", "start", str(kas_yaml)])

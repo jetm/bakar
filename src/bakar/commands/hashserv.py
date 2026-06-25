@@ -19,7 +19,7 @@ import bakar.commands._app as _state
 from bakar import hashserv
 from bakar.commands._app import app, console
 from bakar.commands._helpers import _dispatch_bsp, _dispatch_from_yaml, _resolve_workspace
-from bakar.config import resolve
+from bakar.config import BuildConfig, resolve
 
 hashserv_app = typer.Typer(
     help="Manage the workspace bitbake-hashserv daemon (start/stop/status).",
@@ -27,13 +27,15 @@ hashserv_app = typer.Typer(
 )
 
 
-def _resolve_bsp_root(workspace: Path | None = None, kas_yaml: Path | None = None) -> Path:
-    """Resolve the per-family BSP root for the current workspace.
+def _resolve_cfg(workspace: Path | None = None, kas_yaml: Path | None = None) -> BuildConfig:
+    """Resolve the :class:`BuildConfig` for the current workspace.
 
     Mirrors the doctor command's no-manifest path: walk up from CWD (or
     use the explicit ``workspace`` when supplied) to find the workspace,
     dispatch the BSP family (defaulting to NXP when no manifest argument
-    or env var is set), and return the resolved ``BuildConfig.bsp_root``.
+    or env var is set), and return the resolved config. Callers read
+    ``hashserv_state_key`` (where the daemon's port/DB/PID live) and
+    ``bsp_root`` (where the bitbake-hashserv binary is found) off it.
 
     When ``kas_yaml`` is supplied, the BSP family is inferred from the
     YAML via :func:`_dispatch_from_yaml` instead of the NXP-default
@@ -46,13 +48,12 @@ def _resolve_bsp_root(workspace: Path | None = None, kas_yaml: Path | None = Non
     else:
         family, _bsp = _dispatch_bsp(None)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
-    cfg = resolve(
+    return resolve(
         workspace=ws,
         bsp_family=family,
         kas_yaml=kas_yaml,
         user_config=_state._USER_CONFIG,
     )
-    return cfg.bsp_root
 
 
 @hashserv_app.command("start")
@@ -70,12 +71,12 @@ def start(
     ] = None,
 ) -> None:
     """Start the workspace hashserv daemon (or report the existing URL)."""
-    bsp_root = _resolve_bsp_root(workspace, kas_yaml)
-    url = hashserv.ensure_running(bsp_root)
+    cfg = _resolve_cfg(workspace, kas_yaml)
+    url = hashserv.ensure_running(cfg.hashserv_state_key, binary_root=cfg.bsp_root)
     if url is None:
         console.print(
             f"failed to start hashserv: bitbake-hashserv not found or startup probe failed; "
-            f"see {bsp_root}/.bakar/hashserv.stderr"
+            f"see {cfg.hashserv_state_key}/.bakar/hashserv.stderr"
         )
         raise typer.Exit(code=1)
     console.print(f"started: {url}")
@@ -96,8 +97,8 @@ def stop(
     ] = None,
 ) -> None:
     """Signal the workspace hashserv daemon to stop and clean PID/port files."""
-    bsp_root = _resolve_bsp_root(workspace, kas_yaml)
-    if hashserv.stop(bsp_root):
+    cfg = _resolve_cfg(workspace, kas_yaml)
+    if hashserv.stop(cfg.hashserv_state_key):
         console.print("stopped")
     else:
         console.print("not running")
@@ -118,11 +119,11 @@ def status(
     ] = None,
 ) -> None:
     """Print the current daemon state (URL + PID, or ``not running``)."""
-    bsp_root = _resolve_bsp_root(workspace, kas_yaml)
-    if not hashserv.is_running(bsp_root):
+    cfg = _resolve_cfg(workspace, kas_yaml)
+    if not hashserv.is_running(cfg.hashserv_state_key):
         console.print("not running")
         return
-    state_dir = bsp_root / ".bakar"
+    state_dir = cfg.hashserv_state_key / ".bakar"
     try:
         pid = (state_dir / "hashserv.pid").read_text().strip()
         port = (state_dir / "hashserv.port").read_text().strip()

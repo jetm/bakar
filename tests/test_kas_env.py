@@ -227,7 +227,7 @@ def test_build_env_host_mode_keeps_localhost_url(tmp_path: Path, monkeypatch: py
     monkeypatch.delenv("BB_HASHSERVE", raising=False)
     monkeypatch.setattr(
         "bakar.steps.kas_build.hashserv.ensure_running",
-        lambda _root: "ws://localhost:50000",
+        lambda _state_key, **_kw: "ws://localhost:50000",
     )
     cfg = _hashequiv_cfg(tmp_path, use_hashequiv=True, host_mode=True)
 
@@ -243,7 +243,7 @@ def test_build_env_container_mode_rewrites_to_host_docker_internal(
     monkeypatch.delenv("BB_HASHSERVE", raising=False)
     monkeypatch.setattr(
         "bakar.steps.kas_build.hashserv.ensure_running",
-        lambda _root: "ws://localhost:50000",
+        lambda _state_key, **_kw: "ws://localhost:50000",
     )
     cfg = _hashequiv_cfg(tmp_path, use_hashequiv=True, host_mode=False)
 
@@ -259,7 +259,7 @@ def test_build_env_omits_bb_hashserve_when_ensure_running_returns_none(
     monkeypatch.delenv("BB_HASHSERVE", raising=False)
     monkeypatch.setattr(
         "bakar.steps.kas_build.hashserv.ensure_running",
-        lambda _root: None,
+        lambda _state_key, **_kw: None,
     )
     cfg = _hashequiv_cfg(tmp_path, use_hashequiv=True, host_mode=False)
 

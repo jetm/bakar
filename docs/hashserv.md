@@ -24,7 +24,7 @@ bakar hashserv status
 
 ## State files
 
-Daemon state lives under `<bsp_root>/.bakar/`:
+Daemon state lives under `<state_key>/.bakar/`, where the **state key** is the effective `SSTATE_DIR` (a live `SSTATE_DIR` env var, else `[build] sstate_dir` in config), falling back to `<bsp_root>` when no sstate dir is set:
 
 | File | Contents |
 |------|----------|
@@ -33,23 +33,25 @@ Daemon state lives under `<bsp_root>/.bakar/`:
 | `hashserv.db` | SQLite hash equivalence store (preserved across `stop`/`start`) |
 | `hashserv.stderr` | Daemon stderr captured when startup fails (rewritten on each failed `ensure_running`) |
 
-The port is derived from `sha256(realpath(bsp_root))[:8] % 16383 + 49152` so two workspaces on the same machine never collide on the loopback listener. Same workspace path → same port forever.
+The port is derived from `sha256(realpath(state_key))[:8] % 16383 + 49152` so two daemons on the same machine never collide on the loopback listener. Same state key → same port forever.
+
+Keying state to `SSTATE_DIR` means every workspace that shares one sstate cache shares **one** daemon and **one** equivalence DB: the cache and its hash index stay paired instead of being rebuilt per workspace. Workspaces with no shared sstate keep the old per-workspace daemon at `<bsp_root>/.bakar/`. The `bitbake-hashserv` binary is always sourced from the workspace (`<bsp_root>/sources/poky/bitbake/bin/bitbake-hashserv`), independent of where the state lives.
 
 ## Lifecycle
 
 ### Auto-start with `bakar build`
 
-When `[build] hashserv = true` is set in `~/.config/bakar/config.toml`, every `bakar build` calls `hashserv.ensure_running(bsp_root)` before launching kas-container:
+When `[build] hashserv = true` is set in `~/.config/bakar/config.toml`, every `bakar build` calls `hashserv.ensure_running(state_key, binary_root=bsp_root)` before launching kas-container:
 
-1. If a live daemon already exists for this workspace, it is reused.
-2. Otherwise, `<bsp_root>/sources/poky/bitbake/bin/bitbake-hashserv` is spawned with `--bind ws://localhost:<port>` and `--database <bsp_root>/.bakar/hashserv.db`, detached from the bakar process group via `start_new_session=True`.
+1. If a live daemon already exists for this state key, it is reused.
+2. Otherwise, `<bsp_root>/sources/poky/bitbake/bin/bitbake-hashserv` is spawned with `--bind ws://localhost:<port>` and `--database <state_key>/.bakar/hashserv.db`, detached from the bakar process group via `start_new_session=True`.
 3. A 2 s TCP probe gates the return: until `socket.create_connection` succeeds, the daemon is not considered ready. If the probe times out the spawned process is SIGTERMed, its stderr is captured to `hashserv.stderr`, and the build falls through to `BB_HASHSERVE=auto` (the legacy transient behaviour).
 
 The daemon persists across `bakar` exits. A subsequent build, doctor invocation, or `hashserv status` finds it alive and reuses it. Implicit shutdown does **not** happen on bakar exit — that is the whole point: the cache must survive between runs.
 
 ### Explicit stop
 
-`bakar hashserv stop` and `bakar clean --all` both stop the daemon. `clean --all` calls `hashserv.stop(bsp_root)` *before* removing workspace directories so the daemon does not end up orphaned with a missing working directory.
+`bakar hashserv stop` always stops the daemon for the current state key. `bakar clean --all` stops it *before* removing workspace directories **only when the daemon is workspace-local** (the no-shared-sstate fallback). When the daemon is keyed to a shared `SSTATE_DIR`, `clean --all` leaves it running: its DB lives outside the build dir and sibling workspaces depend on it, so wiping one workspace must not stop the shared daemon.
 
 ## Container build wiring
 
@@ -128,16 +130,18 @@ The daemon launched at `<bsp_root>/sources/poky/bitbake/bin/bitbake-hashserv` is
 
 This implies one workspace pins one bitbake version. If you point the same `<bsp_root>` at a different upstream (e.g. kirkstone → scarthgap), stop the daemon first; the next build will spawn the new bitbake's hashserv against the same SQLite database, which the daemon migrates automatically.
 
+When the daemon is keyed to a shared `SSTATE_DIR`, the first workspace to build starts it and later workspaces reuse it. This assumes the workspaces sharing one sstate cache run compatible bitbake versions — which they must already, since sstate hash equivalence is only valid across matching signatures. If you deliberately share `SSTATE_DIR` across incompatible bitbake versions (not recommended), `bakar hashserv stop` against any of those workspaces before the first build of the divergent one, so the next build respawns the daemon on the new bitbake.
+
 ## When the daemon will not start
 
 `ensure_running` returns `None` (silently — no error) and the build falls through to `BB_HASHSERVE=auto` in these cases:
 
 - The workspace bitbake-hashserv binary is missing (sources not yet synced).
-- The SQLite database under `<bsp_root>/.bakar/hashserv.db` cannot be written (read-only filesystem, exhausted quota).
+- The SQLite database under `<state_key>/.bakar/hashserv.db` cannot be written (read-only filesystem, exhausted quota).
 - The derived port is already bound by another process. (Hash collision probability ≈ 1-in-16383 per workspace pair; a real conflict surfaces as a SKIP in doctor with the daemon stderr in `hashserv.stderr`.)
 - The 2 s startup TCP probe times out (the daemon spawned but never opened its socket).
 
-In every failure case the daemon stderr is captured to `<bsp_root>/.bakar/hashserv.stderr` for diagnosis.
+In every failure case the daemon stderr is captured to `<state_key>/.bakar/hashserv.stderr` for diagnosis.
 
 ## Exit codes
 

@@ -222,7 +222,7 @@ def test_ensure_running_returns_none_when_binary_missing(tmp_path: Path) -> None
     """No workspace binary - return None and write no state files."""
     from bakar.hashserv import ensure_running
 
-    assert ensure_running(tmp_path) is None
+    assert ensure_running(tmp_path, binary_root=tmp_path) is None
     state_dir = tmp_path / ".bakar"
     if state_dir.exists():
         assert not (state_dir / "hashserv.pid").exists()
@@ -248,7 +248,7 @@ def test_ensure_running_returns_existing_when_alive(
 
     monkeypatch.setattr(hashserv_mod.subprocess, "Popen", _popen_explodes)
 
-    assert hashserv_mod.ensure_running(tmp_path) == "ws://localhost:54321"
+    assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path) == "ws://localhost:54321"
 
 
 def test_ensure_running_starts_process_and_probe_succeeds(
@@ -278,7 +278,7 @@ def test_ensure_running_starts_process_and_probe_succeeds(
     monkeypatch.setattr(hashserv_mod.socket, "create_connection", _fake_create_connection)
 
     expected_port = hashserv_mod._workspace_port(tmp_path)
-    url = hashserv_mod.ensure_running(tmp_path)
+    url = hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path)
 
     assert url == f"ws://localhost:{expected_port}"
     pid_file = tmp_path / ".bakar" / "hashserv.pid"
@@ -336,7 +336,7 @@ def test_ensure_running_aborts_when_probe_times_out(
 
     monkeypatch.setattr(hashserv_mod.os, "kill", _fake_kill)
 
-    result = hashserv_mod.ensure_running(tmp_path)
+    result = hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path)
 
     assert result is None
     assert not (tmp_path / ".bakar" / "hashserv.pid").exists()
@@ -370,7 +370,7 @@ def test_ensure_running_handles_immediate_exit(
 
     monkeypatch.setattr(hashserv_mod.socket, "create_connection", _should_not_probe)
 
-    result = hashserv_mod.ensure_running(tmp_path)
+    result = hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path)
 
     assert result is None
     assert not (tmp_path / ".bakar" / "hashserv.pid").exists()
@@ -532,3 +532,74 @@ def test_stop_handles_already_dead_pid(
     assert not pid_file.exists()
     assert not port_file.exists()
     assert db_file.exists()
+
+
+def test_ensure_running_keys_state_to_state_key_not_binary_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The DB/port/PID live under state_key while the binary is found under
+    binary_root - the two can be different directories (sstate vs workspace)."""
+    from bakar import hashserv as hashserv_mod
+
+    binary_root = tmp_path / "workspace"
+    state_key = tmp_path / "sstate"
+    binary_root.mkdir()
+    state_key.mkdir()
+    _create_workspace_binary(binary_root)
+
+    monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+
+    fake_proc = _FakeProc(pid=4242, poll_returns=[None])
+    captured: dict[str, object] = {}
+
+    def _fake_popen(args: list[str], **kwargs: object) -> _FakeProc:
+        captured["args"] = args
+        return fake_proc
+
+    monkeypatch.setattr(hashserv_mod.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(
+        hashserv_mod.socket,
+        "create_connection",
+        lambda _addr, timeout: _FakeSocket(),
+    )
+
+    expected_port = hashserv_mod._workspace_port(state_key)
+    url = hashserv_mod.ensure_running(state_key, binary_root=binary_root)
+
+    assert url == f"ws://localhost:{expected_port}"
+    # State files land under state_key, not binary_root.
+    assert (state_key / ".bakar" / "hashserv.pid").read_text().strip() == "4242"
+    assert (state_key / ".bakar" / "hashserv.port").read_text().strip() == str(expected_port)
+    assert not (binary_root / ".bakar" / "hashserv.pid").exists()
+    # The spawned binary is the one under binary_root, and the DB is under state_key.
+    popen_args = captured["args"]
+    assert isinstance(popen_args, list)
+    assert str(binary_root / "sources" / "poky" / "bitbake" / "bin" / "bitbake-hashserv") in popen_args
+    assert str(state_key / ".bakar" / "hashserv.db") in popen_args
+
+
+def test_ensure_running_returns_none_when_binary_root_missing_binary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No binary under binary_root - return None even if state_key exists."""
+    from bakar import hashserv as hashserv_mod
+
+    state_key = tmp_path / "sstate"
+    state_key.mkdir()
+    monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+
+    assert hashserv_mod.ensure_running(state_key, binary_root=tmp_path / "workspace") is None
+
+
+def test_binary_available_checks_binary_root(tmp_path: Path) -> None:
+    """binary_available probes the binary_root, independent of any state key."""
+    from bakar.hashserv import binary_available
+
+    binary_root = tmp_path / "workspace"
+    binary_root.mkdir()
+    assert binary_available(binary_root) is False
+
+    _create_workspace_binary(binary_root)
+    assert binary_available(binary_root) is True

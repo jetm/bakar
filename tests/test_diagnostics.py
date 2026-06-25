@@ -1211,6 +1211,9 @@ def test_check_hashserv_pass_when_running_and_port_listens(tmp_path: Path, monke
     from bakar import diagnostics
     from bakar.diagnostics import check_hashserv
 
+    # No shared SSTATE_DIR: state_key falls back to bsp_root, where this test
+    # writes the PID/port files the check reads.
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
     bsp_root = tmp_path / "nxp"
     state_dir = bsp_root / ".bakar"
     state_dir.mkdir(parents=True)
@@ -1283,6 +1286,9 @@ def test_check_hashserv_fail_when_port_unreachable(tmp_path: Path, monkeypatch: 
     from bakar import diagnostics
     from bakar.diagnostics import check_hashserv
 
+    # No shared SSTATE_DIR: state_key falls back to bsp_root, where this test
+    # writes the PID/port files the check reads.
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
     bsp_root = tmp_path / "nxp"
     state_dir = bsp_root / ".bakar"
     state_dir.mkdir(parents=True)

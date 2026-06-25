@@ -139,6 +139,9 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / ".bakar.toml").write_text("")
     (tmp_path / "nxp" / "build").mkdir(parents=True)
     (tmp_path / "nxp" / "kas-nxp.yml").write_text("# generated kas\n")
+    # No shared SSTATE_DIR: keep the hashserv daemon keyed to bsp_root so
+    # `clean --all` stops it (the workspace-local path these tests pin).
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 

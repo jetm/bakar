@@ -273,6 +273,24 @@ class BuildConfig:
         return shared_ccache_dir(self.ccache_dir, ccache_shared=self.ccache_shared) or self.workspace / "ccache"
 
     @property
+    def hashserv_state_key(self) -> Path:
+        """Directory that keys the persistent hashserv daemon (port, DB, PID).
+
+        Returns the effective SSTATE_DIR so every workspace sharing one sstate
+        cache shares one daemon and one hash-equivalence DB - the cache and its
+        equivalence index stay paired instead of being rebuilt per workspace. A
+        live ``SSTATE_DIR`` env var wins over the config value, matching the dir
+        the build actually writes to (``_build_env`` exports it via setdefault).
+        Falls back to ``bsp_root`` (today's per-workspace behavior) when no
+        sstate dir is configured.
+        """
+        sstate = os.environ.get("SSTATE_DIR") or self.sstate_dir
+        # Resolve to an absolute path: a relative SSTATE_DIR would otherwise make
+        # the daemon's state dir (and the port derived from it) depend on the CWD
+        # the CLI runs from, spawning duplicate daemons for one logical cache.
+        return Path(sstate).resolve() if sstate else self.bsp_root
+
+    @property
     def use_shared_cache(self) -> bool:
         """True when an sstate mirror URL is configured."""
         return bool(self.sstate_mirror_url)

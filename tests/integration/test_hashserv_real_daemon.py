@@ -80,7 +80,7 @@ def test_hashserv_real_daemon_lifecycle(tmp_path: Path) -> None:
     _install_workspace_binary(tmp_path, real_binary)
 
     # ---- First lifecycle: start, verify, stop ----
-    url = hashserv.ensure_running(tmp_path)
+    url = hashserv.ensure_running(tmp_path, binary_root=tmp_path)
     assert url is not None, "ensure_running returned None on a workspace with bitbake-hashserv present"
     assert url.startswith("ws://localhost:"), f"unexpected URL shape: {url}"
 
@@ -122,7 +122,7 @@ def test_hashserv_real_daemon_lifecycle(tmp_path: Path) -> None:
     db_inode_before = db_file.stat().st_ino
 
     # ---- Second lifecycle: confirm DB persistence across restart ----
-    url2 = hashserv.ensure_running(tmp_path)
+    url2 = hashserv.ensure_running(tmp_path, binary_root=tmp_path)
     assert url2 is not None, "ensure_running returned None on second start"
     assert url2 == url, "deterministic port: same workspace should derive same port"
 

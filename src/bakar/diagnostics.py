@@ -1663,7 +1663,7 @@ def check_hashserv(cfg: BuildConfig) -> CheckResult:
     if not cfg.use_hashequiv:
         return _skip(name, Severity.INFO, "hashserv daemon not configured ([build] hashserv = false)")
 
-    if not hashserv.is_running(cfg.bsp_root):
+    if not hashserv.is_running(cfg.hashserv_state_key):
         # The build auto-starts the daemon via _build_env, so a not-yet-running
         # daemon is benign as long as the bitbake-hashserv binary is present -
         # warning here fires on every pre-build doctor run for no reason. Only
@@ -1685,7 +1685,7 @@ def check_hashserv(cfg: BuildConfig) -> CheckResult:
     # that race as the daemon not running.
     not_running_msg = "hashserv daemon is not running (state files vanished mid-check)"
     not_running_hint = "bakar hashserv start"
-    state_dir = cfg.bsp_root / ".bakar"
+    state_dir = cfg.hashserv_state_key / ".bakar"
     port_file = state_dir / "hashserv.port"
     pid_file = state_dir / "hashserv.pid"
 

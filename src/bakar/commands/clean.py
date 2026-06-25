@@ -63,13 +63,16 @@ def clean(
     ws = workspace or _workspace_from_cwd()
     family = _resolve_family(bsp, manifest, ws)
     cfg = resolve(workspace=ws, bsp_family=family, user_config=_state._USER_CONFIG)
-    if all:
-        # Stop the workspace hashserv daemon before wiping so it isn't
-        # orphaned pointing at a removed working directory. Lazy import to
-        # avoid any future import cycle if hashserv grows transitive deps.
+    if all and cfg.hashserv_state_key == cfg.bsp_root:
+        # Stop the hashserv daemon before wiping, but only when it is keyed to
+        # this workspace (the no-shared-sstate fallback). When the daemon is
+        # keyed to a shared SSTATE_DIR, sibling workspaces depend on it and its
+        # DB lives outside this build dir, so wiping the dir leaves it valid -
+        # stopping it here would disrupt an unrelated workspace's build. Lazy
+        # import to avoid any future import cycle if hashserv grows deps.
         from bakar import hashserv
 
-        hashserv.stop(cfg.bsp_root)
+        hashserv.stop(cfg.hashserv_state_key)
     _clean_build_dir(cfg)
     if all and cfg.kas_yaml.exists():
         cfg.kas_yaml.unlink()

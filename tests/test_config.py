@@ -76,6 +76,62 @@ def test_effective_ccache_dir_explicit_path_wins(tmp_path) -> None:
     assert cfg.effective_ccache_dir == Path("/mnt/cache/cc")
 
 
+def test_hashserv_state_key_uses_sstate_dir(tmp_path, monkeypatch) -> None:
+    """When an sstate dir is configured, the daemon keys to it (not bsp_root)."""
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
+    uc = UserConfig(sstate_dir="/mnt/cache/sstate")
+
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+
+    assert cfg.hashserv_state_key == Path("/mnt/cache/sstate")
+
+
+def test_hashserv_state_key_falls_back_to_bsp_root(tmp_path, monkeypatch) -> None:
+    """With no sstate dir set, the daemon stays per-workspace at bsp_root."""
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+
+    assert cfg.hashserv_state_key == cfg.bsp_root
+
+
+def test_hashserv_state_key_resolves_relative_path(tmp_path, monkeypatch) -> None:
+    """A relative sstate dir is resolved to an absolute path so the daemon's
+    state location (and derived port) does not depend on the CLI's CWD."""
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
+    uc = UserConfig(sstate_dir="rel/sstate")
+
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+
+    assert cfg.hashserv_state_key.is_absolute()
+    assert cfg.hashserv_state_key == (Path("rel/sstate").resolve())
+
+
+def test_hashserv_state_key_env_beats_config(tmp_path, monkeypatch) -> None:
+    """A live SSTATE_DIR env var wins over the config value, matching the dir
+    the build actually writes sstate to (see _build_env's setdefault)."""
+    monkeypatch.setenv("SSTATE_DIR", "/mnt/env/sstate")
+    uc = UserConfig(sstate_dir="/mnt/config/sstate")
+
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+
+    assert cfg.hashserv_state_key == Path("/mnt/env/sstate")
+
+
+def test_hashserv_state_key_shared_across_workspaces_same_sstate(tmp_path, monkeypatch) -> None:
+    """Two distinct workspaces sharing one sstate dir resolve to the same state
+    key, so they share one daemon and one hash-equivalence DB."""
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
+    uc = UserConfig(sstate_dir="/mnt/cache/sstate")
+    (tmp_path / "wsA" / "nxp").mkdir(parents=True)
+    (tmp_path / "wsB" / "nxp").mkdir(parents=True)
+
+    cfg_a = resolve(workspace=tmp_path / "wsA", bsp_family="nxp", user_config=uc)
+    cfg_b = resolve(workspace=tmp_path / "wsB", bsp_family="nxp", user_config=uc)
+
+    assert cfg_a.bsp_root != cfg_b.bsp_root
+    assert cfg_a.hashserv_state_key == cfg_b.hashserv_state_key
+
+
 # ---------------------------------------------------------------------------
 # compose_preset_output_path tests
 # ---------------------------------------------------------------------------

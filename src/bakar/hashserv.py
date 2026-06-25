@@ -1,15 +1,22 @@
 """Workspace-scoped bitbake-hashserv daemon helpers.
 
-This module owns the lifecycle of a per-workspace ``bitbake-hashserv``
-daemon. A persistent daemon lets cross-build sstate hash equivalence
-accumulate instead of being rebuilt from scratch on every ``bakar
-build`` (which is what ``BB_HASHSERVE = "auto"`` does).
+This module owns the lifecycle of a ``bitbake-hashserv`` daemon keyed to a
+*state directory*. A persistent daemon lets cross-build sstate hash equivalence
+accumulate instead of being rebuilt from scratch on every ``bakar build``
+(which is what ``BB_HASHSERVE = "auto"`` does).
 
-The daemon binary is sourced exclusively from the synced workspace at
-``<bsp_root>/sources/poky/bitbake/bin/bitbake-hashserv``. We deliberately
-do NOT fall back to a host PATH lookup: the daemon's wire protocol must
-match the bitbake the build will run against, and the workspace bitbake
-is the only version we can guarantee that for.
+Two locations are kept deliberately separate:
+
+- The **state key** (``state_key``) is where the daemon's port, PID, and SQLite
+  DB live, and is what the listen port is derived from. Keying it to the
+  shared ``SSTATE_DIR`` (see :attr:`BuildConfig.hashserv_state_key`) lets every
+  workspace that shares one sstate cache share one daemon and one equivalence
+  DB - the cache and its hash index stay paired.
+- The **binary root** (``binary_root``) is where the ``bitbake-hashserv``
+  executable is found. The daemon binary is sourced exclusively from the synced
+  workspace (``<binary_root>/sources/poky/bitbake/bin/bitbake-hashserv``); we
+  deliberately do NOT fall back to a host PATH lookup, because the daemon's wire
+  protocol must match the bitbake the build will run against.
 """
 
 from __future__ import annotations
@@ -33,20 +40,20 @@ _TERM_GRACE_SECONDS = 5
 _STARTUP_PROBE_DEADLINE_SECONDS = 2.0
 
 
-def _workspace_port(bsp_root: Path) -> int:
-    """Derive a stable ephemeral port from the workspace path.
+def _workspace_port(state_key: Path) -> int:
+    """Derive a stable ephemeral port from the state-key path.
 
-    Two workspaces on the same machine must not collide; a random pick
-    would need a port-file lookup to be authoritative. Hashing
-    ``realpath(bsp_root)`` into the 49152-65534 range gives a stable URL
-    for the lifetime of the workspace without making any state file
-    load-bearing for routing.
+    Two daemons on the same machine must not collide; a random pick would need
+    a port-file lookup to be authoritative. Hashing ``realpath(state_key)`` into
+    the 49152-65534 range gives a stable URL for the lifetime of the daemon
+    without making any state file load-bearing for routing. Two callers sharing
+    one state key therefore land on the same port - the shared-daemon contract.
     """
-    digest = sha256(str(bsp_root.resolve()).encode()).hexdigest()
+    digest = sha256(str(state_key.resolve()).encode()).hexdigest()
     return _PORT_FLOOR + int(digest[:8], 16) % _PORT_SPAN
 
 
-def _find_binary(bsp_root: Path) -> Path | None:
+def _find_binary(binary_root: Path) -> Path | None:
     """Return the workspace ``bitbake-hashserv`` path, or None if absent.
 
     Only workspace paths are consulted - no host PATH fallback. A PATH binary
@@ -55,38 +62,39 @@ def _find_binary(bsp_root: Path) -> Path | None:
     cache.
 
     Search order:
-    1. ``<bsp_root>/sources/poky/bitbake/``  - NXP (poky umbrella)
-    2. ``<bsp_root>/sources/bitbake/``       - TI (bare oe-core)
-    3. ``<bsp_root>/bitbake/``               - generic workspace-root bitbake
-    4. ``<bsp_root.parent>/bitbake/``        - meta-avocado style (bsp_root is
-                                              ``<workspace>/build-<stem>``; the
-                                              workspace ships bitbake as a sibling)
+    1. ``<binary_root>/sources/poky/bitbake/``  - NXP (poky umbrella)
+    2. ``<binary_root>/sources/bitbake/``       - TI (bare oe-core)
+    3. ``<binary_root>/bitbake/``               - generic workspace-root bitbake
+    4. ``<binary_root.parent>/bitbake/``        - meta-avocado style (binary_root
+                                                  is ``<workspace>/build-<stem>``;
+                                                  the workspace ships bitbake as
+                                                  a sibling)
     """
     for candidate in (
-        bsp_root / "sources" / "poky" / "bitbake" / "bin" / "bitbake-hashserv",
-        bsp_root / "sources" / "bitbake" / "bin" / "bitbake-hashserv",
-        bsp_root / "bitbake" / "bin" / "bitbake-hashserv",
-        bsp_root.parent / "bitbake" / "bin" / "bitbake-hashserv",
+        binary_root / "sources" / "poky" / "bitbake" / "bin" / "bitbake-hashserv",
+        binary_root / "sources" / "bitbake" / "bin" / "bitbake-hashserv",
+        binary_root / "bitbake" / "bin" / "bitbake-hashserv",
+        binary_root.parent / "bitbake" / "bin" / "bitbake-hashserv",
     ):
         if candidate.is_file():
             return candidate
     return None
 
 
-def _state_dir(bsp_root: Path) -> Path:
-    """Return ``<bsp_root>/.bakar`` (the workspace state directory)."""
-    return bsp_root / _STATE_SUBDIR
+def _state_dir(state_key: Path) -> Path:
+    """Return ``<state_key>/.bakar`` (the daemon state directory)."""
+    return state_key / _STATE_SUBDIR
 
 
-def _read_pid(bsp_root: Path) -> int | None:
-    """Return the PID recorded for the workspace daemon, or None on any failure.
+def _read_pid(state_key: Path) -> int | None:
+    """Return the PID recorded for the daemon, or None on any failure.
 
     Treats every error path - missing file, unreadable file, unparseable
     content - as "no recorded PID". Callers cannot distinguish the
     failures and do not need to: each one means "we have no live
     reference to a daemon".
     """
-    pid_file = _state_dir(bsp_root) / _PID_FILENAME
+    pid_file = _state_dir(state_key) / _PID_FILENAME
     try:
         raw = pid_file.read_text()
     except OSError:
@@ -97,27 +105,27 @@ def _read_pid(bsp_root: Path) -> int | None:
         return None
 
 
-def binary_available(bsp_root: Path) -> bool:
-    """True when the workspace's bitbake-hashserv binary exists.
+def binary_available(binary_root: Path) -> bool:
+    """True when the workspace's bitbake-hashserv binary exists under binary_root.
 
     When present, ``ensure_running`` can spawn the persistent daemon (the build
     does this automatically), so a not-yet-running daemon is benign. When absent,
     the build silently falls back to bitbake's per-build ``auto`` server and loses
     the persistent cross-build hash-equivalence DB.
     """
-    return _find_binary(bsp_root) is not None
+    return _find_binary(binary_root) is not None
 
 
-def is_running(bsp_root: Path) -> bool:
+def is_running(state_key: Path) -> bool:
     """Return True iff the recorded PID is alive AND its cmdline names the daemon.
 
     The cmdline check guards against PID recycling: a host reboot or a
-    long-lived workspace can leave a stale PID file pointing at a now-
+    long-lived state key can leave a stale PID file pointing at a now-
     unrelated process. ``/proc/<pid>/cmdline`` is NUL-separated, so we
     read bytes and look for the binary name as a substring rather than
     splitting on NUL.
     """
-    pid = _read_pid(bsp_root)
+    pid = _read_pid(state_key)
     if pid is None:
         return False
     try:
@@ -136,8 +144,12 @@ def is_running(bsp_root: Path) -> bool:
     return b"bitbake-hashserv" in cmdline_bytes
 
 
-def ensure_running(bsp_root: Path) -> str | None:
-    """Ensure a workspace-scoped hashserv daemon is running; return its URL.
+def ensure_running(state_key: Path, *, binary_root: Path) -> str | None:
+    """Ensure a hashserv daemon for ``state_key`` is running; return its URL.
+
+    The daemon's port, PID, and DB are keyed to ``state_key`` (so callers that
+    share a state key share one daemon), while the ``bitbake-hashserv`` binary
+    is sourced from ``binary_root`` (the synced workspace).
 
     Returns ``f"ws://localhost:{port}"`` when the daemon is reachable (either
     already running, or freshly spawned and passed the TCP startup probe).
@@ -151,11 +163,11 @@ def ensure_running(bsp_root: Path) -> str | None:
     failed startup never leaves authoritative state behind for the next
     invocation to mis-interpret.
     """
-    state_dir = _state_dir(bsp_root)
+    state_dir = _state_dir(state_key)
     port_file = state_dir / _PORT_FILENAME
     pid_file = state_dir / _PID_FILENAME
 
-    if is_running(bsp_root):
+    if is_running(state_key):
         try:
             port = int(port_file.read_text().strip())
         except FileNotFoundError, ValueError:
@@ -167,11 +179,11 @@ def ensure_running(bsp_root: Path) -> str | None:
         else:
             return f"ws://localhost:{port}"
 
-    binary = _find_binary(bsp_root)
+    binary = _find_binary(binary_root)
     if binary is None:
         return None
 
-    port = _workspace_port(bsp_root)
+    port = _workspace_port(state_key)
     state_dir.mkdir(parents=True, exist_ok=True)
     # Redirect daemon stderr directly to a log file rather than PIPE so the
     # daemon never blocks when the kernel pipe buffer fills (default 64 KiB)
@@ -211,8 +223,8 @@ def ensure_running(bsp_root: Path) -> str | None:
         return f"ws://localhost:{port}"
 
 
-def stop(bsp_root: Path) -> bool:
-    """Stop the workspace daemon and clean PID/port state files.
+def stop(state_key: Path) -> bool:
+    """Stop the daemon for ``state_key`` and clean PID/port state files.
 
     Returns False (no-op) when no PID file is recorded - the daemon was
     never started, or its state has already been cleaned up. Returns True
@@ -226,11 +238,11 @@ def stop(bsp_root: Path) -> bool:
     wiping the DB here would defeat that. Workspace teardown
     (``bakar clean --all``) is the one path that removes the DB.
     """
-    pid = _read_pid(bsp_root)
+    pid = _read_pid(state_key)
     if pid is None:
         return False
 
-    state_dir = _state_dir(bsp_root)
+    state_dir = _state_dir(state_key)
     pid_file = state_dir / _PID_FILENAME
     port_file = state_dir / _PORT_FILENAME
 
@@ -240,16 +252,16 @@ def stop(bsp_root: Path) -> bool:
         pass
 
     deadline = time.monotonic() + _TERM_GRACE_SECONDS
-    while is_running(bsp_root) and time.monotonic() < deadline:
+    while is_running(state_key) and time.monotonic() < deadline:
         time.sleep(0.1)
 
-    if is_running(bsp_root):
+    if is_running(state_key):
         try:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         kill_deadline = time.monotonic() + 1.0
-        while is_running(bsp_root) and time.monotonic() < kill_deadline:
+        while is_running(state_key) and time.monotonic() < kill_deadline:
             time.sleep(0.1)
 
     pid_file.unlink(missing_ok=True)
