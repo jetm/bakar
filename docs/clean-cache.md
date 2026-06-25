@@ -46,11 +46,13 @@ contracts:
 - **sstate** is a flat directory of self-contained archives. `clean-cache` uses
   a two-phase approach: stale files are first renamed into a `.bakar-gc-<pid>/`
   staging directory created inside the sstate root (so the rename is atomic and
-  stays on the same filesystem), then the staging tree is removed wholesale. This
-  means a concurrent build can never observe a half-deleted sstate entry. If
-  interrupted between the rename and the rmtree, a `.bakar-gc-<pid>/` directory
-  is left behind inside the sstate root; remove it manually to reclaim the space.
-  Emptied parent directories are pruned after deletion.
+  stays on the same filesystem), then the staged files are unlinked. This means a
+  concurrent build can never observe a half-deleted sstate entry. Both passes run
+  across a small thread pool and show a progress bar with an ETA, so a multi-GiB
+  prune of hundreds of thousands of files reports live progress instead of
+  appearing hung. If interrupted, a `.bakar-gc-<pid>/` directory is left behind
+  inside the sstate root; remove it manually to reclaim the space. Emptied parent
+  directories are pruned after deletion.
 - **ccache** keeps its own index, manifests, and statistics. Deleting files by
   hand would corrupt that bookkeeping, so `clean-cache` delegates to ccache:
   it runs `ccache --evict-older-than Nd` against the resolved cache directory.

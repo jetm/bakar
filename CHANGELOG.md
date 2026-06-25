@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `bakar clean-cache` now falls back to mtime (creation date) for sstate eviction on `relatime` mounts, not just `noatime`. `relatime` updates atime at most once per 24h and any full-tree read (a backup, `du`, or a file indexer) resets every file's atime at once, so atime is not a dependable last-read signal there. Only `strictatime` mounts still use atime. This fixes "Nothing to remove" on relatime filesystems whose atimes were clobbered by a cache-wide scan. See [docs/clean-cache.md](docs/clean-cache.md).
+- `bakar clean-cache` sstate deletion now runs across a thread pool and shows a progress bar with an ETA. The previous serial unlink of a large prune (hundreds of thousands of files, hundreds of GiB) ran silently and looked hung; `os.rename`/`os.unlink` release the GIL, so the pool parallelizes the actual disk work.
 
 ### Removed
 
