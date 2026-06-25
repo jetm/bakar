@@ -186,7 +186,13 @@ def materialize_sccache_layer(cfg: BuildConfig) -> Path:
     from bakar.commands._helpers import _overlay_dir
 
     source = _overlay_dir() / _SCCACHE_LAYER_NAME
-    dest = cfg.bsp_root / ".bakar" / _SCCACHE_LAYER_NAME
+    # kas resolves the overlay's relative `.bakar/meta-bakar-sccache` repos path
+    # against KAS_WORK_DIR (see _build_env). meta-avocado sets KAS_WORK_DIR to the
+    # workspace while bsp_root is the nested workspace/build-<stem> dir, so the
+    # layer must land under the workspace .bakar; for every other family
+    # KAS_WORK_DIR == bsp_root, so they coincide.
+    base = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
+    dest = base / ".bakar" / _SCCACHE_LAYER_NAME
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(source, dest)

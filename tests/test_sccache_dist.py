@@ -700,6 +700,50 @@ def test_materialize_sccache_layer_copies_class_into_bsp_root(tmp_path: object) 
 
 
 @pytest.mark.unit
+def test_materialize_sccache_layer_targets_workspace_for_meta_avocado(tmp_path: Path) -> None:
+    """For meta-avocado the layer lands under <workspace>/.bakar, not <bsp_root>/.bakar.
+
+    meta-avocado runs kas with KAS_WORK_DIR = workspace (_build_env), and bsp_root
+    is the nested build dir workspace/build-<stem>. kas resolves the sccache
+    overlay's relative repos path `.bakar/meta-bakar-sccache` against KAS_WORK_DIR,
+    so bitbake's bblayers points at <workspace>/.bakar - one level above bsp_root.
+    Materializing under bsp_root/.bakar (the non-avocado location) leaves the layer
+    where bblayers cannot find it and parse fails "layer directories do not exist".
+    This is the falsifier guard: the dest must be the workspace .bakar, and the two
+    paths genuinely differ for avocado's nested bsp_root.
+    """
+    from pathlib import Path
+
+    from bakar.config import BuildConfig
+    from bakar.steps.kas_build import materialize_sccache_layer
+
+    root = Path(str(tmp_path))
+    avocado_yaml = root / "meta-avocado" / "kas" / "machine" / "qemux86-64.yml"
+    cfg = BuildConfig(
+        workspace=root,
+        bsp_family="generic",  # type: ignore[arg-type]
+        machine="m",
+        distro="d",
+        image="i",
+        manifest="x.xml",
+        repo_url="https://example.com",
+        repo_branch="main",
+        kas_container_image="img:latest",
+        kas_yaml_override=avocado_yaml,
+        sccache_dist=True,
+    )
+    assert cfg.is_meta_avocado is True
+    assert cfg.bsp_root != cfg.workspace  # nested build-<stem> dir
+
+    dest = materialize_sccache_layer(cfg)
+
+    assert dest == cfg.workspace / ".bakar" / "meta-bakar-sccache"
+    assert dest != cfg.bsp_root / ".bakar" / "meta-bakar-sccache"
+    assert (dest / "conf" / "layer.conf").is_file()
+    assert (dest / "classes" / "sccache.bbclass").is_file()
+
+
+@pytest.mark.unit
 def test_overlay_exports_sccache_scheduler_env() -> None:
     """The overlay declares the scheduler-URL passthrough env var so kas whitelists it."""
     from bakar.commands._helpers import _sccache_extra_overlays
