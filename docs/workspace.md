@@ -106,12 +106,14 @@ The schema mirrors the user-level `~/.config/bakar/config.toml`: same `[defaults
 | `[defaults.nxp]` | `manifest`, `machine`, `distro`, `image` | NXP i.MX builds |
 | `[defaults.ti]` | `manifest`, `machine`, `distro`, `image` | TI Sitara builds |
 | `[defaults.generic]` | `kas_yaml`, `machine` | Generic / BYO kas builds |
+| `[build]` | `kas_container_image` | kas-container image for this workspace |
 
 - `manifest` - repo/oe-layertool manifest filename
 - `machine` - Yocto `MACHINE`
 - `distro` - Yocto `DISTRO` (nxp/ti only)
 - `image` - target image recipe (nxp/ti only)
 - `kas_yaml` - kas YAML filename for generic workspaces
+- `kas_container_image` - kas-container image tag (top-level `[build]` table, not under `[defaults]`); overrides the user `config.toml` value, beaten by the `KAS_CONTAINER_IMAGE` env var
 
 Workspace defaults sit between `BAKAR_*` env vars and the user `config.toml` in the precedence chain (`CLI flag > BAKAR_* env var > workspace .bakar.toml > user config.toml > built-in default`).
 

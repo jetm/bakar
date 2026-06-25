@@ -21,6 +21,7 @@ _STR_FIELDS = {
     "ti_image",
     "generic_kas_yaml",
     "generic_machine",
+    "kas_container_image",
 }
 
 # Host-threshold fields are numeric (reject non-numeric, reject non-positive).
@@ -48,6 +49,9 @@ class WorkspaceConfig:
     # [defaults.generic]
     generic_kas_yaml: str | None = None
     generic_machine: str | None = None
+    # [build] - workspace-tier override; None means "not set" (falls back to
+    # the user config then the built-in default in config.resolve()).
+    kas_container_image: str | None = None
     # [host] - workspace-tier override; None means "not set" (falls back to
     # the user config then the built-in floor in config.resolve()).
     host_inotify_instances: int | None = None
@@ -76,6 +80,11 @@ _TI_KEYS = {
 _GENERIC_KEYS = {
     "kas_yaml": "generic_kas_yaml",
     "machine": "generic_machine",
+}
+# Top-level [build] table -> build fields. Not under [defaults]; the container
+# image is not family-scoped. Mirrors user_config.py's _BUILD_KEYS subset.
+_BUILD_KEYS = {
+    "kas_container_image": "kas_container_image",
 }
 # Top-level [host] table -> host_* fields. Not under [defaults]; host thresholds
 # are not family-scoped. Mirrors user_config.py's _HOST_KEYS.
@@ -110,9 +119,11 @@ def load_workspace_config(workspace: Path) -> WorkspaceConfig:
     Returns an all-defaults ``WorkspaceConfig()`` when the file is absent or
     carries no recognized sections (e.g. a comment-only marker file). Raises
     ``ValueError`` (with the file path in the message) on a TOML parse error or
-    a type mismatch. Reads ``[defaults.<family>]`` build targets and a
-    top-level ``[host]`` table of numeric thresholds. An unrecognized key under
-    a recognized ``[defaults.<family>]`` section or under ``[host]`` emits a
+    a type mismatch. Reads ``[defaults.<family>]`` build targets, a top-level
+    ``[build]`` table (``kas_container_image``), and a top-level ``[host]``
+    table of numeric thresholds. An unrecognized key under
+    a recognized ``[defaults.<family>]`` section or under ``[build]`` or
+    ``[host]`` emits a
     :class:`UserWarning` naming the unknown key and the recognized keys, then is
     ignored; unknown sections are ignored without warning.
     """
@@ -145,6 +156,19 @@ def load_workspace_config(workspace: Path) -> WorkspaceConfig:
                     continue
                 _check_type(mapping[key], section_data[key], path)
                 values[mapping[key]] = section_data[key]
+
+    build = data.get("build", {})
+    if isinstance(build, dict):
+        for key in build:
+            if key not in _BUILD_KEYS:
+                recognized = ", ".join(sorted(_BUILD_KEYS))
+                warnings.warn(
+                    f"{path}: unknown key '{key}' in [build]; recognized keys: {recognized}",
+                    stacklevel=2,
+                )
+                continue
+            _check_type(_BUILD_KEYS[key], build[key], path)
+            values[_BUILD_KEYS[key]] = build[key]
 
     host = data.get("host", {})
     if isinstance(host, dict):

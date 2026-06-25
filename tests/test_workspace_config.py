@@ -373,3 +373,59 @@ def test_write_load_round_trip_generic(tmp_path: Path) -> None:
 
     assert cfg.generic_kas_yaml == "avocado-bspctl.yml"
     assert cfg.generic_machine == "qemux86-64"
+
+
+@pytest.mark.unit
+def test_build_table_populates_kas_container_image(tmp_path: Path) -> None:
+    """A top-level [build] table must populate kas_container_image."""
+    toml_content = textwrap.dedent("""\
+        # bakar workspace root.
+
+        [build]
+        kas_container_image = "jetm/kas-build-env:5.3-f40"
+    """)
+    (tmp_path / ".bakar.toml").write_text(toml_content)
+
+    cfg = load_workspace_config(tmp_path)
+
+    assert cfg.kas_container_image == "jetm/kas-build-env:5.3-f40"
+
+
+@pytest.mark.unit
+def test_absent_build_table_leaves_kas_container_image_none(tmp_path: Path) -> None:
+    toml_content = textwrap.dedent("""\
+        [defaults.nxp]
+        machine = "imx8mp-var-dart"
+    """)
+    (tmp_path / ".bakar.toml").write_text(toml_content)
+
+    cfg = load_workspace_config(tmp_path)
+
+    assert cfg.kas_container_image is None
+
+
+@pytest.mark.unit
+def test_build_table_unknown_key_warns_and_continues(tmp_path: Path) -> None:
+    toml_content = textwrap.dedent("""\
+        [build]
+        kas_container_image = "jetm/kas-build-env:5.3-f40"
+        bogus = "x"
+    """)
+    (tmp_path / ".bakar.toml").write_text(toml_content)
+
+    with pytest.warns(UserWarning, match="bogus"):
+        cfg = load_workspace_config(tmp_path)
+
+    assert cfg.kas_container_image == "jetm/kas-build-env:5.3-f40"
+
+
+@pytest.mark.unit
+def test_build_non_string_raises_valueerror_naming_field(tmp_path: Path) -> None:
+    toml_content = textwrap.dedent("""\
+        [build]
+        kas_container_image = 123
+    """)
+    (tmp_path / ".bakar.toml").write_text(toml_content)
+
+    with pytest.raises(ValueError, match="kas_container_image"):
+        load_workspace_config(tmp_path)

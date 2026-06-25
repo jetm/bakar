@@ -226,6 +226,56 @@ def test_env_container_image_beats_user_config(tmp_path, monkeypatch):
     )
 
 
+def test_workspace_container_image_beats_user_config(tmp_path, monkeypatch):
+    """A workspace .bakar.toml kas_container_image must beat user_config."""
+    monkeypatch.delenv("KAS_CONTAINER_IMAGE", raising=False)
+    (tmp_path / ".bakar.toml").write_text('[build]\nkas_container_image = "ws/kas-image:latest"\n')
+    uc = UserConfig(kas_container_image="config/kas-image:latest")
+
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+
+    assert cfg.kas_container_image == "ws/kas-image:latest", (
+        "workspace .bakar.toml kas_container_image must beat user_config"
+    )
+
+
+def test_env_container_image_beats_workspace_config(tmp_path, monkeypatch):
+    """KAS_CONTAINER_IMAGE env var must override the workspace value."""
+    monkeypatch.setenv("KAS_CONTAINER_IMAGE", "env/kas-image:latest")
+    (tmp_path / ".bakar.toml").write_text('[build]\nkas_container_image = "ws/kas-image:latest"\n')
+
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+
+    assert cfg.kas_container_image == "env/kas-image:latest", (
+        "KAS_CONTAINER_IMAGE env var must beat the workspace value (env > workspace)"
+    )
+
+
+def test_workspace_container_image_disables_host_mode(tmp_path, monkeypatch):
+    """A workspace-set kas_container_image must disable host_mode auto-enable."""
+    monkeypatch.delenv("KAS_CONTAINER_IMAGE", raising=False)
+    (tmp_path / ".bakar.toml").write_text('[build]\nkas_container_image = "ws/kas-image:latest"\n')
+
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+
+    assert cfg.host_mode is False, "A workspace kas_container_image must disable host_mode auto-enable"
+
+
+def test_empty_env_container_image_treated_as_unset(tmp_path, monkeypatch):
+    """An exported-but-empty KAS_CONTAINER_IMAGE must be treated as unset.
+
+    pick() ignores an empty env value and falls through to the default, so
+    host_mode detection must agree: an empty export is no container setup, and
+    the resolved image is the built-in default.
+    """
+    monkeypatch.setenv("KAS_CONTAINER_IMAGE", "")
+
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+
+    assert cfg.host_mode is True, "An empty KAS_CONTAINER_IMAGE must auto-enable host_mode (treated as unset)"
+    assert cfg.kas_container_image == DEFAULT_CONTAINER_IMAGE
+
+
 # ---------------------------------------------------------------------------
 # 5. Build-tuning fields (dl_dir, sstate_dir, pressure_max_*)
 # ---------------------------------------------------------------------------

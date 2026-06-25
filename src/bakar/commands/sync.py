@@ -182,7 +182,7 @@ def sync(
         raise typer.Exit(code=0)
 
     if "KAS_CONTAINER_IMAGE" not in os.environ and cfg.kas_container_image != DEFAULT_CONTAINER_IMAGE:
-        console.print(f"[dim]container image from config.toml: {cfg.kas_container_image}[/]")
+        console.print(f"[dim]container image from config: {cfg.kas_container_image}[/]")
 
     effective_show_layers = show_layers or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_hashes)
 

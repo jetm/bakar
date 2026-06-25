@@ -47,7 +47,7 @@ one).
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `show_doctor_report` | bool | `true` | Show the pre-flight doctor report before every build and sync. Set to `false` to print only build-blocking issues; the global `--hide-doctor-report` flag does the same for one invocation. Doctor checks always run - a BLOCK-severity failure aborts regardless. |
-| `kas_container_image` | string | `jetm/kas-build-env:latest` | kas-container image tag. Overridden by `KAS_CONTAINER_IMAGE` env var. |
+| `kas_container_image` | string | `jetm/kas-build-env:latest` | kas-container image tag. Overridden by a workspace `.bakar.toml` `[build]` value and by the `KAS_CONTAINER_IMAGE` env var. |
 | `dl_dir` | string | *(not set)* | Override `DL_DIR` (shared download cache path). Passed to kas-container as an env var. |
 | `sstate_dir` | string | *(not set)* | Override `SSTATE_DIR` (sstate cache path). Passed to kas-container as an env var. |
 | `sstate_mirrors` | string | *(not set)* | Raw `SSTATE_MIRRORS` value passed to the build. Use `sstate_mirror_url` unless you need full control over the mirror syntax. |
@@ -166,6 +166,17 @@ but does not fail the load. Unknown sections are silently ignored.
 | `kas_yaml` | string | Default kas YAML path for BYO/generic workspaces. |
 | `machine` | string | Default MACHINE for BYO/generic builds. |
 
+### `[build]`
+
+A top-level table (not under `[defaults]`) that overrides the user
+`config.toml` `[build]` value for this workspace. Precedence: workspace
+`.bakar.toml` `[build]` > user `config.toml` `[build]` > built-in default; the
+`KAS_CONTAINER_IMAGE` env var still beats all three.
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `kas_container_image` | string | Workspace override for the kas-container image tag. Setting it also disables host-mode auto-enable (the workspace has a container setup). |
+
 ### `[host]`
 
 A top-level table (not under `[defaults]`) that overrides the user
@@ -257,7 +268,7 @@ still take precedence over env vars.
 
 | Variable | Description |
 |----------|-------------|
-| `KAS_CONTAINER_IMAGE` | Override the kas-container image for one invocation. Takes precedence over `build.kas_container_image`. |
+| `KAS_CONTAINER_IMAGE` | Override the kas-container image for one invocation. Takes precedence over both the workspace `.bakar.toml` `[build]` value and `build.kas_container_image` in the user config. |
 
 ### bitbake-override
 

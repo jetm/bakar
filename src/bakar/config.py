@@ -554,14 +554,20 @@ def resolve(
     )
     resolved_branch = _resolve_branch(bsp_family, fd, spec.repo_branch, resolved_manifest)
 
-    # Auto-detect: when KAS_CONTAINER_IMAGE is absent from env and host_mode was
-    # not explicitly requested, fall back to plain kas (no Docker) rather than the
-    # hardcoded default container image. This makes bakar work out of the box on
-    # hosts without a container setup. A config-supplied container_image counts the
-    # same as the env var: a user who set it has a container setup and wants it used.
-    effective_host_mode = spec.host_mode or (
-        "KAS_CONTAINER_IMAGE" not in os.environ and (user_config is None or user_config.kas_container_image is None)
+    # Auto-detect: when no container image is configured anywhere and host_mode
+    # was not explicitly requested, fall back to plain kas (no Docker) rather than
+    # the hardcoded default container image. This makes bakar work out of the box
+    # on hosts without a container setup. A container image supplied by the
+    # workspace .bakar.toml or the user config counts the same as the env var: a
+    # user who set it anywhere has a container setup and wants it used. The checks
+    # mirror pick()'s truthiness so an exported-but-empty KAS_CONTAINER_IMAGE (or
+    # an empty config value) reads as unset, exactly as image resolution treats it.
+    no_container_image_configured = (
+        not os.environ.get("KAS_CONTAINER_IMAGE")
+        and not (workspace_config is not None and workspace_config.kas_container_image)
+        and not (user_config is not None and user_config.kas_container_image)
     )
+    effective_host_mode = spec.host_mode or no_container_image_configured
 
     def _host(field_name: str, default: float) -> float:
         """Select a host threshold: workspace [host] > user [host] > built-in default.
@@ -612,13 +618,13 @@ def resolve(
             (user_config.nxp_repo_url if user_config and user_config.nxp_repo_url else DEFAULT_REPO_URL),
         ),
         repo_branch=resolved_branch,
-        kas_container_image=os.environ.get(
+        kas_container_image=pick(
+            None,
             "KAS_CONTAINER_IMAGE",
-            (
-                user_config.kas_container_image
-                if user_config and user_config.kas_container_image
-                else DEFAULT_CONTAINER_IMAGE
-            ),
+            workspace_config.kas_container_image if workspace_config is not None else None,
+            None,
+            user_config.kas_container_image if user_config and user_config.kas_container_image else None,
+            DEFAULT_CONTAINER_IMAGE,
         ),
         host_mode=effective_host_mode,
         kas_yaml_override=kas_yaml.resolve() if kas_yaml is not None else None,

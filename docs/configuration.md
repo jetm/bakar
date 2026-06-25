@@ -24,11 +24,18 @@ flag.
 | `[defaults.ti]` | `manifest`, `machine`, `distro`, `image` |
 | `[defaults.generic]` | `kas_yaml`, `machine` |
 
-The same file may also carry a top-level `[host]` table (not under
-`[defaults]`) overriding the user `config.toml` `[host]` doctor thresholds for
-this workspace: precedence is workspace `.bakar.toml` `[host]` > user
-`config.toml` `[host]` > built-in floor. See
-[config-reference.md](config-reference.md) for the `[host]` keys.
+The same file may also carry a top-level `[build]` table (not under
+`[defaults]`) with `kas_container_image`, overriding the user `config.toml`
+`[build]` value for this workspace: precedence is workspace `.bakar.toml`
+`[build]` > user `config.toml` `[build]` > built-in default, with the
+`KAS_CONTAINER_IMAGE` env var still beating all three. A workspace
+`kas_container_image` also disables host-mode auto-enable.
+
+A top-level `[host]` table (not under `[defaults]`) likewise overrides the user
+`config.toml` `[host]` doctor thresholds for this workspace: precedence is
+workspace `.bakar.toml` `[host]` > user `config.toml` `[host]` > built-in floor.
+See [config-reference.md](config-reference.md) for the `[build]` and `[host]`
+keys.
 
 `bakar init` writes these on workspace creation. See [init.md](init.md) for the
 wizard and [workspace.md](workspace.md) for the full `.bakar.toml` schema.
