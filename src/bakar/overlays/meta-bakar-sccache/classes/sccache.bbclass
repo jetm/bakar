@@ -34,19 +34,21 @@
 # Per-recipe opt-out, mirrors CCACHE_DISABLE.
 SCCACHE_DISABLE ??= ""
 
-# No classes excluded: native, cross, and crosssdk all distribute now. They
-# compile with the host/build compiler, whose `-print-prog-name=as` returns a
-# bare `as`; the sccache fork resolves that against the compile task's PATH (the
-# same -print-prog-name then which(PATH) fallback OE's icecc.bbclass used) rather
-# than the daemon's PATH, so the right assembler is packaged. Verified on avocado
-# scarthgap against the fixed cluster: zlib-native and linux-libc-headers (711
-# tasks) for native, and binutils-cross-aarch64 (306 compiles distributed to the
-# second node) for cross - all 0-error. crosssdk shares that identical
-# host-compiler/bare-`as` path (only the target triple differs, which does not
-# affect host-side `as` packaging) and is exercised only during SDK builds.
-# nativesdk and cross-canadian were never excluded (OE crosssdk compiler,
-# absolute paths, already packageable).
-SCCACHE_EXCLUDED_CLASSES ?= ""
+# native, cross, and crosssdk are excluded: distributing these BUILD_CC-compiled
+# recipes under high build concurrency corrupts libtool PIC objects on the dist
+# server. The .libs/*.o (PIC) slot receives a result that was not built with
+# `-fPIC`, so the shared-library link fails with "relocation R_X86_64_32 ...
+# recompile with -fPIC". Reproduced 2/2 on avocado scarthgap (gcc-cross + its
+# full native dependency tree, 819-2654 concurrent dist compiles) and confirmed
+# at the object level with readelf; the same recipes are correct at low
+# concurrency (libnsl2-native alone, gcc-runtime alone) and target-only
+# distribution is unaffected (gcc-runtime, 908 distributed compiles, 0-error).
+# This is a concurrency race in the sccache-dist build sandbox, not the bare-`as`
+# toolchain packaging the fork already fixed. The BUILD_CC machinery below is
+# kept (it expands to a bare compiler for excluded classes, so they stay local);
+# set this back to "" to re-enable native/cross/crosssdk distribution once the
+# dist race is fixed and re-verified under load.
+SCCACHE_EXCLUDED_CLASSES ?= "native cross crosssdk"
 
 # Target recipes that must compile locally even though their class is eligible.
 # Empty: the gcc/glibc bootstrap recipes (glibc, glibc-initial, libgcc,
@@ -77,9 +79,11 @@ python () {
 
 # Route the build/host compiler through sccache too (${CCACHE} restored).
 # Excluded classes never set CCACHE, so this expands to a bare compiler and stays
-# local; eligible recipes (e.g. native) get "sccache <gcc>" and distribute now
-# that the fork resolves the bare `as` against the compile PATH. Definitions
-# mirror gcc-native.bbclass.
+# local; with native/cross/crosssdk currently excluded (see above) this stays
+# local for every BUILD_CC recipe today. It is retained so re-enabling those
+# classes is a one-line change once the dist concurrency race is fixed - eligible
+# recipes then get "sccache <gcc>" and distribute. Definitions mirror
+# gcc-native.bbclass.
 BUILD_CC:forcevariable = "${CCACHE}${BUILD_PREFIX}gcc ${BUILD_CC_ARCH}"
 BUILD_CXX:forcevariable = "${CCACHE}${BUILD_PREFIX}g++ ${BUILD_CC_ARCH}"
 
