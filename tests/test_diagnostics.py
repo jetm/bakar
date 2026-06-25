@@ -1235,20 +1235,47 @@ def test_check_hashserv_pass_when_running_and_port_listens(tmp_path: Path, monke
     assert fake_sock.closed is True
 
 
-def test_check_hashserv_fail_when_configured_but_not_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """use_hashequiv=True + is_running=False -> FAIL / WARN with not-running message."""
+def test_check_hashserv_pass_when_not_running_but_binary_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not running but bitbake-hashserv is present -> PASS / INFO (build auto-starts it).
+
+    _build_env starts the daemon during the build, so a not-yet-running daemon is
+    benign as long as the binary exists. The old WARN here fired on every pre-build
+    doctor run - a 100% false positive. Falsifier: revert the reframe and this PASS
+    reverts to a FAIL.
+    """
     from bakar.diagnostics import check_hashserv
 
     monkeypatch.setattr("bakar.hashserv.is_running", lambda _root: False)
+    monkeypatch.setattr("bakar.hashserv.binary_available", lambda _root: True)
+
+    cfg = _hashserv_cfg(tmp_path, use_hashequiv=True)
+    result = check_hashserv(cfg)
+
+    assert result.status == Status.PASS
+    assert result.severity == Severity.INFO
+    assert "auto-start" in result.message
+
+
+def test_check_hashserv_warns_when_binary_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Not running AND bitbake-hashserv not synced -> FAIL / WARN.
+
+    Here the build cannot start the persistent daemon and silently falls back to
+    bitbake's per-build auto server, losing the cross-build hash-equivalence DB -
+    a genuine (if non-blocking) degradation worth surfacing.
+    """
+    from bakar.diagnostics import check_hashserv
+
+    monkeypatch.setattr("bakar.hashserv.is_running", lambda _root: False)
+    monkeypatch.setattr("bakar.hashserv.binary_available", lambda _root: False)
 
     cfg = _hashserv_cfg(tmp_path, use_hashequiv=True)
     result = check_hashserv(cfg)
 
     assert result.status == Status.FAIL
     assert result.severity == Severity.WARN
-    assert "not running" in result.message
-    assert result.fix_hint is not None
-    assert "bakar hashserv start" in result.fix_hint
+    assert "not synced" in result.message
 
 
 def test_check_hashserv_fail_when_port_unreachable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -97,6 +97,17 @@ def _read_pid(bsp_root: Path) -> int | None:
         return None
 
 
+def binary_available(bsp_root: Path) -> bool:
+    """True when the workspace's bitbake-hashserv binary exists.
+
+    When present, ``ensure_running`` can spawn the persistent daemon (the build
+    does this automatically), so a not-yet-running daemon is benign. When absent,
+    the build silently falls back to bitbake's per-build ``auto`` server and loses
+    the persistent cross-build hash-equivalence DB.
+    """
+    return _find_binary(bsp_root) is not None
+
+
 def is_running(bsp_root: Path) -> bool:
     """Return True iff the recorded PID is alive AND its cmdline names the daemon.
 

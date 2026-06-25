@@ -1545,12 +1545,28 @@ def check_hashserv(cfg: BuildConfig) -> CheckResult:
     if not cfg.use_hashequiv:
         return _skip(name, Severity.INFO, "hashserv daemon not configured ([build] hashserv = false)")
 
-    not_running_msg = "hashserv configured but daemon is not running"
-    not_running_hint = "bakar hashserv start  (bakar build will auto-start it)"
-
     if not hashserv.is_running(cfg.bsp_root):
-        return _fail(name, Severity.WARN, not_running_msg, fix_hint=not_running_hint)
+        # The build auto-starts the daemon via _build_env, so a not-yet-running
+        # daemon is benign as long as the bitbake-hashserv binary is present -
+        # warning here fires on every pre-build doctor run for no reason. Only
+        # flag the case the user cannot recover by building: the binary is not
+        # synced, so the build silently falls back to bitbake's per-build "auto"
+        # server and loses the persistent cross-build hash-equivalence DB.
+        if hashserv.binary_available(cfg.bsp_root):
+            return _ok(name, Severity.INFO, "daemon not running; bakar build will auto-start it")
+        return _fail(
+            name,
+            Severity.WARN,
+            "hashserv enabled but bitbake-hashserv is not synced; builds fall back to "
+            "bitbake's per-build auto server (no persistent cross-build hash DB)",
+            fix_hint="sync the workspace so bitbake-hashserv exists, then `bakar hashserv start`",
+        )
 
+    # is_running() returned True but the PID/port files may vanish mid-check (a
+    # concurrent `bakar hashserv stop`, or a crash between the two writes): treat
+    # that race as the daemon not running.
+    not_running_msg = "hashserv daemon is not running (state files vanished mid-check)"
+    not_running_hint = "bakar hashserv start"
     state_dir = cfg.bsp_root / ".bakar"
     port_file = state_dir / "hashserv.port"
     pid_file = state_dir / "hashserv.pid"
