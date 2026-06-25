@@ -1046,6 +1046,77 @@ def test_doctor_sccache_warns_localhost_scheduler_in_container(tmp_path: Path, m
     assert "localhost" in result.message
 
 
+@pytest.mark.unit
+def test_doctor_sccache_reports_cluster_capacity_host_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The host-mode preflight surfaces live cluster capacity so the user knows
+    what distributed build power to expect."""
+    import shutil
+    import socket
+    import subprocess
+    import types
+
+    from bakar.diagnostics import Status, check_sccache_dist
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/sccache")
+
+    class _FakeSock:
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: _FakeSock())
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(
+            stdout='{"SchedulerStatus":["http://h:10600/",{"num_servers":2,"num_cpus":64,"in_progress":3}]}',
+            stderr="",
+            returncode=0,
+        ),
+    )
+
+    cfg = _doctor_cfg(sccache_dist=True, sccache_scheduler_url="http://h:10600")
+    result = check_sccache_dist(cfg)  # type: ignore[arg-type]
+
+    assert result.status is Status.PASS
+    assert "2 build server" in result.message
+    assert "64 cpu" in result.message
+    assert "3 job" in result.message
+
+
+@pytest.mark.unit
+def test_doctor_sccache_reports_capacity_container_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Container mode (the common build path) also reports cluster capacity when
+    the configured scheduler is routable, so the user knows what to expect."""
+    import subprocess
+    import types
+    from dataclasses import replace
+
+    from bakar.diagnostics import check_sccache_dist
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    conf = tmp_path / ".config" / "sccache" / "config"
+    conf.parent.mkdir(parents=True)
+    conf.write_text('[dist]\nscheduler_url = "http://10.42.0.1:10600"\n')
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(
+            stdout='{"SchedulerStatus":["http://10.42.0.1:10600/",{"num_servers":2,"num_cpus":64,"in_progress":0}]}',
+            stderr="",
+            returncode=0,
+        ),
+    )
+
+    cfg = replace(
+        _doctor_cfg(sccache_dist=True, sccache_scheduler_url="http://10.42.0.1:10600"),
+        host_mode=False,
+    )
+    result = check_sccache_dist(cfg)  # type: ignore[arg-type]
+
+    assert "2 build server" in result.message
+    assert "64 cpu" in result.message
+
+
 # ---------------------------------------------------------------------------
 # Container path (task 5.1): _ccache_args bind-mounts the sccache binary and
 # client config and adds the host-gateway when the scheduler targets localhost;

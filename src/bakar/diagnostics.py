@@ -1383,6 +1383,42 @@ def check_ccache_health(cfg: BuildConfig) -> CheckResult:
     )
 
 
+def _parse_cluster_capacity(stdout: str) -> str | None:
+    """Summarize `sccache --dist-status` JSON for the preflight message.
+
+    Returns a string like "2 build server(s), 64 cpus, 0 job(s) in progress" so
+    the user sees the live cluster size before the build, or None on any parse
+    failure or unexpected shape - the capacity line is informational and must
+    never fail the gate.
+    """
+    try:
+        info = json.loads(stdout)["SchedulerStatus"][1]
+        return (
+            f"{info['num_servers']} build server(s), {info['num_cpus']} cpus, {info['in_progress']} job(s) in progress"
+        )
+    except ValueError, KeyError, IndexError, TypeError:
+        return None
+
+
+def _query_cluster_capacity() -> str | None:
+    """Run `sccache --dist-status` and return its capacity summary, or None.
+
+    Used by the container path, which has no host-side reachability probe of its
+    own; the scheduler's capacity is global, so the host can still report it.
+    """
+    try:
+        status = subprocess.run(
+            ["sccache", "--dist-status"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except OSError, subprocess.SubprocessError:
+        return None
+    return _parse_cluster_capacity(status.stdout)
+
+
 def _container_sccache_scheduler_check(name: str) -> CheckResult:
     """Warn when the sccache config names a localhost scheduler in container mode.
 
@@ -1410,6 +1446,16 @@ def _container_sccache_scheduler_check(name: str) -> CheckResult:
                 "Set [dist] scheduler_url to the host LAN address (e.g. http://<host-ip>:10600) "
                 "in ~/.config/sccache/config so container builds can reach the scheduler."
             ),
+        )
+    # The config names a routable scheduler. We cannot verify the in-container
+    # client's path from here, but the scheduler's capacity is global, so report
+    # it: the user sees the build power on offer before committing to the build.
+    capacity = _query_cluster_capacity()
+    if capacity:
+        return _skip(
+            name,
+            Severity.INFO,
+            f"distributed compile cluster: {capacity} (in-container client reachability not host-checkable)",
         )
     return _skip(name, Severity.INFO, skip_msg)
 
@@ -1516,11 +1562,10 @@ def check_sccache_dist(cfg: BuildConfig) -> CheckResult:
             ),
         )
 
-    return _ok(
-        name,
-        Severity.BLOCK,
-        f"sccache present; scheduler reachable at {host}:{port}; client dist enabled",
-    )
+    base = f"sccache present; scheduler reachable at {host}:{port}; client dist enabled"
+    capacity = _parse_cluster_capacity(status.stdout)
+    message = f"{base}; cluster: {capacity}" if capacity else base
+    return _ok(name, Severity.BLOCK, message)
 
 
 def check_hashserv(cfg: BuildConfig) -> CheckResult:
