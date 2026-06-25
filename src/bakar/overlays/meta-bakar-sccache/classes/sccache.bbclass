@@ -34,13 +34,17 @@
 # Per-recipe opt-out, mirrors CCACHE_DISABLE.
 SCCACHE_DISABLE ??= ""
 
-# Recipe classes that compile with the host/build compiler (the unpackageable
-# bare-`as` case): native, cross, crosssdk. Excluded from distribution; they
-# compile locally. nativesdk and cross-canadian are deliberately absent - they
-# compile with the OE crosssdk compiler (absolute paths, packageable) and
-# distribute cleanly (measured on avocado: 218 SDK-toolchain compiles across two
-# nodes, 0 distributed-compile failures).
-SCCACHE_EXCLUDED_CLASSES ?= "native cross crosssdk"
+# Recipe classes still excluded from distribution: cross, crosssdk. Pending a
+# per-class verification they compile locally. native was excluded too until the
+# sccache fork's toolchain packager learned to resolve a bare `as` against the
+# compile task's PATH (the same -print-prog-name then which(PATH) fallback OE's
+# icecc.bbclass used) instead of the daemon's PATH. native now distributes,
+# verified on avocado scarthgap against the fixed cluster: zlib-native and
+# linux-libc-headers (711 tasks) built 0-error with host/native compiles
+# distributed to a second node. nativesdk and cross-canadian were never excluded
+# (OE crosssdk compiler, absolute paths, already packageable; 218 SDK-toolchain
+# compiles across two nodes, 0 distributed-compile failures).
+SCCACHE_EXCLUDED_CLASSES ?= "cross crosssdk"
 
 # Target recipes that must compile locally even though their class is eligible.
 # Empty: the gcc/glibc bootstrap recipes (glibc, glibc-initial, libgcc,
@@ -69,10 +73,13 @@ python () {
     d.setVar('CCACHE', 'sccache ')
 }
 
-# Keep the build/host compiler local even inside eligible target recipes
-# (reason 1 above). Definitions copied from gcc-native.bbclass minus ${CCACHE}.
-BUILD_CC:forcevariable = "${BUILD_PREFIX}gcc ${BUILD_CC_ARCH}"
-BUILD_CXX:forcevariable = "${BUILD_PREFIX}g++ ${BUILD_CC_ARCH}"
+# Route the build/host compiler through sccache too (${CCACHE} restored).
+# Excluded classes never set CCACHE, so this expands to a bare compiler and stays
+# local; eligible recipes (e.g. native) get "sccache <gcc>" and distribute now
+# that the fork resolves the bare `as` against the compile PATH. Definitions
+# mirror gcc-native.bbclass.
+BUILD_CC:forcevariable = "${CCACHE}${BUILD_PREFIX}gcc ${BUILD_CC_ARCH}"
+BUILD_CXX:forcevariable = "${CCACHE}${BUILD_PREFIX}g++ ${BUILD_CC_ARCH}"
 
 # cmake.bbclass's oecmake_map_compiler splits the compiler launcher out of CC,
 # but only recognizes the literal "ccache" - with CC="sccache <gcc>" it makes
