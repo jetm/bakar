@@ -20,8 +20,11 @@
 #     gcc-native.bbclass definitions minus ${CCACHE}; :forcevariable beats the
 #     class assignment regardless of inherit order.
 #  2. It cannot package a host gcc whose assembler is PATH-relative (Arch's host
-#     gcc reports a bare `as`), so native/cross/SDK toolchain recipes - whose CC
+#     gcc reports a bare `as`), so native, cross, and crosssdk recipes - whose CC
 #     IS the host compiler - must compile locally. The class gate excludes them.
+#     nativesdk and cross-canadian recipes are NOT excluded: they build with the
+#     OE crosssdk compiler (absolute-path `as`, packageable), so they distribute
+#     like any target cross-compile.
 #  3. The kernel distributes like any other target recipe. A few of its objects
 #     .incbin a binary the inputs packager cannot ship (the vdso, embedded
 #     config, and dtb wrappers) and fail to assemble remotely; sccache falls
@@ -32,8 +35,12 @@
 SCCACHE_DISABLE ??= ""
 
 # Recipe classes that compile with the host/build compiler (the unpackageable
-# `as` case). Excluded from distribution; they compile locally.
-SCCACHE_EXCLUDED_CLASSES ?= "native cross crosssdk nativesdk cross-canadian"
+# bare-`as` case): native, cross, crosssdk. Excluded from distribution; they
+# compile locally. nativesdk and cross-canadian are deliberately absent - they
+# compile with the OE crosssdk compiler (absolute paths, packageable) and
+# distribute cleanly (measured on avocado: 218 SDK-toolchain compiles across two
+# nodes, 0 distributed-compile failures).
+SCCACHE_EXCLUDED_CLASSES ?= "native cross crosssdk"
 
 # Target recipes that must compile locally even though their class is eligible.
 # Empty: the gcc/glibc bootstrap recipes (glibc, glibc-initial, libgcc,

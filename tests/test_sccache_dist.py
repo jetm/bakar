@@ -495,21 +495,25 @@ def test_sccache_class_sets_launcher_per_recipe() -> None:
 
 
 @pytest.mark.unit
-def test_sccache_class_excludes_toolchain_classes() -> None:
-    """The class excludes native/cross/SDK toolchain recipes from distribution.
+def test_sccache_class_excludes_host_compiler_classes_only() -> None:
+    """The class excludes only the host-compiler classes; nativesdk/cross-canadian distribute.
 
-    sccache packages the in-use compiler via `gcc -print-prog-name=as`; a host
-    gcc with a PATH-relative `as` (Arch) cannot be packaged, so native/cross/SDK
-    recipes - whose CC is the host compiler - must compile locally. The kernel is
-    NOT excluded: it distributes like any other target recipe, and its few
-    .incbin objects (vdso/config/dtb wrappers) that fail remotely fall back to a
-    local recompile via sccache's distributed-failure fallback.
+    sccache packages the in-use compiler via `gcc -print-prog-name=as`; native,
+    cross, and crosssdk recipes compile with the host gcc whose PATH-relative `as`
+    (Arch) cannot be packaged, so they must compile locally and stay excluded.
+    nativesdk and cross-canadian build with the OE crosssdk compiler (absolute-path
+    `as`, packageable), so they distribute - measured on avocado as 218 SDK-toolchain
+    compiles across two nodes with 0 distributed-compile failures. The kernel is also
+    not excluded (it distributes; its few .incbin objects fall back locally). This is
+    the falsifier guard: re-adding nativesdk/cross-canadian to the excluded line fails.
     """
     text = _sccache_bbclass_text()
 
-    excluded_line = text.split("SCCACHE_EXCLUDED_CLASSES")[1].split("\n")[0]
-    for cls in ("native", "cross", "crosssdk", "nativesdk", "cross-canadian"):
+    excluded_line = text.split("SCCACHE_EXCLUDED_CLASSES ?=")[1].split("\n")[0]
+    for cls in ("native", "cross", "crosssdk"):
         assert cls in excluded_line
+    assert "nativesdk" not in excluded_line
+    assert "cross-canadian" not in excluded_line
     assert "kernel" not in excluded_line
     assert "inherits_class(cls, d)" in text
 
