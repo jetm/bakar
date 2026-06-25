@@ -517,24 +517,54 @@ def check_disk_free(cfg: BuildConfig) -> CheckResult:
     return _ok("disk-free", Severity.BLOCK, f">= {cfg.disk_free_threshold_gb:.0f}G free on each checked mount")
 
 
+def _swap_free_kb_by_kind() -> tuple[int, int]:
+    """Split free swap into ``(disk_kb, zram_kb)`` from ``/proc/swaps``.
+
+    zram swap is RAM-backed, so counting it toward the host memory budget
+    double-counts physical RAM. Disk-backed swap is genuine extra capacity, so
+    the two kinds are summed separately and only disk swap feeds the floor.
+    """
+    try:
+        lines = Path("/proc/swaps").read_text().splitlines()
+    except OSError:
+        return (0, 0)
+    disk_kb = 0
+    zram_kb = 0
+    for line in lines[1:]:  # skip the header row
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        name, size_kb, used_kb = parts[0], parts[2], parts[3]
+        try:
+            free_kb = int(size_kb) - int(used_kb)
+        except ValueError:
+            continue
+        if name.startswith("/dev/zram"):
+            zram_kb += free_kb
+        else:
+            disk_kb += free_kb
+    return (disk_kb, zram_kb)
+
+
 def check_memory(cfg: BuildConfig) -> CheckResult:
-    meminfo = Path("/proc/meminfo").read_text()
-    free_kb = 0
-    swap_kb = 0
-    for line in meminfo.splitlines():
+    avail_kb = 0
+    for line in Path("/proc/meminfo").read_text().splitlines():
         if line.startswith("MemAvailable:"):
-            free_kb = int(line.split()[1])
-        elif line.startswith("SwapFree:"):
-            swap_kb = int(line.split()[1])
-    total_mb = (free_kb + swap_kb) / 1024
+            avail_kb = int(line.split()[1])
+            break
+    disk_kb, zram_kb = _swap_free_kb_by_kind()
+    total_mb = (avail_kb + disk_kb) / 1024
+    detail = f"available={avail_kb / (1024**2):.1f}G + disk-swap={disk_kb / (1024**2):.1f}G"
+    if zram_kb:
+        detail += f" (zram {zram_kb / (1024**2):.1f}G excluded: RAM-backed)"
     if total_mb < cfg.host_mem_min_gb * 1024:
         return _fail(
             "memory",
             Severity.WARN,
-            f"available+swap={total_mb:.0f}M (<{cfg.host_mem_min_gb:g}G)",
+            f"{detail} (<{cfg.host_mem_min_gb:g}G)",
             fix_hint="Close RAM-heavy apps before starting a big bitbake run.",
         )
-    return _ok("memory", Severity.WARN, f"available+swap={total_mb:.0f}M")
+    return _ok("memory", Severity.WARN, detail)
 
 
 def check_bitbake_override(cfg: BuildConfig) -> CheckResult:

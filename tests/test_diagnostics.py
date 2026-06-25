@@ -564,14 +564,31 @@ def test_check_docker_ulimits_raised_floor_flips_to_fail(monkeypatch: pytest.Mon
     assert "<16384" in result.message
 
 
-def _patch_meminfo(monkeypatch: pytest.MonkeyPatch, mem_avail_kb: int, swap_free_kb: int) -> None:
-    """Patch Path.read_text so /proc/meminfo reports the given MemAvailable/SwapFree."""
+def _patch_meminfo(
+    monkeypatch: pytest.MonkeyPatch,
+    mem_avail_kb: int,
+    *,
+    swaps: tuple[tuple[str, int, int], ...] = (),
+) -> None:
+    """Patch Path.read_text so /proc/meminfo and /proc/swaps report given values.
+
+    ``swaps`` is a tuple of ``(filename, size_kb, used_kb)`` rows; a filename
+    under ``/dev/zram`` is reported as a zram device.
+    """
     real_read_text = Path.read_text
-    content = f"MemTotal:       99999999 kB\nMemAvailable: {mem_avail_kb} kB\nSwapFree:     {swap_free_kb} kB\n"
+    meminfo = f"MemTotal:       99999999 kB\nMemAvailable: {mem_avail_kb} kB\n"
+    swap_rows = ["Filename\tType\tSize\tUsed\tPriority"]
+    for name, size_kb, used_kb in swaps:
+        kind = "partition" if name.startswith("/dev/zram") else "file"
+        swap_rows.append(f"{name}\t{kind}\t{size_kb}\t{used_kb}\t-2")
+    swaps_text = "\n".join(swap_rows) + "\n"
 
     def fake_read_text(self: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
-        if str(self) == "/proc/meminfo":
-            return content
+        target = str(self)
+        if target == "/proc/meminfo":
+            return meminfo
+        if target == "/proc/swaps":
+            return swaps_text
         return real_read_text(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", fake_read_text)
@@ -582,25 +599,49 @@ def test_check_memory_default_config_matches_prior_literal(monkeypatch: pytest.M
     from bakar.diagnostics import check_memory
 
     sixteen_g_kb = 16 * 1024 * 1024  # 16 GiB expressed in kB
-    _patch_meminfo(monkeypatch, mem_avail_kb=sixteen_g_kb, swap_free_kb=0)
+    _patch_meminfo(monkeypatch, mem_avail_kb=sixteen_g_kb)
     assert check_memory(_cfg()).status is Status.PASS
 
-    _patch_meminfo(monkeypatch, mem_avail_kb=sixteen_g_kb - 1024, swap_free_kb=0)
+    _patch_meminfo(monkeypatch, mem_avail_kb=sixteen_g_kb - 1024)
     assert check_memory(_cfg()).status is Status.FAIL
 
 
 def test_check_memory_raised_floor_flips_to_fail(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Available+swap passing the default 16G floor fails once the floor is raised."""
+    """Available memory passing the default 16G floor fails once the floor is raised."""
     from bakar.diagnostics import check_memory
 
     twenty_g_kb = 20 * 1024 * 1024
-    _patch_meminfo(monkeypatch, mem_avail_kb=twenty_g_kb, swap_free_kb=0)
+    _patch_meminfo(monkeypatch, mem_avail_kb=twenty_g_kb)
     assert check_memory(_cfg()).status is Status.PASS
 
     raised = dataclasses.replace(_cfg(), host_mem_min_gb=32.0)
     result = check_memory(raised)
     assert result.status is Status.FAIL
     assert "<32G" in result.message
+
+
+def test_check_memory_excludes_zram_swap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """zram swap is RAM-backed, so it must not count toward the memory floor."""
+    from bakar.diagnostics import check_memory
+
+    ten_g_kb = 10 * 1024 * 1024
+    ninety_g_kb = 90 * 1024 * 1024
+    _patch_meminfo(monkeypatch, mem_avail_kb=ten_g_kb, swaps=(("/dev/zram0", ninety_g_kb, 0),))
+    result = check_memory(_cfg())
+    assert result.status is Status.FAIL  # 10G available alone is below the 16G floor
+    assert "zram" in result.message
+    assert "excluded" in result.message
+
+
+def test_check_memory_counts_disk_swap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disk-backed swap is genuine extra capacity and lifts the total over the floor."""
+    from bakar.diagnostics import check_memory
+
+    ten_g_kb = 10 * 1024 * 1024
+    _patch_meminfo(monkeypatch, mem_avail_kb=ten_g_kb, swaps=(("/swapfile", ten_g_kb, 0),))
+    result = check_memory(_cfg())
+    assert result.status is Status.PASS  # 10G available + 10G disk swap = 20G >= 16G
+    assert "disk-swap=10.0G" in result.message
 
 
 def test_check_git_global_config_both_set(monkeypatch: pytest.MonkeyPatch) -> None:
