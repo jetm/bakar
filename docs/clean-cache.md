@@ -75,32 +75,33 @@ When none resolves (not inside a workspace and no shared cache configured), the
 ccache step is skipped with a note. See
 [configuration.md](configuration.md) for `ccache_shared` / `ccache_dir`.
 
-## atime vs mtime (noatime filesystems)
+## atime vs mtime (sstate)
 
-When the filesystem tracks access times (`relatime` or `strictatime`),
-`--older-than` measures **last read** for sstate: a file created 60 days ago but
-reused in a build yesterday is kept.
+`--older-than` compares each sstate file's age against the threshold. The time
+basis depends on the mount option of the filesystem holding SSTATE_DIR, read
+from `/proc/mounts`:
 
-On `noatime` filesystems, access times are never updated so last-read detection
-is impossible. The command detects this by reading `/proc/mounts` and falls back
-to **mtime (creation date)** with a warning:
+- **strictatime** mounts record a true last-read time on every access, so the
+  threshold measures **last read**: a file created 60 days ago but reused in a
+  build yesterday is kept.
+- **relatime** (the default on most Linux systems) and **noatime** mounts do not
+  give a dependable last-read time, so `clean-cache` falls back to **mtime
+  (creation date)** with a warning. `relatime` updates atime at most once per
+  24h and any full-tree read - a backup, `du`, or a file indexer - resets every
+  file's atime at once, which silently defeats last-read eviction; `noatime`
+  never updates atime at all.
 
 ```text
-Warning: noatime detected on this filesystem - access times are not tracked.
-Falling back to mtime (creation date).
+Warning: this filesystem is mounted relatime or noatime, so access times are not
+a reliable last-read signal (a backup or indexer pass resets them). Falling back
+to mtime (creation date).
 Files created more than N days ago will be removed even if reused recently.
 ```
 
-To get accurate last-read semantics, remount with `relatime` (the default on
-most modern Linux systems):
-
-```bash
-# /etc/fstab - replace noatime with relatime on the partition holding SSTATE_DIR
-sudo mount -o remount,relatime /
-```
-
-`relatime` updates atime at most once per 24 hours per file, so the overhead is
-negligible for sstate. (ccache eviction is mtime-based and unaffected.)
+sstate archives are written once and never rewritten, so mtime is the creation
+date and a stable age signal regardless of scans or backups. To get true
+last-read semantics instead, mount the partition holding SSTATE_DIR with
+`strictatime`. (ccache eviction is mtime-based and unaffected.)
 
 ## Examples
 

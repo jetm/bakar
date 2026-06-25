@@ -265,14 +265,24 @@ def test_noatime_mount_emits_warning_and_uses_mtime(tmp_path: Path, monkeypatch:
         assert p.exists(), f"{p} should be kept (mtime newer than threshold)"
 
 
-def test_atime_tracked_reads_proc_mounts(tmp_path: Path) -> None:
-    """``_atime_tracked`` returns False when noatime appears in /proc/mounts."""
+@pytest.mark.parametrize(
+    ("atime_opt", "expected"),
+    [
+        ("noatime", False),
+        ("relatime", False),
+        ("strictatime", True),
+    ],
+)
+def test_atime_tracked_by_mount_option(tmp_path: Path, atime_opt: str, expected: bool) -> None:
+    """``_atime_tracked`` trusts atime only on strictatime mounts; relatime and
+    noatime both fall back to mtime (relatime atime is clobbered by any full-tree
+    read, so it is not a dependable last-read signal)."""
     from bakar.commands.clean_cache import _atime_tracked
 
     target = tmp_path / "build" / "sstate"
     target.mkdir(parents=True)
 
-    fake_mounts = f"proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\ntmpfs {tmp_path} tmpfs rw,noatime 0 0\n"
+    fake_mounts = f"proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\ntmpfs {tmp_path} tmpfs rw,{atime_opt} 0 0\n"
 
     real_read_text = type(target).read_text
 
@@ -282,7 +292,7 @@ def test_atime_tracked_reads_proc_mounts(tmp_path: Path) -> None:
         return real_read_text(self, *args, **kwargs)
 
     with patch("bakar.commands.clean_cache.Path.read_text", fake_read_text):
-        assert _atime_tracked(target) is False
+        assert _atime_tracked(target) is expected
 
 
 def test_atime_tracked_returns_false_on_oserror(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

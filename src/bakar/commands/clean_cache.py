@@ -50,11 +50,15 @@ def _resolve_ccache_dir(override: Path | None) -> Path | None:
 
 
 def _atime_tracked(path: Path) -> bool:
-    """Return True if the filesystem containing *path* tracks access times.
+    """Return True only if the filesystem containing *path* records reliable atimes.
 
     Reads /proc/mounts and finds the longest (most specific) mount point
-    that is a directory ancestor of *path*. Returns False when noatime is
-    present in that mount's options, True otherwise.
+    that is a directory ancestor of *path*. Returns False when the mount uses
+    ``noatime`` (atime never updated) or ``relatime`` (atime updated at most
+    once per 24h and trivially clobbered by any full-tree read - a backup, du,
+    or file indexer resets every file's atime at once). Returns True otherwise
+    (e.g. ``strictatime``). Only strict atime is a dependable last-read signal
+    for age-based eviction.
     """
     try:
         mounts_text = Path("/proc/mounts").read_text(encoding="utf-8")
@@ -73,7 +77,8 @@ def _atime_tracked(path: Path) -> bool:
             if len(mp) > best_len:
                 best_len = len(mp)
                 best_opts = parts[3]
-    return "noatime" not in best_opts.split(",")
+    opts = best_opts.split(",")
+    return "noatime" not in opts and "relatime" not in opts
 
 
 def _fmt_size(n_bytes: int) -> str:
@@ -234,8 +239,9 @@ def clean_cache(
 ) -> None:
     """Prune sstate and ccache entries older than N days.
 
-    sstate is pruned by removing files older than the threshold (atime where the
-    filesystem tracks it, mtime on noatime mounts). ccache is pruned with
+    sstate is pruned by removing files older than the threshold (atime only on
+    strictatime mounts, mtime on relatime/noatime mounts where atime is not a
+    reliable last-read signal). ccache is pruned with
     ``ccache --evict-older-than Nd`` - ccache keeps its own index, so age-based
     eviction must go through ccache itself. Restrict to one cache with
     --no-sstate / --no-ccache.
@@ -270,8 +276,9 @@ def clean_cache(
                 time_label = "atime (last read)"
             else:
                 console.print(
-                    "[yellow]Warning:[/] noatime detected on this filesystem - "
-                    "access times are not tracked. Falling back to [bold]mtime (creation date)[/].\n"
+                    "[yellow]Warning:[/] this filesystem is mounted relatime or noatime, "
+                    "so access times are not a reliable last-read signal (a backup or indexer "
+                    "pass resets them). Falling back to [bold]mtime (creation date)[/].\n"
                     "Files created more than N days ago will be removed even if reused recently."
                 )
                 time_label = "mtime (creation date)"

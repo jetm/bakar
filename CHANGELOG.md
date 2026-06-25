@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `bakar clean-cache` now falls back to mtime (creation date) for sstate eviction on `relatime` mounts, not just `noatime`. `relatime` updates atime at most once per 24h and any full-tree read (a backup, `du`, or a file indexer) resets every file's atime at once, so atime is not a dependable last-read signal there. Only `strictatime` mounts still use atime. This fixes "Nothing to remove" on relatime filesystems whose atimes were clobbered by a cache-wide scan. See [docs/clean-cache.md](docs/clean-cache.md).
+
 ### Removed
 
 - Removed the `container-os` doctor check that BLOCKed builds on container Python 3.13/3.14. The parser failures it guarded against (the 3.13 fork-in-multi-thread deadlock and the 3.14 forkserver `_pickle.PicklingError`) are handled by the `PYTHONMALLOC=malloc` mitigation in the bakar tuning overlays and by bitbake 5.3+ forcing the `fork` multiprocessing context, so the version gate was a false positive against working images such as `jetm/kas-build-env:5.3-f44`.
