@@ -173,11 +173,16 @@ def test_cluster_info_prints_node_table_when_servers_present(
     monkeypatch.setattr(
         cluster_info_module,
         "probe_cluster",
-        lambda _url: _reachable(servers=["server-a", "server-b"]),
+        lambda _url: _reachable(
+            servers=[
+                {"id": "10.42.0.1:10501", "num_cpus": 32, "in_progress": 2},
+                {"id": "10.42.0.2:10501", "num_cpus": 32, "in_progress": 0},
+            ]
+        ),
     )
 
     result = runner.invoke(app, ["cluster-info"])
 
     assert result.exit_code == 0
-    assert "server-a" in result.output
-    assert "server-b" in result.output
+    assert "10.42.0.1:10501 - 32 cpus, 2 job(s)" in result.output
+    assert "10.42.0.2:10501 - 32 cpus, 0 job(s)" in result.output

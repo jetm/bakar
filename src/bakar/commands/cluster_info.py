@@ -76,4 +76,10 @@ def cluster_info(
     if cap.servers:
         console.print("  nodes:", highlight=False)
         for node in cap.servers:
-            console.print(f"    {node}", highlight=False)
+            if isinstance(node, dict):
+                node_id = node.get("id", "?")
+                cpus = node.get("num_cpus", "?")
+                jobs = node.get("in_progress", 0)
+                console.print(f"    {node_id} - {cpus} cpus, {jobs} job(s)", highlight=False)
+            else:
+                console.print(f"    {node}", highlight=False)
