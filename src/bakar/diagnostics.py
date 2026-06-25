@@ -995,6 +995,30 @@ def check_psi_support(cfg: BuildConfig) -> CheckResult:
     return _ok(name, Severity.INFO, f"PSI throttling active: {active}")
 
 
+def _git_identity_probe_dir(workspace: Path) -> str | None:
+    """Pick a directory whose ``git config`` query resolves the identity git
+    will actually use during a build.
+
+    ``includeIf "gitdir:..."`` conditionals only fire when git is operating
+    inside a repository. The workspace root is frequently not a git repo (the
+    kas/repo-tool layout keeps the layers as sub-repos), so querying from there
+    never matches the conditional and a valid per-tree identity reads as
+    missing. Probe the first sub-repo instead so the conditional resolves the
+    same way the sync steps will.
+    """
+    if not workspace.is_dir():
+        return None
+    if (workspace / ".git").exists():
+        return str(workspace)
+    try:
+        for child in sorted(workspace.iterdir()):
+            if child.is_dir() and (child / ".git").exists():
+                return str(child)
+    except OSError:
+        pass
+    return str(workspace)
+
+
 def check_git_global_config(cfg: BuildConfig) -> CheckResult:
     """Verify that ``user.email`` and ``user.name`` are configured for the workspace.
 
@@ -1002,14 +1026,16 @@ def check_git_global_config(cfg: BuildConfig) -> CheckResult:
     mid-fetch with opaque errors (``please tell me who you are``). This BLOCK
     check surfaces the misconfiguration before any sync runs.
 
-    Runs ``git config <key>`` (without ``--global``) from ``cfg.workspace`` so
-    that ``includeIf "gitdir:..."`` conditionals in ``~/.gitconfig`` are
-    honoured - a developer who keeps separate identities for different project
-    trees (work vs. personal) would otherwise see a false BLOCK even though
-    git itself would resolve the right identity during a build.
+    Runs ``git config <key>`` (without ``--global``) from a workspace sub-repo
+    (see ``_git_identity_probe_dir``) so that ``includeIf "gitdir:..."``
+    conditionals in ``~/.gitconfig`` are honoured - a developer who keeps
+    separate identities for different project trees (work vs. personal) would
+    otherwise see a false BLOCK even though git resolves the right identity
+    during a build. The workspace root itself is often not a git repo, where
+    the conditional cannot match.
     """
     name = "git-global-config"
-    cwd = str(cfg.workspace) if cfg.workspace.is_dir() else None
+    cwd = _git_identity_probe_dir(cfg.workspace)
 
     def _read(key: str) -> str | None:
         try:
