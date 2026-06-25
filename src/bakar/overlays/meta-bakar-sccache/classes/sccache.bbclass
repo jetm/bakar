@@ -34,17 +34,19 @@
 # Per-recipe opt-out, mirrors CCACHE_DISABLE.
 SCCACHE_DISABLE ??= ""
 
-# Recipe classes still excluded from distribution: cross, crosssdk. Pending a
-# per-class verification they compile locally. native was excluded too until the
-# sccache fork's toolchain packager learned to resolve a bare `as` against the
-# compile task's PATH (the same -print-prog-name then which(PATH) fallback OE's
-# icecc.bbclass used) instead of the daemon's PATH. native now distributes,
-# verified on avocado scarthgap against the fixed cluster: zlib-native and
-# linux-libc-headers (711 tasks) built 0-error with host/native compiles
-# distributed to a second node. nativesdk and cross-canadian were never excluded
-# (OE crosssdk compiler, absolute paths, already packageable; 218 SDK-toolchain
-# compiles across two nodes, 0 distributed-compile failures).
-SCCACHE_EXCLUDED_CLASSES ?= "cross crosssdk"
+# No classes excluded: native, cross, and crosssdk all distribute now. They
+# compile with the host/build compiler, whose `-print-prog-name=as` returns a
+# bare `as`; the sccache fork resolves that against the compile task's PATH (the
+# same -print-prog-name then which(PATH) fallback OE's icecc.bbclass used) rather
+# than the daemon's PATH, so the right assembler is packaged. Verified on avocado
+# scarthgap against the fixed cluster: zlib-native and linux-libc-headers (711
+# tasks) for native, and binutils-cross-aarch64 (306 compiles distributed to the
+# second node) for cross - all 0-error. crosssdk shares that identical
+# host-compiler/bare-`as` path (only the target triple differs, which does not
+# affect host-side `as` packaging) and is exercised only during SDK builds.
+# nativesdk and cross-canadian were never excluded (OE crosssdk compiler,
+# absolute paths, already packageable).
+SCCACHE_EXCLUDED_CLASSES ?= ""
 
 # Target recipes that must compile locally even though their class is eligible.
 # Empty: the gcc/glibc bootstrap recipes (glibc, glibc-initial, libgcc,
