@@ -24,6 +24,12 @@ local_conf_header:
     # Run a local hash equivalence server and connect it to the upstream
     # Yocto Project server for cross-machine reuse.
     BB_HASHSERVE = "${@os.environ.get('BB_HASHSERVE', 'auto')}"
+    # Co-locate the hash-equivalence DB with the (shared) sstate cache. Builds
+    # that share SSTATE_DIR otherwise each keep a private DB inside their own
+    # build dir, so an equivalence mapping computed by one build is invisible to
+    # the next and cross-build/workspace sstate reuse never happens (OE warns
+    # about exactly this when SSTATE_DIR is shared).
+    BB_HASHSERVE_DB_DIR = "${SSTATE_DIR}"
     # Default the upstream to empty. For a private BSP with private sstate and
     # no public mirror, an armed upstream only causes a startup hang while
     # bitbake waits on the unreachable server and produces more sstate misses.

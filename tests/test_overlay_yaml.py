@@ -274,3 +274,15 @@ def test_hashequiv_overlay_bb_hashserve_reads_from_env(hashequiv_overlay: dict) 
         assert line.strip() != 'BB_HASHSERVE = "auto"', (
             "BB_HASHSERVE must not be hardcoded to 'auto'; it must read from the BB_HASHSERVE env var"
         )
+
+
+def test_hashequiv_overlay_colocates_db_with_sstate(hashequiv_overlay: dict) -> None:
+    """BB_HASHSERVE_DB_DIR points at SSTATE_DIR so builds sharing the sstate cache
+    share equivalence mappings instead of each keeping a private build-local DB.
+
+    Without it OE warns that the hash-equivalence DB lives inside the build dir
+    while SSTATE_DIR is shared, defeating the cross-build/workspace reuse this
+    overlay advertises. Falsifier: drop the line and the assertion fails.
+    """
+    body = hashequiv_overlay["local_conf_header"]["bakar-tuning-hashequiv"]
+    assert 'BB_HASHSERVE_DB_DIR = "${SSTATE_DIR}"' in body
