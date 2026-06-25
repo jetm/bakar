@@ -113,6 +113,21 @@ def _check_type(field: str, value: object, path: Path) -> None:
             raise ValueError(f"{path}: '{field}' must be positive, got {value}")
 
 
+def _require_table(value: object, name: str, path: Path) -> dict:
+    """Return ``value`` as a dict, raising when it is present but not a table.
+
+    An absent section arrives here as the ``{}`` default and passes through. A
+    scalar like ``build = "x"`` is rejected loudly instead of being silently
+    skipped, which would otherwise drop the whole section's overrides.
+    """
+    if not isinstance(value, dict):
+        # ValueError, not TypeError: the loader's whole contract is ValueError for
+        # malformed config (parse error, _check_type mismatch), and callers catch
+        # ValueError. A non-table section is the same error class.
+        raise ValueError(f"{path}: '{name}' must be a table, got {type(value).__name__}")  # noqa: TRY004
+    return value
+
+
 def load_workspace_config(workspace: Path) -> WorkspaceConfig:
     """Load ``<workspace>/.bakar.toml`` into a :class:`WorkspaceConfig`.
 
@@ -125,7 +140,9 @@ def load_workspace_config(workspace: Path) -> WorkspaceConfig:
     a recognized ``[defaults.<family>]`` section or under ``[build]`` or
     ``[host]`` emits a
     :class:`UserWarning` naming the unknown key and the recognized keys, then is
-    ignored; unknown sections are ignored without warning.
+    ignored; unrecognized top-level sections are ignored without warning. A
+    recognized section (``[defaults]``, ``[defaults.<family>]``, ``[build]``,
+    ``[host]``) that is present but not a table raises ``ValueError``.
     """
     path = workspace / ".bakar.toml"
 
@@ -140,48 +157,43 @@ def load_workspace_config(workspace: Path) -> WorkspaceConfig:
 
     values: dict[str, object] = {}
 
-    defaults = data.get("defaults", {})
-    if isinstance(defaults, dict):
-        for section, mapping in (("nxp", _NXP_KEYS), ("ti", _TI_KEYS), ("generic", _GENERIC_KEYS)):
-            section_data = defaults.get(section, {})
-            if not isinstance(section_data, dict):
-                continue
-            for key in section_data:
-                if key not in mapping:
-                    recognized = ", ".join(sorted(mapping))
-                    warnings.warn(
-                        f"{path}: unknown key '{key}' in [defaults.{section}]; recognized keys: {recognized}",
-                        stacklevel=2,
-                    )
-                    continue
-                _check_type(mapping[key], section_data[key], path)
-                values[mapping[key]] = section_data[key]
-
-    build = data.get("build", {})
-    if isinstance(build, dict):
-        for key in build:
-            if key not in _BUILD_KEYS:
-                recognized = ", ".join(sorted(_BUILD_KEYS))
+    defaults = _require_table(data.get("defaults", {}), "defaults", path)
+    for section, mapping in (("nxp", _NXP_KEYS), ("ti", _TI_KEYS), ("generic", _GENERIC_KEYS)):
+        section_data = _require_table(defaults.get(section, {}), f"defaults.{section}", path)
+        for key in section_data:
+            if key not in mapping:
+                recognized = ", ".join(sorted(mapping))
                 warnings.warn(
-                    f"{path}: unknown key '{key}' in [build]; recognized keys: {recognized}",
+                    f"{path}: unknown key '{key}' in [defaults.{section}]; recognized keys: {recognized}",
                     stacklevel=2,
                 )
                 continue
-            _check_type(_BUILD_KEYS[key], build[key], path)
-            values[_BUILD_KEYS[key]] = build[key]
+            _check_type(mapping[key], section_data[key], path)
+            values[mapping[key]] = section_data[key]
 
-    host = data.get("host", {})
-    if isinstance(host, dict):
-        for key in host:
-            if key not in _HOST_KEYS:
-                recognized = ", ".join(sorted(_HOST_KEYS))
-                warnings.warn(
-                    f"{path}: unknown key '{key}' in [host]; recognized keys: {recognized}",
-                    stacklevel=2,
-                )
-                continue
-            _check_type(_HOST_KEYS[key], host[key], path)
-            values[_HOST_KEYS[key]] = host[key]
+    build = _require_table(data.get("build", {}), "build", path)
+    for key in build:
+        if key not in _BUILD_KEYS:
+            recognized = ", ".join(sorted(_BUILD_KEYS))
+            warnings.warn(
+                f"{path}: unknown key '{key}' in [build]; recognized keys: {recognized}",
+                stacklevel=2,
+            )
+            continue
+        _check_type(_BUILD_KEYS[key], build[key], path)
+        values[_BUILD_KEYS[key]] = build[key]
+
+    host = _require_table(data.get("host", {}), "host", path)
+    for key in host:
+        if key not in _HOST_KEYS:
+            recognized = ", ".join(sorted(_HOST_KEYS))
+            warnings.warn(
+                f"{path}: unknown key '{key}' in [host]; recognized keys: {recognized}",
+                stacklevel=2,
+            )
+            continue
+        _check_type(_HOST_KEYS[key], host[key], path)
+        values[_HOST_KEYS[key]] = host[key]
 
     return WorkspaceConfig(**values)
 

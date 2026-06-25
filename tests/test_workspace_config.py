@@ -429,3 +429,43 @@ def test_build_non_string_raises_valueerror_naming_field(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="kas_container_image"):
         load_workspace_config(tmp_path)
+
+
+@pytest.mark.unit
+def test_build_non_table_raises_valueerror_naming_section(tmp_path: Path) -> None:
+    """A scalar `build` value must be rejected, not silently ignored."""
+    (tmp_path / ".bakar.toml").write_text('build = "not-a-table"\n')
+
+    with pytest.raises(ValueError, match="'build' must be a table"):
+        load_workspace_config(tmp_path)
+
+
+@pytest.mark.unit
+def test_host_non_table_raises_valueerror_naming_section(tmp_path: Path) -> None:
+    """A scalar `host` value must be rejected, not silently ignored."""
+    (tmp_path / ".bakar.toml").write_text('host = "not-a-table"\n')
+
+    with pytest.raises(ValueError, match="'host' must be a table"):
+        load_workspace_config(tmp_path)
+
+
+@pytest.mark.unit
+def test_defaults_non_table_raises_valueerror_naming_section(tmp_path: Path) -> None:
+    """A scalar `defaults` value must be rejected, not silently ignored."""
+    (tmp_path / ".bakar.toml").write_text('defaults = "not-a-table"\n')
+
+    with pytest.raises(ValueError, match="'defaults' must be a table"):
+        load_workspace_config(tmp_path)
+
+
+@pytest.mark.unit
+def test_defaults_family_non_table_raises_valueerror_naming_section(tmp_path: Path) -> None:
+    """A scalar `[defaults].<family>` value must be rejected, not silently ignored."""
+    toml_content = textwrap.dedent("""\
+        [defaults]
+        nxp = "not-a-table"
+    """)
+    (tmp_path / ".bakar.toml").write_text(toml_content)
+
+    with pytest.raises(ValueError, match=r"'defaults\.nxp' must be a table"):
+        load_workspace_config(tmp_path)
