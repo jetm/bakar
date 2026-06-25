@@ -165,8 +165,24 @@ python sccache_dist_summary () {
     if not sccache:
         return
 
+    # Query the same sccache server the compile tasks use. In container mode the
+    # tasks get SCCACHE_CONF/SCCACHE_DIR from the per-task python block above
+    # (mapped from the container-injected BAKAR_* vars); this handler runs in the
+    # cooker, whose environment carries the BAKAR_* vars but not the SCCACHE_*
+    # ones. Without the same mapping the cooker's sccache targets the default
+    # cache dir - absent and unwritable in the container - so --zero-stats never
+    # starts a server and --show-stats reports zero, silently dropping the
+    # summary. Host mode leaves BAKAR_* unset, so the environment is unchanged
+    # there and the pre-started host server is queried as before.
+    env = dict(os.environ)
+    for envname, sccname in (('BAKAR_SCCACHE_CONF', 'SCCACHE_CONF'),
+                             ('BAKAR_SCCACHE_DIR', 'SCCACHE_DIR')):
+        value = os.environ.get(envname)
+        if value:
+            env[sccname] = value
+
     if isinstance(e, bb.event.BuildStarted):
-        subprocess.run([sccache, '--zero-stats'],
+        subprocess.run([sccache, '--zero-stats'], env=env,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return
     if not isinstance(e, bb.event.BuildCompleted):
@@ -174,7 +190,7 @@ python sccache_dist_summary () {
 
     try:
         proc = subprocess.run([sccache, '--show-stats', '--stats-format=json'],
-                              capture_output=True, text=True, timeout=15)
+                              env=env, capture_output=True, text=True, timeout=15)
         stats = json.loads(proc.stdout)['stats']
     except (OSError, subprocess.SubprocessError, ValueError, KeyError):
         return

@@ -666,6 +666,27 @@ def test_sccache_class_zeroes_stats_at_build_started() -> None:
 
 
 @pytest.mark.unit
+def test_sccache_summary_targets_task_sccache_env_in_container() -> None:
+    """The build-end summary must query the same sccache server the compile tasks
+    use. In container mode tasks read SCCACHE_CONF/SCCACHE_DIR mapped from the
+    container-injected BAKAR_* vars (per-task python block); this handler runs in
+    the cooker, whose environment has only the BAKAR_* vars. Without the same
+    mapping its sccache targets the default cache dir - absent and unwritable in
+    the container - so --zero-stats never starts a server and --show-stats reports
+    zero, silently dropping the summary. Falsifier: drop the env mapping and the
+    container-mode summary regresses to never printing.
+    """
+    text = _sccache_bbclass_text()
+    summary = text.split("python sccache_dist_summary")[1]
+
+    # The handler maps both BAKAR_* vars onto the names sccache reads.
+    for var in ("BAKAR_SCCACHE_CONF", "BAKAR_SCCACHE_DIR", "SCCACHE_CONF", "SCCACHE_DIR"):
+        assert var in summary, f"{var} missing from the summary handler env mapping"
+    # And passes the constructed env to both the zero-stats and show-stats calls.
+    assert summary.count("env=env") >= 2
+
+
+@pytest.mark.unit
 def test_materialize_sccache_layer_copies_class_into_bsp_root(tmp_path: object) -> None:
     """materialize_sccache_layer drops the layer under <bsp_root>/.bakar/.
 
