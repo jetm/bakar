@@ -133,6 +133,34 @@ def _inject_literal_parallelism(cfg: BuildConfig, text: str) -> str:
     return _PARALLELISM_LINE_RE.sub(_sub, text)
 
 
+def _inject_literal_sccache(cfg: BuildConfig, text: str) -> str:
+    """Append literal, exported ``SCCACHE_CONF``/``SCCACHE_DIR`` assignments to
+    the sccache overlay's ``local_conf_header``.
+
+    Container mode passes these to the in-container daemon as ``BAKAR_*`` env
+    vars and relies on kas's ``null``-env block to whitelist them through
+    ``BB_ENV_PASSTHROUGH_ADDITIONS`` - the same mechanism ``kas build`` silently
+    drops (see ``_inject_literal_parallelism``). When dropped, the daemon starts
+    config-less: local-only compilation, ``$HOME/.cache`` instead of ``/work``,
+    no scheduler. Baking the values straight into ``local.conf`` (exported, so
+    the daemon subprocess inherits them) makes them immune to env scrubbing.
+
+    The config is bind-mounted at its own host path (see ``_ccache_args``), so
+    that absolute path is valid inside the container too. Host mode pre-starts a
+    configured daemon and leaves ``BAKAR_*`` unset, so nothing is injected."""
+    if cfg.host_mode or not cfg.use_sccache_dist:
+        return text
+    if "SCCACHE_CONF" in text:
+        return text
+    sccache_conf = Path.home() / ".config" / "sccache" / "config"
+    if not sccache_conf.is_file():
+        return text
+    m = re.search(r"^(?P<indent>[ \t]+)INHERIT\b", text, re.MULTILINE)
+    indent = m.group("indent") if m else "    "
+    addition = f'{indent}export SCCACHE_CONF = "{sccache_conf}"\n{indent}export SCCACHE_DIR = "/work/.sccache-cache"\n'
+    return text.rstrip("\n") + "\n" + addition
+
+
 def materialize_overlay(cfg: BuildConfig, overlay_source: Path) -> Path:
     """Copy ``overlay_source`` into ``<bsp_root>/.bakar/overlays/``.
 
@@ -163,6 +191,8 @@ def materialize_overlay(cfg: BuildConfig, overlay_source: Path) -> Path:
     if overlay_source.name.startswith("bakar-tuning-"):
         original = dest.read_text(encoding="utf-8")
         injected = _inject_literal_parallelism(cfg, original)
+        if overlay_source.name == "bakar-tuning-sccache.yml":
+            injected = _inject_literal_sccache(cfg, injected)
         if injected != original:
             dest.write_text(injected, encoding="utf-8")
     return dest.relative_to(cfg.bsp_root)
