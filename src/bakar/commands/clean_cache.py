@@ -15,6 +15,7 @@ import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import _find_workspace_from_cwd
 from bakar.config import shared_ccache_dir
+from bakar.fsremove import parallel_apply
 
 
 def _resolve_sstate_dir(override: Path | None) -> Path | None:
@@ -179,53 +180,6 @@ def _delete_stale(stale: list[Path], effective_dir: Path) -> tuple[int, int, int
     return removed, freed, empty_dirs
 
 
-# Thread-pool size for bulk sstate rename/unlink. These are I/O-bound syscalls
-# that release the GIL, so a small pool parallelizes real disk work. Capped low
-# because XFS serializes metadata per allocation group - past a handful of
-# threads, per-AG lock contention on one device cancels the gain.
-_GC_WORKERS = min(8, (os.cpu_count() or 4) * 2)
-
-
-def _parallel_apply(items: list, fn, description: str) -> list:
-    """Map *fn* over *items* across a thread pool, driving a Rich progress bar.
-
-    Splits *items* into ``_GC_WORKERS`` round-robin chunks so only a handful of
-    futures exist regardless of item count, then runs each chunk on a worker
-    thread. ``Progress.advance`` is thread-safe, so progress ticks as each item
-    completes. Results are returned in chunk order (callers do not rely on it).
-    """
-    if not items:
-        return []
-    from concurrent.futures import ThreadPoolExecutor
-
-    from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeRemainingColumn
-
-    workers = min(_GC_WORKERS, len(items))
-    chunks = [items[w::workers] for w in range(workers)]
-    results: list = []
-    with Progress(
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TimeRemainingColumn(),
-        console=console,
-        transient=True,
-    ) as progress:
-        task = progress.add_task(description, total=len(items))
-
-        def _run_chunk(chunk: list) -> list:
-            out = []
-            for item in chunk:
-                out.append(fn(item))
-                progress.advance(task)
-            return out
-
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            for chunk_result in ex.map(_run_chunk, chunks):
-                results.extend(chunk_result)
-    return results
-
-
 def _stage_and_delete(stale_files: list[Path], effective_dir: Path) -> tuple[int, int]:
     """Move *stale_files* into a staging dir inside *effective_dir*, then delete them in parallel.
 
@@ -233,7 +187,7 @@ def _stage_and_delete(stale_files: list[Path], effective_dir: Path) -> tuple[int
     ``os.rename`` stays on one device (atomic).  Each file is renamed under a monotonic integer
     name to avoid basename collisions, which makes the cache namespace consistent before any
     bytes are freed.  Both the rename pass and the unlink pass run across a thread pool
-    (:data:`_GC_WORKERS`) with a progress bar; ``os.rename``/``os.unlink`` release the GIL, so
+    (:data:`bakar.fsremove.GC_WORKERS`) with a progress bar; ``os.rename``/``os.unlink`` release the GIL, so
     the pool parallelizes real disk work.  Files that fail to move/delete (``OSError``) are
     skipped, not fatal.
 
@@ -254,7 +208,7 @@ def _stage_and_delete(stale_files: list[Path], effective_dir: Path) -> tuple[int
         else:
             return dest, sz
 
-    moved = [r for r in _parallel_apply(list(enumerate(stale_files)), _stage, "Staging stale files") if r is not None]
+    moved = [r for r in parallel_apply(list(enumerate(stale_files)), _stage, "Staging stale files") if r is not None]
     removed = len(moved)
     freed = sum(sz for _, sz in moved)
 
@@ -264,7 +218,7 @@ def _stage_and_delete(stale_files: list[Path], effective_dir: Path) -> tuple[int
         except OSError:
             pass
 
-    _parallel_apply([dest for dest, _ in moved], _unlink, "Freeing disk space")
+    parallel_apply([dest for dest, _ in moved], _unlink, "Freeing disk space")
 
     try:
         staging.rmdir()

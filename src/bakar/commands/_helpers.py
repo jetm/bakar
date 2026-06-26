@@ -281,14 +281,17 @@ def _combine_overlays_with_tuning(user_extras: list[Path], cfg: BuildConfig) -> 
 def _clean_build_dir(cfg: BuildConfig) -> None:
     """Remove the BSP-specific ``build/`` dir. Shared by ``bakar clean``
     and ``bakar build --clean``. No-op if the dir is already absent.
-    """
-    import shutil
 
+    Uses :func:`bakar.fsremove.parallel_rmtree` - the same pooled-removal path
+    ``clean-cache`` uses for sstate GC - so wiping a multi-hundred-GB ``tmp/``
+    parallelizes per-recipe subtree deletion instead of serializing one rmtree.
+    """
     from bakar.commands import console
+    from bakar.fsremove import parallel_rmtree
 
     build_dir = cfg.bsp_root / "build"
     if build_dir.exists():
-        shutil.rmtree(build_dir)
+        parallel_rmtree(build_dir, description=f"Removing {build_dir.name}/")
         console.print(f"[green]removed[/] {build_dir}")
 
 
