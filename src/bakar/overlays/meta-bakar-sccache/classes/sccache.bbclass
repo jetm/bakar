@@ -230,19 +230,29 @@ addhandler sccache_dist_summary
 sccache_dist_summary[eventmask] = "bb.event.BuildStarted bb.event.BuildCompleted"
 
 # Build-start guard: when distributed compilation was requested
-# (SCCACHE_DIST_SCHEDULER_URL set), fail fast if the in-container client cannot
-# reach the scheduler. A broken dist wiring - e.g. SCCACHE_CONF not materialized
-# into local.conf, so the daemon starts config-less - otherwise degrades
-# silently to local-only: the whole image compiles in-container while the
-# cluster sits idle, wasting hours before anyone notices. Reads SCCACHE_CONF
-# from the datastore (NOT os.environ, which bitbake's clean_environment scrubs -
-# the exact failure this guards against) and maps it into the query env like the
-# summary handler does, then asserts the scheduler is reachable with >=1 server.
+# (SCCACHE_DIST_SCHEDULER_URL set), fail fast on any wiring that would silently
+# degrade the whole image to LOCAL-ONLY while the cluster sits idle, wasting
+# hours before anyone notices. Three gates, cheapest first:
+#
+#  1. Config: the client reads its scheduler URL and bearer token only from
+#     SCCACHE_CONF (no env override for either). Assert the config the daemon
+#     will use carries a [dist] scheduler_url and a non-empty [dist.auth] token.
+#  2. Reachability: `sccache --dist-status` must report >= 1 build server.
+#  3. Auth (end-to-end): --dist-status hits the scheduler's UNAUTHENTICATED
+#     /api/v1/scheduler/status, so gates 1-2 cannot prove the token is accepted
+#     for job allocation. The token-gated /api/v1/scheduler/alloc_job 401s a bad
+#     token and the client falls back to local, undetected. So distribute one
+#     throwaway compile and confirm it actually reached the cluster.
+#
+# Reads SCCACHE_CONF from the datastore (NOT os.environ, which clean_environment
+# scrubs - the exact failure this guards against) and maps it into the query env
+# like the summary handler does.
 python sccache_dist_guard () {
     import bb.event
     import json
     import shutil
     import subprocess
+    import tempfile
 
     if not isinstance(e, bb.event.BuildStarted):
         return
@@ -252,12 +262,35 @@ python sccache_dist_guard () {
     if not sccache:
         bb.fatal('sccache-dist requested but the sccache binary is not on PATH in the build environment')
 
+    conf_path = d.getVar('SCCACHE_CONF') or os.environ.get('BAKAR_SCCACHE_CONF')
     env = dict(os.environ)
     for sccname in ('SCCACHE_CONF', 'SCCACHE_DIR'):
         value = d.getVar(sccname) or os.environ.get('BAKAR_' + sccname)
         if value:
             env[sccname] = value
 
+    # Gate 1 (config): only fatal when the config parsed and the token/url is
+    # genuinely absent. A tomllib import or parse failure skips this gate (gate 3
+    # still catches a broken token end-to-end) rather than false-blocking a build.
+    if conf_path and os.path.isfile(conf_path):
+        conf = None
+        try:
+            import tomllib
+            with open(conf_path, 'rb') as cf:
+                conf = tomllib.load(cf)
+        except (OSError, ValueError, ImportError):
+            conf = None
+        if isinstance(conf, dict):
+            dist_conf = conf.get('dist', {}) or {}
+            token = (dist_conf.get('auth', {}) or {}).get('token')
+            if not dist_conf.get('scheduler_url') or not token:
+                bb.fatal(
+                    'sccache-dist was requested but %s is missing a [dist] scheduler_url or a '
+                    '[dist.auth] token. The unauthenticated scheduler status probe would still '
+                    'pass, but token-gated job allocation (/api/v1/scheduler/alloc_job) would '
+                    '401 and every compile would run LOCAL-ONLY.' % conf_path)
+
+    # Gate 2 (reachability): scheduler up with >= 1 build server.
     num_servers = 0
     detail = ''
     try:
@@ -284,7 +317,66 @@ python sccache_dist_guard () {
             % (d.getVar('SCCACHE_CONF') or '(unset)',
                d.getVar('SCCACHE_DIST_SCHEDULER_URL') or '(unset)',
                detail or '(no output)'))
-    bb.plain('sccache-dist: scheduler reachable, %d build server(s) - distribution active' % num_servers)
+
+    # Gate 3 (auth, end-to-end): distribute one throwaway compile and confirm it
+    # reached the cluster. A bare gcc is the build/host compiler the fork
+    # distributes via PATH-resolved `as`; absent it, skip rather than block. Zero
+    # stats around the probe so it is measured in isolation and does not pollute
+    # the build-end summary (this handler runs after the summary's BuildStarted
+    # --zero-stats, so the re-zero leaves the build's own counters clean).
+    gcc = shutil.which('gcc')
+    if not gcc:
+        bb.warn('sccache-dist guard: no gcc found to run the auth probe compile; '
+                'skipping the end-to-end auth check (reachability only)')
+        bb.plain('sccache-dist: scheduler reachable, %d build server(s) - distribution active' % num_servers)
+        return
+
+    subprocess.run([sccache, '--zero-stats'], env=env,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    probe_rc = 1
+    probe_err = ''
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, 'sccache_dist_probe.c')
+        obj = os.path.join(td, 'sccache_dist_probe.o')
+        # Unique body -> guaranteed cache miss -> real compile -> dispatch.
+        with open(src, 'w') as sf:
+            sf.write('int sccache_dist_probe_%d(void) { return 0; }\n' % os.getpid())
+        try:
+            probe = subprocess.run([sccache, gcc, '-c', src, '-o', obj], env=env,
+                                   capture_output=True, text=True, timeout=120)
+            probe_rc = probe.returncode
+            probe_err = (probe.stderr or '').strip()
+        except (OSError, subprocess.SubprocessError) as ex:
+            probe_err = str(ex)
+
+    distributed = 0
+    dist_errors = 0
+    try:
+        st = json.loads(subprocess.run(
+            [sccache, '--show-stats', '--stats-format=json'],
+            env=env, capture_output=True, text=True, timeout=15).stdout)['stats']
+        distributed = sum(st.get('dist_compiles', {}).values())
+        dist_errors = st.get('dist_errors', 0)
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+        pass
+    subprocess.run([sccache, '--zero-stats'], env=env,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    if probe_rc != 0:
+        bb.warn('sccache-dist guard: the auth probe compile did not run cleanly (%s); '
+                'skipping the end-to-end auth check (reachability only)'
+                % (probe_err or 'no output'))
+    elif distributed < 1:
+        bb.fatal(
+            'sccache-dist auth probe FELL BACK to local (%d dist error(s)): the scheduler is '
+            'reachable but the client could not allocate a job, so the token-gated '
+            '/api/v1/scheduler/alloc_job rejected the bearer token (401) or the dispatch '
+            'failed. Every compile would run LOCAL-ONLY. Verify the [dist.auth] token in %s '
+            'matches the scheduler; re-run if the cluster was momentarily busy.'
+            % (dist_errors, conf_path or '(unset)'))
+
+    bb.plain('sccache-dist: scheduler reachable, %d build server(s), dispatch authenticated - distribution active'
+             % num_servers)
 }
 addhandler sccache_dist_guard
 sccache_dist_guard[eventmask] = "bb.event.BuildStarted"

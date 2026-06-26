@@ -684,6 +684,46 @@ def test_sccache_summary_targets_task_sccache_env_in_container() -> None:
 
 
 @pytest.mark.unit
+def test_sccache_guard_rejects_config_without_auth_token() -> None:
+    """The guard fatals when SCCACHE_CONF lacks a dist scheduler_url or token.
+
+    `sccache --dist-status` hits the scheduler's UNAUTHENTICATED
+    /api/v1/scheduler/status, so it passes even with no token; job allocation is
+    token-gated (/api/v1/scheduler/alloc_job) and would 401, degrading silently to
+    local-only. The guard reads the config the daemon will use and asserts both a
+    [dist] scheduler_url and a non-empty [dist.auth] token are present. Falsifier:
+    drop the config-token gate and a token-less config sails past the guard.
+    """
+    text = _sccache_bbclass_text()
+    guard = text.split("python sccache_dist_guard")[1]
+
+    assert "scheduler_url" in guard
+    assert "token" in guard
+    # The rationale names the token-gated route the unauthenticated status probe
+    # cannot exercise, so a future reader cannot mistake the two endpoints.
+    assert "alloc_job" in guard
+
+
+@pytest.mark.unit
+def test_sccache_guard_probes_dispatch_authentication() -> None:
+    """The guard distributes one throwaway compile to confirm auth end to end.
+
+    /status being unauthenticated means reachability cannot prove the client's
+    token is accepted for job allocation. The guard zeroes stats, compiles a
+    unique source (guaranteed cache miss -> real compile -> dispatch), reads the
+    dist counters, then re-zeroes so the probe does not pollute the build-end
+    summary - and fatals if the probe fell back to local instead of distributing.
+    Falsifier: remove the probe and a present-but-wrong token passes undetected.
+    """
+    text = _sccache_bbclass_text()
+    guard = text.split("python sccache_dist_guard")[1]
+
+    assert "--zero-stats" in guard
+    assert "dist_compiles" in guard
+    assert "FELL BACK" in guard
+
+
+@pytest.mark.unit
 def test_materialize_sccache_layer_copies_class_into_bsp_root(tmp_path: object) -> None:
     """materialize_sccache_layer drops the layer under <bsp_root>/.bakar/.
 
