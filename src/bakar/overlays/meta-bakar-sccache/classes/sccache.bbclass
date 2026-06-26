@@ -220,3 +220,63 @@ python sccache_dist_summary () {
 }
 addhandler sccache_dist_summary
 sccache_dist_summary[eventmask] = "bb.event.BuildStarted bb.event.BuildCompleted"
+
+# Build-start guard: when distributed compilation was requested
+# (SCCACHE_DIST_SCHEDULER_URL set), fail fast if the in-container client cannot
+# reach the scheduler. A broken dist wiring - e.g. SCCACHE_CONF not materialized
+# into local.conf, so the daemon starts config-less - otherwise degrades
+# silently to local-only: the whole image compiles in-container while the
+# cluster sits idle, wasting hours before anyone notices. Reads SCCACHE_CONF
+# from the datastore (NOT os.environ, which bitbake's clean_environment scrubs -
+# the exact failure this guards against) and maps it into the query env like the
+# summary handler does, then asserts the scheduler is reachable with >=1 server.
+python sccache_dist_guard () {
+    import bb.event
+    import json
+    import shutil
+    import subprocess
+
+    if not isinstance(e, bb.event.BuildStarted):
+        return
+    if not d.getVar('SCCACHE_DIST_SCHEDULER_URL'):
+        return
+    sccache = shutil.which('sccache')
+    if not sccache:
+        bb.fatal('sccache-dist requested but the sccache binary is not on PATH in the build environment')
+
+    env = dict(os.environ)
+    for sccname in ('SCCACHE_CONF', 'SCCACHE_DIR'):
+        value = d.getVar(sccname) or os.environ.get('BAKAR_' + sccname)
+        if value:
+            env[sccname] = value
+
+    num_servers = 0
+    detail = ''
+    try:
+        proc = subprocess.run([sccache, '--dist-status'], env=env,
+                              capture_output=True, text=True, timeout=30)
+        detail = (proc.stdout or proc.stderr).strip()
+        sched = json.loads(proc.stdout).get('SchedulerStatus')
+        if isinstance(sched, list) and len(sched) > 1:
+            num_servers = sched[1].get('num_servers', 0)
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError) as ex:
+        detail = detail or str(ex)
+
+    if num_servers < 1:
+        bb.fatal(
+            'sccache-dist was requested (--sccache-dist) but the in-container client '
+            'is not reaching the scheduler, so every compile would run LOCAL-ONLY and '
+            'the cluster would sit idle.\n'
+            '  SCCACHE_CONF=%s\n'
+            '  SCCACHE_DIST_SCHEDULER_URL=%s\n'
+            '  sccache --dist-status: %s\n'
+            'Container builds need SCCACHE_CONF/SCCACHE_DIR materialized into local.conf '
+            '(bakar _inject_literal_sccache); host builds need the pre-started daemon '
+            'configured with the dist config.'
+            % (d.getVar('SCCACHE_CONF') or '(unset)',
+               d.getVar('SCCACHE_DIST_SCHEDULER_URL') or '(unset)',
+               detail or '(no output)'))
+    bb.plain('sccache-dist: scheduler reachable, %d build server(s) - distribution active' % num_servers)
+}
+addhandler sccache_dist_guard
+sccache_dist_guard[eventmask] = "bb.event.BuildStarted"
