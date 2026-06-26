@@ -37,6 +37,8 @@ _BOOL_FIELDS = {
     "ccache_shared",
     "psi_autocalibrate",
     "sccache_dist",
+    "ccache",
+    "rm_work",
 }
 _INT_FIELDS: set[str] = {
     "stall_abort_secs",
@@ -84,6 +86,11 @@ class UserConfig:
     scheduler: str | None = None
     sccache_dist: bool = False
     sccache_scheduler_url: str | None = None
+    # ccache enable toggle (default on); effective ccache is gated off whenever
+    # sccache_dist is set (mutually exclusive launchers). rm_work default off:
+    # while bakar is in use the tuning stack strips rm_work so work dirs survive.
+    ccache: bool = True
+    rm_work: bool = False
     pressure_max_cpu: float | None = None
     pressure_max_io: float | None = None
     pressure_max_memory: float | None = None
@@ -143,6 +150,8 @@ _BUILD_KEYS = {
     "scheduler": "scheduler",
     "sccache_dist": "sccache_dist",
     "sccache_scheduler_url": "sccache_scheduler_url",
+    "ccache": "ccache",
+    "rm_work": "rm_work",
     "pressure_max_cpu": "pressure_max_cpu",
     "pressure_max_io": "pressure_max_io",
     "pressure_max_memory": "pressure_max_memory",

@@ -24,6 +24,12 @@ _STR_FIELDS = {
     "kas_container_image",
 }
 
+# [build] booleans; workspace tier (None = not set, falls back to user config).
+_BOOL_FIELDS = {
+    "ccache",
+    "rm_work",
+}
+
 # Host-threshold fields are numeric (reject non-numeric, reject non-positive).
 _HOST_FIELDS = {
     "host_inotify_instances",
@@ -52,6 +58,10 @@ class WorkspaceConfig:
     # [build] - workspace-tier override; None means "not set" (falls back to
     # the user config then the built-in default in config.resolve()).
     kas_container_image: str | None = None
+    # [build] booleans, workspace tier. None = not set -> user config -> default
+    # (ccache default True, rm_work default False) in config.resolve().
+    ccache: bool | None = None
+    rm_work: bool | None = None
     # [host] - workspace-tier override; None means "not set" (falls back to
     # the user config then the built-in floor in config.resolve()).
     host_inotify_instances: int | None = None
@@ -85,6 +95,8 @@ _GENERIC_KEYS = {
 # image is not family-scoped. Mirrors user_config.py's _BUILD_KEYS subset.
 _BUILD_KEYS = {
     "kas_container_image": "kas_container_image",
+    "ccache": "ccache",
+    "rm_work": "rm_work",
 }
 # Top-level [host] table -> host_* fields. Not under [defaults]; host thresholds
 # are not family-scoped. Mirrors user_config.py's _HOST_KEYS.
@@ -100,6 +112,8 @@ _HOST_KEYS = {
 def _check_type(field: str, value: object, path: Path) -> None:
     if field in _STR_FIELDS and not isinstance(value, str):
         raise ValueError(f"{path}: '{field}' must be a string, got {type(value).__name__}")
+    if field in _BOOL_FIELDS and not isinstance(value, bool):
+        raise ValueError(f"{path}: '{field}' must be a boolean, got {type(value).__name__}")
     if field in _HOST_FIELDS:
         # bool is an int subclass; reject it explicitly so True/False can't pose
         # as a count.

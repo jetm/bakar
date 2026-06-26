@@ -336,3 +336,102 @@ def test_resolve_host_mem_min_gb_stays_float(tmp_path) -> None:
 
     assert cfg.host_mem_min_gb == 24.0
     assert isinstance(cfg.host_mem_min_gb, float)
+
+
+def test_resolve_ccache_default_true_rm_work_default_false(tmp_path) -> None:
+    """Without configs, ccache defaults on and rm_work defaults off."""
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+
+    assert cfg.ccache is True
+    assert cfg.rm_work is False
+
+
+def test_resolve_ccache_user_config_disables(tmp_path) -> None:
+    """Global config.toml [build] ccache=false disables ccache."""
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(ccache=False))
+
+    assert cfg.ccache is False
+
+
+def test_resolve_rm_work_user_config_enables(tmp_path) -> None:
+    """Global config.toml [build] rm_work=true keeps rm_work on."""
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(rm_work=True))
+
+    assert cfg.rm_work is True
+
+
+def test_resolve_ccache_workspace_wins_over_user(tmp_path) -> None:
+    """Workspace [build] ccache outranks the global config for the same field."""
+    cfg = resolve(
+        workspace=_workspace(tmp_path),
+        bsp_family="nxp",
+        user_config=UserConfig(ccache=True),
+        workspace_config=WorkspaceConfig(ccache=False),
+    )
+
+    assert cfg.ccache is False
+
+
+def test_resolve_rm_work_workspace_wins_over_user(tmp_path) -> None:
+    """Workspace [build] rm_work outranks the global config for the same field."""
+    cfg = resolve(
+        workspace=_workspace(tmp_path),
+        bsp_family="nxp",
+        user_config=UserConfig(rm_work=False),
+        workspace_config=WorkspaceConfig(rm_work=True),
+    )
+
+    assert cfg.rm_work is True
+
+
+def test_resolve_rm_work_env_wins_over_workspace(tmp_path, monkeypatch) -> None:
+    """BAKAR_RM_WORK env beats both workspace and global config."""
+    monkeypatch.setenv("BAKAR_RM_WORK", "1")
+    cfg = resolve(
+        workspace=_workspace(tmp_path),
+        bsp_family="nxp",
+        user_config=UserConfig(rm_work=False),
+        workspace_config=WorkspaceConfig(rm_work=False),
+    )
+
+    assert cfg.rm_work is True
+
+
+def test_resolve_ccache_env_wins_over_workspace(tmp_path, monkeypatch) -> None:
+    """BAKAR_CCACHE env beats both workspace and global config."""
+    monkeypatch.setenv("BAKAR_CCACHE", "0")
+    cfg = resolve(
+        workspace=_workspace(tmp_path),
+        bsp_family="nxp",
+        user_config=UserConfig(ccache=True),
+        workspace_config=WorkspaceConfig(ccache=True),
+    )
+
+    assert cfg.ccache is False
+
+
+def test_resolve_use_ccache_false_when_sccache_dist_active(tmp_path) -> None:
+    """ccache and sccache are mutually exclusive: use_ccache is False under sccache-dist."""
+    cfg = resolve(
+        workspace=_workspace(tmp_path),
+        bsp_family="nxp",
+        user_config=UserConfig(ccache=True, sccache_dist=True),
+    )
+
+    assert cfg.ccache is True
+    assert cfg.use_sccache_dist is True
+    assert cfg.use_ccache is False
+
+
+def test_resolve_use_ccache_true_when_no_sccache(tmp_path) -> None:
+    """use_ccache is True when ccache is on and sccache-dist is off."""
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(ccache=True))
+
+    assert cfg.use_ccache is True
+
+
+def test_resolve_use_ccache_false_when_ccache_disabled(tmp_path) -> None:
+    """use_ccache is False when ccache is explicitly disabled, regardless of sccache."""
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(ccache=False))
+
+    assert cfg.use_ccache is False

@@ -112,6 +112,23 @@ def pick(
     return default
 
 
+def pick_bool(env_key: str, *, ws_val: bool | None, user_val: bool) -> bool:
+    """Resolve a boolean knob with precedence env > workspace > global.
+
+    Mirrors :func:`pick`'s ordering for the bool tier used by ``rm_work`` and
+    ``ccache``: a set ``BAKAR_*`` env var wins (``1/true/yes/on`` truthy, else
+    falsy), then the workspace ``.bakar.toml`` value when not ``None`` (its
+    "unset" sentinel), then the global config value (``UserConfig`` always
+    carries a concrete bool - its built-in default when the key is absent).
+    """
+    env_val = os.environ.get(env_key)
+    if env_val is not None and env_val.strip() != "":
+        return env_val.strip().lower() in ("1", "true", "yes", "on")
+    if ws_val is not None:
+        return ws_val
+    return user_val
+
+
 @dataclass(frozen=True)
 class _FamilyDefaults:
     d_machine: str
@@ -250,6 +267,15 @@ class BuildConfig:
     # byte-for-byte unchanged (ccache stays) until the user opts in.
     sccache_dist: bool = field(default=False)
     sccache_scheduler_url: str | None = field(default=None)
+    # ccache enable toggle (default on). ccache and sccache are mutually
+    # exclusive launchers, so the effective ccache state is use_ccache (this
+    # flag AND NOT sccache_dist); set ccache=False to disable ccache outright.
+    ccache: bool = field(default=True)
+    # When False (the default while bakar is in use) the tuning stack strips
+    # rm_work from both INHERIT and USER_CLASSES so recipe work dirs survive
+    # (stone provisioning depends on previously-built native binaries). Set
+    # rm_work=True to keep the container's default rm_work behavior.
+    rm_work: bool = field(default=False)
     # [host] doctor thresholds; defaults equal today's hardcoded literals in
     # diagnostics.py so verdicts are byte-identical until a value is written.
     # Resolved with precedence workspace .bakar.toml [host] > user config.toml [host] > default.
@@ -299,6 +325,15 @@ class BuildConfig:
     def use_sccache_dist(self) -> bool:
         """True when distributed-compile via sccache-dist is enabled."""
         return bool(self.sccache_dist)
+
+    @property
+    def use_ccache(self) -> bool:
+        """Effective ccache state: enabled and not displaced by sccache-dist.
+
+        ccache and sccache drive the same OE launcher slot (the CCACHE
+        variable), so they are mutually exclusive; sccache-dist always wins.
+        """
+        return bool(self.ccache and not self.use_sccache_dist)
 
     @property
     def workspace_subdir(self) -> str:
@@ -662,6 +697,16 @@ def resolve(
         sstate_mirror_url=user_config.sstate_mirror_url if user_config else None,
         sccache_dist=user_config.sccache_dist if user_config else False,
         sccache_scheduler_url=user_config.sccache_scheduler_url if user_config else None,
+        ccache=pick_bool(
+            "BAKAR_CCACHE",
+            ws_val=workspace_config.ccache if workspace_config is not None else None,
+            user_val=user_config.ccache if user_config is not None else True,
+        ),
+        rm_work=pick_bool(
+            "BAKAR_RM_WORK",
+            ws_val=workspace_config.rm_work if workspace_config is not None else None,
+            user_val=user_config.rm_work if user_config is not None else False,
+        ),
         nproc=user_config.nproc if user_config else None,
         parallel_make=user_config.parallel_make if user_config else None,
         bb_number_threads=user_config.bb_number_threads if user_config else None,
