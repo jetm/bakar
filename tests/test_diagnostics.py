@@ -1360,6 +1360,12 @@ def test_check_hashserv_fail_when_port_file_deleted_mid_check(tmp_path: Path, mo
 
     monkeypatch.setattr("bakar.hashserv.is_running", lambda _root: True)
 
+    # No shared SSTATE_DIR: state_key falls back to bsp_root, where this test's
+    # port file is absent. An ambient SSTATE_DIR (a dev machine with a live
+    # daemon) would otherwise make hashserv_state_key escape tmp_path, read the
+    # real daemon's port, connect, and return PASS instead of the expected FAIL.
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
+
     cfg = _hashserv_cfg(tmp_path, use_hashequiv=True)
     # State dir does not exist; port file read will raise FileNotFoundError.
     result = check_hashserv(cfg)
