@@ -13,7 +13,10 @@ from bakar.commands._helpers import (
     _bsp_from_cwd,
     _clean_build_dir,
     _dispatch_bsp,
+    _dispatch_from_yaml,
+    _resolve_workspace,
     _workspace_from_cwd,
+    split_kas_yaml_arg,
 )
 from bakar.config import resolve
 
@@ -48,6 +51,13 @@ def _resolve_family(
 
 @app.command()
 def clean(
+    kas_yaml: Annotated[
+        str | None,
+        typer.Argument(
+            help="BYO kas YAML (e.g. meta-avocado/kas/machine/qemuarm64.yml). When given, "
+            "clean that build dir (workspace/build-<stem>) instead of an nxp/ti BSP dir.",
+        ),
+    ] = None,
     all: Annotated[bool, typer.Option("--all", help="Also remove the generated kas YAML")] = False,
     bsp: Annotated[
         str | None,
@@ -59,10 +69,24 @@ def clean(
     ] = None,
     workspace: Annotated[Path | None, typer.Option("--workspace", "-w", help="Workspace root override")] = None,
 ) -> None:
-    """Remove the BSP-specific build/ directory. Use --all to also drop the kas YAML."""
-    ws = workspace or _workspace_from_cwd()
-    family = _resolve_family(bsp, manifest, ws)
-    cfg = resolve(workspace=ws, bsp_family=family, user_config=_state._USER_CONFIG)
+    """Remove the build/ directory. Use --all to also drop the kas YAML.
+
+    Pass a kas YAML positionally to clean a BYO/meta-avocado build dir
+    (``workspace/build-<yaml-stem>/build``), mirroring ``bakar build my.yml``;
+    otherwise the nxp/ti BSP build dir is cleaned.
+    """
+    if kas_yaml is not None:
+        # BYO/generic form: resolve the build dir from the YAML exactly as
+        # `bakar build my.yml` does, so a meta-avocado machine build dir is
+        # reachable (the --bsp ladder only expresses nxp/ti).
+        main_yaml, _extras = split_kas_yaml_arg(kas_yaml)
+        family, _bsp = _dispatch_from_yaml(main_yaml)
+        ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
+        cfg = resolve(workspace=ws, bsp_family=family, kas_yaml=main_yaml, user_config=_state._USER_CONFIG)
+    else:
+        ws = workspace or _workspace_from_cwd()
+        family = _resolve_family(bsp, manifest, ws)
+        cfg = resolve(workspace=ws, bsp_family=family, user_config=_state._USER_CONFIG)
     if all and cfg.hashserv_state_key == cfg.bsp_root:
         # Stop the hashserv daemon before wiping, but only when it is keyed to
         # this workspace (the no-shared-sstate fallback). When the daemon is
