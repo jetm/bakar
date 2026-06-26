@@ -24,15 +24,12 @@ GENERIC_OVERLAY = _OVERLAY_DIR / "bakar-tuning-generic.yml"
 HASHEQUIV_OVERLAY = _OVERLAY_DIR / "bakar-tuning-hashequiv.yml"
 
 _SHARED_LINES = (
-    'CCACHE_DIR = "/work/ccache"',
-    'INHERIT += "ccache"',
     "BB_NUMBER_THREADS",
     "PARALLEL_MAKE",
     "IMAGE_FEATURES:remove",
     'BB_FETCH_TIMEOUT = "600"',
     "MIRRORS = ",
     "PREMIRRORS:prepend = ",
-    "FETCHCMD_wget",
 )
 
 # Tokens added by the performance-optimizations change; present in all three
@@ -84,32 +81,32 @@ def test_ti_overlay_has_kas_header(ti_overlay: dict) -> None:
 
 
 def test_nxp_overlay_carries_shared_tuning(nxp_overlay: dict) -> None:
-    body = nxp_overlay["local_conf_header"]["bakar-tuning"]
+    body = nxp_overlay["local_conf_header"]["zz-bakar-10-base"]
     for needle in _SHARED_LINES:
         assert needle in body, f"NXP overlay missing: {needle!r}"
 
 
 def test_nxp_overlay_carries_nxp_only_tuning(nxp_overlay: dict) -> None:
-    body = nxp_overlay["local_conf_header"]["bakar-tuning"]
+    body = nxp_overlay["local_conf_header"]["zz-bakar-10-base"]
     for needle in _NXP_ONLY_LINES:
         assert needle in body, f"NXP overlay missing: {needle!r}"
 
 
 def test_ti_overlay_carries_shared_tuning(ti_overlay: dict) -> None:
-    body = ti_overlay["local_conf_header"]["bakar-tuning"]
+    body = ti_overlay["local_conf_header"]["zz-bakar-10-base"]
     for needle in _SHARED_LINES:
         assert needle in body, f"TI overlay missing: {needle!r}"
 
 
 def test_ti_overlay_omits_nxp_specific_knobs(ti_overlay: dict) -> None:
     """ACCEPT_FSL_EULA and renderdoc are NXP-specific."""
-    body = ti_overlay["local_conf_header"]["bakar-tuning"]
+    body = ti_overlay["local_conf_header"]["zz-bakar-10-base"]
     assert "ACCEPT_FSL_EULA" not in body
     assert "renderdoc" not in body
 
 
 def test_ti_overlay_carries_ti_fork_premirrors(ti_overlay: dict) -> None:
-    body = ti_overlay["local_conf_header"]["bakar-tuning"]
+    body = ti_overlay["local_conf_header"]["zz-bakar-10-base"]
     assert "/work/forks/ti-linux-kernel" in body
     assert "/work/forks/ti-u-boot" in body
 
@@ -132,21 +129,21 @@ def test_generic_overlay_has_kas_header(generic_overlay: dict) -> None:
 
 
 def test_generic_overlay_carries_shared_tuning(generic_overlay: dict) -> None:
-    body = generic_overlay["local_conf_header"]["bakar-tuning"]
+    body = generic_overlay["local_conf_header"]["zz-bakar-10-base"]
     for needle in _SHARED_LINES:
         assert needle in body, f"generic overlay missing: {needle!r}"
 
 
 def test_generic_overlay_omits_nxp_specific_knobs(generic_overlay: dict) -> None:
     """The generic overlay must not pull in NXP-only knobs."""
-    body = generic_overlay["local_conf_header"]["bakar-tuning"]
+    body = generic_overlay["local_conf_header"]["zz-bakar-10-base"]
     assert "ACCEPT_FSL_EULA" not in body
     assert "renderdoc" not in body
     assert "linux-imx" not in body
 
 
 def test_generic_overlay_omits_ti_specific_knobs(generic_overlay: dict) -> None:
-    body = generic_overlay["local_conf_header"]["bakar-tuning"]
+    body = generic_overlay["local_conf_header"]["zz-bakar-10-base"]
     assert "ti-linux-kernel" not in body
     assert "ti-u-boot" not in body
 
@@ -205,19 +202,19 @@ def hashequiv_overlay() -> dict:
 
 
 def test_nxp_overlay_carries_perf_tuning(nxp_overlay: dict) -> None:
-    body = nxp_overlay["local_conf_header"]["bakar-tuning"]
+    body = nxp_overlay["local_conf_header"]["zz-bakar-10-base"]
     for needle in _TUNING_PERF_LINES:
         assert needle in body, f"NXP overlay missing: {needle!r}"
 
 
 def test_ti_overlay_carries_perf_tuning(ti_overlay: dict) -> None:
-    body = ti_overlay["local_conf_header"]["bakar-tuning"]
+    body = ti_overlay["local_conf_header"]["zz-bakar-10-base"]
     for needle in _TUNING_PERF_LINES:
         assert needle in body, f"TI overlay missing: {needle!r}"
 
 
 def test_generic_overlay_carries_perf_tuning(generic_overlay: dict) -> None:
-    body = generic_overlay["local_conf_header"]["bakar-tuning"]
+    body = generic_overlay["local_conf_header"]["zz-bakar-10-base"]
     for needle in _TUNING_PERF_LINES:
         assert needle in body, f"generic overlay missing: {needle!r}"
 
@@ -234,7 +231,7 @@ def test_all_overlays_decouple_parallelism(nxp_overlay: dict, ti_overlay: dict, 
     BB_ENV_PASSTHROUGH_ADDITIONS - kas only whitelists env: keys.
     """
     for name, overlay in (("nxp", nxp_overlay), ("ti", ti_overlay), ("generic", generic_overlay)):
-        body = overlay["local_conf_header"]["bakar-tuning"]
+        body = overlay["local_conf_header"]["zz-bakar-10-base"]
         assert "BAKAR_PARALLEL_MAKE" in body, f"{name} overlay does not read BAKAR_PARALLEL_MAKE"
         assert "BAKAR_BB_NUMBER_THREADS" in body, f"{name} overlay does not read BAKAR_BB_NUMBER_THREADS"
         env = overlay.get("env") or {}
@@ -245,7 +242,7 @@ def test_all_overlays_decouple_parallelism(nxp_overlay: dict, ti_overlay: dict, 
 
 
 def test_generic_overlay_carries_nice_ionice(generic_overlay: dict) -> None:
-    body = generic_overlay["local_conf_header"]["bakar-tuning"]
+    body = generic_overlay["local_conf_header"]["zz-bakar-10-base"]
     assert "BB_TASK_NICE_LEVEL" in body
     assert "BB_TASK_IONICE_LEVEL" in body
 
@@ -255,7 +252,7 @@ def test_hashequiv_overlay_has_kas_header(hashequiv_overlay: dict) -> None:
 
 
 def test_hashequiv_overlay_sets_signature_handler(hashequiv_overlay: dict) -> None:
-    body = hashequiv_overlay["local_conf_header"]["bakar-tuning-hashequiv"]
+    body = hashequiv_overlay["local_conf_header"]["zz-bakar-30-hashequiv"]
     assert 'BB_SIGNATURE_HANDLER = "OEEquivHash"' in body
     assert "BB_HASHSERVE" in body
     assert "BB_HASHSERVE_UPSTREAM" in body
@@ -268,7 +265,7 @@ def test_hashequiv_overlay_bb_hashserve_reads_from_env(hashequiv_overlay: dict) 
     BB_HASHSERVE into the build environment. A hardcoded ``"auto"`` would
     defeat that injection and start a fresh ephemeral daemon per build.
     """
-    body = hashequiv_overlay["local_conf_header"]["bakar-tuning-hashequiv"]
+    body = hashequiv_overlay["local_conf_header"]["zz-bakar-30-hashequiv"]
     assert "BB_HASHSERVE = \"${@os.environ.get('BB_HASHSERVE', 'auto')}\"" in body
     for line in body.splitlines():
         assert line.strip() != 'BB_HASHSERVE = "auto"', (
@@ -284,5 +281,67 @@ def test_hashequiv_overlay_colocates_db_with_sstate(hashequiv_overlay: dict) -> 
     while SSTATE_DIR is shared, defeating the cross-build/workspace reuse this
     overlay advertises. Falsifier: drop the line and the assertion fails.
     """
-    body = hashequiv_overlay["local_conf_header"]["bakar-tuning-hashequiv"]
+    body = hashequiv_overlay["local_conf_header"]["zz-bakar-30-hashequiv"]
     assert 'BB_HASHSERVE_DB_DIR = "${SSTATE_DIR}"' in body
+
+
+def test_base_overlays_no_longer_inherit_ccache(nxp_overlay: dict, ti_overlay: dict, generic_overlay: dict) -> None:
+    """ccache wiring moved to the conditional bakar-tuning-ccache overlay."""
+    for name, overlay in (("nxp", nxp_overlay), ("ti", ti_overlay), ("generic", generic_overlay)):
+        body = overlay["local_conf_header"]["zz-bakar-10-base"]
+        assert 'INHERIT += "ccache"' not in body, f"{name} base still inherits ccache"
+        assert "CCACHE_DIR" not in body, f"{name} base still sets CCACHE_DIR"
+
+
+def test_generic_overlay_omits_fetchcmd_wget(generic_overlay: dict) -> None:
+    """FETCHCMD_wget left the generic overlay; the workspace's own fetch config owns it."""
+    body = generic_overlay["local_conf_header"]["zz-bakar-10-base"]
+    assert "FETCHCMD_wget" not in body
+
+
+def test_nxp_ti_overlays_keep_fetchcmd_wget(nxp_overlay: dict, ti_overlay: dict) -> None:
+    """NXP/TI keep their crates.io FETCHCMD_wget workaround (vendor BSPs, no avocado fetch overlay)."""
+    for name, overlay in (("nxp", nxp_overlay), ("ti", ti_overlay)):
+        body = overlay["local_conf_header"]["zz-bakar-10-base"]
+        assert "FETCHCMD_wget" in body, f"{name} overlay dropped FETCHCMD_wget"
+
+
+def test_base_overlays_strip_rm_work(nxp_overlay: dict, ti_overlay: dict, generic_overlay: dict) -> None:
+    """While bakar is in use, rm_work is stripped from both inherit paths."""
+    for name, overlay in (("nxp", nxp_overlay), ("ti", ti_overlay), ("generic", generic_overlay)):
+        body = overlay["local_conf_header"]["zz-bakar-10-base"]
+        assert 'INHERIT:remove = "rm_work"' in body, f"{name} base missing INHERIT:remove rm_work"
+        assert 'USER_CLASSES:remove = "rm_work"' in body, f"{name} base missing USER_CLASSES:remove rm_work"
+
+
+def test_base_overlays_hashserve_upstream_plain_not_forcevariable(
+    nxp_overlay: dict, ti_overlay: dict, generic_overlay: dict
+) -> None:
+    """forcevariable dropped: the sort-last key beats BSP YAMLs and lets opt-in overlays override."""
+    for name, overlay in (("nxp", nxp_overlay), ("ti", ti_overlay), ("generic", generic_overlay)):
+        body = overlay["local_conf_header"]["zz-bakar-10-base"]
+        assert 'BB_HASHSERVE_UPSTREAM = ""' in body, f"{name} base missing plain BB_HASHSERVE_UPSTREAM"
+        assert "BB_HASHSERVE_UPSTREAM:forcevariable" not in body, f"{name} base still uses forcevariable"
+
+
+def test_ccache_overlay_carries_ccache_block() -> None:
+    """The conditional ccache overlay carries the ccache wiring under its sort-last key."""
+    overlay = _load(_OVERLAY_DIR / "bakar-tuning-ccache.yml")
+    body = overlay["local_conf_header"]["zz-bakar-20-ccache"]
+    assert 'INHERIT += "ccache"' in body
+    assert 'CCACHE_DIR = "/work/ccache"' in body
+    assert "CCACHE_DISABLE:pn-nodejs" in body
+
+
+def test_all_bakar_overlay_keys_sort_last() -> None:
+    """Every bakar local_conf_header key uses the zz-bakar- prefix so it sorts after workspace keys.
+
+    kas emits local_conf_header sorted by key (kas/config.py _get_conf_header),
+    so a key that does not sort last lets a workspace layer's plain `=` win.
+    """
+    import glob
+
+    for path in sorted(glob.glob(str(_OVERLAY_DIR / "bakar-tuning-*.yml"))):
+        overlay = _load(Path(path))
+        for key in overlay.get("local_conf_header") or {}:
+            assert key.startswith("zz-bakar-"), f"{path}: local_conf_header key {key!r} does not sort last"

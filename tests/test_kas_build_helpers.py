@@ -701,3 +701,47 @@ def test_build_fail_reason_exit_code_when_no_stall() -> None:
 def test_build_fail_reason_wrapper_crash_when_rc_none() -> None:
     """No exit code and no stall is a wrapper crash."""
     assert _build_fail_reason(None, None) == "wrapper-crash"
+
+
+# ---------------------------------------------------------------------------
+# _inject_rm_work
+# ---------------------------------------------------------------------------
+
+_RM_WORK_OVERLAY = (
+    "local_conf_header:\n"
+    "  zz-bakar-10-base: |\n"
+    '    BB_NUMBER_THREADS = "4"\n'
+    "    # Disable rm_work while bakar is in use. Strip both inherit paths.\n"
+    '    INHERIT:remove = "rm_work"\n'
+    '    USER_CLASSES:remove = "rm_work"\n'
+)
+
+
+def _materialize_rm_work_overlay(tmp_path: Path, *, rm_work: bool) -> str:
+    """Materialize a base-shaped overlay and return the resulting text."""
+    import dataclasses
+
+    cfg = dataclasses.replace(_make_nxp_cfg(tmp_path), rm_work=rm_work)
+    src = tmp_path / "bakar-tuning-base.yml"
+    src.write_text(_RM_WORK_OVERLAY, encoding="utf-8")
+    rel = materialize_overlay(cfg, src)
+    return (cfg.bsp_root / rel).read_text(encoding="utf-8")
+
+
+def test_inject_rm_work_keeps_strip_when_rm_work_off(tmp_path: Path) -> None:
+    """Default (rm_work off): the rm_work-removal block survives materialization."""
+    text = _materialize_rm_work_overlay(tmp_path, rm_work=False)
+
+    assert 'INHERIT:remove = "rm_work"' in text
+    assert 'USER_CLASSES:remove = "rm_work"' in text
+
+
+def test_inject_rm_work_strips_block_when_rm_work_on(tmp_path: Path) -> None:
+    """rm_work=True deletes the whole block (comment + both lines), no stale comment."""
+    text = _materialize_rm_work_overlay(tmp_path, rm_work=True)
+
+    assert 'INHERIT:remove = "rm_work"' not in text
+    assert 'USER_CLASSES:remove = "rm_work"' not in text
+    assert "Disable rm_work while bakar" not in text
+    # Untouched content stays.
+    assert 'BB_NUMBER_THREADS = "4"' in text

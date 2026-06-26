@@ -1,0 +1,34 @@
+# ccache tuning overlay.
+#
+# Added by bakar when ccache is the effective launcher - that is, [build]
+# ccache is on (the default) AND sccache-dist is off. ccache and sccache drive
+# the same OE launcher slot (the CCACHE variable), so they are mutually
+# exclusive; the sccache overlay is selected instead when --sccache-dist is set,
+# and this overlay is dropped. Selection lives in
+# bakar.commands._helpers._ccache_extra_overlays (gated on cfg.use_ccache).
+#
+# Extracted from the per-family base overlays (generic/nxp/ti) so ccache is
+# wired in exactly one place and only when actually used.
+
+header:
+  version: 21
+
+local_conf_header:
+  # Sort-last key (see bakar-tuning-generic): 20 orders ccache after the base
+  # section and before the opt-in caches.
+  zz-bakar-20-ccache: |
+    CCACHE_DIR = "/work/ccache"
+    INHERIT += "ccache"
+    # Cap the build ccache. oe-core's CCACHE_CONFIGPATH (meta/conf/ccache.conf)
+    # leaves max_size=0 (uncapped); exporting CCACHE_MAXSIZE puts it in the
+    # do_compile env, where it overrides that config file. With [build]
+    # ccache_shared this one cap governs the shared cache for every workspace;
+    # export a larger CCACHE_MAXSIZE (it overrides this) when sharing widely.
+    CCACHE_MAXSIZE = "50G"
+    export CCACHE_MAXSIZE
+
+    # nodejs uses a GYP-generated Makefile with fixup_dep() that writes
+    # a .d.raw dependency file via -MF, then immediately reads it back.
+    # ccache with hash_dir=false does not restore the .d.raw file on a
+    # cache hit, causing fixup_dep() to fail with "No such file or directory".
+    CCACHE_DISABLE:pn-nodejs = "1"

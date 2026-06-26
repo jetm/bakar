@@ -174,6 +174,30 @@ def _inject_literal_sccache(cfg: BuildConfig, text: str) -> str:
     return text.rstrip("\n") + "\n" + addition
 
 
+# The base overlays statically strip rm_work (default off while bakar is in
+# use); _inject_rm_work deletes that whole block when [build] rm_work is opted
+# back on. The block spans its comment through the USER_CLASSES line, so the
+# generated local.conf carries no stale "we disabled rm_work" comment when the
+# user kept it on. Only the base overlays carry the block, so this no-ops on the
+# opt-in overlays.
+_RM_WORK_BLOCK_RE = re.compile(
+    r"\n[ \t]*#[^\n]*Disable rm_work while bakar.*?\n[ \t]*USER_CLASSES:remove = \"rm_work\"",
+    re.DOTALL,
+)
+
+
+def _inject_rm_work(cfg: BuildConfig, text: str) -> str:
+    """Remove the rm_work-removal block when ``cfg.rm_work`` is True.
+
+    Default (rm_work False) keeps the base overlay's ``INHERIT:remove`` /
+    ``USER_CLASSES:remove = "rm_work"`` lines so rm_work stays off while bakar is
+    in use. When the user opts rm_work back on ([build] rm_work / BAKAR_RM_WORK /
+    .bakar.toml), strip the block so the container's default rm_work stands."""
+    if not cfg.rm_work:
+        return text
+    return _RM_WORK_BLOCK_RE.sub("", text)
+
+
 def materialize_overlay(cfg: BuildConfig, overlay_source: Path) -> Path:
     """Copy ``overlay_source`` into ``<bsp_root>/.bakar/overlays/``.
 
@@ -204,6 +228,7 @@ def materialize_overlay(cfg: BuildConfig, overlay_source: Path) -> Path:
     if overlay_source.name.startswith("bakar-tuning-"):
         original = dest.read_text(encoding="utf-8")
         injected = _inject_literal_parallelism(cfg, original)
+        injected = _inject_rm_work(cfg, injected)
         if overlay_source.name == "bakar-tuning-sccache.yml":
             injected = _inject_literal_sccache(cfg, injected)
         if injected != original:

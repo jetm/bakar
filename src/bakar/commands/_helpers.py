@@ -203,9 +203,25 @@ def _sccache_extra_overlays(cfg: BuildConfig) -> list[Path]:
     return _conditional_overlay(cfg.use_sccache_dist, "bakar-tuning-sccache.yml")
 
 
+def _ccache_extra_overlays(cfg: BuildConfig) -> list[Path]:
+    """Return the ccache overlay path when ccache is the effective launcher.
+
+    ``cfg.use_ccache`` folds in the sccache exclusion (ccache on AND not
+    sccache-dist), so this is dropped whenever sccache-dist is active - the two
+    launchers are mutually exclusive and never both inherited.
+    """
+    return _conditional_overlay(cfg.use_ccache, "bakar-tuning-ccache.yml")
+
+
 def _tuning_extra_overlays(cfg: BuildConfig) -> list[Path]:
-    """Return all opt-in tuning overlay paths for cfg (hashequiv + shared-cache + sccache)."""
+    """Return all opt-in tuning overlay paths for cfg.
+
+    ccache (when effective) + hashequiv + shared-cache + sccache. List order does
+    not set local.conf precedence - kas sorts local_conf_header by key, and the
+    bakar overlays use sort-last ``zz-bakar-NN-*`` keys so the numeric segment
+    decides (base < ccache < hashequiv < shared-cache < sccache)."""
     return [
+        *_ccache_extra_overlays(cfg),
         *_hashequiv_extra_overlays(cfg),
         *_shared_cache_extra_overlays(cfg),
         *_sccache_extra_overlays(cfg),

@@ -18,7 +18,11 @@ header:
   version: 21
 
 local_conf_header:
-  bakar-tuning-hashequiv: |
+  # Sort-last key (see bakar-tuning-generic): 30 orders hashequiv after the base
+  # section, so its BB_HASHSERVE_UPSTREAM env-lookup correctly overrides the
+  # base's plain `= ""` default (the base used to win via :forcevariable, which
+  # also defeated this opt-in).
+  zz-bakar-30-hashequiv: |
     # Switch the signature handler to equivalence-aware mode.
     BB_SIGNATURE_HANDLER = "OEEquivHash"
     # Run a local hash equivalence server and connect it to the upstream

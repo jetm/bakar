@@ -370,7 +370,7 @@ def test_container_sccache_build_does_not_start_host_server(tmp_path: Path, monk
 # ---------------------------------------------------------------------------
 
 
-def _overlay_cfg(*, sccache_dist: bool = False) -> object:
+def _overlay_cfg(*, sccache_dist: bool = False, ccache: bool = True) -> object:
     """Return a minimal BuildConfig for the overlay helper tests."""
     from pathlib import Path
 
@@ -387,6 +387,7 @@ def _overlay_cfg(*, sccache_dist: bool = False) -> object:
         repo_branch="main",
         kas_container_image="img:latest",
         sccache_dist=sccache_dist,
+        ccache=ccache,
     )
 
 
@@ -412,6 +413,39 @@ def test_overlay_sccache_extra_overlays_returns_empty_when_disabled() -> None:
     result = _sccache_extra_overlays(cfg)  # type: ignore[arg-type]
 
     assert result == []
+
+
+@pytest.mark.unit
+def test_overlay_ccache_extra_overlays_returns_path_when_effective() -> None:
+    """ccache on and sccache off: the ccache overlay is selected."""
+    from bakar.commands._helpers import _ccache_extra_overlays
+
+    cfg = _overlay_cfg(sccache_dist=False, ccache=True)
+    result = _ccache_extra_overlays(cfg)  # type: ignore[arg-type]
+
+    assert len(result) == 1
+    assert result[0].name == "bakar-tuning-ccache.yml"
+    assert result[0].is_file()
+
+
+@pytest.mark.unit
+def test_overlay_ccache_extra_overlays_empty_under_sccache() -> None:
+    """ccache and sccache are mutually exclusive: no ccache overlay under sccache-dist."""
+    from bakar.commands._helpers import _ccache_extra_overlays
+
+    cfg = _overlay_cfg(sccache_dist=True, ccache=True)
+
+    assert _ccache_extra_overlays(cfg) == []  # type: ignore[arg-type]
+
+
+@pytest.mark.unit
+def test_overlay_ccache_extra_overlays_empty_when_ccache_disabled() -> None:
+    """ccache=False disables the ccache overlay even without sccache-dist."""
+    from bakar.commands._helpers import _ccache_extra_overlays
+
+    cfg = _overlay_cfg(sccache_dist=False, ccache=False)
+
+    assert _ccache_extra_overlays(cfg) == []  # type: ignore[arg-type]
 
 
 @pytest.mark.unit
@@ -444,21 +478,25 @@ def _sccache_bbclass_text() -> str:
 
 
 @pytest.mark.unit
-def test_overlay_inherits_sccache_class_and_removes_ccache() -> None:
-    """The overlay swaps the ccache inherit for the sccache class.
+def test_overlay_inherits_sccache_class_without_ccache_present() -> None:
+    """The sccache overlay inherits the sccache class.
 
-    ccache and sccache are mutually-exclusive launchers; chaining them
-    double-wraps the compiler and breaks caching. This is the task's
-    falsifier guard - the overlay MUST remove ccache when enabling sccache.
+    ccache and sccache are mutually-exclusive launchers. The ccache overlay
+    (bakar-tuning-ccache) is not selected when sccache-dist is on (use_ccache is
+    False), so ccache is never inherited - the overlay just adds sccache, with no
+    INHERIT:remove needed. Falsifier: a stale INHERIT:remove = "ccache" here would
+    imply ccache was added, which the selection logic now prevents.
     """
-    from bakar.commands._helpers import _sccache_extra_overlays
+    from bakar.commands._helpers import _ccache_extra_overlays, _sccache_extra_overlays
 
     cfg = _overlay_cfg(sccache_dist=True)
     overlay = _sccache_extra_overlays(cfg)[0]  # type: ignore[arg-type]
     text = overlay.read_text()
 
-    assert 'INHERIT:remove = "ccache"' in text
     assert 'INHERIT += "sccache"' in text
+    assert 'INHERIT:remove = "ccache"' not in text
+    # The ccache overlay must not be selected alongside sccache.
+    assert _ccache_extra_overlays(cfg) == []
 
 
 @pytest.mark.unit

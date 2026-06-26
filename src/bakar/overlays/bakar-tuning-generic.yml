@@ -2,9 +2,12 @@
 #
 # Layered on top of any kas YAML that does not classify as NXP
 # or TI. Carries the optimizations that apply to any bitbake build:
-# ccache wiring, fetch robustness (BB_FETCH_TIMEOUT + MIRRORS +
-# PREMIRRORS for github.com), the FETCHCMD_wget crates.io workaround,
-# and PYTHONMALLOC=malloc to mitigate the 3.14 GIL parser-fork race.
+# fetch robustness (BB_FETCH_TIMEOUT + MIRRORS + PREMIRRORS for github.com)
+# and PYTHONMALLOC=malloc to mitigate the 3.14 GIL parser-fork race. ccache
+# wiring lives in the conditional bakar-tuning-ccache overlay (mutually
+# exclusive with sccache); FETCHCMD_wget is left to the workspace's own fetch
+# config (e.g. avocado's contact-bearing User-Agent) and only the NXP/TI
+# overlays still carry a crates.io fallback.
 #
 # Excluded vs. the NXP/TI overlays: ACCEPT_FSL_EULA (NXP-only), the
 # renderdoc CMake-launcher fix (only fires under
@@ -47,16 +50,13 @@ env:
   BAKAR_BB_NUMBER_THREADS: null
 
 local_conf_header:
-  bakar-tuning: |
-    CCACHE_DIR = "/work/ccache"
-    INHERIT += "ccache"
-    # Cap the build ccache. oe-core's CCACHE_CONFIGPATH (meta/conf/ccache.conf)
-    # leaves max_size=0 (uncapped); exporting CCACHE_MAXSIZE puts it in the
-    # do_compile env, where it overrides that config file. With [build]
-    # ccache_shared this one cap governs the shared cache for every workspace;
-    # export a larger CCACHE_MAXSIZE (it overrides this) when sharing widely.
-    CCACHE_MAXSIZE = "50G"
-    export CCACHE_MAXSIZE
+  # Sort-last key: kas emits local_conf_header entries sorted by key
+  # (kas/config.py _get_conf_header), so the `zz-bakar-` prefix lands every
+  # bakar section after the workspace's own keys - bakar's plain `=` then wins.
+  # The numeric segment orders bakar's own overlays (10 base < 20 ccache < 30
+  # hashequiv < 40 shared-cache < 50 sccache). ccache config lives in the
+  # conditional bakar-tuning-ccache overlay now (mutually exclusive with sccache).
+  zz-bakar-10-base: |
     # Decoupled parallelism: recipe concurrency (task + parse threads) is sized
     # to local RAM, compile -j to a distributed-compile cluster. bakar injects
     # BAKAR_BB_NUMBER_THREADS / BAKAR_PARALLEL_MAKE from config.toml [build] when
@@ -128,9 +128,6 @@ local_conf_header:
         https://github.com/.*/.*  http://downloads.yoctoproject.org/mirror/sources/ \n \
     "
 
-    # crates.io 403 workaround (matches NXP/TI overlays).
-    FETCHCMD_wget = "/usr/bin/env wget --tries=2 --timeout=100 -U 'bitbake/2.0'"
-
     # meta-erlang's mix.bbclass runs `mix deps.get` during do_configure with
     # network access enabled. The default Hex HTTP timeout (~60s) is too short
     # for hex.pm under congestion. HEX_HTTP_CONCURRENCY=1 avoids thundering-herd
@@ -143,19 +140,17 @@ local_conf_header:
     # wss://hashserv.yoctoproject.org/ws from inside the container hangs
     # task initialisation when the host is unreachable. The local
     # bakar-managed hashserv (BB_HASHSERVE) is used instead when running.
-    # :forcevariable wins over any later plain `=` in merged kas YAML so
-    # BSP-specific YAMLs (e.g. meta-avocado vendor/oe.yml) cannot override.
-    BB_HASHSERVE_UPSTREAM:forcevariable = ""
+    # Plain `=` suffices now that the zz-bakar key sorts this section last, so it
+    # already beats BSP-specific YAMLs (e.g. meta-avocado vendor/oe.yml). The
+    # hashequiv overlay (sorting after this) overrides with an env-driven opt-in.
+    BB_HASHSERVE_UPSTREAM = ""
 
-    # Disable rm_work entirely. The kas-build-env container enables it by
-    # default (AVOCADO_RM_WORK=1), which cleans recipe-sysroot-native after
-    # each task and breaks any recipe whose later tasks depend on native
-    # binaries (e.g. do_stone_provision needs stone and fwup from a
-    # previously-cleaned sysroot). Work dirs are cheap on a dev machine.
+    # Disable rm_work while bakar is in use. The kas-build-env container enables
+    # it (AVOCADO_RM_WORK=1), which cleans recipe-sysroot-native after each task
+    # and breaks recipes whose later tasks need native binaries (e.g.
+    # do_stone_provision needs stone and fwup). INHERIT:remove misses the copy
+    # meta-avocado adds via USER_CLASSES, so strip it there too; :remove applies
+    # regardless of merge order. bakar materialization deletes both lines when
+    # [build] rm_work=true (BAKAR_RM_WORK / .bakar.toml / config.toml).
     INHERIT:remove = "rm_work"
-
-    # nodejs uses a GYP-generated Makefile with fixup_dep() that writes
-    # a .d.raw dependency file via -MF, then immediately reads it back.
-    # ccache with hash_dir=false does not restore the .d.raw file on a
-    # cache hit, causing fixup_dep() to fail with "No such file or directory".
-    CCACHE_DISABLE:pn-nodejs = "1"
+    USER_CLASSES:remove = "rm_work"

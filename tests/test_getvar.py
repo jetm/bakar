@@ -167,7 +167,7 @@ def test_getvar_colon_overlay_forwarded_to_ctx(
     """
     from bakar.user_config import UserConfig
 
-    monkeypatch.setattr("bakar.commands._app._load_user_config_safe", UserConfig)
+    monkeypatch.setattr("bakar.commands._app._load_user_config_safe", lambda: UserConfig(ccache=False))
     calls: list[dict] = []
     fake = _make_fake_capture_ctx([(_GETVAR_OUTPUT, 0)], calls)
     kas_arg = f"{machine_yaml}:{overlay_yaml}"
@@ -199,7 +199,7 @@ def test_getvar_single_yaml_no_extras(
     """
     from bakar.user_config import UserConfig
 
-    monkeypatch.setattr("bakar.commands._app._load_user_config_safe", UserConfig)
+    monkeypatch.setattr("bakar.commands._app._load_user_config_safe", lambda: UserConfig(ccache=False))
     calls: list[dict] = []
     fake = _make_fake_capture_ctx([(_GETVAR_OUTPUT, 0)], calls)
 

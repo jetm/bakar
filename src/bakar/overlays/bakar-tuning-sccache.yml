@@ -46,8 +46,10 @@ repos:
       .:
 
 local_conf_header:
-  bakar-tuning-sccache: |
-    # ccache and sccache are mutually-exclusive launchers; drop the ccache
-    # inherit added by the generic tuning overlay and inherit sccache instead.
-    INHERIT:remove = "ccache"
+  # Sort-last key (see bakar-tuning-generic): 50 orders sccache last among the
+  # bakar overlays.
+  zz-bakar-50-sccache: |
+    # ccache and sccache are mutually-exclusive launchers. The ccache overlay
+    # (bakar-tuning-ccache) is not selected when sccache-dist is on, so ccache is
+    # never inherited here - no INHERIT:remove needed, just inherit sccache.
     INHERIT += "sccache"

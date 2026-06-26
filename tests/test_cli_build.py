@@ -217,8 +217,11 @@ def test_user_overlay_named_in_build_log(
     events = list(tmp_path.glob("**/events.jsonl"))
     assert events, "no events.jsonl written"
     text = "\n".join(p.read_text() for p in events)
-    assert "merging 3 overlays" in text
+    # 4 overlays: the user YAML, the generic base, the user's bringup.yml, and
+    # the default-on ccache tuning overlay (ccache defaults true, sccache off).
+    assert "merging 4 overlays" in text
     assert "bringup.yml" in text
+    assert "bakar-tuning-ccache.yml" in text
 
 
 # ---------------------------------------------------------------------------

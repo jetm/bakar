@@ -36,16 +36,9 @@ env:
   BAKAR_BB_NUMBER_THREADS: null
 
 local_conf_header:
-  bakar-tuning: |
-    CCACHE_DIR = "/work/ccache"
-    INHERIT += "ccache"
-    # Cap the build ccache. oe-core's CCACHE_CONFIGPATH (meta/conf/ccache.conf)
-    # leaves max_size=0 (uncapped); exporting CCACHE_MAXSIZE puts it in the
-    # do_compile env, where it overrides that config file. With [build]
-    # ccache_shared this one cap governs the shared cache for every workspace;
-    # export a larger CCACHE_MAXSIZE (it overrides this) when sharing widely.
-    CCACHE_MAXSIZE = "50G"
-    export CCACHE_MAXSIZE
+  # Sort-last key (see bakar-tuning-generic): bakar wins over workspace layers.
+  # ccache config lives in the conditional bakar-tuning-ccache overlay now.
+  zz-bakar-10-base: |
     # Decoupled parallelism: recipe concurrency (task + parse threads) is sized
     # to local RAM, compile -j to a distributed-compile cluster. bakar injects
     # BAKAR_BB_NUMBER_THREADS / BAKAR_PARALLEL_MAKE from config.toml [build] when
@@ -70,8 +63,15 @@ local_conf_header:
     BB_SCHEDULER = "${@os.environ.get('BB_SCHEDULER', '')}"
     IMAGE_FEATURES:remove = "dev-pkgs dbg-pkgs tools-sdk tools-debug staticdev-pkgs"
 
-    # Never peer with the public Yocto hashserv (hangs when unreachable).
-    BB_HASHSERVE_UPSTREAM:forcevariable = ""
+    # Disable rm_work while bakar is in use (work dirs are cheap on a dev host
+    # and later tasks may need native binaries). Strip both inherit paths;
+    # bakar materialization deletes these when [build] rm_work=true.
+    INHERIT:remove = "rm_work"
+    USER_CLASSES:remove = "rm_work"
+
+    # Never peer with the public Yocto hashserv (hangs when unreachable). Plain
+    # `=` suffices now that the zz-bakar key sorts this section last.
+    BB_HASHSERVE_UPSTREAM = ""
 
     # Fetch robustness: raise the per-URI timeout so transient TLS / DNS
     # stalls do not trip the default (~45s) and fail the task.

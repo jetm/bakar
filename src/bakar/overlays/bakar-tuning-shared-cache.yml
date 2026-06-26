@@ -25,7 +25,10 @@ env:
   BAKAR_SSTATE_MIRROR_URL:
 
 local_conf_header:
-  bakar-tuning-shared-cache: |
+  # Sort-last key (see bakar-tuning-generic): 40 orders shared-cache after the
+  # base, so BB_HASHSERVE_UPSTREAM here actually takes effect (the base used to
+  # force it empty via :forcevariable, silently defeating this public-hashserv URL).
+  zz-bakar-40-shared-cache: |
     # Redirect sstate fetches to the configured mirror before going upstream.
     # Path layout follows the Yocto Project autobuilder convention (/all/PATH).
     SSTATE_MIRRORS ?= "file://.* ${@os.environ.get('BAKAR_SSTATE_MIRROR_URL', '')}/all/PATH;downloadfilename=PATH"
