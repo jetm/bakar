@@ -1538,6 +1538,106 @@ def probe_cluster(scheduler_url: str | None = None) -> ClusterReport:
     return ClusterReport(reachable=True, capacity=cap)
 
 
+@dataclass
+class BuildDaemonReport:
+    """In-container sccache daemon view for a running bakar build.
+
+    ``running`` is False when no build container is up. ``distributed`` is the
+    total jobs sent to the cluster; ``per_node`` breaks it down by server. A
+    build that compiles (``cache_misses`` > 0) with ``distributed`` == 0 is the
+    local-only failure mode the dist guard exists to catch.
+    """
+
+    running: bool
+    container: str | None = None
+    error: str | None = None
+    cache_hits: int = 0
+    cache_misses: int = 0
+    distributed: int = 0
+    dist_errors: int = 0
+    cache_location: str | None = None
+    per_node: tuple[tuple[str, int], ...] = ()
+
+    @property
+    def verdict(self) -> str:
+        if not self.running:
+            return "no build container running"
+        if self.error:
+            return "stats unavailable"
+        if self.distributed > 0:
+            return "DISTRIBUTING"
+        if self.cache_misses > 0:
+            return "LOCAL-ONLY"
+        return "idle (no compiles yet)"
+
+
+def probe_build_daemon() -> BuildDaemonReport:
+    """Inspect the sccache daemon inside a running bakar build container.
+
+    Finds the build container by its ``bakar.run_id`` label and queries the
+    in-container daemon's stats, so ``bakar cluster-info`` can show whether an
+    in-progress build is actually distributing - not just the scheduler's
+    aggregate capacity, which says nothing about the client. Never raises:
+    returns ``running=False`` when no build container is up and ``error=...``
+    when the query fails.
+    """
+    import json
+
+    try:
+        ps = subprocess.run(
+            ["docker", "ps", "--filter", "label=bakar.run_id", "--format", "{{.ID}}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
+        return BuildDaemonReport(running=False, error=f"docker ps failed: {exc}")
+    cids = ps.stdout.split()
+    if not cids:
+        return BuildDaemonReport(running=False)
+    cid = cids[0]
+    try:
+        out = subprocess.run(
+            ["docker", "exec", cid, "sccache", "--show-stats", "--stats-format=json"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        stats = json.loads(out.stdout)["stats"]
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
+        return BuildDaemonReport(running=True, container=cid, error=f"stats query failed: {exc}")
+    dist = stats.get("dist_compiles", {}) or {}
+    hits = sum(stats.get("cache_hits", {}).get("counts", {}).values())
+    misses = sum(stats.get("cache_misses", {}).get("counts", {}).values())
+    location = None
+    try:
+        txt = subprocess.run(
+            ["docker", "exec", cid, "sccache", "--show-stats"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        for line in txt.stdout.splitlines():
+            if line.strip().startswith("Cache location"):
+                location = line.split("Cache location", 1)[1].strip()
+                break
+    except OSError, subprocess.SubprocessError:
+        pass
+    return BuildDaemonReport(
+        running=True,
+        container=cid,
+        cache_hits=hits,
+        cache_misses=misses,
+        distributed=sum(dist.values()),
+        dist_errors=int(stats.get("dist_errors", 0) or 0),
+        cache_location=location,
+        per_node=tuple(sorted(dist.items())),
+    )
+
+
 def _query_cluster_capacity() -> str | None:
     """Run `sccache --dist-status` and return its capacity summary, or None.
 
