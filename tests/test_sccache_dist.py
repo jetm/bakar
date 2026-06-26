@@ -495,26 +495,24 @@ def test_sccache_class_sets_launcher_per_recipe() -> None:
 
 
 @pytest.mark.unit
-def test_sccache_class_excludes_host_compiler_classes_only() -> None:
-    """The class excludes only the host-compiler classes; nativesdk/cross-canadian distribute.
+def test_sccache_class_excludes_no_compiler_classes() -> None:
+    """The class excludes no inherit-class: native/cross/crosssdk distribute too.
 
-    sccache packages the in-use compiler via `gcc -print-prog-name=as`; native,
-    cross, and crosssdk recipes compile with the host gcc whose PATH-relative `as`
-    (Arch) cannot be packaged, so they must compile locally and stay excluded.
-    nativesdk and cross-canadian build with the OE crosssdk compiler (absolute-path
-    `as`, packageable), so they distribute - measured on avocado as 218 SDK-toolchain
-    compiles across two nodes with 0 distributed-compile failures. The kernel is also
-    not excluded (it distributes; its few .incbin objects fall back locally). This is
-    the falsifier guard: re-adding nativesdk/cross-canadian to the excluded line fails.
+    All of native, cross, and crosssdk compile with the host/build gcc whose
+    `-print-prog-name=as` returns a bare `as`; the sccache fork resolves that
+    against the compile task's PATH (not the daemon's), so the right assembler is
+    packaged and they distribute - measured on avocado scarthgap as zlib-native,
+    linux-libc-headers, and binutils-cross-aarch64, all 0-error. nativesdk,
+    cross-canadian, and the kernel were never excluded either. This is the
+    falsifier guard: re-adding any class to the excluded line fails the empty-list
+    assertion. The per-class gate stays as a documented escape hatch.
     """
     text = _sccache_bbclass_text()
 
     excluded_line = text.split("SCCACHE_EXCLUDED_CLASSES ?=")[1].split("\n")[0]
-    for cls in ("native", "cross", "crosssdk"):
-        assert cls in excluded_line
-    assert "nativesdk" not in excluded_line
-    assert "cross-canadian" not in excluded_line
-    assert "kernel" not in excluded_line
+    assert excluded_line.strip() == '""'
+    for cls in ("native", "cross", "crosssdk", "nativesdk", "cross-canadian", "kernel"):
+        assert cls not in excluded_line
     assert "inherits_class(cls, d)" in text
 
 
@@ -533,23 +531,22 @@ def test_sccache_class_honors_disable_flags() -> None:
 
 
 @pytest.mark.unit
-def test_sccache_class_keeps_build_compiler_local() -> None:
-    """The class strips sccache from the build/host compiler (BUILD_CC/CXX).
+def test_sccache_class_routes_build_compiler_through_sccache() -> None:
+    """The class routes the build/host compiler (BUILD_CC/CXX) through ${CCACHE}.
 
     OE prepends ${CCACHE} to both the target CC (gcc.bbclass) and the build
-    BUILD_CC/BUILD_CXX (gcc-native.bbclass). Eligible target recipes still
-    compile host helper tools with the build compiler - e.g. linux-libc-headers
-    do_install runs `make HOSTCC="${BUILD_CC}"` to build fixdep - so a leaked
-    sccache on BUILD_CC ships those host-tool compiles to the build-server,
-    where they need network the install task lacks and hit the unpackageable
-    host `as`. :forcevariable beats gcc-native.bbclass's `=` regardless of
-    inherit order. Caught by a real qemuarm64 linux-libc-headers do_install
-    failing with "Network is unreachable".
+    BUILD_CC/BUILD_CXX (gcc-native.bbclass). Re-deriving them here with
+    :forcevariable (which beats gcc-native.bbclass's `=` regardless of inherit
+    order) keeps the ${CCACHE} launcher so build-compiler objects distribute too -
+    the fork resolves their bare host `as` against the compile PATH. Excluded
+    recipes never set CCACHE, so for them this expands to a bare compiler and stays
+    local. This is the falsifier: dropping ${CCACHE} would force every build-tool
+    compile local.
     """
     text = _sccache_bbclass_text()
 
-    assert 'BUILD_CC:forcevariable = "${BUILD_PREFIX}gcc ${BUILD_CC_ARCH}"' in text
-    assert 'BUILD_CXX:forcevariable = "${BUILD_PREFIX}g++ ${BUILD_CC_ARCH}"' in text
+    assert 'BUILD_CC:forcevariable = "${CCACHE}${BUILD_PREFIX}gcc ${BUILD_CC_ARCH}"' in text
+    assert 'BUILD_CXX:forcevariable = "${CCACHE}${BUILD_PREFIX}g++ ${BUILD_CC_ARCH}"' in text
 
 
 @pytest.mark.unit
