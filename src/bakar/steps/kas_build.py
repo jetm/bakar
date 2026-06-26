@@ -150,14 +150,27 @@ def _inject_literal_sccache(cfg: BuildConfig, text: str) -> str:
     configured daemon and leaves ``BAKAR_*`` unset, so nothing is injected."""
     if cfg.host_mode or not cfg.use_sccache_dist:
         return text
-    if "SCCACHE_CONF" in text:
+    # Idempotency: match the actual exported assignment, not the string
+    # "SCCACHE_CONF" which also appears in this overlay's comments and in the
+    # BAKAR_SCCACHE_CONF env key (a substring check there would no-op the inject).
+    if re.search(r"^\s*export\s+SCCACHE_CONF\b", text, re.MULTILINE):
         return text
     sccache_conf = Path.home() / ".config" / "sccache" / "config"
     if not sccache_conf.is_file():
         return text
+    lines = []
+    # The scheduler URL also rides the dropped BAKAR_* env path, so bake it in
+    # too - both so the daemon knows the scheduler and so the dist guard (which
+    # keys on SCCACHE_DIST_SCHEDULER_URL) actually fires. localhost is the
+    # container itself, so rewrite to the host gateway as the passthrough does.
+    if cfg.sccache_scheduler_url:
+        url = cfg.sccache_scheduler_url.replace("localhost", "host.docker.internal")
+        lines.append(f'export SCCACHE_DIST_SCHEDULER_URL = "{url}"')
+    lines.append(f'export SCCACHE_CONF = "{sccache_conf}"')
+    lines.append('export SCCACHE_DIR = "/work/.sccache-cache"')
     m = re.search(r"^(?P<indent>[ \t]+)INHERIT\b", text, re.MULTILINE)
     indent = m.group("indent") if m else "    "
-    addition = f'{indent}export SCCACHE_CONF = "{sccache_conf}"\n{indent}export SCCACHE_DIR = "/work/.sccache-cache"\n'
+    addition = "".join(f"{indent}{line}\n" for line in lines)
     return text.rstrip("\n") + "\n" + addition
 
 

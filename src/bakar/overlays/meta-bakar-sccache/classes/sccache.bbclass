@@ -134,11 +134,19 @@ do_kernel_configcheck[network] = "1"
 do_compile_kernelmodules[network] = "1"
 do_bundle_initramfs[network] = "1"
 
-# Point the in-build sccache client at the configured scheduler. Empty when
-# unset, which leaves the client on its own config / local-cache mode. bakar
-# exports BAKAR_SCCACHE_SCHEDULER_URL and the tuning overlay whitelists it
-# through kas's BB_ENV_PASSTHROUGH_ADDITIONS.
-export SCCACHE_DIST_SCHEDULER_URL = "${@os.environ.get('BAKAR_SCCACHE_SCHEDULER_URL', '')}"
+# Point the in-build sccache client at the configured scheduler. Container mode
+# bakes a literal `export SCCACHE_DIST_SCHEDULER_URL = "<url>"` into local.conf
+# (bakar _inject_literal_sccache) because kas's clean_environment drops the
+# BAKAR_* env this class would otherwise read - the same scrubbing that defeats
+# the BB_ENV_PASSTHROUGH_ADDITIONS whitelist. local.conf is parsed before
+# `INHERIT += "sccache"` pulls this class in, so a plain `=` here, parsed last,
+# would clobber that materialized literal back to the empty env lookup. Use a
+# weak default (??=) so the local.conf `=` always wins, with a bare `export` to
+# carry the export flag onto whichever value survives. Host mode injects nothing
+# and leaves this empty, which is correct: the pre-started daemon reads the
+# scheduler from ~/.config/sccache/config.
+export SCCACHE_DIST_SCHEDULER_URL
+SCCACHE_DIST_SCHEDULER_URL ??= "${@os.environ.get('BAKAR_SCCACHE_SCHEDULER_URL', '')}"
 
 # Container mode only: deliver the auth config path and a writable disk cache to
 # the in-container client (bakar sets BAKAR_SCCACHE_CONF/BAKAR_SCCACHE_DIR there;
