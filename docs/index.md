@@ -21,6 +21,7 @@
 | `triage` | [triage.md](triage.md) | Post-mortem a failed build |
 | `report` | [report.md](report.md) | Summarize a completed build run |
 | `log` | [log.md](log.md) | Tail a run log live |
+| `monitor` | [monitor.md](monitor.md) | One-view live watch: cluster load, dist stats, task progress |
 | `layers` | [layers.md](layers.md) | Print layer git hashes, branches, priority, and build status |
 | `show` | [show.md](show.md) | Print resolved build picture: config, overlays, layers, sources, command |
 | `getvar` | [getvar.md](getvar.md) | Resolve a bitbake variable and show where it was set |
@@ -59,7 +60,8 @@
 **Build failed:**
 - Stop a running build cleanly so it stays resumable: [stop.md](stop.md)
 - Find what went wrong: [triage.md](triage.md)
-- Watch a running build: [log.md](log.md)
+- Watch a running build (tail one log): [log.md](log.md)
+- Watch a running build (cluster + dist + task progress in one view): [monitor.md](monitor.md)
 - Check if the environment is sane: [doctor.md](doctor.md)
 - Rebuild or re-run a task on one recipe: [bitbake.md](bitbake.md)
 - Wipe one recipe's sstate and rebuild it in one go: [bitbake.md](bitbake.md) (`rebuild`)
@@ -149,12 +151,13 @@ Related: [bitbake.md](bitbake.md), [graph.md](graph.md)
 
 ```text
 bakar log       - tail a live build log
+bakar monitor   - one-view live watch: cluster load, dist stats, task progress
 bakar triage    - surface the failing recipe/task from bitbake-events.json (--run/--preset/--release select the run dir)
 bakar report    - summarize a completed run (timing, image size, layers)
 bakar layers    - print layer git hashes without running anything
 ```
 
-Related: [log.md](log.md), [triage.md](triage.md), [report.md](report.md), [layers.md](layers.md)
+Related: [log.md](log.md), [monitor.md](monitor.md), [triage.md](triage.md), [report.md](report.md), [layers.md](layers.md)
 
 ### Reproducibility
 

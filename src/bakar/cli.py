@@ -37,6 +37,7 @@ import bakar.commands.layers
 import bakar.commands.lock
 import bakar.commands.log
 import bakar.commands.mirror
+import bakar.commands.monitor
 import bakar.commands.override
 import bakar.commands.prefetch
 import bakar.commands.presets

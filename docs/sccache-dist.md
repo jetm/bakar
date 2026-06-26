@@ -262,6 +262,8 @@ The scheduler URL resolves from `--scheduler`, then the global `--sccache-schedu
 
 The scheduler exposes only aggregate counts (server count, total CPUs, jobs in progress) — there is no per-build-server breakdown. When a build-server array becomes available from the scheduler, `cluster-info` prints it as a node list with no further change.
 
+`cluster-info` is a one-shot snapshot. To watch the cluster *and* the build together while a build runs — per-node job load, the daemon's cache/distributed/fell-back counts, and bitbake task progress in one refreshing view (or `--json`/NDJSON for CI) — use [`bakar monitor`](monitor.md).
+
 ## Configuration
 
 ```toml
