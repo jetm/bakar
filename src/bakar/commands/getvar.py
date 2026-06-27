@@ -131,7 +131,7 @@ def _run_getvar(
 ) -> None:
     """Run ``bitbake-getvar`` and print the result."""
     # Build the bitbake-getvar command.
-    # -e flag: print unexpanded value.
+    # -u flag: print unexpanded value.
     # -r <recipe>: scope to recipe parse context.
     parts = ["bitbake-getvar"]
     if unexpanded:

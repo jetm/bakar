@@ -19,8 +19,8 @@ bakar setup [OPTIONS]
 
 | Flag | Description |
 |------|-------------|
-| `--dry-run` | Print the host profile and the full generated script, mutate nothing |
-| `--yes` | Skip the confirm gate after a passwordless-sudo precheck |
+| `--dry-run`, `-n` | Print the host profile and the full generated script, mutate nothing |
+| `--yes`, `-y` | Skip the confirm gate after a passwordless-sudo precheck |
 | `--git-email` | Global git identity email to set (`git config --global user.email`) |
 | `--git-name` | Global git identity name to set (`git config --global user.name`) |
 

@@ -20,6 +20,7 @@ bakar gen-kas [OPTIONS]
 | `--manifest` | `-f` | Manifest filename |
 | `--branch` | `-b` | Branch override |
 | `--output` | `-o` | Output path (default: `<bsp_root>/kas-<bsp>.yml`) |
+| `--dry-run` | `-n` | Print the resolved output and source paths, then exit without writing |
 | `--workspace` | `-w` | Workspace root override |
 
 ## Examples

@@ -19,7 +19,8 @@ bakar sync [OPTIONS]
 | `--branch` | `-b` | Branch override |
 | `--clean` | | Remove `<bsp>/build/` before syncing |
 | `--show-layers` | | Print layer git hashes after sync |
-| `--dry-run-script` | | Write a runnable bash script to PATH instead of syncing; use `-` for stdout. Distinct from the build `--dry-run` flag: this produces an executable script whose sync step matches the workspace family (repo for NXP, oe-layertool for TI, kas-container checkout for bbsetup). |
+| `--dry-run` | `-n` | Print the sync commands that would run, then exit without syncing |
+| `--dry-run-script` | | Write a runnable bash script to PATH instead of syncing; use `-` for stdout. Distinct from `--dry-run`: this produces an executable script whose sync step matches the workspace family (repo for NXP, oe-layertool for TI, kas-container checkout for bbsetup). |
 | `--workspace` | `-w` | Workspace root override |
 
 **Global option:** `--hide-doctor-report`, placed before the subcommand

@@ -1,16 +1,17 @@
 """bakar inspect subcommand - deep per-recipe report.
 
-Combines three bitbake calls inside kas-container to produce a structured
+Combines two bitbake calls inside kas-container to produce a structured
 report for a single recipe:
 
-1. ``bitbake-layers show-recipes -f <recipe>`` - layer, recipe file, bbappends.
-2. ``bitbake-getvar -r <recipe> WORKDIR S B D T`` - resolved build paths.
-3. ``bitbake -e <recipe>`` - full environment dump parsed by
-   :func:`~bakar.inspect_parse.parse_env_vars` for all other fields.
+1. ``bitbake-layers show-recipes <recipe>`` - the providing layer and version.
+2. ``bitbake -e <recipe>`` - the full environment dump, parsed by
+   :func:`~bakar.inspect_parse.parse_env_vars` for identity, sources, the
+   WORKDIR/S/B/D/T paths, inherits, packages, and dependencies. ``bitbake -e``
+   is a superset of ``bitbake-getvar``, so the paths come from this dump rather
+   than a separate per-variable getvar call.
 
-With ``--recursive/-r`` a fourth call adds transitive forward and reverse
-dependency listings via ``bitbake-layers show-recipes`` and
-``bitbake -g <recipe>``.
+With ``--recursive/-r`` a third call (``bitbake -g <recipe>``) adds the
+transitive forward dependency listing (the reverse list is not populated).
 
 For an unknown recipe, the command exits non-zero and surfaces the bitbake
 error rather than printing an empty report as success.
@@ -84,7 +85,11 @@ def _parse_show_recipes(text: str) -> dict[str, str]:
 
 
 def _parse_getvar_paths(text: str) -> dict[str, str]:
-    """Parse ``bitbake-getvar -r <recipe> WORKDIR S B D T`` output."""
+    """Parse WORKDIR/S/B/D/T from the ``bitbake -e`` environment dump.
+
+    The command passes the ``bitbake -e`` output here (it is a superset of
+    ``bitbake-getvar``), so no separate getvar call is made.
+    """
     return parse_env_vars(text, ["WORKDIR", "S", "B", "D", "T"])
 
 
@@ -335,15 +340,14 @@ def inspect(
 ) -> None:
     """Print a deep per-recipe inspection report.
 
-    Combines three bitbake calls inside kas-container:
+    Combines two bitbake calls inside kas-container:
 
     \b
-    1. bitbake-layers show-recipes -f <recipe>  (Identity: layer, recipe file, bbappends)
-    2. bitbake-getvar -r <recipe> WORKDIR S B D T  (Paths)
-    3. bitbake -e <recipe>  (Sources, Inherits, Packages, Dependencies)
+    1. bitbake-layers show-recipes <recipe>  (Identity: layer, version)
+    2. bitbake -e <recipe>  (Identity FILE, Sources, Paths, Inherits, Packages, Dependencies)
 
-    With ``--recursive/-r`` a fourth call (``bitbake -g <recipe>``) adds
-    transitive forward and reverse dependency listings.
+    With ``--recursive/-r`` a third call (``bitbake -g <recipe>``) adds the
+    transitive forward dependency listing.
 
     Exits non-zero when the recipe is unknown, surfacing the bitbake error
     rather than printing an empty report.

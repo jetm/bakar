@@ -61,6 +61,14 @@ All keys use dotted notation (`section.subsection.key`).
 | `build.hashserv` | bool | Persistent workspace-scoped bitbake-hashserv daemon (default: `false`). See [hashserv.md](hashserv.md). |
 | `build.ccache_shared` | bool | Share one ccache across all workspaces instead of per-workspace (default: `false`). Defaults the cache to `~/.cache/bakar/ccache`. |
 | `build.ccache_dir` | string | Explicit ccache directory (a shared location of your choosing); overrides `ccache_shared` and the per-workspace default. |
+| `build.ccache` | bool | Enable ccache (default: `true`). Mutually exclusive with `sccache_dist`. |
+| `build.sccache_dist` | bool | Route C/C++ `do_compile` through sccache-dist (default: `false`). See [sccache-dist.md](sccache-dist.md). |
+| `build.sccache_scheduler_url` | string | sccache-dist scheduler URL (e.g. `http://localhost:10600`) |
+| `build.rm_work` | bool | Strip each recipe's WORKDIR after it builds (default: `false`; off while bakar is in use) |
+| `build.disk_free_threshold_gb` | float | Minimum free disk (GB) enforced by the doctor `disk-free` check (default: `50.0`) |
+| `build.nproc` | int | Base build parallelism, exported as `NPROC` (default: auto-detected `os.cpu_count()`) |
+| `build.parallel_make` | int | Compile `-j` (`PARALLEL_MAKE`), decoupled from recipe concurrency (default: falls back to `nproc`) |
+| `build.bb_number_threads` | int | Recipe concurrency (`BB_NUMBER_THREADS`), decoupled from compile `-j` (default: falls back to `nproc`) |
 
 ### Host thresholds (`host.*`)
 

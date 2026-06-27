@@ -64,7 +64,7 @@ signalling the wrapper PGID would orphan it. `bakar stop` instead:
 4. If still running, escalates to `<runtime> stop --timeout=5` (SIGTERM), then
    `<runtime> kill --signal=SIGKILL`.
 
-**Host builds** (`bakar build --host` - plain `kas` on the host, no container):
+**Host builds** (`bakar --host build` - plain `kas` on the host, no container):
 bitbake is a real descendant of the wrapper, so `bakar stop` signals the recorded
 process group directly:
 

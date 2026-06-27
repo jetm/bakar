@@ -18,6 +18,7 @@ bakar triage [RUN_ID] [OPTIONS]
 | `--release` | | Restrict run-dir selection to a release (matches the version in the build subdir name) |
 | `--kas-yaml` | `-k` | kas YAML for a BYO build (runs live next to it) |
 | `--workspace` | `-w` | Workspace root override |
+| `--json` | `-j` | Output the triage result as JSON instead of formatted text |
 
 ## Examples
 

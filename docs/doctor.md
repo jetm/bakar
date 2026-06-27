@@ -14,6 +14,7 @@ bakar doctor [KAS_YAML] [OPTIONS]
 |------|-------|-------------|
 | `--manifest` | `-f` | Manifest filename for BSP family dispatch |
 | `--workspace` | `-w` | Workspace root override |
+| `--json` | `-j` | Output results as JSON instead of the formatted table |
 
 ## Examples
 

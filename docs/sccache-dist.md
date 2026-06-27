@@ -167,10 +167,9 @@ With the scheduler, build-server, and client all up on this one PC, run the wryn
 
 ```bash
 cd ~/repos/personal/bakar
-bakar build examples/kas-qemux86-64-wrynose.yml \
-  --host \
-  --sccache-dist \
-  --sccache-scheduler http://localhost:10600
+# --host / --sccache-dist / --sccache-scheduler are global options - before the subcommand
+bakar --host --sccache-dist --sccache-scheduler http://localhost:10600 \
+  build examples/kas-qemux86-64-wrynose.yml
 ```
 
 `bakar doctor` runs first and gates the build (see [doctor integration](#doctor-integration)); if the `sccache-dist` check is BLOCK, the build stops with an actionable message before any compile runs.

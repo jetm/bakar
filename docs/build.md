@@ -48,13 +48,20 @@ bakar build -m imx8mp-var-dart    # machine override in bbsetup workspace
 | `--manifest` | `-f` | Manifest filename (NXP `.xml` or TI `.txt`) |
 | `--branch` | `-b` | Branch override (inferred from manifest when omitted) |
 | `--skip-sync` | | Skip repo/layertool sync step |
-| `--dry-run` | | Regenerate YAML and exit before invoking kas-container |
+| `--keep-going` | `-k` | Pass `-k` to bitbake: continue building other targets when one fails |
+| `--dry-run` | `-n` | Regenerate YAML and exit before invoking kas-container |
 | `--dry-run-script` | | Write a runnable bash script to PATH instead of building; use `-` for stdout. Distinct from `--dry-run`: this produces an executable script, not a preview. |
 | `--clean` | | Remove `<bsp>/build/` before running (forces from-scratch build) |
-| `--host` | | Bypass kas-container, run plain `kas build` on the host |
 | `--show-layers` | | Print layer git hashes before the build starts |
 | `--sstate-mirror` | | HTTP sstate/downloads mirror URL; activates `bakar-tuning-shared-cache.yml` for this build |
+| `--preset` | | Named preset from `config.toml`; additive with explicit flags (explicit flags win) |
 | `--workspace` | `-w` | Workspace root override |
+
+`--host` (bypass kas-container, run plain `kas build` on the host) and
+`--sccache-dist` / `--sccache-scheduler URL` are **global** options handled by the
+top-level callback, so they go *before* the subcommand: `bakar --host build ...`,
+`bakar --sccache-dist build ...`. Placing them after `build` is rejected with
+`No such option`.
 
 **Global option:** `--hide-doctor-report`, placed before the subcommand
 (`bakar --hide-doctor-report build ...`), runs the doctor checks but prints
@@ -94,7 +101,8 @@ bakar build kas/main.yml:kas/sstate-mirror.yml
 bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --show-layers
 
 # Host mode (skip kas-container, run kas directly - requires host Yocto prereqs)
-bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --host
+# --host is global: it goes before the subcommand
+bakar --host build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart
 
 # Pull sstate and downloads from a team mirror (activates shared-cache overlay)
 bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --sstate-mirror https://cache.example.com

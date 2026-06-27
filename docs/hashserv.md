@@ -9,10 +9,14 @@ Manage the workspace-scoped `bitbake-hashserv` daemon that backs OEEquivHash sst
 ## Synopsis
 
 ```text
-bakar hashserv start
-bakar hashserv stop
-bakar hashserv status
+bakar hashserv start  [KAS_YAML]
+bakar hashserv stop   [KAS_YAML]
+bakar hashserv status [KAS_YAML]
 ```
+
+Each verb accepts an optional positional `KAS_YAML` for BYO/bbsetup workspaces:
+when given, the daemon is resolved next to that YAML (the same dispatch as
+`bakar build my.yml`); omit it for an nxp/ti workspace auto-detected from the cwd.
 
 ## Verbs
 
@@ -62,7 +66,7 @@ In container mode (the default — no `--host` flag), the in-container bitbake c
 
 `--add-host=...:host-gateway` requires Docker 20.10 or newer. `bakar doctor` warns when the daemon is older.
 
-In host mode (`bakar build --host`), the rewrite is skipped — `BB_HASHSERVE` stays at `ws://localhost:<port>` because bitbake runs directly on the host and reaches the daemon on the loopback interface without translation.
+In host mode (`bakar --host build`), the rewrite is skipped — `BB_HASHSERVE` stays at `ws://localhost:<port>` because bitbake runs directly on the host and reaches the daemon on the loopback interface without translation.
 
 ## Overlay loading — automatic when `[build] hashserv = true`
 
