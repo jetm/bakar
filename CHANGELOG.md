@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added `--sccache-dist` and `--sccache-scheduler` global options (placed before the subcommand, e.g. `bakar --sccache-dist build my.yml`) enabling distributed compilation via sccache-dist across all commands that resolve a build config, including `build`, `getvar`, `dump`, `shell`, `clean-recipe`, and `bitbake`
+passthrough.
+- Added `sccache_dist` and `sccache_scheduler_url` keys to the `` section of `config.toml` for persistent distributed-compile configuration.
+- Added a `bakar-tuning-sccache` kas overlay and a companion `meta-bakar-sccache` BitBake layer (`sccache.bbclass`) that replace ccache with sccache as OE's compiler launcher, grant network access to compiler-bearing tasks, handle cmake recipes, ptest tasks, and kernel-specific tasks, and emit a per-node distribution summary at build end.
+- Added a preflight check (`doctor`) for sccache-dist that verifies the `sccache` binary is on PATH, the scheduler is TCP-reachable, the client is not in Disabled state, the `` token is configured, and an end-to-end compile actually reaches the cluster; reports scheduler capacity (server count, CPU count, in-progress jobs) in the preflight message.
+- Added `bakar cluster-info` command to query sccache-dist scheduler capacity (servers, CPUs, in-progress jobs, per-node breakdown) and, when a build container is running, report the in-container daemon's cache hit/miss, distributed vs. local compile counts, and a DISTRIBUTING / LOCAL-ONLY verdict.
+- Added `bakar monitor` command providing a single refreshing view of a running distributed build: cluster load, bitbake task progress and failures, and build liveness. `--json` emits a single snapshot; `--json --watch` streams NDJSON for CI consumption.
+- Added `--sccache-dist` and `--sccache-scheduler` options to `bakar getvar` and `bakar dump` so a distributed build's resolved variables and flattened YAML can be inspected without modifying `config.toml`.
+- Added a `bakar-tuning-ccache` overlay that is selected only when ccache is the effective launcher; ccache and sccache-dist are now mutually exclusive by overlay selection rather than add-then-remove.
+- Added `ccache` (default `true`) and `rm_work` (default `false`) as `` keys in `config.toml` and `.bakar.toml`, resolved with env (`BAKAR_CCACHE` / `BAKAR_RM_WORK`) > workspace > user-config > default precedence.
+- Added `nproc`, `parallel_make`, and `bb_number_threads` as independent `` keys in `config.toml`, allowing compile `-j` and recipe concurrency to be tuned separately (useful for sccache-dist clusters where compile parallelism should span the whole cluster).
+- Added `kas_container_image` to the workspace `.bakar.toml` `` table, allowing a per-workspace container image pin that overrides the global `config.toml` setting.
+- Added `bakar clean my.yml` (BYO kas-YAML positional) to clean the `workspace/build-<stem>` directory for meta-avocado and other generic BSP builds.
+- Added a `scarthgap` (Yocto 5.0 LTS) qemuarm64 example kas config (`examples/kas-qemuarm64-scarthgap.yml`) alongside the existing wrynose example.
+- Added a qemuarm64 example kas config (`examples/kas-qemuarm64-wrynose.yml`) for cross-compile validation.
+
+### Changed
+
+- `bakar --host` (and `--sccache-dist` / `--sccache-scheduler`) are now global options placed before the subcommand; placing them after the subcommand is rejected by the parser.
+- `bakar clean-cache` now falls back to mtime on `relatime` mounts (Linux default) in addition to `noatime`; only `strictatime` retains the atime-based eviction policy.
+- `bakar clean-cache` large prune operations now run in parallel with a progress bar and ETA instead of deleting files serially with no output.
+- `bakar clean --all` no longer stops the hashserv daemon when it is shared across workspaces via a common `SSTATE_DIR`; only a workspace-local daemon is stopped.
+- The `container_image` config key has been renamed to `kas_container_image` in `config.toml`, `.bakar.toml`, and all related fields; existing config files are migrated automatically on first load.
+- Setting `build.kas_container_image` in `config.toml` now correctly propagates `KAS_CONTAINER_IMAGE` to the container subprocess (previously it was honored by `doctor` but silently ignored by the actual build).
+- The hash-equivalence database (`BB_HASHSERVE_DB_DIR`) is now co-located with `SSTATE_DIR` so the equivalence index is shared across workspaces that share an sstate cache.
+- Workspaces that share an `SSTATE_DIR` now share a single hashserv daemon and DB keyed to that directory, so equivalence mappings computed by one build are visible to sibling builds.
+- The hashserv preflight check now reports PASS (at INFO) when the daemon is not yet running but `bitbake-hashserv` is available (the build will start it), and only warns when the binary itself is absent.
+- The `bakar doctor` preflight report is now grouped into labelled sections (Compute & parallelism, Tools & container runtime, Caches & storage, Host tuning, Workspace & build config) for easier reading.
+- The container-OS Python-version check has been removed; builds using Python 3.14 containers (including `jetm/kas-build-env:5.3-f44`) are no longer blocked.
+- The git-identity preflight check now probes a workspace sub-repo (where `includeIf "gitdir:..."` conditionals fire) rather than the workspace root,
+eliminating false BLOCK results for developers whose identity comes from per-project `includeIf` rules.
+- Memory floor calculation now excludes zram-backed swap (which is physically backed by RAM) and includes only disk-backed swap, preventing false PASS results on zram-heavy machines; the diagnostic message surfaces the excluded zram amount.
+- Tuning overlay keys are renamed to a `zz-bakar-NN-*` sort-last scheme so bakar's `local.conf` assignments reliably win over workspace overlay sections.
+- `build-dir` removal (`bakar clean`) is now parallelized using the same thread-pool primitive as `clean-cache`, significantly reducing wall time on large OE `tmp/` trees.
+- The `bakar doctor` sccache-dist preflight check is now scoped to host-mode builds; in container mode it warns when the configured scheduler URL points to localhost (unreachable from inside the container) instead of probing host-side.
+
+### Fixed
+
+- `bakar getvar` and `bakar dump` now apply tuning overlays (sccache, hashequiv, shared-cache) consistently with `bakar build`, so `getvar CC --recipe <target>` correctly shows the sccache launcher prefix when `--sccache-dist` is active.
+- Container-mode sccache-dist builds now actually distribute compiles; previously, `kas`'s `clean_environment` scrubbed `SCCACHE_CONF`, `SCCACHE_DIR`, and `SCCACHE_DIST_SCHEDULER_URL` before bitbake ran, causing the in-container daemon to start config-less and compile everything locally.
+- Container-mode sccache-dist builds now fail fast at `BuildStarted` when the scheduler is unreachable or the client is not distributing, instead of silently compiling everything locally for the entire build.
+- `bakar build --sccache-dist` with a broken auth token no longer silently falls back to local-only compilation; the preflight guard parses `SCCACHE_CONF` for a `` token and runs an end-to-end compile probe that exercises the token-gated allocation path.
+- `bakar --sccache-dist build` now bakes the resolved `-j N` parallelism value directly into the materialized tuning overlay, preventing `kas`'s environment scrubbing from silently reverting the compile parallelism to the default of 16.
+- Meta-avocado builds with `--sccache-dist` no longer fail at parse with "layer directories do not exist"; the `meta-bakar-sccache` layer is now materialized under the workspace directory that `KAS_WORK_DIR` points to.
+- The `bakar doctor` preflight sccache check no longer reports a false BLOCK for container builds where the host-side TCP probe cannot speak for the
+in-container client path. - `bakar doctor` no longer falsely blocks host-mode meta-avocado builds that require `gfortran` or `git-lfs`; those tools are now checked in the preflight and
+reported with actionable fix hints before the build starts.
+- Workspace `.bakar.toml` sections written as scalars instead of tables (e.g. `build = "x"`) now raise a clear error naming the offending section instead of being silently ignored.
+
 ### Changed
 
 - `bakar clean-cache` now falls back to mtime (creation date) for sstate eviction on `relatime` mounts, not just `noatime`. `relatime` updates atime at most once per 24h and any full-tree read (a backup, `du`, or a file indexer) resets every file's atime at once, so atime is not a dependable last-read signal there. Only `strictatime` mounts still use atime. This fixes "Nothing to remove" on relatime filesystems whose atimes were clobbered by a cache-wide scan. See [docs/clean-cache.md](docs/clean-cache.md).
