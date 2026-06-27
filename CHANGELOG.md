@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-06-26
+
 ### Added
 
 - Added `--sccache-dist` and `--sccache-scheduler` global options (placed before the subcommand, e.g. `bakar --sccache-dist build my.yml`) enabling distributed compilation via sccache-dist across all commands that resolve a build config, including `build`, `getvar`, `dump`, `shell`, `clean-recipe`, and `bitbake`
@@ -454,7 +456,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/jetm/bakar/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/jetm/bakar/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/jetm/bakar/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/jetm/bakar/compare/v0.15.1...v0.16.0
