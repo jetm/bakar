@@ -520,16 +520,24 @@ def test_overlay_adds_sccache_layer_repo() -> None:
 
 @pytest.mark.unit
 def test_sccache_class_sets_launcher_per_recipe() -> None:
-    """sccache.bbclass sets CCACHE='sccache ' through a per-recipe python gate.
+    """sccache.bbclass scopes CCACHE='sccache ' to the compile-family task overrides.
 
-    Mirrors ccache.bbclass: CCACHE is not set globally (that ignores per-recipe
-    CCACHE_DISABLE); the anonymous python function sets it only for eligible
-    recipes.
+    OE prepends ${CCACHE} to CC for *every* task, so a global CCACHE routed
+    autoconf's thousands of conftest do_configure compiles through sccache, each
+    paying a client->server->scheduler round-trip (measured: do_configure 45% of
+    task-time at 2.8% CPU). Scoping CCACHE to the do_compile-family task overrides
+    keeps configure on plain gcc. Falsifier: a global ``d.setVar('CCACHE',
+    'sccache ')`` would re-introduce the configure bottleneck, so assert it is
+    absent.
     """
     text = _sccache_bbclass_text()
 
     assert "python () {" in text
-    assert "d.setVar('CCACHE', 'sccache ')" in text
+    assert "d.setVar('CCACHE:task-compile', 'sccache ')" in text
+    assert "d.setVar('CCACHE:task-compile-ptest-base', 'sccache ')" in text
+    assert "d.setVar('CCACHE:task-compile-kernelmodules', 'sccache ')" in text
+    assert "d.setVar('CCACHE:task-bundle-initramfs', 'sccache ')" in text
+    assert "d.setVar('CCACHE', 'sccache ')" not in text
 
 
 @pytest.mark.unit
@@ -589,75 +597,69 @@ def test_sccache_class_routes_build_compiler_through_sccache() -> None:
 
 @pytest.mark.unit
 def test_sccache_class_adds_hosttools_and_network() -> None:
-    """The class puts sccache on the task PATH and grants compile tasks network.
+    """The class puts sccache on the task PATH and grants only compile tasks network.
 
     OE restricts each task's PATH to sysroot bins + HOSTTOOLS; without
     HOSTTOOLS += "sccache" every CC="sccache gcc" fails "command not found".
-    bitbake also isolates each task's network namespace unless [network] = "1",
-    so without it the client fails "Network is unreachable". The compiler runs in
-    do_configure (compiler tests), do_compile (main build), and do_install (e.g.
-    glibc links format.lds with the target gcc), so all three need network. Caught
-    by a real qemuarm64 zlib-native do_configure and glibc do_install.
+    bitbake also isolates each task's network namespace unless [network] = "1".
+    With CCACHE now scoped to the compile family, only do_compile and its ptest
+    mirror run the sccache client, so only those need network. Falsifier:
+    do_configure/do_install run plain gcc now, so granting them network would be
+    dead config - assert the compile grants are present and the
+    configure/install grants are absent.
     """
     text = _sccache_bbclass_text()
 
     assert 'HOSTTOOLS += "sccache"' in text
+    for task in ("do_compile", "do_compile_ptest_base"):
+        assert f'{task}[network] = "1"' in text
     for task in (
         "do_configure",
-        "do_compile",
         "do_install",
         "do_configure_ptest_base",
-        "do_compile_ptest_base",
         "do_install_ptest_base",
     ):
-        assert f'{task}[network] = "1"' in text
+        assert f'{task}[network] = "1"' not in text
 
 
 @pytest.mark.unit
 def test_sccache_class_grants_kernel_compiler_task_network() -> None:
-    """Every kernel-specific task that runs the compiler needs task network.
+    """Only the kernel compile-family tasks need network now, not the kconfig probes.
 
-    Beyond the generic do_configure/do_compile/do_install grants, linux-yocto
-    defines extra tasks that invoke CC="sccache <gcc>" - directly via oe_runmake
-    (do_compile_kernelmodules, do_bundle_initramfs -> kernel_do_compile) or via
-    the kconfig probe in scripts/Kconfig.include (do_kernel_configme through
-    `make alldefconfig`, do_kernel_configcheck through symbol_why.py ->
-    kconfiglib; every kernel make also re-runs the syncconfig probe). Without
-    their own [network] = "1" the task runs with loopback down and the client
-    cannot reach its 127.0.0.1 daemon, failing "Network is unreachable (os error
-    101)" -> "Sorry, this C compiler is not supported." Caught by a real
-    qemuarm64 linux-yocto host build (configme, then configcheck, then
-    compile_kernelmodules). bundle_initramfs runs the same kernel_do_compile and
-    is covered for the initramfs-bundle case.
+    do_compile_kernelmodules and do_bundle_initramfs (-> kernel_do_compile) run
+    CC="sccache <gcc>" through oe_runmake, so they keep [network] = "1". The
+    kconfig-probe tasks (do_kernel_configme, do_kernel_configcheck) now compile
+    with plain gcc - CCACHE is not in their task scope - so they reach no
+    scheduler and their network grant is removed. Falsifier: a stale
+    do_kernel_configme/configcheck network grant would imply sccache still runs
+    there, which the compile-only scoping prevents.
     """
     text = _sccache_bbclass_text()
 
-    for task in (
-        "do_kernel_configme",
-        "do_kernel_configcheck",
-        "do_compile_kernelmodules",
-        "do_bundle_initramfs",
-    ):
+    for task in ("do_compile_kernelmodules", "do_bundle_initramfs"):
         assert f'{task}[network] = "1"' in text
+    for task in ("do_kernel_configme", "do_kernel_configcheck"):
+        assert f'{task}[network] = "1"' not in text
 
 
 @pytest.mark.unit
-def test_sccache_class_fixes_cmake_launcher_split() -> None:
-    """The class re-derives the cmake compiler/launcher split to recognize sccache.
+def test_sccache_class_scopes_launcher_to_compile_only() -> None:
+    """The class forces the cmake compiler launcher to sccache, with no global CCACHE.
 
-    cmake.bbclass's oecmake_map_compiler only treats the literal "ccache" as a
-    launcher, so with CC="sccache <gcc>" it makes sccache itself the compiler and
-    the configure-time compiler check fails ("sccache: unexpected argument '-m'").
-    The class overrides OECMAKE_C/CXX_COMPILER and *_LAUNCHER with a helper that
-    splits sccache too. Caught by a real qemuarm64 expat/json-c do_configure.
+    CMake derives CMAKE_<LANG>_COMPILER_LAUNCHER from CC; with CCACHE now scoped
+    to do_compile, CC is bare at parse time, so the upstream
+    OECMAKE_*_COMPILER_LAUNCHER would resolve to '' and CMake recipes would lose
+    sccache. The class sets the launcher vars explicitly to 'sccache'. CMake
+    applies the launcher only to real build compiles (not its try_compile checks),
+    so configure stays clean. Falsifier: a global ``d.setVar('CCACHE', ...)`` would
+    re-route configure, so assert it is absent.
     """
     text = _sccache_bbclass_text()
 
-    assert "OECMAKE_C_COMPILER = " in text
-    assert "OECMAKE_C_COMPILER_LAUNCHER = " in text
-    assert "OECMAKE_CXX_COMPILER = " in text
-    assert "OECMAKE_CXX_COMPILER_LAUNCHER = " in text
+    assert "OECMAKE_C_COMPILER_LAUNCHER" in text
+    assert "OECMAKE_CXX_COMPILER_LAUNCHER" in text
     assert "'sccache'" in text
+    assert "d.setVar('CCACHE', 'sccache ')" not in text
 
 
 @pytest.mark.unit
@@ -796,7 +798,7 @@ def test_materialize_sccache_layer_copies_class_into_bsp_root(tmp_path: object) 
     assert (dest / "conf" / "layer.conf").is_file()
     bbclass = dest / "classes" / "sccache.bbclass"
     assert bbclass.is_file()
-    assert "d.setVar('CCACHE', 'sccache ')" in bbclass.read_text()
+    assert "d.setVar('CCACHE:task-compile', 'sccache ')" in bbclass.read_text()
 
 
 @pytest.mark.unit

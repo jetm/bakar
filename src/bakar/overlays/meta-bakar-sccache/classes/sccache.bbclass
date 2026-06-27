@@ -3,10 +3,14 @@
 #
 # Modeled on oe-core's meta/classes/ccache.bbclass: set CCACHE per-recipe
 # through an anonymous python gate so only compatible recipes route through the
-# launcher, and honor the same per-recipe CCACHE_DISABLE escape hatch. Enable
-# with `INHERIT += "sccache"` (the bakar sccache tuning overlay does this and
-# also `INHERIT:remove = "ccache"`, since the two launchers are mutually
-# exclusive).
+# launcher, and honor the same per-recipe CCACHE_DISABLE escape hatch. Unlike
+# ccache.bbclass, this class scopes CCACHE to the do_compile-family task
+# OVERRIDES (CCACHE:task-compile*) instead of setting it globally: OE prepends
+# ${CCACHE} to CC for every task, so a global launcher routed autoconf's
+# thousands of conftest do_configure compiles through sccache - 45% of build
+# task-time at 2.8% CPU. With the task scope, only do_compile distributes;
+# configure/install run plain gcc locally. Enable with `INHERIT += "sccache"`
+# (the bakar sccache tuning overlay does this).
 #
 # sccache-dist differs from ccache in three ways that this class must handle,
 # none of which ccache.bbclass needs to:
@@ -72,35 +76,41 @@ python () {
     for cls in d.getVar('SCCACHE_EXCLUDED_CLASSES').split():
         if bb.data.inherits_class(cls, d):
             return
-    d.setVar('CCACHE', 'sccache ')
+    # Scope the launcher to the compile family only. OE prepends ${CCACHE} to CC
+    # for every task, so a global CCACHE routed autoconf's thousands of conftest
+    # do_configure compiles through sccache - each one a client->server->scheduler
+    # round-trip (measured: do_configure 45% of task-time at 2.8% CPU, 97% idle).
+    # bitbake adds `task-<name>` to OVERRIDES at execution (replacing `_` with
+    # `-`, verified in bitbake/lib/bb/build.py), so a CCACHE:task-compile override
+    # applies ${CCACHE} only inside do_compile; do_configure/do_install see bare
+    # CC and run plain gcc locally. The four overrides cover the compile-family
+    # tasks: do_compile, the ptest mirror, the kernel module compile, and the
+    # initramfs bundle.
+    d.setVar('CCACHE:task-compile', 'sccache ')
+    d.setVar('CCACHE:task-compile-ptest-base', 'sccache ')
+    d.setVar('CCACHE:task-compile-kernelmodules', 'sccache ')
+    d.setVar('CCACHE:task-bundle-initramfs', 'sccache ')
+    # CMake derives CMAKE_<LANG>_COMPILER_LAUNCHER from CC. With CCACHE now
+    # task-scoped, CC is bare at parse time, so the upstream
+    # OECMAKE_*_COMPILER_LAUNCHER (= the launcher word split out of CC) would
+    # resolve to '' and CMake recipes would lose sccache. Set the launcher vars
+    # explicitly so the real build compiles route through sccache; CMake applies
+    # the launcher only to actual compiles, NOT to its try_compile/compiler
+    # checks, so do_configure stays clean automatically. The bare
+    # OECMAKE_C/CXX_COMPILER that cmake.bbclass derives from the now-bare CC is
+    # already correct, so no compiler override is needed.
+    d.setVar('OECMAKE_C_COMPILER_LAUNCHER', 'sccache')
+    d.setVar('OECMAKE_CXX_COMPILER_LAUNCHER', 'sccache')
 }
 
 # Route the build/host compiler through sccache too (${CCACHE} restored).
-# Excluded classes never set CCACHE, so this expands to a bare compiler and stays
-# local; eligible recipes (e.g. native) get "sccache <gcc>" and distribute now
-# that the fork resolves the bare `as` against the compile PATH. Definitions
-# mirror gcc-native.bbclass.
+# Excluded recipes never set CCACHE, so this expands to a bare compiler and stays
+# local; eligible recipes get "sccache <gcc>" during do_compile (CCACHE is now
+# task-scoped, so configure runs plain gcc) and distribute now that the fork
+# resolves the bare `as` against the compile PATH. Definitions mirror
+# gcc-native.bbclass.
 BUILD_CC:forcevariable = "${CCACHE}${BUILD_PREFIX}gcc ${BUILD_CC_ARCH}"
 BUILD_CXX:forcevariable = "${CCACHE}${BUILD_PREFIX}g++ ${BUILD_CC_ARCH}"
-
-# cmake.bbclass's oecmake_map_compiler splits the compiler launcher out of CC,
-# but only recognizes the literal "ccache" - with CC="sccache <gcc>" it makes
-# sccache itself the compiler, so cmake's compiler check runs `sccache <flags>`
-# and dies "unexpected argument '-m'". Re-derive the OECMAKE compiler/launcher
-# split with a helper that recognizes sccache too. cmake.bbclass uses ?= for
-# these, so this plain assignment wins; its :allarch = "" override still wins for
-# allarch recipes (which do not compile). The NATIVE_* launchers read BUILD_CC,
-# already stripped above, so they need no override.
-def sccache_map_compiler(varname, d):
-    args = (d.getVar(varname) or "").split()
-    if args and args[0] in ('ccache', 'sccache'):
-        return args[1], args[0]
-    return (args[0] if args else ''), ''
-
-OECMAKE_C_COMPILER = "${@sccache_map_compiler('CC', d)[0]}"
-OECMAKE_C_COMPILER_LAUNCHER = "${@sccache_map_compiler('CC', d)[1]}"
-OECMAKE_CXX_COMPILER = "${@sccache_map_compiler('CXX', d)[0]}"
-OECMAKE_CXX_COMPILER_LAUNCHER = "${@sccache_map_compiler('CXX', d)[1]}"
 
 # Put sccache on bitbake's task PATH. OE restricts each task's PATH to sysroot
 # bins plus the HOSTTOOLS allowlist (tmp/hosttools/); the host /usr/bin/sccache
@@ -109,28 +119,21 @@ HOSTTOOLS += "sccache"
 
 # Let the compiler reach the scheduler. bitbake runs each task in a fresh
 # network namespace (loopback down) via unshare(CLONE_NEWNET) unless the task
-# sets [network] = "1" - only do_fetch opts in by default. The sccache client
-# ships jobs from every task that runs the compiler: do_configure (compiler
-# tests), do_compile, do_install (some recipes link with the target gcc at
-# install, e.g. glibc's format.lds), and the ptest.bbclass mirrors of all three
-# (do_compile_ptest_base builds the test binaries). A [network] flag on a task a
-# recipe does not define is harmless.
-do_configure[network] = "1"
+# sets [network] = "1" - only do_fetch opts in by default. Now that CCACHE is
+# scoped to the compile family (see the gate above), the sccache client runs
+# ONLY in do_compile and its ptest mirror, so only those two need to reach the
+# scheduler. do_configure and do_install run plain gcc - no CCACHE in their task
+# scope - so they need no network grant; granting them one would be dead config.
 do_compile[network] = "1"
-do_install[network] = "1"
-do_configure_ptest_base[network] = "1"
 do_compile_ptest_base[network] = "1"
-do_install_ptest_base[network] = "1"
-# linux-yocto defines extra compiler-bearing tasks beyond do_compile that the
-# generic grants above miss. They invoke CC="sccache <gcc>" either directly via
-# oe_runmake (do_compile_kernelmodules; do_bundle_initramfs via kernel_do_compile,
-# only when bundling an initramfs) or via the kconfig probe in
-# scripts/Kconfig.include that every kernel make re-runs (do_kernel_configme via
-# `make alldefconfig`, do_kernel_configcheck via symbol_why.py -> kconfiglib).
-# Without network the client cannot reach its 127.0.0.1 daemon and the probe
-# fails "Network is unreachable" -> "Sorry, this C compiler is not supported".
-do_kernel_configme[network] = "1"
-do_kernel_configcheck[network] = "1"
+# linux-yocto defines two extra compile tasks beyond do_compile that run
+# CC="sccache <gcc>" through oe_runmake: do_compile_kernelmodules and
+# do_bundle_initramfs (via kernel_do_compile, only when bundling an initramfs).
+# They carry CCACHE:task-compile-kernelmodules / CCACHE:task-bundle-initramfs, so
+# they distribute and need network. The kconfig-probe tasks (do_kernel_configme
+# via `make alldefconfig`, do_kernel_configcheck via symbol_why.py) compile
+# locally with plain gcc - they are outside the compile-task scope - so they
+# reach no scheduler and need no network grant.
 do_compile_kernelmodules[network] = "1"
 do_bundle_initramfs[network] = "1"
 
