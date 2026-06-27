@@ -1638,6 +1638,82 @@ def probe_build_daemon() -> BuildDaemonReport:
     )
 
 
+@dataclass
+class CcacheReport:
+    """Host ccache hit/miss view for a running bakar build.
+
+    ``available`` is False when the cache dir is absent, the ``ccache`` binary
+    is missing, or ``ccache --print-stats`` fails; ``error`` then names why.
+    On success ``cache_hits`` sums the direct and preprocessed hits and
+    ``cache_misses`` is the miss count.
+    """
+
+    available: bool
+    cache_hits: int = 0
+    cache_misses: int = 0
+    error: str | None = None
+
+    @property
+    def hit_rate(self) -> float:
+        total = self.cache_hits + self.cache_misses
+        return 100.0 * self.cache_hits / total if total else 0.0
+
+
+def probe_ccache(ccache_dir: Path) -> CcacheReport:
+    """Read host ccache hit/miss counts from ``ccache --print-stats``.
+
+    Mirrors the ``ccache-health`` doctor check's guards: returns
+    ``available=False`` when the cache dir is absent, the ``ccache`` binary is
+    missing, or the stats command fails/times out. Never raises. On success
+    sums ``cache_hit_direct`` + ``cache_hit_preprocessed`` into ``cache_hits``
+    and reads ``cache_miss`` into ``cache_misses``.
+    """
+    if not ccache_dir.exists():
+        return CcacheReport(available=False, error=f"{ccache_dir} absent")
+
+    if shutil.which("ccache") is None:
+        return CcacheReport(available=False, error="ccache binary not on PATH")
+
+    env = {**os.environ, "CCACHE_DIR": str(ccache_dir)}
+    try:
+        out = subprocess.run(
+            ["ccache", "--print-stats"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env=env,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return CcacheReport(available=False, error=f"ccache --print-stats failed: {exc}")
+    if out.returncode != 0:
+        return CcacheReport(
+            available=False,
+            error=out.stderr.strip() or "ccache --print-stats exited non-zero",
+        )
+
+    hit_direct = 0
+    hit_preprocessed = 0
+    misses = 0
+    for line in out.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        key, value = parts
+        try:
+            count = int(value)
+        except ValueError:
+            continue
+        if key == "cache_hit_direct":
+            hit_direct = count
+        elif key == "cache_hit_preprocessed":
+            hit_preprocessed = count
+        elif key == "cache_miss":
+            misses = count
+
+    return CcacheReport(available=True, cache_hits=hit_direct + hit_preprocessed, cache_misses=misses)
+
+
 def _query_cluster_capacity() -> str | None:
     """Run `sccache --dist-status` and return its capacity summary, or None.
 

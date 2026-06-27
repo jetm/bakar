@@ -258,6 +258,9 @@ class BuildUIState:
         # drains via take_pending_alerts() and prints below the frozen frame.
         self._failures: list[tuple[str, str]] = []
         self._pending_alerts: list[RenderableType] = []
+        # Cluster/cache header lines shown during a build, fed by a probe thread
+        # via set_dist_lines() and injected into the normal building frame.
+        self._dist_lines: list[RenderableType] = []
         self._task_failed_count: int = 0
         # Freeze protocol: the first knotty error line of a task failure
         # (TASK_FAIL_HEAD) sets ``_pending_freeze``; the build runner drains
@@ -701,6 +704,11 @@ class BuildUIState:
             out, self._pending_alerts = self._pending_alerts, []
         return out
 
+    def set_dist_lines(self, lines: list[RenderableType]) -> None:
+        """Replace the cluster/cache header lines shown during the build (thread-safe)."""
+        with self._lock:
+            self._dist_lines = list(lines)
+
     def take_fail_freeze(self) -> bool:
         """Drain the one-shot freeze request set by a task-failure head line.
 
@@ -881,6 +889,7 @@ class BuildUIState:
             failures = list(self._failures)
             failed_final = self._failed_final
             fail_frozen = self._fail_frozen
+            dist_lines = list(self._dist_lines)
             tasks = sorted(self._running.values(), key=lambda t: -(now - t.start))
 
         sstate_line: Text | None = None
@@ -926,6 +935,10 @@ class BuildUIState:
         # Gated on setscene_total > 0 so the zero case leaves parts unchanged.
         if sstate_line is not None:
             parts.append(sstate_line)
+
+        # Cluster/cache header lines, fed by the build's cache-probe thread.
+        # Empty when no cache launcher is active, so the list is a no-op then.
+        parts.extend(dist_lines)
 
         parts.append(self._build_progress)
 

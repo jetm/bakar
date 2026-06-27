@@ -44,6 +44,15 @@ import yaml
 from rich.live import Live
 
 from bakar import build_stop, hashserv, sccache_server, task_timings
+from bakar.cache_render import (
+    ccache_doc,
+    cluster_doc,
+    daemon_doc,
+    render_ccache_cache,
+    render_cluster,
+    render_sccache_cache,
+)
+from bakar.diagnostics import probe_build_daemon, probe_ccache, probe_cluster
 from bakar.eventlog import tail_events
 from bakar.kas import KasGenOptions, write_yaml
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
@@ -1035,6 +1044,36 @@ def _run_pty_with_ui(
                         build_stop.stop_running_proc(proc, cfg, log)
                         break
 
+            def _cache_probe() -> None:  # pragma: no cover
+                # Refresh the cluster/cache header lines shown in the build UI.
+                # sccache-dist builds show the cluster + sccache daemon lines;
+                # ccache builds show a single ccache hit/miss line. No-op when
+                # neither cache launcher is active.
+                if not (cfg.use_sccache_dist or cfg.ccache):
+                    return
+
+                def _refresh() -> None:
+                    # Best-effort cosmetic probe: a failure here must never crash
+                    # or spew from this daemon thread, so swallow everything (the
+                    # probes are never-raise in production; this guards the test
+                    # harness and any unforeseen edge).
+                    try:
+                        if cfg.use_sccache_dist:
+                            cluster = probe_cluster(cfg.sccache_scheduler_url)
+                            daemon = probe_build_daemon()
+                            lines = render_cluster(cluster_doc(cluster, cfg.sccache_scheduler_url))
+                            lines.append(render_sccache_cache(daemon_doc(daemon) if daemon.running else None))
+                        else:
+                            cc = probe_ccache(cfg.effective_ccache_dir)
+                            lines = [render_ccache_cache(ccache_doc(cc))]
+                        ui.set_dist_lines(lines)
+                    except Exception:  # noqa: BLE001 - cosmetic probe, never crash the build thread
+                        return
+
+                _refresh()  # show immediately
+                while not stop_event.wait(timeout=3):
+                    _refresh()
+
             # Share the run logger's console so log.info() (the parse-complete
             # line) coordinates with the live region instead of printing onto
             # the same line as the setup bar.
@@ -1047,6 +1086,8 @@ def _run_pty_with_ui(
                 event_tail.start()
                 watchdog = threading.Thread(target=_stall_watchdog, daemon=True)  # pragma: no cover
                 watchdog.start()
+                cache_probe = threading.Thread(target=_cache_probe, daemon=True)  # pragma: no cover
+                cache_probe.start()
                 try:
                     rc = proc.wait()
                 except KeyboardInterrupt:

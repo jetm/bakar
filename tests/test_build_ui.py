@@ -513,3 +513,31 @@ def test_regex_reparse_after_build_resets_bar() -> None:
     # Cycle 2 tasks: the bar tracks the new, larger total (overwriting the stale 1).
     ui.process_line("NOTE: Running task 200 of 9005 (/qtwebengine.bb:do_compile)")
     assert ui._build_progress.tasks[0].total == 9005
+
+
+@pytest.mark.unit
+def test_set_dist_lines_injected_in_building_frame() -> None:
+    ui = BuildUIState()
+    ui.process_line("NOTE: Running task 1200 of 9005 (/x.bb:do_compile)")
+    ui.set_dist_lines([Text("cluster: x"), Text("daemon: y")])
+
+    # No running tasks: Group is [header, cluster, daemon, build_progress].
+    inner = ui.make_renderable().renderables
+    plains = [r.plain for r in inner if isinstance(r, Text)]
+    assert "cluster: x" in plains
+    assert "daemon: y" in plains
+    assert ui._build_progress in inner
+    # The dist lines sit between the header and the build bar.
+    bar_index = inner.index(ui._build_progress)
+    cluster_index = next(i for i, r in enumerate(inner) if isinstance(r, Text) and r.plain == "cluster: x")
+    assert 0 < cluster_index < bar_index
+
+
+@pytest.mark.unit
+def test_set_dist_lines_empty_by_default() -> None:
+    ui = BuildUIState()
+    ui.process_line("NOTE: Running task 1200 of 9005 (/x.bb:do_compile)")
+    # No set_dist_lines call: Group is [header, build_progress] as before.
+    inner = ui.make_renderable().renderables
+    assert len(inner) == 2
+    assert inner[1] is ui._build_progress

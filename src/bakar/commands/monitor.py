@@ -27,6 +27,7 @@ from rich.text import Text
 
 import bakar.commands._app as _state
 from bakar.build_stop import is_build_running
+from bakar.cache_render import cluster_doc, daemon_doc, render_cluster, render_sccache_cache
 from bakar.commands._app import app, console
 from bakar.commands._helpers import _bsp_from_cwd, _dispatch_from_yaml, _resolve_workspace
 from bakar.commands.log import _resolve_run_dir
@@ -36,7 +37,7 @@ from bakar.eventlog import normalize
 from bakar.steps.build_ui import SEVERITY_PASSTHROUGH, _fmt_stall, _task_style
 
 if TYPE_CHECKING:
-    from bakar.diagnostics import BuildDaemonReport, ClusterReport
+    from bakar.diagnostics import BuildDaemonReport
 
 # probe_build_daemon shells out to docker twice with 15s timeouts; never call
 # it more than once per this window so a fast refresh interval cannot stack
@@ -180,49 +181,14 @@ def _build_progress(run_dir: Path) -> dict[str, Any]:
     }
 
 
-def _cluster_doc(report: ClusterReport, url: str | None) -> dict[str, Any]:
-    cap = report.capacity
-    return {
-        "reachable": report.reachable,
-        "scheduler_url": url,
-        "error": report.error,
-        "capacity": (
-            {
-                "num_servers": cap.num_servers,
-                "num_cpus": cap.num_cpus,
-                "in_progress": cap.in_progress,
-                "servers": cap.servers,
-            }
-            if cap is not None
-            else None
-        ),
-    }
-
-
-def _daemon_doc(daemon: BuildDaemonReport) -> dict[str, Any] | None:
-    if not daemon.running:
-        return None
-    return {
-        "container": daemon.container,
-        "error": daemon.error,
-        "cache_hits": daemon.cache_hits,
-        "cache_misses": daemon.cache_misses,
-        "distributed": daemon.distributed,
-        "dist_errors": daemon.dist_errors,
-        "cache_location": daemon.cache_location,
-        "per_node": dict(daemon.per_node),
-        "verdict": daemon.verdict,
-    }
-
-
 def _snapshot(run_dir: Path, url: str | None, daemon_probe: _DaemonProbe) -> dict[str, Any]:
     """Assemble one monitor snapshot doc (cluster + build daemon + build progress)."""
     report = probe_cluster(url)
     daemon = daemon_probe.get()
     return {
         "run": run_dir.name,
-        "cluster": _cluster_doc(report, url),
-        "build_daemon": _daemon_doc(daemon),
+        "cluster": cluster_doc(report, url),
+        "build_daemon": daemon_doc(daemon),
         "build": _build_progress(run_dir),
     }
 
@@ -231,43 +197,8 @@ def _render(snapshot: dict[str, Any]) -> Group:
     """Render a monitor snapshot dict as a light Rich renderable for Live."""
     parts: list[Any] = []
 
-    cluster = snapshot["cluster"]
-    cap = cluster["capacity"]
-    if cluster["reachable"] and cap is not None:
-        line = Text("cluster: ", style="bold")
-        line.append(f"{cap['num_servers']} server(s), {cap['num_cpus']} cpus, {cap['in_progress']} job(s) in progress")
-        parts.append(line)
-        servers = cap["servers"]
-        if servers:
-            for node in servers:
-                if isinstance(node, dict):
-                    parts.append(
-                        Text(
-                            f"  {node.get('id', '?')} - {node.get('num_cpus', '?')} cpus, "
-                            f"{node.get('in_progress', 0)} job(s)",
-                            style="dim",
-                        )
-                    )
-                else:
-                    parts.append(Text(f"  {node}", style="dim"))
-    else:
-        parts.append(Text(f"cluster: unreachable ({cluster['error']})", style="red"))
-
-    daemon = snapshot["build_daemon"]
-    if daemon is None:
-        parts.append(Text("daemon: no build container running", style="dim"))
-    elif daemon["error"]:
-        parts.append(Text(f"daemon: stats unavailable ({daemon['error']})", style="yellow"))
-    else:
-        colour = {"DISTRIBUTING": "green", "LOCAL-ONLY": "red"}.get(daemon["verdict"], "yellow")
-        local = max(daemon["cache_misses"] - daemon["distributed"], 0)
-        line = Text("daemon: ", style="bold")
-        line.append(f"{daemon['verdict']}", style=colour)
-        line.append(
-            f"  cache {daemon['cache_hits']}/{daemon['cache_misses']} hit/miss  "
-            f"dist {daemon['distributed']} (local {local}, errors {daemon['dist_errors']})"
-        )
-        parts.append(line)
+    parts.extend(render_cluster(snapshot["cluster"]))
+    parts.append(render_sccache_cache(snapshot["build_daemon"]))
 
     build = snapshot["build"]
     state = "live" if build["live"] else (build["outcome"] or "unknown")
