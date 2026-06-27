@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING
 import yaml
 from rich.live import Live
 
-from bakar import build_stop, hashserv, sccache_server, task_timings
+from bakar import build_stop, hashserv, sccache_server, task_timings, tuning
 from bakar.cache_render import (
     ccache_doc,
     cluster_doc,
@@ -114,13 +114,49 @@ def _resolve_nproc_base(cfg: BuildConfig) -> int:
     return os.cpu_count() or 16
 
 
+def _derive_parallelism_plan(cfg: BuildConfig, *, probe_cluster_ok: bool) -> tuning.ParallelismPlan:
+    """Derive a :class:`tuning.ParallelismPlan` from every perf input bakar can see.
+
+    Computes the NPROC base (:func:`_resolve_nproc_base`), the active launcher,
+    host RAM (:func:`tuning.host_ram_gb`), and - only under sccache-dist when
+    ``probe_cluster_ok`` - the live cluster cpu count. The cluster probe shells
+    out to the scheduler (network), so callers pass ``probe_cluster_ok=False`` on
+    side-effect-free paths (dry-run/script-gen). Any probe failure falls back to
+    a None cluster cpu count, which sizes PARALLEL_MAKE to the local cpu count.
+    """
+    nproc_local = _resolve_nproc_base(cfg)
+    launcher = "sccache-dist" if cfg.use_sccache_dist else "ccache" if cfg.use_ccache else "none"
+    cluster_cpus: int | None = None
+    if cfg.use_sccache_dist and probe_cluster_ok:
+        try:
+            report = probe_cluster(cfg.sccache_scheduler_url)
+            if report.reachable and report.capacity is not None:
+                cluster_cpus = report.capacity.num_cpus
+        except OSError, subprocess.SubprocessError, ValueError:
+            cluster_cpus = None
+    return tuning.derive_parallelism(
+        nproc_local=nproc_local,
+        ram_gb=tuning.host_ram_gb(),
+        launcher=launcher,
+        cluster_cpus=cluster_cpus,
+    )
+
+
 def _resolve_parallelism(cfg: BuildConfig) -> tuple[int, int]:
-    """Resolve ``(PARALLEL_MAKE -j, BB_NUMBER_THREADS)`` to concrete ints,
-    mirroring the overlay's ``BAKAR_* or NPROC or 16`` precedence with the
-    NPROC base from :func:`_resolve_nproc_base`."""
-    base = _resolve_nproc_base(cfg)
-    parallel_make = cfg.parallel_make if cfg.parallel_make is not None else base
-    bb_number_threads = cfg.bb_number_threads if cfg.bb_number_threads is not None else base
+    """Resolve ``(PARALLEL_MAKE -j, BB_NUMBER_THREADS)`` to concrete ints.
+
+    An explicit cfg override always wins; an unset field is derived from the
+    topology- and RAM-aware plan (:func:`_derive_parallelism_plan`). Cluster
+    probing is enabled here because the only caller, :func:`materialize_overlay`
+    via :func:`_inject_literal_parallelism`, runs solely on the real-build path -
+    the dry-run/script-gen paths return before the overlay materialize calls and
+    never reach this code.
+    """
+    if cfg.parallel_make is not None and cfg.bb_number_threads is not None:
+        return cfg.parallel_make, cfg.bb_number_threads
+    plan = _derive_parallelism_plan(cfg, probe_cluster_ok=True)
+    parallel_make = cfg.parallel_make if cfg.parallel_make is not None else plan.parallel_make
+    bb_number_threads = cfg.bb_number_threads if cfg.bb_number_threads is not None else plan.bb_number_threads
     return parallel_make, bb_number_threads
 
 
@@ -1485,14 +1521,25 @@ def _build_env(
         passthrough["BB_PRESSURE_MAX_IO"] = str(int(cfg.pressure_max_io * 10_000))
     if cfg.pressure_max_memory is not None:
         passthrough["BB_PRESSURE_MAX_MEMORY"] = str(int(cfg.pressure_max_memory * 10_000))
-    # Decoupled parallelism overrides: the overlay reads these (with an NPROC
-    # fallback) only when present, so omitting the key keeps today's behavior.
-    # parallel_make sizes compile -j to a distributed cluster; bb_number_threads
+    # Decoupled parallelism: an explicit cfg override always wins. When a field
+    # is None, derive it from every perf input bakar can observe (local cpus,
+    # host RAM, the active launcher, and the live cluster cpu count under
+    # sccache-dist) via the shared _derive_parallelism_plan helper - the same
+    # path materialize_overlay uses for the container literal, so host and
+    # container modes derive identically. ``ensure_hashserv`` doubles as the
+    # cluster-probe side-effect guard so dry-run/script-gen never reach the
+    # network. parallel_make sizes compile -j to the cluster; bb_number_threads
     # sizes recipe concurrency to local RAM.
+    if cfg.parallel_make is None or cfg.bb_number_threads is None:
+        plan = _derive_parallelism_plan(cfg, probe_cluster_ok=ensure_hashserv)
     if cfg.parallel_make is not None:
         passthrough["BAKAR_PARALLEL_MAKE"] = str(cfg.parallel_make)
+    else:
+        passthrough["BAKAR_PARALLEL_MAKE"] = str(plan.parallel_make)
     if cfg.bb_number_threads is not None:
         passthrough["BAKAR_BB_NUMBER_THREADS"] = str(cfg.bb_number_threads)
+    else:
+        passthrough["BAKAR_BB_NUMBER_THREADS"] = str(plan.bb_number_threads)
     # Persistent hashserv: when enabled, ensure the workspace-scoped
     # daemon is running and rewrite the URL for container reachability.
     # The overlay's BB_HASHSERVE = ${@os.environ.get('BB_HASHSERVE', 'auto')}

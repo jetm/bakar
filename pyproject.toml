@@ -157,6 +157,10 @@ known-first-party = ["bakar"]
 "tests/**/*.py" = ["FBT001", "FBT002", "FBT003"]
 # Test helper _make_tuning_cfg mirrors BuildConfig field overrides - many params by design.
 "tests/test_kas_env.py" = ["PLR0913"]
+# Test helpers mirror BuildConfig overrides / synthetic buildstats fixtures - many params by design.
+"tests/test_build_parallelism_derivation.py" = ["PLR0913"]
+"tests/test_measure.py" = ["PLR0913"]
+"tests/test_build_parallelism_config.py" = ["PLR0913"]
 
 [tool.ty.rules]
 # Noisy without full type annotations - project uses gradual typing

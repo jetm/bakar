@@ -4,8 +4,8 @@ Three optional [build] keys size build parallelism independently of the
 single NPROC coupling: ``nproc`` (the NPROC base, auto-detected when unset),
 ``parallel_make`` (compile -j, exported as BAKAR_PARALLEL_MAKE), and
 ``bb_number_threads`` (recipe concurrency, exported as
-BAKAR_BB_NUMBER_THREADS). All three default to None, preserving the existing
-NPROC-derived behavior byte-for-byte.
+BAKAR_BB_NUMBER_THREADS). All three default to None; when unset, bakar derives
+them (topology- and RAM-aware) via bakar.tuning.derive_parallelism.
 """
 
 from __future__ import annotations
@@ -241,6 +241,8 @@ def _make_cfg(
     nproc: int | None = None,
     parallel_make: int | None = None,
     bb_number_threads: int | None = None,
+    sccache_dist: bool = False,
+    sccache_scheduler_url: str | None = None,
 ) -> BuildConfig:
     return BuildConfig(
         workspace=workspace,
@@ -255,6 +257,8 @@ def _make_cfg(
         nproc=nproc,
         parallel_make=parallel_make,
         bb_number_threads=bb_number_threads,
+        sccache_dist=sccache_dist,
+        sccache_scheduler_url=sccache_scheduler_url,
     )
 
 
@@ -276,29 +280,33 @@ def test_build_env_emits_all_parallelism_vars_when_set(tmp_path: Path, monkeypat
 
 
 def test_build_env_nproc_falls_back_to_cpu_count_when_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unchanged-from-today: NPROC defaults to os.cpu_count() and neither BAKAR_* var is emitted."""
+    """NPROC defaults to os.cpu_count(); both BAKAR_* vars are now derived (not absent)."""
     _clear_parallelism_env(monkeypatch)
     monkeypatch.setattr("bakar.steps.kas_build.os.cpu_count", lambda: 12)
+    monkeypatch.setattr("bakar.tuning.host_ram_gb", lambda: 96.0)
     cfg = _make_cfg(tmp_path)
 
     env = _build_env(cfg)
 
     assert env["NPROC"] == "12"
-    assert "BAKAR_PARALLEL_MAKE" not in env
-    assert "BAKAR_BB_NUMBER_THREADS" not in env
+    # ccache (the cfg default) routes locally, so PARALLEL_MAKE = nproc; threads
+    # are RAM-bound to min(12, floor(96/4)) = 12.
+    assert env["BAKAR_PARALLEL_MAKE"] == "12"
+    assert env["BAKAR_BB_NUMBER_THREADS"] == "12"
 
 
 def test_build_env_emits_only_set_bakar_vars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """parallel_make set, bb_number_threads unset: only BAKAR_PARALLEL_MAKE is emitted."""
+    """parallel_make set passes through; bb_number_threads unset is now derived."""
     _clear_parallelism_env(monkeypatch)
     monkeypatch.setattr("bakar.steps.kas_build.os.cpu_count", lambda: 12)
+    monkeypatch.setattr("bakar.tuning.host_ram_gb", lambda: 96.0)
     cfg = _make_cfg(tmp_path, parallel_make=128)
 
     env = _build_env(cfg)
 
     assert env["NPROC"] == "12"
     assert env["BAKAR_PARALLEL_MAKE"] == "128"
-    assert "BAKAR_BB_NUMBER_THREADS" not in env
+    assert env["BAKAR_BB_NUMBER_THREADS"] == "12"
 
 
 def test_build_env_env_nproc_beats_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -381,8 +389,10 @@ def test_resolve_parallelism_uses_cfg_values(tmp_path: Path, monkeypatch: pytest
 
 
 def test_resolve_parallelism_falls_back_to_nproc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """parallel_make/bb_number_threads unset -> both resolve to the NPROC base."""
+    """Unset + no dist launcher: PARALLEL_MAKE = nproc base, BB_NUMBER_THREADS =
+    min(nproc, ram/4GB). RAM is pinned so the cap is host-independent."""
     _clear_parallelism_env(monkeypatch)
+    monkeypatch.setattr("bakar.tuning.host_ram_gb", lambda: 96.0)
     cfg = _make_cfg(tmp_path, nproc=20)
 
     assert _resolve_parallelism(cfg) == (20, 20)
@@ -390,6 +400,7 @@ def test_resolve_parallelism_falls_back_to_nproc(tmp_path: Path, monkeypatch: py
 
 def test_resolve_parallelism_falls_back_to_cpu_count(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_parallelism_env(monkeypatch)
+    monkeypatch.setattr("bakar.tuning.host_ram_gb", lambda: 96.0)
     monkeypatch.setattr("bakar.steps.kas_build.os.cpu_count", lambda: 12)
     cfg = _make_cfg(tmp_path)
 
@@ -400,10 +411,75 @@ def test_resolve_parallelism_live_nproc_wins(tmp_path: Path, monkeypatch: pytest
     """A non-empty numeric live NPROC env wins over cfg.nproc, matching _build_env."""
     monkeypatch.delenv("BAKAR_PARALLEL_MAKE", raising=False)
     monkeypatch.delenv("BAKAR_BB_NUMBER_THREADS", raising=False)
+    monkeypatch.setattr("bakar.tuning.host_ram_gb", lambda: 96.0)
     monkeypatch.setenv("NPROC", "7")
     cfg = _make_cfg(tmp_path, nproc=96)
 
     assert _resolve_parallelism(cfg) == (7, 7)
+
+
+def test_resolve_parallelism_bb_threads_capped_by_low_ram(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BB_NUMBER_THREADS is RAM-bound: on a low-RAM host it caps below nproc."""
+    _clear_parallelism_env(monkeypatch)
+    monkeypatch.setattr("bakar.tuning.host_ram_gb", lambda: 32.0)
+    cfg = _make_cfg(tmp_path, nproc=32)
+
+    # PARALLEL_MAKE = nproc (no dist); BB_NUMBER_THREADS = min(32, 32/4) = 8.
+    assert _resolve_parallelism(cfg) == (32, 8)
+
+
+def test_resolve_parallelism_sccache_dist_uses_cluster_cpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under sccache-dist with the knobs unset, PARALLEL_MAKE is sized to the live
+    cluster cpu count (the container literal feeds the whole cluster), not nproc."""
+    import types
+
+    from bakar import diagnostics
+    from bakar.steps import kas_build
+
+    _clear_parallelism_env(monkeypatch)
+    monkeypatch.setattr("bakar.tuning.host_ram_gb", lambda: 96.0)
+    monkeypatch.setattr(
+        kas_build,
+        "probe_cluster",
+        lambda url: types.SimpleNamespace(
+            reachable=True,
+            capacity=diagnostics.ClusterCapacity(num_servers=2, num_cpus=64, in_progress=0),
+            error=None,
+        ),
+    )
+    cfg = _make_cfg(tmp_path, nproc=32, sccache_dist=True, sccache_scheduler_url="http://localhost:10600")
+
+    # PARALLEL_MAKE = cluster 64; BB_NUMBER_THREADS = min(32, 96/4) = 24.
+    assert _resolve_parallelism(cfg) == (64, 24)
+
+
+def test_inject_literal_parallelism_bakes_cluster_sized_pm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The materialized container overlay bakes the cluster-sized -j and the
+    RAM-bound BB_NUMBER_THREADS when the knobs are unset under sccache-dist - the
+    container path that the BAKAR_* env var cannot reach (kas scrubs it)."""
+    import types
+
+    from bakar import diagnostics
+    from bakar.steps import kas_build
+
+    _clear_parallelism_env(monkeypatch)
+    monkeypatch.setattr("bakar.tuning.host_ram_gb", lambda: 96.0)
+    monkeypatch.setattr(
+        kas_build,
+        "probe_cluster",
+        lambda url: types.SimpleNamespace(
+            reachable=True,
+            capacity=diagnostics.ClusterCapacity(num_servers=2, num_cpus=64, in_progress=0),
+            error=None,
+        ),
+    )
+    cfg = _make_cfg(tmp_path, nproc=32, sccache_dist=True, sccache_scheduler_url="http://localhost:10600")
+
+    out = _inject_literal_parallelism(cfg, _OVERLAY_PARALLELISM)
+
+    assert 'PARALLEL_MAKE = "-j 64"' in out
+    assert 'BB_NUMBER_THREADS = "24"' in out
+    assert "os.environ.get" not in out
 
 
 def test_inject_literal_parallelism_substitutes_resolved_values(
