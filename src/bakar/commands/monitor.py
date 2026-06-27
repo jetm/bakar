@@ -102,13 +102,29 @@ def _recent_kas_errors(kas_log: Path, limit: int = _FAILURE_TAIL) -> list[str]:
     return hits[-limit:]
 
 
+def _run_started_epoch(run_dir: Path) -> float | None:
+    """Best-effort build start time (epoch seconds) from the run-dir name.
+
+    bitbake's BuildStarted event carries no timestamp, so the event log cannot
+    supply one. The run directory is named ``YYYYMMDD-HHMMSS`` at the local
+    wall-clock start, so parse that. Returns None when the name does not parse.
+    """
+    try:
+        return time.mktime(time.strptime(run_dir.name, "%Y%m%d-%H%M%S"))
+    except ValueError, OverflowError:
+        return None
+
+
 def _build_progress(run_dir: Path) -> dict[str, Any]:
     """Summarize bitbake task progress for ``run_dir`` from its event log.
 
-    Counts started/succeeded/failed tasks, the currently-running ones (started
-    but not yet completed), elapsed wall time, and a tail of failures. Reads
-    only through :mod:`bakar.eventlog`, which decodes the base64-pickled raw
-    log without importing bitbake.
+    Reports the runqueue's planned/done/remaining task counts (so the view
+    shows how far the build has to go), the currently-running tasks, elapsed
+    wall time, and a tail of failures. Task totals come from the latest
+    ``runQueueTaskStarted.stats`` the event log carries; elapsed is derived
+    from the run-dir name because BuildStarted has no timestamp. Reads only
+    through :mod:`bakar.eventlog`, which decodes the base64-pickled raw log
+    without importing bitbake.
     """
     artifact = normalize(run_dir / "bitbake_eventlog.json")
     tasks = artifact["tasks"]
@@ -126,28 +142,38 @@ def _build_progress(run_dir: Path) -> dict[str, Any]:
             running.append(row)
 
     build = artifact["build"]
-    started = build.get("started")
     completed = build.get("completed")
-    if started is not None:
-        end = completed if completed is not None else time.time()
+
+    start_epoch = _run_started_epoch(run_dir)
+    if start_epoch is not None:
         try:
-            elapsed = max(0.0, float(end) - float(started))
+            end = float(completed) if completed is not None else time.time()
         except TypeError, ValueError:
-            elapsed = None
+            end = time.time()
+        elapsed = max(0.0, end - start_epoch)
     else:
         elapsed = None
+
+    # Runqueue total/completed (matches bitbake's "X of Y", which counts
+    # setscene-covered tasks the executed-task log does not). Fall back to the
+    # executed-task success count until the runqueue total is known.
+    planned = build.get("tasks_total")
+    rq_done = build.get("tasks_completed")
+    done = rq_done if rq_done is not None else succeeded
+    remaining = (planned - done) if (planned is not None and done is not None) else None
 
     live, _pgid, _cmdline_ok = is_build_running(run_dir)
 
     return {
         "outcome": build.get("outcome"),
         "live": live,
-        "started": started,
+        "started": build.get("started"),
         "completed": completed,
         "elapsed_seconds": elapsed,
-        "tasks_total": len(tasks),
+        "tasks_total": planned,
+        "tasks_done": done,
+        "tasks_remaining": remaining,
         "tasks_running": len(running),
-        "tasks_succeeded": succeeded,
         "tasks_failed": failed,
         "running": [{"recipe": r.get("recipe"), "task": r.get("task")} for r in running],
         "failures": artifact["failures"][-_FAILURE_TAIL:],
@@ -246,13 +272,19 @@ def _render(snapshot: dict[str, Any]) -> Group:
     build = snapshot["build"]
     state = "live" if build["live"] else (build["outcome"] or "unknown")
     elapsed = build["elapsed_seconds"]
-    elapsed_txt = _fmt_stall(int(elapsed)) if elapsed is not None else "-"
+    elapsed_txt = _fmt_stall(int(elapsed)) if elapsed is not None else "?"
+    done = build["tasks_done"] or 0
+    total = build["tasks_total"]
+    remaining = build["tasks_remaining"]
+    if total:
+        pct = f" {100 * done // total}%" if total else ""
+        tasks_txt = f"{done}/{total} tasks ({remaining} left){pct}"
+    else:
+        tasks_txt = f"{done} tasks done (total pending)"
     progress = Text("build: ", style="bold")
     progress.append(f"[{state}] ")
-    progress.append(
-        f"{build['tasks_succeeded']} done, {build['tasks_running']} running, "
-        f"{build['tasks_failed']} failed  elapsed {elapsed_txt}"
-    )
+    progress.append(f"{tasks_txt}, {build['tasks_running']} running, ")
+    progress.append(f"{build['tasks_failed']} failed  elapsed {elapsed_txt}")
     parts.append(progress)
 
     if build["running"]:

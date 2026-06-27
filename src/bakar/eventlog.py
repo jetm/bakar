@@ -264,6 +264,13 @@ def normalize(raw_path: Path) -> dict[str, Any]:
         "preset": None,
         "release": None,
         "run_id": None,
+        # Runqueue progress from the latest runQueueTaskStarted.stats. tasks_total
+        # is the full planned task count (constant once the runqueue is built);
+        # tasks_completed/tasks_active track progress. None until the first
+        # runQueueTaskStarted is seen (e.g. still parsing).
+        "tasks_total": None,
+        "tasks_completed": None,
+        "tasks_active": None,
     }
     # Keyed by (recipe, task) so a task's start/end events merge into one row.
     tasks: dict[tuple[Any, Any], dict[str, Any]] = {}
@@ -343,16 +350,24 @@ def normalize(raw_path: Path) -> dict[str, Any]:
             logfile = _first(event, "logfile")
             if logfile is not None:
                 row["logfile"] = logfile
-        elif class_name == _RUNQUEUE_TASK_STARTED and not setscene_seen:
+        elif class_name == _RUNQUEUE_TASK_STARTED:
             stats = getattr(event, "stats", None)
-            covered = _stat(stats, "setscene_covered")
-            notcovered = _stat(stats, "setscene_notcovered")
-            total = _stat(stats, "setscene_total")
-            if covered is not None or notcovered is not None or total is not None:
-                setscene["covered"] = covered or 0
-                setscene["notcovered"] = notcovered or 0
-                setscene["total"] = total or 0
-                setscene_seen = True
+            # Runqueue progress: total is constant, completed/active climb. Take
+            # the latest reading so a mid-build snapshot reflects current state.
+            rq_total = _stat(stats, "total")
+            if rq_total is not None:
+                build["tasks_total"] = rq_total
+                build["tasks_completed"] = _stat(stats, "completed") or 0
+                build["tasks_active"] = _stat(stats, "active") or 0
+            if not setscene_seen:
+                covered = _stat(stats, "setscene_covered")
+                notcovered = _stat(stats, "setscene_notcovered")
+                total = _stat(stats, "setscene_total")
+                if covered is not None or notcovered is not None or total is not None:
+                    setscene["covered"] = covered or 0
+                    setscene["notcovered"] = notcovered or 0
+                    setscene["total"] = total or 0
+                    setscene_seen = True
 
     if build["outcome"] == "unknown" and saw_failure:
         build["outcome"] = "failed"

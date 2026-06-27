@@ -61,8 +61,8 @@ the JSON document on stdout.
                    "cache_hits": 6, "cache_misses": 648, "distributed": 4,
                    "dist_errors": 422, "per_node": {"...": 3}, "cache_location": "..."},
   "build": {"outcome": "unknown", "live": true, "started": null, "completed": null,
-            "elapsed_seconds": null, "tasks_total": 1209, "tasks_running": 10,
-            "tasks_succeeded": 1199, "tasks_failed": 0,
+            "elapsed_seconds": 10795, "tasks_total": 12183, "tasks_done": 12035,
+            "tasks_remaining": 148, "tasks_running": 1, "tasks_failed": 0,
             "running": [{"recipe": "...", "task": "do_compile"}],
             "failures": ["...last 5..."]}
 }
@@ -71,6 +71,13 @@ the JSON document on stdout.
 `cluster` and `build_daemon` mirror `bakar cluster-info --json`; `build_daemon`
 is `null` when no build container is running. When no run exists the document is
 `{"error": "no runs yet; start one with 'bakar build'"}` and the exit code is 1.
+
+`tasks_total`/`tasks_done`/`tasks_remaining` come from the bitbake runqueue
+(the same counts as bitbake's "X of Y tasks"); they are `null` until the first
+`runQueueTaskStarted` is seen (early parse/setscene), where `tasks_done` falls
+back to the executed-task success count. `elapsed_seconds` is derived from the
+run directory's `YYYYMMDD-HHMMSS` name, because bitbake's `BuildStarted` event
+carries no timestamp (so `started` stays `null`).
 
 ## Examples
 

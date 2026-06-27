@@ -11,7 +11,9 @@ tests prove the reader decodes the recognized events without ever importing
 
 from __future__ import annotations
 
+import base64
 import json
+import pickle
 import sys
 from pathlib import Path
 
@@ -20,6 +22,19 @@ import pytest
 from bakar import eventlog
 
 FIXTURE = Path(__file__).parent / "fixtures" / "bitbake_eventlog.json"
+
+
+class _StubStats:
+    """Stand-in for bb.runqueue's runQueueStats (decoded via the stub unpickler)."""
+
+
+class _StubEvent:
+    """Stand-in for a bitbake event carrying a ``stats`` attribute."""
+
+
+def _encode_event(obj: object) -> str:
+    """base64(pickle(obj)) - the wire format of an event log ``vars`` payload."""
+    return base64.b64encode(pickle.dumps(obj)).decode("ascii")
 
 
 @pytest.mark.unit
@@ -35,6 +50,30 @@ def test_normalize_decodes_task_fields() -> None:
     failed = tasks[("linux-imx-6.12-r0", "do_compile")]
     assert failed["outcome"] == "failed"
     assert failed["logfile"] == ("/work/build/tmp/work/imx95/linux-imx/6.12-r0/temp/log.do_compile.5151")
+
+
+@pytest.mark.unit
+def test_normalize_captures_runqueue_total(tmp_path: Path) -> None:
+    """normalize records the runqueue total/completed/active from the latest
+    runQueueTaskStarted.stats, so consumers can show how far the build has to go."""
+    stats = _StubStats()
+    stats.total = 120  # type: ignore[attr-defined]
+    stats.completed = 80  # type: ignore[attr-defined]
+    stats.active = 3  # type: ignore[attr-defined]
+    stats.setscene_total = 0  # type: ignore[attr-defined]
+    event = _StubEvent()
+    event.stats = stats  # type: ignore[attr-defined]
+
+    log = tmp_path / "el.json"
+    log.write_text(
+        json.dumps({"class": "bb.runqueue.runQueueTaskStarted", "vars": _encode_event(event)}) + "\n",
+        encoding="utf-8",
+    )
+
+    build = eventlog.normalize(log)["build"]
+    assert build["tasks_total"] == 120
+    assert build["tasks_completed"] == 80
+    assert build["tasks_active"] == 3
 
 
 @pytest.mark.unit

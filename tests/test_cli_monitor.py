@@ -71,7 +71,14 @@ def _synthetic_artifact() -> dict[str, Any]:
     """A normalized event-log artifact with one running, one done, one failed task."""
     return {
         "schema_version": 1,
-        "build": {"started": 1000.0, "completed": None, "outcome": "unknown"},
+        "build": {
+            "started": None,
+            "completed": None,
+            "outcome": "unknown",
+            "tasks_total": 100,
+            "tasks_completed": 60,
+            "tasks_active": 1,
+        },
         "tasks": [
             {"recipe": "busybox-1.36.1-r0", "task": "do_compile", "outcome": "succeeded", "started": 1.0},
             {"recipe": "zlib-1.3-r0", "task": "do_configure", "outcome": None, "started": 2.0},
@@ -121,11 +128,17 @@ def test_json_once_emits_cluster_and_build(
     }
     assert doc["build_daemon"]["verdict"] == "DISTRIBUTING"
     build = doc["build"]
-    assert build["tasks_succeeded"] == 1
+    # Runqueue progress comes from the synthetic stats: 60 of 100, 40 left.
+    assert build["tasks_total"] == 100
+    assert build["tasks_done"] == 60
+    assert build["tasks_remaining"] == 40
     assert build["tasks_failed"] == 1
     assert build["tasks_running"] == 1
     assert build["running"] == [{"recipe": "zlib-1.3-r0", "task": "do_configure"}]
     assert build["live"] is False
+    # Elapsed is derived from the run-dir name (BuildStarted carries no time),
+    # so it is populated even though build.started is None.
+    assert build["elapsed_seconds"] is not None and build["elapsed_seconds"] > 0
 
 
 def test_json_once_omits_decoration_on_stdout(
@@ -142,6 +155,34 @@ def test_json_once_omits_decoration_on_stdout(
     assert result.exit_code == 0
     # The whole stdout must parse as a single JSON document.
     json.loads(result.stdout)
+
+
+def test_progress_falls_back_before_runqueue_total_known(
+    runner: _CliRunner,
+    nxp_workspace_with_run: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Before the runqueue total is known (no runQueueTaskStarted yet), done
+    falls back to the succeeded-task count and remaining is null."""
+    artifact = _synthetic_artifact()
+    artifact["build"]["tasks_total"] = None
+    artifact["build"]["tasks_completed"] = None
+    artifact["build"]["tasks_active"] = None
+    monkeypatch.setattr(monitor_module, "probe_cluster", lambda _url: _reachable_cluster())
+    monkeypatch.setattr(monitor_module, "probe_build_daemon", _running_daemon)
+    monkeypatch.setattr(monitor_module, "normalize", lambda _path: artifact)
+    monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: (False, None, False))
+
+    result = runner.invoke(
+        app,
+        ["monitor", "--json", "--once", "--workspace", str(nxp_workspace_with_run)],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    build = json.loads(result.stdout)["build"]
+    assert build["tasks_total"] is None
+    assert build["tasks_done"] == 1  # fallback: one succeeded task seen
+    assert build["tasks_remaining"] is None
 
 
 def test_no_active_run_json_exits_nonzero(
