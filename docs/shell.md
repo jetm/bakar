@@ -14,8 +14,9 @@ bakar shell [KAS_YAML] [OPTIONS]
 |------|-------|-------------|
 | `--command` | `-c` | Run a single command instead of an interactive shell |
 | `--manifest` | `-f` | Manifest filename for BSP family dispatch |
-| `--host` | | Bypass kas-container, run plain `kas shell` on the host |
 | `--workspace` | `-w` | Workspace root override |
+
+`--host` (bypass kas-container, run plain `kas shell` on the host) is a **global** option, so it goes *before* the subcommand: `bakar --host shell ...`. Placing it after `shell` is rejected by the CLI parser.
 
 ## Examples
 
@@ -35,8 +36,8 @@ bakar shell -f imx-6.12.49-2.2.0.xml -c "bitbake -e | grep ^BB_TASKS_SCHEDULER"
 # Investigate a parse failure (bitbake -p parses all recipes)
 bakar shell -f imx-6.12.49-2.2.0.xml -c "bitbake -p 2>&1 | tail -30"
 
-# Host mode - no Docker, runs kas shell directly
-bakar shell -f imx-6.12.49-2.2.0.xml --host -c "bitbake -c cleansstate glibc"
+# Host mode - no Docker, runs kas shell directly (--host is global: before the subcommand)
+bakar --host shell -f imx-6.12.49-2.2.0.xml -c "bitbake -c cleansstate glibc"
 ```
 
 ## Notes

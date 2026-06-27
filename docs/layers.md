@@ -77,7 +77,7 @@ image. Run `bakar sync` (or `bakar build`) before using this sub-verb.
 |------|-------|-------------|
 | `--manifest` | `-f` | Manifest filename for BSP family dispatch (NXP `.xml` or TI `.txt`) |
 | `--workspace` | `-w` | Workspace root override |
-| `--json` | | Emit a JSON array instead of human-readable text |
+| `--json` | | Emit a JSON object (`layers` array + `cross_validation_warnings`) instead of human-readable text |
 
 ### Examples
 
@@ -86,7 +86,7 @@ image. Run `bakar sync` (or `bakar build`) before using this sub-verb.
 bakar layers inspect -f imx-6.12.49-2.2.0.xml
 
 # JSON output for scripting
-bakar layers inspect -f imx-6.12.49-2.2.0.xml --json | jq '.[] | select(.name == "meta-imx")'
+bakar layers inspect -f imx-6.12.49-2.2.0.xml --json | jq '.layers[] | select(.name == "meta-imx")'
 
 # BYO kas YAML
 bakar layers inspect my-project.yml
@@ -118,7 +118,8 @@ poky
 
 ### JSON output
 
-`--json` emits a JSON array. Each element is an object with these fields:
+`--json` emits a JSON object with a `layers` array and a `cross_validation_warnings`
+array. Each element of `layers` has these fields:
 
 ```text
 name      string  layer name
@@ -128,6 +129,10 @@ compat    string  LAYERSERIES_COMPAT value (space-separated release names)
 version   string  LAYERVERSION value (empty string if not set)
 provides  string  recipes or package groups the layer provides (when available)
 ```
+
+`cross_validation_warnings` is a list of strings flagging layer-stack
+inconsistencies (e.g. priority or compat mismatches); it is empty when none are
+found.
 
 ## bakar layers status
 

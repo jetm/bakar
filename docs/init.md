@@ -1,16 +1,37 @@
 # bakar init
 
-Interactively scaffold a new bakar workspace. Walks through the BSP family, workspace directory, and family-specific defaults, writes `.bakar.toml` (and the family subdirectory for nxp/ti), then optionally kicks off `bakar sync`.
+Scaffold a new bakar workspace. The interactive wizard walks through the BSP family, workspace directory, and family-specific defaults, writes `.bakar.toml` (and the family subdirectory for nxp/ti), then optionally kicks off `bakar sync`. Passing `--family` runs the same scaffolding non-interactively from flags + built-in defaults (no TTY, no sync) for CI and scripts.
 
 This is the documented "start here" entry point: you no longer need to know the `mkdir nxp/` / `touch .bakar.toml` conventions up front. The selections you make are persisted into `.bakar.toml` as workspace-scoped defaults so you don't have to re-pass them as flags on every invocation.
 
 ## Synopsis
 
 ```text
-bakar init
+bakar init [OPTIONS]
 ```
 
-`init` takes no flags. Every input is collected through interactive prompts.
+`init` has two modes. Without `--family` it runs an interactive wizard, collecting
+every input through prompts (requires a TTY). With `--family` it runs
+non-interactively - no TTY required - taking the remaining values from flags and
+falling back to the family's built-in defaults; this is the scriptable path for
+CI or automation.
+
+## Options
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--family` | `-f` | BSP family (`nxp`/`ti`/`bbsetup`/`generic`). Passing it **enables non-interactive mode** |
+| `--workspace` | `-w` | Workspace directory (default: current directory) |
+| `--manifest` | | Manifest filename (nxp/ti only) |
+| `--machine` | | Machine name |
+| `--distro` | | Distro (nxp/ti only) |
+| `--image` | | Image (nxp/ti only) |
+| `--kas-yaml` | | KAS YAML filename (generic only) |
+| `--no-sync` | | Skip the post-scaffold sync prompt (interactive mode only) |
+
+In non-interactive mode, any value not passed as a flag is read from the family's
+built-in defaults (the same defaults the interactive prompts pre-fill), and sync
+is never run.
 
 ## Prompts
 
@@ -72,16 +93,16 @@ Then asks "Run `bakar sync` now?", defaulting to **no**. NXP and TI source syncs
 
 ## Non-TTY failure mode
 
-`init` requires an interactive terminal. Before any prompt it checks `sys.stdin.isatty()`; when stdin is not a TTY (a pipe, CI runner, or redirected input) it prints a message naming the requirement and exits non-zero:
+The **interactive** wizard requires a terminal. Before any prompt it checks `sys.stdin.isatty()`; when stdin is not a TTY (a pipe, CI runner, or redirected input) it prints a message and exits non-zero:
 
 ```text
 bakar init requires an interactive terminal - stdin is not a TTY.
-Create the workspace manually with `mkdir <family>/ && touch .bakar.toml`.
+Use --family to enable non-interactive mode.
 ```
 
-There is no `--non-interactive` flag. For scriptable workspace creation, create the layout by hand: `mkdir nxp/ && touch .bakar.toml` (or the `ti/` equivalent), or `touch .bakar.toml` for a generic workspace.
+For scriptable workspace creation, pass `--family` (with the relevant `--manifest`/`--machine`/`--distro`/`--image`/`--kas-yaml` flags, or accept the built-in defaults). That path needs no TTY and never runs sync.
 
-Pressing Ctrl+C at any prompt aborts cleanly (exit 1) without writing a partial workspace.
+Pressing Ctrl+C at any interactive prompt aborts cleanly (exit 1) without writing a partial workspace.
 
 ## Examples
 
@@ -128,6 +149,18 @@ bakar init
 ```
 
 Result: a comment-only `.bakar.toml` marker. `init` does not prompt for a manifest because `bitbake-setup init` drives its own setup. Run that command next, from inside the workspace, before `bakar build`.
+
+### Non-interactive (CI / scripts)
+
+```bash
+# Generic workspace from flags - no TTY, no prompts, no sync
+bakar init --family generic --kas-yaml avocado-bspctl.yml --machine qemux86-64 -w ~/bsp/ci
+
+# NXP workspace accepting the built-in manifest/machine/distro/image defaults
+bakar init --family nxp -w ~/bsp/nxp
+```
+
+`--family` is what switches off the prompts; omit it and `init` runs the wizard.
 
 ## See also
 

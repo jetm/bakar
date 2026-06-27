@@ -48,19 +48,21 @@ bakar drift -f imx-6.6.52-2.2.2.xml --format md
 Default text output, one row per drifted source:
 
 ```text
-source           pinned    actual    distance
-meta-imx         abc12345  def67890  +7
-poky             11223344  55667788  +2
+Source                              Pinned      Actual  Distance  Status
+---------------------------------------------------------------------------
+meta-imx                          abc12345    def67890        +7  DRIFTED
+poky                              11223344    55667788        +2  DRIFTED
 ```
 
-Columns: source name, pinned SHA (8 chars), actual HEAD SHA (8 chars), commit distance ahead of the pin.
+Columns: source name, pinned SHA (8 chars), actual HEAD SHA (8 chars), commit distance ahead of the pin, and a status (`DRIFTED` or `clean`).
 
-With `--all`, clean sources appear with an empty distance column:
+With `--all`, clean sources are included with an empty distance and a `clean` status:
 
 ```text
-source           pinned    actual    distance
-meta-imx         abc12345  def67890  +7
-meta-variscite   11223344  11223344
+Source                              Pinned      Actual  Distance  Status
+---------------------------------------------------------------------------
+meta-imx                          abc12345    def67890        +7  DRIFTED
+meta-variscite                    11223344    11223344            clean
 ```
 
 With `--json`, output is a JSON array. Each object contains:
@@ -87,7 +89,8 @@ With `--json`, output is a JSON array. Each object contains:
 
 **Exit codes:**
 
-- `0`: completed successfully (zero drift or drift reported)
+- `0`: no drift - every source is at its pinned revision
+- `1`: drift detected - at least one source has advanced past its pin
 - `2`: the family could not be resolved, or the pin input (manifest/lockfile) is missing for the resolved family
 
 ## See also

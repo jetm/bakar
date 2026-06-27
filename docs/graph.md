@@ -20,7 +20,8 @@ The reported insights are:
 | Insight | Meaning |
 |---------|---------|
 | **package count** | Number of recipes in `pn-buildlist` (the full build list for the target) |
-| **blast radius** | Count of transitive descendants of the target in the PN-collapsed graph (how many recipes a change to it can affect) |
+| **direct deps** | The target's immediate (first-level) dependencies (`direct deps:` in the text report; `direct_deps` in JSON) |
+| **transitive deps** | Count of transitive descendants of the target in the PN-collapsed graph - how many recipes a change to it can affect (`transitive deps:` in the text report; `blast_radius` in JSON) |
 | **longest build chain** | The longest dependency path through the graph (`networkx.dag_longest_path`) |
 | **cycles** | The recipes forming a dependency cycle, or "no cycles" for an acyclic graph |
 | **critical recipes** | The most depended-on recipes (highest in-degree) |
@@ -75,16 +76,16 @@ and TI workspaces dispatch via the `-f` manifest instead.
 
 | Value | Output |
 |-------|--------|
-| `text` | Default. Human-readable report: package count, blast radius, longest chain, cycle report, critical recipes |
+| `text` | Default. Human-readable report: package count, direct deps, transitive deps, longest chain, cycle report, critical recipes |
 | `dot` | The raw `task-depends.dot` text, unmodified |
 | `json` | A machine-readable document carrying every insight (see below) |
 
 ## --depth
 
-`--depth N` bounds the transitive dependency expansion used to compute the blast
-radius to N levels. Without it, the blast radius counts all transitive
-descendants. The text report labels the bounded radius as
-`blast radius (depth N)`.
+`--depth N` bounds the transitive dependency expansion to N levels. Without it,
+the transitive-descendant count includes all descendants. The text report labels
+the bounded count as `transitive deps (depth N)` (the `blast_radius` value in
+JSON).
 
 ## JSON output
 
@@ -94,6 +95,7 @@ descendants. The text report labels the bounded radius as
 target                string   the analyzed recipe name
 depth                 int|null the --depth bound, or null when unbounded
 package_count         int      number of recipes in pn-buildlist
+direct_deps           array    the target's immediate (first-level) dependencies
 blast_radius          int      transitive descendant count of the target
 longest_chain         array    recipe names forming the longest build chain
 cycle                 array    recipe names forming a cycle, empty when acyclic

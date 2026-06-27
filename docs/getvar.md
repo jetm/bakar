@@ -59,7 +59,7 @@ bakar getvar IMAGE_INSTALL -f imx-6.12.49-2.2.0.xml --recipe core-image-minimal
 
 ### Unexpanded value
 
-`--unexpanded` passes the `-e` flag to `bitbake-getvar`, which prints the value
+`--unexpanded` passes the `-u` flag to `bitbake-getvar`, which prints the value
 before `${...}` references are substituted. This is helpful when you want to see
 the literal assignment rather than the fully resolved string:
 

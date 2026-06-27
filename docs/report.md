@@ -1,6 +1,6 @@
 # bakar report
 
-Summarize a completed build run: status, duration, deploy directory, image size, peak build-tmp size, and per-layer SHAs.
+Summarize a completed build run: status, duration, deploy directory, image size, build revision, and per-layer SHAs.
 
 ## Synopsis
 
@@ -42,10 +42,9 @@ bakar settings set layers.show_sstate_summary true
 :: report 20260601-143022
 status: success
 duration: 1823s
-build_revision: a3f9c21b8e04
 deploy: /bsp/nxp/build/tmp/deploy/images/imx8mp-var-dart
 image size: 245366784 bytes
-peak build/tmp: 18432000000 bytes
+build_revision: a3f9c21b8e04
 meta-imx         abc12345  main
 meta-variscite   def67890  dunfell-var01
 poky             11223344  dunfell
@@ -61,7 +60,6 @@ poky             11223344  dunfell
   "build_revision": "a3f9c21b8e04",
   "deploy_dir": "/bsp/nxp/build/tmp/deploy/images/imx8mp-var-dart",
   "image_size": 245366784,
-  "peak_tmp_bytes": 18432000000,
   "layers": [
     {"name": "meta-imx", "sha": "abc12345", "branch": "main"},
     ...
@@ -135,7 +133,7 @@ the user opted in via their own overlay.
 ## Notes
 
 - `--json` writes to stdout; the human-readable output goes to stderr (consistent with all bakar output).
-- `image_size`, `peak_tmp_bytes`, and `duration_s` are omitted from JSON when unavailable (build interrupted before deploy, etc.).
+- `image_size` and `duration_s` are omitted from JSON when unavailable (build interrupted before deploy, etc.).
 - `build_revision` is omitted from both outputs when `collect_layer_hashes` returns no layers.
 - sstate keys appear in `--json` only when `--show-sstate` / `layers.show_sstate_summary` is set; buildhistory keys appear only when the buildhistory directory exists.
 - Kernel version and recipe count are best-effort and omitted when unresolvable.

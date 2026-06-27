@@ -68,7 +68,7 @@ command   string  the full kas-container invocation string
 bakar show -f imx-6.12.49-2.2.0.xml
 
 # Workspace not yet synced - Config, Overlays, and Command sections are populated;
-# Layers and Sources show "(none - run bakar sync first)"
+# Layers show "(none - run `bakar build` or `bakar sync` first)", Sources "(none - run `bakar sync` first)"
 bakar show -f imx-6.12.49-2.2.0.xml
 
 # Markdown output (one ## heading per section)

@@ -15,7 +15,7 @@ bakar diffsigs <recipe> <task> [OPTIONS]
 1. **printdiff** - `bitbake -S printdiff <recipe>` generates fresh sigdata for the recipe using bitbake's `printdiff` signature handler. This writes per-task `.sigdata` stamp files under `build/tmp/stamps/`.
 2. **diffsigs** - `bitbake-diffsigs -t <recipe> <task>` compares the newly generated sigdata against the prior build's sigdata and renders the per-variable old-vs-new differences.
 
-The rendered diff text is printed directly - `bitbake-diffsigs` output is already human-readable and lists each variable that changed the task hash, with the old and new values side by side.
+By default `diffsigs` parses the `bitbake-diffsigs` output and renders a structured summary: the **root cause(s)** (the variables or dep-list change that moved the hash), the **rebuild chain** (how the requested task traces back to the root-cause task, possibly across recipes), and the **dependency list diff** (tasks added/removed from the signature). Pass `--raw` to print the full unprocessed `bitbake-diffsigs` text instead. When no structure can be extracted, the raw kas-stripped text is printed as a fallback.
 
 When no prior sigdata exists (no prior build has run for this recipe), the second step fails and `diffsigs` exits non-zero with a message explaining that a prior build is required. It does not print an empty diff as success.
 
@@ -37,6 +37,7 @@ Run `bakar build` for the workspace first, then re-run `diffsigs` after a subseq
 |------|-------|-------------|
 | `--manifest` | `-f` | Manifest filename for BSP family dispatch (NXP `.xml` or TI `.txt`) |
 | `--machine` | `-m` | Override the target machine |
+| `--raw` | | Print the full unprocessed `bitbake-diffsigs` output (including kas startup lines) instead of the structured summary |
 | `--workspace` | `-w` | Workspace root override |
 
 ## Examples
@@ -57,19 +58,27 @@ bakar diffsigs busybox do_compile -f imx-6.12.49-2.2.0.xml -w /path/to/workspace
 
 ## Output
 
+Default (structured) output:
+
 ```text
 diffsigs: busybox do_compile
 
-basehash changed from 7a3e91f2... to d4b2c083...
+Root cause:
+  WORKDIR changed
+  (basehash changed independently — task function or referenced code changed)
 
-Variable WORKDIR changed:
-  old: /builds/tmp/work/cortexa53-poky-linux/busybox/1.36.1-r0
-  new: /builds/tmp/work/cortexa53-poky-linux/busybox/1.37.0-r0
+Rebuild chain  (2 levels deep):
+  busybox:do_compile  ← requested
+    ↳ busybox:do_fetch  ← root cause
 
-Variable SRC_URI[md5sum] changed:
-  old: 4b2b68c83d...
-  new: 9f1a034d21...
+Dependency list diff  (1 added, 1 removed):
+  + virtual/libc:do_populate_sysroot
+  - virtual/libc-initial:do_populate_sysroot
 ```
+
+With `--raw`, the full unprocessed `bitbake-diffsigs` output is printed instead
+(`basehash changed from ... to ...`, `Variable X changed:` with old/new values),
+including the kas startup lines.
 
 ## Notes
 

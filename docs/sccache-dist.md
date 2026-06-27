@@ -256,11 +256,14 @@ bakar cluster-info
 #   build servers: 2
 #   cpus: 64
 #   jobs in progress: 3
+#   nodes:
+#     10.42.0.2:10501 - 32 cpus, 2 job(s)
+#     192.168.8.174:10501 - 32 cpus, 1 job(s)
 ```
 
 The scheduler URL resolves from `--scheduler`, then the global `--sccache-scheduler`, then `sccache_scheduler_url` in config. `--json` emits a machine-readable document (`reachable`, `scheduler_url`, `error`, `capacity`); the command exits 1 when the scheduler is unreachable or `sccache` is not installed.
 
-The scheduler exposes only aggregate counts (server count, total CPUs, jobs in progress) — there is no per-build-server breakdown. When a build-server array becomes available from the scheduler, `cluster-info` prints it as a node list with no further change.
+`cluster-info` prints a per-node breakdown — each build-server's address, CPU count, and in-flight jobs — when the scheduler exposes a per-server array in its status response. The stock upstream scheduler returns only the aggregate counts (server count, total CPUs, jobs in progress) and the `nodes:` block is omitted; a scheduler that adds the per-server array (as the source build this runbook uses does) gets the node list with no further change to `cluster-info`.
 
 `cluster-info` is a one-shot snapshot. To watch the cluster *and* the build together while a build runs — per-node job load, the daemon's cache/distributed/fell-back counts, and bitbake task progress in one refreshing view (or `--json`/NDJSON for CI) — use [`bakar monitor`](monitor.md).
 

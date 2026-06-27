@@ -5,8 +5,14 @@ Remove the BSP-specific `build/` directory to force a from-scratch build.
 ## Synopsis
 
 ```text
-bakar clean [OPTIONS]
+bakar clean [KAS_YAML] [OPTIONS]
 ```
+
+## Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `KAS_YAML` | Optional BYO/meta-avocado kas YAML. When given, cleans that build dir (`workspace/build-<yaml-stem>/build`), mirroring `bakar build my.yml`, instead of an nxp/ti BSP dir. Mutually exclusive with `--bsp`/`--manifest`. |
 
 ## Options
 
@@ -32,6 +38,9 @@ bakar clean --bsp nxp --all
 
 # Clean from outside the workspace
 bakar clean --bsp nxp --workspace ~/bsp/my-workspace
+
+# BYO/meta-avocado: clean workspace/build-<stem>/build for a kas YAML
+bakar clean meta-avocado/kas/machine/qemuarm64.yml
 ```
 
 ## Notes
@@ -39,7 +48,7 @@ bakar clean --bsp nxp --workspace ~/bsp/my-workspace
 - `clean` removes `<bsp_root>/build/` which contains `tmp/`, `sstate-cache/`, `conf/`, and `runs/`. It does not remove `sources/` (synced layers).
 - With `--all`, the generated `kas-<bsp>.yml` is also removed. The next `bakar build` will regenerate it from the manifest.
 - BSP family is auto-detected from cwd by looking for `nxp/` or `ti/` subdirectories.
-- `--all` calls `hashserv.stop(bsp_root)` before the wipe so the persistent hashserv daemon (when running) gets the SIGTERM grace it needs to flush SQLite cleanly. The hash-equivalence database under `<bsp_root>/.bakar/hashserv.db` is removed together with the rest of the workspace - clean --all wipes the cache. Use `bakar hashserv stop` alone if you want to stop the daemon without dropping its database.
+- `--all` stops the persistent hashserv daemon before the wipe **only when the daemon is keyed to this workspace** (`hashserv_state_key == bsp_root`, the no-shared-sstate fallback), so it gets the SIGTERM grace it needs to flush SQLite cleanly and its `<bsp_root>/.bakar/hashserv.db` is wiped with the rest of the workspace. When the daemon is keyed to a shared `SSTATE_DIR`, its database lives outside this build dir and sibling workspaces depend on it, so `--all` leaves it running and the wipe does not touch it. Use `bakar hashserv stop` to stop the daemon without dropping its database.
 
 ## See also
 
