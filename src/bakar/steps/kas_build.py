@@ -52,7 +52,13 @@ from bakar.cache_render import (
     render_cluster,
     render_sccache_cache,
 )
-from bakar.diagnostics import probe_build_daemon, probe_ccache, probe_cluster
+from bakar.diagnostics import (
+    BUILDTOOLS_DIR_ENV,
+    detect_buildtools,
+    probe_build_daemon,
+    probe_ccache,
+    probe_cluster,
+)
 from bakar.eventlog import tail_events
 from bakar.kas import KasGenOptions, write_yaml
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
@@ -1406,13 +1412,97 @@ def _autocalibrate_psi(
     return changes
 
 
+class BuildtoolsMissingError(RuntimeError):
+    """A host build was requested but no pinned buildtools-extended toolchain is present.
+
+    Raised before bitbake is invoked so the build fails loudly instead of
+    silently falling back to the system ``/usr/bin/gcc``. The message names the
+    missing toolchain and how to point bakar at it.
+    """
+
+
+def _capture_sourced_env(env_script: Path) -> dict[str, str]:
+    """Source ``env_script`` in a clean shell and return the resulting environment.
+
+    The buildtools-extended ``environment-setup-*`` script mutates PATH,
+    OECORE_NATIVE_SYSROOT, CC/CXX and friends. Sourcing it in a subshell and
+    dumping ``env`` is the only faithful way to capture those edits without
+    reimplementing the script.
+    """
+    result = subprocess.run(
+        ["bash", "-c", f". {shlex.quote(str(env_script))} && env -0"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    captured: dict[str, str] = {}
+    for entry in result.stdout.split("\0"):
+        key, sep, value = entry.partition("=")
+        if sep:
+            captured[key] = value
+    return captured
+
+
+def _provision_buildtools(cfg: BuildConfig, passthrough: dict[str, str]) -> None:
+    """Stage the pinned buildtools-extended toolchain into the host build env.
+
+    Host builds must run against the pinned ``buildtools-extended`` gcc, never
+    the rolling Arch system gcc. Detect the toolchain via
+    :func:`bakar.diagnostics.detect_buildtools`; if it is absent, raise
+    :class:`BuildtoolsMissingError` naming it instead of letting bitbake fall
+    back to ``/usr/bin/gcc``. When present via the env-script path, source the
+    script and merge its PATH/sysroot/compiler exports into ``passthrough``;
+    when already sourced, the process env already carries them.
+
+    No-op outside host mode - container builds get their toolchain from the kas
+    image.
+    """
+    if not cfg.host_mode:
+        return
+    toolchain = detect_buildtools()
+    if not toolchain.present:
+        raise BuildtoolsMissingError(
+            "host build requires the pinned buildtools-extended toolchain, but it "
+            f"was not found: {toolchain.detail}. Install Yocto's "
+            "buildtools-extended-tarball and either source its environment-setup "
+            f"script or set {BUILDTOOLS_DIR_ENV} to its install directory. Refusing "
+            "to fall back to the system /usr/bin/gcc."
+        )
+    if toolchain.env_script is not None:
+        sourced = _capture_sourced_env(toolchain.env_script)
+        # Carry the toolchain's PATH (pinned gcc first) and every OE/SDK var the
+        # script exports so the host bitbake sees the pinned compiler.
+        if "PATH" in sourced:
+            passthrough["PATH"] = sourced["PATH"]
+        passthrough.update(
+            {
+                key: value
+                for key, value in sourced.items()
+                if key.startswith(("OECORE_", "SDKTARGETSYSROOT")) or key in {"CC", "CXX", "CPP", "AR", "LD", "CFLAGS"}
+            }
+        )
+
+
 def _apply_host_mode_env(
     cfg: BuildConfig,
     python_executable: Path | None,
     passthrough: dict[str, str],
+    *,
+    provision_buildtools: bool = True,
 ) -> None:
-    """Inject host-mode Python interpreter settings into the env dict (mutates in place)."""
+    """Inject host-mode Python interpreter settings into the env dict (mutates in place).
+
+    ``provision_buildtools`` gates the buildtools-extended staging side effect
+    (and its loud failure when absent) so dry-run/script-gen env rendering never
+    sources the toolchain or aborts on a missing one - it mirrors the
+    ``ensure_hashserv`` guard the hashserv/sccache side effects use.
+    """
     if cfg.host_mode:
+        # Stage the pinned buildtools-extended toolchain first (raises loudly
+        # when absent), then prepend the build's Python so it wins on PATH over
+        # the toolchain's interpreter.
+        if provision_buildtools:
+            _provision_buildtools(cfg, passthrough)
         if python_executable is not None:
             py_path = python_executable.resolve()
             py_bin = str(py_path.parent)
@@ -1565,7 +1655,7 @@ def _build_env(
     else:
         passthrough["KAS_WORK_DIR"] = str(cfg.bsp_root)
 
-    _apply_host_mode_env(cfg, python_executable, passthrough)
+    _apply_host_mode_env(cfg, python_executable, passthrough, provision_buildtools=ensure_hashserv)
     # When the caller supplies a container-visible event-log path, point
     # bitbake at it via BB_DEFAULT_EVENTLOG (cooker.py honors this var literally
     # via setupEventLog, no datetime substitution). Omit the key when None so

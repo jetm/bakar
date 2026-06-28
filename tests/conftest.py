@@ -87,3 +87,22 @@ def fake_run_dir(tmp_path: Path) -> Path:
     (run / "events.jsonl").write_text(SAMPLE_EVENTS_JSONL)
     (run / "kas.log").write_text(SAMPLE_KAS_LOG)
     return run
+
+
+@pytest.fixture(autouse=True)
+def _fake_buildtools_toolchain(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make host-mode builds find a pinned buildtools-extended toolchain.
+
+    Host builds now refuse to fall back to the system gcc: ``_build_env`` calls
+    ``_provision_buildtools`` which raises when no toolchain is detected. The
+    suite's host-mode env-emission tests don't care about provisioning, so this
+    autouse fixture sets ``OECORE_NATIVE_SYSROOT`` to a temp sysroot carrying a
+    stub gcc. Tests that specifically exercise the missing-toolchain path
+    (``test_buildtools_provision.py``) clear these vars in their own autouse
+    fixture, which runs after this one and wins.
+    """
+    sysroot = tmp_path_factory.mktemp("buildtools-sysroot")
+    gcc = sysroot / "usr" / "bin" / "gcc"
+    gcc.parent.mkdir(parents=True, exist_ok=True)
+    gcc.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("OECORE_NATIVE_SYSROOT", str(sysroot))

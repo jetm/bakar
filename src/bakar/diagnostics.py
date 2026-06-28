@@ -73,6 +73,88 @@ def _skip(name: str, severity: Severity, message: str) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# buildtools-extended detection (shared by the host build path and doctor)
+# ---------------------------------------------------------------------------
+
+# Env var pointing at an installed buildtools-extended-tarball directory (the
+# dir holding the ``environment-setup-*`` script). config.py owns no field for
+# this yet, so detection is env-driven; a config field can layer on later
+# without changing the contract here.
+BUILDTOOLS_DIR_ENV = "BAKAR_BUILDTOOLS_DIR"
+
+# Glob for the script Yocto's buildtools-extended installer drops at the
+# install root (e.g. ``environment-setup-x86_64-pokysdk-linux``). Sourcing it
+# exports OECORE_NATIVE_SYSROOT and prepends the pinned gcc to PATH.
+_BUILDTOOLS_ENV_SCRIPT_GLOB = "environment-setup-*"
+
+
+@dataclass(frozen=True)
+class BuildtoolsToolchain:
+    """Result of probing for a buildtools-extended toolchain.
+
+    ``present`` is True only when a pinned toolchain is locatable: either the
+    process already has it sourced (``OECORE_NATIVE_SYSROOT`` set and its gcc
+    on disk), or ``BAKAR_BUILDTOOLS_DIR`` names a dir with an
+    ``environment-setup-*`` script. ``env_script`` is the script to source when
+    the toolchain is found via the env-var path; it is None when the toolchain
+    is already sourced (nothing to source) or absent.
+    """
+
+    present: bool
+    sysroot: Path | None = None
+    env_script: Path | None = None
+    detail: str = ""
+
+
+def detect_buildtools() -> BuildtoolsToolchain:
+    """Locate a pinned buildtools-extended toolchain without sourcing it.
+
+    Detection order:
+
+    1. Already sourced: ``OECORE_NATIVE_SYSROOT`` is set and its ``usr/bin/gcc``
+       exists on disk. Nothing needs sourcing; ``env_script`` stays None.
+    2. ``BAKAR_BUILDTOOLS_DIR`` names a dir containing an ``environment-setup-*``
+       script. ``env_script`` is that script so callers can source it before
+       invoking host bitbake.
+
+    Returns ``present=False`` when neither holds, so the caller can fail loudly
+    naming the missing toolchain instead of letting bitbake fall back to the
+    system gcc.
+    """
+    sysroot_env = os.environ.get("OECORE_NATIVE_SYSROOT")
+    if sysroot_env:
+        sysroot = Path(sysroot_env)
+        if (sysroot / "usr" / "bin" / "gcc").exists():
+            return BuildtoolsToolchain(
+                present=True,
+                sysroot=sysroot,
+                env_script=None,
+                detail=f"already sourced ({sysroot})",
+            )
+
+    dir_env = os.environ.get(BUILDTOOLS_DIR_ENV)
+    if dir_env:
+        install_dir = Path(dir_env)
+        scripts = sorted(install_dir.glob(_BUILDTOOLS_ENV_SCRIPT_GLOB))
+        if scripts:
+            return BuildtoolsToolchain(
+                present=True,
+                sysroot=None,
+                env_script=scripts[0],
+                detail=f"found env script {scripts[0]}",
+            )
+        return BuildtoolsToolchain(
+            present=False,
+            detail=f"{BUILDTOOLS_DIR_ENV}={install_dir} has no environment-setup-* script",
+        )
+
+    return BuildtoolsToolchain(
+        present=False,
+        detail=f"neither OECORE_NATIVE_SYSROOT nor {BUILDTOOLS_DIR_ENV} is set",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Shared checks (run for every BSP family)
 # ---------------------------------------------------------------------------
 
