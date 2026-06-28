@@ -23,7 +23,8 @@ Two gates decide the plan:
 
 Only host-environment checks are mapped (host-tools, docker-daemon,
 container-image, docker-ulimits, docker-storage-driver, sysctl,
-git-global-config, cache-dirs); workspace/runtime checks (manifest, forks-*,
+git-global-config, cache-dirs, host-preflight); workspace/runtime checks
+(manifest, forks-*,
 ti-*, bbsetup-*, kas-yaml-syntax, hashserv, bitbake-locks, bitbake-override,
 sstate-hash-leak) are never mapped. The memory / disk-free /
 workspace-filesystem / docker-version checks stay advisory: they
@@ -53,6 +54,8 @@ from bakar.setup.actions.docker import (
 from bakar.setup.actions.git import GitConfigAction
 from bakar.setup.actions.sysctl import SysctlAction
 from bakar.setup.actions.tools import (
+    BuildtoolsConfigPersistAction,
+    BuildtoolsInstallAction,
     DockerPullAction,
     KasInstallAction,
     docker_engine_advice,
@@ -77,8 +80,14 @@ _HOST_SCOPED_CHECKS: frozenset[str] = frozenset(
         "sysctl",
         "git-global-config",
         "cache-dirs",
+        "host-preflight",
     }
 )
+
+# Path under the active workspace where oe-core's buildtools installer lives.
+# The plan only adds the buildtools remediation when this script resolves; the
+# no-workspace fallback (a bakar-pinned release) is a non-goal.
+_INSTALL_BUILDTOOLS_REL = Path("openembedded-core") / "scripts" / "install-buildtools"
 
 # Checks reported as advisory text, never turned into an applied action. These
 # are host-environment conditions setup surfaces but deliberately does not fix
@@ -113,12 +122,40 @@ class SetupPlan:
     advisories: list[str] = field(default_factory=list)
 
 
+def _resolve_install_buildtools(cfg: BuildConfig) -> Path | None:
+    """Resolve the active workspace's ``install-buildtools`` script, or ``None``.
+
+    The release the toolchain installs is tied to the workspace's oe-core
+    checkout, so the script is sourced from ``cfg.workspace``. When the workspace
+    does not expose ``openembedded-core/scripts/install-buildtools`` there is
+    nothing to run - the no-workspace fallback is a non-goal - so the buildtools
+    remediation is skipped entirely.
+    """
+    workspace = getattr(cfg, "workspace", None)
+    if workspace is None:
+        return None
+    script = Path(workspace) / _INSTALL_BUILDTOOLS_REL
+    return script if script.is_file() else None
+
+
+@dataclass(frozen=True, slots=True)
+class _DispatchContext:
+    """Per-build context the check->action dispatcher needs beyond profile/cfg.
+
+    Groups the git identity (supplied by the command) and the effective host mode
+    so the dispatcher signature stays within the project's argument-count limit.
+    """
+
+    git_email: str | None
+    git_name: str | None
+    effective_host_mode: bool
+
+
 def _candidate_actions(
     check_name: str,
     profile: HostProfile,
     cfg: BuildConfig,
-    git_email: str | None,
-    git_name: str | None,
+    ctx: _DispatchContext,
 ) -> list[Action]:
     """Map one FAILing host-scoped ``check_name`` to its candidate action(s).
 
@@ -135,12 +172,26 @@ def _candidate_actions(
         return [SysctlAction()]
     if check_name == "cache-dirs":
         return [CacheDirsAction()]
+    if check_name == "host-preflight":
+        # The buildtools toolchain is a host-mode-only need: in a container-only
+        # setup (host mode not the effective default) builds run inside the image
+        # and never source a host toolchain, so contribute nothing. With no
+        # workspace install-buildtools script there is nothing to run either.
+        if not ctx.effective_host_mode:
+            return []
+        install_buildtools = _resolve_install_buildtools(cfg)
+        if install_buildtools is None:
+            return []
+        return [
+            BuildtoolsInstallAction(install_buildtools=str(install_buildtools)),
+            BuildtoolsConfigPersistAction(),
+        ]
     if check_name == "git-global-config":
         # The identity comes from the command (CLI options or a prompt); without
         # it there is no value to write, so the action is skipped.
-        if git_email is None or git_name is None:
+        if ctx.git_email is None or ctx.git_name is None:
             return []
-        return [GitConfigAction(email=git_email, name=git_name)]
+        return [GitConfigAction(email=ctx.git_email, name=ctx.git_name)]
 
     # Remaining checks are docker-dependent. With no docker engine installed the
     # advisory install hint stands in their place and no action is produced.
@@ -175,16 +226,27 @@ def build(
     The git identity (``git_email`` / ``git_name``) is passed in by the command;
     when either is absent the ``git-global-config`` remediation is omitted.
     """
+    # Whether host mode is the effective default. The buildtools remediation is
+    # host-mode-only, so it is gated on this. It must be read BEFORE the
+    # docker-check clobber below forces host_mode False - that clobber is purely
+    # about running the docker checks and must not suppress the toolchain
+    # install. A self-resolved cfg's host_mode (config.py:725) is the effective
+    # value; a caller-supplied cfg carries its own.
     if cfg is None:
         cfg = config.resolve(workspace=Path.cwd(), user_config=user_config)
+        effective_host_mode = bool(getattr(cfg, "host_mode", False))
         # setup prepares the container runtime, so it must always evaluate the
         # docker checks. resolve() auto-detects host_mode=True on a stock host
         # (no KAS_CONTAINER_IMAGE env, no configured image), and run_all then
         # filters out every _DOCKER_CHECKS member - which would silently drop
         # all docker remediations. Force host_mode off so they are assessed.
         cfg = replace(cfg, host_mode=False)
+    else:
+        effective_host_mode = bool(getattr(cfg, "host_mode", False))
 
     results = run_all(cfg, None)
+
+    dispatch_ctx = _DispatchContext(git_email=git_email, git_name=git_name, effective_host_mode=effective_host_mode)
 
     actions: list[Action] = []
     advisories: list[str] = []
@@ -206,7 +268,7 @@ def build(
         if name == "git-global-config" and (git_email is None or git_name is None):
             advisories.append("git-global-config: pass --git-email and --git-name to configure git identity")
             continue
-        for action in _candidate_actions(name, profile, cfg, git_email, git_name):
+        for action in _candidate_actions(name, profile, cfg, dispatch_ctx):
             if action.is_satisfied(profile):
                 continue
             actions.append(action)

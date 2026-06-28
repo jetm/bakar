@@ -35,7 +35,12 @@ from bakar.setup.actions.docker import (
 )
 from bakar.setup.actions.git import GitConfigAction
 from bakar.setup.actions.sysctl import SysctlAction
-from bakar.setup.actions.tools import DockerPullAction, KasInstallAction
+from bakar.setup.actions.tools import (
+    BuildtoolsConfigPersistAction,
+    BuildtoolsInstallAction,
+    DockerPullAction,
+    KasInstallAction,
+)
 from bakar.setup.profile import HostProfile
 
 if TYPE_CHECKING:
@@ -319,3 +324,78 @@ def test_build_forces_host_mode_off_so_docker_checks_run(monkeypatch: pytest.Mon
     plan_mod.build(_profile())
 
     assert seen["host_mode"] is False
+
+
+# ---------------------------------------------------------------------------
+# host-preflight -> buildtools provisioning
+#
+# The remediation is gated on (1) host mode being the effective default, (2) the
+# host-preflight check FAILing, and (3) the active workspace exposing
+# openembedded-core/scripts/install-buildtools. The already-present case is
+# dropped by the existing is_satisfied filter (detect_buildtools().present).
+# ---------------------------------------------------------------------------
+
+
+def _workspace_with_installer(tmp_path) -> object:
+    """A tmp workspace dir carrying the oe-core install-buildtools script."""
+    script = tmp_path / "openembedded-core" / "scripts" / "install-buildtools"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/bin/sh\n")
+    return tmp_path
+
+
+def _host_cfg(workspace) -> SimpleNamespace:
+    """A host-mode cfg pointing at ``workspace`` (host mode is the effective default)."""
+    return SimpleNamespace(kas_container_image="img:1", host_mode=True, workspace=workspace)
+
+
+def test_host_preflight_failing_in_host_mode_adds_buildtools_actions(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Host mode default + host-preflight FAIL + installer present -> install action."""
+    _patch_results(monkeypatch, [_fail("host-preflight")])
+    # The toolchain is absent, so the install action is not dropped at stage two.
+    monkeypatch.setattr(BuildtoolsInstallAction, "is_satisfied", lambda _self, _p: False)
+    monkeypatch.setattr(BuildtoolsConfigPersistAction, "is_satisfied", lambda _self, _p: False)
+    cfg = _host_cfg(_workspace_with_installer(tmp_path))
+    result = plan_mod.build(_profile(), cfg=cfg)
+    present = _types(result.actions)
+    assert BuildtoolsInstallAction in present
+    assert BuildtoolsConfigPersistAction in present
+    installs = [a for a in result.actions if isinstance(a, BuildtoolsInstallAction)]
+    assert installs[0].install_buildtools.endswith("openembedded-core/scripts/install-buildtools")
+
+
+def test_host_preflight_in_container_mode_adds_nothing(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Host mode NOT the effective default -> no buildtools action even with the installer present."""
+    _patch_results(monkeypatch, [_fail("host-preflight")])
+    monkeypatch.setattr(BuildtoolsInstallAction, "is_satisfied", lambda _self, _p: False)
+    monkeypatch.setattr(BuildtoolsConfigPersistAction, "is_satisfied", lambda _self, _p: False)
+    cfg = SimpleNamespace(kas_container_image="img:1", host_mode=False, workspace=_workspace_with_installer(tmp_path))
+    result = plan_mod.build(_profile(), cfg=cfg)
+    present = _types(result.actions)
+    assert BuildtoolsInstallAction not in present
+    assert BuildtoolsConfigPersistAction not in present
+
+
+def test_host_preflight_toolchain_already_present_is_dropped(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """An already-present toolchain (is_satisfied True) drops both buildtools actions."""
+    _patch_results(monkeypatch, [_fail("host-preflight")])
+    # detect_buildtools().present is True -> the satisfied-action filter drops them.
+    monkeypatch.setattr(BuildtoolsInstallAction, "is_satisfied", lambda _self, _p: True)
+    monkeypatch.setattr(BuildtoolsConfigPersistAction, "is_satisfied", lambda _self, _p: True)
+    cfg = _host_cfg(_workspace_with_installer(tmp_path))
+    result = plan_mod.build(_profile(), cfg=cfg)
+    present = _types(result.actions)
+    assert BuildtoolsInstallAction not in present
+    assert BuildtoolsConfigPersistAction not in present
+
+
+def test_host_preflight_without_installer_adds_nothing(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Host mode default but no install-buildtools script in the workspace -> nothing added."""
+    _patch_results(monkeypatch, [_fail("host-preflight")])
+    monkeypatch.setattr(BuildtoolsInstallAction, "is_satisfied", lambda _self, _p: False)
+    # tmp_path has no openembedded-core/scripts/install-buildtools.
+    cfg = _host_cfg(tmp_path)
+    result = plan_mod.build(_profile(), cfg=cfg)
+    present = _types(result.actions)
+    assert BuildtoolsInstallAction not in present
+    assert BuildtoolsConfigPersistAction not in present
