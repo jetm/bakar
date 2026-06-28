@@ -19,7 +19,7 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bakar.diagnostics import detect_buildtools
+from bakar.diagnostics import detect_buildtools, resolve_buildtools_dir
 from bakar.setup.actions.base import RunCommand, WriteFile
 from bakar.user_config import set_setting
 
@@ -190,19 +190,23 @@ class BuildtoolsConfigPersistAction:
     def apply(self, path: Path | None = None) -> None:
         """Write ``build.buildtools_dir`` to the global config when the install took.
 
-        Guards the persist on :func:`detect_buildtools` reporting the toolchain
-        present at apply time. This makes both install-failure modes safe without
-        recording a dead config path:
+        Guards the persist by probing ``self.install_dir`` directly for an
+        ``environment-setup-*`` script (via :func:`resolve_buildtools_dir`), not
+        via :func:`detect_buildtools`: at apply time the env var and the config
+        key being written are both unset and the install ran in a child process,
+        so the env/config-driven detector cannot see the freshly installed dir.
+        Probing the dir makes both install-failure modes safe without recording
+        a dead config path:
 
         - a non-zero ``install-buildtools`` exit aborts the plan in the runner
           before this action runs, so the key is never written;
-        - an install that exits 0 but leaves the toolchain undetectable re-checks
-          here, finds ``present`` False, and writes nothing.
+        - an install that exits 0 but drops no env-setup script leaves the probe
+          ``present`` False here, so nothing is written.
 
         ``path`` defaults to ``None``, routing ``set_setting`` to the user-global
         ``~/.config/bakar/config.toml``; tests pass an explicit path to assert
         the global-config target.
         """
-        if not detect_buildtools().present:
+        if not resolve_buildtools_dir(self.install_dir, "[build] buildtools_dir").present:
             return
         set_setting("build.buildtools_dir", str(self.install_dir), path)

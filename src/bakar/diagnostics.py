@@ -107,7 +107,7 @@ class BuildtoolsToolchain:
     detail: str = ""
 
 
-def _resolve_buildtools_dir(install_dir: Path, source: str) -> BuildtoolsToolchain:
+def resolve_buildtools_dir(install_dir: Path, source: str) -> BuildtoolsToolchain:
     """Probe ``install_dir`` for an ``environment-setup-*`` script.
 
     ``source`` names where the dir came from (the env var or the config key) so
@@ -158,11 +158,11 @@ def detect_buildtools() -> BuildtoolsToolchain:
 
     dir_env = os.environ.get(BUILDTOOLS_DIR_ENV)
     if dir_env:
-        return _resolve_buildtools_dir(Path(dir_env), BUILDTOOLS_DIR_ENV)
+        return resolve_buildtools_dir(Path(dir_env), BUILDTOOLS_DIR_ENV)
 
     config_dir = load_user_config().buildtools_dir
     if config_dir:
-        return _resolve_buildtools_dir(Path(config_dir), "[build] buildtools_dir")
+        return resolve_buildtools_dir(Path(config_dir), "[build] buildtools_dir")
 
     return BuildtoolsToolchain(
         present=False,

@@ -279,9 +279,11 @@ def test_failed_install_surfaces_and_leaves_buildtools_dir_unset(monkeypatch) ->
     assert persisted == []
 
 
-def test_install_exit_zero_but_still_absent_persists_nothing(monkeypatch) -> None:
-    """An install that exits 0 yet leaves the toolchain undetectable writes no config."""
-    install_argv = _install_argv()
+def test_install_exit_zero_but_still_absent_persists_nothing(monkeypatch, tmp_path) -> None:
+    """An install that exits 0 yet drops no env-setup script writes no config."""
+    empty_dir = tmp_path / "buildtools"
+    empty_dir.mkdir()  # exists but carries no environment-setup-* script
+    install_argv = ["/ws/openembedded-core/scripts/install-buildtools", "-d", str(empty_dir)]
     recorder = _Recorder()
     monkeypatch.setattr(runner.subprocess, "run", recorder)
 
@@ -290,21 +292,48 @@ def test_install_exit_zero_but_still_absent_persists_nothing(monkeypatch) -> Non
         "bakar.setup.actions.tools.set_setting",
         lambda key, value, path=None: persisted.append((key, value, path)),
     )
-    # Install ran cleanly, but detection still cannot find a toolchain.
-    monkeypatch.setattr(
-        "bakar.setup.actions.tools.detect_buildtools",
-        lambda: BuildtoolsToolchain(present=False, detail="absent"),
-    )
 
-    install = BuildtoolsInstallAction(
-        install_buildtools=install_argv[0],
-        install_dir=Path(install_argv[2]),
-    )
-    persist = BuildtoolsConfigPersistAction(install_dir=Path(install_argv[2]))
+    install = BuildtoolsInstallAction(install_buildtools=install_argv[0], install_dir=empty_dir)
+    persist = BuildtoolsConfigPersistAction(install_dir=empty_dir)
     plan = SetupPlan(actions=[install, persist])
 
     runner.apply_plan(plan, assume_yes=True)
 
-    # The install op ran; the persist guard declined to record a dead path.
+    # The install op ran; the persist guard probed install_dir, found no
+    # env-setup script, and declined to record a dead path.
     assert recorder.calls == [install_argv]
     assert persisted == []
+
+
+def test_install_succeeds_persists_buildtools_dir(monkeypatch, tmp_path) -> None:
+    """A successful install (env-setup script present) persists the dir to the global config.
+
+    Regression guard: the persist guard must probe ``install_dir`` directly. The
+    env/config-driven ``detect_buildtools`` cannot see a freshly installed dir at
+    apply time (env var unset, the config key is what we are about to write, and
+    the install ran in a child process), so guarding on it silently skipped every
+    real install.
+    """
+    install_dir = tmp_path / "buildtools"
+    install_dir.mkdir()
+    (install_dir / "environment-setup-x86_64-pokysdk-linux").write_text("# env\n")
+    install_argv = ["/ws/openembedded-core/scripts/install-buildtools", "-d", str(install_dir)]
+    recorder = _Recorder()
+    monkeypatch.setattr(runner.subprocess, "run", recorder)
+
+    persisted: list[tuple[str, str, Path | None]] = []
+    monkeypatch.setattr(
+        "bakar.setup.actions.tools.set_setting",
+        lambda key, value, path=None: persisted.append((key, value, path)),
+    )
+
+    install = BuildtoolsInstallAction(install_buildtools=install_argv[0], install_dir=install_dir)
+    persist = BuildtoolsConfigPersistAction(install_dir=install_dir)
+    plan = SetupPlan(actions=[install, persist])
+
+    runner.apply_plan(plan, assume_yes=True)
+
+    # The dir is persisted to the user-global config (path=None) - the round-trip
+    # the old env/config-driven guard silently skipped.
+    assert recorder.calls == [install_argv]
+    assert persisted == [("build.buildtools_dir", str(install_dir), None)]

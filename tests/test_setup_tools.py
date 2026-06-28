@@ -186,18 +186,16 @@ def test_buildtools_persist_satisfied_tracks_detector(monkeypatch) -> None:
     assert BuildtoolsConfigPersistAction().is_satisfied(_profile()) is False
 
 
-def test_buildtools_persist_writes_build_key_to_global_config(monkeypatch) -> None:
+def test_buildtools_persist_writes_build_key_to_global_config(tmp_path, monkeypatch) -> None:
     """apply() routes set_setting at the global config, the [build] key."""
-    monkeypatch.setattr(
-        "bakar.setup.actions.tools.detect_buildtools",
-        lambda: _toolchain(present=True),
-    )
+    install_dir = tmp_path / "bt"
+    install_dir.mkdir()
+    (install_dir / "environment-setup-x86_64-pokysdk-linux").write_text("# env\n")
     calls: list[tuple[str, str, Path | None]] = []
     monkeypatch.setattr(
         "bakar.setup.actions.tools.set_setting",
         lambda key, value, path=None: calls.append((key, value, path)),
     )
-    install_dir = Path("/opt/bakar/bt")
     BuildtoolsConfigPersistAction(install_dir=install_dir).apply()
     assert calls == [("build.buildtools_dir", str(install_dir), None)]
 
@@ -211,13 +209,11 @@ def test_buildtools_persist_targets_explicit_global_path_not_workspace(tmp_path,
         captured["value"] = value
         captured["path"] = path
 
-    monkeypatch.setattr(
-        "bakar.setup.actions.tools.detect_buildtools",
-        lambda: _toolchain(present=True),
-    )
     monkeypatch.setattr("bakar.setup.actions.tools.set_setting", _fake_set_setting)
+    install_dir = tmp_path / "bt"
+    install_dir.mkdir()
+    (install_dir / "environment-setup-x86_64-pokysdk-linux").write_text("# env\n")
     global_cfg = tmp_path / "config.toml"
-    install_dir = Path("/opt/bakar/bt")
     BuildtoolsConfigPersistAction(install_dir=install_dir).apply(global_cfg)
     assert captured["key"] == "build.buildtools_dir"
     assert captured["value"] == str(install_dir)
