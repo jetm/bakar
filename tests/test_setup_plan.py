@@ -399,3 +399,31 @@ def test_host_preflight_without_installer_adds_nothing(monkeypatch: pytest.Monke
     present = _types(result.actions)
     assert BuildtoolsInstallAction not in present
     assert BuildtoolsConfigPersistAction not in present
+
+
+def test_host_preflight_skipped_by_clobber_is_reevaluated_in_host_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """run_all skips host-preflight under the forced-host_mode-False docker clobber;
+    build() must re-evaluate it under the effective host mode so an absent toolchain
+    still provisions. Regression guard: without the re-evaluation the buildtools
+    actions never fire on the real setup path, because the dispatch loop only maps
+    FAILing checks and the clobbered run_all returns host-preflight as SKIP."""
+    # What real run_all returns under the clobber: host-preflight SKIPPED.
+    skipped = CheckResult(
+        name="host-preflight", severity=Severity.INFO, status=Status.SKIP, message="container build"
+    )
+    _patch_results(monkeypatch, [skipped])
+    # The re-evaluation under host_mode=True finds the toolchain absent -> FAIL.
+    monkeypatch.setattr(plan_mod, "check_host_preflight", lambda _cfg: _fail("host-preflight"))
+    monkeypatch.setattr(BuildtoolsInstallAction, "is_satisfied", lambda _self, _p: False)
+    monkeypatch.setattr(BuildtoolsConfigPersistAction, "is_satisfied", lambda _self, _p: False)
+    cfg = _host_cfg(_workspace_with_installer(tmp_path))
+    result = plan_mod.build(_profile(), cfg=cfg)
+    present = _types(result.actions)
+    assert BuildtoolsInstallAction in present
+    assert BuildtoolsConfigPersistAction in present
+    # f0001: the install target and the persisted location share one dir.
+    installs = [a for a in result.actions if isinstance(a, BuildtoolsInstallAction)]
+    persists = [a for a in result.actions if isinstance(a, BuildtoolsConfigPersistAction)]
+    assert installs[0].install_dir == persists[0].install_dir

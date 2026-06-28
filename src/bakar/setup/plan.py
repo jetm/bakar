@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bakar import config
-from bakar.diagnostics import Status, run_all
+from bakar.diagnostics import Status, check_host_preflight, run_all
 from bakar.setup.actions.cache import CacheDirsAction
 from bakar.setup.actions.config_write import ConfigWriteAction
 from bakar.setup.actions.docker import (
@@ -54,6 +54,7 @@ from bakar.setup.actions.docker import (
 from bakar.setup.actions.git import GitConfigAction
 from bakar.setup.actions.sysctl import SysctlAction
 from bakar.setup.actions.tools import (
+    DEFAULT_BUILDTOOLS_DIR,
     BuildtoolsConfigPersistAction,
     BuildtoolsInstallAction,
     DockerPullAction,
@@ -182,9 +183,14 @@ def _candidate_actions(
         install_buildtools = _resolve_install_buildtools(cfg)
         if install_buildtools is None:
             return []
+        # Share one install_dir across both actions so the install target and the
+        # persisted location can never diverge. A fresh host has no configured
+        # dir (an already-configured one is found by detect_buildtools, which
+        # drops both actions via is_satisfied), so the default is correct here.
+        install_dir = DEFAULT_BUILDTOOLS_DIR
         return [
-            BuildtoolsInstallAction(install_buildtools=str(install_buildtools)),
-            BuildtoolsConfigPersistAction(),
+            BuildtoolsInstallAction(install_buildtools=str(install_buildtools), install_dir=install_dir),
+            BuildtoolsConfigPersistAction(install_dir=install_dir),
         ]
     if check_name == "git-global-config":
         # The identity comes from the command (CLI options or a prompt); without
@@ -245,6 +251,20 @@ def build(
         effective_host_mode = bool(getattr(cfg, "host_mode", False))
 
     results = run_all(cfg, None)
+
+    # run_all evaluated host-preflight under the docker-check clobber above
+    # (host_mode False), which makes check_host_preflight SKIP - never FAIL - so
+    # the dispatch loop below would never reach the buildtools remediation. When
+    # host mode is the effective default and the check came back skipped, re-run
+    # it under the true host_mode and splice the result back in, so an absent
+    # toolchain FAILs and provisions. Only the skipped case is re-evaluated, so a
+    # caller-supplied cfg whose run_all already returned a real PASS/FAIL stands.
+    if effective_host_mode:
+        pre = next((r for r in results if r.name == "host-preflight"), None)
+        if pre is not None and pre.status is Status.SKIP:
+            host_cfg = cfg if getattr(cfg, "host_mode", False) else replace(cfg, host_mode=True)
+            preflight = check_host_preflight(host_cfg)
+            results = [preflight if r.name == "host-preflight" else r for r in results]
 
     dispatch_ctx = _DispatchContext(git_email=git_email, git_name=git_name, effective_host_mode=effective_host_mode)
 
