@@ -48,6 +48,29 @@ bakar setup [OPTIONS]
    `host.swappiness_max`, `host.nofile_soft`). It never writes a workspace
    `.bakar.toml`; pin host expectations in-repo only by editing it yourself.
 
+## Buildtools auto-provisioning (host mode)
+
+When host mode is the effective default (no container image configured, or
+`--host`/`host_mode = true`), host builds need the `buildtools-extended`
+toolchain. `setup` installs it for you, but only under all of these conditions:
+
+- host mode is the effective default (in a container-only setup `setup` installs
+  nothing here), **and**
+- the `host-preflight` `doctor` check is failing (the toolchain is not already
+  resolvable - a prepared host yields no install), **and**
+- the active workspace exposes oe-core's `install-buildtools` script (the
+  release is derived from that workspace; `setup` with no workspace adds
+  nothing).
+
+When all three hold, `setup` runs `install-buildtools -d <dir>` (default
+`~/.local/share/bakar/buildtools`, a ~63 MB unprivileged download) and persists
+the location as `[build] buildtools_dir` in the global
+`~/.config/bakar/config.toml`. `detect_buildtools()` resolves that field as a
+fallback after the `BAKAR_BUILDTOOLS_DIR` env var, so the install survives into a
+new shell and `bakar --host build` is turnkey. A failed or incomplete install
+surfaces naming `buildtools-extended` and leaves `buildtools_dir` unset rather
+than recording a dead path.
+
 ## Privileged actions
 
 These land in the single confirmed script:
