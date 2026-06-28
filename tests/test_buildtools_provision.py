@@ -15,6 +15,7 @@ loudly naming it and must never silently fall back to ``/usr/bin/gcc``.
 
 from __future__ import annotations
 
+import sys
 from typing import TYPE_CHECKING
 
 import pytest
@@ -229,3 +230,84 @@ def test_apply_host_mode_env_provisions_before_python(tmp_path: Path, monkeypatc
     passthrough: dict[str, str] = {"PATH": "/usr/bin:/bin"}
     with pytest.raises(kas_build.BuildtoolsMissingError):
         kas_build._apply_host_mode_env(cfg, None, passthrough)
+
+
+# ---------------------------------------------------------------------------
+# SDK python selection - host bitbake must run under the buildtools-extended
+# python (it ships bitbake's runtime deps, e.g. websockets for the hashserv ws
+# client), not bakar's venv python.
+# ---------------------------------------------------------------------------
+
+
+def _sdk_env_script(tmp_path: Path) -> Path:
+    """Create a fake buildtools SDK (gcc + python3) and its env-setup script.
+
+    Returns the sysroot. The script prepends the SDK bin to PATH but does NOT
+    export OECORE_NATIVE_SYSROOT, matching the real buildtools-extended file, so
+    BB_PYTHON3 derivation must read the SDK bin from PATH.
+    """
+    sysroot = tmp_path / "sdk" / "sysroots" / "x86_64"
+    toolbin = sysroot / "usr" / "bin"
+    toolbin.mkdir(parents=True)
+    (toolbin / "gcc").write_text("#!/bin/sh\n")
+    (toolbin / "python3").write_text("#!/bin/sh\n")
+    script = tmp_path / "environment-setup-x86_64-pokysdk-linux"
+    script.write_text("export PATH=" + str(toolbin) + ":$PATH\n")
+    return sysroot
+
+
+def test_provision_sets_bb_python3_to_sdk_python(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """env-script path: BB_PYTHON3 points at the SDK's python3 under the sysroot."""
+    sysroot = _sdk_env_script(tmp_path)
+    monkeypatch.setenv(diagnostics.BUILDTOOLS_DIR_ENV, str(tmp_path))
+    cfg = _make_cfg(tmp_path, host_mode=True)
+    passthrough: dict[str, str] = {"PATH": "/usr/bin:/bin"}
+    kas_build._provision_buildtools(cfg, passthrough)
+    assert passthrough["BB_PYTHON3"] == str(sysroot / "usr" / "bin" / "python3")
+
+
+def test_provision_sets_bb_python3_already_sourced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """already-sourced path: BB_PYTHON3 derived from OECORE_NATIVE_SYSROOT."""
+    sysroot = tmp_path / "sysroot"
+    gcc = sysroot / "usr" / "bin" / "gcc"
+    gcc.parent.mkdir(parents=True)
+    gcc.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("OECORE_NATIVE_SYSROOT", str(sysroot))
+    cfg = _make_cfg(tmp_path, host_mode=True)
+    passthrough: dict[str, str] = {"PATH": "/usr/bin:/bin"}
+    kas_build._provision_buildtools(cfg, passthrough)
+    assert passthrough["BB_PYTHON3"] == str(sysroot / "usr" / "bin" / "python3")
+
+
+def test_apply_host_mode_uses_sdk_python_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default host build runs under the SDK python, not bakar's interpreter."""
+    sysroot = _sdk_env_script(tmp_path)
+    monkeypatch.setenv(diagnostics.BUILDTOOLS_DIR_ENV, str(tmp_path))
+    cfg = _make_cfg(tmp_path, host_mode=True)
+    cfg.bitbake_bin_path.mkdir(parents=True)
+    passthrough: dict[str, str] = {"PATH": "/usr/bin:/bin"}
+    kas_build._apply_host_mode_env(cfg, None, passthrough)
+    assert passthrough["BB_PYTHON3"] == str(sysroot / "usr" / "bin" / "python3")
+    assert passthrough["BB_PYTHON3"] != sys.executable
+
+
+def test_apply_host_mode_explicit_python_overrides_sdk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicit python_executable (stress-parse) still wins over the SDK python."""
+    _sdk_env_script(tmp_path)
+    monkeypatch.setenv(diagnostics.BUILDTOOLS_DIR_ENV, str(tmp_path))
+    cfg = _make_cfg(tmp_path, host_mode=True)
+    cfg.bitbake_bin_path.mkdir(parents=True)
+    custom = tmp_path / "custom" / "python3"
+    custom.parent.mkdir(parents=True)
+    custom.write_text("#!/bin/sh\n")
+    passthrough: dict[str, str] = {"PATH": "/usr/bin:/bin"}
+    kas_build._apply_host_mode_env(cfg, custom, passthrough)
+    assert passthrough["BB_PYTHON3"] == str(custom.resolve())
+
+
+def test_apply_host_mode_dry_run_falls_back_to_sys_executable(tmp_path: Path) -> None:
+    """Dry-run/script-gen (no provisioning) falls back to bakar's interpreter."""
+    cfg = _make_cfg(tmp_path, host_mode=True)
+    passthrough: dict[str, str] = {"PATH": "/usr/bin:/bin"}
+    kas_build._apply_host_mode_env(cfg, None, passthrough, provision_buildtools=False)
+    assert passthrough["BB_PYTHON3"] == sys.executable

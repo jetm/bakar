@@ -1523,6 +1523,20 @@ def _provision_buildtools(cfg: BuildConfig, passthrough: dict[str, str]) -> None
                 if key.startswith(("OECORE_", "SDKTARGETSYSROOT")) or key in {"CC", "CXX", "CPP", "AR", "LD", "CFLAGS"}
             }
         )
+        # The env-setup script prepends the SDK bin dir (<sysroot>/usr/bin, where
+        # python3 and gcc live) as the first PATH entry. OECORE_NATIVE_SYSROOT is
+        # NOT reliably exported by the buildtools-extended script, so take the bin
+        # dir from PATH directly rather than from that var.
+        sdk_bin = sourced["PATH"].split(os.pathsep)[0] if sourced.get("PATH") else None
+    else:
+        sdk_bin = str(toolchain.sysroot / "usr" / "bin") if toolchain.sysroot is not None else None
+    # Host bitbake must run under the SDK's own python, which ships bitbake's
+    # runtime deps (e.g. websockets for the hashserv ws client) and matches the
+    # release the metadata targets. Its bin is already first on PATH via the
+    # sourced toolchain PATH above, so the bitbake shebang resolves to it; record
+    # BB_PYTHON3 too for any sub-invocation that honors it.
+    if sdk_bin:
+        passthrough["BB_PYTHON3"] = str(Path(sdk_bin) / "python3")
 
 
 def _apply_host_mode_env(
@@ -1541,8 +1555,8 @@ def _apply_host_mode_env(
     """
     if cfg.host_mode:
         # Stage the pinned buildtools-extended toolchain first (raises loudly
-        # when absent), then prepend the build's Python so it wins on PATH over
-        # the toolchain's interpreter.
+        # when absent). _provision_buildtools sets BB_PYTHON3 to the SDK python,
+        # which ships bitbake's runtime deps; do not shadow it with bakar's venv.
         if provision_buildtools:
             _provision_buildtools(cfg, passthrough)
             # OE's HOSTTOOLS resolves each tool against BB_ORIGENV's PATH, and kas
@@ -1557,17 +1571,22 @@ def _apply_host_mode_env(
                     "Check the workspace layout (bitbake must be provisioned before "
                     "the build)."
                 )
-        # Prepend the bitbake bin after the buildtools toolbin so the launch can
-        # find bitbake; the later py_bin prepend keeps the build's Python first.
+        # Prepend the bitbake bin after the buildtools toolbin so kas's launch
+        # can find bitbake; the SDK python (set by _provision_buildtools, its bin
+        # already first on PATH) stays the host interpreter by default.
         passthrough["PATH"] = str(cfg.bitbake_bin_path) + os.pathsep + passthrough.get("PATH", "")
         if python_executable is not None:
+            # Explicit interpreter override (e.g. stress-parse's obmalloc-patched
+            # CPython) wins over the SDK python and goes first on PATH.
             py_path = python_executable.resolve()
-            py_bin = str(py_path.parent)
             passthrough["BB_PYTHON3"] = str(py_path)
-        else:
-            py_bin = sysconfig.get_path("scripts")
+            passthrough["PATH"] = str(py_path.parent) + os.pathsep + passthrough.get("PATH", "")
+        elif not provision_buildtools:
+            # Dry-run/script-gen skipped provisioning, so no SDK is on PATH; fall
+            # back to bakar's interpreter for env rendering only. Real builds skip
+            # this branch and keep the SDK python first on PATH.
             passthrough["BB_PYTHON3"] = sys.executable
-        passthrough["PATH"] = py_bin + os.pathsep + passthrough.get("PATH", "")
+            passthrough["PATH"] = sysconfig.get_path("scripts") + os.pathsep + passthrough.get("PATH", "")
 
 
 def _build_env(

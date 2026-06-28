@@ -8,9 +8,10 @@ PATH (the bitbake-launch environment). Two consequences under test:
   bitbake ``bin`` directory per BSP family - it MUST be on the launch PATH or
   the kas->bitbake launch fails.
 * :func:`bakar.steps.kas_build._apply_host_mode_env` prepends that directory
-  (after py_bin, ahead of the buildtools toolbin and the inherited PATH) so
-  the pinned buildtools gcc wins over the rolling ``/usr/bin/gcc`` while the
-  launch can still find bitbake.
+  ahead of the buildtools toolbin and the inherited PATH so the pinned
+  buildtools gcc wins over the rolling ``/usr/bin/gcc`` while the launch can
+  still find bitbake. By default it does not prepend bakar's venv: BB_PYTHON3
+  is the SDK python (set by _provision_buildtools), which ships bitbake's deps.
 
 Container mode early-returns: no bitbake_bin injection there.
 """
@@ -112,8 +113,9 @@ def _install_fake_toolchain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     return toolbin
 
 
-def test_host_mode_path_orders_py_bitbake_buildtools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """py_bin first, then bitbake bin, then the buildtools toolbin ahead of /usr/bin."""
+def test_host_mode_path_orders_bitbake_then_buildtools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default host build: bitbake bin first, then the buildtools toolbin ahead of
+    /usr/bin, and BB_PYTHON3 is the SDK python (bakar's venv is not prepended)."""
     toolbin = _install_fake_toolchain(tmp_path, monkeypatch)
     cfg = _meta_avocado_cfg(tmp_path, host_mode=True)
     cfg.bitbake_bin_path.mkdir(parents=True, exist_ok=True)
@@ -122,11 +124,13 @@ def test_host_mode_path_orders_py_bitbake_buildtools(tmp_path: Path, monkeypatch
     kas_build._apply_host_mode_env(cfg, None, passthrough)
 
     parts = passthrough["PATH"].split(":")
-    py_bin = parts[0]
     bb_bin = str(cfg.bitbake_bin_path)
-    assert bb_bin in parts, parts
-    assert parts.index(py_bin) < parts.index(bb_bin)
+    # No bakar venv prepend in the default case: bitbake bin leads, the SDK
+    # toolbin (carrying the SDK python and gcc) sits ahead of /usr/bin.
+    assert parts[0] == bb_bin, parts
+    assert parts.index(bb_bin) < parts.index(str(toolbin))
     assert parts.index(str(toolbin)) < parts.index("/usr/bin")
+    assert passthrough["BB_PYTHON3"] == str(toolbin / "python3")
 
 
 def test_host_mode_missing_bitbake_bin_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
