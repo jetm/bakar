@@ -201,12 +201,18 @@ class BuildtoolsConfigPersistAction:
         - a non-zero ``install-buildtools`` exit aborts the plan in the runner
           before this action runs, so the key is never written;
         - an install that exits 0 but drops no env-setup script leaves the probe
-          ``present`` False here, so nothing is written.
+          ``present`` False here; this raises to surface the still-missing
+          toolchain rather than silently reporting the host prepared (the spec
+          requires a failed install to surface, not just to skip the write).
 
         ``path`` defaults to ``None``, routing ``set_setting`` to the user-global
         ``~/.config/bakar/config.toml``; tests pass an explicit path to assert
         the global-config target.
         """
         if not resolve_buildtools_dir(self.install_dir, "[build] buildtools_dir").present:
-            return
+            raise RuntimeError(
+                f"buildtools-extended install left no environment-setup-* script at "
+                f"{self.install_dir}; the toolchain is still missing, so host builds "
+                f"cannot proceed. Re-run the install or inspect the installer output."
+            )
         set_setting("build.buildtools_dir", str(self.install_dir), path)

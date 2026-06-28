@@ -280,7 +280,7 @@ def test_failed_install_surfaces_and_leaves_buildtools_dir_unset(monkeypatch) ->
 
 
 def test_install_exit_zero_but_still_absent_persists_nothing(monkeypatch, tmp_path) -> None:
-    """An install that exits 0 yet drops no env-setup script writes no config."""
+    """An install that exits 0 yet drops no env-setup script raises and writes no config."""
     empty_dir = tmp_path / "buildtools"
     empty_dir.mkdir()  # exists but carries no environment-setup-* script
     install_argv = ["/ws/openembedded-core/scripts/install-buildtools", "-d", str(empty_dir)]
@@ -297,10 +297,11 @@ def test_install_exit_zero_but_still_absent_persists_nothing(monkeypatch, tmp_pa
     persist = BuildtoolsConfigPersistAction(install_dir=empty_dir)
     plan = SetupPlan(actions=[install, persist])
 
-    runner.apply_plan(plan, assume_yes=True)
+    with pytest.raises(RuntimeError, match="buildtools-extended"):
+        runner.apply_plan(plan, assume_yes=True)
 
-    # The install op ran; the persist guard probed install_dir, found no
-    # env-setup script, and declined to record a dead path.
+    # The install op ran, but the persist guard found no env-setup script and
+    # raised to surface the still-missing toolchain - never recording a dead path.
     assert recorder.calls == [install_argv]
     assert persisted == []
 
