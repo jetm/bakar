@@ -22,6 +22,7 @@ import pytest
 from bakar import diagnostics
 from bakar.config import BuildConfig
 from bakar.steps import kas_build
+from bakar.user_config import UserConfig
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -47,9 +48,15 @@ def _make_cfg(workspace: Path, *, host_mode: bool = False) -> BuildConfig:
 
 @pytest.fixture(autouse=True)
 def _clear_buildtools_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Start each test from a clean slate (no toolchain in the ambient env)."""
+    """Start each test from a clean slate (no toolchain in the ambient env).
+
+    Also neutralizes the ``[build] buildtools_dir`` config fallback so a real
+    ``~/.config/bakar/config.toml`` on the dev's host cannot leak in; tests that
+    exercise the config path patch ``load_user_config`` themselves.
+    """
     monkeypatch.delenv("OECORE_NATIVE_SYSROOT", raising=False)
     monkeypatch.delenv(diagnostics.BUILDTOOLS_DIR_ENV, raising=False)
+    monkeypatch.setattr(diagnostics, "load_user_config", UserConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +107,51 @@ def test_detect_install_dir_without_script_is_absent(tmp_path: Path, monkeypatch
     tc = diagnostics.detect_buildtools()
     assert tc.present is False
     assert "no environment-setup-*" in tc.detail
+
+
+def _toolchain_dir(parent: Path) -> Path:
+    """Create a dir holding a buildtools-extended env-setup script."""
+    (parent / "environment-setup-x86_64-pokysdk-linux").write_text("export OECORE_NATIVE_SYSROOT=/x\n")
+    return parent
+
+
+def test_detect_via_config_when_env_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Env var unset, [build] buildtools_dir set -> present at the configured dir."""
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    _toolchain_dir(cfg_dir)
+    monkeypatch.setattr(diagnostics, "load_user_config", lambda: UserConfig(buildtools_dir=str(cfg_dir)))
+
+    tc = diagnostics.detect_buildtools()
+
+    assert tc.present is True
+    assert tc.env_script == cfg_dir / "environment-setup-x86_64-pokysdk-linux"
+
+
+def test_detect_env_wins_over_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both env and config name valid toolchains -> the env-var dir is resolved."""
+    env_dir = tmp_path / "env"
+    env_dir.mkdir()
+    _toolchain_dir(env_dir)
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    _toolchain_dir(cfg_dir)
+    monkeypatch.setenv(diagnostics.BUILDTOOLS_DIR_ENV, str(env_dir))
+    monkeypatch.setattr(diagnostics, "load_user_config", lambda: UserConfig(buildtools_dir=str(cfg_dir)))
+
+    tc = diagnostics.detect_buildtools()
+
+    assert tc.present is True
+    assert tc.env_script is not None
+    assert tc.env_script.parent == env_dir
+    assert tc.env_script.parent != cfg_dir
+
+
+def test_detect_absent_when_neither_env_nor_config_set() -> None:
+    """Neither env var nor config field set -> present=False (loud-failure contract)."""
+    # The autouse fixture already patches load_user_config to an empty config.
+    tc = diagnostics.detect_buildtools()
+    assert tc.present is False
 
 
 # ---------------------------------------------------------------------------

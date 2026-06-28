@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 from bakar.config import BuildConfig
 from bakar.kas import parse_bblayers
 from bakar.setup.profile import _read_sysctl
+from bakar.user_config import load_user_config
 
 if TYPE_CHECKING:
     from bakar.bsp_model import BspModel
@@ -106,6 +107,26 @@ class BuildtoolsToolchain:
     detail: str = ""
 
 
+def _resolve_buildtools_dir(install_dir: Path, source: str) -> BuildtoolsToolchain:
+    """Probe ``install_dir`` for an ``environment-setup-*`` script.
+
+    ``source`` names where the dir came from (the env var or the config key) so
+    the ``detail`` message points the user at the right knob to fix.
+    """
+    scripts = sorted(install_dir.glob(_BUILDTOOLS_ENV_SCRIPT_GLOB))
+    if scripts:
+        return BuildtoolsToolchain(
+            present=True,
+            sysroot=None,
+            env_script=scripts[0],
+            detail=f"found env script {scripts[0]}",
+        )
+    return BuildtoolsToolchain(
+        present=False,
+        detail=f"{source}={install_dir} has no environment-setup-* script",
+    )
+
+
 def detect_buildtools() -> BuildtoolsToolchain:
     """Locate a pinned buildtools-extended toolchain without sourcing it.
 
@@ -116,8 +137,11 @@ def detect_buildtools() -> BuildtoolsToolchain:
     2. ``BAKAR_BUILDTOOLS_DIR`` names a dir containing an ``environment-setup-*``
        script. ``env_script`` is that script so callers can source it before
        invoking host bitbake.
+    3. The persisted ``[build] buildtools_dir`` user-config value (the location
+       ``bakar setup`` records), used only when the env var is unset so an
+       explicit export still wins.
 
-    Returns ``present=False`` when neither holds, so the caller can fail loudly
+    Returns ``present=False`` when none holds, so the caller can fail loudly
     naming the missing toolchain instead of letting bitbake fall back to the
     system gcc.
     """
@@ -134,23 +158,16 @@ def detect_buildtools() -> BuildtoolsToolchain:
 
     dir_env = os.environ.get(BUILDTOOLS_DIR_ENV)
     if dir_env:
-        install_dir = Path(dir_env)
-        scripts = sorted(install_dir.glob(_BUILDTOOLS_ENV_SCRIPT_GLOB))
-        if scripts:
-            return BuildtoolsToolchain(
-                present=True,
-                sysroot=None,
-                env_script=scripts[0],
-                detail=f"found env script {scripts[0]}",
-            )
-        return BuildtoolsToolchain(
-            present=False,
-            detail=f"{BUILDTOOLS_DIR_ENV}={install_dir} has no environment-setup-* script",
-        )
+        return _resolve_buildtools_dir(Path(dir_env), BUILDTOOLS_DIR_ENV)
+
+    config_dir = load_user_config().buildtools_dir
+    if config_dir:
+        return _resolve_buildtools_dir(Path(config_dir), "[build] buildtools_dir")
 
     return BuildtoolsToolchain(
         present=False,
-        detail=f"neither OECORE_NATIVE_SYSROOT nor {BUILDTOOLS_DIR_ENV} is set",
+        detail=f"neither OECORE_NATIVE_SYSROOT nor {BUILDTOOLS_DIR_ENV} is set "
+        "and [build] buildtools_dir is unconfigured",
     )
 
 
