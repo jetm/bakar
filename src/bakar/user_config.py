@@ -27,6 +27,7 @@ _STR_FIELDS = {
     "sstate_mirror_url",
     "scheduler",
     "ccache_dir",
+    "buildtools_dir",
     "sccache_scheduler_url",
 }
 _BOOL_FIELDS = {
@@ -106,6 +107,10 @@ class UserConfig:
     hashserv: bool = False
     ccache_shared: bool = False
     ccache_dir: str | None = None
+    # Persisted location of the buildtools-extended toolchain installed by
+    # `bakar setup`. detect_buildtools() reads it as a fallback after the
+    # BAKAR_BUILDTOOLS_DIR env var so host builds survive into a new shell.
+    buildtools_dir: str | None = None
     psi_autocalibrate: bool = False
     # Decoupled build parallelism. All optional; absent -> None -> the existing
     # NPROC-derived behavior (nproc auto-detected via os.cpu_count). nproc sets
@@ -166,6 +171,7 @@ _BUILD_KEYS = {
     "hashserv": "hashserv",
     "ccache_shared": "ccache_shared",
     "ccache_dir": "ccache_dir",
+    "buildtools_dir": "buildtools_dir",
     "psi_autocalibrate": "psi_autocalibrate",
     "nproc": "nproc",
     "parallel_make": "parallel_make",
