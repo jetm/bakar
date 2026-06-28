@@ -129,6 +129,31 @@ def pick_bool(env_key: str, *, ws_val: bool | None, user_val: bool) -> bool:
     return user_val
 
 
+def pick_host_toggle(
+    env_key: str,
+    *,
+    ws_val: bool | None,
+    user_val: bool | None,
+) -> bool | None:
+    """Resolve the explicit ``host_mode`` toggle, tri-state.
+
+    Mirrors :func:`pick_bool`'s env > workspace > user ordering, but returns
+    ``None`` when no tier explicitly sets the toggle so the caller can fall
+    through to container auto-detection. A set ``BAKAR_HOST_MODE`` env var wins
+    (``1/true/yes/on`` truthy, else falsy); then the workspace ``.bakar.toml``
+    value when not ``None`` (its "unset" sentinel); then the user config value
+    when not ``None``. The CLI ``--host`` flag is applied above this helper.
+    """
+    env_val = os.environ.get(env_key)
+    if env_val is not None and env_val.strip() != "":
+        return env_val.strip().lower() in ("1", "true", "yes", "on")
+    if ws_val is not None:
+        return ws_val
+    if user_val is not None:
+        return user_val
+    return None
+
+
 @dataclass(frozen=True)
 class _FamilyDefaults:
     d_machine: str
@@ -620,7 +645,25 @@ def resolve(
         and not (workspace_config is not None and workspace_config.kas_container_image)
         and not (user_config is not None and user_config.kas_container_image)
     )
-    effective_host_mode = spec.host_mode or no_container_image_configured
+    # Explicit host_mode toggle, resolved env > workspace [build] host_mode >
+    # user config. None means no tier set it, so we fall through to auto-detect.
+    explicit_host_toggle = pick_host_toggle(
+        "BAKAR_HOST_MODE",
+        ws_val=workspace_config.host_mode if workspace_config is not None else None,
+        user_val=user_config.host_mode if user_config is not None else None,
+    )
+    # Precedence (highest first): CLI --host (spec.host_mode) > explicit toggle
+    # (env/workspace/user) > auto-detect-when-no-container-image. The CLI flag and
+    # an explicit toggle only ever force host ON; neither can force container when
+    # no image is configured, preserving the out-of-the-box host default. When the
+    # toggle is explicitly False it simply declines to force host, deferring to
+    # auto-detect (which still picks host if no image is configured).
+    if spec.host_mode:
+        effective_host_mode = True
+    elif explicit_host_toggle is not None:
+        effective_host_mode = explicit_host_toggle or no_container_image_configured
+    else:
+        effective_host_mode = no_container_image_configured
 
     def _host(field_name: str, default: float) -> float:
         """Select a host threshold: workspace [host] > user [host] > built-in default.

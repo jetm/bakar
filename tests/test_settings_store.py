@@ -55,6 +55,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.sccache_scheduler_url": "http://localhost:10600",
         "build.ccache": "false",
         "build.rm_work": "true",
+        "build.host_mode": "true",
         "build.nproc": "96",
         "build.parallel_make": "256",
         "build.bb_number_threads": "24",
@@ -105,6 +106,8 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert isinstance(cfg.ccache, bool)
     assert cfg.rm_work is True
     assert isinstance(cfg.rm_work, bool)
+    assert cfg.host_mode is True
+    assert isinstance(cfg.host_mode, bool)
     assert cfg.nproc == 96
     assert isinstance(cfg.nproc, int) and not isinstance(cfg.nproc, bool)
     assert cfg.parallel_make == 256

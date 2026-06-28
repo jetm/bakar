@@ -39,6 +39,7 @@ _BOOL_FIELDS = {
     "sccache_dist",
     "ccache",
     "rm_work",
+    "host_mode",
 }
 _INT_FIELDS: set[str] = {
     "stall_abort_secs",
@@ -91,6 +92,10 @@ class UserConfig:
     # while bakar is in use the tuning stack strips rm_work so work dirs survive.
     ccache: bool = True
     rm_work: bool = False
+    # Force host execution (plain `kas`, no kas-container). Default off: when
+    # unset, config.resolve() falls back to auto-detect (host when no container
+    # image is configured anywhere). Mirrors the [build] ccache/rm_work toggles.
+    host_mode: bool = False
     pressure_max_cpu: float | None = None
     pressure_max_io: float | None = None
     pressure_max_memory: float | None = None
@@ -152,6 +157,7 @@ _BUILD_KEYS = {
     "sccache_scheduler_url": "sccache_scheduler_url",
     "ccache": "ccache",
     "rm_work": "rm_work",
+    "host_mode": "host_mode",
     "pressure_max_cpu": "pressure_max_cpu",
     "pressure_max_io": "pressure_max_io",
     "pressure_max_memory": "pressure_max_memory",
