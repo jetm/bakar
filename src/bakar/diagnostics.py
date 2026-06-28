@@ -1077,6 +1077,95 @@ def check_psi_support(cfg: BuildConfig) -> CheckResult:
     return _ok(name, Severity.INFO, f"PSI throttling active: {active}")
 
 
+def _buildtools_gcc(toolchain: BuildtoolsToolchain) -> Path | None:
+    """Locate the native gcc whose loader the uninative probe must run.
+
+    Two detection paths feed this:
+
+    * already-sourced: ``toolchain.sysroot`` points at the native sysroot, so
+      its ``usr/bin/gcc`` is the binary to probe.
+    * env-script: the toolchain is found via ``BAKAR_BUILDTOOLS_DIR`` and not
+      yet sourced; the install root carries the native sysroot under
+      ``sysroots/*-pokysdk-linux``. Probe that gcc when it is on disk.
+
+    Returns None when no concrete gcc is locatable (env-script path with an
+    unconventional layout); the caller then reports presence without a loader
+    probe rather than a false failure.
+    """
+    if toolchain.sysroot is not None:
+        gcc = toolchain.sysroot / "usr" / "bin" / "gcc"
+        return gcc if gcc.exists() else None
+    if toolchain.env_script is not None:
+        for gcc in sorted(toolchain.env_script.parent.glob("sysroots/*-pokysdk-linux/usr/bin/gcc")):
+            return gcc
+    return None
+
+
+def check_host_preflight(cfg: BuildConfig) -> CheckResult:
+    """Host-mode preflight: buildtools-extended present AND uninative loader runs.
+
+    Host builds run bitbake against the pinned ``buildtools-extended`` toolchain
+    whose ``-native`` binaries carry uninative's shipped dynamic loader. This
+    gate fails loudly before a build when the toolchain is absent (so bitbake
+    never falls back to the system gcc) or when its loader cannot execute on
+    the host kernel (the uninative independence the host path depends on).
+
+    Container builds do not exercise the host toolchain, so the check skips
+    when ``cfg.host_mode`` is False.
+    """
+    name = "host-preflight"
+    if not cfg.host_mode:
+        return _skip(name, Severity.INFO, "container build; host toolchain not exercised")
+
+    toolchain = detect_buildtools()
+    if not toolchain.present:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"buildtools-extended toolchain not found ({toolchain.detail})",
+            fix_hint=(
+                f"Install the buildtools-extended-tarball and source its environment-setup-* "
+                f"script, or set {BUILDTOOLS_DIR_ENV} to its install dir."
+            ),
+        )
+
+    gcc = _buildtools_gcc(toolchain)
+    if gcc is None:
+        return _ok(
+            name,
+            Severity.BLOCK,
+            f"buildtools-extended present ({toolchain.detail}); loader probe skipped (gcc not locatable)",
+        )
+
+    try:
+        out = subprocess.run(
+            [str(gcc), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except OSError as exc:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"uninative loader for {gcc} is not runnable: {exc}",
+            fix_hint="Rebuild uninative against a newer glibc or pin a worker kernel/glibc floor.",
+        )
+    if out.returncode != 0:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"uninative loader for {gcc} failed (exit {out.returncode}): {out.stderr.strip()}",
+            fix_hint="Rebuild uninative against a newer glibc or pin a worker kernel/glibc floor.",
+        )
+    return _ok(
+        name,
+        Severity.BLOCK,
+        f"buildtools-extended present and uninative loader runs ({toolchain.detail})",
+    )
+
+
 def _git_identity_probe_dir(workspace: Path) -> str | None:
     """Pick a directory whose ``git config`` query resolves the identity git
     will actually use during a build.
@@ -2166,6 +2255,7 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_sccache_dist,
     check_sstate_hash_leak,
     check_override_syntax,
+    check_host_preflight,
 )
 
 # Docker-dependent checks from ``SHARED_CHECKS``. Filtered out of
@@ -2212,7 +2302,7 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "Host tuning",
-        ("sysctl", "workspace-filesystem", "psi_support"),
+        ("sysctl", "workspace-filesystem", "psi_support", "host-preflight"),
     ),
     (
         "Workspace & build config",
