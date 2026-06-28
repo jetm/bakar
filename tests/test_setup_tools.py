@@ -2,14 +2,23 @@
 
 Covers ``KasInstallAction`` (kas always via ``uv tool install``, never a distro
 package), ``DockerPullAction`` (image comes from a constructor argument, not
-``resolve()``), and the advisory-only ``docker_engine_advice`` helper (text on
-every distro, including unknown, and never an Action).
+``resolve()``), the advisory-only ``docker_engine_advice`` helper (text on
+every distro, including unknown, and never an Action), and the buildtools
+provisioning pair ``BuildtoolsInstallAction`` / ``BuildtoolsConfigPersistAction``
+(detection reused from ``detect_buildtools``, install argv shape, and
+global-config persistence).
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from bakar.diagnostics import BuildtoolsToolchain
 from bakar.setup.actions.base import Action, RunCommand
 from bakar.setup.actions.tools import (
+    DEFAULT_BUILDTOOLS_DIR,
+    BuildtoolsConfigPersistAction,
+    BuildtoolsInstallAction,
     DockerPullAction,
     KasInstallAction,
     docker_engine_advice,
@@ -95,3 +104,114 @@ def test_docker_engine_advice_is_text_not_an_action() -> None:
     advice = docker_engine_advice(None)
     assert isinstance(advice, str)
     assert not isinstance(advice, Action)
+
+
+def _toolchain(present: bool) -> BuildtoolsToolchain:
+    return BuildtoolsToolchain(present=present, detail="test")
+
+
+# ---------------------------------------------------------------------------
+# BuildtoolsInstallAction
+# ---------------------------------------------------------------------------
+
+
+def test_buildtools_install_is_an_action_remediating_host_preflight() -> None:
+    action = BuildtoolsInstallAction(install_buildtools="/ws/oe-core/scripts/install-buildtools")
+    assert isinstance(action, Action)
+    assert action.check_name == "host-preflight"
+    assert action.needs_root is False
+
+
+def test_buildtools_install_default_dir_is_host_level() -> None:
+    """No install_dir given -> the host-level default under $HOME."""
+    action = BuildtoolsInstallAction(install_buildtools="/ws/install-buildtools")
+    assert action.install_dir == DEFAULT_BUILDTOOLS_DIR
+    assert Path.home() / ".local" / "share" / "bakar" / "buildtools" == DEFAULT_BUILDTOOLS_DIR
+
+
+def test_buildtools_install_operations_have_install_dir_argv() -> None:
+    """operations() runs `install-buildtools -d <install_dir>`, unprivileged."""
+    script = "/ws/openembedded-core/scripts/install-buildtools"
+    install_dir = Path("/opt/bakar/bt")
+    ops = BuildtoolsInstallAction(install_buildtools=script, install_dir=install_dir).operations()
+    assert ops == [RunCommand(argv=[script, "-d", str(install_dir)], needs_root=False)]
+    assert ops[0].needs_root is False
+
+
+def test_buildtools_install_satisfied_when_detector_present(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "bakar.setup.actions.tools.detect_buildtools",
+        lambda: _toolchain(present=True),
+    )
+    action = BuildtoolsInstallAction(install_buildtools="/ws/install-buildtools")
+    assert action.is_satisfied(_profile()) is True
+
+
+def test_buildtools_install_unsatisfied_when_detector_absent(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "bakar.setup.actions.tools.detect_buildtools",
+        lambda: _toolchain(present=False),
+    )
+    action = BuildtoolsInstallAction(install_buildtools="/ws/install-buildtools")
+    assert action.is_satisfied(_profile()) is False
+
+
+# ---------------------------------------------------------------------------
+# BuildtoolsConfigPersistAction
+# ---------------------------------------------------------------------------
+
+
+def test_buildtools_persist_is_an_action_remediating_host_preflight() -> None:
+    action = BuildtoolsConfigPersistAction()
+    assert isinstance(action, Action)
+    assert action.check_name == "host-preflight"
+    assert action.needs_root is False
+
+
+def test_buildtools_persist_has_no_shell_operations() -> None:
+    """The persist happens in apply(), so operations() yields nothing."""
+    assert BuildtoolsConfigPersistAction().operations() == []
+
+
+def test_buildtools_persist_satisfied_tracks_detector(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "bakar.setup.actions.tools.detect_buildtools",
+        lambda: _toolchain(present=True),
+    )
+    assert BuildtoolsConfigPersistAction().is_satisfied(_profile()) is True
+    monkeypatch.setattr(
+        "bakar.setup.actions.tools.detect_buildtools",
+        lambda: _toolchain(present=False),
+    )
+    assert BuildtoolsConfigPersistAction().is_satisfied(_profile()) is False
+
+
+def test_buildtools_persist_writes_build_key_to_global_config(monkeypatch) -> None:
+    """apply() routes set_setting at the global config, the [build] key."""
+    calls: list[tuple[str, str, Path | None]] = []
+    monkeypatch.setattr(
+        "bakar.setup.actions.tools.set_setting",
+        lambda key, value, path=None: calls.append((key, value, path)),
+    )
+    install_dir = Path("/opt/bakar/bt")
+    BuildtoolsConfigPersistAction(install_dir=install_dir).apply()
+    assert calls == [("build.buildtools_dir", str(install_dir), None)]
+
+
+def test_buildtools_persist_targets_explicit_global_path_not_workspace(tmp_path, monkeypatch) -> None:
+    """apply(path) writes the given global config file; never a workspace .bakar.toml."""
+    captured: dict[str, object] = {}
+
+    def _fake_set_setting(key, value, path=None):
+        captured["key"] = key
+        captured["value"] = value
+        captured["path"] = path
+
+    monkeypatch.setattr("bakar.setup.actions.tools.set_setting", _fake_set_setting)
+    global_cfg = tmp_path / "config.toml"
+    install_dir = Path("/opt/bakar/bt")
+    BuildtoolsConfigPersistAction(install_dir=install_dir).apply(global_cfg)
+    assert captured["key"] == "build.buildtools_dir"
+    assert captured["value"] == str(install_dir)
+    assert captured["path"] == global_cfg
+    assert Path(captured["path"]).name != ".bakar.toml"

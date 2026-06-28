@@ -16,12 +16,20 @@ action and therefore no docker-dependent action either.
 from __future__ import annotations
 
 import shutil
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from bakar.diagnostics import detect_buildtools
 from bakar.setup.actions.base import RunCommand, WriteFile
+from bakar.user_config import set_setting
 
 if TYPE_CHECKING:
     from bakar.setup.profile import HostProfile
+
+# Default host-level install dir for the buildtools-extended toolchain. The
+# toolchain is host-wide (release-tied to the workspace's oe-core), so one
+# install under $HOME serves every workspace.
+DEFAULT_BUILDTOOLS_DIR = Path.home() / ".local" / "share" / "bakar" / "buildtools"
 
 # Official per-distro docker-engine install commands (docs.docker.com). Used as
 # advisory text only - bakar never runs these.
@@ -100,3 +108,90 @@ def docker_engine_advice(pkg_manager: str | None) -> str:
     if command is None:
         return f"Install Docker Engine for your distro: {_DOCKER_ENGINE_INSTALL_URL}"
     return f"Install Docker Engine: {command}"
+
+
+class BuildtoolsInstallAction:
+    """Install the ``buildtools-extended`` toolchain via oe-core's installer.
+
+    Host-mode bitbake builds run against a pinned ``buildtools-extended``
+    toolchain. This action runs the active workspace's
+    ``openembedded-core/scripts/install-buildtools`` (whose default already
+    installs the extended set) into a host-level dir, so the release matches the
+    workspace's oe-core checkout. The script path is resolved by the plan
+    builder and passed in; this action never resolves a workspace itself.
+
+    Remediates the ``host-preflight`` check; unprivileged - the installer writes
+    under ``$HOME`` and needs no root.
+    """
+
+    check_name = "host-preflight"
+    needs_root = False
+
+    def __init__(self, install_buildtools: str, install_dir: Path = DEFAULT_BUILDTOOLS_DIR) -> None:
+        self.install_buildtools = install_buildtools
+        self.install_dir = install_dir
+
+    def describe(self) -> str:
+        return f"install buildtools-extended (~63 MB) into {self.install_dir}"
+
+    def is_satisfied(self, _profile: HostProfile) -> bool:
+        """True when a buildtools toolchain is already resolvable.
+
+        Reuses :func:`detect_buildtools` so there is one detector and one
+        truth; the action self-drops when the toolchain is already present via
+        the env var, config field, or an already-sourced sysroot.
+        """
+        return detect_buildtools().present
+
+    def operations(self) -> list[RunCommand | WriteFile]:
+        return [
+            RunCommand(
+                argv=[self.install_buildtools, "-d", str(self.install_dir)],
+                needs_root=False,
+            ),
+        ]
+
+
+class BuildtoolsConfigPersistAction:
+    """Persist the buildtools install dir to the global ``[build]`` config.
+
+    After :class:`BuildtoolsInstallAction` installs the toolchain, this records
+    its location as ``[build] buildtools_dir`` so ``detect_buildtools`` resolves
+    it in a fresh shell. Mirrors :class:`ConfigWriteAction`: the persist happens
+    in :meth:`apply` (not via shell ``operations``), and the write goes to the
+    user-global config (``set_setting`` default path), never a workspace
+    ``.bakar.toml`` - host facts are machine-global.
+
+    Carries the same ``host-preflight`` ``check_name`` as the install action so
+    the plan drops it on a prepared host.
+    """
+
+    check_name = "host-preflight"
+    needs_root = False
+
+    def __init__(self, install_dir: Path = DEFAULT_BUILDTOOLS_DIR) -> None:
+        self.install_dir = install_dir
+
+    def describe(self) -> str:
+        return f"record buildtools dir {self.install_dir} in the global [build] config"
+
+    def is_satisfied(self, _profile: HostProfile) -> bool:
+        """True when a buildtools toolchain is already resolvable.
+
+        Defers to :func:`detect_buildtools` so a prepared host (toolchain
+        already found) drops the persist along with the install.
+        """
+        return detect_buildtools().present
+
+    def operations(self) -> list[RunCommand | WriteFile]:
+        """No shell ops: the persist happens in :meth:`apply`, not via primitives."""
+        return []
+
+    def apply(self, path: Path | None = None) -> None:
+        """Write ``build.buildtools_dir`` to the global config.
+
+        ``path`` defaults to ``None``, routing ``set_setting`` to the user-global
+        ``~/.config/bakar/config.toml``; tests pass an explicit path to assert
+        the global-config target.
+        """
+        set_setting("build.buildtools_dir", str(self.install_dir), path)
