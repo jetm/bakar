@@ -38,6 +38,21 @@ def _stub_doctor_checks():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_user_config(tmp_path_factory, monkeypatch):
+    """Isolate host-mode resolution from the developer's real environment.
+
+    ``resolve()`` reads ``~/.config/bakar/config.toml`` (via ``Path.home()``) and
+    the ``BAKAR_HOST_MODE`` env var. A developer who sets ``host_mode = true`` for
+    real host builds would otherwise leak it into these CLI-parsing assertions,
+    which test resolution from the ``--host`` flag and ``KAS_CONTAINER_IMAGE``
+    only. Point HOME at an empty dir and clear the env toggle so the real config
+    cannot influence the resolved ``host_mode``.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("home")))
+    monkeypatch.delenv("BAKAR_HOST_MODE", raising=False)
+
+
 def _make_generic_yaml(tmp_path: Path) -> Path:
     """Write a minimal generic kas YAML and return its path."""
     pilots = tmp_path / "pilot"
