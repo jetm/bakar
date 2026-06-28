@@ -421,6 +421,21 @@ class BuildConfig:
         return self.bsp_root / "sources" / "poky" / "bitbake"
 
     @property
+    def bitbake_bin_path(self) -> Path:
+        """Bundled bitbake ``bin`` directory for the host-mode launch PATH.
+
+        Host builds launch bitbake via kas's
+        ``find_program(ctx.environ['PATH'], 'bitbake')``, so this dir must be
+        on the launch PATH or the launch fails. NXP/TI bundle bitbake under
+        :attr:`bsp_bitbake_path` (``.../bitbake/bin``); the generic and bbsetup
+        flows (including meta-avocado, whose YAML lives deep in the source tree
+        but whose bitbake sits at the workspace top) take ``<workspace>/bitbake/bin``.
+        """
+        if self.bsp_family in ("ti", "nxp"):
+            return self.bsp_bitbake_path / "bin"
+        return self.workspace / "bitbake" / "bin"
+
+    @property
     def bsp_bitbake_conf(self) -> Path:
         """BSP-bundled ``bitbake.conf`` consumed by the parser-compat check.
 

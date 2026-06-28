@@ -230,6 +230,7 @@ def test_build_env_host_mode_keeps_localhost_url(tmp_path: Path, monkeypatch: py
         lambda _state_key, **_kw: "ws://localhost:50000",
     )
     cfg = _hashequiv_cfg(tmp_path, use_hashequiv=True, host_mode=True)
+    cfg.bitbake_bin_path.mkdir(parents=True, exist_ok=True)
 
     env = _build_env(cfg)
 
@@ -428,6 +429,7 @@ def test_host_mode_omits_kas_container_image(tmp_path: Path, monkeypatch: pytest
     """In host mode, KAS_CONTAINER_IMAGE is not injected (kas runs directly, no container)."""
     monkeypatch.delenv("KAS_CONTAINER_IMAGE", raising=False)
     cfg = _make_cfg(tmp_path, host_mode=True)
+    cfg.bitbake_bin_path.mkdir(parents=True, exist_ok=True)
 
     env = _build_env(cfg)
 

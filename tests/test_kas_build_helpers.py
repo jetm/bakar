@@ -35,6 +35,7 @@ from bakar.steps.kas_build import (
     _build_fail_reason,
     _ccache_args,
     _find_oe_eventlog,
+    _inject_literal_ccache,
     _resolve_user_yaml,
     _run_kas_dump,
     _strip_branch_from_dump,
@@ -745,3 +746,91 @@ def test_inject_rm_work_strips_block_when_rm_work_on(tmp_path: Path) -> None:
     assert "Disable rm_work while bakar" not in text
     # Untouched content stays.
     assert 'BB_NUMBER_THREADS = "4"' in text
+
+
+# ---------------------------------------------------------------------------
+# _inject_literal_ccache
+# ---------------------------------------------------------------------------
+
+_CCACHE_OVERLAY = (
+    "local_conf_header:\n"
+    "  zz-bakar-20-ccache: |\n"
+    '    CCACHE_DIR = "/work/ccache"\n'
+    '    INHERIT += "ccache"\n'
+    '    CCACHE_MAXSIZE = "50G"\n'
+    "    export CCACHE_MAXSIZE\n"
+    '    CCACHE_DISABLE:pn-nodejs = "1"\n'
+)
+
+
+def test_inject_literal_ccache_host_mode_rewrites_dir(tmp_path: Path) -> None:
+    """Host mode rewrites CCACHE_DIR to the effective host path; leaves the rest."""
+    cfg = _make_nxp_cfg(tmp_path, host_mode=True)
+
+    result = _inject_literal_ccache(cfg, _CCACHE_OVERLAY)
+
+    assert f'CCACHE_DIR = "{cfg.effective_ccache_dir}"' in result
+    assert "/work/ccache" not in result
+    # Sibling lines untouched.
+    assert 'CCACHE_MAXSIZE = "50G"' in result
+    assert "export CCACHE_MAXSIZE" in result
+    assert 'INHERIT += "ccache"' in result
+    assert "CCACHE_DISABLE:pn-nodejs" in result
+
+
+def test_inject_literal_ccache_container_mode_byte_identical(tmp_path: Path) -> None:
+    """Container mode returns the text unchanged (byte-identical)."""
+    cfg = _make_nxp_cfg(tmp_path, host_mode=False)
+    result = _inject_literal_ccache(cfg, _CCACHE_OVERLAY)
+    assert result == _CCACHE_OVERLAY
+
+
+def test_inject_literal_ccache_uses_explicit_ccache_dir(tmp_path: Path) -> None:
+    import dataclasses
+
+    explicit = tmp_path / "my-cache"
+    cfg = dataclasses.replace(_make_nxp_cfg(tmp_path, host_mode=True), ccache_dir=str(explicit))
+    result = _inject_literal_ccache(cfg, _CCACHE_OVERLAY)
+    assert f'CCACHE_DIR = "{cfg.effective_ccache_dir}"' in result
+    assert str(explicit) in result
+
+
+def test_inject_literal_ccache_uses_shared_dir(tmp_path: Path) -> None:
+    import dataclasses
+
+    cfg = dataclasses.replace(_make_nxp_cfg(tmp_path, host_mode=True), ccache_shared=True)
+    result = _inject_literal_ccache(cfg, _CCACHE_OVERLAY)
+    assert f'CCACHE_DIR = "{cfg.effective_ccache_dir}"' in result
+
+
+def test_inject_literal_ccache_preserves_indentation(tmp_path: Path) -> None:
+    """The rewritten line keeps the original 4-space indentation."""
+    cfg = _make_nxp_cfg(tmp_path, host_mode=True)
+    result = _inject_literal_ccache(cfg, _CCACHE_OVERLAY)
+    assert f'    CCACHE_DIR = "{cfg.effective_ccache_dir}"\n' in result
+
+
+def test_materialize_ccache_overlay_host_mode_rewrites_dir(tmp_path: Path) -> None:
+    """materialize_overlay rewrites the ccache dir in host mode and creates it."""
+    cfg = _make_nxp_cfg(tmp_path, host_mode=True)
+    src = tmp_path / "bakar-tuning-ccache.yml"
+    src.write_text(_CCACHE_OVERLAY, encoding="utf-8")
+
+    rel = materialize_overlay(cfg, src)
+    text = (cfg.bsp_root / rel).read_text(encoding="utf-8")
+
+    assert f'CCACHE_DIR = "{cfg.effective_ccache_dir}"' in text
+    assert "/work/ccache" not in text
+    assert cfg.effective_ccache_dir.is_dir()
+
+
+def test_materialize_ccache_overlay_container_mode_keeps_work_path(tmp_path: Path) -> None:
+    """Container mode keeps the /work/ccache bind-mount target unchanged."""
+    cfg = _make_nxp_cfg(tmp_path, host_mode=False)
+    src = tmp_path / "bakar-tuning-ccache.yml"
+    src.write_text(_CCACHE_OVERLAY, encoding="utf-8")
+
+    rel = materialize_overlay(cfg, src)
+    text = (cfg.bsp_root / rel).read_text(encoding="utf-8")
+
+    assert 'CCACHE_DIR = "/work/ccache"' in text

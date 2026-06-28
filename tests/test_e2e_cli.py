@@ -412,6 +412,10 @@ def kas_layer(tmp_path: Path) -> tuple[Path, str]:
 def kas_yaml_pinned(tmp_path: Path, kas_layer: tuple[Path, str]) -> Path:
     """kas YAML with a pinned commit so ``kas dump`` needs no clone."""
     layer, sha = kas_layer
+    # Host-mode dump runs _build_env, which now requires the bundled bitbake bin
+    # on the launch PATH. For a BYO generic YAML, cfg.bitbake_bin_path is
+    # <workspace>/bitbake/bin where workspace == the YAML's parent (tmp_path).
+    (tmp_path / "bitbake" / "bin").mkdir(parents=True, exist_ok=True)
     config = tmp_path / "kas-e2e.yml"
     config.write_text(
         "header:\n"
@@ -433,6 +437,10 @@ def kas_yaml_pinned(tmp_path: Path, kas_layer: tuple[Path, str]) -> Path:
 def kas_yaml_branch(tmp_path: Path, kas_layer: tuple[Path, str]) -> Path:
     """kas YAML referencing the local layer by branch (for ``lock`` to resolve)."""
     layer, _ = kas_layer
+    # Host-mode lock runs _build_env, which now requires the bundled bitbake bin
+    # on the launch PATH. cfg.bitbake_bin_path is <workspace>/bitbake/bin where
+    # workspace == the YAML's parent (tmp_path) for a BYO generic YAML.
+    (tmp_path / "bitbake" / "bin").mkdir(parents=True, exist_ok=True)
     config = tmp_path / "kas-lock-e2e.yml"
     config.write_text(
         "header:\n"

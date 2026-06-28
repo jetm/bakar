@@ -163,6 +163,7 @@ def test_generic_overlay_declares_pythonmalloc_env(generic_overlay: dict) -> Non
         "SDKMACHINE": None,
         "BAKAR_PARALLEL_MAKE": None,
         "BAKAR_BB_NUMBER_THREADS": None,
+        "PATH": None,
     }
 
 
@@ -194,6 +195,21 @@ def test_all_overlays_whitelist_sdkmachine(nxp_overlay: dict, ti_overlay: dict, 
         env = overlay.get("env") or {}
         assert "SDKMACHINE" in env, f"{name} overlay missing SDKMACHINE env declaration"
         assert env["SDKMACHINE"] is None, f"{name} overlay must declare SDKMACHINE as null"
+
+
+def test_all_overlays_whitelist_path(nxp_overlay: dict, ti_overlay: dict, generic_overlay: dict) -> None:
+    """Every BSP overlay must declare PATH (null = passthrough-only).
+
+    Declaring PATH in the env: block makes kas set the bitbake-launch PATH to
+    the live os.environ['PATH'] of the kas subprocess (config.py get_environment
+    prefers os.environ over the YAML default), so bakar's host-mode launch PATH
+    (py_bin : bitbake_bin : buildtools_bindir : inherited) reaches the bitbake
+    process and OE's HOSTTOOLS resolves against the pinned buildtools gcc.
+    """
+    for name, overlay in (("nxp", nxp_overlay), ("ti", ti_overlay), ("generic", generic_overlay)):
+        env = overlay.get("env") or {}
+        assert "PATH" in env, f"{name} overlay missing PATH env declaration"
+        assert env["PATH"] is None, f"{name} overlay must declare PATH as null"
 
 
 @pytest.fixture

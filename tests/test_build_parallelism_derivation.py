@@ -33,7 +33,7 @@ def _cfg(
     sccache_scheduler_url: str | None = None,
     host_mode: bool = True,
 ) -> BuildConfig:
-    return BuildConfig(
+    cfg = BuildConfig(
         workspace=workspace,
         bsp_family="nxp",  # type: ignore[arg-type]
         machine="imx8mp-var-dart",
@@ -51,6 +51,10 @@ def _cfg(
         ccache=ccache,
         sccache_scheduler_url=sccache_scheduler_url,
     )
+    # Host-mode _build_env now requires the bundled bitbake bin on the launch PATH.
+    if host_mode:
+        cfg.bitbake_bin_path.mkdir(parents=True, exist_ok=True)
+    return cfg
 
 
 def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:

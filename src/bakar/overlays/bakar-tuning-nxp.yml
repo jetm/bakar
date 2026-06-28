@@ -38,6 +38,12 @@ env:
   # to survive into the container. Unset -> the os.environ.get falls back to NPROC.
   BAKAR_PARALLEL_MAKE: null
   BAKAR_BB_NUMBER_THREADS: null
+  # Passthrough-only (null = no default): bakar supplies the host-mode launch
+  # PATH (py_bin : bitbake_bin : buildtools_bindir : inherited) via _build_env.
+  # The YAML literal is irrelevant because kas's get_environment prefers
+  # os.environ['PATH']; declaring it here makes kas set the bitbake-launch PATH
+  # from the live subprocess env so OE's HOSTTOOLS picks the pinned gcc.
+  PATH: null
 
 local_conf_header:
   # Sort-last key (see bakar-tuning-generic): bakar wins over workspace layers.

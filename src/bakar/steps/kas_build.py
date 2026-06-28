@@ -225,6 +225,31 @@ def _inject_literal_sccache(cfg: BuildConfig, text: str) -> str:
     return text.rstrip("\n") + "\n" + addition
 
 
+def _inject_literal_ccache(cfg: BuildConfig, text: str) -> str:
+    """Rewrite the ccache overlay's container ``CCACHE_DIR`` for host builds.
+
+    Container mode bind-mounts ``cfg.effective_ccache_dir`` to ``/work/ccache``
+    (see ``_ccache_args``), so the overlay's hardcoded ``CCACHE_DIR =
+    "/work/ccache"`` is correct and this returns the text byte-identical. Host
+    mode has no bind mount, so that container path is unwritable (ccache aborts
+    with ``Permission denied``); rewrite it to the real host cache dir.
+
+    Only the ``CCACHE_DIR`` line is touched - ``CCACHE_MAXSIZE``, the
+    ``export CCACHE_MAXSIZE``, ``INHERIT += "ccache"``, and the nodejs disable
+    are left alone. The original indentation is preserved. Kept pure (no
+    filesystem side effects) so dry-run rendering is safe; the host-mode dir is
+    created by the caller (``materialize_overlay``)."""
+    if not cfg.host_mode:
+        return text
+    return re.sub(
+        r'^(?P<indent>[ \t]*)CCACHE_DIR\s*=\s*"/work/ccache"',
+        lambda m: f'{m.group("indent")}CCACHE_DIR = "{cfg.effective_ccache_dir}"',
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+
+
 # The base overlays statically strip rm_work (default off while bakar is in
 # use); _inject_rm_work deletes that whole block when [build] rm_work is opted
 # back on. The block spans its comment through the USER_CLASSES line, so the
@@ -282,6 +307,13 @@ def materialize_overlay(cfg: BuildConfig, overlay_source: Path) -> Path:
         injected = _inject_rm_work(cfg, injected)
         if overlay_source.name == "bakar-tuning-sccache.yml":
             injected = _inject_literal_sccache(cfg, injected)
+        if overlay_source.name == "bakar-tuning-ccache.yml":
+            injected = _inject_literal_ccache(cfg, injected)
+            # Host mode has no /work/ccache bind mount; ensure the rewritten host
+            # cache dir exists so ccache can write. Real-build-only path - the
+            # injector stays pure for dry-run rendering.
+            if cfg.host_mode:
+                cfg.effective_ccache_dir.mkdir(parents=True, exist_ok=True)
         if injected != original:
             dest.write_text(injected, encoding="utf-8")
     return dest.relative_to(cfg.bsp_root)
@@ -1421,6 +1453,16 @@ class BuildtoolsMissingError(RuntimeError):
     """
 
 
+class BitbakeBinMissingError(RuntimeError):
+    """A host build's derived bitbake ``bin`` directory does not exist on disk.
+
+    Raised before bitbake is invoked so a wrong :attr:`BuildConfig.bitbake_bin_path`
+    derivation fails loudly. Without this dir on the launch PATH, kas's
+    ``find_program(ctx.environ['PATH'], 'bitbake')`` cannot locate bitbake and
+    the launch fails with a confusing downstream error.
+    """
+
+
 def _capture_sourced_env(env_script: Path) -> dict[str, str]:
     """Source ``env_script`` in a clean shell and return the resulting environment.
 
@@ -1503,6 +1545,21 @@ def _apply_host_mode_env(
         # the toolchain's interpreter.
         if provision_buildtools:
             _provision_buildtools(cfg, passthrough)
+            # OE's HOSTTOOLS resolves each tool against BB_ORIGENV's PATH, and kas
+            # launches bitbake via find_program(ctx.environ['PATH'], 'bitbake'), so
+            # the bundled bitbake bin must be on the launch PATH. Fail loud on a
+            # wrong derivation instead of producing a broken launch. Gated on
+            # provision_buildtools so dry-run/script-gen rendering never aborts.
+            if not cfg.bitbake_bin_path.is_dir():
+                raise BitbakeBinMissingError(
+                    "host build requires the bundled bitbake bin directory on the "
+                    f"launch PATH, but it does not exist: {cfg.bitbake_bin_path}. "
+                    "Check the workspace layout (bitbake must be provisioned before "
+                    "the build)."
+                )
+        # Prepend the bitbake bin after the buildtools toolbin so the launch can
+        # find bitbake; the later py_bin prepend keeps the build's Python first.
+        passthrough["PATH"] = str(cfg.bitbake_bin_path) + os.pathsep + passthrough.get("PATH", "")
         if python_executable is not None:
             py_path = python_executable.resolve()
             py_bin = str(py_path.parent)
