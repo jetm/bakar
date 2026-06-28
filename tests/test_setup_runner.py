@@ -15,14 +15,18 @@ them is exercised here by monkeypatching ``subprocess.run`` and
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 import typer
 
+from bakar.diagnostics import BuildtoolsToolchain
 from bakar.setup import runner
 from bakar.setup.actions.base import RunCommand, WriteFile
+from bakar.setup.actions.tools import BuildtoolsConfigPersistAction, BuildtoolsInstallAction
 from bakar.setup.plan import SetupPlan
 
 if TYPE_CHECKING:
@@ -214,3 +218,93 @@ def test_no_privileged_ops_skips_confirm(monkeypatch) -> None:
     runner.apply_plan(plan, assume_yes=True)
 
     assert recorder.sudo_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Failure-surfacing for buildtools provisioning
+#
+# A failed or partial install must NOT leave a dead ``[build] buildtools_dir``
+# in the global config. Two failure modes:
+#   (a) ``install-buildtools`` exits non-zero  -> the runner's ``check=True``
+#       raises, aborting the plan before the persist action's ``apply()`` runs.
+#   (b) ``install-buildtools`` exits 0 but the toolchain is still undetectable
+#       -> the persist action re-checks ``detect_buildtools`` and writes nothing.
+# ---------------------------------------------------------------------------
+
+
+def _install_argv() -> list[str]:
+    """The argv the install action runs, naming buildtools-extended via the script."""
+    return ["/ws/openembedded-core/scripts/install-buildtools", "-d", "/opt/bakar/buildtools"]
+
+
+def test_failed_install_surfaces_and_leaves_buildtools_dir_unset(monkeypatch) -> None:
+    """A non-zero install exit raises (naming buildtools) and never persists the dir."""
+    install_argv = _install_argv()
+
+    def _run(argv, *_a, **_k):
+        if argv == install_argv:
+            raise subprocess.CalledProcessError(returncode=1, cmd=argv)
+
+        class _Result:
+            returncode = 0
+
+        return _Result()
+
+    monkeypatch.setattr(runner.subprocess, "run", _run)
+
+    persisted: list[tuple[str, str, Path | None]] = []
+    monkeypatch.setattr(
+        "bakar.setup.actions.tools.set_setting",
+        lambda key, value, path=None: persisted.append((key, value, path)),
+    )
+    # Even if the guard were reached, detection reports absent.
+    monkeypatch.setattr(
+        "bakar.setup.actions.tools.detect_buildtools",
+        lambda: BuildtoolsToolchain(present=False, detail="absent"),
+    )
+
+    install = BuildtoolsInstallAction(
+        install_buildtools=install_argv[0],
+        install_dir=Path(install_argv[2]),
+    )
+    persist = BuildtoolsConfigPersistAction(install_dir=Path(install_argv[2]))
+    plan = SetupPlan(actions=[install, persist])
+
+    with pytest.raises(subprocess.CalledProcessError) as excinfo:
+        runner.apply_plan(plan, assume_yes=True)
+
+    # The failure names the buildtools-extended installer, so the user sees what broke.
+    assert "buildtools" in " ".join(excinfo.value.cmd)
+    # The plan aborted before persistence: no dead config path recorded.
+    assert persisted == []
+
+
+def test_install_exit_zero_but_still_absent_persists_nothing(monkeypatch) -> None:
+    """An install that exits 0 yet leaves the toolchain undetectable writes no config."""
+    install_argv = _install_argv()
+    recorder = _Recorder()
+    monkeypatch.setattr(runner.subprocess, "run", recorder)
+
+    persisted: list[tuple[str, str, Path | None]] = []
+    monkeypatch.setattr(
+        "bakar.setup.actions.tools.set_setting",
+        lambda key, value, path=None: persisted.append((key, value, path)),
+    )
+    # Install ran cleanly, but detection still cannot find a toolchain.
+    monkeypatch.setattr(
+        "bakar.setup.actions.tools.detect_buildtools",
+        lambda: BuildtoolsToolchain(present=False, detail="absent"),
+    )
+
+    install = BuildtoolsInstallAction(
+        install_buildtools=install_argv[0],
+        install_dir=Path(install_argv[2]),
+    )
+    persist = BuildtoolsConfigPersistAction(install_dir=Path(install_argv[2]))
+    plan = SetupPlan(actions=[install, persist])
+
+    runner.apply_plan(plan, assume_yes=True)
+
+    # The install op ran; the persist guard declined to record a dead path.
+    assert recorder.calls == [install_argv]
+    assert persisted == []

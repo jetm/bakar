@@ -188,10 +188,21 @@ class BuildtoolsConfigPersistAction:
         return []
 
     def apply(self, path: Path | None = None) -> None:
-        """Write ``build.buildtools_dir`` to the global config.
+        """Write ``build.buildtools_dir`` to the global config when the install took.
+
+        Guards the persist on :func:`detect_buildtools` reporting the toolchain
+        present at apply time. This makes both install-failure modes safe without
+        recording a dead config path:
+
+        - a non-zero ``install-buildtools`` exit aborts the plan in the runner
+          before this action runs, so the key is never written;
+        - an install that exits 0 but leaves the toolchain undetectable re-checks
+          here, finds ``present`` False, and writes nothing.
 
         ``path`` defaults to ``None``, routing ``set_setting`` to the user-global
         ``~/.config/bakar/config.toml``; tests pass an explicit path to assert
         the global-config target.
         """
+        if not detect_buildtools().present:
+            return
         set_setting("build.buildtools_dir", str(self.install_dir), path)

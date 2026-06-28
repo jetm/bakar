@@ -188,6 +188,10 @@ def test_buildtools_persist_satisfied_tracks_detector(monkeypatch) -> None:
 
 def test_buildtools_persist_writes_build_key_to_global_config(monkeypatch) -> None:
     """apply() routes set_setting at the global config, the [build] key."""
+    monkeypatch.setattr(
+        "bakar.setup.actions.tools.detect_buildtools",
+        lambda: _toolchain(present=True),
+    )
     calls: list[tuple[str, str, Path | None]] = []
     monkeypatch.setattr(
         "bakar.setup.actions.tools.set_setting",
@@ -207,6 +211,10 @@ def test_buildtools_persist_targets_explicit_global_path_not_workspace(tmp_path,
         captured["value"] = value
         captured["path"] = path
 
+    monkeypatch.setattr(
+        "bakar.setup.actions.tools.detect_buildtools",
+        lambda: _toolchain(present=True),
+    )
     monkeypatch.setattr("bakar.setup.actions.tools.set_setting", _fake_set_setting)
     global_cfg = tmp_path / "config.toml"
     install_dir = Path("/opt/bakar/bt")
