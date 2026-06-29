@@ -189,16 +189,50 @@ def _build_progress(run_dir: Path) -> dict[str, Any]:
     }
 
 
-def _daemon_status(cfg: BuildConfig) -> dict[str, Any]:
-    """Resolve the persistent hashserv/prserv daemon addresses for a host build.
+def _split_host_port(endpoint: str, default_port: int) -> tuple[str, int]:
+    """Split a ``host:port`` endpoint; fall back to ``default_port`` if no numeric port."""
+    host, sep, port = endpoint.rpartition(":")
+    if sep and port.isdigit():
+        return host, int(port)
+    return endpoint, default_port
 
-    bakar manages these two cluster-cache daemons only in host mode (see
-    ``steps.kas_build``): both are keyed to the shared sstate dir and bind
-    ``cfg.cluster_bind_host`` so other cluster nodes can reach them. Returns each
-    daemon's address plus a one-shot liveness probe, or an empty dict outside
-    host mode where bitbake's own autostart owns them and bakar has nothing to
-    report.
+
+def _central_daemon_status(cfg: BuildConfig) -> dict[str, Any]:
+    """Report the central cross-node tier endpoints + liveness, or {} when unconfigured.
+
+    When ``cfg.bb_hashserve`` / ``cfg.prserv_host`` are set the build points
+    BB_HASHSERVE / PRSERV_HOST at the shared Rust/PostgreSQL services, so probe
+    those endpoints (a plain TCP connect) rather than the per-workspace ports.
     """
+    status: dict[str, Any] = {}
+    if cfg.bb_hashserve:
+        host, port = _split_host_port(cfg.bb_hashserve, hashserv.CENTRAL_DEFAULT_PORT)
+        status["hashserv"] = {"url": cfg.bb_hashserve, "running": hashserv.central_listening(host, port)}
+    if cfg.prserv_host:
+        host, port = _split_host_port(cfg.prserv_host, prserv.CENTRAL_DEFAULT_PORT)
+        status["prserv"] = {"host": cfg.prserv_host, "running": prserv.central_listening(host, port)}
+    return status
+
+
+def _daemon_status(cfg: BuildConfig) -> dict[str, Any]:
+    """Resolve the cache-daemon addresses for the run, toggling on config.
+
+    Two tiers, selected by config:
+
+    - **Central** (``cfg.bb_hashserve`` / ``cfg.prserv_host`` set): the build
+      points BB_HASHSERVE / PRSERV_HOST at the shared Rust/PostgreSQL services
+      and never starts the per-workspace bitbake daemons, so report and probe
+      the central endpoints. Takes precedence whenever configured.
+    - **Per-workspace** (host mode, no central tier): bakar manages a
+      bitbake-hashserv/prserv daemon keyed to the shared sstate dir and bound to
+      ``cfg.cluster_bind_host``; report those addresses plus a liveness probe.
+
+    Returns an empty dict when neither applies (a container build with no
+    central tier), so the caller suppresses the daemon line.
+    """
+    central = _central_daemon_status(cfg)
+    if central:
+        return central
     if not cfg.host_mode:
         return {}
     bind_host = cfg.cluster_bind_host or "localhost"

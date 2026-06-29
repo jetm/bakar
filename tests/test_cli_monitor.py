@@ -307,7 +307,13 @@ def test_unreachable_cluster_does_not_crash_json(
     assert doc["build_daemon"] is None
 
 
-def _host_cfg_stub(*, host_mode: bool, bind_host: str | None) -> Any:
+def _host_cfg_stub(
+    *,
+    host_mode: bool,
+    bind_host: str | None,
+    bb_hashserve: str | None = None,
+    prserv_host: str | None = None,
+) -> Any:
     """Minimal cfg stand-in carrying only the fields ``_daemon_status`` reads."""
     from pathlib import Path
     from types import SimpleNamespace
@@ -317,7 +323,47 @@ def _host_cfg_stub(*, host_mode: bool, bind_host: str | None) -> Any:
         cluster_bind_host=bind_host,
         hashserv_state_key=Path("/sstate"),
         prserv_state_key=Path("/sstate"),
+        bb_hashserve=bb_hashserve,
+        prserv_host=prserv_host,
     )
+
+
+def test_daemon_status_central_tier_takes_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the central tier is configured, report its endpoints, not the per-workspace ports."""
+    monkeypatch.setattr(monitor_module.hashserv, "central_listening", lambda _h, _p, **_k: True)
+    monkeypatch.setattr(monitor_module.prserv, "central_listening", lambda _h, _p, **_k: True)
+
+    def _must_not_probe(*_a, **_k):
+        raise AssertionError("per-workspace daemon probe used while central tier is configured")
+
+    monkeypatch.setattr(monitor_module.hashserv, "is_running", _must_not_probe)
+    monkeypatch.setattr(monitor_module.prserv, "is_running", _must_not_probe)
+
+    status = monitor_module._daemon_status(
+        _host_cfg_stub(
+            host_mode=True, bind_host="10.42.0.1", bb_hashserve="10.42.0.1:8686", prserv_host="10.42.0.1:8585"
+        )
+    )
+
+    assert status == {
+        "hashserv": {"url": "10.42.0.1:8686", "running": True},
+        "prserv": {"host": "10.42.0.1:8585", "running": True},
+    }
+
+
+def test_daemon_status_central_tier_reports_down_when_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A configured-but-unreachable central endpoint shows running False, not the stale port up."""
+    monkeypatch.setattr(monitor_module.hashserv, "central_listening", lambda _h, _p, **_k: False)
+    monkeypatch.setattr(monitor_module.prserv, "central_listening", lambda _h, _p, **_k: False)
+
+    status = monitor_module._daemon_status(
+        _host_cfg_stub(
+            host_mode=True, bind_host="10.42.0.1", bb_hashserve="10.42.0.1:8686", prserv_host="10.42.0.1:8585"
+        )
+    )
+
+    assert status["hashserv"] == {"url": "10.42.0.1:8686", "running": False}
+    assert status["prserv"] == {"host": "10.42.0.1:8585", "running": False}
 
 
 def test_daemon_status_host_mode_returns_addresses(monkeypatch: pytest.MonkeyPatch) -> None:
