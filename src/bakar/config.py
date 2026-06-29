@@ -346,6 +346,19 @@ class BuildConfig:
         return Path(sstate).resolve() if sstate else self.bsp_root
 
     @property
+    def prserv_state_key(self) -> Path:
+        """Directory that keys the persistent prserv daemon (port, DB).
+
+        Shares the hashserv state key (the effective SSTATE_DIR) so the PR
+        service DB lives with the same shared-cache lineage as sstate and the
+        hash-equivalence DB. PRs then stay monotonic across every build and
+        workspace that shares the cache instead of resetting to r0 when one
+        build tree's volatile TMPDIR is wiped (the cause of the
+        version-going-backwards setscene rejections).
+        """
+        return self.hashserv_state_key
+
+    @property
     def use_shared_cache(self) -> bool:
         """True when an sstate mirror URL is configured."""
         return bool(self.sstate_mirror_url)

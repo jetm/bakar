@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING
 import yaml
 from rich.live import Live
 
-from bakar import build_stop, hashserv, sccache_server, task_timings, tuning
+from bakar import build_stop, hashserv, prserv, sccache_server, task_timings, tuning
 from bakar.cache_render import (
     ccache_doc,
     cluster_doc,
@@ -1749,6 +1749,22 @@ def _build_env(
                 passthrough["BB_HASHSERVE"] = url
             else:
                 passthrough["BB_HASHSERVE"] = url.replace("localhost", "host.docker.internal")
+    # Persistent, cluster-reachable PR service (host mode only). meta-avocado
+    # sets PRSERV_HOST=localhost:0, a per-build autostart whose DB sits under the
+    # volatile PERSISTENT_DIR (TMPDIR/cache); a wiped build tree then resets PRs
+    # to r0 while TOPDIR buildhistory keeps r0.N, failing the
+    # version-going-backwards QA on do_packagedata_setscene. Start one managed
+    # prserv keyed to the shared sstate and override PRSERV_HOST so PRs stay
+    # monotonic across builds/TMPDIR-wipes and reach other cluster nodes via
+    # cluster_bind_host. ``ensure_hashserv`` is the dry-run/script-gen guard.
+    if cfg.host_mode and ensure_hashserv:
+        prserv_addr = prserv.ensure_running(
+            cfg.prserv_state_key,
+            binary_root=cfg.bsp_root,
+            bind_host=cfg.cluster_bind_host or "localhost",
+        )
+        if prserv_addr is not None:
+            passthrough["PRSERV_HOST"] = prserv_addr
     # Persistent sccache server: in host mode, pre-start one detached server so
     # it survives bitbake's per-task process-group teardown. Without it the
     # first task's auto-started server dies with that task, churning fallbacks

@@ -41,6 +41,7 @@ import bakar.commands.monitor
 import bakar.commands.override
 import bakar.commands.prefetch
 import bakar.commands.presets
+import bakar.commands.prserv
 import bakar.commands.report
 import bakar.commands.settings
 import bakar.commands.setup
