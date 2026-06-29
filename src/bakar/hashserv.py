@@ -144,7 +144,7 @@ def is_running(state_key: Path) -> bool:
     return b"bitbake-hashserv" in cmdline_bytes
 
 
-def ensure_running(state_key: Path, *, binary_root: Path) -> str | None:
+def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "localhost") -> str | None:
     """Ensure a hashserv daemon for ``state_key`` is running; return its URL.
 
     The daemon's port, PID, and DB are keyed to ``state_key`` (so callers that
@@ -177,13 +177,15 @@ def ensure_running(state_key: Path, *, binary_root: Path) -> str | None:
             pid_file.unlink(missing_ok=True)
             port_file.unlink(missing_ok=True)
         else:
-            return f"ws://localhost:{port}"
+            return f"ws://{bind_host}:{port}"
 
     binary = _find_binary(binary_root)
     if binary is None:
         return None
 
     port = _workspace_port(state_key)
+    # 0.0.0.0 (and empty) are bind-only addresses; probe loopback for them.
+    probe_host = "127.0.0.1" if bind_host in ("0.0.0.0", "") else bind_host
     state_dir.mkdir(parents=True, exist_ok=True)
     # Redirect daemon stderr directly to a log file rather than PIPE so the
     # daemon never blocks when the kernel pipe buffer fills (default 64 KiB)
@@ -194,7 +196,7 @@ def ensure_running(state_key: Path, *, binary_root: Path) -> str | None:
         [
             str(binary),
             "--bind",
-            f"ws://localhost:{port}",
+            f"ws://{bind_host}:{port}",
             "--database",
             str(state_dir / _DB_FILENAME),
         ],
@@ -210,7 +212,7 @@ def ensure_running(state_key: Path, *, binary_root: Path) -> str | None:
             _abort_startup(proc, state_dir)
             return None
         try:
-            sock = socket.create_connection(("127.0.0.1", port), timeout=0.5)
+            sock = socket.create_connection((probe_host, port), timeout=0.5)
         except OSError:
             if time.monotonic() > deadline:
                 _abort_startup(proc, state_dir)
@@ -220,7 +222,7 @@ def ensure_running(state_key: Path, *, binary_root: Path) -> str | None:
         sock.close()
         pid_file.write_text(f"{proc.pid}\n")
         port_file.write_text(f"{port}\n")
-        return f"ws://localhost:{port}"
+        return f"ws://{bind_host}:{port}"
 
 
 def stop(state_key: Path) -> bool:

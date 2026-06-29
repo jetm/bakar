@@ -54,6 +54,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.psi_autocalibrate": "true",
         "build.sccache_dist": "true",
         "build.sccache_scheduler_url": "http://localhost:10600",
+        "build.cluster_bind_host": "10.42.0.1",
         "build.ccache": "false",
         "build.rm_work": "true",
         "build.host_mode": "true",

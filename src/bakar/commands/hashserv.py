@@ -72,7 +72,11 @@ def start(
 ) -> None:
     """Start the workspace hashserv daemon (or report the existing URL)."""
     cfg = _resolve_cfg(workspace, kas_yaml)
-    url = hashserv.ensure_running(cfg.hashserv_state_key, binary_root=cfg.bsp_root)
+    url = hashserv.ensure_running(
+        cfg.hashserv_state_key,
+        binary_root=cfg.bsp_root,
+        bind_host=cfg.cluster_bind_host or "localhost",
+    )
     if url is None:
         console.print(
             f"failed to start hashserv: bitbake-hashserv not found or startup probe failed; "

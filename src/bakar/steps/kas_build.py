@@ -1739,7 +1739,11 @@ def _build_env(
     # The overlay's BB_HASHSERVE = ${@os.environ.get('BB_HASHSERVE', 'auto')}
     # falls through to "auto" when this block omits the key.
     if cfg.use_hashequiv and ensure_hashserv:
-        url = hashserv.ensure_running(cfg.hashserv_state_key, binary_root=cfg.bsp_root)
+        url = hashserv.ensure_running(
+            cfg.hashserv_state_key,
+            binary_root=cfg.bsp_root,
+            bind_host=cfg.cluster_bind_host or "localhost",
+        )
         if url is not None:
             if cfg.host_mode:
                 passthrough["BB_HASHSERVE"] = url

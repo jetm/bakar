@@ -293,6 +293,41 @@ def test_ensure_running_starts_process_and_probe_succeeds(
     assert "--database" in popen_args
 
 
+def test_ensure_running_binds_to_cluster_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """bind_host routes the daemon bind, the probe target, and the URL to the cluster IP."""
+    from bakar import hashserv as hashserv_mod
+
+    _create_workspace_binary(tmp_path)
+    monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+
+    fake_proc = _FakeProc(pid=222, poll_returns=[None])
+    captured: dict[str, object] = {}
+
+    def _fake_popen(args: list[str], **kwargs: object) -> _FakeProc:
+        captured["args"] = args
+        return fake_proc
+
+    monkeypatch.setattr(hashserv_mod.subprocess, "Popen", _fake_popen)
+
+    def _fake_create_connection(addr: tuple[str, int], timeout: float) -> _FakeSocket:
+        del timeout
+        captured["probe_addr"] = addr
+        return _FakeSocket()
+
+    monkeypatch.setattr(hashserv_mod.socket, "create_connection", _fake_create_connection)
+
+    expected_port = hashserv_mod._workspace_port(tmp_path)
+    url = hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path, bind_host="10.42.0.1")
+
+    assert url == f"ws://10.42.0.1:{expected_port}"
+    assert f"ws://10.42.0.1:{expected_port}" in captured["args"]
+    # a specific (non-0.0.0.0) bind host is also the probe target
+    assert captured["probe_addr"] == ("10.42.0.1", expected_port)
+
+
 def test_ensure_running_aborts_when_probe_times_out(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

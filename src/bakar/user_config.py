@@ -29,6 +29,7 @@ _STR_FIELDS = {
     "ccache_dir",
     "buildtools_dir",
     "sccache_scheduler_url",
+    "cluster_bind_host",
 }
 _BOOL_FIELDS = {
     "show_doctor_report",
@@ -88,6 +89,11 @@ class UserConfig:
     scheduler: str | None = None
     sccache_dist: bool = False
     sccache_scheduler_url: str | None = None
+    # Address the workspace cache services (hashserv, prserv) bind to so other
+    # cluster nodes can reach them. None keeps the safe localhost-only default;
+    # set it to the node's cluster-reachable IP (e.g. the direct-link address)
+    # to share one hashserv/prserv across the cluster.
+    cluster_bind_host: str | None = None
     # ccache enable toggle (default on); effective ccache is gated off whenever
     # sccache_dist is set (mutually exclusive launchers). rm_work default off:
     # while bakar is in use the tuning stack strips rm_work so work dirs survive.
@@ -160,6 +166,7 @@ _BUILD_KEYS = {
     "scheduler": "scheduler",
     "sccache_dist": "sccache_dist",
     "sccache_scheduler_url": "sccache_scheduler_url",
+    "cluster_bind_host": "cluster_bind_host",
     "ccache": "ccache",
     "rm_work": "rm_work",
     "host_mode": "host_mode",

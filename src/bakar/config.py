@@ -292,6 +292,10 @@ class BuildConfig:
     # byte-for-byte unchanged (ccache stays) until the user opts in.
     sccache_dist: bool = field(default=False)
     sccache_scheduler_url: str | None = field(default=None)
+    # Bind address for the workspace cache services (hashserv, prserv). None
+    # means localhost-only (single-node default); set to a cluster-reachable IP
+    # so other nodes can share one hashserv/prserv. See user_config.cluster_bind_host.
+    cluster_bind_host: str | None = field(default=None)
     # ccache enable toggle (default on). ccache and sccache are mutually
     # exclusive launchers, so the effective ccache state is use_ccache (this
     # flag AND NOT sccache_dist); set ccache=False to disable ccache outright.
@@ -755,6 +759,7 @@ def resolve(
         sstate_mirror_url=user_config.sstate_mirror_url if user_config else None,
         sccache_dist=user_config.sccache_dist if user_config else False,
         sccache_scheduler_url=user_config.sccache_scheduler_url if user_config else None,
+        cluster_bind_host=user_config.cluster_bind_host if user_config else None,
         ccache=pick_bool(
             "BAKAR_CCACHE",
             ws_val=workspace_config.ccache if workspace_config is not None else None,
