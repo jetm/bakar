@@ -83,6 +83,12 @@ def _synthetic_artifact() -> dict[str, Any]:
             {"recipe": "busybox-1.36.1-r0", "task": "do_compile", "outcome": "succeeded", "started": 1.0},
             {"recipe": "zlib-1.3-r0", "task": "do_configure", "outcome": None, "started": 2.0},
             {"recipe": "linux-imx-6.12-r0", "task": "do_compile", "outcome": "failed", "started": 3.0},
+            {
+                "recipe": "glibc-locale-2.39-r0",
+                "task": "do_packagedata_setscene",
+                "outcome": "failed_silent",
+                "started": 4.0,
+            },
         ],
         "setscene": {"covered": 0, "notcovered": 0, "total": 0, "per_recipe": []},
         "failures": [{"recipe": "linux-imx-6.12-r0", "task": "do_compile", "logfile": "/x/log", "errprinted": True}],
@@ -132,7 +138,10 @@ def test_json_once_emits_cluster_and_build(
     assert build["tasks_total"] == 100
     assert build["tasks_done"] == 60
     assert build["tasks_remaining"] == 40
+    # Only the real do_compile failure counts as failed; the failed_silent
+    # setscene rejection is a recovered cache miss, reported separately.
     assert build["tasks_failed"] == 1
+    assert build["tasks_setscene_rerun"] == 1
     assert build["tasks_running"] == 1
     assert build["running"] == [{"recipe": "zlib-1.3-r0", "task": "do_configure"}]
     assert build["live"] is False

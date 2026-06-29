@@ -133,12 +133,18 @@ def _build_progress(run_dir: Path) -> dict[str, Any]:
     running: list[dict[str, Any]] = []
     succeeded = 0
     failed = 0
+    setscene_rerun = 0
     for row in tasks:
         outcome = row.get("outcome")
         if outcome == "succeeded":
             succeeded += 1
-        elif outcome in ("failed", "failed_silent"):
+        elif outcome == "failed":
             failed += 1
+        elif outcome == "failed_silent":
+            # setscene (sstate-restore) failure: bitbake re-runs the real task,
+            # so this is a recovered cache miss, NOT a build failure. Count it
+            # separately so the monitor never reports it as "N failed".
+            setscene_rerun += 1
         elif outcome is None and row.get("started") is not None:
             running.append(row)
 
@@ -176,6 +182,7 @@ def _build_progress(run_dir: Path) -> dict[str, Any]:
         "tasks_remaining": remaining,
         "tasks_running": len(running),
         "tasks_failed": failed,
+        "tasks_setscene_rerun": setscene_rerun,
         "running": [{"recipe": r.get("recipe"), "task": r.get("task")} for r in running],
         "failures": artifact["failures"][-_FAILURE_TAIL:],
     }
@@ -215,7 +222,13 @@ def _render(snapshot: dict[str, Any]) -> Group:
     progress = Text("build: ", style="bold")
     progress.append(f"[{state}] ")
     progress.append(f"{tasks_txt}, {build['tasks_running']} running, ")
-    progress.append(f"{build['tasks_failed']} failed  elapsed {elapsed_txt}")
+    failed_n = build["tasks_failed"]
+    progress.append(f"{failed_n} failed", style="bold red" if failed_n else None)
+    rerun_n = build.get("tasks_setscene_rerun") or 0
+    if rerun_n:
+        # recovered sstate-restore rejections, not build failures
+        progress.append(f", {rerun_n} setscene re-runs", style="dim")
+    progress.append(f"  elapsed {elapsed_txt}")
     parts.append(progress)
 
     if build["running"]:
