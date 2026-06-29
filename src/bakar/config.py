@@ -296,6 +296,12 @@ class BuildConfig:
     # means localhost-only (single-node default); set to a cluster-reachable IP
     # so other nodes can share one hashserv/prserv. See user_config.cluster_bind_host.
     cluster_bind_host: str | None = field(default=None)
+    # Central cross-node tier endpoints (host:port), provisioned by `bakar setup`
+    # (CentralTierAction). When set, the build points BB_HASHSERVE / PRSERV_HOST at
+    # the shared Rust/PostgreSQL services and skips the per-workspace bitbake
+    # daemons; None keeps the per-workspace daemon path. See user_config.bb_hashserve.
+    bb_hashserve: str | None = field(default=None)
+    prserv_host: str | None = field(default=None)
     # ccache enable toggle (default on). ccache and sccache are mutually
     # exclusive launchers, so the effective ccache state is use_ccache (this
     # flag AND NOT sccache_dist); set ccache=False to disable ccache outright.
@@ -768,6 +774,8 @@ def resolve(
         sccache_dist=user_config.sccache_dist if user_config else False,
         sccache_scheduler_url=user_config.sccache_scheduler_url if user_config else None,
         cluster_bind_host=user_config.cluster_bind_host if user_config else None,
+        bb_hashserve=user_config.bb_hashserve if user_config else None,
+        prserv_host=user_config.prserv_host if user_config else None,
         ccache=pick_bool(
             "BAKAR_CCACHE",
             ws_val=workspace_config.ccache if workspace_config is not None else None,

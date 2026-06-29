@@ -8,6 +8,7 @@ unconditionally overwrites that variable before its option-parsing loop.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -267,6 +268,41 @@ def test_build_env_omits_bb_hashserve_when_ensure_running_returns_none(
     env = _build_env(cfg)
 
     assert "BB_HASHSERVE" not in env
+
+
+def test_build_env_central_bb_hashserve_preferred_over_per_workspace_daemon(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A configured central endpoint is used verbatim; the per-workspace daemon never starts."""
+    monkeypatch.delenv("BB_HASHSERVE", raising=False)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("ensure_running must not run when the central tier is configured")
+
+    monkeypatch.setattr("bakar.steps.kas_build.hashserv.ensure_running", _boom)
+    cfg = replace(_hashequiv_cfg(tmp_path, use_hashequiv=True, host_mode=False), bb_hashserve="10.42.0.1:8686")
+
+    env = _build_env(cfg)
+
+    # Verbatim host:port - no host.docker.internal rewrite (the cluster IP is reachable directly).
+    assert env["BB_HASHSERVE"] == "10.42.0.1:8686"
+
+
+def test_build_env_central_prserv_host_preferred_over_per_workspace_daemon(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A configured central PRSERV_HOST is used verbatim; the per-workspace daemon never starts."""
+    monkeypatch.delenv("PRSERV_HOST", raising=False)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("prserv.ensure_running must not run when the central tier is configured")
+
+    monkeypatch.setattr("bakar.steps.kas_build.prserv.ensure_running", _boom)
+    cfg = replace(_hashequiv_cfg(tmp_path, use_hashequiv=True, host_mode=False), prserv_host="10.42.0.1:8585")
+
+    env = _build_env(cfg)
+
+    assert env["PRSERV_HOST"] == "10.42.0.1:8585"
 
 
 # ---------------------------------------------------------------------------

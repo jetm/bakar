@@ -1740,7 +1740,13 @@ def _build_env(
     # daemon is running and rewrite the URL for container reachability.
     # The overlay's BB_HASHSERVE = ${@os.environ.get('BB_HASHSERVE', 'auto')}
     # falls through to "auto" when this block omits the key.
-    if cfg.use_hashequiv and ensure_hashserv:
+    if cfg.bb_hashserve:
+        # Central cross-node tier: point at the shared Rust/PostgreSQL hashserv
+        # (CentralTierAction persisted this host:port endpoint) instead of the
+        # per-workspace bitbake daemon. In container mode the cluster IP is
+        # reachable directly, so no host.docker.internal rewrite is needed.
+        passthrough["BB_HASHSERVE"] = cfg.bb_hashserve
+    elif cfg.use_hashequiv and ensure_hashserv:
         url = hashserv.ensure_running(
             cfg.hashserv_state_key,
             binary_root=cfg.bsp_root,
@@ -1759,7 +1765,13 @@ def _build_env(
     # prserv keyed to the shared sstate and override PRSERV_HOST so PRs stay
     # monotonic across builds/TMPDIR-wipes and reach other cluster nodes via
     # cluster_bind_host. ``ensure_hashserv`` is the dry-run/script-gen guard.
-    if cfg.host_mode and ensure_hashserv:
+    if cfg.prserv_host:
+        # Central cross-node tier: the shared Rust/PostgreSQL prserv
+        # (CentralTierAction persisted this endpoint). One monotonic PR DB for the
+        # whole cluster, surviving TMPDIR wipes, instead of the per-workspace
+        # bitbake daemon - so PRs never go backwards regardless of build tree.
+        passthrough["PRSERV_HOST"] = cfg.prserv_host
+    elif cfg.host_mode and ensure_hashserv:
         prserv_addr = prserv.ensure_running(
             cfg.prserv_state_key,
             binary_root=cfg.bsp_root,
