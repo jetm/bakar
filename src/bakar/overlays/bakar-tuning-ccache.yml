@@ -17,7 +17,10 @@ local_conf_header:
   # Sort-last key (see bakar-tuning-generic): 20 orders ccache after the base
   # section and before the opt-in caches.
   zz-bakar-20-ccache: |
-    CCACHE_DIR = "/work/ccache"
+    # Neutral host-canonical default; bakar rewrites this per-mode at
+    # materialize time (the real host dir on host, the kas-container cache
+    # mount under --container). See steps.kas_build._inject_literal_ccache.
+    CCACHE_DIR = "${TOPDIR}/ccache"
     INHERIT += "ccache"
     # Cap the build ccache. oe-core's CCACHE_CONFIGPATH (meta/conf/ccache.conf)
     # leaves max_size=0 (uncapped); exporting CCACHE_MAXSIZE puts it in the

@@ -345,7 +345,7 @@ def test_ccache_overlay_carries_ccache_block() -> None:
     overlay = _load(_OVERLAY_DIR / "bakar-tuning-ccache.yml")
     body = overlay["local_conf_header"]["zz-bakar-20-ccache"]
     assert 'INHERIT += "ccache"' in body
-    assert 'CCACHE_DIR = "/work/ccache"' in body
+    assert 'CCACHE_DIR = "${TOPDIR}/ccache"' in body
     assert "CCACHE_DISABLE:pn-nodejs" in body
 
 

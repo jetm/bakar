@@ -755,7 +755,7 @@ def test_inject_rm_work_strips_block_when_rm_work_on(tmp_path: Path) -> None:
 _CCACHE_OVERLAY = (
     "local_conf_header:\n"
     "  zz-bakar-20-ccache: |\n"
-    '    CCACHE_DIR = "/work/ccache"\n'
+    '    CCACHE_DIR = "${TOPDIR}/ccache"\n'
     '    INHERIT += "ccache"\n'
     '    CCACHE_MAXSIZE = "50G"\n'
     "    export CCACHE_MAXSIZE\n"
@@ -771,6 +771,7 @@ def test_inject_literal_ccache_host_mode_rewrites_dir(tmp_path: Path) -> None:
 
     assert f'CCACHE_DIR = "{cfg.effective_ccache_dir}"' in result
     assert "/work/ccache" not in result
+    assert "${TOPDIR}/ccache" not in result  # neutral default rewritten away
     # Sibling lines untouched.
     assert 'CCACHE_MAXSIZE = "50G"' in result
     assert "export CCACHE_MAXSIZE" in result
@@ -778,11 +779,12 @@ def test_inject_literal_ccache_host_mode_rewrites_dir(tmp_path: Path) -> None:
     assert "CCACHE_DISABLE:pn-nodejs" in result
 
 
-def test_inject_literal_ccache_container_mode_byte_identical(tmp_path: Path) -> None:
-    """Container mode returns the text unchanged (byte-identical)."""
+def test_inject_literal_ccache_container_mode_sets_work_path(tmp_path: Path) -> None:
+    """Container mode rewrites the neutral default to the /work bind-mount target."""
     cfg = _make_nxp_cfg(tmp_path, host_mode=False)
     result = _inject_literal_ccache(cfg, _CCACHE_OVERLAY)
-    assert result == _CCACHE_OVERLAY
+    assert 'CCACHE_DIR = "/work/ccache"' in result
+    assert "${TOPDIR}/ccache" not in result
 
 
 def test_inject_literal_ccache_uses_explicit_ccache_dir(tmp_path: Path) -> None:
@@ -824,8 +826,8 @@ def test_materialize_ccache_overlay_host_mode_rewrites_dir(tmp_path: Path) -> No
     assert cfg.effective_ccache_dir.is_dir()
 
 
-def test_materialize_ccache_overlay_container_mode_keeps_work_path(tmp_path: Path) -> None:
-    """Container mode keeps the /work/ccache bind-mount target unchanged."""
+def test_materialize_ccache_overlay_container_mode_sets_work_path(tmp_path: Path) -> None:
+    """Container mode injects the /work/ccache bind-mount target from the neutral default."""
     cfg = _make_nxp_cfg(tmp_path, host_mode=False)
     src = tmp_path / "bakar-tuning-ccache.yml"
     src.write_text(_CCACHE_OVERLAY, encoding="utf-8")
@@ -834,3 +836,15 @@ def test_materialize_ccache_overlay_container_mode_keeps_work_path(tmp_path: Pat
     text = (cfg.bsp_root / rel).read_text(encoding="utf-8")
 
     assert 'CCACHE_DIR = "/work/ccache"' in text
+
+
+def test_shipped_ccache_overlay_has_no_work_path() -> None:
+    """The shipped ccache overlay source carries a neutral default, never a /work path.
+
+    Guards the host-default contract: the overlay must not name a container
+    /work path; the per-mode value is constructed by _inject_literal_ccache.
+    """
+    import importlib.resources
+
+    text = (importlib.resources.files("bakar") / "overlays" / "bakar-tuning-ccache.yml").read_text(encoding="utf-8")
+    assert "/work" not in text

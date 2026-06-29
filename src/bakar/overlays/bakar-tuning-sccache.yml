@@ -31,7 +31,9 @@ env:
   # token lives only in the config file (no env override) and HOME inside the
   # container is not the host HOME, so the client needs SCCACHE_CONF to find it;
   # the config's cache dir is absent in the container, so SCCACHE_DIR redirects
-  # it under /work. Both unset (null passthrough) in host mode. See sccache.bbclass.
+  # it to the container bind mount. Both stay null in host mode (the default),
+  # where the sccache client reads its own config and host cache dir directly -
+  # no /work involved. See sccache.bbclass.
   BAKAR_SCCACHE_CONF: null
   BAKAR_SCCACHE_DIR: null
 

@@ -226,24 +226,26 @@ def _inject_literal_sccache(cfg: BuildConfig, text: str) -> str:
 
 
 def _inject_literal_ccache(cfg: BuildConfig, text: str) -> str:
-    """Rewrite the ccache overlay's container ``CCACHE_DIR`` for host builds.
+    """Set ``CCACHE_DIR`` to the per-mode cache path.
 
-    Container mode bind-mounts ``cfg.effective_ccache_dir`` to ``/work/ccache``
-    (see ``_ccache_args``), so the overlay's hardcoded ``CCACHE_DIR =
-    "/work/ccache"`` is correct and this returns the text byte-identical. Host
-    mode has no bind mount, so that container path is unwritable (ccache aborts
-    with ``Permission denied``); rewrite it to the real host cache dir.
+    The overlay carries a neutral, host-canonical default (``${TOPDIR}/ccache``)
+    that never names a container path; this rewrites it to the absolute host
+    cache dir in host mode (the default), or to the kas-container bind-mount
+    target (``/work/ccache``) when the container path is opted in. The rewrite
+    runs in both modes so the host default stays free of any ``/work`` reference
+    and the container value is constructed here rather than hardcoded in the
+    overlay - container mode bind-mounts ``cfg.effective_ccache_dir`` to
+    ``/work/ccache`` (see ``_ccache_args``), the in-container path written here.
 
     Only the ``CCACHE_DIR`` line is touched - ``CCACHE_MAXSIZE``, the
     ``export CCACHE_MAXSIZE``, ``INHERIT += "ccache"``, and the nodejs disable
     are left alone. The original indentation is preserved. Kept pure (no
     filesystem side effects) so dry-run rendering is safe; the host-mode dir is
     created by the caller (``materialize_overlay``)."""
-    if not cfg.host_mode:
-        return text
+    target = str(cfg.effective_ccache_dir) if cfg.host_mode else "/work/ccache"
     return re.sub(
-        r'^(?P<indent>[ \t]*)CCACHE_DIR\s*=\s*"/work/ccache"',
-        lambda m: f'{m.group("indent")}CCACHE_DIR = "{cfg.effective_ccache_dir}"',
+        r'^(?P<indent>[ \t]*)CCACHE_DIR\s*=\s*"[^"]*"',
+        lambda m: f'{m.group("indent")}CCACHE_DIR = "{target}"',
         text,
         count=1,
         flags=re.MULTILINE,
