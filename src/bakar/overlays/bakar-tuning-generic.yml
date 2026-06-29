@@ -151,6 +151,14 @@ local_conf_header:
     # hashequiv overlay (sorting after this) overrides with an env-driven opt-in.
     BB_HASHSERVE_UPSTREAM = ""
 
+    # Disable the connectivity sanity check. On a fresh parse OE fetches
+    # https://www.yoctoproject.org/connectivity.html to probe network reach;
+    # bitbake's fetcher cannot reach it in this build environment (host curl
+    # can, the fetcher path cannot), so the check fails the build before any
+    # task runs. All sources come from the shared DL_DIR, so the pre-build
+    # reachability probe is pointless here. Empty disables it.
+    CONNECTIVITY_CHECK_URIS = ""
+
     # Disable rm_work while bakar is in use. The kas-build-env container enables
     # it (AVOCADO_RM_WORK=1), which cleans recipe-sysroot-native after each task
     # and breaks recipes whose later tasks need native binaries (e.g.
