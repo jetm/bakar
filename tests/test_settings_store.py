@@ -55,6 +55,8 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.sccache_dist": "true",
         "build.sccache_scheduler_url": "http://localhost:10600",
         "build.cluster_bind_host": "10.42.0.1",
+        "build.bb_hashserve": "10.42.0.1:8686",
+        "build.prserv_host": "10.42.0.1:8585",
         "build.ccache": "false",
         "build.rm_work": "true",
         "build.container": "true",
@@ -106,6 +108,8 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert cfg.sccache_dist is True
     assert isinstance(cfg.sccache_dist, bool)
     assert cfg.sccache_scheduler_url == "http://localhost:10600"
+    assert cfg.bb_hashserve == "10.42.0.1:8686"
+    assert cfg.prserv_host == "10.42.0.1:8585"
     assert cfg.ccache is False
     assert isinstance(cfg.ccache, bool)
     assert cfg.rm_work is True

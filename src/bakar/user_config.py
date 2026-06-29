@@ -95,6 +95,12 @@ class UserConfig:
     # set it to the node's cluster-reachable IP (e.g. the direct-link address)
     # to share one hashserv/prserv across the cluster.
     cluster_bind_host: str | None = None
+    # Central cross-node coordination tier (Rust/PostgreSQL hashserv + prserv,
+    # provisioned by `bakar setup`). When set, the build points BB_HASHSERVE /
+    # PRSERV_HOST at these shared endpoints instead of the per-workspace bitbake
+    # daemons, so every node reports to one hash-equivalence + PR service.
+    bb_hashserve: str | None = None
+    prserv_host: str | None = None
     # ccache enable toggle (default on); effective ccache is gated off whenever
     # sccache_dist is set (mutually exclusive launchers). rm_work default off:
     # while bakar is in use the tuning stack strips rm_work so work dirs survive.
@@ -171,6 +177,8 @@ _BUILD_KEYS = {
     "sccache_dist": "sccache_dist",
     "sccache_scheduler_url": "sccache_scheduler_url",
     "cluster_bind_host": "cluster_bind_host",
+    "bb_hashserve": "bb_hashserve",
+    "prserv_host": "prserv_host",
     "ccache": "ccache",
     "rm_work": "rm_work",
     "container": "container",

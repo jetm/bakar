@@ -33,6 +33,7 @@ tracks liveness by TCP-probing the listen port rather than by a Popen PID.
 
 from __future__ import annotations
 
+import shutil
 import socket
 import subprocess
 import time
@@ -215,3 +216,68 @@ def stop(state_key: Path, *, binary_root: Path, bind_host: str = "localhost") ->
     )
     _clean_stale_pidfiles(port)
     return True
+
+
+# --- Central cross-node tier (Rust/PostgreSQL prserv) ------------------------
+#
+# The avocado-linux Rust prserv is a PostgreSQL-backed reimplementation of
+# bitbake's PR service (prserv/docs/integration.md). Postgres-backed PR
+# allocation is the shared, monotonic source of package revisions for the build
+# cluster: unlike the per-workspace bitbake-prserv daemon above (Python +
+# single-writer SQLite), one instance serves every node and survives a
+# TMPDIR wipe, so PRs never go backwards. Liveness is the TCP probe (mirroring
+# the bitbake daemon's model); the postgres DB is the durable state.
+
+CENTRAL_DEFAULT_PORT = 8585  # prserv/docs/integration.md default bind port
+
+
+def central_prserv_host(host: str, port: int = CENTRAL_DEFAULT_PORT) -> str:
+    """The ``PRSERV_HOST`` value (``host:port``) for the central Rust prserv."""
+    return f"{host}:{port}"
+
+
+def central_listening(host: str, port: int = CENTRAL_DEFAULT_PORT, *, timeout: float = 0.5) -> bool:
+    """Return True iff a TCP connection to the central prserv endpoint succeeds."""
+    return _probe(_probe_host(host), port, timeout=timeout)
+
+
+def central_service_argv(binary: str, *, bind: str, database: str) -> list[str]:
+    """argv to start the avocado-prserv Rust service against ``database``."""
+    return [binary, "server", "--bind", bind, "--database", database]
+
+
+def central_ensure_running(
+    *,
+    binary: str,
+    bind_host: str,
+    database: str,
+    port: int = CENTRAL_DEFAULT_PORT,
+    startup_deadline_seconds: float = 5.0,
+) -> str | None:
+    """Ensure the central Rust prserv is listening; return ``host:port``.
+
+    Returns the endpoint when the service is already listening or a fresh spawn
+    passes the TCP startup probe. Returns ``None`` when ``binary`` resolves to no
+    executable, or when a fresh spawn never reaches the probe within
+    ``startup_deadline_seconds``. Liveness is the TCP probe; no PID is tracked
+    because the postgres DB - not an on-disk file - is the durable state.
+    """
+    probe = _probe_host(bind_host)
+    if _probe(probe, port):
+        return central_prserv_host(bind_host, port)
+    if shutil.which(binary) is None and not Path(binary).is_file():
+        return None
+    proc = subprocess.Popen(
+        central_service_argv(binary, bind=f"{bind_host}:{port}", database=database),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + startup_deadline_seconds
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return None
+        if _probe(probe, port):
+            return central_prserv_host(bind_host, port)
+        time.sleep(0.1)
+    return None

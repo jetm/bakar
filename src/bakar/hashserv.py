@@ -22,6 +22,7 @@ Two locations are kept deliberately separate:
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -287,3 +288,82 @@ def _abort_startup(proc: subprocess.Popen[bytes], state_dir: Path) -> None:
             os.kill(proc.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+
+
+# --- Central cross-node tier (Rust/PostgreSQL hashserv) ----------------------
+#
+# The avocado-linux Rust hashserv is an asyncrpc-compatible reimplementation
+# backed by PostgreSQL (hashserv/docs/integration.md). It is the shared,
+# concurrent-writer-safe hash-equivalence service for the build cluster: unlike
+# the per-workspace bitbake-hashserv daemon above (Python + single-writer
+# SQLite), one instance serves every node. These helpers manage that service by
+# TCP probe for liveness rather than a tracked PID - the postgres DB is the
+# durable state, so a restart loses nothing and any node may (re)start it.
+
+CENTRAL_DEFAULT_PORT = 8686  # hashserv/docs/integration.md default bind port
+
+
+def _probe_addr(bind_host: str) -> str:
+    """Loopback for bind-only addresses (0.0.0.0/empty), else the host itself."""
+    return "127.0.0.1" if bind_host in ("0.0.0.0", "") else bind_host
+
+
+def central_bb_hashserve(host: str, port: int = CENTRAL_DEFAULT_PORT) -> str:
+    """The ``BB_HASHSERVE`` value (``host:port``) for the central Rust hashserv."""
+    return f"{host}:{port}"
+
+
+def central_listening(host: str, port: int = CENTRAL_DEFAULT_PORT, *, timeout: float = 0.5) -> bool:
+    """Return True iff a TCP connection to the central hashserv endpoint succeeds."""
+    try:
+        sock = socket.create_connection((_probe_addr(host), port), timeout=timeout)
+    except OSError:
+        return False
+    sock.close()
+    return True
+
+
+def central_service_argv(binary: str, *, bind: str, database: str) -> list[str]:
+    """argv to start the avocado-hashserv Rust service against ``database``."""
+    return [binary, "server", "--bind", bind, "--database", database]
+
+
+def central_ensure_running(
+    *,
+    binary: str,
+    bind_host: str,
+    database: str,
+    port: int = CENTRAL_DEFAULT_PORT,
+    startup_deadline_seconds: float = 5.0,
+) -> str | None:
+    """Ensure the central Rust hashserv is listening; return ``host:port``.
+
+    Returns the endpoint when the service is already listening or a fresh spawn
+    passes the TCP startup probe. Returns ``None`` when ``binary`` resolves to no
+    executable, or when a fresh spawn never reaches the probe within
+    ``startup_deadline_seconds``. Liveness is the TCP probe; no PID is tracked
+    because the postgres DB - not an on-disk file - is the durable state.
+    """
+    if central_listening(bind_host, port):
+        return central_bb_hashserve(bind_host, port)
+    if shutil.which(binary) is None and not Path(binary).is_file():
+        return None
+    probe = _probe_addr(bind_host)
+    proc = subprocess.Popen(
+        central_service_argv(binary, bind=f"{bind_host}:{port}", database=database),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + startup_deadline_seconds
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return None
+        try:
+            sock = socket.create_connection((probe, port), timeout=0.5)
+        except OSError:
+            time.sleep(0.1)
+            continue
+        sock.close()
+        return central_bb_hashserve(bind_host, port)
+    return None
