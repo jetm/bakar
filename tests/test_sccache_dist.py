@@ -373,7 +373,7 @@ def test_container_sccache_build_does_not_start_host_server(tmp_path: Path, monk
 # ---------------------------------------------------------------------------
 
 
-def _overlay_cfg(*, sccache_dist: bool = False, ccache: bool = True) -> object:
+def _overlay_cfg(*, sccache_dist: bool = False, ccache: bool = True, host_mode: bool = False) -> object:
     """Return a minimal BuildConfig for the overlay helper tests."""
     from pathlib import Path
 
@@ -391,6 +391,7 @@ def _overlay_cfg(*, sccache_dist: bool = False, ccache: bool = True) -> object:
         kas_container_image="img:latest",
         sccache_dist=sccache_dist,
         ccache=ccache,
+        host_mode=host_mode,
     )
 
 
@@ -471,6 +472,94 @@ def test_overlay_absent_from_tuning_stack_when_disabled() -> None:
     names = [p.name for p in _tuning_extra_overlays(cfg)]  # type: ignore[arg-type]
 
     assert "bakar-tuning-sccache.yml" not in names
+
+
+@pytest.mark.unit
+def test_overlay_host_extra_overlays_returns_path_in_host_mode() -> None:
+    """When host_mode is True the helper returns the host isolation overlay path."""
+    from bakar.commands._helpers import _host_extra_overlays
+
+    cfg = _overlay_cfg(host_mode=True)
+    result = _host_extra_overlays(cfg)  # type: ignore[arg-type]
+
+    assert len(result) == 1
+    assert result[0].name == "bakar-tuning-host.yml"
+    assert result[0].is_file(), "overlay file must exist in the installed overlays/ dir"
+
+
+@pytest.mark.unit
+def test_overlay_host_extra_overlays_empty_in_container_mode() -> None:
+    """When host_mode is False the helper returns an empty list (falsifier)."""
+    from bakar.commands._helpers import _host_extra_overlays
+
+    cfg = _overlay_cfg(host_mode=False)
+    result = _host_extra_overlays(cfg)  # type: ignore[arg-type]
+
+    assert result == []
+
+
+@pytest.mark.unit
+def test_host_overlay_in_tuning_stack_in_host_mode() -> None:
+    """_tuning_extra_overlays includes the host overlay when host_mode is on."""
+    from bakar.commands._helpers import _tuning_extra_overlays
+
+    cfg = _overlay_cfg(host_mode=True)
+    names = [p.name for p in _tuning_extra_overlays(cfg)]  # type: ignore[arg-type]
+
+    assert "bakar-tuning-host.yml" in names
+
+
+@pytest.mark.unit
+def test_host_overlay_absent_from_tuning_stack_in_container_mode() -> None:
+    """_tuning_extra_overlays omits the host overlay in container mode (falsifier)."""
+    from bakar.commands._helpers import _tuning_extra_overlays
+
+    cfg = _overlay_cfg(host_mode=False)
+    names = [p.name for p in _tuning_extra_overlays(cfg)]  # type: ignore[arg-type]
+
+    assert "bakar-tuning-host.yml" not in names
+
+
+@pytest.mark.unit
+def test_materialize_host_layer_copies_rpm_bbappend_into_bsp_root(tmp_path: Path) -> None:
+    """materialize_host_layer drops the layer (and its rpm bbappend) under <bsp_root>/.bakar/.
+
+    The host overlay references the layer by the relative repos path
+    .bakar/meta-bakar-host; the rpm bbappend must exist there for kas to apply it
+    and disable the rpm transaction plugins that otherwise dlopen the build
+    host's ABI-incompatible /usr/lib/rpm-plugins during do_rootfs.
+    """
+    import re
+    from pathlib import Path
+
+    from bakar.config import BuildConfig
+    from bakar.steps.kas_build import materialize_host_layer
+
+    root = Path(str(tmp_path))
+    cfg = BuildConfig(
+        workspace=root,
+        bsp_family="generic",  # type: ignore[arg-type]
+        machine="m",
+        distro="d",
+        image="i",
+        manifest="x.xml",
+        repo_url="https://example.com",
+        repo_branch="main",
+        kas_container_image="img:latest",
+        kas_yaml_override=root / "my.yml",
+        host_mode=True,
+    )
+
+    dest = materialize_host_layer(cfg)
+
+    assert dest == cfg.bsp_root / ".bakar" / "meta-bakar-host"
+    assert (dest / "conf" / "layer.conf").is_file()
+    bbappend = dest / "recipes-devtools" / "rpm" / "rpm_%.bbappend"
+    assert bbappend.is_file()
+    text = bbappend.read_text()
+    assert "do_install:append:class-native" in text
+    # the audit plugin (the one that broke do_rootfs) must be neutralised to nil
+    assert re.search(r"%__transaction_audit\s+%\{nil\}", text)
 
 
 def _sccache_bbclass_text() -> str:

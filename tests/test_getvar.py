@@ -180,7 +180,9 @@ def test_getvar_colon_overlay_forwarded_to_ctx(
 
     assert result.exit_code == 0, result.output
     assert len(calls) == 1
-    extras = calls[0]["extra_overlays"]
+    # host_mode defaults on (no container image), so the host isolation overlay
+    # is appended; filter it to assert the user colon-overlay forwarding.
+    extras = [o for o in calls[0]["extra_overlays"] if o.name != "bakar-tuning-host.yml"]
     assert len(extras) == 1
     assert extras[0].resolve() == overlay_yaml.resolve()
 
@@ -210,7 +212,10 @@ def test_getvar_single_yaml_no_extras(
         )
 
     assert result.exit_code == 0, result.output
-    assert calls[0]["extra_overlays"] == []
+    # host_mode defaults on (no container image), so only the host isolation
+    # overlay is appended; assert no USER extra overlays beyond it.
+    user_extras = [o for o in calls[0]["extra_overlays"] if o.name != "bakar-tuning-host.yml"]
+    assert user_extras == []
 
 
 @pytest.mark.unit

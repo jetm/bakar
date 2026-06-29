@@ -350,6 +350,30 @@ def materialize_sccache_layer(cfg: BuildConfig) -> Path:
     return dest
 
 
+_HOST_LAYER_NAME = "meta-bakar-host"
+
+
+def materialize_host_layer(cfg: BuildConfig) -> Path:
+    """Copy the bundled ``meta-bakar-host`` layer into ``<bsp_root>/.bakar/``.
+
+    Returns the destination directory. Overwrites on every call so the layer
+    tracks the packaged source byte-for-byte. The host tuning overlay
+    (``bakar-tuning-host.yml``) references it by the relative path
+    ``.bakar/meta-bakar-host``. Mirrors :func:`materialize_sccache_layer`; only
+    invoked in host mode, where the layer's rpm bbappend keeps rpm-native from
+    dlopening the build host's rpm transaction plugins.
+    """
+    from bakar.commands._helpers import _overlay_dir
+
+    source = _overlay_dir() / _HOST_LAYER_NAME
+    base = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
+    dest = base / ".bakar" / _HOST_LAYER_NAME
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(source, dest)
+    return dest
+
+
 def _setup_meta_avocado_build_dir(cfg: BuildConfig) -> None:
     """Create the build directory for Avocado OS builds.
 
@@ -688,6 +712,8 @@ def _build_kas_arg(
     # repos path; materialize it under .bakar/ so kas can resolve and inherit it.
     if cfg.use_sccache_dist:
         materialize_sccache_layer(cfg)
+    if cfg.host_mode:
+        materialize_host_layer(cfg)
     if cfg.is_meta_avocado:
         _setup_meta_avocado_build_dir(cfg)
         overlay_rel = materialize_overlay(cfg, overlay_source)
@@ -1257,6 +1283,8 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     # repos path; materialize it under .bakar/ so kas can resolve and inherit it.
     if cfg.use_sccache_dist:
         materialize_sccache_layer(cfg)
+    if cfg.host_mode:
+        materialize_host_layer(cfg)
     if cfg.is_meta_avocado:
         _setup_meta_avocado_build_dir(cfg)
         overlay_rel = materialize_overlay(cfg, overlay_source)

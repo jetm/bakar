@@ -213,14 +213,28 @@ def _ccache_extra_overlays(cfg: BuildConfig) -> list[Path]:
     return _conditional_overlay(cfg.use_ccache, "bakar-tuning-ccache.yml")
 
 
+def _host_extra_overlays(cfg: BuildConfig) -> list[Path]:
+    """Return the host-mode isolation overlay path when building in host mode.
+
+    Adds the meta-bakar-host layer (rpm bbappend disabling rpm transaction
+    plugins) so rpm-native does not dlopen the build host's ABI-incompatible
+    /usr/lib/rpm-plugins during do_rootfs. Container builds run on a clean image
+    with no host rpm, so this is gated on ``cfg.host_mode``.
+    """
+    return _conditional_overlay(cfg.host_mode, "bakar-tuning-host.yml")
+
+
 def _tuning_extra_overlays(cfg: BuildConfig) -> list[Path]:
     """Return all opt-in tuning overlay paths for cfg.
 
-    ccache (when effective) + hashequiv + shared-cache + sccache. List order does
-    not set local.conf precedence - kas sorts local_conf_header by key, and the
-    bakar overlays use sort-last ``zz-bakar-NN-*`` keys so the numeric segment
-    decides (base < ccache < hashequiv < shared-cache < sccache)."""
+    host (host-mode rpm isolation) + ccache (when effective) + hashequiv +
+    shared-cache + sccache. List order does not set local.conf precedence - kas
+    sorts local_conf_header by key, and the bakar overlays use sort-last
+    ``zz-bakar-NN-*`` keys so the numeric segment decides (base < ccache <
+    hashequiv < shared-cache < sccache). The host overlay adds only a layer (no
+    local_conf_header), so its position is immaterial."""
     return [
+        *_host_extra_overlays(cfg),
         *_ccache_extra_overlays(cfg),
         *_hashequiv_extra_overlays(cfg),
         *_shared_cache_extra_overlays(cfg),

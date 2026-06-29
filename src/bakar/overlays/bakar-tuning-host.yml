@@ -1,0 +1,24 @@
+# Host-mode build-isolation overlay.
+#
+# Never auto-loaded; bakar appends it only when the resolved build runs in host
+# mode (cfg.host_mode). It adds the bakar-provided meta-bakar-host layer
+# (materialized into <bsp_root>/.bakar/meta-bakar-host), which carries bbappends
+# that isolate the on-host build from host tooling. Today that is a single rpm
+# bbappend disabling rpm transaction plugins so rpm-native does not dlopen the
+# build host's ABI-incompatible /usr/lib/rpm-plugins during do_rootfs; see
+# meta-bakar-host/recipes-devtools/rpm/rpm_%.bbappend.
+#
+# The layer carries only a bbappend (auto-applied once the layer is on
+# BBLAYERS), so there is no INHERIT or local_conf_header - just the repos entry.
+
+header:
+  version: 21
+
+repos:
+  # bakar materializes this layer next to the overlay under .bakar/; the relative
+  # path resolves against KAS_WORK_DIR (= bsp_root) in container mode and the
+  # build CWD (= bsp_root) in host mode, same pattern as meta-bakar-sccache.
+  meta-bakar-host:
+    path: .bakar/meta-bakar-host
+    layers:
+      .:

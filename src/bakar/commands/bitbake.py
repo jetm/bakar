@@ -29,6 +29,7 @@ import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     _combine_overlays_with_tuning,
+    _host_extra_overlays,
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
@@ -41,6 +42,7 @@ from bakar.observability import RunLogger
 from bakar.steps.kas_build import (
     KasBuildContext,
     copy_oe_eventlog_to_run_dir,
+    materialize_host_layer,
     materialize_sccache_layer,
     run_shell,
     run_shell_capture,
@@ -125,6 +127,13 @@ def _run_task(
         extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
     else:
         extra_overlays = user_extras
+    # Host mode needs the meta-bakar-host layer (rpm transaction-plugin guard)
+    # even when sccache is off, where the branch above skips tuning overlays.
+    # Materialize the layer and append its overlay, deduped against whatever the
+    # sccache branch already combined in.
+    if cfg.host_mode:
+        materialize_host_layer(cfg)
+        extra_overlays = [*extra_overlays, *(o for o in _host_extra_overlays(cfg) if o not in extra_overlays)]
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
 
     command = command_override if command_override is not None else _build_command(target, task, keep_going=keep_going)
