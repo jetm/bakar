@@ -305,3 +305,93 @@ def test_unreachable_cluster_does_not_crash_json(
     assert doc["cluster"]["capacity"] is None
     assert "unreachable" in doc["cluster"]["error"]
     assert doc["build_daemon"] is None
+
+
+def _host_cfg_stub(*, host_mode: bool, bind_host: str | None) -> Any:
+    """Minimal cfg stand-in carrying only the fields ``_daemon_status`` reads."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        host_mode=host_mode,
+        cluster_bind_host=bind_host,
+        hashserv_state_key=Path("/sstate"),
+        prserv_state_key=Path("/sstate"),
+    )
+
+
+def test_daemon_status_host_mode_returns_addresses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """In host mode, ``_daemon_status`` reports both daemon addresses + liveness."""
+    monkeypatch.setattr(monitor_module.hashserv, "_workspace_port", lambda _k: 60701)
+    monkeypatch.setattr(monitor_module.prserv, "_workspace_port", lambda _k: 57423)
+    monkeypatch.setattr(monitor_module.hashserv, "is_running", lambda _k: True)
+    monkeypatch.setattr(monitor_module.prserv, "is_running", lambda _k, bind_host="localhost": True)
+
+    status = monitor_module._daemon_status(_host_cfg_stub(host_mode=True, bind_host="10.42.0.1"))
+
+    assert status == {
+        "hashserv": {"url": "ws://10.42.0.1:60701", "running": True},
+        "prserv": {"host": "10.42.0.1:57423", "running": True},
+    }
+
+
+def test_daemon_status_non_host_mode_is_empty() -> None:
+    """Outside host mode bakar does not manage the daemons, so the block is empty."""
+    assert monitor_module._daemon_status(_host_cfg_stub(host_mode=False, bind_host="10.42.0.1")) == {}
+
+
+def test_daemon_status_defaults_bind_host_to_localhost(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unset cluster_bind_host falls back to localhost (the daemon default)."""
+    monkeypatch.setattr(monitor_module.hashserv, "_workspace_port", lambda _k: 60701)
+    monkeypatch.setattr(monitor_module.prserv, "_workspace_port", lambda _k: 57423)
+    monkeypatch.setattr(monitor_module.hashserv, "is_running", lambda _k: False)
+    monkeypatch.setattr(monitor_module.prserv, "is_running", lambda _k, bind_host="localhost": False)
+
+    status = monitor_module._daemon_status(_host_cfg_stub(host_mode=True, bind_host=None))
+
+    assert status["hashserv"]["url"] == "ws://localhost:60701"
+    assert status["prserv"]["host"] == "localhost:57423"
+
+
+def test_render_daemons_shows_addresses_and_state() -> None:
+    """``_render_daemons`` renders bare host:port plus an up/down marker per daemon."""
+    line = monitor_module._render_daemons(
+        {
+            "hashserv": {"url": "ws://10.42.0.1:60701", "running": True},
+            "prserv": {"host": "10.42.0.1:57423", "running": False},
+        }
+    )
+
+    assert line is not None
+    text = line.plain
+    assert "hashserv 10.42.0.1:60701" in text
+    assert "prserv 10.42.0.1:57423" in text
+    assert "up" in text  # hashserv is up
+    assert "down" in text  # prserv is down
+
+
+def test_render_daemons_empty_returns_none() -> None:
+    """No managed daemons (non-host build): the daemon line is suppressed entirely."""
+    assert monitor_module._render_daemons({}) is None
+
+
+def test_json_once_includes_daemons(
+    runner: _CliRunner,
+    nxp_workspace_with_run: Path,
+    patched_probes: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The snapshot doc carries the resolved ``daemons`` block on the JSON path."""
+    sentinel = {
+        "hashserv": {"url": "ws://10.42.0.1:60701", "running": True},
+        "prserv": {"host": "10.42.0.1:57423", "running": True},
+    }
+    monkeypatch.setattr(monitor_module, "_daemon_status", lambda _cfg: sentinel)
+
+    result = runner.invoke(
+        app,
+        ["monitor", "--json", "--once", "--workspace", str(nxp_workspace_with_run)],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert json.loads(result.stdout)["daemons"] == sentinel

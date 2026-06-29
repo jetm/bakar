@@ -26,12 +26,13 @@ from rich.table import Table
 from rich.text import Text
 
 import bakar.commands._app as _state
+from bakar import hashserv, prserv
 from bakar.build_stop import is_build_running
 from bakar.cache_render import cluster_doc, daemon_doc, render_cluster, render_sccache_cache
 from bakar.commands._app import app, console
 from bakar.commands._helpers import _bsp_from_cwd, _dispatch_from_yaml, _resolve_workspace
 from bakar.commands.log import _resolve_run_dir
-from bakar.config import BSPSpec, resolve
+from bakar.config import BSPSpec, BuildConfig, resolve
 from bakar.diagnostics import probe_build_daemon, probe_cluster
 from bakar.eventlog import normalize
 from bakar.steps.build_ui import SEVERITY_PASSTHROUGH, _fmt_stall, _task_style
@@ -188,7 +189,61 @@ def _build_progress(run_dir: Path) -> dict[str, Any]:
     }
 
 
-def _snapshot(run_dir: Path, url: str | None, daemon_probe: _DaemonProbe) -> dict[str, Any]:
+def _daemon_status(cfg: BuildConfig) -> dict[str, Any]:
+    """Resolve the persistent hashserv/prserv daemon addresses for a host build.
+
+    bakar manages these two cluster-cache daemons only in host mode (see
+    ``steps.kas_build``): both are keyed to the shared sstate dir and bind
+    ``cfg.cluster_bind_host`` so other cluster nodes can reach them. Returns each
+    daemon's address plus a one-shot liveness probe, or an empty dict outside
+    host mode where bitbake's own autostart owns them and bakar has nothing to
+    report.
+    """
+    if not cfg.host_mode:
+        return {}
+    bind_host = cfg.cluster_bind_host or "localhost"
+    hs_port = hashserv._workspace_port(cfg.hashserv_state_key)
+    pr_port = prserv._workspace_port(cfg.prserv_state_key)
+    return {
+        "hashserv": {
+            "url": f"ws://{bind_host}:{hs_port}",
+            "running": hashserv.is_running(cfg.hashserv_state_key),
+        },
+        "prserv": {
+            "host": f"{bind_host}:{pr_port}",
+            "running": prserv.is_running(cfg.prserv_state_key, bind_host=bind_host),
+        },
+    }
+
+
+def _render_daemons(daemons: dict[str, Any]) -> Text | None:
+    """Render the managed cluster-cache daemon addresses as one line.
+
+    Returns ``None`` when no daemons are managed (non-host build) so the caller
+    suppresses the line entirely rather than printing an empty header.
+    """
+    if not daemons:
+        return None
+    rendered: list[tuple[str, str, bool]] = []
+    hs = daemons.get("hashserv")
+    if hs:
+        rendered.append(("hashserv", hs["url"].removeprefix("ws://"), hs["running"]))
+    pr = daemons.get("prserv")
+    if pr:
+        rendered.append(("prserv", pr["host"], pr["running"]))
+    if not rendered:
+        return None
+
+    line = Text("daemons: ", style="bold")
+    for i, (name, addr, running) in enumerate(rendered):
+        if i:
+            line.append(", ")
+        line.append(f"{name} {addr} ")
+        line.append("(up)" if running else "(down)", style="green" if running else "red")
+    return line
+
+
+def _snapshot(run_dir: Path, url: str | None, daemon_probe: _DaemonProbe, daemons: dict[str, Any]) -> dict[str, Any]:
     """Assemble one monitor snapshot doc (cluster + build daemon + build progress)."""
     report = probe_cluster(url)
     daemon = daemon_probe.get()
@@ -197,6 +252,7 @@ def _snapshot(run_dir: Path, url: str | None, daemon_probe: _DaemonProbe) -> dic
         "cluster": cluster_doc(report, url),
         "build_daemon": daemon_doc(daemon),
         "build": _build_progress(run_dir),
+        "daemons": daemons,
     }
 
 
@@ -206,6 +262,10 @@ def _render(snapshot: dict[str, Any]) -> Group:
 
     parts.extend(render_cluster(snapshot["cluster"]))
     parts.append(render_sccache_cache(snapshot["build_daemon"]))
+
+    daemon_line = _render_daemons(snapshot.get("daemons") or {})
+    if daemon_line is not None:
+        parts.append(daemon_line)
 
     build = snapshot["build"]
     state = "live" if build["live"] else (build["outcome"] or "unknown")
@@ -326,30 +386,33 @@ def monitor(
     run_dir = _resolve_run_dir(runs_dir, run)
     url = _resolve_scheduler_url(scheduler)
     daemon_probe = _DaemonProbe()
+    daemons = _daemon_status(cfg)
 
     if output_json and not watch:
-        doc = _snapshot(run_dir, url, daemon_probe)
+        doc = _snapshot(run_dir, url, daemon_probe, daemons)
         typer.echo(json.dumps(doc, indent=2))
         return
 
     if output_json and watch:
-        _run_watch(run_dir, url, daemon_probe, interval)
+        _run_watch(run_dir, url, daemon_probe, daemons, interval)
         return
 
     if once:
-        snapshot = _snapshot(run_dir, url, daemon_probe)
+        snapshot = _snapshot(run_dir, url, daemon_probe, daemons)
         snapshot["kas_errors"] = _recent_kas_errors(run_dir / "kas.log")
         console.print(_render(snapshot))
         return
 
-    _run_live(run_dir, url, daemon_probe, interval)
+    _run_live(run_dir, url, daemon_probe, daemons, interval)
 
 
-def _run_watch(run_dir: Path, url: str | None, daemon_probe: _DaemonProbe, interval: float) -> None:
+def _run_watch(
+    run_dir: Path, url: str | None, daemon_probe: _DaemonProbe, daemons: dict[str, Any], interval: float
+) -> None:
     """Stream NDJSON snapshots to stdout until the build finishes (one final snapshot)."""
     try:
         while True:
-            doc = _snapshot(run_dir, url, daemon_probe)
+            doc = _snapshot(run_dir, url, daemon_probe, daemons)
             typer.echo(json.dumps(doc))
             if not doc["build"]["live"]:
                 return
@@ -358,12 +421,14 @@ def _run_watch(run_dir: Path, url: str | None, daemon_probe: _DaemonProbe, inter
         raise typer.Exit(code=0) from None
 
 
-def _run_live(run_dir: Path, url: str | None, daemon_probe: _DaemonProbe, interval: float) -> None:
+def _run_live(
+    run_dir: Path, url: str | None, daemon_probe: _DaemonProbe, daemons: dict[str, Any], interval: float
+) -> None:
     """Refresh a Rich live view on stderr until the build finishes, then a final frame."""
     from rich.live import Live
 
     def _snapshot_with_errors() -> dict[str, Any]:
-        snapshot = _snapshot(run_dir, url, daemon_probe)
+        snapshot = _snapshot(run_dir, url, daemon_probe, daemons)
         snapshot["kas_errors"] = _recent_kas_errors(run_dir / "kas.log")
         return snapshot
 
