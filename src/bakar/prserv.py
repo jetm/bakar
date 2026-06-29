@@ -280,4 +280,8 @@ def central_ensure_running(
         if _probe(probe, port):
             return central_prserv_host(bind_host, port)
         time.sleep(0.1)
+    # Never reached the probe within the deadline: terminate the spawn so a
+    # service that started but never listened is not left orphaned.
+    if proc.poll() is None:
+        proc.terminate()
     return None

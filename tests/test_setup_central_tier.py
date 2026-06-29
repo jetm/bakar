@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import tomllib
 
+import pytest
+
 from bakar import hashserv, prserv
 from bakar.setup.actions import central_tier
 from bakar.setup.actions.base import Action, RunCommand
@@ -51,6 +53,38 @@ def test_central_ensure_running_returns_none_when_binary_missing(tmp_path) -> No
         hashserv.central_ensure_running(binary=missing, bind_host="127.0.0.1", database="postgres://x", port=1) is None
     )
     assert prserv.central_ensure_running(binary=missing, bind_host="127.0.0.1", database="postgres://x", port=1) is None
+
+
+class _NeverListensProc:
+    """A spawn that stays alive but never opens its port."""
+
+    def __init__(self) -> None:
+        self.terminated = False
+
+    def poll(self):
+        return None  # still running
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+
+@pytest.mark.parametrize("module", [hashserv, prserv])
+def test_central_ensure_running_terminates_spawn_on_startup_timeout(module, monkeypatch) -> None:
+    """A spawn that never starts listening is terminated, not left orphaned."""
+    fake = _NeverListensProc()
+    monkeypatch.setattr(module.shutil, "which", lambda _b: "/usr/bin/svc")
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *a, **k: fake)
+
+    result = module.central_ensure_running(
+        binary="svc",
+        bind_host="127.0.0.1",
+        database="postgres://x",
+        port=1,  # nothing listening -> probe never succeeds
+        startup_deadline_seconds=0.05,
+    )
+
+    assert result is None
+    assert fake.terminated is True
 
 
 # --- Action protocol conformance --------------------------------------------

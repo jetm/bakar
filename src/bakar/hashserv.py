@@ -366,4 +366,8 @@ def central_ensure_running(
             continue
         sock.close()
         return central_bb_hashserve(bind_host, port)
+    # Never reached the probe within the deadline: terminate the spawn so a
+    # service that started but never listened is not left orphaned.
+    if proc.poll() is None:
+        proc.terminate()
     return None
