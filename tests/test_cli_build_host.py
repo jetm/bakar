@@ -99,8 +99,8 @@ def test_build_host_flag_sets_host_mode(tmp_path: Path) -> None:
     assert captured[0].host_mode is True
 
 
-def test_build_no_host_flag_with_container_image_uses_container(tmp_path: Path, monkeypatch) -> None:
-    """Without ``--host`` but with ``KAS_CONTAINER_IMAGE`` set, host_mode is False."""
+def test_build_image_set_without_container_flag_stays_host(tmp_path: Path, monkeypatch) -> None:
+    """With ``KAS_CONTAINER_IMAGE`` set but no ``--container``, the build stays on host."""
     monkeypatch.setenv("KAS_CONTAINER_IMAGE", "test/kas-image:latest")
     kas_yaml = _make_generic_yaml(tmp_path)
     captured: list[BuildConfig] = []
@@ -113,6 +113,27 @@ def test_build_no_host_flag_with_container_image_uses_container(tmp_path: Path, 
         result = runner.invoke(
             app,
             ["build", str(kas_yaml), "--dry-run"],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert len(captured) == 1
+    assert captured[0].host_mode is True
+
+
+def test_build_container_flag_selects_container(tmp_path: Path, monkeypatch) -> None:
+    """The global ``--container`` flag opts the build into the kas-container path."""
+    monkeypatch.delenv("KAS_CONTAINER_IMAGE", raising=False)
+    kas_yaml = _make_generic_yaml(tmp_path)
+    captured: list[BuildConfig] = []
+    runner = CliRunner()
+
+    with (
+        patch("bakar.commands._app.load_vendors", return_value=[]),
+        patch("bakar.commands.build.resolve", side_effect=_capturing_resolve(captured)),
+    ):
+        result = runner.invoke(
+            app,
+            ["--container", "build", str(kas_yaml), "--dry-run"],
         )
 
     assert result.exit_code == 0, result.output

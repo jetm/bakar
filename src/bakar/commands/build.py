@@ -27,6 +27,7 @@ from bakar.commands._helpers import (
     _run_doctor_gate,
     _tuning_extra_overlays,
     _uninitialized_bbsetup_dir,
+    global_container_mode,
     global_host_mode,
     split_kas_yaml_arg,
 )
@@ -60,6 +61,7 @@ class _BbsetupCtx:
     distro: str | None
     image: str | None
     host_mode: bool
+    container_mode: bool
     clean: bool
     dry_run: bool
     keep_going: bool
@@ -82,7 +84,13 @@ def _run_bbsetup_build(
     cfg = resolve(
         workspace=setup_dir,
         bsp_family="bbsetup",
-        spec=BSPSpec(machine=ctx.machine, distro=ctx.distro, image=ctx.image, host_mode=ctx.host_mode),
+        spec=BSPSpec(
+            machine=ctx.machine,
+            distro=ctx.distro,
+            image=ctx.image,
+            host_mode=ctx.host_mode,
+            container_mode=ctx.container_mode,
+        ),
         user_config=_state._USER_CONFIG,
     )
     if ctx.sstate_mirror is not None:
@@ -321,6 +329,7 @@ def _run_single_preset_release(
     image: str | None,
     branch: str | None,
     host_mode: bool,
+    container_mode: bool,
     skip_sync: bool,
     dry_run: bool,
     keep_going: bool,
@@ -368,6 +377,7 @@ def _run_single_preset_release(
             manifest=spec.manifest,
             repo_branch=branch or spec.branch,
             host_mode=host_mode,
+            container_mode=container_mode,
         ),
         kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
@@ -533,9 +543,10 @@ def build(
     The two forms are mutually exclusive: passing both a positional
     YAML and ``--manifest`` exits non-zero.
     """
-    # --host / --sccache-dist / --sccache-scheduler are global callback options;
-    # read them into the local names the body threads through.
+    # --host / --container / --sccache-dist / --sccache-scheduler are global
+    # callback options; read them into the local names the body threads through.
     host_mode = global_host_mode()
+    container_mode = global_container_mode()
     sccache_dist = _state._SCCACHE_DIST
     sccache_scheduler = _state._SCCACHE_SCHEDULER
     # Resolve the active preset (if any) before dispatch.
@@ -601,6 +612,7 @@ def build(
                 image=image,
                 branch=branch,
                 host_mode=host_mode,
+                container_mode=container_mode,
                 skip_sync=skip_sync,
                 dry_run=dry_run,
                 keep_going=keep_going,
@@ -646,6 +658,7 @@ def build(
                 distro=distro,
                 image=image,
                 host_mode=host_mode,
+                container_mode=container_mode,
                 clean=clean,
                 dry_run=dry_run,
                 keep_going=keep_going,
@@ -688,7 +701,13 @@ def build(
         workspace=ws,
         bsp_family=family,
         spec=BSPSpec(
-            machine=machine, distro=distro, image=image, manifest=manifest, repo_branch=branch, host_mode=host_mode
+            machine=machine,
+            distro=distro,
+            image=image,
+            manifest=manifest,
+            repo_branch=branch,
+            host_mode=host_mode,
+            container_mode=container_mode,
         ),
         kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,

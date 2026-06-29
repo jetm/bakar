@@ -17,6 +17,7 @@ from bakar.commands._helpers import (
     _overlay_for,
     _resolve_workspace,
     apply_sccache_overrides,
+    global_container_mode,
     global_host_mode,
     split_kas_yaml_arg,
 )
@@ -72,7 +73,7 @@ def dump(
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
-        spec=BSPSpec(manifest=manifest, host_mode=global_host_mode()),
+        spec=BSPSpec(manifest=manifest, host_mode=global_host_mode(), container_mode=global_container_mode()),
         kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
     )

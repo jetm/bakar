@@ -252,6 +252,16 @@ def global_host_mode() -> bool:
     return _state._HOST_MODE
 
 
+def global_container_mode() -> bool:
+    """Return the global ``--container`` flag set on the top-level callback.
+
+    A late import avoids a circular dependency between ``_helpers`` and ``_app``.
+    """
+    import bakar.commands._app as _state
+
+    return _state._CONTAINER_MODE
+
+
 def apply_sccache_overrides(cfg: BuildConfig) -> BuildConfig:
     """Apply the global ``--sccache-dist`` / ``--sccache-scheduler`` flags to cfg.
 

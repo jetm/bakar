@@ -34,6 +34,7 @@ _HIDE_DOCTOR_REPORT: bool = False
 # single flag set applies uniformly to build and the inspection/maintenance
 # commands (getvar, dump, bitbake, clean-recipe, rebuild, ...).
 _HOST_MODE: bool = False
+_CONTAINER_MODE: bool = False
 _SCCACHE_DIST: bool = False
 _SCCACHE_SCHEDULER: str | None = None
 
@@ -90,7 +91,14 @@ def _main(
         bool,
         typer.Option(
             "--host",
-            help="Run kas on the host instead of kas-container (applies to build and all kas subcommands).",
+            help="Back-compat alias forcing the host path; host is the default, so this is a no-op.",
+        ),
+    ] = False,
+    container: Annotated[
+        bool,
+        typer.Option(
+            "--container",
+            help="Opt into kas-container instead of the host path (applies to build and all kas subcommands).",
         ),
     ] = False,
     sccache_dist: Annotated[
@@ -102,10 +110,11 @@ def _main(
         typer.Option("--sccache-scheduler", help="sccache-dist scheduler URL, e.g. http://localhost:10600"),
     ] = None,
 ) -> None:
-    global _USER_CONFIG, _HIDE_DOCTOR_REPORT, _HOST_MODE, _SCCACHE_DIST, _SCCACHE_SCHEDULER
+    global _USER_CONFIG, _HIDE_DOCTOR_REPORT, _HOST_MODE, _CONTAINER_MODE, _SCCACHE_DIST, _SCCACHE_SCHEDULER
     _USER_CONFIG = _load_user_config_safe()
     _HIDE_DOCTOR_REPORT = hide_doctor_report
     _HOST_MODE = host
+    _CONTAINER_MODE = container
     _SCCACHE_DIST = sccache_dist
     _SCCACHE_SCHEDULER = sccache_scheduler
     _get_vendors()

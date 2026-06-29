@@ -57,6 +57,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.cluster_bind_host": "10.42.0.1",
         "build.ccache": "false",
         "build.rm_work": "true",
+        "build.container": "true",
         "build.host_mode": "true",
         "build.nproc": "96",
         "build.parallel_make": "256",
@@ -109,6 +110,8 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert isinstance(cfg.ccache, bool)
     assert cfg.rm_work is True
     assert isinstance(cfg.rm_work, bool)
+    assert cfg.container is True
+    assert isinstance(cfg.container, bool)
     assert cfg.host_mode is True
     assert isinstance(cfg.host_mode, bool)
     assert cfg.nproc == 96

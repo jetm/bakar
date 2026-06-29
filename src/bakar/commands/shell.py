@@ -14,6 +14,7 @@ from bakar.commands._helpers import (
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
+    global_container_mode,
     global_host_mode,
 )
 from bakar.config import BSPSpec, resolve
@@ -61,7 +62,7 @@ def shell(
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
-        spec=BSPSpec(manifest=manifest, host_mode=global_host_mode()),
+        spec=BSPSpec(manifest=manifest, host_mode=global_host_mode(), container_mode=global_container_mode()),
         kas_yaml=kas_yaml,
         user_config=_state._USER_CONFIG,
     )

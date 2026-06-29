@@ -28,6 +28,7 @@ _STR_FIELDS = {
 _BOOL_FIELDS = {
     "ccache",
     "rm_work",
+    "container",
     "host_mode",
 }
 
@@ -63,9 +64,10 @@ class WorkspaceConfig:
     # (ccache default True, rm_work default False) in config.resolve().
     ccache: bool | None = None
     rm_work: bool | None = None
-    # [build] host_mode toggle, workspace tier. None = not set -> user config
-    # (default False) -> auto-detect (host when no container image) in
-    # config.resolve().
+    # [build] container opt-in, workspace tier. None = not set -> user config
+    # (default False) -> host (structural default) in config.resolve().
+    container: bool | None = None
+    # Retained back-compat alias (no-op; host is the default). None = not set.
     host_mode: bool | None = None
     # [host] - workspace-tier override; None means "not set" (falls back to
     # the user config then the built-in floor in config.resolve()).
@@ -102,6 +104,7 @@ _BUILD_KEYS = {
     "kas_container_image": "kas_container_image",
     "ccache": "ccache",
     "rm_work": "rm_work",
+    "container": "container",
     "host_mode": "host_mode",
 }
 # Top-level [host] table -> host_* fields. Not under [defaults]; host thresholds

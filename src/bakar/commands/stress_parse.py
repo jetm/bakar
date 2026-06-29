@@ -15,6 +15,7 @@ from bakar.commands._helpers import (
     _dispatch_bsp,
     _overlay_for,
     _workspace_from_cwd,
+    global_container_mode,
     global_host_mode,
 )
 from bakar.config import BSPSpec, resolve
@@ -94,8 +95,9 @@ def stress_parse(
         console.print("[red]--runs must be >= 1[/]")
         raise typer.Exit(code=2)
 
-    # --host is a global callback option; read it into the local name used below.
+    # --host / --container are global callback options; read into locals used below.
     host_mode = global_host_mode()
+    container_mode = global_container_mode()
 
     python_executable: Path | None = None
     if python is not None:
@@ -109,7 +111,14 @@ def stress_parse(
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
-        spec=BSPSpec(machine=machine, image=image, manifest=manifest, repo_branch=branch, host_mode=host_mode),
+        spec=BSPSpec(
+            machine=machine,
+            image=image,
+            manifest=manifest,
+            repo_branch=branch,
+            host_mode=host_mode,
+            container_mode=container_mode,
+        ),
         user_config=_state._USER_CONFIG,
     )
     overlay_source = _overlay_for(bsp)

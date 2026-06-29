@@ -142,13 +142,17 @@ def test_host_mode_auto_enables_when_kas_container_image_absent(tmp_path, monkey
     assert cfg.host_mode is True, "host_mode must auto-enable when KAS_CONTAINER_IMAGE is absent"
 
 
-def test_host_mode_false_when_kas_container_image_set(tmp_path, monkeypatch):
-    """With KAS_CONTAINER_IMAGE set, host_mode stays False."""
+def test_image_alone_does_not_enable_container(tmp_path, monkeypatch):
+    """A configured KAS_CONTAINER_IMAGE no longer auto-selects the container.
+
+    Container is opt-in (--container / BAKAR_CONTAINER / [build] container); an
+    image value alone leaves the structural host default in place.
+    """
     monkeypatch.setenv("KAS_CONTAINER_IMAGE", "test/kas-image:latest")
 
     cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
 
-    assert cfg.host_mode is False, "host_mode must be False when KAS_CONTAINER_IMAGE is configured"
+    assert cfg.host_mode is True, "an image alone must not flip bakar to the container path"
 
 
 def test_explicit_host_mode_beats_kas_container_image(tmp_path, monkeypatch):
@@ -211,7 +215,7 @@ def test_user_config_container_image_used_when_env_absent(tmp_path, monkeypatch)
         "user_config.kas_container_image must be used when KAS_CONTAINER_IMAGE is unset"
     )
     assert cfg.kas_container_image != DEFAULT_CONTAINER_IMAGE
-    assert cfg.host_mode is False, "A config-supplied kas_container_image must disable host_mode auto-enable"
+    assert cfg.host_mode is True, "an image value alone must not disable the host default"
 
 
 def test_env_container_image_beats_user_config(tmp_path, monkeypatch):
@@ -251,14 +255,14 @@ def test_env_container_image_beats_workspace_config(tmp_path, monkeypatch):
     )
 
 
-def test_workspace_container_image_disables_host_mode(tmp_path, monkeypatch):
-    """A workspace-set kas_container_image must disable host_mode auto-enable."""
+def test_workspace_container_image_does_not_disable_host(tmp_path, monkeypatch):
+    """A workspace-set kas_container_image no longer disables the host default."""
     monkeypatch.delenv("KAS_CONTAINER_IMAGE", raising=False)
     (tmp_path / ".bakar.toml").write_text('[build]\nkas_container_image = "ws/kas-image:latest"\n')
 
     cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
 
-    assert cfg.host_mode is False, "A workspace kas_container_image must disable host_mode auto-enable"
+    assert cfg.host_mode is True, "a workspace kas_container_image must not flip to container; opt in explicitly"
 
 
 def test_empty_env_container_image_treated_as_unset(tmp_path, monkeypatch):

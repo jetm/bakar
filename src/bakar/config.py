@@ -548,7 +548,10 @@ class BSPSpec:
     image: str | None = None
     manifest: str | None = None
     repo_branch: str | None = None
+    # CLI --host: force the host path (back-compat alias; host is the default).
     host_mode: bool = False
+    # CLI --container: opt into the kas-container path. Wins over host_mode.
+    container_mode: bool = False
 
 
 def compose_preset_output_path(preset: PresetEntry, release_index: int = 0) -> str:
@@ -664,38 +667,30 @@ def resolve(
     )
     resolved_branch = _resolve_branch(bsp_family, fd, spec.repo_branch, resolved_manifest)
 
-    # Auto-detect: when no container image is configured anywhere and host_mode
-    # was not explicitly requested, fall back to plain kas (no Docker) rather than
-    # the hardcoded default container image. This makes bakar work out of the box
-    # on hosts without a container setup. A container image supplied by the
-    # workspace .bakar.toml or the user config counts the same as the env var: a
-    # user who set it anywhere has a container setup and wants it used. The checks
-    # mirror pick()'s truthiness so an exported-but-empty KAS_CONTAINER_IMAGE (or
-    # an empty config value) reads as unset, exactly as image resolution treats it.
-    no_container_image_configured = (
-        not os.environ.get("KAS_CONTAINER_IMAGE")
-        and not (workspace_config is not None and workspace_config.kas_container_image)
-        and not (user_config is not None and user_config.kas_container_image)
+    # Host is the structural default; the kas-container path is opt-in. A
+    # configured KAS_CONTAINER_IMAGE no longer auto-selects the container - only
+    # an explicit container opt-in does (mirroring how --host used to be the
+    # opt-in for the host path). Explicit container toggle resolved env >
+    # workspace [build] container > user config container; None means no tier
+    # set it, so the default (host) stands.
+    explicit_container_toggle = pick_host_toggle(
+        "BAKAR_CONTAINER",
+        ws_val=workspace_config.container if workspace_config is not None else None,
+        user_val=user_config.container if user_config is not None else None,
     )
-    # Explicit host_mode toggle, resolved env > workspace [build] host_mode >
-    # user config. None means no tier set it, so we fall through to auto-detect.
-    explicit_host_toggle = pick_host_toggle(
-        "BAKAR_HOST_MODE",
-        ws_val=workspace_config.host_mode if workspace_config is not None else None,
-        user_val=user_config.host_mode if user_config is not None else None,
-    )
-    # Precedence (highest first): CLI --host (spec.host_mode) > explicit toggle
-    # (env/workspace/user) > auto-detect-when-no-container-image. The CLI flag and
-    # an explicit toggle only ever force host ON; neither can force container when
-    # no image is configured, preserving the out-of-the-box host default. When the
-    # toggle is explicitly False it simply declines to force host, deferring to
-    # auto-detect (which still picks host if no image is configured).
-    if spec.host_mode:
+    # Precedence (highest first): CLI --container (spec.container_mode) > CLI
+    # --host (spec.host_mode, back-compat alias forcing host) > explicit
+    # container toggle (env/workspace/user) > host (structural default). The
+    # retained host_mode toggle is a no-op: host is already the default, so a
+    # config carrying host_mode keeps working without selecting the container.
+    if spec.container_mode:
+        effective_host_mode = False
+    elif spec.host_mode:
         effective_host_mode = True
-    elif explicit_host_toggle is not None:
-        effective_host_mode = explicit_host_toggle or no_container_image_configured
+    elif explicit_container_toggle is not None:
+        effective_host_mode = not explicit_container_toggle
     else:
-        effective_host_mode = no_container_image_configured
+        effective_host_mode = True
 
     def _host(field_name: str, default: float) -> float:
         """Select a host threshold: workspace [host] > user [host] > built-in default.

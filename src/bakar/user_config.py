@@ -41,6 +41,7 @@ _BOOL_FIELDS = {
     "sccache_dist",
     "ccache",
     "rm_work",
+    "container",
     "host_mode",
 }
 _INT_FIELDS: set[str] = {
@@ -99,9 +100,12 @@ class UserConfig:
     # while bakar is in use the tuning stack strips rm_work so work dirs survive.
     ccache: bool = True
     rm_work: bool = False
-    # Force host execution (plain `kas`, no kas-container). Default off: when
-    # unset, config.resolve() falls back to auto-detect (host when no container
-    # image is configured anywhere). Mirrors the [build] ccache/rm_work toggles.
+    # Opt into the kas-container path. Default off: host is the structural
+    # default and the container is reachable only by setting this (or
+    # --container / BAKAR_CONTAINER / [build] container in the workspace).
+    container: bool = False
+    # Retained back-compat alias: only ever forced the host path, which is now
+    # the default, so this is a no-op kept so existing configs keep parsing.
     host_mode: bool = False
     pressure_max_cpu: float | None = None
     pressure_max_io: float | None = None
@@ -169,6 +173,7 @@ _BUILD_KEYS = {
     "cluster_bind_host": "cluster_bind_host",
     "ccache": "ccache",
     "rm_work": "rm_work",
+    "container": "container",
     "host_mode": "host_mode",
     "pressure_max_cpu": "pressure_max_cpu",
     "pressure_max_io": "pressure_max_io",
