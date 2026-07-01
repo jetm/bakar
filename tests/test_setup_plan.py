@@ -133,6 +133,10 @@ def test_failing_checks_map_to_their_actions(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(KasInstallAction, "is_satisfied", lambda _self, _p: False)
     monkeypatch.setattr(CacheDirsAction, "is_satisfied", lambda _self, _p: False)
     monkeypatch.setattr(ConfigWriteAction, "is_satisfied", lambda _self, _p: False)
+    # GitConfigAction.is_satisfied reads the live `git config` value (identity is
+    # not on HostProfile), so on any machine with git configured it would drop the
+    # action and mask the mapping. Force it False like the siblings above.
+    monkeypatch.setattr(GitConfigAction, "is_satisfied", lambda _self, _p: False)
     result = plan_mod.build(profile, cfg=_CFG, git_email="me@example.com", git_name="Me")
 
     present = _types(result.actions)
@@ -410,9 +414,7 @@ def test_host_preflight_skipped_by_clobber_is_reevaluated_in_host_mode(
     actions never fire on the real setup path, because the dispatch loop only maps
     FAILing checks and the clobbered run_all returns host-preflight as SKIP."""
     # What real run_all returns under the clobber: host-preflight SKIPPED.
-    skipped = CheckResult(
-        name="host-preflight", severity=Severity.INFO, status=Status.SKIP, message="container build"
-    )
+    skipped = CheckResult(name="host-preflight", severity=Severity.INFO, status=Status.SKIP, message="container build")
     _patch_results(monkeypatch, [skipped])
     # The re-evaluation under host_mode=True finds the toolchain absent -> FAIL.
     monkeypatch.setattr(plan_mod, "check_host_preflight", lambda _cfg: _fail("host-preflight"))
