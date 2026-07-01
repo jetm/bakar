@@ -18,6 +18,13 @@ from pathlib import Path
 # (webkit, nodejs, llvm), where a single recipe can hold several GB resident.
 PER_TASK_GB = 4.0
 
+# Per-recipe RAM estimate under sccache-dist. The heavy C++ compile that drives
+# PER_TASK_GB runs on the build-server cluster, not locally, so a local recipe
+# only holds fetch/configure/install/package resident - roughly half. The
+# smaller divisor raises BB_NUMBER_THREADS, feeding more concurrent compile jobs
+# to the scheduler so secondary nodes do not idle in under-saturated builds.
+SCCACHE_DIST_PER_TASK_GB = 2.0
+
 # Indirected so a test can point the meminfo read at a fixture file.
 _MEMINFO_PATH = Path("/proc/meminfo")
 
@@ -54,24 +61,33 @@ def derive_parallelism(
 
     PARALLEL_MAKE feeds all available compile slots: the remote+local cluster
     width under sccache-dist (when ``cluster_cpus`` is a positive int), else the
-    local CPU count. BB_NUMBER_THREADS bounds concurrent recipes by RAM:
-    ``min(nproc_local, floor(ram_gb / PER_TASK_GB))``, clamped to at least 1.
+    local CPU count. BB_NUMBER_THREADS bounds concurrent recipes by RAM. When
+    distributing, compile RAM is offloaded to the cluster, so it drops the
+    local-nproc cap and uses the smaller ``SCCACHE_DIST_PER_TASK_GB`` divisor:
+    ``max(1, floor(ram_gb / SCCACHE_DIST_PER_TASK_GB))``. Otherwise it keeps the
+    local cap: ``max(1, min(nproc_local, floor(ram_gb / PER_TASK_GB)))``.
     """
-    if launcher == "sccache-dist" and isinstance(cluster_cpus, int) and cluster_cpus > 0:
+    distributing = launcher == "sccache-dist" and isinstance(cluster_cpus, int) and cluster_cpus > 0
+    if distributing:
         parallel_make = cluster_cpus
         pm_reason = f"sccache-dist: cluster {cluster_cpus} cpus"
+        # Compile RAM is offloaded to the cluster, so the local per-recipe
+        # footprint is smaller and local cores no longer bound recipe
+        # concurrency: use the smaller divisor and drop the nproc cap.
+        ram_threads = math.floor(ram_gb / SCCACHE_DIST_PER_TASK_GB)
+        bb_number_threads = max(1, ram_threads)
+        bbnt_reason = (
+            f"sccache-dist: ram {ram_gb:g}GB/{SCCACHE_DIST_PER_TASK_GB:g}GB={ram_threads}, "
+            f"nproc cap dropped (compile offloaded)"
+        )
     else:
         parallel_make = nproc_local
         pm_reason = f"local nproc {nproc_local}"
+        ram_threads = math.floor(ram_gb / PER_TASK_GB)
+        bb_number_threads = max(1, min(nproc_local, ram_threads))
+        bbnt_reason = f"min(nproc={nproc_local}, ram {ram_gb:g}GB/{PER_TASK_GB:g}GB={ram_threads})"
 
-    ram_threads = math.floor(ram_gb / PER_TASK_GB)
-    bb_number_threads = max(1, min(nproc_local, ram_threads))
-
-    rationale = (
-        f"PARALLEL_MAKE={parallel_make} ({pm_reason}); "
-        f"BB_NUMBER_THREADS={bb_number_threads} "
-        f"(min(nproc={nproc_local}, ram {ram_gb:g}GB/{PER_TASK_GB:g}GB={ram_threads}))"
-    )
+    rationale = f"PARALLEL_MAKE={parallel_make} ({pm_reason}); BB_NUMBER_THREADS={bb_number_threads} ({bbnt_reason})"
     return ParallelismPlan(
         parallel_make=parallel_make,
         bb_number_threads=bb_number_threads,
