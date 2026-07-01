@@ -8,9 +8,14 @@ idempotent "already running" short-circuit, without touching a real sccache.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from bakar import sccache_server
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.mark.unit
@@ -104,3 +109,68 @@ def test_server_port_honors_env_override(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.delenv("SCCACHE_SERVER_PORT", raising=False)
     assert sccache_server._server_port() == 4226
+
+
+@pytest.mark.unit
+def test_default_uds_path_is_absolute_and_short() -> None:
+    """The host-mode server socket is an absolute ``.sock`` path.
+
+    It must be absolute (do_compile's HOME is a kas throwaway temp dir, so a
+    ``~``-relative path would resolve wrong inside the task) and stay well under
+    the 108-byte AF_UNIX path limit.
+    """
+    p = sccache_server.default_uds_path()
+    assert p.is_absolute()
+    assert p.name.endswith(".sock")
+    assert len(str(p)) < 100
+
+
+@pytest.mark.unit
+def test_ensure_running_uds_spawns_on_socket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With ``uds_path`` set, spawn the server on that unix socket.
+
+    do_compile runs in a private network namespace, so a TCP 127.0.0.1:4226
+    daemon is unreachable and each task auto-starts its own config-less local
+    server - the cluster sits idle. A unix-socket path is filesystem-based, so it
+    crosses the namespace boundary; the daemon (host netns, real config) does the
+    dist dispatch.
+    """
+    uds = str(tmp_path / "sccache-server.sock")
+    responses = iter([False, True])  # pre-spawn UDS probe, then post-spawn probe
+    monkeypatch.setattr(sccache_server, "_uds_responding", lambda p: next(responses))
+    captured: dict = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(sccache_server.subprocess, "Popen", fake_popen)
+
+    result = sccache_server.ensure_running("http://localhost:10600", binary="/usr/bin/sccache", uds_path=uds)
+
+    assert result is True
+    assert captured["cmd"] == ["/usr/bin/sccache", "--start-server"]
+    assert captured["kwargs"]["start_new_session"] is True
+    env = captured["kwargs"]["env"]
+    assert env["SCCACHE_SERVER_UDS"] == uds
+    assert env["SCCACHE_IDLE_TIMEOUT"] == "0"
+    assert env["SCCACHE_DIST_SCHEDULER_URL"] == "http://localhost:10600"
+
+
+@pytest.mark.unit
+def test_ensure_running_uds_short_circuits_when_socket_up(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A responding unix socket short-circuits: no second server is spawned."""
+    uds = str(tmp_path / "sccache-server.sock")
+    monkeypatch.setattr(sccache_server, "_uds_responding", lambda p: True)
+    spawned: list[object] = []
+    monkeypatch.setattr(sccache_server.subprocess, "Popen", lambda *a, **k: spawned.append((a, k)))
+
+    assert sccache_server.ensure_running(binary="/usr/bin/sccache", uds_path=uds) is True
+    assert spawned == []

@@ -197,10 +197,13 @@ def _inject_literal_sccache(cfg: BuildConfig, text: str) -> str:
     the daemon subprocess inherits them) makes them immune to env scrubbing.
 
     The config is bind-mounted at its own host path (see ``_ccache_args``), so
-    that absolute path is valid inside the container too. Host mode pre-starts a
-    configured daemon and leaves ``BAKAR_*`` unset, so nothing is injected."""
-    if cfg.host_mode or not cfg.use_sccache_dist:
+    that absolute path is valid inside the container too. Host mode takes a
+    different branch (:func:`_inject_host_sccache`): it exports the pre-started
+    daemon's unix socket so private-netns do_compile can reach it."""
+    if not cfg.use_sccache_dist:
         return text
+    if cfg.host_mode:
+        return _inject_host_sccache(text)
     # Idempotency: match the actual exported assignment, not the string
     # "SCCACHE_CONF" which also appears in this overlay's comments and in the
     # BAKAR_SCCACHE_CONF env key (a substring check there would no-op the inject).
@@ -222,6 +225,39 @@ def _inject_literal_sccache(cfg: BuildConfig, text: str) -> str:
     m = re.search(r"^(?P<indent>[ \t]+)INHERIT\b", text, re.MULTILINE)
     indent = m.group("indent") if m else "    "
     addition = "".join(f"{indent}{line}\n" for line in lines)
+    return text.rstrip("\n") + "\n" + addition
+
+
+def _inject_host_sccache(text: str) -> str:
+    """Bake the pre-started daemon's unix socket into the host-mode sccache overlay.
+
+    bitbake runs each task in a private network namespace (loopback down for
+    tasks without a [network] grant), so a TCP ``127.0.0.1:4226`` daemon is
+    unreachable: the task's ``sccache gcc`` auto-starts its own server, which
+    inherits the kas throwaway ``HOME``, finds no ``~/.config/sccache/config``,
+    and compiles locally - the whole build runs on one node while the cluster
+    sits idle.
+
+    A unix-domain socket is a filesystem path: it is reachable across the network
+    namespace boundary AND without loopback, so every task (do_compile with a
+    [network] grant and do_configure without one) can connect to the pre-started
+    daemon over it. The daemon - started by ``ensure_running`` in the host netns
+    with the real config - does the dist dispatch. Bake an exported
+    ``SCCACHE_SERVER_UDS`` into ``local.conf`` (like the container-mode literals
+    above) so it survives kas's ``clean_environment`` scrub. The path matches
+    :func:`sccache_server.default_uds_path`, which ``ensure_running`` binds.
+
+    A global export routes do_configure's conftests through the daemon too (they
+    distribute or fail fast to a local recompile); a task-scoped socket is NOT an
+    option, because a configure task stripped of the socket falls back to the TCP
+    port and its loopback-down netns then makes sccache fail outright.
+    """
+    if re.search(r"^\s*export\s+SCCACHE_SERVER_UDS\b", text, re.MULTILINE):
+        return text
+    uds = sccache_server.default_uds_path()
+    m = re.search(r"^(?P<indent>[ \t]+)INHERIT\b", text, re.MULTILINE)
+    indent = m.group("indent") if m else "    "
+    addition = f'{indent}export SCCACHE_SERVER_UDS = "{uds}"\n'
     return text.rstrip("\n") + "\n" + addition
 
 
@@ -1786,7 +1822,7 @@ def _build_env(
     # container mode sccache runs inside the container. ``ensure_hashserv``
     # doubles as the side-effect guard, so dry-run/script-gen never spawn it.
     if cfg.use_sccache_dist and cfg.host_mode and ensure_hashserv:
-        sccache_server.ensure_running(cfg.sccache_scheduler_url)
+        sccache_server.ensure_running(cfg.sccache_scheduler_url, uds_path=str(sccache_server.default_uds_path()))
     if cfg.is_meta_avocado:
         passthrough["KAS_WORK_DIR"] = str(cfg.workspace)
         passthrough["KAS_BUILD_DIR"] = str(cfg.bsp_root / "build")

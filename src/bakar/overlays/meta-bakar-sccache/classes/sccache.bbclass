@@ -76,29 +76,29 @@ python () {
     for cls in d.getVar('SCCACHE_EXCLUDED_CLASSES').split():
         if bb.data.inherits_class(cls, d):
             return
-    # Scope the launcher to the compile family only. OE prepends ${CCACHE} to CC
-    # for every task, so a global CCACHE routed autoconf's thousands of conftest
-    # do_configure compiles through sccache - each one a client->server->scheduler
-    # round-trip (measured: do_configure 45% of task-time at 2.8% CPU, 97% idle).
-    # bitbake adds `task-<name>` to OVERRIDES at execution (replacing `_` with
-    # `-`, verified in bitbake/lib/bb/build.py), so a CCACHE:task-compile override
-    # applies ${CCACHE} only inside do_compile; do_configure/do_install see bare
-    # CC and run plain gcc locally. The four overrides cover the compile-family
-    # tasks: do_compile, the ptest mirror, the kernel module compile, and the
-    # initramfs bundle.
-    d.setVar('CCACHE:task-compile', 'sccache ')
-    d.setVar('CCACHE:task-compile-ptest-base', 'sccache ')
-    d.setVar('CCACHE:task-compile-kernelmodules', 'sccache ')
-    d.setVar('CCACHE:task-bundle-initramfs', 'sccache ')
-    # CMake derives CMAKE_<LANG>_COMPILER_LAUNCHER from CC. With CCACHE now
-    # task-scoped, CC is bare at parse time, so the upstream
-    # OECMAKE_*_COMPILER_LAUNCHER (= the launcher word split out of CC) would
-    # resolve to '' and CMake recipes would lose sccache. Set the launcher vars
-    # explicitly so the real build compiles route through sccache; CMake applies
-    # the launcher only to actual compiles, NOT to its try_compile/compiler
-    # checks, so do_configure stays clean automatically. The bare
-    # OECMAKE_C/CXX_COMPILER that cmake.bbclass derives from the now-bare CC is
-    # already correct, so no compiler override is needed.
+    # Launch the compiler through sccache globally, exactly as oe-core's
+    # ccache.bbclass does (`CCACHE = 'ccache '`). OE bakes ${CCACHE} into CC
+    # (`CC = "${CCACHE}${HOST_PREFIX}gcc ..."`), so with a global CCACHE autotools'
+    # do_configure captures `CC = sccache gcc` into the generated Makefile and
+    # oe_runmake at do_compile (which passes no CC= override) still invokes
+    # sccache. Scoping CCACHE to do_compile only (the earlier approach) left
+    # configure baking bare gcc, so make ran plain gcc and nothing distributed.
+    # sccache already keeps configure's conftests local on its own - it tags them
+    # "not eligible for distributed compilation" - so a global launcher does not
+    # flood the cluster with conftest round-trips.
+    d.setVar('CCACHE', 'sccache ')
+    # cmake.bbclass's oecmake_map_compiler strips only 'ccache' from CC, never
+    # 'sccache', so with the global CCACHE it reads CC="sccache gcc" as
+    # compiler=sccache; the explicit launcher below would then double it into
+    # `sccache sccache ...`, and the inner sccache dies on the preprocessor's -E
+    # ("unexpected argument '-E'") - breaking every CMake recipe's compiler check.
+    # Mirror the ccache handling for sccache: point the CMake compiler at the real
+    # gcc/g++ (the word after the launcher) and keep sccache as the launcher.
+    # autotools (bakes CC) and meson (uses the whole CC array) need no such fixup.
+    for cvar, srcvar in (('OECMAKE_C_COMPILER', 'CC'), ('OECMAKE_CXX_COMPILER', 'CXX')):
+        words = (d.getVar(srcvar) or '').split()
+        if len(words) > 1 and words[0] == 'sccache':
+            d.setVar(cvar, words[1])
     d.setVar('OECMAKE_C_COMPILER_LAUNCHER', 'sccache')
     d.setVar('OECMAKE_CXX_COMPILER_LAUNCHER', 'sccache')
 }

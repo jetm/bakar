@@ -139,7 +139,7 @@ def test_sccache_dist_feeds_cluster_cpus_into_parallel_make(tmp_path: Path, monk
             error=None,
         ),
     )
-    monkeypatch.setattr(kas_build.sccache_server, "ensure_running", lambda url=None: True)
+    monkeypatch.setattr(kas_build.sccache_server, "ensure_running", lambda url=None, **kw: True)
     cfg = _cfg(tmp_path, sccache_dist=True, ccache=False, sccache_scheduler_url="http://localhost:10600")
 
     env = _build_env(cfg, ensure_hashserv=True)
@@ -161,7 +161,7 @@ def test_cluster_probe_failure_falls_back_to_nproc(tmp_path: Path, monkeypatch: 
         raise OSError("scheduler unreachable")
 
     monkeypatch.setattr(kas_build, "probe_cluster", _boom)
-    monkeypatch.setattr(kas_build.sccache_server, "ensure_running", lambda url=None: True)
+    monkeypatch.setattr(kas_build.sccache_server, "ensure_running", lambda url=None, **kw: True)
     cfg = _cfg(tmp_path, sccache_dist=True, ccache=False, sccache_scheduler_url="http://localhost:10600")
 
     env = _build_env(cfg, ensure_hashserv=True)

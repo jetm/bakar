@@ -22,10 +22,40 @@ import shutil
 import socket
 import subprocess
 import time
+from pathlib import Path
 
 # sccache's default server port; overridable via SCCACHE_SERVER_PORT.
 _DEFAULT_PORT = 4226
 _STARTUP_DEADLINE_SECONDS = 10.0
+
+
+def default_uds_path() -> Path:
+    """Stable host-mode server socket path.
+
+    A unix-domain socket instead of a TCP port because bitbake runs do_compile in
+    a private network namespace: ``127.0.0.1:4226`` inside the task is a different
+    loopback than the host daemon's, so a TCP client cannot see the pre-started
+    server and auto-starts its own config-less local-only one - every compile runs
+    locally and the cluster sits idle. A socket file crosses the namespace
+    boundary. Absolute (do_compile's HOME is a kas throwaway temp dir) and kept
+    outside the sccache disk-cache dir so a cache wipe never unlinks a live socket.
+    """
+    return Path.home() / ".cache" / "bakar" / "sccache-server.sock"
+
+
+def _uds_responding(path: str) -> bool:
+    """Return True when a server answers a connect on the unix socket path.
+
+    A pure probe mirroring :func:`_server_responding`: it never starts a server.
+    """
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(0.5)
+        sock.connect(path)
+    except OSError:
+        return False
+    sock.close()
+    return True
 
 
 def _server_port() -> int:
@@ -53,13 +83,20 @@ def _server_responding(port: int) -> bool:
     return True
 
 
-def ensure_running(scheduler_url: str | None = None, *, binary: str | None = None) -> bool:
+def ensure_running(scheduler_url: str | None = None, *, binary: str | None = None, uds_path: str | None = None) -> bool:
     """Ensure a persistent, detached sccache server is running. Return True if up.
 
-    Idempotent: returns True without spawning when a server already answers on
-    the sccache port. Otherwise spawns ``sccache --start-server`` detached
+    Idempotent: returns True without spawning when a server already answers.
+    Otherwise spawns ``sccache --start-server`` detached
     (``start_new_session=True``) with ``SCCACHE_IDLE_TIMEOUT=0`` so it survives
     bitbake's per-task process-group teardown, then probes until it answers.
+
+    ``uds_path`` selects a unix-domain socket instead of the TCP port. Host-mode
+    do_compile runs in a private network namespace, so a TCP ``127.0.0.1:4226``
+    daemon is unreachable and each task auto-starts its own config-less local
+    server (the cluster sits idle); a socket file crosses the namespace boundary,
+    letting every recipe compile reach the pre-started dist daemon. When set, the
+    server binds the socket (its parent dir is created) and the probe checks it.
 
     Returns False when the ``sccache`` binary is absent from PATH or the server
     never came up within the startup deadline - the caller treats that as
@@ -74,13 +111,25 @@ def ensure_running(scheduler_url: str | None = None, *, binary: str | None = Non
     if sccache is None:
         return False
 
-    port = _server_port()
-    if _server_responding(port):
-        return True
-
     env = {**os.environ, "SCCACHE_IDLE_TIMEOUT": "0"}
     if scheduler_url:
         env["SCCACHE_DIST_SCHEDULER_URL"] = scheduler_url
+
+    if uds_path is not None:
+        if _uds_responding(uds_path):
+            return True
+        Path(uds_path).parent.mkdir(parents=True, exist_ok=True)
+        env["SCCACHE_SERVER_UDS"] = uds_path
+
+        def responding() -> bool:
+            return _uds_responding(uds_path)
+    else:
+        port = _server_port()
+        if _server_responding(port):
+            return True
+
+        def responding() -> bool:
+            return _server_responding(port)
 
     subprocess.Popen(
         [sccache, "--start-server"],
@@ -92,7 +141,7 @@ def ensure_running(scheduler_url: str | None = None, *, binary: str | None = Non
 
     deadline = time.monotonic() + _STARTUP_DEADLINE_SECONDS
     while time.monotonic() < deadline:
-        if _server_responding(port):
+        if responding():
             return True
         time.sleep(0.1)
     return False

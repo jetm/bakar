@@ -318,15 +318,21 @@ def test_host_sccache_build_starts_persistent_server(tmp_path: Path, monkeypatch
     Without it the first bitbake task's auto-started server dies with that task,
     churning fallbacks and poisoning the cache (the recurring -fPIC link error).
     """
+    from bakar import sccache_server
     from bakar.steps import kas_build
 
-    calls: list[str | None] = []
-    monkeypatch.setattr(kas_build.sccache_server, "ensure_running", lambda url=None: calls.append(url) or True)
+    calls: list[tuple[str | None, str | None]] = []
+
+    def fake_ensure(url=None, *, uds_path=None):
+        calls.append((url, uds_path))
+        return True
+
+    monkeypatch.setattr(kas_build.sccache_server, "ensure_running", fake_ensure)
     cfg = _sccache_build_cfg(tmp_path, sccache_dist=True, sccache_scheduler_url="http://localhost:10600")
 
     kas_build._build_env(cfg, ensure_hashserv=True)  # type: ignore[arg-type]
 
-    assert calls == ["http://localhost:10600"]
+    assert calls == [("http://localhost:10600", str(sccache_server.default_uds_path()))]
 
 
 @pytest.mark.unit
@@ -335,7 +341,7 @@ def test_dry_run_env_does_not_start_sccache_server(tmp_path: Path, monkeypatch: 
     from bakar.steps import kas_build
 
     calls: list[str | None] = []
-    monkeypatch.setattr(kas_build.sccache_server, "ensure_running", lambda url=None: calls.append(url) or True)
+    monkeypatch.setattr(kas_build.sccache_server, "ensure_running", lambda url=None, **kw: calls.append(url) or True)
     cfg = _sccache_build_cfg(tmp_path, sccache_dist=True, sccache_scheduler_url="http://localhost:10600")
 
     kas_build._build_env(cfg, ensure_hashserv=False)  # type: ignore[arg-type]
@@ -351,7 +357,7 @@ def test_container_sccache_build_does_not_start_host_server(tmp_path: Path, monk
     from bakar.steps import kas_build
 
     calls: list[str | None] = []
-    monkeypatch.setattr(kas_build.sccache_server, "ensure_running", lambda url=None: calls.append(url) or True)
+    monkeypatch.setattr(kas_build.sccache_server, "ensure_running", lambda url=None, **kw: calls.append(url) or True)
     cfg = replace(
         _sccache_build_cfg(tmp_path, sccache_dist=True, sccache_scheduler_url="http://localhost:10600"),
         host_mode=False,
@@ -611,28 +617,6 @@ def test_overlay_adds_sccache_layer_repo() -> None:
 
 
 @pytest.mark.unit
-def test_sccache_class_sets_launcher_per_recipe() -> None:
-    """sccache.bbclass scopes CCACHE='sccache ' to the compile-family task overrides.
-
-    OE prepends ${CCACHE} to CC for *every* task, so a global CCACHE routed
-    autoconf's thousands of conftest do_configure compiles through sccache, each
-    paying a client->server->scheduler round-trip (measured: do_configure 45% of
-    task-time at 2.8% CPU). Scoping CCACHE to the do_compile-family task overrides
-    keeps configure on plain gcc. Falsifier: a global ``d.setVar('CCACHE',
-    'sccache ')`` would re-introduce the configure bottleneck, so assert it is
-    absent.
-    """
-    text = _sccache_bbclass_text()
-
-    assert "python () {" in text
-    assert "d.setVar('CCACHE:task-compile', 'sccache ')" in text
-    assert "d.setVar('CCACHE:task-compile-ptest-base', 'sccache ')" in text
-    assert "d.setVar('CCACHE:task-compile-kernelmodules', 'sccache ')" in text
-    assert "d.setVar('CCACHE:task-bundle-initramfs', 'sccache ')" in text
-    assert "d.setVar('CCACHE', 'sccache ')" not in text
-
-
-@pytest.mark.unit
 def test_sccache_class_excludes_no_compiler_classes() -> None:
     """The class excludes no inherit-class: native/cross/crosssdk distribute too.
 
@@ -735,23 +719,28 @@ def test_sccache_class_grants_kernel_compiler_task_network() -> None:
 
 
 @pytest.mark.unit
-def test_sccache_class_scopes_launcher_to_compile_only() -> None:
-    """The class forces the cmake compiler launcher to sccache, with no global CCACHE.
+def test_sccache_class_uses_global_launcher() -> None:
+    """The class sets a global CCACHE='sccache ' launcher, like oe-core ccache.bbclass.
 
-    CMake derives CMAKE_<LANG>_COMPILER_LAUNCHER from CC; with CCACHE now scoped
-    to do_compile, CC is bare at parse time, so the upstream
-    OECMAKE_*_COMPILER_LAUNCHER would resolve to '' and CMake recipes would lose
-    sccache. The class sets the launcher vars explicitly to 'sccache'. CMake
-    applies the launcher only to real build compiles (not its try_compile checks),
-    so configure stays clean. Falsifier: a global ``d.setVar('CCACHE', ...)`` would
-    re-route configure, so assert it is absent.
+    OE bakes ${CCACHE} into CC, so a global CCACHE makes autotools do_configure
+    capture CC="sccache gcc" into the generated Makefile; oe_runmake at do_compile
+    then invokes sccache. Scoping CCACHE to the do_compile task (the earlier
+    approach) left configure baking bare gcc, so make ran plain gcc and nothing
+    distributed. cmake.bbclass strips only 'ccache' out of CC, so the class must
+    de-sccache OECMAKE_C/CXX_COMPILER itself or the launcher doubles into
+    `sccache sccache`. Falsifier: the per-task CCACHE:task-compile scoping must be
+    gone, the launchers still set, and the compiler-word fixup present.
     """
     text = _sccache_bbclass_text()
 
+    assert "d.setVar('CCACHE', 'sccache ')" in text
+    assert "d.setVar('CCACHE:task-compile', 'sccache ')" not in text
     assert "OECMAKE_C_COMPILER_LAUNCHER" in text
     assert "OECMAKE_CXX_COMPILER_LAUNCHER" in text
-    assert "'sccache'" in text
-    assert "d.setVar('CCACHE', 'sccache ')" not in text
+    # CMake compiler must be de-sccache'd (word after the launcher), else the
+    # launcher doubles: `sccache sccache ...` and the inner sccache gets -E.
+    assert "'OECMAKE_C_COMPILER'" in text
+    assert "words[0] == 'sccache'" in text
 
 
 @pytest.mark.unit
@@ -890,7 +879,7 @@ def test_materialize_sccache_layer_copies_class_into_bsp_root(tmp_path: object) 
     assert (dest / "conf" / "layer.conf").is_file()
     bbclass = dest / "classes" / "sccache.bbclass"
     assert bbclass.is_file()
-    assert "d.setVar('CCACHE:task-compile', 'sccache ')" in bbclass.read_text()
+    assert "d.setVar('CCACHE', 'sccache ')" in bbclass.read_text()
 
 
 @pytest.mark.unit
@@ -1427,6 +1416,59 @@ def test_host_env_omits_sccache_conf_and_dir(tmp_path: Path, monkeypatch: pytest
 
     assert "BAKAR_SCCACHE_CONF" not in env
     assert "BAKAR_SCCACHE_DIR" not in env
+
+
+@pytest.mark.unit
+def test_host_inject_exports_server_uds(tmp_path: Path) -> None:
+    """Host mode bakes an exported SCCACHE_SERVER_UDS into the sccache overlay.
+
+    bitbake runs tasks in a private network namespace with loopback down (no
+    [network] grant), so a TCP 127.0.0.1:4226 daemon is unreachable and each task
+    auto-starts its own config-less local server - the cluster sits idle. A unix
+    socket is a filesystem path, reachable across the namespace boundary and
+    without loopback, so every task (including loopback-down do_configure) connects
+    to the pre-started dist daemon. The export must be global for that reason: a
+    task-scoped socket would strip do_configure of it and make its sccache fall
+    back to the loopback-down TCP port and fail outright.
+    """
+    from bakar import sccache_server
+    from bakar.steps.kas_build import _inject_literal_sccache
+
+    cfg = _sccache_build_cfg(tmp_path, sccache_dist=True, sccache_scheduler_url="http://192.168.8.172:10600")
+    text = 'local_conf_header:\n  zz-bakar-50-sccache: |\n    INHERIT += "sccache"\n'
+
+    out = _inject_literal_sccache(cfg, text)  # type: ignore[arg-type]
+
+    assert f'export SCCACHE_SERVER_UDS = "{sccache_server.default_uds_path()}"' in out
+
+
+@pytest.mark.unit
+def test_container_inject_still_exports_conf_not_uds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Container mode keeps baking SCCACHE_CONF and never emits the host UDS export.
+
+    The host-mode UDS branch must not perturb the container path, which routes the
+    in-container client at the container daemon via SCCACHE_CONF/DIR, not a host
+    socket (falsifier guard for the new branch).
+    """
+    from dataclasses import replace
+
+    from bakar.steps.kas_build import _inject_literal_sccache
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    conf = tmp_path / ".config" / "sccache" / "config"
+    conf.parent.mkdir(parents=True)
+    conf.write_text('[dist]\nscheduler_url = "http://192.168.8.172:10600"\n')
+
+    cfg = replace(
+        _sccache_build_cfg(tmp_path, sccache_dist=True, sccache_scheduler_url="http://192.168.8.172:10600"),
+        host_mode=False,
+    )
+    text = 'local_conf_header:\n  zz-bakar-50-sccache: |\n    INHERIT += "sccache"\n'
+
+    out = _inject_literal_sccache(cfg, text)  # type: ignore[arg-type]
+
+    assert f'export SCCACHE_CONF = "{conf}"' in out
+    assert "SCCACHE_SERVER_UDS" not in out
 
 
 # ---------------------------------------------------------------------------
