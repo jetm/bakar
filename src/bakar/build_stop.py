@@ -395,10 +395,13 @@ def _pgid_alive(pgid: int) -> bool:
 def stop_build(bsp_root: Path, *, force: bool = False) -> bool:
     """Stop the most recent build, targeting it by execution mode.
 
-    Resolves the lexically-latest run dir under ``bsp_root/build/runs`` and
-    reads its launch record. Returns ``True`` when a build was targeted (host
-    PGID signalled or container stopped), ``False`` when no build could be
-    targeted (no run dir, or a legacy/unresolvable container run).
+    Scans run dirs under ``bsp_root/build/runs`` newest-first and targets the
+    first whose build is still live (host: a verified live PGID; container: a
+    recorded container label). Taking only the lexically-latest run missed a
+    live build whenever a later clean-recipe or second build left a newer but
+    finished run dir. Returns ``True`` when a build was targeted (host PGID
+    signalled or container stopped), ``False`` when none is targetable (no run
+    dir, or every run is finished/unresolvable).
 
     Host mode keeps the existing ``os.killpg`` SIGINT -> SIGTERM -> SIGKILL
     escalation. Container mode resolves the container via its recorded label and
@@ -415,10 +418,27 @@ def stop_build(bsp_root: Path, *, force: bool = False) -> bool:
     if not run_dirs:
         print("no running build found")
         return False
-
-    run_dir = run_dirs[-1]
+    # Target the newest run whose build is actually live/targetable, not just
+    # the lexically-latest: a clean-recipe or a second build creates a newer run
+    # dir, so the running build is often not runs[-1]. A host run is targetable
+    # while its PGID is live+verified; a container run whenever a container label
+    # was recorded (the wrapper may be dead while the container lives, so PGID
+    # liveness must not gate it). Fall back to the latest run when none is
+    # targetable, so the not-found messaging and stale-record cleanup below still
+    # apply to it exactly as before.
+    target = None
+    for candidate in reversed(run_dirs):
+        candidate_record = read_launch_record(candidate)
+        if candidate_record.mode == "host":
+            live, _pgid, cmdline_ok = is_build_running(candidate)
+            if live and cmdline_ok:
+                target = candidate
+                break
+        elif candidate_record.container_label is not None:
+            target = candidate
+            break
+    run_dir = target if target is not None else run_dirs[-1]
     record = read_launch_record(run_dir)
-
     if record.mode == "host":
         try:
             live, pgid, cmdline_ok = is_build_running(run_dir)

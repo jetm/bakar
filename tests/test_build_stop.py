@@ -169,6 +169,39 @@ def test_stop_build_sigint_then_clean_exit(
     assert not (run_dir / "build.meta.json").exists()
 
 
+def test_stop_build_targets_older_live_run_when_newest_is_dead(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stop_build scans newest->oldest for the live build, not just runs[-1].
+
+    A finished clean-recipe (or a second build) leaves a lexically-newer but
+    dead run dir while an older build is still running. stop_build must target
+    the older LIVE run rather than read the dead newest record and give up with
+    'no running build found'.
+    """
+    older = _make_run_dir(tmp_path, "20260701-090000")
+    newer = _make_run_dir(tmp_path, "20260701-100000")
+    build_stop.write_launch_record(older, pgid=4242, mode="host")
+    build_stop.write_launch_record(newer, pgid=5555, mode="host")
+
+    def fake_running(run_dir: Path) -> tuple[bool, int | None, bool]:
+        # Only the older run's build is alive; the newest is a finished run.
+        if run_dir == older:
+            return (True, 4242, True)
+        return (False, 5555, False)
+
+    monkeypatch.setattr(build_stop, "is_build_running", fake_running)
+    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+    calls = _record_killpg(monkeypatch)
+
+    assert build_stop.stop_build(tmp_path) is True
+
+    assert calls == [(4242, signal.SIGINT)]
+    assert not (older / "build.pid").exists()
+
+
 def test_stop_build_escalates_through_sigterm_sigkill(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
