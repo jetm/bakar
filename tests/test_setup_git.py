@@ -1,8 +1,8 @@
 """Tests for the git-identity action of ``bakar setup``.
 
-Covers ``GitConfigAction``: it sets the GLOBAL git identity (never repo-local),
-takes the email/name from constructor arguments, is unprivileged, and reads the
-live global identity directly for ``is_satisfied``.
+Covers ``GitConfigAction``: it sets the git identity with ``git config`` (no
+``--global``), takes the email/name from constructor arguments, is unprivileged,
+and reads the live identity directly for ``is_satisfied``.
 """
 
 from __future__ import annotations
@@ -46,15 +46,15 @@ def test_git_action_is_an_action_remediating_git_global_config() -> None:
     assert action.needs_root is False
 
 
-def test_operations_write_global_identity_never_repo_local() -> None:
-    """Both ops use `git config --global`, never a repo-local write."""
+def test_operations_write_identity_without_global() -> None:
+    """Both ops use plain `git config`, never `--global` or `--local`."""
     ops = GitConfigAction("you@example.com", "Your Name").operations()
     assert ops == [
-        RunCommand(argv=["git", "config", "--global", "user.email", "you@example.com"], needs_root=False),
-        RunCommand(argv=["git", "config", "--global", "user.name", "Your Name"], needs_root=False),
+        RunCommand(argv=["git", "config", "user.email", "you@example.com"], needs_root=False),
+        RunCommand(argv=["git", "config", "user.name", "Your Name"], needs_root=False),
     ]
     for op in ops:
-        assert "--global" in op.argv
+        assert "--global" not in op.argv
         assert "--local" not in op.argv
         assert op.needs_root is False
 
@@ -105,8 +105,8 @@ def test_is_satisfied_false_when_git_missing(monkeypatch) -> None:
     assert GitConfigAction("you@example.com", "Your Name").is_satisfied(_profile()) is False
 
 
-def test_describe_mentions_global_and_values() -> None:
+def test_describe_mentions_identity_and_values() -> None:
     text = GitConfigAction("you@example.com", "Your Name").describe()
-    assert "global" in text
+    assert "git identity" in text
     assert "you@example.com" in text
     assert "Your Name" in text

@@ -1248,7 +1248,7 @@ def check_git_global_config(cfg: BuildConfig) -> CheckResult:
     missing = [k for k, v in (("user.email", email), ("user.name", user_name)) if v is None]
     if missing:
         hint_lines = [
-            f'git config --global {k} "{"you@example.com" if k == "user.email" else "Your Name"}"' for k in missing
+            f'git config {k} "{"you@example.com" if k == "user.email" else "Your Name"}"' for k in missing
         ]
         return _fail(
             name,
