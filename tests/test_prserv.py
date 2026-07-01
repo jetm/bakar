@@ -9,12 +9,15 @@ host and return once the TCP probe succeeds.
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from bakar import prserv
 from bakar.prserv import _find_binary, _workspace_port
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 pytestmark = pytest.mark.unit
 
