@@ -1631,3 +1631,46 @@ def test_probe_cluster_threads_scheduler_url_into_env(monkeypatch: pytest.Monkey
     env = captured["env"]
     assert env is not None
     assert env["SCCACHE_DIST_SCHEDULER_URL"] == "http://override:10600"
+
+
+@pytest.mark.unit
+def test_sccache_class_wraps_rustc_via_non_sccache_stem_shim() -> None:
+    """rustc is routed through sccache for cargo recipes, but never as the bare
+    `sccache`.
+
+    cc-rs (the `cc` crate used by -sys build scripts) reads RUSTC_WRAPPER and, if
+    its file stem is "sccache" or "cachepot", also prepends it to the C compiler.
+    In an OE rust build that C compiler is the `target-rust-cc` wrapper script,
+    which sccache cannot identify ("Compiler not supported"), so a bare
+    RUSTC_WRAPPER=sccache breaks every cargo recipe with a cc-rs C dependency
+    (rust-native/lzma-sys, avocadoctl/aws-lc-sys). The class must point
+    RUSTC_WRAPPER at a shim whose stem is NOT a cc-rs-recognized wrapper.
+
+    Negative assertion: the broken bare-`sccache` form must be absent, and the
+    shim's basename stem must not be in cc-rs's wrapper list - flipping either
+    (rename the shim to `sccache`, or set RUSTC_WRAPPER='sccache') fails here.
+    """
+    from pathlib import PurePosixPath
+
+    text = _sccache_bbclass_text()
+
+    # Routed for cargo recipes, gated on cargo_common (covers app recipes + the
+    # rust toolchain), and exported so cargo sees it.
+    assert "inherits_class('cargo_common', d)" in text
+    assert "RUSTC_WRAPPER" in text
+    assert "setVarFlag('RUSTC_WRAPPER', 'export', '1')" in text
+
+    # The broken form that trips cc-rs must never reappear.
+    assert "setVar('RUSTC_WRAPPER', 'sccache')" not in text
+    assert 'RUSTC_WRAPPER = "sccache"' not in text
+
+    # The shim the class writes and targets: its stem must dodge cc-rs.
+    assert "sccache-rustc-shim/rustc-cache" in text
+    assert PurePosixPath("rustc-cache").stem not in {"sccache", "cachepot"}
+
+    # The shim just execs the real sccache, and is created on both compile
+    # locations (rust-native compiles rustc in do_install, cargo apps in
+    # do_compile), so an sstate-restored sibling task cannot leave it missing.
+    assert 'exec sccache "$@"' in text
+    assert "appendVarFlag('do_compile', 'prefuncs', ' sccache_write_rustc_shim')" in text
+    assert "appendVarFlag('do_install', 'prefuncs', ' sccache_write_rustc_shim')" in text

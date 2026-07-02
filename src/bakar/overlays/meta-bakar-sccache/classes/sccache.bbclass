@@ -101,6 +101,39 @@ python () {
             d.setVar(cvar, words[1])
     d.setVar('OECMAKE_C_COMPILER_LAUNCHER', 'sccache')
     d.setVar('OECMAKE_CXX_COMPILER_LAUNCHER', 'sccache')
+
+    # Route rustc through sccache for cargo recipes so Rust compiles cache and
+    # distribute like C/C++. cargo honors RUSTC_WRAPPER natively - but it must
+    # NOT be the bare `sccache`. cc-rs (the `cc` crate that -sys build scripts
+    # use to compile C) checks RUSTC_WRAPPER's file stem against
+    # {"sccache", "cachepot"} (cc rustc_wrapper_fallback) and, on a match, ALSO
+    # prepends it to the C compiler. In an OE rust build that C compiler is the
+    # `target-rust-cc` wrapper script, which sccache cannot identify ("Compiler
+    # not supported"), so a bare RUSTC_WRAPPER=sccache breaks every cargo recipe
+    # carrying a cc-rs C dependency (rust-native via lzma-sys, avocadoctl via
+    # aws-lc-sys). Point RUSTC_WRAPPER at a differently-named shim that just
+    # execs sccache: its stem is not in cc-rs's list, so cargo still
+    # caches/distributes rustc while cc-rs leaves C on the normal (already
+    # sccache-routed) compiler path. The shim is written by the prefunc below,
+    # on both do_compile and do_install because rust-native compiles rustc in
+    # do_install (bootstrap.py) while ordinary cargo recipes compile in
+    # do_compile - and a prefunc runs whenever its task actually runs, so it
+    # survives an sstate-restored sibling task.
+    if bb.data.inherits_class('cargo_common', d):
+        d.setVar('RUSTC_WRAPPER', d.getVar('WORKDIR') + '/sccache-rustc-shim/rustc-cache')
+        d.setVarFlag('RUSTC_WRAPPER', 'export', '1')
+        d.appendVarFlag('do_compile', 'prefuncs', ' sccache_write_rustc_shim')
+        d.appendVarFlag('do_install', 'prefuncs', ' sccache_write_rustc_shim')
+}
+
+# Write the rustc shim (see the RUSTC_WRAPPER note in the gate above). cc-rs
+# keys off the wrapper's file stem, so the shim must be named something other
+# than `sccache`/`cachepot`; it just execs the real sccache, which is on the
+# task PATH via HOSTTOOLS. Idempotent, so running it from two prefuncs is fine.
+sccache_write_rustc_shim () {
+    mkdir -p ${WORKDIR}/sccache-rustc-shim
+    printf '#!/bin/sh\nexec sccache "$@"\n' > ${WORKDIR}/sccache-rustc-shim/rustc-cache
+    chmod +x ${WORKDIR}/sccache-rustc-shim/rustc-cache
 }
 
 # Route the build/host compiler through sccache too (${CCACHE} restored).
