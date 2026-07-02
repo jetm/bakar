@@ -116,9 +116,12 @@ def render_sccache_cache(daemon: dict[str, Any] | None) -> Text:
         misses = misses_by_lang.get(lang, 0)
         total = hits + misses
         rate = (hits / total * 100) if total else 0.0
-        line.append(f"\n  {lang}: {hits}/{misses} hit/miss ({rate:.0f}% hit)", style="dim")
+        line.append(f"\n  cache[{lang}]: {hits}/{misses} hit/miss ({rate:.0f}% hit)", style="dim")
     for node, jobs in (daemon.get("per_node") or {}).items():
-        line.append(f"\n  {node}: {jobs} job(s)", style="dim")
+        # Distribution is per-node and aggregated across all languages - sccache
+        # exposes no per-language distribution, so this must not be read as
+        # "language X distributed to node Y".
+        line.append(f"\n  dist[{node}]: {jobs} job(s)", style="dim")
     return line
 
 

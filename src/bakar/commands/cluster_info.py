@@ -8,6 +8,7 @@ from typing import Annotated
 import typer
 
 import bakar.commands._app as _state
+from bakar.cache_render import daemon_doc
 from bakar.commands._app import app, console
 from bakar.diagnostics import probe_build_daemon, probe_cluster
 
@@ -59,21 +60,7 @@ def cluster_info(
                 if cap is not None
                 else None
             ),
-            "build_daemon": (
-                {
-                    "container": daemon.container,
-                    "error": daemon.error,
-                    "cache_hits": daemon.cache_hits,
-                    "cache_misses": daemon.cache_misses,
-                    "distributed": daemon.distributed,
-                    "dist_errors": daemon.dist_errors,
-                    "cache_location": daemon.cache_location,
-                    "per_node": dict(daemon.per_node),
-                    "verdict": daemon.verdict,
-                }
-                if daemon.running
-                else None
-            ),
+            "build_daemon": daemon_doc(daemon),
         }
         typer.echo(json.dumps(doc, indent=2))
         if not report.reachable:
@@ -107,12 +94,19 @@ def cluster_info(
         else:
             local = max(daemon.cache_misses - daemon.distributed, 0)
             console.print(f"    cache: {daemon.cache_hits} hits / {daemon.cache_misses} misses", highlight=False)
+            for lang in sorted(set(daemon.cache_hits_by_lang) | set(daemon.cache_misses_by_lang)):
+                lh = daemon.cache_hits_by_lang.get(lang, 0)
+                lm = daemon.cache_misses_by_lang.get(lang, 0)
+                lt = lh + lm
+                lr = 100 * lh / lt if lt else 0.0
+                console.print(f"      cache[{lang}]: {lh}/{lm} hit/miss ({lr:.0f}% hit)", highlight=False)
             console.print(
-                f"    compiles: {daemon.distributed} distributed, {local} local, {daemon.dist_errors} dist errors",
+                f"    compiles: {daemon.distributed} distributed (all langs), {local} local, "
+                f"{daemon.dist_errors} dist errors",
                 highlight=False,
             )
             for addr, n in daemon.per_node:
-                console.print(f"      {addr}: {n}", highlight=False)
+                console.print(f"      dist[{addr}]: {n}", highlight=False)
             if daemon.cache_location:
                 console.print(f"    cache location: {daemon.cache_location}", highlight=False)
             colour = {"DISTRIBUTING": "green", "LOCAL-ONLY": "red"}.get(daemon.verdict, "yellow")

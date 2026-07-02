@@ -34,6 +34,19 @@ def runner() -> _CliRunner:
     return CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _stub_build_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep cluster-info tests hermetic: default the daemon probe to not-running.
+
+    probe_build_daemon now falls back to the host UDS daemon, so an unmocked
+    call would depend on whether a real sccache daemon is running on the test
+    host. Stub it to not-running by default; the per-language tests override it.
+    """
+    from bakar.diagnostics import BuildDaemonReport
+
+    monkeypatch.setattr(cluster_info_module, "probe_build_daemon", lambda: BuildDaemonReport(running=False))
+
+
 def _reachable(servers: object = None) -> ClusterReport:
     return ClusterReport(
         reachable=True,
@@ -186,3 +199,45 @@ def test_cluster_info_prints_node_table_when_servers_present(
     assert result.exit_code == 0
     assert "10.42.0.1:10501 - 32 cpus, 2 job(s)" in result.output
     assert "10.42.0.2:10501 - 32 cpus, 0 job(s)" in result.output
+
+
+def _daemon_with_langs():  # type: ignore[no-untyped-def]
+    from bakar.diagnostics import BuildDaemonReport
+
+    return BuildDaemonReport(
+        running=True,
+        container=None,
+        cache_hits=3104,
+        cache_misses=34007,
+        cache_hits_by_lang={"C/C++": 3104},
+        cache_misses_by_lang={"Rust": 400, "C/C++": 33607},
+        distributed=28909,
+        dist_errors=739,
+        per_node=(("10.42.0.2:10501", 14505), ("192.168.8.172:10501", 14404)),
+    )
+
+
+def test_cluster_info_json_carries_per_language(runner: _CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The --json build_daemon block exposes the per-language + per-node breakdown."""
+    monkeypatch.setattr(cluster_info_module, "probe_cluster", lambda _url: _reachable())
+    monkeypatch.setattr(cluster_info_module, "probe_build_daemon", _daemon_with_langs)
+
+    result = runner.invoke(app, ["cluster-info", "--json"])
+
+    assert result.exit_code == 0
+    bd = json.loads(result.stdout)["build_daemon"]
+    assert bd["misses_by_lang"] == {"Rust": 400, "C/C++": 33607}
+    assert bd["hits_by_lang"] == {"C/C++": 3104}
+    assert bd["per_node"] == {"10.42.0.2:10501": 14505, "192.168.8.172:10501": 14404}
+
+
+def test_cluster_info_human_shows_per_language(runner: _CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The human output prints a per-language hit/miss line for each language present."""
+    monkeypatch.setattr(cluster_info_module, "probe_cluster", lambda _url: _reachable())
+    monkeypatch.setattr(cluster_info_module, "probe_build_daemon", _daemon_with_langs)
+
+    result = runner.invoke(app, ["cluster-info"])
+
+    assert result.exit_code == 0
+    assert "cache[Rust]:" in result.output
+    assert "0/400 hit/miss" in result.output
