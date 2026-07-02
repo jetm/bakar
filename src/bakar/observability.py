@@ -91,6 +91,10 @@ class RunLogger:
         return self.run_dir / "bitbake-events.json"
 
     @property
+    def sccache_stats_path(self) -> Path:
+        return self.run_dir / "sccache-stats.json"
+
+    @property
     def console(self) -> Console:
         """The Rich console the log handler writes to.
 
@@ -203,6 +207,24 @@ class RunLogger:
             self.warn(f"failed to persist bitbake-events.json: {exc}")
             return
         self.step_ok("bitbake_events", path=str(self.bitbake_events_path))
+
+    def persist_sccache_stats(self, doc: dict[str, Any] | None) -> None:
+        """Persist the build-end sccache daemon stats as ``sccache-stats.json``.
+
+        Serializes the ``daemon_doc`` dict (carrying the per-language
+        ``hits_by_lang``/``misses_by_lang`` breakdown and per-node
+        distribution) so ``bakar report`` can present it post-build without a
+        live daemon. Best-effort: a ``None`` doc (no running daemon) or a
+        write failure is a no-op. Never raises.
+        """
+        if not doc:
+            return
+        try:
+            self.sccache_stats_path.write_text(json.dumps(doc, default=str))
+        except (OSError, ValueError) as exc:
+            self.warn(f"failed to persist sccache-stats.json: {exc}")
+            return
+        self.step_ok("sccache_stats", path=str(self.sccache_stats_path))
 
     def persist_task_timings(self, timings_path: Path | None = None) -> None:
         """Accumulate this run's task durations into the global baseline store.

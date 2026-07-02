@@ -136,3 +136,51 @@ def test_persist_bitbake_events_noop_without_raw_log(tmp_path: Path) -> None:
     events = [json.loads(ln) for ln in log.events_path.read_text().splitlines() if ln]
     announce = [e for e in events if e.get("step") == "bitbake_events"]
     assert announce == []
+
+
+@pytest.mark.unit
+def test_persist_sccache_stats_writes_per_language_keys(tmp_path: Path) -> None:
+    """The writer produces readable JSON carrying the per-language keys."""
+    import json
+
+    doc = {
+        "cache_hits": 52697,
+        "cache_misses": 4333,
+        "hits_by_lang": {"C/C++": 52186, "Rust": 511},
+        "misses_by_lang": {"Assembler": 70, "C/C++": 4263},
+        "per_node": {"10.42.0.2": 5107},
+    }
+    runs_dir = tmp_path / "runs"
+    with RunLogger(runs_dir) as log:
+        log.persist_sccache_stats(doc)
+
+        assert log.sccache_stats_path.is_file()
+        written = json.loads(log.sccache_stats_path.read_text())
+        assert written["hits_by_lang"] == {"C/C++": 52186, "Rust": 511}
+        assert written["misses_by_lang"] == {"Assembler": 70, "C/C++": 4263}
+
+    events = [json.loads(ln) for ln in log.events_path.read_text().splitlines() if ln]
+    announce = [e for e in events if e.get("step") == "sccache_stats"]
+    assert len(announce) == 1
+    assert announce[0]["event"] == "step_ok"
+
+
+@pytest.mark.unit
+def test_persist_sccache_stats_noop_when_unwritable(tmp_path: Path) -> None:
+    """A write failure is swallowed: no raise, and the doc is not written."""
+    doc = {"hits_by_lang": {"C/C++": 1}, "misses_by_lang": {}}
+    runs_dir = tmp_path / "runs"
+    with RunLogger(runs_dir) as log:
+        # Make the target path a directory so write_text raises OSError.
+        log.sccache_stats_path.mkdir(parents=True, exist_ok=True)
+        log.persist_sccache_stats(doc)  # must not raise
+        assert log.sccache_stats_path.is_dir()
+
+
+@pytest.mark.unit
+def test_persist_sccache_stats_noop_for_none_doc(tmp_path: Path) -> None:
+    """A None doc (no running daemon) writes nothing and does not raise."""
+    runs_dir = tmp_path / "runs"
+    with RunLogger(runs_dir) as log:
+        log.persist_sccache_stats(None)
+        assert not log.sccache_stats_path.exists()

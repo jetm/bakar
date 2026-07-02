@@ -1182,6 +1182,11 @@ def _run_pty_with_ui(
                         build_stop.stop_running_proc(proc, cfg, log)
                         break
 
+            # Holds the freshest daemon_doc the cache-probe thread computed,
+            # so the build-end persist reuses that probe rather than issuing a
+            # second one after the build completes.
+            last_daemon_doc: list = [None]
+
             def _cache_probe() -> None:  # pragma: no cover
                 # Refresh the cluster/cache header lines shown in the build UI.
                 # sccache-dist builds show the cluster + sccache daemon lines;
@@ -1200,7 +1205,10 @@ def _run_pty_with_ui(
                             cluster = probe_cluster(cfg.sccache_scheduler_url)
                             daemon = probe_build_daemon()
                             lines = render_cluster(cluster_doc(cluster, cfg.sccache_scheduler_url))
-                            lines.append(render_sccache_cache(daemon_doc(daemon) if daemon.running else None))
+                            doc = daemon_doc(daemon) if daemon.running else None
+                            if doc is not None:
+                                last_daemon_doc[0] = doc
+                            lines.append(render_sccache_cache(doc))
                         else:
                             cc = probe_ccache(cfg.effective_ccache_dir)
                             lines = [render_ccache_cache(ccache_doc(cc))]
@@ -1243,6 +1251,10 @@ def _run_pty_with_ui(
                         live.console.print(layer_hash_table(hashes))
                         layers_pending = False
                 event_tail.join(timeout=5)
+                # Persist the freshest daemon stats the cache-probe thread saw
+                # so `bakar report` can present the per-language breakdown
+                # post-build. Best-effort: a no-op when no daemon was running.
+                log.persist_sccache_stats(last_daemon_doc[0])
                 if event_feed_error:
                     log.warn(f"bitbake event feed died ({event_feed_error}); live UI ran on regex fallback")
                 elif event_feed_count == 0:
