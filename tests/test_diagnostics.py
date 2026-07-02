@@ -18,8 +18,10 @@ from bakar.diagnostics import (
     _DOCKER_CHECKS,
     _REQUIRED_TOOLS_BY_FAMILY,
     SHARED_CHECKS,
+    BuildDaemonReport,
     Severity,
     Status,
+    _build_daemon_report_from_stats,
     _read_sysctl,
     check_bbsetup_config_sources,
     check_bitbake_locks,
@@ -1698,3 +1700,54 @@ def test_override_syntax_pass_on_clean_files(tmp_path: Path, monkeypatch) -> Non
     cfg = _override_cfg(tmp_path)
     result = check_override_syntax(cfg)
     assert result.status == Status.PASS
+
+
+# ---------------------------------------------------------------------------
+# _build_daemon_report_from_stats: per-language sccache accounting
+# ---------------------------------------------------------------------------
+
+
+def test_build_daemon_report_preserves_per_language_counts() -> None:
+    """The per-language counts dicts are preserved verbatim from the stats JSON."""
+    stats = {
+        "cache_hits": {"counts": {"Rust": 511, "Assembler": 837, "C/C++": 52186}},
+        "cache_misses": {"counts": {"Assembler": 70, "C/C++": 4263}},
+    }
+    report = _build_daemon_report_from_stats(stats, "abc123", "s3://bucket")
+
+    assert report.cache_hits_by_lang == {"Rust": 511, "Assembler": 837, "C/C++": 52186}
+    assert report.cache_misses_by_lang == {"Assembler": 70, "C/C++": 4263}
+
+
+def test_build_daemon_report_scalars_equal_per_language_sums() -> None:
+    """The scalar totals equal the sum of the per-language dicts."""
+    stats = {
+        "cache_hits": {"counts": {"Rust": 511, "Assembler": 837, "C/C++": 52186}},
+        "cache_misses": {"counts": {"Assembler": 70, "C/C++": 4263}},
+    }
+    report = _build_daemon_report_from_stats(stats, "abc123", None)
+
+    assert report.cache_hits == 511 + 837 + 52186
+    assert report.cache_misses == 70 + 4263
+
+
+def test_build_daemon_report_empty_counts_yield_empty_dicts_and_zero_totals() -> None:
+    """Empty counts produce empty dicts and zero scalar totals without raising."""
+    stats = {"cache_hits": {"counts": {}}, "cache_misses": {"counts": {}}}
+    report = _build_daemon_report_from_stats(stats, "abc123", None)
+
+    assert report.cache_hits_by_lang == {}
+    assert report.cache_misses_by_lang == {}
+    assert report.cache_hits == 0
+    assert report.cache_misses == 0
+
+
+def test_build_daemon_report_defaults_are_empty_dicts() -> None:
+    """A default-constructed report has empty per-language dicts (independent instances)."""
+    a = BuildDaemonReport(running=False)
+    b = BuildDaemonReport(running=False)
+
+    assert a.cache_hits_by_lang == {}
+    assert a.cache_misses_by_lang == {}
+    a.cache_hits_by_lang["Rust"] = 1
+    assert b.cache_hits_by_lang == {}

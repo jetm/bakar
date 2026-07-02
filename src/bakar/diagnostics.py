@@ -26,7 +26,7 @@ import subprocess
 import tomllib
 import urllib.parse
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -1247,9 +1247,7 @@ def check_git_global_config(cfg: BuildConfig) -> CheckResult:
 
     missing = [k for k, v in (("user.email", email), ("user.name", user_name)) if v is None]
     if missing:
-        hint_lines = [
-            f'git config {k} "{"you@example.com" if k == "user.email" else "Your Name"}"' for k in missing
-        ]
+        hint_lines = [f'git config {k} "{"you@example.com" if k == "user.email" else "Your Name"}"' for k in missing]
         return _fail(
             name,
             Severity.BLOCK,
@@ -1741,6 +1739,8 @@ class BuildDaemonReport:
     error: str | None = None
     cache_hits: int = 0
     cache_misses: int = 0
+    cache_hits_by_lang: dict[str, int] = field(default_factory=dict)
+    cache_misses_by_lang: dict[str, int] = field(default_factory=dict)
     distributed: int = 0
     dist_errors: int = 0
     cache_location: str | None = None
@@ -1796,9 +1796,6 @@ def probe_build_daemon() -> BuildDaemonReport:
         stats = json.loads(out.stdout)["stats"]
     except (OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
         return BuildDaemonReport(running=True, container=cid, error=f"stats query failed: {exc}")
-    dist = stats.get("dist_compiles", {}) or {}
-    hits = sum(stats.get("cache_hits", {}).get("counts", {}).values())
-    misses = sum(stats.get("cache_misses", {}).get("counts", {}).values())
     location = None
     try:
         txt = subprocess.run(
@@ -1814,11 +1811,29 @@ def probe_build_daemon() -> BuildDaemonReport:
                 break
     except OSError, subprocess.SubprocessError:
         pass
+    return _build_daemon_report_from_stats(stats, cid, location)
+
+
+def _build_daemon_report_from_stats(stats: dict, cid: str, location: str | None) -> BuildDaemonReport:
+    """Map an sccache ``--show-stats --stats-format=json`` ``stats`` block to a report.
+
+    Pure (no docker/subprocess) so it is unit-testable without a build
+    container. Preserves the per-language ``counts`` dicts sccache keys by
+    display name (``C/C++``, ``Rust``, ``Assembler``) and sets the scalar
+    ``cache_hits``/``cache_misses`` totals to the sums of those dicts, keeping
+    the existing aggregate contract every scalar caller relies on. Missing or
+    empty ``counts`` yield empty dicts and zero totals without raising.
+    """
+    dist = stats.get("dist_compiles", {}) or {}
+    hits_by_lang = dict(stats.get("cache_hits", {}).get("counts", {}))
+    misses_by_lang = dict(stats.get("cache_misses", {}).get("counts", {}))
     return BuildDaemonReport(
         running=True,
         container=cid,
-        cache_hits=hits,
-        cache_misses=misses,
+        cache_hits=sum(hits_by_lang.values()),
+        cache_misses=sum(misses_by_lang.values()),
+        cache_hits_by_lang=hits_by_lang,
+        cache_misses_by_lang=misses_by_lang,
         distributed=sum(dist.values()),
         dist_errors=int(stats.get("dist_errors", 0) or 0),
         cache_location=location,
