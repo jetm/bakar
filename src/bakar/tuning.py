@@ -20,10 +20,12 @@ PER_TASK_GB = 4.0
 
 # Per-recipe RAM estimate under sccache-dist. The heavy C++ compile that drives
 # PER_TASK_GB runs on the build-server cluster, not locally, so a local recipe
-# only holds fetch/configure/install/package resident - roughly half. The
-# smaller divisor raises BB_NUMBER_THREADS, feeding more concurrent compile jobs
-# to the scheduler so secondary nodes do not idle in under-saturated builds.
-SCCACHE_DIST_PER_TASK_GB = 2.0
+# mostly holds fetch/configure/install/package resident. Sizing this near 1GB
+# lands BB_NUMBER_THREADS around the cluster's job-dispatch ceiling on a ~91GB
+# host (floor(91/0.95) ~= 96 vs 45 at 2.0), roughly doubling recipe concurrency
+# to attack job-supply starvation - the dominant reason both build-server nodes
+# idle between do_compile bursts in an under-saturated build.
+SCCACHE_DIST_PER_TASK_GB = 0.95
 
 # Indirected so a test can point the meminfo read at a fixture file.
 _MEMINFO_PATH = Path("/proc/meminfo")

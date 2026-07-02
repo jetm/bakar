@@ -17,7 +17,7 @@ pytestmark = pytest.mark.unit
 
 @pytest.mark.unit
 def test_sccache_dist_single_node_feeds_cluster_cpus() -> None:
-    """sccache-dist, one 32-cpu node on a 32t/96GB host: PM=32, BBNT=floor(96/2)=48.
+    """sccache-dist, one 32-cpu node on a 32t/96GB host: PM=32, BBNT=floor(96/0.95)=101.
 
     Compile RAM is offloaded to the cluster, so BB_NUMBER_THREADS uses the
     smaller sccache-dist divisor and drops the local-nproc cap.
@@ -25,16 +25,16 @@ def test_sccache_dist_single_node_feeds_cluster_cpus() -> None:
     plan = derive_parallelism(nproc_local=32, ram_gb=96.0, launcher="sccache-dist", cluster_cpus=32)
 
     assert plan.parallel_make == 32
-    assert plan.bb_number_threads == 48
+    assert plan.bb_number_threads == 101
 
 
 @pytest.mark.unit
 def test_sccache_dist_two_nodes_feeds_full_cluster() -> None:
-    """sccache-dist, 64-cpu cluster: PM=64, BBNT=floor(96/2)=48 (offloaded divisor)."""
+    """sccache-dist, 64-cpu cluster: PM=64, BBNT=floor(96/0.95)=101 (offloaded divisor)."""
     plan = derive_parallelism(nproc_local=32, ram_gb=96.0, launcher="sccache-dist", cluster_cpus=64)
 
     assert plan.parallel_make == 64
-    assert plan.bb_number_threads == 48
+    assert plan.bb_number_threads == 101
 
 
 @pytest.mark.unit
@@ -107,22 +107,22 @@ def test_sccache_dist_zero_cluster_cpus_falls_back_to_nproc() -> None:
 @pytest.mark.unit
 def test_sccache_dist_drops_nproc_cap() -> None:
     """Under sccache-dist the local-nproc cap is dropped: with nproc=8 and
-    ram=96, BBNT is the RAM-bound floor(96/2)=48, not min(8, ...)."""
+    ram=96, BBNT is the RAM-bound floor(96/0.95)=101, not min(8, ...)."""
     plan = derive_parallelism(nproc_local=8, ram_gb=96.0, launcher="sccache-dist", cluster_cpus=64)
 
-    assert plan.bb_number_threads == 48
+    assert plan.bb_number_threads == 101
 
 
 @pytest.mark.unit
 def test_ccache_keeps_nproc_cap_at_same_inputs() -> None:
     """At nproc=8/ram=96, ccache keeps the nproc cap (BBNT=8) while sccache-dist
-    relaxes it (BBNT=48). Only the launcher differs - proves the cap is
+    relaxes it (BBNT=101). Only the launcher differs - proves the cap is
     dropped for the dist path alone."""
     ccache = derive_parallelism(nproc_local=8, ram_gb=96.0, launcher="ccache", cluster_cpus=64)
     dist = derive_parallelism(nproc_local=8, ram_gb=96.0, launcher="sccache-dist", cluster_cpus=64)
 
     assert ccache.bb_number_threads == 8
-    assert dist.bb_number_threads == 48
+    assert dist.bb_number_threads == 101
 
 
 @pytest.mark.unit
@@ -136,7 +136,7 @@ def test_sccache_dist_fallback_reverts_to_general_guard() -> None:
 
 @pytest.mark.unit
 def test_sccache_dist_tiny_ram_clamps_threads_to_one() -> None:
-    """sccache-dist with 1GB RAM: floor(1/2)=0 clamps up to 1, never zero."""
+    """sccache-dist with 1GB RAM: floor(1/0.95)=1 stays at 1, never zero."""
     plan = derive_parallelism(nproc_local=32, ram_gb=1.0, launcher="sccache-dist", cluster_cpus=64)
 
     assert plan.bb_number_threads == 1
@@ -144,8 +144,9 @@ def test_sccache_dist_tiny_ram_clamps_threads_to_one() -> None:
 
 @pytest.mark.unit
 def test_sccache_dist_per_task_gb_constant() -> None:
-    """The offloaded-compile divisor is half the general per-task estimate."""
-    assert SCCACHE_DIST_PER_TASK_GB == 2.0
+    """The offloaded-compile divisor sits far below the general per-task estimate,
+    reflecting that heavy compile RAM runs on the cluster, not locally."""
+    assert SCCACHE_DIST_PER_TASK_GB == 0.95
     assert SCCACHE_DIST_PER_TASK_GB < PER_TASK_GB
 
 
@@ -169,7 +170,7 @@ def test_rationale_is_nonempty_string() -> None:
     assert isinstance(plan.rationale, str)
     assert plan.rationale
     assert "64" in plan.rationale
-    assert "48" in plan.rationale
+    assert "101" in plan.rationale
 
 
 @pytest.mark.unit

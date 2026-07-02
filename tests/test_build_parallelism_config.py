@@ -450,8 +450,8 @@ def test_resolve_parallelism_sccache_dist_uses_cluster_cpus(tmp_path: Path, monk
     cfg = _make_cfg(tmp_path, nproc=32, sccache_dist=True, sccache_scheduler_url="http://localhost:10600")
 
     # PARALLEL_MAKE = cluster 64; compile offloaded, so BB_NUMBER_THREADS =
-    # floor(96/2) = 48 (offloaded divisor, nproc cap dropped).
-    assert _resolve_parallelism(cfg) == (64, 48)
+    # floor(96/0.95) = 101 (offloaded divisor, nproc cap dropped).
+    assert _resolve_parallelism(cfg) == (64, 101)
 
 
 def test_inject_literal_parallelism_bakes_cluster_sized_pm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -479,7 +479,7 @@ def test_inject_literal_parallelism_bakes_cluster_sized_pm(tmp_path: Path, monke
     out = _inject_literal_parallelism(cfg, _OVERLAY_PARALLELISM)
 
     assert 'PARALLEL_MAKE = "-j 64"' in out
-    assert 'BB_NUMBER_THREADS = "48"' in out
+    assert 'BB_NUMBER_THREADS = "101"' in out
     assert "os.environ.get" not in out
 
 

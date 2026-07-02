@@ -117,7 +117,7 @@ def test_derives_only_the_unset_field(tmp_path: Path, monkeypatch: pytest.Monkey
 
 @pytest.mark.unit
 def test_sccache_dist_feeds_cluster_cpus_into_parallel_make(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """sccache-dist, reachable 64-cpu cluster: PM=64 (cluster), BBNT=floor(96/2)=48.
+    """sccache-dist, reachable 64-cpu cluster: PM=64 (cluster), BBNT=floor(96/0.95)=101.
 
     Compile is offloaded, so BB_NUMBER_THREADS uses the sccache-dist divisor.
     """
@@ -145,7 +145,7 @@ def test_sccache_dist_feeds_cluster_cpus_into_parallel_make(tmp_path: Path, monk
     env = _build_env(cfg, ensure_hashserv=True)
 
     assert env["BAKAR_PARALLEL_MAKE"] == "64"
-    assert env["BAKAR_BB_NUMBER_THREADS"] == "48"
+    assert env["BAKAR_BB_NUMBER_THREADS"] == "101"
 
 
 @pytest.mark.unit
