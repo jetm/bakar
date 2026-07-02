@@ -123,6 +123,14 @@ def report(
             "image_size": summary.image_size,
             "layers": [dataclasses.asdict(layer) for layer in summary.layers],
             "build_revision": summary.build_revision,
+            "cache_by_language": {
+                lang: dataclasses.asdict(stat) for lang, stat in summary.cache_by_language.items()
+            },
+            "dist_by_node": summary.dist_by_node,
+            "task_family_rollup": {
+                family: dataclasses.asdict(stat) for family, stat in summary.task_family_rollup.items()
+            },
+            "go_compile_seconds": summary.go_compile_seconds,
         }
         if effective_show_sstate:
             payload.update(
@@ -181,3 +189,18 @@ def report(
                 console.print(f"    {pkg}: {size} KiB")
         if summary.layers_dirty:
             console.print(f"  dirty layers: {', '.join(summary.layers_dirty)}")
+    if summary.cache_by_language:
+        console.print("[bold]cache by language:[/]")
+        for lang, stat in summary.cache_by_language.items():
+            console.print(f"  {lang}: {stat.hits} hits, {stat.misses} misses, {stat.hit_rate:.1f}% hit rate")
+        if summary.dist_by_node:
+            console.print("  distribution:")
+            for node, count in summary.dist_by_node.items():
+                console.print(f"    {node}: {count}")
+    if any(stat.count for stat in summary.task_family_rollup.values()):
+        total_family_s = sum(stat.seconds for stat in summary.task_family_rollup.values())
+        console.print("[bold]task families:[/]")
+        for family, stat in summary.task_family_rollup.items():
+            share = 100.0 * stat.seconds / total_family_s if total_family_s else 0.0
+            console.print(f"  {family}: {stat.seconds:.0f}s, {stat.count} tasks, {share:.1f}%")
+        console.print(f"  go compile: {summary.go_compile_seconds:.0f}s")
