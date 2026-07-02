@@ -43,6 +43,7 @@ import bakar.commands.prefetch
 import bakar.commands.presets
 import bakar.commands.prserv
 import bakar.commands.report
+import bakar.commands.sched_triage
 import bakar.commands.settings
 import bakar.commands.setup
 import bakar.commands.shell
