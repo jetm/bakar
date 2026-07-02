@@ -34,6 +34,7 @@ from bakar.diagnostics import (
     check_psi_support,
     check_sysctl,
     check_workspace_filesystem,
+    probe_build_daemon,
     run_all,
 )
 
@@ -1740,6 +1741,58 @@ def test_build_daemon_report_empty_counts_yield_empty_dicts_and_zero_totals() ->
     assert report.cache_misses_by_lang == {}
     assert report.cache_hits == 0
     assert report.cache_misses == 0
+
+
+def test_probe_build_daemon_falls_back_to_host_uds_when_no_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No bakar.run_id container -> query the host UDS daemon and surface its stats.
+
+    Host-mode builds have no build container, so the docker path finds nothing;
+    the client daemon still answers on the host unix socket, so the probe must
+    fall back to it rather than reporting the daemon absent.
+    """
+    stats = {
+        "cache_hits": {"counts": {"C/C++": 3104}},
+        "cache_misses": {"counts": {"Rust": 400, "C/C++": 33607}},
+        "dist_compiles": {"192.168.8.172:10501": 14404, "10.42.0.2:10501": 14505},
+        "dist_errors": 739,
+    }
+
+    def fake_run(cmd, *a, **k):  # type: ignore[no-untyped-def]
+        if cmd[:2] == ["docker", "ps"]:
+            return _mock_run("")  # no build container
+        if "--stats-format=json" in cmd:
+            return _mock_run(json.dumps({"stats": stats}))
+        return _mock_run("Cache location        /var/cache/sccache\n")
+
+    monkeypatch.setattr("bakar.diagnostics.subprocess.run", fake_run)
+    monkeypatch.setattr("bakar.sccache_server._uds_responding", lambda _p: True)
+
+    report = probe_build_daemon()
+
+    assert report.running is True
+    assert report.container is None
+    assert report.cache_misses_by_lang == {"Rust": 400, "C/C++": 33607}
+    assert dict(report.per_node) == {"192.168.8.172:10501": 14404, "10.42.0.2:10501": 14505}
+
+
+def test_probe_build_daemon_no_container_no_host_daemon_returns_not_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No container and no responding host UDS daemon -> running=False, never auto-starts one."""
+
+    def fake_run(cmd, *a, **k):  # type: ignore[no-untyped-def]
+        if cmd[:2] == ["docker", "ps"]:
+            return _mock_run("")
+        raise AssertionError(f"must not query sccache when no host daemon answers: {cmd}")
+
+    monkeypatch.setattr("bakar.diagnostics.subprocess.run", fake_run)
+    monkeypatch.setattr("bakar.sccache_server._uds_responding", lambda _p: False)
+
+    report = probe_build_daemon()
+
+    assert report.running is False
 
 
 def test_build_daemon_report_defaults_are_empty_dicts() -> None:

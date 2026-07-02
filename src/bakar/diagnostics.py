@@ -1765,9 +1765,11 @@ def probe_build_daemon() -> BuildDaemonReport:
     Finds the build container by its ``bakar.run_id`` label and queries the
     in-container daemon's stats, so ``bakar cluster-info`` can show whether an
     in-progress build is actually distributing - not just the scheduler's
-    aggregate capacity, which says nothing about the client. Never raises:
-    returns ``running=False`` when no build container is up and ``error=...``
-    when the query fails.
+    aggregate capacity, which says nothing about the client. Host-mode builds
+    run no container, so an empty docker result falls back to the host UDS
+    daemon (:func:`_probe_host_uds_daemon`). Never raises: returns
+    ``running=False`` only when neither a container nor a host daemon answers,
+    and ``error=...`` when the query fails.
     """
     import json
 
@@ -1783,7 +1785,8 @@ def probe_build_daemon() -> BuildDaemonReport:
         return BuildDaemonReport(running=False, error=f"docker ps failed: {exc}")
     cids = ps.stdout.split()
     if not cids:
-        return BuildDaemonReport(running=False)
+        # No build container (host-mode build): fall back to the host UDS daemon.
+        return _probe_host_uds_daemon()
     cid = cids[0]
     try:
         out = subprocess.run(
@@ -1814,7 +1817,55 @@ def probe_build_daemon() -> BuildDaemonReport:
     return _build_daemon_report_from_stats(stats, cid, location)
 
 
-def _build_daemon_report_from_stats(stats: dict, cid: str, location: str | None) -> BuildDaemonReport:
+def _probe_host_uds_daemon() -> BuildDaemonReport:
+    """Query the host-mode sccache daemon over its unix-domain socket.
+
+    Host-mode builds run no ``bakar.run_id`` container, so
+    :func:`probe_build_daemon`'s docker path finds nothing; the client daemon
+    still answers on the host UDS (:func:`bakar.sccache_server.default_uds_path`).
+    Query it directly so per-language and per-node stats surface for host builds
+    too. Returns ``running=False`` when no host daemon answers, and never
+    auto-starts one - the ``_uds_responding`` pre-check avoids sccache's implicit
+    server spawn on ``--show-stats``.
+    """
+    from bakar import sccache_server
+
+    uds = str(sccache_server.default_uds_path())
+    if not sccache_server._uds_responding(uds):
+        return BuildDaemonReport(running=False)
+    env = {**os.environ, "SCCACHE_SERVER_UDS": uds}
+    try:
+        out = subprocess.run(
+            ["sccache", "--show-stats", "--stats-format=json"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+            env=env,
+        )
+        stats = json.loads(out.stdout)["stats"]
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
+        return BuildDaemonReport(running=True, container=None, error=f"stats query failed: {exc}")
+    location = None
+    try:
+        txt = subprocess.run(
+            ["sccache", "--show-stats"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+            env=env,
+        )
+        for line in txt.stdout.splitlines():
+            if line.strip().startswith("Cache location"):
+                location = line.split("Cache location", 1)[1].strip()
+                break
+    except OSError, subprocess.SubprocessError:
+        pass
+    return _build_daemon_report_from_stats(stats, None, location)
+
+
+def _build_daemon_report_from_stats(stats: dict, cid: str | None, location: str | None) -> BuildDaemonReport:
     """Map an sccache ``--show-stats --stats-format=json`` ``stats`` block to a report.
 
     Pure (no docker/subprocess) so it is unit-testable without a build
