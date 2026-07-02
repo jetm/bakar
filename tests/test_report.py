@@ -78,3 +78,89 @@ def test_failure_run_status(tmp_path: Path) -> None:
     summary = assemble_report(run_dir, cfg)
 
     assert summary.status == "failure"
+
+
+def _write_json(path: Path, payload: object) -> None:
+    """Write ``payload`` as JSON into ``path`` (parent must already exist)."""
+    path.write_text(json.dumps(payload))
+
+
+def _success_events(run_dir: Path) -> None:
+    """Write a minimal success event log so status resolves to success."""
+    _write_events(
+        run_dir,
+        [
+            {"ts": "2026-05-27T10:00:00Z", "event": "run_start", "run_id": run_dir.name},
+            {"ts": "2026-05-27T10:30:45Z", "event": "step_ok", "step": "kas_build"},
+            {"ts": "2026-05-27T10:30:45Z", "event": "run_end"},
+        ],
+    )
+
+
+def test_measurement_fields_populated(tmp_path: Path) -> None:
+    """Per-language cache, per-node, and task-family rollup fields populate."""
+    cfg = _nxp_cfg(tmp_path)
+    run_dir = tmp_path / "runs" / "20260527-120000"
+    _success_events(run_dir)
+    _write_json(
+        run_dir / "sccache-stats.json",
+        {
+            "cache_hits": 511,
+            "cache_misses": 52186,
+            "distributed": 100,
+            "dist_errors": 0,
+            "per_node": {"10.42.0.1": 60, "10.42.0.2": 40},
+            "hits_by_lang": {"Rust": 400, "C/C++": 100},
+            "misses_by_lang": {"Rust": 100, "C/C++": 52086},
+        },
+    )
+    _write_json(
+        run_dir / "bitbake-events.json",
+        {
+            "tasks": [
+                {"recipe": "go-helloworld", "task": "do_compile", "started": 0, "completed": 20},
+                {"recipe": "zlib", "task": "do_compile", "started": 0, "completed": 30},
+                {"recipe": "zlib", "task": "do_configure", "started": 0, "completed": 5},
+            ]
+        },
+    )
+
+    summary = assemble_report(run_dir, cfg)
+
+    assert set(summary.cache_by_language) == {"Rust", "C/C++"}
+    rust = summary.cache_by_language["Rust"]
+    assert rust.hits == 400
+    assert rust.misses == 100
+    assert rust.hit_rate == pytest.approx(80.0)
+
+    assert summary.dist_by_node == {"10.42.0.1": 60, "10.42.0.2": 40}
+
+    assert summary.task_family_rollup["do_compile"].seconds == pytest.approx(50.0)
+    assert summary.task_family_rollup["do_compile"].count == 2
+    assert summary.task_family_rollup["do_configure"].seconds == pytest.approx(5.0)
+    assert summary.go_compile_seconds == pytest.approx(20.0)
+
+
+def test_missing_sccache_stats_yields_empty_fields(tmp_path: Path) -> None:
+    """A run with no sccache-stats.json yields empty cache/node fields, no raise."""
+    cfg = _nxp_cfg(tmp_path)
+    run_dir = tmp_path / "runs" / "20260527-130000"
+    _success_events(run_dir)
+
+    summary = assemble_report(run_dir, cfg)
+
+    assert summary.cache_by_language == {}
+    assert summary.dist_by_node == {}
+
+
+def test_empty_event_log_yields_zeroed_rollup(tmp_path: Path) -> None:
+    """A run whose event log has no usable task durations yields a zeroed rollup."""
+    cfg = _nxp_cfg(tmp_path)
+    run_dir = tmp_path / "runs" / "20260527-140000"
+    _success_events(run_dir)
+    _write_json(run_dir / "bitbake-events.json", {"tasks": []})
+
+    summary = assemble_report(run_dir, cfg)
+
+    assert summary.go_compile_seconds == 0.0
+    assert all(stat.seconds == 0.0 and stat.count == 0 for stat in summary.task_family_rollup.values())

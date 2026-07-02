@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bakar.layers import collect_layer_hashes
+from bakar.task_rollup import FamilyStat, compute_task_rollup
 from bakar.triage import _last_event_matching
 
 if TYPE_CHECKING:
@@ -25,6 +26,15 @@ if TYPE_CHECKING:
     from bakar.layers import LayerHash
 
 _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+@dataclass(frozen=True)
+class LangCacheStat:
+    """sccache hit/miss counts and derived hit-rate for one language."""
+
+    hits: int = 0
+    misses: int = 0
+    hit_rate: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -48,6 +58,10 @@ class ReportSummary:
     pkg_count: int | None = None
     layers_dirty: list[str] = field(default_factory=list)
     has_buildhistory: bool = False
+    cache_by_language: dict[str, LangCacheStat] = field(default_factory=dict)
+    dist_by_node: dict[str, int] = field(default_factory=dict)
+    task_family_rollup: dict[str, FamilyStat] = field(default_factory=dict)
+    go_compile_seconds: float = 0.0
 
 
 def _parse_ts(rec: dict | None) -> datetime | None:
@@ -264,6 +278,56 @@ def _parse_buildhistory(cfg: BuildConfig) -> dict | None:
     }
 
 
+def _read_sccache_stats(stats_path: Path) -> dict:
+    """Return the persisted ``sccache-stats.json`` doc, or ``{}`` when absent.
+
+    The file is the serialized ``daemon_doc`` dict written at build end. It is
+    absent for container builds and runs predating this feature; a missing file
+    or a malformed/non-object payload yields ``{}`` without raising.
+    """
+    try:
+        with stats_path.open("r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except OSError, ValueError:
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def _cache_by_language(stats: dict) -> dict[str, LangCacheStat]:
+    """Build the per-language hit/miss/hit-rate map from a stats doc.
+
+    Reads the ``hits_by_lang``/``misses_by_lang`` dicts (keyed by sccache's
+    language display name) and derives ``hit_rate = 100 * hits / (hits + misses)``
+    per language, guarding a zero total. Languages present in either dict are
+    covered; a missing or non-dict source yields ``{}``.
+    """
+    hits = stats.get("hits_by_lang")
+    misses = stats.get("misses_by_lang")
+    hits = hits if isinstance(hits, dict) else {}
+    misses = misses if isinstance(misses, dict) else {}
+    langs = [*hits, *(lang for lang in misses if lang not in hits)]
+    result: dict[str, LangCacheStat] = {}
+    for lang in langs:
+        h = hits.get(lang, 0)
+        m = misses.get(lang, 0)
+        total = h + m
+        rate = 100.0 * h / total if total else 0.0
+        result[lang] = LangCacheStat(hits=h, misses=m, hit_rate=rate)
+    return result
+
+
+def _dist_by_node(stats: dict) -> dict[str, int]:
+    """Return the per-node distribution counts from a stats doc.
+
+    Reads the ``per_node`` dict (node address -> compile count). A missing or
+    non-dict source, or a non-integer count, yields an empty/filtered map.
+    """
+    per_node = stats.get("per_node")
+    if not isinstance(per_node, dict):
+        return {}
+    return {str(addr): count for addr, count in per_node.items() if isinstance(count, int)}
+
+
 def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
     """Assemble a best-effort summary of the run in ``run_dir``.
 
@@ -303,6 +367,9 @@ def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
     # the ReportSummary field names exactly, so both maps splat directly.
     buildhistory = _parse_buildhistory(cfg)
 
+    stats = _read_sccache_stats(run_dir / "sccache-stats.json")
+    rollup = compute_task_rollup(run_dir / "bitbake-events.json")
+
     return ReportSummary(
         run_id=run_dir.name,
         status=status,
@@ -312,6 +379,10 @@ def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
         layers=layers,
         build_revision=build_revision,
         has_buildhistory=buildhistory is not None,
+        cache_by_language=_cache_by_language(stats),
+        dist_by_node=_dist_by_node(stats),
+        task_family_rollup=rollup.families,
+        go_compile_seconds=rollup.go_compile_seconds,
         **sstate,
         **(buildhistory or {}),
     )
