@@ -441,3 +441,43 @@ def test_json_once_includes_daemons(
 
     assert result.exit_code == 0, result.stderr
     assert json.loads(result.stdout)["daemons"] == sentinel
+
+
+def _running_daemon_with_langs() -> BuildDaemonReport:
+    return BuildDaemonReport(
+        running=True,
+        container="abc123",
+        cache_hits=152,
+        cache_misses=50,
+        distributed=40,
+        dist_errors=1,
+        per_node=(("10.42.0.2:10501", 40),),
+        cache_hits_by_lang={"C/C++": 100, "Rust": 52},
+        cache_misses_by_lang={"C/C++": 40, "Rust": 10},
+    )
+
+
+def test_json_once_build_daemon_carries_per_language(
+    runner: _CliRunner,
+    nxp_workspace_with_run: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--json`` surfaces the per-language breakdown under ``build_daemon`` and
+    keeps every existing top-level snapshot key."""
+    monkeypatch.setattr(monitor_module, "probe_cluster", lambda _url: _reachable_cluster())
+    monkeypatch.setattr(monitor_module, "probe_build_daemon", _running_daemon_with_langs)
+    monkeypatch.setattr(monitor_module, "normalize", lambda _path: _synthetic_artifact())
+    monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: (False, None, False))
+
+    result = runner.invoke(
+        app,
+        ["monitor", "--json", "--once", "--workspace", str(nxp_workspace_with_run)],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    doc = json.loads(result.stdout)
+    # The pre-existing top-level contract is preserved.
+    assert set(doc) >= {"run", "cluster", "build_daemon", "build", "daemons"}
+    build_daemon = doc["build_daemon"]
+    assert build_daemon["hits_by_lang"] == {"C/C++": 100, "Rust": 52}
+    assert build_daemon["misses_by_lang"] == {"C/C++": 40, "Rust": 10}

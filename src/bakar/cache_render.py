@@ -49,6 +49,8 @@ def daemon_doc(report: BuildDaemonReport) -> dict[str, Any] | None:
         "dist_errors": report.dist_errors,
         "cache_location": report.cache_location,
         "per_node": dict(report.per_node),
+        "hits_by_lang": dict(report.cache_hits_by_lang),
+        "misses_by_lang": dict(report.cache_misses_by_lang),
         "verdict": report.verdict,
     }
 
@@ -107,6 +109,16 @@ def render_sccache_cache(daemon: dict[str, Any] | None) -> Text:
         f"  cache {daemon['cache_hits']}/{daemon['cache_misses']} hit/miss  "
         f"dist {daemon['distributed']} (local {local}, errors {daemon['dist_errors']})"
     )
+    hits_by_lang = daemon.get("hits_by_lang") or {}
+    misses_by_lang = daemon.get("misses_by_lang") or {}
+    for lang in sorted(set(hits_by_lang) | set(misses_by_lang)):
+        hits = hits_by_lang.get(lang, 0)
+        misses = misses_by_lang.get(lang, 0)
+        total = hits + misses
+        rate = (hits / total * 100) if total else 0.0
+        line.append(f"\n  {lang}: {hits}/{misses} hit/miss ({rate:.0f}% hit)", style="dim")
+    for node, jobs in (daemon.get("per_node") or {}).items():
+        line.append(f"\n  {node}: {jobs} job(s)", style="dim")
     return line
 
 

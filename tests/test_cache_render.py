@@ -10,7 +10,8 @@ from __future__ import annotations
 import pytest
 from rich.text import Text
 
-from bakar.cache_render import render_ccache_cache, render_cluster, render_sccache_cache
+from bakar.cache_render import daemon_doc, render_ccache_cache, render_cluster, render_sccache_cache
+from bakar.diagnostics import BuildDaemonReport
 
 pytestmark = pytest.mark.unit
 
@@ -96,3 +97,53 @@ def test_render_ccache_cache_none_is_stats_unavailable() -> None:
     text = render_ccache_cache(None)
     assert isinstance(text, Text)
     assert text.plain == "ccache: stats unavailable"
+
+
+def test_daemon_doc_carries_per_language_dicts() -> None:
+    """daemon_doc surfaces the report's per-language hit/miss dicts alongside per_node."""
+    report = BuildDaemonReport(
+        running=True,
+        container="abc123",
+        cache_hits=52697,
+        cache_misses=4333,
+        distributed=4000,
+        dist_errors=2,
+        per_node=(("10.42.0.2:10501", 4000),),
+        cache_hits_by_lang={"C/C++": 52186, "Rust": 511},
+        cache_misses_by_lang={"C/C++": 4263, "Assembler": 70},
+    )
+    doc = daemon_doc(report)
+    assert doc is not None
+    assert doc["hits_by_lang"] == {"C/C++": 52186, "Rust": 511}
+    assert doc["misses_by_lang"] == {"C/C++": 4263, "Assembler": 70}
+    # The scalar aggregates and per_node distribution remain present.
+    assert doc["cache_hits"] == 52697
+    assert doc["per_node"] == {"10.42.0.2:10501": 4000}
+
+
+def test_render_sccache_cache_emits_a_line_per_language() -> None:
+    """render_sccache_cache prints one hit/miss/hit-rate line for each language present."""
+    daemon = {
+        "container": "abc123",
+        "error": None,
+        "cache_hits": 152,
+        "cache_misses": 50,
+        "distributed": 40,
+        "dist_errors": 1,
+        "cache_location": None,
+        "per_node": {"10.42.0.2:10501": 40},
+        "hits_by_lang": {"C/C++": 100, "Rust": 52},
+        "misses_by_lang": {"C/C++": 40, "Rust": 10},
+        "verdict": "DISTRIBUTING",
+    }
+    lines = render_sccache_cache(daemon).plain.splitlines()
+    cpp_line = next(ln for ln in lines if "C/C++" in ln)
+    rust_line = next(ln for ln in lines if "Rust" in ln)
+    # C/C++: 100 hits, 40 misses -> 100/140 = 71% hit.
+    assert "100/40 hit/miss" in cpp_line
+    assert "71% hit" in cpp_line
+    # Rust: 52 hits, 10 misses -> 52/62 = 84% hit.
+    assert "52/10 hit/miss" in rust_line
+    assert "84% hit" in rust_line
+    # The per-node distribution is rendered too.
+    assert any("10.42.0.2:10501" in ln for ln in lines)
