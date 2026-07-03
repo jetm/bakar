@@ -628,9 +628,7 @@ def test_graceful_wait_runtime_death_cap_exits_lost_runtime() -> None:
 
 def test_graceful_wait_single_transient_error_keeps_waiting() -> None:
     """A single transient query error does not end the wait; the streak resets."""
-    liveness = _liveness_from(
-        [build_stop._ERROR, build_stop._ALIVE, build_stop._ERROR, build_stop._DEAD]
-    )
+    liveness = _liveness_from([build_stop._ERROR, build_stop._ALIVE, build_stop._ERROR, build_stop._DEAD])
 
     status = build_stop._graceful_wait(
         liveness=liveness,

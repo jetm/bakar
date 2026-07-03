@@ -211,7 +211,8 @@ def test_missing_workspace_dir_exits_2_and_sends_no_signal(
     result = runner.invoke(app, ["stop", "--workspace", str(missing), "my.yml"])
 
     assert result.exit_code == 2, result.output
-    assert "--workspace" in result.output
+    # Typer color mode splits "--workspace" with ANSI codes; assert the plain word.
+    assert "workspace" in result.output
     assert calls == []
 
 
@@ -231,7 +232,8 @@ def test_file_workspace_exits_2_and_sends_no_signal(
     result = runner.invoke(app, ["stop", "--workspace", str(a_file), "my.yml"])
 
     assert result.exit_code == 2, result.output
-    assert "--workspace" in result.output
+    # Typer color mode splits "--workspace" with ANSI codes; assert the plain word.
+    assert "workspace" in result.output
     assert calls == []
 
 
