@@ -30,7 +30,7 @@ from bakar import hashserv, prserv
 from bakar.build_stop import is_build_running
 from bakar.cache_render import cluster_doc, daemon_doc, render_cluster, render_sccache_cache
 from bakar.commands._app import app, console
-from bakar.commands._helpers import _bsp_from_cwd, _dispatch_from_yaml, _resolve_workspace
+from bakar.commands._helpers import WorkspaceOption, _bsp_from_cwd, _dispatch_from_yaml, _resolve_workspace
 from bakar.commands.log import _resolve_run_dir
 from bakar.config import BSPSpec, BuildConfig, resolve
 from bakar.diagnostics import probe_build_daemon, probe_cluster
@@ -378,10 +378,7 @@ def monitor(
         bool,
         typer.Option("--watch", help="With --json, stream NDJSON (one object per interval)."),
     ] = False,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root override"),
-    ] = None,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Aggregate cluster load, build-daemon stats, and bitbake progress for a run.
 

@@ -11,6 +11,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app
 from bakar.commands._helpers import (
+    WorkspaceOption,
     _bbsetup_workspace,
     _normalize_dispatch,
     _print_diagnosis,
@@ -33,10 +34,7 @@ def doctor(
         str | None,
         typer.Option("--manifest", "-f", help="Manifest filename used to dispatch BSP family"),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root; auto-detected if omitted"),
-    ] = None,
+    workspace: WorkspaceOption = None,
     output_json: Annotated[
         bool,
         typer.Option("--json", "-j", help="Output results as JSON instead of formatted table."),

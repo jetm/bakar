@@ -29,6 +29,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
+    WorkspaceOption,
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
@@ -325,10 +326,7 @@ def inspect(
         str | None,
         typer.Option("--machine", "-m", help="Override the target machine"),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root override"),
-    ] = None,
+    workspace: WorkspaceOption = None,
     output_json: Annotated[
         bool,
         typer.Option("--json", help="Emit the report as a JSON document"),

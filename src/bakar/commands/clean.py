@@ -10,6 +10,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
+    WorkspaceOption,
     _bsp_from_cwd,
     _clean_build_dir,
     _dispatch_bsp,
@@ -67,7 +68,7 @@ def clean(
         str | None,
         typer.Option("--manifest", "-f", help="Manifest filename (back-compat alias for --bsp)"),
     ] = None,
-    workspace: Annotated[Path | None, typer.Option("--workspace", "-w", help="Workspace root override")] = None,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Remove the build/ directory. Use --all to also drop the kas YAML.
 

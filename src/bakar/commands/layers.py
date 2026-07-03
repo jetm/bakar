@@ -12,6 +12,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
+    WorkspaceOption,
     _normalize_dispatch,
     _overlay_for,
     _print_layer_hashes,
@@ -74,10 +75,7 @@ def layers(
         str | None,
         typer.Option("--manifest", "-f", help="Manifest filename used to dispatch BSP family"),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root override"),
-    ] = None,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Print each synced layer's repo name, git short-hash, and branch.
 
@@ -124,10 +122,7 @@ def layers_inspect(
         str | None,
         typer.Option("--manifest", "-f", help="Manifest filename used to dispatch BSP family"),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root override"),
-    ] = None,
+    workspace: WorkspaceOption = None,
     output_json: Annotated[
         bool,
         typer.Option("--json", help="Emit JSON instead of human-readable text"),
@@ -254,10 +249,7 @@ def layers_status(
         str | None,
         typer.Option("--manifest", "-f", help="Manifest filename used to dispatch BSP family"),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root override"),
-    ] = None,
+    workspace: WorkspaceOption = None,
     output_json: Annotated[
         bool,
         typer.Option("--json", help="Emit JSON instead of human-readable text"),

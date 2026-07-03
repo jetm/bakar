@@ -12,6 +12,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
+    WorkspaceOption,
     _dispatch_bsp,
     _dispatch_from_yaml,
     _resolve_workspace,
@@ -89,10 +90,7 @@ def log_cmd(
         str | None,
         typer.Option("--manifest", "-f", help="Manifest filename used to dispatch BSP family"),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root override"),
-    ] = None,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Tail the latest bakar run's kas.log live. Use --run for a specific run, --which to pick a different log file.
 

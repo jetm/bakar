@@ -11,7 +11,13 @@ import typer
 
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
-from bakar.commands._helpers import _bbsetup_workspace, _find_run, _print_layer_hashes, _workspace_from_cwd
+from bakar.commands._helpers import (
+    WorkspaceOption,
+    _bbsetup_workspace,
+    _find_run,
+    _print_layer_hashes,
+    _workspace_from_cwd,
+)
 from bakar.config import BSPSpec, resolve
 from bakar.report import assemble_report
 
@@ -26,10 +32,7 @@ def report(
         str | None,
         typer.Option("--manifest", "-f", help="Manifest filename used to dispatch BSP family"),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root override"),
-    ] = None,
+    workspace: WorkspaceOption = None,
     json_out: Annotated[
         bool,
         typer.Option("--json", help="Emit the summary as a single JSON object on stdout."),
