@@ -31,6 +31,23 @@ import pytest
 # "--sstate" + ESC[0m + "-mirror"), breaking plain substring assertions.
 os.environ.setdefault("NO_COLOR", "1")
 
+
+@pytest.fixture(autouse=True)
+def _reset_invocation_cwd():
+    """Clear ``_helpers._INVOCATION`` around every test.
+
+    The ``-w`` callback (``_enter_workspace``) records the pre-chdir cwd in the
+    module-global ``_INVOCATION`` so ``_bsp_from_cwd`` can read it. Direct
+    ``_bsp_from_cwd`` unit tests do not go through the callback, so without this
+    reset a prior test's captured cwd leaks into them under ``pytest-randomly``.
+    """
+    from bakar.commands._helpers import _INVOCATION
+
+    _INVOCATION.clear()
+    yield
+    _INVOCATION.clear()
+
+
 if TYPE_CHECKING:
     from pathlib import Path
 
