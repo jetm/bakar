@@ -41,6 +41,11 @@ _STOP_TERM_SECONDS = 5
 _EVENTS_FILENAME = "events.jsonl"
 _RUN_ID_LABEL_KEY = "bakar.run_id"
 
+# Stale bitbake artifacts left in the build TOPDIR by a forced/killed cooker.
+# A stale ``bitbake.lock`` blocks the next build ("Cannot lock ... bitbake.lock").
+# ``bitbake-cookerdaemon.log`` is a diagnostic log (like kas.log) and is kept.
+_STALE_BITBAKE_FILES = ("bitbake.lock", "bitbake.sock")
+
 # Wait-loop tuning. The graceful wait is UNBOUNDED (no grace cap); these only
 # govern the live-progress view and the runtime-death guard, never how long we
 # are willing to wait for a build to drain.
@@ -583,6 +588,39 @@ def _escalate_host(pgid: int) -> None:
         os.killpg(pgid, signal.SIGKILL)
 
 
+def _clean_stale_bitbake_files(run_dir: Path) -> list[Path]:
+    """Remove stale bitbake lock/socket files from the build TOPDIR.
+
+    The TOPDIR is ``run_dir.parent.parent`` - the directory that CONTAINS the
+    ``runs/`` dir (a resolved run dir is ``<TOPDIR>/runs/<timestamp>/``). A
+    forced or killed bitbake leaves ``bitbake.lock`` and ``bitbake.sock``
+    behind; a stale ``bitbake.lock`` makes the next build fail with
+    "Cannot lock ... bitbake.lock". Call ONLY after the build is confirmed no
+    longer running, so these files are guaranteed stale (never a live lock).
+    ``bitbake-cookerdaemon.log`` is a diagnostic log and is left in place.
+
+    Never raises: a missing or unremovable file is skipped (OSError). Returns
+    the paths actually removed.
+    """
+    topdir = run_dir.parent.parent
+    removed: list[Path] = []
+    for name in _STALE_BITBAKE_FILES:
+        path = topdir / name
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        removed.append(path)
+    return removed
+
+
+def _report_stale_cleanup(run_dir: Path) -> None:
+    """Clean stale bitbake files for ``run_dir`` and print a one-line note."""
+    removed = _clean_stale_bitbake_files(run_dir)
+    if removed:
+        print(f"removed stale bitbake files: {', '.join(p.name for p in removed)}")
+
+
 def stop_build(bsp_root: Path, *, force: bool = False) -> bool:
     """Stop the most recent build, targeting it by execution mode.
 
@@ -650,6 +688,7 @@ def stop_build(bsp_root: Path, *, force: bool = False) -> bool:
                 print(f"Sent SIGTERM to build PGID {pgid}...")
                 _escalate_host(pgid)
             print("stopped")
+            _report_stale_cleanup(run_dir)
             return True
         finally:
             remove_pid(run_dir)
@@ -681,6 +720,8 @@ def stop_build(bsp_root: Path, *, force: bool = False) -> bool:
         )
         # A drained/escalated/forced stop is success (exit 0); only a runtime we
         # lost contact with mid-wait is a failure (exit 1).
+        if status != "lost_runtime":
+            _report_stale_cleanup(run_dir)
         return status != "lost_runtime"
     finally:
         remove_pid(run_dir)

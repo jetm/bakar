@@ -729,3 +729,48 @@ def test_container_liveness_oserror_is_error(monkeypatch: pytest.MonkeyPatch) ->
 
     monkeypatch.setattr(build_stop.subprocess, "run", _boom)
     assert build_stop._container_liveness("docker", "cid") == build_stop._ERROR
+
+
+# --- _clean_stale_bitbake_files --------------------------------------------
+
+
+def test_clean_stale_bitbake_files_removes_lock_and_sock(tmp_path: Path) -> None:
+    """Removes bitbake.lock/bitbake.sock from TOPDIR, keeps the cookerdaemon log."""
+    run_dir = _make_run_dir(tmp_path)
+    topdir = run_dir.parent.parent  # <tmp>/build
+    lock = topdir / "bitbake.lock"
+    sock = topdir / "bitbake.sock"
+    log = topdir / "bitbake-cookerdaemon.log"
+    for path in (lock, sock, log):
+        path.write_text("x")
+
+    removed = build_stop._clean_stale_bitbake_files(run_dir)
+
+    assert not lock.exists()
+    assert not sock.exists()
+    assert log.exists()
+    assert set(removed) == {lock, sock}
+
+
+def test_clean_stale_bitbake_files_absent_is_noop(tmp_path: Path) -> None:
+    """Absent lock/sock files: the helper is a no-op returning [] without raising."""
+    run_dir = _make_run_dir(tmp_path)
+
+    removed = build_stop._clean_stale_bitbake_files(run_dir)
+
+    assert removed == []
+
+
+def test_clean_stale_bitbake_files_targets_topdir_not_run_dir(tmp_path: Path) -> None:
+    """The helper removes files from run_dir.parent.parent, never from run_dir."""
+    run_dir = _make_run_dir(tmp_path)
+    topdir = run_dir.parent.parent
+    (topdir / "bitbake.lock").write_text("x")
+    run_dir_lock = run_dir / "bitbake.lock"
+    run_dir_lock.write_text("x")
+
+    removed = build_stop._clean_stale_bitbake_files(run_dir)
+
+    assert not (topdir / "bitbake.lock").exists()
+    assert run_dir_lock.exists()  # a lock inside the run dir is untouched
+    assert removed == [topdir / "bitbake.lock"]
