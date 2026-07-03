@@ -16,6 +16,7 @@ from rich.table import Table
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
+    WorkspaceOption,
     _bbsetup_workspace,
     _clean_build_dir,
     _dispatch_bsp,
@@ -499,7 +500,7 @@ def build(
             help="Remove <bsp>/build/ before running the pipeline (forces a from-scratch build).",
         ),
     ] = False,
-    workspace: Annotated[Path | None, typer.Option("--workspace", "-w", help="Workspace root override")] = None,
+    workspace: WorkspaceOption = None,
     show_layers: Annotated[
         bool,
         typer.Option("--show-layers", help="Print layer git hashes before build."),

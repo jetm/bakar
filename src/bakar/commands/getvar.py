@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import shlex
-from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -18,6 +17,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
+    WorkspaceOption,
     _combine_overlays_with_tuning,
     _normalize_dispatch,
     _overlay_for,
@@ -72,10 +72,7 @@ def getvar(
         str | None,
         typer.Option("--machine", "-m", help="Override the target machine"),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root override"),
-    ] = None,
+    workspace: WorkspaceOption = None,
     output_json: Annotated[
         bool,
         typer.Option("--json", help="Emit a JSON document with keys var, recipe, value/history."),

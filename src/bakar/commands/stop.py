@@ -11,6 +11,7 @@ import bakar.commands._app as _state
 from bakar import build_stop
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
+    WorkspaceOption,
     _dispatch_bsp,
     _dispatch_from_yaml,
     _resolve_workspace,
@@ -27,7 +28,7 @@ def stop(
             help="Optional kas YAML; runs live next to it under <yaml-parent>/build/runs/.",
         ),
     ] = None,
-    workspace: Annotated[Path | None, typer.Option("--workspace", "-w", help="Workspace root override")] = None,
+    workspace: WorkspaceOption = None,
     manifest: Annotated[
         str | None,
         typer.Option("--manifest", "-f", help="Manifest filename used to resolve the BSP family"),

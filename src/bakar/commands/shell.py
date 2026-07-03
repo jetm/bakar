@@ -10,6 +10,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
+    WorkspaceOption,
     _dispatch_from_yaml,
     _normalize_dispatch,
     _overlay_for,
@@ -49,7 +50,7 @@ def shell(
         list[str] | None,
         typer.Argument(help="Extra args passed through to kas-container shell"),
     ] = None,
-    workspace: Annotated[Path | None, typer.Option("--workspace", "-w", help="Workspace root override")] = None,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Drop into a `kas-container shell` for this project, or run a single command via -c.
 
@@ -95,10 +96,7 @@ def run(
             help="Run with software TPM via swtpm daemon (default: enabled).",
         ),
     ] = True,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root override"),
-    ] = None,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Boot an avocado-os image in QEMU from the build directory.
 

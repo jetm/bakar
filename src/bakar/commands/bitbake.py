@@ -28,6 +28,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
+    WorkspaceOption,
     _combine_overlays_with_tuning,
     _host_extra_overlays,
     _normalize_dispatch,
@@ -204,10 +205,7 @@ def bitbake(
         str | None,
         typer.Option("--machine", "-m", help="Override the target machine"),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root override"),
-    ] = None,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Run ``bitbake <target>`` inside kas-container, logged to the run dir.
 
@@ -255,10 +253,7 @@ def clean_recipe(
         str | None,
         typer.Option("--machine", "-m", help="Override the target machine"),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root override"),
-    ] = None,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Run ``bitbake -c cleansstate <recipe>`` inside kas-container.
 
@@ -302,10 +297,7 @@ def rebuild(
         str | None,
         typer.Option("--machine", "-m", help="Override the target machine"),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root override"),
-    ] = None,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Rebuild a recipe from scratch: ``bitbake -c cleansstate <recipe> && bitbake <recipe>``.
 
