@@ -65,6 +65,7 @@ class SaturationStats:
 
     samples: int = 0
     ceiling: int = 0  # total cores across servers (last poll)
+    admission_ceiling: int = 0  # summed cores_plus_slack (c+1+c//8), last poll
     mean_inflight: float = 0.0
     mean_util_pct: float = 0.0
     idle_pct: float = 0.0  # share of polls with 0 in-progress
@@ -111,30 +112,39 @@ def parse_dist_status(lines: Iterable[str]) -> SaturationStats:
     """Aggregate cluster utilisation from the scheduler's ``dist-status poll`` lines.
 
     ``ceiling`` is the summed core count across servers on the most recent poll;
-    the percentages are computed against each poll's own ceiling so a server
-    joining or leaving mid-build does not skew the series.
+    ``mean_util_pct`` is computed against each poll's own core ceiling so a
+    server joining or leaving mid-build does not skew the series. ``near_sat``
+    is measured against the *admission* ceiling instead - ``cores_plus_slack =
+    c + 1 + c//8`` per server, the scheduler's own accept cutoff (main.rs
+    ``load_weight``) - so it reflects how often the scheduler was close to
+    refusing work, not merely how busy the cores were. For two 32-core servers
+    the admission ceiling is 74, not the raw 64.
     """
     inflights: list[int] = []
     utils: list[float] = []
     last_ceiling = 0
+    last_admission = 0
     idle = under8 = near = 0
     for line in lines:
         m = _STATUS_RE.search(line)
         if m is None:
             continue
         inflight = int(m.group("inflight"))
-        ceiling = sum(int(s.group("cores")) for s in _STATUS_SERVER_RE.finditer(m.group("servers")))
+        server_cores = [int(s.group("cores")) for s in _STATUS_SERVER_RE.finditer(m.group("servers"))]
+        ceiling = sum(server_cores)
         if ceiling <= 0:
             continue
+        admission = sum(c + 1 + c // 8 for c in server_cores)
         inflights.append(inflight)
         last_ceiling = ceiling
+        last_admission = admission
         util = inflight / ceiling
         utils.append(util)
         if inflight == 0:
             idle += 1
         if inflight < ceiling / 8:
             under8 += 1
-        if inflight >= ceiling * 7 / 8:
+        if inflight >= admission * 7 / 8:
             near += 1
     n = len(inflights)
     if n == 0:
@@ -142,6 +152,7 @@ def parse_dist_status(lines: Iterable[str]) -> SaturationStats:
     return SaturationStats(
         samples=n,
         ceiling=last_ceiling,
+        admission_ceiling=last_admission,
         mean_inflight=mean(inflights),
         mean_util_pct=100.0 * mean(utils),
         idle_pct=100.0 * idle / n,

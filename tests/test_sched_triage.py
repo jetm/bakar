@@ -72,6 +72,22 @@ def test_parse_dist_status_computes_util_and_idle() -> None:
     assert stats.idle_pct == 50.0  # one of two polls had 0 in-progress
 
 
+def test_parse_dist_status_near_sat_uses_admission_ceiling() -> None:
+    """near_sat is measured against the scheduler's admission ceiling, not raw cores.
+
+    The scheduler admits up to ``cores_plus_slack = c + 1 + c//8`` per server, so
+    two 32-core servers admit 2*(32+1+4) = 74, not the raw 64. An inflight of 60
+    is >= 7/8*64 (56) under the old raw denominator but < 7/8*74 (~64.75), so it
+    must NOT count as near-saturated.
+    """
+    lines = [
+        'dist-status poll: 60 in-progress jobs; servers [("192.168.8.172:10501", 30, 32), ("10.42.0.2:10501", 30, 32)]',
+    ]
+    stats = parse_dist_status(lines)
+    assert stats.admission_ceiling == 74
+    assert stats.near_sat_pct == 0.0
+
+
 def test_parse_client_log_job_timers() -> None:
     """dist-job lines are parsed into per-node counts and phase-timer means."""
     lines = [
