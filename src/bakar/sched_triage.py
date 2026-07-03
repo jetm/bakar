@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from statistics import mean
+from statistics import mean, median
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -96,6 +96,15 @@ class SupplyBucket:
     polls: int = 0
     mean_util_pct: float = 0.0
     per_node_ratio: dict[str, float] = field(default_factory=dict)  # addr -> mean jobs/cores
+
+
+@dataclass
+class WeightedUtil:
+    """Time-weighted utilisation with the cadence stats that qualify it."""
+
+    mean_util_pct: float = 0.0
+    median_cadence_s: float = 0.0
+    max_gap_s: float = 0.0
 
 
 def _load_bucket(concurrent: int) -> str:
@@ -277,6 +286,32 @@ def conditioned_util(series: list[PollSample], compile_intervals: list[tuple[flo
             bucket.mean_util_pct = 100.0 * util_sums[name] / bucket.polls
             bucket.per_node_ratio = {addr: total / bucket.polls for addr, total in ratio_sums[name].items()}
     return buckets
+
+
+def time_weighted_util(series: list[PollSample], max_gap_multiple: float = 5.0) -> WeightedUtil:
+    """Time-weight poll utilisation so an irregular, request-driven cadence does not bias the mean.
+
+    dist-status polls are emitted only when something queries the scheduler, so
+    the cadence is uneven; an equal-weight mean over-counts bursts of frequent
+    polls. Weight each poll by the gap to the next poll - the span its util
+    represents - capping any gap at ``max_gap_multiple`` times the median gap so
+    a monitor outage does not swamp the average. The last poll is weighted by
+    the median gap. ``max_gap_s`` (uncapped) flags any window where an "idle"
+    reading is really "unobserved".
+    """
+    ordered = sorted(series, key=lambda p: p.ts)
+    if not ordered:
+        return WeightedUtil()
+    utils = [(p.inflight / c if (c := sum(p.per_server_cores.values())) > 0 else 0.0) for p in ordered]
+    gaps = [ordered[i + 1].ts - ordered[i].ts for i in range(len(ordered) - 1)]
+    if not gaps:
+        return WeightedUtil(mean_util_pct=100.0 * utils[0])
+    med = median(gaps)
+    cap = max_gap_multiple * med
+    weights = [min(g, cap) for g in gaps] + [med]
+    total_w = sum(weights)
+    weighted = sum(u * w for u, w in zip(utils, weights, strict=True)) / total_w if total_w else 0.0
+    return WeightedUtil(mean_util_pct=100.0 * weighted, median_cadence_s=med, max_gap_s=max(gaps))
 
 
 # --- client log -------------------------------------------------------------

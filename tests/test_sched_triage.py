@@ -15,6 +15,7 @@ from bakar.sched_triage import (
     parse_dist_alloc,
     parse_dist_status,
     parse_dist_status_series,
+    time_weighted_util,
 )
 
 pytestmark = pytest.mark.unit
@@ -210,3 +211,22 @@ def test_conditioned_util_idle_bucket_when_no_compile_live() -> None:
     buckets = conditioned_util(series, compile_intervals=[(90.0, 110.0)])
     assert buckets["idle"].polls == 1
     assert buckets["high"].polls == 0
+
+
+def test_time_weighted_util_weights_polls_by_the_span_they_represent() -> None:
+    """An irregular cadence is time-weighted so a long busy stretch is not out-voted by dense idle polls.
+
+    Polls: t=0 idle, t=1 fully busy, t=101 idle. The busy poll's util persists for
+    the 100s until the next poll, so the equal-weight mean (33%) understates the
+    real occupancy. Weights: gaps 1 and 100 (median 50.5, cap 5x not hit), last
+    poll weighted by the median -> 100/(1+100+50.5) = 66%.
+    """
+    series = [
+        PollSample(ts=0.0, inflight=0, per_server_jobs={}, per_server_cores={"pc1": 64}),
+        PollSample(ts=1.0, inflight=64, per_server_jobs={}, per_server_cores={"pc1": 64}),
+        PollSample(ts=101.0, inflight=0, per_server_jobs={}, per_server_cores={"pc1": 64}),
+    ]
+    w = time_weighted_util(series)
+    assert w.max_gap_s == 100.0
+    assert w.median_cadence_s == 50.5
+    assert round(w.mean_util_pct, 1) == 66.0
