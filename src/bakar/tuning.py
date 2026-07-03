@@ -13,10 +13,16 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-# Estimated peak RAM per concurrent recipe. BB_NUMBER_THREADS is capped to
-# floor(ram_gb / PER_TASK_GB) so a host does not OOM under heavy C++ links
-# (webkit, nodejs, llvm), where a single recipe can hold several GB resident.
-PER_TASK_GB = 4.0
+# Estimated average RAM per concurrent recipe, capping BB_NUMBER_THREADS at
+# floor(ram_gb / PER_TASK_GB) so a host does not OOM. The heaviest C++ links
+# (webkit, nodejs, llvm) hold several GB, but they are a minority the recipe DAG
+# rarely runs at once, so the average across all recipes (fetch, configure,
+# light compile, package) is well under that peak. 4.0 was peak-biased: it
+# pinned a 32-core/96GB host to 24 recipes with tens of GB idle and left the
+# non-sccache path far below its core count. 2.5 lets a well-provisioned host
+# reach the nproc cap while thin hosts stay RAM-bounded, and the nproc cap in
+# the non-distributing branch still prevents compute oversubscription.
+PER_TASK_GB = 2.5
 
 # Per-recipe RAM estimate under sccache-dist. The heavy C++ compile that drives
 # PER_TASK_GB runs on the build-server cluster, not locally, so a local recipe

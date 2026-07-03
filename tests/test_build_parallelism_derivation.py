@@ -82,7 +82,7 @@ def test_derives_both_vars_when_cfg_none_none_launcher(tmp_path: Path, monkeypat
     env = _build_env(cfg, ensure_hashserv=False)
 
     assert env["BAKAR_PARALLEL_MAKE"] == "32"
-    assert env["BAKAR_BB_NUMBER_THREADS"] == "24"
+    assert env["BAKAR_BB_NUMBER_THREADS"] == "32"
 
 
 @pytest.mark.unit
@@ -112,7 +112,7 @@ def test_derives_only_the_unset_field(tmp_path: Path, monkeypatch: pytest.Monkey
     env = _build_env(cfg, ensure_hashserv=False)
 
     assert env["BAKAR_PARALLEL_MAKE"] == "128"
-    assert env["BAKAR_BB_NUMBER_THREADS"] == "24"
+    assert env["BAKAR_BB_NUMBER_THREADS"] == "32"
 
 
 @pytest.mark.unit
@@ -167,7 +167,7 @@ def test_cluster_probe_failure_falls_back_to_nproc(tmp_path: Path, monkeypatch: 
     env = _build_env(cfg, ensure_hashserv=True)
 
     assert env["BAKAR_PARALLEL_MAKE"] == "32"
-    assert env["BAKAR_BB_NUMBER_THREADS"] == "24"
+    assert env["BAKAR_BB_NUMBER_THREADS"] == "32"
 
 
 @pytest.mark.unit

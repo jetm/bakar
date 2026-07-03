@@ -43,7 +43,8 @@ def test_ccache_ignores_cluster_cpus() -> None:
     plan = derive_parallelism(nproc_local=32, ram_gb=96.0, launcher="ccache", cluster_cpus=64)
 
     assert plan.parallel_make == 32
-    assert plan.bb_number_threads == 24
+    # 96GB / 2.5GB-per-task = 38 RAM threads, capped at nproc 32.
+    assert plan.bb_number_threads == 32
 
 
 @pytest.mark.unit
@@ -52,20 +53,21 @@ def test_no_launcher_uses_local_nproc() -> None:
     plan = derive_parallelism(nproc_local=32, ram_gb=96.0, launcher="none", cluster_cpus=64)
 
     assert plan.parallel_make == 32
-    assert plan.bb_number_threads == 24
+    # 96GB / 2.5GB-per-task = 38 RAM threads, capped at nproc 32.
+    assert plan.bb_number_threads == 32
 
 
 @pytest.mark.unit
 def test_ram_cap_dominates_thread_count() -> None:
-    """32t/64GB: BBNT capped by floor(64/4)=16 below nproc."""
+    """32t/64GB: BBNT capped by floor(64/2.5)=25 below nproc."""
     plan = derive_parallelism(nproc_local=32, ram_gb=64.0, launcher="ccache", cluster_cpus=None)
 
-    assert plan.bb_number_threads == 16
+    assert plan.bb_number_threads == 25
 
 
 @pytest.mark.unit
 def test_nproc_cap_dominates_thread_count() -> None:
-    """8t/96GB: BBNT capped by nproc=8 below floor(96/4)=24."""
+    """8t/96GB: BBNT capped by nproc=8 below floor(96/2.5)=38."""
     plan = derive_parallelism(nproc_local=8, ram_gb=96.0, launcher="none", cluster_cpus=None)
 
     assert plan.bb_number_threads == 8
@@ -73,7 +75,7 @@ def test_nproc_cap_dominates_thread_count() -> None:
 
 @pytest.mark.unit
 def test_tiny_ram_clamps_threads_to_one() -> None:
-    """4t/2GB: floor(2/4)=0 clamps up to 1, never zero."""
+    """4t/2GB: floor(2/2.5)=0 clamps up to 1, never zero."""
     plan = derive_parallelism(nproc_local=4, ram_gb=2.0, launcher="none", cluster_cpus=None)
 
     assert plan.bb_number_threads == 1
@@ -153,10 +155,10 @@ def test_ccache_keeps_nproc_cap_at_same_inputs() -> None:
 @pytest.mark.unit
 def test_sccache_dist_fallback_reverts_to_general_guard() -> None:
     """Cluster unreachable (cluster_cpus=None): compile runs local, so BBNT
-    reverts to the 4GB guard with the nproc cap - min(32, floor(96/4))=24."""
+    reverts to the general guard with the nproc cap - min(32, floor(96/2.5))=32."""
     plan = derive_parallelism(nproc_local=32, ram_gb=96.0, launcher="sccache-dist", cluster_cpus=None)
 
-    assert plan.bb_number_threads == 24
+    assert plan.bb_number_threads == 32
 
 
 @pytest.mark.unit
@@ -201,7 +203,7 @@ def test_rationale_is_nonempty_string() -> None:
 @pytest.mark.unit
 def test_per_task_gb_constant() -> None:
     """PER_TASK_GB is the documented 4.0 GB per concurrent recipe estimate."""
-    assert PER_TASK_GB == 4.0
+    assert PER_TASK_GB == 2.5
 
 
 @pytest.mark.unit

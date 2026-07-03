@@ -424,8 +424,8 @@ def test_resolve_parallelism_bb_threads_capped_by_low_ram(tmp_path: Path, monkey
     monkeypatch.setattr("bakar.tuning.host_ram_gb", lambda: 32.0)
     cfg = _make_cfg(tmp_path, nproc=32)
 
-    # PARALLEL_MAKE = nproc (no dist); BB_NUMBER_THREADS = min(32, 32/4) = 8.
-    assert _resolve_parallelism(cfg) == (32, 8)
+    # PARALLEL_MAKE = nproc (no dist); BB_NUMBER_THREADS = min(32, floor(32/2.5)) = 12.
+    assert _resolve_parallelism(cfg) == (32, 12)
 
 
 def test_resolve_parallelism_sccache_dist_uses_cluster_cpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
