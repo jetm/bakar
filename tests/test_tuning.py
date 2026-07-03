@@ -105,24 +105,49 @@ def test_sccache_dist_zero_cluster_cpus_falls_back_to_nproc() -> None:
 
 
 @pytest.mark.unit
-def test_sccache_dist_drops_nproc_cap() -> None:
-    """Under sccache-dist the local-nproc cap is dropped: with nproc=8 and
-    ram=96, BBNT is the RAM-bound floor(96/0.95)=101, not min(8, ...)."""
+def test_sccache_dist_relaxes_nproc_cap_to_core_multiple() -> None:
+    """Under sccache-dist the local-nproc cap is relaxed to 4x nproc, not dropped:
+    with nproc=8 and ram=96, BBNT is min(floor(96/0.95)=101, 4*8=32) = 32 - far above
+    the plain 8-recipe cap, but still core-bounded so a thin host cannot OOM."""
     plan = derive_parallelism(nproc_local=8, ram_gb=96.0, launcher="sccache-dist", cluster_cpus=64)
+
+    assert plan.bb_number_threads == 32
+
+
+def test_sccache_dist_caps_threads_at_core_multiple_on_thin_host() -> None:
+    """A high-RAM/low-core host is bounded by 4x nproc, not RAM, to avoid an OOM
+    thread count: nproc=8/ram=256 -> min(floor(256/0.95)=269, 4*8=32) = 32."""
+    plan = derive_parallelism(nproc_local=8, ram_gb=256.0, launcher="sccache-dist", cluster_cpus=64)
+
+    assert plan.bb_number_threads == 32
+
+
+def test_sccache_dist_ram_binds_below_core_cap() -> None:
+    """When RAM is the tighter bound the core cap does not bite: nproc=32/ram=96 ->
+    min(floor(96/0.95)=101, 4*32=128) = 101, so the concurrency raise still lands."""
+    plan = derive_parallelism(nproc_local=32, ram_gb=96.0, launcher="sccache-dist", cluster_cpus=64)
 
     assert plan.bb_number_threads == 101
 
 
+def test_derive_parallelism_floors_nonpositive_nproc() -> None:
+    """A non-positive nproc (unreadable /proc) floors to 1 rather than yielding PM=0."""
+    plan = derive_parallelism(nproc_local=0, ram_gb=96.0, launcher="none", cluster_cpus=None)
+
+    assert plan.parallel_make == 1
+    assert plan.bb_number_threads == 1
+
+
 @pytest.mark.unit
 def test_ccache_keeps_nproc_cap_at_same_inputs() -> None:
-    """At nproc=8/ram=96, ccache keeps the nproc cap (BBNT=8) while sccache-dist
-    relaxes it (BBNT=101). Only the launcher differs - proves the cap is
-    dropped for the dist path alone."""
+    """At nproc=8/ram=96, ccache keeps the tight nproc cap (BBNT=8) while sccache-dist
+    relaxes it to 4x nproc (BBNT=32). Only the launcher differs - proves the dist path
+    alone loosens (but does not drop) the local-core cap."""
     ccache = derive_parallelism(nproc_local=8, ram_gb=96.0, launcher="ccache", cluster_cpus=64)
     dist = derive_parallelism(nproc_local=8, ram_gb=96.0, launcher="sccache-dist", cluster_cpus=64)
 
     assert ccache.bb_number_threads == 8
-    assert dist.bb_number_threads == 101
+    assert dist.bb_number_threads == 32
 
 
 @pytest.mark.unit

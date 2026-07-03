@@ -27,6 +27,14 @@ PER_TASK_GB = 4.0
 # idle between do_compile bursts in an under-saturated build.
 SCCACHE_DIST_PER_TASK_GB = 0.95
 
+# Even with the compile offloaded, local recipes hold fetch/configure/install and
+# especially link (never distributed) resident, so recipe concurrency is bounded
+# by a multiple of local cores in addition to the RAM cap. Dropping the local cap
+# entirely let a high-RAM/low-core host derive an OOM-inducing thread count
+# (e.g. 128GB/8-core -> 134 recipes); this ceiling keeps the offloaded-compile
+# concurrency raise on well-provisioned hosts while protecting thin ones.
+LOCAL_RECIPE_MULTIPLIER = 4
+
 # Indirected so a test can point the meminfo read at a fixture file.
 _MEMINFO_PATH = Path("/proc/meminfo")
 
@@ -69,6 +77,9 @@ def derive_parallelism(
     ``max(1, floor(ram_gb / SCCACHE_DIST_PER_TASK_GB))``. Otherwise it keeps the
     local cap: ``max(1, min(nproc_local, floor(ram_gb / PER_TASK_GB)))``.
     """
+    # A non-positive nproc (unreadable /proc, bad config) would otherwise yield an
+    # invalid PARALLEL_MAKE=0 or a zero core cap; floor it to one usable core.
+    nproc_local = max(1, nproc_local)
     distributing = launcher == "sccache-dist" and isinstance(cluster_cpus, int) and cluster_cpus > 0
     if distributing:
         parallel_make = cluster_cpus
@@ -77,10 +88,11 @@ def derive_parallelism(
         # footprint is smaller and local cores no longer bound recipe
         # concurrency: use the smaller divisor and drop the nproc cap.
         ram_threads = math.floor(ram_gb / SCCACHE_DIST_PER_TASK_GB)
-        bb_number_threads = max(1, ram_threads)
+        core_cap = LOCAL_RECIPE_MULTIPLIER * nproc_local
+        bb_number_threads = max(1, min(ram_threads, core_cap))
         bbnt_reason = (
-            f"sccache-dist: ram {ram_gb:g}GB/{SCCACHE_DIST_PER_TASK_GB:g}GB={ram_threads}, "
-            f"nproc cap dropped (compile offloaded)"
+            f"sccache-dist: min(ram {ram_gb:g}GB/{SCCACHE_DIST_PER_TASK_GB:g}GB={ram_threads}, "
+            f"{LOCAL_RECIPE_MULTIPLIER}x nproc={core_cap})"
         )
     else:
         parallel_make = nproc_local
