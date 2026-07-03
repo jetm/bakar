@@ -11,7 +11,7 @@ import importlib.resources
 import os
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 import typer
 from rich.table import Table
@@ -28,6 +28,42 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Workspace detection
 # ---------------------------------------------------------------------------
+
+
+_WORKSPACE_HELP = "Workspace root; auto-detected if omitted"
+
+
+def _enter_workspace(workspace: Path | None) -> Path | None:
+    """Resolve, validate, and chdir into an explicit ``-w``/``--workspace`` path.
+
+    Returns ``None`` unchanged (no chdir) so commands without ``-w`` keep their
+    CWD-based behavior. Otherwise resolves ``workspace`` to an absolute path,
+    ``chdir``s into it, and returns it so a relative positional argument
+    resolves against the workspace instead of the original CWD. A missing path
+    or a non-directory raises :class:`typer.BadParameter`, which Typer renders
+    as exit 2 naming the option.
+    """
+    if workspace is None:
+        return None
+    resolved = workspace.expanduser().resolve()
+    if not resolved.is_dir():
+        raise typer.BadParameter(
+            f"workspace does not exist or is not a directory: {resolved}",
+            param_hint="--workspace/-w",
+        )
+    os.chdir(resolved)
+    return resolved
+
+
+def _workspace_callback(value: Path | None) -> Path | None:
+    """Typer parameter callback: chdir into ``value`` before the command body runs."""
+    return _enter_workspace(value)
+
+
+WorkspaceOption = Annotated[
+    Path | None,
+    typer.Option("--workspace", "-w", callback=_workspace_callback, help=_WORKSPACE_HELP, is_eager=True),
+]
 
 
 def _bbsetup_workspace(workspace: Path | None) -> Path | None:
