@@ -331,6 +331,8 @@ _NOT_ELIGIBLE_RE = re.compile(r"Compiling locally \(not eligible")
 _FALLBACK_RE = re.compile(r"falling back to local: (?P<reason>.+?)\s*$")
 # rustc JSON diagnostic: ..."code":{"code":"E0433"...
 _RUST_ERR_RE = re.compile(r'"code":"(?P<code>E\d{3,4})"')
+# W2 gauge: the fork logs live preprocess concurrency (PC1 jobserver token pressure).
+_PREPROC_CONC_RE = re.compile(r"preprocess done in \d+ms \(concurrent (?P<conc>\d+)\)")
 
 
 @dataclass
@@ -346,6 +348,8 @@ class ClientStats:
     not_eligible: int = 0  # configure conftests kept local (expected)
     fallback_reasons: Counter = field(default_factory=Counter)
     rust_error_codes: Counter = field(default_factory=Counter)
+    preproc_concurrency_max: int | None = None  # peak cc1 -E tokens held at once on PC1's jobserver
+    preproc_concurrency_p95: int | None = None
 
 
 def _norm_reason(reason: str) -> str:
@@ -371,6 +375,7 @@ def parse_client_log(lines: Iterable[str]) -> ClientStats:
     put_tcs: list[int] = []
     run_fetches: list[int] = []
     preprocs: list[int] = []
+    concs: list[int] = []
     for line in lines:
         m = _JOB_RE.search(line)
         if m is not None:
@@ -389,6 +394,10 @@ def parse_client_log(lines: Iterable[str]) -> ClientStats:
         if fb is not None:
             stats.fallback_reasons[_norm_reason(fb.group("reason"))] += 1
             continue
+        cm = _PREPROC_CONC_RE.search(line)
+        if cm is not None:
+            concs.append(int(cm.group("conc")))
+            continue
         re_err = _RUST_ERR_RE.search(line)
         if re_err is not None:
             stats.rust_error_codes[re_err.group("code")] += 1
@@ -398,4 +407,8 @@ def parse_client_log(lines: Iterable[str]) -> ClientStats:
         stats.mean_run_fetch_ms = mean(run_fetches)
     if preprocs:
         stats.mean_preprocess_ms = mean(preprocs)
+    if concs:
+        ordered = sorted(concs)
+        stats.preproc_concurrency_max = ordered[-1]
+        stats.preproc_concurrency_p95 = ordered[min(len(ordered) - 1, round(0.95 * (len(ordered) - 1)))]
     return stats

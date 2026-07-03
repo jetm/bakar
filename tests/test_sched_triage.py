@@ -230,3 +230,25 @@ def test_time_weighted_util_weights_polls_by_the_span_they_represent() -> None:
     assert w.max_gap_s == 100.0
     assert w.median_cadence_s == 50.5
     assert round(w.mean_util_pct, 1) == 66.0
+
+
+def test_parse_client_log_reads_preproc_concurrency_gauge() -> None:
+    """The fork's PC1 preprocess-concurrency gauge is summarised as p95 and max."""
+    lines = [
+        "preprocess done in 10ms (concurrent 8)",
+        "preprocess done in 20ms (concurrent 12)",
+        "preprocess done in 5ms (concurrent 30)",
+    ]
+    stats = parse_client_log(lines)
+    assert stats.preproc_concurrency_max == 30
+    assert stats.preproc_concurrency_p95 == 30
+
+
+def test_parse_client_log_preproc_concurrency_none_when_absent() -> None:
+    """A log without the gauge (pre-fork-emit) leaves the concurrency fields None."""
+    line = (
+        "[a.o]: dist-job done on 10.42.0.2:10501 in 5ms (put_tc 1ms, alloc 0ms, submit 0ms, run+fetch 4ms, in_flight 1)"
+    )
+    stats = parse_client_log([line])
+    assert stats.preproc_concurrency_max is None
+    assert stats.preproc_concurrency_p95 is None
