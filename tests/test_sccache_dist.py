@@ -940,17 +940,23 @@ def test_overlay_exports_sccache_scheduler_env() -> None:
 
 @pytest.mark.unit
 def test_bbclass_distributes_gcc_runtime_recipes(tmp_path: Path) -> None:
-    """The bbclass no longer force-excludes the gcc/glibc bootstrap recipes.
+    """The bbclass excludes qemu-system-native but keeps the gcc/glibc bootstrap.
 
-    sccache-dist used to break two ways on these - glibc's side `.o.dt`
-    dependency files were not captured when zipping remote outputs, and the
-    libgcc/gcc-sanitizers soft-float files errored on -Wimplicit-fallthrough once
-    preprocessing stripped the suppressing comments - so they were listed in
+    sccache-dist used to break two ways on the bootstrap recipes - glibc's side
+    `.o.dt` dependency files were not captured when zipping remote outputs, and
+    the libgcc/gcc-sanitizers soft-float files errored on -Wimplicit-fallthrough
+    once preprocessing stripped the suppressing comments - so they were listed in
     SCCACHE_EXCLUDED_PN. The client now falls back to a local recompile on any
     dist-infra failure, so the overwhelming majority of their objects distribute
-    and the rest fall back safely; the exclusion list is empty. This is the
-    falsifier guard: re-adding any PN to the list fails the empty-list assertion.
-    The per-PN gate is kept as a documented escape hatch.
+    and the rest fall back safely; none of them are excluded.
+
+    qemu-system-native IS excluded, on a different rationale: its ~5516 ninja
+    objects measure ~1.0 CPU-s each (cheap), so the preprocess + network RTT +
+    scheduler-queue tax per distributed compile exceeds the compile itself and
+    distribution runs ~2x slower than a local -j53 (measured: 388s wall, 14.3x of
+    -j53). This is the falsifier guard: dropping qemu-system-native from the list,
+    or re-adding any bootstrap recipe, fails these assertions. The per-PN gate is
+    kept as a documented escape hatch.
     """
     from pathlib import Path
 
@@ -975,7 +981,17 @@ def test_bbclass_distributes_gcc_runtime_recipes(tmp_path: Path) -> None:
     bbclass = (materialize_sccache_layer(cfg) / "classes" / "sccache.bbclass").read_text()
 
     pn_assignment = bbclass.split("SCCACHE_EXCLUDED_PN ?= ")[1].split("\n")[0]
-    assert pn_assignment == '""', pn_assignment
+    excluded_pns = pn_assignment.strip().strip('"').split()
+    assert "qemu-system-native" in excluded_pns, pn_assignment
+    for bootstrap_pn in (
+        "glibc",
+        "glibc-initial",
+        "libgcc",
+        "libgcc-initial",
+        "gcc-runtime",
+        "gcc-sanitizers",
+    ):
+        assert bootstrap_pn not in excluded_pns, pn_assignment
     # The per-PN escape-hatch gate must survive so a recipe can still be forced local.
     assert "d.getVar('PN') in" in bbclass
     assert "d.getVar('SCCACHE_EXCLUDED_PN').split()" in bbclass

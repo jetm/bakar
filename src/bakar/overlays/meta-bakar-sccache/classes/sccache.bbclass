@@ -65,7 +65,21 @@ SCCACHE_EXCLUDED_CLASSES ?= ""
 # these recipes still distribute (glibc 6427/6429, libgcc 604/608, gcc-runtime
 # 1026/1026, gcc-sanitizers ~960/1066). Add a PN here to force a recipe local when
 # its dist round-trips never pay off.
-SCCACHE_EXCLUDED_PN ?= ""
+#
+# qemu-system-native is such a recipe. Measured on avocado scarthgap cold
+# (buildstats do_compile: 388s wall, 5548 child CPU-s over 5516 ninja objects =
+# ~1.0 CPU-s per object), it reaches only 14.3x effective concurrency out of
+# -j53. Its objects are too cheap to amortize the preprocess + network RTT +
+# scheduler-queue tax each distributed compile pays, so distribution runs ~2x
+# slower than a plain local -j53 would. It never hits the admission ceiling (0
+# capacity fallbacks) - the loss is pure per-object overhead, not contention.
+# Contrast llvm-native (2571 C++ objects, ~9 CPU-s each, 103x of -j53, 23170
+# CPU-s compressed into 224s wall): expensive objects are exactly where
+# distribution pays 2-3x, so it stays eligible. The dividing line is object
+# cost, not recipe identity - list a recipe here only once its objects measure
+# cheap enough that the round-trip never pays off. A cluster with near-zero
+# client<->server RTT can re-enable it with SCCACHE_EXCLUDED_PN = "" in local.conf.
+SCCACHE_EXCLUDED_PN ?= "qemu-system-native"
 
 python () {
     if (bb.utils.to_boolean(d.getVar('SCCACHE_DISABLE')) or
