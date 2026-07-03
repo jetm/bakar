@@ -20,6 +20,7 @@ the plan logic is tested without touching the live host.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -84,7 +85,9 @@ def _patch_results(monkeypatch: pytest.MonkeyPatch, results: Iterable[CheckResul
     monkeypatch.setattr(plan_mod, "run_all", lambda _cfg, _bsp: list(results))
 
 
-_CFG = SimpleNamespace(kas_container_image="jetm/kas-build-env:latest")
+# workspace is a non-existent dir so _git_identity_probe_dir returns None (probe_dir
+# unset); the git argv then stays plain, which these mapping tests assert against.
+_CFG = SimpleNamespace(kas_container_image="jetm/kas-build-env:latest", workspace=Path("/nonexistent"))
 
 
 def _types(actions: list) -> set[type]:

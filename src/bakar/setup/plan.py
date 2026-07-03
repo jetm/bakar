@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bakar import config
-from bakar.diagnostics import Status, check_host_preflight, run_all
+from bakar.diagnostics import Status, _git_identity_probe_dir, check_host_preflight, run_all
 from bakar.setup.actions.cache import CacheDirsAction
 from bakar.setup.actions.config_write import ConfigWriteAction
 from bakar.setup.actions.docker import (
@@ -197,7 +197,13 @@ def _candidate_actions(
         # it there is no value to write, so the action is skipped.
         if ctx.git_email is None or ctx.git_name is None:
             return []
-        return [GitConfigAction(email=ctx.git_email, name=ctx.git_name)]
+        return [
+            GitConfigAction(
+                email=ctx.git_email,
+                name=ctx.git_name,
+                probe_dir=_git_identity_probe_dir(cfg.workspace),
+            )
+        ]
 
     # Remaining checks are docker-dependent. With no docker engine installed the
     # advisory install hint stands in their place and no action is produced.

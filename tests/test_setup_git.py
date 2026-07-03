@@ -56,6 +56,20 @@ def test_operations_write_identity_without_global() -> None:
     for op in ops:
         assert "--global" not in op.argv
         assert "--local" not in op.argv
+
+
+def test_operations_target_probe_dir_when_given() -> None:
+    """With a probe_dir the writes run ``git -C <dir> config`` so they land where the
+    check reads - a sub-repo where the includeIf per-tree identity resolves - and a
+    non-global write there succeeds instead of aborting outside a repo."""
+    ops = GitConfigAction("you@example.com", "Your Name", probe_dir="/ws/layer").operations()
+
+    assert [op.argv for op in ops] == [
+        ["git", "-C", "/ws/layer", "config", "user.email", "you@example.com"],
+        ["git", "-C", "/ws/layer", "config", "user.name", "Your Name"],
+    ]
+    for op in ops:
+        assert "--global" not in op.argv
         assert op.needs_root is False
 
 
