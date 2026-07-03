@@ -19,6 +19,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
+    WorkspaceOption,
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
@@ -175,10 +176,7 @@ def diffsigs(
         str | None,
         typer.Option("--machine", "-m", help="Override the target machine"),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root override"),
-    ] = None,
+    workspace: WorkspaceOption = None,
     raw: Annotated[
         bool,
         typer.Option("--raw", help="Print the full unprocessed bitbake-diffsigs output including kas startup lines"),

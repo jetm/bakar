@@ -18,7 +18,7 @@ import typer
 import bakar.commands._app as _state
 from bakar import hashserv
 from bakar.commands._app import app, console
-from bakar.commands._helpers import _dispatch_bsp, _dispatch_from_yaml, _resolve_workspace
+from bakar.commands._helpers import WorkspaceOption, _dispatch_bsp, _dispatch_from_yaml, _resolve_workspace
 from bakar.config import BuildConfig, resolve
 
 hashserv_app = typer.Typer(
@@ -65,10 +65,7 @@ def start(
             help="Optional kas YAML; routes through _dispatch_from_yaml when supplied",
         ),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root; auto-detected if omitted"),
-    ] = None,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Start the workspace hashserv daemon (or report the existing URL)."""
     cfg = _resolve_cfg(workspace, kas_yaml)
@@ -95,10 +92,7 @@ def stop(
             help="Optional kas YAML; routes through _dispatch_from_yaml when supplied",
         ),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root; auto-detected if omitted"),
-    ] = None,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Signal the workspace hashserv daemon to stop and clean PID/port files."""
     cfg = _resolve_cfg(workspace, kas_yaml)
@@ -117,10 +111,7 @@ def status(
             help="Optional kas YAML; routes through _dispatch_from_yaml when supplied",
         ),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root; auto-detected if omitted"),
-    ] = None,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Print the current daemon state (URL + PID, or ``not running``)."""
     cfg = _resolve_cfg(workspace, kas_yaml)

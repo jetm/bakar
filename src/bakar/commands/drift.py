@@ -23,7 +23,7 @@ import typer
 import bakar.commands._app as _state
 from bakar import pin_state
 from bakar.commands._app import app, console
-from bakar.commands._helpers import _normalize_dispatch, _resolve_workspace
+from bakar.commands._helpers import WorkspaceOption, _normalize_dispatch, _resolve_workspace
 from bakar.config import BSPSpec, resolve
 from bakar.layers import discover_source_repos
 
@@ -81,10 +81,7 @@ def drift(
         str | None,
         typer.Option("--manifest", "-f", help="Manifest filename (NXP/TI) or kas YAML path."),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root override."),
-    ] = None,
+    workspace: WorkspaceOption = None,
     show_json: Annotated[
         bool,
         typer.Option("--json", help="Emit JSON array to stdout instead of plain text."),

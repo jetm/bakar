@@ -18,7 +18,7 @@ import typer
 import bakar.commands._app as _state
 from bakar import prserv
 from bakar.commands._app import app, console
-from bakar.commands._helpers import _dispatch_bsp, _dispatch_from_yaml, _resolve_workspace
+from bakar.commands._helpers import WorkspaceOption, _dispatch_bsp, _dispatch_from_yaml, _resolve_workspace
 from bakar.config import BuildConfig, resolve
 
 prserv_app = typer.Typer(
@@ -52,10 +52,7 @@ def start(
         Path | None,
         typer.Argument(exists=False, help="Optional kas YAML; routes through _dispatch_from_yaml"),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root; auto-detected if omitted"),
-    ] = None,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Start the workspace prserv daemon (or report the existing PRSERV_HOST)."""
     cfg = _resolve_cfg(workspace, kas_yaml)
@@ -75,10 +72,7 @@ def stop(
         Path | None,
         typer.Argument(exists=False, help="Optional kas YAML; routes through _dispatch_from_yaml"),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root; auto-detected if omitted"),
-    ] = None,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Gracefully stop the workspace prserv daemon (preserves the PR DB)."""
     cfg = _resolve_cfg(workspace, kas_yaml)
@@ -94,10 +88,7 @@ def status(
         Path | None,
         typer.Argument(exists=False, help="Optional kas YAML; routes through _dispatch_from_yaml"),
     ] = None,
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root; auto-detected if omitted"),
-    ] = None,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Print the current daemon state (PRSERV_HOST, or ``not running``)."""
     cfg = _resolve_cfg(workspace, kas_yaml)
