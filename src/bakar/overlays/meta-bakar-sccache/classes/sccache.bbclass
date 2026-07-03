@@ -2,15 +2,30 @@
 # sccache.bbclass - route eligible target compiles through sccache-dist.
 #
 # Modeled on oe-core's meta/classes/ccache.bbclass: set CCACHE per-recipe
-# through an anonymous python gate so only compatible recipes route through the
-# launcher, and honor the same per-recipe CCACHE_DISABLE escape hatch. Unlike
-# ccache.bbclass, this class scopes CCACHE to the do_compile-family task
-# OVERRIDES (CCACHE:task-compile*) instead of setting it globally: OE prepends
-# ${CCACHE} to CC for every task, so a global launcher routed autoconf's
-# thousands of conftest do_configure compiles through sccache - 45% of build
-# task-time at 2.8% CPU. With the task scope, only do_compile distributes;
-# configure/install run plain gcc locally. Enable with `INHERIT += "sccache"`
-# (the bakar sccache tuning overlay does this).
+# through an anonymous python gate so only selected recipes route through the
+# launcher, and honor the same per-recipe CCACHE_DISABLE escape hatch. This
+# class distributes on an ALLOW-LIST: only recipes named in SCCACHE_INCLUDED_PN
+# set CCACHE, so only they reach the sccache client daemon at all. Every other
+# recipe compiles plain-local and never contacts the daemon.
+#
+# Why an allow-list, not a deny-list: sccache-dist ships compile-units to a
+# remote build server, but every compile - distributable or not - must first
+# visit the single client daemon, which preprocesses locally (cc1 -E) and
+# packages inputs. On a whole image that counter is the throughput ceiling:
+# thousands of cheap objects plus autoconf's conftest storm queue behind it and
+# starve make's job slots, so distribution loses to plain ccache. The win lives
+# only in heavy-object recipes (llvm-native measured 103x of -j53, the
+# cross-toolchain C++ builds) where a ~9 CPU-s object dwarfs the per-compile
+# tax. So distribute ONLY those and let bitbake+sstate carry the rest.
+#
+# CCACHE is set globally within an allow-listed recipe (NOT task-scoped): OE
+# bakes ${CCACHE} into CC at do_configure and oe_runmake at do_compile passes no
+# CC= override, so a task-scoped CCACHE would leave configure baking bare gcc
+# and nothing would distribute. Global CCACHE means an allow-listed recipe's own
+# conftests also invoke sccache, but sccache tags conftests "not eligible for
+# distributed compilation" and keeps them local, and only a handful of recipes
+# carry the launcher, so the conftest load on the daemon is bounded. Enable with
+# `INHERIT += "sccache"` (the bakar sccache tuning overlay does this).
 #
 # sccache-dist differs from ccache in three ways that this class must handle,
 # none of which ccache.bbclass needs to:
@@ -38,58 +53,62 @@
 # Per-recipe opt-out, mirrors CCACHE_DISABLE.
 SCCACHE_DISABLE ??= ""
 
-# No classes excluded: native, cross, and crosssdk all distribute now. They
-# compile with the host/build compiler, whose `-print-prog-name=as` returns a
-# bare `as`; the sccache fork resolves that against the compile task's PATH (the
-# same -print-prog-name then which(PATH) fallback OE's icecc.bbclass used) rather
-# than the daemon's PATH, so the right assembler is packaged. Verified on avocado
-# scarthgap against the fixed cluster: zlib-native and linux-libc-headers (711
-# tasks) for native, and binutils-cross-aarch64 (306 compiles distributed to the
-# second node) for cross - all 0-error. crosssdk shares that identical
-# host-compiler/bare-`as` path (only the target triple differs, which does not
-# affect host-side `as` packaging) and is exercised only during SDK builds.
-# nativesdk and cross-canadian were never excluded (OE crosssdk compiler,
-# absolute paths, already packageable).
-SCCACHE_EXCLUDED_CLASSES ?= ""
-
-# Target recipes that must compile locally even though their class is eligible.
-# Empty: the gcc/glibc bootstrap recipes (glibc, glibc-initial, libgcc,
-# libgcc-initial, gcc-runtime, gcc-sanitizers) used to be listed here, but they
-# distribute cleanly now that the sccache-dist client falls back to a local
-# recompile on any dist-infra failure. The fallback covers the two failure points
-# these recipes hit: glibc's per-object `.o.dt` dependency file, which the server
-# drops from the returned output set, and the libgcc/gcc-sanitizers soft-float
-# files whose -Wimplicit-fallthrough suppressing comments preprocessing strips, so
-# the remote -Werror compile errors where a local one (comments intact) does not.
-# Both fall back and the local recompile succeeds; the vast majority of objects in
-# these recipes still distribute (glibc 6427/6429, libgcc 604/608, gcc-runtime
-# 1026/1026, gcc-sanitizers ~960/1066). Add a PN here to force a recipe local when
-# its dist round-trips never pay off.
+# Allow-list: ONLY these recipes distribute; everything else compiles
+# plain-local and never contacts the daemon. Membership is the measured (or
+# strongly-inferred) set of heavy-object recipes where a distributed compile's
+# per-object tax (local cc1 -E + round trip + input packaging) is dwarfed by the
+# object's own cost, so distribution pays 2-3x. Grouped by tier:
 #
-# qemu-system-native is such a recipe. Measured on avocado scarthgap cold
-# (buildstats do_compile: 388s wall, 5548 child CPU-s over 5516 ninja objects =
-# ~1.0 CPU-s per object), it reaches only 14.3x effective concurrency out of
-# -j53. Its objects are too cheap to amortize the preprocess + network RTT +
-# scheduler-queue tax each distributed compile pays, so distribution runs ~2x
-# slower than a plain local -j53 would. It never hits the admission ceiling (0
-# capacity fallbacks) - the loss is pure per-object overhead, not contention.
-# Contrast llvm-native (2571 C++ objects, ~9 CPU-s each, 103x of -j53, 23170
-# CPU-s compressed into 224s wall): expensive objects are exactly where
-# distribution pays 2-3x, so it stays eligible. The dividing line is object
-# cost, not recipe identity - list a recipe here only once its objects measure
-# cheap enough that the round-trip never pays off. A cluster with near-zero
-# client<->server RTT can re-enable it with SCCACHE_EXCLUDED_PN = "" in local.conf.
-SCCACHE_EXCLUDED_PN ?= "qemu-system-native"
+# Toolchain / LLVM (built on most non-trivial builds, expensive C++):
+#   llvm-native                   - 2571 C++ objects ~9 CPU-s each, measured 103x
+#                                   of -j53 (23170 CPU-s into 224s wall). The one
+#                                   hard-measured win. It distributes via
+#                                   OECMAKE_*_COMPILER_LAUNCHER (set below)
+#                                   regardless of CCACHE, but is listed so the
+#                                   gate reaches that launcher setup.
+#   gcc-cross-${TARGET_ARCH}      - the cross C++ compiler build, critical path.
+#   binutils-cross-${TARGET_ARCH} - measured 306 compiles distributed, 0-error.
+#   gcc-runtime, gcc-sanitizers   - libstdc++/libgcc and asan/tsan/ubsan runtimes,
+#                                   large C++ (a few objects fall back local on a
+#                                   -Wimplicit-fallthrough/soft-float preprocessing
+#                                   mismatch, harmless).
+#   clang, clang-cross-${TARGET_ARCH}, clang-crosssdk-${SDK_ARCH}
+#                                 - target and cross Clang, same heavy C++ profile.
+#   compiler-rt, libcxx, openmp   - LLVM runtime C++ built with the clang toolchain.
+#   rust-llvm, rust-llvm-native   - the LLVM (C++) behind rustc; the rustc crates
+#                                   themselves are NOT distributable (no sccache
+#                                   Rust backend) but this LLVM build is.
+#
+# Kernel and init:
+#   linux-yocto                   - ~1128 target C objects, 1124 distribute (4
+#                                   .incbin vdso/config/dtb objects fall back).
+#   systemd                       - large C project, many translation units.
+#
+# Feed/extra big C++ (only built for the larger rootfs with `opengl wayland`; an
+# inert no-op on core-image-minimal, where none of them are scheduled):
+#   chromium-ozone-wayland, chromium-x11 - full Chromium 146 C++ tree.
+#   qtwebengine, wpewebkit        - embedded browser engines, huge C++ TUs.
+#   nodejs                        - bundles V8, template-heavy C++.
+#   qtbase, qtdeclarative         - large C++ frameworks.
+#   opencv                        - C++ vision library, template/SIMD-heavy TUs.
+#
+# A listed recipe that is not built is inert. The cross/native recipes compile
+# with the host/build compiler, whose `-print-prog-name=as` returns a bare `as`;
+# the sccache fork resolves it against the compile task's PATH (icecc.bbclass's
+# which(PATH) fallback) rather than the daemon's PATH, so the right assembler is
+# packaged. Any dist-infra failure falls back to a correct local recompile, so a
+# listed recipe never breaks - a bad fit only wastes round-trips. The dividing
+# line is object cost, not recipe identity: qemu-system-native (~1.0 CPU-s per
+# object over 5516 ninja objects, ~2x SLOWER distributed than local -j53) is the
+# archetypal loser and stays OFF the list.
+SCCACHE_INCLUDED_PN ?= "llvm-native gcc-cross-${TARGET_ARCH} binutils-cross-${TARGET_ARCH} gcc-runtime gcc-sanitizers clang clang-cross-${TARGET_ARCH} clang-crosssdk-${SDK_ARCH} compiler-rt libcxx openmp rust-llvm rust-llvm-native linux-yocto systemd chromium-ozone-wayland chromium-x11 qtwebengine wpewebkit nodejs qtbase qtdeclarative opencv"
 
 python () {
     if (bb.utils.to_boolean(d.getVar('SCCACHE_DISABLE')) or
             bb.utils.to_boolean(d.getVar('CCACHE_DISABLE'))):
         return
-    if d.getVar('PN') in d.getVar('SCCACHE_EXCLUDED_PN').split():
+    if d.getVar('PN') not in (d.getVar('SCCACHE_INCLUDED_PN') or '').split():
         return
-    for cls in d.getVar('SCCACHE_EXCLUDED_CLASSES').split():
-        if bb.data.inherits_class(cls, d):
-            return
     # Launch the compiler through sccache globally, exactly as oe-core's
     # ccache.bbclass does (`CCACHE = 'ccache '`). OE bakes ${CCACHE} into CC
     # (`CC = "${CCACHE}${HOST_PREFIX}gcc ..."`), so with a global CCACHE autotools'
@@ -151,11 +170,10 @@ sccache_write_rustc_shim () {
 }
 
 # Route the build/host compiler through sccache too (${CCACHE} restored).
-# Excluded recipes never set CCACHE, so this expands to a bare compiler and stays
-# local; eligible recipes get "sccache <gcc>" during do_compile (CCACHE is now
-# task-scoped, so configure runs plain gcc) and distribute now that the fork
-# resolves the bare `as` against the compile PATH. Definitions mirror
-# gcc-native.bbclass.
+# Non-allow-listed recipes never set CCACHE, so this expands to a bare compiler
+# and stays local; allow-listed recipes get "sccache <gcc>" and distribute now
+# that the fork resolves the bare `as` against the compile PATH. Definitions
+# mirror gcc-native.bbclass.
 BUILD_CC:forcevariable = "${CCACHE}${BUILD_PREFIX}gcc ${BUILD_CC_ARCH}"
 BUILD_CXX:forcevariable = "${CCACHE}${BUILD_PREFIX}g++ ${BUILD_CC_ARCH}"
 
@@ -166,11 +184,12 @@ HOSTTOOLS += "sccache"
 
 # Let the compiler reach the scheduler. bitbake runs each task in a fresh
 # network namespace (loopback down) via unshare(CLONE_NEWNET) unless the task
-# sets [network] = "1" - only do_fetch opts in by default. Now that CCACHE is
-# scoped to the compile family (see the gate above), the sccache client runs
-# ONLY in do_compile and its ptest mirror, so only those two need to reach the
-# scheduler. do_configure and do_install run plain gcc - no CCACHE in their task
-# scope - so they need no network grant; granting them one would be dead config.
+# sets [network] = "1" - only do_fetch opts in by default. CCACHE is set
+# globally for an allow-listed recipe, so its sccache client runs in every
+# compile-bearing task; but only do_compile (and its ptest mirror) DISPATCHES to
+# the cluster. do_configure's conftests are tagged not-eligible and kept local
+# by sccache, so configure/install reach no scheduler and need no network grant;
+# granting them one would be dead config.
 do_compile[network] = "1"
 do_compile_ptest_base[network] = "1"
 # linux-yocto defines two extra compile tasks beyond do_compile that run

@@ -617,25 +617,39 @@ def test_overlay_adds_sccache_layer_repo() -> None:
 
 
 @pytest.mark.unit
-def test_sccache_class_excludes_no_compiler_classes() -> None:
-    """The class excludes no inherit-class: native/cross/crosssdk distribute too.
+def test_sccache_class_distributes_on_allowlist() -> None:
+    """The class distributes on an allow-list: only SCCACHE_INCLUDED_PN recipes.
 
-    All of native, cross, and crosssdk compile with the host/build gcc whose
-    `-print-prog-name=as` returns a bare `as`; the sccache fork resolves that
-    against the compile task's PATH (not the daemon's), so the right assembler is
-    packaged and they distribute - measured on avocado scarthgap as zlib-native,
-    linux-libc-headers, and binutils-cross-aarch64, all 0-error. nativesdk,
-    cross-canadian, and the kernel were never excluded either. This is the
-    falsifier guard: re-adding any class to the excluded line fails the empty-list
-    assertion. The per-class gate stays as a documented escape hatch.
+    sccache-dist's single client daemon is the whole-image throughput ceiling, so
+    only heavy-object recipes (where the object's own cost dwarfs the per-compile
+    distribution tax) are worth distributing. The gate early-returns for any
+    recipe NOT named in SCCACHE_INCLUDED_PN, so everything else compiles
+    plain-local and never contacts the daemon. Falsifier: a deny-list gate
+    (`PN in ...EXCLUDED`) or a missing allow-list membership check would let the
+    cheap-object tail flood the daemon again.
     """
     text = _sccache_bbclass_text()
 
-    excluded_line = text.split("SCCACHE_EXCLUDED_CLASSES ?=")[1].split("\n")[0]
-    assert excluded_line.strip() == '""'
-    for cls in ("native", "cross", "crosssdk", "nativesdk", "cross-canadian", "kernel"):
-        assert cls not in excluded_line
-    assert "inherits_class(cls, d)" in text
+    included_line = text.split("SCCACHE_INCLUDED_PN ?=")[1].split("\n")[0]
+    for pn in (
+        "llvm-native",
+        "gcc-runtime",
+        "gcc-sanitizers",
+        "linux-yocto",
+        "systemd",
+        "clang",
+        "compiler-rt",
+        "rust-llvm",
+        "nodejs",
+        "opencv",
+    ):
+        assert pn in included_line, included_line
+    # Cross recipes are arch-parameterized, expanded by bitbake at parse time.
+    assert "${TARGET_ARCH}" in included_line
+    # Allow-list gate, not the old deny-list.
+    assert "d.getVar('PN') not in" in text
+    assert "SCCACHE_EXCLUDED_PN" not in text
+    assert "SCCACHE_EXCLUDED_CLASSES" not in text
 
 
 @pytest.mark.unit
@@ -939,24 +953,18 @@ def test_overlay_exports_sccache_scheduler_env() -> None:
 
 
 @pytest.mark.unit
-def test_bbclass_distributes_gcc_runtime_recipes(tmp_path: Path) -> None:
-    """The bbclass excludes qemu-system-native but keeps the gcc/glibc bootstrap.
+def test_bbclass_allowlists_heavy_recipes_and_omits_qemu(tmp_path: Path) -> None:
+    """The materialized bbclass allow-lists heavy recipes and omits qemu-system-native.
 
-    sccache-dist used to break two ways on the bootstrap recipes - glibc's side
-    `.o.dt` dependency files were not captured when zipping remote outputs, and
-    the libgcc/gcc-sanitizers soft-float files errored on -Wimplicit-fallthrough
-    once preprocessing stripped the suppressing comments - so they were listed in
-    SCCACHE_EXCLUDED_PN. The client now falls back to a local recompile on any
-    dist-infra failure, so the overwhelming majority of their objects distribute
-    and the rest fall back safely; none of them are excluded.
-
-    qemu-system-native IS excluded, on a different rationale: its ~5516 ninja
-    objects measure ~1.0 CPU-s each (cheap), so the preprocess + network RTT +
-    scheduler-queue tax per distributed compile exceeds the compile itself and
-    distribution runs ~2x slower than a local -j53 (measured: 388s wall, 14.3x of
-    -j53). This is the falsifier guard: dropping qemu-system-native from the list,
-    or re-adding any bootstrap recipe, fails these assertions. The per-PN gate is
-    kept as a documented escape hatch.
+    Distribution pays only when an object's own cost dwarfs the per-compile tax
+    (local cc1 -E + round trip + input packaging). The heavy set - the toolchain
+    (llvm-native, gcc-cross/binutils-cross, gcc-runtime, gcc-sanitizers), the
+    kernel (linux-yocto), systemd, and clang - is on SCCACHE_INCLUDED_PN.
+    qemu-system-native is NOT: its ~5516 ninja objects measure ~1.0 CPU-s each
+    (cheap), so distribution ran ~2x slower than a local -j53 (measured: 388s
+    wall, 14.3x of -j53). Under the allow-list a recipe simply left off never
+    contacts the daemon. Falsifier: adding qemu-system-native to the allow-list,
+    or dropping a heavy recipe from it, fails these assertions.
     """
     from pathlib import Path
 
@@ -980,21 +988,25 @@ def test_bbclass_distributes_gcc_runtime_recipes(tmp_path: Path) -> None:
 
     bbclass = (materialize_sccache_layer(cfg) / "classes" / "sccache.bbclass").read_text()
 
-    pn_assignment = bbclass.split("SCCACHE_EXCLUDED_PN ?= ")[1].split("\n")[0]
-    excluded_pns = pn_assignment.strip().strip('"').split()
-    assert "qemu-system-native" in excluded_pns, pn_assignment
-    for bootstrap_pn in (
-        "glibc",
-        "glibc-initial",
-        "libgcc",
-        "libgcc-initial",
+    included_line = bbclass.split("SCCACHE_INCLUDED_PN ?= ")[1].split("\n")[0]
+    included_pns = included_line.strip().strip('"').split()
+    assert "qemu-system-native" not in included_pns, included_line
+    for heavy_pn in (
+        "llvm-native",
         "gcc-runtime",
         "gcc-sanitizers",
+        "linux-yocto",
+        "systemd",
+        "clang",
+        "compiler-rt",
+        "rust-llvm",
+        "nodejs",
+        "opencv",
     ):
-        assert bootstrap_pn not in excluded_pns, pn_assignment
-    # The per-PN escape-hatch gate must survive so a recipe can still be forced local.
-    assert "d.getVar('PN') in" in bbclass
-    assert "d.getVar('SCCACHE_EXCLUDED_PN').split()" in bbclass
+        assert heavy_pn in included_pns, included_line
+    # Allow-list gate, not the old deny-list.
+    assert "d.getVar('PN') not in" in bbclass
+    assert "d.getVar('SCCACHE_INCLUDED_PN')" in bbclass
 
 
 # ---------------------------------------------------------------------------
