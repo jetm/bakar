@@ -10,6 +10,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
+    WorkspaceOption,
     _bbsetup_workspace,
     _dispatch_bsp,
     _workspace_from_cwd,
@@ -32,7 +33,7 @@ def gen_kas(
         Path | None,
         typer.Option("--output", "-o", help="Output path; defaults to <bsp_root>/kas-<bsp>.yml"),
     ] = None,
-    workspace: Annotated[Path | None, typer.Option("--workspace", "-w", help="Workspace root override")] = None,
+    workspace: WorkspaceOption = None,
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", "-n", help="Print the resolved output and source paths, then exit without writing"),

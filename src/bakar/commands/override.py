@@ -9,7 +9,7 @@ import typer
 
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
-from bakar.commands._helpers import _dispatch_bsp, _workspace_from_cwd
+from bakar.commands._helpers import WorkspaceOption, _dispatch_bsp, _workspace_from_cwd
 from bakar.config import BSPSpec, resolve
 from bakar.observability import RunLogger
 from bakar.steps import bitbake_override as step_override
@@ -53,7 +53,7 @@ def bitbake_override_cmd(
             help="Manifest filename used to dispatch BSP family. Defaults to BAKAR_MANIFEST or the NXP default.",
         ),
     ] = None,
-    workspace: Annotated[Path | None, typer.Option("--workspace", "-w", help="Workspace root override")] = None,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Swap the BSP-bundled bitbake for a symlink to a local upstream checkout.
 

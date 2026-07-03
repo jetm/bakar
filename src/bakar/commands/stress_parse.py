@@ -12,6 +12,7 @@ from rich.table import Table
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
+    WorkspaceOption,
     _dispatch_bsp,
     _overlay_for,
     _workspace_from_cwd,
@@ -56,7 +57,7 @@ def stress_parse(
         str | None,
         typer.Option("--branch", "-b", help="Branch override; inferred from manifest when omitted."),
     ] = None,
-    workspace: Annotated[Path | None, typer.Option("--workspace", "-w")] = None,
+    workspace: WorkspaceOption = None,
     label: Annotated[
         str | None,
         typer.Option(

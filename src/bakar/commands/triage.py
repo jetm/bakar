@@ -11,7 +11,7 @@ import typer
 
 from bakar.bsp_detect import detect_kas_workspace, is_meta_avocado_yaml
 from bakar.commands._app import app, console
-from bakar.commands._helpers import _bbsetup_workspace, _find_run, _workspace_from_cwd
+from bakar.commands._helpers import WorkspaceOption, _bbsetup_workspace, _find_run, _workspace_from_cwd
 from bakar.triage import _last_event_matching, _tail, _translate_container_path, analyse
 
 _BITBAKE_EVENTS_FILENAME = "bitbake-events.json"
@@ -258,7 +258,7 @@ def triage(
             help="kas YAML for a BYO build; runs live next to it under <yaml-parent>/build/runs/.",
         ),
     ] = None,
-    workspace: Annotated[Path | None, typer.Option("--workspace", "-w", help="Workspace root override")] = None,
+    workspace: WorkspaceOption = None,
     output_json: Annotated[
         bool,
         typer.Option("--json", "-j", help="Output triage result as JSON instead of formatted text."),

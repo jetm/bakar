@@ -11,6 +11,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
+    WorkspaceOption,
     _dispatch_bsp,
     _dispatch_from_yaml,
     _overlay_for,
@@ -39,7 +40,7 @@ def prefetch(
         str | None,
         typer.Option("--machine", "-m", help="e.g. imx8mp-var-dart, am62x-var-som"),
     ] = None,
-    workspace: Annotated[Path | None, typer.Option("--workspace", "-w", help="Workspace root override")] = None,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Pre-fetch all recipe sources into DL_DIR without running the build.
 

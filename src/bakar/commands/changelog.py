@@ -32,7 +32,7 @@ import typer
 import bakar.commands._app as _state
 from bakar import pin_state
 from bakar.commands._app import app, console
-from bakar.commands._helpers import _dispatch_bsp, _resolve_workspace
+from bakar.commands._helpers import WorkspaceOption, _dispatch_bsp, _resolve_workspace
 from bakar.config import BSPSpec, resolve
 from bakar.workspace import parse_manifest_pins
 
@@ -240,10 +240,7 @@ def changelog(
         str,
         typer.Argument(help="To-state: manifest XML path, kas lockfile path, or git ref."),
     ],
-    workspace: Annotated[
-        Path | None,
-        typer.Option("--workspace", "-w", help="Workspace root override."),
-    ] = None,
+    workspace: WorkspaceOption = None,
     manifest: Annotated[
         str | None,
         typer.Option("--manifest", "-f", help="Manifest filename (NXP/TI) used to dispatch BSP family."),
