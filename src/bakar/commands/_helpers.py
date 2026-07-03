@@ -32,6 +32,13 @@ if TYPE_CHECKING:
 
 _WORKSPACE_HELP = "Workspace root; auto-detected if omitted"
 
+# The invoking cwd captured before ``_enter_workspace`` chdirs into a ``-w``
+# workspace. ``_bsp_from_cwd`` reads it so family auto-detection reflects where
+# the user actually stood (e.g. ``<ws>/ti``) rather than the post-chdir workspace
+# root. Reset on every command invocation (the callback always fires), so it never
+# leaks a stale cwd into a later ``-w``-less command.
+_INVOCATION: dict[str, Path] = {}
+
 
 def _enter_workspace(workspace: Path | None) -> Path | None:
     """Resolve, validate, and chdir into an explicit ``-w``/``--workspace`` path.
@@ -43,6 +50,7 @@ def _enter_workspace(workspace: Path | None) -> Path | None:
     or a non-directory raises :class:`typer.BadParameter`, which Typer renders
     as exit 2 naming the option.
     """
+    _INVOCATION.pop("cwd", None)
     if workspace is None:
         return None
     resolved = workspace.expanduser().resolve()
@@ -51,6 +59,7 @@ def _enter_workspace(workspace: Path | None) -> Path | None:
             f"workspace does not exist or is not a directory: {resolved}",
             param_hint="--workspace/-w",
         )
+    _INVOCATION["cwd"] = Path.cwd()
     os.chdir(resolved)
     return resolved
 
@@ -169,9 +178,12 @@ def _bsp_from_cwd(workspace: Path) -> Literal["nxp", "ti"] | None:
     """Detect BSP family from the current working directory.
 
     Returns ``"nxp"`` or ``"ti"`` if cwd is inside ``workspace/nxp/``
-    or ``workspace/ti/``; otherwise ``None``.
+    or ``workspace/ti/``; otherwise ``None``. Under an explicit ``-w`` the
+    ``_enter_workspace`` callback has already chdir'd into the workspace root, so
+    the pre-chdir invoking cwd (captured in ``_INVOCATION``) is used instead of the
+    live cwd; without ``-w`` the live cwd is used exactly as before.
     """
-    cwd = Path.cwd().resolve()
+    cwd = _INVOCATION.get("cwd", Path.cwd()).resolve()
     try:
         rel = cwd.relative_to(workspace.resolve())
     except ValueError:

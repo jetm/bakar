@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import typer
 
-from bakar.commands._helpers import _enter_workspace
+from bakar.commands._helpers import _bsp_from_cwd, _enter_workspace
 
 
 @pytest.mark.unit
@@ -62,3 +62,31 @@ def test_relative_path_resolves_once(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     assert result == tmp_path.resolve() / "ws"
     assert Path.cwd() == tmp_path.resolve() / "ws"
+
+
+@pytest.mark.unit
+def test_bsp_from_cwd_uses_invoking_cwd_after_chdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With -w, family auto-detection must reflect where the user stood (``<ws>/ti``),
+    not the post-chdir workspace root. Regression: the eager chdir made
+    ``_bsp_from_cwd`` see cwd == workspace and lose the family."""
+    ws = tmp_path / "ws"
+    (ws / "ti").mkdir(parents=True)
+    monkeypatch.chdir(ws / "ti")
+
+    _enter_workspace(ws)
+
+    assert Path.cwd() == ws.resolve()
+    assert _bsp_from_cwd(ws) == "ti"
+
+
+@pytest.mark.unit
+def test_bsp_from_cwd_without_w_uses_live_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without -w, the callback fires with None and resets the capture, so
+    ``_bsp_from_cwd`` reflects the live cwd exactly as before."""
+    ws = tmp_path / "ws"
+    (ws / "nxp").mkdir(parents=True)
+    _enter_workspace(ws)  # a prior -w invocation captured a cwd
+    _enter_workspace(None)  # a later -w-less command must reset it
+    monkeypatch.chdir(ws / "nxp")
+
+    assert _bsp_from_cwd(ws) == "nxp"
