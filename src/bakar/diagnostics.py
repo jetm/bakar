@@ -1771,8 +1771,6 @@ def probe_build_daemon() -> BuildDaemonReport:
     ``running=False`` only when neither a container nor a host daemon answers,
     and ``error=...`` when the query fails.
     """
-    import json
-
     try:
         ps = subprocess.run(
             ["docker", "ps", "--filter", "label=bakar.run_id", "--format", "{{.ID}}"],
@@ -1788,13 +1786,25 @@ def probe_build_daemon() -> BuildDaemonReport:
         # No build container (host-mode build): fall back to the host UDS daemon.
         return _probe_host_uds_daemon()
     cid = cids[0]
+    return _query_sccache_daemon(["docker", "exec", cid, "sccache"], env=None, cid=cid)
+
+
+def _query_sccache_daemon(sccache_argv: list[str], env: dict[str, str] | None, cid: str | None) -> BuildDaemonReport:
+    """Query a running sccache daemon's stats + cache location and map to a report.
+
+    ``sccache_argv`` is the command prefix that reaches the daemon: ``docker exec
+    <cid> sccache`` for the in-container probe, or ``sccache`` with ``env`` carrying
+    ``SCCACHE_SERVER_UDS`` for the host UDS probe. Returns an error report when the
+    JSON stats query fails; the ``Cache location`` scan is best-effort.
+    """
     try:
         out = subprocess.run(
-            ["docker", "exec", cid, "sccache", "--show-stats", "--stats-format=json"],
+            [*sccache_argv, "--show-stats", "--stats-format=json"],
             capture_output=True,
             text=True,
             timeout=15,
             check=False,
+            env=env,
         )
         stats = json.loads(out.stdout)["stats"]
     except (OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
@@ -1802,11 +1812,12 @@ def probe_build_daemon() -> BuildDaemonReport:
     location = None
     try:
         txt = subprocess.run(
-            ["docker", "exec", cid, "sccache", "--show-stats"],
+            [*sccache_argv, "--show-stats"],
             capture_output=True,
             text=True,
             timeout=15,
             check=False,
+            env=env,
         )
         for line in txt.stdout.splitlines():
             if line.strip().startswith("Cache location"):
@@ -1834,35 +1845,7 @@ def _probe_host_uds_daemon() -> BuildDaemonReport:
     if not sccache_server._uds_responding(uds):
         return BuildDaemonReport(running=False)
     env = {**os.environ, "SCCACHE_SERVER_UDS": uds}
-    try:
-        out = subprocess.run(
-            ["sccache", "--show-stats", "--stats-format=json"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-            env=env,
-        )
-        stats = json.loads(out.stdout)["stats"]
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
-        return BuildDaemonReport(running=True, container=None, error=f"stats query failed: {exc}")
-    location = None
-    try:
-        txt = subprocess.run(
-            ["sccache", "--show-stats"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-            env=env,
-        )
-        for line in txt.stdout.splitlines():
-            if line.strip().startswith("Cache location"):
-                location = line.split("Cache location", 1)[1].strip()
-                break
-    except OSError, subprocess.SubprocessError:
-        pass
-    return _build_daemon_report_from_stats(stats, None, location)
+    return _query_sccache_daemon(["sccache"], env=env, cid=None)
 
 
 def _build_daemon_report_from_stats(stats: dict, cid: str | None, location: str | None) -> BuildDaemonReport:
