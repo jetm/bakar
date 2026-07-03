@@ -8,7 +8,14 @@ from __future__ import annotations
 
 import pytest
 
-from bakar.sched_triage import parse_client_log, parse_dist_alloc, parse_dist_status
+from bakar.sched_triage import (
+    PollSample,
+    conditioned_util,
+    parse_client_log,
+    parse_dist_alloc,
+    parse_dist_status,
+    parse_dist_status_series,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -162,3 +169,44 @@ def test_parse_client_log_surfaces_rust_error_codes() -> None:
     )
     stats = parse_client_log([line])
     assert stats.rust_error_codes["E0433"] == 1
+
+
+def test_parse_dist_status_series_extracts_epoch_and_per_server() -> None:
+    """The short-unix journal prefix gives each poll an epoch and per-server jobs/cores."""
+    lines = [
+        "1720008000.500000 host sched[1]: dist-status poll: 8 in-progress jobs; "
+        'servers [("192.168.8.172:10501", 5, 32), ("10.42.0.2:10501", 3, 32)]',
+    ]
+    series = parse_dist_status_series(lines)
+    assert len(series) == 1
+    assert series[0].ts == 1720008000.5
+    assert series[0].inflight == 8
+    assert series[0].per_server_jobs["10.42.0.2:10501"] == 3
+    assert series[0].per_server_cores["192.168.8.172:10501"] == 32
+
+
+def test_conditioned_util_buckets_polls_by_live_compile_count() -> None:
+    """A poll is bucketed by how many do_compile tasks were live at its timestamp."""
+    series = [
+        PollSample(
+            ts=100.0,
+            inflight=8,
+            per_server_jobs={"pc1": 5, "pc2": 3},
+            per_server_cores={"pc1": 32, "pc2": 32},
+        ),
+    ]
+    compile_intervals = [(90.0, 110.0)] * 8  # 8 do_compile tasks live at ts=100
+    buckets = conditioned_util(series, compile_intervals)
+    assert buckets["high"].polls == 1
+    assert buckets["high"].per_node_ratio["pc2"] == 3 / 32
+    assert buckets["idle"].polls == 0
+
+
+def test_conditioned_util_idle_bucket_when_no_compile_live() -> None:
+    """A poll with no live do_compile lands in the idle-supply bucket, not high."""
+    series = [
+        PollSample(ts=5.0, inflight=0, per_server_jobs={"pc1": 0}, per_server_cores={"pc1": 32}),
+    ]
+    buckets = conditioned_util(series, compile_intervals=[(90.0, 110.0)])
+    assert buckets["idle"].polls == 1
+    assert buckets["high"].polls == 0

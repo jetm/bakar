@@ -41,6 +41,8 @@ _ALLOC_CAND_RE = re.compile(r"ServerId\((?P<addr>[\d.]+:\d+)\), (?P<load>[\d.]+)
 # dist-status poll: 11 in-progress jobs; servers [("192.168.8.172:10501", 5, 32), ("10.42.0.2:10501", 6, 32)]
 _STATUS_RE = re.compile(r"dist-status poll: (?P<inflight>\d+) in-progress jobs; servers \[(?P<servers>.*)\]")
 _STATUS_SERVER_RE = re.compile(r'"(?P<addr>[\d.]+:\d+)", (?P<jobs>\d+), (?P<cores>\d+)')
+# journalctl -o short-unix prefixes each line with an epoch (10+ digits . micros).
+_TS_RE = re.compile(r"(?P<ts>\d{9,}\.\d+)")
 
 
 @dataclass
@@ -75,6 +77,25 @@ class SaturationStats:
     idle_pct: float = 0.0  # share of polls with 0 in-progress
     under_eighth_pct: float = 0.0  # share of polls below 1/8 of ceiling
     near_sat_pct: float = 0.0  # share of polls at >= 7/8 of ceiling
+
+
+@dataclass
+class PollSample:
+    """One ``dist-status poll`` with its epoch and per-server occupancy."""
+
+    ts: float
+    inflight: int
+    per_server_jobs: dict[str, int]
+    per_server_cores: dict[str, int]
+
+
+@dataclass
+class SupplyBucket:
+    """Utilisation of the polls that share a do_compile supply level."""
+
+    polls: int = 0
+    mean_util_pct: float = 0.0
+    per_node_ratio: dict[str, float] = field(default_factory=dict)  # addr -> mean jobs/cores
 
 
 def _load_bucket(concurrent: int) -> str:
@@ -199,6 +220,63 @@ def parse_dist_status(lines: Iterable[str]) -> SaturationStats:
         under_eighth_pct=100.0 * under8 / n,
         near_sat_pct=100.0 * near / n,
     )
+
+
+def parse_dist_status_series(lines: Iterable[str]) -> list[PollSample]:
+    """Parse each ``dist-status poll`` line into a timestamped :class:`PollSample`.
+
+    Wants the journal in ``-o short-unix`` format so each line carries a leading
+    epoch; a line without one gets ts 0.0 (it still parses, but cannot be joined
+    to the task timeline).
+    """
+    samples: list[PollSample] = []
+    for line in lines:
+        m = _STATUS_RE.search(line)
+        if m is None:
+            continue
+        tm = _TS_RE.search(line)
+        ts = float(tm.group("ts")) if tm else 0.0
+        jobs: dict[str, int] = {}
+        cores: dict[str, int] = {}
+        for s in _STATUS_SERVER_RE.finditer(m.group("servers")):
+            jobs[s.group("addr")] = int(s.group("jobs"))
+            cores[s.group("addr")] = int(s.group("cores"))
+        samples.append(
+            PollSample(ts=ts, inflight=int(m.group("inflight")), per_server_jobs=jobs, per_server_cores=cores)
+        )
+    return samples
+
+
+def conditioned_util(series: list[PollSample], compile_intervals: list[tuple[float, float]]) -> dict[str, SupplyBucket]:
+    """Bucket poll utilisation by how many do_compile tasks were live at each poll.
+
+    ``compile_intervals`` is the ``(started, completed)`` epoch span of every
+    do_compile task (the caller filters the bitbake task timeline). A poll's
+    supply level is the count of intervals containing its ts: 0 -> ``idle``,
+    1-7 -> ``low``, >= 8 -> ``high``. This separates "the cluster was idle
+    because no compiles existed" from "compiles existed but a node starved" -
+    the per-node jobs/cores ratio in the ``high`` bucket is the feed-bottleneck
+    signal a flat whole-build util average hides.
+    """
+    buckets: dict[str, SupplyBucket] = {name: SupplyBucket() for name in ("idle", "low", "high")}
+    util_sums: dict[str, float] = dict.fromkeys(buckets, 0.0)
+    ratio_sums: dict[str, dict[str, float]] = {name: {} for name in buckets}
+    for poll in series:
+        live = sum(1 for start, end in compile_intervals if start <= poll.ts <= end)
+        name = "idle" if live == 0 else "low" if live < 8 else "high"
+        bucket = buckets[name]
+        bucket.polls += 1
+        total_cores = sum(poll.per_server_cores.values())
+        if total_cores > 0:
+            util_sums[name] += poll.inflight / total_cores
+        for addr, cores in poll.per_server_cores.items():
+            if cores > 0:
+                ratio_sums[name][addr] = ratio_sums[name].get(addr, 0.0) + poll.per_server_jobs.get(addr, 0) / cores
+    for name, bucket in buckets.items():
+        if bucket.polls:
+            bucket.mean_util_pct = 100.0 * util_sums[name] / bucket.polls
+            bucket.per_node_ratio = {addr: total / bucket.polls for addr, total in ratio_sums[name].items()}
+    return buckets
 
 
 # --- client log -------------------------------------------------------------

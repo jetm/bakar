@@ -26,7 +26,9 @@ def _journal_lines(unit: str, since: str) -> list[str]:
     """Return the unit's journal lines since ``since`` (empty on any failure)."""
     try:
         out = subprocess.run(
-            ["journalctl", "-u", unit, "--since", since, "--no-pager"],
+            # -o short-unix prefixes every line with an epoch so the poll series
+            # can be joined to the bitbake task timeline (per-phase util).
+            ["journalctl", "-u", unit, "--since", since, "--no-pager", "-o", "short-unix"],
             capture_output=True,
             text=True,
             timeout=30,
