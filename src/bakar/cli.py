@@ -54,6 +54,7 @@ import bakar.commands.sync
 import bakar.commands.triage  # noqa: F401
 from bakar.commands import app
 from bakar.commands._app import console
+from bakar.steps.kas_build import BitbakeBinMissingError, BuildtoolsMissingError
 
 __all__ = ["app", "main"]
 
@@ -83,6 +84,13 @@ def main() -> int:
     except (_click_exc.Exit, typer.Exit) as exc:
         # typer.Exit (used everywhere in our commands) -> the carried exit code.
         return int(exc.exit_code) if getattr(exc, "exit_code", 0) is not None else 0
+    except (BuildtoolsMissingError, BitbakeBinMissingError) as exc:
+        # A host build/inspection prerequisite (the pinned buildtools-extended
+        # toolchain or its bitbake bin) is missing. The exception message names the
+        # missing toolchain and the fix, so surface it cleanly - a read-only
+        # `bakar getvar`/`dump` on a stock host must not dump a raw traceback.
+        console.print(f"Error: {exc}")
+        return 1
 
 
 if __name__ == "__main__":

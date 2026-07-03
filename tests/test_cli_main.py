@@ -69,3 +69,25 @@ def test_main_returns_exit_code_from_typer_exit(
     monkeypatch.setattr(sys, "argv", ["bakar", "settings", "get", "no.such.key"])
     rc = main()
     assert rc == 2
+
+
+def test_main_buildtools_missing_returns_1_clean(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A BuildtoolsMissingError (host-mode inspection on a stock host) surfaces as a
+    plain 'Error:' with rc 1, not a raw traceback."""
+    import bakar.cli as cli_mod
+    from bakar.steps.kas_build import BuildtoolsMissingError
+
+    def _raise(**_kw: object) -> int:
+        raise BuildtoolsMissingError("buildtools-extended toolchain not found; set BAKAR_BUILDTOOLS_DIR")
+
+    monkeypatch.setattr(cli_mod, "app", _raise)
+    monkeypatch.setattr(sys, "argv", ["bakar", "getvar", "FOO"])
+    rc = main()
+    captured = capsys.readouterr()
+    assert rc == 1, captured.err
+    assert "Error:" in captured.err
+    assert "buildtools-extended" in captured.err
+    assert "╭" not in captured.err
