@@ -206,3 +206,36 @@ def test_stop_returns_true_exits_zero(
     result = runner.invoke(app, ["stop", str(yaml)])
 
     assert result.exit_code == 0, result.output
+
+
+def test_stop_force_returns_false_exits_nonzero(
+    runner: _CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``stop --force`` still exits 1 when ``stop_build`` finds nothing to stop.
+
+    ``--force`` skips the grace wait but does not manufacture a target: when no
+    live/targetable build exists ``stop_build`` returns False and the command
+    must still exit 1. Also proves ``force=True`` is threaded through to
+    ``stop_build``.
+    """
+    yaml = tmp_path / "kas-generic.yml"
+    yaml.write_text("header:\n  version: 21\nmachine: qemux86-64\ndistro: nodistro\ntarget: core-image-minimal\n")
+    (tmp_path / "build" / "runs" / "20260617-120000").mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    calls: list[tuple[Path, bool]] = []
+
+    def _rec(bsp_root: Path, force: bool) -> bool:
+        calls.append((bsp_root, force))
+        return False
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", _rec)
+
+    result = runner.invoke(app, ["stop", "--force", str(yaml)])
+
+    assert result.exit_code == 1, result.output
+    assert calls == [(tmp_path, True)]

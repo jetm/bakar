@@ -103,6 +103,58 @@ def test_stop_container_falls_back_to_pid1_sigint_when_exec_fails(monkeypatch: p
     assert issued[0] == ["docker", "kill", "--signal=SIGINT", "abc"]
 
 
+def test_stop_container_ctrl_c_reaches_stop_kill_ladder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Ctrl-C during the graceful wait escalates to ``stop --timeout`` -> SIGKILL.
+
+    The graceful drain path never reaches the 5s ``stop --timeout`` step (that is
+    asserted by ``test_stop_container_graceful_drain_signals_bitbake_only``); the
+    timeout ladder is reached only when the operator interrupts the wait. A
+    ``_container_liveness`` poll raising ``KeyboardInterrupt`` stands in for the
+    Ctrl-C, so the real ``_graceful_wait`` catches it on the first poll (no sleep)
+    and fires the container escalate ladder.
+    """
+    issued: list[list[str]] = []
+    monkeypatch.setattr(build_stop, "_run_runtime", issued.append)
+    monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", lambda runtime, cid: True)
+
+    def _ctrl_c(_runtime: str, _cid: str) -> str:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(build_stop, "_container_liveness", _ctrl_c)
+
+    status = build_stop._stop_container("docker", "abc", force=False, term_secs=5)
+
+    assert status == "escalated"
+    assert issued == [
+        ["docker", "stop", "--timeout=5", "abc"],
+        ["docker", "kill", "--signal=SIGKILL", "abc"],
+    ]
+
+
+def test_stop_container_lost_runtime_propagates_without_ladder(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A ``lost_runtime`` graceful wait is surfaced verbatim, without escalation.
+
+    When the runtime goes unreachable mid-wait the graceful wait returns
+    ``lost_runtime`` (the consecutive-query-error cap is exercised directly in
+    ``tests/test_build_stop.py``). ``_stop_container`` must propagate that status,
+    print the "lost contact" warning, and NOT run the SIGTERM->SIGKILL ladder so
+    the caller can map it to exit 1.
+    """
+    issued: list[list[str]] = []
+    monkeypatch.setattr(build_stop, "_run_runtime", issued.append)
+    monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", lambda runtime, cid: True)
+    monkeypatch.setattr(build_stop, "_graceful_wait", lambda **_kwargs: "lost_runtime")
+
+    status = build_stop._stop_container("podman", "cid", force=False, term_secs=5)
+
+    assert status == "lost_runtime"
+    assert issued == []  # the SIGTERM->SIGKILL ladder never ran
+    assert "lost contact with the container runtime" in capsys.readouterr().out
+
+
 # --- _detect_runtime -------------------------------------------------------
 
 
