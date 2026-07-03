@@ -123,9 +123,7 @@ def report(
             "image_size": summary.image_size,
             "layers": [dataclasses.asdict(layer) for layer in summary.layers],
             "build_revision": summary.build_revision,
-            "cache_by_language": {
-                lang: dataclasses.asdict(stat) for lang, stat in summary.cache_by_language.items()
-            },
+            "cache_by_language": {lang: dataclasses.asdict(stat) for lang, stat in summary.cache_by_language.items()},
             "dist_by_node": summary.dist_by_node,
             "task_family_rollup": {
                 family: dataclasses.asdict(stat) for family, stat in summary.task_family_rollup.items()
