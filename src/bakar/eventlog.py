@@ -34,6 +34,7 @@ import binascii
 import io
 import json
 import pickle
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -388,3 +389,45 @@ def _stat(stats: Any, name: str) -> Any:
     if isinstance(stats, dict):
         return stats.get(name)
     return getattr(stats, name, None)
+
+
+@dataclass(frozen=True)
+class RunningTask:
+    """A bitbake task that has started but not yet completed.
+
+    ``started_epoch`` is the task's start time in epoch seconds (from the
+    ``TaskStarted`` event), or ``None`` when the writer omitted it.
+    """
+
+    recipe: str
+    task: str
+    started_epoch: float | None
+
+
+def running_tasks(run_dir: Path) -> list[RunningTask]:
+    """Return the tasks currently running for ``run_dir`` from its live event log.
+
+    Reads ``<run_dir>/bitbake_eventlog.json`` via :func:`normalize` and returns
+    one :class:`RunningTask` per task row whose ``outcome`` is ``None`` and whose
+    ``started`` is set - the same running-task selection
+    :func:`bakar.commands.monitor._build_progress` performs. Completed tasks
+    (any ``outcome``) are excluded.
+
+    Never raises: an absent, unreadable, malformed, or truncated event log yields
+    ``[]`` so a caller polling a build mid-shutdown cannot crash.
+    """
+    try:
+        artifact = normalize(run_dir / "bitbake_eventlog.json")
+        rows = artifact["tasks"]
+    except Exception:  # noqa: BLE001 - any read/normalize failure degrades to no running tasks
+        return []
+
+    return [
+        RunningTask(
+            recipe=row.get("recipe"),
+            task=row.get("task"),
+            started_epoch=row.get("started"),
+        )
+        for row in rows
+        if row.get("outcome") is None and row.get("started") is not None
+    ]

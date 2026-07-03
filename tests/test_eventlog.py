@@ -176,3 +176,56 @@ def test_non_utf8_log_does_not_raise(tmp_path: Path) -> None:
     artifact = eventlog.normalize(raw)
 
     assert set(artifact) == {"schema_version", "build", "tasks", "setscene", "failures"}
+
+
+def _task_event(class_name: str, recipe: str, task: str, *, started: float | None = None) -> str:
+    """Build one JSONL event line for ``class_name`` with recipe/task/time fields."""
+    ev = _StubEvent()
+    ev._package = recipe  # type: ignore[attr-defined]
+    ev._task = task  # type: ignore[attr-defined]
+    if started is not None:
+        ev.time = started  # type: ignore[attr-defined]
+    return json.dumps({"class": class_name, "vars": _encode_event(ev)})
+
+
+def _write_eventlog(run_dir: Path, lines: list[str]) -> None:
+    (run_dir / "bitbake_eventlog.json").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_running_tasks_reports_running(tmp_path: Path) -> None:
+    """A started-but-not-completed task is reported; a completed one is excluded."""
+    _write_eventlog(
+        tmp_path,
+        [
+            _task_event("bb.build.TaskStarted", "busybox-1.36.1-r0", "do_compile", started=100.0),
+            _task_event("bb.build.TaskStarted", "zlib-1.3-r0", "do_fetch", started=50.0),
+            _task_event("bb.build.TaskSucceeded", "zlib-1.3-r0", "do_fetch"),
+        ],
+    )
+
+    running = eventlog.running_tasks(tmp_path)
+
+    assert running == [eventlog.RunningTask(recipe="busybox-1.36.1-r0", task="do_compile", started_epoch=100.0)]
+
+
+@pytest.mark.unit
+def test_running_tasks_excludes_completed(tmp_path: Path) -> None:
+    """The committed fixture has no running task (busybox is succeeded)."""
+    _write_eventlog(tmp_path, FIXTURE.read_text(encoding="utf-8").splitlines())
+
+    assert eventlog.running_tasks(tmp_path) == []
+
+
+@pytest.mark.unit
+def test_running_tasks_absent_log_returns_empty(tmp_path: Path) -> None:
+    """A run dir with no event log yields ``[]`` without raising."""
+    assert eventlog.running_tasks(tmp_path) == []
+
+
+@pytest.mark.unit
+def test_running_tasks_malformed_log_returns_empty(tmp_path: Path) -> None:
+    """A truncated/non-UTF-8 event log yields ``[]`` without raising."""
+    (tmp_path / "bitbake_eventlog.json").write_bytes(b"\xff\xfe not json {\x80 truncated")
+
+    assert eventlog.running_tasks(tmp_path) == []
