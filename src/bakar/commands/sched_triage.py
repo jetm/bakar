@@ -19,7 +19,13 @@ from typing import Annotated
 import typer
 
 from bakar.commands._app import app, console
-from bakar.sched_triage import parse_client_log, parse_dist_alloc, parse_dist_status
+from bakar.sched_triage import (
+    parse_client_log,
+    parse_dist_alloc,
+    parse_dist_status,
+    parse_dist_status_series,
+    time_weighted_util,
+)
 
 
 def _journal_lines(unit: str, since: str) -> list[str]:
@@ -68,6 +74,8 @@ def sched_triage(
     journal = _journal_lines(unit, since)
     alloc = parse_dist_alloc(journal)
     sat = parse_dist_status(journal)
+    series = parse_dist_status_series(journal)
+    weighted = time_weighted_util(series)
 
     log_path = client_log or (Path(os.environ["SCCACHE_ERROR_LOG"]) if os.environ.get("SCCACHE_ERROR_LOG") else None)
     # Stream the log line-by-line rather than read_text().splitlines(): the client
@@ -88,6 +96,7 @@ def sched_triage(
             "client_log": str(log_path) if log_path else None,
             "routing": dataclasses.asdict(alloc),
             "saturation": dataclasses.asdict(sat),
+            "time_weighted": dataclasses.asdict(weighted),
             "client": dataclasses.asdict(client),
         }
         typer.echo(json.dumps(doc, indent=2, default=dict))
@@ -104,15 +113,41 @@ def sched_triage(
         highlight=False,
     )
     console.print(f"  idle skips: {alloc.idle_skips} (skipped a zero-job server)", highlight=False)
+    if alloc.truncated:
+        console.print(
+            f"  [yellow]truncated candidate lines: {alloc.truncated}[/] (excluded from the rate; a load==0 "
+            f"break cut the candidate list - expect 0 once the scheduler tie-break fix is deployed)",
+            highlight=False,
+        )
+    high_total = alloc.total_by_bucket.get("high", 0)
+    if high_total:
+        high_mis = alloc.misroutes_by_bucket.get("high", 0)
+        hi_style = "red" if high_mis else "green"
+        console.print(
+            f"  high-load misroutes: [{hi_style}]{high_mis}/{high_total}[/] "
+            f"(the actionable rate - a wrong choice while both nodes are loaded)",
+            highlight=False,
+        )
     if alloc.per_node_chosen:
         nodes = ", ".join(f"{addr} {n}" for addr, n in sorted(alloc.per_node_chosen.items()))
         console.print(f"  chosen per node: {nodes}", highlight=False)
 
     console.print("[bold]cluster saturation:[/]", highlight=False)
-    console.print(f"  polls: {sat.samples}, ceiling: {sat.ceiling} cores", highlight=False)
-    console.print(f"  mean util: {sat.mean_util_pct:.1f}% ({sat.mean_inflight:.1f} in-flight)", highlight=False)
     console.print(
-        f"  idle: {sat.idle_pct:.1f}%  under-1/8: {sat.under_eighth_pct:.1f}%  near-saturated: {sat.near_sat_pct:.1f}%",
+        f"  polls: {sat.samples}, ceiling: {sat.ceiling} cores, admission ceiling: {sat.admission_ceiling}",
+        highlight=False,
+    )
+    console.print(f"  mean util: {sat.mean_util_pct:.1f}% ({sat.mean_inflight:.1f} in-flight)", highlight=False)
+    if series:
+        console.print(
+            f"  time-weighted util: {weighted.mean_util_pct:.1f}% "
+            f"(median cadence {weighted.median_cadence_s:.0f}s, max gap {weighted.max_gap_s:.0f}s - a large gap "
+            f"means 'idle' may be 'unobserved')",
+            highlight=False,
+        )
+    console.print(
+        f"  idle: {sat.idle_pct:.1f}%  under-1/8: {sat.under_eighth_pct:.1f}%  "
+        f"near-saturated: {sat.near_sat_pct:.1f}% (vs the admission ceiling)",
         highlight=False,
     )
 
@@ -133,6 +168,12 @@ def sched_triage(
                 "    [dim]preprocess timer absent - rebuild sccache with the W2 timer to measure it[/]",
                 highlight=False,
             )
+    if client.preproc_concurrency_max is not None:
+        console.print(
+            f"  preprocess concurrency: p95 {client.preproc_concurrency_p95}, max {client.preproc_concurrency_max} "
+            f"(PC1 jobserver token pressure; pinned near the pool = the preprocessing wall)",
+            highlight=False,
+        )
     console.print(f"  local (conftest / not eligible): {client.not_eligible}", highlight=False)
     if client.fallback_reasons:
         console.print("  fallbacks to local:", highlight=False)
