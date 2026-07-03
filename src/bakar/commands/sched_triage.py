@@ -68,13 +68,17 @@ def sched_triage(
     sat = parse_dist_status(journal)
 
     log_path = client_log or (Path(os.environ["SCCACHE_ERROR_LOG"]) if os.environ.get("SCCACHE_ERROR_LOG") else None)
-    client_lines: list[str] = []
+    # Stream the log line-by-line rather than read_text().splitlines(): the client
+    # SCCACHE_ERROR_LOG can be hundreds of MB, and parse_client_log takes an iterable,
+    # so a file handle keeps memory O(1) instead of materializing the whole file.
     if log_path is not None:
         try:
-            client_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            with log_path.open(encoding="utf-8", errors="replace") as fh:
+                client = parse_client_log(fh)
         except OSError:
-            client_lines = []
-    client = parse_client_log(client_lines)
+            client = parse_client_log([])
+    else:
+        client = parse_client_log([])
 
     if output_json:
         doc = {

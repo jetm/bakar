@@ -309,7 +309,7 @@ def _render(snapshot: dict[str, Any]) -> Group:
     total = build["tasks_total"]
     remaining = build["tasks_remaining"]
     if total:
-        pct = f" {100 * done // total}%" if total else ""
+        pct = f" {100 * done // total}%"
         tasks_txt = f"{done}/{total} tasks ({remaining} left){pct}"
     else:
         tasks_txt = f"{done} tasks done (total pending)"
