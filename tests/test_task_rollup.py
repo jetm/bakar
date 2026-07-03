@@ -8,11 +8,14 @@ compile-time subset that never alters the ``do_compile`` family total.
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from bakar import task_rollup
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _row(recipe: str, task: str, started: float | None, completed: float | None) -> dict:
