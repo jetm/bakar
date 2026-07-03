@@ -252,3 +252,18 @@ def test_parse_client_log_preproc_concurrency_none_when_absent() -> None:
     stats = parse_client_log([line])
     assert stats.preproc_concurrency_max is None
     assert stats.preproc_concurrency_p95 is None
+
+
+def test_compile_intervals_filters_to_do_compile(tmp_path) -> None:
+    """_compile_intervals pulls only do_compile (started, completed) spans, skipping others and bad rows."""
+    from bakar.commands.sched_triage import _compile_intervals
+
+    events = tmp_path / "bitbake-events.json"
+    events.write_text(
+        '{"tasks": ['
+        '{"recipe": "glibc", "task": "do_compile", "started": 100.0, "completed": 200.0},'
+        '{"recipe": "x", "task": "do_configure", "started": 100.0, "completed": 200.0},'
+        '{"recipe": "y", "task": "do_compile", "completed": 200.0}'
+        "]}"
+    )
+    assert _compile_intervals(events) == [(100.0, 200.0)]

@@ -20,12 +20,38 @@ import typer
 
 from bakar.commands._app import app, console
 from bakar.sched_triage import (
+    conditioned_util,
     parse_client_log,
     parse_dist_alloc,
     parse_dist_status,
     parse_dist_status_series,
     time_weighted_util,
 )
+
+
+def _compile_intervals(events_path: Path) -> list[tuple[float, float]]:
+    """do_compile (started, completed) epoch spans from bitbake-events.json.
+
+    Feeds the per-phase util join (conditioned_util). Any error - missing file,
+    bad JSON, wrong shape - yields an empty list so the caller never guards it.
+    """
+    try:
+        with events_path.open(encoding="utf-8") as fh:
+            artifact = json.load(fh)
+    except OSError, ValueError:
+        return []
+    rows = artifact.get("tasks") if isinstance(artifact, dict) else None
+    intervals: list[tuple[float, float]] = []
+    for row in rows or []:
+        if not isinstance(row, dict) or row.get("task") != "do_compile":
+            continue
+        try:
+            start, end = float(row["started"]), float(row["completed"])
+        except KeyError, TypeError, ValueError:
+            continue
+        if end >= start:
+            intervals.append((start, end))
+    return intervals
 
 
 def _journal_lines(unit: str, since: str) -> list[str]:
@@ -59,6 +85,10 @@ def sched_triage(
         str,
         typer.Option("--unit", help="Scheduler systemd unit."),
     ] = "sccache-scheduler.service",
+    events: Annotated[
+        Path | None,
+        typer.Option("--events", help="bitbake-events.json for the per-phase (do_compile supply) util join."),
+    ] = None,
     output_json: Annotated[
         bool,
         typer.Option("--json", help="Emit the triage report as one JSON object."),
@@ -99,6 +129,11 @@ def sched_triage(
             "time_weighted": dataclasses.asdict(weighted),
             "client": dataclasses.asdict(client),
         }
+        if events is not None:
+            doc["conditioned"] = {
+                name: dataclasses.asdict(bucket)
+                for name, bucket in conditioned_util(series, _compile_intervals(events)).items()
+            }
         typer.echo(json.dumps(doc, indent=2, default=dict))
         return
 
@@ -150,6 +185,21 @@ def sched_triage(
         f"near-saturated: {sat.near_sat_pct:.1f}% (vs the admission ceiling)",
         highlight=False,
     )
+    if events is not None and series:
+        buckets = conditioned_util(series, _compile_intervals(events))
+        console.print("  per-supply util (polls bucketed by live do_compile count):", highlight=False)
+        for name, label in (("idle", "no compiles"), ("low", "1-7 compiles"), ("high", ">=8 compiles")):
+            bucket = buckets[name]
+            if bucket.polls:
+                ratios = "  ".join(f"{addr} {r:.2f}" for addr, r in sorted(bucket.per_node_ratio.items()))
+                console.print(
+                    f"    {label}: {bucket.polls} polls, util {bucket.mean_util_pct:.1f}%   jobs/cores: {ratios}",
+                    highlight=False,
+                )
+        console.print(
+            "    [dim](high-supply bucket: a node far below its jobs/cores share = feed bottleneck)[/]",
+            highlight=False,
+        )
 
     console.print("[bold]client compiles (W2):[/]", highlight=False)
     console.print(f"  distributed jobs: {client.jobs}", highlight=False)
