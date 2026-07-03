@@ -771,7 +771,11 @@ def resolve(
         ccache_dir=user_config.ccache_dir if user_config else None,
         psi_autocalibrate=user_config.psi_autocalibrate if user_config else False,
         sstate_mirror_url=user_config.sstate_mirror_url if user_config else None,
-        sccache_dist=user_config.sccache_dist if user_config else False,
+        sccache_dist=pick_bool(
+            "BAKAR_SCCACHE_DIST",
+            ws_val=None,
+            user_val=user_config.sccache_dist if user_config is not None else False,
+        ),
         sccache_scheduler_url=user_config.sccache_scheduler_url if user_config else None,
         cluster_bind_host=user_config.cluster_bind_host if user_config else None,
         bb_hashserve=user_config.bb_hashserve if user_config else None,

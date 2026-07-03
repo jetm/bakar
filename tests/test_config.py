@@ -410,6 +410,31 @@ def test_resolve_ccache_env_wins_over_workspace(tmp_path, monkeypatch) -> None:
     assert cfg.ccache is False
 
 
+def test_resolve_sccache_dist_user_config_toggles(tmp_path) -> None:
+    """A single global config.toml [build] sccache_dist toggle flips sccache on and off."""
+    on = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(sccache_dist=True))
+    off = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(sccache_dist=False))
+
+    assert on.use_sccache_dist is True
+    assert off.use_sccache_dist is False
+
+
+def test_resolve_sccache_dist_env_disables_over_user_config(tmp_path, monkeypatch) -> None:
+    """BAKAR_SCCACHE_DIST=0 disables sccache even when the global config enables it."""
+    monkeypatch.setenv("BAKAR_SCCACHE_DIST", "0")
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(sccache_dist=True))
+
+    assert cfg.use_sccache_dist is False
+
+
+def test_resolve_sccache_dist_env_enables_over_user_config(tmp_path, monkeypatch) -> None:
+    """BAKAR_SCCACHE_DIST=1 enables sccache even when the global config disables it."""
+    monkeypatch.setenv("BAKAR_SCCACHE_DIST", "1")
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(sccache_dist=False))
+
+    assert cfg.use_sccache_dist is True
+
+
 def test_resolve_use_ccache_false_when_sccache_dist_active(tmp_path) -> None:
     """ccache and sccache are mutually exclusive: use_ccache is False under sccache-dist."""
     cfg = resolve(
