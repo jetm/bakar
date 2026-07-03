@@ -10,9 +10,13 @@
 # HOSTTOOLS, task network, the scheduler-URL export - lives in the class; see
 # classes/sccache.bbclass for the rationale.
 #
-# ccache and sccache are mutually-exclusive launchers (both take the compiler as
-# their next argument), so this overlay removes the ccache inherit the generic
-# tuning overlay adds and inherits sccache in its place.
+# ccache and sccache both take the compiler as their next argument (OE's CCACHE
+# slot), but under the hybrid they are COMPLEMENTARY: the ccache overlay is
+# co-selected whenever [build] ccache is on so ccache caches the non-allowlisted
+# recipe tail while sccache distributes the allowlisted heavy recipes. The ccache
+# overlay's INHERIT += "ccache" is ordered before this overlay's INHERIT +=
+# "sccache" (lower zz-bakar-NN key), so sccache.bbclass's per-recipe CCACHE
+# override wins for allowlisted PNs - no INHERIT:remove needed.
 #
 # The scheduler URL is supplied at build time via BAKAR_SCCACHE_SCHEDULER_URL,
 # which bakar exports from the configured sccache_scheduler_url (host-mode path).
@@ -51,7 +55,9 @@ local_conf_header:
   # Sort-last key (see bakar-tuning-generic): 50 orders sccache last among the
   # bakar overlays.
   zz-bakar-50-sccache: |
-    # ccache and sccache are mutually-exclusive launchers. The ccache overlay
-    # (bakar-tuning-ccache) is not selected when sccache-dist is on, so ccache is
-    # never inherited here - no INHERIT:remove needed, just inherit sccache.
+    # The ccache overlay (bakar-tuning-ccache, zz-bakar-20) is co-selected under
+    # the hybrid, so INHERIT += "ccache" is already in local.conf above this line.
+    # Inheriting sccache last lets sccache.bbclass's per-recipe CCACHE override win
+    # for allowlisted PNs while ccache stays the launcher for the rest - no
+    # INHERIT:remove needed.
     INHERIT += "sccache"

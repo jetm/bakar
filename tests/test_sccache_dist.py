@@ -372,9 +372,10 @@ def test_container_sccache_build_does_not_start_host_server(tmp_path: Path, monk
 # Task 2.1: the sccache tuning overlay and its append helper. When
 # cfg.use_sccache_dist, _sccache_extra_overlays() returns the
 # bakar-tuning-sccache.yml path and _tuning_extra_overlays() includes it;
-# both yield nothing when disabled. The overlay swaps the compiler launcher
-# (CCACHE = "sccache ") and removes the mutually-exclusive ccache inherit
-# (INHERIT:remove = "ccache"). The ``overlay`` keyword groups these tests for
+# both yield nothing when disabled. Under the hybrid the ccache overlay is
+# co-selected alongside sccache (ccache for the non-allowlisted tail, sccache
+# for the allowlisted heavy recipes); the sccache overlay inherits sccache after
+# ccache with no INHERIT:remove. The ``overlay`` keyword groups these tests for
 # the task's verify command.
 # ---------------------------------------------------------------------------
 
@@ -439,13 +440,21 @@ def test_overlay_ccache_extra_overlays_returns_path_when_effective() -> None:
 
 
 @pytest.mark.unit
-def test_overlay_ccache_extra_overlays_empty_under_sccache() -> None:
-    """ccache and sccache are mutually exclusive: no ccache overlay under sccache-dist."""
+def test_overlay_ccache_extra_overlays_present_under_sccache() -> None:
+    """Hybrid: the ccache overlay is co-selected under sccache-dist.
+
+    ccache and sccache are complementary, not mutually exclusive: ccache caches
+    the non-allowlisted recipe tail while sccache distributes the allowlisted
+    heavy recipes. Falsifier: gating on cfg.use_ccache (False under sccache-dist)
+    would drop the overlay and leave the tail with no compile cache.
+    """
     from bakar.commands._helpers import _ccache_extra_overlays
 
     cfg = _overlay_cfg(sccache_dist=True, ccache=True)
+    result = _ccache_extra_overlays(cfg)  # type: ignore[arg-type]
 
-    assert _ccache_extra_overlays(cfg) == []  # type: ignore[arg-type]
+    assert len(result) == 1
+    assert result[0].name == "bakar-tuning-ccache.yml"
 
 
 @pytest.mark.unit
@@ -576,25 +585,30 @@ def _sccache_bbclass_text() -> str:
 
 
 @pytest.mark.unit
-def test_overlay_inherits_sccache_class_without_ccache_present() -> None:
-    """The sccache overlay inherits the sccache class.
+def test_overlay_hybrid_co_selects_ccache_before_sccache() -> None:
+    """Hybrid: under sccache-dist both overlays are selected, ccache before sccache.
 
-    ccache and sccache are mutually-exclusive launchers. The ccache overlay
-    (bakar-tuning-ccache) is not selected when sccache-dist is on (use_ccache is
-    False), so ccache is never inherited - the overlay just adds sccache, with no
-    INHERIT:remove needed. Falsifier: a stale INHERIT:remove = "ccache" here would
-    imply ccache was added, which the selection logic now prevents.
+    ccache and sccache are complementary. The tuning stack co-selects both, and
+    the ccache overlay must precede the sccache overlay so INHERIT += "ccache"
+    lands before INHERIT += "sccache" and sccache.bbclass's per-recipe CCACHE
+    override wins for allowlisted PNs. The sccache overlay inherits sccache with
+    no INHERIT:remove = "ccache" (ccache stays inherited for the non-allowlisted
+    tail). Falsifier: a stale INHERIT:remove = "ccache" would strip the tail's
+    launcher; a stack that dropped or reordered the ccache overlay would flip the
+    per-recipe precedence.
     """
-    from bakar.commands._helpers import _ccache_extra_overlays, _sccache_extra_overlays
+    from bakar.commands._helpers import _sccache_extra_overlays, _tuning_extra_overlays
 
-    cfg = _overlay_cfg(sccache_dist=True)
-    overlay = _sccache_extra_overlays(cfg)[0]  # type: ignore[arg-type]
-    text = overlay.read_text()
+    cfg = _overlay_cfg(sccache_dist=True, ccache=True)
+    names = [p.name for p in _tuning_extra_overlays(cfg)]  # type: ignore[arg-type]
 
+    assert "bakar-tuning-ccache.yml" in names
+    assert "bakar-tuning-sccache.yml" in names
+    assert names.index("bakar-tuning-ccache.yml") < names.index("bakar-tuning-sccache.yml")
+
+    text = _sccache_extra_overlays(cfg)[0].read_text()  # type: ignore[arg-type]
     assert 'INHERIT += "sccache"' in text
     assert 'INHERIT:remove = "ccache"' not in text
-    # The ccache overlay must not be selected alongside sccache.
-    assert _ccache_extra_overlays(cfg) == []
 
 
 @pytest.mark.unit
@@ -640,16 +654,49 @@ def test_sccache_class_distributes_on_allowlist() -> None:
         "clang",
         "compiler-rt",
         "rust-llvm",
-        "nodejs",
         "opencv",
     ):
         assert pn in included_line, included_line
+    # nodejs is deliberately OFF the allow-list: the co-selected ccache overlay
+    # sets CCACHE_DISABLE:pn-nodejs (its GYP .d.raw dep files break ccache), and
+    # sccache honors CCACHE_DISABLE, so nodejs stays local-uncached pending a test
+    # of whether sccache handles those .d.raw files.
+    assert "nodejs" not in included_line.split(), included_line
     # Cross recipes are arch-parameterized, expanded by bitbake at parse time.
+    # clang-crosssdk keys off SDK_SYS (its PN is clang-crosssdk-${SDK_SYS}), NOT
+    # SDK_ARCH - a mismatch would silently never match, so pin the right var.
     assert "${TARGET_ARCH}" in included_line
+    assert "clang-crosssdk-${SDK_SYS}" in included_line
+    assert "${SDK_ARCH}" not in included_line
     # Allow-list gate, not the old deny-list.
     assert "d.getVar('PN') not in" in text
     assert "SCCACHE_EXCLUDED_PN" not in text
     assert "SCCACHE_EXCLUDED_CLASSES" not in text
+
+
+@pytest.mark.unit
+def test_sccache_class_hybrid_gate_leaves_ccache_for_non_allowlisted() -> None:
+    """The gate early-returns for non-allowlisted PNs, so ccache's launcher stands.
+
+    Under the hybrid, oe-core's ccache.bbclass sets CCACHE = "ccache " for every
+    eligible recipe (parse order: ccache inherited before sccache), then this
+    gate runs. For an allowlisted PN it overrides CCACHE = "sccache " (sccache
+    distributes); for any other PN it returns before touching CCACHE, so the
+    "ccache " value survives and the recipe gets a local object cache. bitbake
+    parse is not available in unit tests, so assert the gate structure that
+    produces that contract: the "not in ... SCCACHE_INCLUDED_PN: return"
+    early-return (non-listed recipes fall through to ccache) and the
+    "sccache " setVar on the listed path. Falsifier: an unconditional CCACHE set,
+    or a missing early-return, would clobber ccache for the whole tail.
+    """
+    text = _sccache_bbclass_text()
+
+    assert "d.getVar('PN') not in (d.getVar('SCCACHE_INCLUDED_PN') or '').split()" in text
+    # The line immediately after the membership check is the early return.
+    gate = text.split("d.getVar('PN') not in (d.getVar('SCCACHE_INCLUDED_PN') or '').split():")[1]
+    assert gate.lstrip().startswith("return")
+    # The allowlisted path sets sccache as the launcher.
+    assert "d.setVar('CCACHE', 'sccache ')" in text
 
 
 @pytest.mark.unit
@@ -1000,10 +1047,14 @@ def test_bbclass_allowlists_heavy_recipes_and_omits_qemu(tmp_path: Path) -> None
         "clang",
         "compiler-rt",
         "rust-llvm",
-        "nodejs",
         "opencv",
     ):
         assert heavy_pn in included_pns, included_line
+    # nodejs is deliberately OFF the allow-list: the co-selected ccache overlay
+    # sets CCACHE_DISABLE:pn-nodejs and sccache honors CCACHE_DISABLE, so nodejs
+    # stays local-uncached pending a test of whether sccache handles its GYP
+    # .d.raw dep files.
+    assert "nodejs" not in included_pns, included_line
     # Allow-list gate, not the old deny-list.
     assert "d.getVar('PN') not in" in bbclass
     assert "d.getVar('SCCACHE_INCLUDED_PN')" in bbclass

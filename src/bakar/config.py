@@ -302,9 +302,12 @@ class BuildConfig:
     # daemons; None keeps the per-workspace daemon path. See user_config.bb_hashserve.
     bb_hashserve: str | None = field(default=None)
     prserv_host: str | None = field(default=None)
-    # ccache enable toggle (default on). ccache and sccache are mutually
-    # exclusive launchers, so the effective ccache state is use_ccache (this
-    # flag AND NOT sccache_dist); set ccache=False to disable ccache outright.
+    # ccache enable toggle (default on). ccache and sccache co-exist as a hybrid:
+    # the ccache overlay is selected whenever this flag is on (INCLUDING under
+    # sccache_dist), so ccache is the local object cache for the non-allowlisted
+    # recipe tail while sccache distributes the allowlisted heavy recipes.
+    # use_ccache stays the parallelism-dominant-launcher marker (this flag AND NOT
+    # sccache_dist). Set ccache=False to disable ccache outright.
     ccache: bool = field(default=True)
     # When False (the default while bakar is in use) the tuning stack strips
     # rm_work from both INHERIT and USER_CLASSES so recipe work dirs survive
@@ -376,10 +379,15 @@ class BuildConfig:
 
     @property
     def use_ccache(self) -> bool:
-        """Effective ccache state: enabled and not displaced by sccache-dist.
+        """True when ccache is the dominant compile launcher for parallelism sizing.
 
-        ccache and sccache drive the same OE launcher slot (the CCACHE
-        variable), so they are mutually exclusive; sccache-dist always wins.
+        ccache and sccache both drive OE's CCACHE slot, but under the hybrid they
+        co-exist (sccache for the allowlisted heavy recipes, ccache for the rest).
+        This marks whether ccache is the *sole/dominant* launcher, so it stays
+        False under sccache-dist - the launcher label feeds PARALLEL_MAKE sizing,
+        which sccache-dist governs. Overlay selection uses the raw ``ccache``
+        toggle instead (see ``_ccache_extra_overlays``), so the ccache overlay is
+        still co-selected under sccache-dist.
         """
         return bool(self.ccache and not self.use_sccache_dist)
 

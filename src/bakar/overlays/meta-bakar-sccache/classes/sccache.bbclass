@@ -79,7 +79,15 @@ SCCACHE_DISABLE ??= ""
 #                                   themselves are NOT distributable (no sccache
 #                                   Rust backend) but this LLVM build is.
 #
-# Kernel and init:
+# Kernel and init (PROVISIONAL - see note): these two are the largest allow-listed
+# recipes that actually build on core-image-minimal, so they dominate the
+# benchmark, but by the object-cost dividing line below they are closer to the
+# qemu loser than to llvm: kernel C objects run ~0.2-0.5 CPU-s, systemd's C is
+# similar. "1124 of 1128 kernel compiles distribute" proves they CAN, not that
+# they PAY. Keep them for the first instrumented run ONLY with the A/B falsifier
+# armed (per-recipe do_compile wall, distributed vs plain, from buildstats); drop
+# either recipe that measures slower distributed once G2's transport tax drop is
+# in effect.
 #   linux-yocto                   - ~1128 target C objects, 1124 distribute (4
 #                                   .incbin vdso/config/dtb objects fall back).
 #   systemd                       - large C project, many translation units.
@@ -88,9 +96,17 @@ SCCACHE_DISABLE ??= ""
 # inert no-op on core-image-minimal, where none of them are scheduled):
 #   chromium-ozone-wayland, chromium-x11 - full Chromium 146 C++ tree.
 #   qtwebengine, wpewebkit        - embedded browser engines, huge C++ TUs.
-#   nodejs                        - bundles V8, template-heavy C++.
 #   qtbase, qtdeclarative         - large C++ frameworks.
 #   opencv                        - C++ vision library, template/SIMD-heavy TUs.
+#
+# nodejs is deliberately NOT allow-listed even though it bundles V8 (template-
+# heavy C++). Under the hybrid the ccache overlay is co-selected, and it carries
+# CCACHE_DISABLE:pn-nodejs = "1" (nodejs's GYP Makefile writes a .d.raw dep file
+# via -MF then reads it back, which ccache with hash_dir=false does not restore
+# on a hit). sccache.bbclass honors CCACHE_DISABLE (the gate early-returns), so
+# distributing nodejs would need it OFF the ccache-disable list - but whether
+# sccache restores the .d.raw file is untested, so nodejs stays local-uncached
+# pending that test rather than risking an unverified GYP break.
 #
 # A listed recipe that is not built is inert. The cross/native recipes compile
 # with the host/build compiler, whose `-print-prog-name=as` returns a bare `as`;
@@ -100,8 +116,14 @@ SCCACHE_DISABLE ??= ""
 # listed recipe never breaks - a bad fit only wastes round-trips. The dividing
 # line is object cost, not recipe identity: qemu-system-native (~1.0 CPU-s per
 # object over 5516 ninja objects, ~2x SLOWER distributed than local -j53) is the
-# archetypal loser and stays OFF the list.
-SCCACHE_INCLUDED_PN ?= "llvm-native gcc-cross-${TARGET_ARCH} binutils-cross-${TARGET_ARCH} gcc-runtime gcc-sanitizers clang clang-cross-${TARGET_ARCH} clang-crosssdk-${SDK_ARCH} compiler-rt libcxx openmp rust-llvm rust-llvm-native linux-yocto systemd chromium-ozone-wayland chromium-x11 qtwebengine wpewebkit nodejs qtbase qtdeclarative opencv"
+# archetypal loser and stays OFF the list. The glibc bootstrap family (glibc,
+# glibc-initial, libgcc, libgcc-initial) is DELIBERATELY omitted for the same
+# reason: it distributed heavily under the old deny-list (glibc alone 6427/6429
+# objects) but its objects are cheap-to-moderate C, so it is qemu-shaped, not
+# llvm-shaped - it now gets local ccache via the hybrid tail instead. Multilib
+# variants (lib32-gcc-runtime, etc.) do not match the bare PNs and also run
+# local via ccache; that is intended.
+SCCACHE_INCLUDED_PN ?= "llvm-native gcc-cross-${TARGET_ARCH} binutils-cross-${TARGET_ARCH} gcc-runtime gcc-sanitizers clang clang-cross-${TARGET_ARCH} clang-crosssdk-${SDK_SYS} compiler-rt libcxx openmp rust-llvm rust-llvm-native linux-yocto systemd chromium-ozone-wayland chromium-x11 qtwebengine wpewebkit qtbase qtdeclarative opencv"
 
 python () {
     if (bb.utils.to_boolean(d.getVar('SCCACHE_DISABLE')) or
@@ -189,7 +211,16 @@ HOSTTOOLS += "sccache"
 # compile-bearing task; but only do_compile (and its ptest mirror) DISPATCHES to
 # the cluster. do_configure's conftests are tagged not-eligible and kept local
 # by sccache, so configure/install reach no scheduler and need no network grant;
-# granting them one would be dead config.
+# granting them one would be dead config. This conclusion depends on the daemon
+# being pre-spawned OUTSIDE any task netns: with global CCACHE the first sccache
+# call of a listed recipe is usually a do_configure conftest, and if no daemon
+# exists yet the client would auto-spawn one INSIDE configure's network-less
+# namespace - a daemon that can never reach the scheduler and poisons every later
+# dispatch. What prevents that today is the sccache_dist_guard BuildStarted
+# handler below, which runs --dist-status + a probe compile in the cooker's
+# networked environment, so a connected daemon always exists before any
+# task-netns conftest runs (host mode also pre-starts it). If that guard is ever
+# removed or conditionalized, this narrative inverts - keep them together.
 do_compile[network] = "1"
 do_compile_ptest_base[network] = "1"
 # linux-yocto defines two extra compile tasks beyond do_compile that run

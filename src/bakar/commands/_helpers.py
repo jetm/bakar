@@ -252,13 +252,18 @@ def _sccache_extra_overlays(cfg: BuildConfig) -> list[Path]:
 
 
 def _ccache_extra_overlays(cfg: BuildConfig) -> list[Path]:
-    """Return the ccache overlay path when ccache is the effective launcher.
+    """Return the ccache overlay path whenever ``[build] ccache`` is on.
 
-    ``cfg.use_ccache`` folds in the sccache exclusion (ccache on AND not
-    sccache-dist), so this is dropped whenever sccache-dist is active - the two
-    launchers are mutually exclusive and never both inherited.
+    Gated on the raw ``cfg.ccache`` toggle, NOT ``cfg.use_ccache`` (which stays
+    the parallelism-dominant-launcher marker). ccache and sccache are
+    complementary under the hybrid: with sccache-dist on, the ccache overlay is
+    co-selected so the non-allowlisted recipe tail still gets a local object
+    cache while sccache distributes the allowlisted heavy recipes. Ordered before
+    the sccache overlay in ``_tuning_extra_overlays`` (lower ``zz-bakar-NN`` key)
+    so ``INHERIT += "ccache"`` lands before ``INHERIT += "sccache"`` and
+    sccache.bbclass's per-recipe ``CCACHE`` override wins for allowlisted PNs.
     """
-    return _conditional_overlay(cfg.use_ccache, "bakar-tuning-ccache.yml")
+    return _conditional_overlay(cfg.ccache, "bakar-tuning-ccache.yml")
 
 
 def _host_extra_overlays(cfg: BuildConfig) -> list[Path]:

@@ -1,11 +1,15 @@
 # ccache tuning overlay.
 #
-# Added by bakar when ccache is the effective launcher - that is, [build]
-# ccache is on (the default) AND sccache-dist is off. ccache and sccache drive
-# the same OE launcher slot (the CCACHE variable), so they are mutually
-# exclusive; the sccache overlay is selected instead when --sccache-dist is set,
-# and this overlay is dropped. Selection lives in
-# bakar.commands._helpers._ccache_extra_overlays (gated on cfg.use_ccache).
+# Added by bakar whenever [build] ccache is on (the default), INCLUDING when
+# sccache-dist is on. ccache and sccache both drive the same OE launcher slot
+# (the CCACHE variable), but they are COMPLEMENTARY under the hybrid: ccache is
+# the local object cache for the non-allowlisted recipe tail while sccache
+# distributes the allowlisted heavy recipes (SCCACHE_INCLUDED_PN). When both are
+# active this overlay's INHERIT += "ccache" lands before the sccache overlay's
+# INHERIT += "sccache" (lower zz-bakar-NN key), so sccache.bbclass's per-recipe
+# CCACHE override wins for allowlisted PNs and the ccache value stands for the
+# rest. Selection lives in bakar.commands._helpers._ccache_extra_overlays (gated
+# on cfg.ccache).
 #
 # Extracted from the per-family base overlays (generic/nxp/ti) so ccache is
 # wired in exactly one place and only when actually used.
