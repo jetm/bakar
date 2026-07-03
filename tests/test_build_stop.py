@@ -15,6 +15,7 @@ import json
 import os
 import signal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
@@ -216,23 +217,54 @@ def test_stop_build_targets_older_live_run_when_newest_is_dead(
     assert not (older / "build.pid").exists()
 
 
-def test_stop_build_escalates_through_sigterm_sigkill(
+def test_escalate_host_sigterm_then_sigkill_when_lingering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_escalate_host sends SIGTERM then SIGKILL when the PGID survives the term wait."""
+    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: True)
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+    calls = _record_killpg(monkeypatch)
+
+    build_stop._escalate_host(4242)
+
+    assert calls == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)]
+
+
+def test_escalate_host_no_sigkill_when_dead_after_sigterm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_escalate_host skips SIGKILL when the group is gone after SIGTERM."""
+    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+    calls = _record_killpg(monkeypatch)
+
+    build_stop._escalate_host(4242)
+
+    assert calls == [(4242, signal.SIGTERM)]
+
+
+def test_stop_build_host_ctrl_c_runs_escalation_ladder(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Host-mode force=False escalates SIGINT -> SIGTERM -> SIGKILL when the PGID lingers.
+    """A Ctrl-C during the host graceful wait escalates through SIGTERM -> SIGKILL.
 
-    _pgid_alive stays True across the grace loop and the post-SIGTERM check,
-    forcing the full escalation ladder. Grace is shrunk and sleep neutered to
-    keep the test instant.
+    The unbounded wait no longer escalates on a timer; escalation is triggered
+    only by the injected ``escalate`` callback firing. Stub ``_graceful_wait`` to
+    invoke that callback (as a real Ctrl-C would) and assert the ladder runs.
     """
     run_dir = _make_run_dir(tmp_path)
     build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
 
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
     monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: True)
-    monkeypatch.setattr(build_stop, "_STOP_GRACE_SECONDS", 2)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+
+    def _fake_wait(*, escalate: object, **_kw: object) -> str:
+        escalate()
+        return "escalated"
+
+    monkeypatch.setattr(build_stop, "_graceful_wait", _fake_wait)
     calls = _record_killpg(monkeypatch)
 
     assert build_stop.stop_build(tmp_path) is True
@@ -241,7 +273,6 @@ def test_stop_build_escalates_through_sigterm_sigkill(
     assert sigs == [signal.SIGINT, signal.SIGTERM, signal.SIGKILL]
     assert all(pgid == 4242 for pgid, _sig in calls)
     assert not (run_dir / "build.pid").exists()
-    assert not (run_dir / "build.meta.json").exists()
 
 
 def test_stop_build_force_skips_sigint(
@@ -450,3 +481,251 @@ def test_check_unclean_stop_no_pidfile_silent(tmp_path: Path) -> None:
     build_stop.check_unclean_stop(tmp_path, console)
 
     assert console.export_text().strip() == ""
+
+
+# --- _graceful_wait (unbounded task-aware wait) ----------------------------
+
+
+def _incrementing_clock() -> object:
+    """Return a clock callable that yields 0.0, 1.0, 2.0, ... on each call."""
+    state = {"n": -1.0}
+
+    def _clock() -> float:
+        state["n"] += 1.0
+        return state["n"]
+
+    return _clock
+
+
+def _liveness_from(statuses: list[str]) -> object:
+    """Return a liveness callable that yields ``statuses`` then repeats the last."""
+    it = iter(statuses)
+    last = {"v": statuses[-1]}
+
+    def _liveness() -> str:
+        try:
+            last["v"] = next(it)
+        except StopIteration:
+            pass
+        return last["v"]
+
+    return _liveness
+
+
+def test_graceful_wait_long_wait_never_auto_escalates() -> None:
+    """A simulated >60s wait ends on liveness=false, not tasks==0, and never escalates.
+
+    Liveness stays alive for 70 polls (elapsed well past the old 60s cap) with an
+    empty running-task set the whole time; the loop must keep waiting until the
+    final _DEAD and must not fire the escalate ladder.
+    """
+    poll_count = {"n": 0}
+
+    def _liveness() -> str:
+        poll_count["n"] += 1
+        return build_stop._DEAD if poll_count["n"] > 70 else build_stop._ALIVE
+
+    escalate_calls: list[int] = []
+    out = Console(record=True, width=100)
+
+    status = build_stop._graceful_wait(
+        liveness=_liveness,
+        escalate=lambda: escalate_calls.append(1),
+        target_desc="PGID 4242",
+        run_dir=None,
+        console_out=out,
+        sleep=lambda _s: None,
+        clock=_incrementing_clock(),
+        tasks_reader=lambda _rd: [],
+        install_signal=False,
+    )
+
+    assert status == "drained"
+    assert escalate_calls == []
+    assert poll_count["n"] == 71  # polled through all 70 alive iterations, ended on _DEAD
+
+
+def test_graceful_wait_ends_on_liveness_not_tasks_zero() -> None:
+    """With tasks==0 from the first poll, the wait still runs until liveness=false."""
+    liveness = _liveness_from([build_stop._ALIVE, build_stop._ALIVE, build_stop._DEAD])
+    seen: list[str] = []
+
+    def _counting_liveness() -> str:
+        v = liveness()
+        seen.append(v)
+        return v
+
+    status = build_stop._graceful_wait(
+        liveness=_counting_liveness,
+        escalate=lambda: None,
+        target_desc="PGID 1",
+        run_dir=SimpleNamespace(),  # non-None so tasks_reader is consulted
+        console_out=Console(record=True, width=100),
+        sleep=lambda _s: None,
+        clock=_incrementing_clock(),
+        tasks_reader=lambda _rd: [],  # tasks==0 immediately
+        install_signal=False,
+    )
+
+    assert status == "drained"
+    assert seen == [build_stop._ALIVE, build_stop._ALIVE, build_stop._DEAD]
+
+
+def test_graceful_wait_frozen_running_set_flips_to_spinner() -> None:
+    """A running set that stops changing flips the live rows to the spinner fallback."""
+    from bakar.eventlog import RunningTask
+
+    frozen = [RunningTask(recipe="busybox", task="do_compile", started_epoch=100.0)]
+    out = Console(record=True, width=120)
+
+    status = build_stop._graceful_wait(
+        liveness=_liveness_from([build_stop._ALIVE, build_stop._ALIVE, build_stop._DEAD]),
+        escalate=lambda: None,
+        target_desc="PGID 4242",
+        run_dir=SimpleNamespace(),
+        console_out=out,
+        sleep=lambda _s: None,
+        clock=_incrementing_clock(),
+        tasks_reader=lambda _rd: frozen,
+        stale_after=1.0,
+        hint_interval=0.0,
+        install_signal=False,
+    )
+
+    text = out.export_text()
+    assert status == "drained"
+    assert "busybox:do_compile" in text  # the first poll rendered a live row
+    assert "press Ctrl-C to force" in text  # a later poll degraded to the spinner
+
+
+def test_graceful_wait_runtime_death_cap_exits_lost_runtime() -> None:
+    """A bounded run of consecutive query errors ends the wait with lost_runtime."""
+    poll_count = {"n": 0}
+
+    def _always_error() -> str:
+        poll_count["n"] += 1
+        return build_stop._ERROR
+
+    escalate_calls: list[int] = []
+
+    status = build_stop._graceful_wait(
+        liveness=_always_error,
+        escalate=lambda: escalate_calls.append(1),
+        target_desc="container abc",
+        run_dir=None,
+        console_out=Console(record=True, width=100),
+        error_cap=3,
+        sleep=lambda _s: None,
+        clock=_incrementing_clock(),
+        tasks_reader=lambda _rd: [],
+        install_signal=False,
+    )
+
+    assert status == "lost_runtime"
+    assert poll_count["n"] == 3  # gave up after exactly error_cap consecutive errors
+    assert escalate_calls == []
+
+
+def test_graceful_wait_single_transient_error_keeps_waiting() -> None:
+    """A single transient query error does not end the wait; the streak resets."""
+    liveness = _liveness_from(
+        [build_stop._ERROR, build_stop._ALIVE, build_stop._ERROR, build_stop._DEAD]
+    )
+
+    status = build_stop._graceful_wait(
+        liveness=liveness,
+        escalate=lambda: None,
+        target_desc="container abc",
+        run_dir=None,
+        console_out=Console(record=True, width=100),
+        error_cap=3,
+        sleep=lambda _s: None,
+        clock=_incrementing_clock(),
+        tasks_reader=lambda _rd: [],
+        install_signal=False,
+    )
+
+    assert status == "drained"  # never reached 3 errors in a row
+
+
+def test_graceful_wait_keyboard_interrupt_runs_escalation() -> None:
+    """A KeyboardInterrupt mid-wait (a Ctrl-C) fires the escalate ladder once."""
+    escalate_calls: list[int] = []
+
+    def _boom(_s: float) -> None:
+        raise KeyboardInterrupt
+
+    status = build_stop._graceful_wait(
+        liveness=lambda: build_stop._ALIVE,
+        escalate=lambda: escalate_calls.append(1),
+        target_desc="PGID 4242",
+        run_dir=None,
+        console_out=Console(record=True, width=100),
+        sleep=_boom,
+        clock=_incrementing_clock(),
+        tasks_reader=lambda _rd: [],
+        install_signal=False,
+    )
+
+    assert status == "escalated"
+    assert escalate_calls == [1]
+
+
+# --- stop_running_proc regression (unchanged in-process semantics) ---------
+
+
+def test_stop_running_proc_host_sends_single_nonblocking_sigint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Host mode still sends exactly one SIGINT to the wrapper PGID and does not block."""
+    calls = _record_killpg(monkeypatch)
+
+    proc = SimpleNamespace(pid=999)
+    cfg = SimpleNamespace(host_mode=True)
+    log = SimpleNamespace(run_id="20260101-000000")
+    build_stop.stop_running_proc(proc, cfg, log)  # type: ignore[arg-type]
+
+    assert calls == [(999, signal.SIGINT)]
+
+
+# --- _container_liveness tri-state -----------------------------------------
+
+
+def test_container_liveness_alive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """inspect reporting State.Running == true maps to _ALIVE."""
+    monkeypatch.setattr(
+        build_stop.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout="true\n", stderr=""),
+    )
+    assert build_stop._container_liveness("docker", "cid") == build_stop._ALIVE
+
+
+def test_container_liveness_dead(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A clean inspect reporting false is a definitive _DEAD, not an error."""
+    monkeypatch.setattr(
+        build_stop.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout="false\n", stderr=""),
+    )
+    assert build_stop._container_liveness("docker", "cid") == build_stop._DEAD
+
+
+def test_container_liveness_nonzero_exit_is_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-zero inspect exit is a query error (keep polling), not a drained container."""
+    monkeypatch.setattr(
+        build_stop.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="daemon unreachable"),
+    )
+    assert build_stop._container_liveness("docker", "cid") == build_stop._ERROR
+
+
+def test_container_liveness_oserror_is_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An OSError (runtime binary absent) is a query error, never _DEAD."""
+
+    def _boom(*_a: object, **_k: object) -> SimpleNamespace:
+        raise OSError("no runtime")
+
+    monkeypatch.setattr(build_stop.subprocess, "run", _boom)
+    assert build_stop._container_liveness("docker", "cid") == build_stop._ERROR

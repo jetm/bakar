@@ -22,21 +22,45 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rich.console import Console
 from rich.panel import Panel
 
+from bakar.eventlog import running_tasks
+
 if TYPE_CHECKING:
-    from rich.console import Console
+    from collections.abc import Callable
 
     from bakar.config import BuildConfig
+    from bakar.eventlog import RunningTask
     from bakar.observability import RunLogger
 
 _PID_FILENAME = "build.pid"
 _META_FILENAME = "build.meta.json"
 _VALID_CMDLINE_TOKENS = ("kas-container", "kas")
-_STOP_GRACE_SECONDS = 60
 _STOP_TERM_SECONDS = 5
 _EVENTS_FILENAME = "events.jsonl"
 _RUN_ID_LABEL_KEY = "bakar.run_id"
+
+# Wait-loop tuning. The graceful wait is UNBOUNDED (no grace cap); these only
+# govern the live-progress view and the runtime-death guard, never how long we
+# are willing to wait for a build to drain.
+_STOP_POLL_SECONDS = 1.0  # liveness/render cadence
+_STOP_STALE_SECONDS = 10.0  # running-set unchanged this long -> spinner fallback
+_STOP_HINT_SECONDS = 30.0  # cadence of the "press Ctrl-C to force" hint
+_RUNTIME_ERROR_CAP = 5  # consecutive container-query errors before giving up
+
+# Liveness tri-state. ``_ERROR`` is a query that could not be answered (a
+# transient runtime failure), distinct from a definitive ``_DEAD``; the wait
+# loop keeps polling on a single ``_ERROR`` and only concludes the runtime is
+# gone after ``_RUNTIME_ERROR_CAP`` in a row.
+_ALIVE = "alive"
+_DEAD = "dead"
+_ERROR = "error"
+
+# Module-level Rich console for the out-of-process ``bakar stop`` wait view.
+# build_stop sits below the commands tier, so it cannot import the shared
+# console from ``commands._app``; it owns its own.
+console = Console()
 
 
 def run_id_label(run_id: str) -> str:
@@ -223,6 +247,33 @@ def _container_running(runtime: str, cid: str) -> bool:
     return result.stdout.strip() == "true"
 
 
+def _container_liveness(runtime: str, cid: str) -> str:
+    """Return the tri-state liveness of container ``cid``.
+
+    Unlike :func:`_container_running`, this distinguishes a definitive
+    not-running result from a query that could not be answered:
+
+    - ``_ALIVE``  - ``inspect`` reported ``State.Running == true``;
+    - ``_DEAD``   - ``inspect`` succeeded and the container is stopped/gone
+      (``"false"`` or empty stdout with a clean exit);
+    - ``_ERROR``  - the query itself failed (runtime binary absent, daemon
+      unreachable, or a non-zero exit) so we cannot yet conclude the container
+      drained. The wait loop treats this as "keep polling", not "drained".
+    """
+    try:
+        result = subprocess.run(
+            [runtime, "inspect", "-f", "{{.State.Running}}", cid],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return _ERROR
+    if result.returncode != 0:
+        return _ERROR
+    return _ALIVE if result.stdout.strip() == "true" else _DEAD
+
+
 def _sigint_bitbake_in_container(runtime: str, cid: str) -> bool:
     """Send SIGINT to the main bitbake process INSIDE container ``cid``.
 
@@ -254,23 +305,148 @@ def _sigint_bitbake_in_container(runtime: str, cid: str) -> bool:
     return result.returncode == 0
 
 
+def _wait_sigint_handler(_signum: int, _frame: object) -> None:  # pragma: no cover - real signal path
+    """Convert a SIGINT delivered during the wait into a ``KeyboardInterrupt``.
+
+    Scoped to the wait loop only (installed/restored by :func:`_graceful_wait`)
+    so a Ctrl-C escalates the stop instead of tearing the process down.
+    """
+    raise KeyboardInterrupt
+
+
+def _render_running(out: Console, tasks: list[RunningTask], elapsed: float) -> None:
+    """Render the live per-task progress view (bitbake is still draining)."""
+    out.print(f"Waiting for {len(tasks)} running task(s) to finish (elapsed {elapsed:.0f}s)")
+    now = time.time()
+    for t in tasks:
+        if t.started_epoch is None:
+            per = ""
+        else:
+            per = f" {max(0.0, now - t.started_epoch):.0f}s"
+        out.print(f"  {t.recipe}:{t.task}{per}")
+
+
+def _render_spinner(out: Console, elapsed: float, target_desc: str, *, show_hint: bool) -> None:
+    """Render the spinner fallback used when the event log is frozen/unavailable."""
+    line = f"Waiting for build to finish (elapsed {elapsed:.0f}s)"
+    if show_hint:
+        line += f" - still waiting; press Ctrl-C to force [{target_desc}]"
+    out.print(line)
+
+
+def _graceful_wait(
+    *,
+    liveness: Callable[[], str],
+    escalate: Callable[[], None],
+    target_desc: str,
+    run_dir: Path | None = None,
+    console_out: Console | None = None,
+    error_cap: int = _RUNTIME_ERROR_CAP,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    tasks_reader: Callable[[Path], list[RunningTask]] = running_tasks,
+    poll_interval: float = _STOP_POLL_SECONDS,
+    stale_after: float = _STOP_STALE_SECONDS,
+    hint_interval: float = _STOP_HINT_SECONDS,
+    install_signal: bool = True,
+) -> str:
+    """Wait UNBOUNDED until ``liveness()`` says the target is gone.
+
+    The exit gate is liveness, never ``tasks == 0``: bitbake may still finalize
+    (sstate writes, cooker shutdown) after the last task drains, so only a
+    ``_DEAD`` liveness result ends the wait. Returns one of:
+
+    - ``"drained"``      - ``liveness()`` returned ``_DEAD``;
+    - ``"escalated"``    - a Ctrl-C fired the SIGTERM->SIGKILL ``escalate()`` ladder;
+    - ``"lost_runtime"`` - ``error_cap`` consecutive ``_ERROR`` liveness queries
+      (container runtime unreachable); the caller should exit 1.
+
+    A single ``_ERROR`` keeps waiting (re-query before concluding). Progress is
+    read from ``tasks_reader(run_dir)``; when the running set is empty or has not
+    changed for ``stale_after`` seconds (a frozen event log), the view degrades to
+    a spinner + elapsed with a periodic Ctrl-C hint so stale, non-decrementing
+    rows are never left on screen.
+
+    ``clock``/``sleep``/``liveness``/``tasks_reader`` are injectable seams so the
+    branching logic is unit-testable without real sleeps or signals; pass
+    ``install_signal=False`` to skip the SIGINT handler in tests.
+    """
+    out = console_out if console_out is not None else console
+    start = clock()
+    error_streak = 0
+    last_signature: frozenset[tuple[str, str]] | None = None
+    last_change = start
+    last_hint = start
+
+    prev_handler = None
+    if install_signal:
+        prev_handler = signal.signal(signal.SIGINT, _wait_sigint_handler)  # pragma: no cover
+    try:
+        while True:
+            status = liveness()
+            if status == _DEAD:
+                return "drained"
+            if status == _ERROR:
+                error_streak += 1
+                if error_streak >= error_cap:
+                    return "lost_runtime"
+            else:
+                error_streak = 0
+
+            now = clock()
+            elapsed = now - start
+            tasks = tasks_reader(run_dir) if run_dir is not None else []
+            signature = frozenset((t.recipe, t.task) for t in tasks)
+            if signature != last_signature:
+                last_signature = signature
+                last_change = now
+            stale = (now - last_change) >= stale_after
+
+            if tasks and not stale:
+                _render_running(out, tasks, elapsed)
+            else:
+                show_hint = (now - last_hint) >= hint_interval
+                if show_hint:
+                    last_hint = now
+                _render_spinner(out, elapsed, target_desc, show_hint=show_hint)
+
+            sleep(poll_interval)
+    except KeyboardInterrupt:
+        escalate()
+        return "escalated"
+    finally:
+        if prev_handler is not None:
+            signal.signal(signal.SIGINT, prev_handler)  # pragma: no cover
+
+
+def _escalate_container(runtime: str, cid: str, term_secs: int) -> None:
+    """Run the container SIGTERM->SIGKILL ladder: ``stop --timeout`` then ``kill``."""
+    _run_runtime([runtime, "stop", f"--timeout={term_secs}", cid])
+    _run_runtime([runtime, "kill", "--signal=SIGKILL", cid])
+
+
 def _stop_container(
     runtime: str,
     cid: str,
     *,
     force: bool,
-    grace_secs: int,
     term_secs: int,
-) -> None:
-    """Stop container ``cid`` via ``runtime`` with graceful escalation.
+    run_dir: Path | None = None,
+    console_out: Console | None = None,
+) -> str:
+    """Stop container ``cid`` via ``runtime`` with an unbounded graceful wait.
 
     When ``force`` is False: send SIGINT to bitbake inside the container first
     (via :func:`_sigint_bitbake_in_container`, falling back to a container-PID-1
-    SIGINT if the exec fails), poll ``inspect`` once per second for up to
-    ``grace_secs`` (stopping early once the container is no longer running),
-    then ``stop --timeout=<term_secs>`` and finally ``kill --signal=SIGKILL``.
-    When ``force`` is True: skip the SIGINT step and go straight to ``stop``
-    then ``kill --signal=SIGKILL``.
+    SIGINT if the exec fails), then wait UNBOUNDED via :func:`_graceful_wait`
+    until the container is no longer running, rendering live progress. A Ctrl-C
+    during the wait escalates through ``stop --timeout=<term_secs>`` ->
+    ``kill --signal=SIGKILL``. When ``force`` is True: skip the SIGINT step and go
+    straight to that escalation ladder.
+
+    Returns the :func:`_graceful_wait` status (``"drained"``/``"escalated"``/
+    ``"lost_runtime"``) for the graceful path, or ``"forced"`` for ``force=True``.
+    ``"lost_runtime"`` tells the caller the runtime went unreachable (exit 1).
 
     Uses ``--timeout`` (docker >= 29 deprecates ``--time``). Every subprocess
     call captures output and never raises on a non-zero exit.
@@ -279,20 +455,23 @@ def _stop_container(
         print(f"Sent SIGINT to bitbake in container {cid}...")
         if not _sigint_bitbake_in_container(runtime, cid):
             _run_runtime([runtime, "kill", "--signal=SIGINT", cid])
-        for _ in range(grace_secs):
-            if not _container_running(runtime, cid):
-                print("stopped")
-                return
-            time.sleep(1)
-        print("escalating to SIGTERM")
-    else:
-        print(f"Sending SIGTERM to container {cid}...")
+        status = _graceful_wait(
+            liveness=lambda: _container_liveness(runtime, cid),
+            escalate=lambda: _escalate_container(runtime, cid, term_secs),
+            target_desc=f"container {cid}",
+            run_dir=run_dir,
+            console_out=console_out,
+        )
+        if status == "lost_runtime":
+            print("lost contact with the container runtime")
+        else:
+            print("stopped")
+        return status
 
-    _run_runtime([runtime, "stop", f"--timeout={term_secs}", cid])
-    if _container_running(runtime, cid):
-        print("escalating to SIGKILL")
-    _run_runtime([runtime, "kill", "--signal=SIGKILL", cid])
+    print(f"Sending SIGTERM to container {cid}...")
+    _escalate_container(runtime, cid, term_secs)
     print("stopped")
+    return "forced"
 
 
 def stop_running_proc(proc: subprocess.Popen, cfg: BuildConfig, log: RunLogger) -> None:
@@ -392,6 +571,18 @@ def _pgid_alive(pgid: int) -> bool:
     return True
 
 
+def _escalate_host(pgid: int) -> None:
+    """Run the host SIGTERM->SIGKILL ladder against process group ``pgid``.
+
+    SIGTERM, wait ``_STOP_TERM_SECONDS``, then SIGKILL only if the group is
+    still alive - the existing escalation, unchanged.
+    """
+    os.killpg(pgid, signal.SIGTERM)
+    time.sleep(_STOP_TERM_SECONDS)
+    if _pgid_alive(pgid):
+        os.killpg(pgid, signal.SIGKILL)
+
+
 def stop_build(bsp_root: Path, *, force: bool = False) -> bool:
     """Stop the most recent build, targeting it by execution mode.
 
@@ -403,8 +594,9 @@ def stop_build(bsp_root: Path, *, force: bool = False) -> bool:
     signalled or container stopped), ``False`` when none is targetable (no run
     dir, or every run is finished/unresolvable).
 
-    Host mode keeps the existing ``os.killpg`` SIGINT -> SIGTERM -> SIGKILL
-    escalation. Container mode resolves the container via its recorded label and
+    Host mode sends SIGINT then waits UNBOUNDED (via ``_graceful_wait``) until
+    the PGID is gone, escalating through SIGTERM -> SIGKILL only on Ctrl-C or
+    ``force``. Container mode resolves the container via its recorded label and
     stops it through the runtime daemon, without touching the wrapper PGID. The
     launch record (``build.pid`` + ``build.meta.json``) is always removed before
     returning.
@@ -448,20 +640,15 @@ def stop_build(bsp_root: Path, *, force: bool = False) -> bool:
             if not force:
                 print(f"Sent SIGINT to build PGID {pgid}...")
                 os.killpg(pgid, signal.SIGINT)
-                for _ in range(_STOP_GRACE_SECONDS):
-                    if not _pgid_alive(pgid):
-                        print("stopped")
-                        return True
-                    time.sleep(1)
-                print("escalating to SIGTERM")
+                _graceful_wait(
+                    liveness=lambda: _ALIVE if _pgid_alive(pgid) else _DEAD,
+                    escalate=lambda: _escalate_host(pgid),
+                    target_desc=f"PGID {pgid}",
+                    run_dir=run_dir,
+                )
             else:
                 print(f"Sent SIGTERM to build PGID {pgid}...")
-
-            os.killpg(pgid, signal.SIGTERM)
-            time.sleep(_STOP_TERM_SECONDS)
-            if _pgid_alive(pgid):
-                print("escalating to SIGKILL")
-                os.killpg(pgid, signal.SIGKILL)
+                _escalate_host(pgid)
             print("stopped")
             return True
         finally:
@@ -485,14 +672,16 @@ def stop_build(bsp_root: Path, *, force: bool = False) -> bool:
             print("no running build container found")
             return False
 
-        _stop_container(
+        status = _stop_container(
             runtime,
             cid,
             force=force,
-            grace_secs=_STOP_GRACE_SECONDS,
             term_secs=_STOP_TERM_SECONDS,
+            run_dir=run_dir,
         )
-        return True
+        # A drained/escalated/forced stop is success (exit 0); only a runtime we
+        # lost contact with mid-wait is a failure (exit 1).
+        return status != "lost_runtime"
     finally:
         remove_pid(run_dir)
 

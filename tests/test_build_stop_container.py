@@ -31,9 +31,9 @@ def _patch_runtime_seams(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 
     ``_run_runtime`` appends each issued argv to the returned list,
     ``_sigint_bitbake_in_container`` records a ``["sigint-bitbake", runtime,
-    cid]`` sentinel and reports success (True), ``_container_running`` always
-    reports still-running so the escalation runs to completion, and
-    ``time.sleep`` is a no-op to keep the grace loop fast.
+    cid]`` sentinel and reports success (True), ``_container_liveness`` reports
+    the container already gone (``_DEAD``) so the unbounded graceful wait drains
+    on its first poll, and ``time.sleep`` is a no-op.
     """
     issued: list[list[str]] = []
 
@@ -46,42 +46,48 @@ def _patch_runtime_seams(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 
     monkeypatch.setattr(build_stop, "_run_runtime", _record)
     monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", _record_sigint)
-    monkeypatch.setattr(build_stop, "_container_running", lambda runtime, cid: True)
+    monkeypatch.setattr(build_stop, "_container_liveness", lambda runtime, cid: build_stop._DEAD)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     return issued
 
 
-def test_stop_container_graceful_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    """force=False signals bitbake inside the container first, then stop, then SIGKILL."""
+def test_stop_container_graceful_drain_signals_bitbake_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """force=False signals bitbake inside the container, then the wait drains - no SIGKILL.
+
+    The graceful path is now an unbounded liveness wait, not a bounded poll that
+    always escalates: once ``_container_liveness`` reports the container gone the
+    wait returns without ever running the stop/kill ladder.
+    """
     issued = _patch_runtime_seams(monkeypatch)
 
-    build_stop._stop_container("docker", "abc123", force=False, grace_secs=2, term_secs=5)
+    status = build_stop._stop_container("docker", "abc123", force=False, term_secs=5)
 
-    assert issued == [
-        ["sigint-bitbake", "docker", "abc123"],
-        ["docker", "stop", "--timeout=5", "abc123"],
-        ["docker", "kill", "--signal=SIGKILL", "abc123"],
-    ]
+    assert status == "drained"
+    assert issued == [["sigint-bitbake", "docker", "abc123"]]
 
 
 def test_stop_container_graceful_sigint_first(monkeypatch: pytest.MonkeyPatch) -> None:
     """The very first action in the graceful path is the in-container bitbake SIGINT."""
     issued = _patch_runtime_seams(monkeypatch)
 
-    build_stop._stop_container("podman", "cid", force=False, grace_secs=1, term_secs=3)
+    build_stop._stop_container("podman", "cid", force=False, term_secs=3)
 
     assert issued[0] == ["sigint-bitbake", "podman", "cid"]
 
 
 def test_stop_container_force_skips_sigint(monkeypatch: pytest.MonkeyPatch) -> None:
-    """force=True signals no bitbake SIGINT; the first call is stop --timeout."""
+    """force=True signals no bitbake SIGINT; it runs the stop -> SIGKILL ladder."""
     issued = _patch_runtime_seams(monkeypatch)
 
-    build_stop._stop_container("docker", "abc", force=True, grace_secs=2, term_secs=7)
+    status = build_stop._stop_container("docker", "abc", force=True, term_secs=7)
 
+    assert status == "forced"
     assert not any(call[0] == "sigint-bitbake" for call in issued)
     assert not any("SIGINT" in arg for call in issued for arg in call)
-    assert issued[0] == ["docker", "stop", "--timeout=7", "abc"]
+    assert issued == [
+        ["docker", "stop", "--timeout=7", "abc"],
+        ["docker", "kill", "--signal=SIGKILL", "abc"],
+    ]
 
 
 def test_stop_container_falls_back_to_pid1_sigint_when_exec_fails(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -89,10 +95,10 @@ def test_stop_container_falls_back_to_pid1_sigint_when_exec_fails(monkeypatch: p
     issued: list[list[str]] = []
     monkeypatch.setattr(build_stop, "_run_runtime", issued.append)
     monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", lambda runtime, cid: False)
-    monkeypatch.setattr(build_stop, "_container_running", lambda runtime, cid: True)
+    monkeypatch.setattr(build_stop, "_container_liveness", lambda runtime, cid: build_stop._DEAD)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
 
-    build_stop._stop_container("docker", "abc", force=False, grace_secs=1, term_secs=4)
+    build_stop._stop_container("docker", "abc", force=False, term_secs=4)
 
     assert issued[0] == ["docker", "kill", "--signal=SIGINT", "abc"]
 

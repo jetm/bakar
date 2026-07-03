@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 import bakar.commands.monitor as monitor_module
+import bakar.eventlog as eventlog_module
 from bakar.cli import app
 from bakar.diagnostics import BuildDaemonReport, ClusterCapacity, ClusterReport
 
@@ -101,6 +102,8 @@ def patched_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(monitor_module, "probe_cluster", lambda _url: _reachable_cluster())
     monkeypatch.setattr(monitor_module, "probe_build_daemon", _running_daemon)
     monkeypatch.setattr(monitor_module, "normalize", lambda _path: _synthetic_artifact())
+    # running_tasks re-reads the log via eventlog.normalize, so patch it there too.
+    monkeypatch.setattr(eventlog_module, "normalize", lambda _path: _synthetic_artifact())
     # is_build_running shells out to /proc; force a deterministic "finished".
     monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: (False, None, False))
 
@@ -180,6 +183,7 @@ def test_progress_falls_back_before_runqueue_total_known(
     monkeypatch.setattr(monitor_module, "probe_cluster", lambda _url: _reachable_cluster())
     monkeypatch.setattr(monitor_module, "probe_build_daemon", _running_daemon)
     monkeypatch.setattr(monitor_module, "normalize", lambda _path: artifact)
+    monkeypatch.setattr(eventlog_module, "normalize", lambda _path: artifact)
     monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: (False, None, False))
 
     result = runner.invoke(
@@ -292,6 +296,7 @@ def test_unreachable_cluster_does_not_crash_json(
     )
     monkeypatch.setattr(monitor_module, "probe_build_daemon", lambda: BuildDaemonReport(running=False))
     monkeypatch.setattr(monitor_module, "normalize", lambda _path: _synthetic_artifact())
+    monkeypatch.setattr(eventlog_module, "normalize", lambda _path: _synthetic_artifact())
     monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: (False, None, False))
 
     result = runner.invoke(
@@ -467,6 +472,7 @@ def test_json_once_build_daemon_carries_per_language(
     monkeypatch.setattr(monitor_module, "probe_cluster", lambda _url: _reachable_cluster())
     monkeypatch.setattr(monitor_module, "probe_build_daemon", _running_daemon_with_langs)
     monkeypatch.setattr(monitor_module, "normalize", lambda _path: _synthetic_artifact())
+    monkeypatch.setattr(eventlog_module, "normalize", lambda _path: _synthetic_artifact())
     monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: (False, None, False))
 
     result = runner.invoke(
