@@ -20,7 +20,7 @@ bakar stop [OPTIONS] [KAS_YAML]
 |------|-------------|
 | `--force` | Skip the SIGINT grace period and escalate straight to SIGTERM, then SIGKILL |
 | `--manifest`, `-f` | Manifest filename used to resolve the BSP family (NXP/TI); mutually exclusive with a positional `KAS_YAML` |
-| `--workspace`, `-w` | Workspace root override |
+| `--workspace`, `-w` | Workspace root; changes directory into the resolved workspace before resolving paths, so a relative `KAS_YAML` resolves from outside the workspace. An invalid path exits 2 |
 
 ## Examples
 
@@ -60,17 +60,19 @@ signalling the wrapper PGID would orphan it. `bakar stop` instead:
    signalled: the kas-container entrypoint runs under docker-init and does not
    forward signals to bitbake, so the SIGINT goes straight to the cooker. If the
    in-container exec fails, it falls back to a PID-1 SIGINT.
-3. Waits up to 60 seconds for the container to exit, polling once a second.
-4. If still running, escalates to `<runtime> stop --timeout=5` (SIGTERM), then
-   `<runtime> kill --signal=SIGKILL`.
+3. Waits, unbounded and task-aware, until the container is no longer running
+   (see [Graceful wait](#graceful-wait)). There is no fixed 60-second cap.
+4. On Ctrl-C during the wait, escalates to `<runtime> stop --timeout=5` (SIGTERM),
+   then `<runtime> kill --signal=SIGKILL`.
 
 **Host builds** (`bakar --host build` - plain `kas` on the host, no container):
 bitbake is a real descendant of the wrapper, so `bakar stop` signals the recorded
 process group directly:
 
 1. Sends `SIGINT` to the build process group; bitbake runs its graceful shutdown.
-2. Waits up to 60 seconds for the group to exit.
-3. If still alive, escalates to `SIGTERM`, waits 5 seconds, then `SIGKILL`.
+2. Waits, unbounded and task-aware, until the process group is no longer running
+   (see [Graceful wait](#graceful-wait)).
+3. On Ctrl-C during the wait, escalates to `SIGTERM`, waits 5 seconds, then `SIGKILL`.
 
    Before signalling, it verifies the recorded PGID still belongs to a
    kas-container/kas process (`/proc/<pgid>/cmdline`). A dead or recycled PID
@@ -79,6 +81,29 @@ process group directly:
 
 `--force` skips the SIGINT step in both modes and escalates straight to SIGTERM
 then SIGKILL.
+
+## Graceful wait
+
+The SIGINT grace wait is unbounded and task-aware. After the SIGINT, `bakar stop`
+waits until the build process (host) or container (container mode) is no longer
+running - there is no fixed 60-second cap, so a long `do_compile` that outlasts a
+minute is allowed to finish and write consistent sstate.
+
+While it waits, it renders live progress from the build's event log
+(`bitbake_eventlog.json`): `Waiting for N running tasks to finish (elapsed …)` with
+one `recipe:task elapsed` row per running task. When task progress is unavailable -
+no event log, a malformed or truncated log, or the log stops updating during the
+drain - it falls back to a spinner and elapsed timer with a periodic
+`still waiting; press Ctrl-C to force` hint plus the alive PID / container id.
+
+Pressing Ctrl-C during the wait escalates immediately to the SIGTERM then SIGKILL
+ladder (mirroring bitbake's own second Ctrl-C). `--force` skips the graceful wait
+entirely and goes straight to SIGTERM then SIGKILL.
+
+In container mode, a liveness query that errors (docker/podman transiently
+unreachable) is not treated as "container stopped"; `bakar stop` warns and keeps
+waiting. If the runtime stays unreachable across repeated liveness queries,
+`bakar stop` gives up and exits 1 with `lost contact with the container runtime`.
 
 ## Why graceful matters
 

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The `-w`/`--workspace` flag now changes directory into the resolved workspace before any path resolution, across every command that exposes it, so a relative kas YAML positional argument resolves from outside the workspace (e.g. `bakar stop -w <ws> machine.yml`). An invalid `-w` path (missing or a regular file) exits 2 naming `--workspace`. `bakar init`'s `--workspace` is unchanged.
+- `bakar stop` replaces its fixed 60-second grace poll with an unbounded, task-aware graceful wait: it waits until the build process/container is no longer running, rendering live `Waiting for N running tasks to finish` progress from the build event log, with a spinner + elapsed fallback when task progress is unavailable or the log freezes. If the container runtime becomes unreachable across repeated liveness queries it gives up and exits 1; Ctrl-C during the wait escalates to SIGTERM then SIGKILL, and `--force` skips the graceful wait entirely.
+
 ## [0.19.0] - 2026-06-26
 
 ### Added
