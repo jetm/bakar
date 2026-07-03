@@ -34,7 +34,7 @@ from bakar.commands._helpers import WorkspaceOption, _bsp_from_cwd, _dispatch_fr
 from bakar.commands.log import _resolve_run_dir
 from bakar.config import BSPSpec, BuildConfig, resolve
 from bakar.diagnostics import probe_build_daemon, probe_cluster
-from bakar.eventlog import normalize
+from bakar.eventlog import normalize, running_tasks
 from bakar.steps.build_ui import SEVERITY_PASSTHROUGH, _fmt_stall, _task_style
 
 if TYPE_CHECKING:
@@ -131,7 +131,6 @@ def _build_progress(run_dir: Path) -> dict[str, Any]:
     artifact = normalize(run_dir / "bitbake_eventlog.json")
     tasks = artifact["tasks"]
 
-    running: list[dict[str, Any]] = []
     succeeded = 0
     failed = 0
     setscene_rerun = 0
@@ -146,8 +145,10 @@ def _build_progress(run_dir: Path) -> dict[str, Any]:
             # so this is a recovered cache miss, NOT a build failure. Count it
             # separately so the monitor never reports it as "N failed".
             setscene_rerun += 1
-        elif outcome is None and row.get("started") is not None:
-            running.append(row)
+
+    # Running-task selection is owned by eventlog.running_tasks so this view and
+    # bakar stop cannot drift on which rows count as running.
+    running = running_tasks(run_dir)
 
     build = artifact["build"]
     completed = build.get("completed")
@@ -184,7 +185,7 @@ def _build_progress(run_dir: Path) -> dict[str, Any]:
         "tasks_running": len(running),
         "tasks_failed": failed,
         "tasks_setscene_rerun": setscene_rerun,
-        "running": [{"recipe": r.get("recipe"), "task": r.get("task")} for r in running],
+        "running": [{"recipe": r.recipe, "task": r.task} for r in running],
         "failures": artifact["failures"][-_FAILURE_TAIL:],
     }
 
