@@ -53,6 +53,10 @@ class AllocStats:
     # A misroute where the skipped, less-loaded candidate had zero jobs (idle).
     idle_skips: int = 0
     per_node_chosen: Counter = field(default_factory=Counter)
+    truncated: int = 0  # alloc lines whose candidate list was cut short (load==0 break)
+    total_by_bucket: Counter = field(default_factory=Counter)  # non-truncated allocs by concurrent in-flight
+    misroutes_by_bucket: Counter = field(default_factory=Counter)
+    idle_skips_by_bucket: Counter = field(default_factory=Counter)
 
     @property
     def misroute_pct(self) -> float:
@@ -73,14 +77,41 @@ class SaturationStats:
     near_sat_pct: float = 0.0  # share of polls at >= 7/8 of ceiling
 
 
+def _load_bucket(concurrent: int) -> str:
+    """Bucket an alloc by the concurrent in-flight jobs at decision time.
+
+    ``concurrent`` is the sum of the candidate servers' pre-assignment job
+    counts. Only high-bucket misroutes are actionable - a wrong choice when
+    both nodes are loaded costs real queueing; low-bucket misroutes are
+    dominated by don't-care ties.
+    """
+    if concurrent < 16:
+        return "low"
+    if concurrent < 48:
+        return "mid"
+    return "high"
+
+
 def parse_dist_alloc(lines: Iterable[str]) -> AllocStats:
     """Aggregate routing quality from the scheduler's ``dist-alloc`` lines.
 
     A *misroute* is an allocation whose chosen server was not the least-loaded
     candidate; an *idle skip* is a misroute where the cheaper candidate had zero
     jobs. Lines without a parseable chosen server are skipped.
+
+    A line whose candidate list is shorter than the widest list seen in the run
+    was *truncated* by the scheduler's ``load == 0`` early break (main.rs): it
+    omits the unscanned servers, so it cannot express a misroute and would bias
+    the rate downward. Truncated lines are counted in ``truncated`` and still
+    attributed in ``per_node_chosen``, but excluded from ``total`` and the
+    misroute math. Non-truncated allocs are bucketed by the concurrent in-flight
+    jobs at decision time so the load-dependent rate is visible (only the high
+    bucket is actionable). A single streaming pass records each alloc, then the
+    widest candidate count classifies truncation once it is known.
     """
     stats = AllocStats()
+    parsed: list[tuple[int, int, str, bool, bool]] = []
+    max_cands = 0
     for line in lines:
         m = _ALLOC_CHOSEN_RE.search(line)
         if m is None:
@@ -95,16 +126,25 @@ def parse_dist_alloc(lines: Iterable[str]) -> AllocStats:
         cands = {c.group("addr"): (float(c.group("load")), int(c.group("jobs"))) for c in _ALLOC_CAND_RE.finditer(line)}
         if chosen_addr not in cands:
             continue
-        stats.total += 1
-        stats.per_node_chosen[chosen_addr] += 1
+        max_cands = max(max_cands, len(cands))
+        concurrent = sum(jobs for _load, jobs in cands.values())
         chosen_load = cands[chosen_addr][0]
-        cheaper = [
-            (addr, load, jobs) for addr, (load, jobs) in cands.items() if addr != chosen_addr and load < chosen_load
-        ]
-        if cheaper:
+        cheaper = [jobs for addr, (load, jobs) in cands.items() if addr != chosen_addr and load < chosen_load]
+        parsed.append((len(cands), concurrent, chosen_addr, bool(cheaper), any(j == 0 for j in cheaper)))
+    for n_cands, concurrent, chosen_addr, is_misroute, is_idle_skip in parsed:
+        stats.per_node_chosen[chosen_addr] += 1
+        if n_cands < max_cands:
+            stats.truncated += 1
+            continue
+        stats.total += 1
+        bucket = _load_bucket(concurrent)
+        stats.total_by_bucket[bucket] += 1
+        if is_misroute:
             stats.misroutes += 1
-            if any(jobs == 0 for _addr, _load, jobs in cheaper):
+            stats.misroutes_by_bucket[bucket] += 1
+            if is_idle_skip:
                 stats.idle_skips += 1
+                stats.idle_skips_by_bucket[bucket] += 1
     return stats
 
 

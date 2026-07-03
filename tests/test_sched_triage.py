@@ -49,12 +49,38 @@ def test_parse_dist_alloc_misroute_pct() -> None:
         "dist-alloc: job 1 -> ServerId(192.168.8.172:10501) (now 6/32 jobs, load 0.6); "
         "candidates [(ServerId(192.168.8.172:10501), 0.5, 5, 32), (ServerId(10.42.0.2:10501), 0.1, 1, 32)]",
         "dist-alloc: job 2 -> ServerId(10.42.0.2:10501) (now 2/32 jobs, load 0.125); "
-        "candidates [(ServerId(10.42.0.2:10501), 0.1, 1, 32)]",
+        "candidates [(ServerId(10.42.0.2:10501), 0.1, 1, 32), (ServerId(192.168.8.172:10501), 0.5, 5, 32)]",
     ]
     stats = parse_dist_alloc(lines)
     assert stats.total == 2
     assert stats.misroutes == 1
     assert stats.misroute_pct == 50.0
+
+
+def test_parse_dist_alloc_excludes_truncated_candidate_lines() -> None:
+    """A candidate list shorter than the widest seen was cut by the load==0 break; exclude it."""
+    lines = [
+        "dist-alloc: job 1 -> ServerId(192.168.8.172:10501) (now 1/32 jobs, load 0.0); "
+        "candidates [(ServerId(192.168.8.172:10501), 0.0, 0, 32)]",
+        "dist-alloc: job 2 -> ServerId(192.168.8.172:10501) (now 6/32 jobs, load 0.6); "
+        "candidates [(ServerId(192.168.8.172:10501), 0.5, 5, 32), (ServerId(10.42.0.2:10501), 0.1, 1, 32)]",
+    ]
+    stats = parse_dist_alloc(lines)
+    assert stats.truncated == 1
+    assert stats.total == 1
+    assert stats.per_node_chosen["192.168.8.172:10501"] == 2
+
+
+def test_parse_dist_alloc_buckets_misroute_by_load() -> None:
+    """Misroutes are bucketed by concurrent in-flight so the load-dependent rate is visible."""
+    lines = [
+        "dist-alloc: job 1 -> ServerId(192.168.8.172:10501) (now 31/32 jobs, load 0.94); "
+        "candidates [(ServerId(192.168.8.172:10501), 0.6, 30, 32), (ServerId(10.42.0.2:10501), 0.2, 20, 32)]",
+    ]
+    stats = parse_dist_alloc(lines)
+    assert stats.misroutes_by_bucket["high"] == 1
+    assert stats.total_by_bucket["high"] == 1
+    assert stats.misroutes_by_bucket["low"] == 0
 
 
 def test_parse_dist_status_computes_util_and_idle() -> None:
