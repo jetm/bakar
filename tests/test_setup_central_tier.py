@@ -13,7 +13,7 @@ import tomllib
 
 import pytest
 
-from bakar import hashserv, prserv
+from bakar import central_service, hashserv, prserv
 from bakar.setup.actions import central_tier
 from bakar.setup.actions.base import Action, RunCommand
 from bakar.setup.actions.central_tier import CentralTierAction, CentralTierConfig
@@ -70,10 +70,14 @@ class _NeverListensProc:
 
 @pytest.mark.parametrize("module", [hashserv, prserv])
 def test_central_ensure_running_terminates_spawn_on_startup_timeout(module, monkeypatch) -> None:
-    """A spawn that never starts listening is terminated, not left orphaned."""
+    """A spawn that never starts listening is terminated, not left orphaned.
+
+    Both modules' central_ensure_running delegate to bakar.central_service, where
+    the spawn/probe/terminate loop lives, so the spawn is patched there.
+    """
     fake = _NeverListensProc()
-    monkeypatch.setattr(module.shutil, "which", lambda _b: "/usr/bin/svc")
-    monkeypatch.setattr(module.subprocess, "Popen", lambda *a, **k: fake)
+    monkeypatch.setattr(central_service.shutil, "which", lambda _b: "/usr/bin/svc")
+    monkeypatch.setattr(central_service.subprocess, "Popen", lambda *a, **k: fake)
 
     result = module.central_ensure_running(
         binary="svc",

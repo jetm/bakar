@@ -33,13 +33,14 @@ tracks liveness by TCP-probing the listen port rather than by a Popen PID.
 
 from __future__ import annotations
 
-import shutil
 import socket
 import subprocess
 import time
 from contextlib import suppress
 from hashlib import sha256
 from pathlib import Path
+
+from bakar import central_service
 
 _DB_FILENAME = "prserv.sqlite3"
 _LOG_FILENAME = "prserv.log"
@@ -233,17 +234,17 @@ CENTRAL_DEFAULT_PORT = 8585  # prserv/docs/integration.md default bind port
 
 def central_prserv_host(host: str, port: int = CENTRAL_DEFAULT_PORT) -> str:
     """The ``PRSERV_HOST`` value (``host:port``) for the central Rust prserv."""
-    return f"{host}:{port}"
+    return central_service.endpoint(host, port)
 
 
 def central_listening(host: str, port: int = CENTRAL_DEFAULT_PORT, *, timeout: float = 0.5) -> bool:
     """Return True iff a TCP connection to the central prserv endpoint succeeds."""
-    return _probe(_probe_host(host), port, timeout=timeout)
+    return central_service.is_listening(host, port, timeout=timeout)
 
 
 def central_service_argv(binary: str, *, bind: str, database: str) -> list[str]:
     """argv to start the avocado-prserv Rust service against ``database``."""
-    return [binary, "server", "--bind", bind, "--database", database]
+    return central_service.service_argv(binary, bind=bind, database=database)
 
 
 def central_ensure_running(
@@ -262,26 +263,10 @@ def central_ensure_running(
     ``startup_deadline_seconds``. Liveness is the TCP probe; no PID is tracked
     because the postgres DB - not an on-disk file - is the durable state.
     """
-    probe = _probe_host(bind_host)
-    if _probe(probe, port):
-        return central_prserv_host(bind_host, port)
-    if shutil.which(binary) is None and not Path(binary).is_file():
-        return None
-    proc = subprocess.Popen(
-        central_service_argv(binary, bind=f"{bind_host}:{port}", database=database),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
+    return central_service.ensure_running(
+        binary=binary,
+        bind_host=bind_host,
+        database=database,
+        port=port,
+        startup_deadline_seconds=startup_deadline_seconds,
     )
-    deadline = time.monotonic() + startup_deadline_seconds
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            return None
-        if _probe(probe, port):
-            return central_prserv_host(bind_host, port)
-        time.sleep(0.1)
-    # Never reached the probe within the deadline: terminate the spawn so a
-    # service that started but never listened is not left orphaned.
-    if proc.poll() is None:
-        proc.terminate()
-    return None
