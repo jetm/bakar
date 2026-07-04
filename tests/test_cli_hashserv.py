@@ -16,6 +16,7 @@ import pytest
 
 import bakar.commands.hashserv as hashserv_cmd
 from bakar.cli import app
+from bakar.user_config import UserConfig
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -46,6 +47,9 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # is what these per-workspace state-file assertions expect. A shared sstate
     # is covered in test_config.py's hashserv_state_key tests.
     monkeypatch.delenv("SSTATE_DIR", raising=False)
+    # The real ~/.config/bakar/config.toml sets sstate_dir for the cluster; load a
+    # clean default so hashserv_state_key falls back to bsp_root, not the shared dir.
+    monkeypatch.setattr("bakar.commands._app._load_user_config_safe", UserConfig)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 

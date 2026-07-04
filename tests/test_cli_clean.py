@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from bakar.cli import app
+from bakar.user_config import UserConfig
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -44,6 +45,9 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # stops it (the workspace-local path these tests pin). With a shared sstate,
     # clean leaves the shared daemon alone - covered in test_config.py.
     monkeypatch.delenv("SSTATE_DIR", raising=False)
+    # The real ~/.config/bakar/config.toml sets sstate_dir for the cluster; load a
+    # clean default so hashserv_state_key falls back to bsp_root, not the shared dir.
+    monkeypatch.setattr("bakar.commands._app._load_user_config_safe", UserConfig)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
