@@ -1,7 +1,15 @@
-"""bakar clean-cache - prune stale sstate-cache and ccache entries by age."""
+"""bakar clean-cache - prune stale sstate-cache and ccache entries by age.
+
+With ``--full`` the command instead runs a total cold-reset of the sccache-dist
+cluster and Yocto caches (ported from the former ``scripts/clean-all-cache.sh``):
+it empties the shared sstate in place (NFS-safe), wipes each node's build dir and
+the sccache client disk cache, stops the client daemon, then wipes and
+reinitialises the sccache-dist server on every cluster node.
+"""
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -15,7 +23,7 @@ import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import _find_workspace_from_cwd
 from bakar.config import shared_ccache_dir
-from bakar.fsremove import parallel_apply
+from bakar.fsremove import parallel_apply, parallel_rmtree
 
 
 def _resolve_sstate_dir(override: Path | None) -> Path | None:
@@ -227,6 +235,265 @@ def _stage_and_delete(stale_files: list[Path], effective_dir: Path) -> tuple[int
     return removed, freed
 
 
+# ---------------------------------------------------------------------------
+# Full cold-reset (ports scripts/clean-all-cache.sh)
+# ---------------------------------------------------------------------------
+
+_DIST_STATUS_RETRIES = 3
+
+
+def _log(msg: str) -> None:
+    """Print one cold-reset progress line, mirroring the script's ``log`` output."""
+    console.print(f"cold-reset: {msg}", highlight=False)
+
+
+def _local_ips() -> set[str]:
+    """Return this host's interface IPs via ``ip -o addr show`` (empty on failure).
+
+    Column 4 of each ``ip -o addr`` row is ``<addr>/<prefix>``; the prefix is
+    stripped so a server ``id`` can be matched against the bare address.
+    """
+    try:
+        out = subprocess.run(
+            ["ip", "-o", "addr", "show"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except FileNotFoundError, subprocess.TimeoutExpired:
+        return set()
+    ips: set[str] = set()
+    for line in out.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 4:
+            ips.add(parts[3].split("/", 1)[0])
+    return ips
+
+
+def _parse_dist_status_servers(status_json: str, local_ips: set[str]) -> list[str]:
+    """Return the secondary server hosts named in a ``sccache --dist-status`` blob.
+
+    Mirrors the bash python filter: reads ``SchedulerStatus[1].servers[].id``,
+    strips the ``:port`` suffix, drops this host's own IPs, and dedupes while
+    preserving order. Returns [] on malformed JSON or an unexpected shape.
+    """
+    try:
+        status = json.loads(status_json)
+    except ValueError, TypeError:
+        return []
+    sched = status.get("SchedulerStatus") if isinstance(status, dict) else None
+    if not isinstance(sched, list) or len(sched) < 2 or not isinstance(sched[1], dict):
+        return []
+    servers = sched[1].get("servers") or []
+    hosts: list[str] = []
+    seen: set[str] = set()
+    for srv in servers:
+        if not isinstance(srv, dict):
+            continue
+        host = (srv.get("id") or "").rsplit(":", 1)[0]
+        if host and host not in local_ips and host not in seen:
+            seen.add(host)
+            hosts.append(host)
+    return hosts
+
+
+def _resolve_secondaries() -> list[str]:
+    """Resolve the secondary (non-local) sccache-dist build servers to reset.
+
+    Precedence mirrors clean-all-cache.sh: an explicit ``SECONDARY_NODES`` env
+    override (space-split) wins; otherwise the live server list reported by
+    ``sccache --dist-status`` with this host's own IPs filtered out. ``--dist-status``
+    routes through the local client daemon, which the first call auto-starts, so it
+    is retried until the scheduler reports its ``servers``. Returns [] when sccache
+    is absent or the scheduler never reports its servers.
+    """
+    override = os.environ.get("SECONDARY_NODES")
+    if override:
+        return override.split()
+    if shutil.which("sccache") is None:
+        return []
+    status_json = ""
+    for attempt in range(_DIST_STATUS_RETRIES):
+        try:
+            out = subprocess.run(
+                ["sccache", "--dist-status"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except FileNotFoundError, subprocess.TimeoutExpired:
+            return []
+        status_json = out.stdout
+        if '"servers"' in status_json:
+            break
+        if attempt < _DIST_STATUS_RETRIES - 1:
+            time.sleep(1)
+    if not status_json:
+        return []
+    return _parse_dist_status_servers(status_json, _local_ips())
+
+
+def _resolve_build_dirs(override: Path | None) -> list[Path]:
+    """Resolve the per-node build dir(s) to wipe.
+
+    Precedence: ``--build-dir`` override, then the ``BUILD_DIR`` env var, then
+    every ``build-*`` directory under the workspace found by walking up from CWD.
+    Returns [] when none resolve, signalling the caller to skip the build-dir step.
+    """
+    if override is not None:
+        return [override]
+    env_val = os.environ.get("BUILD_DIR")
+    if env_val:
+        return [Path(env_val)]
+    ws = _find_workspace_from_cwd()
+    if ws is None:
+        return []
+    return sorted(p for p in ws.glob("build-*") if p.is_dir())
+
+
+def _empty_dir_in_place(path: Path) -> None:
+    """Delete every child of *path* but keep *path* itself (NFS-safe).
+
+    Removing and recreating an NFS-exported directory swaps its inode and breaks
+    every client mount (the secondary sees ESTALE). Emptying its contents in place
+    cools the shared cache for all nodes while preserving the export root. Creates
+    *path* first when absent - bakar doctor needs it to exist.
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    for child in path.iterdir():
+        try:
+            if child.is_symlink() or not child.is_dir():
+                child.unlink()
+            else:
+                shutil.rmtree(child, ignore_errors=True)
+        except OSError:
+            pass
+
+
+def _sccache_client_cache_dirs() -> list[Path]:
+    """Return the sccache client disk-cache dirs under ``~/.cache`` to wipe."""
+    cache = Path.home() / ".cache"
+    dirs = [cache / "sccache", cache / "sccache-dist-client"]
+    dirs.extend(sorted(cache.glob("sccache-dist-client.stale.*")))
+    return dirs
+
+
+def _reset_dist_server_cmd() -> str:
+    """Return the shell command that wipes and reinitialises the sccache-dist server.
+
+    The build server does a NON-recursive ``mkdir`` of ``build/toolchains/<hash>``
+    per job, so ``build/toolchains`` must exist or every distributed compile fails
+    with "failed to prepare overlay dirs" (HTTP 500). Recreate that subdir
+    explicitly and restart the service so its in-memory toolchain refs match the
+    wiped disk.
+    """
+    return (
+        "sudo rm -rf /var/cache/sccache-dist/toolchains /var/cache/sccache-dist/build "
+        "&& sudo mkdir -p /var/cache/sccache-dist/toolchains /var/cache/sccache-dist/build/toolchains "
+        "&& sudo systemctl restart sccache-server"
+    )
+
+
+def _remote_reset_cmd(build_dirs: list[Path], reset_cmd: str) -> str:
+    """Build the ssh command run on a secondary: wipe its build dir(s), then reset.
+
+    The secondary runs its own bitbake into a per-node (not shared) build dir, so a
+    cold multi-node run must clear it too. The shared SSTATE_DIR is NOT re-wiped
+    remotely - the local in-place empty already cooled the single NFS copy.
+    """
+    prefix = "".join(f"rm -rf '{b}'; " for b in build_dirs)
+    return prefix + reset_cmd
+
+
+def _run_full_reset(
+    sstate_override: Path | None,
+    build_dir_override: Path | None,
+    yes: bool,
+    dry_run: bool,
+) -> None:
+    """Total cold-reset of the sccache-dist cluster and Yocto caches.
+
+    Faithful port of scripts/clean-all-cache.sh. Resolves the shared sstate dir,
+    the per-node build dir(s), and the secondary nodes; on a real run empties
+    sstate in place, wipes the build dirs and sccache client cache, stops the
+    client daemon, then resets the sccache-dist server on PC1 (local) and every
+    secondary over ssh. ``dry_run`` prints the full plan and changes nothing.
+    """
+    sstate = _resolve_sstate_dir(sstate_override)
+    if sstate is None:
+        sstate = Path.home() / "yocto-cache" / "sstate"
+    build_dirs = _resolve_build_dirs(build_dir_override)
+    secondaries = _resolve_secondaries()
+    reset_cmd = _reset_dist_server_cmd()
+    cache_dirs = _sccache_client_cache_dirs()
+
+    _log("cold-reset starting")
+    _log(f"shared SSTATE_DIR  = {sstate}")
+    if build_dirs:
+        _log("per-node build dir(s) = " + ", ".join(str(b) for b in build_dirs))
+    else:
+        _log("per-node build dir(s) = <none resolved; build-dir wipe skipped>")
+    _log("secondary nodes: " + (" ".join(secondaries) if secondaries else "<none>"))
+
+    if dry_run:
+        console.print()
+        console.print("[bold]Dry run - no changes made.[/] Plan:", highlight=False)
+        console.print(f"  empty in place (keep root): {sstate}", highlight=False)
+        for b in build_dirs:
+            console.print(f"  rm -rf (local): {b}", highlight=False)
+        for c in cache_dirs:
+            console.print(f"  rm -rf (local): {c}", highlight=False)
+        console.print("  pkill -f '^/usr/bin/sccache$'", highlight=False)
+        console.print(f"  PC1 (local): {reset_cmd}", highlight=False)
+        for node in secondaries:
+            console.print(f"  ssh -t {node}: {_remote_reset_cmd(build_dirs, reset_cmd)}", highlight=False)
+        return
+
+    if not yes:
+        node_str = " ".join(secondaries) if secondaries else "<none>"
+        confirmed = typer.confirm(
+            f"Cold-reset: empty {sstate}, wipe {len(build_dirs)} build dir(s) + the sccache "
+            f"client cache, stop the client daemon, and reset the sccache-dist server on PC1 "
+            f"and secondaries [{node_str}]. Proceed?"
+        )
+        if not confirmed:
+            console.print("Aborted.")
+            raise typer.Exit
+
+    _log("emptying shared sstate in place (can take a while on a large cache) ...")
+    _empty_dir_in_place(sstate)
+    _log("shared sstate emptied")
+
+    for b in build_dirs:
+        _log(f"wiping local build dir {b} ...")
+        parallel_rmtree(b, description=f"Removing {b.name}/")
+
+    _log("wiping sccache client disk cache under ~/.cache ...")
+    for c in cache_dirs:
+        shutil.rmtree(c, ignore_errors=True)
+
+    _log("stopping the sccache client daemon (if running) ...")
+    try:
+        subprocess.run(["pkill", "-f", "^/usr/bin/sccache$"], check=False)
+    except FileNotFoundError:
+        pass
+
+    _log("resetting sccache-dist server on PC1 (local) ...")
+    subprocess.run(["bash", "-c", reset_cmd], check=False)
+    _log("PC1 sccache-dist server reset + restarted")
+
+    if not secondaries:
+        _log("no secondary build servers detected; reset PC1 only.")
+    for node in secondaries:
+        _log(f"resetting {node}: local build dir + sccache-dist server ...")
+        subprocess.run(["ssh", "-t", node, _remote_reset_cmd(build_dirs, reset_cmd)], check=False)
+        _log(f"{node} reset complete")
+
+    _log("cold-reset complete")
+
+
 @app.command(name="clean-cache")
 def clean_cache(
     older_than: Annotated[
@@ -241,6 +508,17 @@ def clean_cache(
         Path | None,
         typer.Option("--ccache-dir", help="Override the ccache directory"),
     ] = None,
+    build_dir: Annotated[
+        Path | None,
+        typer.Option("--build-dir", help="Override the per-node build dir wiped by --full"),
+    ] = None,
+    full: Annotated[
+        bool,
+        typer.Option(
+            "--full",
+            help="Total cold-reset of the sccache-dist cluster and caches (ignores --older-than)",
+        ),
+    ] = False,
     sstate: Annotated[
         bool,
         typer.Option("--sstate/--no-sstate", help="Prune the sstate cache (default: on)"),
@@ -271,7 +549,21 @@ def clean_cache(
     ~/.config/bakar/config.toml. The ccache directory is resolved from
     --ccache-dir, then [build] ccache_shared / ccache_dir, then the current
     workspace's per-workspace cache.
+
+    --full instead runs a total cold-reset of the sccache-dist cluster and
+    caches: it empties the shared sstate in place, wipes each node's build dir
+    and the sccache client cache, stops the client daemon, and resets the
+    sccache-dist server on every cluster node. --full ignores the age-based
+    prune options (--older-than / --sstate / --ccache).
     """
+    if full:
+        console.print(
+            "[yellow]--full:[/] total cold-reset; the age-based prune options "
+            "(--older-than / --sstate / --ccache) are ignored.",
+        )
+        _run_full_reset(sstate_dir, build_dir, yes, dry_run)
+        return
+
     if not sstate and not ccache:
         console.print("[yellow]Nothing to do[/] (both --no-sstate and --no-ccache).")
         raise typer.Exit
