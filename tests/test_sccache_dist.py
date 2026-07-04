@@ -649,14 +649,16 @@ def test_sccache_class_distributes_on_allowlist() -> None:
         "llvm-native",
         "gcc-runtime",
         "gcc-sanitizers",
-        "linux-yocto",
-        "systemd",
         "clang",
         "compiler-rt",
         "rust-llvm",
         "opencv",
     ):
         assert pn in included_line, included_line
+    # linux-yocto and systemd were delisted (qemu-shaped cheap objects; the first
+    # cold run measured ~parity), so they must NOT be on the allow-list.
+    for delisted in ("linux-yocto", "systemd"):
+        assert delisted not in included_line.split(), included_line
     # nodejs is deliberately OFF the allow-list: the co-selected ccache overlay
     # sets CCACHE_DISABLE:pn-nodejs (its GYP .d.raw dep files break ccache), and
     # sccache honors CCACHE_DISABLE, so nodejs stays local-uncached pending a test
@@ -1005,9 +1007,11 @@ def test_bbclass_allowlists_heavy_recipes_and_omits_qemu(tmp_path: Path) -> None
 
     Distribution pays only when an object's own cost dwarfs the per-compile tax
     (local cc1 -E + round trip + input packaging). The heavy set - the toolchain
-    (llvm-native, gcc-cross/binutils-cross, gcc-runtime, gcc-sanitizers), the
-    kernel (linux-yocto), systemd, and clang - is on SCCACHE_INCLUDED_PN.
-    qemu-system-native is NOT: its ~5516 ninja objects measure ~1.0 CPU-s each
+    (llvm-native, gcc-cross/binutils-cross, gcc-runtime, gcc-sanitizers), clang,
+    and the LLVM runtimes (compiler-rt/libcxx/openmp/rust-llvm) - is on
+    SCCACHE_INCLUDED_PN. linux-yocto and systemd are delisted (qemu-shaped cheap
+    objects; the ccache tail handles them). qemu-system-native is likewise NOT on
+    the list: its ~5516 ninja objects measure ~1.0 CPU-s each
     (cheap), so distribution ran ~2x slower than a local -j53 (measured: 388s
     wall, 14.3x of -j53). Under the allow-list a recipe simply left off never
     contacts the daemon. Falsifier: adding qemu-system-native to the allow-list,
@@ -1042,14 +1046,15 @@ def test_bbclass_allowlists_heavy_recipes_and_omits_qemu(tmp_path: Path) -> None
         "llvm-native",
         "gcc-runtime",
         "gcc-sanitizers",
-        "linux-yocto",
-        "systemd",
         "clang",
         "compiler-rt",
         "rust-llvm",
         "opencv",
     ):
         assert heavy_pn in included_pns, included_line
+    # linux-yocto and systemd are delisted (qemu-shaped; the ccache tail handles them).
+    for delisted in ("linux-yocto", "systemd"):
+        assert delisted not in included_pns, included_line
     # nodejs is deliberately OFF the allow-list: the co-selected ccache overlay
     # sets CCACHE_DISABLE:pn-nodejs and sccache honors CCACHE_DISABLE, so nodejs
     # stays local-uncached pending a test of whether sccache handles its GYP

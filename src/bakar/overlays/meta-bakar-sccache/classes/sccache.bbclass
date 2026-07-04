@@ -79,18 +79,15 @@ SCCACHE_DISABLE ??= ""
 #                                   themselves are NOT distributable (no sccache
 #                                   Rust backend) but this LLVM build is.
 #
-# Kernel and init (PROVISIONAL - see note): these two are the largest allow-listed
-# recipes that actually build on core-image-minimal, so they dominate the
-# benchmark, but by the object-cost dividing line below they are closer to the
-# qemu loser than to llvm: kernel C objects run ~0.2-0.5 CPU-s, systemd's C is
-# similar. "1124 of 1128 kernel compiles distribute" proves they CAN, not that
-# they PAY. Keep them for the first instrumented run ONLY with the A/B falsifier
-# armed (per-recipe do_compile wall, distributed vs plain, from buildstats); drop
-# either recipe that measures slower distributed once G2's transport tax drop is
-# in effect.
-#   linux-yocto                   - ~1128 target C objects, 1124 distribute (4
-#                                   .incbin vdso/config/dtb objects fall back).
-#   systemd                       - large C project, many translation units.
+# Kernel and init - DELISTED. linux-yocto and systemd were on the list for the
+# first instrumented cold run; they distribute cleanly but by the object-cost
+# dividing line below they are qemu-shaped, not llvm-shaped (kernel C objects
+# ~0.2-0.5 CPU-s, systemd's C similar). "1124 of 1128 kernel compiles distribute"
+# proves they CAN, not that they PAY, and the first cold core-image-minimal run
+# landed at ~parity with the plain-ccache baseline, so distributing this cheap
+# tail buys nothing on minimal. They now compile locally via the ccache tail. Re-
+# add either only if a per-recipe do_compile A/B (distributed vs plain buildstats)
+# later shows it pays.
 #
 # Feed/extra big C++ (only built for the larger rootfs with `opengl wayland`; an
 # inert no-op on core-image-minimal, where none of them are scheduled):
@@ -123,7 +120,7 @@ SCCACHE_DISABLE ??= ""
 # llvm-shaped - it now gets local ccache via the hybrid tail instead. Multilib
 # variants (lib32-gcc-runtime, etc.) do not match the bare PNs and also run
 # local via ccache; that is intended.
-SCCACHE_INCLUDED_PN ?= "llvm-native gcc-cross-${TARGET_ARCH} binutils-cross-${TARGET_ARCH} gcc-runtime gcc-sanitizers clang clang-cross-${TARGET_ARCH} clang-crosssdk-${SDK_SYS} compiler-rt libcxx openmp rust-llvm rust-llvm-native linux-yocto systemd chromium-ozone-wayland chromium-x11 qtwebengine wpewebkit qtbase qtdeclarative opencv"
+SCCACHE_INCLUDED_PN ?= "llvm-native gcc-cross-${TARGET_ARCH} binutils-cross-${TARGET_ARCH} gcc-runtime gcc-sanitizers clang clang-cross-${TARGET_ARCH} clang-crosssdk-${SDK_SYS} compiler-rt libcxx openmp rust-llvm rust-llvm-native chromium-ozone-wayland chromium-x11 qtwebengine wpewebkit qtbase qtdeclarative opencv"
 
 python () {
     if (bb.utils.to_boolean(d.getVar('SCCACHE_DISABLE')) or
