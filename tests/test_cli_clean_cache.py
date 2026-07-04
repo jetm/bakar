@@ -27,6 +27,7 @@ import pytest
 from typer.testing import CliRunner
 
 from bakar.cli import app
+from bakar.user_config import UserConfig
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -203,7 +204,10 @@ def test_all_new_files_nothing_to_prune(sstate_dir: Path) -> None:
 def test_no_sstate_dir_set_exits_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """SSTATE_DIR unset (env + no user config), ccache off: exits 2 with a message."""
     monkeypatch.delenv("SSTATE_DIR", raising=False)
-    monkeypatch.setattr("bakar.commands.clean_cache._state._USER_CONFIG", None)
+    # The app callback reloads _USER_CONFIG from the real ~/.config/bakar/config.toml
+    # on every invoke, clobbering a direct _USER_CONFIG patch; patch the loader so the
+    # resolved config has no sstate_dir regardless of the developer's real config.
+    monkeypatch.setattr("bakar.commands._app._load_user_config_safe", UserConfig)
 
     result = runner.invoke(app, ["clean-cache", "--no-ccache"])
 
