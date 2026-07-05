@@ -541,3 +541,36 @@ def test_set_dist_lines_empty_by_default() -> None:
     inner = ui.make_renderable().renderables
     assert len(inner) == 2
     assert inner[1] is ui._build_progress
+
+
+@pytest.mark.unit
+def test_make_renderable_shows_cache_badge_when_active() -> None:
+    ui = BuildUIState()
+    ui.process_line("NOTE: Running task 10 of 100 (/x.bb:do_compile)")
+    ui.set_cache_badge(active=True, hit_pct=90.0, verdict="DISTRIBUTING")
+    inner = ui.make_renderable().renderables
+    flat = " ".join(r.plain for r in inner if isinstance(r, Text))
+    assert "90%" in flat
+    assert "dist on" in flat
+
+
+@pytest.mark.unit
+def test_make_renderable_cache_badge_ccache_has_no_dist() -> None:
+    ui = BuildUIState()
+    ui.process_line("NOTE: Running task 10 of 100 (/x.bb:do_compile)")
+    # A ccache build reports no verdict: cache badge only, no dist badge.
+    ui.set_cache_badge(active=True, hit_pct=75.0, verdict=None)
+    inner = ui.make_renderable().renderables
+    flat = " ".join(r.plain for r in inner if isinstance(r, Text))
+    assert "75%" in flat
+    assert "dist" not in flat
+
+
+@pytest.mark.unit
+def test_make_renderable_no_cache_badge_by_default() -> None:
+    ui = BuildUIState()
+    ui.process_line("NOTE: Running task 10 of 100 (/x.bb:do_compile)")
+    inner = ui.make_renderable().renderables
+    flat = " ".join(r.plain for r in inner if isinstance(r, Text))
+    assert "dist" not in flat
+    assert len(inner) == 2

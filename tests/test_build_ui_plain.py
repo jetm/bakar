@@ -58,3 +58,33 @@ def test_plain_pre_total_renders_question_mark() -> None:
     line = ui.plain_status_line()
     assert line is not None
     assert "tasks=0/?" in line
+
+
+def test_plain_status_line_badge_tokens_no_ansi() -> None:
+    ui = _building_state()
+    ui.set_cache_badge(active=True, hit_pct=90.0, verdict="DISTRIBUTING")
+    line = ui.plain_status_line()
+    assert line is not None
+    assert "cache=90%" in line
+    assert "dist=on" in line
+    assert _ESC not in line
+
+
+def test_plain_status_line_no_badge_emits_no_cache_token() -> None:
+    line = _building_state().plain_status_line()
+    assert line is not None
+    assert "cache=" not in line
+    assert "dist=" not in line
+
+
+def test_plain_status_line_preserves_existing_field_order() -> None:
+    ui = _building_state()
+    ui.set_cache_badge(active=True, hit_pct=75.0, verdict=None)
+    line = ui.plain_status_line()
+    assert line is not None
+    # The existing bakar[build] fields keep their order and precede the badge.
+    assert line.index("bakar[build]") < line.index("phase=")
+    assert line.index("elapsed=") < line.index("cache=")
+    # A ccache build (verdict=None) emits the cache token but no dist token.
+    assert "cache=75%" in line
+    assert "dist=" not in line

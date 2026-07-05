@@ -46,7 +46,7 @@ from rich.progress import BarColumn, Progress, TextColumn
 from rich.table import Table
 from rich.text import Text
 
-from bakar import task_timings
+from bakar import cache_render, task_timings
 from bakar.eventlog import (
     _RUNQUEUE_TASK_STARTED,
     _TASK_FAILED,
@@ -261,6 +261,14 @@ class BuildUIState:
         # Cluster/cache header lines shown during a build, fed by a probe thread
         # via set_dist_lines() and injected into the normal building frame.
         self._dist_lines: list[RenderableType] = []
+        # At-a-glance cache/dist badge state, fed by the cache-probe thread via
+        # set_cache_badge() and read by make_renderable/plain_status_line. Guarded
+        # by _lock (like _dist_lines): a daemon thread writes, render threads read.
+        # ``_cache_badge_active`` gates emission; ``_dist_verdict`` is set only for
+        # an sccache daemon (a ccache build leaves it None -> no dist badge/token).
+        self._cache_badge_active: bool = False
+        self._cache_hit_pct: float = 0.0
+        self._dist_verdict: str | None = None
         self._task_failed_count: int = 0
         # Freeze protocol: the first knotty error line of a task failure
         # (TASK_FAIL_HEAD) sets ``_pending_freeze``; the build runner drains
@@ -712,6 +720,18 @@ class BuildUIState:
         with self._lock:
             self._dist_lines = list(lines)
 
+    def set_cache_badge(self, *, active: bool, hit_pct: float | None = None, verdict: str | None = None) -> None:
+        """Set the live cache/dist badge state (thread-safe).
+
+        Fed by the cache-probe thread with the cumulative-so-far hit rate and
+        (sccache only) the daemon verdict. ``verdict`` stays None for a ccache
+        build, which suppresses the dist badge/token.
+        """
+        with self._lock:
+            self._cache_badge_active = active
+            self._cache_hit_pct = hit_pct or 0.0
+            self._dist_verdict = verdict
+
     def take_fail_freeze(self) -> bool:
         """Drain the one-shot freeze request set by a task-failure head line.
 
@@ -893,6 +913,9 @@ class BuildUIState:
             failed_final = self._failed_final
             fail_frozen = self._fail_frozen
             dist_lines = list(self._dist_lines)
+            cache_badge_active = self._cache_badge_active
+            cache_hit_pct = self._cache_hit_pct
+            dist_verdict = self._dist_verdict
             tasks = sorted(self._running.values(), key=lambda t: -(now - t.start))
 
         sstate_line: Text | None = None
@@ -942,6 +965,15 @@ class BuildUIState:
         # Cluster/cache header lines, fed by the build's cache-probe thread.
         # Empty when no cache launcher is active, so the list is a no-op then.
         parts.extend(dist_lines)
+
+        # At-a-glance cache badge (plus a dist badge for an sccache daemon).
+        # Suppressed entirely when no cache backend is active.
+        if cache_badge_active:
+            badge = cache_render.cache_badge_rich(cache_hit_pct)
+            if dist_verdict is not None:
+                badge.append("  ")
+                badge.append_text(cache_render.dist_badge_rich(dist_verdict))
+            parts.append(badge)
 
         parts.append(self._build_progress)
 
@@ -1040,6 +1072,9 @@ class BuildUIState:
             # render "?" rather than the literal None so the field stays parseable.
             total = task.total if task is not None else None
             elapsed = _fmt_stall(int(now - self._start_monotonic))
+            cache_badge_active = self._cache_badge_active
+            cache_hit_pct = self._cache_hit_pct
+            dist_verdict = self._dist_verdict
 
         phase_label = stage if phase is _Phase.SETUP else (kind or "tasks")
         parts = [f"bakar[build] phase={phase_label}"]
@@ -1049,6 +1084,13 @@ class BuildUIState:
         parts.append(f"tasks={completed}/{total_str}")
         parts.append(f"running={running}")
         parts.append(f"elapsed={elapsed}")
+        # Cache/dist badge tokens, appended after the existing fields so their
+        # order is preserved. Emitted only when a cache backend is active; the
+        # dist token appears only for an sccache daemon (verdict set).
+        if cache_badge_active:
+            parts.append(cache_render.cache_badge_token(cache_hit_pct))
+            if dist_verdict is not None:
+                parts.append(cache_render.dist_badge_token(dist_verdict))
         line = " ".join(parts)
 
         with self._lock:
