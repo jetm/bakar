@@ -99,6 +99,10 @@ class RunLogger:
         return self.run_dir / "sccache-stats.json"
 
     @property
+    def ccache_stats_path(self) -> Path:
+        return self.run_dir / "ccache-stats.json"
+
+    @property
     def console(self) -> Console:
         """The Rich console the log handler writes to.
 
@@ -232,6 +236,24 @@ class RunLogger:
             self.warn(f"failed to persist sccache-stats.json: {exc}")
             return
         self.step_ok("sccache_stats", path=str(self.sccache_stats_path))
+
+    def persist_ccache_stats(self, doc: dict[str, Any] | None) -> None:
+        """Persist the build-end ccache stats as ``ccache-stats.json``.
+
+        Serializes the ``ccache_doc`` dict it is GIVEN verbatim (whatever keys
+        the caller supplies, including a ``window`` key when present). Delta
+        math and window synthesis live in the caller (``cache_delta``); this
+        writer only serializes. Best-effort: a ``None``/empty doc or a write
+        failure is a no-op. Never raises.
+        """
+        if not doc:
+            return
+        try:
+            self.ccache_stats_path.write_text(json.dumps(doc, default=str))
+        except (OSError, ValueError) as exc:
+            self.warn(f"failed to persist ccache-stats.json: {exc}")
+            return
+        self.step_ok("ccache_stats", path=str(self.ccache_stats_path))
 
     def persist_task_timings(self, timings_path: Path | None = None) -> None:
         """Accumulate this run's task durations into the global baseline store.

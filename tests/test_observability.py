@@ -184,3 +184,45 @@ def test_persist_sccache_stats_noop_for_none_doc(tmp_path: Path) -> None:
     with RunLogger(runs_dir) as log:
         log.persist_sccache_stats(None)
         assert not log.sccache_stats_path.exists()
+
+
+@pytest.mark.unit
+def test_persist_ccache_stats_writes_file(tmp_path: Path) -> None:
+    """The writer serializes the given ccache doc verbatim, including ``window``."""
+    import json
+
+    doc = {"cache_hits": 5, "cache_misses": 2, "hit_rate": 0.71, "window": "build"}
+    runs_dir = tmp_path / "runs"
+    with RunLogger(runs_dir) as log:
+        log.persist_ccache_stats(doc)
+
+        assert log.ccache_stats_path.is_file()
+        written = json.loads(log.ccache_stats_path.read_text())
+        assert written == doc
+        assert written["window"] == "build"
+
+    events = [json.loads(ln) for ln in log.events_path.read_text().splitlines() if ln]
+    announce = [e for e in events if e.get("step") == "ccache_stats"]
+    assert len(announce) == 1
+    assert announce[0]["event"] == "step_ok"
+
+
+@pytest.mark.unit
+def test_persist_ccache_stats_noop_for_none_doc(tmp_path: Path) -> None:
+    """A None/empty doc writes nothing and does not raise."""
+    runs_dir = tmp_path / "runs"
+    with RunLogger(runs_dir) as log:
+        log.persist_ccache_stats(None)
+        assert not log.ccache_stats_path.exists()
+
+
+@pytest.mark.unit
+def test_persist_ccache_stats_noop_when_unwritable(tmp_path: Path) -> None:
+    """A write failure is swallowed: no raise, and no file is written."""
+    doc = {"cache_hits": 1, "cache_misses": 0, "hit_rate": 1.0, "window": "build"}
+    runs_dir = tmp_path / "runs"
+    with RunLogger(runs_dir) as log:
+        # Make the target path a directory so write_text raises OSError.
+        log.ccache_stats_path.mkdir(parents=True, exist_ok=True)
+        log.persist_ccache_stats(doc)  # must not raise
+        assert log.ccache_stats_path.is_dir()
