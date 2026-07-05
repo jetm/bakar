@@ -7,7 +7,6 @@ from ``cli``.
 
 from __future__ import annotations
 
-import importlib.resources
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -18,6 +17,7 @@ from rich.table import Table
 
 from bakar.bsp_detect import detect_bsp_from_yaml, detect_kas_workspace, is_bbsetup_workspace
 from bakar.bsp_model import BspModel, detect_bsp_family, get_model
+from bakar.config import _overlay_dir
 from bakar.diagnostics import CheckResult, Severity, Status, any_blocking_failure, group_results, run_all
 from bakar.layers import collect_layer_hashes
 
@@ -202,17 +202,6 @@ def _bsp_from_cwd(workspace: Path) -> Literal["nxp", "ti"] | None:
 # ---------------------------------------------------------------------------
 # Overlay lookup
 # ---------------------------------------------------------------------------
-
-
-def _overlay_dir() -> Path:
-    """Locate the ``overlays/`` package data directory.
-
-    Uses ``importlib.resources`` so the lookup works for both editable
-    installs (source tree) and wheel installs (site-packages).
-    ``uv_build`` includes all non-``.py`` files under ``src/bakar/``
-    automatically, so the YAMLs land at ``bakar/overlays/`` in the wheel.
-    """
-    return Path(str(importlib.resources.files("bakar") / "overlays"))
 
 
 def _overlay_for(bsp: BspModel | None) -> Path:

@@ -34,6 +34,7 @@ paths = [
   "src/bakar/manifest_diff.py",
   "src/bakar/hashserv.py",
   "src/bakar/psi.py",
+  "src/bakar/output_mode.py",
 ]
 
 [[modules]]
@@ -55,7 +56,15 @@ paths = ["src/bakar/bsp_model.py"]
 [[modules]]
 name = "core"
 paths = ["src/bakar/diagnostics.py"]
-# diagnostics.py: all pre-flight check functions; imports foundation + model.
+# diagnostics.py: pre-flight check functions plus a cross-layer probe/detection
+# surface (probe_cluster/probe_build_daemon/probe_ccache, detect_buildtools,
+# split_host_port). It has a bidirectional deferred coupling with steps: steps
+# (kas_build) import the probes at module level, and diagnostics imports
+# steps.kas_build.clear_stale_bitbake_locks / steps.bitbake_override.status inside
+# function bodies (diagnostics.py:691,947). Like `model` (bsp_model), it is placed in
+# its own group OUTSIDE the layers order so those genuinely cross-layer edges are
+# ungoverned (SUGGESTION) rather than false-positive CRITICAL layer violations. The
+# forbidden rule below caps the top of its allowed import set.
 
 [[modules]]
 name = "analysis"
@@ -82,15 +91,15 @@ paths = ["tests/**"]
 exempt = true  # never a violation source
 
 # Main dependency stack (outermost → innermost):
-# commands may import core, steps, analysis, foundation (and model, ungoverned)
-# core may import steps, analysis, foundation (and model, ungoverned)
-# steps may import analysis, foundation (and model TYPE_CHECKING refs, ungoverned)
+# commands may import steps, analysis, foundation (and core + model, ungoverned)
+# steps may import analysis, foundation (and core + model refs, ungoverned)
 # analysis may import foundation only
 # foundation may not import anything above it (bsp_model ref is deferred, ungoverned)
+# core (diagnostics) sits OUTSIDE the order - see its module comment above.
 [[rules]]
 type = "layers"
-order = ["commands", "core", "steps", "analysis", "foundation"]
-reason = "CLI orchestrators → diagnostics → subprocess wrappers → read/compute layer → pure data/config"
+order = ["commands", "steps", "analysis", "foundation"]
+reason = "CLI orchestrators → subprocess wrappers → read/compute layer → pure data/config"
 
 # model: cap the top of its allowed import set
 [[rules]]
@@ -104,3 +113,10 @@ type = "forbidden"
 from = "model"
 to = "analysis"
 reason = "bsp_model must not depend on triage/report/layers"
+
+# core (diagnostics): cap the top of its allowed import set, like model
+[[rules]]
+type = "forbidden"
+from = "core"
+to = "commands"
+reason = "diagnostics must not depend on the CLI layer (prevents an upward cycle)"

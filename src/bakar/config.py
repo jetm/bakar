@@ -10,6 +10,7 @@ rest of bakar does not have to know about the workspace layout.
 
 from __future__ import annotations
 
+import importlib.resources
 import os
 import re
 from dataclasses import dataclass, field
@@ -20,6 +21,19 @@ if TYPE_CHECKING:
     from bakar.preset_config import PresetEntry
     from bakar.user_config import UserConfig
     from bakar.workspace_config import WorkspaceConfig
+
+
+def _overlay_dir() -> Path:
+    """Locate the ``overlays/`` package data directory.
+
+    Uses ``importlib.resources`` so the lookup works for both editable installs
+    (source tree) and wheel installs (site-packages). ``uv_build`` includes all
+    non-``.py`` files under ``src/bakar/`` automatically, so the YAMLs land at
+    ``bakar/overlays/`` in the wheel. Lives here (foundation) rather than in
+    ``commands/_helpers`` so ``steps`` can import it without a steps->commands edge.
+    """
+    return Path(str(importlib.resources.files("bakar") / "overlays"))
+
 
 # ---------------------------------------------------------------------------
 # NXP defaults (i.MX BSP, scarthgap warmup machine).

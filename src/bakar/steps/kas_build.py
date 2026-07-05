@@ -375,7 +375,7 @@ def materialize_sccache_layer(cfg: BuildConfig) -> Path:
     tracks the packaged source byte-for-byte. The sccache tuning overlay
     references it by the relative path ``.bakar/meta-bakar-sccache``.
     """
-    from bakar.commands._helpers import _overlay_dir
+    from bakar.config import _overlay_dir
 
     source = _overlay_dir() / _SCCACHE_LAYER_NAME
     # kas resolves the overlay's relative `.bakar/meta-bakar-sccache` repos path
@@ -404,7 +404,7 @@ def materialize_host_layer(cfg: BuildConfig) -> Path:
     invoked in host mode, where the layer's rpm bbappend keeps rpm-native from
     dlopening the build host's rpm transaction plugins.
     """
-    from bakar.commands._helpers import _overlay_dir
+    from bakar.config import _overlay_dir
 
     source = _overlay_dir() / _HOST_LAYER_NAME
     base = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
