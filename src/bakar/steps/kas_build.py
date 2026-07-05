@@ -1020,6 +1020,11 @@ class _PlainFrameController:
         return self
 
     def __exit__(self, *exc: object) -> None:
+        # Set the stop event ourselves so the status thread always terminates,
+        # even if the body raised before its own stop_event.set() (e.g. a Ctrl-C
+        # during thread startup) - otherwise the join would time out with the
+        # daemon still emitting heartbeats during teardown.
+        self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=2 * _PLAIN_STATUS_INTERVAL)
 
