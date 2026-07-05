@@ -23,6 +23,7 @@ import re
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 import tomllib
 import urllib.parse
@@ -2318,7 +2319,8 @@ def check_sstate_hash_leak(cfg: BuildConfig) -> CheckResult:
 # independent). The pre-flight REPORT is sorted by group via ``CHECK_GROUPS``
 # below - when adding a check here, also list it in the matching group there.
 def _is_loopback(host: str) -> bool:
-    return host in {"localhost", "127.0.0.1", "::1"} or host.startswith("127.")
+    h = host.strip("[]")  # tolerate a bracketed IPv6 literal like [::1]
+    return h in {"localhost", "127.0.0.1", "::1"} or h.startswith("127.")
 
 
 def _check_central_endpoint(
@@ -2402,33 +2404,39 @@ def check_shared_cache_mounts(cfg: BuildConfig) -> CheckResult:
     reuse); clock skew and soft mounts are WARN riders off the same probe file.
     """
     name = "shared-mounts"
-    targets: list[tuple[str, Path]] = []
+    # (label, path, critical): sstate + downloads must be the shared NFS mounts
+    # for cross-node reuse, so a local one is a BLOCK. ccache is non-critical - a
+    # local ccache is a legitimate config (it only loses cross-node hit-rate, it
+    # does not make the build wrong), so a non-shared ccache is a WARN.
+    targets: list[tuple[str, Path, bool]] = []
     sstate = os.environ.get("SSTATE_DIR") or cfg.sstate_dir
     if sstate:
-        targets.append(("sstate_dir", Path(sstate)))
+        targets.append(("sstate_dir", Path(sstate), True))
     dl = os.environ.get("DL_DIR") or cfg.dl_dir
     if dl:
-        targets.append(("dl_dir", Path(dl)))
+        targets.append(("dl_dir", Path(dl), True))
     if cfg.ccache and cfg.effective_ccache_dir:
-        targets.append(("ccache_dir", Path(cfg.effective_ccache_dir)))
+        targets.append(("ccache_dir", Path(cfg.effective_ccache_dir), False))
     if not targets:
         return _skip(name, Severity.BLOCK, "cluster mode with no shared cache directories configured")
 
-    problems: list[str] = []
+    block_problems: list[str] = []
     warnings: list[str] = []
     oks: list[str] = []
-    for label, path in targets:
+    for label, path, critical in targets:
+        sink = block_problems if critical else warnings
         if not path.exists():
-            problems.append(f"{label} {path} is missing")
+            sink.append(f"{label} {path} is missing")
             continue
         # Write probe first: triggers an autofs automount and is truthful where
-        # os.access lies on an NFS root_squash export.
-        probe = path / f".bakar-doctor-probe-{os.getpid()}"
+        # os.access lies on an NFS root_squash export. A unique temp name avoids a
+        # stale probe from a killed run colliding under PID reuse.
         try:
-            fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            fd, probe_name = tempfile.mkstemp(prefix=".bakar-doctor-probe-", dir=path)
         except OSError:
-            problems.append(f"{label} {path} exists but is not writable")
+            sink.append(f"{label} {path} exists but is not writable")
             continue
+        probe = Path(probe_name)
         try:
             os.close(fd)
             skew = abs(time.time() - probe.stat().st_mtime)
@@ -2443,21 +2451,21 @@ def check_shared_cache_mounts(cfg: BuildConfig) -> CheckResult:
             return _skip(name, Severity.BLOCK, f"/proc/mounts unreadable: {exc}")
         entry = _mount_entry_in(mounts_raw, path)
         if entry is None:
-            problems.append(f"{label} {path}: no covering mountpoint in /proc/mounts")
+            sink.append(f"{label} {path}: no covering mountpoint in /proc/mounts")
             continue
         source, mountpoint, fstype, opts = entry
         if fstype not in {"nfs", "nfs4"}:
-            problems.append(f"{label} {path} is not an NFS mount ({fstype} at {mountpoint})")
+            sink.append(f"{label} {path} is not an NFS mount ({fstype} at {mountpoint})")
             continue
         if "soft" in opts.split(","):
             warnings.append(f"{label} {source} is a soft mount (a timeout can corrupt the cache; use hard)")
         oks.append(f"{label} {source}")
 
-    if problems:
+    if block_problems:
         return _fail(
             name,
             Severity.BLOCK,
-            "; ".join(problems),
+            "; ".join(block_problems),
             fix_hint=(
                 "mount the shared NFS exports (hard) at these paths so the node does not build into a private cache"
             ),

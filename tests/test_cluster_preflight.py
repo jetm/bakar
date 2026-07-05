@@ -282,3 +282,29 @@ def test_shared_mount_clock_skew_warns(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert result.status == Status.FAIL
     assert result.severity == Severity.WARN
     assert "skew" in result.message
+
+
+@pytest.mark.unit
+def test_shared_mount_local_ccache_warns_not_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A local (non-NFS) ccache dir is a WARN, not a BLOCK - local ccache is legitimate."""
+    ccache = tmp_path / "ccache"
+    ccache.mkdir()
+    monkeypatch.setattr("bakar.diagnostics._mount_entry_in", lambda *_a: ("/dev/sda1", "/", "ext4", "rw"))
+    result = check_shared_cache_mounts(
+        _cfg(cluster=True, sstate_dir=None, dl_dir=None, ccache=True, ccache_dir=str(ccache))
+    )
+    assert result.severity == Severity.WARN
+    assert "ccache_dir" in result.message
+
+
+@pytest.mark.unit
+def test_central_hashserv_bracketed_ipv6_loopback_warns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bracketed IPv6 loopback central endpoint is caught as loopback (WARN, no probe)."""
+
+    def _boom(*_a: object, **_k: object) -> bool:
+        raise AssertionError("probed a bracketed IPv6 loopback endpoint")
+
+    monkeypatch.setattr("bakar.hashserv.central_listening", _boom)
+    result = check_central_hashserv(_cfg(cluster=True, bb_hashserve="[::1]:8686"))
+    assert result.status == Status.FAIL
+    assert result.severity == Severity.WARN
