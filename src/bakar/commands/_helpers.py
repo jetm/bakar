@@ -24,6 +24,7 @@ from bakar.layers import collect_layer_hashes
 if TYPE_CHECKING:
     from bakar.config import BuildConfig
     from bakar.layers import LayerHash
+    from bakar.output_mode import OutputMode
 
 # ---------------------------------------------------------------------------
 # Workspace detection
@@ -313,6 +314,16 @@ def global_container_mode() -> bool:
     import bakar.commands._app as _state
 
     return _state._CONTAINER_MODE
+
+
+def global_output_mode_override() -> OutputMode | None:
+    """Return the global ``--plain``/``--ci``/``--rich`` override, or None for auto-detect.
+
+    A late import avoids a circular dependency between ``_helpers`` and ``_app``.
+    """
+    import bakar.commands._app as _state
+
+    return _state._OUTPUT_MODE_OVERRIDE
 
 
 def apply_sccache_overrides(cfg: BuildConfig) -> BuildConfig:
