@@ -61,11 +61,14 @@ from bakar.diagnostics import (
 )
 from bakar.eventlog import tail_events
 from bakar.kas import KasGenOptions, write_yaml
+from bakar.output_mode import OutputMode
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
 from bakar.steps.build_ui import BuildUIState, _fmt_stall
 from bakar.triage import _translate_container_path, write_error_report
 
 if TYPE_CHECKING:
+    from rich.console import Console
+
     from bakar.bsp_model import BspModel
     from bakar.config import BuildConfig
     from bakar.observability import RunLogger
@@ -734,6 +737,9 @@ class KasBuildContext:
     # kas target override (kas build --target <TARGET>); None builds the YAML's
     # own target. Must land before any `-- <bitbake-args>` separator in the argv.
     target: str | None = None
+    # Human-output mode for the live build display. RICH drives the Rich Live;
+    # PLAIN swaps in a line-oriented, ANSI-free frame controller (set by build.py).
+    output_mode: OutputMode = OutputMode.RICH
     # User-supplied overlays from colon syntax (machine.yml:extra.yml:...).
     # Materialized and appended after the bakar tuning overlay in the kas arg.
     extra_overlays: list[Path] = field(default_factory=list)
@@ -970,6 +976,53 @@ def generate_dry_run_script(
 # How often the stall watchdog samples running-task log freshness.
 _STALL_POLL_SECS = 30
 
+# Plain-mode status heartbeat tick. The TICK is the throttle: the status thread
+# samples the current build state once per interval (level-sampled), so a task
+# storm cannot flood the log. plain_status_line() only dedups identical lines.
+_PLAIN_STATUS_INTERVAL = 2.0
+
+
+class _PlainFrameController:
+    """Frame controller for plain (CI) output: no Rich ``Live``, a throttled status thread.
+
+    Exposes the exact surface the PTY closures call on a Rich ``Live`` - ``console``,
+    ``stop()``, ``start(*, refresh=False)``, and a writable ``transient`` attribute - as
+    no-ops / plain writes, so ``_run_pty_with_ui``'s body runs unchanged. As a context
+    manager it starts a daemon thread that prints ``ui.plain_status_line()`` on a fixed
+    ``_PLAIN_STATUS_INTERVAL`` tick and joins it on exit (before the caller prints its
+    post-build summary), so a stale heartbeat cannot interleave with the final lines.
+    """
+
+    def __init__(self, ui: BuildUIState, console: Console, stop_event: threading.Event) -> None:
+        self.console = console
+        self.transient = False
+        self._ui = ui
+        self._stop_event = stop_event
+        self._thread: threading.Thread | None = None
+
+    def stop(self) -> None:
+        """No-op: there is no Live region to tear down in plain mode."""
+
+    def start(self, *, refresh: bool = False) -> None:
+        """No-op: mirrors ``Live.start(refresh=...)`` so the freeze/restart path is safe."""
+
+    def _loop(self) -> None:  # pragma: no cover - timing-driven daemon thread
+        while not self._stop_event.wait(timeout=_PLAIN_STATUS_INTERVAL):
+            line = self._ui.plain_status_line()
+            if line is not None:
+                # markup=False: the status line contains literal brackets (e.g.
+                # "bakar[build]") that Rich would otherwise parse as style tags.
+                self.console.print(line, markup=False)
+
+    def __enter__(self) -> _PlainFrameController:
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        if self._thread is not None:
+            self._thread.join(timeout=2 * _PLAIN_STATUS_INTERVAL)
+
 
 @dataclass(slots=True)
 class _PtyOutcome:
@@ -1001,6 +1054,7 @@ def _run_pty_with_ui(
     stop_event: threading.Event,
     *,
     show_layers: bool = False,
+    output_mode: OutputMode = OutputMode.RICH,
 ) -> _PtyOutcome:
     """Run ``cmd`` under a PTY, pumping its output into ``ui`` live.
 
@@ -1223,7 +1277,12 @@ def _run_pty_with_ui(
             # Share the run logger's console so log.info() (the parse-complete
             # line) coordinates with the live region instead of printing onto
             # the same line as the setup bar.
-            with Live(get_renderable=ui.make_renderable, console=log.console, refresh_per_second=8) as live:
+            frame_cm: Live | _PlainFrameController = (
+                _PlainFrameController(ui, log.console, stop_event)
+                if output_mode is OutputMode.PLAIN
+                else Live(get_renderable=ui.make_renderable, console=log.console, refresh_per_second=8)
+            )
+            with frame_cm as live:
                 pump = threading.Thread(target=_pump, daemon=True)  # pragma: no cover
                 pump.start()
                 heartbeat = threading.Thread(target=_heartbeat, daemon=True)  # pragma: no cover
@@ -1396,7 +1455,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     rc: int | None = None
     stall_tasks: list[str] | None = None
     try:
-        outcome = _run_pty_with_ui(cmd, cfg, log, ui, stop_event, show_layers=show_layers)
+        outcome = _run_pty_with_ui(cmd, cfg, log, ui, stop_event, show_layers=show_layers, output_mode=ctx.output_mode)
         rc, stall_tasks = outcome.rc, outcome.stall_tasks
         if rc == 0:
             deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
@@ -1474,7 +1533,7 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
     rc: int | None = None
     completed = False
     try:
-        rc = _run_pty_with_ui(cmd, cfg, log, ui, stop_event).rc
+        rc = _run_pty_with_ui(cmd, cfg, log, ui, stop_event, output_mode=ctx.output_mode).rc
         completed = True
     finally:
         stop_event.set()
