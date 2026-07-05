@@ -101,6 +101,12 @@ class UserConfig:
     # daemons, so every node reports to one hash-equivalence + PR service.
     bb_hashserve: str | None = None
     prserv_host: str | None = None
+    # Explicit cluster-mode opt-in (default off). The single gating signal for the
+    # cluster preflight checks (central hashserv/prserv liveness, shared-mount
+    # validation); a default single-node build never probes cluster infra. Distinct
+    # from bb_hashserve/prserv_host being set, which can point one node at the
+    # central tier for warm-cache reads without cluster intent.
+    cluster: bool = False
     # ccache enable toggle (default on); effective ccache is gated off whenever
     # sccache_dist is set (mutually exclusive launchers). rm_work default off:
     # while bakar is in use the tuning stack strips rm_work so work dirs survive.
@@ -179,6 +185,7 @@ _BUILD_KEYS = {
     "cluster_bind_host": "cluster_bind_host",
     "bb_hashserve": "bb_hashserve",
     "prserv_host": "prserv_host",
+    "cluster": "cluster",
     "ccache": "ccache",
     "rm_work": "rm_work",
     "container": "container",

@@ -302,6 +302,9 @@ class BuildConfig:
     # daemons; None keeps the per-workspace daemon path. See user_config.bb_hashserve.
     bb_hashserve: str | None = field(default=None)
     prserv_host: str | None = field(default=None)
+    # Explicit cluster-mode opt-in (default off); the single gating signal for the
+    # cluster preflight checks. See user_config.cluster.
+    cluster: bool = field(default=False)
     # ccache enable toggle (default on). ccache and sccache co-exist as a hybrid:
     # the ccache overlay is selected whenever this flag is on (INCLUDING under
     # sccache_dist), so ccache is the local object cache for the non-allowlisted
@@ -788,6 +791,11 @@ def resolve(
         cluster_bind_host=user_config.cluster_bind_host if user_config else None,
         bb_hashserve=user_config.bb_hashserve if user_config else None,
         prserv_host=user_config.prserv_host if user_config else None,
+        cluster=pick_bool(
+            "BAKAR_CLUSTER",
+            ws_val=None,
+            user_val=user_config.cluster if user_config is not None else False,
+        ),
         ccache=pick_bool(
             "BAKAR_CCACHE",
             ws_val=workspace_config.ccache if workspace_config is not None else None,
