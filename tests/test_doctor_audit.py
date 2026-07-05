@@ -16,17 +16,17 @@ from bakar.diagnostics import Severity, Status, check_sccache_dist
 
 
 def _cfg(**over: object) -> BuildConfig:
-    base: dict[str, object] = dict(
-        workspace=Path("/tmp"),
-        bsp_family="nxp",
-        machine="m",
-        distro="d",
-        image="i",
-        manifest="x.xml",
-        repo_url="https://example.com",
-        repo_branch="main",
-        kas_container_image="img:latest",
-    )
+    base: dict[str, object] = {
+        "workspace": Path("/tmp"),
+        "bsp_family": "nxp",
+        "machine": "m",
+        "distro": "d",
+        "image": "i",
+        "manifest": "x.xml",
+        "repo_url": "https://example.com",
+        "repo_branch": "main",
+        "kas_container_image": "img:latest",
+    }
     base.update(over)
     return BuildConfig(**base)  # type: ignore[arg-type]
 

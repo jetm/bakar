@@ -2328,7 +2328,6 @@ def _check_central_endpoint(
     default_port: int,
     probe: Callable[[str, int], bool],
     service: str,
-    config_key: str,
 ) -> CheckResult:
     """Cluster-mode liveness of a central-tier endpoint.
 
@@ -2338,6 +2337,7 @@ def _check_central_endpoint(
     loopback endpoint is WARN (valid on the hub, poisonous when the config is
     reused on another node); unreachable is BLOCK; reachable is PASS.
     """
+    config_key = {"hashserv": "bb_hashserve", "prserv": "prserv_host"}[service]
     if not endpoint:
         return _fail(
             name,
@@ -2373,7 +2373,6 @@ def check_central_hashserv(cfg: BuildConfig) -> CheckResult:
         default_port=hashserv.CENTRAL_DEFAULT_PORT,
         probe=hashserv.central_listening,
         service="hashserv",
-        config_key="bb_hashserve",
     )
 
 
@@ -2387,7 +2386,6 @@ def check_central_prserv(cfg: BuildConfig) -> CheckResult:
         default_port=prserv.CENTRAL_DEFAULT_PORT,
         probe=prserv.central_listening,
         service="prserv",
-        config_key="prserv_host",
     )
 
 
@@ -2460,7 +2458,9 @@ def check_shared_cache_mounts(cfg: BuildConfig) -> CheckResult:
             name,
             Severity.BLOCK,
             "; ".join(problems),
-            fix_hint="mount the shared NFS exports (hard) at these paths so the node does not build into a private cache",
+            fix_hint=(
+                "mount the shared NFS exports (hard) at these paths so the node does not build into a private cache"
+            ),
         )
     detail = "; ".join(oks)
     if warnings:
