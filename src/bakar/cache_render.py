@@ -132,3 +132,55 @@ def render_ccache_cache(ccache: dict[str, Any] | None) -> Text:
     line = Text("ccache: ", style="bold")
     line.append(f"{ccache['cache_hits']}/{ccache['cache_misses']} hit/miss ({ccache['hit_rate']:.0f}% hit)")
     return line
+
+
+def render_cluster_plain(cluster: dict[str, Any]) -> list[str]:
+    """Plain-text sibling of :func:`render_cluster` (no markup/color, same fields)."""
+    lines: list[str] = []
+    cap = cluster["capacity"]
+    if cluster["reachable"] and cap is not None:
+        lines.append(
+            f"cluster: {cap['num_servers']} server(s), {cap['num_cpus']} cpus, {cap['in_progress']} job(s) in progress"
+        )
+        for node in cap["servers"] or []:
+            if isinstance(node, dict):
+                lines.append(
+                    f"  {node.get('id', '?')} - {node.get('num_cpus', '?')} cpus, {node.get('in_progress', 0)} job(s)"
+                )
+            else:
+                lines.append(f"  {node}")
+    else:
+        lines.append(f"cluster: unreachable ({cluster['error']})")
+    return lines
+
+
+def render_sccache_cache_plain(daemon: dict[str, Any] | None) -> str:
+    """Plain-text sibling of :func:`render_sccache_cache` (no markup/color, same fields)."""
+    if daemon is None:
+        return "daemon: no build container running"
+    if daemon["error"]:
+        return f"daemon: stats unavailable ({daemon['error']})"
+    local = max(daemon["cache_misses"] - daemon["distributed"], 0)
+    lines = [
+        f"daemon: {daemon['verdict']}  "
+        f"cache {daemon['cache_hits']}/{daemon['cache_misses']} hit/miss  "
+        f"dist {daemon['distributed']} (local {local}, errors {daemon['dist_errors']})"
+    ]
+    hits_by_lang = daemon.get("hits_by_lang") or {}
+    misses_by_lang = daemon.get("misses_by_lang") or {}
+    for lang in sorted(set(hits_by_lang) | set(misses_by_lang)):
+        hits = hits_by_lang.get(lang, 0)
+        misses = misses_by_lang.get(lang, 0)
+        total = hits + misses
+        rate = (hits / total * 100) if total else 0.0
+        lines.append(f"  cache[{lang}]: {hits}/{misses} hit/miss ({rate:.0f}% hit)")
+    for node, jobs in (daemon.get("per_node") or {}).items():
+        lines.append(f"  dist[{node}]: {jobs} job(s)")
+    return "\n".join(lines)
+
+
+def render_ccache_cache_plain(ccache: dict[str, Any] | None) -> str:
+    """Plain-text sibling of :func:`render_ccache_cache` (no markup/color, same fields)."""
+    if ccache is None:
+        return "ccache: stats unavailable"
+    return f"ccache: {ccache['cache_hits']}/{ccache['cache_misses']} hit/miss ({ccache['hit_rate']:.0f}% hit)"
