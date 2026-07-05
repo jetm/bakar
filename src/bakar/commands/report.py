@@ -117,6 +117,18 @@ def report(
     # its JSON fields appear only when the user opted into buildhistory.
     has_buildhistory = summary.has_buildhistory
 
+    # ccache builds persist raw ccache tool counters to ccache-stats.json (the
+    # sccache stats live in the eventlog-derived cache_by_language section
+    # instead). Read whichever artifact is present; a missing file omits its
+    # section without error. Best-effort: a decode failure yields no section.
+    ccache_stats: dict | None = None
+    ccache_path = run_dir / "ccache-stats.json"
+    try:
+        if ccache_path.is_file():
+            ccache_stats = json.loads(ccache_path.read_text())
+    except OSError, ValueError:
+        ccache_stats = None
+
     if json_out:
         payload = {
             "run_id": summary.run_id,
@@ -154,6 +166,12 @@ def report(
                     "layers_dirty": summary.layers_dirty,
                 }
             )
+        if ccache_stats is not None:
+            payload["ccache_cache"] = {
+                "cache_hits": ccache_stats.get("cache_hits"),
+                "cache_misses": ccache_stats.get("cache_misses"),
+                "hit_rate": ccache_stats.get("hit_rate"),
+            }
         print(json.dumps(payload))
         return
 
@@ -198,6 +216,14 @@ def report(
             console.print("  distribution:")
             for node, count in summary.dist_by_node.items():
                 console.print(f"    {node}: {count}")
+    if ccache_stats is not None:
+        # Raw ccache tool counters for this build. Deliberately free of
+        # per-language claims: the sccache cache_by_language section above is
+        # eventlog-derived and the two can visibly disagree post-delta.
+        console.print("[bold]ccache (this build):[/]")
+        console.print(f"  hits: {ccache_stats.get('cache_hits', 0)}")
+        console.print(f"  misses: {ccache_stats.get('cache_misses', 0)}")
+        console.print(f"  hit rate: {ccache_stats.get('hit_rate', 0.0):.1f}%")
     if any(stat.count for stat in summary.task_family_rollup.values()):
         total_family_s = sum(stat.seconds for stat in summary.task_family_rollup.values())
         console.print("[bold]task families:[/]")

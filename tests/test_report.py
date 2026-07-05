@@ -164,3 +164,115 @@ def test_empty_event_log_yields_zeroed_rollup(tmp_path: Path) -> None:
 
     assert summary.go_compile_seconds == 0.0
     assert all(stat.seconds == 0.0 and stat.count == 0 for stat in summary.task_family_rollup.values())
+
+
+# ---------------------------------------------------------------------------
+# bakar report - backend-agnostic ccache section (commands/report.py)
+# ---------------------------------------------------------------------------
+
+
+def _cli_run_dir(nxp_ws: Path) -> Path:
+    run_dir = nxp_ws / "nxp" / "build" / "runs" / "20260527-100000"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
+def test_report_json_gains_ccache_key_when_artifact_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--json`` gains an additive ``ccache_cache`` key when ccache-stats.json exists."""
+    from typer.testing import CliRunner
+
+    import bakar.commands.report as report_module
+    from bakar.cli import app
+    from bakar.report import LangCacheStat, ReportSummary
+
+    (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
+    run_dir = _cli_run_dir(tmp_path)
+    (run_dir / "ccache-stats.json").write_text(
+        json.dumps({"cache_hits": 5, "cache_misses": 2, "hit_rate": 71.4, "window": "build"})
+    )
+    summary = ReportSummary(
+        run_id="20260527-100000",
+        status="success",
+        duration_s=1.0,
+        deploy_dir="/x",
+        image_size=1,
+        layers=[],
+        build_revision=None,
+        cache_by_language={"C/C++": LangCacheStat(hits=10, misses=1, hit_rate=90.9)},
+        dist_by_node={"10.42.0.2": 5},
+    )
+    monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
+    monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: summary)
+
+    result = CliRunner().invoke(app, ["report", "--json", "--workspace", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+
+    payload = json.loads(result.stdout)
+    # The additive ccache key is present with the three tool counters.
+    assert payload["ccache_cache"] == {"cache_hits": 5, "cache_misses": 2, "hit_rate": 71.4}
+    # The pre-existing sccache keys are retained, unchanged in shape.
+    assert payload["cache_by_language"]["C/C++"]["hits"] == 10
+    assert payload["dist_by_node"] == {"10.42.0.2": 5}
+
+
+def test_report_json_omits_ccache_key_when_artifact_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing ccache-stats.json omits the section without error."""
+    from typer.testing import CliRunner
+
+    import bakar.commands.report as report_module
+    from bakar.cli import app
+    from bakar.report import ReportSummary
+
+    (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
+    run_dir = _cli_run_dir(tmp_path)  # no ccache-stats.json written
+    summary = ReportSummary(
+        run_id="20260527-100000",
+        status="success",
+        duration_s=1.0,
+        deploy_dir="/x",
+        image_size=1,
+        layers=[],
+        build_revision=None,
+    )
+    monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
+    monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: summary)
+
+    result = CliRunner().invoke(app, ["report", "--json", "--workspace", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+
+    payload = json.loads(result.stdout)
+    assert "ccache_cache" not in payload
+    # cache_by_language / dist_by_node still present (empty), never removed.
+    assert "cache_by_language" in payload
+    assert "dist_by_node" in payload
+
+
+def test_report_human_shows_ccache_section_when_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The human path renders an additive ccache section when the artifact exists."""
+    from typer.testing import CliRunner
+
+    import bakar.commands.report as report_module
+    from bakar.cli import app
+    from bakar.report import ReportSummary
+
+    (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
+    run_dir = _cli_run_dir(tmp_path)
+    (run_dir / "ccache-stats.json").write_text(
+        json.dumps({"cache_hits": 5, "cache_misses": 2, "hit_rate": 71.4, "window": "build"})
+    )
+    summary = ReportSummary(
+        run_id="20260527-100000",
+        status="success",
+        duration_s=1.0,
+        deploy_dir="/x",
+        image_size=1,
+        layers=[],
+        build_revision=None,
+    )
+    monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
+    monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: summary)
+
+    result = CliRunner().invoke(app, ["report", "--workspace", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "ccache" in result.output
+    assert "71.4" in result.output
