@@ -184,3 +184,107 @@ def render_ccache_cache_plain(ccache: dict[str, Any] | None) -> str:
     if ccache is None:
         return "ccache: stats unavailable"
     return f"ccache: {ccache['cache_hits']}/{ccache['cache_misses']} hit/miss ({ccache['hit_rate']:.0f}% hit)"
+
+
+# Build-end summary + live-badge helpers ---------------------------------
+#
+# The build runner persists per-build cache deltas (``cache_delta``) and prints
+# a greppable ``bakar[cache]`` summary at build end, plus drives live at-a-glance
+# badges in the build UI. These helpers keep all cache rendering in this module.
+
+_CACHE_SUMMARY_PREFIX = "bakar[cache]"
+
+# Verdict -> compact dist state used by both the plain token and the Rich badge.
+_DIST_STATE = {"DISTRIBUTING": "on", "LOCAL-ONLY": "off"}
+_DIST_COLOUR = {"on": "green", "off": "red", "idle": "yellow"}
+
+
+def cache_hit_pct(hits: int, misses: int) -> float:
+    """Hit-rate percentage from raw hit/miss counts, guarding divide-by-zero.
+
+    The sccache ``daemon_doc`` carries no aggregate ``hit_rate``, only counts;
+    this recomputes it and returns ``0.0`` when both counters are zero rather
+    than raising ``ZeroDivisionError``.
+    """
+    total = hits + misses
+    return (100.0 * hits / total) if total else 0.0
+
+
+def cache_badge_token(hit_pct: float) -> str:
+    """Pure-``str`` ``cache=NN%`` live-badge token (no markup/ANSI)."""
+    return f"cache={hit_pct:.0f}%"
+
+
+def dist_badge_token(verdict: str | None) -> str:
+    """Pure-``str`` ``dist=on|off|idle`` token from a daemon verdict."""
+    return f"dist={_DIST_STATE.get(verdict or '', 'idle')}"
+
+
+def cache_badge_rich(hit_pct: float) -> Text:
+    """Rich cache badge: a Nerd-Font database glyph plus the hit-rate percent."""
+    badge = Text(" ", style="cyan")  # nf-fa-database
+    badge.append(f"{hit_pct:.0f}%")
+    return badge
+
+
+def dist_badge_rich(verdict: str | None) -> Text:
+    """Rich dist badge: a Nerd-Font sitemap glyph coloured by the verdict."""
+    state = _DIST_STATE.get(verdict or "", "idle")
+    colour = _DIST_COLOUR[state]
+    badge = Text(" ", style=colour)  # nf-fa-sitemap
+    badge.append(f"dist {state}", style=colour)
+    return badge
+
+
+def cache_delta(first_doc: dict[str, Any] | None, last_doc: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Per-build cache delta between the first-probe baseline and the last doc.
+
+    Subtracts the baseline counts from the last counts, recomputes ``hit_rate``
+    from the delta, clamps any negative count (a mid-build counter reset) to 0,
+    and tags ``window``. Returns the cumulative ``last_doc`` tagged
+    ``window="lifetime"`` when ``first_doc`` is ``None`` (no baseline was
+    captured); otherwise tags ``window="build"``. Returns ``None`` when there is
+    no last doc to summarize.
+    """
+    if not last_doc:
+        return None
+    if first_doc is None:
+        doc = dict(last_doc)
+        doc["window"] = "lifetime"
+        return doc
+    delta = dict(last_doc)
+    for key in ("cache_hits", "cache_misses", "distributed", "dist_errors"):
+        if key in last_doc:
+            delta[key] = max(int(last_doc.get(key, 0)) - int(first_doc.get(key, 0)), 0)
+    for lang_key in ("hits_by_lang", "misses_by_lang"):
+        if lang_key in last_doc:
+            base = first_doc.get(lang_key) or {}
+            delta[lang_key] = {k: max(v - base.get(k, 0), 0) for k, v in last_doc[lang_key].items()}
+    if "per_node" in last_doc:
+        base = first_doc.get("per_node") or {}
+        delta["per_node"] = {k: max(v - base.get(k, 0), 0) for k, v in last_doc["per_node"].items()}
+    if "hit_rate" in last_doc:
+        delta["hit_rate"] = cache_hit_pct(delta.get("cache_hits", 0), delta.get("cache_misses", 0))
+    delta["window"] = "build"
+    return delta
+
+
+def build_end_summary_plain(doc: dict[str, Any] | None, backend: str) -> str:
+    """Plain, ANSI-free build-end cache summary tagged for CI discrimination.
+
+    Prepends the stable ``bakar[cache]`` prefix and appends ``backend=`` and
+    ``window=`` tokens on the summary line. Returns ``""`` when no backend was
+    active (``doc`` is ``None``).
+    """
+    if not doc:
+        return ""
+    window = doc.get("window", "build")
+    body = render_sccache_cache_plain(doc) if backend == "sccache" else render_ccache_cache_plain(doc)
+    lines = body.split("\n")
+    lines[0] = f"{_CACHE_SUMMARY_PREFIX} {lines[0]}  backend={backend} window={window}"
+    return "\n".join(lines)
+
+
+def build_end_summary_rich(doc: dict[str, Any] | None, backend: str) -> Text:
+    """Rich build-end cache summary (styled ``Text``, unprefixed)."""
+    return render_sccache_cache(doc) if backend == "sccache" else render_ccache_cache(doc)
