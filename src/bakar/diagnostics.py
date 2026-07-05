@@ -23,6 +23,7 @@ import re
 import shutil
 import socket
 import subprocess
+import time
 import tomllib
 import urllib.parse
 from collections.abc import Callable
@@ -1343,6 +1344,34 @@ _FS_ALLOW: frozenset[str] = frozenset({"ext4", "btrfs", "xfs", "zfs", "overlay"}
 _FS_BLOCK: frozenset[str] = frozenset({"vfat", "exfat", "ntfs", "9p", "nfs", "nfs4", "cifs", "smb", "smb3", "smbfs"})
 
 
+def _mount_entry_in(mounts_raw: str, path: Path) -> tuple[str, str, str, str] | None:
+    """Longest-prefix ``/proc/mounts`` entry covering ``path``.
+
+    Returns ``(source, mountpoint, fstype, opts)`` or None when no mountpoint
+    covers the path. Sorting by mountpoint length descending makes the most
+    specific (longest) prefix win, which resolves bind/overlay mounts to the
+    real backing filesystem. Shared by :func:`check_workspace_filesystem`
+    (fstype only) and :func:`check_shared_cache_mounts` (source + opts too).
+    """
+    entries: list[tuple[str, str, str, str]] = []
+    for line in mounts_raw.splitlines():
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        entries.append((fields[0], fields[1], fields[2], fields[3]))
+    entries.sort(key=lambda e: len(e[1]), reverse=True)
+
+    target = path.resolve()
+    for source, mountpoint, fstype, opts in entries:
+        try:
+            mp = Path(mountpoint)
+        except TypeError, ValueError:
+            continue
+        if target == mp or target.is_relative_to(mp):
+            return (source, mountpoint, fstype, opts)
+    return None
+
+
 def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
     """Detect the filesystem hosting ``cfg.workspace`` via ``/proc/mounts``.
 
@@ -1361,37 +1390,15 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
     except OSError as exc:
         return _skip(name, Severity.WARN, f"/proc/mounts unreadable: {exc}")
 
-    entries: list[tuple[str, str]] = []
-    for line in mounts_raw.splitlines():
-        fields = line.split()
-        if len(fields) < 3:
-            continue
-        entries.append((fields[1], fields[2]))
-
-    # Sort by mountpoint length descending so the longest (most specific)
-    # prefix wins - this handles bind/overlay mounts where multiple parent
-    # mountpoints cover the workspace path.
-    entries.sort(key=lambda pair: len(pair[0]), reverse=True)
-
     workspace = cfg.workspace.resolve()
-    fstype: str | None = None
-    matched_mount: str | None = None
-    for mountpoint, kind in entries:
-        try:
-            mp = Path(mountpoint)
-        except TypeError, ValueError:
-            continue
-        if workspace == mp or workspace.is_relative_to(mp):
-            fstype = kind
-            matched_mount = mountpoint
-            break
-
-    if fstype is None:
+    entry = _mount_entry_in(mounts_raw, workspace)
+    if entry is None:
         return _skip(
             name,
             Severity.WARN,
             f"no mountpoint covers {workspace} in /proc/mounts",
         )
+    _source, matched_mount, fstype, _opts = entry
 
     if fstype in _FS_ALLOW:
         return _ok(name, Severity.WARN, f"{fstype} at {matched_mount}")
@@ -2384,6 +2391,83 @@ def check_central_prserv(cfg: BuildConfig) -> CheckResult:
     )
 
 
+def check_shared_cache_mounts(cfg: BuildConfig) -> CheckResult:
+    """Cluster-mode: verify each effective shared cache dir is a writable NFS mount.
+
+    Only runs in cluster mode (run_all filters the cluster checks out otherwise).
+    Validates the *effective* dirs the build uses - the SSTATE_DIR/DL_DIR env
+    overrides and effective_ccache_dir, not the raw config fields - and probes the
+    ccache dir only when ccache is enabled. Per dir the order is load-bearing: a
+    tempfile write probe first (it triggers an autofs automount and is truthful
+    where os.access lies under NFS root_squash), THEN the /proc/mounts fstype. A
+    silently-local shared dir is a BLOCK (a private cache defeats cross-node
+    reuse); clock skew and soft mounts are WARN riders off the same probe file.
+    """
+    name = "shared-mounts"
+    targets: list[tuple[str, Path]] = []
+    sstate = os.environ.get("SSTATE_DIR") or cfg.sstate_dir
+    if sstate:
+        targets.append(("sstate_dir", Path(sstate)))
+    dl = os.environ.get("DL_DIR") or cfg.dl_dir
+    if dl:
+        targets.append(("dl_dir", Path(dl)))
+    if cfg.ccache and cfg.effective_ccache_dir:
+        targets.append(("ccache_dir", Path(cfg.effective_ccache_dir)))
+    if not targets:
+        return _skip(name, Severity.BLOCK, "cluster mode with no shared cache directories configured")
+
+    problems: list[str] = []
+    warnings: list[str] = []
+    oks: list[str] = []
+    for label, path in targets:
+        if not path.exists():
+            problems.append(f"{label} {path} is missing")
+            continue
+        # Write probe first: triggers an autofs automount and is truthful where
+        # os.access lies on an NFS root_squash export.
+        probe = path / f".bakar-doctor-probe-{os.getpid()}"
+        try:
+            fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except OSError:
+            problems.append(f"{label} {path} exists but is not writable")
+            continue
+        try:
+            os.close(fd)
+            skew = abs(time.time() - probe.stat().st_mtime)
+        finally:
+            probe.unlink(missing_ok=True)
+        if skew > 5.0:
+            warnings.append(f"{label}: clock skew ~{skew:.0f}s across the shared mount")
+        # Read /proc/mounts AFTER the probe so a just-triggered autofs mount shows.
+        try:
+            mounts_raw = Path("/proc/mounts").read_text()
+        except OSError as exc:
+            return _skip(name, Severity.BLOCK, f"/proc/mounts unreadable: {exc}")
+        entry = _mount_entry_in(mounts_raw, path)
+        if entry is None:
+            problems.append(f"{label} {path}: no covering mountpoint in /proc/mounts")
+            continue
+        source, mountpoint, fstype, opts = entry
+        if fstype not in {"nfs", "nfs4"}:
+            problems.append(f"{label} {path} is not an NFS mount ({fstype} at {mountpoint})")
+            continue
+        if "soft" in opts.split(","):
+            warnings.append(f"{label} {source} is a soft mount (a timeout can corrupt the cache; use hard)")
+        oks.append(f"{label} {source}")
+
+    if problems:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            "; ".join(problems),
+            fix_hint="mount the shared NFS exports (hard) at these paths so the node does not build into a private cache",
+        )
+    detail = "; ".join(oks)
+    if warnings:
+        return _fail(name, Severity.WARN, "; ".join(warnings) + (f" ({detail})" if detail else ""))
+    return _ok(name, Severity.BLOCK, detail or "shared cache mounts OK")
+
+
 # Preflight audit (doctor-cluster-preflight): the severity policy is BLOCK iff a
 # check's failure prevents a correct build, else WARN (a degradation) or INFO.
 # The full surface was reviewed against that policy - every current severity is
@@ -2425,6 +2509,7 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_host_preflight,
     check_central_hashserv,
     check_central_prserv,
+    check_shared_cache_mounts,
 )
 
 # Docker-dependent checks from ``SHARED_CHECKS``. Filtered out of
@@ -2451,6 +2536,7 @@ _DOCKER_CHECKS: tuple[CheckFunc, ...] = (
 _CLUSTER_CHECKS: tuple[CheckFunc, ...] = (
     check_central_hashserv,
     check_central_prserv,
+    check_shared_cache_mounts,
 )
 
 

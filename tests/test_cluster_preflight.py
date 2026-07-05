@@ -20,6 +20,7 @@ from bakar.diagnostics import (
     Status,
     check_central_hashserv,
     check_central_prserv,
+    check_shared_cache_mounts,
     run_all,
 )
 from bakar.user_config import UserConfig
@@ -28,9 +29,14 @@ from bakar.workspace_config import WorkspaceConfig
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Strip ambient toggles so each test controls cluster resolution explicitly."""
-    monkeypatch.delenv("BAKAR_CLUSTER", raising=False)
-    monkeypatch.delenv("KAS_CONTAINER_IMAGE", raising=False)
+    """Strip ambient toggles + cache-dir env overrides so each test is hermetic.
+
+    SSTATE_DIR/DL_DIR/CCACHE_DIR would otherwise override the effective dirs the
+    shared-mount check validates, pointing it at the real host caches instead of
+    the test's tmp_path.
+    """
+    for var in ("BAKAR_CLUSTER", "KAS_CONTAINER_IMAGE", "SSTATE_DIR", "DL_DIR", "CCACHE_DIR"):
+        monkeypatch.delenv(var, raising=False)
 
 
 def _workspace(tmp_path: Path) -> Path:
@@ -179,3 +185,100 @@ def test_central_checks_host_pure_and_grouped_once() -> None:
     for cname in ("central-hashserv", "central-prserv"):
         buckets = [group for group, names in CHECK_GROUPS if cname in names]
         assert buckets == ["Cluster"], f"{cname} grouped into {buckets}"
+
+
+# --- Task 5: shared-mount check --------------------------------------------
+
+_NFS_ENTRY = ("10.42.0.1:/export/sstate", "/mnt/sstate", "nfs", "rw,hard,vers=4")
+
+
+@pytest.mark.unit
+def test_gating_shared_mount_absent_when_cluster_off(tmp_path: Path) -> None:
+    """cluster=False: run_all lists no shared-mounts check."""
+    cfg = resolve(
+        workspace=_workspace(tmp_path),
+        bsp_family="nxp",
+        user_config=UserConfig(cluster=False),
+        workspace_config=WorkspaceConfig(),
+    )
+    assert "shared-mounts" not in {r.name for r in run_all(cfg)}
+
+
+@pytest.mark.unit
+def test_gating_shared_mount_present_when_cluster_on(tmp_path: Path) -> None:
+    """cluster=True: the shared-mounts check appears."""
+    cfg = resolve(
+        workspace=_workspace(tmp_path),
+        bsp_family="nxp",
+        user_config=UserConfig(cluster=True),
+        workspace_config=WorkspaceConfig(),
+    )
+    assert "shared-mounts" in {r.name for r in run_all(cfg)}
+
+
+@pytest.mark.unit
+def test_shared_mount_nfs_writable_passes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A writable NFS-mounted shared dir -> PASS at BLOCK, message names the source."""
+    monkeypatch.setattr("bakar.diagnostics._mount_entry_in", lambda *_a: _NFS_ENTRY)
+    result = check_shared_cache_mounts(_cfg(cluster=True, sstate_dir=str(tmp_path), dl_dir=None, ccache=False))
+    assert result.status == Status.PASS
+    assert result.severity == Severity.BLOCK
+    assert "10.42.0.1:/export/sstate" in result.message
+
+
+@pytest.mark.unit
+def test_shared_mount_local_fs_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A shared dir on a local (non-NFS) filesystem -> FAIL at BLOCK."""
+    monkeypatch.setattr("bakar.diagnostics._mount_entry_in", lambda *_a: ("/dev/sda1", "/", "ext4", "rw"))
+    result = check_shared_cache_mounts(_cfg(cluster=True, sstate_dir=str(tmp_path), dl_dir=None, ccache=False))
+    assert result.status == Status.FAIL
+    assert result.severity == Severity.BLOCK
+    assert "not an NFS mount" in result.message
+
+
+@pytest.mark.unit
+def test_shared_mount_missing_blocks(tmp_path: Path) -> None:
+    """A missing shared dir -> FAIL at BLOCK naming it missing."""
+    result = check_shared_cache_mounts(_cfg(cluster=True, sstate_dir=str(tmp_path / "nope"), dl_dir=None, ccache=False))
+    assert result.status == Status.FAIL
+    assert result.severity == Severity.BLOCK
+    assert "missing" in result.message
+
+
+@pytest.mark.unit
+def test_shared_mount_unwritable_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """An existing but unwritable shared dir -> FAIL at BLOCK, distinguished from missing."""
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o500)
+    try:
+        monkeypatch.setattr("bakar.diagnostics._mount_entry_in", lambda *_a: _NFS_ENTRY)
+        result = check_shared_cache_mounts(_cfg(cluster=True, sstate_dir=str(ro), dl_dir=None, ccache=False))
+        assert result.status == Status.FAIL
+        assert result.severity == Severity.BLOCK
+        assert "not writable" in result.message
+    finally:
+        ro.chmod(0o700)
+
+
+@pytest.mark.unit
+def test_shared_mount_soft_option_warns(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A soft-mounted shared dir -> WARN (data-integrity hazard), not a block."""
+    monkeypatch.setattr(
+        "bakar.diagnostics._mount_entry_in", lambda *_a: ("10.42.0.1:/e", "/mnt", "nfs", "rw,soft,vers=4")
+    )
+    result = check_shared_cache_mounts(_cfg(cluster=True, sstate_dir=str(tmp_path), dl_dir=None, ccache=False))
+    assert result.status == Status.FAIL
+    assert result.severity == Severity.WARN
+    assert "soft" in result.message
+
+
+@pytest.mark.unit
+def test_shared_mount_clock_skew_warns(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A large mtime-vs-local-clock delta on the shared mount -> WARN."""
+    monkeypatch.setattr("bakar.diagnostics._mount_entry_in", lambda *_a: _NFS_ENTRY)
+    monkeypatch.setattr("bakar.diagnostics.time.time", lambda: 10_000_000_000.0)
+    result = check_shared_cache_mounts(_cfg(cluster=True, sstate_dir=str(tmp_path), dl_dir=None, ccache=False))
+    assert result.status == Status.FAIL
+    assert result.severity == Severity.WARN
+    assert "skew" in result.message

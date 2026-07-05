@@ -57,6 +57,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.cluster_bind_host": "10.42.0.1",
         "build.bb_hashserve": "10.42.0.1:8686",
         "build.prserv_host": "10.42.0.1:8585",
+        "build.cluster": "true",
         "build.ccache": "false",
         "build.rm_work": "true",
         "build.container": "true",
