@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 import typer
+from rich.console import Console
 from rich.table import Table
 
 import bakar.commands._app as _state
@@ -30,11 +31,13 @@ from bakar.commands._helpers import (
     _uninitialized_bbsetup_dir,
     global_container_mode,
     global_host_mode,
+    global_output_mode_override,
     split_kas_yaml_arg,
 )
 from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, compose_preset_output_path, resolve
 from bakar.kas import translate_bbsetup_config, write_bbsetup_yaml
 from bakar.observability import RunLogger
+from bakar.output_mode import OutputMode, resolve_output_mode
 from bakar.preset_config import load_presets
 from bakar.steps import bitbake_override as step_override
 from bakar.steps import kas_build as step_kas
@@ -43,6 +46,22 @@ from bakar.workspace import detect
 
 if TYPE_CHECKING:
     from bakar.bsp_model import BspModel
+
+
+def _output_mode() -> OutputMode:
+    """Resolve the human-output mode from the global override and this run's stream."""
+    return resolve_output_mode(global_output_mode_override(), isatty=sys.stderr.isatty(), ci_env=os.environ.get("CI"))
+
+
+def _plain_render_console() -> Console | None:
+    """A no-color render console for RunLogger under plain mode, else None (module default).
+
+    Keeps the out-of-Live summary/hint lines, layer tables, and alerts ANSI-free even on a
+    forced ``--plain`` TTY (design D9).
+    """
+    if _output_mode() is OutputMode.PLAIN:
+        return Console(no_color=True, force_terminal=False, stderr=True)
+    return None
 
 
 def _preset_completer(incomplete: str) -> list[str]:
@@ -158,7 +177,7 @@ def _run_bbsetup_build(
         raise typer.Exit(code=0)
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
-    with RunLogger(runs_dir=cfg.runs_dir) as log:
+    with RunLogger(runs_dir=cfg.runs_dir, render_console=_plain_render_console()) as log:
         log.info(f"build mode=bbsetup bsp=bbsetup yaml={cfg.kas_yaml} overlay={overlay_source}")
 
         _run_doctor_gate(cfg, log, None)
@@ -171,7 +190,14 @@ def _run_bbsetup_build(
         )
 
         kas_ctx = KasBuildContext(
-            cfg, log, cfg.kas_yaml, overlay_source, keep_going=ctx.keep_going, dry_run=ctx.dry_run, target=ctx.target
+            cfg,
+            log,
+            cfg.kas_yaml,
+            overlay_source,
+            keep_going=ctx.keep_going,
+            dry_run=ctx.dry_run,
+            target=ctx.target,
+            output_mode=_output_mode(),
         )
         rc = step_kas.run_build(
             kas_ctx,
@@ -229,7 +255,14 @@ def _run_byo_build(
             step_override.apply(cfg, log)
 
     kas_ctx = KasBuildContext(
-        cfg, log, cfg.kas_yaml, ctx.overlay_source, keep_going=ctx.keep_going, dry_run=ctx.dry_run, target=ctx.target
+        cfg,
+        log,
+        cfg.kas_yaml,
+        ctx.overlay_source,
+        keep_going=ctx.keep_going,
+        dry_run=ctx.dry_run,
+        target=ctx.target,
+        output_mode=_output_mode(),
     )
     rc = step_kas.run_build(
         kas_ctx,
@@ -294,7 +327,14 @@ def _run_manifest_build(
         step_kas.regenerate_yaml(cfg, log, bsp=ctx.bsp)
 
     kas_ctx = KasBuildContext(
-        cfg, log, cfg.kas_yaml, ctx.overlay_source, keep_going=ctx.keep_going, dry_run=ctx.dry_run, target=ctx.target
+        cfg,
+        log,
+        cfg.kas_yaml,
+        ctx.overlay_source,
+        keep_going=ctx.keep_going,
+        dry_run=ctx.dry_run,
+        target=ctx.target,
+        output_mode=_output_mode(),
     )
     rc = step_kas.run_build(
         kas_ctx,
@@ -420,7 +460,7 @@ def _run_single_preset_release(
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
     try:
-        with RunLogger(runs_dir=cfg.runs_dir) as log:
+        with RunLogger(runs_dir=cfg.runs_dir, render_console=_plain_render_console()) as log:
             log.info(
                 f"build mode={'byo' if byo_form else 'manifest'} bsp={family}"
                 f" yaml={cfg.kas_yaml} overlay={overlay_source}"
@@ -770,7 +810,7 @@ def build(
     )
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
-    with RunLogger(runs_dir=cfg.runs_dir) as log:
+    with RunLogger(runs_dir=cfg.runs_dir, render_console=_plain_render_console()) as log:
         overlays = [p for p in (cfg.kas_yaml, overlay_source, *extra_overlays) if p is not None]
         log.info(
             f"build mode={'byo' if byo_form else 'manifest'} bsp={family}, merging {len(overlays)} overlays:\n"
