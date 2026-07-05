@@ -2297,11 +2297,22 @@ def check_sstate_hash_leak(cfg: BuildConfig) -> CheckResult:
 # NOTE: this tuple is the run registry; its order does not matter (checks are
 # independent). The pre-flight REPORT is sorted by group via ``CHECK_GROUPS``
 # below - when adding a check here, also list it in the matching group there.
+# Preflight audit (doctor-cluster-preflight): the severity policy is BLOCK iff a
+# check's failure prevents a correct build, else WARN (a degradation) or INFO.
+# The full surface was reviewed against that policy - every current severity is
+# appropriate and the _DOCKER_CHECKS membership below is correct, so the audit
+# produced no severity or membership flips. Two overlaps with the Cluster-group
+# checks are intentional and must NOT be "deduplicated"; see the inline notes on
+# check_cache_dirs and check_hashserv.
 SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_host_tools,
     check_docker_daemon,
     check_container_image,
     check_container_bitbake,
+    # BLOCK: the env-set SSTATE_DIR/DL_DIR exist and are writable. Overlaps the
+    # Cluster group's check_shared_cache_mounts (which validates the *effective*
+    # dirs are NFS mounts) - related but distinct: this one validates presence,
+    # that one validates the shared mount. Do not merge them.
     check_cache_dirs,
     check_sysctl,
     check_docker_ulimits,
@@ -2317,6 +2328,9 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_docker_version,
     check_docker_storage_driver,
     check_ccache_health,
+    # Per-workspace hashserv daemon (127.0.0.1). Distinct from the Cluster
+    # group's check_central_hashserv (the shared central-tier daemon) - same
+    # word, different service.
     check_hashserv,
     check_sccache_dist,
     check_sstate_hash_leak,
@@ -2327,7 +2341,10 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
 # Docker-dependent checks from ``SHARED_CHECKS``. Filtered out of
 # :func:`run_all` when ``cfg.host_mode`` is True because plain ``kas``
 # does not invoke the container runtime. Keep this list in sync with
-# any new container/Docker check added above.
+# any new container/Docker check added above. Audit-verified: all six members
+# are docker-daemon-dependent, and host-pure checks (check_psi_support,
+# check_hashserv, check_cache_dirs, check_workspace_filesystem, and the
+# cluster checks) are correctly excluded so they survive host mode.
 _DOCKER_CHECKS: tuple[CheckFunc, ...] = (
     check_docker_daemon,
     check_container_image,

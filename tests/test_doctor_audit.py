@@ -54,3 +54,40 @@ def test_sccache_gated_proceeds_when_enabled(monkeypatch: pytest.MonkeyPatch) ->
     result = check_sccache_dist(_cfg(sccache_dist=True, host_mode=True))
     assert result.status == Status.FAIL
     assert result.severity == Severity.BLOCK
+
+
+@pytest.mark.unit
+def test_docker_membership_is_exactly_the_daemon_checks() -> None:
+    """_DOCKER_CHECKS holds exactly the docker-daemon checks; host-pure checks stay."""
+    from bakar.diagnostics import (
+        _DOCKER_CHECKS,
+        SHARED_CHECKS,
+        check_cache_dirs,
+        check_container_bitbake,
+        check_container_image,
+        check_docker_daemon,
+        check_docker_storage_driver,
+        check_docker_ulimits,
+        check_docker_version,
+        check_hashserv,
+        check_psi_support,
+        check_workspace_filesystem,
+    )
+
+    # Every docker-dependent check is registered in SHARED_CHECKS.
+    assert set(_DOCKER_CHECKS) <= set(SHARED_CHECKS)
+    # Membership is exactly the six docker-daemon-dependent checks.
+    assert set(_DOCKER_CHECKS) == {
+        check_docker_daemon,
+        check_container_image,
+        check_container_bitbake,
+        check_docker_ulimits,
+        check_docker_version,
+        check_docker_storage_driver,
+    }
+    # Host-pure checks are NOT members, so host mode does not drop them.
+    for check in (check_psi_support, check_hashserv, check_cache_dirs, check_workspace_filesystem):
+        assert check not in _DOCKER_CHECKS
+    # Host mode drops exactly _DOCKER_CHECKS and nothing else.
+    host_checks = tuple(c for c in SHARED_CHECKS if c not in _DOCKER_CHECKS)
+    assert set(SHARED_CHECKS) - set(host_checks) == set(_DOCKER_CHECKS)
