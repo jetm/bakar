@@ -110,6 +110,13 @@ local_conf_header:
     # BB_GENERATE_MIRROR_TARBALLS = "1"
     IMAGE_FEATURES:remove = "dev-pkgs dbg-pkgs tools-sdk tools-debug staticdev-pkgs"
 
+    # Generate only the en_US binary locale. oe-core's default
+    # (ENABLE_BINARY_LOCALE_GENERATION=1 with GLIBC_GENERATE_LOCALES unset) builds
+    # the full glibc locale set through qemu, which dominates glibc-locale's
+    # do_package on a cold build. `?=` yields to any workspace/distro that sets a
+    # wider locale list, so a product needing more locales overrides it.
+    GLIBC_GENERATE_LOCALES ?= "en_US.UTF-8"
+
     # Fetch robustness: raise the per-URI timeout so transient TLS / DNS
     # stalls do not trip the default (~45s) and fail the task.
     BB_FETCH_TIMEOUT = "600"
