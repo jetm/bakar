@@ -73,6 +73,19 @@ def _skip(name: str, severity: Severity, message: str) -> CheckResult:
     return CheckResult(name=name, severity=severity, status=Status.SKIP, message=message)
 
 
+def split_host_port(endpoint: str, default_port: int) -> tuple[str, int]:
+    """Split a ``host:port`` endpoint; fall back to ``default_port`` when no numeric port.
+
+    Shared by the cluster preflight checks and ``bakar monitor`` so a bare host
+    like ``10.42.0.1`` probes the service's default port rather than failing to
+    parse.
+    """
+    host, sep, port = endpoint.rpartition(":")
+    if sep and port.isdigit():
+        return host, int(port)
+    return endpoint, default_port
+
+
 # ---------------------------------------------------------------------------
 # buildtools-extended detection (shared by the host build path and doctor)
 # ---------------------------------------------------------------------------
@@ -2297,6 +2310,80 @@ def check_sstate_hash_leak(cfg: BuildConfig) -> CheckResult:
 # NOTE: this tuple is the run registry; its order does not matter (checks are
 # independent). The pre-flight REPORT is sorted by group via ``CHECK_GROUPS``
 # below - when adding a check here, also list it in the matching group there.
+def _is_loopback(host: str) -> bool:
+    return host in {"localhost", "127.0.0.1", "::1"} or host.startswith("127.")
+
+
+def _check_central_endpoint(
+    *,
+    name: str,
+    endpoint: str | None,
+    default_port: int,
+    probe: Callable[[str, int], bool],
+    service: str,
+    config_key: str,
+) -> CheckResult:
+    """Cluster-mode liveness of a central-tier endpoint.
+
+    Only runs in cluster mode - ``run_all`` filters the cluster checks out when
+    ``cfg.cluster`` is False. An unset endpoint is WARN (a cluster build with no
+    central service is almost always a misconfiguration, but must not block); a
+    loopback endpoint is WARN (valid on the hub, poisonous when the config is
+    reused on another node); unreachable is BLOCK; reachable is PASS.
+    """
+    if not endpoint:
+        return _fail(
+            name,
+            Severity.WARN,
+            f"cluster mode is on but no central {service} is configured - intentional?",
+            fix_hint=f"set [build] {config_key} to the shared {service} endpoint, or disable cluster mode",
+        )
+    host, port = split_host_port(endpoint, default_port)
+    if _is_loopback(host):
+        return _fail(
+            name,
+            Severity.WARN,
+            f"central {service} endpoint {endpoint} is loopback - valid only on the hub node, "
+            "but breaks when this config is reused on another cluster node",
+        )
+    if probe(host, port):
+        return _ok(name, Severity.BLOCK, f"central {service} reachable at {host}:{port}")
+    return _fail(
+        name,
+        Severity.BLOCK,
+        f"central {service} unreachable at {host}:{port}",
+        fix_hint=f"start the central {service} service, or fix [build] {config_key}",
+    )
+
+
+def check_central_hashserv(cfg: BuildConfig) -> CheckResult:
+    """Cluster-mode central hashserv liveness (bb_hashserve); filtered out when cluster is off."""
+    from bakar import hashserv
+
+    return _check_central_endpoint(
+        name="central-hashserv",
+        endpoint=cfg.bb_hashserve,
+        default_port=hashserv.CENTRAL_DEFAULT_PORT,
+        probe=hashserv.central_listening,
+        service="hashserv",
+        config_key="bb_hashserve",
+    )
+
+
+def check_central_prserv(cfg: BuildConfig) -> CheckResult:
+    """Cluster-mode central prserv liveness (prserv_host); filtered out when cluster is off."""
+    from bakar import prserv
+
+    return _check_central_endpoint(
+        name="central-prserv",
+        endpoint=cfg.prserv_host,
+        default_port=prserv.CENTRAL_DEFAULT_PORT,
+        probe=prserv.central_listening,
+        service="prserv",
+        config_key="prserv_host",
+    )
+
+
 # Preflight audit (doctor-cluster-preflight): the severity policy is BLOCK iff a
 # check's failure prevents a correct build, else WARN (a degradation) or INFO.
 # The full surface was reviewed against that policy - every current severity is
@@ -2336,6 +2423,8 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_sstate_hash_leak,
     check_override_syntax,
     check_host_preflight,
+    check_central_hashserv,
+    check_central_prserv,
 )
 
 # Docker-dependent checks from ``SHARED_CHECKS``. Filtered out of
@@ -2352,6 +2441,16 @@ _DOCKER_CHECKS: tuple[CheckFunc, ...] = (
     check_docker_ulimits,
     check_docker_version,
     check_docker_storage_driver,
+)
+
+
+# Cluster-mode checks, filtered out of run_all when cfg.cluster is False (mirrors
+# the _DOCKER_CHECKS / host_mode filter) so a default single-node build never
+# runs or lists them. They are host-pure (TCP + /proc/mounts probes), so they
+# stay OUT of _DOCKER_CHECKS and survive host mode when cluster mode is on.
+_CLUSTER_CHECKS: tuple[CheckFunc, ...] = (
+    check_central_hashserv,
+    check_central_prserv,
 )
 
 
@@ -2382,6 +2481,10 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "Caches & storage",
         ("cache-dirs", "ccache-health", "hashserv", "sstate-hash-leak", "disk-free"),
+    ),
+    (
+        "Cluster",
+        ("central-hashserv", "central-prserv", "shared-mounts"),
     ),
     (
         "Host tuning",
@@ -2442,6 +2545,8 @@ def run_all(cfg: BuildConfig, bsp: BspModel | None = None) -> list[CheckResult]:
         checks = (*checks, check_bbsetup_initialized, check_bbsetup_config_sources)
     if cfg.host_mode:
         checks = tuple(c for c in checks if c not in _DOCKER_CHECKS)
+    if not cfg.cluster:
+        checks = tuple(c for c in checks if c not in _CLUSTER_CHECKS)
     return [check(cfg) for check in checks]
 
 

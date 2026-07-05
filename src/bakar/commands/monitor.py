@@ -33,7 +33,7 @@ from bakar.commands._app import app, console
 from bakar.commands._helpers import WorkspaceOption, _bsp_from_cwd, _dispatch_from_yaml, _resolve_workspace
 from bakar.commands.log import _resolve_run_dir
 from bakar.config import BSPSpec, BuildConfig, resolve
-from bakar.diagnostics import probe_build_daemon, probe_cluster
+from bakar.diagnostics import probe_build_daemon, probe_cluster, split_host_port
 from bakar.eventlog import normalize, running_tasks
 from bakar.steps.build_ui import SEVERITY_PASSTHROUGH, _fmt_stall, _task_style
 
@@ -190,12 +190,10 @@ def _build_progress(run_dir: Path) -> dict[str, Any]:
     }
 
 
-def _split_host_port(endpoint: str, default_port: int) -> tuple[str, int]:
-    """Split a ``host:port`` endpoint; fall back to ``default_port`` if no numeric port."""
-    host, sep, port = endpoint.rpartition(":")
-    if sep and port.isdigit():
-        return host, int(port)
-    return endpoint, default_port
+# Extracted to bakar.diagnostics.split_host_port for reuse by the cluster
+# preflight checks; kept as a module-local alias so the call sites below and the
+# tests that patch them are unchanged.
+_split_host_port = split_host_port
 
 
 def _central_daemon_status(cfg: BuildConfig) -> dict[str, Any]:
