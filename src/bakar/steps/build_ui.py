@@ -304,6 +304,9 @@ class BuildUIState:
         # first build -> estimated stays None and stuck-task detection falls
         # back to the current-run median.
         self._task_baselines = task_timings.load_baselines(timings_path)
+        # Last line returned by plain_status_line(); enables idle-dedup in plain mode
+        # (the emission RATE is bounded by the caller thread's tick, not by this class).
+        self._plain_last_line: str | None = None
 
     def process_line(self, line: str) -> str | None:
         """Parse one line of knotty fallback output and update internal state.
@@ -1013,3 +1016,43 @@ class BuildUIState:
                 parts.append(Text(f"   … +{overflow} more running", style="dim"))
 
         return Group(*parts)
+
+    def plain_status_line(self) -> str | None:
+        """Return a plain, glyph-free status line, or None when unchanged (idle dedup).
+
+        Reads the same ``_lock``-guarded state ``make_renderable`` renders (phase, sstate
+        coverage, running count, the build bar's completed/total, elapsed) and composes one
+        greppable line with no ANSI, no Rich markup, and no Nerd-Font glyph. Returns ``None``
+        only when the composed line is identical to the last line this method returned - the
+        emission RATE is bounded by the caller thread's tick, not by an interval here.
+        """
+        now = time.monotonic()
+        with self._lock:
+            phase = self._phase
+            stage = self._stage
+            kind = self._kind
+            setscene_covered = self._setscene_covered
+            setscene_total = self._setscene_total
+            running = len(self._running)
+            task = self._build_progress.tasks[0] if self._build_progress.tasks else None
+            completed = int(task.completed) if task is not None else 0
+            # total is None until bitbake reports it (the bar is created total=None);
+            # render "?" rather than the literal None so the field stays parseable.
+            total = task.total if task is not None else None
+            elapsed = _fmt_stall(int(now - self._start_monotonic))
+
+        phase_label = stage if phase is _Phase.SETUP else (kind or "tasks")
+        parts = [f"bakar[build] phase={phase_label}"]
+        if setscene_total > 0:
+            parts.append(f"sstate={int(setscene_covered / setscene_total * 100)}%")
+        total_str = str(int(total)) if total is not None else "?"
+        parts.append(f"tasks={completed}/{total_str}")
+        parts.append(f"running={running}")
+        parts.append(f"elapsed={elapsed}")
+        line = " ".join(parts)
+
+        with self._lock:
+            if line == self._plain_last_line:
+                return None
+            self._plain_last_line = line
+        return line
