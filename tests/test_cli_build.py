@@ -912,3 +912,65 @@ def test_run_build_writes_then_removes_build_pid(
     assert rc == 0
     assert calls == [("write", 424242), ("remove", 0)], f"expected write then remove, got {calls!r}"
     assert not leftover, "build.pid must be removed on the clean-exit path"
+
+
+# ---------------------------------------------------------------------------
+# Build-end cache-usage summary: printed at the post-block site (after the
+# live frame has closed), plain (markup=False) so its literal brackets survive.
+# ---------------------------------------------------------------------------
+
+
+def test_build_end_summary_prints_after_frame(tmp_path: Path) -> None:
+    """The ``bakar[cache]`` summary reaches the console AFTER the final frame line.
+
+    Drives the plain-mode teardown: a ``_PlainFrameController`` emits a final
+    heartbeat line and closes, then the post-block ``_print_cache_summary`` (the
+    same helper the runner's finally calls) prints the summary. Asserts the
+    summary lands after the frame line, carries no ANSI, and keeps its literal
+    brackets intact (the ``markup=False`` guard).
+    """
+    import threading
+    from io import StringIO
+
+    from rich.console import Console
+
+    from bakar.output_mode import OutputMode
+    from bakar.steps.build_ui import BuildUIState
+    from bakar.steps.kas_build import _PlainFrameController, _print_cache_summary
+
+    buf = StringIO()
+    capture = Console(no_color=True, force_terminal=False, file=buf, width=200)
+    with RunLogger(runs_dir=tmp_path / "runs", render_console=capture) as log:
+        ui = BuildUIState(start_monotonic=1.0)
+        ui.process_line("Running task 1 of 2")
+        stop = threading.Event()
+        stop.set()  # the plain frame loop exits on the first wait and joins immediately
+        with _PlainFrameController(ui, log.console, stop) as live:
+            frame_line = ui.plain_status_line()
+            assert frame_line is not None
+            live.console.print(frame_line, markup=False)
+        # Post-block: the frame has closed; print the build-end summary.
+        doc = {"cache_hits": 5, "cache_misses": 2, "hit_rate": 71.4, "window": "build"}
+        _print_cache_summary(log, "ccache", doc, OutputMode.PLAIN)
+
+    out = buf.getvalue()
+    assert "bakar[cache]" in out  # (i) reaches the captured console
+    assert out.index("bakar[build]") < out.index("bakar[cache]")  # (ii) after the frame line
+    assert "\x1b" not in out  # (iii) no ANSI
+    assert "[cache]" in out  # (iv) literal brackets intact (markup=False)
+
+
+def test_print_cache_summary_emits_nothing_when_no_backend(tmp_path: Path) -> None:
+    """No backend active -> no summary line at all."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    from bakar.output_mode import OutputMode
+    from bakar.steps.kas_build import _print_cache_summary
+
+    buf = StringIO()
+    capture = Console(no_color=True, force_terminal=False, file=buf, width=200)
+    with RunLogger(runs_dir=tmp_path / "runs", render_console=capture) as log:
+        _print_cache_summary(log, None, None, OutputMode.PLAIN)
+    assert "bakar[cache]" not in buf.getvalue()

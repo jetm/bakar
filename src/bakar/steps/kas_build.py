@@ -45,6 +45,10 @@ from rich.live import Live
 
 from bakar import build_stop, hashserv, prserv, sccache_server, task_timings, tuning
 from bakar.cache_render import (
+    build_end_summary_plain,
+    build_end_summary_rich,
+    cache_delta,
+    cache_hit_pct,
     ccache_doc,
     cluster_doc,
     daemon_doc,
@@ -1036,10 +1040,17 @@ class _PtyOutcome:
     ``stall_tasks`` is the list of running task labels at the moment the stall
     watchdog aborted the build (``None`` for a normal exit), so the caller can
     record a ``stall-timeout`` step_fail instead of a bare exit code.
+
+    ``cache_backend``/``cache_doc`` carry the active backend name and its
+    per-build cache delta (computed at teardown), so the caller can print the
+    build-end summary at the post-block site. Both are ``None`` when no cache
+    backend was active.
     """
 
     rc: int | None
     stall_tasks: list[str] | None = None
+    cache_backend: str | None = None
+    cache_doc: dict | None = None
 
 
 def _build_fail_reason(rc: int | None, stall_tasks: list[str] | None) -> str:
@@ -1049,6 +1060,28 @@ def _build_fail_reason(rc: int | None, stall_tasks: list[str] | None) -> str:
     if rc is not None:
         return f"exit_code={rc}"
     return "wrapper-crash"
+
+
+def _print_cache_summary(log: RunLogger, backend: str | None, doc: dict | None, output_mode: OutputMode) -> None:
+    """Print the build-end cache-usage summary at the post-block summary site.
+
+    Called from the runner's finally, after the live frame has closed, so the
+    summary cannot interleave with a heartbeat frame. Best-effort: emits nothing
+    when no cache backend was active and never crashes a completed build.
+    """
+    if not doc or backend is None:
+        return
+    try:
+        if output_mode is OutputMode.PLAIN:
+            # markup=False: the ``bakar[cache]`` prefix has literal brackets that
+            # Rich would otherwise parse as a style tag (as the heartbeat does).
+            summary = build_end_summary_plain(doc, backend)
+            if summary:
+                log.console.print(summary, markup=False)
+        else:
+            log.console.print(build_end_summary_rich(doc, backend))
+    except Exception:  # noqa: BLE001 - best-effort; never crash a completed build
+        return
 
 
 def _run_pty_with_ui(
@@ -1083,6 +1116,9 @@ def _run_pty_with_ui(
     """
     rc: int | None = None
     stall_tasks: list[str] | None = None
+    # Per-build cache delta for the build-end summary, filled at teardown.
+    cache_backend: str | None = None
+    cache_doc: dict | None = None
     master_fd, slave_fd = pty.openpty()  # pragma: no cover
     try:
         with log.kas_log_path.open("w", encoding="utf-8", buffering=1) as kas_log:
@@ -1241,10 +1277,15 @@ def _run_pty_with_ui(
                         build_stop.stop_running_proc(proc, cfg, log)
                         break
 
-            # Holds the freshest daemon_doc the cache-probe thread computed,
-            # so the build-end persist reuses that probe rather than issuing a
-            # second one after the build completes.
+            # Holds the freshest daemon_doc/ccache_doc the cache-probe thread
+            # computed, so the build-end persist reuses that probe rather than
+            # issuing a second one after the build completes. The ``first_*``
+            # holders snapshot the SYNCHRONOUS first refresh (build start) so
+            # the teardown can subtract a per-build delta (cumulative odometer).
             last_daemon_doc: list = [None]
+            first_daemon_doc: list = [None]
+            last_ccache_doc: list = [None]
+            first_ccache_doc: list = [None]
 
             def _cache_probe() -> None:  # pragma: no cover
                 # Refresh the cluster/cache header lines shown in the build UI.
@@ -1267,10 +1308,27 @@ def _run_pty_with_ui(
                             doc = daemon_doc(daemon) if daemon.running else None
                             if doc is not None:
                                 last_daemon_doc[0] = doc
+                                if first_daemon_doc[0] is None:
+                                    first_daemon_doc[0] = doc
+                                # Live badge is status, not accounting: cumulative
+                                # so-far hit rate plus the current daemon verdict.
+                                ui.set_cache_badge(
+                                    active=True,
+                                    hit_pct=cache_hit_pct(doc["cache_hits"], doc["cache_misses"]),
+                                    verdict=doc["verdict"],
+                                )
                             lines.append(render_sccache_cache(doc))
                         else:
                             cc = probe_ccache(cfg.effective_ccache_dir)
-                            lines = [render_ccache_cache(ccache_doc(cc))]
+                            cc_doc = ccache_doc(cc)
+                            if cc_doc is not None:
+                                last_ccache_doc[0] = cc_doc
+                                if first_ccache_doc[0] is None:
+                                    first_ccache_doc[0] = cc_doc
+                                # ccache has no distribution: cache badge only,
+                                # no verdict (suppresses the dist badge/token).
+                                ui.set_cache_badge(active=True, hit_pct=cc_doc["hit_rate"], verdict=None)
+                            lines = [render_ccache_cache(cc_doc)]
                         ui.set_dist_lines(lines)
                     except Exception:  # noqa: BLE001 - cosmetic probe, never crash the build thread
                         return
@@ -1315,10 +1373,27 @@ def _run_pty_with_ui(
                         live.console.print(layer_hash_table(hashes))
                         layers_pending = False
                 event_tail.join(timeout=5)
-                # Persist the freshest daemon stats the cache-probe thread saw
-                # so `bakar report` can present the per-language breakdown
-                # post-build. Best-effort: a no-op when no daemon was running.
-                log.persist_sccache_stats(last_daemon_doc[0])
+                # Join the cache probe (the one teardown thread not joined
+                # above) so the last_* holders are current before we read them.
+                cache_probe.join(timeout=1)
+                # Persist this-build cache deltas (the raw counters are
+                # cumulative odometers). Persist the DELTA, not the lifetime
+                # total, for whichever backend was active; the probe branches are
+                # mutually exclusive so exactly one artifact is written. Compute
+                # the summary doc here (inside the block, where the holders are
+                # read) but PRINT it at the post-block site. Best-effort: a
+                # persistence failure must never crash a completed build.
+                try:
+                    sccache_delta = cache_delta(first_daemon_doc[0], last_daemon_doc[0])
+                    ccache_delta = cache_delta(first_ccache_doc[0], last_ccache_doc[0])
+                    log.persist_sccache_stats(sccache_delta)
+                    log.persist_ccache_stats(ccache_delta)
+                    if sccache_delta is not None:
+                        cache_backend, cache_doc = "sccache", sccache_delta
+                    elif ccache_delta is not None:
+                        cache_backend, cache_doc = "ccache", ccache_delta
+                except Exception as exc:  # noqa: BLE001 - best-effort; never crash the build
+                    log.warn(f"failed to persist cache stats: {exc}")
                 if event_feed_error:
                     log.warn(f"bitbake event feed died ({event_feed_error}); live UI ran on regex fallback")
                 elif event_feed_count == 0:
@@ -1353,7 +1428,7 @@ def _run_pty_with_ui(
             os.close(master_fd)
         except OSError:
             pass
-    return _PtyOutcome(rc=rc, stall_tasks=stall_tasks)
+    return _PtyOutcome(rc=rc, stall_tasks=stall_tasks, cache_backend=cache_backend, cache_doc=cache_doc)
 
 
 def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None, show_layers: bool = False) -> int:
@@ -1459,6 +1534,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     terminated = False
     rc: int | None = None
     stall_tasks: list[str] | None = None
+    outcome: _PtyOutcome | None = None
     try:
         outcome = _run_pty_with_ui(cmd, cfg, log, ui, stop_event, show_layers=show_layers, output_mode=ctx.output_mode)
         rc, stall_tasks = outcome.rc, outcome.stall_tasks
@@ -1487,6 +1563,11 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         e_label = "error" if err == 1 else "errors"
         log.console.print(f"{warn} {w_label}, {err} {e_label}")
         log.console.print(f"[dim]hint: bakar log --run {log.run_dir.name} to follow the full build log[/]")
+        # Build-end cache-usage summary, printed at the post-block site (after
+        # the live frame closed and its heartbeat joined) so it cannot interleave
+        # with a frame. Emits nothing when no cache backend was active.
+        if outcome is not None:
+            _print_cache_summary(log, outcome.cache_backend, outcome.cache_doc, ctx.output_mode)
         if not terminated:
             # Wrapper crashed before the normal step_ok/step_fail path.  Emit
             # a terminal event anyway so events.jsonl never dead-ends at
@@ -1537,8 +1618,10 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
     # and bakar triage has a terminal event to find.
     rc: int | None = None
     completed = False
+    outcome: _PtyOutcome | None = None
     try:
-        rc = _run_pty_with_ui(cmd, cfg, log, ui, stop_event, output_mode=ctx.output_mode).rc
+        outcome = _run_pty_with_ui(cmd, cfg, log, ui, stop_event, output_mode=ctx.output_mode)
+        rc = outcome.rc
         completed = True
     finally:
         stop_event.set()
@@ -1547,6 +1630,9 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
         w_label = "warning" if warn == 1 else "warnings"
         e_label = "error" if err == 1 else "errors"
         log.console.print(f"{warn} {w_label}, {err} {e_label}")
+        # Build-end cache summary at the post-block site (see run_build).
+        if outcome is not None:
+            _print_cache_summary(log, outcome.cache_backend, outcome.cache_doc, ctx.output_mode)
         actual_rc = rc if rc is not None else -1
         if completed and actual_rc == 0:
             log.step_ok("kas_shell_live", exit_code=actual_rc)
