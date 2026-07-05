@@ -56,6 +56,10 @@ class RunLogger:
     # so the build UI's global timer can count from the command invocation.
     start_monotonic: float = field(default_factory=time.monotonic)
     _events_fh: Any = None
+    # Optional per-instance render console. When None, ``console`` falls back to the
+    # shared module-level Console. Plain mode supplies a no-color one so all run output
+    # (status lines, out-of-Live summary/hint lines, layer tables) is ANSI-free.
+    render_console: Console | None = None
     _logger: logging.Logger = field(init=False, repr=False)
 
     @property
@@ -101,8 +105,11 @@ class RunLogger:
         A ``Live`` display should be created on this same console so its
         in-place renders coordinate with log output (clear, print above,
         re-render) instead of colliding on the same line.
+
+        Returns the per-instance ``render_console`` when one was supplied (plain mode
+        passes a no-color console), else the shared module-level console.
         """
-        return console
+        return self.render_console if self.render_console is not None else console
 
     def __enter__(self) -> RunLogger:
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -110,7 +117,7 @@ class RunLogger:
         self._logger = logging.getLogger(f"bakar.run.{self.run_id}")
         self._logger.setLevel(logging.DEBUG)
         self._logger.handlers.clear()
-        rich_h = RichHandler(console=console, show_time=False, show_path=False, markup=True)
+        rich_h = RichHandler(console=self.console, show_time=False, show_path=False, markup=True)
         rich_h.setLevel(logging.INFO)
         file_h = logging.FileHandler(self.console_path)
         file_h.setLevel(logging.DEBUG)
