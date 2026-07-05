@@ -255,7 +255,7 @@ def _daemon_status(cfg: BuildConfig) -> dict[str, Any]:
     pr_port = prserv._workspace_port(cfg.prserv_state_key)
     return {
         "hashserv": {
-            "url": f"ws://{bind_host}:{hs_port}",
+            "url": f"ws://{bind_host}:{hs_port}",  # nosemgrep
             "running": hashserv.is_running(cfg.hashserv_state_key),
         },
         "prserv": {
@@ -276,7 +276,7 @@ def _render_daemons(daemons: dict[str, Any]) -> Text | None:
     rendered: list[tuple[str, str, bool]] = []
     hs = daemons.get("hashserv")
     if hs:
-        rendered.append(("hashserv", hs["url"].removeprefix("ws://"), hs["running"]))
+        rendered.append(("hashserv", hs["url"].removeprefix("ws://"), hs["running"]))  # nosemgrep
     pr = daemons.get("prserv")
     if pr:
         rendered.append(("prserv", pr["host"], pr["running"]))
@@ -375,7 +375,7 @@ def _render_daemons_plain(daemons: dict[str, Any]) -> str | None:
     rendered: list[tuple[str, str, bool]] = []
     hs = daemons.get("hashserv")
     if hs:
-        rendered.append(("hashserv", hs["url"].removeprefix("ws://"), hs["running"]))
+        rendered.append(("hashserv", hs["url"].removeprefix("ws://"), hs["running"]))  # nosemgrep
     pr = daemons.get("prserv")
     if pr:
         rendered.append(("prserv", pr["host"], pr["running"]))

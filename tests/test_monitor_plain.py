@@ -31,7 +31,7 @@ _SNAP = {
     },
     "build_daemon": None,
     "daemons": {
-        "hashserv": {"url": "ws://h:8686", "running": True},
+        "hashserv": {"url": "ws://h:8686", "running": True},  # nosemgrep
         "prserv": {"host": "h:8585", "running": False},
     },
     "build": {
