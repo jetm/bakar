@@ -16,6 +16,8 @@ interval to stdout. Human/Rich output always goes to stderr so a piped
 from __future__ import annotations
 
 import json
+import os
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
@@ -28,13 +30,27 @@ from rich.text import Text
 import bakar.commands._app as _state
 from bakar import hashserv, prserv
 from bakar.build_stop import is_build_running
-from bakar.cache_render import cluster_doc, daemon_doc, render_cluster, render_sccache_cache
+from bakar.cache_render import (
+    cluster_doc,
+    daemon_doc,
+    render_cluster,
+    render_cluster_plain,
+    render_sccache_cache,
+    render_sccache_cache_plain,
+)
 from bakar.commands._app import app, console
-from bakar.commands._helpers import WorkspaceOption, _bsp_from_cwd, _dispatch_from_yaml, _resolve_workspace
+from bakar.commands._helpers import (
+    WorkspaceOption,
+    _bsp_from_cwd,
+    _dispatch_from_yaml,
+    _resolve_workspace,
+    global_output_mode_override,
+)
 from bakar.commands.log import _resolve_run_dir
 from bakar.config import BSPSpec, BuildConfig, resolve
 from bakar.diagnostics import probe_build_daemon, probe_cluster, split_host_port
 from bakar.eventlog import normalize, running_tasks
+from bakar.output_mode import OutputMode, resolve_output_mode
 from bakar.steps.build_ui import SEVERITY_PASSTHROUGH, _fmt_stall, _task_style
 
 if TYPE_CHECKING:
@@ -344,6 +360,95 @@ def _render(snapshot: dict[str, Any]) -> Group:
     return Group(*parts)
 
 
+def _monitor_error(msg: str, mode: OutputMode) -> None:
+    """Print a monitor error, plain (typer.echo) under plain mode, else Rich-red."""
+    if mode is OutputMode.PLAIN:
+        typer.echo(msg, err=True)
+    else:
+        console.print(f"[red]{msg}[/]")
+
+
+def _render_daemons_plain(daemons: dict[str, Any]) -> str | None:
+    """Plain-text sibling of :func:`_render_daemons` (no markup/color)."""
+    if not daemons:
+        return None
+    rendered: list[tuple[str, str, bool]] = []
+    hs = daemons.get("hashserv")
+    if hs:
+        rendered.append(("hashserv", hs["url"].removeprefix("ws://"), hs["running"]))
+    pr = daemons.get("prserv")
+    if pr:
+        rendered.append(("prserv", pr["host"], pr["running"]))
+    if not rendered:
+        return None
+    parts = [f"{name} {addr} ({'up' if running else 'down'})" for name, addr, running in rendered]
+    return "daemons: " + ", ".join(parts)
+
+
+def _render_plain(snapshot: dict[str, Any]) -> list[str]:
+    """Render a monitor snapshot as plain text lines (no ANSI/glyphs).
+
+    Reuses the same snapshot doc :func:`_render` consumes, so the plain and Rich
+    views never drift on which fields they show.
+    """
+    lines: list[str] = list(render_cluster_plain(snapshot["cluster"]))
+    lines.append(render_sccache_cache_plain(snapshot["build_daemon"]))
+
+    daemon_line = _render_daemons_plain(snapshot.get("daemons") or {})
+    if daemon_line is not None:
+        lines.append(daemon_line)
+
+    build = snapshot["build"]
+    state = "live" if build["live"] else (build["outcome"] or "unknown")
+    elapsed = build["elapsed_seconds"]
+    elapsed_txt = _fmt_stall(int(elapsed)) if elapsed is not None else "?"
+    done = build["tasks_done"] or 0
+    total = build["tasks_total"]
+    remaining = build["tasks_remaining"]
+    if total:
+        tasks_txt = f"{done}/{total} tasks ({remaining} left) {100 * done // total}%"
+    else:
+        tasks_txt = f"{done} tasks done (total pending)"
+    rerun_n = build.get("tasks_setscene_rerun") or 0
+    rerun_txt = f", {rerun_n} setscene re-runs" if rerun_n else ""
+    lines.append(
+        f"build: [{state}] {tasks_txt}, {build['tasks_running']} running, "
+        f"{build['tasks_failed']} failed{rerun_txt}  elapsed {elapsed_txt}"
+    )
+    lines.extend(f"  {row['task'] or '?'}  {row['recipe'] or '?'}" for row in build["running"][:16])
+
+    failures = build["failures"]
+    kas_errors = snapshot.get("kas_errors") or []
+    if failures or kas_errors:
+        lines.append("recent failures:")
+        lines.extend(f"  {f.get('recipe', '?')} {f.get('task', '?')}" for f in failures)
+        lines.extend(f"  {line}" for line in kas_errors)
+    return lines
+
+
+def _run_plain(
+    run_dir: Path,
+    url: str | None,
+    daemon_probe: _DaemonProbe,
+    daemons: dict[str, Any],
+    interval: float,
+    *,
+    once: bool = False,
+) -> None:
+    """Print plain-text snapshots to stderr until the build finishes (or once)."""
+    try:
+        while True:
+            snapshot = _snapshot(run_dir, url, daemon_probe, daemons)
+            snapshot["kas_errors"] = _recent_kas_errors(run_dir / "kas.log")
+            for line in _render_plain(snapshot):
+                typer.echo(line, err=True)
+            if once or not snapshot["build"]["live"]:
+                return
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        raise typer.Exit(code=0) from None
+
+
 @app.command("monitor")
 def monitor(
     kas_yaml: Annotated[
@@ -387,8 +492,9 @@ def monitor(
     BYO builds; runs are resolved next to the YAML. ``--run`` selects a specific
     run (default: latest).
     """
+    mode = resolve_output_mode(global_output_mode_override(), isatty=sys.stderr.isatty(), ci_env=os.environ.get("CI"))
     if watch and not output_json:
-        console.print("[red]--watch is only meaningful with --json[/]")
+        _monitor_error("--watch is only meaningful with --json", mode)
         raise typer.Exit(code=2)
 
     if kas_yaml is not None:
@@ -410,7 +516,7 @@ def monitor(
         if output_json:
             typer.echo(json.dumps({"error": "no runs yet; start one with `bakar build`"}, indent=2))
         else:
-            console.print("[red]no runs yet[/]; start one with `bakar build`")
+            _monitor_error("no runs yet; start one with `bakar build`", mode)
         raise typer.Exit(code=1)
 
     run_dir = _resolve_run_dir(runs_dir, run)
@@ -428,12 +534,18 @@ def monitor(
         return
 
     if once:
-        snapshot = _snapshot(run_dir, url, daemon_probe, daemons)
-        snapshot["kas_errors"] = _recent_kas_errors(run_dir / "kas.log")
-        console.print(_render(snapshot))
+        if mode is OutputMode.PLAIN:
+            _run_plain(run_dir, url, daemon_probe, daemons, interval, once=True)
+        else:
+            snapshot = _snapshot(run_dir, url, daemon_probe, daemons)
+            snapshot["kas_errors"] = _recent_kas_errors(run_dir / "kas.log")
+            console.print(_render(snapshot))
         return
 
-    _run_live(run_dir, url, daemon_probe, daemons, interval)
+    if mode is OutputMode.PLAIN:
+        _run_plain(run_dir, url, daemon_probe, daemons, interval)
+    else:
+        _run_live(run_dir, url, daemon_probe, daemons, interval)
 
 
 def _run_watch(
