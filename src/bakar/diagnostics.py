@@ -2645,7 +2645,20 @@ def run_all(cfg: BuildConfig, bsp: BspModel | None = None) -> list[CheckResult]:
         checks = tuple(c for c in checks if c not in _DOCKER_CHECKS)
     if not cfg.cluster:
         checks = tuple(c for c in checks if c not in _CLUSTER_CHECKS)
-    return [check(cfg) for check in checks]
+    results: list[CheckResult] = []
+    for check in checks:
+        try:
+            results.append(check(cfg))
+        except Exception as exc:  # noqa: BLE001 - one check's bug must not abort the doctor run
+            results.append(
+                CheckResult(
+                    name=getattr(check, "__name__", "unknown"),
+                    severity=Severity.WARN,
+                    status=Status.FAIL,
+                    message=f"check crashed: {exc!r}",
+                )
+            )
+    return results
 
 
 def any_blocking_failure(results: list[CheckResult]) -> bool:
