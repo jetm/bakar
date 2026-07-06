@@ -95,6 +95,31 @@ def render_cluster(cluster: dict[str, Any]) -> list[Text]:
     return parts
 
 
+def _daemon_local_count(daemon: dict[str, Any]) -> int:
+    """Locally-compiled (non-distributed) count, clamped to 0.
+
+    sccache's ``cache_misses`` counter includes both locally-compiled and
+    distributed misses; subtracting ``distributed`` isolates the local-only
+    portion. Clamped because a mid-build counter reset can otherwise produce
+    a transient negative value.
+    """
+    return max(daemon["cache_misses"] - daemon["distributed"], 0)
+
+
+def _daemon_lang_rates(daemon: dict[str, Any]) -> list[tuple[str, int, int, float]]:
+    """Per-language (lang, hits, misses, hit_rate_pct) rows, sorted by lang name."""
+    hits_by_lang = daemon.get("hits_by_lang") or {}
+    misses_by_lang = daemon.get("misses_by_lang") or {}
+    rows: list[tuple[str, int, int, float]] = []
+    for lang in sorted(set(hits_by_lang) | set(misses_by_lang)):
+        hits = hits_by_lang.get(lang, 0)
+        misses = misses_by_lang.get(lang, 0)
+        total = hits + misses
+        rate = (hits / total * 100) if total else 0.0
+        rows.append((lang, hits, misses, rate))
+    return rows
+
+
 def render_sccache_cache(daemon: dict[str, Any] | None) -> Text:
     """Render the build-daemon doc (shape from :func:`daemon_doc`) as one Text."""
     if daemon is None:
@@ -102,20 +127,14 @@ def render_sccache_cache(daemon: dict[str, Any] | None) -> Text:
     if daemon["error"]:
         return Text(f"daemon: stats unavailable ({daemon['error']})", style="yellow")
     colour = {"DISTRIBUTING": "green", "LOCAL-ONLY": "red"}.get(daemon["verdict"], "yellow")
-    local = max(daemon["cache_misses"] - daemon["distributed"], 0)
+    local = _daemon_local_count(daemon)
     line = Text("daemon: ", style="bold")
     line.append(f"{daemon['verdict']}", style=colour)
     line.append(
         f"  cache {daemon['cache_hits']}/{daemon['cache_misses']} hit/miss  "
         f"dist {daemon['distributed']} (local {local}, errors {daemon['dist_errors']})"
     )
-    hits_by_lang = daemon.get("hits_by_lang") or {}
-    misses_by_lang = daemon.get("misses_by_lang") or {}
-    for lang in sorted(set(hits_by_lang) | set(misses_by_lang)):
-        hits = hits_by_lang.get(lang, 0)
-        misses = misses_by_lang.get(lang, 0)
-        total = hits + misses
-        rate = (hits / total * 100) if total else 0.0
+    for lang, hits, misses, rate in _daemon_lang_rates(daemon):
         line.append(f"\n  cache[{lang}]: {hits}/{misses} hit/miss ({rate:.0f}% hit)", style="dim")
     for node, jobs in (daemon.get("per_node") or {}).items():
         # Distribution is per-node and aggregated across all languages - sccache
@@ -160,19 +179,13 @@ def render_sccache_cache_plain(daemon: dict[str, Any] | None) -> str:
         return "daemon: no build container running"
     if daemon["error"]:
         return f"daemon: stats unavailable ({daemon['error']})"
-    local = max(daemon["cache_misses"] - daemon["distributed"], 0)
+    local = _daemon_local_count(daemon)
     lines = [
         f"daemon: {daemon['verdict']}  "
         f"cache {daemon['cache_hits']}/{daemon['cache_misses']} hit/miss  "
         f"dist {daemon['distributed']} (local {local}, errors {daemon['dist_errors']})"
     ]
-    hits_by_lang = daemon.get("hits_by_lang") or {}
-    misses_by_lang = daemon.get("misses_by_lang") or {}
-    for lang in sorted(set(hits_by_lang) | set(misses_by_lang)):
-        hits = hits_by_lang.get(lang, 0)
-        misses = misses_by_lang.get(lang, 0)
-        total = hits + misses
-        rate = (hits / total * 100) if total else 0.0
+    for lang, hits, misses, rate in _daemon_lang_rates(daemon):
         lines.append(f"  cache[{lang}]: {hits}/{misses} hit/miss ({rate:.0f}% hit)")
     for node, jobs in (daemon.get("per_node") or {}).items():
         lines.append(f"  dist[{node}]: {jobs} job(s)")
