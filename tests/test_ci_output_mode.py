@@ -1,7 +1,8 @@
 """Tests for bakar's CI/plain output-mode resolution and plain rendering.
 
 Resolver unit tests (task 1.1) live here; the integration behaviors referenced by the
-threat model (task 8.1) are appended below the resolver block.
+threat model (task 8.1) are appended below the resolver block. The --json mode-invariance
+check (formerly duplicated here) now lives solely in test_monitor_plain.py.
 """
 
 from __future__ import annotations
@@ -9,30 +10,18 @@ from __future__ import annotations
 import threading
 import time
 from io import StringIO
-from unittest import mock
 
 from rich.console import Console
-from typer.testing import CliRunner
 
 import bakar.cli  # noqa: F401 - registers all subcommands on the shared app
 import bakar.steps.kas_build as kas_build
 from bakar import eventlog
-from bakar.commands._app import app
 from bakar.output_mode import OutputMode, resolve_output_mode
-from bakar.steps import build_ui
 from bakar.steps.build_ui import BuildUIState
 from bakar.steps.kas_build import _PlainFrameController
+from tests.conftest import _GLYPHS
 
 _ESC = "\x1b"
-_GLYPHS = (
-    build_ui._ICON_COMPILE,
-    build_ui._ICON_FETCH,
-    build_ui._ICON_CONFIGURE,
-    build_ui._ICON_PACKAGE,
-    build_ui._ICON_SETSCENE,
-    build_ui._ICON_TIMER,
-    build_ui._ICON_DRIFT,
-)
 
 
 def test_piped_selects_plain() -> None:
@@ -61,54 +50,6 @@ def test_explicit_rich_override_wins_under_ci() -> None:
 
 
 # --- Integration behaviors referenced by the threat model (task 8.1) -----------
-
-_SNAP = {
-    "run": "20260101-000000",
-    "cluster": {
-        "reachable": True,
-        "error": None,
-        "capacity": {"num_servers": 1, "num_cpus": 8, "in_progress": 0, "servers": []},
-    },
-    "build_daemon": None,
-    "daemons": {},
-    "build": {
-        "live": True,
-        "outcome": None,
-        "elapsed_seconds": 5,
-        "tasks_done": 3,
-        "tasks_total": 10,
-        "tasks_remaining": 7,
-        "tasks_running": 2,
-        "tasks_failed": 0,
-        "tasks_setscene_rerun": 0,
-        "running": [],
-        "failures": [],
-    },
-    "kas_errors": [],
-}
-
-
-def _invoke_monitor(args, tmp_path):
-    cfg = mock.Mock(runs_dir=tmp_path)
-    with (
-        mock.patch("bakar.commands.monitor.resolve", return_value=cfg),
-        mock.patch("bakar.commands.monitor._resolve_workspace", return_value=tmp_path),
-        mock.patch("bakar.commands.monitor._bsp_from_cwd", return_value="nxp"),
-        mock.patch("bakar.commands.monitor._resolve_run_dir", return_value=tmp_path),
-        mock.patch("bakar.commands.monitor._daemon_status", return_value={}),
-        mock.patch("bakar.commands.monitor._resolve_scheduler_url", return_value=None),
-        mock.patch("bakar.commands.monitor._snapshot", return_value=dict(_SNAP)),
-        mock.patch("bakar.commands.monitor._recent_kas_errors", return_value=[]),
-    ):
-        return CliRunner().invoke(app, args)
-
-
-def test_json_identical_across_modes(tmp_path) -> None:
-    rich_out = _invoke_monitor(["--rich", "monitor", "--json"], tmp_path)
-    plain_out = _invoke_monitor(["--plain", "monitor", "--json"], tmp_path)
-    assert rich_out.exit_code == 0
-    assert plain_out.exit_code == 0
-    assert rich_out.stdout == plain_out.stdout
 
 
 def test_plain_has_no_ansi(tmp_path) -> None:

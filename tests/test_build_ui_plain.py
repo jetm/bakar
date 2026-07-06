@@ -4,19 +4,10 @@ from __future__ import annotations
 
 import time
 
-from bakar.steps import build_ui
 from bakar.steps.build_ui import BuildUIState
+from tests.conftest import _GLYPHS
 
 _ESC = "\x1b"
-_GLYPHS = (
-    build_ui._ICON_COMPILE,
-    build_ui._ICON_FETCH,
-    build_ui._ICON_CONFIGURE,
-    build_ui._ICON_PACKAGE,
-    build_ui._ICON_SETSCENE,
-    build_ui._ICON_TIMER,
-    build_ui._ICON_DRIFT,
-)
 
 
 def _building_state() -> BuildUIState:

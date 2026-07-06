@@ -23,13 +23,80 @@ from __future__ import annotations
 
 import os
 from typing import TYPE_CHECKING
+from unittest import mock
 
 import pytest
+from typer.testing import CliRunner
+
+import bakar.cli  # noqa: F401 - registers all subcommands on the shared app
+from bakar.commands._app import app
+from bakar.steps import build_ui
 
 # Prevent Rich from inserting ANSI escape codes into captured CLI output.
 # Without this, --help text arrives with mid-token color resets (e.g.
 # "--sstate" + ESC[0m + "-mirror"), breaking plain substring assertions.
 os.environ.setdefault("NO_COLOR", "1")
+
+# Plain-mode glyph icons that must never leak into no-ANSI/no-glyph assertions.
+# Shared by test_ci_output_mode.py, test_monitor_plain.py, test_build_ui_plain.py
+# (each previously carried its own identical copy of this tuple).
+_GLYPHS = (
+    build_ui._ICON_COMPILE,
+    build_ui._ICON_FETCH,
+    build_ui._ICON_CONFIGURE,
+    build_ui._ICON_PACKAGE,
+    build_ui._ICON_SETSCENE,
+    build_ui._ICON_TIMER,
+    build_ui._ICON_DRIFT,
+)
+
+# Synthetic `bakar monitor` snapshot + CLI-invocation helper shared by
+# test_ci_output_mode.py and test_monitor_plain.py. Carries non-empty
+# daemons/running/failures so it exercises both the --json equality check and
+# the plain-render field assertions in test_monitor_plain.py.
+MONITOR_SNAPSHOT = {
+    "run": "20260101-000000",
+    "cluster": {
+        "reachable": True,
+        "error": None,
+        "capacity": {"num_servers": 1, "num_cpus": 8, "in_progress": 0, "servers": []},
+    },
+    "build_daemon": None,
+    "daemons": {
+        "hashserv": {"url": "ws://h:8686", "running": True},  # nosemgrep
+        "prserv": {"host": "h:8585", "running": False},
+    },
+    "build": {
+        "live": True,
+        "outcome": None,
+        "elapsed_seconds": 61,
+        "tasks_done": 10,
+        "tasks_total": 100,
+        "tasks_remaining": 90,
+        "tasks_running": 3,
+        "tasks_failed": 1,
+        "tasks_setscene_rerun": 2,
+        "running": [{"recipe": "foo", "task": "do_compile"}],
+        "failures": [{"recipe": "bar", "task": "do_install"}],
+    },
+    "kas_errors": [],
+}
+
+
+def _invoke_monitor(args, tmp_path):
+    """Invoke the CLI with monitor-command args against MONITOR_SNAPSHOT."""
+    cfg = mock.Mock(runs_dir=tmp_path)
+    with (
+        mock.patch("bakar.commands.monitor.resolve", return_value=cfg),
+        mock.patch("bakar.commands.monitor._resolve_workspace", return_value=tmp_path),
+        mock.patch("bakar.commands.monitor._bsp_from_cwd", return_value="nxp"),
+        mock.patch("bakar.commands.monitor._resolve_run_dir", return_value=tmp_path),
+        mock.patch("bakar.commands.monitor._daemon_status", return_value={}),
+        mock.patch("bakar.commands.monitor._resolve_scheduler_url", return_value=None),
+        mock.patch("bakar.commands.monitor._snapshot", return_value=dict(MONITOR_SNAPSHOT)),
+        mock.patch("bakar.commands.monitor._recent_kas_errors", return_value=[]),
+    ):
+        return CliRunner().invoke(app, args)
 
 
 @pytest.fixture(autouse=True)
