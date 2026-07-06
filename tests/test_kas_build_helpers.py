@@ -44,6 +44,7 @@ from bakar.steps.kas_build import (
     clear_stale_bitbake_locks,
     copy_oe_eventlog_to_run_dir,
     materialize_overlay,
+    persist_run_artifacts,
 )
 from bakar.user_config import load_user_config
 
@@ -684,6 +685,54 @@ def test_copy_oe_eventlog_copies_when_primary_absent(tmp_path: Path) -> None:
     result = copy_oe_eventlog_to_run_dir(cfg, log)
     assert result is True
     assert log.eventlog_path.read_text() == '{"oe":true}'
+
+
+# ---------------------------------------------------------------------------
+# persist_run_artifacts
+# ---------------------------------------------------------------------------
+
+
+def test_persist_run_artifacts_calls_eventlog_copy_and_bitbake_events(tmp_path: Path) -> None:
+    """Without a timings_path, the eventlog copy and bitbake-events persist run, timings do not."""
+    cfg = _oe_eventlog_cfg(tmp_path)
+    log = RunLogger(runs_dir=cfg.runs_dir)
+    log.run_dir.mkdir(parents=True, exist_ok=True)
+    with (
+        patch("bakar.steps.kas_build.copy_oe_eventlog_to_run_dir") as copy_mock,
+        patch("bakar.observability.RunLogger.persist_bitbake_events") as persist_events,
+        patch("bakar.observability.RunLogger.persist_task_timings") as persist_timings,
+    ):
+        persist_run_artifacts(cfg, log)
+    copy_mock.assert_called_once_with(cfg, log)
+    persist_events.assert_called_once_with()
+    persist_timings.assert_not_called()
+
+
+def test_persist_run_artifacts_persists_timings_when_path_given(tmp_path: Path) -> None:
+    """With a timings_path, persist_task_timings is called with it."""
+    cfg = _oe_eventlog_cfg(tmp_path)
+    log = RunLogger(runs_dir=cfg.runs_dir)
+    log.run_dir.mkdir(parents=True, exist_ok=True)
+    timings_path = tmp_path / "timings.json"
+    with (
+        patch("bakar.steps.kas_build.copy_oe_eventlog_to_run_dir"),
+        patch("bakar.observability.RunLogger.persist_bitbake_events"),
+        patch("bakar.observability.RunLogger.persist_task_timings") as persist_timings,
+    ):
+        persist_run_artifacts(cfg, log, timings_path=timings_path)
+    persist_timings.assert_called_once_with(timings_path)
+
+
+def test_persist_run_artifacts_swallows_any_exception_and_warns(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A broad exception from any wrapped call is caught and printed as a warning, not raised."""
+    cfg = _oe_eventlog_cfg(tmp_path)
+    log = RunLogger(runs_dir=cfg.runs_dir)
+    log.run_dir.mkdir(parents=True, exist_ok=True)
+    with patch("bakar.steps.kas_build.copy_oe_eventlog_to_run_dir", side_effect=RuntimeError("boom")):
+        persist_run_artifacts(cfg, log)
+    assert "warning: failed to persist run artifacts: boom" in capsys.readouterr().err
 
 
 @pytest.mark.unit

@@ -43,9 +43,9 @@ from bakar.config import BSPSpec, resolve
 from bakar.observability import RunLogger
 from bakar.steps.kas_build import (
     KasBuildContext,
-    copy_oe_eventlog_to_run_dir,
     materialize_host_layer,
     materialize_sccache_layer,
+    persist_run_artifacts,
     run_shell,
     run_shell_capture,
     run_shell_live,
@@ -154,11 +154,7 @@ def _run_task(
         if task == "listtasks":
             stdout_path = log.run_dir / f"{step}.log"
             rc = run_shell_capture(kas_ctx, command, stdout_path, step=step)
-            try:
-                copy_oe_eventlog_to_run_dir(cfg, log)
-                log.persist_bitbake_events()
-            except Exception as exc:  # noqa: BLE001 - defense-in-depth; a completed command must not crash on persist failure
-                console.print(f"[yellow]warning: failed to persist run artifacts: {exc}[/]")
+            persist_run_artifacts(cfg, log)
             out_text = stdout_path.read_text(errors="replace") if stdout_path.exists() else ""
             if rc != 0:
                 console.print(f"[red]bitbake -c listtasks {target} failed (exit {rc}).[/]\n{out_text}")
@@ -173,11 +169,7 @@ def _run_task(
             raise typer.Exit(code=0)
 
         rc = run_shell_live(kas_ctx, command)
-        try:
-            copy_oe_eventlog_to_run_dir(cfg, log)
-            log.persist_bitbake_events()
-        except Exception as exc:  # noqa: BLE001 - defense-in-depth; a completed command must not crash on persist failure
-            console.print(f"[yellow]warning: failed to persist run artifacts: {exc}[/]")
+        persist_run_artifacts(cfg, log)
         if rc != 0:
             console.print(f"[red]{command} failed (exit {rc}).[/]")
         raise typer.Exit(code=rc)

@@ -1566,12 +1566,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         # outcomes. Best-effort: a no-op when bitbake wrote no event log.
         # Belt-and-braces alongside the RunLogger-side never-raises fix (task
         # 1.1): a failure here must not crash the CLI after a completed build.
-        try:
-            copy_oe_eventlog_to_run_dir(cfg, log)
-            log.persist_bitbake_events()
-            log.persist_task_timings(timings_path)
-        except Exception as exc:  # noqa: BLE001 - defense-in-depth; a completed build must not crash on persist failure
-            log.console.print(f"[yellow]warning: failed to persist run artifacts: {exc}[/]")
+        persist_run_artifacts(cfg, log, timings_path=timings_path)
     finally:
         warn = ui.warn_count
         err = ui.error_count
@@ -2076,6 +2071,24 @@ def copy_oe_eventlog_to_run_dir(cfg: BuildConfig, log: RunLogger) -> bool:
         return False
     shutil.copy2(oe_log, log.eventlog_path)
     return True
+
+
+def persist_run_artifacts(cfg: BuildConfig, log: RunLogger, *, timings_path: Path | None = None) -> None:
+    """Copy and normalize a completed run's artifacts, tolerating any failure.
+
+    Wraps ``copy_oe_eventlog_to_run_dir``, ``log.persist_bitbake_events()``, and
+    (when ``timings_path`` is given) ``log.persist_task_timings(timings_path)``
+    in one best-effort block. A completed command must not crash on persist
+    failure, so any exception is caught and reported as a warning rather than
+    propagated.
+    """
+    try:
+        copy_oe_eventlog_to_run_dir(cfg, log)
+        log.persist_bitbake_events()
+        if timings_path is not None:
+            log.persist_task_timings(timings_path)
+    except Exception as exc:  # noqa: BLE001 - defense-in-depth; a completed command must not crash on persist failure
+        log.console.print(f"[yellow]warning: failed to persist run artifacts: {exc}[/]")
 
 
 def _container_eventlog_path(cfg: BuildConfig, log: RunLogger) -> str:
