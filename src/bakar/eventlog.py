@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 
 # Bumped when the artifact shape changes so downstream consumers
 # (build-insights, triage) can detect format drift.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # bitbake event class names (the JSON line's ``class`` field) we recognize.
 # Each decoded event is classified by this string, NOT by isinstance - the
@@ -262,8 +262,6 @@ def normalize(raw_path: Path) -> dict[str, Any]:
         "started": None,
         "completed": None,
         "outcome": "unknown",
-        "preset": None,
-        "release": None,
         "run_id": None,
         # Runqueue progress from the latest runQueueTaskStarted.stats. tasks_total
         # is the full planned task count (constant once the runqueue is built);
@@ -280,7 +278,6 @@ def normalize(raw_path: Path) -> dict[str, Any]:
         "covered": 0,
         "notcovered": 0,
         "total": 0,
-        "per_recipe": [],
     }
     setscene_seen = False
     saw_failure = False
