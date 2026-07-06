@@ -18,6 +18,7 @@ from bakar.bsp_detect import (
     detect_kas_workspace,
     is_bbsetup_workspace,
     is_meta_avocado_yaml,
+    machine_from_yaml,
 )
 
 pytestmark = pytest.mark.unit
@@ -296,3 +297,42 @@ def test_bbsetup_valid_json_missing_bitbake_config_returns_false(tmp_path: Path)
     config = {"data": _VALID_BBSETUP_CONFIG["data"]}
     ws = _make_bbsetup_workspace(tmp_path / "ws", config=config)
     assert is_bbsetup_workspace(ws) is False
+
+
+def test_machine_from_yaml_reads_top_level_key(tmp_path: Path) -> None:
+    p = _write(tmp_path, "machine: avocado-qemuarm64\nrepos: {}\n")
+    assert machine_from_yaml(p) == "avocado-qemuarm64"
+
+
+def test_machine_from_yaml_strips_whitespace(tmp_path: Path) -> None:
+    p = _write(tmp_path, 'machine: "  qemux86-64  "\n')
+    assert machine_from_yaml(p) == "qemux86-64"
+
+
+def test_machine_from_yaml_absent_returns_none(tmp_path: Path) -> None:
+    p = _write(tmp_path, "repos:\n  poky:\n    path: sources/poky\n")
+    assert machine_from_yaml(p) is None
+
+
+def test_machine_from_yaml_follows_includes_last_wins(tmp_path: Path) -> None:
+    (tmp_path / "base-a.yml").write_text("machine: first\n", encoding="utf-8")
+    (tmp_path / "base-b.yml").write_text("machine: second\n", encoding="utf-8")
+    entry = tmp_path / "entry.yml"
+    entry.write_text("header:\n  includes:\n    - base-a.yml\n    - base-b.yml\n", encoding="utf-8")
+    assert machine_from_yaml(entry) == "second"
+
+
+def test_machine_from_yaml_top_level_wins_over_includes(tmp_path: Path) -> None:
+    (tmp_path / "base.yml").write_text("machine: from-include\n", encoding="utf-8")
+    entry = tmp_path / "entry.yml"
+    entry.write_text("machine: from-entry\nheader:\n  includes:\n    - base.yml\n", encoding="utf-8")
+    assert machine_from_yaml(entry) == "from-entry"
+
+
+def test_machine_from_yaml_missing_file_returns_none(tmp_path: Path) -> None:
+    assert machine_from_yaml(tmp_path / "nope.yml") is None
+
+
+def test_machine_from_yaml_unparseable_returns_none(tmp_path: Path) -> None:
+    p = _write(tmp_path, "machine: [unterminated\n")
+    assert machine_from_yaml(p) is None

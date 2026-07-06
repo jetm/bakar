@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.table import Table
 
 import bakar.commands._app as _state
+from bakar.bsp_detect import machine_from_yaml
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     WorkspaceOption,
@@ -408,7 +409,7 @@ def _run_single_preset_release(
         workspace=ws,
         bsp_family=family,
         spec=BSPSpec(
-            machine=machine or spec.machine,
+            machine=machine or spec.machine or (machine_from_yaml(spec.kas_yaml) if byo_form else None),
             distro=distro or spec.distro,
             image=image or spec.image,
             manifest=spec.manifest,
@@ -724,6 +725,12 @@ def build(
         family, bsp = _dispatch_from_yaml(main_yaml)
     else:
         family, bsp = _dispatch_bsp(manifest)
+
+    # BYO kas YAMLs carry the real MACHINE; without an explicit --machine the
+    # family default ("generic") would otherwise land the artifacts path on a
+    # nonexistent deploy/images/generic dir.
+    if byo_form and machine is None:
+        machine = machine_from_yaml(main_yaml)
 
     ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
 

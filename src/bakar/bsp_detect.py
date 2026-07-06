@@ -154,6 +154,47 @@ def detect_bsp_from_yaml(yaml_path: Path, _depth: int = 0) -> Literal["nxp", "ti
     return "unknown"
 
 
+def machine_from_yaml(yaml_path: Path, _depth: int = 0) -> str | None:
+    """Return the effective ``MACHINE`` a kas YAML resolves to, or None.
+
+    Reads the top-level ``machine:`` key. When the entry YAML omits it,
+    follows ``header.includes`` (string includes resolved relative to the
+    YAML) and takes the last include that declares one, mirroring kas's
+    last-include-wins merge so the reported machine matches what kas
+    actually builds. Returns None when no machine can be resolved or the
+    YAML is unreadable, letting callers fall back to the family default.
+
+    Used by the BYO build path to fill ``cfg.machine`` from the YAML
+    instead of the ``generic`` placeholder, so the ``artifacts:`` and
+    ``.wic`` paths point at the real ``deploy/images/<machine>`` dir.
+    """
+    if yaml_path is None or not yaml_path.is_file():
+        return None
+    try:
+        with yaml_path.open("r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+    except OSError, yaml.YAMLError:
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    machine = data.get("machine")
+    if isinstance(machine, str) and machine.strip():
+        return machine.strip()
+
+    header = data.get("header")
+    includes = header.get("includes") if isinstance(header, dict) else None
+    if isinstance(includes, list) and includes and _depth < _MAX_INCLUDE_DEPTH:
+        resolved: str | None = None
+        for inc in includes:
+            if isinstance(inc, str):
+                hit = machine_from_yaml(yaml_path.parent / inc, _depth=_depth + 1)
+                if hit:
+                    resolved = hit
+        return resolved
+    return None
+
+
 def is_bbsetup_workspace(path: Path) -> bool:
     """Return True if ``path`` is an initialized ``bitbake-setup`` workspace.
 
