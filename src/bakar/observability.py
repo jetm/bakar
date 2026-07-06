@@ -145,8 +145,17 @@ class RunLogger:
 
     def _emit(self, event: str, **fields: Any) -> None:
         rec = {"ts": _utc_now_iso(), "event": event, **fields}
-        self._events_fh.write(json.dumps(rec, default=str) + "\n")
-        self._events_fh.flush()
+        # Best-effort: a write failure (ENOSPC, a closed fd) must not re-raise.
+        # Every persist_* method reports failures via warn() -> _emit(), which
+        # hits this same write - swallowing here keeps the documented "Never
+        # raises" contract instead of re-raising through the error-reporting
+        # path. Report the drop through the logger only, never back through
+        # warn()/_emit().
+        try:
+            self._events_fh.write(json.dumps(rec, default=str) + "\n")
+            self._events_fh.flush()
+        except OSError as exc:
+            self._logger.warning(f"failed to write event {event!r}: {exc}")
 
     def _snapshot_env(self) -> None:
         keep_prefixes = ("BAKAR_", "KAS_", "BB_", "DL_", "SSTATE_", "NPROC", "MACHINE", "DISTRO")
