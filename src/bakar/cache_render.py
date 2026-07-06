@@ -114,9 +114,7 @@ def _daemon_lang_rates(daemon: dict[str, Any]) -> list[tuple[str, int, int, floa
     for lang in sorted(set(hits_by_lang) | set(misses_by_lang)):
         hits = hits_by_lang.get(lang, 0)
         misses = misses_by_lang.get(lang, 0)
-        total = hits + misses
-        rate = (hits / total * 100) if total else 0.0
-        rows.append((lang, hits, misses, rate))
+        rows.append((lang, hits, misses, cache_hit_pct(hits, misses)))
     return rows
 
 

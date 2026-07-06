@@ -690,12 +690,8 @@ def resolve(
     # kas YAML" scenario, dispatch resolving to "generic" there is correct
     # behavior, not a conflict to reject.
     #
-    # ``family_is_explicit`` (default True) distinguishes a caller-supplied
-    # family that came from an explicit flag from one derived via a fallback
-    # default. When False, a disagreeing bsp_family silently defers to the
-    # preset's family instead of raising - callers only pass this when
-    # bsp_family was computed heuristically rather than from an explicit
-    # user flag.
+    # See the ``family_is_explicit`` docstring paragraph above for what the
+    # not-explicit branch below does and why.
     if bsp_family is None:
         bsp_family = preset.family if preset is not None else "nxp"  # type: ignore[assignment]
     elif preset is not None and bsp_family in ("nxp", "ti") and bsp_family != preset.family:

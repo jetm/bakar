@@ -440,7 +440,13 @@ def _run_full_reset(
     build_dirs = _resolve_build_dirs(build_dir_override)
     reset_cmd = _reset_dist_server_cmd()
     cache_dirs = _sccache_client_cache_dirs()
-    binary_root = build_dirs[0] if build_dirs else Path.cwd()
+    # The bitbake-prserv binary lives under the workspace root (sources/poky/bitbake,
+    # sources/bitbake, or a sibling bitbake/ - see hashserv._find_binary), not inside a
+    # build-* dir, so a workspace-root binary_root is required for the nxp/ti cluster
+    # layout this reset targets; build_dirs[0]/cwd is a last-resort fallback only.
+    binary_root = _find_workspace_from_cwd() or (build_dirs[0] if build_dirs else Path.cwd())
+    user_cfg = _state._USER_CONFIG
+    bind_host = (user_cfg.cluster_bind_host if user_cfg is not None else None) or "localhost"
 
     def _stop_daemons() -> None:
         # Lazy import to avoid any future import cycle if hashserv/prserv grow deps.
@@ -448,7 +454,7 @@ def _run_full_reset(
 
         _log("stopping hashserv/prserv daemons (if running) ...")
         hashserv.stop(sstate)
-        prserv.stop(sstate, binary_root=binary_root, bind_host="localhost")
+        prserv.stop(sstate, binary_root=binary_root, bind_host=bind_host)
 
     def _empty_sstate() -> None:
         _log("emptying shared sstate in place (can take a while on a large cache) ...")
@@ -460,6 +466,7 @@ def _run_full_reset(
         parallel_rmtree(b, description=f"Removing {b.name}/")
 
     def _wipe_cache_dir(c: Path) -> None:
+        _log(f"wiping sccache client disk cache {c} ...")
         shutil.rmtree(c, ignore_errors=True)
 
     def _stop_client_daemon() -> None:
