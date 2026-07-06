@@ -278,7 +278,7 @@ def test_stop_running_proc_container_sends_single_sigint(monkeypatch: pytest.Mon
     sigint_calls: list[tuple[str, str]] = []
     stop_container_calls: list[object] = []
     killpg_calls: list[tuple[int, int]] = []
-    monkeypatch.setattr(build_stop, "_detect_runtime", lambda: "docker")
+    monkeypatch.setattr(build_stop, "detect_runtime", lambda: "docker")
     monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: "abc123")
     monkeypatch.setattr(
         build_stop,
@@ -301,7 +301,7 @@ def test_stop_running_proc_container_sends_single_sigint(monkeypatch: pytest.Mon
 def test_stop_running_proc_container_exec_fail_falls_back_to_pgid(monkeypatch: pytest.MonkeyPatch) -> None:
     """When the in-container SIGINT exec fails, fall back to os.killpg(SIGINT)."""
     killpg_calls: list[tuple[int, int]] = []
-    monkeypatch.setattr(build_stop, "_detect_runtime", lambda: "docker")
+    monkeypatch.setattr(build_stop, "detect_runtime", lambda: "docker")
     monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: "abc123")
     monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", lambda runtime, cid: False)
     monkeypatch.setattr(build_stop.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
@@ -319,7 +319,7 @@ def test_stop_running_proc_container_falls_back_to_pgid(monkeypatch: pytest.Monk
     issued: list[list[str]] = []
     killpg_calls: list[tuple[int, int]] = []
     monkeypatch.setattr(build_stop, "_run_runtime", issued.append)
-    monkeypatch.setattr(build_stop, "_detect_runtime", lambda: "docker")
+    monkeypatch.setattr(build_stop, "detect_runtime", lambda: "docker")
     monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: None)
     monkeypatch.setattr(build_stop.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
 

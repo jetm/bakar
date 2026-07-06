@@ -28,6 +28,15 @@ from pathlib import Path
 _DEFAULT_PORT = 4226
 _STARTUP_DEADLINE_SECONDS = 10.0
 
+# Central daemon stderr log lives under the user state dir (the sccache server is
+# detached and long-lived; no per-workspace state key exists for it).
+_STATE_DIR = Path.home() / ".local" / "state" / "bakar"
+
+
+def _stderr_log_path(binary: str) -> Path:
+    """State-dir stderr log path for the central ``binary`` daemon."""
+    return _STATE_DIR / f"{Path(binary).name}-central.stderr"
+
 
 def default_uds_path() -> Path:
     """Stable host-mode server socket path.
@@ -131,13 +140,27 @@ def ensure_running(scheduler_url: str | None = None, *, binary: str | None = Non
         def responding() -> bool:
             return _server_responding(port)
 
+    # Redirect the detached server's stderr to a state-dir log file rather than
+    # discarding it, so a server that starts but crashes or never answers leaves
+    # its diagnostic output on disk. A file (not PIPE) avoids the server blocking
+    # when the kernel pipe buffer fills. Matches the workspace hashserv/prserv logs.
+    stderr_fh = None
+    try:
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        stderr_fh = _stderr_log_path(sccache).open("wb")
+    except OSError:
+        # Best-effort diagnostic capture; a state-dir write failure must not
+        # block spawning the server itself.
+        pass
     subprocess.Popen(
         [sccache, "--start-server"],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=stderr_fh if stderr_fh is not None else subprocess.DEVNULL,
         start_new_session=True,
         env=env,
     )
+    if stderr_fh is not None:
+        stderr_fh.close()
 
     deadline = time.monotonic() + _STARTUP_DEADLINE_SECONDS
     while time.monotonic() < deadline:
