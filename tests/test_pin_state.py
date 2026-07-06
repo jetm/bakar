@@ -9,13 +9,15 @@ by ``tests/test_manifest_diff.py``.
 from __future__ import annotations
 
 import json
+import subprocess
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 
 from bakar import pin_state
-from bakar.pin_state import commit_distance, parse_kas_lockfile, read_pins
+from bakar.gitutil import run_git
+from bakar.pin_state import _git_head, commit_distance, parse_kas_lockfile, read_pins
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -233,3 +235,23 @@ def test_module_reuses_rev_list_count() -> None:
     from bakar import manifest_diff
 
     assert pin_state._rev_list_count is manifest_diff._rev_list_count
+
+
+# ---------------------------------------------------------------------------
+# gitutil.run_git - bounded timeout
+# ---------------------------------------------------------------------------
+
+
+def test_run_git_returns_none_on_timeout() -> None:
+    """Falsifier: run_git must swallow subprocess.TimeoutExpired, not raise it."""
+    with patch("bakar.gitutil.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["git"], timeout=5)):
+        assert run_git(["git", "-C", "/tmp", "rev-parse", "HEAD"]) is None
+
+
+def test_git_head_returns_none_when_git_probe_times_out(tmp_path: Path) -> None:
+    """A wedged git probe must degrade pin_state._git_head to its documented None, not hang or raise."""
+    checkout = tmp_path / "poky"
+    checkout.mkdir()
+
+    with patch("bakar.gitutil.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["git"], timeout=5)):
+        assert _git_head(checkout) is None
