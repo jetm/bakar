@@ -35,6 +35,7 @@ from bakar.steps.kas_build import (
     _build_fail_reason,
     _ccache_args,
     _find_oe_eventlog,
+    _finish_step,
     _inject_literal_ccache,
     _resolve_user_yaml,
     _run_kas_dump,
@@ -848,3 +849,43 @@ def test_shipped_ccache_overlay_has_no_work_path() -> None:
 
     text = (importlib.resources.files("bakar") / "overlays" / "bakar-tuning-ccache.yml").read_text(encoding="utf-8")
     assert "/work" not in text
+
+
+# ---------------------------------------------------------------------------
+# _finish_step
+# ---------------------------------------------------------------------------
+
+
+class _FakeStepLog:
+    """Minimal RunLogger stand-in recording step_ok/step_fail calls."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict]] = []
+
+    def step_ok(self, step: str, **fields: object) -> None:
+        self.calls.append(("step_ok", step, fields))
+
+    def step_fail(self, step: str, reason: str, **fields: object) -> None:
+        self.calls.append(("step_fail", step, {"reason": reason, **fields}))
+
+
+def test_finish_step_run_shell_rc_zero_emits_step_ok_with_exit_code() -> None:
+    log = _FakeStepLog()
+
+    _finish_step(log, "kas_shell", 0)
+
+    assert log.calls == [("step_ok", "kas_shell", {"exit_code": 0})]
+
+
+@pytest.mark.parametrize("rc", [1, 137])
+def test_finish_step_run_shell_nonzero_rc_emits_step_fail_with_reason_and_exit_code(rc: int) -> None:
+    """A failing run_shell/run_shell_capture call must carry a structured exit_code,
+    not just embed it in the reason string.
+    """
+    log = _FakeStepLog()
+
+    _finish_step(log, "kas_shell_capture", rc)
+
+    assert log.calls == [
+        ("step_fail", "kas_shell_capture", {"reason": f"exit_code={rc}", "exit_code": rc}),
+    ]

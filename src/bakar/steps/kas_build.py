@@ -2101,6 +2101,21 @@ def _container_eventlog_path(cfg: BuildConfig, log: RunLogger) -> str:
     return str(Path("/work") / rel)
 
 
+def _finish_step(log: RunLogger, step: str, rc: int) -> None:
+    """Log a step's terminal event, deriving pass/fail from its exit code.
+
+    Sister helper for :func:`run_shell` and :func:`run_shell_capture`, which
+    both wrap a subprocess whose only signal is a return code. Centralizes the
+    ``reason`` string shape and ensures the structured ``exit_code`` field is
+    always attached to ``step_fail`` events, not just embedded in the reason
+    string.
+    """
+    if rc != 0:
+        log.step_fail(step, reason=f"exit_code={rc}", exit_code=rc)
+    else:
+        log.step_ok(step, exit_code=rc)
+
+
 def run_shell(ctx: KasBuildContext, args: list[str], command: str | None = None) -> int:
     """Drop into a kas-container shell, passing through extra args.
 
@@ -2125,10 +2140,7 @@ def run_shell(ctx: KasBuildContext, args: list[str], command: str | None = None)
         cmd, cwd=cfg.bsp_root, env=_build_env(cfg, eventlog_path=_container_eventlog_path(cfg, log))
     )
     rc = proc.wait()
-    if rc != 0:
-        log.step_fail("kas_shell", reason=f"exit_code={rc}")
-    else:
-        log.step_ok("kas_shell", exit_code=rc)
+    _finish_step(log, "kas_shell", rc)
     return rc
 
 
@@ -2174,10 +2186,7 @@ def run_shell_capture(
             stderr=subprocess.STDOUT,
         )
         rc = proc.wait()
-    if rc != 0:
-        log.step_fail(step, reason=f"exit_code={rc}")
-    else:
-        log.step_ok(step, exit_code=rc)
+    _finish_step(log, step, rc)
     return rc
 
 

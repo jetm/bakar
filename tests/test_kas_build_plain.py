@@ -145,6 +145,7 @@ def test_run_shell_emits_step_ok_or_step_fail_matching_rc(
     else:
         assert terminal[0]["event"] == "step_fail"
         assert terminal[0].get("reason") == f"exit_code={rc}"
+        assert terminal[0].get("exit_code") == rc
 
 
 @pytest.mark.unit
@@ -169,6 +170,7 @@ def test_run_shell_capture_emits_step_ok_or_step_fail_matching_rc(
     else:
         assert terminal[0]["event"] == "step_fail"
         assert terminal[0].get("reason") == f"exit_code={rc}"
+        assert terminal[0].get("exit_code") == rc
 
 
 # ---------------------------------------------------------------------------
