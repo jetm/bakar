@@ -460,3 +460,60 @@ def test_resolve_use_ccache_false_when_ccache_disabled(tmp_path) -> None:
     cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(ccache=False))
 
     assert cfg.use_ccache is False
+
+
+# ---------------------------------------------------------------------------
+# resolve() bsp_family None sentinel and preset/family conflict tests
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_omitted_bsp_family_takes_preset_family(tmp_path) -> None:
+    """Omitting bsp_family with an active non-nxp preset resolves to the preset's family."""
+    preset = PresetEntry(
+        name="ti-test-preset",
+        family="ti",
+        manifest="processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt",
+        branch="scarthgap_11.00.09.04_var01",
+    )
+
+    cfg = resolve(workspace=_workspace(tmp_path), preset=preset)
+
+    assert cfg.bsp_family == "ti"
+
+
+def test_resolve_omitted_bsp_family_defaults_to_nxp_without_preset(tmp_path) -> None:
+    """Omitting bsp_family with no active preset still defaults to nxp."""
+    cfg = resolve(workspace=_workspace(tmp_path))
+
+    assert cfg.bsp_family == "nxp"
+
+
+def test_resolve_explicit_bsp_family_conflicting_with_preset_raises(tmp_path) -> None:
+    """An explicit bsp_family that disagrees with the active preset's family is a loud error."""
+    preset = PresetEntry(
+        name="ti-test-preset",
+        family="ti",
+        manifest="processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt",
+        branch="scarthgap_11.00.09.04_var01",
+    )
+
+    with pytest.raises(ValueError, match="ti-test-preset") as excinfo:
+        resolve(workspace=_workspace(tmp_path), bsp_family="nxp", preset=preset)
+
+    message = str(excinfo.value)
+    assert "nxp" in message
+    assert "ti" in message
+
+
+def test_resolve_explicit_bsp_family_matching_preset_succeeds(tmp_path) -> None:
+    """An explicit bsp_family that matches the active preset's family raises nothing."""
+    preset = PresetEntry(
+        name="ti-test-preset",
+        family="ti",
+        manifest="processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt",
+        branch="scarthgap_11.00.09.04_var01",
+    )
+
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="ti", preset=preset)
+
+    assert cfg.bsp_family == "ti"
