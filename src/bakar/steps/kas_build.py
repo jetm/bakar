@@ -2128,7 +2128,10 @@ def run_shell(ctx: KasBuildContext, args: list[str], command: str | None = None)
         cmd, cwd=cfg.bsp_root, env=_build_env(cfg, eventlog_path=_container_eventlog_path(cfg, log))
     )
     rc = proc.wait()
-    log.step_ok("kas_shell", exit_code=rc)
+    if rc != 0:
+        log.step_fail("kas_shell", reason=f"exit_code={rc}")
+    else:
+        log.step_ok("kas_shell", exit_code=rc)
     return rc
 
 
