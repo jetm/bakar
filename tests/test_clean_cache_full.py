@@ -160,13 +160,21 @@ def _patch_no_secondaries(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_full_dry_run_prints_plan_and_runs_no_destructive_subprocess(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``--full --dry-run`` prints the plan and calls NO destructive subprocess."""
+    """``--full --dry-run`` prints the plan and calls NO destructive subprocess.
+
+    ``SECONDARY_NODES`` is deliberately left unset and ``sccache`` is reported as
+    present on PATH: resolving secondaries would otherwise require a live
+    ``sccache --dist-status`` call, which a dry-run must never trigger (P1-2).
+    The plan therefore names the deferred step generically instead of printing
+    resolved node names.
+    """
     sstate = tmp_path / "sstate"
     sstate.mkdir()
     (sstate / "keep.zst").write_bytes(b"payload")
     monkeypatch.setenv("SSTATE_DIR", str(sstate))
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("SECONDARY_NODES", "node-x")
+    monkeypatch.delenv("SECONDARY_NODES", raising=False)
+    monkeypatch.setattr("bakar.commands.clean_cache.shutil.which", lambda _n: "/usr/bin/sccache")
 
     calls: list[list[str]] = []
     monkeypatch.setattr(
@@ -181,11 +189,23 @@ def test_full_dry_run_prints_plan_and_runs_no_destructive_subprocess(
 
     assert result.exit_code == 0, result.output
     assert "Dry run" in result.output, result.output
-    assert "node-x" in result.output, result.output
+    assert "secondary" in result.output.lower(), result.output
     assert "sccache-server" in result.output, result.output
-    assert calls == [], f"dry-run must not invoke subprocess: {calls}"
+    assert calls == [], f"dry-run must not invoke any subprocess (including sccache --dist-status): {calls}"
     assert (sstate / "keep.zst").exists(), "dry-run must not empty sstate"
     assert build.is_dir(), "dry-run must not wipe the build dir"
+
+
+def test_full_dry_run_missing_sstate_dir_exits_2(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """No resolvable SSTATE_DIR must error and exit 2, not silently fall back to a default path."""
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
+    monkeypatch.setattr("bakar.commands.clean_cache._state._USER_CONFIG", None)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    result = runner.invoke(app, ["clean-cache", "--full", "--dry-run"])
+
+    assert result.exit_code == 2, result.output
+    assert "SSTATE_DIR not set" in result.output, result.output
 
 
 def test_full_yes_empties_sstate_resets_server_and_ssh_secondaries(
@@ -262,3 +282,56 @@ def test_full_no_secondaries_resets_pc1_only(tmp_path: Path, monkeypatch: pytest
     assert not any(c[:1] == ["ssh"] for c in calls), f"no ssh expected without secondaries: {calls}"
     assert any(c[:2] == ["bash", "-c"] for c in calls), calls
     assert "reset PC1 only" in result.output, result.output
+
+
+def test_full_stops_daemons_before_emptying_sstate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """hashserv/prserv are stopped before the sstate wipe runs (P1-12 ordering)."""
+    sstate = tmp_path / "sstate"
+    sstate.mkdir()
+    (sstate / "old.zst").write_bytes(b"payload")
+    monkeypatch.setenv("SSTATE_DIR", str(sstate))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _patch_no_secondaries(monkeypatch)
+
+    build = tmp_path / "build-x"
+    build.mkdir()
+
+    order: list[str] = []
+    monkeypatch.setattr("bakar.hashserv.stop", lambda _state_key: order.append("hashserv") or True)
+    monkeypatch.setattr(
+        "bakar.prserv.stop",
+        lambda _state_key, *, binary_root, bind_host="localhost": order.append("prserv") or False,
+    )
+
+    import bakar.commands.clean_cache as clean_cache_mod
+
+    real_empty = clean_cache_mod._empty_dir_in_place
+
+    def _tracked_empty(path):
+        order.append("empty_sstate")
+        return real_empty(path)
+
+    monkeypatch.setattr("bakar.commands.clean_cache._empty_dir_in_place", _tracked_empty)
+    monkeypatch.setattr(
+        "bakar.commands.clean_cache.subprocess.run",
+        lambda cmd, **_k: subprocess.CompletedProcess(cmd, 0),
+    )
+
+    result = runner.invoke(app, ["clean-cache", "--full", "--build-dir", str(build), "-y"])
+
+    assert result.exit_code == 0, result.output
+    assert order == ["hashserv", "prserv", "empty_sstate"], order
+
+
+def test_remote_reset_cmd_shell_quotes_build_dirs() -> None:
+    """Build dir paths are shell-quoted so a path with spaces/metacharacters is safe (P1-3b)."""
+    import shlex
+    from pathlib import Path
+
+    from bakar.commands.clean_cache import _remote_reset_cmd
+
+    dangerous = Path("/tmp/build dir; rm -rf other")
+    cmd = _remote_reset_cmd([dangerous], "echo reset")
+
+    assert f"rm -rf {shlex.quote(str(dangerous))}; " in cmd, cmd
+    assert cmd.endswith("echo reset")

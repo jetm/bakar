@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
@@ -24,6 +25,9 @@ from bakar.commands._app import app, console
 from bakar.commands._helpers import _find_workspace_from_cwd
 from bakar.config import shared_ccache_dir
 from bakar.fsremove import parallel_apply, parallel_rmtree
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def _resolve_sstate_dir(override: Path | None) -> Path | None:
@@ -401,9 +405,11 @@ def _remote_reset_cmd(build_dirs: list[Path], reset_cmd: str) -> str:
 
     The secondary runs its own bitbake into a per-node (not shared) build dir, so a
     cold multi-node run must clear it too. The shared SSTATE_DIR is NOT re-wiped
-    remotely - the local in-place empty already cooled the single NFS copy.
+    remotely - the local in-place empty already cooled the single NFS copy. Each
+    build dir path is shell-quoted: an unquoted path containing spaces or shell
+    metacharacters would otherwise break or reinterpret the remote command.
     """
-    prefix = "".join(f"rm -rf '{b}'; " for b in build_dirs)
+    prefix = "".join(f"rm -rf {shlex.quote(str(b))}; " for b in build_dirs)
     return prefix + reset_cmd
 
 
@@ -415,19 +421,80 @@ def _run_full_reset(
 ) -> None:
     """Total cold-reset of the sccache-dist cluster and Yocto caches.
 
-    Faithful port of scripts/clean-all-cache.sh. Resolves the shared sstate dir,
-    the per-node build dir(s), and the secondary nodes; on a real run empties
-    sstate in place, wipes the build dirs and sccache client cache, stops the
-    client daemon, then resets the sccache-dist server on PC1 (local) and every
-    secondary over ssh. ``dry_run`` prints the full plan and changes nothing.
+    Faithful port of scripts/clean-all-cache.sh. Resolves the shared sstate dir
+    and the per-node build dir(s), then builds one ordered list of (description,
+    thunk) actions covering every step. ``dry_run`` prints each action's
+    description without calling any thunk; a real run calls each thunk in order.
+    Sharing one list between the two modes keeps the printed plan and the actual
+    execution from drifting apart. Resolving the secondary build servers requires
+    a live ``sccache --dist-status`` call, so that resolution is itself deferred
+    into its own thunk - a ``--dry-run`` must never trigger it.
     """
     sstate = _resolve_sstate_dir(sstate_override)
     if sstate is None:
-        sstate = Path.home() / "yocto-cache" / "sstate"
+        console.print(
+            "[red]SSTATE_DIR not set.[/] Export it as an env var or add "
+            "'sstate_dir = \"/path\"' under [build] in ~/.config/bakar/config.toml"
+        )
+        raise typer.Exit(code=2)
     build_dirs = _resolve_build_dirs(build_dir_override)
-    secondaries = _resolve_secondaries()
     reset_cmd = _reset_dist_server_cmd()
     cache_dirs = _sccache_client_cache_dirs()
+    binary_root = build_dirs[0] if build_dirs else Path.cwd()
+
+    def _stop_daemons() -> None:
+        # Lazy import to avoid any future import cycle if hashserv/prserv grow deps.
+        from bakar import hashserv, prserv
+
+        _log("stopping hashserv/prserv daemons (if running) ...")
+        hashserv.stop(sstate)
+        prserv.stop(sstate, binary_root=binary_root, bind_host="localhost")
+
+    def _empty_sstate() -> None:
+        _log("emptying shared sstate in place (can take a while on a large cache) ...")
+        _empty_dir_in_place(sstate)
+        _log("shared sstate emptied")
+
+    def _wipe_build_dir(b: Path) -> None:
+        _log(f"wiping local build dir {b} ...")
+        parallel_rmtree(b, description=f"Removing {b.name}/")
+
+    def _wipe_cache_dir(c: Path) -> None:
+        shutil.rmtree(c, ignore_errors=True)
+
+    def _stop_client_daemon() -> None:
+        _log("stopping the sccache client daemon (if running) ...")
+        try:
+            subprocess.run(["pkill", "-f", "^/usr/bin/sccache$"], check=False)
+        except FileNotFoundError:
+            pass
+
+    def _reset_pc1() -> None:
+        _log("resetting sccache-dist server on PC1 (local) ...")
+        subprocess.run(["bash", "-c", reset_cmd], check=False)
+        _log("PC1 sccache-dist server reset + restarted")
+
+    def _reset_secondaries() -> None:
+        secondaries = _resolve_secondaries()
+        if not secondaries:
+            _log("no secondary build servers detected; reset PC1 only.")
+            return
+        for node in secondaries:
+            _log(f"resetting {node}: local build dir + sccache-dist server ...")
+            subprocess.run(["ssh", "-t", node, _remote_reset_cmd(build_dirs, reset_cmd)], check=False)
+            _log(f"{node} reset complete")
+
+    actions: list[tuple[str, Callable[[], None]]] = [
+        ("stop hashserv/prserv daemons (if running)", _stop_daemons),
+        (f"empty in place (keep root): {sstate}", _empty_sstate),
+    ]
+    actions.extend((f"rm -rf (local): {b}", lambda b=b: _wipe_build_dir(b)) for b in build_dirs)
+    actions.extend((f"rm -rf (local): {c}", lambda c=c: _wipe_cache_dir(c)) for c in cache_dirs)
+    actions.append(("pkill -f '^/usr/bin/sccache$'", _stop_client_daemon))
+    actions.append((f"PC1 (local): {reset_cmd}", _reset_pc1))
+    actions.append(
+        ("reset secondary build servers (resolved via sccache --dist-status at run time)", _reset_secondaries)
+    )
 
     _log("cold-reset starting")
     _log(f"shared SSTATE_DIR  = {sstate}")
@@ -435,61 +502,26 @@ def _run_full_reset(
         _log("per-node build dir(s) = " + ", ".join(str(b) for b in build_dirs))
     else:
         _log("per-node build dir(s) = <none resolved; build-dir wipe skipped>")
-    _log("secondary nodes: " + (" ".join(secondaries) if secondaries else "<none>"))
 
     if dry_run:
         console.print()
         console.print("[bold]Dry run - no changes made.[/] Plan:", highlight=False)
-        console.print(f"  empty in place (keep root): {sstate}", highlight=False)
-        for b in build_dirs:
-            console.print(f"  rm -rf (local): {b}", highlight=False)
-        for c in cache_dirs:
-            console.print(f"  rm -rf (local): {c}", highlight=False)
-        console.print("  pkill -f '^/usr/bin/sccache$'", highlight=False)
-        console.print(f"  PC1 (local): {reset_cmd}", highlight=False)
-        for node in secondaries:
-            console.print(f"  ssh -t {node}: {_remote_reset_cmd(build_dirs, reset_cmd)}", highlight=False)
+        for desc, _thunk in actions:
+            console.print(f"  {desc}", highlight=False)
         return
 
     if not yes:
-        node_str = " ".join(secondaries) if secondaries else "<none>"
         confirmed = typer.confirm(
             f"Cold-reset: empty {sstate}, wipe {len(build_dirs)} build dir(s) + the sccache "
             f"client cache, stop the client daemon, and reset the sccache-dist server on PC1 "
-            f"and secondaries [{node_str}]. Proceed?"
+            f"and any secondary build servers. Proceed?"
         )
         if not confirmed:
             console.print("Aborted.")
             raise typer.Exit
 
-    _log("emptying shared sstate in place (can take a while on a large cache) ...")
-    _empty_dir_in_place(sstate)
-    _log("shared sstate emptied")
-
-    for b in build_dirs:
-        _log(f"wiping local build dir {b} ...")
-        parallel_rmtree(b, description=f"Removing {b.name}/")
-
-    _log("wiping sccache client disk cache under ~/.cache ...")
-    for c in cache_dirs:
-        shutil.rmtree(c, ignore_errors=True)
-
-    _log("stopping the sccache client daemon (if running) ...")
-    try:
-        subprocess.run(["pkill", "-f", "^/usr/bin/sccache$"], check=False)
-    except FileNotFoundError:
-        pass
-
-    _log("resetting sccache-dist server on PC1 (local) ...")
-    subprocess.run(["bash", "-c", reset_cmd], check=False)
-    _log("PC1 sccache-dist server reset + restarted")
-
-    if not secondaries:
-        _log("no secondary build servers detected; reset PC1 only.")
-    for node in secondaries:
-        _log(f"resetting {node}: local build dir + sccache-dist server ...")
-        subprocess.run(["ssh", "-t", node, _remote_reset_cmd(build_dirs, reset_cmd)], check=False)
-        _log(f"{node} reset complete")
+    for _desc, thunk in actions:
+        thunk()
 
     _log("cold-reset complete")
 
