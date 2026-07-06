@@ -154,8 +154,11 @@ def _run_task(
         if task == "listtasks":
             stdout_path = log.run_dir / f"{step}.log"
             rc = run_shell_capture(kas_ctx, command, stdout_path, step=step)
-            copy_oe_eventlog_to_run_dir(cfg, log)
-            log.persist_bitbake_events()
+            try:
+                copy_oe_eventlog_to_run_dir(cfg, log)
+                log.persist_bitbake_events()
+            except Exception as exc:  # noqa: BLE001 - defense-in-depth; a completed command must not crash on persist failure
+                console.print(f"[yellow]warning: failed to persist run artifacts: {exc}[/]")
             out_text = stdout_path.read_text(errors="replace") if stdout_path.exists() else ""
             if rc != 0:
                 console.print(f"[red]bitbake -c listtasks {target} failed (exit {rc}).[/]\n{out_text}")
@@ -170,8 +173,11 @@ def _run_task(
             raise typer.Exit(code=0)
 
         rc = run_shell_live(kas_ctx, command)
-        copy_oe_eventlog_to_run_dir(cfg, log)
-        log.persist_bitbake_events()
+        try:
+            copy_oe_eventlog_to_run_dir(cfg, log)
+            log.persist_bitbake_events()
+        except Exception as exc:  # noqa: BLE001 - defense-in-depth; a completed command must not crash on persist failure
+            console.print(f"[yellow]warning: failed to persist run artifacts: {exc}[/]")
         if rc != 0:
             console.print(f"[red]{command} failed (exit {rc}).[/]")
         raise typer.Exit(code=rc)

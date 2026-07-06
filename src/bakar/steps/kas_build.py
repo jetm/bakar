@@ -1557,9 +1557,14 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         terminated = True
         # Normalize the raw bitbake event log into bitbake-events.json for both
         # outcomes. Best-effort: a no-op when bitbake wrote no event log.
-        copy_oe_eventlog_to_run_dir(cfg, log)
-        log.persist_bitbake_events()
-        log.persist_task_timings(timings_path)
+        # Belt-and-braces alongside the RunLogger-side never-raises fix (task
+        # 1.1): a failure here must not crash the CLI after a completed build.
+        try:
+            copy_oe_eventlog_to_run_dir(cfg, log)
+            log.persist_bitbake_events()
+            log.persist_task_timings(timings_path)
+        except Exception as exc:  # noqa: BLE001 - defense-in-depth; a completed build must not crash on persist failure
+            log.console.print(f"[yellow]warning: failed to persist run artifacts: {exc}[/]")
     finally:
         warn = ui.warn_count
         err = ui.error_count
