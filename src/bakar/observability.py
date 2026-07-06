@@ -3,7 +3,7 @@
 Each `bakar build` invocation creates a run directory under build/runs/<ts>/
 containing:
 
-    events.jsonl    one JSON object per step start/end/error (machine-readable)
+    events.jsonl    one JSON object per step_start/step_ok/step_fail/step_skip (machine-readable)
     console.log     the same content in human-readable lines
     env.txt         snapshot of BAKAR_*, KAS_*, NPROC, DL_DIR, SSTATE_DIR at start
     kas.log         stdout+stderr from kas-container build
@@ -154,7 +154,7 @@ class RunLogger:
         try:
             self._events_fh.write(json.dumps(rec, default=str) + "\n")
             self._events_fh.flush()
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             self._logger.warning(f"failed to write event {event!r}: {exc}")
 
     def _snapshot_env(self) -> None:
@@ -222,6 +222,7 @@ class RunLogger:
             if not raw.is_file() or raw.stat().st_size == 0:
                 return
             artifact = eventlog.normalize(raw)
+            artifact["build"]["run_id"] = self.run_id
             self.bitbake_events_path.write_text(json.dumps(artifact, default=str))
         except (OSError, ValueError) as exc:
             self.warn(f"failed to persist bitbake-events.json: {exc}")
