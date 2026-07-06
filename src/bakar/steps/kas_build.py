@@ -1550,12 +1550,16 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
                 kas_log=str(log.kas_log_path),
             )
             write_error_report(log.run_dir, cfg, rc)
+        # step_ok/step_fail above is the true terminal event for kas_build.
+        # Mark terminated before the persistence tail so an exception escaping
+        # copy_oe_eventlog_to_run_dir/persist_* cannot make the finally block
+        # emit a duplicate terminal step event.
+        terminated = True
         # Normalize the raw bitbake event log into bitbake-events.json for both
         # outcomes. Best-effort: a no-op when bitbake wrote no event log.
         copy_oe_eventlog_to_run_dir(cfg, log)
         log.persist_bitbake_events()
         log.persist_task_timings(timings_path)
-        terminated = True
     finally:
         warn = ui.warn_count
         err = ui.error_count
