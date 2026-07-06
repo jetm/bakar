@@ -64,6 +64,29 @@ def _plain_render_console() -> Console | None:
     return None
 
 
+def _make_kas_ctx(cfg, log, overlay_source: Path, ctx) -> KasBuildContext:
+    """Build a KasBuildContext for run_build, threading the shared mode config.
+
+    ``ctx`` is either ``_BbsetupCtx`` or ``_BuildCtx``; both carry keep_going,
+    dry_run, and target, the only fields callers need beyond cfg/log/overlay.
+    """
+    return KasBuildContext(
+        cfg,
+        log,
+        cfg.kas_yaml,
+        overlay_source,
+        keep_going=ctx.keep_going,
+        dry_run=ctx.dry_run,
+        target=ctx.target,
+        output_mode=_output_mode(),
+    )
+
+
+def _open_run_logger(cfg) -> RunLogger:
+    """Open a RunLogger honoring the plain-mode render console override."""
+    return RunLogger(runs_dir=cfg.runs_dir, render_console=_plain_render_console())
+
+
 def _preset_completer(incomplete: str) -> list[str]:
     """Shell completion for --preset: returns preset names starting with incomplete."""
     try:
@@ -177,7 +200,7 @@ def _run_bbsetup_build(
         raise typer.Exit(code=0)
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
-    with RunLogger(runs_dir=cfg.runs_dir, render_console=_plain_render_console()) as log:
+    with _open_run_logger(cfg) as log:
         log.info(f"build mode=bbsetup bsp=bbsetup yaml={cfg.kas_yaml} overlay={overlay_source}")
 
         _run_doctor_gate(cfg, log, None)
@@ -189,16 +212,7 @@ def _run_bbsetup_build(
             distro_override=ctx.distro,
         )
 
-        kas_ctx = KasBuildContext(
-            cfg,
-            log,
-            cfg.kas_yaml,
-            overlay_source,
-            keep_going=ctx.keep_going,
-            dry_run=ctx.dry_run,
-            target=ctx.target,
-            output_mode=_output_mode(),
-        )
+        kas_ctx = _make_kas_ctx(cfg, log, overlay_source, ctx)
         rc = step_kas.run_build(
             kas_ctx,
             extra_overlays=_tuning_extra_overlays(cfg),
@@ -254,16 +268,7 @@ def _run_byo_build(
         else:
             step_override.apply(cfg, log)
 
-    kas_ctx = KasBuildContext(
-        cfg,
-        log,
-        cfg.kas_yaml,
-        ctx.overlay_source,
-        keep_going=ctx.keep_going,
-        dry_run=ctx.dry_run,
-        target=ctx.target,
-        output_mode=_output_mode(),
-    )
+    kas_ctx = _make_kas_ctx(cfg, log, ctx.overlay_source, ctx)
     rc = step_kas.run_build(
         kas_ctx,
         extra_overlays=ctx.extra_overlays,
@@ -326,16 +331,7 @@ def _run_manifest_build(
         step_override.apply(cfg, log)
         step_kas.regenerate_yaml(cfg, log, bsp=ctx.bsp)
 
-    kas_ctx = KasBuildContext(
-        cfg,
-        log,
-        cfg.kas_yaml,
-        ctx.overlay_source,
-        keep_going=ctx.keep_going,
-        dry_run=ctx.dry_run,
-        target=ctx.target,
-        output_mode=_output_mode(),
-    )
+    kas_ctx = _make_kas_ctx(cfg, log, ctx.overlay_source, ctx)
     rc = step_kas.run_build(
         kas_ctx,
         extra_overlays=_tuning_extra_overlays(cfg),
@@ -460,7 +456,7 @@ def _run_single_preset_release(
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
     try:
-        with RunLogger(runs_dir=cfg.runs_dir, render_console=_plain_render_console()) as log:
+        with _open_run_logger(cfg) as log:
             log.info(
                 f"build mode={'byo' if byo_form else 'manifest'} bsp={family}"
                 f" yaml={cfg.kas_yaml} overlay={overlay_source}"
@@ -810,7 +806,7 @@ def build(
     )
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
-    with RunLogger(runs_dir=cfg.runs_dir, render_console=_plain_render_console()) as log:
+    with _open_run_logger(cfg) as log:
         overlays = [p for p in (cfg.kas_yaml, overlay_source, *extra_overlays) if p is not None]
         log.info(
             f"build mode={'byo' if byo_form else 'manifest'} bsp={family}, merging {len(overlays)} overlays:\n"

@@ -51,7 +51,11 @@ def test_render_console_none_in_rich(monkeypatch) -> None:
 def test_every_build_site_threads_the_mode() -> None:
     # No construction site may be left on the RICH default / shared console.
     src = Path(build.__file__).read_text(encoding="utf-8")
-    assert src.count("KasBuildContext(") == src.count("output_mode=_output_mode()")
-    assert src.count("RunLogger(runs_dir=cfg.runs_dir") == src.count("render_console=_plain_render_console()")
-    assert src.count("KasBuildContext(") == 3
-    assert src.count("RunLogger(runs_dir=cfg.runs_dir") == 3
+    # Exactly one KasBuildContext(/RunLogger(runs_dir=cfg.runs_dir construction may
+    # exist in the whole module: the one inside the factory below. A stray ad hoc
+    # construction added outside the factories bumps these counts and fails here.
+    assert src.count("KasBuildContext(") == 1
+    assert src.count("RunLogger(runs_dir=cfg.runs_dir") == 1
+    # 1 factory definition + 3 call sites each.
+    assert src.count("_make_kas_ctx(") == 4
+    assert src.count("_open_run_logger(") == 4
