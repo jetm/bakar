@@ -17,6 +17,24 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+class _RaisingFH:
+    """Events-file stand-in whose ``write`` always raises ``OSError``.
+
+    Swapped in for ``RunLogger._events_fh`` to simulate the events.jsonl
+    write itself failing - the path ``warn()`` -> ``_emit()`` takes when
+    reporting a persistence failure.
+    """
+
+    def write(self, *_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    def flush(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
 @pytest.mark.unit
 def test_step_start_writes_header_to_console_log(tmp_path: Path) -> None:
     runs_dir = tmp_path / "runs"
@@ -226,3 +244,73 @@ def test_persist_ccache_stats_noop_when_unwritable(tmp_path: Path) -> None:
         log.ccache_stats_path.mkdir(parents=True, exist_ok=True)
         log.persist_ccache_stats(doc)  # must not raise
         assert log.ccache_stats_path.is_dir()
+
+
+@pytest.mark.unit
+def test_persist_bitbake_events_stamps_run_id(tmp_path: Path) -> None:
+    """The persisted artifact's build.run_id matches this RunLogger's run_id."""
+    import json
+    from pathlib import Path as _Path
+
+    fixture = _Path(__file__).parent / "fixtures" / "bitbake_eventlog.json"
+    runs_dir = tmp_path / "runs"
+    with RunLogger(runs_dir) as log:
+        log.eventlog_path.write_bytes(fixture.read_bytes())
+        log.persist_bitbake_events()
+
+        artifact = json.loads(log.bitbake_events_path.read_text())
+        assert artifact["build"]["run_id"] == log.run_id
+        assert artifact["build"]["run_id"] is not None
+
+
+@pytest.mark.unit
+def test_persist_bitbake_events_never_raises_when_report_path_also_fails(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Task 1.1: a write failure must not re-raise through warn()'s own write.
+
+    ``persist_bitbake_events``'s except branch reports the failure via
+    ``self.warn()``, which itself calls ``self._emit()`` and performs the same
+    kind of events.jsonl write. Before the fix, a second write failure there
+    re-raised straight through the handler meant to report the first one.
+    """
+    from pathlib import Path as _Path
+
+    fixture = _Path(__file__).parent / "fixtures" / "bitbake_eventlog.json"
+    runs_dir = tmp_path / "runs"
+    with RunLogger(runs_dir) as log:
+        log.eventlog_path.write_bytes(fixture.read_bytes())
+        # Make bitbake_events_path a directory so write_text() raises OSError.
+        log.bitbake_events_path.mkdir(parents=True, exist_ok=True)
+        # Make the events.jsonl write (warn() -> _emit()) fail too.
+        log._events_fh = _RaisingFH()
+
+        log.persist_bitbake_events()  # must not raise
+
+    assert "failed to write event" in caplog.text
+
+
+@pytest.mark.unit
+def test_persist_task_timings_never_raises_when_report_path_also_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Task 1.1/1.2: same never-raises contract for persist_task_timings.
+
+    Forces the underlying ``task_timings.update_from_events`` write to raise
+    ``OSError`` and, on top of that, forces the events.jsonl write used by
+    ``warn()`` -> ``_emit()`` to fail too - neither failure may propagate.
+    """
+    from bakar import task_timings
+
+    def _raise(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(task_timings, "update_from_events", _raise)
+
+    runs_dir = tmp_path / "runs"
+    with RunLogger(runs_dir) as log:
+        log._events_fh = _RaisingFH()
+
+        log.persist_task_timings(tmp_path / "timings.json")  # must not raise
+
+    assert "failed to persist task timings" in caplog.text
