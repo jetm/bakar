@@ -2177,7 +2177,10 @@ def run_shell_capture(
             stderr=subprocess.STDOUT,
         )
         rc = proc.wait()
-    log.step_ok(step, exit_code=rc)
+    if rc != 0:
+        log.step_fail(step, reason=f"exit_code={rc}")
+    else:
+        log.step_ok(step, exit_code=rc)
     return rc
 
 
