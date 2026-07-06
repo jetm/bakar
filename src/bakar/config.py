@@ -617,7 +617,7 @@ def compose_preset_output_path(preset: PresetEntry, release_index: int = 0) -> s
 def resolve(
     *,
     workspace: Path,
-    bsp_family: Literal["nxp", "ti", "generic", "bbsetup"] = "nxp",
+    bsp_family: Literal["nxp", "ti", "generic", "bbsetup"] | None = None,
     spec: BSPSpec | None = None,
     kas_yaml: Path | None = None,
     user_config: UserConfig | None = None,
@@ -664,12 +664,11 @@ def resolve(
     if spec is None:
         spec = BSPSpec()
 
-    # When a preset is active, let it supply the family and branch defaults.
-    # bsp_family: use preset.family when the caller did not explicitly supply it
-    # (detected by comparing against the parameter default "nxp" — callers that
-    # truly want nxp and also pass a preset must explicitly pass bsp_family="nxp").
-    if preset is not None and bsp_family == "nxp" and preset.family != "nxp":
-        bsp_family = preset.family  # type: ignore[assignment]
+    # When the caller omits bsp_family (None), an active preset supplies the
+    # family; otherwise fall back to "nxp". An explicitly-passed family is never
+    # confused with "caller did not specify."
+    if bsp_family is None:
+        bsp_family = preset.family if preset is not None else "nxp"  # type: ignore[assignment]
 
     # Thread preset branch into spec.repo_branch.  BSPSpec is frozen so we
     # create a replacement only when the caller left repo_branch unset.
