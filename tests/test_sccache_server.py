@@ -174,3 +174,41 @@ def test_ensure_running_uds_short_circuits_when_socket_up(
 
     assert sccache_server.ensure_running(binary="/usr/bin/sccache", uds_path=uds) is True
     assert spawned == []
+
+
+@pytest.mark.unit
+def test_ensure_running_closes_stderr_fh_when_popen_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``Popen`` failure (vanished binary, fork failure) still closes the fh.
+
+    Before the ``daemon_log.stderr_target`` contextmanager, the ``close()``
+    call sat on the line after ``Popen()`` returned - an exception raised by
+    ``Popen`` itself skipped it and leaked the fd.
+    """
+    import pathlib
+
+    monkeypatch.setattr(sccache_server, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(sccache_server, "_server_responding", lambda port: False)
+
+    opened_files: list = []
+    original_open = pathlib.Path.open
+
+    def tracking_open(self, mode="r", *args, **kwargs):
+        fh = original_open(self, mode, *args, **kwargs)
+        opened_files.append(fh)
+        return fh
+
+    monkeypatch.setattr(pathlib.Path, "open", tracking_open)
+
+    def fake_popen(*_a, **_k):
+        raise OSError("fork failed")
+
+    monkeypatch.setattr(sccache_server.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(OSError, match="fork failed"):
+        sccache_server.ensure_running(binary="/usr/bin/sccache")
+
+    assert len(opened_files) == 1
+    assert opened_files[0].closed is True

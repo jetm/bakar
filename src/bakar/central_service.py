@@ -18,6 +18,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from bakar import daemon_log
+
 
 def probe_addr(bind_host: str) -> str:
     """Loopback for bind-only addresses (0.0.0.0/empty), else the host itself."""
@@ -46,12 +48,7 @@ def service_argv(binary: str, *, bind: str, database: str) -> list[str]:
 
 # Central daemon stderr logs live under the user state dir (no per-workspace
 # state key exists for the central tier - the postgres DB is the durable state).
-_STATE_DIR = Path.home() / ".local" / "state" / "bakar"
-
-
-def _stderr_log_path(binary: str) -> Path:
-    """State-dir stderr log path for a central ``binary`` daemon."""
-    return _STATE_DIR / f"{Path(binary).name}-central.stderr"
+_STATE_DIR = daemon_log.STATE_DIR
 
 
 def ensure_running(
@@ -79,22 +76,15 @@ def ensure_running(
     # so a service that starts but crashes or never listens leaves its diagnostic
     # output on disk. A file (not PIPE) avoids the daemon blocking when the kernel
     # pipe buffer fills. Matches the per-workspace hashserv/prserv stderr logs.
-    stderr_fh = None
-    try:
-        _STATE_DIR.mkdir(parents=True, exist_ok=True)
-        stderr_fh = _stderr_log_path(binary).open("wb")
-    except OSError:
-        # Best-effort diagnostic capture; a state-dir write failure must not
-        # block spawning the daemon itself.
-        pass
-    proc = subprocess.Popen(
-        service_argv(binary, bind=f"{bind_host}:{port}", database=database),
-        stdout=subprocess.DEVNULL,
-        stderr=stderr_fh if stderr_fh is not None else subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    if stderr_fh is not None:
-        stderr_fh.close()
+    # The stderr_target contextmanager guarantees the fh is closed even if
+    # Popen() itself raises (binary vanished, fork failure).
+    with daemon_log.stderr_target(binary, _STATE_DIR) as stderr_fh:
+        proc = subprocess.Popen(
+            service_argv(binary, bind=f"{bind_host}:{port}", database=database),
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_fh if stderr_fh is not None else subprocess.DEVNULL,
+            start_new_session=True,
+        )
     deadline = time.monotonic() + startup_deadline_seconds
     while time.monotonic() < deadline:
         if proc.poll() is not None:

@@ -112,3 +112,47 @@ def test_ensure_running_returns_none_when_binary_absent(
 
     assert endpoint is None
     assert spawned == []
+
+
+@pytest.mark.unit
+def test_ensure_running_closes_stderr_fh_when_popen_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``Popen`` failure (vanished binary, fork failure) still closes the fh.
+
+    Before the ``daemon_log.stderr_target`` contextmanager, the ``close()``
+    call sat on the line after ``Popen()`` returned - an exception raised by
+    ``Popen`` itself skipped it and leaked the fd.
+    """
+    import pathlib
+
+    monkeypatch.setattr(central_service, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(central_service, "is_listening", lambda host, port, **_: False)
+    monkeypatch.setattr(central_service.shutil, "which", lambda name: name)
+
+    opened_files: list = []
+    original_open = pathlib.Path.open
+
+    def tracking_open(self, mode="r", *args, **kwargs):
+        fh = original_open(self, mode, *args, **kwargs)
+        opened_files.append(fh)
+        return fh
+
+    monkeypatch.setattr(pathlib.Path, "open", tracking_open)
+
+    def fake_popen(*_a, **_k):
+        raise OSError("fork failed")
+
+    monkeypatch.setattr(central_service.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(OSError, match="fork failed"):
+        central_service.ensure_running(
+            binary="/usr/bin/bb-hashserv",
+            bind_host="127.0.0.1",
+            database=str(tmp_path / "hashserv.db"),
+            port=9000,
+        )
+
+    assert len(opened_files) == 1
+    assert opened_files[0].closed is True
