@@ -24,6 +24,7 @@ from bakar.diagnostics import (
     Status,
     _build_daemon_report_from_stats,
     _read_sysctl,
+    any_blocking_failure,
     check_bbsetup_config_sources,
     check_bitbake_locks,
     check_ccache_health,
@@ -35,6 +36,7 @@ from bakar.diagnostics import (
     check_psi_support,
     check_sysctl,
     check_workspace_filesystem,
+    group_results,
     probe_build_daemon,
     run_all,
 )
@@ -121,6 +123,44 @@ def test_run_all_isolates_check_crash_and_continues(monkeypatch: pytest.MonkeyPa
     assert crashed[0].status == Status.FAIL
     assert crashed[0].severity == Severity.WARN
     assert "boom" in crashed[0].message
+
+
+def test_run_all_crash_resolves_registered_name_and_severity_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A registered check crashing must resolve to its real name and severity
+    ceiling from ``_CHECK_METADATA``, not the raw function name and a
+    hardcoded WARN.
+
+    ``check_git_global_config`` registers name ``"git-global-config"`` at a
+    BLOCK-only ceiling (see ``_CHECK_METADATA``), so a crash there must
+    produce a BLOCK ``CheckResult`` named ``"git-global-config"`` - which
+    also makes ``any_blocking_failure`` True and lets ``group_results`` place
+    it in the "Workspace & build config" group instead of "Other".
+    """
+
+    def _crashing_git_check(cfg: BuildConfig):  # pragma: no cover - raises before returning
+        raise RuntimeError("git config probe exploded")
+
+    monkeypatch.setattr("bakar.diagnostics.SHARED_CHECKS", (_crashing_git_check,))
+    monkeypatch.setattr(
+        "bakar.diagnostics._CHECK_NAME",
+        {_crashing_git_check: "git-global-config"},
+    )
+    monkeypatch.setattr("bakar.diagnostics._DOCKER_CHECKS", ())
+    monkeypatch.setattr("bakar.diagnostics._CLUSTER_CHECKS", ())
+
+    cfg = _cfg()
+    results = run_all(cfg)
+
+    assert len(results) == 1
+    result = results[0]
+    assert result.name == "git-global-config"
+    assert result.severity == Severity.BLOCK
+    assert any_blocking_failure(results)
+
+    grouped = group_results(results)
+    group_names = dict(grouped)
+    assert "git-global-config" in [r.name for r in group_names.get("Workspace & build config", [])]
+    assert "Other" not in group_names
 
 
 def test_check_host_tools_host_mode_substitutes_kas() -> None:

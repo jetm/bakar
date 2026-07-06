@@ -2595,6 +2595,63 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+# Per-check metadata: (registered ``name`` string, ceiling severity the check
+# can emit across its own _ok/_fail/_skip call sites). Built once so
+# run_all's except-Exception branch can resolve a crashed check's real
+# registered name and severity instead of the raw Python __name__ (which does
+# not always match, e.g. check_psi_support registers "psi_support") and a
+# hardcoded WARN. Checks that vary severity by branch (e.g. check_psi_support,
+# check_sccache_dist) are listed at their maximum. Every check function used
+# in any run_all-assembled list - SHARED_CHECKS, the NXP/TI BspModel
+# doctor_extras, and the bbsetup-only extras - is covered so a crash from any
+# of them resolves correctly; a check omitted here falls back to its raw
+# __name__ and Severity.WARN, matching the prior behavior.
+_CHECK_METADATA: tuple[tuple[CheckFunc, str, Severity], ...] = (
+    (check_host_tools, "host-tools", Severity.BLOCK),
+    (check_docker_daemon, "docker-daemon", Severity.BLOCK),
+    (check_container_image, "container-image", Severity.BLOCK),
+    (check_container_bitbake, "container-bitbake", Severity.INFO),
+    (check_cache_dirs, "cache-dirs", Severity.BLOCK),
+    (check_sysctl, "sysctl", Severity.WARN),
+    (check_docker_ulimits, "docker-ulimits", Severity.WARN),
+    (check_disk_free, "disk-free", Severity.BLOCK),
+    (check_memory, "memory", Severity.WARN),
+    (check_nproc, "nproc", Severity.INFO),
+    (check_bitbake_override, "bitbake-override", Severity.INFO),
+    (check_bitbake_locks, "bitbake-locks", Severity.BLOCK),
+    (check_psi_support, "psi_support", Severity.WARN),
+    (check_git_global_config, "git-global-config", Severity.BLOCK),
+    (check_kas_yaml_syntax, "kas-yaml-syntax", Severity.BLOCK),
+    (check_workspace_filesystem, "workspace-filesystem", Severity.WARN),
+    (check_docker_version, "docker-version", Severity.WARN),
+    (check_docker_storage_driver, "docker-storage-driver", Severity.WARN),
+    (check_ccache_health, "ccache-health", Severity.WARN),
+    (check_hashserv, "hashserv", Severity.WARN),
+    (check_sccache_dist, "sccache-dist", Severity.BLOCK),
+    (check_sstate_hash_leak, "sstate-hash-leak", Severity.WARN),
+    (check_override_syntax, "override-syntax", Severity.BLOCK),
+    (check_host_preflight, "host-preflight", Severity.BLOCK),
+    (check_central_hashserv, "central-hashserv", Severity.BLOCK),
+    (check_central_prserv, "central-prserv", Severity.BLOCK),
+    (check_shared_cache_mounts, "shared-mounts", Severity.BLOCK),
+    # NXP-only (BspModel.doctor_extras)
+    (check_forks_linux_imx, "forks-linux-imx", Severity.INFO),
+    (check_manifest_consistency, "manifest", Severity.INFO),
+    (check_git_object_cache, "git-cache", Severity.INFO),
+    # TI-only (BspModel.doctor_extras)
+    (check_ti_layertool_present, "ti-layertool", Severity.BLOCK),
+    (check_ti_layertool_config_consistency, "ti-config", Severity.INFO),
+    (check_forks_ti_linux_kernel, "forks-ti-linux-kernel", Severity.INFO),
+    (check_forks_ti_u_boot, "forks-ti-u-boot", Severity.INFO),
+    # bbsetup-only (appended directly in run_all)
+    (check_bbsetup_initialized, "bbsetup-init", Severity.BLOCK),
+    (check_bbsetup_config_sources, "bbsetup-sources", Severity.BLOCK),
+)
+
+_CHECK_SEVERITY: dict[str, Severity] = {name: sev for _func, name, sev in _CHECK_METADATA}
+_CHECK_NAME: dict[CheckFunc, str] = {func: name for func, name, _sev in _CHECK_METADATA}
+
+
 def group_results(results: list[CheckResult]) -> list[tuple[str, list[CheckResult]]]:
     """Order check results into display groups for the pre-flight report.
 
@@ -2650,10 +2707,11 @@ def run_all(cfg: BuildConfig, bsp: BspModel | None = None) -> list[CheckResult]:
         try:
             results.append(check(cfg))
         except Exception as exc:  # noqa: BLE001 - one check's bug must not abort the doctor run
+            resolved_name = _CHECK_NAME.get(check, getattr(check, "__name__", "unknown"))
             results.append(
                 CheckResult(
-                    name=getattr(check, "__name__", "unknown"),
-                    severity=Severity.WARN,
+                    name=resolved_name,
+                    severity=_CHECK_SEVERITY.get(resolved_name, Severity.WARN),
                     status=Status.FAIL,
                     message=f"check crashed: {exc!r}",
                 )
