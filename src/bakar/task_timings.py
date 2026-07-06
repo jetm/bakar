@@ -219,7 +219,14 @@ def update_from_events(events_json: Path, timings_path: Path) -> None:
             if not isinstance(entry, dict):
                 entry = {}
                 tasks[name] = entry
-            _welford_update(entry, duration)
+            try:
+                _welford_update(entry, duration)
+            except TypeError, ValueError, OverflowError:
+                # A corrupted or hand-edited baseline entry with a non-numeric
+                # count/mean/m2 makes the Welford arithmetic raise; skip it
+                # rather than crash an otherwise-successful build, matching
+                # load_baselines' tolerance of the same malformed shape.
+                continue
 
         fh.seek(0)
         fh.truncate()
