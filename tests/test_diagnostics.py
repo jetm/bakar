@@ -19,6 +19,7 @@ from bakar.diagnostics import (
     _REQUIRED_TOOLS_BY_FAMILY,
     SHARED_CHECKS,
     BuildDaemonReport,
+    CheckResult,
     Severity,
     Status,
     _build_daemon_report_from_stats,
@@ -92,6 +93,34 @@ def test_run_all_skips_docker_checks_in_host_mode() -> None:
     assert names.isdisjoint(docker_check_names), (
         f"host-mode run_all returned Docker-dependent check names: {names & docker_check_names}"
     )
+
+
+def test_run_all_isolates_check_crash_and_continues(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A single check raising must not abort ``run_all``: the crashing check
+    yields a WARN/FAIL ``CheckResult`` naming the check, and the remaining
+    (non-crashing) checks still run and appear in the returned list."""
+
+    def _crashing_check(cfg: BuildConfig):  # pragma: no cover - raises before returning
+        raise RuntimeError("boom")
+
+    def _ok_check(cfg: BuildConfig):
+        return CheckResult(name="ok-check", severity=Severity.INFO, status=Status.PASS, message="fine")
+
+    monkeypatch.setattr("bakar.diagnostics.SHARED_CHECKS", (_crashing_check, _ok_check))
+    monkeypatch.setattr("bakar.diagnostics._DOCKER_CHECKS", ())
+    monkeypatch.setattr("bakar.diagnostics._CLUSTER_CHECKS", ())
+
+    cfg = _cfg()
+    results = run_all(cfg)
+
+    names = {r.name for r in results}
+    assert "ok-check" in names, "a non-crashing check must still run after another check crashes"
+
+    crashed = [r for r in results if r.name == "_crashing_check"]
+    assert len(crashed) == 1
+    assert crashed[0].status == Status.FAIL
+    assert crashed[0].severity == Severity.WARN
+    assert "boom" in crashed[0].message
 
 
 def test_check_host_tools_host_mode_substitutes_kas() -> None:
@@ -1793,6 +1822,31 @@ def test_probe_build_daemon_no_container_no_host_daemon_returns_not_running(
     report = probe_build_daemon()
 
     assert report.running is False
+
+
+def test_probe_build_daemon_uses_detect_runtime_not_hardcoded_docker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``probe_build_daemon`` resolves the runtime via ``build_stop.detect_runtime``
+    instead of hardcoding ``"docker"``, so a podman host's ``ps``/``exec`` argv
+    uses ``podman``."""
+    monkeypatch.setattr("bakar.diagnostics.build_stop.detect_runtime", lambda: "podman")
+
+    seen_cmds: list[list[str]] = []
+
+    def fake_run(cmd, *a, **k):  # type: ignore[no-untyped-def]
+        seen_cmds.append(cmd)
+        return _mock_run("")  # no build container
+
+    monkeypatch.setattr("bakar.diagnostics.subprocess.run", fake_run)
+    monkeypatch.setattr("bakar.sccache_server._uds_responding", lambda _p: False)
+
+    report = probe_build_daemon()
+
+    assert report.running is False
+    assert seen_cmds, "subprocess.run was never called"
+    assert seen_cmds[0][0] == "podman"
+    assert seen_cmds[0][:2] == ["podman", "ps"]
 
 
 def test_build_daemon_report_defaults_are_empty_dicts() -> None:
