@@ -148,7 +148,7 @@ def test_read_pins_falls_back_to_git_head_when_no_lockfile(tmp_path: Path) -> No
         assert "HEAD" in argv
         return _Completed(0, f"{_SHA_B}\n")
 
-    with patch("bakar.pin_state.subprocess.run", side_effect=fake_run):
+    with patch("bakar.gitutil.subprocess.run", side_effect=fake_run):
         pins = read_pins("bbsetup", workspace=tmp_path)
 
     assert pins == {"poky": _SHA_B}
@@ -159,7 +159,7 @@ def test_read_pins_git_head_fallback_skips_failed_repo(tmp_path: Path) -> None:
     src.mkdir(parents=True)
     (src / ".git").mkdir()
 
-    with patch("bakar.pin_state.subprocess.run", return_value=_Completed(128, "")):
+    with patch("bakar.gitutil.subprocess.run", return_value=_Completed(128, "")):
         pins = read_pins("bbsetup", workspace=tmp_path)
 
     assert pins == {}
@@ -171,7 +171,7 @@ def test_read_pins_prefers_existing_lockfile_over_workspace(tmp_path: Path) -> N
     # A workspace is also provided but must be ignored when the lockfile exists.
     (tmp_path / "sources" / "poky").mkdir(parents=True)
 
-    with patch("bakar.pin_state.subprocess.run") as run:
+    with patch("bakar.gitutil.subprocess.run") as run:
         pins = read_pins("bbsetup", lockfile=lock, workspace=tmp_path)
 
     assert pins == {"poky": _SHA_A}
@@ -190,7 +190,7 @@ def test_read_pins_absent_lockfile_falls_back_to_workspace(tmp_path: Path) -> No
     src.mkdir(parents=True)
     (src / ".git").mkdir()
 
-    with patch("bakar.pin_state.subprocess.run", return_value=_Completed(0, _SHA_A)):
+    with patch("bakar.gitutil.subprocess.run", return_value=_Completed(0, _SHA_A)):
         pins = read_pins("bbsetup", lockfile=missing_lock, workspace=tmp_path)
 
     assert pins == {"poky": _SHA_A}
@@ -212,7 +212,7 @@ def test_commit_distance_computes_old_to_new(tmp_path: Path) -> None:
         assert f"{_SHA_A}..{_SHA_B}" in argv
         return _Completed(0, "7\n")
 
-    with patch("bakar.manifest_diff.subprocess.run", side_effect=fake_run):
+    with patch("bakar.gitutil.subprocess.run", side_effect=fake_run):
         assert commit_distance(checkout, _SHA_A, _SHA_B) == 7
 
 
@@ -224,7 +224,7 @@ def test_commit_distance_failed_git_returns_none(tmp_path: Path) -> None:
     checkout = tmp_path / "poky"
     checkout.mkdir()
 
-    with patch("bakar.manifest_diff.subprocess.run", return_value=_Completed(1, "")):
+    with patch("bakar.gitutil.subprocess.run", return_value=_Completed(1, "")):
         assert commit_distance(checkout, _SHA_A, _SHA_B) is None
 
 

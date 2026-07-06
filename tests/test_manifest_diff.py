@@ -133,7 +133,7 @@ def test_changed_layer_with_checkout_uses_rev_list(tmp_path: Path) -> None:
         assert f"{_SHA_A}..{_SHA_B}" in argv
         return _Completed(0, "5\n")
 
-    with patch("bakar.manifest_diff.subprocess.run", side_effect=fake_run) as run:
+    with patch("bakar.gitutil.subprocess.run", side_effect=fake_run) as run:
         diffs = _by_layer(diff_manifests(old, new, checkout_root=checkout_root))
 
     assert diffs["sources/poky"].commit_count == 5

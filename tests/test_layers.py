@@ -7,7 +7,7 @@ BYO/generic branch of ``collect_layer_hashes`` that exercises Strategy 2 path
 resolution. Companion to ``test_layer_hashes.py`` which covers the
 NXP ``/sources/<repo>`` (Strategy 1) branch.
 
-Every git invocation is patched at ``bakar.layers.subprocess.run`` so the
+Every git invocation is patched at ``bakar.gitutil.subprocess.run`` so the
 suite runs hermetically (no real ``git`` calls).
 """
 
@@ -96,7 +96,7 @@ def test_resolve_bblayers_paths_two_topdir_layers(tmp_path: Path) -> None:
             return _Completed(0, str(layers / "meta-imx") + "\n")
         return _Completed(128, "")
 
-    with patch("bakar.layers.subprocess.run", side_effect=fake_run):
+    with patch("bakar.gitutil.subprocess.run", side_effect=fake_run):
         result = _resolve_bblayers_paths(bblayers)
 
     assert set(result.keys()) == {"poky", "meta-imx"}
@@ -112,7 +112,7 @@ def test_resolve_bblayers_paths_empty_bblayers(tmp_path: Path) -> None:
     bblayers = conf / "bblayers.conf"
     bblayers.write_text("# no BBLAYERS here\n")
 
-    with patch("bakar.layers.subprocess.run") as run:
+    with patch("bakar.gitutil.subprocess.run") as run:
         result = _resolve_bblayers_paths(bblayers)
 
     assert result == {}
@@ -136,7 +136,7 @@ def test_resolve_bblayers_paths_dedupes_shared_git_root(tmp_path: Path) -> None:
         # Both sublayers resolve to the same git root.
         return _Completed(0, str(poky) + "\n")
 
-    with patch("bakar.layers.subprocess.run", side_effect=fake_run):
+    with patch("bakar.gitutil.subprocess.run", side_effect=fake_run):
         result = _resolve_bblayers_paths(bblayers)
 
     assert list(result.keys()) == ["poky"]
@@ -228,7 +228,7 @@ def test_git_short_hash_returns_none_on_non_git_path(tmp_path: Path) -> None:
     def fake_run(argv, **kwargs):
         return _Completed(128, "")
 
-    with patch("bakar.layers.subprocess.run", side_effect=fake_run):
+    with patch("bakar.gitutil.subprocess.run", side_effect=fake_run):
         assert _git_short_hash(tmp_path) is None
 
 
@@ -238,13 +238,13 @@ def test_git_short_hash_returns_stripped_stdout(tmp_path: Path) -> None:
     def fake_run(argv, **kwargs):
         return _Completed(0, "abc1234\n")
 
-    with patch("bakar.layers.subprocess.run", side_effect=fake_run):
+    with patch("bakar.gitutil.subprocess.run", side_effect=fake_run):
         assert _git_short_hash(tmp_path) == "abc1234"
 
 
 def test_git_short_hash_oserror_returns_none(tmp_path: Path) -> None:
     """``OSError`` raised by subprocess (e.g. git not installed) -> ``None``."""
-    with patch("bakar.layers.subprocess.run", side_effect=OSError("no git")):
+    with patch("bakar.gitutil.subprocess.run", side_effect=OSError("no git")):
         assert _git_short_hash(tmp_path) is None
 
 
@@ -254,7 +254,7 @@ def test_git_branch_returns_empty_on_non_git_path(tmp_path: Path) -> None:
     def fake_run(argv, **kwargs):
         return _Completed(128, "")
 
-    with patch("bakar.layers.subprocess.run", side_effect=fake_run):
+    with patch("bakar.gitutil.subprocess.run", side_effect=fake_run):
         assert _git_branch(tmp_path) == ""
 
 
@@ -264,13 +264,13 @@ def test_git_branch_returns_stripped_branch_name(tmp_path: Path) -> None:
     def fake_run(argv, **kwargs):
         return _Completed(0, "main\n")
 
-    with patch("bakar.layers.subprocess.run", side_effect=fake_run):
+    with patch("bakar.gitutil.subprocess.run", side_effect=fake_run):
         assert _git_branch(tmp_path) == "main"
 
 
 def test_git_branch_oserror_returns_empty(tmp_path: Path) -> None:
     """``OSError`` from subprocess returns the empty string."""
-    with patch("bakar.layers.subprocess.run", side_effect=OSError("no git")):
+    with patch("bakar.gitutil.subprocess.run", side_effect=OSError("no git")):
         assert _git_branch(tmp_path) == ""
 
 
@@ -282,7 +282,7 @@ def test_git_branch_detached_resolves_containing_remote_branch(tmp_path: Path) -
             return _Completed(0, "remotes/origin/scarthgap~3\n")
         return _Completed(0, "\n")  # show-current: detached HEAD
 
-    with patch("bakar.layers.subprocess.run", side_effect=fake_run):
+    with patch("bakar.gitutil.subprocess.run", side_effect=fake_run):
         assert _git_branch(tmp_path) == "scarthgap"
 
 
@@ -294,7 +294,7 @@ def test_git_branch_detached_unresolvable_returns_empty(tmp_path: Path) -> None:
             return _Completed(0, "undefined\n")
         return _Completed(0, "\n")
 
-    with patch("bakar.layers.subprocess.run", side_effect=fake_run):
+    with patch("bakar.gitutil.subprocess.run", side_effect=fake_run):
         assert _git_branch(tmp_path) == ""
 
 
@@ -382,7 +382,7 @@ def test_collect_layer_hashes_byo_strategy_with_bitbake(tmp_path: Path) -> None:
         return _Completed(0, str(poky) + "\n")
 
     with (
-        patch("bakar.layers.subprocess.run", side_effect=fake_rev_parse),
+        patch("bakar.gitutil.subprocess.run", side_effect=fake_rev_parse),
         patch("bakar.layers._git_short_hash", return_value="abc1234"),
         patch("bakar.layers._git_branch", return_value="main"),
     ):

@@ -11,10 +11,10 @@ failed ``git`` command yields ``commit_count=None`` rather than an error.
 
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from bakar.gitutil import run_git
 from bakar.workspace import parse_manifest_pins
 
 if TYPE_CHECKING:
@@ -37,16 +37,8 @@ def _rev_list_count(checkout: Path, old: str, new: str) -> int | None:
     """
     if not checkout.is_dir():
         return None
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(checkout), "rev-list", "--count", f"{old}..{new}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        return None
-    if out.returncode != 0:
+    out = run_git(["git", "-C", str(checkout), "rev-list", "--count", f"{old}..{new}"])
+    if out is None or out.returncode != 0:
         return None
     try:
         return int(out.stdout.strip())

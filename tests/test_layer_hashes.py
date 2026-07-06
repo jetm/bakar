@@ -72,7 +72,7 @@ def test_missing_bblayers_returns_empty(tmp_path: Path) -> None:
     cfg = _nxp_cfg(tmp_path)
     assert not cfg.bblayers_conf.is_file()
 
-    with patch("bakar.layers.subprocess.run") as run:
+    with patch("bakar.gitutil.subprocess.run") as run:
         result = collect_layer_hashes(cfg)
 
     assert result == []
@@ -96,7 +96,7 @@ def test_two_present_repos_return_sorted(tmp_path: Path) -> None:
             return _Completed(0, hashes[repo] + "\n")
         return _Completed(0, branches[repo] + "\n")
 
-    with patch("bakar.layers.subprocess.run", side_effect=fake_run):
+    with patch("bakar.gitutil.subprocess.run", side_effect=fake_run):
         result = collect_layer_hashes(cfg)
 
     assert result == [
@@ -118,7 +118,7 @@ def test_missing_source_dir_is_omitted(tmp_path: Path) -> None:
             return _Completed(0, "deadbee\n")
         return _Completed(0, "scarthgap\n")
 
-    with patch("bakar.layers.subprocess.run", side_effect=fake_run) as run:
+    with patch("bakar.gitutil.subprocess.run", side_effect=fake_run) as run:
         result = collect_layer_hashes(cfg)
 
     assert [lh.repo for lh in result] == ["poky"]
@@ -142,7 +142,7 @@ def test_rev_parse_failure_omits_repo(tmp_path: Path) -> None:
             return _Completed(0, "deadbee\n")
         return _Completed(0, "scarthgap\n")
 
-    with patch("bakar.layers.subprocess.run", side_effect=fake_run):
+    with patch("bakar.gitutil.subprocess.run", side_effect=fake_run):
         result = collect_layer_hashes(cfg)
 
     assert [lh.repo for lh in result] == ["poky"]
@@ -161,7 +161,7 @@ def test_empty_branch_yields_empty_branch_field(tmp_path: Path) -> None:
             return _Completed(0, "undefined\n")  # no remote branch found
         return _Completed(0, "\n")  # branch --show-current: detached HEAD
 
-    with patch("bakar.layers.subprocess.run", side_effect=fake_run):
+    with patch("bakar.gitutil.subprocess.run", side_effect=fake_run):
         result = collect_layer_hashes(cfg)
 
     assert result == [LayerHash(repo="poky", short_hash="deadbee", branch="")]

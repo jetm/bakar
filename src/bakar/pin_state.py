@@ -17,9 +17,9 @@ the best-effort ``git rev-list --count`` logic already in
 from __future__ import annotations
 
 import json
-import subprocess
 from typing import TYPE_CHECKING
 
+from bakar.gitutil import run_git
 from bakar.manifest_diff import _rev_list_count
 from bakar.workspace import parse_manifest_pins
 
@@ -73,16 +73,8 @@ def _git_head(checkout: Path) -> str | None:
     """Return the resolved ``HEAD`` SHA of a checkout, or None on failure."""
     if not checkout.is_dir():
         return None
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(checkout), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        return None
-    if out.returncode != 0:
+    out = run_git(["git", "-C", str(checkout), "rev-parse", "HEAD"])
+    if out is None or out.returncode != 0:
         return None
     sha = out.stdout.strip()
     return sha or None

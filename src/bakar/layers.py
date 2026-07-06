@@ -11,13 +11,13 @@ branch query, reported with an empty branch - a valid detached HEAD).
 from __future__ import annotations
 
 import re
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich.table import Table
 
+from bakar.gitutil import run_git
 from bakar.kas import _bblayers_bodies, parse_bblayers
 
 if TYPE_CHECKING:
@@ -101,16 +101,8 @@ def _resolve_bblayers_paths(bblayers_conf: Path) -> dict[str, Path]:
             layer_path = Path(token).resolve()
             if not layer_path.is_dir():
                 continue
-            try:
-                root_out = subprocess.run(
-                    ["git", "-C", str(layer_path), "rev-parse", "--show-toplevel"],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-            except OSError:
-                continue
-            if root_out.returncode != 0:
+            root_out = run_git(["git", "-C", str(layer_path), "rev-parse", "--show-toplevel"])
+            if root_out is None or root_out.returncode != 0:
                 continue
             git_root = Path(root_out.stdout.strip())
             if git_root in seen:
@@ -154,48 +146,29 @@ def _read_bitbake_version(bitbake_dir: Path) -> str | None:
 
 
 def _git_short_hash(path: Path) -> str | None:
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
+    out = run_git(["git", "-C", str(path), "rev-parse", "--short", "HEAD"])
+    if out is None:
         return None
     return out.stdout.strip() if out.returncode == 0 else None
 
 
 def _git_branch(path: Path) -> str:
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(path), "branch", "--show-current"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if out.returncode != 0:
-            return ""
-        if out.stdout.strip():
-            return out.stdout.strip()
-        # Detached HEAD - the normal state for kas-pinned layers. Resolve the
-        # nearest containing remote branch so the row still names where the
-        # commit lives (e.g. "scarthgap" for a commit on origin/scarthgap).
-        out = subprocess.run(
-            ["git", "-C", str(path), "name-rev", "--name-only", "--refs", "refs/remotes/*", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if out.returncode != 0:
-            return ""
-        name = out.stdout.strip()
-        if not name or name == "undefined":
-            return ""
-        name = re.sub(r"^remotes/[^/]+/", "", name)
-        return re.sub(r"[~^].*$", "", name)
-    except OSError:
+    out = run_git(["git", "-C", str(path), "branch", "--show-current"])
+    if out is None or out.returncode != 0:
         return ""
+    if out.stdout.strip():
+        return out.stdout.strip()
+    # Detached HEAD - the normal state for kas-pinned layers. Resolve the
+    # nearest containing remote branch so the row still names where the
+    # commit lives (e.g. "scarthgap" for a commit on origin/scarthgap).
+    out = run_git(["git", "-C", str(path), "name-rev", "--name-only", "--refs", "refs/remotes/*", "HEAD"])
+    if out is None or out.returncode != 0:
+        return ""
+    name = out.stdout.strip()
+    if not name or name == "undefined":
+        return ""
+    name = re.sub(r"^remotes/[^/]+/", "", name)
+    return re.sub(r"[~^].*$", "", name)
 
 
 def collect_layer_hashes(cfg: BuildConfig) -> list[LayerHash]:
