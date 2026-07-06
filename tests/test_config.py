@@ -517,3 +517,30 @@ def test_resolve_explicit_bsp_family_matching_preset_succeeds(tmp_path) -> None:
     cfg = resolve(workspace=_workspace(tmp_path), bsp_family="ti", preset=preset)
 
     assert cfg.bsp_family == "ti"
+
+
+def test_resolve_fallback_bsp_family_conflicting_with_preset_defers_silently(tmp_path) -> None:
+    """A fallback-derived bsp_family conflicting with an active preset defers, no error."""
+    preset = PresetEntry(
+        name="ti-test-preset",
+        family="ti",
+        manifest="processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt",
+        branch="scarthgap_11.00.09.04_var01",
+    )
+
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", preset=preset, family_is_explicit=False)
+
+    assert cfg.bsp_family == "ti"
+
+
+def test_resolve_default_family_is_explicit_preserves_conflict_raise(tmp_path) -> None:
+    """Omitting family_is_explicit still raises for an explicit conflicting bsp_family."""
+    preset = PresetEntry(
+        name="ti-test-preset",
+        family="ti",
+        manifest="processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt",
+        branch="scarthgap_11.00.09.04_var01",
+    )
+
+    with pytest.raises(ValueError, match="ti-test-preset"):
+        resolve(workspace=_workspace(tmp_path), bsp_family="nxp", preset=preset)

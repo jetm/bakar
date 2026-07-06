@@ -623,6 +623,7 @@ def resolve(
     user_config: UserConfig | None = None,
     workspace_config: WorkspaceConfig | None = None,
     preset: PresetEntry | None = None,
+    family_is_explicit: bool = True,
 ) -> BuildConfig:
     """Resolve BuildConfig from CLI flags, env vars, config, and family defaults.
 
@@ -659,6 +660,14 @@ def resolve(
     machine/distro/image placeholders, no manifest/branch inference);
     the real machine/distro come from the bitbake-setup config
     translation step, not from this resolver.
+
+    ``family_is_explicit`` (default ``True``) marks whether ``bsp_family``
+    came from an explicit user flag. When a caller-supplied ``bsp_family``
+    disagrees with an active ``preset``'s family, the default raises
+    ``ValueError`` loudly. Pass ``family_is_explicit=False`` when
+    ``bsp_family`` was instead derived via a heuristic fallback default -
+    in that case a disagreement silently defers to the preset's family
+    instead of raising.
     """
 
     if spec is None:
@@ -680,10 +689,22 @@ def resolve(
     # specs/preset-build-resolution/spec.md's "bbsetup preset dispatches via
     # kas YAML" scenario, dispatch resolving to "generic" there is correct
     # behavior, not a conflict to reject.
+    #
+    # ``family_is_explicit`` (default True) distinguishes a caller-supplied
+    # family that came from an explicit flag from one derived via a fallback
+    # default. When False, a disagreeing bsp_family silently defers to the
+    # preset's family instead of raising - callers only pass this when
+    # bsp_family was computed heuristically rather than from an explicit
+    # user flag.
     if bsp_family is None:
         bsp_family = preset.family if preset is not None else "nxp"  # type: ignore[assignment]
     elif preset is not None and bsp_family in ("nxp", "ti") and bsp_family != preset.family:
-        raise ValueError(f"bsp_family={bsp_family!r} conflicts with preset {preset.name!r}'s family={preset.family!r}")
+        if not family_is_explicit:
+            bsp_family = preset.family  # type: ignore[assignment]
+        else:
+            raise ValueError(
+                f"bsp_family={bsp_family!r} conflicts with preset {preset.name!r}'s family={preset.family!r}"
+            )
 
     # Thread preset branch into spec.repo_branch.  BSPSpec is frozen so we
     # create a replacement only when the caller left repo_branch unset.
