@@ -254,10 +254,13 @@ def check_host_tools(cfg: BuildConfig) -> CheckResult:
             f"missing on PATH: {', '.join(missing)}",
             fix_hint="Install with your package manager or `uv tool install kas`.",
         )
+    # The family prefix names the SoC vendor tool set for nxp/ti; a generic
+    # BYO build has no vendor, so drop it rather than surface the placeholder.
+    prefix = "" if cfg.bsp_family == "generic" else f"{cfg.bsp_family.upper()} "
     return _ok(
         "host-tools",
         Severity.BLOCK,
-        f"{cfg.bsp_family.upper()} required binaries present ({', '.join(required)})",
+        f"{prefix}required binaries present ({', '.join(required)})",
     )
 
 

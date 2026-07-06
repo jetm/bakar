@@ -208,6 +208,21 @@ def test_check_host_tools_avocado_host_mode_requires_extra_hosttools(monkeypatch
     assert "git-lfs" in result.message
 
 
+def test_check_host_tools_generic_label_omits_family_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A generic BYO build has no SoC vendor, so the host-tools row must not
+    surface the ``GENERIC`` placeholder prefix; nxp/ti keep their vendor label."""
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    generic = check_host_tools(_host_cfg("generic"))
+    assert "GENERIC" not in generic.message
+    assert generic.message.startswith("required binaries present")
+
+    nxp = check_host_tools(_host_cfg("nxp"))
+    assert nxp.message.startswith("NXP required binaries present")
+
+
 def test_check_host_tools_non_avocado_host_mode_omits_extra_hosttools(monkeypatch: pytest.MonkeyPatch) -> None:
     """A non-avocado host build does not require gfortran/git-lfs (falsifier guard)."""
     import shutil
