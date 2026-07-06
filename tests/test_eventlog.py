@@ -137,6 +137,19 @@ def test_normalize_returns_schema_keys() -> None:
 
 
 @pytest.mark.unit
+def test_normalize_prunes_dead_schema_fields() -> None:
+    """The pruned build.preset/build.release/setscene.per_recipe fields must
+    stay gone, and SCHEMA_VERSION must reflect the shape change (1 -> 2)."""
+    artifact = eventlog.normalize(FIXTURE)
+
+    assert eventlog.SCHEMA_VERSION == 2
+    assert artifact["schema_version"] == 2
+    assert "preset" not in artifact["build"]
+    assert "release" not in artifact["build"]
+    assert "per_recipe" not in artifact["setscene"]
+
+
+@pytest.mark.unit
 def test_failed_silent_in_tasks_but_not_failures() -> None:
     """TaskFailedSilent is recorded in tasks but excluded from failures."""
     artifact = eventlog.normalize(FIXTURE)
