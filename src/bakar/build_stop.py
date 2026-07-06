@@ -178,7 +178,7 @@ def read_launch_record(run_dir: Path) -> LaunchRecord:
     return LaunchRecord(pgid=legacy_pgid, mode="container", container_label=None)
 
 
-def _detect_runtime() -> str:
+def detect_runtime() -> str:
     """Resolve the container runtime the way kas-container does.
 
     Honors ``KAS_CONTAINER_ENGINE`` when set (a name or a full path; only the
@@ -193,6 +193,13 @@ def _detect_runtime() -> str:
         if shutil.which(candidate):
             return candidate
     return "docker"
+
+
+# Back-compat alias: steps/kas_build.py (owned by a different task/round) still
+# imports this module's runtime detection as ``_detect_runtime``. Keep the old
+# private name bound to the same function until that call site is migrated,
+# so this rename does not break an out-of-scope module mid-round.
+_detect_runtime = detect_runtime
 
 
 def _container_id(runtime: str, container_label: str) -> str | None:
@@ -494,7 +501,7 @@ def stop_running_proc(proc: subprocess.Popen, cfg: BuildConfig, log: RunLogger) 
         return
 
     try:
-        runtime = _detect_runtime()
+        runtime = detect_runtime()
         cid = _container_id(runtime, run_id_label(log.run_id))
         if cid is None:
             os.killpg(proc.pid, signal.SIGINT)
@@ -701,7 +708,7 @@ def stop_build(bsp_root: Path, *, force: bool = False) -> bool:
             print("cannot target build: run predates container tracking; stop it manually")
             return False
 
-        runtime = record.runtime or _detect_runtime()
+        runtime = record.runtime or detect_runtime()
         if shutil.which(runtime) is None:
             print(f"cannot target build: container runtime {runtime!r} is not installed")
             return False
