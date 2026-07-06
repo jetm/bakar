@@ -250,9 +250,18 @@ def stop(state_key: Path) -> bool:
     pid_file = state_dir / _PID_FILENAME
     port_file = state_dir / _PORT_FILENAME
 
+    if not is_running(state_key):
+        # The recorded PID is dead or has been recycled onto an unrelated
+        # process (is_running performs the cmdline-identity check). Either
+        # way our daemon is gone - clean up the stale state and report a
+        # successful stop without signaling a process we do not own.
+        pid_file.unlink(missing_ok=True)
+        port_file.unlink(missing_ok=True)
+        return True
+
     try:
         os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
+    except ProcessLookupError, PermissionError:
         pass
 
     deadline = time.monotonic() + _TERM_GRACE_SECONDS
@@ -262,7 +271,7 @@ def stop(state_key: Path) -> bool:
     if is_running(state_key):
         try:
             os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
+        except ProcessLookupError, PermissionError:
             pass
         kill_deadline = time.monotonic() + 1.0
         while is_running(state_key) and time.monotonic() < kill_deadline:

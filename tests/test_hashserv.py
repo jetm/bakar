@@ -448,12 +448,13 @@ def test_stop_signals_alive_pid(
 
     monkeypatch.setattr(hashserv_mod.os, "kill", _fake_kill)
 
-    # Daemon "dies" the first time stop polls is_running after SIGTERM.
+    # Daemon is alive when stop() first checks (the PID-identity gate), then
+    # "dies" on the poll after SIGTERM.
     is_running_calls = {"n": 0}
 
     def _fake_is_running(_root: Path) -> bool:
         is_running_calls["n"] += 1
-        return False
+        return is_running_calls["n"] == 1
 
     monkeypatch.setattr(hashserv_mod, "is_running", _fake_is_running)
     monkeypatch.setattr(hashserv_mod.time, "sleep", lambda _s: None)
