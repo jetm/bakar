@@ -7,10 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-07-03
+
+### Added
+
+- `bakar setup` can now provision a central Rust/PostgreSQL-backed hashserv+prserv tier for build clusters that share an `SSTATE_DIR`. Unlike bitbake's single-writer SQLite daemons, the central services are concurrent-writer-safe and keep the PR database off the volatile `TMPDIR`, so hash-equivalence and PRs stay consistent and monotonic when multiple nodes report to one shared sstate. Their endpoints are persisted as the `build.bb_hashserve` and `build.prserv_host` config keys; a build that finds them set points `BB_HASHSERVE`/`PRSERV_HOST` at the shared tier and skips the per-workspace daemons entirely.
+- Added a `bakar prserv start/stop/status` subcommand (mirroring `bakar hashserv`) that manages a bakar-owned PR service keyed to the shared sstate, bound to a cluster-reachable address, so PRs persist with the cache lineage across builds and `TMPDIR` wipes and are reachable from other cluster nodes.
+- Added a `cluster_bind_host` config key that makes the managed `hashserv`/`prserv` daemons bind and advertise a reachable address instead of `localhost`, so a single shared daemon can serve every node of a build cluster. The default is unchanged (`localhost`), keeping single-node builds untouched.
+- Added `bakar sched-triage`, a read-only command that aggregates the sccache-dist scheduler journal and client log into a single report: scheduler misroute rate (bucketed by load), cluster saturation against the admission ceiling, per-compile timers, preprocess-concurrency gauge, and local fallbacks plus remote rustc errors. `--json` emits the structured report and `--events <bitbake-events.json>` joins the poll series to live `do_compile` supply for per-phase cluster utilisation.
+- `bakar setup` now auto-provisions the pinned `buildtools-extended` toolchain required by host-mode builds: it runs the workspace's own `install-buildtools` script into a `$HOME` directory and persists the location as the `build.buildtools_dir` config key so `detect_buildtools` resolves it in a fresh shell without a manual `BAKAR_BUILDTOOLS_DIR` export. A new host-mode `bakar doctor` preflight check blocks the build when the toolchain is missing or its native gcc cannot execute against the host kernel ABI. See [docs/setup.md](docs/setup.md).
+- `bakar report` now surfaces build-performance metrics: a per-language sccache hit/miss/hit-rate map, a per-node distribution count map, a per-task-family wall-time rollup (`do_compile`/`do_configure`/`do_install`/`do_fetch`/other) and a Go compile subtotal, sourced from build-end stats persisted to the run directory. Both the JSON payload and the human output carry the data, and the human output omits each section when its underlying data is absent.
+- `bakar cluster-info` now shows the per-language cache hit/miss breakdown and labels per-language cache (`cache[<lang>]`) separately from the aggregate per-node distribution (`dist[<node>]`), so a per-language miss count is no longer misread as that language having distributed to a node.
+- The end-of-build sccache summary now breaks cache hits and misses down per language (C/C++, Rust, Assembler), each with its own hit-rate percentage, instead of reporting only aggregate totals.
+- The `bakar build` live UI now surfaces cluster and cache status during the build: sccache-dist builds show a cluster-load line plus the in-daemon cache/distribution line, and ccache builds show a ccache hit/miss line, so distribution health is visible without running `bakar monitor` in a second window.
+- `bakar monitor` now shows runqueue progress (`<done>/<total> tasks (<n> left) <pct>%`) and a real elapsed clock derived from the run directory, counts setscene re-runs separately from real task failures (a noisy-but-healthy build no longer reads as collapsing), and reports the managed `hashserv`/`prserv` addresses — or the central-tier endpoints when configured — each with a liveness probe.
+
 ### Changed
 
 - The `-w`/`--workspace` flag now changes directory into the resolved workspace before any path resolution, across every command that exposes it, so a relative kas YAML positional argument resolves from outside the workspace (e.g. `bakar stop -w <ws> machine.yml`). An invalid `-w` path (missing or a regular file) exits 2 naming `--workspace`. `bakar init`'s `--workspace` is unchanged.
 - `bakar stop` replaces its fixed 60-second grace poll with an unbounded, task-aware graceful wait: it waits until the build process/container is no longer running, rendering live `Waiting for N running tasks to finish` progress from the build event log, with a spinner + elapsed fallback when task progress is unavailable or the log freezes. If the container runtime becomes unreachable across repeated liveness queries it gives up and exits 1; Ctrl-C during the wait escalates to SIGTERM then SIGKILL, and `--force` skips the graceful wait entirely.
+- Host execution is now the structural default and the `kas-container` path is an explicit opt-in. A configured container image no longer selects the container on its own; reach the container path with the new global `--container` flag, the `BAKAR_CONTAINER` env var, or a `[build] container` toggle in the workspace/user config. The old `--host` flag, `BAKAR_HOST_MODE`, and `[build] host_mode` are retained as no-op back-compat aliases so existing configs keep parsing unchanged.
+- Host-mode builds now enforce the pinned `buildtools-extended` toolchain and refuse to start (`BuildtoolsMissingError`, raised before bitbake is invoked) when it cannot be located via a sourced sysroot, `BAKAR_BUILDTOOLS_DIR`, or the persisted `build.buildtools_dir`, instead of silently falling back to the rolling system gcc and producing non-reproducible builds.
+- sccache-dist now distributes compiles on an allow-list (`SCCACHE_INCLUDED_PN`) rather than a deny-list. Only a curated set of heavy-object recipes (the toolchain/LLVM C++ set and large C++ feed packages) route through the shared sccache daemon and the cluster, where the per-object compile cost dwarfs the network round-trip; every other recipe now compiles locally. The non-distributed tail is cached with ccache (the two launchers are now complementary rather than mutually exclusive, so ccache and sccache-dist can be enabled together), giving heavy recipes distribution and the long tail local object caching.
+- `PARALLEL_MAKE` and `BB_NUMBER_THREADS` are now derived automatically whenever unset: `PARALLEL_MAKE` tracks the live sccache-dist scheduler CPU total (auto-scaling as servers join) or the local core count otherwise, and `BB_NUMBER_THREADS` is bounded by host RAM and capped at 4× local cores, with a relaxed per-recipe RAM divisor under an actually-reachable sccache-dist cluster to keep more `do_compile` phases in flight. An explicit config value still wins per field.
+- Rust compiles (`rust-native` and cargo recipes) are now cached and distributed through sccache via a `RUSTC_WRAPPER` shim that routes rustc through the cluster without tripping cc-rs into wrapping the C compiler; previously they ran plain `rustc` on one node with no caching and no distribution.
+
+### Fixed
+
+- Host-mode sccache-dist builds now actually distribute recipe compiles across the cluster. Previously autotools `do_configure` baked `CC=gcc` into the generated Makefile so `do_compile` never invoked sccache, and `do_compile`'s private network namespace hid the pre-started daemon; sccache now sets `CCACHE` globally and pre-starts a unix-domain-socket daemon that crosses the netns boundary, so every task reaches the shared daemon and native/cross recipes compile on the cluster.
+- `bakar stop` now scans run directories newest-first for the first still-targetable run instead of inspecting only the lexically latest one, so a live build is stopped even when a later clean-recipe or second build left a newer but dead run directory.
+- `bakar stop` now removes the stale `bitbake.lock` and `bitbake.sock` files from the build TOPDIR after the build process is confirmed no longer running, so the next build is not blocked by a leftover lock; the `bitbake-cookerdaemon.log` is preserved for post-mortem analysis.
+- Host-mode `bakar monitor`, `bakar report`, and the build-end stats now read the host client's sccache daemon over its unix socket, so the common (containerless) build path surfaces per-language and per-node distribution data instead of reporting the daemon absent.
+- `bakar getvar`, `bakar dump`, and `bakar shell` now print a clean `Error:` line naming the missing host toolchain (and the fix) instead of a raw traceback when `buildtools-extended` is absent.
+- Fixed BSP (NXP/TI) family detection being lost when `-w`/`--workspace` chdir'd to the workspace root from inside a BSP subdirectory; the invoking directory is now captured before the chdir so `bsp_from_cwd` still resolves `ti`/`nxp`.
+- `BAKAR_SCCACHE_DIST=0` now correctly disables the sccache-dist overlay even when `config.toml` has it enabled, restoring the documented `BAKAR_*` env-override contract and a clean no-sccache baseline.
+- `bakar setup`'s git-identity remediation now writes the identity where the check reads it (via `git -C <probe_dir> config`, not `git config --global`), so it no longer aborts the setup plan when launched outside a git repo and no longer targets a location the check never inspects.
+- Clean/from-scratch builds no longer abort at parse in OE's connectivity sanity check; bakar's generic tuning overlay now sets `CONNECTIVITY_CHECK_URIS = ""` (surviving `bakar clean`), since all sources come from the shared `DL_DIR` and the reachability probe is redundant here.
 
 ## [0.19.0] - 2026-06-26
 
@@ -461,7 +493,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/jetm/bakar/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/jetm/bakar/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/jetm/bakar/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/jetm/bakar/compare/v0.16.0...v0.17.0
