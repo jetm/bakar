@@ -289,8 +289,6 @@ def _render_daemons(daemons: dict[str, Any]) -> Text | None:
     Returns ``None`` when no daemons are managed (non-host build) so the caller
     suppresses the line entirely rather than printing an empty header.
     """
-    if not daemons:
-        return None
     rendered = _daemon_rows(daemons)
     if not rendered:
         return None
@@ -382,8 +380,6 @@ def _monitor_error(msg: str, mode: OutputMode) -> None:
 
 def _render_daemons_plain(daemons: dict[str, Any]) -> str | None:
     """Plain-text sibling of :func:`_render_daemons` (no markup/color)."""
-    if not daemons:
-        return None
     rendered = _daemon_rows(daemons)
     if not rendered:
         return None

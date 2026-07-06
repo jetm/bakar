@@ -222,12 +222,8 @@ def report(
         # the sccache cache_by_language section above is eventlog-derived and
         # the two can visibly disagree post-delta. Older artifacts predate the
         # "window" field, so fall back to the historical "this build" label.
-        window = ccache_stats.get("window")
-        if window == "lifetime":
-            ccache_label = "ccache (lifetime):"
-        else:
-            ccache_label = "ccache (this build):"
-        console.print(f"[bold]{ccache_label}[/]")
+        window_label = "lifetime" if ccache_stats.get("window") == "lifetime" else "this build"
+        console.print(f"[bold]ccache ({window_label}):[/]")
         console.print(f"  hits: {ccache_stats.get('cache_hits', 0)}")
         console.print(f"  misses: {ccache_stats.get('cache_misses', 0)}")
         console.print(f"  hit rate: {ccache_stats.get('hit_rate', 0.0):.1f}%")
