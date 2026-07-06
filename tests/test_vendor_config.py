@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 import textwrap
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
 from bakar.vendor_config import VendorEntry, load_vendor_presets, load_vendors
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
 pytestmark = pytest.mark.unit
-
 
 # ---------------------------------------------------------------------------
 # VendorEntry validation
@@ -136,6 +132,53 @@ def test_load_vendors_invalid_family_raises(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="family must be one of"):
         load_vendors(config_file)
+
+
+def test_load_vendors_invalid_toml_syntax_raises_value_error_naming_path(tmp_path: Path) -> None:
+    """Malformed TOML syntax raises ValueError naming the file path, not a raw TOMLDecodeError."""
+    config_file = tmp_path / "vendors.toml"
+    config_file.write_text("[[vendors]\nname = 'unterminated\n")
+
+    with pytest.raises(ValueError, match="invalid TOML") as exc_info:
+        load_vendors(config_file)
+    assert str(config_file) in str(exc_info.value)
+
+
+def test_load_vendors_malformed_entry_raises_value_error_not_type_error(tmp_path: Path) -> None:
+    """A vendor entry missing a required field raises the wrapped ValueError, never a bare TypeError."""
+    toml_content = textwrap.dedent("""\
+        [[vendors]]
+        name = "incomplete-vendor"
+        family = "nxp"
+    """)
+    config_file = tmp_path / "vendors.toml"
+    config_file.write_text(toml_content)
+
+    with pytest.raises(ValueError, match="invalid vendor entry") as exc_info:
+        load_vendors(config_file)
+    assert str(config_file) in str(exc_info.value)
+
+
+def test_detect_bsp_family_degrades_when_load_vendors_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """detect_bsp_family keeps its documented 'never raises' contract when load_vendors raises.
+
+    A malformed vendors.toml now surfaces as ValueError from load_vendors (see
+    test_load_vendors_invalid_toml_syntax_raises_value_error_naming_path above); detect_bsp_family
+    must catch it and fall back to the built-in NXP/TI regexes instead of propagating.
+    """
+    from bakar.bsp_model import detect_bsp_family
+
+    def _raise() -> list:
+        raise ValueError("vendors.toml: invalid TOML: bad syntax")
+
+    monkeypatch.setattr("bakar.bsp_model.load_vendors", _raise)
+
+    # Built-in NXP regex still matches despite the broken vendor loader.
+    assert detect_bsp_family(Path("imx-6.6.52-2.2.2.xml")) == "nxp"
+    # Built-in TI regex still matches too.
+    assert detect_bsp_family(Path("arago-console-image.txt")) == "ti"
+    # No match anywhere degrades to "unknown", not an uncaught exception.
+    assert detect_bsp_family(Path("garbage.xml")) == "unknown"
 
 
 # ---------------------------------------------------------------------------
