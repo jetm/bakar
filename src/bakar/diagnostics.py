@@ -81,8 +81,22 @@ def split_host_port(endpoint: str, default_port: int) -> tuple[str, int]:
 
     Shared by the cluster preflight checks and ``bakar monitor`` so a bare host
     like ``10.42.0.1`` probes the service's default port rather than failing to
-    parse.
+    parse. Handles bracketed IPv6 literals (``[::1]:8686``) by stripping the
+    brackets and reading the port after ``]:``, and bare IPv6 literals with no
+    port (``::1``) by treating the whole string as the host instead of
+    naively splitting on the last colon (which would chop a hextet off).
     """
+    if endpoint.startswith("["):
+        closing = endpoint.find("]")
+        if closing != -1:
+            host = endpoint[1:closing]
+            rest = endpoint[closing + 1 :]
+            if rest.startswith(":") and rest[1:].isdigit():
+                return host, int(rest[1:])
+            return host, default_port
+    if endpoint.count(":") > 1:
+        # Bare IPv6 literal with no brackets and no port, e.g. "::1".
+        return endpoint, default_port
     host, sep, port = endpoint.rpartition(":")
     if sep and port.isdigit():
         return host, int(port)

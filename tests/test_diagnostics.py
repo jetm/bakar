@@ -39,6 +39,7 @@ from bakar.diagnostics import (
     group_results,
     probe_build_daemon,
     run_all,
+    split_host_port,
 )
 
 pytestmark = pytest.mark.unit
@@ -1898,3 +1899,31 @@ def test_build_daemon_report_defaults_are_empty_dicts() -> None:
     assert a.cache_misses_by_lang == {}
     a.cache_hits_by_lang["Rust"] = 1
     assert b.cache_hits_by_lang == {}
+
+
+def test_split_host_port_ipv4() -> None:
+    assert split_host_port("10.42.0.1:8686", 8686) == ("10.42.0.1", 8686)
+
+
+def test_split_host_port_bare_hostname() -> None:
+    assert split_host_port("cache-node", 8686) == ("cache-node", 8686)
+
+
+def test_split_host_port_hostname_with_port() -> None:
+    assert split_host_port("cache-node:1234", 8686) == ("cache-node", 1234)
+
+
+def test_split_host_port_bracketed_ipv6_with_port() -> None:
+    assert split_host_port("[2001:db8::5]:8686", 8686) == ("2001:db8::5", 8686)
+
+
+def test_split_host_port_bracketed_ipv6_no_port() -> None:
+    assert split_host_port("[::1]", 8686) == ("::1", 8686)
+
+
+def test_split_host_port_bare_ipv6_no_port() -> None:
+    assert split_host_port("::1", 8686) == ("::1", 8686)
+
+
+def test_split_host_port_bare_ipv6_no_port_full() -> None:
+    assert split_host_port("2001:db8::5", 8686) == ("2001:db8::5", 8686)
