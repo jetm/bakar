@@ -265,6 +265,22 @@ def _daemon_status(cfg: BuildConfig) -> dict[str, Any]:
     }
 
 
+def _daemon_rows(daemons: dict[str, Any]) -> list[tuple[str, str, bool]]:
+    """Extract (name, addr, running) rows for the managed hashserv/prserv daemons.
+
+    Shared by :func:`_render_daemons` (Rich) and :func:`_render_daemons_plain`
+    (plain text) so the two renderers never drift on which daemons they list.
+    """
+    rendered: list[tuple[str, str, bool]] = []
+    hs = daemons.get("hashserv")
+    if hs:
+        rendered.append(("hashserv", hs["url"].removeprefix("ws://"), hs["running"]))  # nosemgrep
+    pr = daemons.get("prserv")
+    if pr:
+        rendered.append(("prserv", pr["host"], pr["running"]))
+    return rendered
+
+
 def _render_daemons(daemons: dict[str, Any]) -> Text | None:
     """Render the managed cluster-cache daemon addresses as one line.
 
@@ -273,13 +289,7 @@ def _render_daemons(daemons: dict[str, Any]) -> Text | None:
     """
     if not daemons:
         return None
-    rendered: list[tuple[str, str, bool]] = []
-    hs = daemons.get("hashserv")
-    if hs:
-        rendered.append(("hashserv", hs["url"].removeprefix("ws://"), hs["running"]))  # nosemgrep
-    pr = daemons.get("prserv")
-    if pr:
-        rendered.append(("prserv", pr["host"], pr["running"]))
+    rendered = _daemon_rows(daemons)
     if not rendered:
         return None
 
@@ -372,13 +382,7 @@ def _render_daemons_plain(daemons: dict[str, Any]) -> str | None:
     """Plain-text sibling of :func:`_render_daemons` (no markup/color)."""
     if not daemons:
         return None
-    rendered: list[tuple[str, str, bool]] = []
-    hs = daemons.get("hashserv")
-    if hs:
-        rendered.append(("hashserv", hs["url"].removeprefix("ws://"), hs["running"]))  # nosemgrep
-    pr = daemons.get("prserv")
-    if pr:
-        rendered.append(("prserv", pr["host"], pr["running"]))
+    rendered = _daemon_rows(daemons)
     if not rendered:
         return None
     parts = [f"{name} {addr} ({'up' if running else 'down'})" for name, addr, running in rendered]
