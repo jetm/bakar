@@ -731,9 +731,10 @@ def _interrupted_step(run_dir: Path) -> str | None:
     """Return the name of an interrupted step from ``run_dir/events.jsonl``.
 
     Each line is a JSON object with an ``event`` discriminator
-    (``step_start`` / ``step_end``) and a coarse ``step`` label such as
+    (``step_start`` paired with one of the terminal events ``step_ok`` /
+    ``step_fail`` / ``step_skip``) and a coarse ``step`` label such as
     ``kas_build`` (NOT a recipe name). A step whose ``step_start`` has no
-    matching ``step_end`` is the interrupted step. Returns ``None`` when the
+    matching terminal event is the interrupted step. Returns ``None`` when the
     file is absent, unreadable, contains no unmatched ``step_start``, or any
     line fails to parse.
     """
@@ -761,7 +762,7 @@ def _interrupted_step(run_dir: Path) -> str | None:
             continue
         if event == "step_start":
             started.append(step)
-        elif event == "step_end":
+        elif event in ("step_ok", "step_fail", "step_skip"):
             ended.add(step)
 
     for step in started:

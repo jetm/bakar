@@ -473,6 +473,41 @@ def test_check_unclean_stop_stale_names_interrupted_step(
     assert "kas_build" in output
 
 
+def test_interrupted_step_names_later_step_after_terminal_events(tmp_path: Path) -> None:
+    """A step terminated by step_ok/step_fail/step_skip is not interrupted; a
+    later step with no terminal event is."""
+    run_dir = _make_run_dir(tmp_path)
+    events = run_dir / "events.jsonl"
+    events.write_text(
+        json.dumps({"event": "step_start", "step": "sync"})
+        + "\n"
+        + json.dumps({"event": "step_ok", "step": "sync"})
+        + "\n"
+        + json.dumps({"event": "step_start", "step": "gen_kas"})
+        + "\n"
+        + json.dumps({"event": "step_skip", "step": "gen_kas"})
+        + "\n"
+        + json.dumps({"event": "step_start", "step": "kas_build"})
+        + "\n"
+    )
+
+    assert build_stop._interrupted_step(run_dir) == "kas_build"
+
+
+def test_interrupted_step_none_when_all_terminated(tmp_path: Path) -> None:
+    """No interrupted step when every step_start has a terminal event."""
+    run_dir = _make_run_dir(tmp_path)
+    events = run_dir / "events.jsonl"
+    events.write_text(
+        json.dumps({"event": "step_start", "step": "sync"})
+        + "\n"
+        + json.dumps({"event": "step_fail", "step": "sync"})
+        + "\n"
+    )
+
+    assert build_stop._interrupted_step(run_dir) is None
+
+
 def test_check_unclean_stop_no_pidfile_silent(tmp_path: Path) -> None:
     """An empty runs dir (no build.pid) prints nothing."""
     _make_run_dir(tmp_path)  # run dir exists but holds no build.pid
