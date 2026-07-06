@@ -1277,8 +1277,18 @@ def _run_pty_with_ui(
             # Holds the freshest daemon_doc/ccache_doc the cache-probe thread
             # computed, so the build-end persist reuses that probe rather than
             # issuing a second one after the build completes. The ``first_*``
-            # holders snapshot the SYNCHRONOUS first refresh (build start) so
-            # the teardown can subtract a per-build delta (cumulative odometer).
+            # holders snapshot the FIRST SUCCESSFUL PROBE from the cache-probe
+            # thread (see ``_cache_probe`` -> ``_refresh`` below), NOT build
+            # start: the thread's initial ``_refresh()`` call races the build
+            # process and can fail (daemon/cache not up yet), in which case the
+            # holder stays None until a later iteration succeeds. Any cache
+            # activity between build start and that first successful probe is
+            # therefore excluded from the build-end delta (``cache_delta``
+            # below). This is a deliberate tradeoff, not a bug: closing the gap
+            # would require a synchronous pre-loop baseline snapshot, which is
+            # riskier than the narrow accuracy gap it leaves. In the degenerate
+            # case where the probe only ever succeeds once (first == last), the
+            # delta is honestly all-zero - not wrong, just narrow.
             last_daemon_doc: list = [None]
             first_daemon_doc: list = [None]
             last_ccache_doc: list = [None]
