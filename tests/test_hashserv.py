@@ -570,6 +570,100 @@ def test_stop_handles_already_dead_pid(
     assert db_file.exists()
 
 
+def test_stop_pid_recycled_no_signal_sent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recorded PID is alive but reassigned to an unrelated process (recycled).
+
+    ``stop()`` must gate the SIGTERM on the same cmdline-identity check
+    ``is_running`` already performs, not a bare liveness probe - a process
+    that answers to the PID but does not name ``bitbake-hashserv`` must
+    never be signaled.
+    """
+    import signal as signal_mod
+
+    from bakar import hashserv as hashserv_mod
+
+    state_dir = tmp_path / ".bakar"
+    state_dir.mkdir(parents=True)
+    pid_file = state_dir / "hashserv.pid"
+    pid_file.write_text("12345\n")
+    port_file = state_dir / "hashserv.port"
+    port_file.write_text("50000\n")
+    db_file = state_dir / "hashserv.db"
+    db_file.write_bytes(b"cache")
+
+    signals_sent: list[int] = []
+
+    def _fake_kill(_pid: int, sig: int) -> None:
+        if sig == 0:
+            return  # is_running's own liveness probe - the PID exists.
+        signals_sent.append(sig)
+
+    monkeypatch.setattr(hashserv_mod.os, "kill", _fake_kill)
+
+    real_read_bytes = Path.read_bytes
+
+    def _fake_read_bytes(self: Path) -> bytes:
+        if str(self).startswith("/proc/"):
+            # PID recycled onto an unrelated process - no bitbake-hashserv.
+            return b"/bin/bash\x00-l\x00"
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _fake_read_bytes)
+
+    result = hashserv_mod.stop(tmp_path)
+
+    assert result is True
+    assert signals_sent == []
+    assert signal_mod.SIGTERM not in signals_sent
+    assert signal_mod.SIGKILL not in signals_sent
+    assert not pid_file.exists()
+    assert not port_file.exists()
+    assert db_file.exists()
+
+
+def test_stop_permission_error_does_not_raise(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PermissionError from os.kill (PID recycled to another user) is caught,
+    not propagated - at both the SIGTERM and the SIGKILL escalation."""
+    from bakar import hashserv as hashserv_mod
+
+    state_dir = tmp_path / ".bakar"
+    state_dir.mkdir(parents=True)
+    pid_file = state_dir / "hashserv.pid"
+    pid_file.write_text("12345\n")
+    port_file = state_dir / "hashserv.port"
+    port_file.write_text("50000\n")
+
+    def _fake_kill(_pid: int, _sig: int) -> None:
+        raise PermissionError
+
+    monkeypatch.setattr(hashserv_mod.os, "kill", _fake_kill)
+    # Daemon appears alive throughout the gate check and both grace loops, so
+    # stop() drives all the way to the SIGKILL escalation and back out.
+    monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: True)
+    monkeypatch.setattr(hashserv_mod.time, "sleep", lambda _s: None)
+
+    fake_clock = {"now": 0.0}
+
+    def _fake_monotonic() -> float:
+        current = fake_clock["now"]
+        fake_clock["now"] += 1.0
+        return current
+
+    monkeypatch.setattr(hashserv_mod.time, "monotonic", _fake_monotonic)
+
+    result = hashserv_mod.stop(tmp_path)
+
+    assert result is True
+    assert not pid_file.exists()
+    assert not port_file.exists()
+
+
 def test_ensure_running_keys_state_to_state_key_not_binary_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
