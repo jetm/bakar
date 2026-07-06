@@ -2415,11 +2415,13 @@ def check_shared_cache_mounts(cfg: BuildConfig) -> CheckResult:
     Only runs in cluster mode (run_all filters the cluster checks out otherwise).
     Validates the *effective* dirs the build uses - the SSTATE_DIR/DL_DIR env
     overrides and effective_ccache_dir, not the raw config fields - and probes the
-    ccache dir only when ccache is enabled. Per dir the order is load-bearing: a
-    tempfile write probe first (it triggers an autofs automount and is truthful
-    where os.access lies under NFS root_squash), THEN the /proc/mounts fstype. A
-    silently-local shared dir is a BLOCK (a private cache defeats cross-node
-    reuse); clock skew and soft mounts are WARN riders off the same probe file.
+    ccache dir only when ccache is enabled. The order is load-bearing: a tempfile
+    write probe runs for every dir first (it triggers an autofs automount and is
+    truthful where os.access lies under NFS root_squash), THEN /proc/mounts is
+    read exactly once and every probed dir is evaluated against that single
+    snapshot. A silently-local shared dir is a BLOCK (a private cache defeats
+    cross-node reuse); clock skew and soft mounts are WARN riders off the same
+    probe file.
     """
     name = "shared-mounts"
     # (label, path, critical): sstate + downloads must be the shared NFS mounts
@@ -2441,6 +2443,11 @@ def check_shared_cache_mounts(cfg: BuildConfig) -> CheckResult:
     block_problems: list[str] = []
     warnings: list[str] = []
     oks: list[str] = []
+
+    # Probe every target first (existence + a write probe that triggers an
+    # autofs automount) before touching /proc/mounts, so the mounts table is
+    # read exactly once for the whole check instead of once per target.
+    probed: list[tuple[str, Path, bool]] = []
     for label, path, critical in targets:
         sink = block_problems if critical else warnings
         if not path.exists():
@@ -2462,11 +2469,25 @@ def check_shared_cache_mounts(cfg: BuildConfig) -> CheckResult:
             probe.unlink(missing_ok=True)
         if skew > 5.0:
             warnings.append(f"{label}: clock skew ~{skew:.0f}s across the shared mount")
-        # Read /proc/mounts AFTER the probe so a just-triggered autofs mount shows.
-        try:
-            mounts_raw = Path("/proc/mounts").read_text()
-        except OSError as exc:
-            return _skip(name, Severity.BLOCK, f"/proc/mounts unreadable: {exc}")
+        probed.append((label, path, critical))
+
+    # Read /proc/mounts once, after every write probe (so a just-triggered
+    # autofs automount shows for all targets), and evaluate every probed
+    # target against that single snapshot. An unreadable /proc/mounts must not
+    # discard the existence/writability findings already collected above, so
+    # record the read failure per target instead of returning early.
+    mounts_raw: str | None = None
+    mounts_error: OSError | None = None
+    try:
+        mounts_raw = Path("/proc/mounts").read_text()
+    except OSError as exc:
+        mounts_error = exc
+
+    for label, path, critical in probed:
+        sink = block_problems if critical else warnings
+        if mounts_raw is None:
+            sink.append(f"{label} {path}: /proc/mounts unreadable: {mounts_error}")
+            continue
         entry = _mount_entry_in(mounts_raw, path)
         if entry is None:
             sink.append(f"{label} {path}: no covering mountpoint in /proc/mounts")

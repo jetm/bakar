@@ -1927,3 +1927,75 @@ def test_split_host_port_bare_ipv6_no_port() -> None:
 
 def test_split_host_port_bare_ipv6_no_port_full() -> None:
     assert split_host_port("2001:db8::5", 8686) == ("2001:db8::5", 8686)
+
+
+# ---------------------------------------------------------------------------
+# check_shared_cache_mounts: single /proc/mounts read shared across targets
+# ---------------------------------------------------------------------------
+
+from bakar.diagnostics import (  # noqa: E402
+    check_shared_cache_mounts,
+)
+
+
+def _cluster_cfg(tmp_path: Path, **over: object) -> BuildConfig:
+    """BuildConfig with cluster mode on and ccache off, for shared-mount tests."""
+    base = dataclasses.replace(_cfg(), cluster=True, ccache=False)
+    return dataclasses.replace(base, **over)
+
+
+def test_shared_cache_mounts_reads_proc_mounts_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Two targets needing a mount lookup -> /proc/mounts is read exactly once."""
+    for var in ("SSTATE_DIR", "DL_DIR", "CCACHE_DIR"):
+        monkeypatch.delenv(var, raising=False)
+    sstate = tmp_path / "sstate"
+    dl = tmp_path / "downloads"
+    sstate.mkdir()
+    dl.mkdir()
+
+    real_read_text = Path.read_text
+    calls: list[str] = []
+
+    def fake_read_text(self: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if str(self) == "/proc/mounts":
+            calls.append(str(self))
+            return "10.42.0.1:/export/sstate /mnt nfs rw,hard,vers=4 0 0\n"
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+    monkeypatch.setattr(
+        "bakar.diagnostics._mount_entry_in",
+        lambda *_a: ("10.42.0.1:/export/sstate", "/mnt", "nfs", "rw,hard,vers=4"),
+    )
+    result = check_shared_cache_mounts(_cluster_cfg(tmp_path, sstate_dir=str(sstate), dl_dir=str(dl)))
+    assert result.status == Status.PASS
+    assert len(calls) == 1
+
+
+def test_shared_cache_mounts_proc_mounts_unreadable_keeps_prior_target_problems(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A missing sstate dir plus an unreadable /proc/mounts for dl_dir -> both
+    problems surface in the same BLOCK failure. The OSError from the single
+    /proc/mounts read must not discard the missing-dir finding collected for
+    an earlier target in the same call."""
+    for var in ("SSTATE_DIR", "DL_DIR", "CCACHE_DIR"):
+        monkeypatch.delenv(var, raising=False)
+    dl = tmp_path / "downloads"
+    dl.mkdir()
+
+    real_read_text = Path.read_text
+
+    def fake_read_text(self: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if str(self) == "/proc/mounts":
+            raise OSError("permission denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+    result = check_shared_cache_mounts(
+        _cluster_cfg(tmp_path, sstate_dir=str(tmp_path / "missing-sstate"), dl_dir=str(dl))
+    )
+    assert result.status == Status.FAIL
+    assert result.severity == Severity.BLOCK
+    assert "missing" in result.message
+    assert "unreadable" in result.message
