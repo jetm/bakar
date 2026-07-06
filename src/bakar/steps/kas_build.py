@@ -56,6 +56,7 @@ from bakar.cache_render import (
     render_cluster,
     render_sccache_cache,
 )
+from bakar.config import _overlay_dir
 from bakar.diagnostics import (
     BUILDTOOLS_DIR_ENV,
     detect_buildtools,
@@ -379,8 +380,6 @@ def materialize_sccache_layer(cfg: BuildConfig) -> Path:
     tracks the packaged source byte-for-byte. The sccache tuning overlay
     references it by the relative path ``.bakar/meta-bakar-sccache``.
     """
-    from bakar.config import _overlay_dir
-
     source = _overlay_dir() / _SCCACHE_LAYER_NAME
     # kas resolves the overlay's relative `.bakar/meta-bakar-sccache` repos path
     # against KAS_WORK_DIR (see _build_env). meta-avocado sets KAS_WORK_DIR to the
@@ -408,8 +407,6 @@ def materialize_host_layer(cfg: BuildConfig) -> Path:
     invoked in host mode, where the layer's rpm bbappend keeps rpm-native from
     dlopening the build host's rpm transaction plugins.
     """
-    from bakar.config import _overlay_dir
-
     source = _overlay_dir() / _HOST_LAYER_NAME
     base = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
     dest = base / ".bakar" / _HOST_LAYER_NAME
