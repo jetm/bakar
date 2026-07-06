@@ -199,6 +199,8 @@ def detect_runtime() -> str:
 # imports this module's runtime detection as ``_detect_runtime``. Keep the old
 # private name bound to the same function until that call site is migrated,
 # so this rename does not break an out-of-scope module mid-round.
+# remaining caller: src/bakar/steps/kas_build.py:1152. Removing this alias
+# requires migrating that call site to ``detect_runtime`` first.
 _detect_runtime = detect_runtime
 
 

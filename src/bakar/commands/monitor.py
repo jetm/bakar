@@ -209,6 +209,8 @@ def _build_progress(run_dir: Path) -> dict[str, Any]:
 # Extracted to bakar.diagnostics.split_host_port for reuse by the cluster
 # preflight checks; kept as a module-local alias so the call sites below and the
 # tests that patch them are unchanged.
+# remaining callers: monitor.py:224, monitor.py:227. Removing this alias
+# requires migrating both call sites to ``split_host_port`` first.
 _split_host_port = split_host_port
 
 
