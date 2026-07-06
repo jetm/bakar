@@ -667,12 +667,22 @@ def resolve(
     # When the caller omits bsp_family (None), an active preset supplies the
     # family; otherwise fall back to "nxp". An explicitly-passed family is never
     # confused with "caller did not specify." When the caller DOES pass an
-    # explicit family that disagrees with the active preset's family, that is
-    # a genuine conflict (e.g. a TI preset invoked with an NXP manifest) - raise
-    # loudly instead of silently keeping the explicit value.
+    # explicit, concrete family (nxp/ti) that disagrees with the active preset's
+    # family, that is a genuine conflict (e.g. a TI preset invoked with an NXP
+    # manifest) - raise loudly instead of silently keeping the explicit value.
+    #
+    # "generic" is excluded from the conflict check: it is the dispatch
+    # classifier's fallback value for "not recognized as nxp/ti", not a
+    # concretely-detected family. commands/build.py's BYO dispatch
+    # (_dispatch_from_yaml) returns "generic" for any preset whose kas YAML
+    # doesn't declare NXP/TI signals - including bbsetup presets, since
+    # _dispatch_from_yaml's Literal return type has no "bbsetup" member. Per
+    # specs/preset-build-resolution/spec.md's "bbsetup preset dispatches via
+    # kas YAML" scenario, dispatch resolving to "generic" there is correct
+    # behavior, not a conflict to reject.
     if bsp_family is None:
         bsp_family = preset.family if preset is not None else "nxp"  # type: ignore[assignment]
-    elif preset is not None and bsp_family != preset.family:
+    elif preset is not None and bsp_family in ("nxp", "ti") and bsp_family != preset.family:
         raise ValueError(f"bsp_family={bsp_family!r} conflicts with preset {preset.name!r}'s family={preset.family!r}")
 
     # Thread preset branch into spec.repo_branch.  BSPSpec is frozen so we
