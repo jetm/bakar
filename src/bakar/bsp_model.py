@@ -85,7 +85,11 @@ def detect_bsp_family(
     """
     if manifest_path is not None:
         name = manifest_path.name
-        for vendor in load_vendors():
+        try:
+            vendors = load_vendors()
+        except ValueError:
+            vendors = []
+        for vendor in vendors:
             if re.match(vendor.manifest_regex, name):
                 return vendor.family  # type: ignore[return-value]
         if _NXP_MANIFEST_RE.match(name):

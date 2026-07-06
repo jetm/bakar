@@ -53,13 +53,19 @@ def load_vendors(path: Path | None = None) -> list[VendorEntry]:
     if not path.exists():
         return []
 
-    with path.open("rb") as f:
-        data = tomllib.load(f)
+    try:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"{path}: invalid TOML: {exc}") from exc
 
-    entries = [
-        VendorEntry(**{("kas_container_image" if k == "container_image" else k): v for k, v in item.items()})
-        for item in data.get("vendors", [])
-    ]
+    try:
+        entries = [
+            VendorEntry(**{("kas_container_image" if k == "container_image" else k): v for k, v in item.items()})
+            for item in data.get("vendors", [])
+        ]
+    except TypeError as exc:
+        raise ValueError(f"{path}: invalid vendor entry: {exc}") from exc
 
     return entries
 
@@ -78,7 +84,10 @@ def load_vendor_presets(path: Path | None = None) -> list[dict]:
     if not path.exists():
         return []
 
-    with path.open("rb") as f:
-        data = tomllib.load(f)
+    try:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"{path}: invalid TOML: {exc}") from exc
 
     return data.get("presets", [])
