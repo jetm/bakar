@@ -171,6 +171,7 @@ def report(
                 "cache_hits": ccache_stats.get("cache_hits"),
                 "cache_misses": ccache_stats.get("cache_misses"),
                 "hit_rate": ccache_stats.get("hit_rate"),
+                "window": ccache_stats.get("window"),
             }
         print(json.dumps(payload))
         return
@@ -217,10 +218,16 @@ def report(
             for node, count in summary.dist_by_node.items():
                 console.print(f"    {node}: {count}")
     if ccache_stats is not None:
-        # Raw ccache tool counters for this build. Deliberately free of
-        # per-language claims: the sccache cache_by_language section above is
-        # eventlog-derived and the two can visibly disagree post-delta.
-        console.print("[bold]ccache (this build):[/]")
+        # Raw ccache tool counters. Deliberately free of per-language claims:
+        # the sccache cache_by_language section above is eventlog-derived and
+        # the two can visibly disagree post-delta. Older artifacts predate the
+        # "window" field, so fall back to the historical "this build" label.
+        window = ccache_stats.get("window")
+        if window == "lifetime":
+            ccache_label = "ccache (lifetime):"
+        else:
+            ccache_label = "ccache (this build):"
+        console.print(f"[bold]{ccache_label}[/]")
         console.print(f"  hits: {ccache_stats.get('cache_hits', 0)}")
         console.print(f"  misses: {ccache_stats.get('cache_misses', 0)}")
         console.print(f"  hit rate: {ccache_stats.get('hit_rate', 0.0):.1f}%")

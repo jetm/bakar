@@ -208,8 +208,8 @@ def test_report_json_gains_ccache_key_when_artifact_present(tmp_path: Path, monk
     assert result.exit_code == 0, result.output
 
     payload = json.loads(result.stdout)
-    # The additive ccache key is present with the three tool counters.
-    assert payload["ccache_cache"] == {"cache_hits": 5, "cache_misses": 2, "hit_rate": 71.4}
+    # The additive ccache key is present with the three tool counters plus window.
+    assert payload["ccache_cache"] == {"cache_hits": 5, "cache_misses": 2, "hit_rate": 71.4, "window": "build"}
     # The pre-existing sccache keys are retained, unchanged in shape.
     assert payload["cache_by_language"]["C/C++"]["hits"] == 10
     assert payload["dist_by_node"] == {"10.42.0.2": 5}
@@ -276,3 +276,126 @@ def test_report_human_shows_ccache_section_when_present(tmp_path: Path, monkeypa
     assert result.exit_code == 0, result.output
     assert "ccache" in result.output
     assert "71.4" in result.output
+
+
+def test_report_json_carries_lifetime_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--json`` carries ``window: "lifetime"`` through to the payload unchanged."""
+    from typer.testing import CliRunner
+
+    import bakar.commands.report as report_module
+    from bakar.cli import app
+    from bakar.report import ReportSummary
+
+    (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
+    run_dir = _cli_run_dir(tmp_path)
+    (run_dir / "ccache-stats.json").write_text(
+        json.dumps({"cache_hits": 5, "cache_misses": 2, "hit_rate": 71.4, "window": "lifetime"})
+    )
+    summary = ReportSummary(
+        run_id="20260527-100000",
+        status="success",
+        duration_s=1.0,
+        deploy_dir="/x",
+        image_size=1,
+        layers=[],
+        build_revision=None,
+    )
+    monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
+    monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: summary)
+
+    result = CliRunner().invoke(app, ["report", "--json", "--workspace", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+
+    payload = json.loads(result.stdout)
+    assert payload["ccache_cache"]["window"] == "lifetime"
+
+
+def test_report_json_window_absent_for_legacy_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pre-existing artifact written before ``window`` existed yields ``window: None``."""
+    from typer.testing import CliRunner
+
+    import bakar.commands.report as report_module
+    from bakar.cli import app
+    from bakar.report import ReportSummary
+
+    (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
+    run_dir = _cli_run_dir(tmp_path)
+    (run_dir / "ccache-stats.json").write_text(json.dumps({"cache_hits": 5, "cache_misses": 2, "hit_rate": 71.4}))
+    summary = ReportSummary(
+        run_id="20260527-100000",
+        status="success",
+        duration_s=1.0,
+        deploy_dir="/x",
+        image_size=1,
+        layers=[],
+        build_revision=None,
+    )
+    monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
+    monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: summary)
+
+    result = CliRunner().invoke(app, ["report", "--json", "--workspace", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+
+    payload = json.loads(result.stdout)
+    assert payload["ccache_cache"]["window"] is None
+
+
+def test_report_human_shows_lifetime_label(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The human path prints ``ccache (lifetime):`` when ``window`` is ``"lifetime"``."""
+    from typer.testing import CliRunner
+
+    import bakar.commands.report as report_module
+    from bakar.cli import app
+    from bakar.report import ReportSummary
+
+    (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
+    run_dir = _cli_run_dir(tmp_path)
+    (run_dir / "ccache-stats.json").write_text(
+        json.dumps({"cache_hits": 5, "cache_misses": 2, "hit_rate": 71.4, "window": "lifetime"})
+    )
+    summary = ReportSummary(
+        run_id="20260527-100000",
+        status="success",
+        duration_s=1.0,
+        deploy_dir="/x",
+        image_size=1,
+        layers=[],
+        build_revision=None,
+    )
+    monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
+    monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: summary)
+
+    result = CliRunner().invoke(app, ["report", "--workspace", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "ccache (lifetime):" in result.output
+    assert "ccache (this build):" not in result.output
+
+
+def test_report_human_falls_back_to_this_build_label_for_legacy_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A legacy artifact with no ``window`` field still prints the historical label."""
+    from typer.testing import CliRunner
+
+    import bakar.commands.report as report_module
+    from bakar.cli import app
+    from bakar.report import ReportSummary
+
+    (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
+    run_dir = _cli_run_dir(tmp_path)
+    (run_dir / "ccache-stats.json").write_text(json.dumps({"cache_hits": 5, "cache_misses": 2, "hit_rate": 71.4}))
+    summary = ReportSummary(
+        run_id="20260527-100000",
+        status="success",
+        duration_s=1.0,
+        deploy_dir="/x",
+        image_size=1,
+        layers=[],
+        build_revision=None,
+    )
+    monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
+    monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: summary)
+
+    result = CliRunner().invoke(app, ["report", "--workspace", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "ccache (this build):" in result.output
