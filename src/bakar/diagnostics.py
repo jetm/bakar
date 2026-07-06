@@ -33,6 +33,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from bakar import build_stop
 from bakar.config import BuildConfig
 from bakar.kas import parse_bblayers
 from bakar.setup.profile import _read_sysctl
@@ -1786,28 +1787,31 @@ def probe_build_daemon() -> BuildDaemonReport:
     Finds the build container by its ``bakar.run_id`` label and queries the
     in-container daemon's stats, so ``bakar cluster-info`` can show whether an
     in-progress build is actually distributing - not just the scheduler's
-    aggregate capacity, which says nothing about the client. Host-mode builds
-    run no container, so an empty docker result falls back to the host UDS
+    aggregate capacity, which says nothing about the client. Uses
+    :func:`bakar.build_stop.detect_runtime` to resolve the container runtime
+    (docker or podman) the same way ``kas-container`` does. Host-mode builds
+    run no container, so an empty result falls back to the host UDS
     daemon (:func:`_probe_host_uds_daemon`). Never raises: returns
     ``running=False`` only when neither a container nor a host daemon answers,
     and ``error=...`` when the query fails.
     """
+    runtime = build_stop.detect_runtime()
     try:
         ps = subprocess.run(
-            ["docker", "ps", "--filter", "label=bakar.run_id", "--format", "{{.ID}}"],
+            [runtime, "ps", "--filter", "label=bakar.run_id", "--format", "{{.ID}}"],
             capture_output=True,
             text=True,
             timeout=5,
             check=False,
         )
     except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
-        return BuildDaemonReport(running=False, error=f"docker ps failed: {exc}")
+        return BuildDaemonReport(running=False, error=f"{runtime} ps failed: {exc}")
     cids = ps.stdout.split()
     if not cids:
         # No build container (host-mode build): fall back to the host UDS daemon.
         return _probe_host_uds_daemon()
     cid = cids[0]
-    return _query_sccache_daemon(["docker", "exec", cid, "sccache"], env=None, cid=cid)
+    return _query_sccache_daemon([runtime, "exec", cid, "sccache"], env=None, cid=cid)
 
 
 def _query_sccache_daemon(sccache_argv: list[str], env: dict[str, str] | None, cid: str | None) -> BuildDaemonReport:
