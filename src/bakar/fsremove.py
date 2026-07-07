@@ -29,13 +29,17 @@ if TYPE_CHECKING:
 GC_WORKERS = min(8, (os.cpu_count() or 4) * 2)
 
 
-def parallel_apply(items: list, fn, description: str) -> list:
+def parallel_apply(items: list, fn, description: str, *, show_eta: bool = True) -> list:
     """Map *fn* over *items* across a thread pool, driving a Rich progress bar.
 
     Splits *items* into ``GC_WORKERS`` round-robin chunks so only a handful of
     futures exist regardless of item count, then runs each chunk on a worker
     thread. ``Progress.advance`` is thread-safe, so progress ticks as each item
     completes. Results are returned in chunk order (callers do not rely on it).
+
+    ``show_eta=False`` drops the time-remaining column. The ETA is item-count
+    based, so it is meaningless when the items are subtrees of wildly different
+    size (see :func:`parallel_rmtree`), where it only ever shows a wrong number.
     """
     if not items:
         return []
@@ -48,11 +52,15 @@ def parallel_apply(items: list, fn, description: str) -> list:
     workers = min(GC_WORKERS, len(items))
     chunks = [items[w::workers] for w in range(workers)]
     results: list = []
-    with Progress(
+    columns = [
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         MofNCompleteColumn(),
-        TimeRemainingColumn(),
+    ]
+    if show_eta:
+        columns.append(TimeRemainingColumn())
+    with Progress(
+        *columns,
         console=console,
         transient=True,
     ) as progress:
@@ -143,6 +151,8 @@ def parallel_rmtree(root: Path, description: str = "Removing") -> None:
         except OSError:
             pass
 
-    parallel_apply(targets, _rm, description)
+    # No ETA: deletion units are subtrees of wildly different size, so an
+    # item-count time-remaining estimate is always wrong.
+    parallel_apply(targets, _rm, description, show_eta=False)
     # Drop the skeleton (the now-empty parent dirs left behind by expansion).
     shutil.rmtree(root, ignore_errors=True)

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar.fsremove import _gather_remove_targets, parallel_rmtree
+from bakar.fsremove import _gather_remove_targets, parallel_apply, parallel_rmtree
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -97,3 +97,52 @@ def test_gather_remove_targets_expands_the_high_fanout_branch(tmp_path: Path) ->
         for b in targets:
             if a is not b:
                 assert a not in b.parents, f"{a} is an ancestor of {b}"
+
+
+def _progress_column_types(monkeypatch: pytest.MonkeyPatch, *, show_eta: bool) -> set[str]:
+    """Run parallel_apply and return the Rich Progress column type names it built."""
+    import rich.progress
+
+    captured: dict[str, tuple] = {}
+    real_progress = rich.progress.Progress
+
+    class _SpyProgress(real_progress):
+        def __init__(self, *columns, **kwargs) -> None:
+            captured["columns"] = columns
+            super().__init__(*columns, **kwargs)
+
+    monkeypatch.setattr("rich.progress.Progress", _SpyProgress)
+    parallel_apply([1, 2, 3], lambda x: x, "d", show_eta=show_eta)
+    return {type(c).__name__ for c in captured["columns"]}
+
+
+def test_parallel_apply_show_eta_false_drops_time_column(monkeypatch: pytest.MonkeyPatch) -> None:
+    types = _progress_column_types(monkeypatch, show_eta=False)
+    assert "TimeRemainingColumn" not in types
+    assert "BarColumn" in types
+
+
+def test_parallel_apply_show_eta_true_keeps_time_column(monkeypatch: pytest.MonkeyPatch) -> None:
+    types = _progress_column_types(monkeypatch, show_eta=True)
+    assert "TimeRemainingColumn" in types
+
+
+def test_parallel_rmtree_removes_without_eta_column(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The build-dir wipe drops the (inaccurate) ETA and still removes the tree."""
+    import bakar.fsremove as fsremove
+
+    root = tmp_path / "build-x"
+    _populate(root, dirs=3, files_per_dir=2)
+
+    seen: dict[str, object] = {}
+    real_apply = fsremove.parallel_apply
+
+    def _spy(items, fn, description, *, show_eta=True):
+        seen["show_eta"] = show_eta
+        return real_apply(items, fn, description, show_eta=show_eta)
+
+    monkeypatch.setattr(fsremove, "parallel_apply", _spy)
+    parallel_rmtree(root)
+
+    assert seen["show_eta"] is False
+    assert not root.exists()
