@@ -17,6 +17,9 @@ bakar clean-cache [OPTIONS]
 | `--ccache-dir` | - | Override the ccache directory |
 | `--sstate` / `--no-sstate` | on | Prune (or skip) the sstate cache |
 | `--ccache` / `--no-ccache` | on | Evict (or skip) the ccache |
+| `--full` | - | Total cold-reset of the cluster and caches (ignores the age-based options) |
+| `--build-dir` | - | Override the per-node build dir wiped by `--full` |
+| `--force` | - | With `--full`, reset even when a bitbake build is running |
 | `--yes`, `-y` | - | Skip the confirmation prompt (for scripting) |
 | `--dry-run`, `-n` | - | Scan and report without prompting or deleting |
 
@@ -37,6 +40,31 @@ Proceed to delete 1,247 sstate files (14.3 GiB) and evict ccache entries older t
 
 Restrict to one cache with `--no-ccache` (sstate only) or `--no-sstate`
 (ccache only).
+
+## Full cold-reset (`--full`)
+
+`--full` ignores the age-based options and instead runs a total cold-reset of
+the sccache-dist cluster and every local cache, for when you need a pristine
+starting point. It:
+
+- empties the shared `SSTATE_DIR` in place (the export root is preserved so NFS
+  clients do not see an ESTALE),
+- wipes each per-node build dir (`--build-dir`, the `BUILD_DIR` env var, or every
+  `build-*` under the workspace),
+- wipes the sccache client disk cache under `~/.cache`,
+- wipes the local ccache dir **whole** (the same directory `--ccache-dir` /
+  `ccache_shared` / `<workspace>/ccache` resolves to) - not an age-based evict,
+- stops the sccache client daemon, then resets and restarts the sccache-dist
+  server on the local node and every secondary reached over ssh.
+
+Because that server restart aborts any in-flight compile, `--full` first checks
+for a running bitbake build (a host-wide process scan) and **refuses** if one is
+found - stop the build with `bakar stop` first, or pass `--force` to override.
+After the reset it polls `sccache --dist-status` and confirms a server is serving
+again before returning, warning if distribution did not come back.
+
+Use `--dry-run` to print the ordered plan without touching anything (the
+running-build guard does not apply to a dry run).
 
 ## sstate vs ccache pruning
 

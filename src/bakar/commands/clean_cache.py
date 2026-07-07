@@ -2,9 +2,11 @@
 
 With ``--full`` the command instead runs a total cold-reset of the sccache-dist
 cluster and Yocto caches (ported from the former ``scripts/clean-all-cache.sh``):
-it empties the shared sstate in place (NFS-safe), wipes each node's build dir and
-the sccache client disk cache, stops the client daemon, then wipes and
-reinitialises the sccache-dist server on every cluster node.
+it empties the shared sstate in place (NFS-safe), wipes each node's build dir, the
+sccache client disk cache, and the local ccache dir, stops the client daemon, then
+wipes and reinitialises the sccache-dist server on every cluster node. It refuses
+to run while a bitbake build is live (the reset would abort it) unless ``--force``
+is passed, and verifies distribution is back before returning.
 """
 
 from __future__ import annotations
@@ -245,10 +247,74 @@ def _stage_and_delete(stale_files: list[Path], effective_dir: Path) -> tuple[int
 
 _DIST_STATUS_RETRIES = 3
 
+# Post-reset distribution verification: servers re-register with the scheduler a
+# few seconds after ``systemctl restart``, so poll rather than probe once.
+_DIST_VERIFY_RETRIES = 15
+_DIST_VERIFY_INTERVAL = 2.0  # seconds between dist-status polls
+
+# argv basenames that identify a live bitbake build process.
+_BITBAKE_PROC_TOKENS = (b"bitbake", b"bitbake-worker", b"bitbake-server")
+
 
 def _log(msg: str) -> None:
     """Print one cold-reset progress line, mirroring the script's ``log`` output."""
     console.print(f"cold-reset: {msg}", highlight=False)
+
+
+def _bitbake_build_running() -> tuple[bool, str | None]:
+    """Return ``(running, evidence)`` if a bitbake build is live on this host.
+
+    The ``--full`` cold-reset kills the sccache client daemon and restarts the
+    sccache-dist server machine-wide; doing that mid-build SIGKILLs an in-flight
+    compile and aborts the whole build. The build dir passed to ``--full`` does
+    not bound the blast radius (the daemon/server ops are host-global and a build
+    may run from any workspace), so the guard is a host-wide procfs scan for a
+    live bitbake cooker/worker rather than a per-run-dir check. ``evidence`` is
+    the matching cmdline, for the refusal message.
+    """
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        return (False, None)
+    for proc in entries:
+        if not proc.name.isdigit():
+            continue
+        try:
+            cmdline = (proc / "cmdline").read_bytes()
+        except OSError:
+            continue
+        for field in cmdline.split(b"\x00"):
+            if field.rsplit(b"/", 1)[-1] in _BITBAKE_PROC_TOKENS:
+                return (True, cmdline.replace(b"\x00", b" ").decode("utf-8", "replace").strip())
+    return (False, None)
+
+
+def _verify_distribution() -> None:
+    """Confirm sccache-dist has a ready server after the reset, or warn.
+
+    A cold reset restarts the server; verifying the scheduler sees it again
+    before returning stops the command from reporting success while the cluster
+    is still down. Non-fatal: re-registration can lag the poll window, so a
+    failure is surfaced as a warning rather than a non-zero exit.
+    """
+    if shutil.which("sccache") is None:
+        _log("sccache not on PATH; skipping distribution verification")
+        return
+    from bakar.diagnostics import probe_cluster
+
+    _log("verifying sccache-dist distribution is back ...")
+    for attempt in range(_DIST_VERIFY_RETRIES):
+        report = probe_cluster()
+        cap = report.capacity
+        if report.reachable and cap is not None and cap.num_servers >= 1:
+            _log(f"distribution OK: {cap.num_servers} server(s), {cap.num_cpus} cpus")
+            return
+        if attempt < _DIST_VERIFY_RETRIES - 1:
+            time.sleep(_DIST_VERIFY_INTERVAL)
+    console.print(
+        "[yellow]warning:[/] sccache-dist reported no ready server after the reset; "
+        "distribution may be degraded - check `sccache --dist-status`."
+    )
 
 
 def _local_ips() -> set[str]:
@@ -416,13 +482,16 @@ def _remote_reset_cmd(build_dirs: list[Path], reset_cmd: str) -> str:
 def _run_full_reset(
     sstate_override: Path | None,
     build_dir_override: Path | None,
+    ccache_override: Path | None,
     yes: bool,
     dry_run: bool,
+    force: bool,
 ) -> None:
     """Total cold-reset of the sccache-dist cluster and Yocto caches.
 
-    Faithful port of scripts/clean-all-cache.sh. Resolves the shared sstate dir
-    and the per-node build dir(s), then builds one ordered list of (description,
+    Faithful port of scripts/clean-all-cache.sh, extended to also wipe the local
+    ccache dir. Resolves the shared sstate dir, the per-node build dir(s), and the
+    ccache dir, then builds one ordered list of (description,
     thunk) actions covering every step. ``dry_run`` prints each action's
     description without calling any thunk; a real run calls each thunk in order.
     Sharing one list between the two modes keeps the printed plan and the actual
@@ -440,6 +509,7 @@ def _run_full_reset(
     build_dirs = _resolve_build_dirs(build_dir_override)
     reset_cmd = _reset_dist_server_cmd()
     cache_dirs = _sccache_client_cache_dirs()
+    ccache = _resolve_ccache_dir(ccache_override)
     # The bitbake-prserv binary lives under the workspace root (sources/poky/bitbake,
     # sources/bitbake, or a sibling bitbake/ - see hashserv._find_binary), not inside a
     # build-* dir, so a workspace-root binary_root is required for the nxp/ti cluster
@@ -467,6 +537,12 @@ def _run_full_reset(
 
     def _wipe_cache_dir(c: Path) -> None:
         _log(f"wiping sccache client disk cache {c} ...")
+        shutil.rmtree(c, ignore_errors=True)
+
+    def _wipe_ccache_dir(c: Path) -> None:
+        # --full is a cold reset: age-based ccache eviction is not enough, the
+        # local ccache dir is wiped whole so the next build starts empty.
+        _log(f"wiping local ccache dir {c} ...")
         shutil.rmtree(c, ignore_errors=True)
 
     def _stop_client_daemon() -> None:
@@ -497,6 +573,8 @@ def _run_full_reset(
     ]
     actions.extend((f"rm -rf (local): {b}", lambda b=b: _wipe_build_dir(b)) for b in build_dirs)
     actions.extend((f"rm -rf (local): {c}", lambda c=c: _wipe_cache_dir(c)) for c in cache_dirs)
+    if ccache is not None:
+        actions.append((f"rm -rf (local ccache): {ccache}", lambda c=ccache: _wipe_ccache_dir(c)))
     actions.append(("pkill -f '^/usr/bin/sccache$'", _stop_client_daemon))
     actions.append((f"PC1 (local): {reset_cmd}", _reset_pc1))
     actions.append(
@@ -509,6 +587,10 @@ def _run_full_reset(
         _log("per-node build dir(s) = " + ", ".join(str(b) for b in build_dirs))
     else:
         _log("per-node build dir(s) = <none resolved; build-dir wipe skipped>")
+    if ccache is not None:
+        _log(f"local ccache dir   = {ccache}")
+    else:
+        _log("local ccache dir   = <none resolved; ccache wipe skipped>")
 
     if dry_run:
         console.print()
@@ -517,11 +599,22 @@ def _run_full_reset(
             console.print(f"  {desc}", highlight=False)
         return
 
+    if not force:
+        running, evidence = _bitbake_build_running()
+        if running:
+            console.print(
+                "[red]Refusing --full: a bitbake build is running.[/] The cold-reset "
+                "restarts the sccache-dist server and would abort it.\n"
+                f"[dim]{evidence}[/]\n"
+                "Stop the build (`bakar stop`) and retry, or pass --force to override."
+            )
+            raise typer.Exit(code=1)
+
     if not yes:
         confirmed = typer.confirm(
             f"Cold-reset: empty {sstate}, wipe {len(build_dirs)} build dir(s) + the sccache "
-            f"client cache, stop the client daemon, and reset the sccache-dist server on PC1 "
-            f"and any secondary build servers. Proceed?"
+            f"client cache + the local ccache dir, stop the client daemon, and reset the "
+            f"sccache-dist server on PC1 and any secondary build servers. Proceed?"
         )
         if not confirmed:
             console.print("Aborted.")
@@ -530,6 +623,7 @@ def _run_full_reset(
     for _desc, thunk in actions:
         thunk()
 
+    _verify_distribution()
     _log("cold-reset complete")
 
 
@@ -574,6 +668,10 @@ def clean_cache(
         bool,
         typer.Option("--dry-run", "-n", help="Scan and report without deleting or prompting"),
     ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="With --full, reset even when a bitbake build is running"),
+    ] = False,
 ) -> None:
     """Prune sstate and ccache entries older than N days.
 
@@ -590,17 +688,20 @@ def clean_cache(
     workspace's per-workspace cache.
 
     --full instead runs a total cold-reset of the sccache-dist cluster and
-    caches: it empties the shared sstate in place, wipes each node's build dir
-    and the sccache client cache, stops the client daemon, and resets the
-    sccache-dist server on every cluster node. --full ignores the age-based
-    prune options (--older-than / --sstate / --ccache).
+    caches: it empties the shared sstate in place, wipes each node's build dir,
+    the sccache client cache, and the local ccache dir (resolved as above),
+    stops the client daemon, and resets the sccache-dist server on every cluster
+    node. --full ignores the age-based prune options (--older-than / --sstate /
+    --ccache). It refuses when a bitbake build is running (the reset would abort
+    it) unless --force is given, and verifies the sccache-dist server is serving
+    again before returning.
     """
     if full:
         console.print(
             "[yellow]--full:[/] total cold-reset; the age-based prune options "
             "(--older-than / --sstate / --ccache) are ignored.",
         )
-        _run_full_reset(sstate_dir, build_dir, yes, dry_run)
+        _run_full_reset(sstate_dir, build_dir, ccache_dir, yes, dry_run, force)
         return
 
     if not sstate and not ccache:

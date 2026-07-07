@@ -1,9 +1,9 @@
 """Tests for the ``bakar clean-cache --full`` total cold-reset path.
 
 The full reset ports scripts/clean-all-cache.sh: it empties the shared sstate in
-place (NFS-safe), wipes the per-node build dir(s) and the sccache client cache,
-stops the client daemon, and resets the sccache-dist server on PC1 (local) and
-each secondary over ssh.
+place (NFS-safe), wipes the per-node build dir(s), the sccache client cache, and
+the local ccache dir, stops the client daemon, and resets the sccache-dist server
+on PC1 (local) and each secondary over ssh.
 
 Every subprocess call (sccache, ip, pkill, bash -c server reset, ssh) is mocked -
 no real sudo, ssh, systemctl, or pkill runs. Local filesystem ops (sstate empty,
@@ -157,6 +157,16 @@ def _patch_no_secondaries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("bakar.commands.clean_cache.shutil.which", lambda _n: None)
 
 
+def _patch_full_reset_gates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neutralize the running-build guard and the post-reset distribution check.
+
+    The destructive-path tests exercise the reset actions only; the guard's real
+    /proc scan and the verify poll are environment-dependent, so stub both.
+    """
+    monkeypatch.setattr("bakar.commands.clean_cache._bitbake_build_running", lambda: (False, None))
+    monkeypatch.setattr("bakar.commands.clean_cache._verify_distribution", lambda: None)
+
+
 def test_full_dry_run_prints_plan_and_runs_no_destructive_subprocess(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -219,6 +229,7 @@ def test_full_yes_empties_sstate_resets_server_and_ssh_secondaries(
     monkeypatch.setenv("SSTATE_DIR", str(sstate))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("SECONDARY_NODES", "10.42.0.2")
+    _patch_full_reset_gates(monkeypatch)
 
     # A populated sccache client cache under the redirected HOME.
     cache = tmp_path / ".cache" / "sccache"
@@ -266,6 +277,7 @@ def test_full_no_secondaries_resets_pc1_only(tmp_path: Path, monkeypatch: pytest
     monkeypatch.setenv("SSTATE_DIR", str(sstate))
     monkeypatch.setenv("HOME", str(tmp_path))
     _patch_no_secondaries(monkeypatch)
+    _patch_full_reset_gates(monkeypatch)
 
     build = tmp_path / "build-x"
     build.mkdir()
@@ -292,6 +304,7 @@ def test_full_stops_daemons_before_emptying_sstate(tmp_path: Path, monkeypatch: 
     monkeypatch.setenv("SSTATE_DIR", str(sstate))
     monkeypatch.setenv("HOME", str(tmp_path))
     _patch_no_secondaries(monkeypatch)
+    _patch_full_reset_gates(monkeypatch)
 
     build = tmp_path / "build-x"
     build.mkdir()
@@ -335,3 +348,173 @@ def test_remote_reset_cmd_shell_quotes_build_dirs() -> None:
 
     assert f"rm -rf {shlex.quote(str(dangerous))}; " in cmd, cmd
     assert cmd.endswith("echo reset")
+
+
+def test_full_wipes_local_ccache_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--full -y`` wipes the local ccache dir whole (not just an age-based evict)."""
+    sstate = tmp_path / "sstate"
+    sstate.mkdir()
+    monkeypatch.setenv("SSTATE_DIR", str(sstate))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _patch_no_secondaries(monkeypatch)
+    _patch_full_reset_gates(monkeypatch)
+
+    ccache = tmp_path / "ws" / "ccache"
+    ccache.mkdir(parents=True)
+    (ccache / "0" / "abc").parent.mkdir(parents=True)
+    (ccache / "0" / "abc").write_bytes(b"object")
+
+    monkeypatch.setattr(
+        "bakar.commands.clean_cache.subprocess.run",
+        lambda cmd, **_k: subprocess.CompletedProcess(cmd, 0),
+    )
+
+    result = runner.invoke(app, ["clean-cache", "--full", "--ccache-dir", str(ccache), "-y"])
+
+    assert result.exit_code == 0, result.output
+    assert not ccache.exists(), "local ccache dir should be wiped whole under --full"
+
+
+def test_full_dry_run_lists_ccache_wipe_without_deleting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The ccache dir appears in the --full plan and survives a dry run."""
+    sstate = tmp_path / "sstate"
+    sstate.mkdir()
+    monkeypatch.setenv("SSTATE_DIR", str(sstate))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _patch_no_secondaries(monkeypatch)
+
+    ccache = tmp_path / "ws" / "ccache"
+    ccache.mkdir(parents=True)
+    (ccache / "keep").write_bytes(b"object")
+
+    result = runner.invoke(app, ["clean-cache", "--full", "--ccache-dir", str(ccache), "-n"])
+
+    assert result.exit_code == 0, result.output
+    assert str(ccache) in result.output, result.output
+    assert ccache.exists() and (ccache / "keep").exists(), "dry run must not delete the ccache dir"
+
+
+def test_full_refuses_when_bitbake_build_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--full refuses (exit 1) with a running build and runs no destructive action."""
+    sstate = tmp_path / "sstate"
+    sstate.mkdir()
+    (sstate / "keep.zst").write_bytes(b"payload")
+    monkeypatch.setenv("SSTATE_DIR", str(sstate))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "bakar.commands.clean_cache._bitbake_build_running",
+        lambda: (True, "python3 /ws/bitbake/bin/bitbake -c build core-image-minimal"),
+    )
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "bakar.commands.clean_cache.subprocess.run",
+        lambda cmd, **_k: calls.append(list(cmd)) or subprocess.CompletedProcess(cmd, 0),
+    )
+
+    result = runner.invoke(app, ["clean-cache", "--full", "-y"])
+
+    assert result.exit_code == 1, result.output
+    assert "Refusing --full" in result.output
+    assert "bitbake" in result.output
+    assert calls == [], f"no destructive subprocess should run when refused: {calls}"
+    assert (sstate / "keep.zst").exists(), "sstate must be untouched when refused"
+
+
+def test_full_force_overrides_running_build_guard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--force proceeds with the reset even when a build is detected as running."""
+    sstate = tmp_path / "sstate"
+    sstate.mkdir()
+    monkeypatch.setenv("SSTATE_DIR", str(sstate))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _patch_no_secondaries(monkeypatch)
+    monkeypatch.setattr("bakar.commands.clean_cache._bitbake_build_running", lambda: (True, "bitbake"))
+    monkeypatch.setattr("bakar.commands.clean_cache._verify_distribution", lambda: None)
+
+    build = tmp_path / "build-x"
+    build.mkdir()
+    monkeypatch.setattr(
+        "bakar.commands.clean_cache.subprocess.run",
+        lambda cmd, **_k: subprocess.CompletedProcess(cmd, 0),
+    )
+
+    result = runner.invoke(app, ["clean-cache", "--full", "--build-dir", str(build), "-y", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert not build.exists(), "with --force the reset runs and wipes the build dir"
+
+
+def test_full_dry_run_not_blocked_by_running_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A dry run prints the plan even while a build runs (guard applies to real runs only)."""
+    sstate = tmp_path / "sstate"
+    sstate.mkdir()
+    monkeypatch.setenv("SSTATE_DIR", str(sstate))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _patch_no_secondaries(monkeypatch)
+    monkeypatch.setattr("bakar.commands.clean_cache._bitbake_build_running", lambda: (True, "bitbake"))
+
+    result = runner.invoke(app, ["clean-cache", "--full", "-n"])
+
+    assert result.exit_code == 0, result.output
+    assert "Plan:" in result.output
+    assert "Refusing" not in result.output
+
+
+def test_full_verifies_distribution_reports_ok(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """After the reset, a reachable scheduler with a server logs distribution OK."""
+    from types import SimpleNamespace
+
+    sstate = tmp_path / "sstate"
+    sstate.mkdir()
+    monkeypatch.setenv("SSTATE_DIR", str(sstate))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SECONDARY_NODES", raising=False)
+    monkeypatch.setattr("bakar.commands.clean_cache._bitbake_build_running", lambda: (False, None))
+    monkeypatch.setattr("bakar.commands.clean_cache.shutil.which", lambda _n: "/usr/bin/sccache")
+    monkeypatch.setattr("bakar.commands.clean_cache.time.sleep", lambda *_a: None)
+    monkeypatch.setattr(
+        "bakar.commands.clean_cache.subprocess.run",
+        lambda cmd, **_k: subprocess.CompletedProcess(cmd, 0, stdout=""),
+    )
+    monkeypatch.setattr(
+        "bakar.diagnostics.probe_cluster",
+        lambda *a, **k: SimpleNamespace(
+            reachable=True, capacity=SimpleNamespace(num_servers=2, num_cpus=53, in_progress=0), error=None
+        ),
+    )
+
+    build = tmp_path / "build-x"
+    build.mkdir()
+    result = runner.invoke(app, ["clean-cache", "--full", "--build-dir", str(build), "-y"])
+
+    assert result.exit_code == 0, result.output
+    assert "distribution OK" in result.output
+
+
+def test_full_verify_distribution_warns_when_no_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the scheduler reports no server after the reset, a warning is printed."""
+    from types import SimpleNamespace
+
+    sstate = tmp_path / "sstate"
+    sstate.mkdir()
+    monkeypatch.setenv("SSTATE_DIR", str(sstate))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SECONDARY_NODES", raising=False)
+    monkeypatch.setattr("bakar.commands.clean_cache._bitbake_build_running", lambda: (False, None))
+    monkeypatch.setattr("bakar.commands.clean_cache.shutil.which", lambda _n: "/usr/bin/sccache")
+    monkeypatch.setattr("bakar.commands.clean_cache.time.sleep", lambda *_a: None)
+    monkeypatch.setattr(
+        "bakar.commands.clean_cache.subprocess.run",
+        lambda cmd, **_k: subprocess.CompletedProcess(cmd, 0, stdout=""),
+    )
+    monkeypatch.setattr(
+        "bakar.diagnostics.probe_cluster",
+        lambda *a, **k: SimpleNamespace(reachable=False, capacity=None, error="unreachable"),
+    )
+
+    build = tmp_path / "build-x"
+    build.mkdir()
+    result = runner.invoke(app, ["clean-cache", "--full", "--build-dir", str(build), "-y"])
+
+    assert result.exit_code == 0, result.output
+    assert "degraded" in result.output
