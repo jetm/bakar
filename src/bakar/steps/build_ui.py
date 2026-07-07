@@ -56,6 +56,7 @@ from bakar.eventlog import (
     _stat,
     _task_key,
 )
+from bakar.fmt import fmt_duration
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -133,13 +134,7 @@ class _RunTask:
 
 
 def _fmt_stall(seconds: int) -> str:
-    if seconds < 60:
-        return f"{seconds}s"
-    m, s = divmod(seconds, 60)
-    if m < 60:
-        return f"{m}m{s:02d}s"
-    h, m = divmod(m, 60)
-    return f"{h}h{m:02d}m"
+    return fmt_duration(seconds)
 
 
 def _task_style(task: str) -> tuple[str, str]:

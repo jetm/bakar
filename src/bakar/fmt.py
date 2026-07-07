@@ -3,6 +3,23 @@
 from __future__ import annotations
 
 
+def fmt_duration(seconds: float) -> str:
+    """Format an elapsed duration compactly: ``42s``, ``24m31s``, ``1h02m``.
+
+    Matches the build UI's global-timer style so a reported build time reads the
+    same as the live ``󰦗`` clock. Sub-minute shows seconds; under an hour shows
+    ``m``/``s``; an hour or more shows ``h``/``m`` (seconds dropped).
+    """
+    total = int(seconds)
+    if total < 60:
+        return f"{total}s"
+    m, s = divmod(total, 60)
+    if m < 60:
+        return f"{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m"
+
+
 def fmt_bytes(n: float) -> str:
     """Format a byte count as a compact human-readable string.
 

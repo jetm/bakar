@@ -36,6 +36,7 @@ from bakar.commands._helpers import (
     split_kas_yaml_arg,
 )
 from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, compose_preset_output_path, resolve
+from bakar.fmt import fmt_duration
 from bakar.kas import translate_bbsetup_config, write_bbsetup_yaml
 from bakar.observability import RunLogger
 from bakar.output_mode import OutputMode, resolve_output_mode
@@ -227,7 +228,7 @@ def _run_bbsetup_build(
         deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / translated["machine"]
         if _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary:
             _print_sstate_summary(log.run_dir / "kas.log")
-        console.print("[bold green]build succeeded[/]")
+        console.print(f"[bold green]build succeeded[/] in {fmt_duration(time.monotonic() - log.start_monotonic)}")
         console.print(f"artifacts: {deploy}")
 
 
@@ -281,7 +282,7 @@ def _run_byo_build(
     deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
     if _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary:
         _print_sstate_summary(log.run_dir / "kas.log")
-    console.print("[bold green]build succeeded[/]")
+    console.print(f"[bold green]build succeeded[/] in {fmt_duration(time.monotonic() - log.start_monotonic)}")
     console.print(f"artifacts: {deploy}")
 
 
@@ -344,7 +345,7 @@ def _run_manifest_build(
     deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
     if _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary:
         _print_sstate_summary(log.run_dir / "kas.log")
-    console.print("[bold green]build succeeded[/]")
+    console.print(f"[bold green]build succeeded[/] in {fmt_duration(time.monotonic() - log.start_monotonic)}")
     console.print(f"artifacts: {deploy}")
 
 
