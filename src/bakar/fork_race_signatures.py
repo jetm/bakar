@@ -37,7 +37,7 @@ FORK_RACE_SIGNATURES: list[re.Pattern[str]] = [
 FORK_RACE_SUGGESTION = (
     "bitbake parser worker corrupted by fork-in-multi-threaded-program race "
     "(CPython torn PyType state). Recurring upstream bug; not a recipe "
-    "Manual workaround: re-run `bakar build` - the next fork roll "
+    "bug. Manual workaround: re-run `bakar build` - the next fork roll "
     "usually wins."
 )
 

@@ -71,7 +71,7 @@ def _machine_family(machine: str) -> Literal["nxp", "ti", "unknown"]:
     name = machine.lower()
     if name.startswith("imx"):
         return "nxp"
-    if name.startswith(("am", "k3-", "j7-", "j72", "j78", "j784")):
+    if name.startswith(("am3", "am4", "am5", "am6", "k3-", "j7-", "j72", "j78", "j784")):
         return "ti"
     return "unknown"
 

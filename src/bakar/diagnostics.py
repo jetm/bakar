@@ -2202,12 +2202,12 @@ def check_hashserv(cfg: BuildConfig) -> CheckResult:
 
     try:
         port = int(port_file.read_text().strip())
-    except FileNotFoundError:
+    except ValueError, OSError:
         return _fail(name, Severity.WARN, not_running_msg, fix_hint=not_running_hint)
 
     try:
         pid = int(pid_file.read_text().strip())
-    except FileNotFoundError:
+    except ValueError, OSError:
         return _fail(name, Severity.WARN, not_running_msg, fix_hint=not_running_hint)
 
     try:

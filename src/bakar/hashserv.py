@@ -174,12 +174,13 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
             port = int(port_file.read_text().strip())
         except FileNotFoundError, ValueError:
             # Port file missing or corrupt (PID/port written non-atomically;
-            # crash between the two writes leaves an orphan PID file). Fall
-            # through to re-spawn below by treating the daemon as stopped.
-            pid_file.unlink(missing_ok=True)
-            port_file.unlink(missing_ok=True)
-        else:
-            return f"ws://{bind_host}:{port}"
+            # crash between the two writes leaves an orphan PID file). The live
+            # daemon is deterministically bound to _workspace_port(state_key),
+            # so recover the port from there and rewrite the port file rather
+            # than respawning onto the port the daemon still holds.
+            port = _workspace_port(state_key)
+            port_file.write_text(f"{port}\n")
+        return f"ws://{bind_host}:{port}"
 
     binary = _find_binary(binary_root)
     if binary is None:

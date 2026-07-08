@@ -301,15 +301,12 @@ def triage(
     # of scraping kas.log. Absent artifact (or no recorded failures) falls
     # through to the kas.log analysis below.
     structured = _read_structured_failures(run_dir)
-    if output_json and structured is not None:
-        if structured:
-            f0 = structured[0]
-            logfile = f0.get("logfile")
-            _emit_triage_json(
-                run_dir.name, f"{f0.get('recipe')}:{f0.get('task')}", None, str(logfile) if logfile else None, []
-            )
-        else:
-            _emit_triage_json(run_dir.name, None, None, None, [])
+    if output_json and structured:
+        f0 = structured[0]
+        logfile = f0.get("logfile")
+        _emit_triage_json(
+            run_dir.name, f"{f0.get('recipe')}:{f0.get('task')}", None, str(logfile) if logfile else None, []
+        )
         return
     if structured:
         _print_structured_failures(structured, translation_workspace)

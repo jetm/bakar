@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -13,8 +14,7 @@ import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     WorkspaceOption,
-    _dispatch_bsp,
-    _dispatch_from_yaml,
+    _normalize_dispatch,
     _resolve_workspace,
 )
 from bakar.config import BSPSpec, resolve
@@ -34,15 +34,25 @@ def _tail_follow(path: Path, history_lines: int = 40) -> None:
     screen stays blank. Emit a chunk of recent history first (matches
     `tail -f` default behavior) so `bakar log` is useful mid-run.
     """
-    with path.open("r", encoding="utf-8", errors="replace") as fh:
-        lines = fh.readlines()
+    with path.open("rb") as fh:
+        # Read only the last block instead of the whole file: a mid-build
+        # kas.log can be hundreds of MiB, and we only need the last N lines
+        # before following.
+        block = 65536
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        fh.seek(max(0, size - block))
+        lines = fh.read().splitlines(keepends=True)
+        if size > block and lines:
+            # Drop the leading partial line left by the block boundary.
+            lines = lines[1:]
         for line in lines[-history_lines:]:
-            sys.stdout.write(line)
+            sys.stdout.write(line.decode("utf-8", errors="replace"))
         sys.stdout.flush()
         while True:
             line = fh.readline()
             if line:
-                sys.stdout.write(line)
+                sys.stdout.write(line.decode("utf-8", errors="replace"))
                 sys.stdout.flush()
             else:
                 time.sleep(0.2)
@@ -102,14 +112,7 @@ def log_cmd(
         console.print(f"[red]invalid --which value[/]: {which!r} (expected one of: kas, console, events)")
         raise typer.Exit(code=2)
 
-    if kas_yaml is not None and manifest is not None:
-        console.print("[red]choose either a positional kas YAML or --manifest, not both[/]")
-        raise typer.Exit(code=2)
-
-    if kas_yaml is not None:
-        family, _bsp = _dispatch_from_yaml(kas_yaml)
-    else:
-        family, _bsp = _dispatch_bsp(manifest)
+    family, _bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
     cfg = resolve(
         workspace=ws,

@@ -49,6 +49,8 @@ def _scaffold_workspace(
     if marker.exists():
         raise FileExistsError(str(marker))
 
+    path.mkdir(parents=True, exist_ok=True)
+
     if family in ("nxp", "ti"):
         (path / family).mkdir(parents=True, exist_ok=True)
         write_workspace_config(path, family, settings)

@@ -134,6 +134,10 @@ def show(
         typer.echo(json.dumps(doc, indent=2))
         return
 
+    if fmt not in ("text", "md"):
+        console.print(f"[red]unknown format:[/] {fmt!r} - must be 'text' or 'md'")
+        raise typer.Exit(2)
+
     use_md = fmt == "md"
     _heading = (lambda t: f"## {t}") if use_md else (lambda t: f"{t}:")
 

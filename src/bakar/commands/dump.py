@@ -13,8 +13,7 @@ from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     WorkspaceOption,
     _combine_overlays_with_tuning,
-    _dispatch_bsp,
-    _dispatch_from_yaml,
+    _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
     apply_sccache_overrides,
@@ -56,17 +55,8 @@ def dump(
     container-vs-host mode. With no ``--output`` the resolved YAML is printed
     to stdout; otherwise it is written to the given path.
     """
-    if kas_yaml is not None and manifest is not None:
-        console.print("[red]choose either a positional kas YAML or --manifest, not both[/]")
-        raise typer.Exit(code=2)
-
     main_yaml, user_extras = split_kas_yaml_arg(kas_yaml)
-
-    if main_yaml is not None:
-        family, bsp = _dispatch_from_yaml(main_yaml)
-    else:
-        family, bsp = _dispatch_bsp(manifest)
-
+    family, bsp, main_yaml, manifest = _normalize_dispatch(main_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
     cfg = resolve(
         workspace=ws,
