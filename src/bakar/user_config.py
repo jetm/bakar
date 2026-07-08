@@ -39,6 +39,7 @@ _BOOL_FIELDS = {
     "ccache_shared",
     "psi_autocalibrate",
     "sccache_dist",
+    "cluster",
     "ccache",
     "rm_work",
     "container",

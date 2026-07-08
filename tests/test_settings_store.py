@@ -94,6 +94,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert cfg.show_doctor_report is False
     assert cfg.dl_dir == "/data/dl"
     assert cfg.sstate_dir == "/data/sstate"
+    assert cfg.sstate_mirror_url == "https://cache.example.com"
     assert cfg.sstate_mirrors == "file:///mirror/sstate PATH"
     assert cfg.scheduler == "completion"
     assert cfg.pressure_max_cpu == 60
@@ -111,6 +112,9 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert cfg.sccache_scheduler_url == "http://localhost:10600"
     assert cfg.bb_hashserve == "10.42.0.1:8686"
     assert cfg.prserv_host == "10.42.0.1:8585"
+    assert cfg.cluster_bind_host == "10.42.0.1"
+    assert cfg.cluster is True
+    assert isinstance(cfg.cluster, bool)
     assert cfg.ccache is False
     assert isinstance(cfg.ccache, bool)
     assert cfg.rm_work is True
