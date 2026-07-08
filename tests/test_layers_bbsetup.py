@@ -15,7 +15,9 @@ Also covers the sub-app conversion of ``bakar layers`` (task 5.1):
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+from contextlib import ExitStack, contextmanager
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
@@ -49,13 +51,21 @@ def _git_repo(path: Path) -> None:
         "GIT_COMMITTER_NAME": "t",
         "GIT_COMMITTER_EMAIL": "t@example.com",
     }
-    subprocess.run(["git", "-C", str(path), "init", "-q"], check=True, env={**env})
+    # Inherit PATH so git resolves; isolate from user/system git config so a
+    # host commit.gpgsign or hooks path cannot break these commits.
+    git_env = {
+        **os.environ,
+        **env,
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    subprocess.run(["git", "-C", str(path), "init", "-q"], check=True, env=git_env)
     (path / "README").write_text("x\n")
-    subprocess.run(["git", "-C", str(path), "add", "README"], check=True, env={**env})
+    subprocess.run(["git", "-C", str(path), "add", "README"], check=True, env=git_env)
     subprocess.run(
         ["git", "-C", str(path), "commit", "-q", "-m", "init"],
         check=True,
-        env={**env},
+        env=git_env,
     )
 
 
@@ -67,6 +77,11 @@ def _write_bbsetup_bblayers(cfg, repos: list[str]) -> None:
     lines.extend(f"  ${{TOPDIR}}/../layers/{repo}/meta-{repo} \\" for repo in repos)
     lines.append('"')
     conf.write_text("\n".join(lines) + "\n")
+
+
+def _env_dump(values: dict[str, str]) -> str:
+    """Render a ``bitbake -e`` style dump: one ``VAR="value"`` line per entry."""
+    return "".join(f'{var}="{value}"\n' for var, value in values.items())
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +223,36 @@ def _make_cfg_mock(tmp_path: Path):
     return mock_cfg
 
 
+_UNSET = object()
+
+
+@contextmanager
+def patched_layers_cli(cfg, fake_capture, *, family="nxp", bsp=_UNSET, bblayer_paths=_UNSET):
+    """Patch the shared dependencies every layers inspect/status test needs.
+
+    Owns the RunLogger context-manager wiring plus the _common_options,
+    _overlay_for, KasBuildContext, and step_kas.run_shell_capture patches.
+    Each caller supplies only its own ``fake_capture`` payload. Pass
+    ``bblayer_paths`` for the inspect subcommand (which reads bblayers.conf);
+    omit it for status (which does not) - that is the one-patch difference
+    between the two subcommands.
+    """
+    bsp_val = MagicMock() if bsp is _UNSET else bsp
+    with ExitStack() as es:
+        es.enter_context(
+            patch("bakar.commands.layers._common_options", return_value=(family, bsp_val, cfg.bsp_root, cfg))
+        )
+        es.enter_context(patch("bakar.commands.layers._overlay_for", return_value=MagicMock()))
+        es.enter_context(patch("bakar.commands.layers.KasBuildContext"))
+        es.enter_context(patch("bakar.commands.layers.step_kas.run_shell_capture", side_effect=fake_capture))
+        if bblayer_paths is not _UNSET:
+            es.enter_context(patch("bakar.commands.layers._collect_bblayer_paths", return_value=bblayer_paths))
+        mock_rl = es.enter_context(patch("bakar.commands.layers.RunLogger"))
+        mock_rl.return_value.__enter__ = MagicMock(return_value=MagicMock())
+        mock_rl.return_value.__exit__ = MagicMock(return_value=False)
+        yield
+
+
 def test_layers_inspect_text_output(tmp_path: Path) -> None:
     """``bakar layers inspect`` prints per-layer name/priority/compat/version."""
     mock_cfg = _make_cfg_mock(tmp_path)
@@ -224,16 +269,7 @@ def test_layers_inspect_text_output(tmp_path: Path) -> None:
         capture_path.write_text(show_layers_output)
         return 0
 
-    with (
-        patch("bakar.commands.layers._common_options", return_value=("nxp", MagicMock(), tmp_path, mock_cfg)),
-        patch("bakar.commands.layers._overlay_for", return_value=MagicMock()),
-        patch("bakar.commands.layers._collect_bblayer_paths", return_value=[]),
-        patch("bakar.commands.layers.RunLogger") as mock_rl,
-        patch("bakar.commands.layers.KasBuildContext"),
-        patch("bakar.commands.layers.step_kas.run_shell_capture", side_effect=fake_run_shell_capture),
-    ):
-        mock_rl.return_value.__enter__ = MagicMock(return_value=MagicMock())
-        mock_rl.return_value.__exit__ = MagicMock(return_value=False)
+    with patched_layers_cli(mock_cfg, fake_run_shell_capture, bblayer_paths=[]):
         result = runner.invoke(app, ["layers", "inspect"])
 
     assert result.exit_code == 0
@@ -256,16 +292,7 @@ def test_layers_inspect_json_output(tmp_path: Path) -> None:
         capture_path.write_text(show_layers_output)
         return 0
 
-    with (
-        patch("bakar.commands.layers._common_options", return_value=("nxp", MagicMock(), tmp_path, mock_cfg)),
-        patch("bakar.commands.layers._overlay_for", return_value=MagicMock()),
-        patch("bakar.commands.layers._collect_bblayer_paths", return_value=[]),
-        patch("bakar.commands.layers.RunLogger") as mock_rl,
-        patch("bakar.commands.layers.KasBuildContext"),
-        patch("bakar.commands.layers.step_kas.run_shell_capture", side_effect=fake_run_shell_capture),
-    ):
-        mock_rl.return_value.__enter__ = MagicMock(return_value=MagicMock())
-        mock_rl.return_value.__exit__ = MagicMock(return_value=False)
+    with patched_layers_cli(mock_cfg, fake_run_shell_capture, bblayer_paths=[]):
         result = runner.invoke(app, ["layers", "inspect", "--json"])
 
     assert result.exit_code == 0
@@ -295,16 +322,13 @@ def test_layers_inspect_local_layer_conf(tmp_path: Path) -> None:
         capture_path.write_text("")
         return 1  # container not available - local data only
 
-    with (
-        patch("bakar.commands.layers._common_options", return_value=("bbsetup", None, tmp_path, mock_cfg)),
-        patch("bakar.commands.layers._overlay_for", return_value=MagicMock()),
-        patch("bakar.commands.layers._collect_bblayer_paths", return_value=[("meta", layer_dir)]),
-        patch("bakar.commands.layers.RunLogger") as mock_rl,
-        patch("bakar.commands.layers.KasBuildContext"),
-        patch("bakar.commands.layers.step_kas.run_shell_capture", side_effect=fake_run_shell_capture),
+    with patched_layers_cli(
+        mock_cfg,
+        fake_run_shell_capture,
+        family="bbsetup",
+        bsp=None,
+        bblayer_paths=[("meta", layer_dir)],
     ):
-        mock_rl.return_value.__enter__ = MagicMock(return_value=MagicMock())
-        mock_rl.return_value.__exit__ = MagicMock(return_value=False)
         result = runner.invoke(app, ["layers", "inspect"])
 
     assert result.exit_code == 0
@@ -323,34 +347,26 @@ def test_layers_status_text_output(tmp_path: Path) -> None:
     """``bakar layers status`` prints MACHINE and DISTRO."""
     mock_cfg = _make_cfg_mock(tmp_path)
 
-    call_count = [0]
+    # status now issues a single ``bitbake -e`` whose dump carries every var.
+    env_dump = _env_dump(
+        {
+            "MACHINE": "imx8mp-lpddr4-evk",
+            "DISTRO": "fsl-imx-xwayland",
+            "DISTRO_CODENAME": "scarthgap",
+            "BB_NUMBER_THREADS": "16",
+            "PARALLEL_MAKE": "-j16",
+            "SOURCE_MIRROR_URL": "",
+            "SSTATE_MIRRORS": "",
+            "BB_HASHSERV": "",
+        }
+    )
 
     def fake_run_shell_capture(kas_ctx, command, capture_path, **kwargs):
         capture_path.parent.mkdir(parents=True, exist_ok=True)
-        var = command.split()[-1]
-        values = {
-            "MACHINE": 'MACHINE="imx8mp-lpddr4-evk"',
-            "DISTRO": 'DISTRO="fsl-imx-xwayland"',
-            "DISTRO_CODENAME": 'DISTRO_CODENAME="scarthgap"',
-            "BB_NUMBER_THREADS": 'BB_NUMBER_THREADS="16"',
-            "PARALLEL_MAKE": 'PARALLEL_MAKE="-j16"',
-            "SOURCE_MIRROR_URL": 'SOURCE_MIRROR_URL=""',
-            "SSTATE_MIRRORS": 'SSTATE_MIRRORS=""',
-            "BB_HASHSERV": 'BB_HASHSERV=""',
-        }
-        capture_path.write_text(values.get(var, ""))
-        call_count[0] += 1
+        capture_path.write_text(env_dump)
         return 0
 
-    with (
-        patch("bakar.commands.layers._common_options", return_value=("nxp", MagicMock(), tmp_path, mock_cfg)),
-        patch("bakar.commands.layers._overlay_for", return_value=MagicMock()),
-        patch("bakar.commands.layers.RunLogger") as mock_rl,
-        patch("bakar.commands.layers.KasBuildContext"),
-        patch("bakar.commands.layers.step_kas.run_shell_capture", side_effect=fake_run_shell_capture),
-    ):
-        mock_rl.return_value.__enter__ = MagicMock(return_value=MagicMock())
-        mock_rl.return_value.__exit__ = MagicMock(return_value=False)
+    with patched_layers_cli(mock_cfg, fake_run_shell_capture):
         result = runner.invoke(app, ["layers", "status"])
 
     assert result.exit_code == 0
@@ -364,31 +380,25 @@ def test_layers_status_json_output(tmp_path: Path) -> None:
     """``bakar layers status --json`` emits a parseable JSON object with required keys."""
     mock_cfg = _make_cfg_mock(tmp_path)
 
+    env_dump = _env_dump(
+        {
+            "MACHINE": "imx8mp-lpddr4-evk",
+            "DISTRO": "fsl-imx-xwayland",
+            "DISTRO_CODENAME": "scarthgap",
+            "BB_NUMBER_THREADS": "16",
+            "PARALLEL_MAKE": "-j16",
+            "SOURCE_MIRROR_URL": "",
+            "SSTATE_MIRRORS": "file:///sstate",
+            "BB_HASHSERV": "http://hashserv:8686",
+        }
+    )
+
     def fake_run_shell_capture(kas_ctx, command, capture_path, **kwargs):
         capture_path.parent.mkdir(parents=True, exist_ok=True)
-        var = command.split()[-1]
-        values = {
-            "MACHINE": 'MACHINE="imx8mp-lpddr4-evk"',
-            "DISTRO": 'DISTRO="fsl-imx-xwayland"',
-            "DISTRO_CODENAME": 'DISTRO_CODENAME="scarthgap"',
-            "BB_NUMBER_THREADS": 'BB_NUMBER_THREADS="16"',
-            "PARALLEL_MAKE": 'PARALLEL_MAKE="-j16"',
-            "SOURCE_MIRROR_URL": 'SOURCE_MIRROR_URL=""',
-            "SSTATE_MIRRORS": 'SSTATE_MIRRORS="file:///sstate"',
-            "BB_HASHSERV": 'BB_HASHSERV="http://hashserv:8686"',
-        }
-        capture_path.write_text(values.get(var, ""))
+        capture_path.write_text(env_dump)
         return 0
 
-    with (
-        patch("bakar.commands.layers._common_options", return_value=("nxp", MagicMock(), tmp_path, mock_cfg)),
-        patch("bakar.commands.layers._overlay_for", return_value=MagicMock()),
-        patch("bakar.commands.layers.RunLogger") as mock_rl,
-        patch("bakar.commands.layers.KasBuildContext"),
-        patch("bakar.commands.layers.step_kas.run_shell_capture", side_effect=fake_run_shell_capture),
-    ):
-        mock_rl.return_value.__enter__ = MagicMock(return_value=MagicMock())
-        mock_rl.return_value.__exit__ = MagicMock(return_value=False)
+    with patched_layers_cli(mock_cfg, fake_run_shell_capture):
         result = runner.invoke(app, ["layers", "status", "--json"])
 
     assert result.exit_code == 0
@@ -405,31 +415,25 @@ def test_layers_status_omits_unset_optional_fields(tmp_path: Path) -> None:
     """``bakar layers status`` omits DISTRO_CODENAME line when empty."""
     mock_cfg = _make_cfg_mock(tmp_path)
 
+    env_dump = _env_dump(
+        {
+            "MACHINE": "some-machine",
+            "DISTRO": "some-distro",
+            "DISTRO_CODENAME": "",
+            "BB_NUMBER_THREADS": "",
+            "PARALLEL_MAKE": "",
+            "SOURCE_MIRROR_URL": "",
+            "SSTATE_MIRRORS": "",
+            "BB_HASHSERV": "",
+        }
+    )
+
     def fake_run_shell_capture(kas_ctx, command, capture_path, **kwargs):
         capture_path.parent.mkdir(parents=True, exist_ok=True)
-        var = command.split()[-1]
-        values = {
-            "MACHINE": 'MACHINE="some-machine"',
-            "DISTRO": 'DISTRO="some-distro"',
-            "DISTRO_CODENAME": 'DISTRO_CODENAME=""',
-            "BB_NUMBER_THREADS": 'BB_NUMBER_THREADS=""',
-            "PARALLEL_MAKE": 'PARALLEL_MAKE=""',
-            "SOURCE_MIRROR_URL": 'SOURCE_MIRROR_URL=""',
-            "SSTATE_MIRRORS": 'SSTATE_MIRRORS=""',
-            "BB_HASHSERV": 'BB_HASHSERV=""',
-        }
-        capture_path.write_text(values.get(var, ""))
+        capture_path.write_text(env_dump)
         return 0
 
-    with (
-        patch("bakar.commands.layers._common_options", return_value=("nxp", MagicMock(), tmp_path, mock_cfg)),
-        patch("bakar.commands.layers._overlay_for", return_value=MagicMock()),
-        patch("bakar.commands.layers.RunLogger") as mock_rl,
-        patch("bakar.commands.layers.KasBuildContext"),
-        patch("bakar.commands.layers.step_kas.run_shell_capture", side_effect=fake_run_shell_capture),
-    ):
-        mock_rl.return_value.__enter__ = MagicMock(return_value=MagicMock())
-        mock_rl.return_value.__exit__ = MagicMock(return_value=False)
+    with patched_layers_cli(mock_cfg, fake_run_shell_capture):
         result = runner.invoke(app, ["layers", "status"])
 
     assert result.exit_code == 0

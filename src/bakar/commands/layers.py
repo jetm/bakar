@@ -19,7 +19,7 @@ from bakar.commands._helpers import (
     _resolve_workspace,
 )
 from bakar.config import BSPSpec, resolve
-from bakar.inspect_parse import parse_getvar_value, parse_layer_conf
+from bakar.inspect_parse import parse_env_vars, parse_layer_conf
 from bakar.kas import parse_bblayers
 from bakar.layers import _parse_bbsetup_layer_repos, collect_layer_hashes
 from bakar.observability import RunLogger
@@ -272,18 +272,20 @@ def layers_status(
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source)
-        for var in _STATUS_VARS:
-            capture_path = cfg.runs_dir / f"layers_status_{var}.txt"
-            rc = step_kas.run_shell_capture(
-                kas_ctx,
-                f"bitbake-getvar {var}",
-                capture_path,
-                step=f"layers_status_{var}",
-            )
-            if rc == 0 and capture_path.is_file():
-                value = parse_getvar_value(capture_path.read_text(), var)
-                if value:
-                    var_values[var] = value
+        # bitbake -e dumps every variable at once, so one container invocation
+        # replaces the eight per-var bitbake-getvar calls (getvar takes exactly
+        # one positional). Same values: getvar is a subset of the -e dump.
+        capture_path = cfg.runs_dir / "layers_status_env.txt"
+        rc = step_kas.run_shell_capture(
+            kas_ctx,
+            "bitbake -e",
+            capture_path,
+            step="layers_status",
+        )
+        if rc == 0 and capture_path.is_file():
+            var_values = {
+                var: value for var, value in parse_env_vars(capture_path.read_text(), _STATUS_VARS).items() if value
+            }
 
     if output_json:
         summary = _build_status_summary(var_values)
