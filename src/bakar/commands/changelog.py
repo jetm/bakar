@@ -57,23 +57,9 @@ def _is_kas_lockfile(path: Path) -> bool:
         return False
 
 
-def _strip_path_prefix(key: str) -> str:
-    """Strip the leading path component from a manifest pin key.
-
-    Manifest pins use keys like ``"sources/meta-imx"``; the last component is
-    the bare name matching the checkout directory.
-    """
-    return key.split("/", 1)[-1]
-
-
-def _normalize_pins(raw: dict[str, str], *, is_manifest: bool) -> dict[str, str]:
-    """Return ``{bare_name: sha}`` from a raw pins dict.
-
-    Manifest pins carry a path prefix; lockfile pins use bare names already.
-    """
-    if is_manifest:
-        return {_strip_path_prefix(k): v for k, v in raw.items()}
-    return dict(raw)
+# Pin-key normalization now lives in pin_state so drift and changelog share one
+# implementation; re-exported here for callers that import the old name.
+_normalize_pins = pin_state._normalize_pin_keys
 
 
 def _read_pins_from_file(path: Path) -> tuple[dict[str, str], bool]:
@@ -266,6 +252,10 @@ def changelog(
     Markdown output (``--format md``) starts with a heading naming the
     from/to states.
     """
+    if fmt not in ("text", "md"):
+        console.print(f"[red]Unknown format:[/] {fmt!r}. Valid values: text, md")
+        raise typer.Exit(code=2)
+
     family, _bsp = _dispatch_bsp(manifest)
     ws = _resolve_workspace(workspace, family=family)
     cfg = resolve(
@@ -281,8 +271,8 @@ def changelog(
     from_pins_raw, from_is_manifest = _resolve_pins(from_state, bsp_root)
     to_pins_raw, to_is_manifest = _resolve_pins(to_state, bsp_root)
 
-    from_pins = _normalize_pins(from_pins_raw, is_manifest=from_is_manifest)
-    to_pins = _normalize_pins(to_pins_raw, is_manifest=to_is_manifest)
+    from_pins = pin_state._normalize_pin_keys(from_pins_raw, is_manifest=from_is_manifest)
+    to_pins = pin_state._normalize_pin_keys(to_pins_raw, is_manifest=to_is_manifest)
 
     # Compute set operations
     from_names = set(from_pins)
@@ -302,10 +292,6 @@ def changelog(
             if cand.is_dir():
                 return cand
         return None
-
-    if fmt not in ("text", "md"):
-        console.print(f"[red]Unknown format:[/] {fmt!r}. Valid values: text, md")
-        raise typer.Exit(code=2)
 
     # Render
     if fmt == "md":

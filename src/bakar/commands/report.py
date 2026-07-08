@@ -16,6 +16,7 @@ from bakar.commands._helpers import (
     _bbsetup_workspace,
     _find_run,
     _print_layer_hashes,
+    _render_sstate_lines,
     _workspace_from_cwd,
 )
 from bakar.config import BSPSpec, resolve
@@ -189,14 +190,17 @@ def report(
         console.print(f"build_revision: {summary.build_revision}")
     _print_layer_hashes(cfg, hashes=summary.layers)
     if effective_show_sstate:
-        console.print("[bold]sstate summary:[/]")
-        console.print(f"  wanted: {summary.sstate_wanted}")
-        console.print(f"  local: {summary.sstate_local}")
-        console.print(f"  mirrors: {summary.sstate_mirrors}")
-        console.print(f"  missed: {summary.sstate_missed}")
-        console.print(f"  current: {summary.sstate_current}")
-        console.print(f"  match: {summary.sstate_match_pct}%")
-        console.print(f"  complete: {summary.sstate_complete_pct}%")
+        _render_sstate_lines(
+            console,
+            wanted=summary.sstate_wanted,
+            local=summary.sstate_local,
+            mirrors=summary.sstate_mirrors,
+            missed=summary.sstate_missed,
+            current=summary.sstate_current,
+            match_pct=summary.sstate_match_pct,
+            complete_pct=summary.sstate_complete_pct,
+            header_style="bold",
+        )
     if has_buildhistory:
         console.print("[bold]buildhistory:[/]")
         if summary.buildhistory_imagesize_kib is not None:

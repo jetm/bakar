@@ -22,6 +22,8 @@ from bakar.diagnostics import CheckResult, Severity, Status, any_blocking_failur
 from bakar.layers import collect_layer_hashes
 
 if TYPE_CHECKING:
+    from rich.console import Console
+
     from bakar.config import BuildConfig
     from bakar.layers import LayerHash
     from bakar.output_mode import OutputMode
@@ -591,6 +593,37 @@ def _print_layer_hashes(cfg: BuildConfig, hashes: list[LayerHash] | None = None)
     console.print(layer_hash_table(hashes))
 
 
+def _render_sstate_lines(
+    console: Console,
+    *,
+    wanted: int | None,
+    local: int | None,
+    mirrors: int | None,
+    missed: int | None,
+    current: int | None,
+    match_pct: int | None,
+    complete_pct: int | None,
+    header_style: str = "",
+    highlight: bool = True,
+) -> None:
+    """Render the 7-field sstate summary block to ``console``.
+
+    Shared by the ``report`` command's success summary and
+    ``_print_sstate_summary`` so the labels and ordering live in one place.
+    ``header_style`` wraps the heading in a Rich markup tag (e.g. ``bold``);
+    empty leaves it plain. ``highlight`` toggles Rich number highlighting.
+    """
+    header = f"[{header_style}]sstate summary:[/]" if header_style else "sstate summary:"
+    console.print(header, highlight=highlight)
+    console.print(f"  wanted: {wanted}", highlight=highlight)
+    console.print(f"  local: {local}", highlight=highlight)
+    console.print(f"  mirrors: {mirrors}", highlight=highlight)
+    console.print(f"  missed: {missed}", highlight=highlight)
+    console.print(f"  current: {current}", highlight=highlight)
+    console.print(f"  match: {match_pct}%", highlight=highlight)
+    console.print(f"  complete: {complete_pct}%", highlight=highlight)
+
+
 def _print_sstate_summary(kas_log: Path) -> None:
     """Print the sstate summary from ``kas_log`` when the line is present.
 
@@ -603,14 +636,17 @@ def _print_sstate_summary(kas_log: Path) -> None:
     sstate = _parse_sstate_summary(kas_log)
     if sstate.get("sstate_wanted") is None:
         return
-    console.print("sstate summary:", highlight=False)
-    console.print(f"  wanted: {sstate['sstate_wanted']}", highlight=False)
-    console.print(f"  local: {sstate['sstate_local']}", highlight=False)
-    console.print(f"  mirrors: {sstate['sstate_mirrors']}", highlight=False)
-    console.print(f"  missed: {sstate['sstate_missed']}", highlight=False)
-    console.print(f"  current: {sstate['sstate_current']}", highlight=False)
-    console.print(f"  match: {sstate['sstate_match_pct']}%", highlight=False)
-    console.print(f"  complete: {sstate['sstate_complete_pct']}%", highlight=False)
+    _render_sstate_lines(
+        console,
+        wanted=sstate["sstate_wanted"],
+        local=sstate["sstate_local"],
+        mirrors=sstate["sstate_mirrors"],
+        missed=sstate["sstate_missed"],
+        current=sstate["sstate_current"],
+        match_pct=sstate["sstate_match_pct"],
+        complete_pct=sstate["sstate_complete_pct"],
+        highlight=False,
+    )
 
 
 def _find_run(

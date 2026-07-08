@@ -137,12 +137,14 @@ def _parse_sstate_summary(kas_log: Path) -> dict[str, int | None]:
     none_result: dict[str, int | None] = dict.fromkeys(_SSTATE_FIELDS)
     if not kas_log.is_file():
         return none_result
+    summary_line: str | None = None
     try:
-        text = kas_log.read_text()
+        with kas_log.open() as handle:
+            for line in handle:
+                if "Sstate summary:" in line:
+                    summary_line = line
     except OSError:
         return none_result
-
-    summary_line = next((ln for ln in reversed(text.splitlines()) if "Sstate summary:" in ln), None)
     if summary_line is None:
         return none_result
 

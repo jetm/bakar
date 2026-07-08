@@ -85,11 +85,12 @@ def _bitbake_override_summary(events_path: Path) -> str | None:
     return f"bitbake-override skipped during this run: {last.get('reason', 'unknown')}"
 
 
-def _tail(path: Path, n: int = 80) -> list[str]:
-    if not path.is_file():
-        return []
-    lines = path.read_text(errors="replace").splitlines()
-    return lines[-n:]
+def _tail(path: Path, n: int = 80, *, text: str | None = None) -> list[str]:
+    if text is None:
+        if not path.is_file():
+            return []
+        text = path.read_text(errors="replace")
+    return text.splitlines()[-n:]
 
 
 _RECIPE_LOG_RE = re.compile(r"Logfile of failure stored in: (?P<path>/[^\s]+)")
@@ -107,17 +108,19 @@ _RECIPE_ERROR_RE = re.compile(
 )
 
 
-def _scan_recipe_errors(kas_log: Path, cap: int = 10) -> list[RecipeError]:
+def _scan_recipe_errors(kas_log: Path, cap: int = 10, *, text: str | None = None) -> list[RecipeError]:
     """Walk kas.log for bitbake recipe-level ERROR lines.
 
     Returns up to ``cap`` distinct ``(recipe, task)`` pairs with a short
     one-line excerpt (truncated to ~120 chars).  Order is first-seen.
     """
-    if not kas_log.is_file():
-        return []
+    if text is None:
+        if not kas_log.is_file():
+            return []
+        text = kas_log.read_text(errors="replace")
     seen: set[tuple[str, str]] = set()
     out: list[RecipeError] = []
-    for line in kas_log.read_text(errors="replace").splitlines():
+    for line in text.splitlines():
         m = _RECIPE_ERROR_RE.search(line)
         if not m:
             continue
@@ -148,12 +151,14 @@ def _translate_container_path(container_path: str, workspace: Path) -> str:
     return container_path.replace("/work/", str(workspace) + "/", 1)
 
 
-def _find_recipe_log(kas_log: Path, workspace: Path) -> Path | None:
+def _find_recipe_log(kas_log: Path, workspace: Path, *, text: str | None = None) -> Path | None:
     """Scan kas.log for bitbake's Logfile hint and rewrite the container
     path (/work/...) to a host path under ``workspace``."""
-    if not kas_log.is_file():
-        return None
-    for line in kas_log.read_text(errors="replace").splitlines():
+    if text is None:
+        if not kas_log.is_file():
+            return None
+        text = kas_log.read_text(errors="replace")
+    for line in text.splitlines():
         m = _RECIPE_LOG_RE.search(line)
         if not m:
             continue
@@ -333,15 +338,18 @@ def analyse(run_dir: Path, workspace: Path) -> TriageReport:
     # Live-parse path: used when error-report.json is absent or unreadable
     # (backward compatible with run dirs produced before this feature).
     kas_log = run_dir / "kas.log"
+    # Read kas.log once and thread the text through the three scanners below
+    # instead of each re-reading the file.
+    kas_text = kas_log.read_text(errors="replace") if kas_log.is_file() else ""
 
     fail = _last_event_matching(events_path, "step_fail")
     failing_step = fail.get("step") if fail else None
     fail_reason = fail.get("reason") if fail else None
 
-    kas_log_tail = _tail(kas_log, 60)
-    recipe_log = _find_recipe_log(kas_log, workspace)
+    kas_log_tail = _tail(kas_log, 60, text=kas_text)
+    recipe_log = _find_recipe_log(kas_log, workspace, text=kas_text)
     recipe_log_tail = _tail(recipe_log, 60) if recipe_log else []
-    recipe_errors = _scan_recipe_errors(kas_log)
+    recipe_errors = _scan_recipe_errors(kas_log, text=kas_text)
 
     suggestions_text = "\n".join(kas_log_tail + recipe_log_tail)
     suggestions = _match_suggestions(suggestions_text)

@@ -110,22 +110,39 @@ def _gather_remove_targets(root: Path, min_fanout: int) -> list[Path]:
     the heavy subtrees across workers.
     """
     targets: list[Path] = [root]
+    # Cache per-path child counts and materialized children so an entry that
+    # survives across while-passes (and the final sort) is counted once, not
+    # once per pass. The winner's children are reused from kids_cache instead of
+    # a second iterdir after the count.
+    count_cache: dict[Path, int] = {}
+    kids_cache: dict[Path, list[Path]] = {}
+
+    def _count(path: Path) -> int:
+        count = count_cache.get(path)
+        if count is None:
+            count = _direct_child_count(path)
+            count_cache[path] = count
+        return count
+
     while len(targets) < min_fanout:
         best_idx = -1
         best_count = 1  # require >= 2 children to bother expanding
         best_kids: list[Path] | None = None
         for i, t in enumerate(targets):
-            count = _direct_child_count(t)
+            count = _count(t)
             if count > best_count:
-                try:
-                    kids = list(t.iterdir())
-                except OSError:
-                    continue
+                kids = kids_cache.get(t)
+                if kids is None:
+                    try:
+                        kids = list(t.iterdir())
+                    except OSError:
+                        continue
+                    kids_cache[t] = kids
                 best_idx, best_count, best_kids = i, count, kids
         if best_idx < 0 or best_kids is None:
             break
         targets[best_idx : best_idx + 1] = best_kids
-    targets.sort(key=_direct_child_count, reverse=True)
+    targets.sort(key=_count, reverse=True)
     return targets
 
 

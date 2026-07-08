@@ -49,7 +49,7 @@ from bakar.commands._helpers import (
 from bakar.commands.log import _resolve_run_dir
 from bakar.config import BSPSpec, BuildConfig, resolve
 from bakar.diagnostics import probe_build_daemon, probe_cluster, split_host_port
-from bakar.eventlog import normalize, running_tasks
+from bakar.eventlog import normalize, running_from_rows
 from bakar.output_mode import OutputMode, resolve_output_mode
 from bakar.steps.build_ui import SEVERITY_PASSTHROUGH, _fmt_stall, _task_style
 
@@ -162,9 +162,10 @@ def _build_progress(run_dir: Path) -> dict[str, Any]:
             # separately so the monitor never reports it as "N failed".
             setscene_rerun += 1
 
-    # Running-task selection is owned by eventlog.running_tasks so this view and
-    # bakar stop cannot drift on which rows count as running.
-    running = running_tasks(run_dir)
+    # Running-task selection is owned by eventlog.running_from_rows so this view
+    # and bakar stop cannot drift on which rows count as running. Reuse the rows
+    # already normalized above instead of re-normalizing the same event log.
+    running = running_from_rows(tasks)
 
     build = artifact["build"]
     completed = build.get("completed")

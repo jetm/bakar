@@ -162,7 +162,7 @@ def _iter_events(raw_path: Path):
                 continue
             if not isinstance(record, dict) or record.get("class") not in _RECOGNIZED_CLASSES:
                 continue
-            decoded = _decode_line(line)
+            decoded = _decode_record(record)
             if decoded is not None:
                 yield decoded
 
@@ -182,6 +182,19 @@ def _decode_line(line: str) -> tuple[str, _EventStub] | None:
         record = json.loads(line)
     except json.JSONDecodeError, ValueError:
         return None
+    return _decode_record(record)
+
+
+def _decode_record(record: Any) -> tuple[str, _EventStub] | None:
+    """Decode one already-parsed JSONL record into ``(class_name, event)`` or ``None``.
+
+    Applies the same per-record guards as :func:`_decode_line` (skip non-dict
+    records, the ``allvariables`` dump, and records missing a str
+    ``class``/``vars``) but takes the parsed dict directly, so a caller that
+    already ran ``json.loads`` (e.g. :func:`_iter_events`, which class-filters on
+    the parsed record) does not decode the same line twice. Does NOT filter on
+    ``_RECOGNIZED_CLASSES``. Returns ``None`` for any record that should be skipped.
+    """
     if not isinstance(record, dict) or "allvariables" in record:
         return None
     class_name = record.get("class")
@@ -419,6 +432,19 @@ def running_tasks(run_dir: Path) -> list[RunningTask]:
     except Exception:  # noqa: BLE001 - any read/normalize failure degrades to no running tasks
         return []
 
+    return running_from_rows(rows)
+
+
+def running_from_rows(rows: list[dict[str, Any]]) -> list[RunningTask]:
+    """Select the running tasks from already-normalized ``tasks`` rows.
+
+    A row counts as running when its ``outcome`` is ``None`` and its ``started``
+    is set; completed tasks (any ``outcome``) are excluded. Owning this selection
+    here lets a caller that already holds a normalized artifact (e.g.
+    :func:`bakar.commands.monitor._build_progress`) reuse its ``tasks`` rows
+    instead of re-normalizing the same log, while keeping the running-task
+    definition in one place so the monitor view and ``bakar stop`` cannot drift.
+    """
     return [
         RunningTask(
             recipe=row.get("recipe"),

@@ -108,6 +108,28 @@ def _git_head_pins(workspace: Path) -> dict[str, str]:
     return pins
 
 
+def _strip_path_prefix(key: str) -> str:
+    """Return the bare repo name from a manifest pin key.
+
+    Manifest pins use keys like ``"sources/meta-imx"``; stripping the leading
+    path component gives the bare name that matches the checkout directory
+    under ``sources/`` or ``layers/``.
+    """
+    return key.split("/", 1)[-1]
+
+
+def _normalize_pin_keys(pins: dict[str, str], *, is_manifest: bool) -> dict[str, str]:
+    """Return ``{bare_name: sha}`` from a raw pins dict.
+
+    Manifest pins carry a leading path component (``"sources/meta-imx"``); the
+    bare name is the last path component. Lockfile and git-HEAD pins already use
+    bare names, so they pass through unchanged.
+    """
+    if is_manifest:
+        return {_strip_path_prefix(k): v for k, v in pins.items()}
+    return dict(pins)
+
+
 def read_pins(
     family: str,
     *,

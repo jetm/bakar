@@ -21,6 +21,7 @@ from bakar.commands._helpers import (
     WorkspaceOption,
     _bbsetup_workspace,
     _clean_build_dir,
+    _combine_overlays_with_tuning,
     _dispatch_bsp,
     _dispatch_from_yaml,
     _overlay_for,
@@ -87,6 +88,22 @@ def _make_kas_ctx(cfg, log, overlay_source: Path, ctx) -> KasBuildContext:
 def _open_run_logger(cfg) -> RunLogger:
     """Open a RunLogger honoring the plain-mode render console override."""
     return RunLogger(runs_dir=cfg.runs_dir, render_console=_plain_render_console())
+
+
+def _finish_build(cfg, log, rc: int, machine: str) -> None:
+    """Shared build tail: rc check + triage hint, sstate summary, success line, artifacts path.
+
+    ``machine`` names the deploy/images subdir - ``cfg.machine`` for byo/manifest
+    builds, the bbsetup-translated machine for the bbsetup path.
+    """
+    if rc != 0:
+        console.print(f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details.")
+        raise typer.Exit(code=rc)
+    deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / machine
+    if _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary:
+        _print_sstate_summary(log.run_dir / "kas.log")
+    console.print(f"[bold green]build succeeded[/] in {fmt_duration(time.monotonic() - log.start_monotonic)}")
+    console.print(f"artifacts: {deploy}")
 
 
 def _preset_completer(incomplete: str) -> list[str]:
@@ -220,16 +237,7 @@ def _run_bbsetup_build(
             extra_overlays=_tuning_extra_overlays(cfg),
             show_layers=effective_show_layers,
         )
-        if rc != 0:
-            console.print(
-                f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details."
-            )
-            raise typer.Exit(code=rc)
-        deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / translated["machine"]
-        if _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary:
-            _print_sstate_summary(log.run_dir / "kas.log")
-        console.print(f"[bold green]build succeeded[/] in {fmt_duration(time.monotonic() - log.start_monotonic)}")
-        console.print(f"artifacts: {deploy}")
+        _finish_build(cfg, log, rc, translated["machine"])
 
 
 @dataclass(frozen=True)
@@ -276,14 +284,7 @@ def _run_byo_build(
         extra_overlays=ctx.extra_overlays,
         show_layers=ctx.effective_show_layers and not ctx.dry_run,
     )
-    if rc != 0:
-        console.print(f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details.")
-        raise typer.Exit(code=rc)
-    deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
-    if _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary:
-        _print_sstate_summary(log.run_dir / "kas.log")
-    console.print(f"[bold green]build succeeded[/] in {fmt_duration(time.monotonic() - log.start_monotonic)}")
-    console.print(f"artifacts: {deploy}")
+    _finish_build(cfg, log, rc, cfg.machine)
 
 
 def _run_manifest_build(
@@ -339,14 +340,7 @@ def _run_manifest_build(
         extra_overlays=_tuning_extra_overlays(cfg),
         show_layers=ctx.effective_show_layers and not ctx.dry_run,
     )
-    if rc != 0:
-        console.print(f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details.")
-        raise typer.Exit(code=rc)
-    deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
-    if _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary:
-        _print_sstate_summary(log.run_dir / "kas.log")
-    console.print(f"[bold green]build succeeded[/] in {fmt_duration(time.monotonic() - log.start_monotonic)}")
-    console.print(f"artifacts: {deploy}")
+    _finish_build(cfg, log, rc, cfg.machine)
 
 
 def _is_multi_release(preset: object) -> bool:
@@ -399,9 +393,11 @@ def _run_single_preset_release(
     ws = workspace_root / "build" / out_subdir
 
     byo_form = spec.kas_yaml is not None
+    main_yaml: Path | None
+    user_extras: list[Path] = []
     if byo_form:
-        family, bsp = _dispatch_from_yaml(spec.kas_yaml)
-        main_yaml: Path | None = spec.kas_yaml
+        main_yaml, user_extras = split_kas_yaml_arg(spec.kas_yaml)
+        family, bsp = _dispatch_from_yaml(main_yaml)
     else:
         family, bsp = _dispatch_bsp(spec.manifest)
         main_yaml = None
@@ -410,7 +406,7 @@ def _run_single_preset_release(
         workspace=ws,
         bsp_family=family,
         spec=BSPSpec(
-            machine=machine or spec.machine or (machine_from_yaml(spec.kas_yaml) if byo_form else None),
+            machine=machine or spec.machine or (machine_from_yaml(main_yaml) if byo_form else None),
             distro=distro or spec.distro,
             image=image or spec.image,
             manifest=spec.manifest,
@@ -431,13 +427,8 @@ def _run_single_preset_release(
 
     overlay_source = _overlay_for(bsp)
     extra_overlays: list[Path] = []
-    if byo_form and main_yaml is not None:
-        resolved_existing = set()
-        for overlay in _tuning_extra_overlays(cfg):
-            resolved_overlay = overlay.resolve()
-            if resolved_overlay not in resolved_existing:
-                extra_overlays.append(overlay)
-                resolved_existing.add(resolved_overlay)
+    if byo_form:
+        extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
 
     effective_show_layers = show_layers or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_hashes)
 
@@ -767,13 +758,7 @@ def build(
 
     extra_overlays: list[Path] = []
     if byo_form:
-        extra_overlays = list(user_extras)
-        resolved_existing = {p.resolve() for p in extra_overlays}
-        for overlay in _tuning_extra_overlays(cfg):
-            resolved_overlay = overlay.resolve()
-            if resolved_overlay not in resolved_existing:
-                extra_overlays.append(overlay)
-                resolved_existing.add(resolved_overlay)
+        extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
 
     overlay_source = _overlay_for(bsp)
     if "KAS_CONTAINER_IMAGE" not in os.environ and cfg.kas_container_image != DEFAULT_CONTAINER_IMAGE:

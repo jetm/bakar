@@ -31,30 +31,6 @@ from bakar.layers import discover_source_repos
 _MANIFEST_FAMILIES = pin_state._MANIFEST_FAMILIES
 
 
-def _strip_path_prefix(pin_key: str) -> str:
-    """Return the bare repo name from a manifest pin key.
-
-    Manifest pins use keys like ``"sources/meta-imx"``; stripping the first
-    path component gives the bare name that matches the directory entry under
-    ``sources/`` or ``layers/``.
-    """
-    parts = pin_key.split("/", 1)
-    return parts[-1]
-
-
-def _build_pin_lookup(pins: dict[str, str], family: str) -> dict[str, str]:
-    """Return ``{bare_name: pinned_sha}`` from a raw pins dict.
-
-    For NXP/TI the raw keys contain a leading path component
-    (``"sources/meta-imx"``); for BYO/bbsetup the keys are already bare names
-    (``"meta-avocado"``). This normalises both shapes to bare names so they can
-    be matched against :func:`~bakar.layers.discover_source_repos` output.
-    """
-    if family in _MANIFEST_FAMILIES:
-        return {_strip_path_prefix(k): v for k, v in pins.items()}
-    return dict(pins)
-
-
 def _locate_lockfile(cfg_bsp_root: Path, kas_yaml: Path | None) -> Path | None:
     """Return the kas lockfile path when it exists, or None.
 
@@ -106,6 +82,10 @@ def drift(
     Exits 0 when no sources have drifted (or when ``--all`` is used).
     Exits 2 when the pin input required by the family is not found.
     """
+    if fmt not in ("text", "md"):
+        console.print(f"[red]Unknown format:[/] {fmt!r}. Valid values: text, md")
+        raise typer.Exit(code=2)
+
     family, _bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
     cfg = resolve(
@@ -142,7 +122,7 @@ def drift(
             console.print(f"[red]Cannot read pins:[/] {exc}")
             raise typer.Exit(code=2) from None
 
-    pin_lookup = _build_pin_lookup(raw_pins, family)
+    pin_lookup = pin_state._normalize_pin_keys(raw_pins, is_manifest=family in _MANIFEST_FAMILIES)
 
     # -- Enumerate sources ------------------------------------------------
     sources = discover_source_repos(cfg)
@@ -196,10 +176,6 @@ def drift(
         else:
             console.print("All sources are on their pinned revision.")
         raise typer.Exit(code=0)
-
-    if fmt not in ("text", "md"):
-        console.print(f"[red]Unknown format:[/] {fmt!r}. Valid values: text, md")
-        raise typer.Exit(code=2)
 
     if fmt == "md":
         _render_markdown(rows)
