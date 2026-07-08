@@ -1,6 +1,6 @@
 [project]
 name = "bakar"
-version = "0.20.0"
+version = "0.21.0"
 description = "kas-based Yocto BSP build orchestrator - live build UI, pre-flight checks, telemetry, and failure triage"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -151,7 +151,9 @@ known-first-party = ["bakar"]
 "src/bakar/config.py" = ["PLR0913"]
 "src/bakar/steps/stress_parse.py" = ["PLR0913"]
 "src/bakar/steps/kas_build.py" = ["PLR0913"]
-"src/bakar/build_stop.py" = ["PLR0913"]  # _graceful_wait exposes injectable clock/liveness/eventlog seams for testing
+"src/bakar/build_stop.py" = [
+  "PLR0913"
+]  # _graceful_wait exposes injectable clock/liveness/eventlog seams for testing
 # permanent: module-level lazy-load singletons (_VENDORS, _USER_CONFIG).
 "src/bakar/commands/_app.py" = ["PLW0603"]
 # Test functions receive bool params from @pytest.mark.parametrize, not from callers.

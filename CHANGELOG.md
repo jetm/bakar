@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-07-08
+
+### Added
+- Added `--full` mode to `clean-cache` that performs a complete cold-reset of the sccache-dist cluster: stops hashserv/prserv daemons, empties the shared sstate directory in-place (preserving NFS export inodes), wipes build directories, clears the local sccache client cache, wipes the local ccache directory, and resets the sccache-dist server on all nodes over SSH. Includes `--dry-run` support, a live-build guard (refuses to run while bitbake is active unless `--force` is given), and post-reset verification that distributed compilation recovered.
+- Added a `cluster` boolean setting (default `false`) to user and build configuration, controllable via `BAKAR_CLUSTER`, that gates cluster-mode preflight checks so a single-node build is never blocked by cluster-only diagnostics.
+- Added cluster-mode doctor preflight checks for the central hashserv and prserv endpoints (`check_central_hashserv`, `check_central_prserv`): an unreachable endpoint is a blocking failure, an unset or loopback endpoint is a warning. These checks only run when cluster mode is enabled.
+- Added a cluster-mode doctor preflight check (`check_shared_cache_mounts`) that verifies the shared sstate, downloads, and ccache directories are on NFS mounts and are writable. A non-NFS or unwritable sstate/downloads directory is a blocking failure; a local ccache directory is a warning.
+- Added `--plain` / `--ci` and `--rich` global flags to force plain or Rich output mode. Plain mode produces ANSI-free, glyph-free, line-oriented output suitable for CI logs; Rich mode forces the interactive display even when output is piped. Passing both flags exits with an error.
+- Build output now automatically switches to plain (ANSI-free) mode when stdout is not a TTY or a CI environment variable is set, so piped and CI logs are readable without manual flags.
+- `bakar monitor` now produces plain, ANSI-free output in non-TTY and CI environments (or when `--plain` is passed), including the `--once` path. `--json` output is unaffected.
+- The build UI now shows a live cache badge displaying the cumulative compiler cache hit rate and, for sccache-dist builds, a distributed-compilation verdict alongside existing build progress.
+- A per-build cache summary line is now printed after the build completes, showing the delta hit/miss counts for the build rather than lifetime daemon totals. The line is prefixed with `bakar[cache]` for reliable CI log parsing.
+- Added ccache statistics persistence to the build run directory (`ccache-stats.json`), providing a structured artifact for post-build cache analysis comparable to the existing sccache stats artifact.
+- `bakar report` now reads and displays ccache hit/miss counters from `ccache-stats.json` when present, shown as a distinct section in both human-readable and JSON output. The label correctly reflects whether the counters represent this build or lifetime totals.
+- For BYO builds (`bakar build some.yml`), the post-build artifacts path and hints now correctly reflect the `machine:` value declared in the kas YAML rather than the generic placeholder.
+- `bakar layers --status` now issues a single `bitbake -e` call to retrieve all layer status variables instead of one subprocess per variable, significantly reducing startup overhead.
+- `bakar inspect --recursive` now reads the `pn-buildlist` file instead of parsing `bitbake -g` stdout, eliminating build-log noise lines (progress messages) from the dependency list.
+- Elapsed build time is now printed on the build-succeeded line, so the total duration is visible after the live UI has closed.
+- Daemon stderr from central hashserv/prserv and sccache server processes is now redirected to a persistent log file under the user state directory instead of being discarded, making silent startup failures diagnosable.
+- The normalized bitbake events artifact now includes the `run_id` of the build that produced it, making it unambiguously linkable to its originating run.
+- `bakar doctor` now continues running all remaining checks even when an individual check crashes, recording the failure as a structured result rather than aborting the entire diagnostic run.
+
+### Changed
+- The glibc binary locale generation in the generic tuning overlay is now limited to `en_US.UTF-8` by default, reducing cold build time for glibc-locale. Workspaces or distros that require additional locales can override this setting.
+- The `bakar doctor` host-tools check no longer prefixes its message with "GENERIC" for BYO/generic-family builds, where the vendor prefix carries no meaningful information.
+- The eventlog artifact schema version is bumped to v2; the `preset`, `release`, and `per_recipe` fields are removed from the normalized output. Downstream consumers such as build-insights and triage can detect the format change via the `schema_version` field.
+- `bakar show` now exits with code 2 for unrecognized `--format` values, consistent with `changelog` and `drift`.
+- `bakar stop`, `for-all`, `prefetch`, `dump`, `lock`, and `log` now correctly accept `-f <yaml>` to specify a kas YAML, matching the behavior of other subcommands.
+- `bakar init` now creates the workspace directory before writing the marker file, preventing a `FileNotFoundError` for bbsetup and generic families.
+- `bsp-detect` no longer classifies all `am*` machines as TI; only Sitara-generation boards (`am3xx`/`am4xx`/`am5xx`/`am6xx`) are matched.
+- `hashserv stop()` now verifies process identity before sending any signal, preventing accidental signaling of an unrelated process that has recycled the recorded PID. A `PermissionError` during signaling is handled gracefully rather than propagating.
+- A corrupted or invalid vendor configuration file now produces a descriptive `ValueError` instead of a raw library exception; BSP family detection falls back to built-in patterns rather than failing.
+- Passing a `bsp_family` that conflicts with an active preset's declared family now raises an error immediately rather than silently using the caller-supplied value.
+- A docker/podman container runtime mismatch in `bakar cluster-info` is fixed: the active runtime is now detected rather than hardcoded to `docker`, so podman hosts are handled correctly.
+- `changelog` and `drift` now validate the `--format` argument before performing any git work, failing fast on an invalid value.
+- The build-dir removal progress display no longer shows a time-remaining column, which previously showed unreliable estimates due to uneven subtree sizes.
+- Passing an invalid or missing `machine` in a bbsetup config now raises an error with a clear message at translation time rather than emitting `machine: null` into the kas YAML and failing later with an opaque schema error.
+- `kas shell` failures (non-zero exit code) are now correctly reported as `step_fail` in the event log instead of `step_ok`.
+- Shell command failures in `run_shell` and `run_shell_capture` are now reported as `step_fail` with the exit code, instead of always reporting `step_ok`.
+- `stress-parse` now correctly distinguishes a run where no fork-race signature matched but the exit code was nonzero (recorded as `errored`) from a genuinely race-free pass, preventing inflation of the fix-confidence rate.
+- `bakar settings set build.cluster false` now correctly stores and reads back a boolean `false` instead of the truthy string `"false"`, which previously silently enabled cluster mode.
+- The `hashserv` daemon now reuses its known port on restart instead of respawning on a fixed port after unlinking a stale port file, preventing collisions with a live daemon.
+- `lock` now runs `repo manifest` under the configured `bsp_root` instead of a hardcoded path, fixing manifest locking for non-default vendor repo layouts.
+- `bakar doctor` crash isolation now preserves the crashing check's registered severity, so a crash in a blocking check remains blocking rather than being silently downgraded to a warning.
+- Git subprocess calls in `layers`, `manifest_diff`, and `pin_state` now share a centralized helper with a five-second timeout, preventing indefinite hangs on wedged or NFS-stalled repositories.
+- Artifact persistence errors (event log copy, event JSON write, task timing write) after a completed build are now demoted to console warnings and never cause the build to exit with a failure code.
+- A corrupted entry in the build timings baseline no longer aborts the build; the malformed entry is silently skipped, consistent with how `load_baselines` handles the same condition.
+
+### Fixed
+- Fixed `clean-cache --full --dry-run` no longer triggers a live `sccache --dist-status` subprocess call (which could auto-start the client daemon) when only printing the plan.
+- Fixed `clean-cache --full` now exits with code 2 when no sstate directory can be resolved, instead of silently wiping a guessed path.
+- Fixed `clean-cache --full` now stops hashserv/prserv daemons before emptying sstate, preventing live daemons from running against unlinked files.
+- Fixed `clean-cache --full` prserv stop now correctly resolves the binary from the workspace root and respects the configured `cluster_bind_host`.
+- Fixed a file descriptor leak in central daemon and sccache server spawn paths where a failure inside `Popen()` could leave the stderr log file open.
+- Fixed duplicate terminal step events being emitted when an exception occurred during post-build artifact persistence.
+- Fixed the interrupted-step detector incorrectly flagging normally-completed steps as interrupted; it now recognizes all three terminal event types (`step_ok`, `step_fail`, `step_skip`).
+- Fixed I/O errors during event emission (full disk, closed file descriptor) no longer propagate out of the error-reporting path, preserving the "never raises" contract.
+- Fixed the `triage` command disagreement between JSON and text mode on a parsed-but-clean artifact with a kas-level failure.
+- Fixed the hashserv port and PID readers now handle corrupt state files (`ValueError`) and permission errors in addition to missing files, preventing unexpected exceptions on the not-running path.
+- Fixed `lock` running `repo manifest` under a hardcoded path instead of the configured workspace root.
+- Fixed a typo in the fork-race hint that read "not a recipe Manual workaround" instead of "not a recipe bug. Manual workaround".
+- Fixed IPv6 addresses (both bare `::1` and bracketed `[::1]`) being incorrectly parsed in `split_host_port`, causing healthy IPv6 cluster endpoints to be reported as unreachable by doctor.
+- Fixed `bakar report` ccache window label always showing "this build" regardless of whether the persisted artifact contained a lifetime or per-build window marker.
+- Fixed the `run_shell_capture` step always reporting success regardless of exit code; non-zero exits now produce `step_fail` events with structured exit code information.
+
+### Removed
+- Removed `scripts/clean-all-cache.sh`; its functionality is now available as `bakar clean-cache --full`.
+- Removed the `preset`, `release`, and `per_recipe` fields from the normalized eventlog artifact (schema v2).
+
 ## [0.20.0] - 2026-07-03
 
 ### Added
@@ -493,7 +562,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/jetm/bakar/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/jetm/bakar/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/jetm/bakar/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/jetm/bakar/compare/v0.17.0...v0.18.0
