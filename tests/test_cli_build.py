@@ -201,8 +201,9 @@ def test_user_overlay_named_in_build_log(
     base + user/auto overlays), so the operator can confirm their extra overlay
     is in the merge. Asserts on the structured events.jsonl message (the Rich
     console soft-wraps long paths, which would make a console substring match
-    fragile). With hashserv=False the stack is exactly 3: my.yml, the tuning
-    base, and bringup.yml.
+    fragile). With hashserv=False the stack is exactly 5: my.yml, the generic
+    tuning base, bringup.yml, the default-on ccache tuning overlay, and the
+    host-mode isolation overlay.
     """
     _stub_user_config_loader(monkeypatch, hashserv=False)
     monkeypatch.setattr(build_cmd.step_kas, "run_build", lambda ctx, **kw: 0)

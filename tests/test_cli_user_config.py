@@ -89,7 +89,7 @@ def _stub_build_steps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(helpers_module, "collect_layer_hashes", lambda cfg: [])
     # Reset cached vendors so the _main callback does not short-circuit on a
     # stale value from another test.
-    app_module._VENDORS = None
+    monkeypatch.setattr(app_module, "_VENDORS", None)
 
 
 def _set_user_config(monkeypatch: pytest.MonkeyPatch, uc: UserConfig) -> None:
@@ -189,4 +189,4 @@ def test_no_flag_no_config_omits_layers_table(
     monkeypatch.setattr(helpers_module, "collect_layer_hashes", lambda cfg: sentinel)
     result = _invoke_build(runner, nxp_workspace)
     assert result.exit_code == 0, result.output
-    assert "layers:" not in result.output
+    assert "Layers (" not in result.output

@@ -11,12 +11,12 @@ Covers:
 
 from __future__ import annotations
 
-import hashlib
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 
+from bakar.report import assemble_report
 from bakar.steps.build_ui import BuildUIState
 from bakar.triage import _SUGGESTIONS, _match_suggestions, find_runs
 
@@ -141,41 +141,69 @@ def test_find_runs_workspace_root_build(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _report_cfg(tmp_path: Path):
+    """Resolve an nxp BuildConfig and a run dir rooted at ``tmp_path``."""
+    from bakar.config import resolve
+
+    (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
+    cfg = resolve(workspace=tmp_path, bsp_family="nxp")
+    run_dir = tmp_path / "runs" / "20260601-120000"
+    run_dir.mkdir(parents=True)
+    return run_dir, cfg
+
+
 @pytest.mark.unit
-def test_build_revision_deterministic() -> None:
-    """SHA-1 of sorted layer hashes is stable across two calls."""
-    short_hashes = ["abc123", "def456", "789fed"]
+def test_build_revision_deterministic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """assemble_report derives a stable build_revision across repeated calls."""
+    import bakar.report as report_module
+    from bakar.layers import LayerHash
 
-    def _compute(hashes: list[str]) -> str:
-        return hashlib.sha1("".join(sorted(hashes)).encode()).hexdigest()[:12]
+    run_dir, cfg = _report_cfg(tmp_path)
+    layers = [
+        LayerHash(repo="bitbake", short_hash="abc123", branch="master"),
+        LayerHash(repo="oe-core", short_hash="def456", branch="master"),
+        LayerHash(repo="meta-oe", short_hash="789fed", branch="master"),
+    ]
+    monkeypatch.setattr(report_module, "collect_layer_hashes", lambda _cfg: layers)
 
-    first = _compute(short_hashes)
-    second = _compute(short_hashes)
+    first = assemble_report(run_dir, cfg).build_revision
+    second = assemble_report(run_dir, cfg).build_revision
+    assert first is not None
     assert first == second, "build_revision must be deterministic"
 
 
 @pytest.mark.unit
-def test_build_revision_order_independent() -> None:
-    """Sorting means input order does not affect the result."""
-    hashes_a = ["abc123", "def456", "789fed"]
-    hashes_b = ["789fed", "abc123", "def456"]
+def test_build_revision_order_independent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sorting layer hashes means input order does not affect build_revision."""
+    import bakar.report as report_module
+    from bakar.layers import LayerHash
 
-    def _compute(hashes: list[str]) -> str:
-        return hashlib.sha1("".join(sorted(hashes)).encode()).hexdigest()[:12]
+    run_dir, cfg = _report_cfg(tmp_path)
+    ordered = [
+        LayerHash(repo="bitbake", short_hash="abc123", branch="master"),
+        LayerHash(repo="oe-core", short_hash="def456", branch="master"),
+        LayerHash(repo="meta-oe", short_hash="789fed", branch="master"),
+    ]
+    shuffled = [ordered[2], ordered[0], ordered[1]]
 
-    assert _compute(hashes_a) == _compute(hashes_b)
+    monkeypatch.setattr(report_module, "collect_layer_hashes", lambda _cfg: ordered)
+    rev_ordered = assemble_report(run_dir, cfg).build_revision
+    monkeypatch.setattr(report_module, "collect_layer_hashes", lambda _cfg: shuffled)
+    rev_shuffled = assemble_report(run_dir, cfg).build_revision
+
+    assert rev_ordered is not None
+    assert rev_ordered == rev_shuffled
 
 
 @pytest.mark.unit
-def test_build_revision_none_for_empty_layers() -> None:
-    """Empty layer list must produce build_revision = None (matches assemble_report logic)."""
-    layers: list = []
-    # Reproduce the exact condition from report.py:
-    # if layers: ... else: build_revision = None
-    build_revision = (
-        hashlib.sha1("".join(sorted(la.short_hash for la in layers)).encode()).hexdigest()[:12] if layers else None
-    )
-    assert build_revision is None
+def test_build_revision_none_for_empty_layers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Empty layer list must produce build_revision = None."""
+    import bakar.report as report_module
+
+    run_dir, cfg = _report_cfg(tmp_path)
+    monkeypatch.setattr(report_module, "collect_layer_hashes", lambda _cfg: [])
+
+    assert assemble_report(run_dir, cfg).build_revision is None
 
 
 # ---------------------------------------------------------------------------

@@ -1,9 +1,10 @@
 """Tests for the ``bakar build --host`` flag and KAS_CONTAINER_IMAGE auto-detection.
 
 Covers CLI parsing only: invoking ``bakar build <yaml> --host`` must
-flip ``BuildConfig.host_mode`` to ``True``. Without ``--host`` and without
-``KAS_CONTAINER_IMAGE`` set, ``resolve()`` auto-enables host mode. When
-``KAS_CONTAINER_IMAGE`` is set, container mode is the default.
+flip ``BuildConfig.host_mode`` to ``True``. Host is the structural default:
+``resolve()`` keeps ``host_mode`` on unless ``--container``, ``BAKAR_CONTAINER``,
+or a configured container selects the kas-container path. ``KAS_CONTAINER_IMAGE``
+alone does not switch to the container.
 
 The actual kas/kas-container invocation is short-circuited via
 ``--dry-run`` so these tests stay at the argument-parsing layer, mirroring
@@ -51,6 +52,7 @@ def _isolate_user_config(tmp_path_factory, monkeypatch):
     """
     monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("home")))
     monkeypatch.delenv("BAKAR_HOST_MODE", raising=False)
+    monkeypatch.delenv("BAKAR_CONTAINER", raising=False)
 
 
 def _make_generic_yaml(tmp_path: Path) -> Path:

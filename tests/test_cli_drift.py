@@ -8,6 +8,7 @@ calls go through actual git binaries when creating the fake checkouts.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -27,9 +28,6 @@ pytestmark = pytest.mark.unit
 # Helpers
 # ---------------------------------------------------------------------------
 
-_SHA_A = "a" * 40
-_SHA_B = "b" * 40
-
 
 def _write_manifest(path: Path, projects: list[tuple[str, str]]) -> None:
     """Write a minimal repo manifest XML."""
@@ -40,30 +38,34 @@ def _write_manifest(path: Path, projects: list[tuple[str, str]]) -> None:
     path.write_text("\n".join(lines) + "\n")
 
 
-def _make_git_repo(path: Path, sha: str) -> None:
-    """Create a minimal git repo whose HEAD resolves to the given SHA.
+def _make_git_repo(path: Path) -> None:
+    """Create a minimal git repo whose HEAD resolves to a real SHA.
 
     Uses ``git init`` and ``git commit`` so ``git rev-parse HEAD`` returns a
-    real 40-hex SHA, then patches the SHA into the test expectations.
+    real 40-hex SHA.
     """
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
     path.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", str(path)], capture_output=True, check=True)
+    subprocess.run(["git", "init", str(path)], capture_output=True, check=True, env=env)
     subprocess.run(
         ["git", "-C", str(path), "config", "user.email", "test@test.com"],
         capture_output=True,
         check=True,
+        env=env,
     )
     subprocess.run(
         ["git", "-C", str(path), "config", "user.name", "Test"],
         capture_output=True,
         check=True,
+        env=env,
     )
     (path / "README").write_text("x")
-    subprocess.run(["git", "-C", str(path), "add", "README"], capture_output=True, check=True)
+    subprocess.run(["git", "-C", str(path), "add", "README"], capture_output=True, check=True, env=env)
     subprocess.run(
         ["git", "-C", str(path), "commit", "-m", "init"],
         capture_output=True,
         check=True,
+        env=env,
     )
 
 
@@ -83,17 +85,21 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
+@pytest.fixture
+def kas_yaml(tmp_path: Path) -> Path:
+    """Write a minimal kas YAML and return its path."""
+    path = tmp_path / "machine.yml"
+    path.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
+    return path
+
+
 # ---------------------------------------------------------------------------
 # bbsetup family (BYO via kas YAML + lockfile)
 # ---------------------------------------------------------------------------
 
 
-def test_drift_no_sources_reports_clean(runner: CliRunner, tmp_path: Path) -> None:
+def test_drift_no_sources_reports_clean(runner: CliRunner, tmp_path: Path, kas_yaml: Path) -> None:
     """When the workspace has no source repos, the command exits 0 with a clean message."""
-    # Create a minimal kas YAML
-    kas_yaml = tmp_path / "machine.yml"
-    kas_yaml.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
-
     with patch("bakar.commands.drift.discover_source_repos", return_value=[]):
         result = runner.invoke(app, ["drift", str(kas_yaml), "-w", str(tmp_path)])
 
@@ -101,13 +107,10 @@ def test_drift_no_sources_reports_clean(runner: CliRunner, tmp_path: Path) -> No
     assert "All sources are on their pinned revision" in result.output
 
 
-def test_drift_clean_source_excluded_by_default(runner: CliRunner, tmp_path: Path) -> None:
+def test_drift_clean_source_excluded_by_default(runner: CliRunner, tmp_path: Path, kas_yaml: Path) -> None:
     """A source at its pinned SHA is not listed without --all."""
-    kas_yaml = tmp_path / "machine.yml"
-    kas_yaml.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
-
     sources_dir = tmp_path / "sources"
-    _make_git_repo(sources_dir / "poky", _SHA_A)
+    _make_git_repo(sources_dir / "poky")
     actual_sha = _git_head(sources_dir / "poky")
 
     # Write a lockfile that pins to the same SHA as actual HEAD
@@ -121,13 +124,10 @@ def test_drift_clean_source_excluded_by_default(runner: CliRunner, tmp_path: Pat
     assert "DRIFTED" not in result.output
 
 
-def test_drift_drifted_source_listed(runner: CliRunner, tmp_path: Path) -> None:
+def test_drift_drifted_source_listed(runner: CliRunner, tmp_path: Path, kas_yaml: Path) -> None:
     """A source whose HEAD differs from its lockfile pin is reported as DRIFTED."""
-    kas_yaml = tmp_path / "machine.yml"
-    kas_yaml.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
-
     sources_dir = tmp_path / "sources"
-    _make_git_repo(sources_dir / "poky", _SHA_A)
+    _make_git_repo(sources_dir / "poky")
     actual_sha = _git_head(sources_dir / "poky")
 
     # Pin to a DIFFERENT sha to force drift
@@ -144,13 +144,10 @@ def test_drift_drifted_source_listed(runner: CliRunner, tmp_path: Path) -> None:
     assert pinned_sha[:8] in result.output
 
 
-def test_drift_all_flag_shows_clean_sources(runner: CliRunner, tmp_path: Path) -> None:
+def test_drift_all_flag_shows_clean_sources(runner: CliRunner, tmp_path: Path, kas_yaml: Path) -> None:
     """--all includes clean (non-drifted) sources in the output."""
-    kas_yaml = tmp_path / "machine.yml"
-    kas_yaml.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
-
     sources_dir = tmp_path / "sources"
-    _make_git_repo(sources_dir / "poky", _SHA_A)
+    _make_git_repo(sources_dir / "poky")
     actual_sha = _git_head(sources_dir / "poky")
 
     lock = tmp_path / "kas.lock"
@@ -163,13 +160,10 @@ def test_drift_all_flag_shows_clean_sources(runner: CliRunner, tmp_path: Path) -
     assert "clean" in result.output
 
 
-def test_drift_json_output_parseable(runner: CliRunner, tmp_path: Path) -> None:
+def test_drift_json_output_parseable(runner: CliRunner, tmp_path: Path, kas_yaml: Path) -> None:
     """--json emits a JSON array parseable by json.loads."""
-    kas_yaml = tmp_path / "machine.yml"
-    kas_yaml.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
-
     sources_dir = tmp_path / "sources"
-    _make_git_repo(sources_dir / "poky", _SHA_A)
+    _make_git_repo(sources_dir / "poky")
     actual_sha = _git_head(sources_dir / "poky")
     pinned_sha = "d" * 40
 
@@ -189,13 +183,10 @@ def test_drift_json_output_parseable(runner: CliRunner, tmp_path: Path) -> None:
     assert "distance" in entry
 
 
-def test_drift_json_keys_present(runner: CliRunner, tmp_path: Path) -> None:
+def test_drift_json_keys_present(runner: CliRunner, tmp_path: Path, kas_yaml: Path) -> None:
     """JSON output objects contain pinned, actual, and distance keys."""
-    kas_yaml = tmp_path / "machine.yml"
-    kas_yaml.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
-
     sources_dir = tmp_path / "sources"
-    _make_git_repo(sources_dir / "meta-foo", _SHA_A)
+    _make_git_repo(sources_dir / "meta-foo")
     pinned_sha = "e" * 40
 
     lock = tmp_path / "kas.lock"
@@ -214,13 +205,10 @@ def test_drift_json_keys_present(runner: CliRunner, tmp_path: Path) -> None:
         assert "distance" in obj
 
 
-def test_drift_markdown_format(runner: CliRunner, tmp_path: Path) -> None:
+def test_drift_markdown_format(runner: CliRunner, tmp_path: Path, kas_yaml: Path) -> None:
     """--format md emits a markdown table."""
-    kas_yaml = tmp_path / "machine.yml"
-    kas_yaml.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
-
     sources_dir = tmp_path / "sources"
-    _make_git_repo(sources_dir / "poky", _SHA_A)
+    _make_git_repo(sources_dir / "poky")
     pinned_sha = "f" * 40
 
     lock = tmp_path / "kas.lock"
@@ -255,7 +243,7 @@ def test_drift_nxp_missing_manifest_exits_2(runner: CliRunner, tmp_path: Path) -
 
     assert result.exit_code == 2, result.output
     # Should mention the missing input
-    assert "Manifest not found" in result.output or "imx" in result.output.lower()
+    assert "Manifest not found" in result.output
 
 
 def test_drift_nxp_reads_manifest_pins(runner: CliRunner, tmp_path: Path) -> None:
@@ -273,7 +261,7 @@ def test_drift_nxp_reads_manifest_pins(runner: CliRunner, tmp_path: Path) -> Non
 
     # Create a real git repo for the source
     sources_dir = nxp_dir / "sources"
-    _make_git_repo(sources_dir / "poky", _SHA_A)
+    _make_git_repo(sources_dir / "poky")
     actual_sha = _git_head(sources_dir / "poky")
 
     # The source HEAD differs from the pinned sha -> drift reported
@@ -293,24 +281,18 @@ def test_drift_nxp_reads_manifest_pins(runner: CliRunner, tmp_path: Path) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_drift_exits_0_when_no_drift(runner: CliRunner, tmp_path: Path) -> None:
+def test_drift_exits_0_when_no_drift(runner: CliRunner, tmp_path: Path, kas_yaml: Path) -> None:
     """Exit code is 0 when all sources match their pinned SHA."""
-    kas_yaml = tmp_path / "machine.yml"
-    kas_yaml.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
-
     with patch("bakar.commands.drift.discover_source_repos", return_value=[]):
         result = runner.invoke(app, ["drift", str(kas_yaml), "-w", str(tmp_path)])
 
     assert result.exit_code == 0
 
 
-def test_drift_exits_nonzero_when_drift_detected(runner: CliRunner, tmp_path: Path) -> None:
+def test_drift_exits_nonzero_when_drift_detected(runner: CliRunner, tmp_path: Path, kas_yaml: Path) -> None:
     """Exit code is non-zero when at least one source has drifted."""
-    kas_yaml = tmp_path / "machine.yml"
-    kas_yaml.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
-
     sources_dir = tmp_path / "sources"
-    _make_git_repo(sources_dir / "poky", _SHA_A)
+    _make_git_repo(sources_dir / "poky")
 
     pinned_sha = "0" * 40
     lock = tmp_path / "kas.lock"

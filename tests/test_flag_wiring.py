@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from typer.testing import CliRunner
 
 import bakar.cli  # noqa: F401 - registers all subcommands on the shared app
@@ -11,6 +12,16 @@ from bakar.commands._helpers import global_output_mode_override
 from bakar.output_mode import OutputMode
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _restore_output_mode_override() -> None:
+    """Save and restore the module global so tests can't leak override state."""
+    saved = _state._OUTPUT_MODE_OVERRIDE
+    try:
+        yield
+    finally:
+        _state._OUTPUT_MODE_OVERRIDE = saved
 
 
 def test_plain_flag_sets_override() -> None:

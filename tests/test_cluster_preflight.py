@@ -8,6 +8,7 @@ hashserv/prserv checks classify reachable/unreachable/unset/loopback endpoints.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -246,6 +247,7 @@ def test_shared_mount_missing_blocks(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.geteuid() == 0, reason="chmod is ignored as root; write probe would succeed")
 def test_shared_mount_unwritable_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """An existing but unwritable shared dir -> FAIL at BLOCK, distinguished from missing."""
     ro = tmp_path / "ro"

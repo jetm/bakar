@@ -187,7 +187,7 @@ def test_status_accepts_positional_kas_yaml(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``status`` accepts a positional generic kas YAML and resolves via the YAML's parent."""
+    """``status`` accepts a positional generic kas YAML and routes it to the workspace resolver."""
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)  # Outside any workspace
@@ -220,7 +220,7 @@ def test_start_accepts_positional_kas_yaml(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``start`` accepts a positional generic kas YAML and resolves via the YAML's parent."""
+    """``start`` accepts a positional generic kas YAML and routes it to the workspace resolver."""
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)  # Outside any workspace

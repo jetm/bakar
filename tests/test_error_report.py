@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 import stat
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -130,6 +131,7 @@ def test_analyse_fallback_when_no_error_report(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.geteuid() == 0, reason="chmod is ignored as root; the write would succeed")
 def test_write_error_report_silent_on_read_only_dir(tmp_path: Path) -> None:
     """(d) write_error_report does not raise when run_dir is read-only."""
     run_dir = tmp_path / "run"

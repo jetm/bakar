@@ -75,7 +75,7 @@ def test_stage_and_delete_moves_and_removes_files(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_stage_and_delete_staging_dir_is_inside_sstate_root(tmp_path: Path) -> None:
+def test_stage_and_delete_staging_dir_is_inside_sstate_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The staging dir is a direct child of effective_dir (same device)."""
     sstate = tmp_path / "sstate"
     sstate.mkdir()
@@ -92,11 +92,8 @@ def test_stage_and_delete_staging_dir_is_inside_sstate_root(tmp_path: Path) -> N
         staging_parents.append(Path(dst).parent)
         original_rename(src, dst)
 
-    _cc.os.rename = capturing_rename
-    try:
-        _stage_and_delete([p], sstate)
-    finally:
-        _cc.os.rename = original_rename
+    monkeypatch.setattr(_cc.os, "rename", capturing_rename)
+    _stage_and_delete([p], sstate)
 
     assert len(staging_parents) == 1, "expected exactly one rename"
     staging_dir = staging_parents[0]
@@ -196,7 +193,7 @@ def test_clean_cache_yes_reports_freed_bytes_and_no_staging_dir(
     assert result.exit_code == 0, result.output
     # The output must report deleted count and freed size
     assert "deleted" in result.output, result.output
-    assert "2" in result.output, result.output
+    assert "deleted 2 files" in result.output, result.output
     # Stale files are gone; fresh file is kept
     for f in stale_files:
         assert not f.exists(), f"{f} should have been deleted"

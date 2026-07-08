@@ -396,7 +396,7 @@ def test_triage_structured_failure_prints_recipe_task_and_logfile_excerpt(
     host_logfile.parent.mkdir(parents=True)
     host_logfile.write_text("configure: error: missing toolchain\nmake[1]: *** [all] Error 2\n")
 
-    _write_structured_run(
+    run = _write_structured_run(
         workspace,
         ts="20260601-120000",
         failures=[
@@ -410,7 +410,6 @@ def test_triage_structured_failure_prints_recipe_task_and_logfile_excerpt(
     )
     # A kas.log carrying a *different* recipe proves the structured path was
     # taken rather than the kas.log regex fallback.
-    run = workspace / "nxp" / "build" / "runs" / "20260601-120000"
     (run / "kas.log").write_text("ERROR: kas-log-only-recipe-1.0-r0 do_fetch: should not appear\n")
 
     monkeypatch.chdir(workspace)

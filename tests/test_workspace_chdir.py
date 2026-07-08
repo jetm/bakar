@@ -155,7 +155,7 @@ def test_relative_workspace_value_does_not_double_resolve(
     assert len(calls) == 1
     bsp_root = calls[0][0]
     # The resolved bsp_root lives under <tmp>/ws, never under a doubled <tmp>/ws/ws.
-    assert (ws / "ws") not in bsp_root.parents
+    assert not bsp_root.is_relative_to(ws / "ws")
     assert bsp_root == ws.resolve() or ws.resolve() in bsp_root.parents
 
 

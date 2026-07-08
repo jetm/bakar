@@ -71,7 +71,7 @@ def test_empty_workspace_prints_guidance_no_table(
     assert result.exit_code == 0, result.output
     assert "bakar build" in result.output
     assert "bakar sync" in result.output
-    assert "layers:" not in result.output
+    assert "Layers (" not in result.output
 
 
 @pytest.mark.unit
