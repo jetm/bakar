@@ -20,7 +20,8 @@ from typer.testing import CliRunner
 import bakar.commands.report as report_module
 from bakar.cli import app
 from bakar.config import resolve
-from bakar.report import ReportSummary, assemble_report
+from bakar.report import assemble_report
+from tests.conftest import make_report_summary
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -189,14 +190,10 @@ def test_report_json_gains_ccache_key_when_artifact_present(tmp_path: Path, monk
     (run_dir / "ccache-stats.json").write_text(
         json.dumps({"cache_hits": 5, "cache_misses": 2, "hit_rate": 71.4, "window": "build"})
     )
-    summary = ReportSummary(
-        run_id="20260527-100000",
-        status="success",
+    summary = make_report_summary(
         duration_s=1.0,
         deploy_dir="/x",
         image_size=1,
-        layers=[],
-        build_revision=None,
         cache_by_language={"C/C++": LangCacheStat(hits=10, misses=1, hit_rate=90.9)},
         dist_by_node={"10.42.0.2": 5},
     )
@@ -218,14 +215,10 @@ def test_report_json_omits_ccache_key_when_artifact_absent(tmp_path: Path, monke
     """A missing ccache-stats.json omits the section without error."""
     (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
     run_dir = _cli_run_dir(tmp_path)  # no ccache-stats.json written
-    summary = ReportSummary(
-        run_id="20260527-100000",
-        status="success",
+    summary = make_report_summary(
         duration_s=1.0,
         deploy_dir="/x",
         image_size=1,
-        layers=[],
-        build_revision=None,
     )
     monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
     monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: summary)
@@ -247,14 +240,10 @@ def test_report_human_shows_ccache_section_when_present(tmp_path: Path, monkeypa
     (run_dir / "ccache-stats.json").write_text(
         json.dumps({"cache_hits": 5, "cache_misses": 2, "hit_rate": 71.4, "window": "build"})
     )
-    summary = ReportSummary(
-        run_id="20260527-100000",
-        status="success",
+    summary = make_report_summary(
         duration_s=1.0,
         deploy_dir="/x",
         image_size=1,
-        layers=[],
-        build_revision=None,
     )
     monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
     monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: summary)
@@ -272,14 +261,10 @@ def test_report_json_carries_lifetime_window(tmp_path: Path, monkeypatch: pytest
     (run_dir / "ccache-stats.json").write_text(
         json.dumps({"cache_hits": 5, "cache_misses": 2, "hit_rate": 71.4, "window": "lifetime"})
     )
-    summary = ReportSummary(
-        run_id="20260527-100000",
-        status="success",
+    summary = make_report_summary(
         duration_s=1.0,
         deploy_dir="/x",
         image_size=1,
-        layers=[],
-        build_revision=None,
     )
     monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
     monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: summary)
@@ -296,14 +281,10 @@ def test_report_json_window_absent_for_legacy_artifact(tmp_path: Path, monkeypat
     (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
     run_dir = _cli_run_dir(tmp_path)
     (run_dir / "ccache-stats.json").write_text(json.dumps({"cache_hits": 5, "cache_misses": 2, "hit_rate": 71.4}))
-    summary = ReportSummary(
-        run_id="20260527-100000",
-        status="success",
+    summary = make_report_summary(
         duration_s=1.0,
         deploy_dir="/x",
         image_size=1,
-        layers=[],
-        build_revision=None,
     )
     monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
     monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: summary)
@@ -322,14 +303,10 @@ def test_report_human_shows_lifetime_label(tmp_path: Path, monkeypatch: pytest.M
     (run_dir / "ccache-stats.json").write_text(
         json.dumps({"cache_hits": 5, "cache_misses": 2, "hit_rate": 71.4, "window": "lifetime"})
     )
-    summary = ReportSummary(
-        run_id="20260527-100000",
-        status="success",
+    summary = make_report_summary(
         duration_s=1.0,
         deploy_dir="/x",
         image_size=1,
-        layers=[],
-        build_revision=None,
     )
     monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
     monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: summary)
@@ -347,14 +324,10 @@ def test_report_human_falls_back_to_this_build_label_for_legacy_artifact(
     (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
     run_dir = _cli_run_dir(tmp_path)
     (run_dir / "ccache-stats.json").write_text(json.dumps({"cache_hits": 5, "cache_misses": 2, "hit_rate": 71.4}))
-    summary = ReportSummary(
-        run_id="20260527-100000",
-        status="success",
+    summary = make_report_summary(
         duration_s=1.0,
         deploy_dir="/x",
         image_size=1,
-        layers=[],
-        build_revision=None,
     )
     monkeypatch.setattr(report_module, "_find_run", lambda runs_dirs, run_id: (run_dir, "nxp"))
     monkeypatch.setattr(report_module, "assemble_report", lambda run_dir, cfg: summary)

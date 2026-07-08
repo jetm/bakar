@@ -20,6 +20,7 @@ import bakar.commands.report as report_module
 from bakar.cli import app
 from bakar.report import ReportSummary, _parse_sstate_summary
 from bakar.user_config import UserConfig
+from tests.conftest import make_report_summary
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -82,14 +83,7 @@ def test_parse_malformed_line_does_not_raise(tmp_path: Path) -> None:
 
 
 def _summary() -> ReportSummary:
-    return ReportSummary(
-        run_id="20260527-100000",
-        status="success",
-        duration_s=1845.0,
-        deploy_dir="/work/build/tmp/deploy/images/imx8mp-var-dart",
-        image_size=123456,
-        layers=[],
-        build_revision=None,
+    return make_report_summary(
         sstate_wanted=100,
         sstate_local=40,
         sstate_mirrors=30,

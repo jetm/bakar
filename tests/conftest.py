@@ -31,6 +31,7 @@ from typer.testing import CliRunner
 import bakar.cli  # noqa: F401 - registers all subcommands on the shared app
 from bakar.commands._app import app
 from bakar.config import BuildConfig
+from bakar.report import ReportSummary
 from bakar.setup.profile import HostProfile
 from bakar.steps import build_ui
 
@@ -83,6 +84,28 @@ _BUILD_CONFIG_DEFAULTS: dict[str, object] = {
 def make_build_config(**overrides: object) -> BuildConfig:
     """A minimal NXP ``BuildConfig``; pass ``workspace=`` plus any field overrides."""
     return BuildConfig(**{**_BUILD_CONFIG_DEFAULTS, **overrides})  # type: ignore[arg-type]
+
+
+# A successful-run ``ReportSummary`` shape shared by the report-command tests
+# (``test_report``'s ccache cases, ``test_report_buildhistory``, and
+# ``test_report_sstate``). Each site overrides the section-specific fields
+# (sstate counts, buildhistory packages, ccache/dist maps) it asserts on, so
+# every constructed summary stays field-for-field identical to its former local
+# builder. ``layers`` is left to the dataclass ``default_factory`` so each
+# summary gets a fresh list.
+_REPORT_SUMMARY_DEFAULTS: dict[str, object] = {
+    "run_id": "20260527-100000",
+    "status": "success",
+    "duration_s": 1845.0,
+    "deploy_dir": "/work/build/tmp/deploy/images/imx8mp-var-dart",
+    "image_size": 123456,
+    "build_revision": None,
+}
+
+
+def make_report_summary(**overrides: object) -> ReportSummary:
+    """A success-run ``ReportSummary``; override any field the test asserts on."""
+    return ReportSummary(**{**_REPORT_SUMMARY_DEFAULTS, **overrides})  # type: ignore[arg-type]
 
 
 # Plain-mode glyph icons that must never leak into no-ANSI/no-glyph assertions.

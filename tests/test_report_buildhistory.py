@@ -20,6 +20,7 @@ import bakar.commands.report as report_module
 from bakar.cli import app
 from bakar.config import resolve
 from bakar.report import ReportSummary, _parse_buildhistory
+from tests.conftest import make_report_summary
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -101,14 +102,7 @@ def test_parse_gate_on_metadata_revs_only(tmp_path: Path) -> None:
 
 
 def _summary(has_buildhistory: bool = False) -> ReportSummary:
-    return ReportSummary(
-        run_id="20260527-100000",
-        status="success",
-        duration_s=1845.0,
-        deploy_dir="/work/build/tmp/deploy/images/imx8mp-var-dart",
-        image_size=123456,
-        layers=[],
-        build_revision=None,
+    return make_report_summary(
         buildhistory_imagesize_kib=524288,
         top_packages=[("libc6", 8192), ("busybox", 4096)],
         pkg_count=4,
