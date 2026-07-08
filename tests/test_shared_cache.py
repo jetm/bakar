@@ -14,8 +14,12 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from bakar.config import BuildConfig
 
 pytestmark = pytest.mark.unit
 
@@ -74,7 +78,7 @@ def test_use_shared_cache_false_when_url_not_set() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_cfg(*, sstate_mirror_url: str | None = None) -> object:
+def _make_cfg(*, sstate_mirror_url: str | None = None) -> BuildConfig:
     """Return a minimal BuildConfig for overlay helper tests."""
     from bakar.config import BuildConfig
 
@@ -97,7 +101,7 @@ def test_shared_cache_extra_overlays_returns_path_when_enabled() -> None:
     from bakar.commands._helpers import _shared_cache_extra_overlays
 
     cfg = _make_cfg(sstate_mirror_url="https://cache.example.com")
-    result = _shared_cache_extra_overlays(cfg)  # type: ignore[arg-type]
+    result = _shared_cache_extra_overlays(cfg)
 
     assert len(result) == 1
     assert result[0].name == "bakar-tuning-shared-cache.yml"
@@ -109,7 +113,7 @@ def test_shared_cache_extra_overlays_returns_empty_when_disabled() -> None:
     from bakar.commands._helpers import _shared_cache_extra_overlays
 
     cfg = _make_cfg(sstate_mirror_url=None)
-    result = _shared_cache_extra_overlays(cfg)  # type: ignore[arg-type]
+    result = _shared_cache_extra_overlays(cfg)
 
     assert result == []
 
@@ -121,7 +125,6 @@ def test_shared_cache_extra_overlays_returns_empty_when_disabled() -> None:
 
 def test_build_env_includes_sstate_mirror_url_when_set(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """BAKAR_SSTATE_MIRROR_URL is present in the env when sstate_mirror_url is set."""
     from bakar.config import BuildConfig
@@ -139,9 +142,6 @@ def test_build_env_includes_sstate_mirror_url_when_set(
         kas_container_image="img:latest",
         sstate_mirror_url="https://cache.example.com",
     )
-
-    # ensure_hashserv would try to start a daemon; patch it to a no-op
-    monkeypatch.setattr(kas_build_mod.hashserv, "ensure_running", lambda _root: None)
 
     env = kas_build_mod._build_env(cfg, ensure_hashserv=False)
 
@@ -168,8 +168,6 @@ def test_build_env_omits_sstate_mirror_url_when_none(
         repo_branch="main",
         kas_container_image="img:latest",
     )
-
-    monkeypatch.setattr(kas_build_mod.hashserv, "ensure_running", lambda _root: None)
 
     # Also strip BAKAR_SSTATE_MIRROR_URL from the process environment so the
     # passthrough prefix loop cannot inject it.

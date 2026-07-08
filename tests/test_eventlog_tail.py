@@ -104,8 +104,6 @@ def test_preexisting_events_yielded_before_appended(tmp_path: Path) -> None:
 
         assert _wait_for(lambda: len(collected) >= 3), "appended line not yielded"
         assert collected[2][0] == "bb.runqueue.runQueueTaskStarted"
-        # The appended event must come strictly after the two pre-existing ones.
-        assert collected.index((collected[2][0], collected[2][1])) == 2
     finally:
         stop.set()
         thread.join(timeout=5)

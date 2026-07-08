@@ -26,7 +26,6 @@ PERIDIO_MARKER = (
 )
 
 
-@pytest.mark.unit
 def test_missing_file_returns_defaults(tmp_path: Path) -> None:
     result = load_workspace_config(tmp_path)
     assert result == WorkspaceConfig()
@@ -37,7 +36,6 @@ def test_missing_file_returns_defaults(tmp_path: Path) -> None:
     assert result.generic_machine is None
 
 
-@pytest.mark.unit
 def test_comment_only_file_returns_defaults(tmp_path: Path) -> None:
     """Peridio's comment-only marker parses to all-defaults, no raise."""
     (tmp_path / ".bakar.toml").write_text(PERIDIO_MARKER)
@@ -47,7 +45,6 @@ def test_comment_only_file_returns_defaults(tmp_path: Path) -> None:
     assert result == WorkspaceConfig()
 
 
-@pytest.mark.unit
 def test_nxp_section_only_populates_nxp_fields(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         # bakar workspace root.
@@ -73,7 +70,6 @@ def test_nxp_section_only_populates_nxp_fields(tmp_path: Path) -> None:
     assert cfg.generic_machine is None
 
 
-@pytest.mark.unit
 def test_nxp_and_ti_sections_populate_both(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         # bakar workspace root.
@@ -103,7 +99,6 @@ def test_nxp_and_ti_sections_populate_both(tmp_path: Path) -> None:
     assert cfg.nxp_image is None
 
 
-@pytest.mark.unit
 def test_invalid_toml_raises_valueerror_with_path(tmp_path: Path) -> None:
     config_file = tmp_path / ".bakar.toml"
     config_file.write_text("not valid toml [[[[\n")
@@ -112,7 +107,6 @@ def test_invalid_toml_raises_valueerror_with_path(tmp_path: Path) -> None:
         load_workspace_config(tmp_path)
 
 
-@pytest.mark.unit
 def test_type_mismatch_raises_valueerror_with_path(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [defaults.nxp]
@@ -125,7 +119,6 @@ def test_type_mismatch_raises_valueerror_with_path(tmp_path: Path) -> None:
         load_workspace_config(tmp_path)
 
 
-@pytest.mark.unit
 def test_unknown_key_in_known_section_warns_and_continues(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [defaults.nxp]
@@ -147,7 +140,6 @@ def test_unknown_key_in_known_section_warns_and_continues(tmp_path: Path) -> Non
         assert recognized in message
 
 
-@pytest.mark.unit
 def test_recognized_keys_do_not_warn(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [defaults.nxp]
@@ -170,7 +162,6 @@ def test_recognized_keys_do_not_warn(tmp_path: Path) -> None:
     assert cfg.generic_machine == "qemux86-64"
 
 
-@pytest.mark.unit
 def test_unknown_section_is_ignored(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [defaults.unknown_family]
@@ -193,7 +184,6 @@ def test_unknown_section_is_ignored(tmp_path: Path) -> None:
     assert cfg.ti_machine is None
 
 
-@pytest.mark.unit
 def test_host_table_populates_host_fields(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         # bakar workspace root.
@@ -218,7 +208,6 @@ def test_host_table_populates_host_fields(tmp_path: Path) -> None:
     assert cfg.nxp_manifest is None
 
 
-@pytest.mark.unit
 def test_absent_host_table_leaves_host_fields_none(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [defaults.nxp]
@@ -235,7 +224,6 @@ def test_absent_host_table_leaves_host_fields_none(tmp_path: Path) -> None:
     assert cfg.host_mem_min_gb is None
 
 
-@pytest.mark.unit
 def test_host_table_is_top_level_not_under_defaults(tmp_path: Path) -> None:
     """A [defaults.host] table must NOT populate the host_* fields."""
     toml_content = textwrap.dedent("""\
@@ -253,7 +241,6 @@ def test_host_table_is_top_level_not_under_defaults(tmp_path: Path) -> None:
     assert cfg.host_inotify_instances is None
 
 
-@pytest.mark.unit
 def test_host_non_numeric_raises_valueerror_naming_field(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [host]
@@ -266,7 +253,6 @@ def test_host_non_numeric_raises_valueerror_naming_field(tmp_path: Path) -> None
         load_workspace_config(tmp_path)
 
 
-@pytest.mark.unit
 def test_host_non_positive_raises_valueerror_naming_field(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [host]
@@ -279,7 +265,6 @@ def test_host_non_positive_raises_valueerror_naming_field(tmp_path: Path) -> Non
         load_workspace_config(tmp_path)
 
 
-@pytest.mark.unit
 def test_host_int_field_rejects_float(tmp_path: Path) -> None:
     """A float for an int count field is rejected, matching UserConfig - otherwise
     resolve() would silently int()-truncate it."""
@@ -294,7 +279,6 @@ def test_host_int_field_rejects_float(tmp_path: Path) -> None:
         load_workspace_config(tmp_path)
 
 
-@pytest.mark.unit
 def test_unknown_key_in_host_table_warns_and_continues(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [host]
@@ -322,7 +306,6 @@ _requires_writer = pytest.mark.skipif(
 )
 
 
-@pytest.mark.unit
 @_requires_writer
 def test_write_load_round_trip_nxp(tmp_path: Path) -> None:
     settings = {
@@ -341,7 +324,6 @@ def test_write_load_round_trip_nxp(tmp_path: Path) -> None:
     assert cfg.nxp_image == "core-image-minimal"
 
 
-@pytest.mark.unit
 @_requires_writer
 def test_write_load_round_trip_ti(tmp_path: Path) -> None:
     settings = {
@@ -360,7 +342,6 @@ def test_write_load_round_trip_ti(tmp_path: Path) -> None:
     assert cfg.ti_image == "var-thin-image"
 
 
-@pytest.mark.unit
 @_requires_writer
 def test_write_load_round_trip_generic(tmp_path: Path) -> None:
     settings = {
@@ -375,7 +356,6 @@ def test_write_load_round_trip_generic(tmp_path: Path) -> None:
     assert cfg.generic_machine == "qemux86-64"
 
 
-@pytest.mark.unit
 def test_build_table_populates_kas_container_image(tmp_path: Path) -> None:
     """A top-level [build] table must populate kas_container_image."""
     toml_content = textwrap.dedent("""\
@@ -391,7 +371,6 @@ def test_build_table_populates_kas_container_image(tmp_path: Path) -> None:
     assert cfg.kas_container_image == "jetm/kas-build-env:5.3-f40"
 
 
-@pytest.mark.unit
 def test_absent_build_table_leaves_kas_container_image_none(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [defaults.nxp]
@@ -404,7 +383,6 @@ def test_absent_build_table_leaves_kas_container_image_none(tmp_path: Path) -> N
     assert cfg.kas_container_image is None
 
 
-@pytest.mark.unit
 def test_build_table_unknown_key_warns_and_continues(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [build]
@@ -419,7 +397,6 @@ def test_build_table_unknown_key_warns_and_continues(tmp_path: Path) -> None:
     assert cfg.kas_container_image == "jetm/kas-build-env:5.3-f40"
 
 
-@pytest.mark.unit
 def test_build_non_string_raises_valueerror_naming_field(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [build]
@@ -431,7 +408,6 @@ def test_build_non_string_raises_valueerror_naming_field(tmp_path: Path) -> None
         load_workspace_config(tmp_path)
 
 
-@pytest.mark.unit
 def test_build_non_table_raises_valueerror_naming_section(tmp_path: Path) -> None:
     """A scalar `build` value must be rejected, not silently ignored."""
     (tmp_path / ".bakar.toml").write_text('build = "not-a-table"\n')
@@ -440,7 +416,6 @@ def test_build_non_table_raises_valueerror_naming_section(tmp_path: Path) -> Non
         load_workspace_config(tmp_path)
 
 
-@pytest.mark.unit
 def test_host_non_table_raises_valueerror_naming_section(tmp_path: Path) -> None:
     """A scalar `host` value must be rejected, not silently ignored."""
     (tmp_path / ".bakar.toml").write_text('host = "not-a-table"\n')
@@ -449,7 +424,6 @@ def test_host_non_table_raises_valueerror_naming_section(tmp_path: Path) -> None
         load_workspace_config(tmp_path)
 
 
-@pytest.mark.unit
 def test_defaults_non_table_raises_valueerror_naming_section(tmp_path: Path) -> None:
     """A scalar `defaults` value must be rejected, not silently ignored."""
     (tmp_path / ".bakar.toml").write_text('defaults = "not-a-table"\n')
@@ -458,7 +432,6 @@ def test_defaults_non_table_raises_valueerror_naming_section(tmp_path: Path) -> 
         load_workspace_config(tmp_path)
 
 
-@pytest.mark.unit
 def test_defaults_family_non_table_raises_valueerror_naming_section(tmp_path: Path) -> None:
     """A scalar `[defaults].<family>` value must be rejected, not silently ignored."""
     toml_content = textwrap.dedent("""\

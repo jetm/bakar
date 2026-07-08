@@ -270,8 +270,6 @@ def test_strip_kas_preamble_removes_log_lines() -> None:
 def test_extract_dep_diff_finds_added_variable() -> None:
     """_extract_dep_diff returns CCACHE_MAXSIZE as added, nothing removed."""
     lines = _SAMPLE_DIFFSIGS.splitlines()
-    from bakar.commands.diffsigs import _strip_kas_preamble
-
     clean = _strip_kas_preamble(lines)
     added, removed = _extract_dep_diff(clean)
     assert "CCACHE_MAXSIZE" in added

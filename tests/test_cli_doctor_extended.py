@@ -11,6 +11,7 @@ Companion to ``tests/test_cli_doctor.py``, which covers the pure
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -276,8 +277,6 @@ def test_kas_yaml_and_manifest_are_mutually_exclusive(nxp_workspace: Path, tmp_p
 
 def test_json_all_pass_exits_zero_and_valid_json(nxp_workspace: Path) -> None:
     """All-PASS results with --json: valid JSON, version==1, exit 0."""
-    import json
-
     results = [
         CheckResult(
             name="host-tools",
@@ -304,8 +303,6 @@ def test_json_all_pass_exits_zero_and_valid_json(nxp_workspace: Path) -> None:
 
 def test_json_finding_has_all_five_keys(nxp_workspace: Path) -> None:
     """Each finding object has exactly the five required keys."""
-    import json
-
     results = [
         CheckResult(
             name="sysctl",
@@ -331,8 +328,6 @@ def test_json_finding_has_all_five_keys(nxp_workspace: Path) -> None:
 
 def test_json_fix_hint_null_when_none(nxp_workspace: Path) -> None:
     """fix_hint is null in JSON (not absent) when CheckResult.fix_hint is None."""
-    import json
-
     results = [
         CheckResult(
             name="host-tools",
@@ -355,8 +350,6 @@ def test_json_fix_hint_null_when_none(nxp_workspace: Path) -> None:
 
 def test_json_block_fail_exits_2(nxp_workspace: Path) -> None:
     """BLOCK+FAIL result with --json exits 2 and still produces valid JSON."""
-    import json
-
     results = [
         CheckResult(
             name="docker-daemon",
@@ -380,8 +373,6 @@ def test_json_block_fail_exits_2(nxp_workspace: Path) -> None:
 
 def test_json_warn_fail_exits_zero(nxp_workspace: Path) -> None:
     """WARN+FAIL with --json exits 0 (only BLOCK failures drive exit 2)."""
-    import json
-
     results = [
         CheckResult(
             name="sysctl",

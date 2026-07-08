@@ -16,7 +16,6 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.unit
 
 
-@pytest.mark.unit
 def test_missing_file_returns_defaults(tmp_path: Path) -> None:
     result = load_user_config(tmp_path / "nonexistent.toml")
     assert result == UserConfig()
@@ -27,7 +26,6 @@ def test_missing_file_returns_defaults(tmp_path: Path) -> None:
     assert result.show_hashes is False
 
 
-@pytest.mark.unit
 def test_full_file_populates_every_field(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [defaults.nxp]
@@ -69,7 +67,6 @@ def test_full_file_populates_every_field(tmp_path: Path) -> None:
     assert cfg.show_hashes is True
 
 
-@pytest.mark.unit
 def test_partial_file_leaves_unsupplied_fields_at_defaults(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [defaults.nxp]
@@ -92,7 +89,6 @@ def test_partial_file_leaves_unsupplied_fields_at_defaults(tmp_path: Path) -> No
     assert cfg.show_doctor_report is True
 
 
-@pytest.mark.unit
 def test_unknown_key_in_known_section_is_ignored(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [defaults.nxp]
@@ -114,7 +110,6 @@ def test_unknown_key_in_known_section_is_ignored(tmp_path: Path) -> None:
     assert not hasattr(cfg, "unknown")
 
 
-@pytest.mark.unit
 def test_invalid_toml_raises_valueerror_with_path(tmp_path: Path) -> None:
     config_file = tmp_path / "config.toml"
     config_file.write_text("not valid toml [[[[\n")
@@ -123,7 +118,6 @@ def test_invalid_toml_raises_valueerror_with_path(tmp_path: Path) -> None:
         load_user_config(config_file)
 
 
-@pytest.mark.unit
 def test_type_mismatch_raises_valueerror_with_path(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [defaults.nxp]
@@ -136,7 +130,6 @@ def test_type_mismatch_raises_valueerror_with_path(tmp_path: Path) -> None:
         load_user_config(config_file)
 
 
-@pytest.mark.unit
 def test_build_tuning_keys_valid_types(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [build]
@@ -169,7 +162,6 @@ def test_build_tuning_keys_valid_types(tmp_path: Path) -> None:
     assert isinstance(cfg.pressure_max_memory, int)
 
 
-@pytest.mark.unit
 def test_build_tuning_keys_absent_yields_none_defaults(tmp_path: Path) -> None:
     config_file = tmp_path / "config.toml"
     config_file.write_text("[build]\ndoctor = true\n")
@@ -185,7 +177,6 @@ def test_build_tuning_keys_absent_yields_none_defaults(tmp_path: Path) -> None:
     assert cfg.pressure_max_memory is None
 
 
-@pytest.mark.unit
 def test_pressure_key_string_value_raises_with_path(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [build]
@@ -198,7 +189,6 @@ def test_pressure_key_string_value_raises_with_path(tmp_path: Path) -> None:
         load_user_config(config_file)
 
 
-@pytest.mark.unit
 def test_pressure_key_bool_value_raises_with_path(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [build]
@@ -211,7 +201,6 @@ def test_pressure_key_bool_value_raises_with_path(tmp_path: Path) -> None:
         load_user_config(config_file)
 
 
-@pytest.mark.unit
 def test_set_then_load_pressure_key_round_trip(tmp_path: Path) -> None:
     config_file = tmp_path / "config.toml"
     set_setting("build.pressure_max_cpu", "55", path=config_file)
@@ -222,7 +211,6 @@ def test_set_then_load_pressure_key_round_trip(tmp_path: Path) -> None:
     assert isinstance(cfg.pressure_max_cpu, (int, float))
 
 
-@pytest.mark.unit
 def test_load_user_config_hashserv_default_false(tmp_path: Path) -> None:
     """`hashserv` defaults to False when the `[build]` table omits it."""
     config_file = tmp_path / "config.toml"
@@ -234,7 +222,6 @@ def test_load_user_config_hashserv_default_false(tmp_path: Path) -> None:
     assert isinstance(cfg.hashserv, bool)
 
 
-@pytest.mark.unit
 def test_load_user_config_hashserv_true_loads(tmp_path: Path) -> None:
     """`[build] hashserv = true` loads as a real boolean True."""
     config_file = tmp_path / "config.toml"
@@ -246,7 +233,6 @@ def test_load_user_config_hashserv_true_loads(tmp_path: Path) -> None:
     assert isinstance(cfg.hashserv, bool)
 
 
-@pytest.mark.unit
 def test_load_user_config_hashserv_type_mismatch_raises(tmp_path: Path) -> None:
     """A non-bool value for `hashserv` raises ValueError mentioning the field."""
     toml_content = textwrap.dedent("""\
@@ -260,7 +246,6 @@ def test_load_user_config_hashserv_type_mismatch_raises(tmp_path: Path) -> None:
         load_user_config(config_file)
 
 
-@pytest.mark.unit
 def test_set_setting_build_hashserv_round_trip(tmp_path: Path) -> None:
     """`set_setting('build.hashserv', 'true')` round-trips through load_user_config."""
     config_file = tmp_path / "config.toml"
@@ -293,7 +278,6 @@ def test_set_setting_build_ccache_dir_round_trip(tmp_path: Path) -> None:
     assert cfg.ccache_dir == "/mnt/cache/cc"
 
 
-@pytest.mark.unit
 def test_host_defaults_equal_diagnostics_literals() -> None:
     """An unset [host] section yields the exact thresholds diagnostics.py hardcoded."""
     cfg = UserConfig()
@@ -305,7 +289,6 @@ def test_host_defaults_equal_diagnostics_literals() -> None:
     assert isinstance(cfg.host_mem_min_gb, float)
 
 
-@pytest.mark.unit
 def test_host_table_loads_into_fields(tmp_path: Path) -> None:
     """A top-level [host] table populates the host_* fields with their typed values."""
     toml_content = textwrap.dedent("""\
@@ -330,7 +313,6 @@ def test_host_table_loads_into_fields(tmp_path: Path) -> None:
     assert isinstance(cfg.host_mem_min_gb, float)
 
 
-@pytest.mark.unit
 def test_host_table_absent_leaves_defaults(tmp_path: Path) -> None:
     config_file = tmp_path / "config.toml"
     config_file.write_text("[build]\ndoctor = true\n")
@@ -341,7 +323,6 @@ def test_host_table_absent_leaves_defaults(tmp_path: Path) -> None:
     assert cfg.host_mem_min_gb == 16.0
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize(
     "field",
     ["inotify_instances", "inotify_watches", "swappiness_max", "nofile_soft"],
@@ -355,7 +336,6 @@ def test_host_int_field_non_integer_raises_naming_field(tmp_path: Path, field: s
         load_user_config(config_file)
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize(
     "field",
     ["inotify_instances", "inotify_watches", "swappiness_max", "nofile_soft", "mem_min_gb"],
@@ -369,7 +349,6 @@ def test_host_field_non_positive_raises_naming_field(tmp_path: Path, field: str)
         load_user_config(config_file)
 
 
-@pytest.mark.unit
 def test_host_mem_min_gb_non_numeric_raises_naming_field(tmp_path: Path) -> None:
     config_file = tmp_path / "config.toml"
     config_file.write_text('[host]\nmem_min_gb = "lots"\n')
@@ -378,7 +357,6 @@ def test_host_mem_min_gb_non_numeric_raises_naming_field(tmp_path: Path) -> None
         load_user_config(config_file)
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize(
     "dotted",
     [
@@ -393,7 +371,6 @@ def test_host_keys_present_in_settings_schema(dotted: str) -> None:
     assert dotted in SETTINGS_SCHEMA
 
 
-@pytest.mark.unit
 @pytest.mark.parametrize(
     "dotted",
     [
@@ -411,7 +388,6 @@ def test_set_host_int_key_non_positive_raises(tmp_path: Path, dotted: str) -> No
     assert not config_file.exists()
 
 
-@pytest.mark.unit
 def test_set_host_mem_min_gb_round_trip(tmp_path: Path) -> None:
     """settings-set host.mem_min_gb coerces to a float, not a string."""
     config_file = tmp_path / "config.toml"
@@ -423,7 +399,6 @@ def test_set_host_mem_min_gb_round_trip(tmp_path: Path) -> None:
     assert isinstance(cfg.host_mem_min_gb, float)
 
 
-@pytest.mark.unit
 def test_set_host_mem_min_gb_non_positive_raises(tmp_path: Path) -> None:
     config_file = tmp_path / "config.toml"
     with pytest.raises(ValueError, match="mem_min_gb"):

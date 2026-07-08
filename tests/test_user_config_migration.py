@@ -26,14 +26,12 @@ def _write(path: Path, content: str) -> Path:
     return path
 
 
-@pytest.mark.unit
 def test_missing_file_is_current_version(tmp_path: Path) -> None:
     cfg = load_user_config(tmp_path / "absent.toml")
     assert cfg == UserConfig()
     assert cfg.config_version == CURRENT_CONFIG_VERSION
 
 
-@pytest.mark.unit
 def test_legacy_config_without_version_migrates_to_current(tmp_path: Path) -> None:
     config_file = _write(
         tmp_path / "config.toml",
@@ -49,7 +47,6 @@ def test_legacy_config_without_version_migrates_to_current(tmp_path: Path) -> No
     assert cfg.config_version == CURRENT_CONFIG_VERSION
 
 
-@pytest.mark.unit
 def test_legacy_config_migration_persists_version_to_disk(tmp_path: Path) -> None:
     config_file = _write(
         tmp_path / "config.toml",
@@ -68,7 +65,6 @@ def test_legacy_config_migration_persists_version_to_disk(tmp_path: Path) -> Non
     assert on_disk["build"]["kas_container_image"] == "jetm/kas-build-env:latest"
 
 
-@pytest.mark.unit
 def test_v1_to_v2_migrates_doctor_false_to_show_doctor_report(tmp_path: Path) -> None:
     config_file = _write(
         tmp_path / "config.toml",
@@ -90,7 +86,6 @@ def test_v1_to_v2_migrates_doctor_false_to_show_doctor_report(tmp_path: Path) ->
     assert "doctor" not in on_disk["build"]
 
 
-@pytest.mark.unit
 def test_v1_to_v2_drops_doctor_true_without_setting_show_doctor_report(tmp_path: Path) -> None:
     config_file = _write(
         tmp_path / "config.toml",
@@ -113,7 +108,6 @@ def test_v1_to_v2_drops_doctor_true_without_setting_show_doctor_report(tmp_path:
     assert "show_doctor_report" not in on_disk.get("build", {})
 
 
-@pytest.mark.unit
 def test_current_version_loads_unchanged(tmp_path: Path) -> None:
     config_file = _write(
         tmp_path / "config.toml",
@@ -134,7 +128,6 @@ def test_current_version_loads_unchanged(tmp_path: Path) -> None:
     assert config_file.read_bytes() == before
 
 
-@pytest.mark.unit
 def test_future_version_raises_naming_version(tmp_path: Path) -> None:
     future = CURRENT_CONFIG_VERSION + 7
     config_file = _write(
@@ -148,7 +141,6 @@ def test_future_version_raises_naming_version(tmp_path: Path) -> None:
         load_user_config(config_file)
 
 
-@pytest.mark.unit
 def test_future_version_does_not_rewrite_file(tmp_path: Path) -> None:
     config_file = _write(
         tmp_path / "config.toml",
@@ -164,7 +156,6 @@ def test_future_version_does_not_rewrite_file(tmp_path: Path) -> None:
     assert config_file.read_bytes() == before
 
 
-@pytest.mark.unit
 def test_non_integer_version_raises(tmp_path: Path) -> None:
     config_file = _write(
         tmp_path / "config.toml",
@@ -177,7 +168,6 @@ def test_non_integer_version_raises(tmp_path: Path) -> None:
         load_user_config(config_file)
 
 
-@pytest.mark.unit
 def test_bool_version_rejected(tmp_path: Path) -> None:
     config_file = _write(
         tmp_path / "config.toml",
@@ -190,7 +180,6 @@ def test_bool_version_rejected(tmp_path: Path) -> None:
         load_user_config(config_file)
 
 
-@pytest.mark.unit
 def test_migrate_config_stamps_current_version_from_zero() -> None:
     raw: dict[str, object] = {"build": {"kas_container_image": "x"}}
     out = _migrate_config(raw, 0)
@@ -198,7 +187,6 @@ def test_migrate_config_stamps_current_version_from_zero() -> None:
     assert out["build"] == {"kas_container_image": "x"}
 
 
-@pytest.mark.unit
 def test_v2_to_v3_renames_container_image_to_kas_container_image() -> None:
     raw: dict[str, object] = {"build": {"container_image": "custom/kas:4.7"}}
     out = _migrate_config(raw, 2)
@@ -206,7 +194,6 @@ def test_v2_to_v3_renames_container_image_to_kas_container_image() -> None:
     assert out["build"] == {"kas_container_image": "custom/kas:4.7"}
 
 
-@pytest.mark.unit
 def test_v2_to_v3_no_op_when_container_image_absent() -> None:
     raw: dict[str, object] = {"build": {"dl_dir": "/data/dl"}}
     out = _migrate_config(raw, 2)
@@ -214,7 +201,6 @@ def test_v2_to_v3_no_op_when_container_image_absent() -> None:
     assert out["build"] == {"dl_dir": "/data/dl"}
 
 
-@pytest.mark.unit
 def test_v2_to_v3_preserves_kas_container_image_when_both_keys_present() -> None:
     raw: dict[str, object] = {"build": {"container_image": "old/kas:1.0", "kas_container_image": "new/kas:2.0"}}
     out = _migrate_config(raw, 2)
@@ -222,7 +208,6 @@ def test_v2_to_v3_preserves_kas_container_image_when_both_keys_present() -> None
     assert out["build"] == {"kas_container_image": "new/kas:2.0"}
 
 
-@pytest.mark.unit
 def test_migrate_config_no_op_at_current_version() -> None:
     raw: dict[str, object] = {"config_version": CURRENT_CONFIG_VERSION}
     out = _migrate_config(raw, CURRENT_CONFIG_VERSION)

@@ -13,7 +13,6 @@ mocks - never on call counts alone.
 
 from __future__ import annotations
 
-import subprocess
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
@@ -339,9 +338,3 @@ def test_setup_env_missing_bblayers_after_success_raises_runtimeerror(
     assert len(recorder.calls) == 1, (
         f"expected subprocess.run to have fired once before the missing-bblayers check, got {recorder.calls!r}"
     )
-
-
-# Sanity: ensure subprocess module is imported in this test module so a
-# real CalledProcessError type is available if a future test wants to
-# simulate a non-zero return code.  Silences unused-import warnings.
-_ = subprocess.CalledProcessError

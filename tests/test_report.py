@@ -15,9 +15,12 @@ import json
 from typing import TYPE_CHECKING
 
 import pytest
+from typer.testing import CliRunner
 
+import bakar.commands.report as report_module
+from bakar.cli import app
 from bakar.config import resolve
-from bakar.report import assemble_report
+from bakar.report import ReportSummary, assemble_report
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -179,11 +182,7 @@ def _cli_run_dir(nxp_ws: Path) -> Path:
 
 def test_report_json_gains_ccache_key_when_artifact_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``--json`` gains an additive ``ccache_cache`` key when ccache-stats.json exists."""
-    from typer.testing import CliRunner
-
-    import bakar.commands.report as report_module
-    from bakar.cli import app
-    from bakar.report import LangCacheStat, ReportSummary
+    from bakar.report import LangCacheStat
 
     (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
     run_dir = _cli_run_dir(tmp_path)
@@ -217,12 +216,6 @@ def test_report_json_gains_ccache_key_when_artifact_present(tmp_path: Path, monk
 
 def test_report_json_omits_ccache_key_when_artifact_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A missing ccache-stats.json omits the section without error."""
-    from typer.testing import CliRunner
-
-    import bakar.commands.report as report_module
-    from bakar.cli import app
-    from bakar.report import ReportSummary
-
     (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
     run_dir = _cli_run_dir(tmp_path)  # no ccache-stats.json written
     summary = ReportSummary(
@@ -249,12 +242,6 @@ def test_report_json_omits_ccache_key_when_artifact_absent(tmp_path: Path, monke
 
 def test_report_human_shows_ccache_section_when_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The human path renders an additive ccache section when the artifact exists."""
-    from typer.testing import CliRunner
-
-    import bakar.commands.report as report_module
-    from bakar.cli import app
-    from bakar.report import ReportSummary
-
     (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
     run_dir = _cli_run_dir(tmp_path)
     (run_dir / "ccache-stats.json").write_text(
@@ -280,12 +267,6 @@ def test_report_human_shows_ccache_section_when_present(tmp_path: Path, monkeypa
 
 def test_report_json_carries_lifetime_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``--json`` carries ``window: "lifetime"`` through to the payload unchanged."""
-    from typer.testing import CliRunner
-
-    import bakar.commands.report as report_module
-    from bakar.cli import app
-    from bakar.report import ReportSummary
-
     (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
     run_dir = _cli_run_dir(tmp_path)
     (run_dir / "ccache-stats.json").write_text(
@@ -312,12 +293,6 @@ def test_report_json_carries_lifetime_window(tmp_path: Path, monkeypatch: pytest
 
 def test_report_json_window_absent_for_legacy_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A pre-existing artifact written before ``window`` existed yields ``window: None``."""
-    from typer.testing import CliRunner
-
-    import bakar.commands.report as report_module
-    from bakar.cli import app
-    from bakar.report import ReportSummary
-
     (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
     run_dir = _cli_run_dir(tmp_path)
     (run_dir / "ccache-stats.json").write_text(json.dumps({"cache_hits": 5, "cache_misses": 2, "hit_rate": 71.4}))
@@ -342,12 +317,6 @@ def test_report_json_window_absent_for_legacy_artifact(tmp_path: Path, monkeypat
 
 def test_report_human_shows_lifetime_label(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The human path prints ``ccache (lifetime):`` when ``window`` is ``"lifetime"``."""
-    from typer.testing import CliRunner
-
-    import bakar.commands.report as report_module
-    from bakar.cli import app
-    from bakar.report import ReportSummary
-
     (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
     run_dir = _cli_run_dir(tmp_path)
     (run_dir / "ccache-stats.json").write_text(
@@ -375,12 +344,6 @@ def test_report_human_falls_back_to_this_build_label_for_legacy_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A legacy artifact with no ``window`` field still prints the historical label."""
-    from typer.testing import CliRunner
-
-    import bakar.commands.report as report_module
-    from bakar.cli import app
-    from bakar.report import ReportSummary
-
     (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
     run_dir = _cli_run_dir(tmp_path)
     (run_dir / "ccache-stats.json").write_text(json.dumps({"cache_hits": 5, "cache_misses": 2, "hit_rate": 71.4}))

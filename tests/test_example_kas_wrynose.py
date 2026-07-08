@@ -37,8 +37,8 @@ _BITBAKE_URL = "https://git.openembedded.org/bitbake"
 
 
 @pytest.fixture(autouse=True)
-def _reset_vendors() -> None:
-    cli_module._VENDORS = None
+def _reset_vendors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli_module, "_VENDORS", None)
 
 
 @pytest.fixture

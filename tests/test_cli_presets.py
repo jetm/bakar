@@ -33,6 +33,24 @@ def _write_config(tmp_path: Path, presets: list[dict]) -> Path:
     return path
 
 
+class _FakeQuestion:
+    def __init__(self, answer: str) -> None:
+        self._answer = answer
+
+    def ask(self) -> str:
+        return self._answer
+
+
+def _patch_questionary(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> None:
+    """Patch questionary select/text/path to return scripted answers in order."""
+    import bakar.commands.presets as presets_mod
+
+    it = iter(answers)
+    monkeypatch.setattr(presets_mod.questionary, "select", lambda msg, choices: _FakeQuestion(next(it)))
+    monkeypatch.setattr(presets_mod.questionary, "text", lambda msg, default="": _FakeQuestion(next(it)))
+    monkeypatch.setattr(presets_mod.questionary, "path", lambda msg, default="": _FakeQuestion(next(it)))
+
+
 # ---------------------------------------------------------------------------
 # list verb
 # ---------------------------------------------------------------------------
@@ -40,11 +58,6 @@ def _write_config(tmp_path: Path, presets: list[dict]) -> Path:
 
 def test_list_no_presets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """list with no presets defined prints a message and exits 0."""
-    empty_config = tmp_path / "config.toml"
-    empty_config.write_text("")
-    empty_vendors = tmp_path / "vendors.toml"
-    empty_vendors.write_text("")
-
     import bakar.commands.presets as presets_mod
 
     monkeypatch.setattr(
@@ -171,8 +184,13 @@ def test_show_multi_release_lists_each_release(monkeypatch: pytest.MonkeyPatch) 
 # ---------------------------------------------------------------------------
 
 
-def test_add_no_tty_exits_nonzero() -> None:
+def test_add_no_tty_exits_nonzero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """add without a TTY exits non-zero without blocking on a prompt."""
+    import bakar.commands.presets as presets_mod
+
+    # Guard against a TTY-detection regression writing the real user config.
+    monkeypatch.setattr(presets_mod, "_CONFIG_PATH", tmp_path / "config.toml")
+
     # CliRunner uses a non-TTY stdin by default (mix_stderr=False, no isatty).
     result = runner.invoke(app, ["presets", "add"])
     assert result.exit_code != 0
@@ -191,29 +209,10 @@ def test_add_nxp_writes_presets_entry(tmp_path: Path, monkeypatch: pytest.Monkey
     monkeypatch.setattr(presets_mod, "_is_tty", lambda: True)
 
     # Mock questionary prompts in order: family, name, manifest, branch, machine, distro, image.
-    answers = iter(
-        ["nxp", "my-nxp-preset", "imx-6.6.52-2.2.2.xml", "lf-6.6.y", "imx8mpevk", "fsl-imx-xwayland", "imx-image-full"]
+    _patch_questionary(
+        monkeypatch,
+        ["nxp", "my-nxp-preset", "imx-6.6.52-2.2.2.xml", "lf-6.6.y", "imx8mpevk", "fsl-imx-xwayland", "imx-image-full"],
     )
-
-    class _FakeQuestion:
-        def __init__(self, answer: str) -> None:
-            self._answer = answer
-
-        def ask(self) -> str:
-            return self._answer
-
-    def _fake_select(msg: str, choices: list[str]) -> _FakeQuestion:
-        return _FakeQuestion(next(answers))
-
-    def _fake_text(msg: str, default: str = "") -> _FakeQuestion:
-        return _FakeQuestion(next(answers))
-
-    def _fake_path(msg: str, default: str = "") -> _FakeQuestion:
-        return _FakeQuestion(next(answers))
-
-    monkeypatch.setattr(presets_mod.questionary, "select", _fake_select)
-    monkeypatch.setattr(presets_mod.questionary, "text", _fake_text)
-    monkeypatch.setattr(presets_mod.questionary, "path", _fake_path)
 
     result = runner.invoke(app, ["presets", "add"])
     assert result.exit_code == 0, result.output
@@ -245,27 +244,7 @@ def test_add_bbsetup_prompts_kas_yaml(tmp_path: Path, monkeypatch: pytest.Monkey
     monkeypatch.setattr(presets_mod, "_is_tty", lambda: True)
 
     # Order: family, name, kas_yaml path, machine, image.
-    answers = iter(["bbsetup", "my-bbsetup-preset", "layers/qemu.yml", "qemux86-64", "avocado-os"])
-
-    class _FakeQuestion:
-        def __init__(self, answer: str) -> None:
-            self._answer = answer
-
-        def ask(self) -> str:
-            return self._answer
-
-    def _fake_select(msg: str, choices: list[str]) -> _FakeQuestion:
-        return _FakeQuestion(next(answers))
-
-    def _fake_text(msg: str, default: str = "") -> _FakeQuestion:
-        return _FakeQuestion(next(answers))
-
-    def _fake_path(msg: str, default: str = "") -> _FakeQuestion:
-        return _FakeQuestion(next(answers))
-
-    monkeypatch.setattr(presets_mod.questionary, "select", _fake_select)
-    monkeypatch.setattr(presets_mod.questionary, "text", _fake_text)
-    monkeypatch.setattr(presets_mod.questionary, "path", _fake_path)
+    _patch_questionary(monkeypatch, ["bbsetup", "my-bbsetup-preset", "layers/qemu.yml", "qemux86-64", "avocado-os"])
 
     result = runner.invoke(app, ["presets", "add"])
     assert result.exit_code == 0, result.output
@@ -347,18 +326,7 @@ def test_add_appends_to_existing_config(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(presets_mod, "_CONFIG_PATH", config_path)
     monkeypatch.setattr(presets_mod, "_is_tty", lambda: True)
 
-    answers = iter(["generic", "second-preset", "kas-second.yml", "qemux86-64", "avocado-os"])
-
-    class _FakeQuestion:
-        def __init__(self, answer: str) -> None:
-            self._answer = answer
-
-        def ask(self) -> str:
-            return self._answer
-
-    monkeypatch.setattr(presets_mod.questionary, "select", lambda msg, choices: _FakeQuestion(next(answers)))
-    monkeypatch.setattr(presets_mod.questionary, "text", lambda msg, default="": _FakeQuestion(next(answers)))
-    monkeypatch.setattr(presets_mod.questionary, "path", lambda msg, default="": _FakeQuestion(next(answers)))
+    _patch_questionary(monkeypatch, ["generic", "second-preset", "kas-second.yml", "qemux86-64", "avocado-os"])
 
     result = runner.invoke(app, ["presets", "add"])
     assert result.exit_code == 0, result.output
