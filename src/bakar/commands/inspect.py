@@ -35,7 +35,7 @@ from bakar.commands._helpers import (
     _resolve_workspace,
 )
 from bakar.config import BSPSpec, resolve
-from bakar.inspect_parse import parse_env_vars
+from bakar.inspect_parse import parse_env_vars, parse_getvar_value
 from bakar.observability import RunLogger
 from bakar.steps.kas_build import KasBuildContext, run_shell_capture
 
@@ -399,8 +399,32 @@ def inspect(
             console.print(f"[red]bitbake -e {recipe} failed (exit {rc_env}).[/]\n{env_text}")
             raise typer.Exit(code=rc_env)
         # --- Step 4 (optional): transitive deps ---
+        # ``bitbake -g`` writes pn-buildlist to ${TOPDIR}; its stdout is bitbake
+        # log noise, so read the artifact file rather than the captured stdout
+        # (mirrors the graph subcommand).
         recursive_text: str | None = None
         if recursive:
+            topdir_out = log.run_dir / "inspect-topdir.log"
+            rc_topdir = run_shell_capture(
+                kas_ctx,
+                f"bitbake-getvar -r {shlex.quote(recipe)} TOPDIR",
+                topdir_out,
+                step="inspect_topdir",
+            )
+            topdir_text = topdir_out.read_text(errors="replace") if topdir_out.exists() else ""
+            if rc_topdir != 0:
+                console.print(f"[red]bitbake-getvar TOPDIR failed for recipe '{recipe}' (exit {rc_topdir}).[/]")
+                if topdir_text.strip():
+                    console.print(topdir_text)
+                raise typer.Exit(code=rc_topdir)
+
+            topdir = parse_getvar_value(topdir_text, "TOPDIR").strip()
+            if not topdir or "\n" in topdir:
+                console.print(f"[red]could not resolve TOPDIR for recipe '{recipe}'.[/]")
+                if topdir_text.strip():
+                    console.print(topdir_text)
+                raise typer.Exit(code=1)
+
             recursive_out = log.run_dir / "inspect-recursive.log"
             rc_rec = run_shell_capture(
                 kas_ctx,
@@ -408,10 +432,22 @@ def inspect(
                 recursive_out,
                 step="inspect_recursive",
             )
-            recursive_text = recursive_out.read_text(errors="replace") if recursive_out.exists() else ""
+            recursive_gen_text = recursive_out.read_text(errors="replace") if recursive_out.exists() else ""
             if rc_rec != 0:
-                console.print(f"[red]bitbake -g {recipe} failed (exit {rc_rec}).[/]\n{recursive_text}")
+                console.print(f"[red]bitbake -g {recipe} failed (exit {rc_rec}).[/]\n{recursive_gen_text}")
                 raise typer.Exit(code=rc_rec)
+
+            buildlist_out = log.run_dir / "inspect-pn-buildlist.log"
+            rc_buildlist = run_shell_capture(
+                kas_ctx,
+                f"cat {shlex.quote(topdir)}/pn-buildlist",
+                buildlist_out,
+                step="inspect_pn_buildlist",
+            )
+            recursive_text = buildlist_out.read_text(errors="replace") if buildlist_out.exists() else ""
+            if rc_buildlist != 0:
+                console.print(f"[red]could not read {topdir}/pn-buildlist (exit {rc_buildlist}).[/]\n{recursive_text}")
+                raise typer.Exit(code=rc_buildlist)
 
     report = _assemble_report(recipe, show_recipes_text, env_text, env_text, recursive_text)
     _print_report(recipe, report, output_json=output_json)

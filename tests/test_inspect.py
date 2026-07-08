@@ -76,8 +76,18 @@ DEPENDS="virtual/libc"
 RDEPENDS=""
 """
 
-_RECURSIVE_OK = """\
+# ``bitbake -g`` stdout is log noise; the real transitive names live in the
+# pn-buildlist artifact file, which the fifth ``cat`` call reads.
+_RECURSIVE_GRAPH_NOISE = """\
 NOTE: Generating dependency graph...
+NOTE: PN build list saved to 'pn-buildlist'
+"""
+
+# ``bitbake-getvar -r <recipe> TOPDIR`` output (getvar assignment form).
+_TOPDIR_OK = 'TOPDIR="/build"\n'
+
+# Contents of ``${TOPDIR}/pn-buildlist`` - the transitive forward dep names.
+_PN_BUILDLIST_OK = """\
 virtual/libc
 libc-glibc
 glibc
@@ -128,10 +138,14 @@ _DEFAULT_PAYLOADS = [
     (_ENV_OK, 0),
 ]
 
+# Recursive mode issues five shell calls: show-recipes, bitbake -e,
+# bitbake-getvar TOPDIR, bitbake -g (graph noise), and cat pn-buildlist.
 _RECURSIVE_PAYLOADS = [
     (_SHOW_RECIPES_OK, 0),
     (_ENV_OK, 0),
-    (_RECURSIVE_OK, 0),
+    (_TOPDIR_OK, 0),
+    (_RECURSIVE_GRAPH_NOISE, 0),
+    (_PN_BUILDLIST_OK, 0),
 ]
 
 
@@ -246,8 +260,8 @@ def test_dependencies_section_present(runner: _CliRunner, nxp_workspace: Path) -
 
 
 @pytest.mark.unit
-def test_three_bitbake_calls_issued(runner: _CliRunner, nxp_workspace: Path) -> None:
-    """Without --recursive, exactly three bitbake calls are issued."""
+def test_two_bitbake_calls_issued(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """Without --recursive, exactly two bitbake calls are issued (show-recipes, bitbake -e)."""
     calls: list[dict] = []
     fake = _make_fake_capture(list(_DEFAULT_PAYLOADS), calls)
 
@@ -268,8 +282,9 @@ def test_three_bitbake_calls_issued(runner: _CliRunner, nxp_workspace: Path) -> 
 
 
 @pytest.mark.unit
-def test_recursive_adds_fourth_call(runner: _CliRunner, nxp_workspace: Path) -> None:
-    """With --recursive, a fourth bitbake -g call is issued."""
+def test_recursive_issues_five_calls(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """With --recursive, five calls run: the two base calls plus getvar TOPDIR,
+    bitbake -g, and cat ${TOPDIR}/pn-buildlist (deps come from the buildlist)."""
     calls: list[dict] = []
     fake = _make_fake_capture(list(_RECURSIVE_PAYLOADS), calls)
 
@@ -280,8 +295,9 @@ def test_recursive_adds_fourth_call(runner: _CliRunner, nxp_workspace: Path) -> 
         )
 
     assert result.exit_code == 0, result.output
-    assert len(calls) == 3
+    assert len(calls) == 5
     assert any("bitbake -g" in c["command"] for c in calls)
+    assert any("pn-buildlist" in c["command"] for c in calls)
 
 
 @pytest.mark.unit
@@ -314,7 +330,7 @@ def test_recursive_flag_short_form(runner: _CliRunner, nxp_workspace: Path) -> N
         )
 
     assert result.exit_code == 0, result.output
-    assert len(calls) == 3
+    assert len(calls) == 5
 
 
 # ---------------------------------------------------------------------------
