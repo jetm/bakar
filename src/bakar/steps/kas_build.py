@@ -820,15 +820,7 @@ def dry_run_preview_lines(
     instead of a fully resolved path.
     """
     exe = "kas" if cfg.host_mode else "kas-container"
-    if cfg.is_meta_avocado:
-        kas_arg = "<kas-arg: computed by kas dump at build time>"
-    else:
-        kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
-        parts: list[str] = [
-            f"{kas_yaml_rel}:{_OVERLAY_DIR_RELPATH / overlay_source.name}",
-            *[str(_OVERLAY_DIR_RELPATH / p.name) for p in extra_overlays or []],
-        ]
-        kas_arg = ":".join(parts)
+    kas_arg = _dry_run_kas_arg(cfg, kas_yaml, overlay_source, extra_overlays)
     cmd = [exe, *_ccache_args(cfg, dry_run=True), "build", kas_arg]
     if target:
         cmd += ["--target", target]
@@ -898,7 +890,8 @@ def _sync_step_lines(cfg: BuildConfig, kas_arg: str) -> list[str]:
             f" -m {shlex.quote(cfg.manifest)} --config-name"
         )
         sync = f"repo sync -j {nproc} --force-sync --no-clone-bundle"
-        return [f"(cd {shlex.quote(str(cfg.workspace))} && {init} && {sync})"]
+        nxp_dir = cfg.workspace / "nxp"
+        return [f"(cd {shlex.quote(str(nxp_dir))} && {init} && {sync})"]
     if cfg.bsp_family == "ti":
         from bakar.steps.ti_layertool import _build_layertool_cmd
 
@@ -1475,29 +1468,10 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         extra_overlays=[str(p) for p in (extra_overlays or [])],
     )
     cfg.measurements_dir.mkdir(parents=True, exist_ok=True)
-    # The sccache overlay references the meta-bakar-sccache layer by a relative
-    # repos path; materialize it under .bakar/ so kas can resolve and inherit it.
-    if cfg.use_sccache_dist:
-        materialize_sccache_layer(cfg)
-    if cfg.host_mode:
-        materialize_host_layer(cfg)
+    kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source, extra_overlays)
     if cfg.is_meta_avocado:
-        _setup_meta_avocado_build_dir(cfg)
-        overlay_rel = materialize_overlay(cfg, overlay_source)
-        extra_overlay_rels = [materialize_overlay(cfg, p) for p in (extra_overlays or [])]
-        wrapper = _write_meta_avocado_wrapper(cfg, kas_yaml)
-        dump = _run_kas_dump(cfg, wrapper, overlay_rel, extra_overlay_rels)
-        kas_arg = str(dump)
         n_overlays = len([kas_yaml, overlay_source, *(extra_overlays or [])])
         log.info(f"kas dump: flattened {n_overlays} overlays -> {_friendly_overlay_path(Path(kas_arg), cfg.workspace)}")
-    else:
-        kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
-        overlay_rel = materialize_overlay(cfg, overlay_source)
-        if extra_overlays:
-            extra_rels = [materialize_overlay(cfg, p) for p in extra_overlays]
-            kas_arg = ":".join([str(kas_yaml_rel), str(overlay_rel), *[str(r) for r in extra_rels]])
-        else:
-            kas_arg = f"{kas_yaml_rel}:{overlay_rel}"
 
     stop_event = threading.Event()
 
@@ -2241,7 +2215,7 @@ def run_kas_subcommand(
                 proc = subprocess.run(  # pragma: no cover
                     cmd,
                     cwd=cfg.bsp_root,
-                    env=_build_env(cfg, eventlog_path=_container_eventlog_path(cfg, log)),
+                    env=_build_env(cfg, ensure_hashserv=False, eventlog_path=_container_eventlog_path(cfg, log)),
                     stdout=fh,
                     check=False,
                 )
@@ -2249,7 +2223,7 @@ def run_kas_subcommand(
             proc = subprocess.run(  # pragma: no cover
                 cmd,
                 cwd=cfg.bsp_root,
-                env=_build_env(cfg, eventlog_path=_container_eventlog_path(cfg, log)),
+                env=_build_env(cfg, ensure_hashserv=False, eventlog_path=_container_eventlog_path(cfg, log)),
                 check=False,
             )
     except FileNotFoundError:

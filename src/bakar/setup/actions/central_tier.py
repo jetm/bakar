@@ -19,6 +19,7 @@ which the runner calls last.
 
 from __future__ import annotations
 
+import shlex
 import socket
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -82,9 +83,9 @@ def _ensure_db_op(pg_host: str, pg_port: int, dbname: str) -> RunCommand:
     connect fails - re-running setup is then a no-op rather than a failure.
     """
     guard = (
-        f"PGPASSWORD={dbname} psql -h {pg_host} -p {pg_port} -U {dbname} "
+        f"PGPASSWORD={dbname} psql -h {shlex.quote(pg_host)} -p {pg_port} -U {dbname} "
         f"-d {dbname} -tAc 'SELECT 1' >/dev/null 2>&1 "
-        f"|| createdb -h {pg_host} -p {pg_port} -O {dbname} {dbname}"
+        f"|| createdb -h {shlex.quote(pg_host)} -p {pg_port} -O {dbname} {dbname}"
     )
     return RunCommand(argv=["sh", "-c", guard], needs_root=False)
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import sys
 import time
@@ -203,7 +204,7 @@ def _build_command(
         val = os.environ.get(name)
         if val:
             forwarded.append((name, val))
-    prefix_assigns = " ".join(f"{n}={v}" for n, v in forwarded)
+    prefix_assigns = " ".join(f"{n}={shlex.quote(v)}" for n, v in forwarded)
     passthrough = " ".join(n for n, _ in forwarded)
     cmd = f"BB_ENV_PASSTHROUGH_ADDITIONS='{passthrough}' {prefix_assigns} {cmd}"
     return cmd
@@ -303,6 +304,7 @@ def run(
         "runs": runs,
         "passed": 0,
         "failed": 0,
+        "errored": 0,
         "elapsed_seconds": [],
         "exit_codes": [],
         "cache_cleared_pre_iter": [],
@@ -357,6 +359,16 @@ def run(
                 elapsed=elapsed,
                 matches=len(hits),
             )
+        elif rc != 0:
+            summary["errored"] += 1
+            log.step_fail(
+                "stress_parse_iter",
+                reason="non-signature nonzero exit",
+                iteration=i,
+                exit_code=rc,
+                elapsed=elapsed,
+                matches=0,
+            )
         else:
             summary["passed"] += 1
             log.step_ok(
@@ -371,6 +383,6 @@ def run(
     summary_path.write_text(json.dumps(summary, indent=2, default=str) + "\n")
     log.info(
         f"stress-parse: {summary['passed']}/{summary['runs']} passed "
-        f"({summary['failed']} failed), summary at {summary_path}"
+        f"({summary['failed']} failed, {summary['errored']} errored), summary at {summary_path}"
     )
     return summary
