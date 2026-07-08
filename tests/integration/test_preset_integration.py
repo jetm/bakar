@@ -45,13 +45,6 @@ def _stub_doctor_checks():
 
 
 @pytest.fixture
-def runner() -> _CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
-@pytest.fixture
 def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Minimal workspace with a ``.bakar.toml`` marker; chdir into it."""
     (tmp_path / ".bakar.toml").write_text("")

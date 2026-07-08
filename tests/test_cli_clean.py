@@ -26,13 +26,6 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-def runner() -> _CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
-@pytest.fixture
 def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A tmp workspace with a ``.bakar.toml`` marker; chdir into it.
 

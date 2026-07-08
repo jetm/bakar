@@ -29,13 +29,6 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-def runner() -> _CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
-@pytest.fixture
 def nxp_workspace(tmp_path: Path) -> Path:
     (tmp_path / "nxp").mkdir()
     return tmp_path

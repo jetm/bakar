@@ -337,13 +337,6 @@ def test_analyse_falls_back_on_missing_json_key(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def runner() -> CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
 def _bbsetup_workspace(tmp_path: Path) -> Path:
     """Workspace with a ``.bakar.toml`` marker so ``_workspace_from_cwd`` finds it."""
     (tmp_path / ".bakar.toml").write_text("")

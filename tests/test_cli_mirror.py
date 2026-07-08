@@ -26,13 +26,6 @@ _URL = "https://github.com/openembedded/meta-openembedded.git"
 _EXPECTED_NAME = "git2_github.com.openembedded.meta-openembedded.git.tar.gz"
 
 
-@pytest.fixture
-def runner() -> _CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
 # ---------------------------------------------------------------------------
 # mirror_tarball_name
 # ---------------------------------------------------------------------------

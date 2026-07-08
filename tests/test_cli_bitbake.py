@@ -46,13 +46,6 @@ _TARGET = "busybox"
 
 
 @pytest.fixture
-def runner() -> _CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
-@pytest.fixture
 def nxp_workspace(tmp_path: Path) -> Path:
     """Minimal NXP workspace so ``_resolve_workspace`` succeeds."""
     (tmp_path / "nxp").mkdir()

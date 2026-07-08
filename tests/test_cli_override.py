@@ -23,13 +23,14 @@ from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
-from typer.testing import CliRunner
 
 from bakar.cli import app
 from bakar.steps.bitbake_override import OverrideStatus
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from typer.testing import CliRunner
 
 pytestmark = pytest.mark.unit
 
@@ -48,11 +49,6 @@ def _fake_status(state: str = "active", detail: str = "symlink ok") -> OverrideS
         upstream_dir=Path("/nonexistent/upstream-bitbake"),
         detail=detail,
     )
-
-
-@pytest.fixture
-def runner() -> CliRunner:
-    return CliRunner()
 
 
 def test_apply_invokes_step_apply(

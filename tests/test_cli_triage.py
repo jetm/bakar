@@ -37,13 +37,6 @@ CLEAN_EVENTS_JSONL = (
 )
 
 
-@pytest.fixture
-def runner() -> _CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
 def _make_workspace(tmp_path: Path) -> Path:
     """Workspace with a ``.bakar.toml`` marker so ``_workspace_from_cwd`` picks it up."""
     (tmp_path / ".bakar.toml").write_text("")

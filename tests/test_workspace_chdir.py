@@ -35,13 +35,6 @@ pytestmark = pytest.mark.unit
 _GENERIC_YAML = "header:\n  version: 21\nmachine: qemux86-64\ndistro: nodistro\ntarget: core-image-minimal\n"
 
 
-@pytest.fixture
-def runner() -> _CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
 @pytest.fixture(autouse=True)
 def _stub_doctor_checks() -> None:
     """Stub doctor's ``run_all`` so build stays host-independent (real checks BLOCK)."""

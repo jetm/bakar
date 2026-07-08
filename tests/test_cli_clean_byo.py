@@ -21,13 +21,6 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.unit
 
 
-@pytest.fixture
-def runner() -> _CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
 def test_clean_byo_meta_avocado_yaml_wipes_build_stem_dir(
     runner: _CliRunner, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

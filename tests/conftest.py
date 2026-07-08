@@ -179,6 +179,11 @@ NOTE: Tasks Summary: Attempted 4321 tasks of which 4320 didn't need to be rerun 
 
 
 @pytest.fixture
+def runner() -> CliRunner:
+    return CliRunner()
+
+
+@pytest.fixture
 def fake_workspace(tmp_path: Path) -> Path:
     """Minimal NXP workspace: ``.bakar.toml`` marker, ``nxp/`` subdir, manifest."""
     (tmp_path / ".bakar.toml").write_text("")

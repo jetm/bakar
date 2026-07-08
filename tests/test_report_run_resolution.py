@@ -45,13 +45,6 @@ _FAIL_EVENTS = (
 )
 
 
-@pytest.fixture
-def runner() -> _CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
 def _write_run(runs_root: Path, run_id: str, events: str) -> Path:
     run_dir = runs_root / run_id
     run_dir.mkdir(parents=True)

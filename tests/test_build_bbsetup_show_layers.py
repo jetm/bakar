@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
-from typer.testing import CliRunner
 
 from bakar.cli import app
 from bakar.user_config import UserConfig
@@ -31,12 +30,9 @@ from bakar.user_config import UserConfig
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from typer.testing import CliRunner
+
 pytestmark = pytest.mark.unit
-
-
-@pytest.fixture
-def runner() -> CliRunner:
-    return CliRunner()
 
 
 def _fake_resolve(setup_dir: Path) -> MagicMock:

@@ -56,13 +56,6 @@ _VALID_BBSETUP_CONFIG: dict = {
 
 
 @pytest.fixture
-def runner() -> _CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
-@pytest.fixture
 def bbsetup_workspace(tmp_path: Path) -> Path:
     """A tmp dir laid out like an initialized ``bitbake-setup`` workspace."""
     (tmp_path / "config").mkdir()

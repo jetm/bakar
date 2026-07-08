@@ -26,13 +26,14 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
-from typer.testing import CliRunner
 
 from bakar.cli import app
 from bakar.fork_race_signatures import FORK_RACE_SIGNATURES
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from typer.testing import CliRunner
 
 pytestmark = pytest.mark.unit
 
@@ -111,11 +112,6 @@ def _patch_steps(
         return_value=summary,
     )
     return override_patcher, kas_patcher, stress_patcher
-
-
-@pytest.fixture
-def runner() -> CliRunner:
-    return CliRunner()
 
 
 def test_stress_parse_runs_count_matches_flag(

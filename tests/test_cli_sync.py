@@ -20,13 +20,14 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
-from typer.testing import CliRunner
 
 from bakar.commands import app
 from bakar.workspace import WorkspaceState
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from typer.testing import CliRunner
 
 pytestmark = pytest.mark.unit
 
@@ -72,11 +73,6 @@ def _fake_completed(returncode: int = 0) -> MagicMock:
     cp.stdout = ""
     cp.stderr = ""
     return cp
-
-
-@pytest.fixture
-def runner() -> CliRunner:
-    return CliRunner()
 
 
 def test_sync_nxp_dispatches_to_repo(

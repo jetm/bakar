@@ -48,13 +48,6 @@ class _StubAction:
         ]
 
 
-@pytest.fixture
-def runner() -> _CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
 def _stub_plan(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force ``setup.build`` to return a fixed privileged plan (no live doctor)."""
     plan = SetupPlan(actions=[_StubAction()], advisories=["memory: low (advisory)"])

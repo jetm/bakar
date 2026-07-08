@@ -22,7 +22,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from typer.testing import CliRunner
 
 import bakar.commands.log as log_module
 from bakar.commands import app
@@ -31,16 +30,11 @@ from tests.conftest import SAMPLE_EVENTS_JSONL, SAMPLE_KAS_LOG
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from typer.testing import CliRunner
+
 pytestmark = pytest.mark.unit
 
 _RUN_ID = "20260529-120000"
-
-
-@pytest.fixture
-def runner() -> CliRunner:
-    # Newer typer/click drop ``mix_stderr``; CliRunner separates streams
-    # by default and exposes them as ``result.stdout`` / ``result.stderr``.
-    return CliRunner()
 
 
 @pytest.fixture

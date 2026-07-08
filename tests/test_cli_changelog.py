@@ -12,12 +12,13 @@ from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
-from typer.testing import CliRunner
 
 from bakar.cli import app
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from typer.testing import CliRunner
 
 pytestmark = pytest.mark.unit
 
@@ -74,11 +75,6 @@ def _make_git_repo(path: Path) -> str:
 _SHA_A = "a" * 40
 _SHA_B = "b" * 40
 _SHA_C = "c" * 40
-
-
-@pytest.fixture
-def runner() -> CliRunner:
-    return CliRunner()
 
 
 # ---------------------------------------------------------------------------

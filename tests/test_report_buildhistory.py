@@ -101,13 +101,6 @@ def test_parse_gate_on_metadata_revs_only(tmp_path: Path) -> None:
 
 
 @pytest.fixture
-def runner() -> _CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
-@pytest.fixture
 def nxp_workspace(tmp_path: Path) -> Path:
     """A workspace with an ``nxp/`` subdir so workspace detection picks nxp."""
     (tmp_path / "nxp").mkdir()

@@ -7,20 +7,19 @@ command-map lookup and a CliRunner --help invocation to cover both surfaces.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 import typer
-from typer.testing import CliRunner
 
 from bakar.cli import app
+
+if TYPE_CHECKING:
+    from typer.testing import CliRunner
 
 pytestmark = pytest.mark.unit
 
 REQUIRED_COMMANDS = {"show", "getvar", "inspect", "diffsigs", "layers", "drift", "changelog"}
-
-
-@pytest.fixture
-def runner() -> CliRunner:
-    return CliRunner()
 
 
 def test_all_commands_in_click_map() -> None:

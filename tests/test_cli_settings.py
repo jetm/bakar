@@ -33,13 +33,6 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-def runner() -> _CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
-@pytest.fixture
 def config_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect the default config path to a tmp file the test owns.
 

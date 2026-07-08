@@ -35,13 +35,6 @@ _RUN_ID = "20260601-120000"
 
 
 @pytest.fixture
-def runner() -> _CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
-@pytest.fixture
 def nxp_workspace_with_run(tmp_path: Path) -> Path:
     """NXP workspace with one run dir at the NXP layout (no raw event log)."""
     run = tmp_path / "nxp" / "build" / "runs" / _RUN_ID

@@ -27,13 +27,6 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.unit
 
 
-@pytest.fixture
-def runner() -> _CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
 @pytest.fixture(autouse=True)
 def _stub_build_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep cluster-info tests hermetic: default the daemon probe to not-running.

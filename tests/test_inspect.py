@@ -103,13 +103,6 @@ _UNKNOWN_RECIPE_ERROR = "ERROR: Nothing PROVIDES 'no-such-recipe'"
 
 
 @pytest.fixture
-def runner() -> _CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
-@pytest.fixture
 def nxp_workspace(tmp_path: Path) -> Path:
     """Minimal NXP workspace so ``_resolve_workspace`` succeeds."""
     (tmp_path / "nxp").mkdir()

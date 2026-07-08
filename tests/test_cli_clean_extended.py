@@ -122,13 +122,6 @@ def test_resolve_family_unresolvable_raises_typer_exit(tmp_path: Path, monkeypat
 
 
 @pytest.fixture
-def runner() -> _CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
-@pytest.fixture
 def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A tmp workspace with a ``.bakar.toml`` marker and an ``nxp/`` subtree.
 

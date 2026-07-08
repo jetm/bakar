@@ -14,12 +14,13 @@ from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
-from typer.testing import CliRunner
 
 from bakar.cli import app
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from typer.testing import CliRunner
 
 pytestmark = pytest.mark.unit
 
@@ -78,11 +79,6 @@ def _git_head(path: Path) -> str:
         check=True,
     )
     return out.stdout.strip()
-
-
-@pytest.fixture
-def runner() -> CliRunner:
-    return CliRunner()
 
 
 @pytest.fixture

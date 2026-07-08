@@ -32,7 +32,6 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
-from typer.testing import CliRunner
 
 from bakar.cli import app
 from bakar.diagnostics import CheckResult, Severity, Status
@@ -40,6 +39,8 @@ from bakar.workspace import WorkspaceState
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from typer.testing import CliRunner
 
 pytestmark = pytest.mark.unit
 
@@ -133,11 +134,6 @@ def _make_subprocess_router(
         return real_run(cmd, *args, **kwargs)
 
     return router
-
-
-@pytest.fixture
-def runner() -> CliRunner:
-    return CliRunner()
 
 
 @pytest.fixture

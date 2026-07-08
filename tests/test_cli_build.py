@@ -91,13 +91,6 @@ def test_hashequiv_overlay_empty_when_use_hashequiv_false(tmp_path: Path) -> Non
 
 
 @pytest.fixture
-def runner() -> _CliRunner:
-    from typer.testing import CliRunner
-
-    return CliRunner()
-
-
-@pytest.fixture
 def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A tmp workspace with a ``.bakar.toml`` marker; chdir into it."""
     (tmp_path / ".bakar.toml").write_text("")
