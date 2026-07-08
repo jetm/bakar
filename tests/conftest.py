@@ -30,6 +30,7 @@ from typer.testing import CliRunner
 
 import bakar.cli  # noqa: F401 - registers all subcommands on the shared app
 from bakar.commands._app import app
+from bakar.config import BuildConfig
 from bakar.setup.profile import HostProfile
 from bakar.steps import build_ui
 
@@ -60,6 +61,28 @@ _BASE_HOST_PROFILE: dict[str, object] = {
 def make_host_profile(**overrides: object) -> HostProfile:
     """A prepared-host ``HostProfile`` by default; override fields to simulate gaps."""
     return HostProfile(**{**_BASE_HOST_PROFILE, **overrides})
+
+
+# Minimal NXP BuildConfig defaults (the imx8mp / 6.6.52 / 5.2-f40 host-mode shape
+# duplicated verbatim across the kas-env, diagnostics-host, buildtools-provision,
+# eventlog-injection, and run-build-host suites). Callers pass ``workspace=`` and
+# override any field whose suite-specific value differs, so every constructed
+# config stays field-for-field identical to its former local builder.
+_BUILD_CONFIG_DEFAULTS: dict[str, object] = {
+    "bsp_family": "nxp",
+    "machine": "imx8mp-var-dart",
+    "distro": "fsl-imx-xwayland",
+    "image": "core-image-minimal",
+    "manifest": "imx-6.6.52-2.2.2.xml",
+    "repo_url": "https://example.invalid/repo.git",
+    "repo_branch": "imx-6.6.52-2.2.2",
+    "kas_container_image": "jetm/kas-build-env:5.2-f40",
+}
+
+
+def make_build_config(**overrides: object) -> BuildConfig:
+    """A minimal NXP ``BuildConfig``; pass ``workspace=`` plus any field overrides."""
+    return BuildConfig(**{**_BUILD_CONFIG_DEFAULTS, **overrides})  # type: ignore[arg-type]
 
 
 # Plain-mode glyph icons that must never leak into no-ANSI/no-glyph assertions.
@@ -190,6 +213,13 @@ def fake_workspace(tmp_path: Path) -> Path:
     nxp = tmp_path / "nxp"
     nxp.mkdir()
     (nxp / "imx-6.1.55-2.2.0.xml").write_text(MINIMAL_NXP_MANIFEST)
+    return tmp_path
+
+
+@pytest.fixture
+def nxp_workspace(tmp_path: Path) -> Path:
+    """Minimal NXP workspace: an ``nxp/`` subdir so workspace detection picks nxp."""
+    (tmp_path / "nxp").mkdir()
     return tmp_path
 
 

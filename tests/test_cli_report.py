@@ -29,13 +29,6 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.unit
 
 
-@pytest.fixture
-def nxp_workspace(tmp_path: Path) -> Path:
-    """A workspace with an ``nxp/`` subdir so workspace detection picks nxp."""
-    (tmp_path / "nxp").mkdir()
-    return tmp_path
-
-
 def _summary(build_revision: str | None = None) -> ReportSummary:
     return ReportSummary(
         run_id="20260527-100000",

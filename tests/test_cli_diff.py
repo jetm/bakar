@@ -35,13 +35,6 @@ _TI_MANIFEST = "processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt"
 
 
 @pytest.fixture
-def nxp_workspace(tmp_path: Path) -> Path:
-    """A workspace with an ``nxp/`` subdir so workspace detection picks nxp."""
-    (tmp_path / "nxp").mkdir()
-    return tmp_path
-
-
-@pytest.fixture
 def ti_workspace(tmp_path: Path) -> Path:
     """A workspace with a ``ti/`` subdir so workspace detection picks ti."""
     (tmp_path / "ti").mkdir()

@@ -76,13 +76,6 @@ _BITBAKE_G_ERROR = "ERROR: Nothing PROVIDES 'no-such-recipe'\n"
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def nxp_workspace(tmp_path: Path) -> Path:
-    """Minimal NXP workspace so ``_resolve_workspace`` succeeds."""
-    (tmp_path / "nxp").mkdir()
-    return tmp_path
-
-
 # Full happy path: TOPDIR, bitbake -g, task-depends.dot, pn-buildlist.
 def _acyclic_payloads() -> list[tuple[str, int]]:
     return [

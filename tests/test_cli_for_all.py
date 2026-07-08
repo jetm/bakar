@@ -26,13 +26,6 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.unit
 
 
-@pytest.fixture
-def nxp_workspace(tmp_path: Path) -> Path:
-    """A workspace with an ``nxp/`` subdir so workspace detection picks nxp."""
-    (tmp_path / "nxp").mkdir()
-    return tmp_path
-
-
 def _make_run_mock(repo_returncodes: dict[str, int], calls: list[dict]):
     """Build a ``subprocess.run`` replacement that records command invocations.
 

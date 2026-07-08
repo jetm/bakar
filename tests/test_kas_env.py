@@ -15,6 +15,7 @@ import pytest
 
 from bakar.config import BuildConfig
 from bakar.steps.kas_build import _build_env, _ccache_args
+from tests.conftest import make_build_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -23,18 +24,7 @@ pytestmark = pytest.mark.unit
 
 
 def _make_cfg(workspace: Path, bsp_family: str = "nxp", *, host_mode: bool = False) -> BuildConfig:
-    return BuildConfig(
-        workspace=workspace,
-        bsp_family=bsp_family,  # type: ignore[arg-type]
-        machine="imx8mp-var-dart",
-        distro="fsl-imx-xwayland",
-        image="core-image-minimal",
-        manifest="imx-6.6.52-2.2.2.xml",
-        repo_url="https://example.invalid/repo.git",
-        repo_branch="imx-6.6.52-2.2.2",
-        kas_container_image="jetm/kas-build-env:5.2-f40",
-        host_mode=host_mode,
-    )
+    return make_build_config(workspace=workspace, bsp_family=bsp_family, host_mode=host_mode)
 
 
 def test_ccache_args_container_mode_returns_flag(tmp_path: Path) -> None:

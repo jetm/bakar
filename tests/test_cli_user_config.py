@@ -59,13 +59,6 @@ def _synced_state() -> WorkspaceState:
     )
 
 
-@pytest.fixture
-def nxp_workspace(tmp_path: Path) -> Path:
-    """A workspace with an ``nxp/`` subdir so workspace detection picks nxp."""
-    (tmp_path / "nxp").mkdir()
-    return tmp_path
-
-
 @pytest.fixture(autouse=True)
 def _stub_build_steps(monkeypatch: pytest.MonkeyPatch) -> None:
     """Neutralize every step that would touch the real workspace.

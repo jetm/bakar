@@ -17,28 +17,19 @@ from typing import TYPE_CHECKING
 import pytest
 
 from bakar import diagnostics
-from bakar.config import BuildConfig
 from bakar.diagnostics import Severity, Status, check_host_preflight
+from tests.conftest import make_build_config
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from bakar.config import BuildConfig
 
 pytestmark = pytest.mark.unit
 
 
 def _make_cfg(workspace: Path, *, host_mode: bool = True) -> BuildConfig:
-    return BuildConfig(
-        workspace=workspace,
-        bsp_family="nxp",  # type: ignore[arg-type]
-        machine="imx8mp-var-dart",
-        distro="fsl-imx-xwayland",
-        image="core-image-minimal",
-        manifest="imx-6.6.52-2.2.2.xml",
-        repo_url="https://example.invalid/repo.git",
-        repo_branch="imx-6.6.52-2.2.2",
-        kas_container_image="jetm/kas-build-env:5.2-f40",
-        host_mode=host_mode,
-    )
+    return make_build_config(workspace=workspace, host_mode=host_mode)
 
 
 @pytest.fixture(autouse=True)

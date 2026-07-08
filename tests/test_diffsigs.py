@@ -48,13 +48,6 @@ Variable do_compile changed:
 _EMPTY_OUTPUT = ""
 
 
-@pytest.fixture
-def nxp_workspace(tmp_path: Path) -> Path:
-    """Minimal NXP workspace so ``_resolve_workspace`` succeeds."""
-    (tmp_path / "nxp").mkdir()
-    return tmp_path
-
-
 @pytest.mark.unit
 def test_success_prints_diff_and_runs_both_commands(runner: _CliRunner, nxp_workspace: Path) -> None:
     """On success both bitbake calls run in order and the diff text is printed."""

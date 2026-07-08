@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar.config import BuildConfig
 from bakar.steps.kas_build import (
     _build_env,
     _inject_literal_parallelism,
@@ -24,9 +23,12 @@ from bakar.steps.kas_build import (
     materialize_overlay,
 )
 from bakar.user_config import SETTINGS_SCHEMA, load_user_config, set_setting
+from tests.conftest import make_build_config
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from bakar.config import BuildConfig
 
 pytestmark = pytest.mark.unit
 
@@ -244,14 +246,8 @@ def _make_cfg(
     sccache_dist: bool = False,
     sccache_scheduler_url: str | None = None,
 ) -> BuildConfig:
-    return BuildConfig(
+    return make_build_config(
         workspace=workspace,
-        bsp_family="nxp",  # type: ignore[arg-type]
-        machine="imx8mp-var-dart",
-        distro="fsl-imx-xwayland",
-        image="core-image-minimal",
-        manifest="imx-6.6.52-2.2.2.xml",
-        repo_url="https://example.invalid/repo.git",
         repo_branch="scarthgap",
         kas_container_image="jetm/kas-build-env:latest",
         nproc=nproc,

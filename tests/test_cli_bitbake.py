@@ -45,13 +45,6 @@ _MANIFEST = "imx-6.6.52-2.2.0.xml"
 _TARGET = "busybox"
 
 
-@pytest.fixture
-def nxp_workspace(tmp_path: Path) -> Path:
-    """Minimal NXP workspace so ``_resolve_workspace`` succeeds."""
-    (tmp_path / "nxp").mkdir()
-    return tmp_path
-
-
 def _make_fake_capture(text: str, rc: int, calls: list[dict]):
     """Return a fake ``run_shell_capture`` writing ``text`` and returning ``rc``."""
 

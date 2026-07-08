@@ -102,13 +102,6 @@ _UNKNOWN_RECIPE_ERROR = "ERROR: Nothing PROVIDES 'no-such-recipe'"
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def nxp_workspace(tmp_path: Path) -> Path:
-    """Minimal NXP workspace so ``_resolve_workspace`` succeeds."""
-    (tmp_path / "nxp").mkdir()
-    return tmp_path
-
-
 _DEFAULT_PAYLOADS = [
     (_SHOW_RECIPES_OK, 0),
     (_ENV_OK, 0),

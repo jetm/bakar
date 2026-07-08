@@ -79,13 +79,6 @@ BB_NUMBER_THREADS="8"
 """
 
 
-@pytest.fixture
-def nxp_workspace(tmp_path: Path) -> Path:
-    """Minimal NXP workspace so ``_resolve_workspace`` succeeds."""
-    (tmp_path / "nxp").mkdir()
-    return tmp_path
-
-
 def _make_fake_capture_ctx(payloads: list[tuple[str, int]], calls: list[dict]):
     """Like ``_make_fake_capture`` but also records ``ctx.extra_overlays`` per call.
 

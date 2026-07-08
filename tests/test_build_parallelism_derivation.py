@@ -14,10 +14,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar.config import BuildConfig
+from tests.conftest import make_build_config
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from bakar.config import BuildConfig
 
 pytestmark = pytest.mark.unit
 
@@ -33,14 +35,8 @@ def _cfg(
     sccache_scheduler_url: str | None = None,
     host_mode: bool = True,
 ) -> BuildConfig:
-    cfg = BuildConfig(
+    cfg = make_build_config(
         workspace=workspace,
-        bsp_family="nxp",  # type: ignore[arg-type]
-        machine="imx8mp-var-dart",
-        distro="fsl-imx-xwayland",
-        image="core-image-minimal",
-        manifest="imx-6.6.52-2.2.2.xml",
-        repo_url="https://example.invalid/repo.git",
         repo_branch="scarthgap",
         kas_container_image="jetm/kas-build-env:latest",
         host_mode=host_mode,

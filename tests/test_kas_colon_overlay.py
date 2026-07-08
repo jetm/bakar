@@ -29,12 +29,6 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-def nxp_workspace(tmp_path: Path) -> Path:
-    (tmp_path / "nxp").mkdir()
-    return tmp_path
-
-
-@pytest.fixture
 def machine_yaml(tmp_path: Path) -> Path:
     p = tmp_path / "machine.yml"
     p.write_text("header:\n  version: 14\nmachine: imx8mp-var-dart\n", encoding="utf-8")

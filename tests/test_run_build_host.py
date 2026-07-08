@@ -21,11 +21,15 @@ expression being removed or moved out of ``run_build``).
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar.config import BuildConfig
 from bakar.steps import kas_build
+from tests.conftest import make_build_config
+
+if TYPE_CHECKING:
+    from bakar.config import BuildConfig
 
 pytestmark = pytest.mark.unit
 
@@ -36,18 +40,7 @@ def _make_cfg(workspace: Path, *, host_mode: bool = False) -> BuildConfig:
     Mirrors :func:`tests.test_kas_env._make_cfg`; the fields not exercised
     here are filled with plausible NXP values.
     """
-    return BuildConfig(
-        workspace=workspace,
-        bsp_family="nxp",  # type: ignore[arg-type]
-        machine="imx8mp-var-dart",
-        distro="fsl-imx-xwayland",
-        image="core-image-minimal",
-        manifest="imx-6.6.52-2.2.2.xml",
-        repo_url="https://example.invalid/repo.git",
-        repo_branch="imx-6.6.52-2.2.2",
-        kas_container_image="jetm/kas-build-env:5.2-f40",
-        host_mode=host_mode,
-    )
+    return make_build_config(workspace=workspace, host_mode=host_mode)
 
 
 def _select_exe(cfg: BuildConfig) -> str:
