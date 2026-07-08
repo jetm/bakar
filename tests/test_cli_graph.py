@@ -25,6 +25,7 @@ import pytest
 
 import bakar.commands.graph  # noqa: F401 - registers the command on app
 from bakar.cli import app
+from tests._fakes import make_fake_run_shell_capture as _make_fake_capture
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -87,24 +88,6 @@ def nxp_workspace(tmp_path: Path) -> Path:
     """Minimal NXP workspace so ``_resolve_workspace`` succeeds."""
     (tmp_path / "nxp").mkdir()
     return tmp_path
-
-
-def _make_fake_capture(payloads: list[tuple[str, int]], calls: list[dict]):
-    """Return a fake ``run_shell_capture`` writing payloads and recording calls.
-
-    ``payloads`` is ``(text, exit_code)`` in call order.
-    ``calls`` accumulates ``{"command": ..., "stdout_path": ...}`` dicts.
-    """
-    payload_iter = iter(payloads)
-
-    def fake_capture(ctx, command, stdout_path, *, step="kas_shell_capture", python_executable=None):
-        text, rc = next(payload_iter)
-        stdout_path.parent.mkdir(parents=True, exist_ok=True)
-        stdout_path.write_text(text)
-        calls.append({"command": command, "stdout_path": stdout_path})
-        return rc
-
-    return fake_capture
 
 
 # Full happy path: TOPDIR, bitbake -g, task-depends.dot, pn-buildlist.

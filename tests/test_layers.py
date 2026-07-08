@@ -29,6 +29,7 @@ from bakar.layers import (
     collect_layer_hashes,
     discover_source_repos,
 )
+from tests._fakes import Completed as _Completed
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -40,14 +41,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-class _Completed:
-    """Minimal stand-in for ``subprocess.CompletedProcess``."""
-
-    def __init__(self, returncode: int, stdout: str) -> None:
-        self.returncode = returncode
-        self.stdout = stdout
 
 
 def _nxp_cfg(tmp_path: Path):

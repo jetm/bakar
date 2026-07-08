@@ -14,6 +14,7 @@ import pytest
 
 from bakar.config import resolve
 from bakar.layers import LayerHash, collect_layer_hashes
+from tests._fakes import Completed as _Completed
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -47,14 +48,6 @@ def _make_source_dirs(cfg, repos: list[str]) -> None:
     """Create the sources/<repo> directories that is_dir() checks against."""
     for repo in repos:
         (cfg.bsp_root / "sources" / repo).mkdir(parents=True, exist_ok=True)
-
-
-class _Completed:
-    """Minimal stand-in for subprocess.CompletedProcess."""
-
-    def __init__(self, returncode: int, stdout: str) -> None:
-        self.returncode = returncode
-        self.stdout = stdout
 
 
 def _git_args(call_args) -> list[str]:

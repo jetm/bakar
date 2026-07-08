@@ -30,12 +30,37 @@ from typer.testing import CliRunner
 
 import bakar.cli  # noqa: F401 - registers all subcommands on the shared app
 from bakar.commands._app import app
+from bakar.setup.profile import HostProfile
 from bakar.steps import build_ui
 
 # Prevent Rich from inserting ANSI escape codes into captured CLI output.
 # Without this, --help text arrives with mid-token color resets (e.g.
 # "--sstate" + ESC[0m + "-mirror"), breaking plain substring assertions.
 os.environ.setdefault("NO_COLOR", "1")
+
+# A prepared-host baseline profile: every knob meets its recommended target,
+# docker is installed and the user is in its group. The seven ``test_setup_*``
+# suites build on this via ``make_host_profile(**overrides)``, each overriding
+# the fields its action reads to simulate a specific gap.
+_BASE_HOST_PROFILE: dict[str, object] = {
+    "cpu_count": 8,
+    "mem_available_gb": 32.0,
+    "disk_free_gb": 400.0,
+    "distro_id": "arch",
+    "pkg_manager": "pacman",
+    "in_docker_group": True,
+    "docker_installed": True,
+    "inotify_instances": 8192,
+    "inotify_watches": 1048576,
+    "swappiness": 10,
+    "docker_nofile_soft": 65536,
+}
+
+
+def make_host_profile(**overrides: object) -> HostProfile:
+    """A prepared-host ``HostProfile`` by default; override fields to simulate gaps."""
+    return HostProfile(**{**_BASE_HOST_PROFILE, **overrides})
+
 
 # Plain-mode glyph icons that must never leak into no-ANSI/no-glyph assertions.
 # Shared by test_ci_output_mode.py, test_monitor_plain.py, test_build_ui_plain.py

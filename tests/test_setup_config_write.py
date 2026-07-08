@@ -16,25 +16,7 @@ import pytest
 from bakar.setup.actions.base import Action
 from bakar.setup.actions.config_write import APPLIED_HOST_SETTINGS, ConfigWriteAction
 from bakar.user_config import set_setting
-
-
-def _profile():
-    """A minimal stand-in profile; this action ignores every field."""
-    from bakar.setup.profile import HostProfile
-
-    return HostProfile(
-        cpu_count=4,
-        mem_available_gb=16.0,
-        disk_free_gb=200.0,
-        distro_id="arch",
-        pkg_manager="pacman",
-        in_docker_group=True,
-        docker_installed=True,
-        inotify_instances=8192,
-        inotify_watches=1048576,
-        swappiness=10,
-        docker_nofile_soft=65536,
-    )
+from tests.conftest import make_host_profile
 
 
 def test_config_write_is_an_action_with_synthetic_check_name() -> None:
@@ -138,12 +120,12 @@ def test_is_satisfied_true_when_all_knobs_already_persisted(tmp_path, monkeypatc
         "bakar.setup.actions.config_write.get_setting",
         lambda key, path=None: APPLIED_HOST_SETTINGS[key],
     )
-    assert ConfigWriteAction().is_satisfied(_profile()) is True
+    assert ConfigWriteAction().is_satisfied(make_host_profile()) is True
 
 
 def test_is_satisfied_false_when_a_knob_is_missing(monkeypatch) -> None:
     monkeypatch.setattr("bakar.setup.actions.config_write.get_setting", lambda _key, path=None: None)
-    assert ConfigWriteAction().is_satisfied(_profile()) is False
+    assert ConfigWriteAction().is_satisfied(make_host_profile()) is False
 
 
 def test_operations_is_empty_persist_happens_in_apply() -> None:

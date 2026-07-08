@@ -11,25 +11,7 @@ import subprocess
 
 from bakar.setup.actions.base import Action, RunCommand
 from bakar.setup.actions.git import GitConfigAction
-
-
-def _profile():
-    """A minimal stand-in profile; this action ignores it."""
-    from bakar.setup.profile import HostProfile
-
-    return HostProfile(
-        cpu_count=4,
-        mem_available_gb=16.0,
-        disk_free_gb=200.0,
-        distro_id="arch",
-        pkg_manager="pacman",
-        in_docker_group=True,
-        docker_installed=True,
-        inotify_instances=8192,
-        inotify_watches=1048576,
-        swappiness=10,
-        docker_nofile_soft=65536,
-    )
+from tests.conftest import make_host_profile
 
 
 def _fake_run(stdout: str, returncode: int = 0):
@@ -85,7 +67,7 @@ def test_is_satisfied_true_when_both_identities_set(monkeypatch) -> None:
         "bakar.setup.actions.git.subprocess.run",
         _fake_run("set-value\n"),
     )
-    assert GitConfigAction("you@example.com", "Your Name").is_satisfied(_profile()) is True
+    assert GitConfigAction("you@example.com", "Your Name").is_satisfied(make_host_profile()) is True
 
 
 def test_is_satisfied_false_when_email_missing(monkeypatch) -> None:
@@ -97,7 +79,7 @@ def test_is_satisfied_false_when_email_missing(monkeypatch) -> None:
         return subprocess.CompletedProcess(argv, 0, stdout="Your Name\n", stderr="")
 
     monkeypatch.setattr("bakar.setup.actions.git.subprocess.run", run)
-    assert GitConfigAction("you@example.com", "Your Name").is_satisfied(_profile()) is False
+    assert GitConfigAction("you@example.com", "Your Name").is_satisfied(make_host_profile()) is False
 
 
 def test_is_satisfied_false_when_value_empty(monkeypatch) -> None:
@@ -106,7 +88,7 @@ def test_is_satisfied_false_when_value_empty(monkeypatch) -> None:
         "bakar.setup.actions.git.subprocess.run",
         _fake_run("   \n"),
     )
-    assert GitConfigAction("you@example.com", "Your Name").is_satisfied(_profile()) is False
+    assert GitConfigAction("you@example.com", "Your Name").is_satisfied(make_host_profile()) is False
 
 
 def test_is_satisfied_false_when_git_missing(monkeypatch) -> None:
@@ -116,7 +98,7 @@ def test_is_satisfied_false_when_git_missing(monkeypatch) -> None:
         raise FileNotFoundError("git")
 
     monkeypatch.setattr("bakar.setup.actions.git.subprocess.run", run)
-    assert GitConfigAction("you@example.com", "Your Name").is_satisfied(_profile()) is False
+    assert GitConfigAction("you@example.com", "Your Name").is_satisfied(make_host_profile()) is False
 
 
 def test_describe_mentions_identity_and_values() -> None:

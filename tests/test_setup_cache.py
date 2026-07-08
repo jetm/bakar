@@ -13,24 +13,7 @@ from pathlib import Path
 
 from bakar.setup.actions.base import Action, RunCommand
 from bakar.setup.actions.cache import CacheDirsAction
-from bakar.setup.profile import HostProfile
-
-
-def _profile() -> HostProfile:
-    """A minimal stand-in profile; this action ignores every field."""
-    return HostProfile(
-        cpu_count=4,
-        mem_available_gb=16.0,
-        disk_free_gb=200.0,
-        distro_id="arch",
-        pkg_manager="pacman",
-        in_docker_group=True,
-        docker_installed=True,
-        inotify_instances=8192,
-        inotify_watches=1048576,
-        swappiness=10,
-        docker_nofile_soft=65536,
-    )
+from tests.conftest import make_host_profile
 
 
 def test_cache_action_is_an_action_remediating_cache_dirs() -> None:
@@ -74,21 +57,21 @@ def test_default_dirs_empty_when_env_unset(monkeypatch) -> None:
     action = CacheDirsAction()
     assert action.dirs == []
     assert action.operations() == []
-    assert action.is_satisfied(_profile()) is True
+    assert action.is_satisfied(make_host_profile()) is True
 
 
 def test_is_satisfied_true_for_existing_writable_dirs(tmp_path) -> None:
     dirs = [tmp_path / "sstate", tmp_path / "downloads", tmp_path / "ccache"]
     for d in dirs:
         d.mkdir()
-    assert CacheDirsAction(dirs).is_satisfied(_profile()) is True
+    assert CacheDirsAction(dirs).is_satisfied(make_host_profile()) is True
 
 
 def test_is_satisfied_false_when_a_dir_is_missing(tmp_path) -> None:
     present = tmp_path / "sstate"
     present.mkdir()
     missing = tmp_path / "downloads"  # never created
-    assert CacheDirsAction([present, missing]).is_satisfied(_profile()) is False
+    assert CacheDirsAction([present, missing]).is_satisfied(make_host_profile()) is False
 
 
 def test_is_satisfied_false_when_a_dir_is_not_writable(tmp_path) -> None:
@@ -102,6 +85,6 @@ def test_is_satisfied_false_when_a_dir_is_not_writable(tmp_path) -> None:
         # assertion in that case rather than emit a false failure.
         if os.access(readonly, os.W_OK):
             return
-        assert CacheDirsAction([writable, readonly]).is_satisfied(_profile()) is False
+            assert CacheDirsAction([writable, readonly]).is_satisfied(make_host_profile()) is False
     finally:
         os.chmod(readonly, 0o700)

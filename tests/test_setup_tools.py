@@ -23,25 +23,7 @@ from bakar.setup.actions.tools import (
     KasInstallAction,
     docker_engine_advice,
 )
-
-
-def _profile():
-    """A minimal stand-in profile; these actions ignore most fields."""
-    from bakar.setup.profile import HostProfile
-
-    return HostProfile(
-        cpu_count=4,
-        mem_available_gb=16.0,
-        disk_free_gb=200.0,
-        distro_id="arch",
-        pkg_manager="pacman",
-        in_docker_group=True,
-        docker_installed=True,
-        inotify_instances=8192,
-        inotify_watches=1048576,
-        swappiness=10,
-        docker_nofile_soft=65536,
-    )
+from tests.conftest import make_host_profile
 
 
 def test_kas_action_is_an_action_remediating_host_tools() -> None:
@@ -63,12 +45,12 @@ def test_kas_installs_via_uv_tool_never_a_distro_package() -> None:
 
 def test_kas_is_satisfied_when_kas_on_path(monkeypatch) -> None:
     monkeypatch.setattr("bakar.setup.actions.tools.shutil.which", lambda _name: "/usr/bin/kas")
-    assert KasInstallAction().is_satisfied(_profile()) is True
+    assert KasInstallAction().is_satisfied(make_host_profile()) is True
 
 
 def test_kas_not_satisfied_when_kas_absent(monkeypatch) -> None:
     monkeypatch.setattr("bakar.setup.actions.tools.shutil.which", lambda _name: None)
-    assert KasInstallAction().is_satisfied(_profile()) is False
+    assert KasInstallAction().is_satisfied(make_host_profile()) is False
 
 
 def test_docker_pull_uses_constructor_image_not_resolve() -> None:
@@ -83,7 +65,7 @@ def test_docker_pull_uses_constructor_image_not_resolve() -> None:
 
 def test_docker_pull_unsatisfied_so_plan_decides() -> None:
     """The profile carries no image-presence field, so is_satisfied is False."""
-    assert DockerPullAction("img:tag").is_satisfied(_profile()) is False
+    assert DockerPullAction("img:tag").is_satisfied(make_host_profile()) is False
 
 
 def test_docker_engine_advice_returns_per_distro_command() -> None:
@@ -144,7 +126,7 @@ def test_buildtools_install_satisfied_when_detector_present(monkeypatch) -> None
         lambda: _toolchain(present=True),
     )
     action = BuildtoolsInstallAction(install_buildtools="/ws/install-buildtools")
-    assert action.is_satisfied(_profile()) is True
+    assert action.is_satisfied(make_host_profile()) is True
 
 
 def test_buildtools_install_unsatisfied_when_detector_absent(monkeypatch) -> None:
@@ -153,7 +135,7 @@ def test_buildtools_install_unsatisfied_when_detector_absent(monkeypatch) -> Non
         lambda: _toolchain(present=False),
     )
     action = BuildtoolsInstallAction(install_buildtools="/ws/install-buildtools")
-    assert action.is_satisfied(_profile()) is False
+    assert action.is_satisfied(make_host_profile()) is False
 
 
 # ---------------------------------------------------------------------------
@@ -178,12 +160,12 @@ def test_buildtools_persist_satisfied_tracks_detector(monkeypatch) -> None:
         "bakar.setup.actions.tools.detect_buildtools",
         lambda: _toolchain(present=True),
     )
-    assert BuildtoolsConfigPersistAction().is_satisfied(_profile()) is True
+    assert BuildtoolsConfigPersistAction().is_satisfied(make_host_profile()) is True
     monkeypatch.setattr(
         "bakar.setup.actions.tools.detect_buildtools",
         lambda: _toolchain(present=False),
     )
-    assert BuildtoolsConfigPersistAction().is_satisfied(_profile()) is False
+    assert BuildtoolsConfigPersistAction().is_satisfied(make_host_profile()) is False
 
 
 def test_buildtools_persist_writes_build_key_to_global_config(tmp_path, monkeypatch) -> None:

@@ -18,6 +18,7 @@ import pytest
 from bakar import pin_state
 from bakar.gitutil import run_git
 from bakar.pin_state import _git_head, commit_distance, parse_kas_lockfile, read_pins
+from tests._fakes import Completed as _Completed
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -30,14 +31,6 @@ pytestmark = pytest.mark.unit
 _SHA_A = "a" * 40
 _SHA_B = "b" * 40
 _SHA_C = "c" * 40
-
-
-class _Completed:
-    """Minimal stand-in for subprocess.CompletedProcess."""
-
-    def __init__(self, returncode: int, stdout: str) -> None:
-        self.returncode = returncode
-        self.stdout = stdout
 
 
 def _write_manifest(path: Path, projects: list[tuple[str, str]]) -> None:

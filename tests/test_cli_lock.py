@@ -19,6 +19,7 @@ import pytest
 
 import bakar.commands.lock as lock_module
 from bakar.cli import app
+from tests._fakes import Completed as _Completed
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -26,13 +27,6 @@ if TYPE_CHECKING:
     from typer.testing import CliRunner as _CliRunner
 
 pytestmark = pytest.mark.unit
-
-
-class _Completed:
-    """Minimal stand-in for subprocess.CompletedProcess."""
-
-    def __init__(self, returncode: int) -> None:
-        self.returncode = returncode
 
 
 @pytest.fixture

@@ -16,29 +16,7 @@ from bakar.setup.actions.sysctl import (
     RECOMMENDED_SWAPPINESS,
     SysctlAction,
 )
-from bakar.setup.profile import HostProfile
-
-
-def _profile(
-    *,
-    inotify_instances: int | None = 8192,
-    inotify_watches: int | None = 1048576,
-    swappiness: int | None = 10,
-) -> HostProfile:
-    """A HostProfile carrying only the fields the sysctl action reads."""
-    return HostProfile(
-        cpu_count=8,
-        mem_available_gb=16.0,
-        disk_free_gb=200.0,
-        distro_id="arch",
-        pkg_manager="pacman",
-        in_docker_group=True,
-        docker_installed=True,
-        inotify_instances=inotify_instances,
-        inotify_watches=inotify_watches,
-        swappiness=swappiness,
-        docker_nofile_soft=65536,
-    )
+from tests.conftest import make_host_profile
 
 
 def test_sysctl_action_conforms_to_protocol() -> None:
@@ -87,35 +65,35 @@ def test_operations_reload_with_sysctl_system() -> None:
 
 def test_is_satisfied_when_all_live_values_meet_targets() -> None:
     """Live values at exactly the targets satisfy the action."""
-    assert SysctlAction().is_satisfied(_profile()) is True
+    assert SysctlAction().is_satisfied(make_host_profile()) is True
 
 
 def test_is_satisfied_when_values_exceed_targets() -> None:
     """Higher inotify and lower swappiness still satisfy the action."""
-    profile = _profile(inotify_instances=16384, inotify_watches=2097152, swappiness=1)
+    profile = make_host_profile(inotify_instances=16384, inotify_watches=2097152, swappiness=1)
     assert SysctlAction().is_satisfied(profile) is True
 
 
 def test_not_satisfied_when_instances_below_target() -> None:
     """Live inotify instances below 8192 leaves the action unsatisfied."""
-    profile = _profile(inotify_instances=4096)
+    profile = make_host_profile(inotify_instances=4096)
     assert SysctlAction().is_satisfied(profile) is False
 
 
 def test_not_satisfied_when_watches_below_target() -> None:
     """Live inotify watches below 1048576 leaves the action unsatisfied."""
-    profile = _profile(inotify_watches=524288)
+    profile = make_host_profile(inotify_watches=524288)
     assert SysctlAction().is_satisfied(profile) is False
 
 
 def test_not_satisfied_when_swappiness_above_target() -> None:
     """A live swappiness above 10 leaves the action unsatisfied."""
-    profile = _profile(swappiness=20)
+    profile = make_host_profile(swappiness=20)
     assert SysctlAction().is_satisfied(profile) is False
 
 
 def test_not_satisfied_when_a_live_value_is_unreadable() -> None:
     """A None (unreadable) live knob is treated as not satisfied."""
-    assert SysctlAction().is_satisfied(_profile(inotify_instances=None)) is False
-    assert SysctlAction().is_satisfied(_profile(inotify_watches=None)) is False
-    assert SysctlAction().is_satisfied(_profile(swappiness=None)) is False
+    assert SysctlAction().is_satisfied(make_host_profile(inotify_instances=None)) is False
+    assert SysctlAction().is_satisfied(make_host_profile(inotify_watches=None)) is False
+    assert SysctlAction().is_satisfied(make_host_profile(swappiness=None)) is False

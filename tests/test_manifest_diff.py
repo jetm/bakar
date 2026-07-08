@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from bakar.manifest_diff import diff_manifests
+from tests._fakes import Completed as _Completed
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -40,14 +41,6 @@ def _write_manifest(path: Path, projects: list[tuple[str, str]]) -> None:
         lines.append(f'  <project path="{proj_path}" revision="{rev}"/>')
     lines.append("</manifest>")
     path.write_text("\n".join(lines) + "\n")
-
-
-class _Completed:
-    """Minimal stand-in for subprocess.CompletedProcess."""
-
-    def __init__(self, returncode: int, stdout: str) -> None:
-        self.returncode = returncode
-        self.stdout = stdout
 
 
 def _by_layer(diffs):

@@ -22,6 +22,7 @@ import pytest
 import bakar.commands.diff as diff_module
 from bakar.cli import app
 from bakar.manifest_diff import LayerDiff
+from tests._fakes import Completed as _Completed
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -52,13 +53,6 @@ def ti_workspace(tmp_path: Path) -> Path:
     """A workspace with a ``ti/`` subdir so workspace detection picks ti."""
     (tmp_path / "ti").mkdir()
     return tmp_path
-
-
-class _Completed:
-    """Minimal stand-in for subprocess.CompletedProcess."""
-
-    def __init__(self, returncode: int) -> None:
-        self.returncode = returncode
 
 
 @pytest.mark.unit

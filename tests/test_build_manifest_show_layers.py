@@ -88,11 +88,6 @@ def _run(*, show_layers: bool, dry_run: bool, tmp_path: Path) -> tuple[MagicMock
     return parent, print_layer_hashes, run_build
 
 
-def _ordered_names(parent: MagicMock) -> list[str]:
-    """The top-level attribute names of the recorded calls, in order."""
-    return [name.split(".", 1)[0] for name, _args, _kwargs in parent.mock_calls if name]
-
-
 def test_real_build_prints_layers_after_run_build(tmp_path: Path) -> None:
     """A real build delegates the layer display to run_build's live panel."""
     _parent, print_layer_hashes, run_build = _run(show_layers=True, dry_run=False, tmp_path=tmp_path)

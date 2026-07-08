@@ -42,34 +42,12 @@ from bakar.setup.actions.tools import (
     DockerPullAction,
     KasInstallAction,
 )
-from bakar.setup.profile import HostProfile
+from tests.conftest import make_host_profile
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
     import pytest
-
-# A prepared-host baseline: every knob meets its recommended target, docker is
-# installed and the user is in its group. Individual tests override fields via
-# ``_profile(**overrides)`` to simulate a specific gap.
-_BASE_PROFILE: dict[str, object] = {
-    "cpu_count": 8,
-    "mem_available_gb": 32.0,
-    "disk_free_gb": 400.0,
-    "distro_id": "arch",
-    "pkg_manager": "pacman",
-    "in_docker_group": True,
-    "docker_installed": True,
-    "inotify_instances": 8192,
-    "inotify_watches": 1048576,
-    "swappiness": 10,
-    "docker_nofile_soft": 65536,
-}
-
-
-def _profile(**overrides: object) -> HostProfile:
-    """A prepared-host profile by default; override fields to simulate gaps."""
-    return HostProfile(**{**_BASE_PROFILE, **overrides})
 
 
 def _fail(name: str) -> CheckResult:
@@ -107,7 +85,7 @@ def test_prepared_host_yields_empty_plan(monkeypatch: pytest.MonkeyPatch) -> Non
         _ok("cache-dirs"),
     ]
     _patch_results(monkeypatch, results)
-    result = plan_mod.build(_profile(), cfg=_CFG)
+    result = plan_mod.build(make_host_profile(), cfg=_CFG)
     assert result.actions == []
 
 
@@ -126,7 +104,7 @@ def test_failing_checks_map_to_their_actions(monkeypatch: pytest.MonkeyPatch) ->
     _patch_results(monkeypatch, results)
     # Force every is_satisfied False so nothing is dropped at stage two: a host
     # with no docker group, low knobs, and missing cache dirs.
-    profile = _profile(
+    profile = make_host_profile(
         in_docker_group=False,
         inotify_instances=1024,
         inotify_watches=8192,
@@ -171,7 +149,7 @@ def test_workspace_runtime_checks_never_become_actions(monkeypatch: pytest.Monke
         _fail("sstate-hash-leak"),
     ]
     _patch_results(monkeypatch, results)
-    result = plan_mod.build(_profile(), cfg=_CFG)
+    result = plan_mod.build(make_host_profile(), cfg=_CFG)
     assert result.actions == []
 
 
@@ -184,7 +162,7 @@ def test_advisory_checks_are_reported_never_actions(monkeypatch: pytest.MonkeyPa
         _fail("docker-version"),
     ]
     _patch_results(monkeypatch, results)
-    result = plan_mod.build(_profile(), cfg=_CFG)
+    result = plan_mod.build(make_host_profile(), cfg=_CFG)
     assert result.actions == []
     joined = " ".join(result.advisories)
     for advisory in ("memory", "disk-free", "workspace-filesystem", "docker-version"):
@@ -196,14 +174,14 @@ def test_satisfied_action_is_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_results(monkeypatch, [_fail("sysctl")])
     # The profile already meets the sysctl recommended targets, so the action is
     # satisfied and dropped despite the FAIL status.
-    result = plan_mod.build(_profile(), cfg=_CFG)
+    result = plan_mod.build(make_host_profile(), cfg=_CFG)
     assert result.actions == []
 
 
 def test_sysctl_failure_emits_sysctl_and_persist(monkeypatch: pytest.MonkeyPatch) -> None:
     """A genuinely low sysctl host gets the action plus the config persist."""
     _patch_results(monkeypatch, [_fail("sysctl")])
-    profile = _profile(inotify_instances=1024, inotify_watches=8192, swappiness=60)
+    profile = make_host_profile(inotify_instances=1024, inotify_watches=8192, swappiness=60)
     monkeypatch.setattr(ConfigWriteAction, "is_satisfied", lambda _self, _p: False)
     result = plan_mod.build(profile, cfg=_CFG)
     present = _types(result.actions)
@@ -215,7 +193,7 @@ def test_no_persist_without_a_value_applying_action(monkeypatch: pytest.MonkeyPa
     """cache-dirs alone is not value-applying, so no ConfigWriteAction."""
     _patch_results(monkeypatch, [_fail("cache-dirs")])
     monkeypatch.setattr(CacheDirsAction, "is_satisfied", lambda _self, _p: False)
-    result = plan_mod.build(_profile(), cfg=_CFG)
+    result = plan_mod.build(make_host_profile(), cfg=_CFG)
     present = _types(result.actions)
     assert CacheDirsAction in present
     assert ConfigWriteAction not in present
@@ -225,7 +203,7 @@ def test_container_image_action_gets_cfg_image(monkeypatch: pytest.MonkeyPatch) 
     """The docker-pull action is constructed with cfg.container_image."""
     _patch_results(monkeypatch, [_fail("container-image")])
     cfg = SimpleNamespace(kas_container_image="example/image:9.9")
-    result = plan_mod.build(_profile(), cfg=cfg)
+    result = plan_mod.build(make_host_profile(), cfg=cfg)
     pulls = [a for a in result.actions if isinstance(a, DockerPullAction)]
     assert len(pulls) == 1
     assert pulls[0].image == "example/image:9.9"
@@ -242,7 +220,7 @@ def test_docker_absent_suppresses_docker_actions_and_adds_advice(monkeypatch: py
     ]
     _patch_results(monkeypatch, results)
     monkeypatch.setattr(KasInstallAction, "is_satisfied", lambda _self, _p: False)
-    profile = _profile(docker_installed=False, in_docker_group=False, docker_nofile_soft=None)
+    profile = make_host_profile(docker_installed=False, in_docker_group=False, docker_nofile_soft=None)
     result = plan_mod.build(profile, cfg=_CFG)
     present = _types(result.actions)
     # kas is bakar-owned and still installs; no docker action survives.
@@ -259,14 +237,14 @@ def test_docker_absent_suppresses_docker_actions_and_adds_advice(monkeypatch: py
 def test_git_action_omitted_without_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     """git-global-config FAIL with no email/name supplied yields no git action."""
     _patch_results(monkeypatch, [_fail("git-global-config")])
-    result = plan_mod.build(_profile(), cfg=_CFG)
+    result = plan_mod.build(make_host_profile(), cfg=_CFG)
     assert all(not isinstance(a, GitConfigAction) for a in result.actions)
 
 
 def test_git_identity_absent_produces_advisory(monkeypatch: pytest.MonkeyPatch) -> None:
     """git-global-config FAIL without email/name emits an advisory, not silence."""
     _patch_results(monkeypatch, [_fail("git-global-config")])
-    result = plan_mod.build(_profile(), cfg=_CFG)
+    result = plan_mod.build(make_host_profile(), cfg=_CFG)
     assert any("git-global-config" in a for a in result.advisories)
 
 
@@ -274,7 +252,7 @@ def test_git_action_uses_supplied_identity(monkeypatch: pytest.MonkeyPatch) -> N
     """A supplied email/name produces a GitConfigAction carrying them."""
     _patch_results(monkeypatch, [_fail("git-global-config")])
     monkeypatch.setattr(GitConfigAction, "is_satisfied", lambda _self, _p: False)
-    result = plan_mod.build(_profile(), cfg=_CFG, git_email="a@b.co", git_name="A B")
+    result = plan_mod.build(make_host_profile(), cfg=_CFG, git_email="a@b.co", git_name="A B")
     git_actions = [a for a in result.actions if isinstance(a, GitConfigAction)]
     assert len(git_actions) == 1
     assert git_actions[0].email == "a@b.co"
@@ -305,7 +283,7 @@ def test_build_resolves_cfg_when_not_supplied(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(plan_mod.config, "resolve", _fake_resolve)
     _patch_results(monkeypatch, [_fail("container-image")])
-    result = plan_mod.build(_profile())
+    result = plan_mod.build(make_host_profile())
 
     assert "workspace" in captured
     pulls = [a for a in result.actions if isinstance(a, DockerPullAction)]
@@ -328,7 +306,7 @@ def test_build_forces_host_mode_off_so_docker_checks_run(monkeypatch: pytest.Mon
         return []
 
     monkeypatch.setattr(plan_mod, "run_all", _capturing_run_all)
-    plan_mod.build(_profile())
+    plan_mod.build(make_host_profile())
 
     assert seen["host_mode"] is False
 
@@ -363,7 +341,7 @@ def test_host_preflight_failing_in_host_mode_adds_buildtools_actions(monkeypatch
     monkeypatch.setattr(BuildtoolsInstallAction, "is_satisfied", lambda _self, _p: False)
     monkeypatch.setattr(BuildtoolsConfigPersistAction, "is_satisfied", lambda _self, _p: False)
     cfg = _host_cfg(_workspace_with_installer(tmp_path))
-    result = plan_mod.build(_profile(), cfg=cfg)
+    result = plan_mod.build(make_host_profile(), cfg=cfg)
     present = _types(result.actions)
     assert BuildtoolsInstallAction in present
     assert BuildtoolsConfigPersistAction in present
@@ -377,7 +355,7 @@ def test_host_preflight_in_container_mode_adds_nothing(monkeypatch: pytest.Monke
     monkeypatch.setattr(BuildtoolsInstallAction, "is_satisfied", lambda _self, _p: False)
     monkeypatch.setattr(BuildtoolsConfigPersistAction, "is_satisfied", lambda _self, _p: False)
     cfg = SimpleNamespace(kas_container_image="img:1", host_mode=False, workspace=_workspace_with_installer(tmp_path))
-    result = plan_mod.build(_profile(), cfg=cfg)
+    result = plan_mod.build(make_host_profile(), cfg=cfg)
     present = _types(result.actions)
     assert BuildtoolsInstallAction not in present
     assert BuildtoolsConfigPersistAction not in present
@@ -390,7 +368,7 @@ def test_host_preflight_toolchain_already_present_is_dropped(monkeypatch: pytest
     monkeypatch.setattr(BuildtoolsInstallAction, "is_satisfied", lambda _self, _p: True)
     monkeypatch.setattr(BuildtoolsConfigPersistAction, "is_satisfied", lambda _self, _p: True)
     cfg = _host_cfg(_workspace_with_installer(tmp_path))
-    result = plan_mod.build(_profile(), cfg=cfg)
+    result = plan_mod.build(make_host_profile(), cfg=cfg)
     present = _types(result.actions)
     assert BuildtoolsInstallAction not in present
     assert BuildtoolsConfigPersistAction not in present
@@ -402,7 +380,7 @@ def test_host_preflight_without_installer_adds_nothing(monkeypatch: pytest.Monke
     monkeypatch.setattr(BuildtoolsInstallAction, "is_satisfied", lambda _self, _p: False)
     # tmp_path has no openembedded-core/scripts/install-buildtools.
     cfg = _host_cfg(tmp_path)
-    result = plan_mod.build(_profile(), cfg=cfg)
+    result = plan_mod.build(make_host_profile(), cfg=cfg)
     present = _types(result.actions)
     assert BuildtoolsInstallAction not in present
     assert BuildtoolsConfigPersistAction not in present
@@ -424,7 +402,7 @@ def test_host_preflight_skipped_by_clobber_is_reevaluated_in_host_mode(
     monkeypatch.setattr(BuildtoolsInstallAction, "is_satisfied", lambda _self, _p: False)
     monkeypatch.setattr(BuildtoolsConfigPersistAction, "is_satisfied", lambda _self, _p: False)
     cfg = _host_cfg(_workspace_with_installer(tmp_path))
-    result = plan_mod.build(_profile(), cfg=cfg)
+    result = plan_mod.build(make_host_profile(), cfg=cfg)
     present = _types(result.actions)
     assert BuildtoolsInstallAction in present
     assert BuildtoolsConfigPersistAction in present

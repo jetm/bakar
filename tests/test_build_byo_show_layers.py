@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from bakar.commands.build import _BuildCtx, _run_byo_build
+from tests._fakes import ordered_names as _ordered_names
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -73,11 +74,6 @@ def _run(*, show_layers: bool, dry_run: bool, tmp_path: Path) -> tuple[MagicMock
         _run_byo_build(cfg, log, _ctx(show_layers=show_layers, dry_run=dry_run, tmp_path=tmp_path))
 
     return parent, print_layer_hashes, run_build
-
-
-def _ordered_names(parent: MagicMock) -> list[str]:
-    """The top-level attribute names of the recorded calls, in order."""
-    return [name.split(".", 1)[0] for name, _args, _kwargs in parent.mock_calls if name]
 
 
 def test_real_build_prints_layers_after_run_build(tmp_path: Path) -> None:

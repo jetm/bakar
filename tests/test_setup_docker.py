@@ -16,26 +16,10 @@ from typing import TYPE_CHECKING
 
 from bakar.setup.actions import docker
 from bakar.setup.actions.base import RunCommand
-from bakar.setup.profile import HostProfile
+from tests.conftest import make_host_profile
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-
-def _profile(*, nofile: int | None = None, in_group: bool = False) -> HostProfile:
-    return HostProfile(
-        cpu_count=4,
-        mem_available_gb=16.0,
-        disk_free_gb=200.0,
-        distro_id="arch",
-        pkg_manager="pacman",
-        in_docker_group=in_group,
-        docker_installed=True,
-        inotify_instances=8192,
-        inotify_watches=1048576,
-        swappiness=10,
-        docker_nofile_soft=nofile,
-    )
 
 
 def _run_merge_script(action_op: RunCommand, daemon_path: Path, backup_path: Path) -> None:
@@ -130,14 +114,14 @@ def test_second_merge_keeps_the_original_backup(tmp_path: Path) -> None:
 def test_ulimits_is_satisfied_reads_profile_nofile() -> None:
     """is_satisfied reads the live nofile soft from the profile."""
     action = docker.DockerUlimitsAction()
-    assert action.is_satisfied(_profile(nofile=65536)) is True
-    assert action.is_satisfied(_profile(nofile=1024)) is False
-    assert action.is_satisfied(_profile(nofile=None)) is False
+    assert action.is_satisfied(make_host_profile(docker_nofile_soft=65536)) is True
+    assert action.is_satisfied(make_host_profile(docker_nofile_soft=1024)) is False
+    assert action.is_satisfied(make_host_profile(docker_nofile_soft=None)) is False
 
 
 def test_storage_driver_always_runs() -> None:
     """The storage-driver merge is idempotent and never skipped."""
-    assert docker.DockerStorageDriverAction().is_satisfied(_profile()) is False
+    assert docker.DockerStorageDriverAction().is_satisfied(make_host_profile()) is False
 
 
 def test_daemon_action_enables_docker() -> None:
@@ -165,5 +149,5 @@ def test_group_action_warns_about_relogin() -> None:
 def test_group_action_is_satisfied_when_already_member() -> None:
     """The group action is satisfied when the user is already in the group."""
     action = docker.DockerGroupAction(username="builder")
-    assert action.is_satisfied(_profile(in_group=True)) is True
-    assert action.is_satisfied(_profile(in_group=False)) is False
+    assert action.is_satisfied(make_host_profile(in_docker_group=True)) is True
+    assert action.is_satisfied(make_host_profile(in_docker_group=False)) is False
