@@ -395,6 +395,9 @@ def translate_bbsetup_config(
     machine = machine_override or _extract_fragment_value(all_fragments, "machine")
     distro = distro_override or _extract_fragment_value(all_fragments, "distro") or "nodistro"
 
+    if machine is None:
+        raise ValueError(f"no machine fragment in {setup_dir} and no --machine override")
+
     return {
         "header": {"version": 21},
         "distro": distro,

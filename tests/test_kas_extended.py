@@ -426,7 +426,9 @@ def test_translate_uses_branch_when_no_rev_and_no_sha(tmp_path: Path) -> None:
         "bitbake-config": {"bb-layers": []},
     }
     _write_bbsetup(tmp_path, cfg)
-    data = translate_bbsetup_config(tmp_path)
+    # translate now requires a machine; supply one so the branch assertion,
+    # not the missing-machine guard, is what this test exercises.
+    data = translate_bbsetup_config(tmp_path, machine_override="qemuarm")
     only_branch = data["repos"]["only-branch"]
     assert only_branch["branch"] == "release-1.0"
     assert "commit" not in only_branch
@@ -462,9 +464,11 @@ def test_translate_defaults_distro_to_nodistro(tmp_path: Path) -> None:
         "bitbake-config": {"bb-layers": []},
     }
     _write_bbsetup(tmp_path, cfg)
-    data = translate_bbsetup_config(tmp_path)
+    # translate now requires a machine; supply one via override so distro is the
+    # only behaviour under test. No distro override, so distro must default.
+    data = translate_bbsetup_config(tmp_path, machine_override="qemuarm")
     assert data["distro"] == "nodistro"
-    assert data["machine"] is None
+    assert data["machine"] == "qemuarm"
 
 
 def test_translate_machine_override_with_no_fragment(tmp_path: Path) -> None:
