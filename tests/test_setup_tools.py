@@ -123,7 +123,7 @@ def test_buildtools_install_operations_have_install_dir_argv() -> None:
 def test_buildtools_install_satisfied_when_detector_present(monkeypatch) -> None:
     monkeypatch.setattr(
         "bakar.setup.actions.tools.detect_buildtools",
-        lambda: _toolchain(present=True),
+        lambda release_key=None: _toolchain(present=True),
     )
     action = BuildtoolsInstallAction(install_buildtools="/ws/install-buildtools")
     assert action.is_satisfied(make_host_profile()) is True
@@ -132,7 +132,7 @@ def test_buildtools_install_satisfied_when_detector_present(monkeypatch) -> None
 def test_buildtools_install_unsatisfied_when_detector_absent(monkeypatch) -> None:
     monkeypatch.setattr(
         "bakar.setup.actions.tools.detect_buildtools",
-        lambda: _toolchain(present=False),
+        lambda release_key=None: _toolchain(present=False),
     )
     action = BuildtoolsInstallAction(install_buildtools="/ws/install-buildtools")
     assert action.is_satisfied(make_host_profile()) is False
@@ -158,12 +158,12 @@ def test_buildtools_persist_has_no_shell_operations() -> None:
 def test_buildtools_persist_satisfied_tracks_detector(monkeypatch) -> None:
     monkeypatch.setattr(
         "bakar.setup.actions.tools.detect_buildtools",
-        lambda: _toolchain(present=True),
+        lambda release_key=None: _toolchain(present=True),
     )
     assert BuildtoolsConfigPersistAction().is_satisfied(make_host_profile()) is True
     monkeypatch.setattr(
         "bakar.setup.actions.tools.detect_buildtools",
-        lambda: _toolchain(present=False),
+        lambda release_key=None: _toolchain(present=False),
     )
     assert BuildtoolsConfigPersistAction().is_satisfied(make_host_profile()) is False
 
@@ -201,3 +201,61 @@ def test_buildtools_persist_targets_explicit_global_path_not_workspace(tmp_path,
     assert captured["value"] == str(install_dir)
     assert captured["path"] == global_cfg
     assert Path(captured["path"]).name != ".bakar.toml"
+
+
+# ---------------------------------------------------------------------------
+# Release-scoped buildtools install/persist - a toolchain built for one oe-core
+# checkout must not be reused for a differently-pinned one.
+# ---------------------------------------------------------------------------
+
+
+def test_buildtools_install_release_scoped_dir_default() -> None:
+    """release_key given, no explicit install_dir -> DEFAULT_BUILDTOOLS_DIR/<release_key>."""
+    action = BuildtoolsInstallAction(install_buildtools="/ws/install-buildtools", release_key="wrynose-abc123")
+    assert action.install_dir == DEFAULT_BUILDTOOLS_DIR / "wrynose-abc123"
+
+
+def test_buildtools_install_no_release_key_keeps_flat_default() -> None:
+    """No release_key (back-compat) -> the old flat DEFAULT_BUILDTOOLS_DIR, unchanged."""
+    action = BuildtoolsInstallAction(install_buildtools="/ws/install-buildtools")
+    assert action.install_dir == DEFAULT_BUILDTOOLS_DIR
+
+
+def test_buildtools_install_is_satisfied_passes_release_key(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_detect(release_key=None):
+        captured["release_key"] = release_key
+        return _toolchain(present=True)
+
+    monkeypatch.setattr("bakar.setup.actions.tools.detect_buildtools", _fake_detect)
+    action = BuildtoolsInstallAction(install_buildtools="/ws/install-buildtools", release_key="wrynose-abc123")
+    assert action.is_satisfied(make_host_profile()) is True
+    assert captured["release_key"] == "wrynose-abc123"
+
+
+def test_buildtools_persist_writes_release_scoped_key(tmp_path, monkeypatch) -> None:
+    install_dir = tmp_path / "bt"
+    install_dir.mkdir()
+    (install_dir / "environment-setup-x86_64-pokysdk-linux").write_text("# env\n")
+    calls: list[tuple[str, str, Path | None]] = []
+    monkeypatch.setattr(
+        "bakar.setup.actions.tools.set_buildtools_dir_for_release",
+        lambda release_key, value, path=None: calls.append((release_key, value, path)),
+    )
+    BuildtoolsConfigPersistAction(install_dir=install_dir, release_key="wrynose-abc123").apply()
+    assert calls == [("wrynose-abc123", str(install_dir), None)]
+
+
+def test_buildtools_persist_no_release_key_keeps_flat_set_setting(tmp_path, monkeypatch) -> None:
+    """No release_key (back-compat) -> the old flat set_setting call, unchanged."""
+    install_dir = tmp_path / "bt"
+    install_dir.mkdir()
+    (install_dir / "environment-setup-x86_64-pokysdk-linux").write_text("# env\n")
+    calls: list[tuple[str, str, Path | None]] = []
+    monkeypatch.setattr(
+        "bakar.setup.actions.tools.set_setting",
+        lambda key, value, path=None: calls.append((key, value, path)),
+    )
+    BuildtoolsConfigPersistAction(install_dir=install_dir).apply()
+    assert calls == [("build.buildtools_dir", str(install_dir), None)]

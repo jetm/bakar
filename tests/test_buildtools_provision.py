@@ -302,3 +302,91 @@ def test_apply_host_mode_dry_run_falls_back_to_sys_executable(tmp_path: Path) ->
     passthrough: dict[str, str] = {"PATH": "/usr/bin:/bin"}
     kas_build._apply_host_mode_env(cfg, None, passthrough, provision_buildtools=False)
     assert passthrough["BB_PYTHON3"] == sys.executable
+
+
+# ---------------------------------------------------------------------------
+# Release-scoped detection - a buildtools-extended install built for one
+# Yocto release (e.g. scarthgap) must never silently satisfy a build against
+# a different release (e.g. wrynose): the two can require different host
+# gcc/glibc/python baselines.
+# ---------------------------------------------------------------------------
+
+
+def test_detect_via_release_scoped_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """release_key given + a matching [build.buildtools_dirs] entry -> present at that dir."""
+    release_dir = tmp_path / "wrynose-bt"
+    release_dir.mkdir()
+    _toolchain_dir(release_dir)
+    monkeypatch.setattr(
+        diagnostics,
+        "load_user_config",
+        lambda: UserConfig(buildtools_dirs={"wrynose-abc123": str(release_dir)}),
+    )
+
+    tc = diagnostics.detect_buildtools(release_key="wrynose-abc123")
+
+    assert tc.present is True
+    assert tc.env_script == release_dir / "environment-setup-x86_64-pokysdk-linux"
+
+
+def test_detect_release_scoped_does_not_fall_back_to_flat_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A release_key with no matching entry must NOT silently reuse the untagged
+    [build] buildtools_dir - that would defeat the point of tagging (a
+    scarthgap-built toolchain must never satisfy a wrynose build)."""
+    flat_dir = tmp_path / "scarthgap-bt"
+    flat_dir.mkdir()
+    _toolchain_dir(flat_dir)
+    monkeypatch.setattr(
+        diagnostics,
+        "load_user_config",
+        lambda: UserConfig(buildtools_dir=str(flat_dir), buildtools_dirs={}),
+    )
+
+    tc = diagnostics.detect_buildtools(release_key="wrynose-abc123")
+
+    assert tc.present is False
+
+
+def test_detect_release_scoped_env_var_still_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BAKAR_BUILDTOOLS_DIR stays the explicit escape hatch even with release_key set."""
+    env_dir = tmp_path / "env"
+    env_dir.mkdir()
+    _toolchain_dir(env_dir)
+    monkeypatch.setenv(diagnostics.BUILDTOOLS_DIR_ENV, str(env_dir))
+
+    tc = diagnostics.detect_buildtools(release_key="wrynose-abc123")
+
+    assert tc.present is True
+    assert tc.env_script is not None
+    assert tc.env_script.parent == env_dir
+
+
+def test_resolve_oe_core_release_key_reads_oe_core_git_commit(tmp_path: Path) -> None:
+    """The release key is the short commit hash of workspace/openembedded-core."""
+    import subprocess
+
+    oe_core = tmp_path / "openembedded-core"
+    oe_core.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=oe_core, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=oe_core, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=oe_core, check=True)
+    (oe_core / "README").write_text("x")
+    subprocess.run(["git", "add", "README"], cwd=oe_core, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=oe_core, check=True)
+    expected = subprocess.run(
+        ["git", "-C", str(oe_core), "rev-parse", "--short=12", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    key = diagnostics.resolve_oe_core_release_key(tmp_path)
+
+    assert key == expected
+
+
+def test_resolve_oe_core_release_key_none_when_no_oe_core_checkout(tmp_path: Path) -> None:
+    """No openembedded-core dir under the workspace -> None, not a raise."""
+    assert diagnostics.resolve_oe_core_release_key(tmp_path) is None

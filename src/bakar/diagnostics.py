@@ -157,7 +157,7 @@ def resolve_buildtools_dir(install_dir: Path, source: str) -> BuildtoolsToolchai
     )
 
 
-def detect_buildtools() -> BuildtoolsToolchain:
+def detect_buildtools(release_key: str | None = None) -> BuildtoolsToolchain:
     """Locate a pinned buildtools-extended toolchain without sourcing it.
 
     Detection order:
@@ -166,10 +166,18 @@ def detect_buildtools() -> BuildtoolsToolchain:
        exists on disk. Nothing needs sourcing; ``env_script`` stays None.
     2. ``BAKAR_BUILDTOOLS_DIR`` names a dir containing an ``environment-setup-*``
        script. ``env_script`` is that script so callers can source it before
-       invoking host bitbake.
-    3. The persisted ``[build] buildtools_dir`` user-config value (the location
-       ``bakar setup`` records), used only when the env var is unset so an
-       explicit export still wins.
+       invoking host bitbake. Wins regardless of ``release_key`` - an explicit
+       export is always the caller's intent, release-tagging or not.
+    3. When ``release_key`` is given: the persisted ``[build.buildtools_dirs]``
+       entry for that key, and ONLY that key - no fallback to the untagged
+       ``[build] buildtools_dir``. A toolchain built for one Yocto release
+       (e.g. scarthgap) must never silently satisfy a build against a
+       different one (e.g. wrynose): the two can require different host
+       gcc/glibc/python baselines, so an absent release-scoped entry means
+       "not present", not "reuse whatever else is configured".
+    4. When ``release_key`` is None (callers that don't distinguish release,
+       e.g. non-oe-core BSP families): the persisted ``[build] buildtools_dir``
+       value, unchanged from before release-scoping existed.
 
     Returns ``present=False`` when none holds, so the caller can fail loudly
     naming the missing toolchain instead of letting bitbake fall back to the
@@ -190,7 +198,19 @@ def detect_buildtools() -> BuildtoolsToolchain:
     if dir_env:
         return resolve_buildtools_dir(Path(dir_env), BUILDTOOLS_DIR_ENV)
 
-    config_dir = load_user_config().buildtools_dir
+    config = load_user_config()
+
+    if release_key is not None:
+        release_dirs = config.buildtools_dirs or {}
+        release_dir = release_dirs.get(release_key)
+        if release_dir:
+            return resolve_buildtools_dir(Path(release_dir), f"[build.buildtools_dirs] {release_key!r}")
+        return BuildtoolsToolchain(
+            present=False,
+            detail=f"no [build.buildtools_dirs] entry for release {release_key!r} and {BUILDTOOLS_DIR_ENV} is unset",
+        )
+
+    config_dir = config.buildtools_dir
     if config_dir:
         return resolve_buildtools_dir(Path(config_dir), "[build] buildtools_dir")
 
@@ -199,6 +219,36 @@ def detect_buildtools() -> BuildtoolsToolchain:
         detail=f"neither OECORE_NATIVE_SYSROOT nor {BUILDTOOLS_DIR_ENV} is set "
         "and [build] buildtools_dir is unconfigured",
     )
+
+
+def resolve_oe_core_release_key(workspace: Path) -> str | None:
+    """Derive a release key from the workspace's checked-out oe-core commit.
+
+    Host-mode builds must not silently reuse a buildtools-extended toolchain
+    built for a different Yocto release (e.g. scarthgap vs wrynose) - the two
+    releases can pin materially different host gcc/glibc/python baselines.
+    The checked-out oe-core commit is a precise, always-available
+    disambiguator regardless of branch name or detached-HEAD state (a kas
+    build typically leaves oe-core checked out at a bare commit, not a named
+    branch).
+
+    Returns None when ``workspace/openembedded-core`` is not a git checkout
+    (e.g. a non-oe-core BSP family, or before kas has cloned anything yet) -
+    callers treat that as "no release-scoped detection available", not an
+    error.
+    """
+    oe_core = workspace / "openembedded-core"
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(oe_core), "rev-parse", "--short=12", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except OSError, subprocess.CalledProcessError:
+        return None
+    key = result.stdout.strip()
+    return key or None
 
 
 # ---------------------------------------------------------------------------

@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 from bakar.diagnostics import detect_buildtools, resolve_buildtools_dir
 from bakar.setup.actions.base import RunCommand, WriteFile
-from bakar.user_config import set_setting
+from bakar.user_config import set_buildtools_dir_for_release, set_setting
 
 if TYPE_CHECKING:
     from bakar.setup.profile import HostProfile
@@ -120,6 +120,12 @@ class BuildtoolsInstallAction:
     workspace's oe-core checkout. The script path is resolved by the plan
     builder and passed in; this action never resolves a workspace itself.
 
+    ``release_key`` (from :func:`bakar.diagnostics.resolve_oe_core_release_key`)
+    scopes both the default install dir and detection to one oe-core release,
+    so a toolchain built for scarthgap is never mistaken for satisfying a
+    wrynose build. None (the default) keeps the pre-release-scoping behavior:
+    one flat install dir shared across every workspace.
+
     Remediates the ``host-preflight`` check; unprivileged - the installer writes
     under ``$HOME`` and needs no root.
     """
@@ -127,9 +133,20 @@ class BuildtoolsInstallAction:
     check_name = "host-preflight"
     needs_root = False
 
-    def __init__(self, install_buildtools: str, install_dir: Path = DEFAULT_BUILDTOOLS_DIR) -> None:
+    def __init__(
+        self,
+        install_buildtools: str,
+        install_dir: Path | None = None,
+        release_key: str | None = None,
+    ) -> None:
         self.install_buildtools = install_buildtools
-        self.install_dir = install_dir
+        self.release_key = release_key
+        if install_dir is not None:
+            self.install_dir = install_dir
+        elif release_key is not None:
+            self.install_dir = DEFAULT_BUILDTOOLS_DIR / release_key
+        else:
+            self.install_dir = DEFAULT_BUILDTOOLS_DIR
 
     def describe(self) -> str:
         return f"install buildtools-extended (~63 MB) into {self.install_dir}"
@@ -139,9 +156,10 @@ class BuildtoolsInstallAction:
 
         Reuses :func:`detect_buildtools` so there is one detector and one
         truth; the action self-drops when the toolchain is already present via
-        the env var, config field, or an already-sourced sysroot.
+        the env var, release-scoped config entry, flat config field, or an
+        already-sourced sysroot.
         """
-        return detect_buildtools().present
+        return detect_buildtools(release_key=self.release_key).present
 
     def operations(self) -> list[RunCommand | WriteFile]:
         return [
@@ -164,13 +182,19 @@ class BuildtoolsConfigPersistAction:
 
     Carries the same ``host-preflight`` ``check_name`` as the install action so
     the plan drops it on a prepared host.
+
+    ``release_key`` mirrors :class:`BuildtoolsInstallAction`: when set, the
+    persist targets ``[build.buildtools_dirs]`` (via
+    :func:`~bakar.user_config.set_buildtools_dir_for_release`) instead of the
+    flat ``[build] buildtools_dir`` key, so distinct releases coexist.
     """
 
     check_name = "host-preflight"
     needs_root = False
 
-    def __init__(self, install_dir: Path = DEFAULT_BUILDTOOLS_DIR) -> None:
-        self.install_dir = install_dir
+    def __init__(self, install_dir: Path | None = None, release_key: str | None = None) -> None:
+        self.install_dir = install_dir if install_dir is not None else DEFAULT_BUILDTOOLS_DIR
+        self.release_key = release_key
 
     def describe(self) -> str:
         return f"record buildtools dir {self.install_dir} in the global [build] config"
@@ -181,7 +205,7 @@ class BuildtoolsConfigPersistAction:
         Defers to :func:`detect_buildtools` so a prepared host (toolchain
         already found) drops the persist along with the install.
         """
-        return detect_buildtools().present
+        return detect_buildtools(release_key=self.release_key).present
 
     def operations(self) -> list[RunCommand | WriteFile]:
         """No shell ops: the persist happens in :meth:`apply`, not via primitives."""
@@ -215,4 +239,7 @@ class BuildtoolsConfigPersistAction:
                 f"{self.install_dir}; the toolchain is still missing, so host builds "
                 f"cannot proceed. Re-run the install or inspect the installer output."
             )
-        set_setting("build.buildtools_dir", str(self.install_dir), path)
+        if self.release_key is not None:
+            set_buildtools_dir_for_release(self.release_key, str(self.install_dir), path)
+        else:
+            set_setting("build.buildtools_dir", str(self.install_dir), path)

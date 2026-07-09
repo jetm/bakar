@@ -410,3 +410,68 @@ def test_host_preflight_skipped_by_clobber_is_reevaluated_in_host_mode(
     installs = [a for a in result.actions if isinstance(a, BuildtoolsInstallAction)]
     persists = [a for a in result.actions if isinstance(a, BuildtoolsConfigPersistAction)]
     assert installs[0].install_dir == persists[0].install_dir
+
+
+def _workspace_with_installer_and_git_oe_core(tmp_path) -> tuple[object, str]:
+    """A workspace whose openembedded-core is both the installer script's home
+    AND a real git checkout, so a release key can be derived. Returns
+    (workspace, expected_release_key)."""
+    import subprocess
+
+    oe_core = tmp_path / "openembedded-core"
+    (oe_core / "scripts").mkdir(parents=True)
+    (oe_core / "scripts" / "install-buildtools").write_text("#!/bin/sh\n")
+    subprocess.run(["git", "init", "-q"], cwd=oe_core, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=oe_core, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=oe_core, check=True)
+    (oe_core / "README").write_text("x")
+    subprocess.run(["git", "add", "README"], cwd=oe_core, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=oe_core, check=True)
+    expected = subprocess.run(
+        ["git", "-C", str(oe_core), "rev-parse", "--short=12", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    return tmp_path, expected
+
+
+def test_host_preflight_release_scoped_install_dir_when_oe_core_is_a_git_checkout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A real oe-core git checkout under the workspace scopes install_dir to its
+    release key, so a differently-pinned workspace never reuses this install."""
+    from bakar.setup.actions.tools import DEFAULT_BUILDTOOLS_DIR
+
+    _patch_results(monkeypatch, [_fail("host-preflight")])
+    monkeypatch.setattr(BuildtoolsInstallAction, "is_satisfied", lambda _self, _p: False)
+    monkeypatch.setattr(BuildtoolsConfigPersistAction, "is_satisfied", lambda _self, _p: False)
+    workspace, release_key = _workspace_with_installer_and_git_oe_core(tmp_path)
+    cfg = _host_cfg(workspace)
+
+    result = plan_mod.build(make_host_profile(), cfg=cfg)
+
+    installs = [a for a in result.actions if isinstance(a, BuildtoolsInstallAction)]
+    persists = [a for a in result.actions if isinstance(a, BuildtoolsConfigPersistAction)]
+    assert installs[0].install_dir == DEFAULT_BUILDTOOLS_DIR / release_key
+    assert installs[0].release_key == release_key
+    assert persists[0].install_dir == installs[0].install_dir
+    assert persists[0].release_key == release_key
+
+
+def test_host_preflight_no_git_oe_core_keeps_flat_install_dir(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """The existing non-git fixture (install-buildtools present, no .git) must
+    keep resolving to the flat DEFAULT_BUILDTOOLS_DIR - the release-scoping
+    feature must not regress a workspace without a resolvable release key."""
+    from bakar.setup.actions.tools import DEFAULT_BUILDTOOLS_DIR
+
+    _patch_results(monkeypatch, [_fail("host-preflight")])
+    monkeypatch.setattr(BuildtoolsInstallAction, "is_satisfied", lambda _self, _p: False)
+    monkeypatch.setattr(BuildtoolsConfigPersistAction, "is_satisfied", lambda _self, _p: False)
+    cfg = _host_cfg(_workspace_with_installer(tmp_path))
+
+    result = plan_mod.build(make_host_profile(), cfg=cfg)
+
+    installs = [a for a in result.actions if isinstance(a, BuildtoolsInstallAction)]
+    assert installs[0].install_dir == DEFAULT_BUILDTOOLS_DIR
+    assert installs[0].release_key is None

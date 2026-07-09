@@ -42,7 +42,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bakar import config
-from bakar.diagnostics import Status, _git_identity_probe_dir, check_host_preflight, run_all
+from bakar.diagnostics import (
+    Status,
+    _git_identity_probe_dir,
+    check_host_preflight,
+    resolve_oe_core_release_key,
+    run_all,
+)
 from bakar.setup.actions.cache import CacheDirsAction
 from bakar.setup.actions.config_write import ConfigWriteAction
 from bakar.setup.actions.docker import (
@@ -183,14 +189,24 @@ def _candidate_actions(
         install_buildtools = _resolve_install_buildtools(cfg)
         if install_buildtools is None:
             return []
+        # A toolchain built for one Yocto release must not silently satisfy a
+        # build against a different one (they can pin different host
+        # gcc/glibc/python baselines), so the install target is scoped to the
+        # workspace's oe-core commit when resolvable. Workspaces where oe-core
+        # is not (yet) a git checkout - e.g. bbsetup families, or before kas
+        # has cloned anything - get None and fall back to the pre-scoping flat
+        # dir, matching the prior behavior exactly for those cases.
+        release_key = resolve_oe_core_release_key(Path(cfg.workspace))
+        install_dir = DEFAULT_BUILDTOOLS_DIR / release_key if release_key is not None else DEFAULT_BUILDTOOLS_DIR
         # Share one install_dir across both actions so the install target and the
         # persisted location can never diverge. A fresh host has no configured
         # dir (an already-configured one is found by detect_buildtools, which
         # drops both actions via is_satisfied), so the default is correct here.
-        install_dir = DEFAULT_BUILDTOOLS_DIR
         return [
-            BuildtoolsInstallAction(install_buildtools=str(install_buildtools), install_dir=install_dir),
-            BuildtoolsConfigPersistAction(install_dir=install_dir),
+            BuildtoolsInstallAction(
+                install_buildtools=str(install_buildtools), install_dir=install_dir, release_key=release_key
+            ),
+            BuildtoolsConfigPersistAction(install_dir=install_dir, release_key=release_key),
         ]
     if check_name == "git-global-config":
         # The identity comes from the command (CLI options or a prompt); without

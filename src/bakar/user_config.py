@@ -134,6 +134,14 @@ class UserConfig:
     # `bakar setup`. detect_buildtools() reads it as a fallback after the
     # BAKAR_BUILDTOOLS_DIR env var so host builds survive into a new shell.
     buildtools_dir: str | None = None
+    # Per-release buildtools-extended installs, keyed by an oe-core release
+    # identifier (see diagnostics.resolve_oe_core_release_key). A toolchain
+    # built against one Yocto release must not silently satisfy a build
+    # against a different one, so this coexists with (and takes priority
+    # over, when a release_key is supplied) the single flat buildtools_dir
+    # above. Parsed from [build.buildtools_dirs] outside the flat _BUILD_KEYS
+    # loop since it is a table, not a scalar.
+    buildtools_dirs: dict[str, str] | None = None
     psi_autocalibrate: bool = False
     # Decoupled build parallelism. All optional; absent -> None -> the existing
     # NPROC-derived behavior (nproc auto-detected via os.cpu_count). nproc sets
@@ -351,6 +359,15 @@ def load_user_config(path: Path | None = None) -> UserConfig:
                 _check_type(field, section_data[key], path)
                 values[field] = section_data[key]
 
+    build_section = data.get("build", {})
+    if isinstance(build_section, dict):
+        dirs = build_section.get("buildtools_dirs")
+        if isinstance(dirs, dict):
+            for release_key, dir_value in dirs.items():
+                if not isinstance(release_key, str) or not isinstance(dir_value, str):
+                    raise ValueError(f"{path}: 'build.buildtools_dirs' entries must be string -> string")  # noqa: TRY004
+            values["buildtools_dirs"] = dict(dirs)
+
     values["config_version"] = CURRENT_CONFIG_VERSION
     return UserConfig(**values)
 
@@ -543,6 +560,40 @@ def unset_setting(key: str, path: Path | None = None) -> None:
         if isinstance(child, dict) and not child:
             del parent[part]
 
+    _dump_raw(config_path, data)
+
+
+def get_buildtools_dir_for_release(release_key: str, path: Path | None = None) -> str | None:
+    """Return the persisted buildtools dir for one oe-core release, or None if unset."""
+    data = _load_raw(_config_path(path))
+    build = data.get("build")
+    if not isinstance(build, dict):
+        return None
+    dirs = build.get("buildtools_dirs")
+    if not isinstance(dirs, dict):
+        return None
+    value = dirs.get(release_key)
+    return value if isinstance(value, str) else None
+
+
+def set_buildtools_dir_for_release(release_key: str, value: str, path: Path | None = None) -> None:
+    """Persist one release's buildtools dir under [build.buildtools_dirs].
+
+    Preserves every other release's entry already recorded there, unlike
+    set_setting (which targets scalar [build] keys and would clobber the
+    whole table if pointed at it).
+    """
+    config_path = _config_path(path)
+    data = _load_raw(config_path)
+    build = data.get("build")
+    if not isinstance(build, dict):
+        build = {}
+        data["build"] = build
+    dirs = build.get("buildtools_dirs")
+    if not isinstance(dirs, dict):
+        dirs = {}
+        build["buildtools_dirs"] = dirs
+    dirs[release_key] = value
     _dump_raw(config_path, data)
 
 

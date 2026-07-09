@@ -404,3 +404,47 @@ def test_set_host_mem_min_gb_non_positive_raises(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="mem_min_gb"):
         set_setting("host.mem_min_gb", "0", path=config_file)
     assert not config_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# Per-release buildtools_dirs - keyed by an oe-core release identifier so a
+# scarthgap-built toolchain and a wrynose-built one can coexist without one
+# silently masking the other.
+# ---------------------------------------------------------------------------
+
+
+def test_buildtools_dirs_round_trip(tmp_path: Path) -> None:
+    from bakar.user_config import get_buildtools_dir_for_release, set_buildtools_dir_for_release
+
+    config_file = tmp_path / "config.toml"
+    assert get_buildtools_dir_for_release("wrynose-abc123", config_file) is None
+
+    set_buildtools_dir_for_release("wrynose-abc123", "/opt/bt/wrynose", config_file)
+    assert get_buildtools_dir_for_release("wrynose-abc123", config_file) == "/opt/bt/wrynose"
+
+    # A second release key coexists without clobbering the first.
+    set_buildtools_dir_for_release("scarthgap-def456", "/opt/bt/scarthgap", config_file)
+    assert get_buildtools_dir_for_release("wrynose-abc123", config_file) == "/opt/bt/wrynose"
+    assert get_buildtools_dir_for_release("scarthgap-def456", config_file) == "/opt/bt/scarthgap"
+
+
+def test_load_user_config_parses_buildtools_dirs_table(tmp_path: Path) -> None:
+    toml_content = textwrap.dedent("""\
+        [build.buildtools_dirs]
+        wrynose-abc123 = "/opt/bt/wrynose"
+        scarthgap-def456 = "/opt/bt/scarthgap"
+    """)
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(toml_content)
+
+    cfg = load_user_config(config_file)
+
+    assert cfg.buildtools_dirs == {
+        "wrynose-abc123": "/opt/bt/wrynose",
+        "scarthgap-def456": "/opt/bt/scarthgap",
+    }
+
+
+def test_missing_file_buildtools_dirs_defaults_to_none(tmp_path: Path) -> None:
+    result = load_user_config(tmp_path / "nonexistent.toml")
+    assert result.buildtools_dirs is None
