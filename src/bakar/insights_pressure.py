@@ -1,15 +1,18 @@
 """PSI (Pressure Stall Information) time-share report.
 
-bitbake's live build emits ``bb.event.PSIEvent`` samples during the run;
-``eventlog.normalize()`` captures them verbatim into ``psi.samples`` (see
-that module's ``_PSI_EVENT`` handling) as
-``{"time": ..., "cpu": ..., "io": ..., "memory": ...}`` dicts. Per the Linux
-kernel PSI documentation, each of ``cpu``/``io``/``memory`` is already an
-``avg10`` value - the percentage of the preceding 10 seconds that tasks
-stalled on that resource - so no second parser is needed to turn a sample
-into a percentage; :func:`pressure_report` only averages values bitbake (via
-:func:`bakar.psi.read_psi_avg10`, the same field this module's docstring
-points at) already parsed.
+In production, ``psi_samples`` comes from bakar's own host-side sampler
+(``steps/kas_build.py``'s ``psi_loop``, persisted via
+``RunLogger.persist_psi_samples`` to the ``psi-samples.json`` sibling file) -
+NOT from the normalized ``bitbake-events.json`` artifact's ``psi.samples``.
+``eventlog.normalize()`` also captures raw ``bb.event.PSIEvent`` records into
+``psi.samples``, but that event class isn't defined anywhere in the vendored
+bitbake tree, so its real attribute shape can't be verified from this repo;
+do not feed it to :func:`pressure_report` without first confirming it carries
+flat ``avg10`` floats per dimension, not nested sub-metric dicts. bakar's own
+sampler values are unambiguous: each of ``cpu``/``io``/``memory`` is a flat
+``avg10`` percentage read via :func:`bakar.psi.read_psi_avg10` (the same
+field the live ``_autocalibrate_psi`` throttling logic already parses), so no
+second parser is needed to turn a sample into a percentage.
 
 This module reuses :data:`bakar.psi.PSI_DIMS` for the fixed dimension order
 so the report never drifts from the tuple :func:`bakar.steps.kas_build
@@ -67,12 +70,13 @@ class PressureReport:
 def pressure_report(psi_samples: list[dict[str, object]]) -> PressureReport:
     """Summarize ``psi_samples`` into per-dimension time-share and a verdict.
 
-    ``psi_samples`` is the ``psi.samples`` list from a normalized
-    ``bitbake-events.json`` artifact (see :mod:`bakar.eventlog`): one dict
-    per captured ``PSIEvent`` with ``cpu``/``io``/``memory`` avg10 values.
-    Samples missing a dimension's value (``None``) are skipped for that
-    dimension only, so a partially-populated event does not corrupt the
-    other dimensions' averages.
+    ``psi_samples`` is bakar's own persisted host-side sample list (see
+    module docstring): one dict per sample with flat ``cpu``/``io``/``memory``
+    avg10 values. Samples missing a dimension's value, or carrying a
+    non-numeric value for it (``None`` is skipped silently; any other
+    non-numeric value, e.g. a nested dict, is also skipped rather than
+    raising), are excluded for that dimension only, so a partially-populated
+    or malformed sample does not corrupt the other dimensions' averages.
 
     Returns a :class:`PressureReport` with ``available=False`` when
     ``psi_samples`` is empty or every dimension has zero usable values -

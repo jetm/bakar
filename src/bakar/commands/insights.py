@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import typer
+from rich.markup import escape
 
 from bakar import eventlog
 from bakar.commands._app import app, console
@@ -141,7 +142,10 @@ def _render_disk(report) -> None:
     if report.warning is not None:
         console.print(f"  [yellow]{report.warning}[/]")
     for event in report.full_events:
-        console.print(f"  [red]disk full:[/] {event}")
+        # event["message"]/["path"] is free-form bitbake error text (e.g. a
+        # bracketed path) - escape it so Rich never parses it as markup
+        # (matches the existing convention in commands/presets.py).
+        console.print(f"  [red]disk full:[/] {escape(str(event))}")
 
 
 @app.command("insights")

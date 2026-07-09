@@ -85,15 +85,20 @@ class TimingReport:
 
 
 def _duration_totals(durations: list[TaskDuration]) -> dict[str, float]:
-    """Sum durations per recipe across all of that recipe's tasks.
+    """Sum durations per recipe (PN) across all of that recipe's tasks.
 
-    The dependency graph is PN-level (one node per recipe), so the
-    weighted critical-path walk needs a single duration figure per recipe
-    rather than per-task.
+    The dependency graph is PN-level (:func:`bakar.graph_analyze.collapse_to_pn`
+    strips each node to its bare package name), while ``TaskDuration.recipe``
+    carries the full versioned PF (e.g. ``busybox-1.36.1-r0``) straight from
+    the event log. Keying this dict on the raw PF would never match a PN graph
+    node, silently zeroing every critical-path edge weight - strip the version
+    the same way :func:`bakar.task_timings.strip_recipe_version` does for
+    baseline keys, so both sides share one namespace.
     """
     totals: dict[str, float] = {}
     for d in durations:
-        totals[d.recipe] = totals.get(d.recipe, 0.0) + d.duration
+        pn = task_timings.strip_recipe_version(d.recipe)
+        totals[pn] = totals.get(pn, 0.0) + d.duration
     return totals
 
 

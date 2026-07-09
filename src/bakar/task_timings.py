@@ -58,6 +58,17 @@ SCHEMA_VERSION = 2
 _PF_VERSION_RE = re.compile(r"-\d[^-]*(?:-r\d+)?$")
 
 
+def strip_recipe_version(recipe: str) -> str:
+    """Return ``recipe`` (a PF like ``glibc-2.39-r0``) with its version/revision suffix removed.
+
+    A PF that does not match the version pattern is returned verbatim. Shared
+    by :func:`baseline_key` and any other caller that needs the bare PN a
+    dependency graph node (see :mod:`bakar.graph_analyze`) is keyed by.
+    """
+    pn = _PF_VERSION_RE.sub("", recipe) if recipe else ""
+    return pn or recipe
+
+
 def baseline_key(recipe: str, task: str) -> str:
     """Return the stable baseline key ``"<recipe-sans-version>:<task>"``.
 
@@ -67,8 +78,7 @@ def baseline_key(recipe: str, task: str) -> str:
     key deterministic on both the write (``update_from_events``) and lookup
     (``BuildUIState``) sides.
     """
-    pn = _PF_VERSION_RE.sub("", recipe) if recipe else ""
-    return f"{pn or recipe}:{task}"
+    return f"{strip_recipe_version(recipe)}:{task}"
 
 
 def load_baselines(path: Path | None = None) -> dict[str, tuple[float, float]]:
