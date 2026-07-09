@@ -1217,7 +1217,8 @@ def check_host_preflight(cfg: BuildConfig) -> CheckResult:
     if not cfg.host_mode:
         return _skip(name, Severity.INFO, "container build; host toolchain not exercised")
 
-    toolchain = detect_buildtools()
+    release_key = resolve_oe_core_release_key(cfg.workspace)
+    toolchain = detect_buildtools(release_key=release_key)
     if not toolchain.present:
         return _fail(
             name,

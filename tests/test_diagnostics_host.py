@@ -18,6 +18,7 @@ import pytest
 
 from bakar import diagnostics
 from bakar.diagnostics import Severity, Status, check_host_preflight
+from bakar.user_config import UserConfig
 from tests.conftest import make_build_config
 
 if TYPE_CHECKING:
@@ -132,3 +133,74 @@ def test_registered_in_shared_checks() -> None:
 def test_grouped_in_check_groups() -> None:
     grouped_names = {name for _, names in diagnostics.CHECK_GROUPS for name in names}
     assert "host-preflight" in grouped_names
+
+
+# ---------------------------------------------------------------------------
+# Release-scoped detection - the doctor gate must consult the SAME
+# release-scoped [build.buildtools_dirs] entry that `bakar setup` installs
+# into, not just the legacy flat [build] buildtools_dir. Without this, a
+# release-scoped install (e.g. a wrynose toolchain keyed to its oe-core
+# commit) is invisible to `bakar build`'s own pre-flight gate even though
+# `bakar setup` already installed it correctly.
+# ---------------------------------------------------------------------------
+
+
+def _git_oe_core(tmp_path: Path) -> str:
+    """Create workspace/openembedded-core as a real git repo; return its short hash."""
+    import subprocess
+
+    oe_core = tmp_path / "openembedded-core"
+    oe_core.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=oe_core, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=oe_core, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=oe_core, check=True)
+    (oe_core / "README").write_text("x")
+    subprocess.run(["git", "add", "README"], cwd=oe_core, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=oe_core, check=True)
+    return subprocess.run(
+        ["git", "-C", str(oe_core), "rev-parse", "--short=12", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def test_passes_via_release_scoped_config_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A release-scoped [build.buildtools_dirs] entry (no flat buildtools_dir,
+    no env var) must satisfy the gate - this is exactly what `bakar setup`
+    persists for a release-scoped install."""
+    release_key = _git_oe_core(tmp_path)
+    install_dir = tmp_path / "bt"
+    install_dir.mkdir()
+    (install_dir / "environment-setup-x86_64-pokysdk-linux").write_text("export OECORE_NATIVE_SYSROOT=/x\n")
+    monkeypatch.setattr(
+        diagnostics,
+        "load_user_config",
+        lambda: UserConfig(buildtools_dirs={release_key: str(install_dir)}),
+    )
+
+    result = check_host_preflight(_make_cfg(tmp_path))
+
+    assert result.status is not Status.FAIL
+    assert "not found" not in result.message
+
+
+def test_fails_when_flat_config_set_but_release_key_entry_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A workspace with a resolvable release key must NOT fall back to the
+    flat buildtools_dir - falling back would let a differently-tagged
+    toolchain silently satisfy this release's gate."""
+    _git_oe_core(tmp_path)
+    flat_dir = tmp_path / "flat-bt"
+    flat_dir.mkdir()
+    (flat_dir / "environment-setup-x86_64-pokysdk-linux").write_text("export OECORE_NATIVE_SYSROOT=/x\n")
+    monkeypatch.setattr(
+        diagnostics,
+        "load_user_config",
+        lambda: UserConfig(buildtools_dir=str(flat_dir), buildtools_dirs={}),
+    )
+
+    result = check_host_preflight(_make_cfg(tmp_path))
+
+    assert result.status is Status.FAIL
