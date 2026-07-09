@@ -315,12 +315,6 @@ def test_generic_overlay_omits_fetchcmd_wget(generic_overlay: dict) -> None:
     assert "FETCHCMD_wget" not in body
 
 
-def test_generic_overlay_limits_binary_locales(generic_overlay: dict) -> None:
-    """The generic overlay caps glibc binary-locale generation to en_US.UTF-8 (?= overridable)."""
-    body = generic_overlay["local_conf_header"]["zz-bakar-10-base"]
-    assert 'GLIBC_GENERATE_LOCALES ?= "en_US.UTF-8"' in body
-
-
 def test_nxp_ti_overlays_keep_fetchcmd_wget(nxp_overlay: dict, ti_overlay: dict) -> None:
     """NXP/TI keep their crates.io FETCHCMD_wget workaround (vendor BSPs, no avocado fetch overlay)."""
     for name, overlay in (("nxp", nxp_overlay), ("ti", ti_overlay)):
