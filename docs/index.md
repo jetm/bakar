@@ -20,6 +20,7 @@
 | `doctor` | [doctor.md](doctor.md) | Run pre-flight checks |
 | `triage` | [triage.md](triage.md) | Post-mortem a failed build |
 | `report` | [report.md](report.md) | Summarize a completed build run |
+| `insights` | [insights.md](insights.md) | Per-recipe/per-task analytics: sstate, timing, pressure, disk |
 | `log` | [log.md](log.md) | Tail a run log live |
 | `monitor` | [monitor.md](monitor.md) | One-view live watch: cluster load, dist stats, task progress |
 | `layers` | [layers.md](layers.md) | Print layer git hashes, branches, priority, and build status |
@@ -69,6 +70,7 @@
 
 **After a successful build:**
 - Summarize timing, image size, layer SHAs: [report.md](report.md)
+- Per-recipe sstate/timing/pressure/disk analytics: [insights.md](insights.md)
 - Inspect layer commits: [layers.md](layers.md)
 
 **Inspecting the build before or after:**
@@ -154,10 +156,11 @@ bakar log       - tail a live build log
 bakar monitor   - one-view live watch: cluster load, dist stats, task progress
 bakar triage    - surface the failing recipe/task from bitbake-events.json (--run/--preset/--release select the run dir)
 bakar report    - summarize a completed run (timing, image size, layers)
+bakar insights  - per-recipe/per-task analytics: sstate, timing, pressure, disk
 bakar layers    - print layer git hashes without running anything
 ```
 
-Related: [log.md](log.md), [monitor.md](monitor.md), [triage.md](triage.md), [report.md](report.md), [layers.md](layers.md)
+Related: [log.md](log.md), [monitor.md](monitor.md), [triage.md](triage.md), [report.md](report.md), [insights.md](insights.md), [layers.md](layers.md)
 
 ### Reproducibility
 
