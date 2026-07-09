@@ -35,6 +35,7 @@ import subprocess
 import sys
 import sysconfig
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1501,6 +1502,25 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         psi_sampler = threading.Thread(target=psi_loop, daemon=True)  # pragma: no cover
         psi_sampler.start()
 
+    # Host-side disk-usage samples for the run's build directory, persisted as
+    # a sibling file (RunLogger.disk_samples_path) - see bakar.insights_disk.
+    # Sampled on the same 5s cadence as psi_loop above so the two host-side
+    # samplers share one cadence rather than inventing an independent one.
+    disk_samples: list[dict[str, Any]] = []
+    disk_sampler: threading.Thread | None = None
+    disk_sample_dir = cfg.bsp_root / "build"
+
+    def disk_loop() -> None:  # pragma: no cover
+        while not stop_event.wait(timeout=5):
+            try:
+                used_bytes = shutil.disk_usage(disk_sample_dir).used
+            except OSError:
+                continue
+            disk_samples.append({"time": time.time(), "used_bytes": used_bytes})
+
+    disk_sampler = threading.Thread(target=disk_loop, daemon=True)  # pragma: no cover
+    disk_sampler.start()
+
     cmd: list[str] = []
     exe = "kas" if cfg.host_mode else "kas-container"
     ccache = _ccache_args(cfg, eventlog_path=_container_eventlog_path(cfg, log), run_id=log.run_id)
@@ -1581,6 +1601,9 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         if psi_sampler is not None:
             psi_sampler.join(timeout=5)
         log.persist_psi_samples(psi_samples)
+        if disk_sampler is not None:
+            disk_sampler.join(timeout=5)
+        log.persist_disk_samples(disk_samples)
     return rc if rc is not None else -1
 
 

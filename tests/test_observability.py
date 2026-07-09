@@ -362,3 +362,51 @@ def test_persist_psi_samples_noop_when_unwritable(tmp_path: Path) -> None:
         log.psi_samples_path.mkdir(parents=True, exist_ok=True)
         log.persist_psi_samples(samples)  # must not raise
         assert log.psi_samples_path.is_dir()
+
+
+@pytest.mark.unit
+def test_persist_disk_samples_writes_sibling_file(tmp_path: Path) -> None:
+    """Disk samples are written to the disk_samples_path sibling file, not events.jsonl."""
+    import json
+
+    samples = [
+        {"time": 1720000000.0, "used_bytes": 1000},
+        {"time": 1720000005.0, "used_bytes": 5000},
+    ]
+    runs_dir = tmp_path / "runs"
+    with RunLogger(runs_dir) as log:
+        log.persist_disk_samples(samples)
+
+        assert log.disk_samples_path.is_file()
+        written = json.loads(log.disk_samples_path.read_text())
+        assert written == samples
+
+    events = [json.loads(ln) for ln in log.events_path.read_text().splitlines() if ln]
+    announce = [e for e in events if e.get("step") == "disk_samples"]
+    assert len(announce) == 1
+    assert announce[0]["event"] == "step_ok"
+    # Sibling file only - the raw samples must never be folded into the
+    # normalized bitbake-events.json artifact.
+    assert not log.bitbake_events_path.exists()
+
+
+@pytest.mark.unit
+def test_persist_disk_samples_noop_for_empty_list(tmp_path: Path) -> None:
+    """An empty or None sample list writes nothing and does not raise."""
+    runs_dir = tmp_path / "runs"
+    with RunLogger(runs_dir) as log:
+        log.persist_disk_samples(None)
+        log.persist_disk_samples([])
+        assert not log.disk_samples_path.exists()
+
+
+@pytest.mark.unit
+def test_persist_disk_samples_noop_when_unwritable(tmp_path: Path) -> None:
+    """A write failure is swallowed: no raise, and no file is written."""
+    samples = [{"time": 1720000000.0, "used_bytes": 1000}]
+    runs_dir = tmp_path / "runs"
+    with RunLogger(runs_dir) as log:
+        # Make the target path a directory so write_text raises OSError.
+        log.disk_samples_path.mkdir(parents=True, exist_ok=True)
+        log.persist_disk_samples(samples)  # must not raise
+        assert log.disk_samples_path.is_dir()
