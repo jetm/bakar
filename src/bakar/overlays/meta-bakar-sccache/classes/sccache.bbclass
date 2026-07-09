@@ -192,9 +192,14 @@ sccache_write_rustc_shim () {
 # Non-allow-listed recipes never set CCACHE, so this expands to a bare compiler
 # and stays local; allow-listed recipes get "sccache <gcc>" and distribute now
 # that the fork resolves the bare `as` against the compile PATH. Definitions
-# mirror gcc-native.bbclass.
-BUILD_CC:forcevariable = "${CCACHE}${BUILD_PREFIX}gcc ${BUILD_CC_ARCH}"
-BUILD_CXX:forcevariable = "${CCACHE}${BUILD_PREFIX}g++ ${BUILD_CC_ARCH}"
+# mirror gcc-native.bbclass - except TOOLCHAIN_NATIVE selects clang-native.bbclass
+# instead (e.g. oe-core's libcxx/compiler-rt native builds), in which case a
+# hardcoded "gcc" here would silently overwrite BUILD_CC back to a compiler the
+# recipe never asked for. Pick the same compiler family clang-native.bbclass
+# would have set, so :forcevariable only re-adds ${CCACHE} and never changes
+# which toolchain actually runs.
+BUILD_CC:forcevariable = "${CCACHE}${BUILD_PREFIX}${@bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang', 'gcc', d)} ${BUILD_CC_ARCH}"
+BUILD_CXX:forcevariable = "${CCACHE}${BUILD_PREFIX}${@bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang++', 'g++', d)} ${BUILD_CC_ARCH}"
 
 # Put sccache on bitbake's task PATH. OE restricts each task's PATH to sysroot
 # bins plus the HOSTTOOLS allowlist (tmp/hosttools/); the host /usr/bin/sccache

@@ -730,8 +730,37 @@ def test_sccache_class_routes_build_compiler_through_sccache() -> None:
     """
     text = _sccache_bbclass_text()
 
-    assert 'BUILD_CC:forcevariable = "${CCACHE}${BUILD_PREFIX}gcc ${BUILD_CC_ARCH}"' in text
-    assert 'BUILD_CXX:forcevariable = "${CCACHE}${BUILD_PREFIX}g++ ${BUILD_CC_ARCH}"' in text
+    assert (
+        'BUILD_CC:forcevariable = "${CCACHE}${BUILD_PREFIX}'
+        "${@bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang', 'gcc', d)}"
+        ' ${BUILD_CC_ARCH}"' in text
+    )
+    assert (
+        'BUILD_CXX:forcevariable = "${CCACHE}${BUILD_PREFIX}'
+        "${@bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang++', 'g++', d)}"
+        ' ${BUILD_CC_ARCH}"' in text
+    )
+
+
+@pytest.mark.unit
+def test_sccache_class_respects_native_clang_toolchain() -> None:
+    """BUILD_CC/CXX pick clang, not a hardcoded gcc, when TOOLCHAIN_NATIVE=clang.
+
+    oe-core's clang-native.bbclass (used by recipes like libcxx-native and
+    compiler-rt-native) sets BUILD_CC to clang via a plain `=`. Before this test,
+    BUILD_CC:forcevariable hardcoded "gcc" unconditionally, silently overwriting
+    clang-native.bbclass's choice back to gcc and breaking any recipe that
+    legitimately selected clang as its native toolchain - the real-world case that
+    surfaced this: libcxx-native's do_configure failed because the resulting
+    BUILD_CC was gcc, but oe-core's TARGET_LDFLAGS still carried clang-only
+    --rtlib=libgcc/--unwindlib=libgcc flags gcc doesn't understand. This is the
+    falsifier: a literal "gcc"/"g++" with no TOOLCHAIN_NATIVE branch would still
+    force every native recipe onto gcc regardless of what it asked for.
+    """
+    text = _sccache_bbclass_text()
+
+    assert "bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang', 'gcc', d)" in text
+    assert "bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang++', 'g++', d)" in text
 
 
 @pytest.mark.unit
