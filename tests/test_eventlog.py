@@ -133,17 +133,17 @@ def test_normalize_returns_schema_keys() -> None:
     """The artifact has exactly the contract's top-level keys."""
     artifact = eventlog.normalize(FIXTURE)
     assert artifact["schema_version"] == eventlog.SCHEMA_VERSION
-    assert set(artifact) == {"schema_version", "build", "tasks", "setscene", "failures"}
+    assert set(artifact) == {"schema_version", "build", "tasks", "setscene", "failures", "psi", "disk"}
 
 
 @pytest.mark.unit
 def test_normalize_prunes_dead_schema_fields() -> None:
     """The pruned build.preset/build.release/setscene.per_recipe fields must
-    stay gone, and SCHEMA_VERSION must reflect the shape change (1 -> 2)."""
+    stay gone, and SCHEMA_VERSION must reflect the shape change (2 -> 3)."""
     artifact = eventlog.normalize(FIXTURE)
 
-    assert eventlog.SCHEMA_VERSION == 2
-    assert artifact["schema_version"] == 2
+    assert eventlog.SCHEMA_VERSION == 3
+    assert artifact["schema_version"] == 3
     assert "preset" not in artifact["build"]
     assert "release" not in artifact["build"]
     assert "per_recipe" not in artifact["setscene"]
@@ -188,7 +188,7 @@ def test_non_utf8_log_does_not_raise(tmp_path: Path) -> None:
 
     artifact = eventlog.normalize(raw)
 
-    assert set(artifact) == {"schema_version", "build", "tasks", "setscene", "failures"}
+    assert set(artifact) == {"schema_version", "build", "tasks", "setscene", "failures", "psi", "disk"}
 
 
 def _task_event(class_name: str, recipe: str, task: str, *, started: float | None = None) -> str:
@@ -242,3 +242,90 @@ def test_running_tasks_malformed_log_returns_empty(tmp_path: Path) -> None:
     (tmp_path / "bitbake_eventlog.json").write_bytes(b"\xff\xfe not json {\x80 truncated")
 
     assert eventlog.running_tasks(tmp_path) == []
+
+
+@pytest.mark.unit
+def test_normalize_psi_disk_absent_when_no_records(tmp_path: Path) -> None:
+    """No PSIEvent/MonitorDiskEvent/DiskUsageSample/DiskFull records in the raw
+    log yields empty psi/disk sections, schema_version 3, and no exception."""
+    _write_eventlog(
+        tmp_path,
+        [_task_event("bb.build.TaskStarted", "busybox-1.36.1-r0", "do_compile", started=100.0)],
+    )
+
+    artifact = eventlog.normalize(tmp_path / "bitbake_eventlog.json")
+
+    assert artifact["schema_version"] == 3
+    assert artifact["psi"] == {"samples": []}
+    assert artifact["disk"] == {"samples": [], "full_events": []}
+
+
+@pytest.mark.unit
+def test_normalize_captures_psi_event(tmp_path: Path) -> None:
+    """A PSIEvent record decodes into psi.samples with cpu/io/memory fields."""
+    ev = _StubEvent()
+    ev.time = 42.0  # type: ignore[attr-defined]
+    ev.cpu = 12.5  # type: ignore[attr-defined]
+    ev.io = 60.0  # type: ignore[attr-defined]
+    ev.memory = 3.0  # type: ignore[attr-defined]
+
+    log = tmp_path / "bitbake_eventlog.json"
+    log.write_text(
+        json.dumps({"class": "bb.event.PSIEvent", "vars": _encode_event(ev)}) + "\n",
+        encoding="utf-8",
+    )
+
+    artifact = eventlog.normalize(log)
+
+    assert artifact["schema_version"] == 3
+    assert artifact["psi"]["samples"] == [{"time": 42.0, "cpu": 12.5, "io": 60.0, "memory": 3.0}]
+    assert artifact["disk"] == {"samples": [], "full_events": []}
+
+
+@pytest.mark.unit
+def test_normalize_captures_disk_usage_and_full_events(tmp_path: Path) -> None:
+    """MonitorDiskEvent/DiskUsageSample fold into disk.samples; DiskFull is
+    tracked separately in disk.full_events."""
+    usage = _StubEvent()
+    usage.time = 10.0  # type: ignore[attr-defined]
+    usage.path = "/work/build"  # type: ignore[attr-defined]
+    usage.used = 100  # type: ignore[attr-defined]
+    usage.free = 50  # type: ignore[attr-defined]
+    usage.total = 150  # type: ignore[attr-defined]
+
+    sample = _StubEvent()
+    sample.time = 20.0  # type: ignore[attr-defined]
+    sample.path = "/work/build"  # type: ignore[attr-defined]
+    sample.used = 140  # type: ignore[attr-defined]
+    sample.free = 10  # type: ignore[attr-defined]
+    sample.total = 150  # type: ignore[attr-defined]
+
+    full = _StubEvent()
+    full.time = 25.0  # type: ignore[attr-defined]
+    full.path = "/work/build"  # type: ignore[attr-defined]
+    full.message = "No space left on device"  # type: ignore[attr-defined]
+
+    log = tmp_path / "bitbake_eventlog.json"
+    log.write_text(
+        "\n".join(
+            [
+                json.dumps({"class": "bb.event.MonitorDiskEvent", "vars": _encode_event(usage)}),
+                json.dumps({"class": "bb.event.DiskUsageSample", "vars": _encode_event(sample)}),
+                json.dumps({"class": "bb.event.DiskFull", "vars": _encode_event(full)}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    artifact = eventlog.normalize(log)
+
+    assert artifact["schema_version"] == 3
+    assert artifact["disk"]["samples"] == [
+        {"time": 10.0, "path": "/work/build", "used": 100, "free": 50, "total": 150},
+        {"time": 20.0, "path": "/work/build", "used": 140, "free": 10, "total": 150},
+    ]
+    assert artifact["disk"]["full_events"] == [
+        {"time": 25.0, "path": "/work/build", "message": "No space left on device"}
+    ]
+    assert artifact["psi"] == {"samples": []}

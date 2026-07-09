@@ -22,7 +22,14 @@ is added.
 :func:`normalize` reads a raw log path and returns the normalized artifact dict
 matching the ``bitbake-events.json`` schema (the downstream contract):
 
-    {schema_version, build, tasks, setscene, failures}
+    {schema_version, build, tasks, setscene, failures, psi, disk}
+
+``psi`` and ``disk`` (added in schema version 3) carry discrete pressure and
+disk-usage events captured from the raw log - ``psi.samples`` from
+``PSIEvent`` records, ``disk.samples`` from ``MonitorDiskEvent``/
+``DiskUsageSample`` records, and ``disk.full_events`` from ``DiskFull``
+records. Both default to empty when the raw log carries none of those
+classes.
 
 Absent optional fields are emitted as ``null``/empty, never dropped.
 """
@@ -43,7 +50,7 @@ if TYPE_CHECKING:
 
 # Bumped when the artifact shape changes so downstream consumers
 # (build-insights, triage) can detect format drift.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # bitbake event class names (the JSON line's ``class`` field) we recognize.
 # Each decoded event is classified by this string, NOT by isinstance - the
@@ -55,6 +62,10 @@ _TASK_SUCCEEDED = "bb.build.TaskSucceeded"
 _TASK_FAILED = "bb.build.TaskFailed"
 _TASK_FAILED_SILENT = "bb.build.TaskFailedSilent"
 _RUNQUEUE_TASK_STARTED = "bb.runqueue.runQueueTaskStarted"
+_PSI_EVENT = "bb.event.PSIEvent"
+_MONITOR_DISK_EVENT = "bb.event.MonitorDiskEvent"
+_DISK_USAGE_SAMPLE = "bb.event.DiskUsageSample"
+_DISK_FULL = "bb.event.DiskFull"
 
 _TASK_CLASSES = frozenset(
     {
@@ -65,10 +76,19 @@ _TASK_CLASSES = frozenset(
     }
 )
 
+# MonitorDiskEvent and DiskUsageSample are both disk-usage snapshots (the
+# former from bitbake's periodic disk monitor, the latter a one-off sample);
+# both fold into disk["samples"] identically.
+_DISK_USAGE_CLASSES = frozenset({_MONITOR_DISK_EVENT, _DISK_USAGE_SAMPLE})
+
 _RECOGNIZED_CLASSES = _TASK_CLASSES | {
     _BUILD_STARTED,
     _BUILD_COMPLETED,
     _RUNQUEUE_TASK_STARTED,
+    _PSI_EVENT,
+    _MONITOR_DISK_EVENT,
+    _DISK_USAGE_SAMPLE,
+    _DISK_FULL,
 }
 
 
@@ -258,7 +278,7 @@ def normalize(raw_path: Path) -> dict[str, Any]:
 
     The returned dict always has exactly these top-level keys::
 
-        {schema_version, build, tasks, setscene, failures}
+        {schema_version, build, tasks, setscene, failures, psi, disk}
 
     ``failures[]`` entries carry ``recipe`` (from ``_package``), ``task``
     (from ``_task``/``taskname``), ``logfile``, and ``errprinted``.
@@ -292,6 +312,8 @@ def normalize(raw_path: Path) -> dict[str, Any]:
         "notcovered": 0,
         "total": 0,
     }
+    psi: dict[str, Any] = {"samples": []}
+    disk: dict[str, Any] = {"samples": [], "full_events": []}
     setscene_seen = False
     saw_failure = False
 
@@ -302,6 +324,8 @@ def normalize(raw_path: Path) -> dict[str, Any]:
             "tasks": [],
             "setscene": setscene,
             "failures": failures,
+            "psi": psi,
+            "disk": disk,
         }
 
     def _task_row(event: _EventStub) -> dict[str, Any]:
@@ -379,6 +403,33 @@ def normalize(raw_path: Path) -> dict[str, Any]:
                     setscene["notcovered"] = notcovered or 0
                     setscene["total"] = total or 0
                     setscene_seen = True
+        elif class_name == _PSI_EVENT:
+            psi["samples"].append(
+                {
+                    "time": _first(event, "time", "timestamp"),
+                    "cpu": _first(event, "cpu"),
+                    "io": _first(event, "io"),
+                    "memory": _first(event, "memory"),
+                }
+            )
+        elif class_name in _DISK_USAGE_CLASSES:
+            disk["samples"].append(
+                {
+                    "time": _first(event, "time", "timestamp"),
+                    "path": _first(event, "path"),
+                    "used": _first(event, "used"),
+                    "free": _first(event, "free"),
+                    "total": _first(event, "total"),
+                }
+            )
+        elif class_name == _DISK_FULL:
+            disk["full_events"].append(
+                {
+                    "time": _first(event, "time", "timestamp"),
+                    "path": _first(event, "path"),
+                    "message": _first(event, "message", "errprinted"),
+                }
+            )
 
     if build["outcome"] == "unknown" and saw_failure:
         build["outcome"] = "failed"
@@ -389,6 +440,8 @@ def normalize(raw_path: Path) -> dict[str, Any]:
         "tasks": list(tasks.values()),
         "setscene": setscene,
         "failures": failures,
+        "psi": psi,
+        "disk": disk,
     }
 
 
