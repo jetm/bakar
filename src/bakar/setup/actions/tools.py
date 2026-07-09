@@ -149,7 +149,10 @@ class BuildtoolsInstallAction:
             self.install_dir = DEFAULT_BUILDTOOLS_DIR
 
     def describe(self) -> str:
-        return f"install buildtools-extended (~63 MB) into {self.install_dir}"
+        return (
+            f"install buildtools-extended (~500 MB) into {self.install_dir} "
+            "(installer runs `wget -q`, so it prints nothing for a few minutes)"
+        )
 
     def is_satisfied(self, _profile: HostProfile) -> bool:
         """True when a buildtools toolchain is already resolvable.

@@ -63,7 +63,8 @@ toolchain. `setup` installs it for you, but only under all of these conditions:
   nothing).
 
 When all three hold, `setup` runs `install-buildtools -d <dir>` (default
-`~/.local/share/bakar/buildtools`, a ~63 MB unprivileged download) and persists
+`~/.local/share/bakar/buildtools`, a ~500 MB unprivileged download that runs
+`wget -q` and prints nothing until it finishes) and persists
 the location as `[build] buildtools_dir` in the global
 `~/.config/bakar/config.toml`. `detect_buildtools()` resolves that field as a
 fallback after the `BAKAR_BUILDTOOLS_DIR` env var, so the install survives into a
