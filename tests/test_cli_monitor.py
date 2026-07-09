@@ -22,7 +22,7 @@ import pytest
 import bakar.commands.monitor as monitor_module
 import bakar.eventlog as eventlog_module
 from bakar.cli import app
-from bakar.diagnostics import BuildDaemonReport, ClusterCapacity, ClusterReport
+from bakar.diagnostics import BuildDaemonReport, CcacheReport, ClusterCapacity, ClusterReport
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -92,6 +92,9 @@ def _synthetic_artifact() -> dict[str, Any]:
 @pytest.fixture
 def patched_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Patch both heavy probes and the event-log reader on the monitor module."""
+    # sccache_dist defaults False (BuildConfig), so force it on - these tests
+    # exercise the cluster/sccache-daemon branch of _snapshot's cache split.
+    monkeypatch.setenv("BAKAR_SCCACHE_DIST", "1")
     monkeypatch.setattr(monitor_module, "probe_cluster", lambda _url: _reachable_cluster())
     monkeypatch.setattr(monitor_module, "probe_build_daemon", _running_daemon)
     monkeypatch.setattr(monitor_module, "normalize", lambda _path: _synthetic_artifact())
@@ -173,6 +176,7 @@ def test_progress_falls_back_before_runqueue_total_known(
     artifact["build"]["tasks_total"] = None
     artifact["build"]["tasks_completed"] = None
     artifact["build"]["tasks_active"] = None
+    monkeypatch.setenv("BAKAR_SCCACHE_DIST", "1")
     monkeypatch.setattr(monitor_module, "probe_cluster", lambda _url: _reachable_cluster())
     monkeypatch.setattr(monitor_module, "probe_build_daemon", _running_daemon)
     monkeypatch.setattr(monitor_module, "normalize", lambda _path: artifact)
@@ -282,6 +286,7 @@ def test_unreachable_cluster_does_not_crash_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An unreachable scheduler is reported in the doc, not raised."""
+    monkeypatch.setenv("BAKAR_SCCACHE_DIST", "1")
     monkeypatch.setattr(
         monitor_module,
         "probe_cluster",
@@ -462,6 +467,7 @@ def test_json_once_build_daemon_carries_per_language(
 ) -> None:
     """``--json`` surfaces the per-language breakdown under ``build_daemon`` and
     keeps every existing top-level snapshot key."""
+    monkeypatch.setenv("BAKAR_SCCACHE_DIST", "1")
     monkeypatch.setattr(monitor_module, "probe_cluster", lambda _url: _reachable_cluster())
     monkeypatch.setattr(monitor_module, "probe_build_daemon", _running_daemon_with_langs)
     monkeypatch.setattr(monitor_module, "normalize", lambda _path: _synthetic_artifact())
@@ -480,3 +486,62 @@ def test_json_once_build_daemon_carries_per_language(
     build_daemon = doc["build_daemon"]
     assert build_daemon["hits_by_lang"] == {"C/C++": 100, "Rust": 52}
     assert build_daemon["misses_by_lang"] == {"C/C++": 40, "Rust": 10}
+
+
+def _available_ccache() -> CcacheReport:
+    return CcacheReport(available=True, cache_hits=120, cache_misses=30)
+
+
+def test_json_once_defaults_to_ccache_branch(
+    runner: _CliRunner,
+    nxp_workspace_with_run: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With sccache-dist off (the ``BuildConfig`` default), the snapshot reports
+    ccache stats instead of cluster/build_daemon. Mirrors the mutually-exclusive
+    split ``steps/kas_build.py``'s live-UI cache probe already applies."""
+
+    def _must_not_probe_cluster(*_a: object, **_k: object) -> None:
+        raise AssertionError("probe_cluster called while sccache-dist is off")
+
+    monkeypatch.setattr(monitor_module, "probe_cluster", _must_not_probe_cluster)
+    monkeypatch.setattr(monitor_module, "probe_ccache", lambda _dir: _available_ccache())
+    monkeypatch.setattr(monitor_module, "normalize", lambda _path: _synthetic_artifact())
+    monkeypatch.setattr(eventlog_module, "normalize", lambda _path: _synthetic_artifact())
+    monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: (False, None, False))
+
+    result = runner.invoke(
+        app,
+        ["monitor", "--json", "--once", "--workspace", str(nxp_workspace_with_run)],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    doc = json.loads(result.stdout)
+    assert doc["cluster"] is None
+    assert doc["build_daemon"] is None
+    assert doc["ccache"] == {"cache_hits": 120, "cache_misses": 30, "hit_rate": 80.0}
+
+
+def test_json_once_ccache_unavailable_is_none(
+    runner: _CliRunner,
+    nxp_workspace_with_run: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unavailable ccache (binary missing, dir absent) reports ``ccache: null``, not a crash."""
+    monkeypatch.setattr(monitor_module, "probe_cluster", lambda _url: _reachable_cluster())
+    monkeypatch.setattr(
+        monitor_module,
+        "probe_ccache",
+        lambda _dir: CcacheReport(available=False, error="ccache binary not on PATH"),
+    )
+    monkeypatch.setattr(monitor_module, "normalize", lambda _path: _synthetic_artifact())
+    monkeypatch.setattr(eventlog_module, "normalize", lambda _path: _synthetic_artifact())
+    monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: (False, None, False))
+
+    result = runner.invoke(
+        app,
+        ["monitor", "--json", "--once", "--workspace", str(nxp_workspace_with_run)],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert json.loads(result.stdout)["ccache"] is None

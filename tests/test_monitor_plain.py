@@ -22,6 +22,21 @@ def test_render_plain_shows_daemons_and_build() -> None:
     assert "hashserv h:8686 (up)" in text
 
 
+def test_render_plain_shows_ccache_not_cluster() -> None:
+    """ccache and sccache-dist are mutually exclusive: with cluster/build_daemon
+    None, the ccache line renders and no cluster/daemon lines appear."""
+    snapshot = {
+        **MONITOR_SNAPSHOT,
+        "cluster": None,
+        "build_daemon": None,
+        "ccache": {"cache_hits": 120, "cache_misses": 30, "hit_rate": 80.0},
+    }
+    text = "\n".join(_render_plain(snapshot))
+    assert "ccache: 120/30 hit/miss (80% hit)" in text
+    assert "cluster:" not in text
+    assert "daemon:" not in text
+
+
 def test_json_identical_across_modes(tmp_path) -> None:
     out_rich = _invoke_monitor(["--rich", "monitor", "--json"], tmp_path)
     out_plain = _invoke_monitor(["--plain", "monitor", "--json"], tmp_path)

@@ -31,8 +31,11 @@ import bakar.commands._app as _state
 from bakar import hashserv, prserv
 from bakar.build_stop import is_build_running
 from bakar.cache_render import (
+    ccache_doc,
     cluster_doc,
     daemon_doc,
+    render_ccache_cache,
+    render_ccache_cache_plain,
     render_cluster,
     render_cluster_plain,
     render_sccache_cache,
@@ -44,11 +47,12 @@ from bakar.commands._helpers import (
     _bsp_from_cwd,
     _dispatch_from_yaml,
     _resolve_workspace,
+    apply_sccache_overrides,
     global_output_mode_override,
 )
 from bakar.commands.log import _resolve_run_dir
 from bakar.config import BSPSpec, BuildConfig, resolve
-from bakar.diagnostics import probe_build_daemon, probe_cluster, split_host_port
+from bakar.diagnostics import probe_build_daemon, probe_ccache, probe_cluster, split_host_port
 from bakar.eventlog import normalize, running_from_rows
 from bakar.output_mode import OutputMode, resolve_output_mode
 from bakar.steps.build_ui import SEVERITY_PASSTHROUGH, _fmt_stall, _task_style
@@ -303,14 +307,32 @@ def _render_daemons(daemons: dict[str, Any]) -> Text | None:
     return line
 
 
-def _snapshot(run_dir: Path, url: str | None, daemon_probe: _DaemonProbe, daemons: dict[str, Any]) -> dict[str, Any]:
-    """Assemble one monitor snapshot doc (cluster + build daemon + build progress)."""
-    report = probe_cluster(url)
-    daemon = daemon_probe.get()
+def _snapshot(
+    run_dir: Path, cfg: BuildConfig, url: str | None, daemon_probe: _DaemonProbe, daemons: dict[str, Any]
+) -> dict[str, Any]:
+    """Assemble one monitor snapshot doc (cache status + build progress).
+
+    Mirrors the live build UI's cache-probe split (``steps/kas_build.py``'s
+    ``_cache_probe``): sccache-dist and ccache are mutually-exclusive
+    launchers (the sccache overlay does ``INHERIT:remove = "ccache"``), so at
+    most one is active. sccache-dist builds get the cluster + sccache-daemon
+    docs; ccache builds - the default, since ``BuildConfig.ccache`` defaults
+    True and ``sccache_dist`` defaults False - get the ccache hit/miss doc
+    instead. Both are None when neither launcher is on.
+    """
+    cluster = None
+    build_daemon = None
+    ccache = None
+    if cfg.use_sccache_dist:
+        cluster = cluster_doc(probe_cluster(url), url)
+        build_daemon = daemon_doc(daemon_probe.get())
+    elif cfg.ccache:
+        ccache = ccache_doc(probe_ccache(cfg.effective_ccache_dir))
     return {
         "run": run_dir.name,
-        "cluster": cluster_doc(report, url),
-        "build_daemon": daemon_doc(daemon),
+        "cluster": cluster,
+        "build_daemon": build_daemon,
+        "ccache": ccache,
         "build": _build_progress(run_dir),
         "daemons": daemons,
     }
@@ -320,8 +342,11 @@ def _render(snapshot: dict[str, Any]) -> Group:
     """Render a monitor snapshot dict as a light Rich renderable for Live."""
     parts: list[Any] = []
 
-    parts.extend(render_cluster(snapshot["cluster"]))
-    parts.append(render_sccache_cache(snapshot["build_daemon"]))
+    if snapshot["cluster"] is not None:
+        parts.extend(render_cluster(snapshot["cluster"]))
+        parts.append(render_sccache_cache(snapshot["build_daemon"]))
+    elif snapshot["ccache"] is not None:
+        parts.append(render_ccache_cache(snapshot["ccache"]))
 
     daemon_line = _render_daemons(snapshot.get("daemons") or {})
     if daemon_line is not None:
@@ -394,8 +419,12 @@ def _render_plain(snapshot: dict[str, Any]) -> list[str]:
     Reuses the same snapshot doc :func:`_render` consumes, so the plain and Rich
     views never drift on which fields they show.
     """
-    lines: list[str] = list(render_cluster_plain(snapshot["cluster"]))
-    lines.append(render_sccache_cache_plain(snapshot["build_daemon"]))
+    lines: list[str] = []
+    if snapshot["cluster"] is not None:
+        lines.extend(render_cluster_plain(snapshot["cluster"]))
+        lines.append(render_sccache_cache_plain(snapshot["build_daemon"]))
+    elif snapshot["ccache"] is not None:
+        lines.append(render_ccache_cache_plain(snapshot["ccache"]))
 
     daemon_line = _render_daemons_plain(snapshot.get("daemons") or {})
     if daemon_line is not None:
@@ -431,6 +460,7 @@ def _render_plain(snapshot: dict[str, Any]) -> list[str]:
 
 def _run_plain(
     run_dir: Path,
+    cfg: BuildConfig,
     url: str | None,
     daemon_probe: _DaemonProbe,
     daemons: dict[str, Any],
@@ -441,7 +471,7 @@ def _run_plain(
     """Print plain-text snapshots to stderr until the build finishes (or once)."""
     try:
         while True:
-            snapshot = _snapshot(run_dir, url, daemon_probe, daemons)
+            snapshot = _snapshot(run_dir, cfg, url, daemon_probe, daemons)
             snapshot["kas_errors"] = _recent_kas_errors(run_dir / "kas.log")
             for line in _render_plain(snapshot):
                 typer.echo(line, err=True)
@@ -514,6 +544,7 @@ def monitor(
         kas_yaml=kas_yaml,
         user_config=_state._USER_CONFIG,
     )
+    cfg = apply_sccache_overrides(cfg)
     runs_dir = cfg.runs_dir
     if not runs_dir.is_dir():
         if output_json:
@@ -528,36 +559,41 @@ def monitor(
     daemons = _daemon_status(cfg)
 
     if output_json and not watch:
-        doc = _snapshot(run_dir, url, daemon_probe, daemons)
+        doc = _snapshot(run_dir, cfg, url, daemon_probe, daemons)
         typer.echo(json.dumps(doc, indent=2))
         return
 
     if output_json and watch:
-        _run_watch(run_dir, url, daemon_probe, daemons, interval)
+        _run_watch(run_dir, cfg, url, daemon_probe, daemons, interval)
         return
 
     if once:
         if mode is OutputMode.PLAIN:
-            _run_plain(run_dir, url, daemon_probe, daemons, interval, once=True)
+            _run_plain(run_dir, cfg, url, daemon_probe, daemons, interval, once=True)
         else:
-            snapshot = _snapshot(run_dir, url, daemon_probe, daemons)
+            snapshot = _snapshot(run_dir, cfg, url, daemon_probe, daemons)
             snapshot["kas_errors"] = _recent_kas_errors(run_dir / "kas.log")
             console.print(_render(snapshot))
         return
 
     if mode is OutputMode.PLAIN:
-        _run_plain(run_dir, url, daemon_probe, daemons, interval)
+        _run_plain(run_dir, cfg, url, daemon_probe, daemons, interval)
     else:
-        _run_live(run_dir, url, daemon_probe, daemons, interval)
+        _run_live(run_dir, cfg, url, daemon_probe, daemons, interval)
 
 
 def _run_watch(
-    run_dir: Path, url: str | None, daemon_probe: _DaemonProbe, daemons: dict[str, Any], interval: float
+    run_dir: Path,
+    cfg: BuildConfig,
+    url: str | None,
+    daemon_probe: _DaemonProbe,
+    daemons: dict[str, Any],
+    interval: float,
 ) -> None:
     """Stream NDJSON snapshots to stdout until the build finishes (one final snapshot)."""
     try:
         while True:
-            doc = _snapshot(run_dir, url, daemon_probe, daemons)
+            doc = _snapshot(run_dir, cfg, url, daemon_probe, daemons)
             typer.echo(json.dumps(doc))
             if not doc["build"]["live"]:
                 return
@@ -567,13 +603,18 @@ def _run_watch(
 
 
 def _run_live(
-    run_dir: Path, url: str | None, daemon_probe: _DaemonProbe, daemons: dict[str, Any], interval: float
+    run_dir: Path,
+    cfg: BuildConfig,
+    url: str | None,
+    daemon_probe: _DaemonProbe,
+    daemons: dict[str, Any],
+    interval: float,
 ) -> None:
     """Refresh a Rich live view on stderr until the build finishes, then a final frame."""
     from rich.live import Live
 
     def _snapshot_with_errors() -> dict[str, Any]:
-        snapshot = _snapshot(run_dir, url, daemon_probe, daemons)
+        snapshot = _snapshot(run_dir, cfg, url, daemon_probe, daemons)
         snapshot["kas_errors"] = _recent_kas_errors(run_dir / "kas.log")
         return snapshot
 

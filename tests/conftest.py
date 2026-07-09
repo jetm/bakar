@@ -133,6 +133,7 @@ MONITOR_SNAPSHOT = {
         "capacity": {"num_servers": 1, "num_cpus": 8, "in_progress": 0, "servers": []},
     },
     "build_daemon": None,
+    "ccache": None,
     "daemons": {
         "hashserv": {"url": "ws://h:8686", "running": True},  # nosemgrep
         "prserv": {"host": "h:8585", "running": False},
