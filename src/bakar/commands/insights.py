@@ -222,12 +222,16 @@ def insights(
 
     console.print(f"[bold]:: insights {log.run_id}[/]")
 
-    if show_sstate or show_all:
+    # Normalizing re-reads and re-unpickles the whole raw event log; load it
+    # once and share it across sections instead of once per section.
+    artifact = None
+    if show_sstate or show_timing or show_disk or show_all:
         artifact = eventlog.normalize(log.eventlog_path)
+
+    if show_sstate or show_all:
         _render_sstate(sstate_report(artifact))
 
     if show_timing or show_all:
-        artifact = eventlog.normalize(log.eventlog_path)
         _render_timing(timing_report(artifact, top_n=top))
 
     if show_pressure or show_all:
@@ -235,6 +239,5 @@ def insights(
         _render_pressure(pressure_report(psi_samples))
 
     if show_disk or show_all:
-        artifact = eventlog.normalize(log.eventlog_path)
         disk_samples = _load_json_list(log.disk_samples_path)
         _render_disk(disk_report(disk_samples, artifact, threshold_bytes=threshold_bytes))

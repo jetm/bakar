@@ -114,12 +114,11 @@ def _compute_critical_path(
     this function never raises back to :func:`timing_report`.
     """
     try:
-        dot_text, buildlist_text = dependency_source()
+        # buildlist_text (package_count etc.) isn't needed for the chain itself.
+        dot_text, _buildlist_text = dependency_source()
         pn_graph = graph_analyze.collapse_to_pn(graph_analyze.read_graph(dot_text))
     except Exception as exc:  # noqa: BLE001 - any dependency-source failure degrades gracefully
         return CriticalPath(note=f"critical-path unavailable: dependency source failed ({exc})")
-
-    _ = buildlist_text  # not needed for the chain itself, only package_count elsewhere
 
     if pn_graph.number_of_nodes() == 0:
         return CriticalPath(note="critical-path unavailable: empty dependency graph")

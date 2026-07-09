@@ -1507,7 +1507,6 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     # Sampled on the same 5s cadence as psi_loop above so the two host-side
     # samplers share one cadence rather than inventing an independent one.
     disk_samples: list[dict[str, Any]] = []
-    disk_sampler: threading.Thread | None = None
     disk_sample_dir = cfg.bsp_root / "build"
 
     def disk_loop() -> None:  # pragma: no cover
@@ -1601,8 +1600,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         if psi_sampler is not None:
             psi_sampler.join(timeout=5)
         log.persist_psi_samples(psi_samples)
-        if disk_sampler is not None:
-            disk_sampler.join(timeout=5)
+        disk_sampler.join(timeout=5)
         log.persist_disk_samples(disk_samples)
     return rc if rc is not None else -1
 

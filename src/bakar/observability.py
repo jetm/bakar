@@ -273,6 +273,23 @@ class RunLogger:
             return
         self.step_ok("ccache_stats", path=str(self.ccache_stats_path))
 
+    def _persist_json_samples(self, samples: list[dict[str, Any]] | None, path: Path, step_name: str) -> None:
+        """Write ``samples`` to ``path`` as JSON and announce ``step_name``.
+
+        Shared by :meth:`persist_psi_samples` and :meth:`persist_disk_samples` -
+        both write a plain list of host-side samples to a sibling file with the
+        same empty/write-failure handling. Best-effort: an empty/``None`` list
+        or a write failure is a no-op. Never raises.
+        """
+        if not samples:
+            return
+        try:
+            path.write_text(json.dumps(samples, default=str))
+        except (OSError, ValueError) as exc:
+            self.warn(f"failed to persist {path.name}: {exc}")
+            return
+        self.step_ok(step_name, path=str(path))
+
     def persist_psi_samples(self, samples: list[dict[str, Any]] | None) -> None:
         """Persist host-side PSI samples collected during the build as ``psi-samples.json``.
 
@@ -281,17 +298,9 @@ class RunLogger:
         polls ``/proc/pressure`` at. This is a sibling file, not part of the
         normalized ``bitbake-events.json`` artifact - PSI sampling is bakar's own
         host-side cadence, not a bitbake event, so it does not belong in the
-        event-derived schema. Best-effort: an empty/``None`` list or a write
-        failure is a no-op. Never raises.
+        event-derived schema.
         """
-        if not samples:
-            return
-        try:
-            self.psi_samples_path.write_text(json.dumps(samples, default=str))
-        except (OSError, ValueError) as exc:
-            self.warn(f"failed to persist psi-samples.json: {exc}")
-            return
-        self.step_ok("psi_samples", path=str(self.psi_samples_path))
+        self._persist_json_samples(samples, self.psi_samples_path, "psi_samples")
 
     def persist_disk_samples(self, samples: list[dict[str, Any]] | None) -> None:
         """Persist host-side disk-usage samples collected during the build as ``disk-samples.json``.
@@ -302,18 +311,9 @@ class RunLogger:
         normalized ``bitbake-events.json`` artifact - disk sampling is bakar's
         own host-side cadence, not a bitbake event. ``bakar.insights_disk``
         consumes this exact shape (``disk_report``'s ``disk_samples`` param)
-        directly, taking the earliest and latest by ``time`` to compute
-        growth. Best-effort: an empty/``None`` list or a write failure is a
-        no-op. Never raises.
+        directly, taking the earliest and latest by ``time`` to compute growth.
         """
-        if not samples:
-            return
-        try:
-            self.disk_samples_path.write_text(json.dumps(samples, default=str))
-        except (OSError, ValueError) as exc:
-            self.warn(f"failed to persist disk-samples.json: {exc}")
-            return
-        self.step_ok("disk_samples", path=str(self.disk_samples_path))
+        self._persist_json_samples(samples, self.disk_samples_path, "disk_samples")
 
     def persist_task_timings(self, timings_path: Path | None = None) -> None:
         """Accumulate this run's task durations into the global baseline store.
