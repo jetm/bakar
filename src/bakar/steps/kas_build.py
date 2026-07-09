@@ -36,9 +36,9 @@ import sys
 import sysconfig
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from rich.live import Live
@@ -1479,16 +1479,24 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     # PSI auto-calibration: sample host /proc/pressure peaks during the build so
     # the recommended pressure_max_* can be written afterwards.
     psi_peaks: dict[str, float] = {}
+    # Raw time-series samples for post-hoc reporting (bakar insights --pressure),
+    # persisted as a sibling file (RunLogger.psi_samples_path) - not folded into
+    # the normalized bitbake-events.json artifact. Kept separate from psi_peaks,
+    # which only tracks the per-dim max for auto-calibration.
+    psi_samples: list[dict[str, Any]] = []
     psi_sampler: threading.Thread | None = None
     if cfg.psi_autocalibrate and read_psi_avg10("cpu") is not None:
         psi_peaks = dict.fromkeys(PSI_DIMS, 0.0)
 
         def psi_loop() -> None:  # pragma: no cover
             while not stop_event.wait(timeout=5):
+                sample: dict[str, Any] = {"ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}
                 for dim in PSI_DIMS:
                     value = read_psi_avg10(dim)
+                    sample[dim] = value
                     if value is not None and value > psi_peaks[dim]:
                         psi_peaks[dim] = value
+                psi_samples.append(sample)
 
         psi_sampler = threading.Thread(target=psi_loop, daemon=True)  # pragma: no cover
         psi_sampler.start()
@@ -1572,6 +1580,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         stop_event.set()
         if psi_sampler is not None:
             psi_sampler.join(timeout=5)
+        log.persist_psi_samples(psi_samples)
     return rc if rc is not None else -1
 
 

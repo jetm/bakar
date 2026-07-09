@@ -314,3 +314,51 @@ def test_persist_task_timings_never_raises_when_report_path_also_fails(
         log.persist_task_timings(tmp_path / "timings.json")  # must not raise
 
     assert "failed to persist task timings" in caplog.text
+
+
+@pytest.mark.unit
+def test_persist_psi_samples_writes_sibling_file(tmp_path: Path) -> None:
+    """PSI samples are written to the psi_samples_path sibling file, not events.jsonl."""
+    import json
+
+    samples = [
+        {"ts": "2026-07-09T00:00:00Z", "cpu": 12.0, "io": 5.0, "memory": 1.0},
+        {"ts": "2026-07-09T00:00:05Z", "cpu": 40.0, "io": 8.0, "memory": 2.0},
+    ]
+    runs_dir = tmp_path / "runs"
+    with RunLogger(runs_dir) as log:
+        log.persist_psi_samples(samples)
+
+        assert log.psi_samples_path.is_file()
+        written = json.loads(log.psi_samples_path.read_text())
+        assert written == samples
+
+    events = [json.loads(ln) for ln in log.events_path.read_text().splitlines() if ln]
+    announce = [e for e in events if e.get("step") == "psi_samples"]
+    assert len(announce) == 1
+    assert announce[0]["event"] == "step_ok"
+    # Sibling file only - the raw samples must never be folded into the
+    # normalized bitbake-events.json artifact.
+    assert not log.bitbake_events_path.exists()
+
+
+@pytest.mark.unit
+def test_persist_psi_samples_noop_for_empty_list(tmp_path: Path) -> None:
+    """An empty or None sample list writes nothing and does not raise."""
+    runs_dir = tmp_path / "runs"
+    with RunLogger(runs_dir) as log:
+        log.persist_psi_samples(None)
+        log.persist_psi_samples([])
+        assert not log.psi_samples_path.exists()
+
+
+@pytest.mark.unit
+def test_persist_psi_samples_noop_when_unwritable(tmp_path: Path) -> None:
+    """A write failure is swallowed: no raise, and no file is written."""
+    samples = [{"ts": "2026-07-09T00:00:00Z", "cpu": 1.0, "io": 0.0, "memory": 0.0}]
+    runs_dir = tmp_path / "runs"
+    with RunLogger(runs_dir) as log:
+        # Make the target path a directory so write_text raises OSError.
+        log.psi_samples_path.mkdir(parents=True, exist_ok=True)
+        log.persist_psi_samples(samples)  # must not raise
+        assert log.psi_samples_path.is_dir()

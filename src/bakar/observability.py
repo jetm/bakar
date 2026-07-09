@@ -103,6 +103,10 @@ class RunLogger:
         return self.run_dir / "ccache-stats.json"
 
     @property
+    def psi_samples_path(self) -> Path:
+        return self.run_dir / "psi-samples.json"
+
+    @property
     def console(self) -> Console:
         """The Rich console the log handler writes to.
 
@@ -264,6 +268,26 @@ class RunLogger:
             self.warn(f"failed to persist ccache-stats.json: {exc}")
             return
         self.step_ok("ccache_stats", path=str(self.ccache_stats_path))
+
+    def persist_psi_samples(self, samples: list[dict[str, Any]] | None) -> None:
+        """Persist host-side PSI samples collected during the build as ``psi-samples.json``.
+
+        Each sample is a plain ``{"ts": <iso>, <dim>: <avg10 or None>, ...}`` dict
+        taken at the same cadence the live ``_autocalibrate_psi`` sampler already
+        polls ``/proc/pressure`` at. This is a sibling file, not part of the
+        normalized ``bitbake-events.json`` artifact - PSI sampling is bakar's own
+        host-side cadence, not a bitbake event, so it does not belong in the
+        event-derived schema. Best-effort: an empty/``None`` list or a write
+        failure is a no-op. Never raises.
+        """
+        if not samples:
+            return
+        try:
+            self.psi_samples_path.write_text(json.dumps(samples, default=str))
+        except (OSError, ValueError) as exc:
+            self.warn(f"failed to persist psi-samples.json: {exc}")
+            return
+        self.step_ok("psi_samples", path=str(self.psi_samples_path))
 
     def persist_task_timings(self, timings_path: Path | None = None) -> None:
         """Accumulate this run's task durations into the global baseline store.
