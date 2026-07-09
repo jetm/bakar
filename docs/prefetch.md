@@ -16,6 +16,7 @@ bakar prefetch [KAS_YAML] [OPTIONS]
 |------|-------|-------------|
 | `--manifest` | `-f` | Manifest filename for BSP family dispatch |
 | `--machine` | `-m` | Target machine |
+| `--image` | `-i` | Fetch target (e.g. `core-image-minimal`, `var-thin-image`). Explicit `--image` always wins; when omitted, the fetch target defaults to `core-image-minimal` for bitbake-setup and BYO/generic workspaces |
 | `--workspace` | `-w` | Workspace root override |
 
 ## Examples
