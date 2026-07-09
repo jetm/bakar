@@ -65,32 +65,23 @@ def prefetch(
             user_config=_state._USER_CONFIG,
         )
         overlay_source = _overlay_for(None)
-        cfg.runs_dir.mkdir(parents=True, exist_ok=True)
-        with RunLogger(runs_dir=cfg.runs_dir) as log:
-            kas_ctx = KasBuildContext(cfg, log, setup_dir / "kas-bbsetup.yml", overlay_source)
-            rc = step_kas.run_shell(
-                kas_ctx,
-                [],
-                command=f"bitbake --runall=fetch {shlex.quote(fetch_target)}",
-            )
-        raise typer.Exit(code=rc)
-
-    family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
-    ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
-    cfg = resolve(
-        workspace=ws,
-        bsp_family=family,
-        spec=BSPSpec(machine=machine, manifest=manifest),
-        kas_yaml=kas_yaml,
-        user_config=_state._USER_CONFIG,
-    )
-    if image is not None:
-        fetch_target = image
-    elif cfg.bsp_family in ("generic", "bbsetup"):
-        fetch_target = "core-image-minimal"
     else:
-        fetch_target = cfg.image
-    overlay_source = _overlay_for(bsp)
+        family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
+        ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
+        cfg = resolve(
+            workspace=ws,
+            bsp_family=family,
+            spec=BSPSpec(machine=machine, manifest=manifest),
+            kas_yaml=kas_yaml,
+            user_config=_state._USER_CONFIG,
+        )
+        # Value-based, matching build.py's guard: an explicit BAKAR_IMAGE/preset
+        # override for a generic/bbsetup family must still win, not just the
+        # literal "generic"/"" sentinel default.
+        sentinel_guarded = cfg.image if cfg.image not in ("", "generic") else "core-image-minimal"
+        fetch_target = image if image is not None else sentinel_guarded
+        overlay_source = _overlay_for(bsp)
+
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source)
