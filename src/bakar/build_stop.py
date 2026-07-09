@@ -569,6 +569,55 @@ def is_build_running(run_dir: Path) -> tuple[bool, int | None, bool]:
     return (True, pgid, cmdline_ok)
 
 
+def _read_bitbake_server_pid(run_dir: Path) -> int | None:
+    """Read bitbake-server's own PID from ``bitbake.lock``'s first line.
+
+    bb.server.process writes ``os.getpid()`` as the lock file's first
+    line/token (see bitbake/lib/bb/server/process.py), and
+    bb.daemonize.createDaemon double-forks + calls os.setsid() to start it -
+    the server leads a brand-new session, so it is NEVER a member of the
+    kas-container/kas process group ``build.pid`` records. killpg(pgid, ...)
+    structurally cannot reach it: the server can (and by design does) outlive
+    the client that launched it, e.g. to serve a warm cooker to a later
+    bitbake invocation, or here, because something killed the client (a
+    SIGQUIT from a job-control keypress) without the server ever seeing an
+    interrupt. This is the only liveness signal that actually reaches it.
+
+    Returns None when the lock is missing, empty, or unparseable - already
+    exited, a mid-write race, or a container build with no host-side lock.
+    """
+    lock_path = run_dir.parent.parent / "bitbake.lock"
+    try:
+        raw = lock_path.read_text()
+    except OSError:
+        return None
+    tokens = raw.split()
+    if not tokens:
+        return None
+    try:
+        return int(tokens[0])
+    except ValueError:
+        return None
+
+
+def _pid_alive(pid: int) -> bool:
+    """Return True while process ``pid`` still exists (single-PID, not group)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # EPERM: still alive, just owned by someone else.
+        return True
+    return True
+
+
+def _bitbake_server_alive(run_dir: Path) -> bool:
+    """True while bitbake-server's own detached PID (from bitbake.lock) is alive."""
+    pid = _read_bitbake_server_pid(run_dir)
+    return pid is not None and _pid_alive(pid)
+
+
 def _pgid_alive(pgid: int) -> bool:
     """Return True while any member of process group ``pgid`` still exists.
 
@@ -585,16 +634,32 @@ def _pgid_alive(pgid: int) -> bool:
     return True
 
 
-def _escalate_host(pgid: int) -> None:
+def _escalate_host(pgid: int, run_dir: Path | None = None) -> None:
     """Run the host SIGTERM->SIGKILL ladder against process group ``pgid``.
 
     SIGTERM, wait ``_STOP_TERM_SECONDS``, then SIGKILL only if the group is
-    still alive - the existing escalation, unchanged.
+    still alive - the existing escalation, unchanged. Also signals
+    bitbake-server's own detached PID (from ``bitbake.lock``, via ``run_dir``)
+    at each rung: killpg(pgid, ...) cannot reach it (see
+    _read_bitbake_server_pid), so without this a force-stop or Ctrl-C
+    escalation kills the kas-container/kas wrapper but leaves the actual
+    cooker - and whatever tasks it dispatched - running untouched.
     """
     os.killpg(pgid, signal.SIGTERM)
+    bb_pid = _read_bitbake_server_pid(run_dir) if run_dir is not None else None
+    if bb_pid is not None:
+        try:
+            os.kill(bb_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
     time.sleep(_STOP_TERM_SECONDS)
     if _pgid_alive(pgid):
         os.killpg(pgid, signal.SIGKILL)
+    if bb_pid is not None and _pid_alive(bb_pid):
+        try:
+            os.kill(bb_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def _clean_stale_bitbake_files(run_dir: Path) -> list[Path]:
@@ -687,15 +752,21 @@ def stop_build(bsp_root: Path, *, force: bool = False) -> bool:
             if not force:
                 print(f"Sent SIGINT to build PGID {pgid}...")
                 os.killpg(pgid, signal.SIGINT)
+                bb_pid = _read_bitbake_server_pid(run_dir)
+                if bb_pid is not None:
+                    try:
+                        os.kill(bb_pid, signal.SIGINT)
+                    except ProcessLookupError:
+                        pass
                 _graceful_wait(
-                    liveness=lambda: _ALIVE if _pgid_alive(pgid) else _DEAD,
-                    escalate=lambda: _escalate_host(pgid),
+                    liveness=lambda: _ALIVE if (_pgid_alive(pgid) or _bitbake_server_alive(run_dir)) else _DEAD,
+                    escalate=lambda: _escalate_host(pgid, run_dir),
                     target_desc=f"PGID {pgid}",
                     run_dir=run_dir,
                 )
             else:
                 print(f"Sent SIGTERM to build PGID {pgid}...")
-                _escalate_host(pgid)
+                _escalate_host(pgid, run_dir)
             print("stopped")
             _report_stale_cleanup(run_dir)
             return True

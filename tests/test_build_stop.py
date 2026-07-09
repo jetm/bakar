@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -314,6 +315,136 @@ def test_stop_build_no_running_build(
     assert calls == []
     assert not (run_dir / "build.pid").exists()
     assert not (run_dir / "build.meta.json").exists()
+
+
+# --- bitbake-server detached-PID liveness -----------------------------------
+#
+# bb.daemonize.createDaemon double-forks and calls os.setsid() to start
+# bitbake-server, so it is never a member of the kas-container/kas process
+# group build.pid records - killpg(pgid, ...) structurally cannot reach it.
+# It writes its own os.getpid() as bitbake.lock's first line/token (see
+# bitbake/lib/bb/server/process.py), which is the only reliable liveness
+# signal for it. These tests reproduce the incident: something kills the
+# wrapper (a stray SIGQUIT keypress, here) without ever signaling the server,
+# which keeps dispatching already-queued tasks. Before this fix, stop_build's
+# liveness gate only checked _pgid_alive(pgid), so it declared "stopped" and
+# deleted bitbake.lock/bitbake.sock while the real cooker was still running.
+
+
+def test_read_bitbake_server_pid_from_lock_file(tmp_path: Path) -> None:
+    """The PID is read from bitbake.lock's first line, topdir = run_dir/../..."""
+    run_dir = _make_run_dir(tmp_path)
+    (run_dir.parent.parent / "bitbake.lock").write_text("424242\n")
+
+    assert build_stop._read_bitbake_server_pid(run_dir) == 424242
+
+
+def test_read_bitbake_server_pid_missing_lock_returns_none(tmp_path: Path) -> None:
+    run_dir = _make_run_dir(tmp_path)
+
+    assert build_stop._read_bitbake_server_pid(run_dir) is None
+
+
+def test_read_bitbake_server_pid_unparseable_lock_returns_none(tmp_path: Path) -> None:
+    """A corrupt or truncated lock file must not raise - just report unknown."""
+    run_dir = _make_run_dir(tmp_path)
+    (run_dir.parent.parent / "bitbake.lock").write_text("not-a-pid\n")
+
+    assert build_stop._read_bitbake_server_pid(run_dir) is None
+
+
+def test_pid_alive_true_for_current_process() -> None:
+    assert build_stop._pid_alive(os.getpid()) is True
+
+
+def test_pid_alive_false_for_reaped_process() -> None:
+    """A PID that has already exited and been reaped reports not-alive."""
+    proc = subprocess.Popen(["true"])
+    proc.wait()
+
+    assert build_stop._pid_alive(proc.pid) is False
+
+
+def test_bitbake_server_alive_true_when_lock_pid_is_alive(tmp_path: Path) -> None:
+    run_dir = _make_run_dir(tmp_path)
+    (run_dir.parent.parent / "bitbake.lock").write_text(f"{os.getpid()}\n")
+
+    assert build_stop._bitbake_server_alive(run_dir) is True
+
+
+def test_bitbake_server_alive_false_when_lock_missing(tmp_path: Path) -> None:
+    run_dir = _make_run_dir(tmp_path)
+
+    assert build_stop._bitbake_server_alive(run_dir) is False
+
+
+def test_stop_build_liveness_stays_alive_while_bitbake_server_pid_lives(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The liveness gate reports _ALIVE from a live bitbake.lock PID alone,
+    even once the recorded PGID has already died - the exact incident this
+    fixes: the wrapper is gone, but the detached cooker is not.
+    """
+    run_dir = _make_run_dir(tmp_path)
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+    (run_dir.parent.parent / "bitbake.lock").write_text(f"{os.getpid()}\n")
+
+    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+    _record_killpg(monkeypatch)
+    # stop_build's initial SIGINT to bb_pid uses the real os.kill; bb_pid here
+    # is this test process's own PID (to make _bitbake_server_alive's real
+    # os.kill(pid, 0) probe see a genuinely live process), so a real SIGINT
+    # would self-interrupt the test run. Stub it - the liveness lambda itself
+    # is what this test is verifying, not the initial signal delivery.
+    monkeypatch.setattr(build_stop.os, "kill", lambda _pid, _sig: None)
+
+    # Call liveness() from inside the fake wait, mirroring how the real
+    # unbounded loop uses it (repeatedly, before ever declaring drained) -
+    # calling it after stop_build returns would see bitbake.lock already
+    # deleted by the cleanup step that only runs once liveness reports dead.
+    observed: list[str] = []
+
+    def _fake_wait(*, liveness: object, **_kw: object) -> str:
+        observed.append(liveness())  # type: ignore[misc]
+        return "drained"
+
+    monkeypatch.setattr(build_stop, "_graceful_wait", _fake_wait)
+
+    assert build_stop.stop_build(tmp_path) is True
+    assert observed == [build_stop._ALIVE]
+
+
+def test_escalate_host_signals_bitbake_server_pid_too(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """force=True must reach bitbake-server's real PID, not just the PGID.
+
+    Before this fix, --force only ever signalled the wrapper's process group,
+    so a force-stop left the actual cooker running untouched.
+    """
+    run_dir = _make_run_dir(tmp_path)
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+    (run_dir.parent.parent / "bitbake.lock").write_text("999999\n")
+
+    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+    _record_killpg(monkeypatch)
+
+    kill_calls: list[tuple[int, int]] = []
+
+    def fake_kill(pid: int, sig: int) -> None:
+        kill_calls.append((pid, sig))
+        raise ProcessLookupError
+
+    monkeypatch.setattr(build_stop.os, "kill", fake_kill)
+
+    assert build_stop.stop_build(tmp_path, force=True) is True
+    assert (999999, signal.SIGTERM) in kill_calls
 
 
 # --- mode-aware stop_build branching ---------------------------------------
