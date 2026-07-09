@@ -111,11 +111,14 @@ def _build_eventlog() -> str:
             time=999.2,
         ),
         # disk: a DiskFull event, surfaced independent of the growth figure.
+        # Real bb.event.DiskFull.__init__(dev, type, freespace, mountpoint)
+        # sets _dev/_type/_free/_mountpoint - no time/path/message attribute.
         _line(
             "bb.event.DiskFull",
-            time=1039.0,
-            path="/work/build",
-            message="Disk full on /work/build: only 1024 KiB free",
+            _dev="/dev/sda1",
+            _type="ext4",
+            _free=1024,
+            _mountpoint="/work/build",
         ),
         _line("bb.event.BuildCompleted", time=1040.0),
     ]

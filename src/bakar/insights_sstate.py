@@ -105,12 +105,14 @@ def sstate_report(artifact: dict | list) -> SstateReport:
     if not hits and not misses:
         return SstateReport(recipes=[], message=NO_DATA_MESSAGE)
 
+    # Recipe names come from a set union, whose iteration order is not
+    # deterministic across processes (hash randomization) - break ties on
+    # recipe name so equal-miss recipes print in a stable order.
     recipes = sorted(
         (
             SstateRecipeStat(recipe=name, hits=hits.get(name, 0), misses=misses.get(name, 0))
             for name in hits.keys() | misses.keys()
         ),
-        key=lambda stat: stat.misses,
-        reverse=True,
+        key=lambda stat: (-stat.misses, stat.recipe),
     )
     return SstateReport(recipes=recipes)

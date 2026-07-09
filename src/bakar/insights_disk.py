@@ -87,7 +87,9 @@ def disk_report(
     valid_samples = [
         row
         for row in (disk_samples or [])
-        if isinstance(row, dict) and isinstance(row.get("used_bytes"), (int, float))
+        if isinstance(row, dict)
+        and isinstance(row.get("used_bytes"), (int, float))
+        and isinstance(row.get("time"), (int, float))
     ]
     # A single sample has no earlier reading to diff against - growth is
     # indeterminate, not zero. Reporting `0` here would be indistinguishable
@@ -95,7 +97,7 @@ def disk_report(
     if len(valid_samples) < 2:
         return DiskReport(full_events=full_events, message=NO_DATA_MESSAGE)
 
-    ordered = sorted(valid_samples, key=lambda row: row.get("time") or 0)
+    ordered = sorted(valid_samples, key=lambda row: row["time"])
     growth_bytes = int(ordered[-1]["used_bytes"] - ordered[0]["used_bytes"])
 
     warning = None

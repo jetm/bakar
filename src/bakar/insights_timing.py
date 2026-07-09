@@ -102,6 +102,43 @@ def _duration_totals(durations: list[TaskDuration]) -> dict[str, float]:
     return totals
 
 
+def _weighted_longest_path(graph: nx.DiGraph, node_weights: dict[str, float]) -> tuple[list[str], float]:
+    """Return the node chain and total weight of the heaviest path through ``graph``.
+
+    ``nx.dag_longest_path(weight=...)`` sums EDGE weights, so a path's first
+    node - which has no incoming edge - never contributes its own weight to
+    the comparison. That silently favors a path whose head node has a large
+    duration less than it should, and can pick the wrong chain entirely (a
+    two-node chain A->B with duration(A)=100, duration(B)=1 loses to an
+    unrelated C->D with duration(C)=10, duration(D)=50, because only B's and
+    D's durations ever reach an edge weight). This does the standard DAG
+    longest-path DP with weight on NODES instead: ``best[v] = node_weights[v]
+    + max(best[u] for u in predecessors(v), default=0)``, so every node's own
+    duration counts once, including the chain's head.
+    """
+    order = list(nx.topological_sort(graph))
+    best: dict[str, float] = {}
+    predecessor: dict[str, str | None] = {}
+    for node in order:
+        preds = list(graph.predecessors(node))
+        if preds:
+            best_pred = max(preds, key=lambda p: best[p])
+            best[node] = best[best_pred] + node_weights.get(node, 0.0)
+            predecessor[node] = best_pred
+        else:
+            best[node] = node_weights.get(node, 0.0)
+            predecessor[node] = None
+
+    end_node = max(best, key=lambda n: best[n])
+    chain: list[str] = []
+    cur: str | None = end_node
+    while cur is not None:
+        chain.append(cur)
+        cur = predecessor[cur]
+    chain.reverse()
+    return chain, best[end_node]
+
+
 def _compute_critical_path(
     dependency_source: Callable[[], tuple[str, str]],
     duration_totals: dict[str, float],
@@ -130,11 +167,7 @@ def _compute_critical_path(
     if not nx.is_directed_acyclic_graph(pn_graph):
         return CriticalPath(note="critical-path unavailable: cyclic dependency graph")
 
-    for _u, v, data in pn_graph.edges(data=True):
-        data["weight"] = duration_totals.get(v, 0.0)
-
-    chain = list(nx.dag_longest_path(pn_graph, weight="weight"))
-    total = sum(duration_totals.get(name, 0.0) for name in chain)
+    chain, total = _weighted_longest_path(pn_graph, duration_totals)
     return CriticalPath(available=True, chain=chain, total_seconds=total, note="critical-path computed")
 
 

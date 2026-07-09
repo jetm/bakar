@@ -55,11 +55,14 @@ class PressureReport:
     ``available`` is ``False`` when the run captured no PSI samples at all;
     in that case ``time_share`` is empty and ``verdict`` explains why
     (:data:`NO_DATA_MESSAGE`) rather than reporting misleading 0% figures.
-    When ``available`` is ``True``, ``time_share`` maps each of
-    :data:`bakar.psi.PSI_DIMS` to its mean avg10 percentage across all
-    samples, and ``verdict`` is a one-line plain-language summary naming the
-    dominant pressure type, or stating the build was not resource-pressured
-    when every dimension stays below :data:`LOW_PRESSURE_THRESHOLD`.
+    When ``available`` is ``True``, ``time_share`` maps each dimension in
+    :data:`bakar.psi.PSI_DIMS` that had at least one usable sample to its mean
+    avg10 percentage - a dimension with zero usable values is omitted
+    entirely rather than reported as ``0.0`` (which would be indistinguishable
+    from a measured, confirmed 0% pressure reading). ``verdict`` is a one-line
+    plain-language summary naming the dominant pressure type among the
+    present dimensions, or stating the build was not resource-pressured when
+    every present dimension stays below :data:`LOW_PRESSURE_THRESHOLD`.
     """
 
     available: bool = False
@@ -80,11 +83,17 @@ def pressure_report(psi_samples: list[dict[str, object]]) -> PressureReport:
 
     Returns a :class:`PressureReport` with ``available=False`` when
     ``psi_samples`` is empty or every dimension has zero usable values -
-    that state must never be mistaken for a 0%-pressure build.
+    that state must never be mistaken for a 0%-pressure build. A dimension
+    with zero usable values is omitted from ``time_share`` entirely (rather
+    than defaulting to ``0.0``) so a single stalled dimension (e.g.
+    ``read_psi_avg10`` failing for ``memory`` on a host without that
+    controller) never gets misread as "measured, confirmed 0% pressure".
     """
     sums = dict.fromkeys(PSI_DIMS, 0.0)
     counts = dict.fromkeys(PSI_DIMS, 0)
     for sample in psi_samples:
+        if not isinstance(sample, dict):
+            continue
         for dim in PSI_DIMS:
             value = sample.get(dim)
             if isinstance(value, (int, float)):
@@ -94,8 +103,8 @@ def pressure_report(psi_samples: list[dict[str, object]]) -> PressureReport:
     if not any(counts[dim] for dim in PSI_DIMS):
         return PressureReport()
 
-    time_share = {dim: (sums[dim] / counts[dim] if counts[dim] else 0.0) for dim in PSI_DIMS}
-    dominant = max(PSI_DIMS, key=lambda dim: time_share[dim])
+    time_share = {dim: sums[dim] / counts[dim] for dim in PSI_DIMS if counts[dim]}
+    dominant = max(time_share, key=lambda dim: time_share[dim])
 
     if time_share[dominant] < LOW_PRESSURE_THRESHOLD:
         verdict = "build was not resource-pressured (CPU/I/O/memory all below the low-pressure threshold)"

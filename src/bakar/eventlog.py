@@ -413,21 +413,46 @@ def normalize(raw_path: Path) -> dict[str, Any]:
                 }
             )
         elif class_name in _DISK_USAGE_CLASSES:
-            disk["samples"].append(
-                {
-                    "time": _first(event, "time", "timestamp"),
-                    "path": _first(event, "path"),
-                    "used": _first(event, "used"),
-                    "free": _first(event, "free"),
-                    "total": _first(event, "total"),
-                }
-            )
+            # Real bb.event.MonitorDiskEvent carries one ``disk_usage`` dict
+            # (device root path -> a DiskUsageSample with available_bytes/
+            # free_bytes/total_bytes) - NOT flat path/used/free/total
+            # attributes on the event itself. DiskUsageSample is never fired
+            # as its own top-level event in upstream bitbake (it has no
+            # Event base class), so the bare-attribute fallback below only
+            # guards a hypothetical future standalone emission.
+            usage = _first(event, "disk_usage")
+            if isinstance(usage, dict):
+                for path, sample in usage.items():
+                    total = _first(sample, "total_bytes")
+                    free = _first(sample, "free_bytes")
+                    used = total - free if isinstance(total, (int, float)) and isinstance(free, (int, float)) else None
+                    disk["samples"].append(
+                        {
+                            "path": path,
+                            "used": used,
+                            "free": free,
+                            "total": total,
+                        }
+                    )
+            else:
+                disk["samples"].append(
+                    {
+                        "path": None,
+                        "used": None,
+                        "free": _first(event, "free_bytes"),
+                        "total": _first(event, "total_bytes"),
+                    }
+                )
         elif class_name == _DISK_FULL:
+            # Real bb.event.DiskFull.__init__(self, dev, type, freespace,
+            # mountpoint) sets _dev/_type/_free/_mountpoint - it carries no
+            # time/path/message attribute at all.
             disk["full_events"].append(
                 {
-                    "time": _first(event, "time", "timestamp"),
-                    "path": _first(event, "path"),
-                    "message": _first(event, "message", "errprinted"),
+                    "dev": _first(event, "_dev"),
+                    "type": _first(event, "_type"),
+                    "free_bytes": _first(event, "_free"),
+                    "mountpoint": _first(event, "_mountpoint"),
                 }
             )
 

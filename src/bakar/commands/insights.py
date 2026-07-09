@@ -37,7 +37,8 @@ from typing import Annotated, Literal
 import typer
 from rich.markup import escape
 
-from bakar import eventlog
+import bakar.commands._app as _state
+from bakar import eventlog, task_timings
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     WorkspaceOption,
@@ -45,6 +46,7 @@ from bakar.commands._helpers import (
     _find_run,
     _workspace_from_cwd,
 )
+from bakar.config import BSPSpec, resolve
 from bakar.insights_disk import disk_report
 from bakar.insights_pressure import pressure_report
 from bakar.insights_sstate import sstate_report
@@ -103,7 +105,12 @@ def _render_sstate(report) -> None:
         console.print(f"  {report.message}")
         return
     for stat in report.recipes:
-        console.print(f"  {stat.recipe}: {stat.hits} hits, {stat.misses} misses, {stat.miss_ratio * 100:.1f}% miss")
+        # stat.recipe comes from the on-disk event log, not a trusted
+        # constant - escape it so a recipe name containing "[...]" can't be
+        # parsed as Rich markup (same class of bug already fixed in _render_disk).
+        console.print(
+            f"  {escape(stat.recipe)}: {stat.hits} hits, {stat.misses} misses, {stat.miss_ratio * 100:.1f}% miss"
+        )
 
 
 def _render_timing(report) -> None:
@@ -114,11 +121,13 @@ def _render_timing(report) -> None:
         baseline = ""
         if d.baseline_mean is not None:
             baseline = f" (baseline mean {d.baseline_mean:.1f}s)"
-        console.print(f"  {d.recipe}:{d.task}: {d.duration:.1f}s{baseline}")
+        # d.recipe/d.task come from the on-disk event log - escape for the
+        # same reason as _render_sstate above.
+        console.print(f"  {escape(d.recipe)}:{escape(d.task)}: {d.duration:.1f}s{baseline}")
     cp = report.critical_path
     console.print("[bold]critical path:[/]")
     if cp.available:
-        console.print(f"  {' -> '.join(cp.chain)} ({cp.total_seconds:.1f}s)")
+        console.print(f"  {escape(' -> '.join(cp.chain))} ({cp.total_seconds:.1f}s)")
     else:
         console.print(f"  {cp.note}")
 
@@ -193,10 +202,13 @@ def insights(
     latest run under the workspace's search roots unless an explicit run ID
     is given, and always names the run it reported on.
     """
+    family: Literal["nxp", "ti", "generic", "bbsetup"]
     runs_dirs: list[tuple[Path, Literal["nxp", "ti", "generic"]]]
     if (setup_dir := _bbsetup_workspace(workspace)) is not None:
         runs_dirs = [(setup_dir / "build" / "runs", "generic")]
         not_found_label = f"{runs_dirs[0][0]}"
+        ws_for_cfg = setup_dir
+        family = "bbsetup"
     else:
         ws = workspace or _workspace_from_cwd()
         runs_dirs = [
@@ -208,6 +220,8 @@ def insights(
             if build_dir.is_dir():
                 runs_dirs.append((build_dir / "build" / "runs", "generic"))
         not_found_label = "nxp/build/runs/, ti/build/runs/, or build/runs/"
+        ws_for_cfg = ws
+        family = "nxp"  # provisional default; overwritten by the resolved run's label below
 
     found = _find_run(runs_dirs, run_id)
     if found is None:
@@ -217,8 +231,34 @@ def insights(
             console.print(f"[yellow]No runs found under {not_found_label}.[/]")
         raise typer.Exit(code=1)
 
-    run_dir, _label = found
+    run_dir, label = found
+    if family != "bbsetup":
+        family = label
     log = RunLogger(runs_dir=run_dir.parent, run_id=run_dir.name)
+
+    # timing_report's baseline annotation reads a per-BSP-root/machine/mode
+    # scoped file (task_timings.timings_path_for) - the DEFAULT_TIMINGS_PATH
+    # timing_report falls back to when no baselines_path is given is never
+    # written to by a real build, so baseline annotation would silently never
+    # fire without this. Mirror bakar report's bsp_root/cfg resolution
+    # (run_dir.parents[2] is always ws/<fam> for nxp/ti, ws/build-<stem> for
+    # meta-avocado, ws for plain generic) to recover the same scoped path.
+    bsp_root_from_run = run_dir.parents[2]
+    if family == "generic":
+        cfg = resolve(
+            workspace=bsp_root_from_run,
+            bsp_family="bbsetup",
+            spec=BSPSpec(manifest=manifest),
+            user_config=_state._USER_CONFIG,
+        )
+    else:
+        cfg = resolve(
+            workspace=ws_for_cfg,
+            bsp_family=family,
+            spec=BSPSpec(manifest=manifest),
+            user_config=_state._USER_CONFIG,
+        )
+    baselines_path = task_timings.timings_path_for(cfg.bsp_root, cfg.machine, host_mode=cfg.host_mode)
 
     threshold_bytes = _parse_size_bytes(growth_threshold) if growth_threshold is not None else None
 
@@ -236,7 +276,7 @@ def insights(
         _render_sstate(sstate_report(artifact))
 
     if show_timing or show_all:
-        _render_timing(timing_report(artifact, top_n=top))
+        _render_timing(timing_report(artifact, top_n=top, baselines_path=baselines_path))
 
     if show_pressure or show_all:
         psi_samples = _load_json_list(log.psi_samples_path)

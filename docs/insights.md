@@ -74,9 +74,12 @@ Per-recipe sstate hit/miss counts, sorted by descending misses:
 
 ```text
 sstate:
-  linux-imx: 0 hits, 1 misses, 100.0% miss
-  busybox: 12 hits, 0 misses, 0.0% miss
+  linux-imx-6.12-r0: 0 hits, 1 misses, 100.0% miss
+  busybox-1.36.1-r0: 12 hits, 0 misses, 0.0% miss
 ```
+
+Recipe names are printed exactly as bitbake's event log recorded them - the
+full versioned PF (e.g. `busybox-1.36.1-r0`), not the bare package name.
 
 When no sstate data was captured for the run, a single message line replaces
 the per-recipe listing (e.g. `no sstate data found for run`).
@@ -89,8 +92,8 @@ critical-path note:
 
 ```text
 timing:
-  linux-imx:do_compile: 812.3s (baseline mean 790.4s)
-  core-image-minimal:do_rootfs: 214.1s
+  linux-imx-6.12-r0:do_compile: 812.3s (baseline mean 790.4s)
+  core-image-minimal-1.0-r0:do_rootfs: 214.1s
 critical path:
   critical-path unavailable
 ```
@@ -118,7 +121,11 @@ pressure:
 ```
 
 When no PSI samples were captured, the verdict alone renders (e.g.
-`not resource-pressured` or a message explaining the missing data).
+`not resource-pressured` or a message explaining the missing data). A
+dimension with zero usable readings (e.g. `read_psi_avg10` failing for one
+resource on a given host) is omitted from the percentages entirely rather
+than shown as `0.0%`, so a measurement gap is never misread as confirmed
+zero pressure on that dimension.
 
 ### disk
 
@@ -128,13 +135,17 @@ surfaced separately, and an optional threshold warning:
 ```text
 disk:
   growth: 5368709120 bytes
-  [yellow]disk growth 5368709120 bytes exceeds threshold 5000000000 bytes[/]
-  disk full: {'time': 1735689602.0, 'path': '/bsp/nxp/build/tmp', 'message': 'Disk full on /bsp/nxp/build/tmp: only 1024 KiB free'}
+  disk growth 5368709120 bytes exceeds threshold 5000000000 bytes
+  disk full: {'dev': '/dev/mmcblk0p2', 'type': 'ext4', 'free_bytes': 1024, 'mountpoint': '/bsp/nxp/build/tmp'}
 ```
 
-The threshold warning appears only when `--growth-threshold` is given and
-exceeded. `disk full:` lines appear only when the run recorded a `DiskFull`
-event.
+The threshold warning line renders in yellow and the `disk full:` label in
+red (Rich markup - the example above shows the plain text a terminal
+without color would print). The threshold warning appears only when
+`--growth-threshold` is given and exceeded. `disk full:` lines appear only
+when the run recorded a `DiskFull` event, and reflect bitbake's real
+`bb.event.DiskFull` fields (`dev`/`type`/`free_bytes`/`mountpoint` - it
+carries no timestamp or message text of its own).
 
 ## Notes
 

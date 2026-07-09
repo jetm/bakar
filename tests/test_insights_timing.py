@@ -152,3 +152,32 @@ def test_critical_path_available_when_dependency_source_succeeds(tmp_path: Path)
     assert report.critical_path.available is True
     assert report.critical_path.chain == ["a", "b"]
     assert report.critical_path.total_seconds == pytest.approx(30.0)
+
+
+@pytest.mark.unit
+def test_critical_path_credits_the_head_nodes_own_duration(tmp_path: Path) -> None:
+    """A path's first node has no incoming edge - its own duration must still
+    count when comparing it against a competing chain, or a long head node
+    followed by cheap successors loses to an unrelated short-head/expensive-tail
+    chain purely because edge-weighting only ever credits destination nodes."""
+    artifact = {
+        "tasks": [
+            _row("a", "do_compile", 0.0, 100.0),  # head of the true-longest chain
+            _row("b", "do_compile", 100.0, 101.0),
+            _row("c", "do_compile", 0.0, 10.0),
+            _row("d", "do_compile", 10.0, 60.0),  # 50s task, but not the longest true chain
+        ]
+    }
+
+    def _two_chain_source() -> tuple[str, str]:
+        return 'digraph { "a.do_compile" -> "b.do_compile"; "c.do_compile" -> "d.do_compile"; }', ""
+
+    report = timing_report(
+        artifact,
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=_two_chain_source,
+    )
+
+    assert report.critical_path.available is True
+    assert report.critical_path.chain == ["a", "b"]
+    assert report.critical_path.total_seconds == pytest.approx(101.0)

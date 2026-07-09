@@ -32,6 +32,15 @@ class _StubEvent:
     """Stand-in for a bitbake event carrying a ``stats`` attribute."""
 
 
+class _StubDiskUsageSample:
+    """Stand-in for bb.event.DiskUsageSample (nested inside MonitorDiskEvent.disk_usage)."""
+
+    def __init__(self, available_bytes: int, free_bytes: int, total_bytes: int) -> None:
+        self.available_bytes = available_bytes
+        self.free_bytes = free_bytes
+        self.total_bytes = total_bytes
+
+
 def _encode_event(obj: object) -> str:
     """base64(pickle(obj)) - the wire format of an event log ``vars`` payload."""
     return base64.b64encode(pickle.dumps(obj)).decode("ascii")
@@ -284,33 +293,28 @@ def test_normalize_captures_psi_event(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_normalize_captures_disk_usage_and_full_events(tmp_path: Path) -> None:
-    """MonitorDiskEvent/DiskUsageSample fold into disk.samples; DiskFull is
-    tracked separately in disk.full_events."""
-    usage = _StubEvent()
-    usage.time = 10.0  # type: ignore[attr-defined]
-    usage.path = "/work/build"  # type: ignore[attr-defined]
-    usage.used = 100  # type: ignore[attr-defined]
-    usage.free = 50  # type: ignore[attr-defined]
-    usage.total = 150  # type: ignore[attr-defined]
-
-    sample = _StubEvent()
-    sample.time = 20.0  # type: ignore[attr-defined]
-    sample.path = "/work/build"  # type: ignore[attr-defined]
-    sample.used = 140  # type: ignore[attr-defined]
-    sample.free = 10  # type: ignore[attr-defined]
-    sample.total = 150  # type: ignore[attr-defined]
+    """MonitorDiskEvent.disk_usage (a dict of DiskUsageSample) folds into
+    disk.samples; DiskFull's dev/type/free/mountpoint fields are tracked
+    separately in disk.full_events - matching real bb.event.MonitorDiskEvent
+    (self.disk_usage) and bb.event.DiskFull (self._dev/_type/_free/_mountpoint)
+    from bitbake/lib/bb/event.py, not a flat path/used/free/total/message
+    guess."""
+    usage_event = _StubEvent()
+    usage_event.disk_usage = {  # type: ignore[attr-defined]
+        "/work/build": _StubDiskUsageSample(available_bytes=45, free_bytes=50, total_bytes=150)
+    }
 
     full = _StubEvent()
-    full.time = 25.0  # type: ignore[attr-defined]
-    full.path = "/work/build"  # type: ignore[attr-defined]
-    full.message = "No space left on device"  # type: ignore[attr-defined]
+    full._dev = "/dev/sda1"  # type: ignore[attr-defined]
+    full._type = "ext4"  # type: ignore[attr-defined]
+    full._free = 1024  # type: ignore[attr-defined]
+    full._mountpoint = "/work/build"  # type: ignore[attr-defined]
 
     log = tmp_path / "bitbake_eventlog.json"
     log.write_text(
         "\n".join(
             [
-                json.dumps({"class": "bb.event.MonitorDiskEvent", "vars": _encode_event(usage)}),
-                json.dumps({"class": "bb.event.DiskUsageSample", "vars": _encode_event(sample)}),
+                json.dumps({"class": "bb.event.MonitorDiskEvent", "vars": _encode_event(usage_event)}),
                 json.dumps({"class": "bb.event.DiskFull", "vars": _encode_event(full)}),
             ]
         )
@@ -322,10 +326,9 @@ def test_normalize_captures_disk_usage_and_full_events(tmp_path: Path) -> None:
 
     assert artifact["schema_version"] == 3
     assert artifact["disk"]["samples"] == [
-        {"time": 10.0, "path": "/work/build", "used": 100, "free": 50, "total": 150},
-        {"time": 20.0, "path": "/work/build", "used": 140, "free": 10, "total": 150},
+        {"path": "/work/build", "used": 100, "free": 50, "total": 150},
     ]
     assert artifact["disk"]["full_events"] == [
-        {"time": 25.0, "path": "/work/build", "message": "No space left on device"}
+        {"dev": "/dev/sda1", "type": "ext4", "free_bytes": 1024, "mountpoint": "/work/build"}
     ]
     assert artifact["psi"] == {"samples": []}
