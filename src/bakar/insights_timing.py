@@ -11,12 +11,19 @@ The tasks-list extraction and missing/negative-duration guard reuse
 :func:`bakar.task_rollup._tasks_from` rather than re-parsing the ``tasks``
 list a third time (see design.md's "reuse ``_tasks_from``" decision).
 
-This module intentionally exposes only the pure, no-live-build part of the
-timing report (durations + top-N + baseline context). A later task adds a
-critical-path sub-section computed from ``bakar graph``'s live dependency
-model; :class:`CriticalPath` is the seam that section plugs into - it always
-reports ``available=False`` here so callers can render "critical-path
-unavailable" without knowing whether that section has been wired in yet.
+This module also exposes an optional critical-path sub-section: the longest
+dependency-respecting serial chain through the build, weighted by this run's
+per-recipe task durations. Per design.md's confirmed finding that
+``commands/graph.py``'s dependency model always invokes ``bitbake -g
+<recipe>`` live inside kas-container (no cached/offline model exists), the
+critical-path step cannot be a pure function over the persisted artifact
+alone. It is opt-in: callers pass a ``dependency_source`` callable that
+returns the ``(dot_text, buildlist_text)`` pair (however they were
+retrieved - live container exec in production, a canned fixture in tests).
+When ``dependency_source`` is omitted, or it raises, or the resulting graph
+is empty/cyclic, :class:`CriticalPath` reports ``available=False`` with an
+explanatory ``note`` - the duration and top-N-slowest sections above never
+depend on this section's success.
 """
 
 from __future__ import annotations
@@ -24,10 +31,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from bakar import task_timings
+import networkx as nx
+
+from bakar import graph_analyze, task_timings
 from bakar.task_rollup import _tasks_from
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 DEFAULT_TOP_N = 10
@@ -50,12 +60,14 @@ class TaskDuration:
 
 @dataclass(frozen=True)
 class CriticalPath:
-    """Seam for the critical-path sub-section (filled in by a later task).
+    """The critical-path sub-section: the longest dependency-respecting chain.
 
-    ``available`` stays ``False`` until the critical-path step (which
-    requires a live ``bakar graph`` dependency-model lookup) is wired in or
-    when that lookup fails/is skipped; the duration and top-N sections above
-    never depend on this section's state.
+    ``available`` is ``False`` (the default) when no dependency source was
+    supplied to :func:`timing_report`, or when the supplied source failed,
+    returned an empty graph, or returned a cyclic graph - in every one of
+    those cases ``note`` explains why, and ``chain``/``total_seconds`` stay
+    at their empty defaults. The duration and top-N sections of
+    :class:`TimingReport` never depend on this section's state.
     """
 
     available: bool = False
@@ -66,10 +78,60 @@ class CriticalPath:
 
 @dataclass(frozen=True)
 class TimingReport:
-    """The timing report: top-N slowest tasks plus the critical-path seam."""
+    """The timing report: top-N slowest tasks plus the critical-path section."""
 
     top_slowest: list[TaskDuration] = field(default_factory=list)
     critical_path: CriticalPath = field(default_factory=CriticalPath)
+
+
+def _duration_totals(durations: list[TaskDuration]) -> dict[str, float]:
+    """Sum durations per recipe across all of that recipe's tasks.
+
+    The dependency graph is PN-level (one node per recipe), so the
+    weighted critical-path walk needs a single duration figure per recipe
+    rather than per-task.
+    """
+    totals: dict[str, float] = {}
+    for d in durations:
+        totals[d.recipe] = totals.get(d.recipe, 0.0) + d.duration
+    return totals
+
+
+def _compute_critical_path(
+    dependency_source: Callable[[], tuple[str, str]],
+    duration_totals: dict[str, float],
+) -> CriticalPath:
+    """Compute the duration-weighted critical path from a dependency source.
+
+    ``dependency_source`` returns ``(dot_text, buildlist_text)`` - the same
+    two artifacts ``bakar graph`` retrieves from a live ``bitbake -g`` run
+    (see :mod:`bakar.commands.graph`). Parsing reuses
+    :func:`bakar.graph_analyze.read_graph`/``collapse_to_pn`` instead of
+    re-implementing DOT parsing.
+
+    Any failure - the callable raises, the graph is empty, or it is cyclic -
+    degrades to an explicit "unavailable" :class:`CriticalPath` with a note;
+    this function never raises back to :func:`timing_report`.
+    """
+    try:
+        dot_text, buildlist_text = dependency_source()
+        pn_graph = graph_analyze.collapse_to_pn(graph_analyze.read_graph(dot_text))
+    except Exception as exc:  # noqa: BLE001 - any dependency-source failure degrades gracefully
+        return CriticalPath(note=f"critical-path unavailable: dependency source failed ({exc})")
+
+    _ = buildlist_text  # not needed for the chain itself, only package_count elsewhere
+
+    if pn_graph.number_of_nodes() == 0:
+        return CriticalPath(note="critical-path unavailable: empty dependency graph")
+    if not nx.is_directed_acyclic_graph(pn_graph):
+        return CriticalPath(note="critical-path unavailable: cyclic dependency graph")
+
+    for _u, v, data in pn_graph.edges(data=True):
+        data["weight"] = duration_totals.get(v, 0.0)
+
+    chain = list(nx.dag_longest_path(pn_graph, weight="weight"))
+    total = sum(duration_totals.get(name, 0.0) for name in chain)
+    return CriticalPath(available=True, chain=chain, total_seconds=total, note="critical-path computed")
 
 
 def timing_report(
@@ -77,6 +139,7 @@ def timing_report(
     top_n: int = DEFAULT_TOP_N,
     *,
     baselines_path: Path | None = None,
+    dependency_source: Callable[[], tuple[str, str]] | None = None,
 ) -> TimingReport:
     """Return the per-task timing report for one run.
 
@@ -91,6 +154,14 @@ def timing_report(
     (``baselines_path`` threads through to it for tests; ``None`` uses the
     default on-disk location) - this reads the existing cross-build baseline
     store rather than recomputing a second one from the raw event deltas.
+
+    ``dependency_source``, when supplied, is called with no arguments and
+    must return ``(dot_text, buildlist_text)`` for the critical-path section
+    (see :func:`_compute_critical_path`). Omitting it (the default) leaves
+    ``critical_path`` at its "unavailable, not requested" default; a failure
+    inside the callable or the resulting graph degrades to an explicit
+    "unavailable" result rather than raising or dropping the duration/top-N
+    sections computed above.
     """
     baselines = task_timings.load_baselines(baselines_path)
 
@@ -134,4 +205,8 @@ def timing_report(
     durations.sort(key=lambda d: d.duration, reverse=True)
     top_slowest = durations[:top_n] if top_n >= 0 else list(durations)
 
-    return TimingReport(top_slowest=top_slowest, critical_path=CriticalPath())
+    critical_path = CriticalPath()
+    if dependency_source is not None:
+        critical_path = _compute_critical_path(dependency_source, _duration_totals(durations))
+
+    return TimingReport(top_slowest=top_slowest, critical_path=critical_path)
