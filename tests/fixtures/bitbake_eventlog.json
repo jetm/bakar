@@ -6,4 +6,7 @@
 {"class": "bb.runqueue.runQueueTaskStarted", "vars": "gAWVpQAAAAAAAACMC2JiLnJ1bnF1ZXVllIwTcnVuUXVldWVUYXNrU3RhcnRlZJSTlCmBlH2UKIwGdGFza2lklIwcbGludXgtaW14LTYuMTItcjA6ZG9fY29tcGlsZZSMBXN0YXRzlH2UKIwQc2V0c2NlbmVfY292ZXJlZJRNnAGME3NldHNjZW5lX25vdGNvdmVyZWSUSyaMDnNldHNjZW5lX3RvdGFslE3CAXV1Yi4="}
 {"class": "bb.event.SomeFutureEventThatBakarDoesNotKnow", "vars": "gAWVYAAAAAAAAACMCGJiLmV2ZW50lIwjU29tZUZ1dHVyZUV2ZW50VGhhdEJha2FyRG9lc05vdEtub3eUk5QpgZR9lCiMDW15c3RlcnlfZmllbGSUjAdpZ25vcmVklIwFdmFsdWWUS2N1Yi4="}
 {"allvariables": {"MACHINE": {"v": "imx95-var-dart", "history": []}, "DISTRO": {"v": "fsl-imx-wayland", "history": []}}}
+{"class": "bb.event.PSIEvent", "vars": "gASVoQAAAAAAAACMCGJiLmV2ZW50lIwIUFNJRXZlbnSUk5QpgZR9lCiMBHRpbWWUR0HZ3SFgAAAAjANjcHWUfZQojAZzb21lMjCUR0ApAAAAAAAAjAZmdWxsMjCUR0AIzMzMzMzNdYwCaW+UfZQoaAhHQBQAAAAAAABoCUcAAAAAAAAAAHWMBm1lbW9yeZR9lChoCEc/8zMzMzMzM2gJRwAAAAAAAAAAdXViLg=="}
+{"class": "bb.event.MonitorDiskEvent", "vars": "gASVeQAAAAAAAACMCGJiLmV2ZW50lIwQTW9uaXRvckRpc2tFdmVudJSTlCmBlH2UKIwEdGltZZRHQdndIWBAAACMBHBhdGiUjAsvd29yay9idWlsZJSMBHVzZWSUigUAAAAACowEZnJlZZSKBQAAAIACjAV0b3RhbJSKBQAAAIAMdWIu"}
+{"class": "bb.event.DiskFull", "vars": "gASVfwAAAAAAAACMCGJiLmV2ZW50lIwIRGlza0Z1bGyUk5QpgZR9lCiMBHRpbWWUR0HZ3SFggAAAjARwYXRolIwLL3dvcmsvYnVpbGSUjAdtZXNzYWdllIwsRGlzayBmdWxsIG9uIC93b3JrL2J1aWxkOiBvbmx5IDEwMjQgS2lCIGZyZWWUdWIu"}
 {"class": "bb.build.TaskStarted", "vars": "gASVLgAAAAAAAACMCGJiLmJ1aWxk
