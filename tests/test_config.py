@@ -346,6 +346,20 @@ def test_resolve_ccache_default_true_rm_work_default_false(tmp_path) -> None:
     assert cfg.rm_work is False
 
 
+def test_resolve_stop_on_error_default_true(tmp_path) -> None:
+    """Without configs, stop_on_error defaults on (mirrors stall_abort_secs's enabled-by-default shape)."""
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+
+    assert cfg.stop_on_error is True
+
+
+def test_resolve_stop_on_error_user_config_disables(tmp_path) -> None:
+    """Global config.toml [build] stop_on_error=false falls back to bitbake's natural drain."""
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(stop_on_error=False))
+
+    assert cfg.stop_on_error is False
+
+
 def test_resolve_ccache_user_config_disables(tmp_path) -> None:
     """Global config.toml [build] ccache=false disables ccache."""
     cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(ccache=False))

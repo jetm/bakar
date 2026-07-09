@@ -44,6 +44,7 @@ _BOOL_FIELDS = {
     "rm_work",
     "container",
     "host_mode",
+    "stop_on_error",
 }
 _INT_FIELDS: set[str] = {
     "stall_abort_secs",
@@ -127,6 +128,11 @@ class UserConfig:
     # Abort the build when every running task's log has been silent this many
     # seconds (a wedged task, e.g. a deadlocked final link). 0 disables the guard.
     stall_abort_secs: int = 2700
+    # SIGINT the build as soon as any task fails, instead of waiting for every
+    # already-running task to finish on its own (bitbake's own halt-on-failure
+    # default already stops scheduling *new* tasks; this just stops bakar from
+    # rendering a misleadingly-normal live view while it waits for the drain).
+    stop_on_error: bool = True
     hashserv: bool = False
     ccache_shared: bool = False
     ccache_dir: str | None = None
@@ -204,6 +210,7 @@ _BUILD_KEYS = {
     "pressure_max_memory": "pressure_max_memory",
     "disk_free_threshold_gb": "disk_free_threshold_gb",
     "stall_abort_secs": "stall_abort_secs",
+    "stop_on_error": "stop_on_error",
     "hashserv": "hashserv",
     "ccache_shared": "ccache_shared",
     "ccache_dir": "ccache_dir",

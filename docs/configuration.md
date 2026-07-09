@@ -105,6 +105,12 @@ psi_autocalibrate = true
 # (bitbake's own keepalive lines would otherwise mask a hang). 0 disables.
 stall_abort_secs = 2700
 
+# SIGINT the build the moment any task fails, rather than waiting for every
+# already-running task to drain on its own schedule. bitbake already stops
+# scheduling new tasks on first failure regardless of this setting; this only
+# stops bakar from rendering a misleadingly-normal live view while it waits.
+stop_on_error = true
+
 # Persistent hash equivalence daemon (off by default; see hashserv.md).
 # When true, bakar spawns and reuses a workspace-scoped bitbake-hashserv
 # so OEEquivHash sstate equivalence accumulates across builds.

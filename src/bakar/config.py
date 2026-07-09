@@ -278,6 +278,10 @@ class BuildConfig:
     # seconds (a wedged task). 0 disables the stall guard. Read by
     # _run_pty_with_ui's watchdog in steps/kas_build.py.
     stall_abort_secs: int = 2700
+    # SIGINT the build as soon as any task fails, instead of waiting for every
+    # already-running task to drain on its own schedule. Read by
+    # _run_pty_with_ui's error watchdog in steps/kas_build.py.
+    stop_on_error: bool = True
     use_hashequiv: bool = field(default=False)
     # ccache location. Per-workspace by default; opt into a single shared cache
     # across all workspaces via [build] ccache_shared, or pin an explicit path
@@ -822,6 +826,7 @@ def resolve(
         pressure_max_memory=user_config.pressure_max_memory if user_config else None,
         disk_free_threshold_gb=user_config.disk_free_threshold_gb if user_config else 50.0,
         stall_abort_secs=user_config.stall_abort_secs if user_config else 2700,
+        stop_on_error=user_config.stop_on_error if user_config else True,
         use_hashequiv=user_config.hashserv if user_config else False,
         ccache_shared=user_config.ccache_shared if user_config else False,
         ccache_dir=user_config.ccache_dir if user_config else None,

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added a `stop_on_error` boolean setting (default `true`) that SIGINTs the build the moment any task fails, instead of waiting for every already-running task to drain on its own schedule. bitbake's own halt-on-failure already stops scheduling new tasks on first failure; this only stops bakar's live view from rendering a misleadingly-normal progress display while it waits for the drain. Mirrors the existing `stall_abort_secs` watchdog. Configurable via `bakar settings set build.stop_on_error <true|false>`.
+
 ## [0.21.0] - 2026-07-08
 
 ### Added

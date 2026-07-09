@@ -972,6 +972,12 @@ def generate_dry_run_script(
 # How often the stall watchdog samples running-task log freshness.
 _STALL_POLL_SECS = 30
 
+# How often the error watchdog checks for a task failure. Short on purpose -
+# unlike the stall watchdog (which waits out a long silence threshold before
+# it even starts caring), this one exists to react as fast as possible once
+# ui.had_task_failures flips true, matching _heartbeat's cadence.
+_ERROR_POLL_SECS = 1
+
 # Plain-mode status heartbeat tick. The TICK is the throttle: the status thread
 # samples the current build state once per interval (level-sampled), so a task
 # storm cannot flood the log. plain_status_line() only dedups identical lines.
@@ -1269,6 +1275,28 @@ def _run_pty_with_ui(
                         build_stop.stop_running_proc(proc, cfg, log)
                         break
 
+            def _error_watchdog() -> None:  # pragma: no cover
+                # SIGINT the build the moment any task fails, instead of
+                # waiting for bitbake's own halt-on-failure to drain every
+                # already-running task on its own schedule. bitbake already
+                # stops scheduling *new* tasks the instant a task fails
+                # regardless of this setting - this only stops bakar's live
+                # view from rendering a misleadingly-normal progress display
+                # while it waits for tasks that started before the failure
+                # (which can run for a long time) to finish on their own.
+                if not cfg.stop_on_error:
+                    return
+                while not stop_event.wait(timeout=_ERROR_POLL_SECS):
+                    if proc.poll() is not None:
+                        break
+                    if ui.had_task_failures:
+                        log.warn(
+                            "build failed: a task reported failure; aborting immediately. "
+                            "Disable with `bakar settings set build.stop_on_error false`."
+                        )
+                        build_stop.stop_running_proc(proc, cfg, log)
+                        break
+
             # Holds the freshest daemon_doc/ccache_doc the cache-probe thread
             # computed, so the build-end persist reuses that probe rather than
             # issuing a second one after the build completes. The ``first_*``
@@ -1356,6 +1384,8 @@ def _run_pty_with_ui(
                 event_tail.start()
                 watchdog = threading.Thread(target=_stall_watchdog, daemon=True)  # pragma: no cover
                 watchdog.start()
+                error_watchdog = threading.Thread(target=_error_watchdog, daemon=True)  # pragma: no cover
+                error_watchdog.start()
                 cache_probe = threading.Thread(target=_cache_probe, daemon=True)  # pragma: no cover
                 cache_probe.start()
                 try:
@@ -1367,6 +1397,7 @@ def _run_pty_with_ui(
                 pump.join(timeout=5)
                 heartbeat.join(timeout=2)
                 watchdog.join(timeout=2)
+                error_watchdog.join(timeout=2)
                 if layers_pending:  # pragma: no cover - fast build finished before first heartbeat tick
                     from bakar.layers import collect_layer_hashes, layer_hash_table
 
