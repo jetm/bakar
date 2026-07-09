@@ -193,3 +193,46 @@ def test_prefetch_byo_generic_yaml_defaults_to_core_image_minimal(
     assert stub.command is not None
     assert "bitbake --runall=fetch core-image-minimal" in stub.command
     assert "generic" not in stub.command
+
+
+@pytest.mark.unit
+def test_prefetch_bbsetup_no_machine_exits_cleanly(
+    runner: _CliRunner, bbsetup_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """bbsetup workspace with no machine fragment and no ``-m``: clean exit 2, not a traceback.
+
+    Regression test: ``write_bbsetup_yaml`` (via ``translate_bbsetup_config``) raises
+    ``ValueError`` when no machine can be resolved. Before this fix that exception
+    was uncaught and escaped as a raw traceback instead of the friendly
+    ``bitbake-setup config error`` exit ``build.py`` already gives for this input.
+    """
+    stub = _ShellStub(rc=0)
+    monkeypatch.setattr(prefetch_module.step_kas, "run_shell", stub)
+    result = runner.invoke(app, ["prefetch", "--workspace", str(bbsetup_workspace)])
+    assert result.exit_code == 2, result.output
+    assert "bitbake-setup config error" in result.output
+    assert not stub.called
+
+
+@pytest.mark.unit
+def test_prefetch_bbsetup_honors_bakar_image_env(
+    runner: _CliRunner, bbsetup_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """bbsetup workspace, no ``--image`` flag but ``BAKAR_IMAGE`` set: env var wins.
+
+    Regression test: the bbsetup branch used to compute its fetch target from
+    the CLI flag alone (``image or "core-image-minimal"``), silently ignoring
+    BAKAR_IMAGE/preset/workspace-config overrides that ``bakar build`` honors
+    via ``cfg.image``. Now both prefetch and build resolve through the same
+    value-guarded ``cfg.image``.
+    """
+    monkeypatch.setenv("BAKAR_IMAGE", "my-env-image")
+    stub = _ShellStub(rc=0)
+    monkeypatch.setattr(prefetch_module.step_kas, "run_shell", stub)
+    result = runner.invoke(
+        app,
+        ["prefetch", "--workspace", str(bbsetup_workspace), "-m", "qemux86-64"],
+    )
+    assert result.exit_code == 0, result.output
+    assert stub.command is not None
+    assert "bitbake --runall=fetch my-env-image" in stub.command
