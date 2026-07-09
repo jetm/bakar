@@ -32,6 +32,7 @@ import bakar.commands.getvar
 import bakar.commands.graph
 import bakar.commands.hashserv
 import bakar.commands.init
+import bakar.commands.insights
 import bakar.commands.inspect
 import bakar.commands.layers
 import bakar.commands.lock
