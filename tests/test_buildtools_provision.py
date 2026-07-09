@@ -390,3 +390,58 @@ def test_resolve_oe_core_release_key_reads_oe_core_git_commit(tmp_path: Path) ->
 def test_resolve_oe_core_release_key_none_when_no_oe_core_checkout(tmp_path: Path) -> None:
     """No openembedded-core dir under the workspace -> None, not a raise."""
     assert diagnostics.resolve_oe_core_release_key(tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# _provision_buildtools release-scoped resolution - the real build step (not
+# just the doctor gate) must find a release-scoped [build.buildtools_dirs]
+# install, so a wrynose toolchain that `bakar setup` staged is actually used
+# at build time rather than crashing the wrapper with "not found".
+# ---------------------------------------------------------------------------
+
+
+def _git_oe_core_ws(workspace: Path) -> str:
+    """Make workspace/openembedded-core a git repo; return its short-12 hash."""
+    import subprocess
+
+    oe_core = workspace / "openembedded-core"
+    oe_core.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=oe_core, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=oe_core, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=oe_core, check=True)
+    (oe_core / "README").write_text("x")
+    subprocess.run(["git", "add", "README"], cwd=oe_core, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=oe_core, check=True)
+    return subprocess.run(
+        ["git", "-C", str(oe_core), "rev-parse", "--short=12", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def test_provision_resolves_release_scoped_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A release-scoped [build.buildtools_dirs] entry keyed to the workspace's
+    oe-core commit must satisfy _provision_buildtools - no env var, no flat
+    config. This is the exact shape a release-scoped `bakar setup` leaves behind.
+    Falsifier: before the fix, _provision_buildtools called detect_buildtools()
+    with no release_key and raised BuildtoolsMissingError here."""
+    release_key = _git_oe_core_ws(tmp_path)
+    sysroot = tmp_path / "sdk" / "sysroots" / "x86_64"
+    toolbin = sysroot / "usr" / "bin"
+    toolbin.mkdir(parents=True)
+    (toolbin / "gcc").write_text("#!/bin/sh\n")
+    (toolbin / "python3").write_text("#!/bin/sh\n")
+    install_dir = tmp_path / "bt"
+    install_dir.mkdir()
+    (install_dir / "environment-setup-x86_64-pokysdk-linux").write_text("export PATH=" + str(toolbin) + ":$PATH\n")
+    monkeypatch.setattr(
+        "bakar.diagnostics.load_user_config",
+        lambda: UserConfig(buildtools_dirs={release_key: str(install_dir)}),
+    )
+
+    cfg = _make_cfg(tmp_path, host_mode=True)
+    passthrough: dict[str, str] = {"PATH": "/usr/bin:/bin"}
+    kas_build._provision_buildtools(cfg, passthrough)
+
+    assert str(toolbin) in passthrough["PATH"]

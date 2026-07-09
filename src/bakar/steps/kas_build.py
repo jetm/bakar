@@ -63,6 +63,7 @@ from bakar.diagnostics import (
     probe_build_daemon,
     probe_ccache,
     probe_cluster,
+    resolve_oe_core_release_key,
 )
 from bakar.eventlog import tail_events
 from bakar.kas import KasGenOptions, write_yaml
@@ -1714,7 +1715,8 @@ def _provision_buildtools(cfg: BuildConfig, passthrough: dict[str, str]) -> None
     """
     if not cfg.host_mode:
         return
-    toolchain = detect_buildtools()
+    release_key = resolve_oe_core_release_key(cfg.workspace)
+    toolchain = detect_buildtools(release_key=release_key)
     if not toolchain.present:
         raise BuildtoolsMissingError(
             "host build requires the pinned buildtools-extended toolchain, but it "
