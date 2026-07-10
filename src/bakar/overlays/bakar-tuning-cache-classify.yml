@@ -1,0 +1,35 @@
+# Cache-backend classification overlay.
+#
+# Unlike the ccache/sccache/host overlays this one is NOT opt-in: bakar appends
+# it on every build (the single unconditional entry in _tuning_extra_overlays).
+# It adds the bakar-provided meta-bakar-cache-classify layer (materialized into
+# <bsp_root>/.bakar/meta-bakar-cache-classify) and inherits its
+# cache_classify.bbclass, which tags each task with the cache backend that
+# served it so the build UI and event log can surface per-task cache visibility.
+#
+# The class is purely observational: it reads BB_CURRENTTASK/allow-list state
+# and fires an event, never touching CCACHE or the compiler launcher. It does
+# not interact with the ccache or sccache overlays, so no INHERIT:remove is
+# needed and its local_conf_header key ordering is immaterial (a low zz-bakar-NN
+# key keeps it early, but nothing below it depends on that position).
+
+header:
+  version: 21
+
+repos:
+  # bakar materializes this layer next to the overlay under .bakar/; the relative
+  # path resolves against KAS_WORK_DIR (= bsp_root) in container mode and the
+  # build CWD (= bsp_root) in host mode, same pattern as meta-bakar-sccache and
+  # meta-bakar-host. No url/commit: kas treats it as an unmanaged local layer.
+  meta-bakar-cache-classify:
+    path: .bakar/meta-bakar-cache-classify
+    layers:
+      .:
+
+local_conf_header:
+  # Sort-last key (see bakar-tuning-generic): the numeric segment decides order.
+  # cache_classify is observational and touches neither CCACHE nor INHERIT of the
+  # cache launchers, so its position relative to the other bakar overlays does
+  # not matter.
+  zz-bakar-05-cache-classify: |
+    INHERIT += "cache_classify"
