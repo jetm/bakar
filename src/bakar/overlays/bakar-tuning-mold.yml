@@ -1,0 +1,37 @@
+# mold linker opt-in overlay.
+#
+# Configured by the `mold` config key (or the `--mold` CLI flag). Never
+# auto-loaded; bakar appends it only when mold is enabled.
+#
+# What it does: adds the bakar-provided meta-bakar-mold layer (materialized
+# into <bsp_root>/.bakar/meta-bakar-mold) and inherits its mold.bbclass, which
+# routes eligible target link steps through mold instead of ld.bfd. All the
+# policy - MOLD_MODE gating (list default / global / baseline), the allow-list
+# (MOLD_INCLUDED_PN) / block-list (MOLD_EXCLUDED_PN), the -B linker discovery,
+# the target-only scope, and the gated mold-provider dependency - lives in the
+# class; see classes/mold.bbclass for the rationale.
+#
+# Unlike ccache/sccache, which share OE's CCACHE launcher slot and need ordered
+# INHERITs, mold touches disjoint variables (TARGET_LDFLAGS, its own MOLD_*), so
+# there is no cross-accelerator interplay and the sort-key ordering alone
+# suffices.
+
+header:
+  version: 21
+
+repos:
+  # bakar materializes this layer next to the overlay under .bakar/; the relative
+  # path resolves against KAS_WORK_DIR (= bsp_root) in container mode and the
+  # build CWD (= bsp_root) in host mode. No url/commit: kas treats it as an
+  # unmanaged local layer (same pattern as the meta-bakar-sccache overlay).
+  meta-bakar-mold:
+    path: .bakar/meta-bakar-mold
+    layers:
+      .:
+
+local_conf_header:
+  # Sort-last key (see bakar-tuning-generic): 60 orders mold after the
+  # accelerator stack (10 base < 20 ccache < 30 hashequiv < 40 shared-cache <
+  # 50 sccache < 60 mold).
+  zz-bakar-60-mold: |
+    INHERIT += "mold"
