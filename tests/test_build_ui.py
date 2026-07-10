@@ -9,12 +9,15 @@ severity lines.
 
 from __future__ import annotations
 
+import json
 import os
 import time
+from typing import TYPE_CHECKING
 
 import pytest
 from rich.text import Text
 
+from bakar import cache_render
 from bakar.steps.build_ui import (
     _ICON_TIMER,
     BuildUIState,
@@ -23,6 +26,9 @@ from bakar.steps.build_ui import (
     _stuck_color,
     _task_style,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # SETUP phase — parse and cache progress
@@ -574,3 +580,82 @@ def test_make_renderable_no_cache_badge_by_default() -> None:
     flat = " ".join(r.plain for r in inner if isinstance(r, Text))
     assert "dist" not in flat
     assert len(inner) == 2
+
+
+# ---------------------------------------------------------------------------
+# Cache-backend classification badge — make_renderable / reset-cycle
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_make_renderable_cache_badge_distinct_per_backend() -> None:
+    """Each of the four cache_backend states renders a visually distinct badge
+    cell (glyph + colour) in the running-task table, not just distinct internal
+    state - covers make_renderable() end to end, unlike the process_event-level
+    coverage in test_build_ui_events.py."""
+    ui = BuildUIState()
+    ui.process_line("NOTE: Running task 1200 of 9005 (/x.bb:do_compile)")
+    base = time.monotonic()
+    ui._running["a:do_compile"] = _RunTask(
+        pf="pkg-a-1.0-r0", task="do_compile", start=base - 4, cache_backend="sccache"
+    )
+    ui._running["b:do_compile"] = _RunTask(pf="pkg-b-1.0-r0", task="do_compile", start=base - 3, cache_backend="ccache")
+    ui._running["c:do_compile"] = _RunTask(pf="pkg-c-1.0-r0", task="do_compile", start=base - 2, cache_backend="none")
+    ui._running["d:do_compile"] = _RunTask(pf="pkg-d-1.0-r0", task="do_compile", start=base - 1, cache_backend=None)
+
+    table = ui.make_renderable().renderables[-1]
+    # Columns: 0=spinner, 1=icon, 2=cache-backend badge, 3=pf, 4=task, 5=elapsed.
+    badge_cells = table.columns[2]._cells
+    glyphs = [c.plain for c in badge_cells]
+    styles = [str(c.style) for c in badge_cells]
+
+    # Rows sort longest-elapsed first: a, b, c, d.
+    assert glyphs[0] == cache_render.cache_backend_badge("sccache")[0]
+    assert glyphs[1] == cache_render.cache_backend_badge("ccache")[0]
+    assert glyphs[2] == cache_render.cache_backend_badge("none")[0]
+    assert glyphs[3] == ""  # unclassified (cache_backend=None) renders blank, not a placeholder
+
+    # Four (glyph, style) pairs must all differ - a real visual distinction,
+    # not four cells that happen to render the same.
+    assert len({(g, s) for g, s in zip(glyphs, styles, strict=True)}) == 4
+
+
+@pytest.mark.unit
+def test_reset_for_new_build_cycle_clears_cache_classification() -> None:
+    """A running task carrying a cache_backend classification must not survive
+    into the next bitbake invocation's cycle - _running is cleared wholesale,
+    same as the other per-cycle fields the existing reset tests assert on."""
+    ui = BuildUIState()
+    ui._running["glibc-2.39-r0:do_compile"] = _RunTask(
+        pf="glibc-2.39-r0", task="do_compile", start=time.monotonic(), cache_backend="sccache"
+    )
+    assert ui._running  # sanity: populated before the reset
+
+    ui._reset_for_new_build_cycle()
+
+    assert ui._running == {}
+
+
+@pytest.mark.unit
+def test_show_baseline_drift_default_false_keeps_baselines_empty(tmp_path: Path) -> None:
+    """Default construction must not load baselines even when a populated
+    timings_path is given - show_baseline_drift defaults to False."""
+    timings = tmp_path / "t.json"
+    timings.write_text(
+        json.dumps({"schema_version": 2, "tasks": {"glibc:do_compile": {"count": 1, "mean": 10.0, "m2": 0.0}}}),
+        encoding="utf-8",
+    )
+    ui = BuildUIState(timings_path=timings)
+    assert ui._task_baselines == {}
+
+
+@pytest.mark.unit
+def test_show_baseline_drift_true_loads_baselines(tmp_path: Path) -> None:
+    """show_baseline_drift=True loads the populated timings_path baselines."""
+    timings = tmp_path / "t.json"
+    timings.write_text(
+        json.dumps({"schema_version": 2, "tasks": {"glibc:do_compile": {"count": 1, "mean": 10.0, "m2": 0.0}}}),
+        encoding="utf-8",
+    )
+    ui = BuildUIState(timings_path=timings, show_baseline_drift=True)
+    assert ui._task_baselines == {"glibc:do_compile": (10.0, 0.0)}
