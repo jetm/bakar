@@ -503,6 +503,7 @@ class RunningTask:
     recipe: str
     task: str
     started_epoch: float | None
+    cache_backend: str | None = None
 
 
 def running_tasks(run_dir: Path) -> list[RunningTask]:
@@ -541,6 +542,7 @@ def running_from_rows(rows: list[dict[str, Any]]) -> list[RunningTask]:
             recipe=row.get("recipe"),
             task=row.get("task"),
             started_epoch=row.get("started"),
+            cache_backend=row.get("cache_backend"),
         )
         for row in rows
         if row.get("outcome") is None and row.get("started") is not None

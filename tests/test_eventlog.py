@@ -188,6 +188,58 @@ def test_omitted_optional_field_emitted_as_null() -> None:
 
 
 @pytest.mark.unit
+def test_metadata_event_classifies_cache_backend(tmp_path: Path) -> None:
+    """A MetadataEvent with type ``bakar-cache-backend`` merges into the
+    matching task row (matched via _package/_task) and sets cache_backend
+    from _localdata - the positive classification case."""
+    started = _StubEvent()
+    started._package = "busybox-1.36.1-r0"  # type: ignore[attr-defined]
+    started._task = "do_compile"  # type: ignore[attr-defined]
+    started.time = 100.0  # type: ignore[attr-defined]
+
+    classified = _StubEvent()
+    classified._package = "busybox-1.36.1-r0"  # type: ignore[attr-defined]
+    classified._task = "do_compile"  # type: ignore[attr-defined]
+    classified.type = "bakar-cache-backend"  # type: ignore[attr-defined]
+    classified._localdata = "sstate"  # type: ignore[attr-defined]
+
+    log = tmp_path / "bitbake_eventlog.json"
+    log.write_text(
+        json.dumps({"class": "bb.build.TaskStarted", "vars": _encode_event(started)})
+        + "\n"
+        + json.dumps({"class": "bb.event.MetadataEvent", "vars": _encode_event(classified)})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    artifact = eventlog.normalize(log)
+    task = next(t for t in artifact["tasks"] if t["recipe"] == "busybox-1.36.1-r0")
+    assert task["cache_backend"] == "sstate"
+
+
+@pytest.mark.unit
+def test_task_without_metadata_event_has_null_cache_backend(tmp_path: Path) -> None:
+    """A task row with no classifying MetadataEvent carries cache_backend as
+    ``None`` and present as a key - distinguishing "unclassified" from any
+    classified value, never simply absent from the row."""
+    started = _StubEvent()
+    started._package = "zlib-1.3-r0"  # type: ignore[attr-defined]
+    started._task = "do_fetch"  # type: ignore[attr-defined]
+    started.time = 50.0  # type: ignore[attr-defined]
+
+    log = tmp_path / "bitbake_eventlog.json"
+    log.write_text(
+        json.dumps({"class": "bb.build.TaskStarted", "vars": _encode_event(started)}) + "\n",
+        encoding="utf-8",
+    )
+
+    artifact = eventlog.normalize(log)
+    task = next(t for t in artifact["tasks"] if t["recipe"] == "zlib-1.3-r0")
+    assert "cache_backend" in task
+    assert task["cache_backend"] is None
+
+
+@pytest.mark.unit
 def test_non_utf8_log_does_not_raise(tmp_path: Path) -> None:
     """A non-UTF-8 byte in the log (aborted/concurrent build) must not raise
     UnicodeDecodeError out of normalize - it degrades to skipping that line."""
