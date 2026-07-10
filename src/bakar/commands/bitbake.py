@@ -43,6 +43,7 @@ from bakar.config import BSPSpec, resolve
 from bakar.observability import RunLogger
 from bakar.steps.kas_build import (
     KasBuildContext,
+    materialize_cache_classify_layer,
     materialize_host_layer,
     materialize_sccache_layer,
     persist_run_artifacts,
@@ -126,6 +127,10 @@ def _run_task(
     )
     cfg = apply_sccache_overrides(cfg)
     overlay_source = _overlay_for(bsp)
+    # The cache-classify overlay is the one unconditional entry in
+    # _tuning_extra_overlays - every build references it, so materialize it
+    # unconditionally too, unlike the sccache/host layers below.
+    materialize_cache_classify_layer(cfg)
     if cfg.use_sccache_dist:
         materialize_sccache_layer(cfg)
         extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)

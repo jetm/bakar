@@ -418,6 +418,30 @@ def materialize_host_layer(cfg: BuildConfig) -> Path:
     return dest
 
 
+_CACHE_CLASSIFY_LAYER_NAME = "meta-bakar-cache-classify"
+
+
+def materialize_cache_classify_layer(cfg: BuildConfig) -> Path:
+    """Copy the bundled ``meta-bakar-cache-classify`` layer into ``<bsp_root>/.bakar/``.
+
+    Returns the destination directory. Overwrites on every call so the layer
+    tracks the packaged source byte-for-byte. The cache-classify tuning overlay
+    (``bakar-tuning-cache-classify.yml``) references it by the relative path
+    ``.bakar/meta-bakar-cache-classify``. Mirrors :func:`materialize_sccache_layer`;
+    unlike it, this one is called unconditionally at every call site - the
+    overlay itself is the single unconditional entry in ``_tuning_extra_overlays``
+    (every build gets the cache-backend classification emitter, not just
+    sccache-dist/host-mode builds).
+    """
+    source = _overlay_dir() / _CACHE_CLASSIFY_LAYER_NAME
+    base = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
+    dest = base / ".bakar" / _CACHE_CLASSIFY_LAYER_NAME
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(source, dest)
+    return dest
+
+
 def _setup_meta_avocado_build_dir(cfg: BuildConfig) -> None:
     """Create the build directory for Avocado OS builds.
 
@@ -755,6 +779,10 @@ def _build_kas_arg(
     extra_overlays: list[Path] | None = None,
 ) -> str:
     """Resolve the kas YAML + overlay colon-arg, handling the meta-avocado wrapper path."""
+    # The cache-classify overlay is the one unconditional entry in
+    # _tuning_extra_overlays - every build references it, so materialize it
+    # unconditionally too, unlike the two gated layers below.
+    materialize_cache_classify_layer(cfg)
     # The sccache overlay references the meta-bakar-sccache layer by a relative
     # repos path; materialize it under .bakar/ so kas can resolve and inherit it.
     if cfg.use_sccache_dist:

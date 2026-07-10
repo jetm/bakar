@@ -1026,6 +1026,84 @@ def test_materialize_sccache_layer_copies_class_into_bsp_root(tmp_path: object) 
 
 
 @pytest.mark.unit
+def test_materialize_cache_classify_layer_copies_class_into_bsp_root(tmp_path: object) -> None:
+    """materialize_cache_classify_layer drops the layer under <bsp_root>/.bakar/.
+
+    Unlike materialize_sccache_layer/materialize_host_layer (gated on
+    sccache_dist/host_mode), the cache-classify overlay is the single
+    unconditional entry in _tuning_extra_overlays - every build references
+    it via the relative repos path .bakar/meta-bakar-cache-classify, so this
+    materialization must run regardless of cfg's cache-backend settings.
+    """
+    from pathlib import Path
+
+    from bakar.config import BuildConfig
+    from bakar.steps.kas_build import materialize_cache_classify_layer
+
+    root = Path(str(tmp_path))
+    cfg = BuildConfig(
+        workspace=root,
+        bsp_family="generic",  # type: ignore[arg-type]
+        machine="m",
+        distro="d",
+        image="i",
+        manifest="x.xml",
+        repo_url="https://example.com",
+        repo_branch="main",
+        kas_container_image="img:latest",
+        kas_yaml_override=root / "my.yml",
+        sccache_dist=False,
+    )
+
+    dest = materialize_cache_classify_layer(cfg)
+
+    assert dest == cfg.bsp_root / ".bakar" / "meta-bakar-cache-classify"
+    assert (dest / "conf" / "layer.conf").is_file()
+    bbclass = dest / "classes" / "cache_classify.bbclass"
+    assert bbclass.is_file()
+    assert "bakar-cache-backend" in bbclass.read_text()
+
+
+@pytest.mark.unit
+def test_build_kas_arg_materializes_cache_classify_layer_unconditionally(tmp_path: Path) -> None:
+    """_build_kas_arg materializes the cache-classify layer even when sccache_dist and host_mode are both off.
+
+    Confirms the fix for a gap where the layer's overlay was always appended
+    to _tuning_extra_overlays but nothing ever copied the layer itself into
+    the workspace - kas would fail to resolve .bakar/meta-bakar-cache-classify
+    on every real build.
+    """
+    from bakar.config import BuildConfig
+    from bakar.steps.kas_build import _build_kas_arg
+
+    root = tmp_path
+    cfg = BuildConfig(
+        workspace=root,
+        bsp_family="generic",  # type: ignore[arg-type]
+        machine="m",
+        distro="d",
+        image="i",
+        manifest="x.xml",
+        repo_url="https://example.com",
+        repo_branch="main",
+        kas_container_image="img:latest",
+        kas_yaml_override=root / "my.yml",
+        sccache_dist=False,
+        host_mode=False,
+    )
+    kas_yaml = root / "my.yml"
+    kas_yaml.write_text("header:\n  version: 18\n", encoding="utf-8")
+    overlay_source = root / "overlay.yml"
+    overlay_source.write_text("header:\n  version: 18\n", encoding="utf-8")
+
+    _build_kas_arg(cfg, kas_yaml, overlay_source)
+
+    dest = cfg.bsp_root / ".bakar" / "meta-bakar-cache-classify"
+    assert dest.is_dir()
+    assert (dest / "classes" / "cache_classify.bbclass").is_file()
+
+
+@pytest.mark.unit
 def test_materialize_sccache_layer_targets_workspace_for_meta_avocado(tmp_path: Path) -> None:
     """For meta-avocado the layer lands under <workspace>/.bakar, not <bsp_root>/.bakar.
 
