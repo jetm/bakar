@@ -1570,6 +1570,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         start_monotonic=log.start_monotonic,
         logfile_translator=(None if cfg.host_mode else lambda p: _translate_container_path(p, cfg.bsp_root)),
         timings_path=timings_path,
+        show_baseline_drift=cfg.show_baseline_drift,
     )
     terminated = False
     rc: int | None = None
@@ -1655,6 +1656,7 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
         start_monotonic=log.start_monotonic,
         logfile_translator=(None if cfg.host_mode else lambda p: _translate_container_path(p, cfg.bsp_root)),
         timings_path=task_timings.timings_path_for(cfg.bsp_root, cfg.machine, host_mode=cfg.host_mode),
+        show_baseline_drift=cfg.show_baseline_drift,
     )
     stop_event = threading.Event()
 

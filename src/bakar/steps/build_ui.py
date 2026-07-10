@@ -196,6 +196,8 @@ class BuildUIState:
         start_monotonic: float | None = None,
         logfile_translator: Callable[[str], str] | None = None,
         timings_path: Path | None = None,
+        *,
+        show_baseline_drift: bool = False,
     ) -> None:
         """``start_monotonic`` is the ``time.monotonic()`` stamp of when ``bakar``
         started (RunLogger captures it before doctor). When given, the global
@@ -205,6 +207,11 @@ class BuildUIState:
         ``timings_path`` selects the context-scoped baseline file (see
         ``task_timings.timings_path_for``); ``None`` falls back to the legacy
         global file.
+
+        ``show_baseline_drift`` gates whether historical baselines are loaded
+        at all. When ``False`` (the default), ``_task_baselines`` stays an
+        empty dict regardless of ``timings_path`` -- estimated durations and
+        stuck-task drift detection fall back to the current-run median.
         """
         # The global wall-clock timer lives on the pipeline header (the
         # parse -> setscene -> build line), not on the bars, so it is in the
@@ -309,7 +316,7 @@ class BuildUIState:
         # prior builds of THIS context (workspace+machine+mode). Empty on the
         # first build -> estimated stays None and stuck-task detection falls
         # back to the current-run median.
-        self._task_baselines = task_timings.load_baselines(timings_path)
+        self._task_baselines = task_timings.load_baselines(timings_path) if show_baseline_drift else {}
         # Last line returned by plain_status_line(); enables idle-dedup in plain mode
         # (the emission RATE is bounded by the caller thread's tick, not by this class).
         self._plain_last_line: str | None = None
