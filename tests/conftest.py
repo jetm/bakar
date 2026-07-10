@@ -153,7 +153,7 @@ MONITOR_SNAPSHOT = {
         "tasks_running": 3,
         "tasks_failed": 1,
         "tasks_setscene_rerun": 2,
-        "running": [{"recipe": "foo", "task": "do_compile"}],
+        "running": [{"recipe": "foo", "task": "do_compile", "cache_backend": None}],
         "failures": [{"recipe": "bar", "task": "do_install"}],
     },
     "kas_errors": [],

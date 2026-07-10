@@ -89,6 +89,20 @@ def _synthetic_artifact() -> dict[str, Any]:
     }
 
 
+def _synthetic_artifact_classified() -> dict[str, Any]:
+    """Sibling of :func:`_synthetic_artifact` whose running task carries a classified backend.
+
+    Same shape, but the running ``zlib-1.3-r0``/``do_configure`` task's row
+    also has ``cache_backend`` set to ``"sccache"``, matching the classified
+    state ``eventlog.running_from_rows`` passes through verbatim.
+    """
+    artifact = _synthetic_artifact()
+    for row in artifact["tasks"]:
+        if row["recipe"] == "zlib-1.3-r0" and row["task"] == "do_configure":
+            row["cache_backend"] = "sccache"
+    return artifact
+
+
 @pytest.fixture
 def patched_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Patch both heavy probes and the event-log reader on the monitor module."""
@@ -252,6 +266,84 @@ def test_watch_emits_ndjson_and_stops_when_finished(
     doc = json.loads(lines[0])
     # Compact: json.dumps(obj) has no indentation.
     assert lines[0] == json.dumps(doc)
+
+
+def test_json_once_includes_cache_backend_for_classified_task(
+    runner: _CliRunner,
+    nxp_workspace_with_run: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A running task with a classified cache backend carries it in the JSON doc."""
+    artifact = _synthetic_artifact_classified()
+    monkeypatch.setenv("BAKAR_SCCACHE_DIST", "1")
+    monkeypatch.setattr(monitor_module, "probe_cluster", lambda _url: _reachable_cluster())
+    monkeypatch.setattr(monitor_module, "probe_build_daemon", _running_daemon)
+    monkeypatch.setattr(monitor_module, "normalize", lambda _path: artifact)
+    monkeypatch.setattr(eventlog_module, "normalize", lambda _path: artifact)
+    monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: (False, None, False))
+
+    result = runner.invoke(
+        app,
+        ["monitor", "--json", "--once", "--workspace", str(nxp_workspace_with_run)],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    build = json.loads(result.stdout)["build"]
+    assert build["running"] == [{"recipe": "zlib-1.3-r0", "task": "do_configure", "cache_backend": "sccache"}]
+
+
+def test_watch_ndjson_lines_include_cache_backend_for_classified_task(
+    runner: _CliRunner,
+    nxp_workspace_with_run: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--json --watch``'s NDJSON output carries ``cache_backend`` on running-task entries.
+
+    The ``--json``-only test above only exercises the single-snapshot path;
+    ``_run_watch`` builds its own doc via a separate loop, so this covers that
+    code path explicitly rather than assuming it matches.
+    """
+    artifact = _synthetic_artifact_classified()
+    monkeypatch.setenv("BAKAR_SCCACHE_DIST", "1")
+    monkeypatch.setattr(monitor_module, "probe_cluster", lambda _url: _reachable_cluster())
+    monkeypatch.setattr(monitor_module, "probe_build_daemon", _running_daemon)
+    monkeypatch.setattr(monitor_module, "normalize", lambda _path: artifact)
+    monkeypatch.setattr(eventlog_module, "normalize", lambda _path: artifact)
+    monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: (False, None, False))
+
+    result = runner.invoke(
+        app,
+        ["monitor", "--json", "--watch", "--workspace", str(nxp_workspace_with_run)],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
+    assert len(lines) == 1
+    doc = json.loads(lines[0])
+    assert doc["build"]["running"] == [{"recipe": "zlib-1.3-r0", "task": "do_configure", "cache_backend": "sccache"}]
+
+
+def test_plain_render_unclassified_task_has_no_badge_and_no_error(
+    runner: _CliRunner,
+    nxp_workspace_with_run: Path,
+    patched_probes: None,
+) -> None:
+    """A running task with no cache-backend classification renders with no badge.
+
+    ``patched_probes`` supplies the default synthetic artifact, whose running
+    task has no ``cache_backend`` key (unclassified). Under the CliRunner,
+    stderr is not a TTY, so ``monitor --once`` (no ``--json``) takes the plain
+    ``_render_plain`` path and must render the task row without a ``cache=``
+    suffix and without raising.
+    """
+    result = runner.invoke(
+        app,
+        ["monitor", "--once", "--workspace", str(nxp_workspace_with_run)],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert "do_configure" in result.stderr
+    assert "cache=" not in result.stderr
 
 
 def test_daemon_probe_throttle_caches_within_window(monkeypatch: pytest.MonkeyPatch) -> None:
