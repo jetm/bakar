@@ -298,6 +298,33 @@ def _inject_literal_ccache(cfg: BuildConfig, text: str) -> str:
     )
 
 
+# The per-build link-timing log the mold overlay's wrappers append to. It must
+# live under the kas bind mount (only KAS_WORK_DIR = <base> is mounted /work in
+# container mode), so the path is delivered as an exported literal baked into the
+# overlay - kas scrubs env passthrough, so a BAKAR_MOLD_LINKLOG env var would
+# reach the daemon empty (see _inject_literal_sccache for the same problem).
+_MOLD_LINKLOG_NAME = "mold-linklog.jsonl"
+
+
+def _inject_literal_mold(cfg: BuildConfig, text: str) -> str:
+    """Append an exported ``BAKAR_MOLD_LINKLOG`` literal to the mold overlay.
+
+    Mirrors :func:`_inject_literal_ccache`'s host/container dual path: the log
+    lands under KAS_WORK_DIR (``cfg.workspace`` for meta-avocado, else
+    ``cfg.bsp_root``) so it is inside the ``/work`` bind mount, written as the
+    absolute host path in host mode and as ``/work/<name>`` in container mode.
+    Idempotent (re-running the injector no-ops) and pure (no filesystem side
+    effects), so dry-run rendering is safe."""
+    if re.search(r"^\s*export\s+BAKAR_MOLD_LINKLOG\b", text, re.MULTILINE):
+        return text
+    base = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
+    log_path = str(base / _MOLD_LINKLOG_NAME) if cfg.host_mode else f"/work/{_MOLD_LINKLOG_NAME}"
+    m = re.search(r"^(?P<indent>[ \t]+)INHERIT\b", text, re.MULTILINE)
+    indent = m.group("indent") if m else "    "
+    addition = f'{indent}export BAKAR_MOLD_LINKLOG = "{log_path}"\n'
+    return text.rstrip("\n") + "\n" + addition
+
+
 # The base overlays statically strip rm_work (default off while bakar is in
 # use); _inject_rm_work deletes that whole block when [build] rm_work is opted
 # back on. The block spans its comment through the USER_CLASSES line, so the
@@ -362,84 +389,72 @@ def materialize_overlay(cfg: BuildConfig, overlay_source: Path) -> Path:
             # injector stays pure for dry-run rendering.
             if cfg.host_mode:
                 cfg.effective_ccache_dir.mkdir(parents=True, exist_ok=True)
+        if overlay_source.name == "bakar-tuning-mold.yml":
+            injected = _inject_literal_mold(cfg, injected)
         if injected != original:
             dest.write_text(injected, encoding="utf-8")
     return dest.relative_to(cfg.bsp_root)
 
 
-# The bakar-provided sccache layer (classes/sccache.bbclass) is materialized
-# next to the overlays under ``.bakar/`` so kas can add it via the sccache
+# The bakar-provided layers (e.g. classes/sccache.bbclass) are materialized
+# next to the overlays under ``.bakar/`` so kas can add them via each tuning
 # overlay's ``repos:`` entry. The relative repos path ``.bakar/<name>`` resolves
-# against ``bsp_root`` in both host mode (build CWD) and container mode
-# (KAS_WORK_DIR = /work), mirroring :func:`materialize_overlay`.
+# against ``KAS_WORK_DIR`` in both host mode (build CWD) and container mode
+# (``/work``), mirroring :func:`materialize_overlay`.
 _SCCACHE_LAYER_NAME = "meta-bakar-sccache"
+_HOST_LAYER_NAME = "meta-bakar-host"
+_CACHE_CLASSIFY_LAYER_NAME = "meta-bakar-cache-classify"
+_MOLD_LAYER_NAME = "meta-bakar-mold"
+
+
+def materialize_layer(cfg: BuildConfig, name: str) -> Path:
+    """Copy the bundled ``<name>`` layer into ``<base>/.bakar/`` and return the dest.
+
+    ``base`` is the workspace for meta-avocado and ``bsp_root`` for every other
+    family: kas resolves the overlay's relative ``.bakar/<name>`` repos path
+    against KAS_WORK_DIR (see ``_build_env``), and meta-avocado points
+    KAS_WORK_DIR at the workspace while ``bsp_root`` is the nested
+    ``workspace/build-<stem>`` dir, so the layer must land under the workspace
+    ``.bakar``; for every other family KAS_WORK_DIR == ``bsp_root`` and the two
+    coincide.
+
+    Overwrites on every call so the layer tracks the packaged source
+    byte-for-byte. Returns the destination directory (not a ``bsp_root``-relative
+    path, unlike :func:`materialize_overlay`), which each tuning overlay
+    references by the relative path ``.bakar/<name>``.
+    """
+    source = _overlay_dir() / name
+    base = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
+    dest = base / ".bakar" / name
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(source, dest)
+    return dest
 
 
 def materialize_sccache_layer(cfg: BuildConfig) -> Path:
-    """Copy the bundled ``meta-bakar-sccache`` layer into ``<bsp_root>/.bakar/``.
-
-    Returns the destination directory. Overwrites on every call so the layer
-    tracks the packaged source byte-for-byte. The sccache tuning overlay
-    references it by the relative path ``.bakar/meta-bakar-sccache``.
-    """
-    source = _overlay_dir() / _SCCACHE_LAYER_NAME
-    # kas resolves the overlay's relative `.bakar/meta-bakar-sccache` repos path
-    # against KAS_WORK_DIR (see _build_env). meta-avocado sets KAS_WORK_DIR to the
-    # workspace while bsp_root is the nested workspace/build-<stem> dir, so the
-    # layer must land under the workspace .bakar; for every other family
-    # KAS_WORK_DIR == bsp_root, so they coincide.
-    base = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
-    dest = base / ".bakar" / _SCCACHE_LAYER_NAME
-    if dest.exists():
-        shutil.rmtree(dest)
-    shutil.copytree(source, dest)
-    return dest
-
-
-_HOST_LAYER_NAME = "meta-bakar-host"
+    """Materialize the ``meta-bakar-sccache`` layer (see :func:`materialize_layer`)."""
+    return materialize_layer(cfg, _SCCACHE_LAYER_NAME)
 
 
 def materialize_host_layer(cfg: BuildConfig) -> Path:
-    """Copy the bundled ``meta-bakar-host`` layer into ``<bsp_root>/.bakar/``.
+    """Materialize the ``meta-bakar-host`` layer (see :func:`materialize_layer`).
 
-    Returns the destination directory. Overwrites on every call so the layer
-    tracks the packaged source byte-for-byte. The host tuning overlay
-    (``bakar-tuning-host.yml``) references it by the relative path
-    ``.bakar/meta-bakar-host``. Mirrors :func:`materialize_sccache_layer`; only
-    invoked in host mode, where the layer's rpm bbappend keeps rpm-native from
-    dlopening the build host's rpm transaction plugins.
+    Only invoked in host mode, where the layer's rpm bbappend keeps rpm-native
+    from dlopening the build host's rpm transaction plugins.
     """
-    source = _overlay_dir() / _HOST_LAYER_NAME
-    base = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
-    dest = base / ".bakar" / _HOST_LAYER_NAME
-    if dest.exists():
-        shutil.rmtree(dest)
-    shutil.copytree(source, dest)
-    return dest
-
-
-_CACHE_CLASSIFY_LAYER_NAME = "meta-bakar-cache-classify"
+    return materialize_layer(cfg, _HOST_LAYER_NAME)
 
 
 def materialize_cache_classify_layer(cfg: BuildConfig) -> Path:
-    """Copy the bundled ``meta-bakar-cache-classify`` layer into ``<bsp_root>/.bakar/``.
+    """Materialize the ``meta-bakar-cache-classify`` layer (see :func:`materialize_layer`).
 
-    Returns the destination directory. Overwrites on every call so the layer
-    tracks the packaged source byte-for-byte. The cache-classify tuning overlay
-    (``bakar-tuning-cache-classify.yml``) references it by the relative path
-    ``.bakar/meta-bakar-cache-classify``. Mirrors :func:`materialize_sccache_layer`;
-    unlike it, this one is called unconditionally at every call site - the
-    overlay itself is the single unconditional entry in ``_tuning_extra_overlays``
-    (every build gets the cache-backend classification emitter, not just
-    sccache-dist/host-mode builds).
+    Unlike the gated layers, this one is called unconditionally at every call
+    site - the overlay itself is the single unconditional entry in
+    ``_tuning_extra_overlays`` (every build gets the cache-backend classification
+    emitter, not just sccache-dist/host-mode builds).
     """
-    source = _overlay_dir() / _CACHE_CLASSIFY_LAYER_NAME
-    base = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
-    dest = base / ".bakar" / _CACHE_CLASSIFY_LAYER_NAME
-    if dest.exists():
-        shutil.rmtree(dest)
-    shutil.copytree(source, dest)
-    return dest
+    return materialize_layer(cfg, _CACHE_CLASSIFY_LAYER_NAME)
 
 
 def _setup_meta_avocado_build_dir(cfg: BuildConfig) -> None:
@@ -789,6 +804,10 @@ def _build_kas_arg(
         materialize_sccache_layer(cfg)
     if cfg.host_mode:
         materialize_host_layer(cfg)
+    # The mold overlay references the meta-bakar-mold layer by a relative repos
+    # path; materialize it under .bakar/ so kas can resolve and inherit it.
+    if cfg.mold:
+        materialize_layer(cfg, _MOLD_LAYER_NAME)
     if cfg.is_meta_avocado:
         _setup_meta_avocado_build_dir(cfg)
         overlay_rel = materialize_overlay(cfg, overlay_source)
