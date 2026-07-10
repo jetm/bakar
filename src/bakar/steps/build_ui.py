@@ -133,7 +133,7 @@ class _RunTask:
     start: float  # time.monotonic() at Started
     estimated: float | None = None  # historical mean seconds for this taskname, if known
     logfile: str | None = None  # host path to the task's log, when known (for the stall guard)
-    cache_backend: str | None = None  # sstate/from-scratch/hashequiv classification, when known
+    cache_backend: str | None = None  # sccache/ccache/none classification, when known
 
 
 def _fmt_stall(seconds: int) -> str:
@@ -1085,7 +1085,7 @@ class BuildUIState:
             setscene_covered = self._setscene_covered
             setscene_total = self._setscene_total
             running = len(self._running)
-            running_tasks = list(self._running.values())
+            backend_tokens = {t.cache_backend for t in self._running.values() if t.cache_backend is not None}
             task = self._build_progress.tasks[0] if self._build_progress.tasks else None
             completed = int(task.completed) if task is not None else 0
             # total is None until bitbake reports it (the bar is created total=None);
@@ -1115,9 +1115,6 @@ class BuildUIState:
         # currently running tasks so a build with many parallel tasks still
         # emits one bounded field rather than growing unbounded with the
         # running count. Omitted entirely when no running task is classified.
-        backend_tokens = {
-            token for t in running_tasks if (token := cache_render.cache_backend_token(t.cache_backend)) is not None
-        }
         if backend_tokens:
             parts.append(f"cache_backend={','.join(sorted(backend_tokens))}")
         line = " ".join(parts)

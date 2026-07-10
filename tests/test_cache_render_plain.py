@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from bakar.cache_render import (
-    cache_backend_token,
     render_ccache_cache_plain,
     render_cluster_plain,
     render_sccache_cache_plain,
@@ -75,30 +74,3 @@ def test_ccache_plain_line() -> None:
     text = render_ccache_cache_plain({"cache_hits": 90, "cache_misses": 10, "hit_rate": 90.0})
     assert _ESC not in text
     assert text == "ccache: 90/10 hit/miss (90% hit)"
-
-
-def test_cache_backend_token_sccache_is_plain_ascii() -> None:
-    token = cache_backend_token("sccache")
-    assert token == "sccache"
-    assert _ESC not in token
-    assert token.isascii()  # no Nerd-Font glyph leaks into the plain token
-
-
-def test_cache_backend_token_ccache_is_plain_ascii() -> None:
-    token = cache_backend_token("ccache")
-    assert token == "ccache"
-    assert _ESC not in token
-    assert token.isascii()
-
-
-def test_cache_backend_token_none_state_is_plain_ascii() -> None:
-    """The classified "none" backend token is the literal string "none", not a glyph."""
-    token = cache_backend_token("none")
-    assert token == "none"
-    assert _ESC not in token
-    assert token.isascii()
-
-
-def test_cache_backend_token_unclassified_is_none_value() -> None:
-    """An unclassified backend returns Python ``None``, distinct from the "none" string."""
-    assert cache_backend_token(None) is None

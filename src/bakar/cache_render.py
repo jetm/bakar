@@ -274,15 +274,6 @@ def cache_backend_badge(backend: str | None) -> tuple[str, str]:
     return _CACHE_BACKEND_BADGE.get(backend or "", ("", ""))
 
 
-def cache_backend_token(backend: str | None) -> str | None:
-    """Plain-``str`` cache-backend token (the classified name), no markup/ANSI.
-
-    Returns ``None`` for an unclassified backend, distinct from the visible
-    ``"none"`` classified token.
-    """
-    return backend
-
-
 def cache_delta(first_doc: dict[str, Any] | None, last_doc: dict[str, Any] | None) -> dict[str, Any] | None:
     """Per-build cache delta between the first-probe baseline and the last doc.
 

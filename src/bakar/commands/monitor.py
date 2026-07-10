@@ -32,7 +32,6 @@ from bakar import hashserv, prserv
 from bakar.build_stop import is_build_running
 from bakar.cache_render import (
     cache_backend_badge,
-    cache_backend_token,
     ccache_doc,
     cluster_doc,
     daemon_doc,
@@ -457,7 +456,7 @@ def _render_plain(snapshot: dict[str, Any]) -> list[str]:
         f"{build['tasks_failed']} failed{rerun_txt}  elapsed {elapsed_txt}"
     )
     for row in build["running"][:16]:
-        token = cache_backend_token(row.get("cache_backend"))
+        token = row.get("cache_backend")
         suffix = f"  cache={token}" if token else ""
         lines.append(f"  {row['task'] or '?'}  {row['recipe'] or '?'}{suffix}")
 
