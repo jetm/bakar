@@ -204,10 +204,10 @@ def test_cache_backend_classification_sets_running_row() -> None:
     classified._package = "glibc-2.39-r0"
     classified._task = "do_compile"
     classified.type = _CACHE_BACKEND_EVENT_TYPE
-    classified._localdata = "sstate"
+    classified._localdata = "sccache"
     ui.process_event(_METADATA_EVENT, classified)
 
-    assert ui._running["glibc-2.39-r0:do_compile"].cache_backend == "sstate"
+    assert ui._running["glibc-2.39-r0:do_compile"].cache_backend == "sccache"
 
 
 @pytest.mark.unit
@@ -219,7 +219,7 @@ def test_cache_backend_classification_for_completed_task_is_noop() -> None:
     classified._package = "glibc-2.39-r0"
     classified._task = "do_compile"
     classified.type = _CACHE_BACKEND_EVENT_TYPE
-    classified._localdata = "sstate"
+    classified._localdata = "sccache"
     ui.process_event(_METADATA_EVENT, classified)
     assert ui._running == {}
 
@@ -237,7 +237,7 @@ def test_metadata_event_wrong_type_ignored() -> None:
     other._package = "glibc-2.39-r0"
     other._task = "do_compile"
     other.type = "some-other-metadata-event"
-    other._localdata = "sstate"
+    other._localdata = "sccache"
     ui.process_event(_METADATA_EVENT, other)
 
     assert ui._running["glibc-2.39-r0:do_compile"].cache_backend is None

@@ -201,7 +201,7 @@ def test_metadata_event_classifies_cache_backend(tmp_path: Path) -> None:
     classified._package = "busybox-1.36.1-r0"  # type: ignore[attr-defined]
     classified._task = "do_compile"  # type: ignore[attr-defined]
     classified.type = "bakar-cache-backend"  # type: ignore[attr-defined]
-    classified._localdata = "sstate"  # type: ignore[attr-defined]
+    classified._localdata = "sccache"  # type: ignore[attr-defined]
 
     log = tmp_path / "bitbake_eventlog.json"
     log.write_text(
@@ -214,7 +214,7 @@ def test_metadata_event_classifies_cache_backend(tmp_path: Path) -> None:
 
     artifact = eventlog.normalize(log)
     task = next(t for t in artifact["tasks"] if t["recipe"] == "busybox-1.36.1-r0")
-    assert task["cache_backend"] == "sstate"
+    assert task["cache_backend"] == "sccache"
 
 
 @pytest.mark.unit

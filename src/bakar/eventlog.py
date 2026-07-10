@@ -67,8 +67,8 @@ _MONITOR_DISK_EVENT = "bb.event.MonitorDiskEvent"
 _DISK_USAGE_SAMPLE = "bb.event.DiskUsageSample"
 _DISK_FULL = "bb.event.DiskFull"
 _METADATA_EVENT = "bb.event.MetadataEvent"
-# The literal ``type`` string task 1.2's bbclass fires on the MetadataEvent
-# that classifies a task's cache backend (sstate vs from-scratch vs hashequiv).
+# The literal ``type`` string the cache_classify.bbclass fires on the
+# MetadataEvent that classifies a task's cache backend (sccache/ccache/none).
 _CACHE_BACKEND_EVENT_TYPE = "bakar-cache-backend"
 
 _TASK_CLASSES = frozenset(

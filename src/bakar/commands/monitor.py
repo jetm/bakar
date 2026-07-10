@@ -314,13 +314,18 @@ def _snapshot(
     """Assemble one monitor snapshot doc (cache status + build progress).
 
     Mirrors the live build UI's cache-probe split (``steps/kas_build.py``'s
-    ``_cache_probe``): sccache-dist and ccache follow the hybrid model in
-    ``config.py`` (``BuildConfig.ccache``/``use_sccache_dist``) - ccache stays
-    selected even under sccache-dist, rather than the two being mutually
-    exclusive launchers. sccache-dist builds get the cluster + sccache-daemon
-    docs; ccache builds - the default, since ``BuildConfig.ccache`` defaults
-    True and ``sccache_dist`` defaults False - get the ccache hit/miss doc
-    instead. Both are None when neither launcher is on.
+    ``_cache_probe``): both pick one doc type via the same
+    ``if use_sccache_dist: ... elif ccache: ...`` precedence, sccache-dist
+    winning when both launchers are genuinely active. This snapshot's own
+    ``cluster``/``build_daemon`` vs ``ccache`` fields are therefore still
+    mutually exclusive in what gets POPULATED here - that is a display
+    precedence choice of this function, not a claim about the underlying
+    launcher configuration. The launchers themselves follow the hybrid model
+    in ``config.py`` (``BuildConfig.ccache``/``use_sccache_dist``): ccache
+    stays selected as the compiler launcher for non-allow-listed recipes even
+    when sccache-dist is on, so a hybrid build's ccache activity is real even
+    on a snapshot where this function reports only the cluster/daemon docs.
+    Both cluster/daemon and ccache are None when neither launcher is on.
     """
     cluster = None
     build_daemon = None
