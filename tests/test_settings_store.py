@@ -37,6 +37,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "defaults.ti.manifest": "processor-sdk-scarthgap.txt",
         "build.kas_container_image": "jetm/kas-build-env:latest",
         "build.show_doctor_report": "false",
+        "build.show_baseline_drift": "true",
         "build.dl_dir": "/data/dl",
         "build.sstate_dir": "/data/sstate",
         "build.sstate_mirror_url": "https://cache.example.com",

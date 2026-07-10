@@ -151,9 +151,12 @@ def test_getvar_colon_overlay_forwarded_to_ctx(
     assert len(calls) == 1
     # host_mode defaults on (no container image), so the host isolation overlay
     # is appended; filter it to assert the user colon-overlay forwarding.
+    # cache-classify is always on, so 2 extras remain: the user's colon
+    # overlay and the always-on cache-classify tuning overlay.
     extras = [o for o in calls[0]["extra_overlays"] if o.name != "bakar-tuning-host.yml"]
-    assert len(extras) == 1
-    assert extras[0].resolve() == overlay_yaml.resolve()
+    assert len(extras) == 2
+    assert overlay_yaml.resolve() in {o.resolve() for o in extras}
+    assert any(o.name == "bakar-tuning-cache-classify.yml" for o in extras)
 
 
 @pytest.mark.unit
@@ -163,10 +166,11 @@ def test_getvar_single_yaml_no_extras(
     machine_yaml: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A bare single positional YAML and a default config leave ctx.extra_overlays empty.
+    """A bare single positional YAML and a default config leave no USER extra overlays.
 
-    Pins a default ``UserConfig`` (no tuning enabled) so neither a user overlay
-    nor an opt-in tuning overlay appears.
+    Pins a default ``UserConfig`` (no opt-in tuning enabled) so no user overlay
+    and no opt-in tuning overlay appears - only the always-on cache-classify
+    overlay remains, since it is unconditional regardless of config.
     """
     from bakar.user_config import UserConfig
 
@@ -181,9 +185,14 @@ def test_getvar_single_yaml_no_extras(
         )
 
     assert result.exit_code == 0, result.output
-    # host_mode defaults on (no container image), so only the host isolation
-    # overlay is appended; assert no USER extra overlays beyond it.
-    user_extras = [o for o in calls[0]["extra_overlays"] if o.name != "bakar-tuning-host.yml"]
+    # host_mode defaults on (no container image), so the host isolation
+    # overlay is appended; filter it out along with the always-on
+    # cache-classify overlay, leaving zero USER-supplied extra overlays.
+    user_extras = [
+        o
+        for o in calls[0]["extra_overlays"]
+        if o.name not in {"bakar-tuning-host.yml", "bakar-tuning-cache-classify.yml"}
+    ]
     assert user_extras == []
 
 
