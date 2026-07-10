@@ -39,6 +39,7 @@ _BOOL_FIELDS = {
     "ccache_shared",
     "psi_autocalibrate",
     "sccache_dist",
+    "mold",
     "cluster",
     "ccache",
     "rm_work",
@@ -94,6 +95,10 @@ class UserConfig:
     scheduler: str | None = None
     sccache_dist: bool = False
     sccache_scheduler_url: str | None = None
+    # mold linker enable toggle (default off). When set the tuning stack adds the
+    # meta-bakar-mold layer and inherits mold.bbclass; resolve()'s accelerator
+    # tier (CLI --mold > BAKAR_MOLD env > this config value > default) reads it.
+    mold: bool = False
     # Address the workspace cache services (hashserv, prserv) bind to so other
     # cluster nodes can reach them. None keeps the safe localhost-only default;
     # set it to the node's cluster-reachable IP (e.g. the direct-link address)
@@ -209,6 +214,7 @@ _BUILD_KEYS = {
     "scheduler": "scheduler",
     "sccache_dist": "sccache_dist",
     "sccache_scheduler_url": "sccache_scheduler_url",
+    "mold": "mold",
     "cluster_bind_host": "cluster_bind_host",
     "bb_hashserve": "bb_hashserve",
     "prserv_host": "prserv_host",

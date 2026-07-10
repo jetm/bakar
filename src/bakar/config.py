@@ -168,6 +168,35 @@ def pick_host_toggle(
     return None
 
 
+def _resolve_mold(
+    *,
+    mold: bool | None,
+    mold_baseline: bool | None,
+    user_config: UserConfig | None,
+) -> tuple[bool, Literal["list", "global", "baseline"]]:
+    """Resolve the mold enable toggle and mode at the accelerator tier.
+
+    Precedence for the enable bool is CLI ``--mold`` > ``BAKAR_MOLD`` env >
+    ``[build] mold`` config > default off. ``--mold-baseline`` is the symmetric
+    bfd measurement arm: it enables mold in ``baseline`` mode and is mutually
+    exclusive with ``--mold`` (both set is a hard error). Neither CLI flag set
+    falls through to env/config; both are flag-style so their CLI value is
+    ``True`` when passed and ``None`` otherwise.
+    """
+    if mold and mold_baseline:
+        raise ValueError("--mold and --mold-baseline are mutually exclusive")
+    if mold_baseline:
+        return True, "baseline"
+    if mold:
+        return True, "list"
+    resolved = pick_bool(
+        "BAKAR_MOLD",
+        ws_val=None,
+        user_val=user_config.mold if user_config is not None else False,
+    )
+    return resolved, "list"
+
+
 @dataclass(frozen=True)
 class _FamilyDefaults:
     d_machine: str
@@ -315,6 +344,14 @@ class BuildConfig:
     # byte-for-byte unchanged (ccache stays) until the user opts in.
     sccache_dist: bool = field(default=False)
     sccache_scheduler_url: str | None = field(default=None)
+    # mold linker. When mold is True the tuning stack adds the meta-bakar-mold
+    # layer and inherits mold.bbclass, injecting -fuse-ld=mold into target link
+    # steps. mold_mode selects the gate: "list" (allow-list via MOLD_INCLUDED_PN,
+    # the default), "global" (deny-list via MOLD_EXCLUDED_PN), or "baseline"
+    # (inject -fuse-ld=bfd over the same included set for symmetric measurement).
+    # Default off, so a build is byte-for-byte unchanged until the user opts in.
+    mold: bool = field(default=False)
+    mold_mode: Literal["list", "global", "baseline"] = "list"
     # Bind address for the workspace cache services (hashserv, prserv). None
     # means localhost-only (single-node default); set to a cluster-reachable IP
     # so other nodes can share one hashserv/prserv. See user_config.cluster_bind_host.
@@ -638,6 +675,8 @@ def resolve(
     workspace_config: WorkspaceConfig | None = None,
     preset: PresetEntry | None = None,
     family_is_explicit: bool = True,
+    mold: bool | None = None,
+    mold_baseline: bool | None = None,
 ) -> BuildConfig:
     """Resolve BuildConfig from CLI flags, env vars, config, and family defaults.
 
@@ -682,6 +721,13 @@ def resolve(
     ``bsp_family`` was instead derived via a heuristic fallback default -
     in that case a disagreement silently defers to the preset's family
     instead of raising.
+
+    ``mold`` and ``mold_baseline`` are the CLI overrides for the mold linker
+    (both flag-style, so ``True`` when passed and ``None`` otherwise). ``mold``
+    enables mold at the accelerator tier (CLI > ``BAKAR_MOLD`` env > ``[build]
+    mold`` config > default off); ``mold_baseline`` enables mold in the
+    symmetric bfd ``baseline`` measurement mode. Passing both raises
+    ``ValueError`` - they are mutually exclusive.
     """
 
     if spec is None:
@@ -784,6 +830,8 @@ def resolve(
             return user_val
         return default
 
+    resolved_mold, resolved_mold_mode = _resolve_mold(mold=mold, mold_baseline=mold_baseline, user_config=user_config)
+
     return BuildConfig(
         workspace=workspace.resolve(),
         bsp_family=bsp_family,
@@ -849,6 +897,8 @@ def resolve(
             user_val=user_config.sccache_dist if user_config is not None else False,
         ),
         sccache_scheduler_url=user_config.sccache_scheduler_url if user_config else None,
+        mold=resolved_mold,
+        mold_mode=resolved_mold_mode,
         cluster_bind_host=user_config.cluster_bind_host if user_config else None,
         bb_hashserve=user_config.bb_hashserve if user_config else None,
         prserv_host=user_config.prserv_host if user_config else None,
