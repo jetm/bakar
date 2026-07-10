@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from bakar.eventlog import _decode_line, _EventStub
+from bakar.eventlog import _CACHE_BACKEND_EVENT_TYPE, _METADATA_EVENT, _decode_line, _EventStub
 from bakar.steps.build_ui import (
     _EVT_CACHE_LOAD_PROGRESS,
     _EVT_PARSE_COMPLETED,
@@ -184,6 +184,63 @@ def test_task_failed_removes_running_row() -> None:
     failed._task = "do_compile"
     ui.process_event(_EVT_TASK_FAILED, failed)
     assert ui._running == {}
+
+
+# ---------------------------------------------------------------------------
+# Cache-backend classification -- MetadataEvent attaches to a running row
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_cache_backend_classification_sets_running_row() -> None:
+    ui = BuildUIState()
+    started = _EventStub()
+    started._package = "glibc-2.39-r0"
+    started.taskname = "do_compile"
+    started._task = "do_compile"
+    ui.process_event(_EVT_TASK_STARTED, started)
+
+    classified = _EventStub()
+    classified._package = "glibc-2.39-r0"
+    classified._task = "do_compile"
+    classified.type = _CACHE_BACKEND_EVENT_TYPE
+    classified._localdata = "sstate"
+    ui.process_event(_METADATA_EVENT, classified)
+
+    assert ui._running["glibc-2.39-r0:do_compile"].cache_backend == "sstate"
+
+
+@pytest.mark.unit
+def test_cache_backend_classification_for_completed_task_is_noop() -> None:
+    ui = BuildUIState()
+    # No TaskStarted for this task -- it already completed and was popped from
+    # _running before the classification event arrived.
+    classified = _EventStub()
+    classified._package = "glibc-2.39-r0"
+    classified._task = "do_compile"
+    classified.type = _CACHE_BACKEND_EVENT_TYPE
+    classified._localdata = "sstate"
+    ui.process_event(_METADATA_EVENT, classified)
+    assert ui._running == {}
+
+
+@pytest.mark.unit
+def test_metadata_event_wrong_type_ignored() -> None:
+    ui = BuildUIState()
+    started = _EventStub()
+    started._package = "glibc-2.39-r0"
+    started.taskname = "do_compile"
+    started._task = "do_compile"
+    ui.process_event(_EVT_TASK_STARTED, started)
+
+    other = _EventStub()
+    other._package = "glibc-2.39-r0"
+    other._task = "do_compile"
+    other.type = "some-other-metadata-event"
+    other._localdata = "sstate"
+    ui.process_event(_METADATA_EVENT, other)
+
+    assert ui._running["glibc-2.39-r0:do_compile"].cache_backend is None
 
 
 # ---------------------------------------------------------------------------

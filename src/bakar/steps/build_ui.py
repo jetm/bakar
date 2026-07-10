@@ -48,6 +48,8 @@ from rich.text import Text
 
 from bakar import cache_render, task_timings
 from bakar.eventlog import (
+    _CACHE_BACKEND_EVENT_TYPE,
+    _METADATA_EVENT,
     _RUNQUEUE_TASK_STARTED,
     _TASK_FAILED,
     _TASK_FAILED_SILENT,
@@ -131,6 +133,7 @@ class _RunTask:
     start: float  # time.monotonic() at Started
     estimated: float | None = None  # historical mean seconds for this taskname, if known
     logfile: str | None = None  # host path to the task's log, when known (for the stall guard)
+    cache_backend: str | None = None  # sstate/from-scratch/hashequiv classification, when known
 
 
 def _fmt_stall(seconds: int) -> str:
@@ -519,6 +522,14 @@ class BuildUIState:
                     estimated=mean,
                     logfile=logfile,
                 )
+            return
+
+        if class_name == _METADATA_EVENT and getattr(event, "type", None) == _CACHE_BACKEND_EVENT_TYPE:
+            recipe, taskname = _task_key(event)
+            with self._lock:
+                task = self._running.get(f"{recipe}:{taskname}")
+                if task is not None:
+                    task.cache_backend = getattr(event, "_localdata", None)
             return
 
         if class_name == _EVT_TASK_FAILED:
