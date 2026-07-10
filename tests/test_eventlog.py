@@ -148,11 +148,11 @@ def test_normalize_returns_schema_keys() -> None:
 @pytest.mark.unit
 def test_normalize_prunes_dead_schema_fields() -> None:
     """The pruned build.preset/build.release/setscene.per_recipe fields must
-    stay gone, and SCHEMA_VERSION must reflect the shape change (2 -> 3)."""
+    stay gone, and SCHEMA_VERSION must reflect the shape change (3 -> 4)."""
     artifact = eventlog.normalize(FIXTURE)
 
-    assert eventlog.SCHEMA_VERSION == 3
-    assert artifact["schema_version"] == 3
+    assert eventlog.SCHEMA_VERSION == 4
+    assert artifact["schema_version"] == 4
     assert "preset" not in artifact["build"]
     assert "release" not in artifact["build"]
     assert "per_recipe" not in artifact["setscene"]
@@ -256,7 +256,7 @@ def test_running_tasks_malformed_log_returns_empty(tmp_path: Path) -> None:
 @pytest.mark.unit
 def test_normalize_psi_disk_absent_when_no_records(tmp_path: Path) -> None:
     """No PSIEvent/MonitorDiskEvent/DiskUsageSample/DiskFull records in the raw
-    log yields empty psi/disk sections, schema_version 3, and no exception."""
+    log yields empty psi/disk sections, schema_version 4, and no exception."""
     _write_eventlog(
         tmp_path,
         [_task_event("bb.build.TaskStarted", "busybox-1.36.1-r0", "do_compile", started=100.0)],
@@ -264,7 +264,7 @@ def test_normalize_psi_disk_absent_when_no_records(tmp_path: Path) -> None:
 
     artifact = eventlog.normalize(tmp_path / "bitbake_eventlog.json")
 
-    assert artifact["schema_version"] == 3
+    assert artifact["schema_version"] == 4
     assert artifact["psi"] == {"samples": []}
     assert artifact["disk"] == {"samples": [], "full_events": []}
 
@@ -286,7 +286,7 @@ def test_normalize_captures_psi_event(tmp_path: Path) -> None:
 
     artifact = eventlog.normalize(log)
 
-    assert artifact["schema_version"] == 3
+    assert artifact["schema_version"] == 4
     assert artifact["psi"]["samples"] == [{"time": 42.0, "cpu": 12.5, "io": 60.0, "memory": 3.0}]
     assert artifact["disk"] == {"samples": [], "full_events": []}
 
@@ -324,7 +324,7 @@ def test_normalize_captures_disk_usage_and_full_events(tmp_path: Path) -> None:
 
     artifact = eventlog.normalize(log)
 
-    assert artifact["schema_version"] == 3
+    assert artifact["schema_version"] == 4
     assert artifact["disk"]["samples"] == [
         {"path": "/work/build", "used": 100, "free": 50, "total": 150},
     ]

@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 
 # Bumped when the artifact shape changes so downstream consumers
 # (build-insights, triage) can detect format drift.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # bitbake event class names (the JSON line's ``class`` field) we recognize.
 # Each decoded event is classified by this string, NOT by isinstance - the
@@ -66,6 +66,10 @@ _PSI_EVENT = "bb.event.PSIEvent"
 _MONITOR_DISK_EVENT = "bb.event.MonitorDiskEvent"
 _DISK_USAGE_SAMPLE = "bb.event.DiskUsageSample"
 _DISK_FULL = "bb.event.DiskFull"
+_METADATA_EVENT = "bb.event.MetadataEvent"
+# The literal ``type`` string task 1.2's bbclass fires on the MetadataEvent
+# that classifies a task's cache backend (sstate vs from-scratch vs hashequiv).
+_CACHE_BACKEND_EVENT_TYPE = "bakar-cache-backend"
 
 _TASK_CLASSES = frozenset(
     {
@@ -89,6 +93,7 @@ _RECOGNIZED_CLASSES = _TASK_CLASSES | {
     _MONITOR_DISK_EVENT,
     _DISK_USAGE_SAMPLE,
     _DISK_FULL,
+    _METADATA_EVENT,
 }
 
 
@@ -340,6 +345,7 @@ def normalize(raw_path: Path) -> dict[str, Any]:
                 "completed": None,
                 "pid": None,
                 "logfile": None,
+                "cache_backend": None,
             }
             tasks[key] = row
         return row
@@ -357,6 +363,13 @@ def normalize(raw_path: Path) -> dict[str, Any]:
             row["pid"] = _first(event, "pid")
             if row["logfile"] is None:
                 row["logfile"] = _first(event, "logfile")
+        elif class_name == _METADATA_EVENT and getattr(event, "type", None) == _CACHE_BACKEND_EVENT_TYPE:
+            # task 1.2's bbclass fires a MetadataEvent with _package/_task set to
+            # the same identity keys TaskStarted uses, so _task_row (via _task_key)
+            # merges this into the existing task row. The classification string
+            # rides in _localdata; identity is read only from _package/_task.
+            row = _task_row(event)
+            row["cache_backend"] = _first(event, "_localdata")
         elif class_name == _TASK_SUCCEEDED:
             row = _task_row(event)
             row["outcome"] = "succeeded"
