@@ -732,12 +732,14 @@ def test_sccache_class_routes_build_compiler_through_sccache() -> None:
 
     assert (
         'BUILD_CC:forcevariable = "${CCACHE}${BUILD_PREFIX}'
-        "${@bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang', 'gcc', d)}"
+        "${@bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang', "
+        "bb.utils.contains('TCOVERRIDE', 'toolchain-clang', 'clang', 'gcc', d), d)}"
         ' ${BUILD_CC_ARCH}"' in text
     )
     assert (
         'BUILD_CXX:forcevariable = "${CCACHE}${BUILD_PREFIX}'
-        "${@bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang++', 'g++', d)}"
+        "${@bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang++', "
+        "bb.utils.contains('TCOVERRIDE', 'toolchain-clang', 'clang++', 'g++', d), d)}"
         ' ${BUILD_CC_ARCH}"' in text
     )
 
@@ -759,8 +761,32 @@ def test_sccache_class_respects_native_clang_toolchain() -> None:
     """
     text = _sccache_bbclass_text()
 
-    assert "bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang', 'gcc', d)" in text
-    assert "bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang++', 'g++', d)" in text
+    assert "bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang', " in text
+    assert "bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang++', " in text
+
+
+@pytest.mark.unit
+def test_sccache_class_respects_target_clang_toolchain_override() -> None:
+    """BUILD_CC/CXX also pick clang when TCOVERRIDE says the target uses clang.
+
+    Some recipes mirror their OWN target-side clang choice into BUILD_CC via a
+    :toolchain-clang override rather than setting TOOLCHAIN_NATIVE - e.g.
+    chromium-gn.inc's "also build the parts that are run on the host with
+    clang": BUILD_CC:toolchain-clang = "clang", keyed on clang.bbclass's
+    TCOVERRIDE = "toolchain-clang" (oe-core's canonical "target uses clang"
+    signal; see clang.bbclass/gcc.bbclass). Before this test,
+    BUILD_CC:forcevariable only checked TOOLCHAIN_NATIVE, so it silently
+    overwrote chromium's own correct override back to gcc - do_compile then
+    failed with a wall of "g++: error: unrecognized command-line option" for
+    every clang-only flag (-fcolor-diagnostics, --target=..., -mllvm, ...)
+    baked into the GN-generated build command. This is the falsifier: a
+    TOOLCHAIN_NATIVE-only check, with no TCOVERRIDE fallback, would still
+    force this recipe's native compiler onto gcc.
+    """
+    text = _sccache_bbclass_text()
+
+    assert "bb.utils.contains('TCOVERRIDE', 'toolchain-clang', 'clang', 'gcc', d)" in text
+    assert "bb.utils.contains('TCOVERRIDE', 'toolchain-clang', 'clang++', 'g++', d)" in text
 
 
 @pytest.mark.unit
