@@ -10,7 +10,16 @@ from __future__ import annotations
 import pytest
 from rich.text import Text
 
-from bakar.cache_render import daemon_doc, render_ccache_cache, render_cluster, render_sccache_cache
+from bakar.cache_render import (
+    _BACKEND_BAN_GLYPH,
+    _BACKEND_DATABASE_GLYPH,
+    _BACKEND_SITEMAP_GLYPH,
+    cache_backend_badge,
+    daemon_doc,
+    render_ccache_cache,
+    render_cluster,
+    render_sccache_cache,
+)
 from bakar.diagnostics import BuildDaemonReport
 
 pytestmark = pytest.mark.unit
@@ -147,3 +156,33 @@ def test_render_sccache_cache_emits_a_line_per_language() -> None:
     assert "84% hit" in rust_line
     # The per-node distribution is rendered too.
     assert any("10.42.0.2:10501" in ln for ln in lines)
+
+
+def test_cache_backend_badge_sccache_is_green_sitemap() -> None:
+    glyph, colour = cache_backend_badge("sccache")
+    assert glyph == _BACKEND_SITEMAP_GLYPH
+    assert colour == "green"
+
+
+def test_cache_backend_badge_ccache_is_cyan_database() -> None:
+    glyph, colour = cache_backend_badge("ccache")
+    assert glyph == _BACKEND_DATABASE_GLYPH
+    assert colour == "cyan"
+
+
+def test_cache_backend_badge_none_state_is_dim_red_ban() -> None:
+    """The classified "none" backend (no cache active) gets the visible ban badge."""
+    glyph, colour = cache_backend_badge("none")
+    assert glyph == _BACKEND_BAN_GLYPH
+    assert colour == "dim red"
+
+
+def test_cache_backend_badge_unclassified_is_empty() -> None:
+    """An unclassified backend (None) is distinct from the "none" state: empty glyph/colour."""
+    assert cache_backend_badge(None) == ("", "")
+
+
+def test_cache_backend_badge_glyphs_are_distinct() -> None:
+    """Each classified state's glyph reads apart from the other two at a glance."""
+    glyphs = {cache_backend_badge(backend)[0] for backend in ("sccache", "ccache", "none")}
+    assert len(glyphs) == 3
