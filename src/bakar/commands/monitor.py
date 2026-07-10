@@ -31,6 +31,8 @@ import bakar.commands._app as _state
 from bakar import hashserv, prserv
 from bakar.build_stop import is_build_running
 from bakar.cache_render import (
+    cache_backend_badge,
+    cache_backend_token,
     ccache_doc,
     cluster_doc,
     daemon_doc,
@@ -206,7 +208,7 @@ def _build_progress(run_dir: Path) -> dict[str, Any]:
         "tasks_running": len(running),
         "tasks_failed": failed,
         "tasks_setscene_rerun": setscene_rerun,
-        "running": [{"recipe": r.recipe, "task": r.task} for r in running],
+        "running": [{"recipe": r.recipe, "task": r.task, "cache_backend": r.cache_backend} for r in running],
         "failures": artifact["failures"][-_FAILURE_TAIL:],
     }
 
@@ -313,9 +315,10 @@ def _snapshot(
     """Assemble one monitor snapshot doc (cache status + build progress).
 
     Mirrors the live build UI's cache-probe split (``steps/kas_build.py``'s
-    ``_cache_probe``): sccache-dist and ccache are mutually-exclusive
-    launchers (the sccache overlay does ``INHERIT:remove = "ccache"``), so at
-    most one is active. sccache-dist builds get the cluster + sccache-daemon
+    ``_cache_probe``): sccache-dist and ccache follow the hybrid model in
+    ``config.py`` (``BuildConfig.ccache``/``use_sccache_dist``) - ccache stays
+    selected even under sccache-dist, rather than the two being mutually
+    exclusive launchers. sccache-dist builds get the cluster + sccache-daemon
     docs; ccache builds - the default, since ``BuildConfig.ccache`` defaults
     True and ``sccache_dist`` defaults False - get the ccache hit/miss doc
     instead. Both are None when neither launcher is on.
@@ -380,10 +383,16 @@ def _render(snapshot: dict[str, Any]) -> Group:
         table = Table(show_edge=False, box=None, pad_edge=False)
         table.add_column("task", no_wrap=True)
         table.add_column("recipe", no_wrap=True)
+        table.add_column("cache", no_wrap=True)
         for row in build["running"][:16]:
             task = row["task"] or "?"
             icon, colour = _task_style(task)
-            table.add_row(Text(f"{icon} {task}", style=colour), Text(str(row["recipe"] or "?"), style="dim"))
+            glyph, badge_colour = cache_backend_badge(row.get("cache_backend"))
+            table.add_row(
+                Text(f"{icon} {task}", style=colour),
+                Text(str(row["recipe"] or "?"), style="dim"),
+                Text(glyph, style=badge_colour) if glyph else Text(""),
+            )
         parts.append(table)
 
     failures = build["failures"]
@@ -447,7 +456,10 @@ def _render_plain(snapshot: dict[str, Any]) -> list[str]:
         f"build: [{state}] {tasks_txt}, {build['tasks_running']} running, "
         f"{build['tasks_failed']} failed{rerun_txt}  elapsed {elapsed_txt}"
     )
-    lines.extend(f"  {row['task'] or '?'}  {row['recipe'] or '?'}" for row in build["running"][:16])
+    for row in build["running"][:16]:
+        token = cache_backend_token(row.get("cache_backend"))
+        suffix = f"  cache={token}" if token else ""
+        lines.append(f"  {row['task'] or '?'}  {row['recipe'] or '?'}{suffix}")
 
     failures = build["failures"]
     kas_errors = snapshot.get("kas_errors") or []

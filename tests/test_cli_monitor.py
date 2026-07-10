@@ -142,7 +142,7 @@ def test_json_once_emits_cluster_and_build(
     assert build["tasks_failed"] == 1
     assert build["tasks_setscene_rerun"] == 1
     assert build["tasks_running"] == 1
-    assert build["running"] == [{"recipe": "zlib-1.3-r0", "task": "do_configure"}]
+    assert build["running"] == [{"recipe": "zlib-1.3-r0", "task": "do_configure", "cache_backend": None}]
     assert build["live"] is False
     # Elapsed is derived from the run-dir name (BuildStarted carries no time),
     # so it is populated even though build.started is None.
