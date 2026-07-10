@@ -45,13 +45,13 @@ if [ -z "$real" ]; then
     IFS=":"
     for d in $PATH; do
         [ -n "$d" ] || d="."
+        # Cheap check first: only canonicalise the dir once a candidate linker
+        # actually lives there and is executable (and not a directory).
+        [ -x "$d/$linker" ] && [ ! -d "$d/$linker" ] || continue
         cd_d="$(cd "$d" 2>/dev/null && pwd)" || continue
         [ "$cd_d" = "$selfdir" ] && continue
-        cand="$cd_d/$linker"
-        if [ -x "$cand" ] && [ ! -d "$cand" ]; then
-            real="$cand"
-            break
-        fi
+        real="$cd_d/$linker"
+        break
     done
     IFS="$oldifs"
 fi
@@ -143,12 +143,15 @@ else
 fi
 
 # Escape a value for inclusion in a JSON string (backslash then doublequote).
+# Only "output" needs it: it is a build-supplied path that can carry a quote or
+# backslash, whereas "linker" and "recipe" are a linker basename and a PN, which
+# the toolchain guarantees cannot contain either character.
 esc() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
 line="$(printf '{"linker":"%s","recipe":"%s","output":"%s","wall_ms":%s,"nproc":%s,"loadavg":%s,"threads":%s}' \
-    "$(esc "$linker")" "$(esc "$recipe")" "$(esc "$output")" \
+    "$linker" "$recipe" "$(esc "$output")" \
     "$wall_ms" "$nproc" "$loadavg" "$threads")"
 
 # Single O_APPEND write keeps parallel-link records from interleaving. A logging

@@ -1,10 +1,12 @@
 """Tests for the mold-linker config plumbing (task 3.1).
 
 Covers the ``BuildConfig.mold``/``mold_mode`` fields, the ``UserConfig.mold``
-config tier, and ``resolve()``'s accelerator-tier precedence (CLI > BAKAR_MOLD
-env > [build] mold config > default off) plus the ``--mold`` / ``--mold-baseline``
-mutual exclusion. The ``resolve`` keyword groups these tests for the task's
-verify command.
+config tier, and ``resolve()``'s accelerator-tier precedence (BAKAR_MOLD env >
+[build] mold config > default off). The CLI ``--mold`` / ``--mold-baseline``
+overrides are applied above ``resolve()`` via ``apply_mold_overrides`` (mirroring
+the global ``--sccache-dist`` flag), so those paths are exercised through the
+helper and the ``_app`` callback here, not through a ``resolve()`` parameter. The
+``resolve`` keyword groups these tests for the task's verify command.
 """
 
 from __future__ import annotations
@@ -93,20 +95,38 @@ def test_resolve_mold_default_off(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_resolve_cli_mold_enables(tmp_path: Path) -> None:
-    """The --mold CLI override enables mold in list mode."""
-    cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", mold=True)
+def test_cli_mold_flips_cfg_via_apply(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The --mold global flips cfg.mold True on the wired command path.
+
+    The build command resolves() (mold off from config) then calls
+    apply_mold_overrides(); this asserts that sequence enables mold in list mode.
+    """
+    import bakar.commands._app as _state
+    from bakar.commands._helpers import apply_mold_overrides
+
+    monkeypatch.setattr(_state, "_MOLD", True)
+    monkeypatch.setattr(_state, "_MOLD_BASELINE", False)
+
+    cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp")
+    assert cfg.mold is False  # resolve() alone does not see the CLI flag
+    cfg = apply_mold_overrides(cfg)
 
     assert cfg.mold is True
     assert cfg.mold_mode == "list"
 
 
 @pytest.mark.unit
-def test_resolve_cli_mold_overrides_disabling_user_config(tmp_path: Path) -> None:
+def test_cli_mold_overrides_disabling_user_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """--mold wins over a config-file `mold = false` (CLI is the top tier)."""
+    import bakar.commands._app as _state
+    from bakar.commands._helpers import apply_mold_overrides
+
+    monkeypatch.setattr(_state, "_MOLD", True)
+    monkeypatch.setattr(_state, "_MOLD_BASELINE", False)
     uc = UserConfig(mold=False)
 
-    cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", user_config=uc, mold=True)
+    cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = apply_mold_overrides(cfg)
 
     assert cfg.mold is True
 
@@ -134,16 +154,32 @@ def test_resolve_mold_from_user_config(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_resolve_mold_baseline_sets_baseline_mode(tmp_path: Path) -> None:
-    """--mold-baseline enables mold in the symmetric bfd baseline mode."""
-    cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", mold_baseline=True)
+def test_cli_mold_baseline_sets_baseline_mode_via_apply(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The --mold-baseline global flips cfg to baseline mode on the wired command path.
+
+    Mirrors what ``build`` does: resolve() first (mold off), then
+    apply_mold_overrides() folds the callback-set global in.
+    """
+    import bakar.commands._app as _state
+    from bakar.commands._helpers import apply_mold_overrides
+
+    monkeypatch.setattr(_state, "_MOLD", False)
+    monkeypatch.setattr(_state, "_MOLD_BASELINE", True)
+
+    cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp")
+    cfg = apply_mold_overrides(cfg)
 
     assert cfg.mold is True
     assert cfg.mold_mode == "baseline"
 
 
 @pytest.mark.unit
-def test_resolve_mold_and_baseline_together_rejected(tmp_path: Path) -> None:
-    """--mold and --mold-baseline together is a hard error (mutually exclusive)."""
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", mold=True, mold_baseline=True)
+def test_cli_mold_and_baseline_together_rejected_by_callback() -> None:
+    """--mold and --mold-baseline together exits non-zero at the top-level callback."""
+    from typer.testing import CliRunner
+
+    from bakar.cli import app
+
+    result = CliRunner().invoke(app, ["--mold", "--mold-baseline", "build", "--help"])
+
+    assert result.exit_code == 2

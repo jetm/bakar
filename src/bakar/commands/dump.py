@@ -16,6 +16,7 @@ from bakar.commands._helpers import (
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
+    apply_mold_overrides,
     apply_sccache_overrides,
     global_container_mode,
     global_host_mode,
@@ -66,6 +67,7 @@ def dump(
         user_config=_state._USER_CONFIG,
     )
     cfg = apply_sccache_overrides(cfg)
+    cfg = apply_mold_overrides(cfg)
     overlay_source = _overlay_for(bsp)
     extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
     # dump is not a build: use an ephemeral run dir so it does not leave a

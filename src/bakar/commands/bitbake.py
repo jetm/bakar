@@ -34,6 +34,7 @@ from bakar.commands._helpers import (
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
+    apply_mold_overrides,
     apply_sccache_overrides,
     global_container_mode,
     global_host_mode,
@@ -126,6 +127,7 @@ def _run_task(
         user_config=_state._USER_CONFIG,
     )
     cfg = apply_sccache_overrides(cfg)
+    cfg = apply_mold_overrides(cfg)
     overlay_source = _overlay_for(bsp)
     # The cache-classify overlay is the one unconditional entry in
     # _tuning_extra_overlays - every build references it, so materialize it

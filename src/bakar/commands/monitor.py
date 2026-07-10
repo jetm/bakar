@@ -48,6 +48,7 @@ from bakar.commands._helpers import (
     _bsp_from_cwd,
     _dispatch_from_yaml,
     _resolve_workspace,
+    apply_mold_overrides,
     apply_sccache_overrides,
     global_output_mode_override,
 )
@@ -561,6 +562,7 @@ def monitor(
         user_config=_state._USER_CONFIG,
     )
     cfg = apply_sccache_overrides(cfg)
+    cfg = apply_mold_overrides(cfg)
     runs_dir = cfg.runs_dir
     if not runs_dir.is_dir():
         if output_json:

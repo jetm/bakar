@@ -160,13 +160,16 @@ def _lines_from(source: Path | str | Iterable[str]) -> list[str]:
     return list(source)
 
 
-def parse_linklog(source: Path | str | Iterable[str]) -> list[LinkRecord]:
+def parse_linklog(source: Path | str | Iterable[str]) -> tuple[LinkRecord, ...]:
     """Parse the JSON-lines link log into records, skipping bad lines.
 
     ``source`` is the log path or an iterable of its lines. Blank lines, lines
     that are not valid JSON, and objects missing the required ``linker``/
     ``wall_ms`` fields (e.g. a truncated final line from a crashed link) are
     dropped silently, so a partially-written log still aggregates cleanly.
+
+    Returns a tuple so :func:`aggregate_linklog` can hand it straight to
+    :attr:`LinkStatsReport.records` (also a tuple) without re-copying.
     """
     records: list[LinkRecord] = []
     for line in _lines_from(source):
@@ -180,7 +183,7 @@ def parse_linklog(source: Path | str | Iterable[str]) -> list[LinkRecord]:
         record = _record_from(obj)
         if record is not None:
             records.append(record)
-    return records
+    return tuple(records)
 
 
 def aggregate_linklog(source: Path | str | Iterable[str]) -> LinkStatsReport:
@@ -191,7 +194,7 @@ def aggregate_linklog(source: Path | str | Iterable[str]) -> LinkStatsReport:
     retained). See the module docstring: Σ is valid only from the first cold
     instrumented run.
     """
-    records = tuple(parse_linklog(source))
+    records = parse_linklog(source)
 
     total_wall_ms = 0
     per_linker_total: dict[str, int] = {}

@@ -307,22 +307,34 @@ _MOLD_LINKLOG_NAME = "mold-linklog.jsonl"
 
 
 def _inject_literal_mold(cfg: BuildConfig, text: str) -> str:
-    """Append an exported ``BAKAR_MOLD_LINKLOG`` literal to the mold overlay.
+    """Bake the mold link-log path and non-default ``MOLD_MODE`` into the overlay.
 
-    Mirrors :func:`_inject_literal_ccache`'s host/container dual path: the log
-    lands under KAS_WORK_DIR (``cfg.workspace`` for meta-avocado, else
-    ``cfg.bsp_root``) so it is inside the ``/work`` bind mount, written as the
-    absolute host path in host mode and as ``/work/<name>`` in container mode.
-    Idempotent (re-running the injector no-ops) and pure (no filesystem side
-    effects), so dry-run rendering is safe."""
-    if re.search(r"^\s*export\s+BAKAR_MOLD_LINKLOG\b", text, re.MULTILINE):
-        return text
-    base = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
-    log_path = str(base / _MOLD_LINKLOG_NAME) if cfg.host_mode else f"/work/{_MOLD_LINKLOG_NAME}"
+    Two literals are appended to the mold overlay's ``local_conf_header`` block:
+
+    * ``export BAKAR_MOLD_LINKLOG`` - the per-build link-timing log. Mirrors
+      :func:`_inject_literal_ccache`'s host/container dual path: the log lands
+      under KAS_WORK_DIR (``cfg.workspace`` for meta-avocado, else
+      ``cfg.bsp_root``) so it is inside the ``/work`` bind mount, written as the
+      absolute host path in host mode and as ``/work/<name>`` in container mode.
+    * ``MOLD_MODE`` - emitted only when ``cfg.mold_mode`` is not ``list``. The
+      bbclass carries ``MOLD_MODE ??= "list"``, so list is already the default
+      and needs no line; ``baseline`` (the symmetric bfd measurement arm) and
+      ``global`` are unreachable unless the mode is written into local.conf here.
+
+    Each line is guarded so re-running the injector no-ops (idempotent) and it is
+    pure (no filesystem side effects), so dry-run rendering is safe."""
     m = re.search(r"^(?P<indent>[ \t]+)INHERIT\b", text, re.MULTILINE)
     indent = m.group("indent") if m else "    "
-    addition = f'{indent}export BAKAR_MOLD_LINKLOG = "{log_path}"\n'
-    return text.rstrip("\n") + "\n" + addition
+    additions = ""
+    if cfg.mold_mode != "list" and not re.search(r"^\s*MOLD_MODE\b", text, re.MULTILINE):
+        additions += f'{indent}MOLD_MODE = "{cfg.mold_mode}"\n'
+    if not re.search(r"^\s*export\s+BAKAR_MOLD_LINKLOG\b", text, re.MULTILINE):
+        base = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
+        log_path = str(base / _MOLD_LINKLOG_NAME) if cfg.host_mode else f"/work/{_MOLD_LINKLOG_NAME}"
+        additions += f'{indent}export BAKAR_MOLD_LINKLOG = "{log_path}"\n'
+    if not additions:
+        return text
+    return text.rstrip("\n") + "\n" + additions
 
 
 # The base overlays statically strip rm_work (default off while bakar is in

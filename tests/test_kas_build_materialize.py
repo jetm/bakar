@@ -23,7 +23,14 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def _cfg(root: Path, *, kas_yaml: Path | None = None, mold: bool = False, host_mode: bool = False) -> BuildConfig:
+def _cfg(
+    root: Path,
+    *,
+    kas_yaml: Path | None = None,
+    mold: bool = False,
+    mold_mode: str = "list",
+    host_mode: bool = False,
+) -> BuildConfig:
     return BuildConfig(
         workspace=root,
         bsp_family="generic",  # type: ignore[arg-type]
@@ -37,6 +44,7 @@ def _cfg(root: Path, *, kas_yaml: Path | None = None, mold: bool = False, host_m
         kas_yaml_override=kas_yaml if kas_yaml is not None else root / "my.yml",
         host_mode=host_mode,
         mold=mold,
+        mold_mode=mold_mode,  # type: ignore[arg-type]
     )
 
 
@@ -135,3 +143,31 @@ def test_inject_literal_mold_idempotent(tmp_path: Path) -> None:
 
     assert once == twice
     assert twice.count("BAKAR_MOLD_LINKLOG") == 1
+
+
+@pytest.mark.unit
+def test_inject_literal_mold_emits_mode_for_baseline(tmp_path: Path) -> None:
+    """A non-list mode (baseline) is written into local.conf so the arm is reachable."""
+    cfg = _cfg(tmp_path, mold=True, mold_mode="baseline", host_mode=False)
+    text = 'local_conf_header:\n  zz-bakar-60-mold: |\n    INHERIT += "mold"\n'
+
+    injected = _inject_literal_mold(cfg, text)
+
+    assert 'MOLD_MODE = "baseline"' in injected
+    # The link-log literal is still emitted alongside the mode.
+    assert "BAKAR_MOLD_LINKLOG" in injected
+    # Idempotent: neither line is duplicated on a second pass.
+    twice = _inject_literal_mold(cfg, injected)
+    assert twice == injected
+    assert twice.count("MOLD_MODE") == 1
+
+
+@pytest.mark.unit
+def test_inject_literal_mold_omits_mode_for_list(tmp_path: Path) -> None:
+    """List is the bbclass default (MOLD_MODE ??= "list"), so no line is written for it."""
+    cfg = _cfg(tmp_path, mold=True, mold_mode="list", host_mode=False)
+    text = 'local_conf_header:\n  zz-bakar-60-mold: |\n    INHERIT += "mold"\n'
+
+    injected = _inject_literal_mold(cfg, text)
+
+    assert "MOLD_MODE" not in injected

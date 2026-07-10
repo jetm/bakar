@@ -31,6 +31,7 @@ from bakar.commands._helpers import (
     _run_doctor_gate,
     _tuning_extra_overlays,
     _uninitialized_bbsetup_dir,
+    apply_mold_overrides,
     global_container_mode,
     global_host_mode,
     global_output_mode_override,
@@ -161,6 +162,7 @@ def _run_bbsetup_build(
         cfg = replace(cfg, sccache_dist=True)
     if ctx.sccache_scheduler is not None:
         cfg = replace(cfg, sccache_scheduler_url=ctx.sccache_scheduler)
+    cfg = apply_mold_overrides(cfg)
     overlay_source = _overlay_for(None)
     bb_target = cfg.image if cfg.image not in ("", "generic") else "core-image-minimal"
 
@@ -424,6 +426,7 @@ def _run_single_preset_release(
         cfg = replace(cfg, sccache_dist=True)
     if sccache_scheduler is not None:
         cfg = replace(cfg, sccache_scheduler_url=sccache_scheduler)
+    cfg = apply_mold_overrides(cfg)
 
     overlay_source = _overlay_for(bsp)
     extra_overlays: list[Path] = []
@@ -755,6 +758,7 @@ def build(
         cfg = replace(cfg, sccache_dist=True)
     if sccache_scheduler is not None:
         cfg = replace(cfg, sccache_scheduler_url=sccache_scheduler)
+    cfg = apply_mold_overrides(cfg)
 
     extra_overlays: list[Path] = []
     if byo_form:

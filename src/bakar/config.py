@@ -170,25 +170,17 @@ def pick_host_toggle(
 
 def _resolve_mold(
     *,
-    mold: bool | None,
-    mold_baseline: bool | None,
     user_config: UserConfig | None,
 ) -> tuple[bool, Literal["list", "global", "baseline"]]:
     """Resolve the mold enable toggle and mode at the accelerator tier.
 
-    Precedence for the enable bool is CLI ``--mold`` > ``BAKAR_MOLD`` env >
-    ``[build] mold`` config > default off. ``--mold-baseline`` is the symmetric
-    bfd measurement arm: it enables mold in ``baseline`` mode and is mutually
-    exclusive with ``--mold`` (both set is a hard error). Neither CLI flag set
-    falls through to env/config; both are flag-style so their CLI value is
-    ``True`` when passed and ``None`` otherwise.
+    Precedence for the enable bool is ``BAKAR_MOLD`` env > ``[build] mold``
+    config > default off. The mode is always ``list`` at this tier - the CLI
+    ``--mold`` / ``--mold-baseline`` overrides (and the baseline mode they
+    select) are applied above ``resolve()`` via
+    :func:`bakar.commands._helpers.apply_mold_overrides`, mirroring how the
+    global ``--sccache-dist`` flag is folded in after resolution.
     """
-    if mold and mold_baseline:
-        raise ValueError("--mold and --mold-baseline are mutually exclusive")
-    if mold_baseline:
-        return True, "baseline"
-    if mold:
-        return True, "list"
     resolved = pick_bool(
         "BAKAR_MOLD",
         ws_val=None,
@@ -675,8 +667,6 @@ def resolve(
     workspace_config: WorkspaceConfig | None = None,
     preset: PresetEntry | None = None,
     family_is_explicit: bool = True,
-    mold: bool | None = None,
-    mold_baseline: bool | None = None,
 ) -> BuildConfig:
     """Resolve BuildConfig from CLI flags, env vars, config, and family defaults.
 
@@ -720,14 +710,11 @@ def resolve(
     ``ValueError`` loudly. Pass ``family_is_explicit=False`` when
     ``bsp_family`` was instead derived via a heuristic fallback default -
     in that case a disagreement silently defers to the preset's family
-    instead of raising.
 
-    ``mold`` and ``mold_baseline`` are the CLI overrides for the mold linker
-    (both flag-style, so ``True`` when passed and ``None`` otherwise). ``mold``
-    enables mold at the accelerator tier (CLI > ``BAKAR_MOLD`` env > ``[build]
-    mold`` config > default off); ``mold_baseline`` enables mold in the
-    symmetric bfd ``baseline`` measurement mode. Passing both raises
-    ``ValueError`` - they are mutually exclusive.
+    Mold is resolved from env/config only here (``BAKAR_MOLD`` env > ``[build]
+    mold`` config > default off, always ``list`` mode); the CLI ``--mold`` /
+    ``--mold-baseline`` overrides are folded into the returned config above
+    ``resolve()`` via :func:`bakar.commands._helpers.apply_mold_overrides`.
     """
 
     if spec is None:
@@ -830,7 +817,7 @@ def resolve(
             return user_val
         return default
 
-    resolved_mold, resolved_mold_mode = _resolve_mold(mold=mold, mold_baseline=mold_baseline, user_config=user_config)
+    resolved_mold, resolved_mold_mode = _resolve_mold(user_config=user_config)
 
     return BuildConfig(
         workspace=workspace.resolve(),
