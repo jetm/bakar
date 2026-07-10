@@ -1267,6 +1267,108 @@ def check_host_preflight(cfg: BuildConfig) -> CheckResult:
     )
 
 
+# ---------------------------------------------------------------------------
+# mold C++20 build-compiler gate (mold-linker-toolchain)
+# ---------------------------------------------------------------------------
+
+# A minimal C++20 program: ``consteval`` is a C++20-only keyword, so a compiler
+# that rejects it (or rejects ``-std=c++20``) fails the probe. mold's CMake
+# build needs a C++20 build compiler; probing this before the build turns a
+# deep do_compile failure into a fast, actionable pre-flight BLOCK.
+_MOLD_CXX20_PROBE = "consteval int mold_probe() { return 0; }\nint main() { return mold_probe(); }\n"
+
+
+def _mold_build_compiler(cfg: BuildConfig) -> Path | None:
+    """Resolve the C++ compiler bakar's build env actually uses, for the mold probe.
+
+    Host mode: the buildtools ``g++`` (or ``gcc`` when no ``g++`` sibling is on
+    disk) that the launcher's pinned toolchain provides - NOT bare host ``g++``,
+    which the build never invokes (A11). ``BUILD_CC`` is a BitBake variable not
+    visible to this process, so the launch-PATH buildtools compiler is the
+    closest observable stand-in for the compiler mold-native will run.
+
+    Container mode: the compiler lives inside ``jetm/kas-build-env:latest`` and
+    cannot be probed here pre-build, so return ``None`` and let the caller
+    skip-with-info rather than probe the wrong (bare host) compiler.
+    """
+    if not cfg.host_mode:
+        return None
+    release_key = resolve_oe_core_release_key(cfg.workspace)
+    toolchain = detect_buildtools(release_key=release_key)
+    if not toolchain.present:
+        return None
+    gcc = _buildtools_gcc(toolchain)
+    if gcc is None:
+        return None
+    gpp = gcc.with_name("g++")
+    return gpp if gpp.exists() else gcc
+
+
+def _compile_mold_cxx20_probe(compiler: Path) -> tuple[bool, str]:
+    """Compile the C++20 probe with ``compiler``; return ``(ok, detail)``.
+
+    Uses ``-fsyntax-only`` so no object file or libstdc++ link is needed - the
+    probe checks only that the compiler accepts ``-std=c++20`` and the C++20
+    language construct.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        src = Path(td) / "mold_probe.cpp"
+        src.write_text(_MOLD_CXX20_PROBE)
+        try:
+            out = subprocess.run(
+                [str(compiler), "-std=c++20", "-fsyntax-only", "-x", "c++", str(src)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except OSError as exc:
+            return False, str(exc)
+    if out.returncode == 0:
+        return True, ""
+    return False, out.stderr.strip() or f"exit {out.returncode}"
+
+
+def check_mold_compiler(cfg: BuildConfig) -> CheckResult:
+    """When mold is enabled, verify the mode-appropriate build compiler is C++20-capable.
+
+    mold-native is a CMake C++20 build; a build compiler that cannot compile
+    C++20 fails deep in ``do_compile`` after doctor has already reported PASS.
+    This gate probes the compiler bakar's build env actually uses and BLOCKs
+    before the build when it lacks C++20 support.
+
+    * mold disabled: no mold finding (skip).
+    * host mode: probe the buildtools compiler on the launch PATH (A11).
+    * container mode: the image compiler cannot be probed pre-build, so
+      skip-with-info rather than probe the wrong compiler.
+    """
+    name = "mold-compiler"
+    if not cfg.mold:
+        return _skip(name, Severity.INFO, "mold not enabled; C++20 build-compiler probe skipped")
+    compiler = _mold_build_compiler(cfg)
+    if compiler is None:
+        if not cfg.host_mode:
+            return _skip(
+                name,
+                Severity.INFO,
+                f"container build compiler ({cfg.kas_container_image}) not probable pre-build; C++20 unverified",
+            )
+        return _skip(
+            name,
+            Severity.INFO,
+            "buildtools compiler not locatable; C++20 probe skipped (host-preflight covers toolchain presence)",
+        )
+    ok, detail = _compile_mold_cxx20_probe(compiler)
+    if ok:
+        return _ok(name, Severity.BLOCK, f"{compiler} compiles a C++20 probe")
+    return _fail(
+        name,
+        Severity.BLOCK,
+        f"{compiler} cannot compile a C++20 probe: {detail}",
+        fix_hint="Pin a buildtools gcc >= 12.1 (C++20-capable); mold-native's CMake build requires a C++20 compiler.",
+    )
+
+
 def _git_identity_probe_dir(workspace: Path) -> str | None:
     """Pick a directory whose ``git config`` query resolves the identity git
     will actually use during a build.
@@ -2608,6 +2710,7 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_sstate_hash_leak,
     check_override_syntax,
     check_host_preflight,
+    check_mold_compiler,
     check_central_hashserv,
     check_central_prserv,
     check_shared_cache_mounts,
@@ -2675,7 +2778,7 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "Host tuning",
-        ("sysctl", "workspace-filesystem", "psi_support", "host-preflight"),
+        ("sysctl", "workspace-filesystem", "psi_support", "host-preflight", "mold-compiler"),
     ),
     (
         "Workspace & build config",
@@ -2720,6 +2823,7 @@ _CHECK_METADATA: tuple[tuple[CheckFunc, str, Severity], ...] = (
     (check_sstate_hash_leak, "sstate-hash-leak", Severity.WARN),
     (check_override_syntax, "override-syntax", Severity.BLOCK),
     (check_host_preflight, "host-preflight", Severity.BLOCK),
+    (check_mold_compiler, "mold-compiler", Severity.BLOCK),
     (check_central_hashserv, "central-hashserv", Severity.BLOCK),
     (check_central_prserv, "central-prserv", Severity.BLOCK),
     (check_shared_cache_mounts, "shared-mounts", Severity.BLOCK),
