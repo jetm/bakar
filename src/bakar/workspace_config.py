@@ -28,6 +28,7 @@ _STR_FIELDS = {
 _BOOL_FIELDS = {
     "ccache",
     "rm_work",
+    "show_baseline_drift",
     "container",
     "host_mode",
 }
@@ -64,6 +65,9 @@ class WorkspaceConfig:
     # (ccache default True, rm_work default False) in config.resolve().
     ccache: bool | None = None
     rm_work: bool | None = None
+    # Live build UI drift coloring, workspace tier. None = not set -> user config
+    # -> default False in config.resolve().
+    show_baseline_drift: bool | None = None
     # [build] container opt-in, workspace tier. None = not set -> user config
     # (default False) -> host (structural default) in config.resolve().
     container: bool | None = None
@@ -104,6 +108,7 @@ _BUILD_KEYS = {
     "kas_container_image": "kas_container_image",
     "ccache": "ccache",
     "rm_work": "rm_work",
+    "show_baseline_drift": "show_baseline_drift",
     "container": "container",
     "host_mode": "host_mode",
 }

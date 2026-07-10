@@ -335,6 +335,11 @@ class BuildConfig:
     # (stone provisioning depends on previously-built native binaries). Set
     # rm_work=True to keep the container's default rm_work behavior.
     rm_work: bool = field(default=False)
+    # When True, the live build UI loads persisted per-task timing baselines and
+    # colors tasks that overrun their historical mean (drift). Default off so a
+    # fresh checkout with no baseline history renders no misleading drift; opt in
+    # via [build] show_baseline_drift / BAKAR_SHOW_BASELINE_DRIFT.
+    show_baseline_drift: bool = field(default=False)
     # [host] doctor thresholds; defaults equal today's hardcoded literals in
     # diagnostics.py so verdicts are byte-identical until a value is written.
     # Resolved with precedence workspace .bakar.toml [host] > user config.toml [host] > default.
@@ -855,6 +860,11 @@ def resolve(
             "BAKAR_RM_WORK",
             ws_val=workspace_config.rm_work if workspace_config is not None else None,
             user_val=user_config.rm_work if user_config is not None else False,
+        ),
+        show_baseline_drift=pick_bool(
+            "BAKAR_SHOW_BASELINE_DRIFT",
+            ws_val=workspace_config.show_baseline_drift if workspace_config is not None else None,
+            user_val=user_config.show_baseline_drift if user_config is not None else False,
         ),
         nproc=user_config.nproc if user_config else None,
         parallel_make=user_config.parallel_make if user_config else None,

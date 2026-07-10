@@ -42,6 +42,7 @@ _BOOL_FIELDS = {
     "cluster",
     "ccache",
     "rm_work",
+    "show_baseline_drift",
     "container",
     "host_mode",
     "stop_on_error",
@@ -114,6 +115,9 @@ class UserConfig:
     # while bakar is in use the tuning stack strips rm_work so work dirs survive.
     ccache: bool = True
     rm_work: bool = False
+    # Live build UI: load per-task timing baselines and color drifting tasks.
+    # Default off so a fresh checkout renders no misleading drift.
+    show_baseline_drift: bool = False
     # Opt into the kas-container path. Default off: host is the structural
     # default and the container is reachable only by setting this (or
     # --container / BAKAR_CONTAINER / [build] container in the workspace).
@@ -203,6 +207,7 @@ _BUILD_KEYS = {
     "cluster": "cluster",
     "ccache": "ccache",
     "rm_work": "rm_work",
+    "show_baseline_drift": "show_baseline_drift",
     "container": "container",
     "host_mode": "host_mode",
     "pressure_max_cpu": "pressure_max_cpu",
