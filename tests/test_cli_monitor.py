@@ -499,7 +499,17 @@ def test_json_once_defaults_to_ccache_branch(
 ) -> None:
     """With sccache-dist off (the ``BuildConfig`` default), the snapshot reports
     ccache stats instead of cluster/build_daemon. Mirrors the mutually-exclusive
-    split ``steps/kas_build.py``'s live-UI cache probe already applies."""
+    split ``steps/kas_build.py``'s live-UI cache probe already applies.
+
+    Forces ``BAKAR_SCCACHE_DIST=0`` so the assertion holds regardless of the
+    executing machine's real ``~/.config/bakar/config.toml`` - the env tier
+    outranks user config in ``resolve()``'s four-level stack (mirrors
+    ``test_config.py::test_resolve_sccache_dist_env_disables_over_user_config``).
+    Without this, a developer machine with ``[build] sccache_dist = true``
+    genuinely configured (e.g. for real sccache-dist-cluster use) fails this
+    test through no fault of the code under test.
+    """
+    monkeypatch.setenv("BAKAR_SCCACHE_DIST", "0")
 
     def _must_not_probe_cluster(*_a: object, **_k: object) -> None:
         raise AssertionError("probe_cluster called while sccache-dist is off")
