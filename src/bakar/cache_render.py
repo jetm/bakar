@@ -247,6 +247,42 @@ def dist_badge_rich(verdict: str | None) -> Text:
     return badge
 
 
+# Cache-backend badge glyphs. The sitemap/database glyphs match the Nerd-Font
+# glyphs named by dist_badge_rich/cache_badge_rich; the ban glyph is new to the
+# "none" state. The three are distinct so each classified state reads apart at a
+# glance.
+_BACKEND_SITEMAP_GLYPH = ""  # nf-fa-sitemap (sccache)
+_BACKEND_DATABASE_GLYPH = ""  # nf-fa-database (ccache)
+_BACKEND_BAN_GLYPH = ""  # nf-fa-ban (none)
+
+# Classified backend -> (glyph, colour). Unclassified (``None``) is deliberately
+# absent so it falls through to an empty glyph, distinct from "none"'s ban badge.
+_CACHE_BACKEND_BADGE = {
+    "sccache": (_BACKEND_SITEMAP_GLYPH, "green"),
+    "ccache": (_BACKEND_DATABASE_GLYPH, "cyan"),
+    "none": (_BACKEND_BAN_GLYPH, "dim red"),
+}
+
+
+def cache_backend_badge(backend: str | None) -> tuple[str, str]:
+    """``(glyph, colour)`` for a classified cache backend.
+
+    Each of the three classified states gets a distinct glyph/colour. An
+    unclassified backend (``None``) returns ``("", "")`` - an empty glyph, which
+    is distinct from the visible ban badge of the ``"none"`` classified state.
+    """
+    return _CACHE_BACKEND_BADGE.get(backend or "", ("", ""))
+
+
+def cache_backend_token(backend: str | None) -> str | None:
+    """Plain-``str`` cache-backend token (the classified name), no markup/ANSI.
+
+    Returns ``None`` for an unclassified backend, distinct from the visible
+    ``"none"`` classified token.
+    """
+    return backend
+
+
 def cache_delta(first_doc: dict[str, Any] | None, last_doc: dict[str, Any] | None) -> dict[str, Any] | None:
     """Per-build cache delta between the first-probe baseline and the last doc.
 
