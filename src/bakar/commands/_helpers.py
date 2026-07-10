@@ -272,13 +272,16 @@ def _host_extra_overlays(cfg: BuildConfig) -> list[Path]:
 def _tuning_extra_overlays(cfg: BuildConfig) -> list[Path]:
     """Return all opt-in tuning overlay paths for cfg.
 
-    host (host-mode rpm isolation) + ccache (when effective) + hashequiv +
-    shared-cache + sccache. List order does not set local.conf precedence - kas
-    sorts local_conf_header by key, and the bakar overlays use sort-last
-    ``zz-bakar-NN-*`` keys so the numeric segment decides (base < ccache <
-    hashequiv < shared-cache < sccache). The host overlay adds only a layer (no
-    local_conf_header), so its position is immaterial."""
+    cache-classify (always on) + host (host-mode rpm isolation) + ccache (when
+    effective) + hashequiv + shared-cache + sccache. The cache-classify overlay
+    is unconditional so plain-ccache builds still get the cache-hit emitter;
+    every other entry is gated on its toggle. List order does not set local.conf
+    precedence - kas sorts local_conf_header by key, and the bakar overlays use
+    sort-last ``zz-bakar-NN-*`` keys so the numeric segment decides (base <
+    ccache < hashequiv < shared-cache < sccache). The host overlay adds only a
+    layer (no local_conf_header), so its position is immaterial."""
     return [
+        _overlay_dir() / "bakar-tuning-cache-classify.yml",
         *_host_extra_overlays(cfg),
         *_ccache_extra_overlays(cfg),
         *_hashequiv_extra_overlays(cfg),
