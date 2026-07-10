@@ -243,6 +243,11 @@ def _sccache_extra_overlays(cfg: BuildConfig) -> list[Path]:
     return _conditional_overlay(cfg.use_sccache_dist, "bakar-tuning-sccache.yml")
 
 
+def _mold_extra_overlays(cfg: BuildConfig) -> list[Path]:
+    """Return the mold overlay path when ``cfg.mold`` is on."""
+    return _conditional_overlay(cfg.mold, "bakar-tuning-mold.yml")
+
+
 def _ccache_extra_overlays(cfg: BuildConfig) -> list[Path]:
     """Return the ccache overlay path whenever ``[build] ccache`` is on.
 
@@ -273,13 +278,14 @@ def _tuning_extra_overlays(cfg: BuildConfig) -> list[Path]:
     """Return all opt-in tuning overlay paths for cfg.
 
     cache-classify (always on) + host (host-mode rpm isolation) + ccache (when
-    effective) + hashequiv + shared-cache + sccache. The cache-classify overlay
-    is unconditional so plain-ccache builds still get the cache-hit emitter;
-    every other entry is gated on its toggle. List order does not set local.conf
-    precedence - kas sorts local_conf_header by key, and the bakar overlays use
-    sort-last ``zz-bakar-NN-*`` keys so the numeric segment decides (base <
-    ccache < hashequiv < shared-cache < sccache). The host overlay adds only a
-    layer (no local_conf_header), so its position is immaterial."""
+    effective) + hashequiv + shared-cache + sccache + mold. The cache-classify
+    overlay is unconditional so plain-ccache builds still get the cache-hit
+    emitter; every other entry is gated on its toggle. List order does not set
+    local.conf precedence - kas sorts local_conf_header by key, and the bakar
+    overlays use sort-last ``zz-bakar-NN-*`` keys so the numeric segment decides
+    (base < ccache < hashequiv < shared-cache < sccache < ``zz-bakar-60-mold``).
+    The host overlay adds only a layer (no local_conf_header), so its position
+    is immaterial."""
     return [
         _overlay_dir() / "bakar-tuning-cache-classify.yml",
         *_host_extra_overlays(cfg),
@@ -287,6 +293,7 @@ def _tuning_extra_overlays(cfg: BuildConfig) -> list[Path]:
         *_hashequiv_extra_overlays(cfg),
         *_shared_cache_extra_overlays(cfg),
         *_sccache_extra_overlays(cfg),
+        *_mold_extra_overlays(cfg),
     ]
 
 
@@ -333,6 +340,24 @@ def apply_sccache_overrides(cfg: BuildConfig) -> BuildConfig:
         cfg = replace(cfg, sccache_dist=True)
     if _state._SCCACHE_SCHEDULER is not None:
         cfg = replace(cfg, sccache_scheduler_url=_state._SCCACHE_SCHEDULER)
+    return cfg
+
+
+def apply_mold_overrides(cfg: BuildConfig) -> BuildConfig:
+    """Apply the global ``--mold`` / ``--mold-baseline`` flags to cfg.
+
+    Mirrors ``apply_sccache_overrides``: the callback stores the flag state in
+    module globals on ``_app``; here they are folded into cfg. ``--mold-baseline``
+    is the symmetric bfd measurement arm, so it enables mold in ``baseline`` mode;
+    ``--mold`` enables it in the default ``list`` mode. A no-op when neither flag
+    is set.
+    """
+    import bakar.commands._app as _state
+
+    if _state._MOLD_BASELINE:
+        cfg = replace(cfg, mold=True, mold_mode="baseline")
+    elif _state._MOLD:
+        cfg = replace(cfg, mold=True, mold_mode="list")
     return cfg
 
 
