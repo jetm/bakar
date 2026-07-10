@@ -650,6 +650,7 @@ def test_sccache_class_distributes_on_allowlist() -> None:
         "gcc-runtime",
         "gcc-sanitizers",
         "clang",
+        "clang-native",
         "compiler-rt",
         "rust-llvm",
         "opencv",
@@ -674,6 +675,30 @@ def test_sccache_class_distributes_on_allowlist() -> None:
     assert "d.getVar('PN') not in" in text
     assert "SCCACHE_EXCLUDED_PN" not in text
     assert "SCCACHE_EXCLUDED_CLASSES" not in text
+
+
+@pytest.mark.unit
+def test_sccache_class_includes_clang_native_despite_being_native() -> None:
+    """clang-native is allow-listed even though it's a -native recipe.
+
+    Every other -native recipe (except rust-llvm-native, already listed) stays
+    off SCCACHE_INCLUDED_PN per the class's own point-2 rationale: a native
+    recipe's CC is the host compiler, whose bare `as` the daemon can't package.
+    clang-native is the exception: measured at 2237s wall / 12336 CPU-s (~5.5x
+    -j parallelism already) building this workspace's raspberrypi5 image - an
+    LLVM-shaped C++ profile comparable to llvm-native's own measured win - and
+    clang defaults to its own integrated assembler, so the external-`as`
+    packaging problem that excludes ordinary native recipes doesn't apply to it.
+    Falsifier: dropping clang-native from the allow-list, or adding it without
+    documenting why the assembler concern doesn't apply, loses this
+    already-measured win the next time someone re-derives the list from
+    scratch.
+    """
+    text = _sccache_bbclass_text()
+
+    included_line = text.split("SCCACHE_INCLUDED_PN ?=")[1].split("\n")[0]
+    assert "clang-native" in included_line.split(), included_line
+    assert "integrated assembler" in text
 
 
 @pytest.mark.unit
@@ -1102,6 +1127,7 @@ def test_bbclass_allowlists_heavy_recipes_and_omits_qemu(tmp_path: Path) -> None
         "gcc-runtime",
         "gcc-sanitizers",
         "clang",
+        "clang-native",
         "compiler-rt",
         "rust-llvm",
         "opencv",
