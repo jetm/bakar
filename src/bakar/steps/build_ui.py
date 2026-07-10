@@ -1004,7 +1004,7 @@ class BuildUIState:
             # them. The historical estimate is deliberately NOT rendered per
             # row - the prediction is too noisy to be useful as a number; it
             # feeds the stuck-task coloring instead.
-            rows: list[tuple[Text, Text, Text, Text, Text]] = []
+            rows: list[tuple[Text, Text, Text, Text, Text, Text]] = []
             for i, t in enumerate(visible):
                 elapsed = now - t.start
                 icon, color = _task_style(t.task)
@@ -1023,10 +1023,15 @@ class BuildUIState:
                 # the task-type color normally, the stuck highlight when the
                 # task has drifted (stuck takes the whole row, not just the pf).
                 row_style = stuck or color
+                # Cache-backend badge: empty glyph/colour for an unclassified task
+                # (cache_backend is None), so the cell renders blank rather than a
+                # placeholder - "badge iff classification recorded".
+                backend_glyph, backend_colour = cache_render.cache_backend_badge(t.cache_backend)
                 rows.append(
                     (
                         Text(spin, style=color),
                         Text(icon, style=color),
+                        Text(backend_glyph, style=backend_colour),
                         Text(t.pf, style=row_style),
                         Text(name, style=row_style),
                         elapsed_cell,
@@ -1038,12 +1043,13 @@ class BuildUIState:
             # this run and never shrink, keeping every column static between
             # frames (an occasional one-time widening aside) without the
             # truncation a hardcoded width caused on long recipe names.
-            self._w_pf = max(self._w_pf, *(r[2].cell_len for r in rows))
-            self._w_task = max(self._w_task, *(r[3].cell_len for r in rows))
-            self._w_elapsed = max(self._w_elapsed, *(r[4].cell_len for r in rows))
+            self._w_pf = max(self._w_pf, *(r[3].cell_len for r in rows))
+            self._w_task = max(self._w_task, *(r[4].cell_len for r in rows))
+            self._w_elapsed = max(self._w_elapsed, *(r[5].cell_len for r in rows))
             table = Table(box=None, show_header=False, padding=(0, 1))
             table.add_column(width=1)  # spinner
             table.add_column(width=1)  # icon
+            table.add_column(width=1)  # cache-backend badge
             table.add_column(width=self._w_pf, no_wrap=True)  # pf
             table.add_column(width=self._w_task, no_wrap=True)  # task
             table.add_column(width=self._w_elapsed, no_wrap=True)  # elapsed
@@ -1072,6 +1078,7 @@ class BuildUIState:
             setscene_covered = self._setscene_covered
             setscene_total = self._setscene_total
             running = len(self._running)
+            running_tasks = list(self._running.values())
             task = self._build_progress.tasks[0] if self._build_progress.tasks else None
             completed = int(task.completed) if task is not None else 0
             # total is None until bitbake reports it (the bar is created total=None);
@@ -1097,6 +1104,15 @@ class BuildUIState:
             parts.append(cache_render.cache_badge_token(cache_hit_pct))
             if dist_verdict is not None:
                 parts.append(cache_render.dist_badge_token(dist_verdict))
+        # Per-task cache-backend classification tokens, deduplicated across the
+        # currently running tasks so a build with many parallel tasks still
+        # emits one bounded field rather than growing unbounded with the
+        # running count. Omitted entirely when no running task is classified.
+        backend_tokens = {
+            token for t in running_tasks if (token := cache_render.cache_backend_token(t.cache_backend)) is not None
+        }
+        if backend_tokens:
+            parts.append(f"cache_backend={','.join(sorted(backend_tokens))}")
         line = " ".join(parts)
 
         with self._lock:

@@ -249,8 +249,8 @@ def test_make_renderable_sort_by_elapsed_desc() -> None:
     ui._running["c:do_install"] = _RunTask(pf="pkg-c-3.0-r0", task="do_install", start=base - 120)
 
     table = ui.make_renderable().renderables[-1]
-    # Columns: 0=spinner, 1=icon, 2=pf, 3=task, 4=elapsed; cells are Text.
-    pf_cells = [c.plain for c in table.columns[2]._cells]
+    # Columns: 0=spinner, 1=icon, 2=cache-backend badge, 3=pf, 4=task, 5=elapsed; cells are Text.
+    pf_cells = [c.plain for c in table.columns[3]._cells]
     assert pf_cells[0] == "pkg-c-3.0-r0", f"Expected base-120 task first, got {pf_cells}"
     assert pf_cells[-1] == "pkg-a-1.0-r0", f"Expected base-5 task last, got {pf_cells}"
 
@@ -262,7 +262,7 @@ def test_make_renderable_strips_do_prefix() -> None:
     ui._running["glibc:do_compile"] = _RunTask(pf="glibc-2.39-r0", task="do_compile", start=time.monotonic())
 
     table = ui.make_renderable().renderables[-1]
-    task_cells = [c.plain for c in table.columns[3]._cells]
+    task_cells = [c.plain for c in table.columns[4]._cells]
     assert task_cells[0] == "compile"
 
 
@@ -282,12 +282,12 @@ def test_make_renderable_column_widths_never_shrink() -> None:
     ui._running["b:do_fetch"] = _RunTask(pf="tiny-1.0-r0", task="do_fetch", start=base - 5)
 
     table = ui.make_renderable().renderables[-1]
-    wide = table.columns[2].width
+    wide = table.columns[3].width
     assert wide == len(long_pf), "pf column must fit the longest recipe untruncated"
 
     del ui._running["a:do_compile"]
     table = ui.make_renderable().renderables[-1]
-    assert table.columns[2].width == wide, "pf column must not shrink after the long recipe finishes"
+    assert table.columns[3].width == wide, "pf column must not shrink after the long recipe finishes"
 
 
 # ---------------------------------------------------------------------------

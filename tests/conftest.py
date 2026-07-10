@@ -29,6 +29,7 @@ import pytest
 from typer.testing import CliRunner
 
 import bakar.cli  # noqa: F401 - registers all subcommands on the shared app
+from bakar import cache_render
 from bakar.commands._app import app
 from bakar.config import BuildConfig
 from bakar.report import ReportSummary
@@ -119,6 +120,10 @@ _GLYPHS = (
     build_ui._ICON_SETSCENE,
     build_ui._ICON_TIMER,
     build_ui._ICON_DRIFT,
+    # Cache-backend "none" badge glyph (nf-fa-ban) - rendered only in the Rich
+    # make_renderable() task table, never in plain_status_line()'s ASCII
+    # cache_backend= token.
+    cache_render._BACKEND_BAN_GLYPH,
 )
 
 # Synthetic `bakar monitor` snapshot + CLI-invocation helper shared by
