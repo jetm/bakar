@@ -363,15 +363,17 @@ def _graceful_wait(
     stale_after: float = _STOP_STALE_SECONDS,
     hint_interval: float = _STOP_HINT_SECONDS,
     install_signal: bool = True,
+    grace_seconds: float = 0,
 ) -> str:
-    """Wait UNBOUNDED until ``liveness()`` says the target is gone.
+    """Wait until ``liveness()`` says the target is gone, or ``grace_seconds`` elapses.
 
     The exit gate is liveness, never ``tasks == 0``: bitbake may still finalize
     (sstate writes, cooker shutdown) after the last task drains, so only a
-    ``_DEAD`` liveness result ends the wait. Returns one of:
+    ``_DEAD`` liveness result ends the wait on its own. Returns one of:
 
     - ``"drained"``      - ``liveness()`` returned ``_DEAD``;
-    - ``"escalated"``    - a Ctrl-C fired the SIGTERM->SIGKILL ``escalate()`` ladder;
+    - ``"escalated"``    - a Ctrl-C, or ``grace_seconds`` elapsing, fired the
+      SIGTERM->SIGKILL ``escalate()`` ladder;
     - ``"lost_runtime"`` - ``error_cap`` consecutive ``_ERROR`` liveness queries
       (container runtime unreachable); the caller should exit 1.
 
@@ -380,6 +382,13 @@ def _graceful_wait(
     changed for ``stale_after`` seconds (a frozen event log), the view degrades to
     a spinner + elapsed with a periodic Ctrl-C hint so stale, non-decrementing
     rows are never left on screen.
+
+    ``grace_seconds`` defaults to 0, which preserves the original unbounded
+    wait (a Ctrl-C is the only way to escalate). A caller with no interactive
+    terminal - a script, or an agent driving ``bakar stop`` through a
+    backgrounded shell - has no way to deliver that Ctrl-C, so a positive
+    ``grace_seconds`` gives it a bounded alternative: once elapsed reaches the
+    value, the wait escalates on its own exactly as a Ctrl-C would.
 
     ``clock``/``sleep``/``liveness``/``tasks_reader`` are injectable seams so the
     branching logic is unit-testable without real sleeps or signals; pass
@@ -409,6 +418,9 @@ def _graceful_wait(
 
             now = clock()
             elapsed = now - start
+            if grace_seconds > 0 and elapsed >= grace_seconds:
+                escalate()
+                return "escalated"
             tasks = tasks_reader(run_dir) if run_dir is not None else []
             signature = frozenset((t.recipe, t.task) for t in tasks)
             if signature != last_signature:
@@ -447,16 +459,17 @@ def _stop_container(
     term_secs: int,
     run_dir: Path | None = None,
     console_out: Console | None = None,
+    grace_seconds: float = 0,
 ) -> str:
-    """Stop container ``cid`` via ``runtime`` with an unbounded graceful wait.
+    """Stop container ``cid`` via ``runtime`` with a graceful wait.
 
     When ``force`` is False: send SIGINT to bitbake inside the container first
     (via :func:`_sigint_bitbake_in_container`, falling back to a container-PID-1
-    SIGINT if the exec fails), then wait UNBOUNDED via :func:`_graceful_wait`
-    until the container is no longer running, rendering live progress. A Ctrl-C
-    during the wait escalates through ``stop --timeout=<term_secs>`` ->
-    ``kill --signal=SIGKILL``. When ``force`` is True: skip the SIGINT step and go
-    straight to that escalation ladder.
+    SIGINT if the exec fails), then wait via :func:`_graceful_wait` until the
+    container is no longer running, rendering live progress. A Ctrl-C, or
+    ``grace_seconds`` elapsing, escalates through
+    ``stop --timeout=<term_secs>`` -> ``kill --signal=SIGKILL``. When ``force``
+    is True: skip the SIGINT step and go straight to that escalation ladder.
 
     Returns the :func:`_graceful_wait` status (``"drained"``/``"escalated"``/
     ``"lost_runtime"``) for the graceful path, or ``"forced"`` for ``force=True``.
@@ -475,6 +488,7 @@ def _stop_container(
             target_desc=f"container {cid}",
             run_dir=run_dir,
             console_out=console_out,
+            grace_seconds=grace_seconds,
         )
         if status == "lost_runtime":
             print("lost contact with the container runtime")
@@ -695,7 +709,7 @@ def _report_stale_cleanup(run_dir: Path) -> None:
         print(f"removed stale bitbake files: {', '.join(p.name for p in removed)}")
 
 
-def stop_build(bsp_root: Path, *, force: bool = False) -> bool:
+def stop_build(bsp_root: Path, *, force: bool = False, grace_seconds: float = 0) -> bool:
     """Stop the most recent build, targeting it by execution mode.
 
     Scans run dirs under ``bsp_root/build/runs`` newest-first and targets the
@@ -706,11 +720,13 @@ def stop_build(bsp_root: Path, *, force: bool = False) -> bool:
     signalled or container stopped), ``False`` when none is targetable (no run
     dir, or every run is finished/unresolvable).
 
-    Host mode sends SIGINT then waits UNBOUNDED (via ``_graceful_wait``) until
-    the PGID is gone, escalating through SIGTERM -> SIGKILL only on Ctrl-C or
-    ``force``. Container mode resolves the container via its recorded label and
-    stops it through the runtime daemon, without touching the wrapper PGID. The
-    launch record (``build.pid`` + ``build.meta.json``) is always removed before
+    Host mode sends SIGINT then waits (via ``_graceful_wait``) until the PGID
+    is gone, escalating through SIGTERM -> SIGKILL on Ctrl-C, ``force``, or
+    ``grace_seconds`` elapsing (0, the default, waits unbounded - only a
+    Ctrl-C or ``force`` escalates). Container mode resolves the container via
+    its recorded label and stops it through the runtime daemon, without
+    touching the wrapper PGID; ``grace_seconds`` applies there too. The launch
+    record (``build.pid`` + ``build.meta.json``) is always removed before
     returning.
     """
     runs_dir = bsp_root / "build" / "runs"
@@ -763,6 +779,7 @@ def stop_build(bsp_root: Path, *, force: bool = False) -> bool:
                     escalate=lambda: _escalate_host(pgid, run_dir),
                     target_desc=f"PGID {pgid}",
                     run_dir=run_dir,
+                    grace_seconds=grace_seconds,
                 )
             else:
                 print(f"Sent SIGTERM to build PGID {pgid}...")
@@ -797,6 +814,7 @@ def stop_build(bsp_root: Path, *, force: bool = False) -> bool:
             force=force,
             term_secs=_STOP_TERM_SECONDS,
             run_dir=run_dir,
+            grace_seconds=grace_seconds,
         )
         # A drained/escalated/forced stop is success (exit 0); only a runtime we
         # lost contact with mid-wait is a failure (exit 1).

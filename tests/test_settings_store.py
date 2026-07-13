@@ -48,6 +48,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.pressure_max_memory": "20",
         "build.disk_free_threshold_gb": "75.0",
         "build.stall_abort_secs": "1800",
+        "build.stop_grace_seconds": "45",
         "build.stop_on_error": "false",
         "build.hashserv": "true",
         "build.ccache_shared": "true",
@@ -104,6 +105,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert cfg.pressure_max_memory == 20
     assert cfg.disk_free_threshold_gb == 75.0
     assert cfg.stall_abort_secs == 1800
+    assert cfg.stop_grace_seconds == 45
     assert cfg.stop_on_error is False
     assert cfg.hashserv is True
     assert cfg.ccache_shared is True

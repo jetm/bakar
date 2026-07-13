@@ -360,6 +360,20 @@ def test_resolve_stop_on_error_user_config_disables(tmp_path) -> None:
     assert cfg.stop_on_error is False
 
 
+def test_resolve_stop_grace_seconds_default_zero(tmp_path) -> None:
+    """Without configs, stop_grace_seconds defaults to 0 (unbounded wait)."""
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+
+    assert cfg.stop_grace_seconds == 0
+
+
+def test_resolve_stop_grace_seconds_user_config_overrides(tmp_path) -> None:
+    """Global config.toml [build] stop_grace_seconds flows through to BuildConfig."""
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(stop_grace_seconds=45))
+
+    assert cfg.stop_grace_seconds == 45
+
+
 def test_resolve_ccache_user_config_disables(tmp_path) -> None:
     """Global config.toml [build] ccache=false disables ccache."""
     cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(ccache=False))

@@ -276,6 +276,31 @@ def test_stop_build_host_ctrl_c_runs_escalation_ladder(
     assert not (run_dir / "build.pid").exists()
 
 
+def test_stop_build_grace_seconds_threaded_to_graceful_wait(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stop_build's grace_seconds reaches _graceful_wait unchanged."""
+    run_dir = _make_run_dir(tmp_path)
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+
+    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+    _record_killpg(monkeypatch)
+
+    captured: dict[str, object] = {}
+
+    def _fake_wait(*, grace_seconds: float = 0, **_kw: object) -> str:
+        captured["grace_seconds"] = grace_seconds
+        return "drained"
+
+    monkeypatch.setattr(build_stop, "_graceful_wait", _fake_wait)
+
+    assert build_stop.stop_build(tmp_path, grace_seconds=45) is True
+    assert captured["grace_seconds"] == 45
+
+
 def test_stop_build_force_skips_sigint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -833,6 +858,60 @@ def test_graceful_wait_keyboard_interrupt_runs_escalation() -> None:
 
     assert status == "escalated"
     assert escalate_calls == [1]
+
+
+def test_graceful_wait_grace_seconds_auto_escalates_without_interrupt() -> None:
+    """grace_seconds > 0 auto-fires the escalate ladder once elapsed reaches it.
+
+    No KeyboardInterrupt is ever raised - the timeout alone must trigger the
+    same escalation path a Ctrl-C would, so a non-interactive caller (a script
+    or an agent driving `bakar stop` through a backgrounded shell) has a way
+    out of the unbounded wait without needing to signal the process itself.
+    """
+    escalate_calls: list[int] = []
+
+    status = build_stop._graceful_wait(
+        liveness=lambda: build_stop._ALIVE,
+        escalate=lambda: escalate_calls.append(1),
+        target_desc="PGID 4242",
+        run_dir=None,
+        console_out=Console(record=True, width=100),
+        sleep=lambda _s: None,
+        clock=_incrementing_clock(),
+        tasks_reader=lambda _rd: [],
+        install_signal=False,
+        grace_seconds=5,
+    )
+
+    assert status == "escalated"
+    assert escalate_calls == [1]
+
+
+def test_graceful_wait_grace_seconds_zero_stays_unbounded() -> None:
+    """grace_seconds=0 (the default) never auto-escalates, matching prior behavior."""
+    poll_count = {"n": 0}
+
+    def _liveness() -> str:
+        poll_count["n"] += 1
+        return build_stop._DEAD if poll_count["n"] > 10 else build_stop._ALIVE
+
+    escalate_calls: list[int] = []
+
+    status = build_stop._graceful_wait(
+        liveness=_liveness,
+        escalate=lambda: escalate_calls.append(1),
+        target_desc="PGID 4242",
+        run_dir=None,
+        console_out=Console(record=True, width=100),
+        sleep=lambda _s: None,
+        clock=_incrementing_clock(),
+        tasks_reader=lambda _rd: [],
+        install_signal=False,
+        grace_seconds=0,
+    )
+
+    assert status == "drained"
+    assert escalate_calls == []
 
 
 # --- stop_running_proc regression (unchanged in-process semantics) ---------

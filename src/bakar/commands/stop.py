@@ -36,6 +36,17 @@ def stop(
         bool,
         typer.Option("--force", help="Skip the SIGINT grace period and escalate straight to SIGTERM"),
     ] = False,
+    timeout: Annotated[
+        float | None,
+        typer.Option(
+            "--timeout",
+            help=(
+                "Auto-escalate to SIGTERM->SIGKILL after this many seconds of graceful "
+                "waiting instead of waiting unbounded for a Ctrl-C. Overrides "
+                "[build] stop_grace_seconds; 0 forces the unbounded wait."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Gracefully stop the running build for this workspace's BSP.
 
@@ -52,6 +63,7 @@ def stop(
         kas_yaml=kas_yaml,
         user_config=_state._USER_CONFIG,
     )
-    stopped = build_stop.stop_build(cfg.bsp_root, force=force)
+    grace_seconds = timeout if timeout is not None else cfg.stop_grace_seconds
+    stopped = build_stop.stop_build(cfg.bsp_root, force=force, grace_seconds=grace_seconds)
     if not stopped:
         raise typer.Exit(code=1)

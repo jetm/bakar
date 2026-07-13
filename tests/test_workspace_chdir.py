@@ -73,7 +73,7 @@ def _record_stop(monkeypatch: pytest.MonkeyPatch, *, result: bool = True) -> lis
     """Stub ``build_stop.stop_build`` to record its calls and return ``result``."""
     calls: list[tuple[Path, bool]] = []
 
-    def _rec(bsp_root: Path, force: bool) -> bool:
+    def _rec(bsp_root: Path, force: bool, grace_seconds: float = 0) -> bool:
         calls.append((bsp_root, force))
         return result
 

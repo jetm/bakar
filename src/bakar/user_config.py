@@ -49,6 +49,7 @@ _BOOL_FIELDS = {
 }
 _INT_FIELDS: set[str] = {
     "stall_abort_secs",
+    "stop_grace_seconds",
     "host_inotify_instances",
     "host_inotify_watches",
     "host_swappiness_max",
@@ -132,6 +133,13 @@ class UserConfig:
     # Abort the build when every running task's log has been silent this many
     # seconds (a wedged task, e.g. a deadlocked final link). 0 disables the guard.
     stall_abort_secs: int = 2700
+    # `bakar stop`'s graceful SIGINT wait auto-escalates to SIGTERM->SIGKILL
+    # after this many seconds instead of waiting unbounded for a Ctrl-C. 0 (the
+    # default) preserves the original unbounded-wait behavior; a non-interactive
+    # caller (a script, or an agent driving `bakar stop` through a backgrounded
+    # shell) has no way to deliver that Ctrl-C, so this gives it a bounded
+    # alternative. Overridable per-invocation via `bakar stop --timeout`.
+    stop_grace_seconds: int = 0
     # SIGINT the build as soon as any task fails, instead of waiting for every
     # already-running task to finish on its own (bitbake's own halt-on-failure
     # default already stops scheduling *new* tasks; this just stops bakar from
@@ -215,6 +223,7 @@ _BUILD_KEYS = {
     "pressure_max_memory": "pressure_max_memory",
     "disk_free_threshold_gb": "disk_free_threshold_gb",
     "stall_abort_secs": "stall_abort_secs",
+    "stop_grace_seconds": "stop_grace_seconds",
     "stop_on_error": "stop_on_error",
     "hashserv": "hashserv",
     "ccache_shared": "ccache_shared",
@@ -251,6 +260,8 @@ def _check_type(field: str, value: object, path: Path) -> None:
         raise ValueError(f"{path}: '{field}' must be an integer, got {type(value).__name__}")
     if field == "stall_abort_secs" and isinstance(value, int) and not isinstance(value, bool) and value < 0:
         raise ValueError(f"{path}: '{field}' must be >= 0 (0 disables), got {value}")
+    if field == "stop_grace_seconds" and isinstance(value, int) and not isinstance(value, bool) and value < 0:
+        raise ValueError(f"{path}: '{field}' must be >= 0 (0 waits unbounded), got {value}")
     # The three parallelism knobs already passed the _INT_FIELDS bool/int guard
     # above; this only adds the strictly-positive requirement.
     if field in _PARALLELISM_FIELDS and isinstance(value, int) and not isinstance(value, bool) and value <= 0:
