@@ -139,12 +139,12 @@ class UserConfig:
     # seconds (a wedged task, e.g. a deadlocked final link). 0 disables the guard.
     stall_abort_secs: int = 2700
     # `bakar stop`'s graceful SIGINT wait auto-escalates to SIGTERM->SIGKILL
-    # after this many seconds instead of waiting unbounded for a Ctrl-C. 0 (the
-    # default) preserves the original unbounded-wait behavior; a non-interactive
-    # caller (a script, or an agent driving `bakar stop` through a backgrounded
-    # shell) has no way to deliver that Ctrl-C, so this gives it a bounded
-    # alternative. Overridable per-invocation via `bakar stop --timeout`.
-    stop_grace_seconds: int = 0
+    # after this many seconds. The 30s default bounds the wait so a non-
+    # interactive caller (a script, or an agent driving `bakar stop` through a
+    # backgrounded shell) that cannot deliver a Ctrl-C still escalates instead
+    # of hanging on a wedged cooker; set to 0 to restore the unbounded wait.
+    # Overridable per-invocation via `bakar stop --timeout`.
+    stop_grace_seconds: int = 30
     # SIGINT the build as soon as any task fails, instead of waiting for every
     # already-running task to finish on its own (bitbake's own halt-on-failure
     # default already stops scheduling *new* tasks; this just stops bakar from

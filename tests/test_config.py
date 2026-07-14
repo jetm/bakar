@@ -360,11 +360,15 @@ def test_resolve_stop_on_error_user_config_disables(tmp_path) -> None:
     assert cfg.stop_on_error is False
 
 
-def test_resolve_stop_grace_seconds_default_zero(tmp_path) -> None:
-    """Without configs, stop_grace_seconds defaults to 0 (unbounded wait)."""
+def test_resolve_stop_grace_seconds_default_thirty(tmp_path) -> None:
+    """Without configs, stop_grace_seconds defaults to 30s (bounded wait).
+
+    The 30s default bounds `bakar stop` so a wedged cooker cannot deadlock it
+    when no operator is present to press Ctrl-C; 0 restores the unbounded wait.
+    """
     cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
 
-    assert cfg.stop_grace_seconds == 0
+    assert cfg.stop_grace_seconds == 30
 
 
 def test_resolve_stop_grace_seconds_user_config_overrides(tmp_path) -> None:

@@ -253,12 +253,21 @@ def test_stop_build_host_ctrl_c_runs_escalation_ladder(
     The unbounded wait no longer escalates on a timer; escalation is triggered
     only by the injected ``escalate`` callback firing. Stub ``_graceful_wait`` to
     invoke that callback (as a real Ctrl-C would) and assert the ladder runs.
+    ``_pgid_alive`` is stateful: alive on the escalate SIGKILL-rung check (so the
+    group is killed) then dead on the post-escalation verify (so `stop_build`
+    confirms the tree is gone and returns True).
     """
     run_dir = _make_run_dir(tmp_path)
     build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
 
+    alive = {"n": 0}
+
+    def _stateful_pgid_alive(_pgid: int) -> bool:
+        alive["n"] += 1
+        return alive["n"] == 1
+
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
-    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: True)
+    monkeypatch.setattr(build_stop, "_pgid_alive", _stateful_pgid_alive)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
 
     def _fake_wait(*, escalate: object, **_kw: object) -> str:
@@ -327,7 +336,12 @@ def test_stop_build_no_running_build(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A host record with a dead/unverified build means no signal is ever sent."""
+    """A dead wrapper with no detached cooker is an idempotent clean-tree success.
+
+    No wrapper, no argv-scoped cooker, and no live bitbake-server means nothing
+    is signalled; ``stop_build`` clears any stale lock/sock and returns True
+    (exit 0) rather than erroring, so a second ``bakar stop`` is a safe no-op.
+    """
     run_dir = _make_run_dir(tmp_path)
     build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
 
@@ -335,7 +349,7 @@ def test_stop_build_no_running_build(
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     calls = _record_killpg(monkeypatch)
 
-    assert build_stop.stop_build(tmp_path) is False
+    assert build_stop.stop_build(tmp_path) is True
 
     assert calls == []
     assert not (run_dir / "build.pid").exists()
@@ -491,7 +505,11 @@ def test_stop_build_container_mode_stops_container_not_pgid(
 
     stop_calls: list[tuple[str, str]] = []
 
-    monkeypatch.setattr(build_stop, "_container_id", lambda _rt, _label: "cafef00d")
+    # _container_id is called twice: once to discover the container to stop, and
+    # once by the post-stop verify. Resolve on discovery, then report the
+    # container gone so verify passes (mirroring the real docker rm -f).
+    container_ids = iter(["cafef00d", None])
+    monkeypatch.setattr(build_stop, "_container_id", lambda _rt, _label: next(container_ids, None))
     monkeypatch.setattr(
         build_stop,
         "_stop_container",
@@ -570,11 +588,16 @@ def test_stop_build_legacy_run_targets_nothing(
     assert not (run_dir / "build.meta.json").exists()
 
 
-def test_stop_build_container_id_unresolved_returns_false(
+def test_stop_build_container_id_unresolved_is_idempotent_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A container record whose label resolves to no live container stops nothing."""
+    """A container label resolving to no live container is a clean-tree success.
+
+    The build already finished (or was killed) so there is nothing to stop;
+    ``stop_build`` clears any stale lock/sock and returns True (exit 0) instead
+    of erroring, matching the host idempotent-clean-tree path.
+    """
     run_dir = _make_run_dir(tmp_path)
     build_stop.write_launch_record(
         run_dir,
@@ -596,7 +619,7 @@ def test_stop_build_container_id_unresolved_returns_false(
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     calls = _record_killpg(monkeypatch)
 
-    assert build_stop.stop_build(tmp_path) is False
+    assert build_stop.stop_build(tmp_path) is True
 
     assert stop_calls == []
     assert calls == []
@@ -1017,3 +1040,280 @@ def test_clean_stale_bitbake_files_targets_topdir_not_run_dir(tmp_path: Path) ->
     assert not (topdir / "bitbake.lock").exists()
     assert run_dir_lock.exists()  # a lock inside the run dir is untouched
     assert removed == [topdir / "bitbake.lock"]
+
+
+# --- scoped /proc reaper: _collect_build_pids ------------------------------
+#
+# These exercise the argv-scoped discovery that reaches a wedged, detached
+# cooker (dead client fds holding the server open) the PGID and lock-PID paths
+# cannot see. The /proc readers are injected so the walk is hermetic - no real
+# process is ever inspected or signalled.
+
+
+def _fake_proc(
+    procs: dict[int, tuple[int, str]],
+    pgids: dict[int, int] | None = None,
+):
+    """Build injectable (pids, cmdline, ppid, pgid) readers from a proc table.
+
+    ``procs`` maps pid -> (ppid, cmdline); ``pgids`` maps pid -> pgid (defaults
+    to each pid being its own group leader).
+    """
+    resolved_pgids = pgids if pgids is not None else {pid: pid for pid in procs}
+
+    def _pids() -> list[int]:
+        return sorted(procs)
+
+    def _cmdline(pid: int) -> str:
+        return procs.get(pid, (0, ""))[1]
+
+    def _ppid(pid: int) -> int | None:
+        return procs[pid][0] if pid in procs else None
+
+    def _pgid(pid: int) -> int:
+        if pid in resolved_pgids:
+            return resolved_pgids[pid]
+        raise ProcessLookupError
+
+    return _pids, _cmdline, _ppid, _pgid
+
+
+def test_collect_build_pids_matches_cooker_by_argv_path(tmp_path: Path) -> None:
+    """A process whose argv references this build's bitbake.sock path is the cooker."""
+    topdir = tmp_path / "build"
+    sock = topdir / "bitbake.sock"
+    procs = {
+        4242: (1, f"python bitbake-server decafbad 7 8 {sock} idle"),
+        4243: (4242, "bitbake-worker decafbad"),  # a child worker, no path in argv
+        9000: (1, "python bitbake-server /other/build/bitbake.sock"),  # a DIFFERENT build
+    }
+    pids, cmdline, ppid, pgid = _fake_proc(procs)
+
+    scoped = build_stop._collect_build_pids(
+        topdir,
+        None,
+        self_pid=1,
+        self_pgid=1,
+        pids_reader=pids,
+        cmdline_reader=cmdline,
+        ppid_reader=ppid,
+        pgid_reader=pgid,
+    )
+
+    assert scoped.cooker == frozenset({4242})  # only THIS build's cooker
+    assert scoped.all_pids == frozenset({4242, 4243})  # cooker + its worker descendant
+    assert 9000 not in scoped.all_pids  # a second build on the host is untouched
+
+
+def test_collect_build_pids_includes_pgid_members_and_descendants(tmp_path: Path) -> None:
+    """PGID members and their transitive children join the cooker in all_pids."""
+    topdir = tmp_path / "build"
+    lock = topdir / "bitbake.lock"
+    procs = {
+        100: (1, "kas-container build"),  # wrapper, pgid 100
+        101: (100, "docker run ..."),  # wrapper child
+        555: (1, f"python bitbake-server {lock}"),  # detached cooker (own session)
+        556: (555, "bitbake-worker decafbad"),  # cooker's worker
+    }
+    pgids = {100: 100, 101: 100, 555: 555, 556: 555}
+    pids, cmdline, ppid, pgid = _fake_proc(procs, pgids)
+
+    scoped = build_stop._collect_build_pids(
+        topdir,
+        100,
+        self_pid=1,
+        self_pgid=1,
+        pids_reader=pids,
+        cmdline_reader=cmdline,
+        ppid_reader=ppid,
+        pgid_reader=pgid,
+    )
+
+    assert scoped.cooker == frozenset({555})
+    assert scoped.all_pids == frozenset({100, 101, 555, 556})
+
+
+def test_collect_build_pids_never_includes_self_or_own_group(tmp_path: Path) -> None:
+    """The `bakar stop` process and its group are dropped even if they'd match."""
+    topdir = tmp_path / "build"
+    lock = topdir / "bitbake.lock"
+    procs = {
+        42: (1, f"bakar stop {lock}"),  # our own stop process references the path
+        43: (42, "child-of-stop"),
+        555: (1, f"python bitbake-server {lock}"),
+    }
+    pgids = {42: 42, 43: 42, 555: 555}
+    pids, cmdline, ppid, pgid = _fake_proc(procs, pgids)
+
+    scoped = build_stop._collect_build_pids(
+        topdir,
+        None,
+        self_pid=42,
+        self_pgid=42,
+        pids_reader=pids,
+        cmdline_reader=cmdline,
+        ppid_reader=ppid,
+        pgid_reader=pgid,
+    )
+
+    assert 42 not in scoped.all_pids  # never signal ourselves
+    assert 43 not in scoped.all_pids  # nor our own group
+    assert scoped.cooker == frozenset({555})
+
+
+def test_collect_build_pids_empty_when_no_match(tmp_path: Path) -> None:
+    """No argv match and no PGID members -> empty set (clean-tree short circuit)."""
+    topdir = tmp_path / "build"
+    procs = {10: (1, "unrelated"), 11: (1, "also unrelated")}
+    pids, cmdline, ppid, pgid = _fake_proc(procs)
+
+    scoped = build_stop._collect_build_pids(
+        topdir,
+        None,
+        self_pid=1,
+        self_pgid=1,
+        pids_reader=pids,
+        cmdline_reader=cmdline,
+        ppid_reader=ppid,
+        pgid_reader=pgid,
+    )
+
+    assert scoped.cooker == frozenset()
+    assert scoped.all_pids == frozenset()
+
+
+# --- _killpg guard ---------------------------------------------------------
+
+
+def test_killpg_refuses_zero_and_negative(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_killpg refuses pgid <= 0 (would hit our own group / every process)."""
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(build_stop.os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
+
+    assert build_stop._killpg(0, signal.SIGKILL) is False
+    assert build_stop._killpg(-1, signal.SIGKILL) is False
+    assert build_stop._killpg(4242, signal.SIGTERM) is True
+
+    assert calls == [(4242, signal.SIGTERM)]  # only the valid group was signalled
+
+
+# --- _report_stale_cleanup holder gate -------------------------------------
+
+
+def test_report_stale_cleanup_skips_removal_when_held(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A live argv-scoped holder blocks lock/sock removal (never yank a live lock)."""
+    run_dir = _make_run_dir(tmp_path)
+    topdir = run_dir.parent.parent
+    (topdir / "bitbake.lock").write_text("x")
+    (topdir / "bitbake.sock").write_text("x")
+
+    monkeypatch.setattr(
+        build_stop,
+        "_collect_build_pids",
+        lambda _td, _pgid, **_kw: build_stop._ScopedProcs(cooker=frozenset({777}), all_pids=frozenset({777})),
+    )
+
+    removed = build_stop._report_stale_cleanup(run_dir)
+
+    assert removed == []
+    assert (topdir / "bitbake.lock").exists()  # left in place - a holder is alive
+    assert "still held by pid(s) [777]" in capsys.readouterr().out
+
+
+def test_report_stale_cleanup_removes_when_unheld(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No holder -> lock/sock are removed and returned."""
+    run_dir = _make_run_dir(tmp_path)
+    topdir = run_dir.parent.parent
+    (topdir / "bitbake.lock").write_text("x")
+    (topdir / "bitbake.sock").write_text("x")
+
+    monkeypatch.setattr(
+        build_stop,
+        "_collect_build_pids",
+        lambda _td, _pgid, **_kw: build_stop._ScopedProcs(cooker=frozenset(), all_pids=frozenset()),
+    )
+
+    removed = build_stop._report_stale_cleanup(run_dir)
+
+    assert set(removed) == {topdir / "bitbake.lock", topdir / "bitbake.sock"}
+    assert not (topdir / "bitbake.lock").exists()
+
+
+# --- _verify_clean ---------------------------------------------------------
+
+
+def test_verify_clean_reports_all_remaining(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every still-present target class becomes a reason string."""
+    run_dir = _make_run_dir(tmp_path)
+    topdir = run_dir.parent.parent
+    (topdir / "bitbake.lock").write_text(f"{os.getpid()}\n")  # a live server pid
+    (topdir / "bitbake.sock").write_text("x")
+
+    monkeypatch.setattr(
+        build_stop,
+        "_collect_build_pids",
+        lambda _td, _pgid, **_kw: build_stop._ScopedProcs(cooker=frozenset({321}), all_pids=frozenset({321})),
+    )
+    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: True)
+    monkeypatch.setattr(build_stop, "_container_id", lambda _rt, _label: "cid123")
+
+    reasons = build_stop._verify_clean(run_dir, 4242, runtime="docker", container_label="bakar.run_id=X")
+
+    joined = " ".join(reasons)
+    assert "cooker/worker still running (pids [321])" in joined
+    assert "process group 4242 still alive" in joined
+    assert "bitbake-server (from bitbake.lock) still alive" in joined
+    assert "build container still running" in joined
+    assert "bitbake.lock still present" in joined
+    assert "bitbake.sock still present" in joined
+
+
+def test_verify_clean_empty_when_all_gone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fully-stopped build with no lock/sock verifies clean (no reasons)."""
+    run_dir = _make_run_dir(tmp_path)
+
+    monkeypatch.setattr(
+        build_stop,
+        "_collect_build_pids",
+        lambda _td, _pgid, **_kw: build_stop._ScopedProcs(cooker=frozenset(), all_pids=frozenset()),
+    )
+    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+
+    assert build_stop._verify_clean(run_dir, 4242) == []
+
+
+def test_stop_build_host_returns_false_when_verify_finds_survivor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If a cooker survives the escalation, stop_build reports incomplete (False)."""
+    run_dir = _make_run_dir(tmp_path)
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+
+    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(build_stop, "_graceful_wait", lambda **_kw: "escalated")
+    # Verify finds a lingering cooker the kill could not reach (e.g. EPERM).
+    monkeypatch.setattr(
+        build_stop,
+        "_verify_clean",
+        lambda *_a, **_k: ["bitbake cooker/worker still running (pids [99])"],
+    )
+    _record_killpg(monkeypatch)
+
+    assert build_stop.stop_build(tmp_path) is False
+    assert not (run_dir / "build.pid").exists()

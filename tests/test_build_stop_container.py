@@ -87,6 +87,7 @@ def test_stop_container_force_skips_sigint(monkeypatch: pytest.MonkeyPatch) -> N
     assert issued == [
         ["docker", "stop", "--timeout=7", "abc"],
         ["docker", "kill", "--signal=SIGKILL", "abc"],
+        ["docker", "rm", "-f", "abc"],
     ]
 
 
@@ -128,6 +129,7 @@ def test_stop_container_ctrl_c_reaches_stop_kill_ladder(monkeypatch: pytest.Monk
     assert issued == [
         ["docker", "stop", "--timeout=5", "abc"],
         ["docker", "kill", "--signal=SIGKILL", "abc"],
+        ["docker", "rm", "-f", "abc"],
     ]
 
 
