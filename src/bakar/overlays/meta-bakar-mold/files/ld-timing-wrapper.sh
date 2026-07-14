@@ -106,7 +106,12 @@ pwd_val="${PWD:-$(pwd 2>/dev/null)}"
 recipe=""
 case "$pwd_val" in
     */work/*)
-        rest="${pwd_val#*/work/}"
+        # ## (longest-match strip) anchors on the LAST /work/ segment, so a
+        # build tree whose own path happens to contain an earlier "work"
+        # component (e.g. TMPDIR under /srv/work/tmp/work/...) still resolves
+        # to the real OE work/<target_sys>/<PN>/... boundary rather than the
+        # first, spurious one.
+        rest="${pwd_val##*/work/}"
         rest="${rest#*/}"
         recipe="${rest%%/*}"
         ;;

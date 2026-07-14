@@ -183,3 +183,25 @@ def test_cli_mold_and_baseline_together_rejected_by_callback() -> None:
     result = CliRunner().invoke(app, ["--mold", "--mold-baseline", "build", "--help"])
 
     assert result.exit_code == 2
+
+
+def test_cli_mold_global_and_baseline_together_rejected_by_callback() -> None:
+    """--mold-global and --mold-baseline together exits non-zero at the top-level callback."""
+    from typer.testing import CliRunner
+
+    from bakar.cli import app
+
+    result = CliRunner().invoke(app, ["--mold-global", "--mold-baseline", "build", "--help"])
+
+    assert result.exit_code == 2
+
+
+def test_cli_mold_global_alone_is_accepted() -> None:
+    """--mold-global alone is a valid, distinct selector from --mold/--mold-baseline."""
+    from typer.testing import CliRunner
+
+    from bakar.cli import app
+
+    result = CliRunner().invoke(app, ["--mold-global", "build", "--help"])
+
+    assert result.exit_code == 0

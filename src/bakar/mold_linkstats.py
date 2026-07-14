@@ -100,7 +100,7 @@ def _opt_int(value: object) -> int | None:
         return None
     try:
         return int(value)
-    except TypeError, ValueError:
+    except TypeError, ValueError, OverflowError:
         return None
 
 
@@ -131,6 +131,10 @@ def _record_from(obj: object) -> LinkRecord | None:
     wall = obj.get("wall_ms")
     if isinstance(wall, bool) or not isinstance(wall, (int, float)):
         return None
+    try:
+        wall_ms = int(wall)
+    except OverflowError, ValueError:
+        return None
 
     recipe = obj.get("recipe")
     output = obj.get("output")
@@ -138,7 +142,7 @@ def _record_from(obj: object) -> LinkRecord | None:
         linker=linker,
         recipe=recipe if isinstance(recipe, str) else "",
         output=output if isinstance(output, str) else "",
-        wall_ms=int(wall),
+        wall_ms=wall_ms,
         nproc=_opt_int(obj.get("nproc")),
         loadavg=_opt_float(obj.get("loadavg")),
         threads=_opt_int(obj.get("threads")),
@@ -217,6 +221,7 @@ def aggregate_linklog(source: Path | str | Iterable[str]) -> LinkStatsReport:
 
 
 def compare_relink(
+    *,
     mold_source: Path | str | Iterable[str],
     baseline_source: Path | str | Iterable[str],
 ) -> RelinkComparison:

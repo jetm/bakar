@@ -98,7 +98,7 @@ def test_missing_file_yields_empty_report(tmp_path):
 def test_compare_relink_headline():
     mold_arm = [r for r in FIXTURE_LINES if '"ld.mold"' in r]
     baseline_arm = [r for r in FIXTURE_LINES if '"ld.bfd"' in r]
-    cmp = compare_relink(mold_arm, baseline_arm)
+    cmp = compare_relink(mold_source=mold_arm, baseline_source=baseline_arm)
     assert cmp.mold.total_wall_ms == 450
     assert cmp.baseline.total_wall_ms == 750
     assert cmp.delta_ms == 300
@@ -106,7 +106,7 @@ def test_compare_relink_headline():
 
 
 def test_compare_relink_zero_mold_no_op():
-    cmp = compare_relink([], FIXTURE_LINES)
+    cmp = compare_relink(mold_source=[], baseline_source=FIXTURE_LINES)
     # A relink that executed no real link -> speedup is None (no-op headline).
     assert cmp.mold.total_wall_ms == 0
     assert cmp.speedup is None

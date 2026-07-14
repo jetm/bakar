@@ -16,6 +16,7 @@ from bakar.commands._helpers import (
     _normalize_dispatch,
     _print_diagnosis,
     _resolve_workspace,
+    apply_mold_overrides,
 )
 from bakar.config import BSPSpec, resolve
 from bakar.diagnostics import any_blocking_failure, run_all
@@ -48,6 +49,7 @@ def doctor(
             bsp_family="bbsetup",
             user_config=_state._USER_CONFIG,
         )
+        cfg = apply_mold_overrides(cfg)
         results = run_all(cfg, None)
         if output_json:
             _print_json(results)
@@ -65,6 +67,7 @@ def doctor(
         kas_yaml=kas_yaml,
         user_config=_state._USER_CONFIG,
     )
+    cfg = apply_mold_overrides(cfg)
     results = run_all(cfg, bsp)
     if output_json:
         _print_json(results)

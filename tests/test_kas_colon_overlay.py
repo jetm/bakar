@@ -344,9 +344,11 @@ def test_bitbake_colon_arg_extra_overlay_in_ctx(
 
     assert result.exit_code == 0, result.output
     assert len(calls) == 1
-    # host_mode defaults on (no container image), so the host isolation overlay
-    # is appended; filter it to assert the user colon-overlay forwarding.
-    extras = [o for o in calls[0]["extra_overlays"] if o.name != "bakar-tuning-host.yml"]
+    # host_mode defaults on (host isolation overlay appended), cache-classify is
+    # unconditional, and ccache defaults on - filter the always-on base stack to
+    # assert the user colon-overlay forwarding in isolation.
+    base_stack = {"bakar-tuning-host.yml", "bakar-tuning-cache-classify.yml", "bakar-tuning-ccache.yml"}
+    extras = [o for o in calls[0]["extra_overlays"] if o.name not in base_stack]
     assert len(extras) == 1
     assert extras[0].resolve() == overlay_yaml.resolve()
 
@@ -358,7 +360,7 @@ def test_bitbake_single_yaml_no_extras(
     machine_yaml: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """bakar bitbake with a bare single YAML has empty extra_overlays (no behavior change)."""
+    """bakar bitbake with a bare single YAML has no user extra_overlays beyond the base tuning stack."""
     import bakar.commands.bitbake  # noqa: F401
     from bakar.cli import app
     from bakar.user_config import UserConfig
@@ -375,9 +377,11 @@ def test_bitbake_single_yaml_no_extras(
         )
 
     assert result.exit_code == 0, result.output
-    # host_mode defaults on (no container image), so only the host isolation
-    # overlay is appended; assert no USER extra overlays beyond it.
-    user_extras = [o for o in calls[0]["extra_overlays"] if o.name != "bakar-tuning-host.yml"]
+    # host_mode defaults on (host isolation overlay appended), cache-classify is
+    # unconditional, and ccache defaults on - assert no USER extra overlays
+    # beyond that always-on base stack.
+    base_stack = {"bakar-tuning-host.yml", "bakar-tuning-cache-classify.yml", "bakar-tuning-ccache.yml"}
+    user_extras = [o for o in calls[0]["extra_overlays"] if o.name not in base_stack]
     assert user_extras == []
 
 

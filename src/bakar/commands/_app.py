@@ -40,6 +40,7 @@ _SCCACHE_DIST: bool = False
 _SCCACHE_SCHEDULER: str | None = None
 _MOLD: bool = False
 _MOLD_BASELINE: bool = False
+_MOLD_GLOBAL: bool = False
 # Human-output mode override from the global --plain/--ci/--rich flags; None means
 # auto-detect (see bakar.output_mode.resolve_output_mode). Read by build and monitor.
 _OUTPUT_MODE_OVERRIDE: OutputMode | None = None
@@ -123,7 +124,17 @@ def _main(
         bool,
         typer.Option(
             "--mold-baseline",
-            help="Enable the symmetric bfd baseline arm for link-time measurement (mutually exclusive with --mold).",
+            help="Enable the symmetric bfd baseline arm for link-time measurement (excl. --mold/--mold-global).",
+        ),
+    ] = False,
+    mold_global: Annotated[
+        bool,
+        typer.Option(
+            "--mold-global",
+            help=(
+                "Enable mold in deny-list mode (MOLD_EXCLUDED_PN) across all target recipes "
+                "instead of the default allow-list (mutually exclusive with --mold/--mold-baseline)."
+            ),
         ),
     ] = False,
     plain: Annotated[
@@ -136,12 +147,12 @@ def _main(
     ] = False,
 ) -> None:
     global _USER_CONFIG, _HIDE_DOCTOR_REPORT, _HOST_MODE, _CONTAINER_MODE, _SCCACHE_DIST
-    global _SCCACHE_SCHEDULER, _MOLD, _MOLD_BASELINE, _OUTPUT_MODE_OVERRIDE
+    global _SCCACHE_SCHEDULER, _MOLD, _MOLD_BASELINE, _MOLD_GLOBAL, _OUTPUT_MODE_OVERRIDE
     if plain and rich_output:
         console.print("[red]choose either --plain/--ci or --rich, not both[/]")
         raise typer.Exit(code=2)
-    if mold and mold_baseline:
-        console.print("[red]choose either --mold or --mold-baseline, not both[/]")
+    if sum([mold, mold_baseline, mold_global]) > 1:
+        console.print("[red]choose only one of --mold, --mold-baseline, --mold-global[/]")
         raise typer.Exit(code=2)
     _USER_CONFIG = _load_user_config_safe()
     _HIDE_DOCTOR_REPORT = hide_doctor_report
@@ -151,6 +162,7 @@ def _main(
     _SCCACHE_SCHEDULER = sccache_scheduler
     _MOLD = mold
     _MOLD_BASELINE = mold_baseline
+    _MOLD_GLOBAL = mold_global
     _OUTPUT_MODE_OVERRIDE = OutputMode.PLAIN if plain else (OutputMode.RICH if rich_output else None)
     _get_vendors()
     _load_presets_safe()

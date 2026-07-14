@@ -103,6 +103,7 @@ def test_apply_mold_overrides_noop_when_globals_unset(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(_state, "_MOLD", False)
     monkeypatch.setattr(_state, "_MOLD_BASELINE", False)
+    monkeypatch.setattr(_state, "_MOLD_GLOBAL", False)
 
     cfg = _mold_cfg(mold=False)
     result = apply_mold_overrides(cfg)
@@ -119,6 +120,7 @@ def test_apply_mold_overrides_enables_list_mode(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(_state, "_MOLD", True)
     monkeypatch.setattr(_state, "_MOLD_BASELINE", False)
+    monkeypatch.setattr(_state, "_MOLD_GLOBAL", False)
 
     result = apply_mold_overrides(_mold_cfg(mold=False))
 
@@ -134,8 +136,25 @@ def test_apply_mold_overrides_baseline_wins(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(_state, "_MOLD", False)
     monkeypatch.setattr(_state, "_MOLD_BASELINE", True)
+    monkeypatch.setattr(_state, "_MOLD_GLOBAL", False)
 
     result = apply_mold_overrides(_mold_cfg(mold=False))
 
     assert result.mold is True
     assert result.mold_mode == "baseline"
+
+
+@pytest.mark.unit
+def test_apply_mold_overrides_global_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The --mold-global flag enables mold in the deny-list (global) mode."""
+    import bakar.commands._app as _state
+    from bakar.commands._helpers import apply_mold_overrides
+
+    monkeypatch.setattr(_state, "_MOLD", False)
+    monkeypatch.setattr(_state, "_MOLD_BASELINE", False)
+    monkeypatch.setattr(_state, "_MOLD_GLOBAL", True)
+
+    result = apply_mold_overrides(_mold_cfg(mold=False))
+
+    assert result.mold is True
+    assert result.mold_mode == "global"

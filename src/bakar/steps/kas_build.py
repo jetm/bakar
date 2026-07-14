@@ -194,6 +194,22 @@ def _inject_literal_parallelism(cfg: BuildConfig, text: str) -> str:
     return _PARALLELISM_LINE_RE.sub(_sub, text)
 
 
+def _append_local_conf_lines(text: str, lines: list[str]) -> str:
+    """Append ``lines`` to ``text``'s ``local_conf_header`` block, indented to
+    match the block's own ``INHERIT`` line (or 4 spaces if none is found).
+
+    Pure (no filesystem side effects). Callers own idempotency - each line
+    already present in ``text`` must be filtered out before calling, since this
+    always appends whatever it is given. Returns ``text`` unchanged when
+    ``lines`` is empty."""
+    if not lines:
+        return text
+    m = re.search(r"^(?P<indent>[ \t]+)INHERIT\b", text, re.MULTILINE)
+    indent = m.group("indent") if m else "    "
+    addition = "".join(f"{indent}{line}\n" for line in lines)
+    return text.rstrip("\n") + "\n" + addition
+
+
 def _inject_literal_sccache(cfg: BuildConfig, text: str) -> str:
     """Append literal, exported ``SCCACHE_CONF``/``SCCACHE_DIR`` assignments to
     the sccache overlay's ``local_conf_header``.
@@ -232,10 +248,7 @@ def _inject_literal_sccache(cfg: BuildConfig, text: str) -> str:
         lines.append(f'export SCCACHE_DIST_SCHEDULER_URL = "{url}"')
     lines.append(f'export SCCACHE_CONF = "{sccache_conf}"')
     lines.append('export SCCACHE_DIR = "/work/.sccache-cache"')
-    m = re.search(r"^(?P<indent>[ \t]+)INHERIT\b", text, re.MULTILINE)
-    indent = m.group("indent") if m else "    "
-    addition = "".join(f"{indent}{line}\n" for line in lines)
-    return text.rstrip("\n") + "\n" + addition
+    return _append_local_conf_lines(text, lines)
 
 
 def _inject_host_sccache(text: str) -> str:
@@ -265,10 +278,7 @@ def _inject_host_sccache(text: str) -> str:
     if re.search(r"^\s*export\s+SCCACHE_SERVER_UDS\b", text, re.MULTILINE):
         return text
     uds = sccache_server.default_uds_path()
-    m = re.search(r"^(?P<indent>[ \t]+)INHERIT\b", text, re.MULTILINE)
-    indent = m.group("indent") if m else "    "
-    addition = f'{indent}export SCCACHE_SERVER_UDS = "{uds}"\n'
-    return text.rstrip("\n") + "\n" + addition
+    return _append_local_conf_lines(text, [f'export SCCACHE_SERVER_UDS = "{uds}"'])
 
 
 def _inject_literal_ccache(cfg: BuildConfig, text: str) -> str:
@@ -323,18 +333,14 @@ def _inject_literal_mold(cfg: BuildConfig, text: str) -> str:
 
     Each line is guarded so re-running the injector no-ops (idempotent) and it is
     pure (no filesystem side effects), so dry-run rendering is safe."""
-    m = re.search(r"^(?P<indent>[ \t]+)INHERIT\b", text, re.MULTILINE)
-    indent = m.group("indent") if m else "    "
-    additions = ""
+    lines = []
     if cfg.mold_mode != "list" and not re.search(r"^\s*MOLD_MODE\b", text, re.MULTILINE):
-        additions += f'{indent}MOLD_MODE = "{cfg.mold_mode}"\n'
+        lines.append(f'MOLD_MODE = "{cfg.mold_mode}"')
     if not re.search(r"^\s*export\s+BAKAR_MOLD_LINKLOG\b", text, re.MULTILINE):
         base = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
         log_path = str(base / _MOLD_LINKLOG_NAME) if cfg.host_mode else f"/work/{_MOLD_LINKLOG_NAME}"
-        additions += f'{indent}export BAKAR_MOLD_LINKLOG = "{log_path}"\n'
-    if not additions:
-        return text
-    return text.rstrip("\n") + "\n" + additions
+        lines.append(f'export BAKAR_MOLD_LINKLOG = "{log_path}"')
+    return _append_local_conf_lines(text, lines)
 
 
 # The base overlays statically strip rm_work (default off while bakar is in

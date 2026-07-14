@@ -429,9 +429,7 @@ def _run_single_preset_release(
     cfg = apply_mold_overrides(cfg)
 
     overlay_source = _overlay_for(bsp)
-    extra_overlays: list[Path] = []
-    if byo_form:
-        extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
+    extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
 
     effective_show_layers = show_layers or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_hashes)
 
@@ -760,9 +758,7 @@ def build(
         cfg = replace(cfg, sccache_scheduler_url=sccache_scheduler)
     cfg = apply_mold_overrides(cfg)
 
-    extra_overlays: list[Path] = []
-    if byo_form:
-        extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
+    extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
 
     overlay_source = _overlay_for(bsp)
     if "KAS_CONTAINER_IMAGE" not in os.environ and cfg.kas_container_image != DEFAULT_CONTAINER_IMAGE:

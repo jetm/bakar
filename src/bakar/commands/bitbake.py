@@ -135,9 +135,7 @@ def _run_task(
     materialize_cache_classify_layer(cfg)
     if cfg.use_sccache_dist:
         materialize_sccache_layer(cfg)
-        extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
-    else:
-        extra_overlays = user_extras
+    extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
     # Host mode needs the meta-bakar-host layer (rpm transaction-plugin guard)
     # even when sccache is off, where the branch above skips tuning overlays.
     # Materialize the layer and append its overlay, deduped against whatever the

@@ -1322,7 +1322,7 @@ def _compile_mold_cxx20_probe(compiler: Path) -> tuple[bool, str]:
                 timeout=30,
                 check=False,
             )
-        except OSError as exc:
+        except (OSError, subprocess.TimeoutExpired) as exc:
             return False, str(exc)
     if out.returncode == 0:
         return True, ""
