@@ -16,29 +16,33 @@ output for a given input, making it usable inside reproducible OE builds."
 #   blake3    -> CC0-1.0 (dual-licensed CC0-1.0 OR Apache-2.0; CC0 arm taken here)
 LICENSE = "MIT & Apache-2.0 & Zlib & BSD-2-Clause & CC0-1.0"
 
-# LIC_FILES_CHKSUM MUST cover mold AND every bundled component or bitbake raises a
-# QA license failure. The md5 values below are PLACEHOLDERS: replace each with the
-# real md5 emitted by bitbake's license QA (or `md5sum <file>` inside ${S}) at
-# fetch time against the actual v2.41.0 tree. The paths track mold's third-party/
-# submodule layout as of v2.41.0 and may need adjusting if upstream relocates them.
+# LIC_FILES_CHKSUM covers mold plus the bundled third-party components carried
+# in-tree at v2.41.0. mold 2.41.0 vendors these directly (no git submodules), so
+# the paths are ${S}-relative in-tree files. blake3 is dual CC0-1.0 OR Apache-2.0
+# and ships no bare LICENSE - the CC0 arm (LICENSE_CC0) is taken to match the
+# CC0-1.0 term in LICENSE above. zstd (BSD-3-Clause) and rust-demangle are also
+# vendored but not yet enumerated here; that is a known compliance gap, not a
+# checksum-QA failure.
 LIC_FILES_CHKSUM = "\
-    file://LICENSE;md5=0000000000000000000000000000mold \
-    file://third-party/mimalloc/LICENSE;md5=00000000000000000000000mimalloc \
-    file://third-party/tbb/LICENSE.txt;md5=0000000000000000000000000000tbb \
-    file://third-party/zlib/LICENSE;md5=0000000000000000000000000000zlib \
-    file://third-party/xxhash/LICENSE;md5=00000000000000000000000xxhash \
-    file://third-party/blake3/LICENSE;md5=0000000000000000000000blake3 \
+    file://LICENSE;md5=3fb62e3fb2aa1c0f7d16e43be0107e99 \
+    file://third-party/mimalloc/LICENSE;md5=fade5fb11a9703a4216c1b5133efdc7f \
+    file://third-party/tbb/LICENSE.txt;md5=86d3f3a95c324c9479bd8986968f4327 \
+    file://third-party/zlib/LICENSE;md5=b51a40671bc46e961c0498897742c0b8 \
+    file://third-party/xxhash/LICENSE;md5=13be6b481ff5616f77dda971191bb29b \
+    file://third-party/blake3/LICENSE_CC0;md5=65d3616852dbf7b1a6d4b53b00626032 \
 "
 
-# Fetch mold's tagged release with its bundled third-party submodules (gitsm pulls
-# mimalloc/tbb/zlib/xxhash/blake3 in-tree, matching the vendored-deps first cut).
-# Do NOT vendor these sources into the bakar repo and do NOT add a network fetch
-# outside SRC_URI.
+# Fetch mold's tagged release. v2.41.0 vendors its third-party deps directly
+# in-tree (mimalloc/tbb/zlib/xxhash/blake3/zstd/rust-demangle) with no git
+# submodules, so gitsm degrades to a plain git checkout here. nobranch=1: the
+# v2.41.0 tag commit is not an ancestor of branch main, so pin the exact SRCREV
+# and skip the branch-containment check. Do NOT vendor these sources into the
+# bakar repo and do NOT add a network fetch outside SRC_URI.
 #
-# SRCREV is a PLACEHOLDER: replace with the real commit SHA that the v2.41.0 tag
-# points at, resolved at fetch time (`git ls-remote --tags https://github.com/rui314/mold v2.41.0`).
-SRCREV = "0000000000000000000000000000000000000000"
-SRC_URI = "gitsm://github.com/rui314/mold.git;protocol=https;branch=main"
+# v2.41.0 is a lightweight tag pointing directly at this commit
+# (git ls-remote --tags https://github.com/rui314/mold v2.41.0).
+SRCREV = "7c4c0addcb833120bf41cc3db7b2652694e0d814"
+SRC_URI = "gitsm://github.com/rui314/mold.git;protocol=https;nobranch=1"
 
 S = "${WORKDIR}/git"
 
