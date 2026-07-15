@@ -131,33 +131,42 @@ class CentralTierAction:
         )
 
     def operations(self) -> list[RunCommand | WriteFile]:
-        """The one-shot, idempotent per-dataset database bootstrap (unprivileged)."""
+        """Per-dataset DB bootstrap (unprivileged) plus enabling the packaged units.
+
+        The two ``createdb`` ops connect as each dataset's own role, so they are
+        unprivileged. Service lifecycle is owned by the ``avocado-buildservices``
+        systemd units, which ship the correct defaults (prserv ``--nohist``); setup
+        enables + starts them rather than spawning the daemons ad-hoc, so that is
+        the one privileged op.
+        """
         cfg = self._cfg
         return [
             _ensure_db_op(cfg.pg_host, cfg.pg_port, "hashserv"),
             _ensure_db_op(cfg.pg_host, cfg.pg_port, "prserv"),
+            RunCommand(
+                argv=[
+                    "systemctl",
+                    "--system",
+                    "enable",
+                    "--now",
+                    "avocado-hashserv.service",
+                    "avocado-prserv.service",
+                ],
+                needs_root=True,
+            ),
         ]
 
     def apply(self, path: Path | None = None) -> None:
-        """Start both services, then persist their endpoints to ``[build]`` config.
+        """Persist the tier endpoints to ``[build]`` config.
 
-        Mirrors :class:`ConfigWriteAction`: the runner calls this last. ``path``
-        defaults to ``None`` (the global config), falling back to the config's
-        ``config_path`` when the runner passes nothing.
+        The systemd units (from the ``avocado-buildservices`` package, enabled in
+        :meth:`operations`) own the service lifecycle, so this no longer spawns
+        anything - it only records where the services listen so every node's build
+        points ``BB_HASHSERVE`` / ``PRSERV_HOST`` at them. Mirrors
+        :class:`ConfigWriteAction`: the runner calls this last. ``path`` defaults to
+        ``None`` (the global config), falling back to the config's ``config_path``.
         """
         cfg = self._cfg
         target = path if path is not None else cfg.config_path
-        hashserv.central_ensure_running(
-            binary=cfg.hashserv_binary,
-            bind_host=cfg.bind_host,
-            port=cfg.hashserv_port,
-            database=cfg.hashserv_database,
-        )
-        prserv.central_ensure_running(
-            binary=cfg.prserv_binary,
-            bind_host=cfg.bind_host,
-            port=cfg.prserv_port,
-            database=cfg.prserv_database,
-        )
         set_setting("build.bb_hashserve", self._bb_hashserve, target)
         set_setting("build.prserv_host", self._prserv_host, target)

@@ -141,8 +141,6 @@ def test_is_satisfied_false_when_config_missing_endpoint(monkeypatch, tmp_path) 
 
 def test_is_satisfied_true_when_all_up_and_persisted(monkeypatch, tmp_path) -> None:
     _all_probes_up(monkeypatch)
-    monkeypatch.setattr(hashserv, "central_ensure_running", lambda **k: "ignored")
-    monkeypatch.setattr(prserv, "central_ensure_running", lambda **k: "ignored")
     action = CentralTierAction(_cfg(tmp_path))
     action.apply(tmp_path / "config.toml")
     assert action.is_satisfied(None) is True
@@ -151,9 +149,7 @@ def test_is_satisfied_true_when_all_up_and_persisted(monkeypatch, tmp_path) -> N
 # --- apply(): start services + persist endpoints -----------------------------
 
 
-def test_apply_writes_endpoints_to_build_config(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(hashserv, "central_ensure_running", lambda **k: "ignored")
-    monkeypatch.setattr(prserv, "central_ensure_running", lambda **k: "ignored")
+def test_apply_writes_endpoints_to_build_config(tmp_path) -> None:
     config_path = tmp_path / "config.toml"
     CentralTierAction(_cfg(tmp_path)).apply(config_path)
 
@@ -164,17 +160,16 @@ def test_apply_writes_endpoints_to_build_config(monkeypatch, tmp_path) -> None:
     assert build["prserv_host"] == "10.42.0.1:8585"
 
 
-def test_apply_starts_both_services_with_db_urls(monkeypatch, tmp_path) -> None:
-    """apply() launches each Rust service with its bind host and postgres URL."""
-    calls: dict[str, dict] = {}
-    monkeypatch.setattr(hashserv, "central_ensure_running", lambda **k: calls.setdefault("hashserv", k) and None)
-    monkeypatch.setattr(prserv, "central_ensure_running", lambda **k: calls.setdefault("prserv", k) and None)
-    CentralTierAction(_cfg(tmp_path)).apply(tmp_path / "config.toml")
-
-    assert calls["hashserv"]["bind_host"] == _BIND
-    assert calls["hashserv"]["database"].startswith("postgres://hashserv")
-    assert calls["prserv"]["bind_host"] == _BIND
-    assert calls["prserv"]["database"].startswith("postgres://prserv")
+def test_operations_enables_both_systemd_units(tmp_path) -> None:
+    """operations() enables the packaged units instead of spawning the daemons."""
+    ops = CentralTierAction(_cfg(tmp_path)).operations()
+    enable = [op for op in ops if isinstance(op, RunCommand) and "enable" in op.argv]
+    assert len(enable) == 1
+    op = enable[0]
+    assert op.needs_root is True
+    assert "avocado-hashserv.service" in op.argv
+    assert "avocado-prserv.service" in op.argv
+    assert "--now" in op.argv
 
 
 # --- operations(): idempotent database bootstrap -----------------------------
@@ -182,10 +177,11 @@ def test_apply_starts_both_services_with_db_urls(monkeypatch, tmp_path) -> None:
 
 def test_operations_bootstrap_both_databases_unprivileged() -> None:
     ops = CentralTierAction(_cfg()).operations()
-    assert len(ops) == 2
+    assert len(ops) == 3
     assert all(isinstance(op, RunCommand) for op in ops)
-    assert all(op.needs_root is False for op in ops)
-    joined = " ".join(arg for op in ops for arg in op.argv)
-    assert "createdb" in joined
+    createdb_ops = [op for op in ops if "createdb" in " ".join(op.argv)]
+    assert len(createdb_ops) == 2
+    assert all(op.needs_root is False for op in createdb_ops)
+    joined = " ".join(arg for op in createdb_ops for arg in op.argv)
     assert "hashserv" in joined
     assert "prserv" in joined
