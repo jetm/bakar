@@ -12,11 +12,15 @@
 # unaudited; a <12.1 gcc hard-fails on -fuse-ld=mold, so the native compiler is
 # left untouched.
 #
-# Linker discovery is via a -B<wrapper-dir> under RECIPE_SYSROOT_NATIVE (D2), not
-# a target-sysroot drop: a -native recipe cannot own a ${TARGET_SYS} tooldir
+# Linker discovery uses a -B<wrapper-dir> under RECIPE_SYSROOT_NATIVE (D2), not a
+# target-sysroot drop: a -native recipe cannot own a ${TARGET_SYS} tooldir
 # without breaking native sstate sharing across arches. -B prefixes are searched
 # ahead of the standard tooldir, sidestepping the collect2 --sysroot lookup
-# failure (mold #564).
+# failure (mold #564). But libtool strips -B from its generated link line, so -B
+# alone leaves autotools recipes unable to find ld.mold; the same wrapper dir is
+# also exported via COMPILER_PATH (an env var libtool cannot strip) so discovery
+# survives libtool. Both point at the same dir; -B wins for cmake/meson/make,
+# COMPILER_PATH covers libtool.
 #
 # The -B dir holds exactly ONE timing wrapper, chosen by mode (revised D6): the
 # mold arm (list/global) stages ld.mold, the baseline arm stages ld.bfd. Staging
@@ -122,6 +126,18 @@ python () {
     d.setVar('MOLD_WRAP_ARM', arm)
     if arm == 'mold':
         d.appendVar('DEPENDS', ' mold-native')
+
+    # Export COMPILER_PATH so gcc still finds the wrapper when libtool strips the
+    # -B<wrapper> flag from its generated link line. libtool filters command-line
+    # flags but inherits the environment, and COMPILER_PATH is gcc's env-var
+    # subprogram search path (tried after GCC_EXEC_PREFIX); -B alone does not
+    # survive libtool, so autotools recipes could not find ld.mold. The wrapper
+    # dir holds only our one arm wrapper, so no other subprogram is shadowed.
+    wrapdir = d.getVar('MOLD_WRAPPER_DIR')
+    existing = d.getVar('COMPILER_PATH') or ''
+    d.setVar('COMPILER_PATH', wrapdir + (':' + existing if existing else ''))
+    d.setVarFlag('COMPILER_PATH', 'export', '1')
+
     d.appendVarFlag('do_prepare_recipe_sysroot', 'postfuncs', ' mold_stage_wrappers')
 }
 
