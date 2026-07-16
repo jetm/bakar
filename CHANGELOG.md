@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added `bakar build --on <host>` for remote single-host build dispatch. It preflights the ssh host, rsyncs the working tree (uncommitted edits included) to the identical path with a `--delete` mirror gated behind a dry-run preview and confirmation (`--yes` bypasses the prompt) and a cache/artifact exclude set, then execs `bakar build` remotely fish-safely over `ssh <host> bash -s` with sccache-dist off by default (`--sccache-dist` opts back in). The remote output streams live, the remote run-id and a copy-pasteable `ssh <host> bakar triage <run-id>` line are surfaced on completion, and the remote build's exit code propagates.
+
 ## [0.22.0] - 2026-07-15
 
 ### Added
