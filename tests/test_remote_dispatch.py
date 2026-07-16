@@ -250,6 +250,7 @@ class FakeSubprocess:
         self.calls: list[tuple[str, list[str]]] = []
         self.reachable_rc = 0
         self.rsync_rc = 0
+        self.dry_rsync_rc = 0
         self.find_stdout = ""
         self.popen_lines: list[str] = []
         self.popen_rc = 0
@@ -261,7 +262,8 @@ class FakeSubprocess:
         if argv[0] == "ssh" and argv[-1] == "true":
             return _Result(self.reachable_rc)
         if argv[0] == "rsync" and "-n" in argv:
-            return _Result(0, stdout="itemized preview line\n")
+            preview = "itemized preview line\n" if self.dry_rsync_rc == 0 else ""
+            return _Result(self.dry_rsync_rc, stdout=preview)
         if argv[0] == "rsync":
             return _Result(self.rsync_rc)
         if argv[0] == "ssh" and "find" in argv[-1]:
@@ -440,4 +442,30 @@ def test_dispatch_run_id_from_success_discovery(fake_sp: FakeSubprocess, capsys:
     assert "20260716-235959" in out
     assert f"ssh {HOST} bakar triage 20260716-235959" in out
     # Success path performs the discovery ssh(find).
+    assert any(kind == "run" and "find" in argv[-1] for kind, argv in fake_sp.calls)
+
+
+def test_confirm_failed_preview_warns(fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]) -> None:
+    # A failed dry-run must surface a warning, not a silent empty preview, so the
+    # user never confirms rsync --delete blind to what it would remove.
+    fake_sp.dry_rsync_rc = 5
+    assert rd.confirm_destructive_sync(WS, HOST, assume_yes=True) is True
+    out = capsys.readouterr().out
+    assert "preview failed" in out
+    assert "rsync exit 5" in out
+
+
+def test_dispatch_failure_without_triage_falls_back_to_discovery(
+    fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # On failure, if the triage-hint line is absent from the stream (e.g. lost to
+    # Rich's non-TTY line-wrap), the run-id is recovered via newest-run-dir discovery.
+    fake_sp.popen_rc = 1
+    fake_sp.popen_lines = ["some build output with no triage hint\n"]
+    fake_sp.find_stdout = "1699999999.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-333333\n"
+    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "20260716-333333" in out
+    # Discovery ran because the stream did not yield the run-id.
     assert any(kind == "run" and "find" in argv[-1] for kind, argv in fake_sp.calls)

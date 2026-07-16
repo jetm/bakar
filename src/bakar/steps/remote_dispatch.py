@@ -148,7 +148,11 @@ def confirm_destructive_sync(ws_root: Path, host: str, *, assume_yes: bool) -> b
         check=False,
     )
     console.print(f"[bold]rsync --delete preview[/] -> {host}:{ws_root}")
-    if preview.stdout:
+    if preview.returncode != 0:
+        # A failed dry-run leaves the preview empty/partial: do not let the user
+        # (or --yes) confirm a --delete blind to what it would remove.
+        console.print(f"[red]preview failed (rsync exit {preview.returncode})[/]; cannot show what would be deleted.")
+    elif preview.stdout:
         # markup=False: rsync -i itemized paths may contain '[' which Rich would
         # otherwise parse as markup and raise MarkupError on.
         console.print(preview.stdout, end="", markup=False)
@@ -220,7 +224,11 @@ def _surface_run_id(host: str, ws_root: Path, captured: list[str], rc: int) -> N
             if match:
                 run_id = match.group(1).strip("`")
                 break
-    else:
+    # Discovery is the universal fallback: on success the stream carries no
+    # run-id, and on failure the triage-hint line can be lost to Rich's 80-col
+    # wrap on a non-TTY. Either way the finished build wrote the newest run dir,
+    # so recover the id from disk when the stream did not yield it.
+    if run_id is None:
         run_id = _discover_newest_run_id(host, ws_root)
     if run_id:
         console.print(f"remote run-id: {run_id}")
