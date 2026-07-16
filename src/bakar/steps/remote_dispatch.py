@@ -356,8 +356,10 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
 
     Each step gates the next: (1) reject a hyphen-prefixed host and guard the
     rsync destination; (2) preflight the host (reachable + bakar on the non-login
-    PATH), aborting with NO rsync/build when it fails; (3) confirm the
-    destructive sync, aborting before any real transfer when declined; (4) run
+    PATH), aborting with NO rsync/build when it fails; (2b) abort when the remote
+    bakar id/version differs from local (a build with different code/overlays),
+    unless ``assume_yes`` overrides; (3) confirm the destructive sync, aborting
+    before any real transfer when declined; (4) run
     the real ``rsync -a --delete``; (5) stream the remote build over
     ``ssh <host> bash -s`` stdin; (6) surface the run-id + triage command;
     (7) return the remote build's exit code.
@@ -386,9 +388,14 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
     local_ver = _local_bakar_version()
     if local_ver and detail and detail != local_ver:
         console.print(
-            f"[yellow]bakar version mismatch[/]: local {local_ver!r} vs remote {detail!r} - "
-            "forwarded flags may not be understood by the remote."
+            f"[red]bakar mismatch[/]: local {local_ver!r} vs remote {detail!r}. The remote would "
+            "build with different bakar code/overlays (the parenthesised id is a content hash), so "
+            "the result may not match a local build. Sync the remote bakar (git pull + "
+            "uv tool install --force), or pass --yes to override."
         )
+        if not assume_yes:
+            return 1
+        console.print("[yellow]--yes: proceeding despite the bakar mismatch.[/]")
 
     if not confirm_destructive_sync(ws_root, host, assume_yes=assume_yes):
         console.print("[yellow]remote sync declined; nothing transferred.[/]")

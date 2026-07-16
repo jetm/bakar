@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Annotated
 import typer
 from rich.console import Console
 
-from bakar import __version__
+from bakar import __version__, package_identity
 from bakar.output_mode import OutputMode
 from bakar.preset_config import PresetEntry, load_presets
 from bakar.user_config import load_user_config
@@ -77,7 +77,9 @@ def _load_presets_safe() -> None:
 
 def _version(value: bool) -> None:
     if value:
-        console.print(f"bakar {__version__}")
+        # The content id lets `build --on <host>` detect a remote bakar whose
+        # code/overlays differ even when __version__ matches (see package_identity).
+        console.print(f"bakar {__version__} ({package_identity()})")
         raise typer.Exit
 
 

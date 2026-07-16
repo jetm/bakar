@@ -717,10 +717,26 @@ def test_dispatch_rejects_hyphen_prefixed_host(fake_sp: FakeSubprocess, capsys: 
     assert "must not begin with" in out
 
 
-# --- C4: version parity warning ---------------------------------------------
+# --- C4: bakar identity parity gate -----------------------------------------
 
 
-def test_dispatch_warns_on_version_mismatch(fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]) -> None:
+def test_dispatch_aborts_on_mismatch_without_yes(fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]) -> None:
+    """A bakar id/version mismatch aborts before any rsync or build."""
+    fake_sp.reachable_rc = 0
+    fake_sp.remote_version = "bakar 0.22.0 (deadbeef0000)"
+    fake_sp.local_version = "bakar 0.22.0 (0123456789ab)"
+    rc = rd.dispatch_remote_build(
+        HOST, WS, Path("/home/tiamarin/ws"), ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=False
+    )
+    assert rc == 1
+    _cap = capsys.readouterr()
+    out = _cap.out + _cap.err
+    assert "bakar mismatch" in out
+    assert "rsync" not in out  # aborted before the destructive sync
+
+
+def test_dispatch_proceeds_on_mismatch_with_yes(fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]) -> None:
+    """--yes overrides the mismatch abort and proceeds with a loud note."""
     fake_sp.reachable_rc = 0
     fake_sp.remote_version = "bakar 2.0.0"
     fake_sp.local_version = "bakar 1.0.0"
@@ -731,9 +747,42 @@ def test_dispatch_warns_on_version_mismatch(fake_sp: FakeSubprocess, capsys: pyt
     assert rc == 0
     _cap = capsys.readouterr()
     out = _cap.out + _cap.err
-    assert "version mismatch" in out
+    assert "bakar mismatch" in out
+    assert "proceeding despite" in out
     assert "1.0.0" in out
     assert "2.0.0" in out
+
+
+def test_package_identity_stable_and_content_sensitive(tmp_path: Path) -> None:
+    """The id is a deterministic 12-hex digest that moves when a file changes."""
+    from bakar import package_identity
+
+    first = package_identity()
+    assert first == package_identity()
+    assert len(first) == 12
+    assert all(c in "0123456789abcdef" for c in first)
+
+    # A byte-different package tree yields a different id (the drift the gate catches).
+    pkg = tmp_path / "pkg"
+    (pkg / "sub").mkdir(parents=True)
+    (pkg / "a.py").write_text("x = 1\n")
+    (pkg / "sub" / "o.bbclass").write_text("FOO = 'a'\n")
+    import hashlib
+
+    def _id(root: Path) -> str:
+        d = hashlib.sha256()
+        for p in sorted(root.rglob("*")):
+            if p.is_dir():
+                continue
+            d.update(p.relative_to(root).as_posix().encode())
+            d.update(b"\0")
+            d.update(p.read_bytes())
+            d.update(b"\0")
+        return d.hexdigest()[:12]
+
+    before = _id(pkg)
+    (pkg / "sub" / "o.bbclass").write_text("FOO = 'b'\n")
+    assert _id(pkg) != before
 
 
 # --- S5: preview filters to deletions ---------------------------------------
