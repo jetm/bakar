@@ -42,14 +42,21 @@ MOLD_MODE ??= "list"
 # Per-recipe opt-out escape hatch (mirrors sccache's SCCACHE_DISABLE).
 MOLD_DISABLE ??= ""
 
-# Allow-list seeded with the Phase-1b heavy target plus the Phase-2 browser
-# heavies, so they are proven under mold before the global flip.
-MOLD_INCLUDED_PN ?= "llvm librsvg chromium-ozone-wayland chromium-x11 qtwebengine wpewebkit"
+# Allow-list of heavy link targets proven to benefit from mold. The chromium
+# variants are NOT here: they build with clang ThinLTO and pin -fuse-ld=lld
+# (the LTO codegen runs inside the linker, and lld carries the LLVM plugin).
+# Forcing mold makes it try to load LLVMgold.so, which is absent from the clang
+# sysroot, and the link fails - so chromium is deny-listed below instead.
+# wpewebkit stays: it does not use ThinLTO and molds cleanly.
+MOLD_INCLUDED_PN ?= "llvm librsvg qtwebengine wpewebkit"
 
-# Deny-list carries glibc so the kernel/glibc NEVER-mold contract (req 4) does
-# NOT rely on gcc flag ordering (A7); kernel/firmware self-exclude by clearing
-# LDFLAGS or forcing ld.bfd, so they need no entry here.
-MOLD_EXCLUDED_PN ?= "glibc"
+# Deny-list carries glibc for the kernel/glibc NEVER-mold contract (req 4), and
+# the chromium variants because their clang-ThinLTO link requires lld's built-in
+# LTO plugin (mold cannot load LLVMgold.so). The chromium -fuse-ld=lld pin lives
+# in gn config, not bitbake LDFLAGS, so the self-pin auto-skip cannot see it -
+# hence an explicit entry. kernel/firmware self-exclude (clear LDFLAGS or force
+# ld.bfd), so they need no entry.
+MOLD_EXCLUDED_PN ?= "glibc chromium-ozone-wayland chromium-x11"
 
 # Neutral -B wrapper directory, in the native sysroot the driver runs from. The
 # target --sysroot only scopes libs/startfiles, never the linker-program lookup.
