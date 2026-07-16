@@ -165,7 +165,7 @@ bakar --sccache-dist build meta-avocado/kas/machine/qemux86-64.yml --on pc2 --ye
    same absolute path on the remote. rsync carries uncommitted edits verbatim
    (`git push` cannot), and the existing remote clone makes this a fast delta.
    `.git` is kept (kas/bitbake read git state for `SRCREV`/`AUTOREV`); build
-   artifacts and caches are excluded: `build-*/`, `**/tmp/`, `**/sstate-cache/`,
+   artifacts and caches are excluded: `build-*/`, `build/`, `**/tmp/`, `**/sstate-cache/`,
    `**/downloads/`, `.bakar/runs/`, the workspace-local `ccache/`, `**/.venv/`,
    `**/__pycache__/`, and `**/*.pyc`. NFS-mounted shared caches live outside the
    workspace, so they are never in scope.
