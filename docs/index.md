@@ -109,6 +109,7 @@
 - Boot a QEMU image from the build directory: [run.md](run.md)
 - Reproduce and measure the bitbake parser race: [stress-parse.md](stress-parse.md)
 - Persistent hash equivalence across builds: [hashserv.md](hashserv.md)
+- Run a build on an idle remote node (mirror the tree, build over ssh): [build.md](build.md) (`--on <host>`)
 
 ---
 

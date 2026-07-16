@@ -56,6 +56,8 @@ bakar build -m imx8mp-var-dart    # machine override in bbsetup workspace
 | `--sstate-mirror` | | HTTP sstate/downloads mirror URL; activates `bakar-tuning-shared-cache.yml` for this build |
 | `--preset` | | Named preset from `config.toml`; additive with explicit flags (explicit flags win) |
 | `--workspace` | `-w` | Workspace root override |
+| `--on` | | Dispatch the build to a remote host (ssh alias or `user@ip`) instead of building locally. See [Remote dispatch](#remote-dispatch---on-host). |
+| `--yes` | `-y` | Skip the `rsync --delete` confirmation prompt for `--on` dispatch (non-interactive) |
 
 `--host` (bypass kas-container, run plain `kas build` on the host) and
 `--sccache-dist` / `--sccache-scheduler URL` are **global** options handled by the
@@ -129,6 +131,62 @@ bakar build my-board.yml --dry-run-script -
 8. **kas-container build** - invokes `kas-container build <kas_yaml>:<overlay>` (or `kas build` in host mode)
 
 Run telemetry is written to `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/`.
+
+## Remote dispatch (`--on <host>`)
+
+`--on <host>` runs the whole build on an idle remote node instead of the local
+machine. It mirrors your working tree (uncommitted edits included) to the remote,
+runs `bakar build` there, streams the output back live, and prints the remote
+run-id so you can triage failures over ssh. Every other build flag passes through
+unchanged. When `--on` is unset the build is byte-identical to a local run - no
+ssh or rsync is spawned.
+
+`<host>` is any ssh destination: an alias from `~/.ssh/config` or a `user@ip`.
+The remote must have the workspace checked out at the same absolute path as the
+local machine and run a matching `bakar` version.
+
+```bash
+# Dispatch the build to the pc2 node; prompts before the destructive sync
+bakar build meta-avocado/kas/machine/qemux86-64.yml --on pc2
+
+# Non-interactive: skip the sync confirmation prompt
+bakar build meta-avocado/kas/machine/qemux86-64.yml --on pc2 --yes
+
+# Force the remote build to join the sccache-dist cluster (off by default)
+bakar --sccache-dist build meta-avocado/kas/machine/qemux86-64.yml --on pc2 --yes
+```
+
+### Dispatch sequence
+
+1. **Host preflight** - `ssh -o BatchMode=yes <host> true` must succeed. If the
+   host is unreachable or key auth is not set up, the command fails fast with a
+   clear message and spawns no rsync.
+2. **Working-tree mirror** - `rsync -a --delete` copies the workspace root to the
+   same absolute path on the remote. rsync carries uncommitted edits verbatim
+   (`git push` cannot), and the existing remote clone makes this a fast delta.
+   `.git` is kept (kas/bitbake read git state for `SRCREV`/`AUTOREV`); build
+   artifacts and caches are excluded: `build-*/`, `**/tmp/`, `**/sstate-cache/`,
+   `**/downloads/`, `.bakar/runs/`, the workspace-local `ccache/`, `**/.venv/`,
+   `**/__pycache__/`, and `**/*.pyc`. NFS-mounted shared caches live outside the
+   workspace, so they are never in scope.
+3. **Delete confirmation** - because `--delete` mutates the remote irreversibly,
+   bakar first runs an `rsync --delete --dry-run -i` preview and prompts for
+   confirmation before any real transfer. `--yes` (`-y`) bypasses the prompt for
+   non-interactive or scripted runs.
+4. **Remote build** - the build runs on the remote with sccache-dist forced
+   **off** by default (`BAKAR_SCCACHE_DIST=0`), so a node that is normally an
+   sccache-dist server runs as an independent worker (local ccache + shared
+   sstate) rather than re-coupling to the cluster. Pass `--sccache-dist` to opt
+   back in - the forwarded flag wins over the env default by CLI-over-env
+   precedence. The remote command is delivered fish-safely as a script over
+   stdin to `ssh <host> bash -s` (the remote login shell is fish, which mangles
+   a naive `ssh <host> '<cmd>'` or `bash -lc` invocation).
+5. **Live streaming + run-id** - the remote build output streams to your terminal
+   as it runs. On completion bakar prints the remote run-id and a copy-pasteable
+   `ssh <host> bakar triage <run-id>` line so you (or Claude, over ssh) can
+   inspect the run remotely.
+6. **Exit propagation** - a non-zero remote build exits the local command with
+   the same code; the failure message points at the remote triage command.
 
 ## On failure
 
