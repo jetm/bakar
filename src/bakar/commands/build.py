@@ -31,6 +31,7 @@ from bakar.commands._helpers import (
     _run_doctor_gate,
     _tuning_extra_overlays,
     _uninitialized_bbsetup_dir,
+    _workspace_from_cwd,
     apply_mold_overrides,
     global_container_mode,
     global_host_mode,
@@ -555,6 +556,23 @@ def build(
             help="Named preset from config.toml; additive with explicit flags (explicit flags win).",
         ),
     ] = None,
+    on: Annotated[
+        str | None,
+        typer.Option(
+            "--on",
+            help="Dispatch the build to a remote host (ssh alias or user@ip) instead of building "
+            "locally: mirror the working tree with rsync, run the build there, stream logs, and "
+            "surface the remote run-id. Unset builds locally.",
+        ),
+    ] = None,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Skip the rsync --delete confirmation prompt for --on dispatch (non-interactive).",
+        ),
+    ] = False,
 ) -> None:
     """Run the build pipeline idempotently.
 
@@ -580,6 +598,20 @@ def build(
     container_mode = global_container_mode()
     sccache_dist = _state._SCCACHE_DIST
     sccache_scheduler = _state._SCCACHE_SCHEDULER
+
+    # --on <host>: dispatch the entire build to a remote node instead of building
+    # locally. Runs before any form-specific branch (preset, bbsetup, byo/manifest)
+    # so it covers every build form (design A2), and captures the invoking cwd before
+    # any workspace resolution/chdir (the bakar-stop-and-workspace-cwd A10 lesson) so
+    # the remote reproduces PC1's path resolution exactly. When --on is unset the body
+    # below is byte-identical to today - no ssh/rsync is spawned.
+    if on is not None:
+        invoking_cwd = Path.cwd()
+        ws_root = workspace.resolve() if workspace is not None else _workspace_from_cwd()
+        from bakar.steps.remote_dispatch import dispatch_remote_build
+
+        rc = dispatch_remote_build(on, ws_root, invoking_cwd, sys.argv[1:], sccache_dist=sccache_dist, assume_yes=yes)
+        raise typer.Exit(code=rc)
     # Resolve the active preset (if any) before dispatch.
     # PresetEntry is used only as a local variable type annotation.
     from bakar.preset_config import PresetEntry
