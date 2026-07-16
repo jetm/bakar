@@ -102,8 +102,6 @@ def disk_report(
 
     warning = None
     if threshold_bytes is not None and growth_bytes > threshold_bytes:
-        warning = (
-            f"disk growth {growth_bytes} bytes exceeds threshold {threshold_bytes} bytes"
-        )
+        warning = f"disk growth {growth_bytes} bytes exceeds threshold {threshold_bytes} bytes"
 
     return DiskReport(growth_bytes=growth_bytes, full_events=full_events, warning=warning)

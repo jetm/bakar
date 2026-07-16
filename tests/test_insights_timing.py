@@ -59,9 +59,7 @@ def test_task_missing_completed_is_excluded_without_raising(tmp_path: Path) -> N
 
 @pytest.mark.unit
 def test_top_n_truncates_when_more_than_n_completed_tasks(tmp_path: Path) -> None:
-    artifact = {
-        "tasks": [_row(f"recipe{i}", "do_compile", 0.0, float(i)) for i in range(1, 6)]
-    }
+    artifact = {"tasks": [_row(f"recipe{i}", "do_compile", 0.0, float(i)) for i in range(1, 6)]}
 
     report = timing_report(artifact, top_n=3, baselines_path=tmp_path / "absent.json")
 
