@@ -34,6 +34,7 @@ console = Console()
 # from both transfer and ``--delete``.
 RSYNC_EXCLUDES: tuple[str, ...] = (
     "build-*/",
+    "build/",
     "**/tmp/",
     "**/sstate-cache/",
     "**/downloads/",
@@ -61,11 +62,18 @@ def build_rsync_argv(ws_root: Path, host: str, *, dry_run: bool = False) -> list
     return argv
 
 
-def strip_on_option(local_args: list[str]) -> list[str]:
-    """Return ``local_args`` with the ``--on`` dispatch option removed.
+# Confirm-gate bypass flags that exist only to drive `--on` dispatch and must
+# never reach the remote build (an older remote bakar rejects `--yes`, and it is
+# a no-op there in any case).
+_DISPATCH_ONLY_FLAGS = frozenset({"--yes", "-y"})
 
-    Handles both the two-token ``--on <host>`` form and the single-token
-    ``--on=<host>`` form; every other token is left intact.
+
+def strip_dispatch_options(local_args: list[str]) -> list[str]:
+    """Return ``local_args`` with the dispatch-only options removed.
+
+    Strips ``--on <host>`` / ``--on=<host>`` (else the remote re-enters dispatch)
+    and the confirm-gate bypass ``--yes`` / ``-y``; every other token is left
+    intact so the remote build sees the same flag surface as the local one.
     """
     result: list[str] = []
     skip_next = False
@@ -77,6 +85,8 @@ def strip_on_option(local_args: list[str]) -> list[str]:
             skip_next = True
             continue
         if arg.startswith("--on="):
+            continue
+        if arg in _DISPATCH_ONLY_FLAGS:
             continue
         result.append(arg)
     return result
@@ -95,7 +105,9 @@ def build_remote_script(remote_argv: list[str], cwd: Path, *, sccache_off: bool)
     if sccache_off:
         env_tokens.append("BAKAR_SCCACHE_DIST=0")
     exec_line = "exec " + " ".join([*env_tokens, "bakar", shlex.join(remote_argv)])
-    return f"cd {shlex.quote(str(cwd))}\n{exec_line}"
+    # `|| exit 1`: if the replicated cwd is missing on the remote, fail loudly
+    # instead of silently running the build in $HOME (the wrong directory).
+    return f"cd {shlex.quote(str(cwd))} || exit 1\n{exec_line}"
 
 
 def assert_safe_workspace(ws_root: Path) -> None:
@@ -109,9 +121,12 @@ def assert_safe_workspace(ws_root: Path) -> None:
         raise ValueError("workspace root is empty")
     if not ws_root.is_absolute():
         raise ValueError(f"workspace root is not absolute: {ws_root}")
-    if ws_root == Path(ws_root.anchor):
+    # Resolve before the equality checks so a symlinked home or root
+    # (e.g. /var/home/user -> /home/user) cannot slip a --delete past the guard.
+    resolved = ws_root.resolve()
+    if resolved == Path(resolved.anchor):
         raise ValueError(f"workspace root is the filesystem root: {ws_root}")
-    if ws_root == Path.home():
+    if resolved == Path.home().resolve():
         raise ValueError(f"workspace root is the home directory: {ws_root}")
 
 
@@ -149,10 +164,11 @@ def confirm_destructive_sync(ws_root: Path, host: str, *, assume_yes: bool) -> b
     )
     console.print(f"[bold]rsync --delete preview[/] -> {host}:{ws_root}")
     if preview.returncode != 0:
-        # A failed dry-run leaves the preview empty/partial: do not let the user
-        # (or --yes) confirm a --delete blind to what it would remove.
-        console.print(f"[red]preview failed (rsync exit {preview.returncode})[/]; cannot show what would be deleted.")
-    elif preview.stdout:
+        # A failed dry-run cannot show what --delete would remove; never run the
+        # destructive mirror blind, even under --yes.
+        console.print(f"[red]preview failed (rsync exit {preview.returncode})[/]; refusing the destructive sync.")
+        return False
+    if preview.stdout:
         # markup=False: rsync -i itemized paths may contain '[' which Rich would
         # otherwise parse as markup and raise MarkupError on.
         console.print(preview.stdout, end="", markup=False)
@@ -253,7 +269,11 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
     ``ssh <host> bash -s`` stdin; (6) surface the run-id + triage command;
     (7) return the remote build's exit code.
     """
-    assert_safe_workspace(ws_root)
+    try:
+        assert_safe_workspace(ws_root)
+    except ValueError as exc:
+        console.print(f"[red]unsafe workspace for remote sync:[/] {exc}")
+        return 1
 
     if not check_host_reachable(host):
         console.print(
@@ -271,7 +291,7 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
         console.print(f"[red]rsync failed (exit {rsync_rc})[/]; remote build not started.")
         return rsync_rc
 
-    script = build_remote_script(strip_on_option(local_args), cwd, sccache_off=not sccache_dist)
+    script = build_remote_script(strip_dispatch_options(local_args), cwd, sccache_off=not sccache_dist)
     rc, captured = _stream_remote_build(host, script)
     _surface_run_id(host, ws_root, captured, rc)
     return rc

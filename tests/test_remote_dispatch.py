@@ -18,7 +18,7 @@ from bakar.steps.remote_dispatch import (
     assert_safe_workspace,
     build_remote_script,
     build_rsync_argv,
-    strip_on_option,
+    strip_dispatch_options,
 )
 
 pytestmark = pytest.mark.unit
@@ -40,6 +40,7 @@ def test_excludes_is_a_tuple() -> None:
     "pattern",
     [
         "build-*/",
+        "build/",
         "**/tmp/",
         "**/sstate-cache/",
         "**/downloads/",
@@ -100,33 +101,39 @@ def test_rsync_argv_source_and_dest_same_absolute_path_with_trailing_slash() -> 
 
 
 # ---------------------------------------------------------------------------
-# strip_on_option
+# strip_dispatch_options
 # ---------------------------------------------------------------------------
 
 
-def test_strip_on_two_token_form() -> None:
-    args = ["build", "my.yml", "--on", "pc2", "--yes"]
-    assert strip_on_option(args) == ["build", "my.yml", "--yes"]
+def test_strip_dispatch_two_token_form() -> None:
+    args = ["build", "my.yml", "--on", "pc2"]
+    assert strip_dispatch_options(args) == ["build", "my.yml"]
 
 
-def test_strip_on_equals_form() -> None:
-    args = ["build", "my.yml", "--on=pc2", "--yes"]
-    assert strip_on_option(args) == ["build", "my.yml", "--yes"]
+def test_strip_dispatch_equals_form() -> None:
+    args = ["build", "my.yml", "--on=pc2"]
+    assert strip_dispatch_options(args) == ["build", "my.yml"]
 
 
-def test_strip_on_no_on_option_unchanged() -> None:
-    args = ["build", "my.yml", "--yes"]
-    assert strip_on_option(args) == args
+def test_strip_dispatch_removes_yes_and_short_y() -> None:
+    # --yes / -y are dispatch-only; they must never reach the remote build.
+    args = ["build", "--on", "pc2", "--yes", "-y", "my.yml"]
+    assert strip_dispatch_options(args) == ["build", "my.yml"]
 
 
-def test_strip_on_leaves_other_tokens_intact() -> None:
+def test_strip_dispatch_no_dispatch_option_unchanged() -> None:
+    args = ["build", "my.yml", "--machine", "imx8"]
+    assert strip_dispatch_options(args) == args
+
+
+def test_strip_dispatch_leaves_other_tokens_intact() -> None:
     args = ["build", "--machine", "imx8", "--on", "pc2", "my.yml"]
-    assert strip_on_option(args) == ["build", "--machine", "imx8", "my.yml"]
+    assert strip_dispatch_options(args) == ["build", "--machine", "imx8", "my.yml"]
 
 
-def test_strip_on_equals_leaves_other_tokens_intact() -> None:
+def test_strip_dispatch_equals_leaves_other_tokens_intact() -> None:
     args = ["build", "--machine", "imx8", "--on=pc2", "my.yml"]
-    assert strip_on_option(args) == ["build", "--machine", "imx8", "my.yml"]
+    assert strip_dispatch_options(args) == ["build", "--machine", "imx8", "my.yml"]
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +144,7 @@ def test_strip_on_equals_leaves_other_tokens_intact() -> None:
 def test_remote_script_sccache_off_default() -> None:
     script = build_remote_script(["build", "my.yml"], Path("/home/tiamarin/ws"), sccache_off=True)
     lines = script.splitlines()
-    assert lines[0] == f"cd {shlex.quote('/home/tiamarin/ws')}"
+    assert lines[0] == f"cd {shlex.quote('/home/tiamarin/ws')} || exit 1"
     assert lines[-1] == "exec env BAKAR_SCCACHE_DIST=0 bakar build my.yml"
 
 
@@ -162,7 +169,7 @@ def test_remote_script_no_bare_name_value_prefix() -> None:
 
 def test_remote_script_quotes_cwd_with_spaces() -> None:
     script = build_remote_script(["build"], Path("/home/tia marin/ws"), sccache_off=True)
-    assert script.splitlines()[0] == "cd '/home/tia marin/ws'"
+    assert script.splitlines()[0] == "cd '/home/tia marin/ws' || exit 1"
 
 
 def test_remote_script_shlex_joins_argv() -> None:
@@ -445,11 +452,11 @@ def test_dispatch_run_id_from_success_discovery(fake_sp: FakeSubprocess, capsys:
     assert any(kind == "run" and "find" in argv[-1] for kind, argv in fake_sp.calls)
 
 
-def test_confirm_failed_preview_warns(fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]) -> None:
-    # A failed dry-run must surface a warning, not a silent empty preview, so the
-    # user never confirms rsync --delete blind to what it would remove.
+def test_confirm_failed_preview_aborts(fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]) -> None:
+    # A failed dry-run must abort - never confirm rsync --delete (even under
+    # --yes) blind to what it would remove.
     fake_sp.dry_rsync_rc = 5
-    assert rd.confirm_destructive_sync(WS, HOST, assume_yes=True) is True
+    assert rd.confirm_destructive_sync(WS, HOST, assume_yes=True) is False
     out = capsys.readouterr().out
     assert "preview failed" in out
     assert "rsync exit 5" in out
@@ -469,3 +476,13 @@ def test_dispatch_failure_without_triage_falls_back_to_discovery(
     assert "20260716-333333" in out
     # Discovery ran because the stream did not yield the run-id.
     assert any(kind == "run" and "find" in argv[-1] for kind, argv in fake_sp.calls)
+
+
+def test_dispatch_unsafe_workspace_aborts_cleanly(fake_sp: FakeSubprocess) -> None:
+    # An unsafe workspace (filesystem root) must abort with exit 1 via a caught
+    # ValueError - no traceback, and no ssh/rsync touched.
+    rc = rd.dispatch_remote_build(
+        HOST, Path("/"), Path("/"), ["build", "--on", HOST], sccache_dist=False, assume_yes=True
+    )
+    assert rc == 1
+    assert not fake_sp.calls
