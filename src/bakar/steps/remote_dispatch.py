@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 import shlex
 import subprocess
+from collections import deque
 from pathlib import Path
 
 import typer
@@ -174,11 +175,13 @@ def _stream_remote_build(host: str, script: str) -> tuple[int, list[str]]:
     assert proc.stdin is not None and proc.stdout is not None  # PIPE is set above
     proc.stdin.write(script)
     proc.stdin.close()
-    captured: list[str] = []
+    # Bounded: only the tail is needed (the `bakar triage <id>` hint rides near
+    # the end on failure), so cap memory on a long/verbose Yocto build stream.
+    captured: deque[str] = deque(maxlen=200)
     for line in proc.stdout:
         print(line, end="")
         captured.append(line)
-    return proc.wait(), captured
+    return proc.wait(), list(captured)
 
 
 def _discover_newest_run_id(host: str, ws_root: Path) -> str | None:
@@ -189,7 +192,12 @@ def _discover_newest_run_id(host: str, ws_root: Path) -> str | None:
     a second ssh and return the basename.
     """
     find_cmd = (
-        f"find {shlex.quote(str(ws_root))} -type d -path '*/build/runs/20*' -printf '%T@ %p\\n' | sort -rn | head -1"
+        f"find {shlex.quote(str(ws_root))} "
+        "-type d -name tmp -prune -o "
+        "-type d -name sstate-cache -prune -o "
+        "-type d -name downloads -prune -o "
+        "-type d -name .git -prune -o "
+        "-type d -path '*/build/runs/20*' -printf '%T@ %p\\n' | sort -rn | head -1"
     )
     result = subprocess.run(["ssh", host, find_cmd], capture_output=True, text=True, check=False)
     line = result.stdout.strip()
