@@ -1,6 +1,6 @@
 [project]
 name = "bakar"
-version = "0.21.0"
+version = "0.22.0"
 description = "kas-based Yocto BSP build orchestrator - live build UI, pre-flight checks, telemetry, and failure triage"
 readme = "README.md"
 requires-python = ">=3.14"

@@ -7,8 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-07-15
+
 ### Added
-- Added a `stop_on_error` boolean setting (default `true`) that SIGINTs the build the moment any task fails, instead of waiting for every already-running task to drain on its own schedule. bitbake's own halt-on-failure already stops scheduling new tasks on first failure; this only stops bakar's live view from rendering a misleadingly-normal progress display while it waits for the drain. Mirrors the existing `stall_abort_secs` watchdog. Configurable via `bakar settings set build.stop_on_error <true|false>`.
+- Buildtools-extended toolchain installs are now scoped to the openembedded-core release commit, preventing a toolchain built for one Yocto release (e.g. scarthgap) from silently satisfying a build against a different release. The `BAKAR_BUILDTOOLS_DIR` environment variable remains an unconditional override.
+- `bakar prefetch` now accepts an `--image` / `-i` flag to specify an arbitrary fetch target without modifying configuration files. Workspaces backed by a raw bbsetup environment are now supported, defaulting to `core-image-minimal` when no image is given for generic or bbsetup BSP families.
+- `bakar monitor` now shows ccache hit/miss statistics for plain ccache builds (previously only sccache-dist cluster information was shown, even when ccache was the active cache). The display mirrors the build-time UI: sccache-dist active shows cluster and daemon stats, otherwise ccache active shows hit/miss rate.
+- The normalized bitbake-events artifact (schema v3) now captures PSI (Pressure Stall Information) samples and disk pressure events, including `MonitorDiskEvent`, `DiskUsageSample`, and `DiskFull` records. Schema version bumped to 4 with the addition of a `cache_backend` field on task rows.
+- PSI pressure samples collected during a build are now persisted to `psi-samples.json` in the run directory after the build completes, enabling post-hoc analysis of CPU, IO, and memory pressure trends.
+- Disk usage is sampled every 5 seconds during a build and persisted to `disk-samples.json` in the run directory, providing visibility into storage consumption over the build lifetime.
+- Added `bakar insights` command to analyze a completed build run's performance from its persisted artifacts. Reports four independently-selectable sections: sstate cache hit/miss breakdown per recipe, per-task wall-clock timing ranked by duration with historical baseline annotations, PSI CPU/IO/memory pressure time-share with a dominant-resource verdict, and disk-usage growth with an optional threshold warning. Defaults to the latest run under the workspace's search roots when no explicit run ID is given.
+- `bakar stop` now correctly tracks and signals the detached `bitbake-server` process (which leads its own session via `bb.daemonize`'s double-fork). Previously, `bakar stop` reported "stopped" while the real bitbake-server continued dispatching tasks.
+- `bakar stop` now accepts a `--timeout` option to bound the graceful-wait escalation period. The corresponding `[build] stop_grace_seconds` config key (default `0`, preserving the previous unbounded wait) allows a default grace period to be set for non-interactive callers such as scripts.
+- The sccache distribution overlay now correctly handles recipes that select the clang native toolchain via `TOOLCHAIN_NATIVE` (e.g. `libcxx-native`, `compiler-rt-native`) or via `TCOVERRIDE` (e.g. `chromium-ozone-wayland`), rather than silently overwriting their compiler selection back to gcc. `clang-native` is also added to the sccache distribution allow-list.
+- Every build now includes a cache-classify overlay that attaches a per-task cache backend annotation (sccache, ccache, or none) to the normalized event log and the live build UI. The cache backend is visible as a badge column in the running-task table and as a `cache=` token in the plain-text status line.
+- The live build UI and `bakar monitor` now display a per-task cache backend badge indicating which compile cache backend (sccache, ccache, or none) is handling each running task.
+- Added a `show_baseline_drift` boolean configuration option (`[build] show_baseline_drift`, env `BAKAR_SHOW_BASELINE_DRIFT`, default `false`) that gates loading of historical task-duration baselines. When disabled, the live UI skips baseline I/O entirely.
+
+### Changed
+- The buildtools-extended download size estimate shown during `bakar setup` is corrected from ~63 MB to ~500 MB, and the description now notes that `install-buildtools` fetches silently via `wget -q`, explaining why the step produces no output for several minutes.
+- The GLIBC locale generation cap (`en_US.UTF-8` only) has been removed from the generic tuning overlay. Full locale generation now runs by default, satisfying locale `RDEPENDS` (e.g. from `m4-ptest`) without requiring per-recipe bbappends, at the cost of a slower cold `glibc-locale` build.
+
+### Fixed
+- `bakar prefetch` no longer passes the literal string `"generic"` to bitbake as a fetch target for generic/BYO kas YAML workspaces. It now correctly defaults to `core-image-minimal`.
+- `bakar prefetch`'s bbsetup path now respects image overrides from environment variables, workspace config, and presets; previously these were silently discarded. A `ValueError` from an unresolvable machine now produces a clean error message instead of a raw traceback.
+- `bakar insights --timing` now correctly annotates tasks with historical baseline data using the BSP/machine/mode-scoped timings file that real builds write to, rather than a default path that is never populated.
+- `bakar insights` no longer crashes with a `MarkupError` when a `DiskFull` event message contains bracketed paths (e.g. `[/mnt/data]`) in Rich markup output.
+- The critical-path computation in `bakar insights --timing` now correctly weights graph nodes by recipe duration rather than edges, and strips version suffixes from recipe names before looking up durations, so the longest blocking chain is computed correctly on real build data.
+- `bakar insights --pressure` no longer misreports a dimension with no usable readings as a measured `0.0%`; it now correctly signals data unavailability in that case.
+- `bakar insights --disk` no longer reports `0 bytes` of growth when the disk sampler fired exactly once during a short build; it now correctly signals unavailability when fewer than two samples are available.
+- The cache-classify layer is now materialized on disk before every build and `bakar bitbake` invocation. Previously the overlay referenced a layer path that was never created, which would have caused a kas parse failure on every real build.
 
 ## [0.21.0] - 2026-07-08
 
@@ -565,7 +593,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/jetm/bakar/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/jetm/bakar/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/jetm/bakar/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/jetm/bakar/compare/v0.18.0...v0.19.0
