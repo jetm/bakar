@@ -198,3 +198,246 @@ def test_assert_safe_workspace_rejects_root() -> None:
 def test_assert_safe_workspace_rejects_home() -> None:
     with pytest.raises(ValueError):
         assert_safe_workspace(Path.home())
+
+
+# ---------------------------------------------------------------------------
+# Orchestration: check_host_reachable / confirm_destructive_sync /
+# dispatch_remote_build  (mocked subprocess, no live host)
+# ---------------------------------------------------------------------------
+
+
+class _Result:
+    """Stand-in for a completed ``subprocess.run`` result."""
+
+    def __init__(self, returncode: int = 0, stdout: str = "") -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = ""
+
+
+class _FakeStdin:
+    """Captures the script written to a fake ssh stdin (StringIO discards on close)."""
+
+    def __init__(self) -> None:
+        self.buffer = ""
+
+    def write(self, s: str) -> None:
+        self.buffer += s
+
+    def close(self) -> None:
+        pass
+
+
+class _FakeProc:
+    """Stand-in for the ``ssh <host> bash -s`` streaming ``Popen``."""
+
+    def __init__(self, lines: list[str], rc: int) -> None:
+        self.stdin = _FakeStdin()
+        self.stdout = list(lines)
+        self._rc = rc
+
+    def wait(self) -> int:
+        return self._rc
+
+
+class FakeSubprocess:
+    """Records every run/Popen call and dispatches a canned result per argv."""
+
+    PIPE = "PIPE"
+    STDOUT = "STDOUT"
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[str]]] = []
+        self.reachable_rc = 0
+        self.rsync_rc = 0
+        self.find_stdout = ""
+        self.popen_lines: list[str] = []
+        self.popen_rc = 0
+        self.last_proc: _FakeProc | None = None
+
+    def run(self, argv, **kwargs) -> _Result:
+        argv = list(argv)
+        self.calls.append(("run", argv))
+        if argv[0] == "ssh" and argv[-1] == "true":
+            return _Result(self.reachable_rc)
+        if argv[0] == "rsync" and "-n" in argv:
+            return _Result(0, stdout="itemized preview line\n")
+        if argv[0] == "rsync":
+            return _Result(self.rsync_rc)
+        if argv[0] == "ssh" and "find" in argv[-1]:
+            return _Result(0, stdout=self.find_stdout)
+        return _Result(0)
+
+    def Popen(self, argv, **kwargs) -> _FakeProc:  # noqa: N802
+        self.calls.append(("Popen", list(argv)))
+        self.last_proc = _FakeProc(self.popen_lines, self.popen_rc)
+        return self.last_proc
+
+
+from bakar.steps import remote_dispatch as rd  # noqa: E402
+
+
+@pytest.fixture
+def fake_sp(monkeypatch: pytest.MonkeyPatch) -> FakeSubprocess:
+    fake = FakeSubprocess()
+    monkeypatch.setattr(rd, "subprocess", fake)
+    return fake
+
+
+def _run_call_argvs(fake: FakeSubprocess) -> list[list[str]]:
+    return [argv for kind, argv in fake.calls if kind == "run"]
+
+
+def _real_rsync_index(fake: FakeSubprocess) -> int:
+    for i, (kind, argv) in enumerate(fake.calls):
+        if kind == "run" and argv[0] == "rsync" and "-n" not in argv:
+            return i
+    return -1
+
+
+def _index_of(fake: FakeSubprocess, predicate) -> int:
+    for i, (kind, argv) in enumerate(fake.calls):
+        if predicate(kind, argv):
+            return i
+    return -1
+
+
+# --- check_host_reachable ---------------------------------------------------
+
+
+def test_check_host_reachable_true_on_zero(fake_sp: FakeSubprocess) -> None:
+    fake_sp.reachable_rc = 0
+    assert rd.check_host_reachable(HOST) is True
+    assert _run_call_argvs(fake_sp)[0] == ["ssh", "-o", "BatchMode=yes", HOST, "true"]
+
+
+def test_check_host_reachable_false_on_nonzero(fake_sp: FakeSubprocess) -> None:
+    fake_sp.reachable_rc = 255
+    assert rd.check_host_reachable(HOST) is False
+
+
+# --- confirm_destructive_sync -----------------------------------------------
+
+
+def test_confirm_assume_yes_returns_true_without_prompt(
+    fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(*a, **k):
+        raise AssertionError("typer.confirm must not be called under assume_yes")
+
+    monkeypatch.setattr(rd.typer, "confirm", _boom)
+    assert rd.confirm_destructive_sync(WS, HOST, assume_yes=True) is True
+    # The dry-run preview must have been produced first.
+    assert any(argv[0] == "rsync" and "-n" in argv for argv in _run_call_argvs(fake_sp))
+
+
+def test_confirm_prompt_answer_forwarded(fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rd.typer, "confirm", lambda *a, **k: False)
+    assert rd.confirm_destructive_sync(WS, HOST, assume_yes=False) is False
+    monkeypatch.setattr(rd.typer, "confirm", lambda *a, **k: True)
+    assert rd.confirm_destructive_sync(WS, HOST, assume_yes=False) is True
+
+
+# --- dispatch_remote_build: guards and ordering -----------------------------
+
+
+def test_dispatch_unreachable_aborts_before_rsync(fake_sp: FakeSubprocess) -> None:
+    fake_sp.reachable_rc = 255
+    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    assert rc != 0
+    # No rsync (dry-run or real) and no remote Popen may run.
+    assert not any(argv[0] == "rsync" for _, argv in fake_sp.calls)
+    assert not any(kind == "Popen" for kind, _ in fake_sp.calls)
+
+
+def test_dispatch_declined_confirm_aborts_before_real_rsync(
+    fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(rd.typer, "confirm", lambda *a, **k: False)
+    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=False)
+    assert rc != 0
+    # A dry-run preview may run (inside confirm), but the real rsync must not.
+    assert _real_rsync_index(fake_sp) == -1
+    assert not any(kind == "Popen" for kind, _ in fake_sp.calls)
+
+
+def test_dispatch_strict_ordering(fake_sp: FakeSubprocess) -> None:
+    fake_sp.popen_rc = 0
+    fake_sp.find_stdout = "1699999999.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-235959\n"
+    rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    reach_i = _index_of(fake_sp, lambda k, a: k == "run" and a[-1] == "true")
+    dry_i = _index_of(fake_sp, lambda k, a: k == "run" and a[0] == "rsync" and "-n" in a)
+    real_i = _real_rsync_index(fake_sp)
+    popen_i = _index_of(fake_sp, lambda k, a: k == "Popen")
+    assert -1 < reach_i < dry_i < real_i < popen_i
+
+
+def test_dispatch_rsync_failure_skips_remote_build(fake_sp: FakeSubprocess) -> None:
+    fake_sp.rsync_rc = 23
+    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    assert rc == 23
+    assert not any(kind == "Popen" for kind, _ in fake_sp.calls)
+
+
+# --- dispatch_remote_build: exit propagation and script construction --------
+
+
+@pytest.mark.parametrize("remote_rc", [0, 1, 2, 42])
+def test_dispatch_propagates_remote_exit(fake_sp: FakeSubprocess, remote_rc: int) -> None:
+    fake_sp.popen_rc = remote_rc
+    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000\n"
+    fake_sp.popen_lines = ["Run `bakar triage 20260716-000000` for details.\n"] if remote_rc else []
+    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    assert rc == remote_rc
+
+
+def test_dispatch_script_strips_on_and_sets_sccache_off(fake_sp: FakeSubprocess) -> None:
+    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-010101\n"
+    rd.dispatch_remote_build(
+        HOST, WS, Path("/home/tiamarin/ws"), ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True
+    )
+    script = fake_sp.last_proc.stdin.buffer
+    # ssh bash -s stdin, never bash -lc.
+    assert ("Popen", ["ssh", HOST, "bash", "-s"]) in fake_sp.calls
+    assert "bash -lc" not in script
+    # --on stripped, sccache forced off.
+    assert "--on" not in script
+    assert "exec env BAKAR_SCCACHE_DIST=0 bakar build my.yml" in script
+
+
+def test_dispatch_sccache_dist_opt_in_omits_env_token(fake_sp: FakeSubprocess) -> None:
+    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-020202\n"
+    rd.dispatch_remote_build(
+        HOST, WS, Path("/home/tiamarin/ws"), ["build", "my.yml", "--on", HOST], sccache_dist=True, assume_yes=True
+    )
+    script = fake_sp.last_proc.stdin.buffer
+    assert "BAKAR_SCCACHE_DIST=0" not in script
+    assert "exec env bakar build my.yml" in script
+
+
+# --- dispatch_remote_build: run-id surfacing --------------------------------
+
+
+def test_dispatch_run_id_from_failure_stream(fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]) -> None:
+    fake_sp.popen_rc = 1
+    fake_sp.popen_lines = ["some build output\n", "Run `bakar triage 20260716-120000` for details.\n"]
+    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "20260716-120000" in out
+    assert f"ssh {HOST} bakar triage 20260716-120000" in out
+    # A failure must NOT trigger the newest-run-dir find discovery.
+    assert not any(kind == "run" and "find" in argv[-1] for kind, argv in fake_sp.calls)
+
+
+def test_dispatch_run_id_from_success_discovery(fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]) -> None:
+    fake_sp.popen_rc = 0
+    fake_sp.popen_lines = ["build succeeded\n"]
+    fake_sp.find_stdout = "1699999999.5 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-235959\n"
+    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "20260716-235959" in out
+    assert f"ssh {HOST} bakar triage 20260716-235959" in out
+    # Success path performs the discovery ssh(find).
+    assert any(kind == "run" and "find" in argv[-1] for kind, argv in fake_sp.calls)

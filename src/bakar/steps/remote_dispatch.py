@@ -1,11 +1,11 @@
-"""Pure builders for ``bakar build --on <host>`` remote dispatch.
+"""Builders and orchestration for ``bakar build --on <host>`` remote dispatch.
 
-This module holds the host-free primitives that construct the rsync
+The pure section holds the host-free primitives that construct the rsync
 invocation, strip the ``--on`` dispatch option from the forwarded argv,
 generate the fish-safe remote bash script, and guard the ``rsync --delete``
-destination. Host orchestration (ssh/rsync subprocess, streaming, run-id
-surfacing) lives in a later addition to this module; everything here is pure
-and unit-testable without a live remote.
+destination. The orchestration section (host preflight, confirm gate, rsync
+transfer, live remote-build streaming, and run-id surfacing) drives ssh/rsync
+subprocesses; it is exercised with a mocked ``subprocess`` and no live remote.
 
 The remote command is delivered over ``ssh <host> bash -s`` stdin rather than
 ``ssh <host> '<cmd>'`` (the remote login shell is fish, where a bare
@@ -16,8 +16,15 @@ script body reaches bash unmodified.
 
 from __future__ import annotations
 
+import re
 import shlex
+import subprocess
 from pathlib import Path
+
+import typer
+from rich.console import Console
+
+console = Console()
 
 # Build artifacts and caches, never source. ``.git`` is deliberately absent:
 # kas/bitbake read git state for SRCREV/AUTOREV. The NFS caches (sstate,
@@ -105,3 +112,150 @@ def assert_safe_workspace(ws_root: Path) -> None:
         raise ValueError(f"workspace root is the filesystem root: {ws_root}")
     if ws_root == Path.home():
         raise ValueError(f"workspace root is the home directory: {ws_root}")
+
+
+_RUN_ID_RE = re.compile(r"bakar triage (\S+)")
+
+
+def check_host_reachable(host: str) -> bool:
+    """Return True when ``ssh -o BatchMode=yes <host> true`` exits 0.
+
+    ``BatchMode=yes`` disables any interactive password/passphrase prompt, so an
+    unreachable host or a missing key fails fast instead of blocking on input.
+    """
+    result = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", host, "true"],
+        capture_output=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def confirm_destructive_sync(ws_root: Path, host: str, *, assume_yes: bool) -> bool:
+    """Preview the ``rsync --delete`` and gate the real transfer behind a prompt.
+
+    Runs the dry-run rsync (``build_rsync_argv(..., dry_run=True)``), prints the
+    itemized preview, then returns True immediately when ``assume_yes`` or the
+    caller's answer otherwise. This human gate layers on top of
+    :func:`assert_safe_workspace`: the preview catches a wrong exclude set that
+    would still pass the path guard before ``--delete`` destroys remote data.
+    """
+    preview = subprocess.run(
+        build_rsync_argv(ws_root, host, dry_run=True),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    console.print(f"[bold]rsync --delete preview[/] -> {host}:{ws_root}")
+    if preview.stdout:
+        # markup=False: rsync -i itemized paths may contain '[' which Rich would
+        # otherwise parse as markup and raise MarkupError on.
+        console.print(preview.stdout, end="", markup=False)
+    if assume_yes:
+        return True
+    return typer.confirm(f"Mirror the workspace to {host} (rsync --delete)?")
+
+
+def _stream_remote_build(host: str, script: str) -> tuple[int, list[str]]:
+    """Feed ``script`` to ``ssh <host> bash -s`` over stdin, streaming stdout.
+
+    Non-PTY ``Popen``: the script is written to stdin and closed, then stdout is
+    read line-by-line and echoed live. The remote bakar sees a non-TTY and
+    renders plain output. Returns the remote exit code and the captured lines
+    (for run-id parsing).
+    """
+    proc = subprocess.Popen(
+        ["ssh", host, "bash", "-s"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    assert proc.stdin is not None and proc.stdout is not None  # PIPE is set above
+    proc.stdin.write(script)
+    proc.stdin.close()
+    captured: list[str] = []
+    for line in proc.stdout:
+        print(line, end="")
+        captured.append(line)
+    return proc.wait(), captured
+
+
+def _discover_newest_run_id(host: str, ws_root: Path) -> str | None:
+    """Find the newest ``build/runs/<run-id>/`` dir under ``ws_root`` on ``host``.
+
+    The success stream does not carry the run-id (RunLogger writes ``run_start``
+    to events.jsonl only, observability.py:126-141), so discover it by mtime via
+    a second ssh and return the basename.
+    """
+    find_cmd = (
+        f"find {shlex.quote(str(ws_root))} -type d -path '*/build/runs/20*' -printf '%T@ %p\\n' | sort -rn | head -1"
+    )
+    result = subprocess.run(["ssh", host, find_cmd], capture_output=True, text=True, check=False)
+    line = result.stdout.strip()
+    if not line:
+        return None
+    return Path(line.split(maxsplit=1)[-1]).name
+
+
+def _surface_run_id(host: str, ws_root: Path, captured: list[str], rc: int) -> None:
+    """Print the remote run-id and a copy-pasteable ``bakar triage`` command.
+
+    On failure the run-id rides in the stream (build.py:101 emits
+    ``Run `bakar triage <id>` for details.``); on success it is discovered via
+    :func:`_discover_newest_run_id`.
+    """
+    run_id: str | None = None
+    if rc != 0:
+        for line in captured:
+            match = _RUN_ID_RE.search(line)
+            if match:
+                run_id = match.group(1).strip("`")
+                break
+    else:
+        run_id = _discover_newest_run_id(host, ws_root)
+    if run_id:
+        console.print(f"remote run-id: {run_id}")
+        console.print(f"inspect the remote run: ssh {host} bakar triage {run_id}")
+
+
+def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed by the build command
+    host: str,
+    ws_root: Path,
+    cwd: Path,
+    local_args: list[str],
+    *,
+    sccache_dist: bool,
+    assume_yes: bool,
+) -> int:
+    """Mirror the workspace to ``host`` and run the build there, in strict order.
+
+    Each step gates the next: (1) guard the rsync destination; (2) preflight the
+    host, aborting with NO rsync/build when unreachable; (3) confirm the
+    destructive sync, aborting before any real transfer when declined; (4) run
+    the real ``rsync -a --delete``; (5) stream the remote build over
+    ``ssh <host> bash -s`` stdin; (6) surface the run-id + triage command;
+    (7) return the remote build's exit code.
+    """
+    assert_safe_workspace(ws_root)
+
+    if not check_host_reachable(host):
+        console.print(
+            f"[red]host {host} unreachable[/] - check connectivity and ssh key auth "
+            f"(`ssh -o BatchMode=yes {host} true` must succeed)."
+        )
+        return 1
+
+    if not confirm_destructive_sync(ws_root, host, assume_yes=assume_yes):
+        console.print("[yellow]remote sync declined; nothing transferred.[/]")
+        return 1
+
+    rsync_rc = subprocess.run(build_rsync_argv(ws_root, host), check=False).returncode
+    if rsync_rc != 0:
+        console.print(f"[red]rsync failed (exit {rsync_rc})[/]; remote build not started.")
+        return rsync_rc
+
+    script = build_remote_script(strip_on_option(local_args), cwd, sccache_off=not sccache_dist)
+    rc, captured = _stream_remote_build(host, script)
+    _surface_run_id(host, ws_root, captured, rc)
+    return rc
