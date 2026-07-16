@@ -158,17 +158,22 @@ bakar --sccache-dist build meta-avocado/kas/machine/qemux86-64.yml --on pc2 --ye
 
 ### Dispatch sequence
 
-1. **Host preflight** - `ssh -o BatchMode=yes <host> true` must succeed. If the
-   host is unreachable or key auth is not set up, the command fails fast with a
-   clear message and spawns no rsync.
+1. **Host preflight** - `ssh -o BatchMode=yes <host> bash -s` runs
+   `command -v bakar && bakar --version` (the same non-login bash the build
+   uses). If the host is unreachable, key auth is not set up, or `bakar` is not
+   on the remote non-login PATH, the command fails fast with a clear message and
+   spawns no rsync. A local/remote `bakar --version` mismatch prints a warning
+   but does not block.
 2. **Working-tree mirror** - `rsync -a --delete` copies the workspace root to the
    same absolute path on the remote. rsync carries uncommitted edits verbatim
    (`git push` cannot), and the existing remote clone makes this a fast delta.
    `.git` is kept (kas/bitbake read git state for `SRCREV`/`AUTOREV`); build
-   artifacts and caches are excluded: `build-*/`, `build/`, `**/tmp/`, `**/sstate-cache/`,
-   `**/downloads/`, `.bakar/runs/`, the workspace-local `ccache/`, `**/.venv/`,
-   `**/__pycache__/`, and `**/*.pyc`. NFS-mounted shared caches live outside the
-   workspace, so they are never in scope.
+   artifacts and caches are excluded. Workspace-root outputs are anchored with a
+   leading `/` so an unanchored basename cannot also drop a real source dir
+   (e.g. oe-core's `meta/recipes-devtools/ccache/`): `/build/`, `/build-*/`,
+   `/*/build/`, `/ccache/`, plus the depth-matched `**/tmp/`, `**/sstate-cache/`,
+   `**/downloads/`, `**/.venv/`, `**/__pycache__/`, and `**/*.pyc`. NFS-mounted
+   shared caches live outside the workspace, so they are never in scope.
 3. **Delete confirmation** - because `--delete` mutates the remote irreversibly,
    bakar first runs an `rsync --delete --dry-run -i` preview and prompts for
    confirmation before any real transfer. `--yes` (`-y`) bypasses the prompt for
@@ -187,6 +192,11 @@ bakar --sccache-dist build meta-avocado/kas/machine/qemux86-64.yml --on pc2 --ye
    inspect the run remotely.
 6. **Exit propagation** - a non-zero remote build exits the local command with
    the same code; the failure message points at the remote triage command.
+
+A single `--on` dispatch opens up to four ssh connections (preflight, rsync's
+own ssh, the build session, and the run-id discovery find). On a high-latency
+link, a `~/.ssh/config` entry with `ControlMaster auto` and a `ControlPersist`
+window amortizes them onto one shared connection.
 
 ## On failure
 

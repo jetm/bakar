@@ -601,13 +601,30 @@ def build(
 
     # --on <host>: dispatch the entire build to a remote node instead of building
     # locally. Runs before any form-specific branch (preset, bbsetup, byo/manifest)
-    # so it covers every build form (design A2), and captures the invoking cwd before
-    # any workspace resolution/chdir (the bakar-stop-and-workspace-cwd A10 lesson) so
-    # the remote reproduces PC1's path resolution exactly. When --on is unset the body
-    # below is byte-identical to today - no ssh/rsync is spawned.
+    # so it covers every build form (design A2). When --on is unset the body below
+    # is byte-identical to today - no ssh/rsync is spawned.
     if on is not None:
-        invoking_cwd = Path.cwd()
-        ws_root = workspace.resolve() if workspace is not None else _workspace_from_cwd()
+        if dry_run or dry_run_script is not None:
+            console.print("[red]--on cannot be combined with --dry-run/--dry-run-script[/]; run the dry run locally.")
+            raise typer.Exit(code=2)
+        from bakar.commands._helpers import invoking_cwd as _invoking_cwd
+
+        # The invoking cwd is captured before _enter_workspace's eager -w chdir
+        # (the bakar-stop-and-workspace-cwd A10 lesson), so the remote reproduces
+        # PC1's path resolution exactly - not the post-chdir workspace root.
+        invoking_cwd = _invoking_cwd()
+        # Mirror the workspace the local build would resolve so a generic BYO YAML
+        # run from outside a workspace does not exit 2, and a manifest/bbsetup run
+        # mirrors the same tree the local build would.
+        if kas_yaml is not None:
+            _on_main_yaml, _ = split_kas_yaml_arg(kas_yaml)
+            _on_family, _ = _dispatch_from_yaml(_on_main_yaml)
+            ws_root = _resolve_workspace(workspace, kas_yaml=_on_main_yaml, family=_on_family)
+        elif manifest is not None:
+            _on_family, _ = _dispatch_bsp(manifest)
+            ws_root = _resolve_workspace(workspace, family=_on_family)
+        else:
+            ws_root = _bbsetup_workspace(workspace) or _workspace_from_cwd()
         from bakar.steps.remote_dispatch import dispatch_remote_build
 
         rc = dispatch_remote_build(on, ws_root, invoking_cwd, sys.argv[1:], sccache_dist=sccache_dist, assume_yes=yes)

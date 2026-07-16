@@ -43,6 +43,15 @@ _WORKSPACE_HELP = "Workspace root; auto-detected if omitted"
 _INVOCATION: dict[str, Path] = {}
 
 
+def invoking_cwd() -> Path:
+    """The cwd captured before ``_enter_workspace`` chdir'd into a ``-w`` workspace.
+
+    Falls back to the live cwd when no ``-w`` was given (the callback pops the
+    key on every invocation), so callers get where the user actually stood.
+    """
+    return _INVOCATION.get("cwd", Path.cwd())
+
+
 def _enter_workspace(workspace: Path | None) -> Path | None:
     """Resolve, validate, and chdir into an explicit ``-w``/``--workspace`` path.
 

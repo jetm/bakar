@@ -106,6 +106,8 @@ class FakeSubprocess:
     def __init__(self) -> None:
         self.calls: list[tuple[str, list[str]]] = []
         self.reachable_rc = 0
+        self.remote_version = ""
+        self.local_version = ""
         self.rsync_rc = 0
         self.find_stdout = ""
         self.popen_lines: list[str] = []
@@ -115,8 +117,11 @@ class FakeSubprocess:
     def run(self, argv, **kwargs) -> _Result:
         argv = list(argv)
         self.calls.append(("run", argv))
-        if argv[0] == "ssh" and argv[-1] == "true":
-            return _Result(self.reachable_rc)
+        # Preflight probe: ssh -o BatchMode=yes <host> bash -s.
+        if argv[0] == "ssh" and argv[-1] == "-s":
+            return _Result(self.reachable_rc, stdout=self.remote_version)
+        if argv[0] == "bakar" and "--version" in argv:
+            return _Result(0, stdout=self.local_version)
         if argv[0] == "rsync" and "-n" in argv:
             return _Result(0, stdout="itemized preview line\n")
         if argv[0] == "rsync":
@@ -136,6 +141,16 @@ def fake_sp(monkeypatch: pytest.MonkeyPatch) -> FakeSubprocess:
     fake = FakeSubprocess()
     monkeypatch.setattr(rd, "subprocess", fake)
     return fake
+
+
+@pytest.fixture(autouse=True)
+def _clean_bakar_kas_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clear ambient BAKAR_*/KAS_* env so the forwarded-env tokens stay deterministic."""
+    import os
+
+    for key in list(os.environ):
+        if key.startswith(("BAKAR_", "KAS_")):
+            monkeypatch.delenv(key, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -303,3 +318,85 @@ def test_without_yes_declined_confirm_aborts(
     # A dry-run preview may run inside confirm, but the real rsync must not.
     assert not any(argv[0] == "rsync" and "-n" not in argv for _, argv in fake_sp.calls)
     assert not any(kind == "Popen" for kind, _ in fake_sp.calls)
+
+
+# ---------------------------------------------------------------------------
+# (g) C9: --on + --dry-run/--dry-run-script is refused before any mirror.
+# ---------------------------------------------------------------------------
+
+
+def test_dry_run_with_on_refused_no_ssh_rsync(
+    runner: _CliRunner,
+    workspace: Path,
+    generic_yaml: Path,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["bakar", "build", str(generic_yaml), "--on", HOST, "--dry-run"])
+
+    result = runner.invoke(app, ["build", str(generic_yaml), "--on", HOST, "--dry-run"])
+
+    assert result.exit_code == 2
+    # Refused before the destructive mirror: no ssh, no rsync.
+    assert fake_sp.calls == []
+
+
+# ---------------------------------------------------------------------------
+# (h) C2: a generic BYO YAML from a non-workspace cwd resolves ws_root (no exit 2).
+# ---------------------------------------------------------------------------
+
+
+def test_generic_yaml_from_non_workspace_resolves_ws_root(
+    runner: _CliRunner,
+    tmp_path: Path,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A generic BYO YAML dispatched from a directory that is NOT a workspace must
+    # resolve ws_root from the YAML (mirroring the local build), not exit 2 the
+    # way the old _workspace_from_cwd() path would from outside a workspace.
+    non_ws = tmp_path / "elsewhere"
+    non_ws.mkdir()
+    monkeypatch.chdir(non_ws)
+    standalone = tmp_path / "standalone"
+    standalone.mkdir()
+    yml = standalone / "qemu.yml"
+    yml.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
+    fake_sp.find_stdout = f"1.0 {standalone}/build/runs/20260716-000000\n"
+    monkeypatch.setattr(sys, "argv", ["bakar", "build", str(yml), "--on", HOST, "--yes"])
+
+    result = runner.invoke(app, ["build", str(yml), "--on", HOST, "--yes"])
+
+    assert result.exit_code == 0, result.output
+    # A real rsync ran, so ws_root resolved (no exit 2 before dispatch).
+    assert any(argv[0] == "rsync" and "-n" not in argv for _, argv in fake_sp.calls)
+
+
+# ---------------------------------------------------------------------------
+# (i) C1: -w chdirs eagerly; the remote script cd's into the ORIGINAL cwd.
+# ---------------------------------------------------------------------------
+
+
+def test_relative_workspace_script_uses_invoking_cwd(
+    runner: _CliRunner,
+    tmp_path: Path,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ws = tmp_path / "ws"
+    sub = ws / "nxp"
+    sub.mkdir(parents=True)
+    (ws / ".bakar.toml").write_text("")
+    (ws / "my.yml").write_text("header:\n  version: 14\nmachine: qemux86-64\n")
+    monkeypatch.chdir(sub)
+    fake_sp.find_stdout = f"1.0 {ws}/build/runs/20260716-000000\n"
+    monkeypatch.setattr(sys, "argv", ["bakar", "build", "my.yml", "-w", "..", "--on", HOST, "--yes"])
+
+    result = runner.invoke(app, ["build", "my.yml", "-w", "..", "--on", HOST, "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert fake_sp.last_proc is not None
+    script = fake_sp.last_proc.stdin.buffer
+    # cd into the pre-chdir invoking cwd (nxp/), not the resolved workspace root.
+    assert f"cd {sub} ||" in script
+    assert f"cd {ws} ||" not in script
