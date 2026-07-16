@@ -119,7 +119,13 @@ esac
 [ -n "$recipe" ] || recipe="${pwd_val##*/}"
 
 # nproc and loadavg covariates so contended-parallel numbers can be normalised.
-nproc="$(nproc 2>/dev/null)" || nproc=""
+# nproc(1) is not in OE's HOSTTOOLS whitelist, so it is unavailable in the recipe
+# link environment and records null; fall back to counting /proc/cpuinfo, which
+# needs only grep (whitelisted) and the always-readable procfs.
+nproc="$(nproc 2>/dev/null)"
+case "$nproc" in
+    '' | *[!0-9]*) nproc="$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)" ;;
+esac
 case "$nproc" in
     '' | *[!0-9]*) nproc=null ;;
 esac
