@@ -128,7 +128,7 @@ python () {
         # build-id (the mold arm keeps sha256, which mold does support). The
         # style choice does not move link time.
         d.setVar('MOLD_LDFLAGS',
-                 '-fuse-ld=bfd -B%s -Wl,--build-id=sha1' % d.getVar('MOLD_WRAPPER_DIR'))
+                 '-fuse-ld=bfd -B${MOLD_WRAPPER_DIR} -Wl,--build-id=sha1')
 
     # Only the mold arm needs the mold binary; the bfd arm links with the cross
     # bfd, so pull mold-native for the mold arm alone (native/cross returned
@@ -143,9 +143,15 @@ python () {
     # subprogram search path (tried after GCC_EXEC_PREFIX); -B alone does not
     # survive libtool, so autotools recipes could not find ld.mold. The wrapper
     # dir holds only our one arm wrapper, so no other subprogram is shadowed.
-    wrapdir = d.getVar('MOLD_WRAPPER_DIR')
+    #
+    # Use the DEFERRED ${MOLD_WRAPPER_DIR} reference, never a parse-time getVar:
+    # RECIPE_SYSROOT_NATIVE resolves differently at parse time vs task time on a
+    # machine that specialises the package arch (e.g. i.MX adds a -mx8mp segment,
+    # cortexa53-crypto -> cortexa53-crypto-mx8mp), so a getVar here would bake a
+    # path missing that segment and gcc would look in a dir with no ld.mold. -B
+    # already uses the deferred reference; COMPILER_PATH must match it.
     existing = d.getVar('COMPILER_PATH') or ''
-    d.setVar('COMPILER_PATH', wrapdir + (':' + existing if existing else ''))
+    d.setVar('COMPILER_PATH', '${MOLD_WRAPPER_DIR}' + (':' + existing if existing else ''))
     d.setVarFlag('COMPILER_PATH', 'export', '1')
 
     d.appendVarFlag('do_prepare_recipe_sysroot', 'postfuncs', ' mold_stage_wrappers')
