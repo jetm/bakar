@@ -106,6 +106,7 @@ def test_cli_mold_flips_cfg_via_apply(tmp_path: Path, monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(_state, "_MOLD", True)
     monkeypatch.setattr(_state, "_MOLD_BASELINE", False)
+    monkeypatch.setattr(_state, "_MOLD_GLOBAL", False)
 
     cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp")
     assert cfg.mold is False  # resolve() alone does not see the CLI flag
@@ -123,6 +124,7 @@ def test_cli_mold_overrides_disabling_user_config(tmp_path: Path, monkeypatch: p
 
     monkeypatch.setattr(_state, "_MOLD", True)
     monkeypatch.setattr(_state, "_MOLD_BASELINE", False)
+    monkeypatch.setattr(_state, "_MOLD_GLOBAL", False)
     uc = UserConfig(mold=False)
 
     cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", user_config=uc)
@@ -165,6 +167,7 @@ def test_cli_mold_baseline_sets_baseline_mode_via_apply(tmp_path: Path, monkeypa
 
     monkeypatch.setattr(_state, "_MOLD", False)
     monkeypatch.setattr(_state, "_MOLD_BASELINE", True)
+    monkeypatch.setattr(_state, "_MOLD_GLOBAL", False)
 
     cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp")
     cfg = apply_mold_overrides(cfg)
@@ -185,15 +188,15 @@ def test_cli_mold_and_baseline_together_rejected_by_callback() -> None:
     assert result.exit_code == 2
 
 
-def test_cli_mold_global_and_baseline_together_rejected_by_callback() -> None:
-    """--mold-global and --mold-baseline together exits non-zero at the top-level callback."""
+def test_cli_mold_global_and_baseline_together_accepted() -> None:
+    """--mold-global with --mold-baseline is the valid global bfd baseline combo."""
     from typer.testing import CliRunner
 
     from bakar.cli import app
 
     result = CliRunner().invoke(app, ["--mold-global", "--mold-baseline", "build", "--help"])
 
-    assert result.exit_code == 2
+    assert result.exit_code == 0
 
 
 def test_cli_mold_global_alone_is_accepted() -> None:

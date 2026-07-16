@@ -99,30 +99,40 @@ python () {
     included = (d.getVar('MOLD_INCLUDED_PN') or '').split()
     excluded = (d.getVar('MOLD_EXCLUDED_PN') or '').split()
 
-    if mode == 'global':
+    # A mode is a (scope, arm) pair. scope selects the recipe set: 'deny' skips
+    # MOLD_EXCLUDED_PN (global), 'allow' requires MOLD_INCLUDED_PN (list). arm
+    # selects the linker: 'mold', or 'bfd' for the symmetric measurement baseline.
+    # baseline-global is the bfd arm at deny-list scope, to A/B against a global
+    # mold build over the same recipe set.
+    scope, arm = {
+        'global': ('deny', 'mold'),
+        'baseline': ('allow', 'bfd'),
+        'baseline-global': ('deny', 'bfd'),
+    }.get(mode, ('allow', 'mold'))
+
+    if scope == 'deny':
         # Deny-list: blank the var for excluded recipes (never re-pin bfd, D4).
         if pn in excluded:
             d.setVar('MOLD_LDFLAGS', '')
             return
-    elif mode == 'baseline':
-        # Measurement arm: bfd over the SAME allow-list, through the same -B
-        # wrapper dir, so the A/B differs only in the linker (D7).
-        if pn not in included:
-            d.setVar('MOLD_LDFLAGS', '')
-            return
-        d.setVar('MOLD_LDFLAGS',
-                 '-fuse-ld=bfd -B%s -Wl,--build-id=sha256' % d.getVar('MOLD_WRAPPER_DIR'))
-    else:
-        # list (default): allow-list. Blank the var for non-members.
-        if pn not in included:
-            d.setVar('MOLD_LDFLAGS', '')
-            return
+    elif pn not in included:
+        # Allow-list: blank the var for non-members.
+        d.setVar('MOLD_LDFLAGS', '')
+        return
 
-    # Reached only for a recipe that links through the -B wrapper. The baseline
-    # arm links with the cross bfd; only the mold arm needs the mold binary, so
-    # pull mold-native into THIS recipe for the mold arm alone (the native/cross
-    # classes returned above, so no D3 cycle). Stage the arm-appropriate wrapper.
-    arm = 'bfd' if mode == 'baseline' else 'mold'
+    if arm == 'bfd':
+        # Baseline: bfd through the SAME -B wrapper dir so the A/B differs only in
+        # the linker (D7). REAL_LINKER, baked at stage time, resolves the cross bfd.
+        # build-id=sha1, not sha256: GNU ld.bfd only knows none/uuid/md5/sha1 and
+        # silently drops an unrecognised style, leaving bfd artifacts with no
+        # build-id (the mold arm keeps sha256, which mold does support). The
+        # style choice does not move link time.
+        d.setVar('MOLD_LDFLAGS',
+                 '-fuse-ld=bfd -B%s -Wl,--build-id=sha1' % d.getVar('MOLD_WRAPPER_DIR'))
+
+    # Only the mold arm needs the mold binary; the bfd arm links with the cross
+    # bfd, so pull mold-native for the mold arm alone (native/cross returned
+    # above, so no D3 cycle). Stage the arm-appropriate wrapper.
     d.setVar('MOLD_WRAP_ARM', arm)
     if arm == 'mold':
         d.appendVar('DEPENDS', ' mold-native')

@@ -351,12 +351,16 @@ def apply_mold_overrides(cfg: BuildConfig) -> BuildConfig:
     is the symmetric bfd measurement arm, so it enables mold in ``baseline`` mode;
     ``--mold-global`` enables the deny-list (``MOLD_EXCLUDED_PN``) arm the bbclass
     already implements but which is otherwise unreachable from any bakar surface;
-    ``--mold`` enables it in the default ``list`` mode. A no-op when none of the
-    three flags is set (the ``_app`` callback rejects more than one being set).
+    ``--mold`` enables it in the default ``list`` mode. ``--mold-global`` together
+    with ``--mold-baseline`` selects ``baseline-global`` - the bfd arm at deny-list
+    scope, to A/B against a ``global`` mold build. A no-op when no flag is set; the
+    ``_app`` callback rejects every multi-flag combination except that one pair.
     """
     import bakar.commands._app as _state
 
-    if _state._MOLD_BASELINE:
+    if _state._MOLD_BASELINE and _state._MOLD_GLOBAL:
+        cfg = replace(cfg, mold=True, mold_mode="baseline-global")
+    elif _state._MOLD_BASELINE:
         cfg = replace(cfg, mold=True, mold_mode="baseline")
     elif _state._MOLD_GLOBAL:
         cfg = replace(cfg, mold=True, mold_mode="global")

@@ -158,3 +158,19 @@ def test_apply_mold_overrides_global_mode(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert result.mold is True
     assert result.mold_mode == "global"
+
+
+@pytest.mark.unit
+def test_apply_mold_overrides_baseline_global_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--mold-global with --mold-baseline selects the deny-list bfd baseline arm."""
+    import bakar.commands._app as _state
+    from bakar.commands._helpers import apply_mold_overrides
+
+    monkeypatch.setattr(_state, "_MOLD", False)
+    monkeypatch.setattr(_state, "_MOLD_BASELINE", True)
+    monkeypatch.setattr(_state, "_MOLD_GLOBAL", True)
+
+    result = apply_mold_overrides(_mold_cfg(mold=False))
+
+    assert result.mold is True
+    assert result.mold_mode == "baseline-global"

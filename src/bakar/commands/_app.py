@@ -124,7 +124,8 @@ def _main(
         bool,
         typer.Option(
             "--mold-baseline",
-            help="Enable the symmetric bfd baseline arm for link-time measurement (excl. --mold/--mold-global).",
+            help="Symmetric bfd baseline arm for link-time measurement over the allow-list; "
+            "add --mold-global for the deny-list (whole-image) scope.",
         ),
     ] = False,
     mold_global: Annotated[
@@ -151,8 +152,15 @@ def _main(
     if plain and rich_output:
         console.print("[red]choose either --plain/--ci or --rich, not both[/]")
         raise typer.Exit(code=2)
-    if sum([mold, mold_baseline, mold_global]) > 1:
-        console.print("[red]choose only one of --mold, --mold-baseline, --mold-global[/]")
+    # --mold-global + --mold-baseline together request the bfd baseline arm at
+    # global (deny-list) scope, to measure against a global mold build over the
+    # same recipe set. Any other multi-flag combination is contradictory.
+    global_bfd_baseline = mold_global and mold_baseline and not mold
+    if sum([mold, mold_baseline, mold_global]) > 1 and not global_bfd_baseline:
+        console.print(
+            "[red]choose one of --mold, --mold-baseline, --mold-global "
+            "(or --mold-global --mold-baseline for the global bfd baseline)[/]"
+        )
         raise typer.Exit(code=2)
     _USER_CONFIG = _load_user_config_safe()
     _HIDE_DOCTOR_REPORT = hide_doctor_report

@@ -341,11 +341,13 @@ class BuildConfig:
     # mold linker. When mold is True the tuning stack adds the meta-bakar-mold
     # layer and inherits mold.bbclass, injecting -fuse-ld=mold into target link
     # steps. mold_mode selects the gate: "list" (allow-list via MOLD_INCLUDED_PN,
-    # the default), "global" (deny-list via MOLD_EXCLUDED_PN), or "baseline"
-    # (inject -fuse-ld=bfd over the same included set for symmetric measurement).
+    # the default), "global" (deny-list via MOLD_EXCLUDED_PN), "baseline"
+    # (inject -fuse-ld=bfd over the allow-list for symmetric measurement), or
+    # "baseline-global" (the bfd arm at deny-list scope, to A/B against a
+    # "global" mold build over the same recipe set).
     # Default off, so a build is byte-for-byte unchanged until the user opts in.
     mold: bool = field(default=False)
-    mold_mode: Literal["list", "global", "baseline"] = "list"
+    mold_mode: Literal["list", "global", "baseline", "baseline-global"] = "list"
     # Bind address for the workspace cache services (hashserv, prserv). None
     # means localhost-only (single-node default); set to a cluster-reachable IP
     # so other nodes can share one hashserv/prserv. See user_config.cluster_bind_host.
