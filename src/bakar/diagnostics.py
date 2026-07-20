@@ -1388,11 +1388,28 @@ def _git_identity_probe_dir(workspace: Path) -> str | None:
     if (workspace / ".git").exists():
         return str(workspace)
     try:
-        for child in sorted(workspace.iterdir()):
-            if child.is_dir() and (child / ".git").exists():
-                return str(child)
+        children = sorted(c for c in workspace.iterdir() if c.is_dir())
     except OSError:
-        pass
+        return str(workspace)
+    for child in children:
+        if (child / ".git").exists():
+            return str(child)
+    # repo/kas layouts nest the layer sub-repos one level below the family
+    # dir (<ws>/<family>/layers/<repo> for the qcom QLI tree,
+    # <ws>/<family>/sources/<repo> for nxp/ti). The family dir itself is not a
+    # git repo, so descend into those nesting dirs to find a real sub-repo -
+    # otherwise a per-tree includeIf identity reads as missing.
+    for child in children:
+        for nest in ("layers", "sources"):
+            nested = child / nest
+            if not nested.is_dir():
+                continue
+            try:
+                for repo in sorted(nested.iterdir()):
+                    if repo.is_dir() and (repo / ".git").exists():
+                        return str(repo)
+            except OSError:
+                pass
     return str(workspace)
 
 
