@@ -250,14 +250,19 @@ def get_model(family: Literal["nxp", "ti", "qcom"]) -> BspModel:
             family="qcom",
             workspace_subdir="qcom",
             kas_yaml_filename="kas-qcom.yml",
-            tuning_overlay_filename="bakar-tuning-qcom.yml",
+            # qcom is a direct-bitbake build (no kas), so it has no kas tuning
+            # overlay of its own; _overlay_for validates the file exists and the
+            # qcom dispatch never applies it, so reuse the generic overlay as an
+            # inert placeholder rather than ship a dead bakar-tuning-qcom.yml.
+            tuning_overlay_filename="bakar-tuning-generic.yml",
             manifest_kind="repo-xml",
             default_machine=cfg_mod.DEFAULT_QCOM_MACHINE,
             default_distro=cfg_mod.DEFAULT_QCOM_DISTRO,
             default_image=cfg_mod.DEFAULT_QCOM_IMAGE,
             default_manifest=cfg_mod.DEFAULT_QCOM_MANIFEST,
             default_branch=cfg_mod.DEFAULT_QCOM_REPO_BRANCH,
-            required_host_tools=("repo", "kas-container", "docker", "python3"),
+            # repo to sync + python3; qcom uses neither kas nor docker.
+            required_host_tools=("repo", "python3"),
             sync_step=step_repo.init_and_sync,
             setup_env_step=step_qcom_setup.run,
             kas_template=QCOM_KAS_TEMPLATE,

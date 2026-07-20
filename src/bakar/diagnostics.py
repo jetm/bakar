@@ -263,6 +263,9 @@ def resolve_oe_core_release_key(workspace: Path) -> str | None:
 _REQUIRED_TOOLS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "nxp": ("repo", "kas-container", "docker", "python3"),
     "ti": ("git", "kas-container", "docker", "python3"),
+    # qcom is a repo-manifest build that runs bitbake directly under the pinned
+    # buildtools (no kas, no container): only repo (sync) and python3 are gated.
+    "qcom": ("repo", "python3"),
     # Generic mode does not run repo-tool or oe-layertool-setup.sh; kas
     # itself does any cloning the YAML asks for.
     "generic": ("kas-container", "docker", "python3"),
