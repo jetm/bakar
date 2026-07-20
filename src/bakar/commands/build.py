@@ -47,6 +47,7 @@ from bakar.output_mode import OutputMode, resolve_output_mode
 from bakar.preset_config import load_presets
 from bakar.steps import bitbake_override as step_override
 from bakar.steps import kas_build as step_kas
+from bakar.steps import qcom_build as step_qcom_build
 from bakar.steps.kas_build import KasBuildContext
 from bakar.workspace import detect
 
@@ -329,7 +330,7 @@ def _run_manifest_build(
         ctx.bsp.sync_step(cfg, log, force_init=state.needs_full_reinit)
     else:
         log.step_skip(
-            "repo_sync" if ctx.family == "nxp" else "ti_layertool",
+            "repo_sync" if ctx.family in ("nxp", "qcom") else "ti_layertool",
             reason="already synced" if not ctx.skip_sync else "user skipped",
         )
 
@@ -339,16 +340,28 @@ def _run_manifest_build(
     else:
         log.step_skip("setup_env", reason="bblayers.conf present")
 
-    if not ctx.dry_run:
-        step_override.apply(cfg, log)
-        step_kas.regenerate_yaml(cfg, log, bsp=ctx.bsp)
+    if ctx.family == "qcom":
+        # QLI is not a kas build: skip the bitbake-swap override, the kas YAML
+        # regeneration, and kas run_build. Source setup-environment and run
+        # bitbake directly in one bash subshell instead.
+        rc = step_qcom_build.run(
+            cfg,
+            log,
+            target=ctx.target or cfg.image,
+            keep_going=ctx.keep_going,
+            dry_run=ctx.dry_run,
+        )
+    else:
+        if not ctx.dry_run:
+            step_override.apply(cfg, log)
+            step_kas.regenerate_yaml(cfg, log, bsp=ctx.bsp)
 
-    kas_ctx = _make_kas_ctx(cfg, log, ctx.overlay_source, ctx)
-    rc = step_kas.run_build(
-        kas_ctx,
-        extra_overlays=_tuning_extra_overlays(cfg),
-        show_layers=ctx.effective_show_layers and not ctx.dry_run,
-    )
+        kas_ctx = _make_kas_ctx(cfg, log, ctx.overlay_source, ctx)
+        rc = step_kas.run_build(
+            kas_ctx,
+            extra_overlays=_tuning_extra_overlays(cfg),
+            show_layers=ctx.effective_show_layers and not ctx.dry_run,
+        )
     _finish_build(cfg, log, rc, cfg.machine)
 
 

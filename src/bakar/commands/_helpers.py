@@ -436,7 +436,7 @@ def _clean_build_dir(cfg: BuildConfig) -> None:
     from bakar.commands import console
     from bakar.fsremove import parallel_rmtree
 
-    build_dir = cfg.bsp_root / "build"
+    build_dir = cfg.bsp_root / cfg.build_dir_name
     if build_dir.exists():
         parallel_rmtree(build_dir, description=f"Removing {build_dir.name}/")
         console.print(f"[green]removed[/] {build_dir}")
