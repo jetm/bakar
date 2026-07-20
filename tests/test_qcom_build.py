@@ -12,6 +12,7 @@ and skips the kas path, while the nxp branch still runs the kas path.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
@@ -44,6 +45,10 @@ def _qcom_cfg(workspace: Path) -> BuildConfig:
         repo_url=DEFAULT_QCOM_REPO_URL,
         repo_branch=DEFAULT_QCOM_REPO_BRANCH,
         kas_container_image="jetm/kas-build-env:latest",
+        # Scope off by default in these tests so wrap_build_command is a no-op
+        # (no systemd-run probe, argv stays ``["bash", "-c", ...]``); the scoped
+        # path is covered by test_qcom_build_wraps_in_systemd_scope.
+        scope=False,
     )
 
 
@@ -102,6 +107,9 @@ class _FakeLogger:
 
     def info(self, msg: str, **fields: object) -> None:
         self.events.append(("info", msg, fields))
+
+    def warn(self, msg: str, **fields: object) -> None:
+        self.events.append(("warn", msg, fields))
 
 
 def _no_buildtools(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -234,6 +242,23 @@ def test_qcom_build_returns_nonzero_rc(tmp_path: Path, monkeypatch: pytest.Monke
 
     assert rc == 2
     assert any(ev[0] == "step_fail" for ev in log.events), f"expected step_fail, got {log.events!r}"
+
+
+def test_qcom_build_wraps_in_systemd_scope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With scoping enabled and systemd-run available, the build is wrapped in a scope."""
+    _no_buildtools(monkeypatch)
+    monkeypatch.setattr("bakar.build_scope.systemd_run_available", lambda: True)
+    cfg = replace(_qcom_cfg(tmp_path), scope=True)
+    log = _FakeLogger(tmp_path)
+    recorder = _PopenRecorder(returncode=0)
+    monkeypatch.setattr(qcom_build_step.subprocess, "Popen", recorder)
+
+    qcom_build_step.run(cfg, log, target="qcom-multimedia-image")
+
+    argv = recorder.calls[0][0]
+    assert argv[0] == "systemd-run", f"build not wrapped in a systemd scope: {argv!r}"
+    assert "bash" in argv and "-c" in argv, f"bash invocation missing from scoped argv: {argv!r}"
+    assert any("bitbake qcom-multimedia-image" in tok for tok in argv), f"bitbake target missing: {argv!r}"
 
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ from __future__ import annotations
 import subprocess
 from typing import TYPE_CHECKING
 
+from bakar import build_scope
 from bakar.steps.qcom_common import qcom_buildtools_prefix, qcom_env
 
 if TYPE_CHECKING:
@@ -24,8 +25,8 @@ if TYPE_CHECKING:
     from bakar.observability import RunLogger
 
 
-def _stream_build(command: str, *, cwd: Path, env: dict[str, str], log_path: Path) -> int:
-    """Run ``bash -c command`` streaming stdout to the operator and ``log_path``.
+def _stream_build(argv: list[str], *, cwd: Path, env: dict[str, str], log_path: Path) -> int:
+    """Run ``argv`` streaming stdout to the operator and ``log_path``.
 
     Non-PTY ``Popen`` mirroring ``remote_dispatch._stream_remote_build``:
     stdout is read line-by-line, echoed live, and mirrored into the run log.
@@ -33,7 +34,7 @@ def _stream_build(command: str, *, cwd: Path, env: dict[str, str], log_path: Pat
     byte in Yocto output cannot crash the stream. Returns the bitbake exit code.
     """
     proc = subprocess.Popen(
-        ["bash", "-c", command],
+        argv,
         cwd=cwd,
         env=env,
         stdout=subprocess.PIPE,
@@ -79,7 +80,13 @@ def run(
     # host/no-container build, so bitbake writes the host path directly.
     env = qcom_env(cfg)
     env["BB_DEFAULT_EVENTLOG"] = str(log.run_dir / "bitbake_eventlog.json")
-    rc = _stream_build(command, cwd=qcom, env=env, log_path=log.run_dir / "kas.log")
+    # Self-scope the build in a transient systemd user scope like the kas path
+    # (build_scope.wrap_build_command), so qcom builds get the cgroup
+    # memory/CPU/IO ceilings and survive session teardown. No-op when scoping is
+    # disabled (``[build] scope = false``) or systemd-run is unavailable.
+    argv = build_scope.wrap_build_command(["bash", "-c", command], cfg, log, unit_suffix="build")
+    env = build_scope.scope_env(env, cfg)
+    rc = _stream_build(argv, cwd=qcom, env=env, log_path=log.run_dir / "kas.log")
     if rc != 0:
         log.step_fail("qcom_build", reason=f"bitbake exited {rc}", target=target)
     else:
