@@ -40,37 +40,41 @@ def init_and_sync(
         branch=cfg.repo_branch,
         force_init=force_init,
     )
-    nxp = cfg.workspace / "nxp"
-    repo_dir = nxp / ".repo"
+    root = cfg.workspace / cfg.workspace_subdir
+    repo_dir = root / ".repo"
     need_init = force_init or not repo_dir.is_dir()
     if need_init:
+        init_argv = [
+            "repo",
+            "init",
+            "-u",
+            cfg.repo_url,
+            "-b",
+            cfg.repo_branch,
+            "-m",
+            cfg.manifest,
+        ]
+        # --config-name is a Variscite/NXP-specific repo init flag; the
+        # qcom (and any other) manifest layout does not use it.
+        if cfg.bsp_family == "nxp":
+            init_argv.append("--config-name")
         subprocess.run(  # pragma: no cover
-            [
-                "repo",
-                "init",
-                "-u",
-                cfg.repo_url,
-                "-b",
-                cfg.repo_branch,
-                "-m",
-                cfg.manifest,
-                "--config-name",
-            ],
-            cwd=nxp,
+            init_argv,
+            cwd=root,
             check=True,
             stdin=subprocess.DEVNULL,
         )
     # Wipe build/conf/ on every sync (init or drift). bblayers.conf
     # rendered against the old tree may reference layer state that has
     # moved under the sync - setup_env regenerates it correctly.
-    build_conf = nxp / "build" / "conf"
+    build_conf = root / "build" / "conf"
     if build_conf.is_dir():
         shutil.rmtree(build_conf)
     nproc = os.environ.get("NPROC", str(os.cpu_count() or 8))
     subprocess.run(  # pragma: no cover
         ["repo", "sync", "-j", nproc, "--force-sync", "--no-clone-bundle"],
-        cwd=nxp,
+        cwd=root,
         check=True,
     )
-    count = len(list((nxp / "sources").iterdir())) if (nxp / "sources").is_dir() else 0
+    count = len(list((root / "sources").iterdir())) if (root / "sources").is_dir() else 0
     log.step_ok("repo_sync", repo_count=count)

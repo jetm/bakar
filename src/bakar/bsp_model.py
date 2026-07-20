@@ -67,6 +67,10 @@ _TI_PROCESSOR_SDK_RE = re.compile(
 # config naming conventions.
 _TI_ARAGO_RE = re.compile(r"^arago-.*\.txt$")
 
+# Qualcomm QLI manifest filename: qcom-<anything>.xml
+# Example: qcom-6.6.119-QLI.1.8-Ver.1.1_qim-product-sdk-2.3.1.xml
+_QCOM_MANIFEST_RE = re.compile(r"^qcom-.*\.xml$")
+
 # Layer name string used as a fallback heuristic when a config file is
 # present but does not match either regex.
 _TI_LAYER_PREFIX = "meta-variscite-bsp-ti"
@@ -75,7 +79,7 @@ _TI_LAYER_PREFIX = "meta-variscite-bsp-ti"
 def detect_bsp_family(
     manifest_path: Path | None,
     config_file: Path | None = None,
-) -> Literal["nxp", "ti", "unknown"]:
+) -> Literal["nxp", "ti", "qcom", "unknown"]:
     """Detect the BSP family from a manifest filename and optional config.
 
     Only the filename (``path.name``) is inspected; the file need not
@@ -96,6 +100,8 @@ def detect_bsp_family(
             return "nxp"
         if _TI_PROCESSOR_SDK_RE.match(name) or _TI_ARAGO_RE.match(name):
             return "ti"
+        if _QCOM_MANIFEST_RE.match(name):
+            return "qcom"
 
     if config_file is not None:
         try:
@@ -149,10 +155,10 @@ class BspModel:
     code reads the fields instead of switching on ``cfg.bsp_family``.
     """
 
-    family: Literal["nxp", "ti"]
-    workspace_subdir: str  # "nxp" or "ti"
-    kas_yaml_filename: str  # "kas-nxp.yml" or "kas-ti.yml"
-    tuning_overlay_filename: str  # "bakar-tuning-nxp.yml" or "bakar-tuning-ti.yml"
+    family: Literal["nxp", "ti", "qcom"]
+    workspace_subdir: str  # "nxp", "ti", or "qcom"
+    kas_yaml_filename: str  # "kas-nxp.yml", "kas-ti.yml", or "kas-qcom.yml"
+    tuning_overlay_filename: str  # "bakar-tuning-nxp.yml", "bakar-tuning-ti.yml", or "bakar-tuning-qcom.yml"
     manifest_kind: Literal["repo-xml", "oe-layertool-config"]
     default_machine: str
     default_distro: str
@@ -166,7 +172,7 @@ class BspModel:
     doctor_extras: tuple[DoctorCheck, ...]
 
 
-def get_model(family: Literal["nxp", "ti"]) -> BspModel:
+def get_model(family: Literal["nxp", "ti", "qcom"]) -> BspModel:
     """Return the BspModel singleton for ``family``.
 
     Imports are intentionally lazy. ``bsp_model`` is imported from
@@ -187,7 +193,8 @@ def get_model(family: Literal["nxp", "ti"]) -> BspModel:
         check_ti_layertool_config_consistency,
         check_ti_layertool_present,
     )
-    from bakar.kas import NXP_KAS_TEMPLATE, TI_KAS_TEMPLATE
+    from bakar.kas import NXP_KAS_TEMPLATE, QCOM_KAS_TEMPLATE, TI_KAS_TEMPLATE
+    from bakar.steps import qcom_setup_env as step_qcom_setup
     from bakar.steps import repo as step_repo
     from bakar.steps import setup_env as step_setup
     from bakar.steps import ti_layertool as step_ti_layertool
@@ -237,6 +244,24 @@ def get_model(family: Literal["nxp", "ti"]) -> BspModel:
                 check_forks_ti_linux_kernel,
                 check_forks_ti_u_boot,
             ),
+        )
+    elif family == "qcom":
+        model = BspModel(
+            family="qcom",
+            workspace_subdir="qcom",
+            kas_yaml_filename="kas-qcom.yml",
+            tuning_overlay_filename="bakar-tuning-qcom.yml",
+            manifest_kind="repo-xml",
+            default_machine=cfg_mod.DEFAULT_QCOM_MACHINE,
+            default_distro=cfg_mod.DEFAULT_QCOM_DISTRO,
+            default_image=cfg_mod.DEFAULT_QCOM_IMAGE,
+            default_manifest=cfg_mod.DEFAULT_QCOM_MANIFEST,
+            default_branch=cfg_mod.DEFAULT_QCOM_REPO_BRANCH,
+            required_host_tools=("repo", "kas-container", "docker", "python3"),
+            sync_step=step_repo.init_and_sync,
+            setup_env_step=step_qcom_setup.run,
+            kas_template=QCOM_KAS_TEMPLATE,
+            doctor_extras=(),
         )
     else:
         raise ValueError(f"Unknown BSP family: {family!r}")

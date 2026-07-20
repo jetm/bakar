@@ -58,6 +58,19 @@ DEFAULT_TI_IMAGE = "var-thin-image"
 DEFAULT_TI_MANIFEST = "processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt"
 DEFAULT_TI_REPO_BRANCH = "scarthgap_11.00.09.04_var01"
 
+# ---------------------------------------------------------------------------
+# Qualcomm QLI defaults (google-`repo` manifest build, scarthgap-based QLI).
+# The manifest ships on a fixed branch of the quic-yocto/qcom-manifest repo;
+# unlike NXP/TI there is no per-manifest branch inference.
+# ---------------------------------------------------------------------------
+
+DEFAULT_QCOM_MACHINE = "exmp-q911"
+DEFAULT_QCOM_DISTRO = "qcom-wayland"
+DEFAULT_QCOM_IMAGE = "qcom-multimedia-image"
+DEFAULT_QCOM_MANIFEST = "qcom-6.6.119-QLI.1.8-Ver.1.1_qim-product-sdk-2.3.1.xml"
+DEFAULT_QCOM_REPO_BRANCH = "qcom-linux-scarthgap"
+DEFAULT_QCOM_REPO_URL = "https://github.com/quic-yocto/qcom-manifest"
+
 # Back-compat aliases for any caller importing the pre-TI names.
 DEFAULT_MACHINE = DEFAULT_NXP_MACHINE
 DEFAULT_DISTRO = DEFAULT_NXP_DISTRO
@@ -207,11 +220,29 @@ class _FamilyDefaults:
 
 
 def _family_defaults(
-    bsp_family: Literal["nxp", "ti", "generic", "bbsetup"],
+    bsp_family: Literal["nxp", "ti", "generic", "bbsetup", "qcom"],
     user_config: UserConfig | None,
     workspace_config: WorkspaceConfig,
 ) -> _FamilyDefaults:
     """Return per-family defaults, user-config, and workspace-config values."""
+    if bsp_family == "qcom":
+        # qcom has real defaults (like nxp) but no user_config/workspace_config
+        # tier yet, so u_*/ws_* stay None; only d_* carry values.
+        return _FamilyDefaults(
+            d_machine=DEFAULT_QCOM_MACHINE,
+            d_distro=DEFAULT_QCOM_DISTRO,
+            d_image=DEFAULT_QCOM_IMAGE,
+            d_manifest=DEFAULT_QCOM_MANIFEST,
+            d_branch=DEFAULT_QCOM_REPO_BRANCH,
+            u_machine=None,
+            u_distro=None,
+            u_image=None,
+            u_manifest=None,
+            ws_machine=None,
+            ws_distro=None,
+            ws_image=None,
+            ws_manifest=None,
+        )
     if bsp_family in ("generic", "bbsetup"):
         return _FamilyDefaults(
             d_machine="generic",
@@ -272,7 +303,7 @@ class BuildConfig:
     """
 
     workspace: Path
-    bsp_family: Literal["nxp", "ti", "generic", "bbsetup"]
+    bsp_family: Literal["nxp", "ti", "generic", "bbsetup", "qcom"]
     machine: str
     distro: str
     image: str
@@ -602,13 +633,14 @@ class BuildConfig:
 
 
 def _resolve_branch(
-    bsp_family: Literal["nxp", "ti", "generic", "bbsetup"],
+    bsp_family: Literal["nxp", "ti", "generic", "bbsetup", "qcom"],
     fd: _FamilyDefaults,
     repo_branch: str | None,
     resolved_manifest: str,
 ) -> str:
     """Resolve the effective repo branch from CLI flag, env, and BSP family inference."""
-    if bsp_family in ("generic", "bbsetup"):
+    # qcom uses a fixed branch (no per-manifest inference), like generic/bbsetup.
+    if bsp_family in ("generic", "bbsetup", "qcom"):
         return pick(repo_branch, "BAKAR_REPO_BRANCH", None, None, None, fd.d_branch)
     if bsp_family == "ti":
         from bakar.bsp_model import infer_bsp_branch
@@ -626,6 +658,33 @@ def _resolve_branch(
         None,
         infer_repo_branch(resolved_manifest, fd.d_branch),
     )
+
+
+def _resolve_repo_url(
+    bsp_family: Literal["nxp", "ti", "generic", "bbsetup", "qcom"],
+    user_config: UserConfig | None,
+) -> str:
+    """Resolve the default repo URL (the ``BAKAR_REPO_URL`` env override is
+    applied by the caller and always wins over this).
+
+    A matching :class:`VendorEntry` with ``repo_url`` set wins first; then
+    qcom's fixed quic-yocto default; then the NXP user-config override; then
+    the Variscite built-in default. NXP behavior is byte-identical when no
+    vendor entry matches, since the vendor list is empty by default.
+    """
+    try:
+        from bakar.vendor_config import load_vendors
+
+        for entry in load_vendors():
+            if entry.family == bsp_family and entry.repo_url:
+                return entry.repo_url
+    except ValueError:
+        pass
+    if bsp_family == "qcom":
+        return DEFAULT_QCOM_REPO_URL
+    if user_config is not None and user_config.nxp_repo_url:
+        return user_config.nxp_repo_url
+    return DEFAULT_REPO_URL
 
 
 @dataclass(slots=True, kw_only=True)
@@ -675,7 +734,7 @@ def compose_preset_output_path(preset: PresetEntry, release_index: int = 0) -> s
 def resolve(
     *,
     workspace: Path,
-    bsp_family: Literal["nxp", "ti", "generic", "bbsetup"] | None = None,
+    bsp_family: Literal["nxp", "ti", "generic", "bbsetup", "qcom"] | None = None,
     spec: BSPSpec | None = None,
     kas_yaml: Path | None = None,
     user_config: UserConfig | None = None,
@@ -862,10 +921,7 @@ def resolve(
             fd.d_image,
         ),
         manifest=resolved_manifest,
-        repo_url=os.environ.get(
-            "BAKAR_REPO_URL",
-            (user_config.nxp_repo_url if user_config and user_config.nxp_repo_url else DEFAULT_REPO_URL),
-        ),
+        repo_url=os.environ.get("BAKAR_REPO_URL", _resolve_repo_url(bsp_family, user_config)),
         repo_branch=resolved_branch,
         kas_container_image=pick(
             None,

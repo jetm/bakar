@@ -176,6 +176,7 @@ def parse_manifest(manifest_path: Path, bblayers_map: dict[str, set[str]] | None
 
 NXP_KAS_TEMPLATE = KasTemplate(workspace_subdir="nxp")
 TI_KAS_TEMPLATE = KasTemplate(workspace_subdir="ti")
+QCOM_KAS_TEMPLATE = KasTemplate(workspace_subdir="qcom")
 
 
 # ---------------------------------------------------------------------------
