@@ -7,8 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-07-20
+
 ### Added
-- Added `bakar build --on <host>` for remote single-host build dispatch. It preflights the ssh host, rsyncs the working tree (uncommitted edits included) to the identical path with a `--delete` mirror gated behind a dry-run preview and confirmation (`--yes` bypasses the prompt) and a cache/artifact exclude set, then execs `bakar build` remotely fish-safely over `ssh <host> bash -s` with sccache-dist off by default (`--sccache-dist` opts back in). The remote output streams live, the remote run-id and a copy-pasteable `ssh <host> bakar triage <run-id>` line are surfaced on completion, and the remote build's exit code propagates.
+- Added `--mold` and `--mold-baseline` CLI flags to opt into the [mold](https://github.com/rui314/mold) linker for target builds. `--mold` routes an allow-listed set of recipes through mold; `--mold-baseline` injects `ld.bfd` over the same set for symmetric A/B link-time comparison. The two flags are mutually exclusive. A `--mold-global` flag enables mold across all recipes (deny-list gating chromium and self-pinning recipes such as glibc). Combining `--mold-global` with `--mold-baseline` measures the full-image bfd baseline, a valid counterpart to a `--mold-global` run. The mold arm records per-link timing covariates (wall time, nproc, load average, thread count) to a JSON-lines log; `bakar` exposes an aggregation and comparison interface over that log.
+- Added a `bakar doctor` pre-flight check that verifies the build-host compiler is C++20-capable before starting a mold build (mold's native recipe requires C++20). In container mode the check is skipped with an informational message since the compiler lives inside the image.
+- Added `bakar build --on <host>` for remote single-host build dispatch. The dispatch preflights SSH reachability and verifies that the remote `bakar` installation is content-identical to the local one (based on a hash of installed sources and overlays, surfaced in `bakar --version`); a mismatch aborts unless `--yes` is supplied. It rsyncs the working tree (uncommitted edits included) to the same path on the remote with `--delete`, gated behind a dry-run preview showing only deletions and an interactive confirmation (`--yes` bypasses the prompt). A failed dry-run preview aborts rather than prompting. `BAKAR_*`/`KAS_*` environment overrides are forwarded to the remote; `BAKAR_SCCACHE_DIST` is forced off by default (`--sccache-dist` opts back in). The remote output streams live; the remote run-id and a copy-pasteable `bakar triage <run-id>` command are surfaced on completion, and the remote build's exit code propagates.
+- `bakar --version` now includes a short content-identity hash covering installed sources and overlays, making it possible to detect overlay drift between the local and remote `bakar` installations.
+- Added `bakar stop --timeout <seconds>` (default 30 s) to bound the graceful SIGINT wait before escalating to a force-kill. Previously the wait was unbounded, causing `bakar stop` to hang indefinitely when a BitBake cooker wedged on dead client file descriptors. Escalation now scans `/proc` for processes carrying the build's lock/socket paths, walks the process tree to reap the cooker, its workers, and any reparented orphans, and removes stale `bitbake.lock`/`bitbake.sock` only after confirming no live process still holds them. Container builds additionally `docker rm -f` the build container. Passing `--timeout 0` restores the previous unbounded wait.
+- Builds now run inside a transient `systemd --user --scope` by default, placing them in a dedicated cgroup that survives session teardown (SSH disconnects and terminal closes no longer kill the build). The scope enforces a `MemoryMax` hard ceiling, a `MemoryHigh` soft throttle, a positive `OOMScoreAdjust` (so the build is the OOM victim under global pressure), and reduced `CPUWeight`/`IOWeight` for host responsiveness. All limits are configurable under `[build] scope*` in the config file, and `--no-scope` opts out globally. When `systemd-run` is unavailable (WSL, minimal containers) the build falls back to an unwrapped launch with a warning.
+- Added support for Qualcomm QLI manifest builds (`bakar build -f <qcom-manifest.xml>`). Family detection, `repo init`/sync, `setup-environment` sourcing (with `MACHINE`/`DISTRO`/`QCOM_SELECTED_BSP`/`EXTRALAYERS`), buildtools-extended pinning, and direct `bitbake` execution are all handled. The build runs inside a transient systemd scope for the same session-survival and memory-ceiling guarantees as other build families. `bakar monitor`, `bakar log`, and `bakar triage` work for qcom runs: `BB_DEFAULT_EVENTLOG` is set so the event log is written to the run directory, and workspace-content-based family detection resolves the correct run directory when the working directory gives no signal.
+
+### Changed
+- `bakar stop` now reports the specific resources that could not be cleaned up and exits 1 when any remain, rather than always reporting success.
+- The `hashserv`/`prserv` central-tier daemons are now enabled via `systemctl enable --now` of the packaged `avocado-buildservices` systemd units (which carry correct `--nohist` monotonic PR defaults) rather than being spawned ad-hoc, preventing PR regression across rebuilds.
+- The git-identity doctor check now descends into `layers/` (qcom) and `sources/` (nxp/ti) subdirectories to find a real sub-repository when no immediate workspace child is one, so `includeIf`-based per-tree identities resolve correctly for the qcom QLI tree layout.
 
 ## [0.22.0] - 2026-07-15
 
@@ -596,7 +609,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/jetm/bakar/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/jetm/bakar/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/jetm/bakar/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/jetm/bakar/compare/v0.19.0...v0.20.0
