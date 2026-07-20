@@ -600,8 +600,20 @@ class BuildConfig:
         return self.bsp_root / ".repo" / "manifests" / self.manifest
 
     @property
+    def build_dir_name(self) -> str:
+        """Name of the BUILDDIR under :attr:`bsp_root`.
+
+        QLI's ``setup-environment`` derives BUILDDIR from the distro
+        (``build-<DISTRO>``, e.g. ``build-qcom-wayland``); every other family
+        uses the plain ``build`` directory kas/init-build produce.
+        """
+        if self.bsp_family == "qcom":
+            return f"build-{self.distro}"
+        return "build"
+
+    @property
     def bblayers_conf(self) -> Path:
-        return self.bsp_root / "build" / "conf" / "bblayers.conf"
+        return self.bsp_root / self.build_dir_name / "conf" / "bblayers.conf"
 
     @property
     def default_kas_yaml(self) -> Path:
@@ -624,12 +636,12 @@ class BuildConfig:
 
     @property
     def measurements_dir(self) -> Path:
-        return self.bsp_root / "build" / "measurements"
+        return self.bsp_root / self.build_dir_name / "measurements"
 
     @property
     def runs_dir(self) -> Path:
         """Per-invocation run state (structured log, env snapshot, diagnostics)."""
-        return self.bsp_root / "build" / "runs"
+        return self.bsp_root / self.build_dir_name / "runs"
 
 
 def _resolve_branch(

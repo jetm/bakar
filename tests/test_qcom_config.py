@@ -69,6 +69,27 @@ def test_resolve_qcom_manifest_path_under_repo_manifests(tmp_path: Path) -> None
     assert cfg.manifest_path.name == DEFAULT_QCOM_MANIFEST
 
 
-def test_resolve_qcom_bblayers_conf_under_bsp_root(tmp_path: Path) -> None:
+def test_resolve_qcom_bblayers_conf_under_build_distro(tmp_path: Path) -> None:
+    """QLI's setup-environment writes BUILDDIR=build-<distro>, not build/."""
     cfg = resolve(workspace=_workspace(tmp_path), bsp_family="qcom")
+    assert cfg.bblayers_conf == cfg.bsp_root / "build-qcom-wayland" / "conf" / "bblayers.conf"
+    assert str(cfg.bblayers_conf).endswith("build-qcom-wayland/conf/bblayers.conf")
+
+
+def test_resolve_qcom_build_dir_name_is_build_distro(tmp_path: Path) -> None:
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="qcom")
+    assert cfg.build_dir_name == "build-qcom-wayland"
+
+
+@pytest.mark.parametrize("family", ["nxp", "ti", "generic"])
+def test_resolve_non_qcom_build_dir_name_is_build(tmp_path: Path, family: str) -> None:
+    (tmp_path / family).mkdir(exist_ok=True)
+    cfg = resolve(workspace=tmp_path, bsp_family=family)  # type: ignore[arg-type]
+    assert cfg.build_dir_name == "build"
+
+
+def test_resolve_nxp_bblayers_conf_still_under_build(tmp_path: Path) -> None:
+    """Regression guard: the qcom build-<distro> fix must not touch NXP."""
+    (tmp_path / "nxp").mkdir(exist_ok=True)
+    cfg = resolve(workspace=tmp_path, bsp_family="nxp")
     assert cfg.bblayers_conf == cfg.bsp_root / "build" / "conf" / "bblayers.conf"
