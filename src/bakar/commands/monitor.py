@@ -47,6 +47,7 @@ from bakar.commands._helpers import (
     WorkspaceOption,
     _bsp_from_cwd,
     _dispatch_from_yaml,
+    _family_from_workspace_contents,
     _resolve_workspace,
     apply_mold_overrides,
     apply_sccache_overrides,
@@ -551,7 +552,10 @@ def monitor(
         family, _bsp = _dispatch_from_yaml(kas_yaml)
     else:
         ws_probe = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=None)
-        family = _bsp_from_cwd(ws_probe) or "nxp"
+        # cwd signal first (where the user stood), then a data-driven probe of
+        # the workspace tree so `bakar monitor -w <qcom-ws>` run from anywhere
+        # resolves qcom, then the historical nxp default.
+        family = _bsp_from_cwd(ws_probe) or _family_from_workspace_contents(ws_probe) or "nxp"
 
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
     cfg = resolve(

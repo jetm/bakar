@@ -166,7 +166,7 @@ def _resolve_workspace(
     workspace: Path | None,
     *,
     kas_yaml: Path | None = None,
-    family: Literal["nxp", "ti", "generic"] | None = None,
+    family: Literal["nxp", "ti", "generic", "qcom"] | None = None,
 ) -> Path:
     """Resolve the workspace path with a BYO+generic carve-out.
 
@@ -186,14 +186,21 @@ def _resolve_workspace(
     return _workspace_from_cwd()
 
 
-def _bsp_from_cwd(workspace: Path) -> Literal["nxp", "ti"] | None:
+# Ordered manifest-family namespaces bakar manages under the workspace root.
+# ``_family_from_workspace_contents`` iterates this list, so a future
+# repo-manifest family is one entry here rather than a new code path.
+_MANIFEST_FAMILIES: tuple[Literal["nxp", "ti", "qcom"], ...] = ("nxp", "ti", "qcom")
+
+
+def _bsp_from_cwd(workspace: Path) -> Literal["nxp", "ti", "qcom"] | None:
     """Detect BSP family from the current working directory.
 
-    Returns ``"nxp"`` or ``"ti"`` if cwd is inside ``workspace/nxp/``
-    or ``workspace/ti/``; otherwise ``None``. Under an explicit ``-w`` the
-    ``_enter_workspace`` callback has already chdir'd into the workspace root, so
-    the pre-chdir invoking cwd (captured in ``_INVOCATION``) is used instead of the
-    live cwd; without ``-w`` the live cwd is used exactly as before.
+    Returns ``"nxp"``, ``"ti"``, or ``"qcom"`` if cwd is inside
+    ``workspace/nxp/``, ``workspace/ti/``, or ``workspace/qcom/``; otherwise
+    ``None``. Under an explicit ``-w`` the ``_enter_workspace`` callback has
+    already chdir'd into the workspace root, so the pre-chdir invoking cwd
+    (captured in ``_INVOCATION``) is used instead of the live cwd; without
+    ``-w`` the live cwd is used exactly as before.
     """
     cwd = _INVOCATION.get("cwd", Path.cwd()).resolve()
     try:
@@ -207,6 +214,27 @@ def _bsp_from_cwd(workspace: Path) -> Literal["nxp", "ti"] | None:
         return "nxp"
     if parts[0] == "ti":
         return "ti"
+    if parts[0] == "qcom":
+        return "qcom"
+    return None
+
+
+def _family_from_workspace_contents(workspace: Path) -> Literal["nxp", "ti", "qcom"] | None:
+    """Detect the manifest family from the workspace tree, cwd-independently.
+
+    Fallback for ``_bsp_from_cwd`` when the invoking cwd carries no family
+    signal (e.g. ``bakar monitor -w <ws>`` run from an unrelated directory).
+    For each family in :data:`_MANIFEST_FAMILIES`, a ``<workspace>/<family>/``
+    subtree carrying a ``.repo`` dir (``repo sync`` output) or a ``build-*``
+    build directory (qcom's ``build-<distro>``) identifies that family. nxp/ti
+    use a plain ``build`` dir, so the ``build-*`` glob is a qcom-only signal in
+    practice; applying it to every family keeps the probe a single loop.
+    Returns the first match, or ``None`` when the workspace holds no family.
+    """
+    for family in _MANIFEST_FAMILIES:
+        subdir = workspace / family
+        if (subdir / ".repo").is_dir() or any(subdir.glob("build-*")):
+            return family
     return None
 
 

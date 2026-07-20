@@ -72,7 +72,14 @@ def run(
     qcom = cfg.workspace / cfg.workspace_subdir
     bitbake = "bitbake " + ("-k " if keep_going else "") + target
     command = f"{qcom_buildtools_prefix(log, step='qcom_build')}. ./setup-environment && {bitbake}"
-    rc = _stream_build(command, cwd=qcom, env=qcom_env(cfg), log_path=log.run_dir / "bitbake.log")
+    # Emit the artifacts bakar monitor/log/triage read: bitbake writes its
+    # base64-pickled event log where _build_progress reads it, and the stream
+    # lands in kas.log (bakar's conventional build-log name that
+    # _recent_kas_errors, `bakar log`, and `bakar triage` all read). qcom is a
+    # host/no-container build, so bitbake writes the host path directly.
+    env = qcom_env(cfg)
+    env["BB_DEFAULT_EVENTLOG"] = str(log.run_dir / "bitbake_eventlog.json")
+    rc = _stream_build(command, cwd=qcom, env=env, log_path=log.run_dir / "kas.log")
     if rc != 0:
         log.step_fail("qcom_build", reason=f"bitbake exited {rc}", target=target)
     else:

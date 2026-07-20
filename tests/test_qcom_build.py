@@ -147,6 +147,30 @@ def test_qcom_build_single_bash_invocation(tmp_path: Path, monkeypatch: pytest.M
     assert any(ev[0] == "step_ok" for ev in log.events), f"expected step_ok, got {log.events!r}"
 
 
+def test_qcom_build_emits_monitor_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The build points bitbake's eventlog at the run dir and streams to kas.log.
+
+    ``bakar monitor``/``log``/``triage`` read ``<run>/bitbake_eventlog.json`` and
+    ``<run>/kas.log``; the direct-bitbake path must produce both, matching the
+    kas path, or the monitor shows an empty build for a qcom run.
+    """
+    _no_buildtools(monkeypatch)
+    cfg = _qcom_cfg(tmp_path)
+    run_dir = tmp_path / "qcom" / "build-qcom-wayland" / "runs" / "20260101-000000"
+    run_dir.mkdir(parents=True)
+    log = _FakeLogger(run_dir)
+    recorder = _PopenRecorder(returncode=0)
+    monkeypatch.setattr(qcom_build_step.subprocess, "Popen", recorder)
+
+    qcom_build_step.run(cfg, log, target="qcom-multimedia-image")
+
+    assert recorder.env["BB_DEFAULT_EVENTLOG"] == str(run_dir / "bitbake_eventlog.json")
+    # The stream target is kas.log (bakar's conventional build-log name), not
+    # bitbake.log; _stream_build opens it for writing, so it must exist after run.
+    assert (run_dir / "kas.log").exists(), "stream log must be kas.log"
+    assert not (run_dir / "bitbake.log").exists(), "stream must not write bitbake.log"
+
+
 def test_qcom_build_sources_buildtools_first(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A BAKAR_BUILDTOOLS_DIR env script is sourced before setup-environment."""
     bt = tmp_path / "buildtools"
