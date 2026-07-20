@@ -50,6 +50,12 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.stall_abort_secs": "1800",
         "build.stop_grace_seconds": "45",
         "build.stop_on_error": "false",
+        "build.scope": "false",
+        "build.scope_memory_high": "0.75",
+        "build.scope_memory_max": "0.88",
+        "build.scope_oom_score_adjust": "750",
+        "build.scope_cpu_weight": "40",
+        "build.scope_io_weight": "0",
         "build.hashserv": "true",
         "build.ccache_shared": "true",
         "build.ccache_dir": "/data/ccache",
@@ -108,6 +114,14 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert cfg.stall_abort_secs == 1800
     assert cfg.stop_grace_seconds == 45
     assert cfg.stop_on_error is False
+    assert cfg.scope is False
+    assert isinstance(cfg.scope, bool)
+    assert cfg.scope_memory_high == 0.75
+    assert cfg.scope_memory_max == 0.88
+    assert cfg.scope_oom_score_adjust == 750
+    assert isinstance(cfg.scope_oom_score_adjust, int) and not isinstance(cfg.scope_oom_score_adjust, bool)
+    assert cfg.scope_cpu_weight == 40
+    assert cfg.scope_io_weight == 0
     assert cfg.hashserv is True
     assert cfg.ccache_shared is True
     assert cfg.ccache_dir == "/data/ccache"

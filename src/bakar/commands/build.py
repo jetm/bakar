@@ -33,6 +33,7 @@ from bakar.commands._helpers import (
     _uninitialized_bbsetup_dir,
     _workspace_from_cwd,
     apply_mold_overrides,
+    apply_scope_override,
     global_container_mode,
     global_host_mode,
     global_output_mode_override,
@@ -164,6 +165,7 @@ def _run_bbsetup_build(
     if ctx.sccache_scheduler is not None:
         cfg = replace(cfg, sccache_scheduler_url=ctx.sccache_scheduler)
     cfg = apply_mold_overrides(cfg)
+    cfg = apply_scope_override(cfg)
     overlay_source = _overlay_for(None)
     bb_target = cfg.image if cfg.image not in ("", "generic") else "core-image-minimal"
 
@@ -428,6 +430,7 @@ def _run_single_preset_release(
     if sccache_scheduler is not None:
         cfg = replace(cfg, sccache_scheduler_url=sccache_scheduler)
     cfg = apply_mold_overrides(cfg)
+    cfg = apply_scope_override(cfg)
 
     overlay_source = _overlay_for(bsp)
     extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
@@ -806,6 +809,7 @@ def build(
     if sccache_scheduler is not None:
         cfg = replace(cfg, sccache_scheduler_url=sccache_scheduler)
     cfg = apply_mold_overrides(cfg)
+    cfg = apply_scope_override(cfg)
 
     extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
 

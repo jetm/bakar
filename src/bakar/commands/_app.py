@@ -36,6 +36,9 @@ _HIDE_DOCTOR_REPORT: bool = False
 # commands (getvar, dump, bitbake, clean-recipe, rebuild, ...).
 _HOST_MODE: bool = False
 _CONTAINER_MODE: bool = False
+# --no-scope: opt out of the transient systemd scope (default is scoped). Read
+# via commands._helpers.apply_scope_override wherever a BuildConfig is resolved.
+_NO_SCOPE: bool = False
 _SCCACHE_DIST: bool = False
 _SCCACHE_SCHEDULER: str | None = None
 _MOLD: bool = False
@@ -110,6 +113,14 @@ def _main(
             help="Opt into kas-container instead of the host path (applies to build and all kas subcommands).",
         ),
     ] = False,
+    no_scope: Annotated[
+        bool,
+        typer.Option(
+            "--no-scope",
+            help="Run the build directly instead of inside a transient systemd scope "
+            "(disables session-survival and the cgroup memory ceiling).",
+        ),
+    ] = False,
     sccache_dist: Annotated[
         bool,
         typer.Option("--sccache-dist", help="Enable the sccache-dist overlay for build and kas subcommands."),
@@ -150,7 +161,7 @@ def _main(
     ] = False,
 ) -> None:
     global _USER_CONFIG, _HIDE_DOCTOR_REPORT, _HOST_MODE, _CONTAINER_MODE, _SCCACHE_DIST
-    global _SCCACHE_SCHEDULER, _MOLD, _MOLD_BASELINE, _MOLD_GLOBAL, _OUTPUT_MODE_OVERRIDE
+    global _SCCACHE_SCHEDULER, _MOLD, _MOLD_BASELINE, _MOLD_GLOBAL, _OUTPUT_MODE_OVERRIDE, _NO_SCOPE
     if plain and rich_output:
         console.print("[red]choose either --plain/--ci or --rich, not both[/]")
         raise typer.Exit(code=2)
@@ -168,6 +179,7 @@ def _main(
     _HIDE_DOCTOR_REPORT = hide_doctor_report
     _HOST_MODE = host
     _CONTAINER_MODE = container
+    _NO_SCOPE = no_scope
     _SCCACHE_DIST = sccache_dist
     _SCCACHE_SCHEDULER = sccache_scheduler
     _MOLD = mold

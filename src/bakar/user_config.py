@@ -47,6 +47,7 @@ _BOOL_FIELDS = {
     "container",
     "host_mode",
     "stop_on_error",
+    "scope",
 }
 _INT_FIELDS: set[str] = {
     "stall_abort_secs",
@@ -58,10 +59,17 @@ _INT_FIELDS: set[str] = {
     "nproc",
     "parallel_make",
     "bb_number_threads",
+    "scope_oom_score_adjust",
+    "scope_cpu_weight",
+    "scope_io_weight",
 }
 # The three [build] parallelism knobs; all require a strictly positive value.
 _PARALLELISM_FIELDS = {"nproc", "parallel_make", "bb_number_threads"}
 _PSI_FIELDS = {"pressure_max_cpu", "pressure_max_io", "pressure_max_memory"}
+# systemd scope MemoryHigh/MemoryMax fractions of physical RAM; must be in (0, 1].
+_SCOPE_FRACTION_FIELDS = {"scope_memory_high", "scope_memory_max"}
+# systemd scope weights (CPUWeight/IOWeight); 0 disables, else 1..10000.
+_SCOPE_WEIGHT_FIELDS = {"scope_cpu_weight", "scope_io_weight"}
 # The five [host] threshold fields; all require a strictly positive value.
 _HOST_FIELDS = {
     "host_inotify_instances",
@@ -150,6 +158,30 @@ class UserConfig:
     # default already stops scheduling *new* tasks; this just stops bakar from
     # rendering a misleadingly-normal live view while it waits for the drain).
     stop_on_error: bool = True
+    # Transient systemd scope. When True (default) `bakar build` and the live
+    # `bakar bitbake` path run kas/kas-container inside a `systemd-run --user
+    # --scope`, so the build survives terminal/session teardown and gets a
+    # cgroup memory ceiling. The five knobs below tune the scope's resource
+    # controls; see bakar.build_scope. Parallelism (BB_NUMBER_THREADS /
+    # PARALLEL_MAKE) is intentionally NOT touched by any of these.
+    scope: bool = True
+    # MemoryHigh (soft reclaim throttle) and MemoryMax (hard OOM ceiling) as
+    # fractions of physical RAM. MemoryMax stays below 1.0 so a runaway is
+    # OOM-killed inside the build cgroup, leaving headroom for kernel + PID 1 +
+    # desktop instead of taking the whole box down. MemoryHigh sits just below
+    # MemoryMax (a narrow soft-throttle band, not an operational cap) so a
+    # legitimately RAM-hungry bitbake build runs unthrottled until it is close
+    # to the hard ceiling.
+    scope_memory_high: float = 0.85
+    scope_memory_max: float = 0.90
+    # Positive oom_score_adjust so under global pressure the build is the OOM
+    # victim and system services are protected. 0 disables the adjustment.
+    scope_oom_score_adjust: int = 500
+    # CPUWeight/IOWeight below the systemd default (100) keep the host
+    # responsive under contention; they never slow an otherwise-idle build.
+    # 0 omits the property.
+    scope_cpu_weight: int = 50
+    scope_io_weight: int = 50
     hashserv: bool = False
     ccache_shared: bool = False
     ccache_dir: str | None = None
@@ -231,6 +263,12 @@ _BUILD_KEYS = {
     "stall_abort_secs": "stall_abort_secs",
     "stop_grace_seconds": "stop_grace_seconds",
     "stop_on_error": "stop_on_error",
+    "scope": "scope",
+    "scope_memory_high": "scope_memory_high",
+    "scope_memory_max": "scope_memory_max",
+    "scope_oom_score_adjust": "scope_oom_score_adjust",
+    "scope_cpu_weight": "scope_cpu_weight",
+    "scope_io_weight": "scope_io_weight",
     "hashserv": "hashserv",
     "ccache_shared": "ccache_shared",
     "ccache_dir": "ccache_dir",
@@ -280,6 +318,18 @@ def _check_type(field: str, value: object, path: Path) -> None:
     if field == "disk_free_threshold_gb":
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
             raise ValueError(f"{path}: '{field}' must be > 0, got {value}")
+    if field in _SCOPE_FRACTION_FIELDS:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{path}: '{field}' must be a number, got {type(value).__name__}")
+        if not 0 < value <= 1:
+            raise ValueError(f"{path}: '{field}' must be a fraction in (0, 1], got {value}")
+    # scope_oom_score_adjust and the two weights are in _INT_FIELDS, whose guard
+    # above already raised on a non-int/bool; the isinstance narrows for the type
+    # checker, these only add the range bounds.
+    if field == "scope_oom_score_adjust" and isinstance(value, int) and not 0 <= value <= 1000:
+        raise ValueError(f"{path}: '{field}' must be in [0, 1000] (0 disables), got {value}")
+    if field in _SCOPE_WEIGHT_FIELDS and isinstance(value, int) and not 0 <= value <= 10000:
+        raise ValueError(f"{path}: '{field}' must be in [0, 10000] (0 disables), got {value}")
     if field in _HOST_FIELDS:
         # All five host thresholds must be a positive number. The four int
         # fields already passed the _INT_FIELDS type check above, so this number
@@ -442,7 +492,9 @@ def _build_settings_schema() -> dict[str, _SettingSpec]:
                 key=key,
                 is_bool=field in _BOOL_FIELDS,
                 is_int=field in _INT_FIELDS,
-                is_float=field in _PSI_FIELDS or field in {"disk_free_threshold_gb", "host_mem_min_gb"},
+                is_float=field in _PSI_FIELDS
+                or field in _SCOPE_FRACTION_FIELDS
+                or field in {"disk_free_threshold_gb", "host_mem_min_gb"},
             )
     return schema
 
@@ -483,6 +535,10 @@ def _coerce(spec: _SettingSpec, raw_value: str) -> str | bool | int | float:
             raise ValueError(f"value for {spec.key!r} must be >= 0 (0 disables), got {v}")
         if (spec.key in _HOST_KEYS or spec.key in _PARALLELISM_FIELDS) and v <= 0:
             raise ValueError(f"value for {spec.key!r} must be > 0, got {v}")
+        if spec.key == "scope_oom_score_adjust" and not 0 <= v <= 1000:
+            raise ValueError(f"value for {spec.key!r} must be in [0, 1000] (0 disables), got {v}")
+        if spec.key in _SCOPE_WEIGHT_FIELDS and not 0 <= v <= 10000:
+            raise ValueError(f"value for {spec.key!r} must be in [0, 10000] (0 disables), got {v}")
         return v
     if spec.is_float:
         try:
@@ -492,6 +548,9 @@ def _coerce(spec: _SettingSpec, raw_value: str) -> str | bool | int | float:
         if spec.key in {"disk_free_threshold_gb", "mem_min_gb"}:
             if v <= 0:
                 raise ValueError(f"value for {spec.key!r} must be > 0, got {v}")
+        elif spec.key in _SCOPE_FRACTION_FIELDS:
+            if not 0 < v <= 1:
+                raise ValueError(f"value for {spec.key!r} must be a fraction in (0, 1], got {v}")
         elif v < 1:
             raise ValueError(f"value for {spec.key!r} must be >= 1 (bitbake minimum), got {v}")
         return v

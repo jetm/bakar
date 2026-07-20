@@ -352,6 +352,29 @@ def apply_sccache_overrides(cfg: BuildConfig) -> BuildConfig:
     return cfg
 
 
+def global_no_scope() -> bool:
+    """Return the global ``--no-scope`` flag set on the top-level callback.
+
+    A late import avoids a circular dependency between ``_helpers`` and ``_app``.
+    """
+    import bakar.commands._app as _state
+
+    return _state._NO_SCOPE
+
+
+def apply_scope_override(cfg: BuildConfig) -> BuildConfig:
+    """Fold the global ``--no-scope`` flag into cfg (disable the transient scope).
+
+    Mirrors ``apply_sccache_overrides``/``apply_mold_overrides``: the callback
+    stores the flag on ``_app``; here it clears ``cfg.scope`` so ``run_build`` /
+    ``run_shell_live`` launch the build unwrapped. A no-op when the flag is
+    unset - the config-resolved default (``[build] scope``) stands.
+    """
+    if global_no_scope():
+        return replace(cfg, scope=False)
+    return cfg
+
+
 def apply_mold_overrides(cfg: BuildConfig) -> BuildConfig:
     """Apply the global ``--mold`` / ``--mold-baseline`` / ``--mold-global`` flags to cfg.
 

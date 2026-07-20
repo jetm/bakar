@@ -59,11 +59,13 @@ bakar build -m imx8mp-var-dart    # machine override in bbsetup workspace
 | `--on` | | Dispatch the build to a remote host (ssh alias or `user@ip`) instead of building locally. See [Remote dispatch](#remote-dispatch---on-host). |
 | `--yes` | `-y` | Skip the `rsync --delete` confirmation prompt for `--on` dispatch (non-interactive) |
 
-`--host` (bypass kas-container, run plain `kas build` on the host) and
+`--host` (bypass kas-container, run plain `kas build` on the host),
+`--no-scope` (run the build directly instead of inside a transient systemd
+scope; see [Transient systemd scope](#transient-systemd-scope)), and
 `--sccache-dist` / `--sccache-scheduler URL` are **global** options handled by the
 top-level callback, so they go *before* the subcommand: `bakar --host build ...`,
-`bakar --sccache-dist build ...`. Placing them after `build` is rejected with
-`No such option`.
+`bakar --no-scope build ...`, `bakar --sccache-dist build ...`. Placing them after
+`build` is rejected with `No such option`.
 
 **Global option:** `--hide-doctor-report`, placed before the subcommand
 (`bakar --hide-doctor-report build ...`), runs the doctor checks but prints
@@ -128,9 +130,53 @@ bakar build my-board.yml --dry-run-script -
 5. **gen-kas** (manifest-driven only) - regenerates `kas-<bsp>.yml` from the manifest
 6. **hashserv** - when `[build] hashserv = true`, ensures the workspace-scoped bitbake-hashserv daemon is running, injects `BB_HASHSERVE` into the container env, AND auto-appends `bakar-tuning-hashequiv.yml` to the overlay list so `BB_SIGNATURE_HANDLER = "OEEquivHash"` takes effect with no extra user wiring. See [hashserv.md](hashserv.md).
 7. **shared-cache overlay** - when `--sstate-mirror <URL>` is passed (or `sstate_mirror_url` is set in config.toml), bakar exports `BAKAR_SSTATE_MIRROR_URL` into the container env and appends `bakar-tuning-shared-cache.yml` to the overlay list. That overlay wires `SSTATE_MIRRORS` (using the `/all/PATH;downloadfilename=PATH` layout required by the Yocto Project autobuilder convention) and `BB_HASHSERVE_UPSTREAM` to enable sstate reuse from the mirror. The official Yocto Project mirror is `http://sstate.yoctoproject.org`. No hand-edited YAML needed.
-8. **kas-container build** - invokes `kas-container build <kas_yaml>:<overlay>` (or `kas build` in host mode)
+8. **kas-container build** - invokes `kas-container build <kas_yaml>:<overlay>` (or `kas build` in host mode), wrapped in a transient systemd scope by default (see below)
 
 Run telemetry is written to `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/`.
+
+## Transient systemd scope
+
+By default `bakar build` (and the live `bakar bitbake` path) launch the
+kas/kas-container invocation inside a transient
+`systemd-run --user --scope`. This does two things:
+
+- **Survives session teardown.** The scope is a unit under
+  `user@<uid>.service` / `app.slice` - a sibling of the interactive session's
+  cgroup, not a child - so closing the terminal, an SSH disconnect, or a
+  reaped background shell no longer SIGHUPs the build to death. The scope
+  inherits the caller's TTY, environment, and CWD, so the live UI, `kas`,
+  `docker`, `sccache`, and every `BAKAR_*`/`KAS_*` env var behave exactly as
+  before.
+- **Contains a runaway.** The scope's cgroup carries safe resource controls:
+  a `MemoryMax` hard ceiling **below** total RAM (a memory blow-up
+  OOM-kills the build cgroup instead of driving the whole box into an OOM
+  storm), a `MemoryHigh` soft reclaim throttle, a positive `oom_score_adj`
+  so the build is the OOM victim under *global* pressure (protecting PID 1
+  and the desktop), and below-default `CPUWeight`/`IOWeight` to keep the host
+  responsive under contention. Build parallelism (`BB_NUMBER_THREADS`,
+  `PARALLEL_MAKE`) is deliberately **not** capped.
+
+The unit name is stable per workspace+target and its lifecycle (start/stop,
+OOM kills) is visible with `journalctl --user -u <unit>` (the run log prints
+the exact command). The run log (`kas.log`) is written as before.
+
+Host vs container mode: in host mode kas runs bitbake directly under the
+scope, so the memory ceiling genuinely caps the build. In container mode the
+heavy work runs inside the `docker`/`podman` container, whose processes live
+in the runtime's cgroup - the scope there delivers session-survival but the
+memory ceiling only bounds the lightweight `kas-container`/`docker` client.
+
+Tune the limits under `[build] scope*` in `config.toml` (see
+[config-reference.md](config-reference.md)); disable per-invocation with the
+global `--no-scope` (before the subcommand: `bakar --no-scope build ...`), or
+permanently with `bakar settings set build.scope false`. When `systemd-run`
+or the user manager is unavailable (e.g. a minimal CI container), bakar warns
+once and runs the build unwrapped.
+
+This hardening addresses build **session-survival and resource containment
+only**. It does not prevent filesystem/kernel faults (e.g. an XFS root-fs
+corruption panic), which are tracked separately - no cgroup control changes
+that class of failure.
 
 ## Remote dispatch (`--on <host>`)
 

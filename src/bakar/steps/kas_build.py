@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 from rich.live import Live
 
-from bakar import build_stop, hashserv, prserv, sccache_server, task_timings, tuning
+from bakar import build_scope, build_stop, hashserv, prserv, sccache_server, task_timings, tuning
 from bakar.cache_render import (
     build_end_summary_plain,
     build_end_summary_rich,
@@ -1199,7 +1199,10 @@ def _run_pty_with_ui(
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,
-                env=_build_env(cfg, eventlog_path=_container_eventlog_path(cfg, log)),
+                # scope_env re-adds the user-bus vars systemd-run needs (a no-op
+                # for an unscoped launch); the curated _build_env otherwise omits
+                # them. See bakar.build_scope.scope_env.
+                env=build_scope.scope_env(_build_env(cfg, eventlog_path=_container_eventlog_path(cfg, log)), cfg),
                 start_new_session=True,
                 close_fds=True,
             )
@@ -1625,6 +1628,13 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     if ctx.keep_going:
         cmd += ["--", "-k"]
 
+    # Wrap in a transient systemd scope (default on) so the build survives
+    # session teardown and runs under a cgroup memory ceiling; no-op when
+    # disabled or systemd-run is unavailable. Must stay after the full kas
+    # command is assembled and before the launch so proc.pid leads the scoped
+    # build's process group.
+    cmd = build_scope.wrap_build_command(cmd, cfg, log, unit_suffix="build")
+
     log.info(f"exec: {' '.join(cmd)}")
     # Baselines are scoped per (workspace, machine, mode): a different
     # project's builds must not train the stuck-task thresholds this one reads.
@@ -1716,6 +1726,9 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
     kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source, ctx.extra_overlays)
     exe = "kas" if cfg.host_mode else "kas-container"
     cmd = [exe, *_ccache_args(cfg, eventlog_path=_container_eventlog_path(cfg, log)), "shell", kas_arg, "-c", command]
+    # A live `bakar bitbake` is a real build; scope it like run_build (no-op when
+    # disabled or systemd-run is unavailable).
+    cmd = build_scope.wrap_build_command(cmd, cfg, log, unit_suffix="bitbake")
 
     ui = BuildUIState(
         start_monotonic=log.start_monotonic,

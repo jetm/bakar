@@ -36,6 +36,7 @@ from bakar.commands._helpers import (
     _resolve_workspace,
     apply_mold_overrides,
     apply_sccache_overrides,
+    apply_scope_override,
     global_container_mode,
     global_host_mode,
     split_kas_yaml_arg,
@@ -128,6 +129,7 @@ def _run_task(
     )
     cfg = apply_sccache_overrides(cfg)
     cfg = apply_mold_overrides(cfg)
+    cfg = apply_scope_override(cfg)
     overlay_source = _overlay_for(bsp)
     # The cache-classify overlay is the one unconditional entry in
     # _tuning_extra_overlays - every build references it, so materialize it
