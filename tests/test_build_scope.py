@@ -183,6 +183,7 @@ def test_wrap_builds_scope_prefix_and_properties(tmp_path: Path) -> None:
     # Resource-control properties, defaults: 85/90% memory, 50/50 weights.
     assert "MemoryHigh=85%" in out
     assert "MemoryMax=90%" in out
+    assert "MemorySwapMax=0" in out
     assert "CPUWeight=50" in out
     assert "IOWeight=50" in out
     # The original kas command is preserved as the tail.

@@ -171,6 +171,13 @@ def _scope_properties(cfg: BuildConfig) -> list[str]:
     hard = _fraction_to_percent(cfg.scope_memory_max)
     if hard is not None:
         props.append(f"MemoryMax={hard}%")
+    # Deny the build any swap. Without this, MemoryHigh/MemoryMax are defeated on
+    # a host with a large (zram) swap: crossing the limit spills the build's pages
+    # into swap instead of OOM-killing it, and zram stores them compressed in RAM
+    # system-wide, so the cgroup cap leaks into global memory pressure and can
+    # freeze the whole session. MemorySwapMax=0 forces a clean, contained
+    # OOM-kill at MemoryMax so the blast radius stays inside the scope.
+    props.append("MemorySwapMax=0")
     if cfg.scope_cpu_weight > 0:
         props.append(f"CPUWeight={cfg.scope_cpu_weight}")
     if cfg.scope_io_weight > 0:
