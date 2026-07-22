@@ -849,3 +849,14 @@ def test_remote_only_dirs_ssh_failure_yields_empty(tmp_path: Path, monkeypatch: 
     fake = _ListingSubprocess(255, "")
     monkeypatch.setattr(rd, "subprocess", fake)
     assert rd._remote_only_dirs(tmp_path, HOST) == []
+
+
+def test_remote_only_dirs_missing_local_workspace_yields_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A local workspace that does not exist (or is unreadable) must not crash the
+    # dispatch: iterdir() raises FileNotFoundError, which is swallowed the same
+    # way a failed remote listing is. Regression for the CI failure where the
+    # hardcoded WS path exists on the dev box but not on the runner.
+    missing = tmp_path / "does-not-exist"
+    fake = _ListingSubprocess(0, "meta-avocado/\nopenembedded-core/\n")
+    monkeypatch.setattr(rd, "subprocess", fake)
+    assert rd._remote_only_dirs(missing, HOST) == []

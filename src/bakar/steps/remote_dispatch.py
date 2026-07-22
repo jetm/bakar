@@ -239,7 +239,14 @@ def _remote_only_dirs(ws_root: Path, host: str) -> list[str]:
     if remote is None:
         console.print(f"[yellow]could not list remote dirs on {host}[/]; proceeding without remote-only excludes.")
         return []
-    local = {p.name for p in ws_root.iterdir() if p.is_dir()}
+    try:
+        local = {p.name for p in ws_root.iterdir() if p.is_dir()}
+    except OSError:
+        # A missing or unreadable local workspace must not crash the dispatch any
+        # more than a failed remote listing does; fall back to no extra excludes
+        # and let the rsync step surface the real workspace problem.
+        console.print(f"[yellow]could not list local workspace {ws_root}[/]; proceeding without remote-only excludes.")
+        return []
     return sorted(set(remote) - local)
 
 
