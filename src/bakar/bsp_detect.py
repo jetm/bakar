@@ -239,14 +239,20 @@ def is_meta_avocado_yaml(yaml_path: Path) -> bool:
 def detect_kas_workspace(yaml_path: Path) -> Path:
     """Return the effective workspace root for a generic kas YAML.
 
-    For meta-avocado YAMLs the YAML sits several levels deep inside the
-    ``meta-avocado`` repository (e.g. ``sources/meta-avocado/kas/machine/
-    qemux86-64.yml``). kas must run from a build directory that is a
-    *sibling* of ``meta-avocado/`` (e.g. ``sources/build-qemux86-64/``),
-    not from inside the repo. This function walks up from the YAML to
-    find the ``meta-avocado`` boundary and returns its parent
-    (e.g. ``sources/``) so :func:`bakar.config.BuildConfig.bsp_root`
-    can derive the correct build-directory path.
+    For meta-avocado *source* YAMLs the YAML sits several levels deep inside
+    the ``meta-avocado`` repository (e.g. ``sources/meta-avocado/kas/machine/
+    qemux86-64.yml``). kas must run from a build directory that is a *sibling*
+    of ``meta-avocado/`` (e.g. ``sources/build-qemux86-64/``), not from inside
+    the repo. This function walks up from the YAML to find the ``meta-avocado``
+    boundary and returns its parent (e.g. ``sources/``) so
+    :func:`bakar.config.BuildConfig.bsp_root` can derive the correct
+    build-directory path.
+
+    A *generated* build YAML (e.g. ``sources/build-qemux86-64/avocado-bakar.yml``)
+    lives OUTSIDE ``meta-avocado``, so the boundary walk above misses it and
+    would otherwise pin the workspace at the build subdir. Fall back to a
+    marker walk: the first ancestor holding a ``.bakar.toml`` file or a
+    ``meta-avocado/`` subdirectory is the workspace root.
 
     For every other generic kas YAML the workspace is simply the YAML's
     parent directory (preserving the existing behavior).
@@ -255,4 +261,7 @@ def detect_kas_workspace(yaml_path: Path) -> Path:
     for parent in resolved.parents:
         if parent.name == "meta-avocado":
             return parent.parent
+    for parent in resolved.parents:
+        if (parent / ".bakar.toml").is_file() or (parent / "meta-avocado").is_dir():
+            return parent
     return resolved.parent

@@ -231,6 +231,28 @@ def test_detect_kas_workspace_returns_yaml_parent_for_plain_generic(tmp_path: Pa
     assert detect_kas_workspace(p) == build
 
 
+def test_detect_kas_workspace_generated_yaml_finds_bakar_toml_root(tmp_path: Path) -> None:
+    """A generated build YAML outside meta-avocado resolves to the .bakar.toml root."""
+    root = tmp_path / "sources"
+    build = root / "build-qemux86-64"
+    build.mkdir(parents=True)
+    (root / ".bakar.toml").write_text("[build]\n")
+    p = build / "avocado-bakar.yml"
+    p.write_text("machine: avocado-qemux86-64\n")
+    assert detect_kas_workspace(p) == root
+
+
+def test_detect_kas_workspace_generated_yaml_finds_meta_avocado_sibling_root(tmp_path: Path) -> None:
+    """Without a .bakar.toml, a meta-avocado/ sibling marks the workspace root."""
+    root = tmp_path / "sources"
+    (root / "meta-avocado").mkdir(parents=True)
+    build = root / "build-x"
+    build.mkdir()
+    p = build / "foo.yml"
+    p.write_text("machine: qemuarm64\n")
+    assert detect_kas_workspace(p) == root
+
+
 # ---------------------------------------------------------------------------
 # is_bbsetup_workspace
 # ---------------------------------------------------------------------------
