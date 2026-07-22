@@ -602,6 +602,11 @@ def test_json_once_defaults_to_ccache_branch(
     test through no fault of the code under test.
     """
     monkeypatch.setenv("BAKAR_SCCACHE_DIST", "0")
+    # Force ccache ON too: the env tier outranks user config, so a dev machine
+    # with `[build] ccache = false` genuinely configured does not skip the ccache
+    # branch and fail this test through no fault of the code under test (mirrors
+    # the BAKAR_SCCACHE_DIST=0 guard above).
+    monkeypatch.setenv("BAKAR_CCACHE", "1")
 
     def _must_not_probe_cluster(*_a: object, **_k: object) -> None:
         raise AssertionError("probe_cluster called while sccache-dist is off")

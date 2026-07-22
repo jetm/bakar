@@ -192,6 +192,28 @@ def _reset_invocation_cwd():
     _INVOCATION.clear()
 
 
+@pytest.fixture(autouse=True)
+def _no_systemd_scope_probe(request, monkeypatch):
+    """Default ``build_scope.systemd_run_available`` to False across the suite.
+
+    The real implementation runs a live ``systemd-run --user --scope -- true``
+    probe (cached via ``functools.cache``), which both spawns a real transient
+    scope as a test side effect and collides with tests that fake
+    ``subprocess.Popen``: the probe's ``subprocess.run`` then hits the fake proc
+    (no ``__exit__``) and raises, flakily, depending on whether ``pytest-randomly``
+    warmed the cache first. Stubbing it False makes every build-driving test run
+    unscoped and deterministic. ``test_build_scope`` exercises the real gate and
+    manages this itself, so it is exempt.
+    """
+    if "test_build_scope" in request.module.__name__:
+        yield
+        return
+    import bakar.build_scope as _build_scope
+
+    monkeypatch.setattr(_build_scope, "systemd_run_available", lambda: False)
+    yield
+
+
 if TYPE_CHECKING:
     from pathlib import Path
 
