@@ -14,6 +14,7 @@ from bakar.config import compose_preset_output_path, resolve
 from bakar.preset_config import PresetEntry
 from bakar.user_config import UserConfig
 from bakar.workspace_config import WorkspaceConfig
+from tests.conftest import make_build_config
 
 pytestmark = pytest.mark.unit
 
@@ -576,3 +577,60 @@ def test_resolve_default_family_is_explicit_preserves_conflict_raise(tmp_path) -
 
     with pytest.raises(ValueError, match="ti-test-preset"):
         resolve(workspace=_workspace(tmp_path), bsp_family="nxp", preset=preset)
+
+
+# ---------------------------------------------------------------------------
+# is_meta_avocado / bsp_root for meta-avocado source vs generated build YAMLs
+# ---------------------------------------------------------------------------
+
+
+def test_is_meta_avocado_source_yaml_bsp_root_is_build_dir(tmp_path: Path) -> None:
+    """The source kas YAML deep inside meta-avocado maps to a sibling build dir.
+
+    ``meta-avocado/kas/machine/qemux86-64.yml`` carries ``meta-avocado`` as a
+    path component, so ``bsp_root`` is ``<ws>/build-<stem>`` (the init-build
+    sibling), not the YAML's own parent.
+    """
+    ws = tmp_path
+    src = ws / "meta-avocado" / "kas" / "machine" / "qemux86-64.yml"
+    src.parent.mkdir(parents=True)
+    src.write_text("machine: avocado-qemux86-64\n", encoding="utf-8")
+
+    cfg = make_build_config(workspace=ws, bsp_family="generic", kas_yaml_override=src)
+
+    assert cfg.is_meta_avocado is True
+    assert cfg.bsp_root == ws / "build-qemux86-64"
+
+
+def test_is_meta_avocado_generated_build_yaml_bsp_root_is_its_parent(tmp_path: Path) -> None:
+    """A generated build YAML sitting in a meta-avocado workspace still counts.
+
+    ``build-qemux86-64/avocado-bakar.yml`` has no ``meta-avocado`` path
+    component, so the literal-path check misses it; the workspace-layer
+    fallback (``<ws>/meta-avocado`` exists) recognizes it. Its ``bsp_root`` is
+    the YAML's own parent because it already lives in the build dir.
+    """
+    ws = tmp_path
+    (ws / "meta-avocado").mkdir()
+    (ws / ".bakar.toml").write_text("", encoding="utf-8")
+    build_dir = ws / "build-qemux86-64"
+    build_dir.mkdir()
+    gen = build_dir / "avocado-bakar.yml"
+    gen.write_text("machine: avocado-qemux86-64\n", encoding="utf-8")
+
+    cfg = make_build_config(workspace=ws, bsp_family="generic", kas_yaml_override=gen)
+
+    assert cfg.is_meta_avocado is True
+    assert cfg.bsp_root == build_dir.resolve()
+
+
+def test_is_meta_avocado_plain_generic_yaml_bsp_root_is_parent(tmp_path: Path) -> None:
+    """A generic BYO YAML with no meta-avocado workspace layer is not meta-avocado."""
+    ws = tmp_path
+    plain = ws / "foo.yml"
+    plain.write_text("machine: qemuarm64\n", encoding="utf-8")
+
+    cfg = make_build_config(workspace=ws, bsp_family="generic", kas_yaml_override=plain)
+
+    assert cfg.is_meta_avocado is False
+    assert cfg.bsp_root == plain.parent

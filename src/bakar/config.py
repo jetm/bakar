@@ -521,7 +521,13 @@ class BuildConfig:
         if self.bsp_family != "generic" or self.kas_yaml_override is None:
             return False
         try:
-            return "meta-avocado" in self.kas_yaml_override.resolve().parts
+            if "meta-avocado" in self.kas_yaml_override.resolve().parts:
+                return True
+            # A generated build YAML (e.g. build-<machine>/avocado-bakar.yml)
+            # lives outside the meta-avocado tree, so the path-component check
+            # misses it. Fall back to the workspace carrying a meta-avocado
+            # layer dir, which identifies a meta-avocado build all the same.
+            return (self.workspace / "meta-avocado").is_dir()
         except OSError:
             return False
 
@@ -545,7 +551,12 @@ class BuildConfig:
         """
         if self.bsp_family == "generic" and self.kas_yaml_override is not None:
             if self.is_meta_avocado:
-                return self.workspace / f"build-{self.kas_yaml_override.stem}"
+                # Source YAMLs live deep inside meta-avocado/, so kas needs a
+                # sibling build dir. A generated build YAML already sits in its
+                # build dir, so its own parent is the bsp_root.
+                if "meta-avocado" in self.kas_yaml_override.resolve().parts:
+                    return self.workspace / f"build-{self.kas_yaml_override.stem}"
+                return self.kas_yaml_override.resolve().parent
             return self.kas_yaml_override.parent
         if self.bsp_family == "bbsetup":
             return self.workspace
