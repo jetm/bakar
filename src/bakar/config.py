@@ -343,12 +343,19 @@ class BuildConfig:
     stop_on_error: bool = True
     # Transient systemd scope. When True (the default) `bakar build` and the
     # live `bakar bitbake` path run kas/kas-container inside a `systemd-run
-    # --user --scope` for session-survival and cgroup containment; see
-    # bakar.build_scope. The five knobs below tune the scope's resource
-    # controls. None of these touch BB_NUMBER_THREADS / PARALLEL_MAKE.
+    # --user --scope` for session-survival and (opt-in) cgroup containment; see
+    # bakar.build_scope. The knobs below tune the scope's resource controls.
+    # None of these touch BB_NUMBER_THREADS / PARALLEL_MAKE.
     scope: bool = True
-    scope_memory_high: float = 0.85
-    scope_memory_max: float = 0.90
+    # MemoryHigh/MemoryMax are OFF by default (0.0 = omit). On a host with a
+    # large zram/zswap swap MemoryMax does NOT cap physical RAM - the cgroup
+    # compresses its pages into zram (which lives in RAM) instead of OOMing, so
+    # the "ceiling" is defeated and MemoryHigh's reclaim just forces a swap-
+    # thrash that can soft-lock the box. Enable (set a 0<f<=1 fraction) only on a
+    # dedicated build host where OOM-killing the build to protect the host is
+    # wanted; build_scope then also sets MemorySwapMax=0 so the cap is real.
+    scope_memory_high: float = 0.0
+    scope_memory_max: float = 0.0
     scope_oom_score_adjust: int = 500
     scope_cpu_weight: int = 50
     scope_io_weight: int = 50
@@ -957,8 +964,8 @@ def resolve(
         stop_grace_seconds=user_config.stop_grace_seconds if user_config else 30,
         stop_on_error=user_config.stop_on_error if user_config else True,
         scope=user_config.scope if user_config else True,
-        scope_memory_high=user_config.scope_memory_high if user_config else 0.85,
-        scope_memory_max=user_config.scope_memory_max if user_config else 0.90,
+        scope_memory_high=user_config.scope_memory_high if user_config else 0.0,
+        scope_memory_max=user_config.scope_memory_max if user_config else 0.0,
         scope_oom_score_adjust=user_config.scope_oom_score_adjust if user_config else 500,
         scope_cpu_weight=user_config.scope_cpu_weight if user_config else 50,
         scope_io_weight=user_config.scope_io_weight if user_config else 50,

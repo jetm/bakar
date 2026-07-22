@@ -147,24 +147,36 @@ kas/kas-container invocation inside a transient
   inherits the caller's TTY, environment, and CWD, so the live UI, `kas`,
   `docker`, `sccache`, and every `BAKAR_*`/`KAS_*` env var behave exactly as
   before.
-- **Contains a runaway.** The scope's cgroup carries safe resource controls:
-  a `MemoryMax` hard ceiling **below** total RAM (a memory blow-up
-  OOM-kills the build cgroup instead of driving the whole box into an OOM
-  storm), a `MemoryHigh` soft reclaim throttle, a positive `oom_score_adj`
-  so the build is the OOM victim under *global* pressure (protecting PID 1
-  and the desktop), and below-default `CPUWeight`/`IOWeight` to keep the host
-  responsive under contention. Build parallelism (`BB_NUMBER_THREADS`,
-  `PARALLEL_MAKE`) is deliberately **not** capped.
+- **Keeps the host responsive (by default).** The scope sets a positive
+  `oom_score_adj` so the build is the OOM victim under *global* pressure
+  (protecting PID 1 and the desktop), and below-default `CPUWeight`/`IOWeight`
+  so a competing desktop stays responsive. Build parallelism
+  (`BB_NUMBER_THREADS`, `PARALLEL_MAKE`) is never touched.
+
+**Memory ceilings are OFF by default.** `MemoryHigh`/`MemoryMax` are opt-in
+(`[build] scope_memory_high`/`scope_memory_max`, both `0.0` = off by default).
+On a host with a large zram/zswap swap they do more harm than good:
+`MemoryMax` (`memory.max`) caps only RAM-resident memory, so crossing it
+spills the build's pages into swap - and zram stores them *compressed in RAM*,
+so the "ceiling" never bounds physical RAM. `MemoryHigh` then just forces
+direct reclaim on the build's anon-heavy (unswappable) working set, spinning
+CPUs; on a box booted with `softlockup_panic=1` that can panic the whole
+machine, and on any workstation it swap-thrashes the desktop. Enable them only
+on a *dedicated* build host where OOM-killing the build to protect the host is
+the goal - when `scope_memory_max` is set the scope also emits
+`MemorySwapMax=0` so the cap becomes a real RAM ceiling (a clean cgroup-OOM,
+not a zram thrash). With the ceilings off (the default) the build's memory
+behaves exactly as it did before the scope existed.
 
 The unit name is stable per workspace+target and its lifecycle (start/stop,
 OOM kills) is visible with `journalctl --user -u <unit>` (the run log prints
 the exact command). The run log (`kas.log`) is written as before.
 
-Host vs container mode: in host mode kas runs bitbake directly under the
-scope, so the memory ceiling genuinely caps the build. In container mode the
-heavy work runs inside the `docker`/`podman` container, whose processes live
-in the runtime's cgroup - the scope there delivers session-survival but the
-memory ceiling only bounds the lightweight `kas-container`/`docker` client.
+Host vs container mode: an opted-in memory ceiling only bites in host mode,
+where kas runs bitbake directly under the scope. In container mode the heavy
+work runs inside the `docker`/`podman` container, whose processes live in the
+runtime's cgroup - the scope there delivers session-survival but a memory
+ceiling only bounds the lightweight `kas-container`/`docker` client.
 
 Tune the limits under `[build] scope*` in `config.toml` (see
 [config-reference.md](config-reference.md)); disable per-invocation with the

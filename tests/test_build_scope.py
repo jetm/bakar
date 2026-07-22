@@ -180,16 +180,36 @@ def test_wrap_builds_scope_prefix_and_properties(tmp_path: Path) -> None:
     out = build_scope.wrap_build_command(_CMD, cfg, log, unit_suffix="build")
     unit = build_scope.scope_unit_name(cfg, "build")
     assert out[:6] == ["systemd-run", "--user", "--scope", "--quiet", "--collect", f"--unit={unit}"]
-    # Resource-control properties, defaults: 85/90% memory, 50/50 weights.
-    assert "MemoryHigh=85%" in out
-    assert "MemoryMax=90%" in out
-    assert "MemorySwapMax=0" in out
+    # Memory ceilings are OFF by default (they swap-thrash / soft-lock a host
+    # with a large zram swap); only the weights are emitted by default.
+    joined = " ".join(out)
+    assert "MemoryHigh" not in joined
+    assert "MemoryMax" not in joined
+    assert "MemorySwapMax" not in joined
     assert "CPUWeight=50" in out
     assert "IOWeight=50" in out
     # The original kas command is preserved as the tail.
     assert out[-3:] == _CMD
     # Journal hint logged so the run log records where to find the scope.
     assert any(unit in line and "journalctl" in line for line in log.infos)
+
+
+def test_wrap_memory_ceiling_opt_in_emits_cap_and_swap_deny(tmp_path: Path) -> None:
+    # Enabling MemoryMax emits the cap AND MemorySwapMax=0 so the cap is a real
+    # RAM ceiling (a clean cgroup-OOM), not one defeated by zram. MemoryHigh
+    # rides along when also set.
+    cfg = _cfg(tmp_path, scope_memory_high=0.85, scope_memory_max=0.90)
+    joined = " ".join(build_scope.wrap_build_command(_CMD, cfg, _FakeLog(), unit_suffix="build"))
+    assert "MemoryHigh=85%" in joined
+    assert "MemoryMax=90%" in joined
+    assert "MemorySwapMax=0" in joined
+
+
+def test_wrap_no_swap_deny_when_ceilings_off(tmp_path: Path) -> None:
+    # Default (ceilings off): the build must NOT be denied swap - unconditional
+    # MemorySwapMax=0 with no cap just shifts swap pressure onto the desktop.
+    joined = " ".join(build_scope.wrap_build_command(_CMD, _cfg(tmp_path), _FakeLog(), unit_suffix="build"))
+    assert "MemorySwapMax" not in joined
 
 
 def test_wrap_resets_stale_scope_before_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -239,12 +259,12 @@ def test_wrap_no_shim_when_oom_zero(tmp_path: Path) -> None:
 
 
 def test_wrap_omits_zero_weights(tmp_path: Path) -> None:
-    cfg = _cfg(tmp_path, scope_cpu_weight=0, scope_io_weight=0)
+    cfg = _cfg(tmp_path, scope_cpu_weight=0, scope_io_weight=0, scope_memory_max=0.90)
     out = build_scope.wrap_build_command(_CMD, cfg, _FakeLog(), unit_suffix="build")
     joined = " ".join(out)
     assert "CPUWeight" not in joined
     assert "IOWeight" not in joined
-    assert "MemoryMax=90%" in joined  # memory ceiling still applied
+    assert "MemoryMax=90%" in joined  # opted-in memory ceiling still applied
 
 
 def test_wrap_omits_out_of_range_memory_fraction(tmp_path: Path) -> None:

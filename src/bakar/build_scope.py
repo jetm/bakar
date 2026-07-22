@@ -29,11 +29,20 @@ changing what the build itself does:
 Resource controls (all configurable via ``~/.config/bakar/config.toml``
 ``[build]``; see :mod:`bakar.user_config`):
 
-* ``MemoryHigh`` - soft throttle. At this fraction of RAM the kernel starts
-  applying reclaim pressure to the cgroup instead of hard-failing.
-* ``MemoryMax`` - hard ceiling, set *below* total RAM so a memory runaway is
-  OOM-killed *inside the build cgroup*, leaving headroom for the kernel,
-  PID 1, and the desktop instead of taking the whole box down.
+* ``MemoryHigh``/``MemoryMax`` - cgroup memory ceilings, **OFF by default**
+  (``scope_memory_high``/``scope_memory_max`` default to ``0.0`` = omit).
+  They are opt-in because on a host with a large zram/zswap swap they do more
+  harm than good: ``MemoryMax`` (``memory.max``) caps only RAM-resident memory,
+  so crossing it spills the cgroup's pages into swap - and zram stores them
+  *compressed in RAM*, so the "hard ceiling" never bounds physical RAM.
+  ``MemoryHigh`` then just forces reclaim on that unswappable/anon-heavy set,
+  spinning CPUs in direct reclaim; on a box with ``softlockup_panic=1`` that
+  can panic the whole machine, and on any workstation it swap-thrashes the
+  desktop. A build that fit in RAM before the scope existed never needed a
+  ceiling. Enable them (set a ``0<f<=1`` fraction) only on a *dedicated* build
+  host where OOM-killing the build to protect the host is the goal; when
+  ``MemoryMax`` is set the scope also emits ``MemorySwapMax=0`` so the cap
+  becomes a real RAM ceiling (a clean cgroup-OOM instead of a zram thrash).
 * ``oom_score_adjust`` (positive) - so under *global* memory pressure the
   kernel picks the build as the OOM victim and protects system services.
   This one is NOT a scope property: ``OOMScoreAdjust=`` belongs to the exec
@@ -63,8 +72,9 @@ ceiling only bounds the lightweight ``kas-container``/``docker`` client, not
 the container itself. A hard container memory cap would need ``docker run
 --memory`` and is out of scope here.
 
-Scope of the hardening, explicitly: this addresses session-survival and
-memory/CPU/IO containment. It does NOT prevent - and is not intended to
+Scope of the hardening, explicitly: by default this delivers session-survival
+plus CPU/IO responsiveness and a positive OOM score; memory *containment*
+(the ceilings above) is opt-in. It does NOT prevent - and is not intended to
 prevent - the XFS-root-fs-corruption class of kernel panic that motivated
 this work; that is a filesystem/kernel fault tracked separately, and no
 amount of cgroup control changes it.
@@ -171,13 +181,15 @@ def _scope_properties(cfg: BuildConfig) -> list[str]:
     hard = _fraction_to_percent(cfg.scope_memory_max)
     if hard is not None:
         props.append(f"MemoryMax={hard}%")
-    # Deny the build any swap. Without this, MemoryHigh/MemoryMax are defeated on
-    # a host with a large (zram) swap: crossing the limit spills the build's pages
-    # into swap instead of OOM-killing it, and zram stores them compressed in RAM
-    # system-wide, so the cgroup cap leaks into global memory pressure and can
-    # freeze the whole session. MemorySwapMax=0 forces a clean, contained
-    # OOM-kill at MemoryMax so the blast radius stays inside the scope.
-    props.append("MemorySwapMax=0")
+        # Deny the build any swap, but ONLY when a MemoryMax cap is opted in.
+        # Without this, MemoryMax is defeated on a host with a large (zram) swap:
+        # crossing the cap spills the build's pages into swap instead of
+        # OOM-killing it, and zram stores them compressed in RAM, so the cap
+        # never bounds physical RAM. Pinning swap to 0 makes the cap real. It is
+        # scoped to the MemoryMax opt-in on purpose: emitting it unconditionally
+        # makes the build's anon un-swappable even with no cap, which just shifts
+        # global swap pressure onto the desktop.
+        props.append("MemorySwapMax=0")
     if cfg.scope_cpu_weight > 0:
         props.append(f"CPUWeight={cfg.scope_cpu_weight}")
     if cfg.scope_io_weight > 0:

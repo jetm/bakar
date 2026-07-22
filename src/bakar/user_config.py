@@ -166,14 +166,16 @@ class UserConfig:
     # PARALLEL_MAKE) is intentionally NOT touched by any of these.
     scope: bool = True
     # MemoryHigh (soft reclaim throttle) and MemoryMax (hard OOM ceiling) as
-    # fractions of physical RAM. MemoryMax stays below 1.0 so a runaway is
-    # OOM-killed inside the build cgroup, leaving headroom for kernel + PID 1 +
-    # desktop instead of taking the whole box down. MemoryHigh sits just below
-    # MemoryMax (a narrow soft-throttle band, not an operational cap) so a
-    # legitimately RAM-hungry bitbake build runs unthrottled until it is close
-    # to the hard ceiling.
-    scope_memory_high: float = 0.85
-    scope_memory_max: float = 0.90
+    # fractions of physical RAM; 0.0 (the default) OMITS the control. They are
+    # OFF by default: on a host with a large zram/zswap swap MemoryMax does not
+    # cap physical RAM (the cgroup compresses pages into zram, which lives in
+    # RAM, instead of OOMing), so the ceiling is defeated and MemoryHigh's
+    # reclaim just forces a swap-thrash that can soft-lock the box. Set a
+    # 0<f<=1 fraction only on a dedicated build host where OOM-killing the build
+    # to protect the host is wanted; build_scope then also sets MemorySwapMax=0
+    # so the cap becomes a real RAM ceiling.
+    scope_memory_high: float = 0.0
+    scope_memory_max: float = 0.0
     # Positive oom_score_adjust so under global pressure the build is the OOM
     # victim and system services are protected. 0 disables the adjustment.
     scope_oom_score_adjust: int = 500
@@ -321,8 +323,8 @@ def _check_type(field: str, value: object, path: Path) -> None:
     if field in _SCOPE_FRACTION_FIELDS:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"{path}: '{field}' must be a number, got {type(value).__name__}")
-        if not 0 < value <= 1:
-            raise ValueError(f"{path}: '{field}' must be a fraction in (0, 1], got {value}")
+        if not 0 <= value <= 1:
+            raise ValueError(f"{path}: '{field}' must be a fraction in [0, 1] (0 disables), got {value}")
     # scope_oom_score_adjust and the two weights are in _INT_FIELDS, whose guard
     # above already raised on a non-int/bool; the isinstance narrows for the type
     # checker, these only add the range bounds.
@@ -549,8 +551,8 @@ def _coerce(spec: _SettingSpec, raw_value: str) -> str | bool | int | float:
             if v <= 0:
                 raise ValueError(f"value for {spec.key!r} must be > 0, got {v}")
         elif spec.key in _SCOPE_FRACTION_FIELDS:
-            if not 0 < v <= 1:
-                raise ValueError(f"value for {spec.key!r} must be a fraction in (0, 1], got {v}")
+            if not 0 <= v <= 1:
+                raise ValueError(f"value for {spec.key!r} must be a fraction in [0, 1] (0 disables), got {v}")
         elif v < 1:
             raise ValueError(f"value for {spec.key!r} must be >= 1 (bitbake minimum), got {v}")
         return v
