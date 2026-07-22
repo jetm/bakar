@@ -9,12 +9,16 @@ follow from that:
   sends SIGHUP to the session; the build dies with it. The work lives in the
   caller's ``session-<n>.scope`` cgroup, which ``systemd-logind`` reaps when
   the session ends.
-* **A runaway has no containment.** A build that balloons past physical RAM
-  can drive the whole box into an OOM storm or swap-thrash death spiral,
-  taking down PID 1 and the desktop with it rather than just the build.
+* **A runaway may need containment.** A build that balloons past physical RAM
+  can drive the whole box into an OOM storm or swap-thrash death spiral. The
+  scope makes cgroup containment *available*, but it is OFF by default and
+  deliberately narrow: on a host with a large swap it does more harm than good
+  (see the memory-ceiling note below), so it is opt-in for a dedicated build
+  host that wants it.
 
-Wrapping the invocation in ``systemd-run --user --scope`` fixes both without
-changing what the build itself does:
+Wrapping the invocation in ``systemd-run --user --scope`` fixes session
+survival unconditionally (and makes containment opt-in) without changing what
+the build itself does:
 
 * The scope is a transient unit under ``user@<uid>.service`` /
   ``app.slice`` - a *sibling* of the session scope, not a child - so it
@@ -31,18 +35,22 @@ Resource controls (all configurable via ``~/.config/bakar/config.toml``
 
 * ``MemoryHigh``/``MemoryMax`` - cgroup memory ceilings, **OFF by default**
   (``scope_memory_high``/``scope_memory_max`` default to ``0.0`` = omit).
-  They are opt-in because on a host with a large zram/zswap swap they do more
-  harm than good: ``MemoryMax`` (``memory.max``) caps only RAM-resident memory,
-  so crossing it spills the cgroup's pages into swap - and zram stores them
-  *compressed in RAM*, so the "hard ceiling" never bounds physical RAM.
-  ``MemoryHigh`` then just forces reclaim on that unswappable/anon-heavy set,
-  spinning CPUs in direct reclaim; on a box with ``softlockup_panic=1`` that
-  can panic the whole machine, and on any workstation it swap-thrashes the
-  desktop. A build that fit in RAM before the scope existed never needed a
-  ceiling. Enable them (set a ``0<f<=1`` fraction) only on a *dedicated* build
-  host where OOM-killing the build to protect the host is the goal; when
-  ``MemoryMax`` is set the scope also emits ``MemorySwapMax=0`` so the cap
-  becomes a real RAM ceiling (a clean cgroup-OOM instead of a zram thrash).
+  They are opt-in because on a host with a large zram/zswap swap they backfire,
+  two ways depending on the swap policy. With swap denied (the paired
+  ``MemorySwapMax=0``), crossing ``MemoryHigh`` drives futile ``memory.high``
+  reclaim on the build's unswappable, anon-heavy working set - the box can die
+  in that reclaim band *before* ``MemoryMax`` is even reached (hence no
+  OOM-kill line in the log). With swap allowed, ``MemoryMax`` (``memory.max``)
+  caps only RAM-resident memory, so the build spills into zram - stored
+  *compressed in RAM* - and the "hard ceiling" never bounds physical RAM.
+  Either way the box reclaim/swap-thrashes; on one booted with
+  ``softlockup_panic=1`` that thrash hard-locked and panicked the machine. A
+  build that fit in RAM before the scope existed never needed a ceiling at all.
+  Enable them only on a *dedicated* build host where OOM-killing the build to
+  protect the host is the goal: set ``scope_memory_max`` (``MemoryHigh`` is a
+  cushion that applies only alongside it), and the scope then also emits
+  ``MemorySwapMax=0`` so the cap becomes a real RAM ceiling (a clean
+  cgroup-OOM).
 * ``oom_score_adjust`` (positive) - so under *global* memory pressure the
   kernel picks the build as the OOM victim and protects system services.
   This one is NOT a scope property: ``OOMScoreAdjust=`` belongs to the exec
@@ -154,16 +162,19 @@ def scope_unit_name(cfg: BuildConfig, unit_suffix: str) -> str:
 
 
 def _fraction_to_percent(fraction: float) -> int | None:
-    """Convert a ``(0, 1]`` RAM fraction to a systemd percentage, or None to omit.
+    """Convert a ``[0, 1]`` RAM fraction to a systemd percentage, or None to omit.
 
     systemd accepts ``MemoryHigh=``/``MemoryMax=`` as a percentage of physical
     RAM, which keeps the limit correct on any box without bakar computing byte
-    counts. A non-positive or out-of-range fraction returns None so the caller
-    omits the property entirely (leaving that control unset).
+    counts. Returns None (omit the property) for a non-positive/out-of-range
+    fraction AND for any positive fraction that rounds to ``0%``: a
+    ``MemoryMax=0%`` is ``memory.max=0``, which OOM-kills the scope on its first
+    allocation, so a sub-1% fraction is treated as "off" rather than "cap at
+    zero" (``0.0`` is the documented disable value).
     """
     if fraction <= 0 or fraction > 1:
         return None
-    return round(fraction * 100)
+    return round(fraction * 100) or None
 
 
 def _scope_properties(cfg: BuildConfig) -> list[str]:
@@ -175,20 +186,25 @@ def _scope_properties(cfg: BuildConfig) -> list[str]:
     property.
     """
     props: list[str] = []
-    high = _fraction_to_percent(cfg.scope_memory_high)
-    if high is not None:
-        props.append(f"MemoryHigh={high}%")
+    # Memory containment is gated on MemoryMax: it is the single opt-in switch.
+    # MemoryHigh is a soft cushion below the hard cap and is meaningful ONLY
+    # paired with it - MemoryHigh alone (swap still available) just makes a zram
+    # host reclaim-and-swap-thrash, the exact regime this feature defaults off -
+    # so it is emitted only inside the MemoryMax block. A high-only config is
+    # warned about and ignored in wrap_build_command.
     hard = _fraction_to_percent(cfg.scope_memory_max)
     if hard is not None:
+        high = _fraction_to_percent(cfg.scope_memory_high)
+        if high is not None:
+            props.append(f"MemoryHigh={high}%")
         props.append(f"MemoryMax={hard}%")
-        # Deny the build any swap, but ONLY when a MemoryMax cap is opted in.
-        # Without this, MemoryMax is defeated on a host with a large (zram) swap:
-        # crossing the cap spills the build's pages into swap instead of
-        # OOM-killing it, and zram stores them compressed in RAM, so the cap
-        # never bounds physical RAM. Pinning swap to 0 makes the cap real. It is
-        # scoped to the MemoryMax opt-in on purpose: emitting it unconditionally
-        # makes the build's anon un-swappable even with no cap, which just shifts
-        # global swap pressure onto the desktop.
+        # Deny the build any swap so the MemoryMax cap is a REAL RAM ceiling.
+        # Without it, crossing the cap spills the build's pages into swap instead
+        # of OOM-killing it, and a zram swap stores them compressed in RAM, so
+        # the cap never bounds physical RAM. Scoped to the MemoryMax opt-in on
+        # purpose: emitting it unconditionally makes the build's anon
+        # un-swappable even with no cap, which just shifts swap pressure onto the
+        # desktop.
         props.append("MemorySwapMax=0")
     if cfg.scope_cpu_weight > 0:
         props.append(f"CPUWeight={cfg.scope_cpu_weight}")
@@ -231,9 +247,9 @@ def wrap_build_command(
 
     Returns ``cmd`` unchanged when scoping is disabled (``[build] scope =
     false`` / ``--no-scope``) or when :func:`systemd_run_available` is False
-    (logged once as a warning, since it means the build loses both the memory
-    ceiling and session-survival). Otherwise prepends the ``systemd-run``
-    invocation with the resource-control properties and, when
+    (logged once as a warning, since it means the build loses session-survival,
+    the OOM-victim bias, and the CPU/IO de-prioritisation). Otherwise prepends
+    the ``systemd-run`` invocation with the resource-control properties and, when
     ``scope_oom_score_adjust`` is set, a ``sh -c`` shim that writes
     ``oom_score_adj`` before exec so every build descendant inherits it.
 
@@ -256,10 +272,22 @@ def wrap_build_command(
     if not systemd_run_available():
         log.warn(
             "systemd-run unavailable; running the build without a transient scope "
-            "(no cgroup memory ceiling, no session-survival). Install systemd's "
-            "user manager or set `bakar settings set build.scope false` to silence this."
+            "(no session-survival, no OOM-victim bias, no CPU/IO de-prioritisation). "
+            "Install systemd's user manager or set `bakar settings set build.scope false` "
+            "to silence this."
         )
         return cmd
+
+    # MemoryHigh is a cushion below the MemoryMax cap and does nothing useful
+    # without it; worse, on a zram host MemoryHigh alone (swap still available)
+    # reclaim-thrashes. Gate containment on MemoryMax and tell the user their
+    # high-only config is ignored (_scope_properties omits it).
+    if cfg.scope_memory_high > 0 and cfg.scope_memory_max <= 0:
+        log.warn(
+            "scope_memory_high is set but scope_memory_max is not; MemoryHigh alone "
+            "swap-thrashes a host with zram swap, so memory containment is left off. "
+            "Set scope_memory_max to enable it."
+        )
 
     unit = scope_unit_name(cfg, unit_suffix)
     _reset_stale_scope(unit)

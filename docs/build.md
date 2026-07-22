@@ -185,9 +185,9 @@ permanently with `bakar settings set build.scope false`. When `systemd-run`
 or the user manager is unavailable (e.g. a minimal CI container), bakar warns
 once and runs the build unwrapped.
 
-This hardening addresses build **session-survival and resource containment
-only**. It does not prevent filesystem/kernel faults (e.g. an XFS root-fs
-corruption panic), which are tracked separately - no cgroup control changes
+This hardening addresses build **session-survival** (plus host responsiveness,
+and opt-in memory containment). It does not prevent filesystem/kernel faults
+(e.g. an XFS root-fs corruption panic), which are tracked separately - no cgroup control changes
 that class of failure.
 
 ## Remote dispatch (`--on <host>`)

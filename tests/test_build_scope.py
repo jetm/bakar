@@ -57,14 +57,19 @@ def _cfg(workspace: Path, **overrides: object) -> BuildConfig:
 
 
 @pytest.fixture(autouse=True)
-def _force_systemd_available(monkeypatch: pytest.MonkeyPatch) -> None:
+def _force_systemd_available(monkeypatch: pytest.MonkeyPatch):
     """Default to systemd-run being available so wrap tests are host-independent.
 
     ``systemd_run_available`` is ``functools.cache``d; clear it and stub the
     inputs it reads (binary, runtime dir, and the throwaway probe) so tests do
-    not depend on the host having systemd and never create a real scope.
+    not depend on the host having systemd and never create a real scope. Clear
+    again on teardown so the True computed under these stubs does not leak past
+    this module (a latent pytest-randomly hazard).
     """
-    build_scope.systemd_run_available.cache_clear()
+    # Capture the real cached function now (before any test replaces the module
+    # attribute with a stub lambda) so teardown can clear its cache regardless.
+    real = build_scope.systemd_run_available
+    real.cache_clear()
     monkeypatch.setattr(build_scope.shutil, "which", lambda _name: "/usr/bin/systemd-run")
     monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
     monkeypatch.setattr(
@@ -72,6 +77,8 @@ def _force_systemd_available(monkeypatch: pytest.MonkeyPatch) -> None:
         "run",
         lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 0),
     )
+    yield
+    real.cache_clear()
 
 
 # ---------------------------------------------------------------------------
@@ -267,14 +274,35 @@ def test_wrap_omits_zero_weights(tmp_path: Path) -> None:
     assert "MemoryMax=90%" in joined  # opted-in memory ceiling still applied
 
 
-def test_wrap_omits_out_of_range_memory_fraction(tmp_path: Path) -> None:
-    # A fraction > 1 (or <= 0) is treated as "leave this control unset" rather
-    # than emitting a nonsensical percentage.
+def test_wrap_zero_disables_and_one_is_full_ram(tmp_path: Path) -> None:
+    # 0.0 is the in-range disable value (property omitted); 1.0 is the max.
     cfg = _cfg(tmp_path, scope_memory_high=0.0, scope_memory_max=1.0)
     out = build_scope.wrap_build_command(_CMD, cfg, _FakeLog(), unit_suffix="build")
     joined = " ".join(out)
-    assert "MemoryHigh" not in joined  # 0.0 omitted
-    assert "MemoryMax=100%" in joined  # 1.0 is in-range (== total)
+    assert "MemoryHigh" not in joined  # 0.0 disabled
+    assert "MemoryMax=100%" in joined  # 1.0 == total RAM
+    assert "MemorySwapMax=0" in joined  # cap opted in -> swap denied
+
+
+def test_wrap_high_only_is_ignored_and_warns(tmp_path: Path) -> None:
+    # MemoryHigh without MemoryMax is the harmful zram regime: gate it on the
+    # cap. High-only emits no memory property and logs a warning.
+    cfg = _cfg(tmp_path, scope_memory_high=0.85, scope_memory_max=0.0)
+    log = _FakeLog()
+    joined = " ".join(build_scope.wrap_build_command(_CMD, cfg, log, unit_suffix="build"))
+    assert "MemoryHigh" not in joined
+    assert "MemoryMax" not in joined
+    assert "MemorySwapMax" not in joined
+    assert any("scope_memory_high is set but scope_memory_max" in w for w in log.warns)
+
+
+def test_wrap_sub_percent_fraction_omitted(tmp_path: Path) -> None:
+    # A positive fraction that rounds to 0% must be omitted, not emitted as
+    # MemoryMax=0% (which is memory.max=0 - an instant OOM of the scope).
+    cfg = _cfg(tmp_path, scope_memory_max=0.004)
+    joined = " ".join(build_scope.wrap_build_command(_CMD, cfg, _FakeLog(), unit_suffix="build"))
+    assert "MemoryMax" not in joined
+    assert "MemorySwapMax" not in joined
 
 
 def test_parallelism_never_touched(tmp_path: Path) -> None:

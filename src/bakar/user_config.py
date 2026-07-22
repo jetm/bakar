@@ -66,7 +66,7 @@ _INT_FIELDS: set[str] = {
 # The three [build] parallelism knobs; all require a strictly positive value.
 _PARALLELISM_FIELDS = {"nproc", "parallel_make", "bb_number_threads"}
 _PSI_FIELDS = {"pressure_max_cpu", "pressure_max_io", "pressure_max_memory"}
-# systemd scope MemoryHigh/MemoryMax fractions of physical RAM; must be in (0, 1].
+# systemd scope MemoryHigh/MemoryMax fractions of physical RAM; must be in [0, 1] (0 disables).
 _SCOPE_FRACTION_FIELDS = {"scope_memory_high", "scope_memory_max"}
 # systemd scope weights (CPUWeight/IOWeight); 0 disables, else 1..10000.
 _SCOPE_WEIGHT_FIELDS = {"scope_cpu_weight", "scope_io_weight"}
@@ -160,10 +160,11 @@ class UserConfig:
     stop_on_error: bool = True
     # Transient systemd scope. When True (default) `bakar build` and the live
     # `bakar bitbake` path run kas/kas-container inside a `systemd-run --user
-    # --scope`, so the build survives terminal/session teardown and gets a
-    # cgroup memory ceiling. The five knobs below tune the scope's resource
-    # controls; see bakar.build_scope. Parallelism (BB_NUMBER_THREADS /
-    # PARALLEL_MAKE) is intentionally NOT touched by any of these.
+    # --scope`, so the build survives terminal/session teardown; cgroup memory
+    # containment is opt-in and OFF by default (see scope_memory_* below). The
+    # knobs below tune the scope's resource controls; see bakar.build_scope.
+    # Parallelism (BB_NUMBER_THREADS / PARALLEL_MAKE) is intentionally NOT
+    # touched by any of these.
     scope: bool = True
     # MemoryHigh (soft reclaim throttle) and MemoryMax (hard OOM ceiling) as
     # fractions of physical RAM; 0.0 (the default) OMITS the control. They are
