@@ -28,6 +28,7 @@ from bakar.diagnostics import (
     check_bbsetup_config_sources,
     check_bitbake_locks,
     check_ccache_health,
+    check_cgroup_v2,
     check_docker_storage_driver,
     check_docker_version,
     check_git_global_config,
@@ -35,6 +36,7 @@ from bakar.diagnostics import (
     check_kas_yaml_syntax,
     check_psi_support,
     check_sysctl,
+    check_systemd_scope,
     check_workspace_filesystem,
     group_results,
     probe_build_daemon,
@@ -407,6 +409,97 @@ def test_check_psi_support_in_shared_checks_not_docker_checks() -> None:
     """check_psi_support is in SHARED_CHECKS and absent from _DOCKER_CHECKS."""
     assert check_psi_support in SHARED_CHECKS
     assert check_psi_support not in _DOCKER_CHECKS
+
+
+# ---------------------------------------------------------------------------
+# systemd scope + cgroup v2 checks
+# ---------------------------------------------------------------------------
+
+
+def _scope_cfg(**kwargs) -> BuildConfig:
+    """BuildConfig for the systemd-scope / cgroup-v2 checks."""
+    return BuildConfig(
+        workspace=Path("/tmp/fake-workspace"),
+        bsp_family="nxp",
+        machine="imx8mp-var-dart",
+        distro="fsl-imx-xwayland",
+        image="core-image-minimal",
+        manifest="imx-6.6.52-2.2.2.xml",
+        repo_url="https://example.invalid/none.git",
+        repo_branch="scarthgap",
+        kas_container_image="jetm/kas-build-env:latest",
+        **kwargs,
+    )
+
+
+def test_systemd_scope_disabled_is_skip() -> None:
+    """scope=False needs no user manager; the check is a silent SKIP/INFO."""
+    result = check_systemd_scope(_scope_cfg(scope=False))
+
+    assert result.status == Status.SKIP
+    assert result.severity == Severity.INFO
+
+
+def test_systemd_scope_available_is_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    """scope on + a reachable user manager yields PASS/INFO."""
+    monkeypatch.setattr("bakar.build_scope.systemd_run_available", lambda: True)
+
+    result = check_systemd_scope(_scope_cfg(scope=True))
+
+    assert result.status == Status.PASS
+    assert result.severity == Severity.INFO
+    assert "scoped" in result.message
+
+
+def test_systemd_scope_unavailable_warns_unscoped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """scope on but no reachable user manager warns the build runs UNSCOPED."""
+    monkeypatch.setattr("bakar.build_scope.systemd_run_available", lambda: False)
+
+    result = check_systemd_scope(_scope_cfg(scope=True))
+
+    assert result.status == Status.FAIL
+    assert result.severity == Severity.WARN
+    assert "UNSCOPED" in result.message
+
+
+def test_cgroup_v2_no_controls_is_skip() -> None:
+    """All scope resource controls off -> cgroup version is irrelevant (SKIP/INFO)."""
+    cfg = _scope_cfg(scope=True, scope_cpu_weight=0, scope_io_weight=0)
+
+    result = check_cgroup_v2(cfg)
+
+    assert result.status == Status.SKIP
+    assert result.severity == Severity.INFO
+
+
+def test_cgroup_v2_unified_present_is_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A control set (default weights) + a unified hierarchy yields PASS/INFO."""
+    controllers = tmp_path / "cgroup.controllers"
+    controllers.write_text("cpuset cpu io memory pids\n")
+    monkeypatch.setattr("bakar.diagnostics._CGROUP2_CONTROLLERS", controllers)
+
+    result = check_cgroup_v2(_scope_cfg(scope=True))
+
+    assert result.status == Status.PASS
+    assert result.severity == Severity.INFO
+
+
+def test_cgroup_v2_non_unified_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A control set on a cgroup v1/hybrid host (no unified file) warns it is ineffective."""
+    monkeypatch.setattr("bakar.diagnostics._CGROUP2_CONTROLLERS", tmp_path / "absent")
+
+    result = check_cgroup_v2(_scope_cfg(scope=True, scope_memory_max=0.8))
+
+    assert result.status == Status.FAIL
+    assert result.severity == Severity.WARN
+    assert "cgroup v2" in result.message
+
+
+def test_scope_checks_in_shared_checks_not_docker_checks() -> None:
+    """Both new checks are host-pure: in SHARED_CHECKS, absent from _DOCKER_CHECKS."""
+    for check in (check_systemd_scope, check_cgroup_v2):
+        assert check in SHARED_CHECKS
+        assert check not in _DOCKER_CHECKS
 
 
 # ---------------------------------------------------------------------------

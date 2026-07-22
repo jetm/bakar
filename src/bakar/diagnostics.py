@@ -33,7 +33,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bakar import build_stop
+from bakar import build_scope, build_stop
 from bakar.config import BuildConfig
 from bakar.kas import parse_bblayers
 from bakar.setup.profile import _read_sysctl
@@ -1188,6 +1188,66 @@ def check_psi_support(cfg: BuildConfig) -> CheckResult:
         if v is not None
     )
     return _ok(name, Severity.INFO, f"PSI throttling active: {active}")
+
+
+def check_systemd_scope(cfg: BuildConfig) -> CheckResult:
+    """Verify the build's ``systemd --user`` scope can actually be created.
+
+    When scoping is enabled (the default) but no user manager is reachable
+    (missing ``XDG_RUNTIME_DIR``/``DBUS_SESSION_BUS_ADDRESS``, a container
+    without systemd, an SSH session with no live user instance),
+    :func:`build_scope.wrap_build_command` silently falls back to an UNWRAPPED
+    launch: the build still runs, but loses the session-survival and
+    oom-victim protections the scope provides. Surface that fallback here so it
+    is visible before the build rather than a silent gap.
+    """
+    name = "systemd-scope"
+    if not cfg.scope:
+        return _skip(name, Severity.INFO, "build scope disabled (--no-scope / [build] scope = false)")
+    if build_scope.systemd_run_available():
+        return _ok(name, Severity.INFO, "systemd --user scope available; build will run scoped")
+    missing = [k for k in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS") if not os.environ.get(k)]
+    detail = f" ({', '.join(missing)} unset)" if missing else ""
+    return _fail(
+        name,
+        Severity.WARN,
+        f"scope enabled but 'systemd-run --user --scope' cannot reach a user manager{detail}; "
+        "build will run UNSCOPED (no session-survival or oom protection)",
+        fix_hint="ensure a systemd --user instance is running (loginctl enable-linger), "
+        "or set [build] scope = false to silence this",
+    )
+
+
+# The cgroup v2 unified hierarchy exposes this file; cgroup v1/hybrid does not.
+_CGROUP2_CONTROLLERS = Path("/sys/fs/cgroup/cgroup.controllers")
+
+
+def check_cgroup_v2(cfg: BuildConfig) -> CheckResult:
+    """Warn when scope resource controls are set on a non-unified cgroup host.
+
+    bakar's scope memory/CPU/IO controls are cgroup v2 properties
+    (``MemoryMax``/``CPUWeight``/``IOWeight``). On a cgroup v1 or hybrid host
+    the unified controller file is absent, so systemd cannot apply them as
+    documented and the knobs are silently ineffective. Only meaningful when
+    scoping is on AND a resource control is actually configured; a
+    survival-only scope (all controls off) needs no controllers, so the cgroup
+    version is irrelevant there.
+    """
+    name = "cgroup-v2"
+    controls_set = (
+        cfg.scope_memory_max > 0 or cfg.scope_memory_high > 0 or cfg.scope_cpu_weight > 0 or cfg.scope_io_weight > 0
+    )
+    if not cfg.scope or not controls_set:
+        return _skip(name, Severity.INFO, "no scope resource controls configured; cgroup version irrelevant")
+    if _CGROUP2_CONTROLLERS.exists():
+        return _ok(name, Severity.INFO, "cgroup v2 unified hierarchy present; scope resource controls apply")
+    return _fail(
+        name,
+        Severity.WARN,
+        "scope resource controls (memory/cpu/io) are configured but this host is not on a "
+        "cgroup v2 unified hierarchy; the controls will be silently ineffective",
+        fix_hint="boot with systemd.unified_cgroup_hierarchy=1, or clear the [build] scope_* resource controls",
+    )
 
 
 def _buildtools_gcc(toolchain: BuildtoolsToolchain) -> Path | None:
@@ -2726,6 +2786,8 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_bitbake_override,
     check_bitbake_locks,
     check_psi_support,
+    check_systemd_scope,
+    check_cgroup_v2,
     check_git_global_config,
     check_kas_yaml_syntax,
     check_workspace_filesystem,
@@ -2808,7 +2870,15 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "Host tuning",
-        ("sysctl", "workspace-filesystem", "psi_support", "host-preflight", "mold-compiler"),
+        (
+            "sysctl",
+            "workspace-filesystem",
+            "psi_support",
+            "systemd-scope",
+            "cgroup-v2",
+            "host-preflight",
+            "mold-compiler",
+        ),
     ),
     (
         "Workspace & build config",
@@ -2842,6 +2912,8 @@ _CHECK_METADATA: tuple[tuple[CheckFunc, str, Severity], ...] = (
     (check_bitbake_override, "bitbake-override", Severity.INFO),
     (check_bitbake_locks, "bitbake-locks", Severity.BLOCK),
     (check_psi_support, "psi_support", Severity.WARN),
+    (check_systemd_scope, "systemd-scope", Severity.WARN),
+    (check_cgroup_v2, "cgroup-v2", Severity.WARN),
     (check_git_global_config, "git-global-config", Severity.BLOCK),
     (check_kas_yaml_syntax, "kas-yaml-syntax", Severity.BLOCK),
     (check_workspace_filesystem, "workspace-filesystem", Severity.WARN),
