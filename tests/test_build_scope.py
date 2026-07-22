@@ -187,18 +187,30 @@ def test_wrap_builds_scope_prefix_and_properties(tmp_path: Path) -> None:
     out = build_scope.wrap_build_command(_CMD, cfg, log, unit_suffix="build")
     unit = build_scope.scope_unit_name(cfg, "build")
     assert out[:6] == ["systemd-run", "--user", "--scope", "--quiet", "--collect", f"--unit={unit}"]
-    # Memory ceilings are OFF by default (they swap-thrash / soft-lock a host
-    # with a large zram swap); only the weights are emitted by default.
+    # All resource controls are OFF by default: memory ceilings swap-thrash /
+    # soft-lock a zram host, and CPU/IO weights realize the cpu/io cgroup
+    # controllers session-wide (which stalled the box under chromium's I/O). So
+    # a default scope emits NO --property flags at all - only survival + oom.
     joined = " ".join(out)
     assert "MemoryHigh" not in joined
     assert "MemoryMax" not in joined
     assert "MemorySwapMax" not in joined
-    assert "CPUWeight=50" in out
-    assert "IOWeight=50" in out
+    assert "CPUWeight" not in joined
+    assert "IOWeight" not in joined
     # The original kas command is preserved as the tail.
     assert out[-3:] == _CMD
     # Journal hint logged so the run log records where to find the scope.
     assert any(unit in line and "journalctl" in line for line in log.infos)
+
+
+def test_wrap_controller_weights_opt_in_emits_them(tmp_path: Path) -> None:
+    # Weights are off by default; explicitly setting them still emits the
+    # CPUWeight=/IOWeight= properties for the rare host where measured
+    # contention justifies the session-wide controller realization.
+    cfg = _cfg(tmp_path, scope_cpu_weight=50, scope_io_weight=50)
+    joined = " ".join(build_scope.wrap_build_command(_CMD, cfg, _FakeLog(), unit_suffix="build"))
+    assert "CPUWeight=50" in joined
+    assert "IOWeight=50" in joined
 
 
 def test_wrap_memory_ceiling_opt_in_emits_cap_and_swap_deny(tmp_path: Path) -> None:

@@ -1250,6 +1250,38 @@ def check_cgroup_v2(cfg: BuildConfig) -> CheckResult:
     )
 
 
+def check_scope_controller_weights(cfg: BuildConfig) -> CheckResult:
+    """Warn when the scope sets CPUWeight/IOWeight (enables session-wide controllers).
+
+    ``scope_cpu_weight``/``scope_io_weight`` make bakar pass ``CPUWeight=``/
+    ``IOWeight=`` to the build's systemd scope. systemd then realizes the cpu/io
+    cgroup controllers not just on the scope but across the whole ``app.slice``
+    hierarchy and its siblings (``unit_get_target_mask`` = own | members |
+    siblings). Under a heavy-I/O recipe (chromium, webkit, LTO links) the io
+    controller's proportional throttling can trigger a priority-inversion stall
+    that hangs the whole session with no OOM and no panic - confirmed on a build
+    host: a chromium build stalled with these at 50 and ran clean with them at
+    0. They are 0 by default, so this warns only when a config re-enables them.
+    """
+    name = "scope-controller-weights"
+    if not cfg.scope:
+        return _skip(name, Severity.INFO, "build scope disabled; controller weights not applied")
+    active = [
+        f"{prop}={val}"
+        for prop, val in (("CPUWeight", cfg.scope_cpu_weight), ("IOWeight", cfg.scope_io_weight))
+        if val > 0
+    ]
+    if not active:
+        return _skip(name, Severity.INFO, "scope sets no CPU/IO controller weights (recommended)")
+    return _fail(
+        name,
+        Severity.WARN,
+        f"scope sets {', '.join(active)}, forcing the cpu/io cgroup controllers across the whole "
+        "user session; under heavy build I/O this can cause a session-wide priority-inversion stall",
+        fix_hint="set [build] scope_cpu_weight = 0 and scope_io_weight = 0 unless you have measured a need",
+    )
+
+
 def _buildtools_gcc(toolchain: BuildtoolsToolchain) -> Path | None:
     """Locate the native gcc whose loader the uninative probe must run.
 
@@ -2788,6 +2820,7 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_psi_support,
     check_systemd_scope,
     check_cgroup_v2,
+    check_scope_controller_weights,
     check_git_global_config,
     check_kas_yaml_syntax,
     check_workspace_filesystem,
@@ -2876,6 +2909,7 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "psi_support",
             "systemd-scope",
             "cgroup-v2",
+            "scope-controller-weights",
             "host-preflight",
             "mold-compiler",
         ),
@@ -2914,6 +2948,7 @@ _CHECK_METADATA: tuple[tuple[CheckFunc, str, Severity], ...] = (
     (check_psi_support, "psi_support", Severity.WARN),
     (check_systemd_scope, "systemd-scope", Severity.WARN),
     (check_cgroup_v2, "cgroup-v2", Severity.WARN),
+    (check_scope_controller_weights, "scope-controller-weights", Severity.WARN),
     (check_git_global_config, "git-global-config", Severity.BLOCK),
     (check_kas_yaml_syntax, "kas-yaml-syntax", Severity.BLOCK),
     (check_workspace_filesystem, "workspace-filesystem", Severity.WARN),

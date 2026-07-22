@@ -149,9 +149,16 @@ kas/kas-container invocation inside a transient
   before.
 - **Keeps the host responsive (by default).** The scope sets a positive
   `oom_score_adj` so the build is the OOM victim under *global* pressure
-  (protecting PID 1 and the desktop), and below-default `CPUWeight`/`IOWeight`
-  so a competing desktop stays responsive. Build parallelism
+  (protecting PID 1 and the desktop). Build parallelism
   (`BB_NUMBER_THREADS`, `PARALLEL_MAKE`) is never touched.
+
+  `CPUWeight`/`IOWeight` (`[build] scope_cpu_weight`/`scope_io_weight`) are
+  **off by default (`0`)**. They are opt-in because setting them makes systemd
+  realize the cpu/io cgroup controllers across the whole `app.slice` hierarchy,
+  not just this scope; under a heavy-I/O recipe the io controller's
+  proportional throttling can hang the whole session (a stall with no OOM and
+  no panic - observed with chromium). Enable them only where measured
+  contention justifies the risk.
 
 **Memory ceilings are OFF by default.** `MemoryHigh`/`MemoryMax` are opt-in
 (`[build] scope_memory_high`/`scope_memory_max`, both `0.0` = off by default).

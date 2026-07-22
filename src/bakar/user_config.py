@@ -183,8 +183,8 @@ class UserConfig:
     # CPUWeight/IOWeight below the systemd default (100) keep the host
     # responsive under contention; they never slow an otherwise-idle build.
     # 0 omits the property.
-    scope_cpu_weight: int = 50
-    scope_io_weight: int = 50
+    scope_cpu_weight: int = 0
+    scope_io_weight: int = 0
     hashserv: bool = False
     ccache_shared: bool = False
     ccache_dir: str | None = None

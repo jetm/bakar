@@ -357,8 +357,8 @@ class BuildConfig:
     scope_memory_high: float = 0.0
     scope_memory_max: float = 0.0
     scope_oom_score_adjust: int = 500
-    scope_cpu_weight: int = 50
-    scope_io_weight: int = 50
+    scope_cpu_weight: int = 0
+    scope_io_weight: int = 0
     use_hashequiv: bool = field(default=False)
     # ccache location. Per-workspace by default; opt into a single shared cache
     # across all workspaces via [build] ccache_shared, or pin an explicit path
@@ -967,8 +967,8 @@ def resolve(
         scope_memory_high=user_config.scope_memory_high if user_config else 0.0,
         scope_memory_max=user_config.scope_memory_max if user_config else 0.0,
         scope_oom_score_adjust=user_config.scope_oom_score_adjust if user_config else 500,
-        scope_cpu_weight=user_config.scope_cpu_weight if user_config else 50,
-        scope_io_weight=user_config.scope_io_weight if user_config else 50,
+        scope_cpu_weight=user_config.scope_cpu_weight if user_config else 0,
+        scope_io_weight=user_config.scope_io_weight if user_config else 0,
         use_hashequiv=user_config.hashserv if user_config else False,
         ccache_shared=user_config.ccache_shared if user_config else False,
         ccache_dir=user_config.ccache_dir if user_config else None,

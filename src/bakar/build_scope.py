@@ -59,10 +59,17 @@ Resource controls (all configurable via ``~/.config/bakar/config.toml``
   launched through a tiny ``sh -c 'echo N > /proc/self/oom_score_adj; exec
   "$@"'`` shim so the value is written before exec and inherited by every
   descendant (in host mode: bitbake, the workers, and every compiler).
-* ``CPUWeight``/``IOWeight`` (below the default 100) - keep the host
-  responsive under contention. These only bite when something else wants the
-  CPU/IO, so they never slow an otherwise-idle build; set either to 0 to omit
-  it.
+* ``CPUWeight``/``IOWeight`` - **OFF by default**
+  (``scope_cpu_weight``/``scope_io_weight`` default to ``0`` = omit). Setting
+  either does NOT stay contained to this scope: systemd realizes the cpu/io
+  cgroup controllers across the whole ``app.slice`` hierarchy and its siblings
+  (``unit_get_target_mask`` = own | members | siblings). Under a heavy-I/O
+  recipe (chromium, webkit, LTO links) the io controller's proportional
+  throttling can trigger a priority-inversion stall that hangs the whole
+  session with no OOM and no panic - confirmed on a build host: a chromium
+  build stalled the box with these at 50 and ran clean (io PSI flat,
+  ``app.slice`` never gaining cpu/io) with them at 0. Enable them only where
+  you have measured contention that justifies the risk.
 
 Parallelism is deliberately untouched. ``BB_NUMBER_THREADS`` and
 ``PARALLEL_MAKE`` are NOT capped here: the root cause of a given runaway is

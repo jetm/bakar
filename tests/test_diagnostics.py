@@ -35,6 +35,7 @@ from bakar.diagnostics import (
     check_host_tools,
     check_kas_yaml_syntax,
     check_psi_support,
+    check_scope_controller_weights,
     check_sysctl,
     check_systemd_scope,
     check_workspace_filesystem,
@@ -473,12 +474,12 @@ def test_cgroup_v2_no_controls_is_skip() -> None:
 
 
 def test_cgroup_v2_unified_present_is_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A control set (default weights) + a unified hierarchy yields PASS/INFO."""
+    """A control set + a unified hierarchy yields PASS/INFO."""
     controllers = tmp_path / "cgroup.controllers"
     controllers.write_text("cpuset cpu io memory pids\n")
     monkeypatch.setattr("bakar.diagnostics._CGROUP2_CONTROLLERS", controllers)
 
-    result = check_cgroup_v2(_scope_cfg(scope=True))
+    result = check_cgroup_v2(_scope_cfg(scope=True, scope_memory_max=0.8))
 
     assert result.status == Status.PASS
     assert result.severity == Severity.INFO
@@ -495,9 +496,34 @@ def test_cgroup_v2_non_unified_warns(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert "cgroup v2" in result.message
 
 
+def test_scope_controller_weights_off_by_default_is_skip() -> None:
+    """Default config (weights 0) sets no controller weights -> SKIP/INFO."""
+    result = check_scope_controller_weights(_scope_cfg(scope=True))
+
+    assert result.status == Status.SKIP
+    assert result.severity == Severity.INFO
+
+
+def test_scope_controller_weights_disabled_scope_is_skip() -> None:
+    """scope=False -> weights are never applied, SKIP/INFO."""
+    result = check_scope_controller_weights(_scope_cfg(scope=False, scope_io_weight=50))
+
+    assert result.status == Status.SKIP
+    assert result.severity == Severity.INFO
+
+
+def test_scope_controller_weights_set_warns() -> None:
+    """A non-zero weight warns it forces session-wide controllers, naming the property."""
+    result = check_scope_controller_weights(_scope_cfg(scope=True, scope_io_weight=50))
+
+    assert result.status == Status.FAIL
+    assert result.severity == Severity.WARN
+    assert "IOWeight=50" in result.message
+
+
 def test_scope_checks_in_shared_checks_not_docker_checks() -> None:
-    """Both new checks are host-pure: in SHARED_CHECKS, absent from _DOCKER_CHECKS."""
-    for check in (check_systemd_scope, check_cgroup_v2):
+    """All three new checks are host-pure: in SHARED_CHECKS, absent from _DOCKER_CHECKS."""
+    for check in (check_systemd_scope, check_cgroup_v2, check_scope_controller_weights):
         assert check in SHARED_CHECKS
         assert check not in _DOCKER_CHECKS
 
