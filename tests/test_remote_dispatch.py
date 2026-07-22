@@ -116,6 +116,20 @@ def test_rsync_argv_source_and_dest_same_absolute_path_with_trailing_slash() -> 
     assert dest.endswith("/")
 
 
+def test_rsync_argv_extra_excludes_appended_and_delete_retained() -> None:
+    # Remote-only dirs are threaded in as anchored excludes so --delete cannot
+    # wipe a checkout the local side does not carry.
+    argv = build_rsync_argv(WS, HOST, extra_excludes=("openembedded-core",))
+    assert "--exclude=/openembedded-core/" in argv
+    assert "--delete" in argv
+
+
+def test_rsync_argv_extra_excludes_default_adds_nothing() -> None:
+    base = build_rsync_argv(WS, HOST)
+    with_default = build_rsync_argv(WS, HOST, extra_excludes=())
+    assert base == with_default
+
+
 # ---------------------------------------------------------------------------
 # strip_dispatch_options
 # ---------------------------------------------------------------------------
@@ -800,3 +814,38 @@ def test_confirm_preview_filters_to_deletions(fake_sp: FakeSubprocess, capsys: p
     assert "2 files to create/update" in out
     # The full creation itemization is summarized, not dumped line-by-line.
     assert ">f+++++++++ new/file" not in out
+
+
+# --- remote-only dir computation (preserve remote checkouts from --delete) ---
+
+
+class _ListingSubprocess:
+    """Minimal subprocess stand-in returning a canned ssh-listing result."""
+
+    def __init__(self, returncode: int = 0, stdout: str = "") -> None:
+        self._result = _Result(returncode, stdout=stdout)
+        self.calls: list[list[str]] = []
+
+    def run(self, argv, **kwargs) -> _Result:
+        self.calls.append(list(argv))
+        return self._result
+
+
+def test_remote_only_dirs_returns_remote_minus_local(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Local carries meta-avocado/ and bitbake/; the remote also has an
+    # openembedded-core/ checkout the local side lacks -> only that is remote-only.
+    (tmp_path / "meta-avocado").mkdir()
+    (tmp_path / "bitbake").mkdir()
+    fake = _ListingSubprocess(0, "meta-avocado/\nbitbake/\nopenembedded-core/\n")
+    monkeypatch.setattr(rd, "subprocess", fake)
+    assert rd._remote_only_dirs(tmp_path, HOST) == ["openembedded-core"]
+    # Listing is over BatchMode ssh so a missing key fails fast instead of hanging.
+    assert fake.calls and fake.calls[0][:3] == ["ssh", "-o", "BatchMode=yes"]
+
+
+def test_remote_only_dirs_ssh_failure_yields_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A failed listing must not crash the dispatch; fall back to no extra excludes.
+    (tmp_path / "meta-avocado").mkdir()
+    fake = _ListingSubprocess(255, "")
+    monkeypatch.setattr(rd, "subprocess", fake)
+    assert rd._remote_only_dirs(tmp_path, HOST) == []

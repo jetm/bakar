@@ -51,18 +51,24 @@ RSYNC_EXCLUDES: tuple[str, ...] = (
 )
 
 
-def build_rsync_argv(ws_root: Path, host: str, *, dry_run: bool = False) -> list[str]:
+def build_rsync_argv(
+    ws_root: Path, host: str, *, dry_run: bool = False, extra_excludes: tuple[str, ...] = ()
+) -> list[str]:
     """Construct the ``rsync`` argv mirroring ``ws_root`` to ``host``.
 
     Returns ``rsync -a --delete`` (plus ``-n -i`` when ``dry_run``) followed by
-    one ``--exclude=<pat>`` per :data:`RSYNC_EXCLUDES` entry, then the source
-    ``<ws_root>/`` and destination ``<host>:<ws_root>/`` (same absolute path,
-    trailing slashes so directory contents map 1:1).
+    one ``--exclude=<pat>`` per :data:`RSYNC_EXCLUDES` entry, then one anchored
+    ``--exclude=/<name>/`` per :paramref:`extra_excludes` entry (remote-only
+    top-level dirs the local side does not carry, kept out of ``--delete`` so a
+    remote checkout is preserved), and finally the source ``<ws_root>/`` and
+    destination ``<host>:<ws_root>/`` (same absolute path, trailing slashes so
+    directory contents map 1:1).
     """
     argv = ["rsync", "-a", "--delete"]
     if dry_run:
         argv += ["-n", "-i"]
     argv += [f"--exclude={pat}" for pat in RSYNC_EXCLUDES]
+    argv += [f"--exclude=/{name}/" for name in extra_excludes]
     argv += [f"{ws_root}/", f"{host}:{ws_root}/"]
     return argv
 
@@ -199,20 +205,62 @@ def _local_bakar_version() -> str | None:
     return result.stdout.strip() or None
 
 
-def confirm_destructive_sync(ws_root: Path, host: str, *, assume_yes: bool) -> bool:
+def _remote_child_dirs(host: str, ws_root: Path) -> list[str] | None:
+    """List the immediate child directory names of ``ws_root`` on ``host``.
+
+    Uses ``ssh -o BatchMode=yes <host> ls -1p <ws_root>`` - ``-p`` marks
+    directories with a trailing ``/`` so files and symlinks are filtered out.
+    ``BatchMode=yes`` keeps a missing key or unreachable host from blocking on a
+    prompt. Returns the directory basenames, or None when the ssh listing fails
+    so the caller can fall back to no extra excludes.
+    """
+    cmd = f"ls -1p {shlex.quote(str(ws_root))}"
+    result = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", host, cmd],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return [ln[:-1] for ln in result.stdout.splitlines() if ln.endswith("/")]
+
+
+def _remote_only_dirs(ws_root: Path, host: str) -> list[str]:
+    """Return top-level dir names present on the remote ``ws_root`` but absent locally.
+
+    These are the remote node's own repo checkouts the local side does not carry;
+    excluding them from ``rsync --delete`` keeps the mirror from wiping them. On
+    any ssh listing failure returns an empty list (preserve the current no-extra-
+    excludes behavior) after a warning - a failed listing must never crash the
+    dispatch.
+    """
+    remote = _remote_child_dirs(host, ws_root)
+    if remote is None:
+        console.print(f"[yellow]could not list remote dirs on {host}[/]; proceeding without remote-only excludes.")
+        return []
+    local = {p.name for p in ws_root.iterdir() if p.is_dir()}
+    return sorted(set(remote) - local)
+
+
+def confirm_destructive_sync(
+    ws_root: Path, host: str, *, assume_yes: bool, extra_excludes: tuple[str, ...] = ()
+) -> bool:
     """Preview the ``rsync --delete`` and gate the real transfer behind a prompt.
 
-    Runs the dry-run rsync (``build_rsync_argv(..., dry_run=True)``), then shows
-    only the safety-relevant signal: the ``*deleting`` lines (bounded head with a
-    ``(+N more)`` overflow count) plus a one-line create/update count. This human
-    gate layers on top of :func:`assert_safe_workspace`: the deletions catch a
-    wrong exclude set that would still pass the path guard before ``--delete``
-    destroys remote data. Returns True immediately under ``assume_yes``, else the
-    caller's prompt answer. A failed dry-run refuses the sync even under
-    ``assume_yes`` (never run ``--delete`` blind).
+    Runs the dry-run rsync (``build_rsync_argv(..., dry_run=True)``) with the same
+    ``extra_excludes`` as the real transfer so the preview reflects what
+    ``--delete`` will actually remove, then shows only the safety-relevant signal:
+    the ``*deleting`` lines (bounded head with a ``(+N more)`` overflow count) plus
+    a one-line create/update count. This human gate layers on top of
+    :func:`assert_safe_workspace`: the deletions catch a wrong exclude set that
+    would still pass the path guard before ``--delete`` destroys remote data.
+    Returns True immediately under ``assume_yes``, else the caller's prompt answer.
+    A failed dry-run refuses the sync even under ``assume_yes`` (never run
+    ``--delete`` blind).
     """
     preview = subprocess.run(
-        build_rsync_argv(ws_root, host, dry_run=True),
+        build_rsync_argv(ws_root, host, dry_run=True, extra_excludes=extra_excludes),
         capture_output=True,
         text=True,
         check=False,
@@ -397,11 +445,18 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
             return 1
         console.print("[yellow]--yes: proceeding despite the bakar mismatch.[/]")
 
-    if not confirm_destructive_sync(ws_root, host, assume_yes=assume_yes):
+    # Compute the remote-only top-level dirs BEFORE the preview so both the
+    # dry-run and the real transfer keep them out of --delete (the remote node's
+    # own repo checkouts must survive a mirror from a local side that lacks them).
+    extra_excludes = tuple(_remote_only_dirs(ws_root, host))
+    if extra_excludes:
+        console.print(f"preserving {len(extra_excludes)} remote-only dir(s) from --delete: {', '.join(extra_excludes)}")
+
+    if not confirm_destructive_sync(ws_root, host, assume_yes=assume_yes, extra_excludes=extra_excludes):
         console.print("[yellow]remote sync declined; nothing transferred.[/]")
         return 1
 
-    rsync_rc = subprocess.run(build_rsync_argv(ws_root, host), check=False).returncode
+    rsync_rc = subprocess.run(build_rsync_argv(ws_root, host, extra_excludes=extra_excludes), check=False).returncode
     if rsync_rc != 0:
         console.print(f"[red]rsync failed (exit {rsync_rc})[/]; remote build not started.")
         return rsync_rc
