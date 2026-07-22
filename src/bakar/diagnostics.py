@@ -1589,12 +1589,20 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
             "kas binary not on host PATH; container-mode workspace, deferring to in-container parse",
         )
     try:
+        # Pin KAS_WORK_DIR (and cwd) to the workspace so kas validates the
+        # workspace's repo checkouts, not whatever repos happen to sit under the
+        # process cwd. Without this, a build invoked from a subdir (e.g. the
+        # per-machine build-<x>/ dir) makes kas default KAS_WORK_DIR to that
+        # subdir and trip on stale clones left there, failing an otherwise-valid
+        # YAML on a spurious `git remote set-url` error.
         out = subprocess.run(
             ["kas", "dump", str(kas_yaml)],
             capture_output=True,
             text=True,
             timeout=15,
             check=False,
+            cwd=cfg.workspace,
+            env={**os.environ, "KAS_WORK_DIR": str(cfg.workspace)},
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return _skip(name, Severity.BLOCK, f"kas unavailable: {exc}")

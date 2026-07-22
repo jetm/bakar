@@ -963,6 +963,29 @@ def test_check_kas_yaml_syntax_valid(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert str(yaml_path) in result.message
 
 
+def test_check_kas_yaml_syntax_runs_in_the_workspace(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """kas dump must run with KAS_WORK_DIR + cwd pinned to the workspace, so it
+    validates the workspace's repo checkouts rather than stale clones under the
+    process cwd (a build invoked from a per-machine build subdir otherwise trips
+    kas on the wrong repos)."""
+    yaml_path = tmp_path / "kas.yml"
+    yaml_path.write_text("header:\n  version: 14\n")
+    cfg = _kas_yaml_cfg(yaml_path)
+    captured: dict[str, object] = {}
+
+    def fake_run(*_args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["cwd"] = kwargs.get("cwd")
+        captured["env"] = kwargs.get("env")
+        return _mock_run("", returncode=0)
+
+    monkeypatch.setattr("bakar.diagnostics.subprocess.run", fake_run)
+    monkeypatch.setattr("bakar.diagnostics.shutil.which", lambda _name: "/usr/bin/kas")
+    check_kas_yaml_syntax(cfg)
+    assert captured["cwd"] == cfg.workspace
+    assert isinstance(captured["env"], dict)
+    assert captured["env"]["KAS_WORK_DIR"] == str(cfg.workspace)
+
+
 def test_check_kas_yaml_syntax_invalid(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Mocked ``kas dump`` exits 1 -> FAIL at BLOCK; first stderr line surfaces in message."""
     yaml_path = tmp_path / "broken.yml"
