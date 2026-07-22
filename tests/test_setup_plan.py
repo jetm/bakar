@@ -412,31 +412,21 @@ def test_host_preflight_skipped_by_clobber_is_reevaluated_in_host_mode(
     assert installs[0].install_dir == persists[0].install_dir
 
 
-def _workspace_with_installer_and_git_oe_core(tmp_path) -> tuple[object, str]:
+def _workspace_with_installer_and_release_codename(tmp_path) -> tuple[object, str]:
     """A workspace whose openembedded-core is both the installer script's home
-    AND a real git checkout, so a release key can be derived. Returns
+    AND declares a Yocto release codename (LAYERSERIES_CORENAMES in
+    meta/conf/layer.conf), so a release key can be derived. Returns
     (workspace, expected_release_key)."""
-    import subprocess
-
     oe_core = tmp_path / "openembedded-core"
     (oe_core / "scripts").mkdir(parents=True)
     (oe_core / "scripts" / "install-buildtools").write_text("#!/bin/sh\n")
-    subprocess.run(["git", "init", "-q"], cwd=oe_core, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=oe_core, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=oe_core, check=True)
-    (oe_core / "README").write_text("x")
-    subprocess.run(["git", "add", "README"], cwd=oe_core, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=oe_core, check=True)
-    expected = subprocess.run(
-        ["git", "-C", str(oe_core), "rev-parse", "--short=12", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    return tmp_path, expected
+    conf = oe_core / "meta" / "conf"
+    conf.mkdir(parents=True)
+    (conf / "layer.conf").write_text('LAYERSERIES_CORENAMES = "scarthgap"\n')
+    return tmp_path, "scarthgap"
 
 
-def test_host_preflight_release_scoped_install_dir_when_oe_core_is_a_git_checkout(
+def test_host_preflight_release_scoped_install_dir_when_oe_core_declares_codename(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     """A real oe-core git checkout under the workspace scopes install_dir to its
@@ -446,7 +436,7 @@ def test_host_preflight_release_scoped_install_dir_when_oe_core_is_a_git_checkou
     _patch_results(monkeypatch, [_fail("host-preflight")])
     monkeypatch.setattr(BuildtoolsInstallAction, "is_satisfied", lambda _self, _p: False)
     monkeypatch.setattr(BuildtoolsConfigPersistAction, "is_satisfied", lambda _self, _p: False)
-    workspace, release_key = _workspace_with_installer_and_git_oe_core(tmp_path)
+    workspace, release_key = _workspace_with_installer_and_release_codename(tmp_path)
     cfg = _host_cfg(workspace)
 
     result = plan_mod.build(make_host_profile(), cfg=cfg)
@@ -459,7 +449,7 @@ def test_host_preflight_release_scoped_install_dir_when_oe_core_is_a_git_checkou
     assert persists[0].release_key == release_key
 
 
-def test_host_preflight_no_git_oe_core_keeps_flat_install_dir(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_host_preflight_no_release_codename_keeps_flat_install_dir(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     """The existing non-git fixture (install-buildtools present, no .git) must
     keep resolving to the flat DEFAULT_BUILDTOOLS_DIR - the release-scoping
     feature must not regress a workspace without a resolvable release key."""

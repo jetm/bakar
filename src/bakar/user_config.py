@@ -189,8 +189,8 @@ class UserConfig:
     # `bakar setup`. detect_buildtools() reads it as a fallback after the
     # BAKAR_BUILDTOOLS_DIR env var so host builds survive into a new shell.
     buildtools_dir: str | None = None
-    # Per-release buildtools-extended installs, keyed by an oe-core release
-    # identifier (see diagnostics.resolve_oe_core_release_key). A toolchain
+    # Per-release buildtools-extended installs, keyed by the oe-core Yocto
+    # release codename (see diagnostics.resolve_oe_core_release_key). A toolchain
     # built against one Yocto release must not silently satisfy a build
     # against a different one, so this coexists with (and takes priority
     # over, when a release_key is supplied) the single flat buildtools_dir

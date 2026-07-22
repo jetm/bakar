@@ -363,32 +363,58 @@ def test_detect_release_scoped_env_var_still_wins(tmp_path: Path, monkeypatch: p
     assert tc.env_script.parent == env_dir
 
 
-def test_resolve_oe_core_release_key_reads_oe_core_git_commit(tmp_path: Path) -> None:
-    """The release key is the short commit hash of workspace/openembedded-core."""
-    import subprocess
+def _write_oe_core_layer_conf(workspace: Path, body: str) -> None:
+    conf = workspace / "openembedded-core" / "meta" / "conf"
+    conf.mkdir(parents=True)
+    (conf / "layer.conf").write_text(body)
 
-    oe_core = tmp_path / "openembedded-core"
-    oe_core.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=oe_core, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=oe_core, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=oe_core, check=True)
-    (oe_core / "README").write_text("x")
-    subprocess.run(["git", "add", "README"], cwd=oe_core, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=oe_core, check=True)
-    expected = subprocess.run(
-        ["git", "-C", str(oe_core), "rev-parse", "--short=12", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
 
-    key = diagnostics.resolve_oe_core_release_key(tmp_path)
+def test_resolve_oe_core_release_key_reads_layerseries_corename(tmp_path: Path) -> None:
+    """The release key is the Yocto release codename from oe-core's layer.conf.
 
-    assert key == expected
+    Keying on the release codename (stable across every commit on the release
+    branch, detached-HEAD-safe) rather than the oe-core commit hash means one
+    scarthgap toolchain serves all scarthgap commits, while scarthgap and
+    wrynose stay on distinct keys.
+    """
+    _write_oe_core_layer_conf(
+        tmp_path,
+        'BBPATH .= ":${LAYERDIR}"\nLAYERSERIES_CORENAMES = "scarthgap"\nLAYERSERIES_COMPAT_core = "scarthgap"\n',
+    )
+
+    assert diagnostics.resolve_oe_core_release_key(tmp_path) == "scarthgap"
+
+
+def test_resolve_oe_core_release_key_handles_assignment_operators(tmp_path: Path) -> None:
+    """A ?= weak assignment is parsed the same as a plain =."""
+    _write_oe_core_layer_conf(tmp_path, 'LAYERSERIES_CORENAMES ?= "wrynose"\n')
+
+    assert diagnostics.resolve_oe_core_release_key(tmp_path) == "wrynose"
+
+
+def test_resolve_oe_core_release_key_multi_corename_is_deterministic(tmp_path: Path) -> None:
+    """When several corenames are listed, the first token is used deterministically."""
+    _write_oe_core_layer_conf(tmp_path, 'LAYERSERIES_CORENAMES = "scarthgap styhead"\n')
+
+    assert diagnostics.resolve_oe_core_release_key(tmp_path) == "scarthgap"
 
 
 def test_resolve_oe_core_release_key_none_when_no_oe_core_checkout(tmp_path: Path) -> None:
-    """No openembedded-core dir under the workspace -> None, not a raise."""
+    """No openembedded-core layer.conf under the workspace -> None, not a raise."""
+    assert diagnostics.resolve_oe_core_release_key(tmp_path) is None
+
+
+def test_resolve_oe_core_release_key_none_when_no_corename(tmp_path: Path) -> None:
+    """layer.conf present but declaring no LAYERSERIES_CORENAMES -> None."""
+    _write_oe_core_layer_conf(tmp_path, 'BBPATH .= ":${LAYERDIR}"\n')
+
+    assert diagnostics.resolve_oe_core_release_key(tmp_path) is None
+
+
+def test_resolve_oe_core_release_key_ignores_similar_var(tmp_path: Path) -> None:
+    """LAYERSERIES_COMPAT_core must not be mistaken for LAYERSERIES_CORENAMES."""
+    _write_oe_core_layer_conf(tmp_path, 'LAYERSERIES_COMPAT_core = "scarthgap"\n')
+
     assert diagnostics.resolve_oe_core_release_key(tmp_path) is None
 
 
@@ -400,24 +426,10 @@ def test_resolve_oe_core_release_key_none_when_no_oe_core_checkout(tmp_path: Pat
 # ---------------------------------------------------------------------------
 
 
-def _git_oe_core_ws(workspace: Path) -> str:
-    """Make workspace/openembedded-core a git repo; return its short-12 hash."""
-    import subprocess
-
-    oe_core = workspace / "openembedded-core"
-    oe_core.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q"], cwd=oe_core, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=oe_core, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=oe_core, check=True)
-    (oe_core / "README").write_text("x")
-    subprocess.run(["git", "add", "README"], cwd=oe_core, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=oe_core, check=True)
-    return subprocess.run(
-        ["git", "-C", str(oe_core), "rev-parse", "--short=12", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
+def _oe_core_ws_release_key(workspace: Path, codename: str = "scarthgap") -> str:
+    """Give workspace/openembedded-core a layer.conf declaring ``codename``; return it."""
+    _write_oe_core_layer_conf(workspace, f'LAYERSERIES_CORENAMES = "{codename}"\n')
+    return codename
 
 
 def test_provision_resolves_release_scoped_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -426,7 +438,7 @@ def test_provision_resolves_release_scoped_install(tmp_path: Path, monkeypatch: 
     config. This is the exact shape a release-scoped `bakar setup` leaves behind.
     Falsifier: before the fix, _provision_buildtools called detect_buildtools()
     with no release_key and raised BuildtoolsMissingError here."""
-    release_key = _git_oe_core_ws(tmp_path)
+    release_key = _oe_core_ws_release_key(tmp_path)
     sysroot = tmp_path / "sdk" / "sysroots" / "x86_64"
     toolbin = sysroot / "usr" / "bin"
     toolbin.mkdir(parents=True)

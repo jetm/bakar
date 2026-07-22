@@ -222,33 +222,43 @@ def detect_buildtools(release_key: str | None = None) -> BuildtoolsToolchain:
 
 
 def resolve_oe_core_release_key(workspace: Path) -> str | None:
-    """Derive a release key from the workspace's checked-out oe-core commit.
+    """Derive a release key from the workspace's oe-core Yocto release codename.
 
     Host-mode builds must not silently reuse a buildtools-extended toolchain
     built for a different Yocto release (e.g. scarthgap vs wrynose) - the two
-    releases can pin materially different host gcc/glibc/python baselines.
-    The checked-out oe-core commit is a precise, always-available
-    disambiguator regardless of branch name or detached-HEAD state (a kas
-    build typically leaves oe-core checked out at a bare commit, not a named
-    branch).
+    releases can pin materially different host gcc/glibc/python baselines. That
+    baseline is fixed per Yocto *release*, not per commit, so the key is the
+    release codename read from oe-core's authoritative ``LAYERSERIES_CORENAMES``
+    in ``meta/conf/layer.conf``. Keying on the codename (rather than the oe-core
+    commit hash) is stable across every commit on a release branch - one
+    scarthgap toolchain serves all scarthgap commits - and detached-HEAD-safe
+    (it reads a tracked file, not a git ref), while still keeping scarthgap and
+    wrynose on distinct keys. oe-core declares a single corename per release; if
+    several are listed, the first token is used deterministically.
 
-    Returns None when ``workspace/openembedded-core`` is not a git checkout
-    (e.g. a non-oe-core BSP family, or before kas has cloned anything yet) -
-    callers treat that as "no release-scoped detection available", not an
-    error.
+    Returns None when ``meta/conf/layer.conf`` is absent or declares no
+    ``LAYERSERIES_CORENAMES`` (a non-oe-core BSP family, or before kas has
+    cloned anything yet) - callers treat that as "no release-scoped detection
+    available", not an error.
     """
-    oe_core = workspace / "openembedded-core"
+    layer_conf = workspace / "openembedded-core" / "meta" / "conf" / "layer.conf"
     try:
-        result = subprocess.run(
-            ["git", "-C", str(oe_core), "rev-parse", "--short=12", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except OSError, subprocess.CalledProcessError:
+        text = layer_conf.read_text()
+    except OSError:
         return None
-    key = result.stdout.strip()
-    return key or None
+    var = "LAYERSERIES_CORENAMES"
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(var):
+            continue
+        rest = stripped[len(var) :].lstrip()
+        if not rest or rest[0] not in "?:+=":
+            continue  # a different var, e.g. LAYERSERIES_CORENAMES_foo
+        value = rest.partition("=")[2].strip().strip("\"'")
+        names = value.split()
+        if names:
+            return names[0]
+    return None
 
 
 # ---------------------------------------------------------------------------
