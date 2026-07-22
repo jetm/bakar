@@ -185,6 +185,29 @@ def _scope_properties(cfg: BuildConfig) -> list[str]:
     return props
 
 
+def _reset_stale_scope(unit: str) -> None:
+    """Flush a lingering transient scope named ``unit`` before re-creating it.
+
+    ``--collect`` GCs the scope on a clean failure, but a hard-killed build
+    (SIGKILL, an OOM, a 143 from a background-shell reaper) can leave the
+    config-hash-named unit loaded - or its transient fragment on disk - so the
+    next same-config build dies with "unit already loaded or has a fragment
+    file" and zero bitbake events before a task runs. ``reset-failed`` flushes
+    an inactive or failed unit (and its fragment) without disturbing an active
+    one, so a genuinely concurrent same-config build still collides correctly
+    while a dead scope no longer blocks the next run. Best-effort: a missing
+    systemctl or an absent unit is a no-op.
+    """
+    try:
+        subprocess.run(
+            ["systemctl", "--user", "reset-failed", unit],
+            check=False,
+            capture_output=True,
+        )
+    except OSError:
+        pass
+
+
 def wrap_build_command(
     cmd: list[str],
     cfg: BuildConfig,
@@ -202,9 +225,10 @@ def wrap_build_command(
     ``scope_oom_score_adjust`` is set, a ``sh -c`` shim that writes
     ``oom_score_adj`` before exec so every build descendant inherits it.
 
-    ``--collect`` GCs the transient unit if it fails so a failed run never
-    leaves the stable unit name lingering and blocking the next build;
-    ``--quiet`` suppresses systemd-run's own "Running as unit" chatter (the
+    ``--collect`` GCs the transient unit on a clean failure, but a hard-killed
+    build can still leave the config-hash-named unit lingering, so
+    :func:`_reset_stale_scope` flushes it first (see there); ``--quiet``
+    suppresses systemd-run's own "Running as unit" chatter (the
     live UI owns the terminal), with the unit name and its journal command
     logged to the run log instead.
 
@@ -226,6 +250,7 @@ def wrap_build_command(
         return cmd
 
     unit = scope_unit_name(cfg, unit_suffix)
+    _reset_stale_scope(unit)
     prefix = ["systemd-run", "--user", "--scope", "--quiet", "--collect", f"--unit={unit}"]
     for prop in _scope_properties(cfg):
         prefix += ["--property", prop]

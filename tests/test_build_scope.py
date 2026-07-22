@@ -192,6 +192,30 @@ def test_wrap_builds_scope_prefix_and_properties(tmp_path: Path) -> None:
     assert any(unit in line and "journalctl" in line for line in log.infos)
 
 
+def test_wrap_resets_stale_scope_before_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """wrap must reset-failed the config-hash-named unit before launching.
+
+    ``--collect`` GCs a scope on clean failure, but a hard-killed build (SIGKILL,
+    OOM, a 143 from a reaper) can leave the unit loaded, so the next same-config
+    run dies with "unit already loaded or has a fragment file" and 0 bitbake
+    events. reset-failed flushes the dead unit first so the next run proceeds.
+    """
+    monkeypatch.setattr(build_scope, "systemd_run_available", lambda: True)
+    calls: list[list[str]] = []
+
+    def _record(argv: list[str], *_a: object, **_k: object) -> subprocess.CompletedProcess:
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(build_scope.subprocess, "run", _record)
+    cfg = _cfg(tmp_path)
+    unit = build_scope.scope_unit_name(cfg, "build")
+
+    build_scope.wrap_build_command(_CMD, cfg, _FakeLog(), unit_suffix="build")
+
+    assert ["systemctl", "--user", "reset-failed", unit] in calls
+
+
 def test_wrap_sets_oom_via_exec_shim(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path, scope_oom_score_adjust=750)
     out = build_scope.wrap_build_command(_CMD, cfg, _FakeLog(), unit_suffix="build")

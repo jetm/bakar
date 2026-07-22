@@ -248,6 +248,9 @@ def test_qcom_build_wraps_in_systemd_scope(tmp_path: Path, monkeypatch: pytest.M
     """With scoping enabled and systemd-run available, the build is wrapped in a scope."""
     _no_buildtools(monkeypatch)
     monkeypatch.setattr("bakar.build_scope.systemd_run_available", lambda: True)
+    # Stub the pre-launch scope reset (its own subprocess.run would otherwise hit
+    # the global Popen recorder below); its behavior is covered in test_build_scope.
+    monkeypatch.setattr("bakar.build_scope._reset_stale_scope", lambda _unit: None)
     cfg = replace(_qcom_cfg(tmp_path), scope=True)
     log = _FakeLogger(tmp_path)
     recorder = _PopenRecorder(returncode=0)
