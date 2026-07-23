@@ -91,3 +91,10 @@ def test_docker_membership_is_exactly_the_daemon_checks() -> None:
     # Host mode drops exactly _DOCKER_CHECKS and nothing else.
     host_checks = tuple(c for c in SHARED_CHECKS if c not in _DOCKER_CHECKS)
     assert set(SHARED_CHECKS) - set(host_checks) == set(_DOCKER_CHECKS)
+
+
+def test_workspace_filesystem_registry_severity_is_block() -> None:
+    """The audit registry ceiling for workspace-filesystem is now BLOCK (TMPDIR-on-NFS is fatal)."""
+    from bakar.diagnostics import _CHECK_SEVERITY
+
+    assert _CHECK_SEVERITY["workspace-filesystem"] is Severity.BLOCK

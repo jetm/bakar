@@ -1056,19 +1056,21 @@ def test_check_kas_yaml_syntax_kas_missing(monkeypatch: pytest.MonkeyPatch, tmp_
     assert "kas binary not on host PATH" in result.message
 
 
-def _fs_cfg(workspace: Path) -> BuildConfig:
+def _fs_cfg(workspace: Path, **overrides: object) -> BuildConfig:
     """BuildConfig pinning ``workspace`` so ``cfg.workspace.resolve()`` is deterministic."""
-    return BuildConfig(
-        workspace=workspace,
-        bsp_family="generic",
-        machine="qemux86-64",
-        distro="poky",
-        image="core-image-minimal",
-        manifest="kas.yml",
-        repo_url="https://example.invalid/none.git",
-        repo_branch="scarthgap",
-        kas_container_image="jetm/kas-build-env:latest",
-    )
+    base: dict[str, object] = {
+        "workspace": workspace,
+        "bsp_family": "generic",
+        "machine": "qemux86-64",
+        "distro": "poky",
+        "image": "core-image-minimal",
+        "manifest": "kas.yml",
+        "repo_url": "https://example.invalid/none.git",
+        "repo_branch": "scarthgap",
+        "kas_container_image": "jetm/kas-build-env:latest",
+    }
+    base.update(overrides)
+    return BuildConfig(**base)
 
 
 def _patch_proc_mounts(monkeypatch: pytest.MonkeyPatch, content: str) -> None:
@@ -1100,18 +1102,58 @@ def test_check_workspace_filesystem_ext4(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert "ext4" in result.message
 
 
-def test_check_workspace_filesystem_nfs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Workspace on nfs -> FAIL at WARN severity with a fix_hint."""
+def test_check_workspace_filesystem_nfs_tmpdir_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """(a) Workspace on nfs, no override -> resolved TMPDIR on nfs -> BLOCK FAIL."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     mounts = f"none / overlay rw 0 0\nserver:/export {workspace.resolve()} nfs rw 0 0\n"
     _patch_proc_mounts(monkeypatch, mounts)
     result = check_workspace_filesystem(_fs_cfg(workspace))
     assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert "nfs" in result.message
+    assert "TMPDIR" in result.message
+    assert result.fix_hint is not None
+    assert "local_tmpdir_base" in result.fix_hint
+
+
+def test_check_workspace_filesystem_nfs_local_tmpdir_passes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """(b) Workspace on nfs WITH a local TMPDIR override -> PASS (the new capability)."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    local_base = tmp_path / "local-tmp"
+    local_base.mkdir()
+    mounts = (
+        f"none / overlay rw 0 0\n"
+        f"server:/export {workspace.resolve()} nfs rw 0 0\n"
+        f"none {local_base.resolve()} ext4 rw 0 0\n"
+    )
+    _patch_proc_mounts(monkeypatch, mounts)
+    cfg = _fs_cfg(workspace, local_tmpdir_base=str(local_base), host_mode=True)
+    result = check_workspace_filesystem(cfg)
+    assert result.status is Status.PASS
     assert result.severity is Severity.WARN
     assert "nfs" in result.message
-    assert result.fix_hint is not None
-    assert "ext4" in result.fix_hint or "btrfs" in result.fix_hint or "xfs" in result.fix_hint
+    assert "local" in result.message.lower()
+
+
+def test_check_workspace_filesystem_vfat_local_tmpdir_still_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """(c) Workspace on vfat with a local TMPDIR override -> still FAIL @ WARN (two-axis)."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    local_base = tmp_path / "local-tmp"
+    local_base.mkdir()
+    mounts = (
+        f"none / overlay rw 0 0\n/dev/sdb1 {workspace.resolve()} vfat rw 0 0\nnone {local_base.resolve()} ext4 rw 0 0\n"
+    )
+    _patch_proc_mounts(monkeypatch, mounts)
+    cfg = _fs_cfg(workspace, local_tmpdir_base=str(local_base), host_mode=True)
+    result = check_workspace_filesystem(cfg)
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.WARN
+    assert "vfat" in result.message
 
 
 def test_check_workspace_filesystem_unknown_fs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

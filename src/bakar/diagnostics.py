@@ -668,6 +668,22 @@ def check_docker_ulimits(cfg: BuildConfig) -> CheckResult:
     return _ok("docker-ulimits", Severity.WARN, f"nofile soft={soft}")
 
 
+def _nearest_existing(path: Path) -> Path:
+    """Climb ``path`` to its nearest existing ancestor.
+
+    The machine-keyed local ``TMPDIR`` leaf does not exist before the first
+    build, so a capacity check on it must probe the closest ancestor that
+    does. The filesystem root always exists, so the walk terminates.
+    """
+    p = path
+    while not p.exists():
+        parent = p.parent
+        if parent == p:
+            break
+        p = parent
+    return p
+
+
 def check_disk_free(cfg: BuildConfig) -> CheckResult:
     """Each checked mount needs at least ``cfg.disk_free_threshold_gb`` free.
 
@@ -678,6 +694,11 @@ def check_disk_free(cfg: BuildConfig) -> CheckResult:
     not exist are skipped, and candidates that resolve to a filesystem
     device already checked (by ``os.stat().st_dev``) are deduplicated so a
     workspace and sstate dir on the same partition are measured once.
+
+    When ``local_tmpdir_base`` is set, the resolved local ``TMPDIR`` (which
+    holds the ~200G build tmp on its own node-local device) is added as a
+    candidate. Its machine-keyed leaf does not exist before the first build,
+    so it is climbed to the nearest existing ancestor for the capacity probe.
     """
     sstate = cfg.sstate_dir if cfg.sstate_dir is not None else os.environ.get("SSTATE_DIR")
     dl = cfg.dl_dir if cfg.dl_dir is not None else os.environ.get("DL_DIR")
@@ -685,6 +706,7 @@ def check_disk_free(cfg: BuildConfig) -> CheckResult:
         ("workspace", cfg.workspace),
         *([("sstate", Path(sstate))] if sstate else []),
         *([("downloads", Path(dl))] if dl else []),
+        *([("tmpdir", _nearest_existing(cfg.resolved_tmpdir))] if cfg.local_tmpdir_base else []),
     ]
     low: list[str] = []
     seen_devs: set[int] = set()
@@ -1645,6 +1667,11 @@ _FS_ALLOW: frozenset[str] = frozenset({"ext4", "btrfs", "xfs", "zfs", "overlay"}
 # unusable as a workspace root.
 _FS_BLOCK: frozenset[str] = frozenset({"vfat", "exfat", "ntfs", "9p", "nfs", "nfs4", "cifs", "smb", "smb3", "smbfs"})
 
+# The NFS subset of _FS_BLOCK. Only these are fatal for the build TMPDIR
+# (bitbake's sanity check aborts on TMPDIR over NFS); the rest break only the
+# source-layer workspace root, so a local TMPDIR override cannot rescue them.
+_FS_NFS: frozenset[str] = frozenset({"nfs", "nfs4"})
+
 
 def _mount_entry_in(mounts_raw: str, path: Path) -> tuple[str, str, str, str] | None:
     """Longest-prefix ``/proc/mounts`` entry covering ``path``.
@@ -1675,16 +1702,22 @@ def _mount_entry_in(mounts_raw: str, path: Path) -> tuple[str, str, str, str] | 
 
 
 def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
-    """Detect the filesystem hosting ``cfg.workspace`` via ``/proc/mounts``.
+    """Judge BOTH the workspace-root fstype AND the resolved-``TMPDIR`` fstype.
 
-    Network filesystems and FAT variants silently break BitBake (case
-    folding, missing xattrs, no atomic rename). This WARN check inspects
-    the kernel's authoritative mount table and surfaces the fstype so the
-    user can move the workspace before the build wastes hours.
+    Two axes break a Yocto build for different reasons:
 
-    PASS when fstype is in :data:`_FS_ALLOW`, FAIL when in :data:`_FS_BLOCK`,
-    PASS with an "unrecognized, assumed OK" message otherwise. Reading
-    ``/proc/mounts`` is portable on Linux and avoids a ``stat`` subprocess.
+    - The resolved ``TMPDIR`` on nfs/nfs4 is fatal: bitbake's sanity check
+      aborts (``TMPDIR ... can't be located on nfs``) and pseudo's hardlink
+      tracking corrupts. This is a ``Severity.BLOCK`` FAIL.
+    - The source workspace on a non-network blocking fstype (vfat/exfat/ntfs/9p
+      or cifs/smb\\*) breaks the build through the *source layers* - case
+      folding, missing xattrs, no atomic rename - regardless of where
+      ``TMPDIR`` lives, so a local ``TMPDIR`` override must NOT false-PASS it.
+      This is a ``Severity.WARN`` FAIL.
+
+    A workspace on nfs/nfs4 with a local resolved ``TMPDIR`` is the new
+    supported capability and PASSes. All-local or unrecognized fstypes PASS
+    exactly as before.
     """
     name = "workspace-filesystem"
     try:
@@ -1693,29 +1726,57 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
         return _skip(name, Severity.WARN, f"/proc/mounts unreadable: {exc}")
 
     workspace = cfg.workspace.resolve()
-    entry = _mount_entry_in(mounts_raw, workspace)
-    if entry is None:
+    ws_entry = _mount_entry_in(mounts_raw, workspace)
+    if ws_entry is None:
         return _skip(
             name,
             Severity.WARN,
             f"no mountpoint covers {workspace} in /proc/mounts",
         )
-    _source, matched_mount, fstype, _opts = entry
+    _ws_source, ws_mount, ws_fstype, _ws_opts = ws_entry
 
-    if fstype in _FS_ALLOW:
-        return _ok(name, Severity.WARN, f"{fstype} at {matched_mount}")
+    tmpdir = cfg.resolved_tmpdir
+    tmp_entry = _mount_entry_in(mounts_raw, tmpdir)
+    tmp_fstype = tmp_entry[2] if tmp_entry is not None else None
+    tmp_mount = tmp_entry[1] if tmp_entry is not None else None
 
-    if fstype in _FS_BLOCK:
+    # (a) resolved TMPDIR on NFS -> fatal, bitbake's sanity check aborts.
+    if tmp_fstype in _FS_NFS:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"resolved TMPDIR {tmpdir} is on {tmp_fstype} at {tmp_mount}: bitbake aborts on TMPDIR over NFS",
+            fix_hint=(
+                "Set [build] local_tmpdir_base to a node-local ext4/btrfs/xfs path so the build TMPDIR "
+                "leaves NFS, then re-run."
+            ),
+        )
+
+    # (c) workspace on a non-NFS blocking fstype breaks the source layers
+    # regardless of TMPDIR locality - a local override must not mask it.
+    if ws_fstype in _FS_BLOCK and ws_fstype not in _FS_NFS:
         return _fail(
             name,
             Severity.WARN,
-            f"{fstype} at {matched_mount} cannot host a Yocto build",
+            f"{ws_fstype} at {ws_mount} cannot host a Yocto build",
             fix_hint=(
                 "Move the workspace to a local ext4/btrfs/xfs path, e.g. /var/cache/sstate or ~/yocto, then re-run."
             ),
         )
 
-    return _ok(name, Severity.WARN, f"{fstype} (unrecognized, assumed OK)")
+    # (b) workspace on NFS with a local TMPDIR - the new supported capability.
+    if ws_fstype in _FS_NFS:
+        return _ok(
+            name,
+            Severity.WARN,
+            f"workspace on {ws_fstype} at {ws_mount}; TMPDIR local at {tmpdir}",
+        )
+
+    # (d) all-local or unrecognized fstype - unchanged.
+    if ws_fstype in _FS_ALLOW:
+        return _ok(name, Severity.WARN, f"{ws_fstype} at {ws_mount}")
+
+    return _ok(name, Severity.WARN, f"{ws_fstype} (unrecognized, assumed OK)")
 
 
 def check_docker_version(cfg: BuildConfig) -> CheckResult:
@@ -2959,7 +3020,7 @@ _CHECK_METADATA: tuple[tuple[CheckFunc, str, Severity], ...] = (
     (check_scope_controller_weights, "scope-controller-weights", Severity.WARN),
     (check_git_global_config, "git-global-config", Severity.BLOCK),
     (check_kas_yaml_syntax, "kas-yaml-syntax", Severity.BLOCK),
-    (check_workspace_filesystem, "workspace-filesystem", Severity.WARN),
+    (check_workspace_filesystem, "workspace-filesystem", Severity.BLOCK),
     (check_docker_version, "docker-version", Severity.WARN),
     (check_docker_storage_driver, "docker-storage-driver", Severity.WARN),
     (check_ccache_health, "ccache-health", Severity.WARN),

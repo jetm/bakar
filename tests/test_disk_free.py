@@ -179,3 +179,62 @@ def test_user_config_rejects_zero_threshold(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match=re.escape(str(config_file))):
         load_user_config(config_file)
+
+
+@pytest.mark.unit
+def test_local_tmpdir_candidate_measured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With local_tmpdir_base + host_mode, the resolved TMPDIR is a checked candidate."""
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
+    monkeypatch.delenv("DL_DIR", raising=False)
+    local_base = tmp_path / "local-tmp"
+    local_base.mkdir()
+    # Materialize the machine-keyed leaf so the candidate resolves to it directly.
+    leaf = local_base / "nxp-imx8mp-var-dart"
+    leaf.mkdir()
+
+    cfg = _build_cfg(tmp_path, local_tmpdir_base=str(local_base), host_mode=True)
+    assert cfg.resolved_tmpdir == leaf
+
+    _patch_stat_distinct(monkeypatch)
+    _patch_disk(monkeypatch, free_gb=5.0)
+
+    result = check_disk_free(cfg)
+
+    assert result.status is Status.FAIL
+    assert "tmpdir@" in result.message
+    assert str(leaf) in result.message
+
+
+@pytest.mark.unit
+def test_local_tmpdir_candidate_climbs_when_leaf_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pre-first-build leaf is absent -> climb to the nearest existing ancestor."""
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
+    monkeypatch.delenv("DL_DIR", raising=False)
+    local_base = tmp_path / "local-tmp"
+    local_base.mkdir()
+    # Deliberately do NOT create the machine-keyed leaf.
+    leaf = local_base / "nxp-imx8mp-var-dart"
+    assert not leaf.exists()
+
+    cfg = _build_cfg(tmp_path, local_tmpdir_base=str(local_base), host_mode=True)
+    assert cfg.resolved_tmpdir == leaf
+
+    # Give each path a distinct st_dev while preserving real existence so the
+    # climb (via Path.exists) behaves as in production.
+    devs: dict[str, int] = {}
+
+    def fake_stat(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        _REAL_STAT(path)  # raises FileNotFoundError for the absent leaf
+        key = str(path)
+        devs.setdefault(key, len(devs) + 1)
+        return _stat_with_dev(devs[key])
+
+    monkeypatch.setattr(diagnostics.os, "stat", fake_stat)
+    _patch_disk(monkeypatch, free_gb=5.0)
+
+    result = check_disk_free(cfg)
+
+    assert result.status is Status.FAIL
+    # Measured against the existing ancestor, not the absent leaf.
+    assert f"tmpdir@{local_base}" in result.message
+    assert str(leaf) not in result.message
