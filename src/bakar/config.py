@@ -321,6 +321,11 @@ class BuildConfig:
     dl_dir: str | None = field(default=None)
     sstate_dir: str | None = field(default=None)
     sstate_mirrors: str | None = field(default=None)
+    # Node-local base for the build TMPDIR. When set (and the build is host
+    # mode), the build tmp is redirected off the - possibly NFS - source
+    # workspace to ``<local_tmpdir_base>/<bsp_root.name>-<machine>`` on local
+    # disk. Absent (None) keeps the workspace-relative tmp; see resolved_tmpdir.
+    local_tmpdir_base: str | None = field(default=None)
     scheduler: str | None = field(default=None)
     pressure_max_cpu: float | None = field(default=None)
     pressure_max_io: float | None = field(default=None)
@@ -466,6 +471,32 @@ class BuildConfig:
         # the daemon's state dir (and the port derived from it) depend on the CWD
         # the CLI runs from, spawning duplicate daemons for one logical cache.
         return Path(sstate).resolve() if sstate else self.bsp_root
+
+    @property
+    def resolved_tmpdir(self) -> Path:
+        """Directory bitbake uses as its build ``TMPDIR``.
+
+        When ``local_tmpdir_base`` is set AND the build is host mode, the tmp is
+        redirected to ``<local_tmpdir_base>/<bsp_root.name>-<machine>`` on
+        node-local disk - keeping the - possibly NFS - source workspace off the
+        path bitbake's sanity check forbids on NFS. The leaf key mirrors the
+        TOPDIR uniqueness domain: ``bsp_root.name`` disambiguates the families
+        (meta-avocado/generic) where ``machine`` degenerates to the literal
+        ``"generic"``, so two distinct builds never collapse onto one tmp.
+
+        Otherwise (knob unset, or a container build where the in-container tmp
+        stays behind the ``/work`` bind mount) it is the workspace-relative
+        default ``bsp_root/build_dir_name/tmp`` - today's path, unchanged.
+
+        Unlike :attr:`hashserv_state_key`, this never honors an env ``TMPDIR``:
+        that is a universal POSIX temp path exported by CI runners and shells,
+        never forwarded to bitbake, so honoring it would either inject ``/tmp``
+        into local.conf or make the diagnostics judge a path the build never
+        uses. An explicit env override belongs on ``local_tmpdir_base`` itself.
+        """
+        if self.local_tmpdir_base and self.host_mode:
+            return Path(self.local_tmpdir_base) / f"{self.bsp_root.name}-{self.machine}"
+        return self.bsp_root / self.build_dir_name / "tmp"
 
     @property
     def prserv_state_key(self) -> Path:
@@ -966,6 +997,7 @@ def resolve(
         dl_dir=user_config.dl_dir if user_config else None,
         sstate_dir=user_config.sstate_dir if user_config else None,
         sstate_mirrors=user_config.sstate_mirrors if user_config else None,
+        local_tmpdir_base=user_config.local_tmpdir_base if user_config else None,
         scheduler=user_config.scheduler if user_config else None,
         pressure_max_cpu=user_config.pressure_max_cpu if user_config else None,
         pressure_max_io=user_config.pressure_max_io if user_config else None,
