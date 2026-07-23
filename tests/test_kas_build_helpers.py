@@ -723,7 +723,7 @@ def test_deploy_dir_uses_override_tmpdir_when_knob_set(tmp_path: Path) -> None:
     base = tmp_path / "local-tmp"
     cfg = replace(_make_nxp_cfg(tmp_path, host_mode=True), local_tmpdir_base=str(base))
     deploy = cfg.resolved_tmpdir / "deploy" / "images" / cfg.machine
-    assert deploy == base / f"{cfg.bsp_root.name}-{cfg.machine}" / "deploy" / "images" / cfg.machine
+    assert str(deploy).startswith(str(base))
     assert cfg.bsp_root / "build" / "tmp" not in deploy.parents
 
 
@@ -980,8 +980,8 @@ def test_inject_local_tmpdir_appends_resolved_path(tmp_path: Path) -> None:
 
     result = _inject_local_tmpdir(cfg, _TMPDIR_OVERLAY)
 
-    expected = base / f"{cfg.bsp_root.name}-{cfg.machine}"
-    assert f'TMPDIR = "{expected}"' in result
+    assert f'TMPDIR = "{cfg.resolved_tmpdir}"' in result
+    assert str(cfg.resolved_tmpdir).startswith(str(base))
     assert result.count("TMPDIR =") == 1
 
 
@@ -1007,8 +1007,8 @@ def test_materialize_main_overlay_injects_single_tmpdir(tmp_path: Path) -> None:
     materialize_overlay(cfg, src, is_main_overlay=True)
     text = (cfg.bsp_root / rel).read_text(encoding="utf-8")
 
-    expected = base / f"{cfg.bsp_root.name}-{cfg.machine}"
-    assert f'TMPDIR = "{expected}"' in text
+    assert f'TMPDIR = "{cfg.resolved_tmpdir}"' in text
+    assert str(cfg.resolved_tmpdir).startswith(str(base))
     assert text.count("TMPDIR =") == 1
 
 

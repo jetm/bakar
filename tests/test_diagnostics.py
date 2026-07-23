@@ -1156,6 +1156,24 @@ def test_check_workspace_filesystem_vfat_local_tmpdir_still_fails(
     assert "vfat" in result.message
 
 
+def test_check_workspace_filesystem_vfat_override_base_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """(a2) An active override whose base is on vfat -> BLOCK: the tmp cannot hold pseudo state."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    local_base = tmp_path / "usb"
+    local_base.mkdir()
+    mounts = (
+        f"none / overlay rw 0 0\nnone {workspace.resolve()} ext4 rw 0 0\n/dev/sdb1 {local_base.resolve()} vfat rw 0 0\n"
+    )
+    _patch_proc_mounts(monkeypatch, mounts)
+    cfg = _fs_cfg(workspace, local_tmpdir_base=str(local_base), host_mode=True)
+    result = check_workspace_filesystem(cfg)
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert "vfat" in result.message
+    assert "xattrs" in result.message
+
+
 def test_check_workspace_filesystem_unknown_fs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Workspace on tmpfs -> PASS at WARN with an 'unrecognized' message."""
     workspace = tmp_path / "ws"

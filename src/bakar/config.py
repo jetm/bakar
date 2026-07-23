@@ -10,6 +10,7 @@ rest of bakar does not have to know about the workspace layout.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.resources
 import os
 import re
@@ -477,16 +478,24 @@ class BuildConfig:
         """Directory bitbake uses as its build ``TMPDIR``.
 
         When ``local_tmpdir_base`` is set AND the build is host mode, the tmp is
-        redirected to ``<local_tmpdir_base>/<bsp_root.name>-<machine>`` on
-        node-local disk - keeping the - possibly NFS - source workspace off the
-        path bitbake's sanity check forbids on NFS. The leaf key mirrors the
-        TOPDIR uniqueness domain: ``bsp_root.name`` disambiguates the families
-        (meta-avocado/generic) where ``machine`` degenerates to the literal
-        ``"generic"``, so two distinct builds never collapse onto one tmp.
+        redirected to ``<local_tmpdir_base>/<bsp_root.name>-<machine>-<digest>``
+        on node-local disk - keeping the - possibly NFS - source workspace off
+        the path bitbake's sanity check forbids on NFS. The leaf must be unique
+        per build directory, but ``bsp_root.name`` alone is not: for nxp/ti it is
+        the family literal (two checkouts share ``nxp``) and for meta-avocado
+        ``machine`` degenerates to ``"generic"``. An 8-char digest of the
+        resolved ``bsp_root`` path is appended so a global ``local_tmpdir_base``
+        never maps two distinct checkouts onto one tmp. The base is absolutized
+        so a relative knob value resolves identically for the diagnostics and
+        the injected ``local.conf`` line (bitbake resolves a relative local.conf
+        TMPDIR against TOPDIR, bakar against its cwd - they would disagree).
 
         Otherwise (knob unset, or a container build where the in-container tmp
         stays behind the ``/work`` bind mount) it is the workspace-relative
-        default ``bsp_root/build_dir_name/tmp`` - today's path, unchanged.
+        default ``bsp_root/build_dir_name/<tmp_leaf>`` - today's path, unchanged.
+        ``tmp_leaf`` is ``tmp-glibc`` for the qcom family and ``tmp`` for every
+        other, mirroring the build-dir layout each family produces (see the
+        ``tmp_name`` split in ``commands/build.py``).
 
         Unlike :attr:`hashserv_state_key`, this never honors an env ``TMPDIR``:
         that is a universal POSIX temp path exported by CI runners and shells,
@@ -495,8 +504,11 @@ class BuildConfig:
         uses. An explicit env override belongs on ``local_tmpdir_base`` itself.
         """
         if self.local_tmpdir_base and self.host_mode:
-            return Path(self.local_tmpdir_base) / f"{self.bsp_root.name}-{self.machine}"
-        return self.bsp_root / self.build_dir_name / "tmp"
+            base = Path(os.path.abspath(os.path.expanduser(self.local_tmpdir_base)))
+            digest = hashlib.sha256(os.path.abspath(self.bsp_root).encode()).hexdigest()[:8]
+            return base / f"{self.bsp_root.name}-{self.machine}-{digest}"
+        tmp_leaf = "tmp-glibc" if self.bsp_family == "qcom" else "tmp"
+        return self.bsp_root / self.build_dir_name / tmp_leaf
 
     @property
     def prserv_state_key(self) -> Path:

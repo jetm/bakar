@@ -60,6 +60,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.ccache_shared": "true",
         "build.ccache_dir": "/data/ccache",
         "build.buildtools_dir": "/some/dir",
+        "build.local_tmpdir_base": "/mnt/nvme/tmp",
         "build.psi_autocalibrate": "true",
         "build.sccache_dist": "true",
         "build.sccache_scheduler_url": "http://localhost:10600",
@@ -126,6 +127,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert cfg.ccache_shared is True
     assert cfg.ccache_dir == "/data/ccache"
     assert cfg.buildtools_dir == "/some/dir"
+    assert cfg.local_tmpdir_base == "/mnt/nvme/tmp"
     assert cfg.psi_autocalibrate is True
     assert cfg.sccache_dist is True
     assert isinstance(cfg.sccache_dist, bool)

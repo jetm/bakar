@@ -188,12 +188,11 @@ def test_local_tmpdir_candidate_measured(tmp_path: Path, monkeypatch: pytest.Mon
     monkeypatch.delenv("DL_DIR", raising=False)
     local_base = tmp_path / "local-tmp"
     local_base.mkdir()
-    # Materialize the machine-keyed leaf so the candidate resolves to it directly.
-    leaf = local_base / "nxp-imx8mp-var-dart"
-    leaf.mkdir()
-
     cfg = _build_cfg(tmp_path, local_tmpdir_base=str(local_base), host_mode=True)
-    assert cfg.resolved_tmpdir == leaf
+    # Materialize the machine-keyed leaf so the candidate resolves to it directly.
+    leaf = cfg.resolved_tmpdir
+    leaf.mkdir(parents=True)
+    assert leaf.parent == local_base
 
     _patch_stat_distinct(monkeypatch)
     _patch_disk(monkeypatch, free_gb=5.0)
@@ -212,12 +211,11 @@ def test_local_tmpdir_candidate_climbs_when_leaf_absent(tmp_path: Path, monkeypa
     monkeypatch.delenv("DL_DIR", raising=False)
     local_base = tmp_path / "local-tmp"
     local_base.mkdir()
-    # Deliberately do NOT create the machine-keyed leaf.
-    leaf = local_base / "nxp-imx8mp-var-dart"
-    assert not leaf.exists()
-
     cfg = _build_cfg(tmp_path, local_tmpdir_base=str(local_base), host_mode=True)
-    assert cfg.resolved_tmpdir == leaf
+    # Deliberately do NOT create the machine-keyed leaf.
+    leaf = cfg.resolved_tmpdir
+    assert leaf.parent == local_base
+    assert not leaf.exists()
 
     # Give each path a distinct st_dev while preserving real existence so the
     # climb (via Path.exists) behaves as in production.

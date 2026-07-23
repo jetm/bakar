@@ -69,7 +69,7 @@ def _clear_parse_cache(cfg: BuildConfig, log: RunLogger, iteration: int) -> bool
     """
     targets = [
         cfg.bsp_root / "build" / "cache",
-        cfg.bsp_root / "build" / "tmp" / "cache",
+        cfg.resolved_tmpdir / "cache",
     ]
     cleared_any = False
     for cache_dir in targets:

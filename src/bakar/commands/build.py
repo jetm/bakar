@@ -103,11 +103,11 @@ def _finish_build(cfg, log, rc: int, machine: str) -> None:
     if rc != 0:
         console.print(f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details.")
         raise typer.Exit(code=rc)
-    # QLI names the build dir build-<distro> and the tmp dir tmp-glibc; every
-    # other family uses build/tmp. build_dir_name is "build" off the qcom path,
-    # so nxp/ti/generic/bbsetup stay byte-identical.
-    tmp_name = "tmp-glibc" if cfg.bsp_family == "qcom" else "tmp"
-    deploy = cfg.bsp_root / cfg.build_dir_name / tmp_name / "deploy" / "images" / machine
+    # resolved_tmpdir is the single source of truth for the build TMPDIR: it
+    # honors a local_tmpdir_base override (so the banner points at the real
+    # images) and already encodes the family tmp-dir layout (tmp-glibc for qcom,
+    # tmp elsewhere).
+    deploy = cfg.resolved_tmpdir / "deploy" / "images" / machine
     if _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary:
         _print_sstate_summary(log.run_dir / "kas.log")
     console.print(f"[bold green]build succeeded[/] in {fmt_duration(time.monotonic() - log.start_monotonic)}")

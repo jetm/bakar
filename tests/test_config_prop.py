@@ -102,10 +102,13 @@ def _meta_avocado_cfg(
 
 @pytest.mark.unit
 def test_resolved_tmpdir_override_applies_in_host_mode() -> None:
-    """Knob set + host_mode -> ``<base>/<bsp_root.name>-<machine>`` on local disk."""
+    """Knob set + host_mode -> ``<base>/<bsp_root.name>-<machine>-<digest>`` on local disk."""
     cfg = _meta_avocado_cfg("qemux86-64", local_tmpdir_base="/local/tmp", host_mode=True)
-    assert cfg.resolved_tmpdir == Path("/local/tmp") / f"{cfg.bsp_root.name}-{cfg.machine}"
-    assert cfg.resolved_tmpdir == Path("/local/tmp/build-qemux86-64-generic")
+    assert cfg.resolved_tmpdir.parent == Path("/local/tmp")
+    prefix = f"{cfg.bsp_root.name}-{cfg.machine}-"
+    assert cfg.resolved_tmpdir.name.startswith(prefix)
+    digest = cfg.resolved_tmpdir.name[len(prefix) :]
+    assert len(digest) == 8 and all(c in "0123456789abcdef" for c in digest)
 
 
 @pytest.mark.unit
@@ -132,7 +135,7 @@ def test_resolved_tmpdir_ignores_env_tmpdir(monkeypatch: pytest.MonkeyPatch) -> 
     assert unset.resolved_tmpdir == Path("/ws/sources/build-qemux86-64/build/tmp")
     assert "/run/user/1000/tmp" not in str(unset.resolved_tmpdir)
     override = _meta_avocado_cfg("qemux86-64", local_tmpdir_base="/local/tmp", host_mode=True)
-    assert override.resolved_tmpdir == Path("/local/tmp/build-qemux86-64-generic")
+    assert str(override.resolved_tmpdir).startswith("/local/tmp/build-qemux86-64-generic-")
     assert "/run/user/1000/tmp" not in str(override.resolved_tmpdir)
 
 
@@ -143,5 +146,55 @@ def test_resolved_tmpdir_distinct_per_bsp_root() -> None:
     b = _meta_avocado_cfg("qemuarm64", local_tmpdir_base="/local/tmp", host_mode=True)
     assert a.machine == b.machine == "generic"
     assert a.resolved_tmpdir != b.resolved_tmpdir
-    assert a.resolved_tmpdir == Path("/local/tmp/build-qemux86-64-generic")
-    assert b.resolved_tmpdir == Path("/local/tmp/build-qemuarm64-generic")
+    assert a.resolved_tmpdir.parent == b.resolved_tmpdir.parent == Path("/local/tmp")
+    assert a.resolved_tmpdir.name.startswith("build-qemux86-64-generic-")
+    assert b.resolved_tmpdir.name.startswith("build-qemuarm64-generic-")
+
+
+@pytest.mark.unit
+def test_resolved_tmpdir_qcom_uses_tmp_glibc_leaf() -> None:
+    """The knob-unset default leaf is ``tmp-glibc`` for qcom, ``tmp`` elsewhere."""
+    qcom = BuildConfig(
+        workspace=Path("/ws"),
+        bsp_family="qcom",
+        machine="qcs6490-rb3gen2-core-kit",
+        distro="qcom-wayland",
+        image="core-image-minimal",
+        manifest="",
+        repo_url="",
+        repo_branch="scarthgap",
+        kas_container_image="",
+    )
+    assert qcom.resolved_tmpdir == qcom.bsp_root / qcom.build_dir_name / "tmp-glibc"
+    assert qcom.resolved_tmpdir.name == "tmp-glibc"
+
+
+@pytest.mark.unit
+def test_resolved_tmpdir_distinct_across_nxp_workspaces() -> None:
+    """Two nxp checkouts (same family dir, same machine) never share one tmp.
+
+    ``bsp_root.name`` is the family literal ``"nxp"`` for every nxp workspace, so
+    a global ``local_tmpdir_base`` would collide two checkouts without the
+    ``bsp_root``-path digest.
+    """
+
+    def _nxp(workspace: str) -> BuildConfig:
+        return BuildConfig(
+            workspace=Path(workspace),
+            bsp_family="nxp",
+            machine="imx8mp-var-dart",
+            distro="fsl-imx-wayland",
+            image="core-image-minimal",
+            manifest="",
+            repo_url="",
+            repo_branch="scarthgap",
+            kas_container_image="",
+            host_mode=True,
+            local_tmpdir_base="/local/tmp",
+        )
+
+    a = _nxp("/work-a")
+    b = _nxp("/work-b")
+    assert a.bsp_root.name == b.bsp_root.name == "nxp"
+    assert a.machine == b.machine
+    assert a.resolved_tmpdir != b.resolved_tmpdir

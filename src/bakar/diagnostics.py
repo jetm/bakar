@@ -706,7 +706,7 @@ def check_disk_free(cfg: BuildConfig) -> CheckResult:
         ("workspace", cfg.workspace),
         *([("sstate", Path(sstate))] if sstate else []),
         *([("downloads", Path(dl))] if dl else []),
-        *([("tmpdir", _nearest_existing(cfg.resolved_tmpdir))] if cfg.local_tmpdir_base else []),
+        *([("tmpdir", _nearest_existing(cfg.resolved_tmpdir))] if cfg.local_tmpdir_base and cfg.host_mode else []),
     ]
     low: list[str] = []
     seen_devs: set[int] = set()
@@ -1747,9 +1747,23 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
             Severity.BLOCK,
             f"resolved TMPDIR {tmpdir} is on {tmp_fstype} at {tmp_mount}: bitbake aborts on TMPDIR over NFS",
             fix_hint=(
-                "Set [build] local_tmpdir_base to a node-local ext4/btrfs/xfs path so the build TMPDIR "
-                "leaves NFS, then re-run."
+                "Set [build] local_tmpdir_base to a node-local ext4/btrfs/xfs path (host mode only) "
+                "so the build TMPDIR leaves NFS, then re-run."
             ),
+        )
+
+    # (a2) an active local_tmpdir_base override that lands on a non-NFS blocking
+    # fstype (vfat/exfat/ntfs/9p) is a user misconfiguration: the redirected tmp
+    # cannot hold pseudo's xattrs/hardlinks or case-sensitive paths. Gated on the
+    # override so an un-overridden workspace on such an fs stays the (c) WARN
+    # below rather than escalating to BLOCK.
+    if cfg.local_tmpdir_base and cfg.host_mode and tmp_fstype in _FS_BLOCK:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"resolved TMPDIR {tmpdir} is on {tmp_fstype} at {tmp_mount}: the build TMPDIR needs "
+            "xattrs/hardlinks/case-sensitivity this filesystem lacks",
+            fix_hint="Point [build] local_tmpdir_base at a node-local ext4/btrfs/xfs path, then re-run.",
         )
 
     # (c) workspace on a non-NFS blocking fstype breaks the source layers
@@ -1765,11 +1779,19 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
         )
 
     # (b) workspace on NFS with a local TMPDIR - the new supported capability.
+    # If the tmp path resolves to no mount entry we cannot assert it is local, so
+    # skip rather than PASS a possibly-NFS tmp under a green verdict.
     if ws_fstype in _FS_NFS:
+        if tmp_fstype is None:
+            return _skip(
+                name,
+                Severity.WARN,
+                f"workspace on {ws_fstype} at {ws_mount}; TMPDIR {tmpdir} resolves to no mount - verify it is local",
+            )
         return _ok(
             name,
             Severity.WARN,
-            f"workspace on {ws_fstype} at {ws_mount}; TMPDIR local at {tmpdir}",
+            f"workspace on {ws_fstype} at {ws_mount}; TMPDIR local ({tmp_fstype}) at {tmpdir}",
         )
 
     # (d) all-local or unrecognized fstype - unchanged.
