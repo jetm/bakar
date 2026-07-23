@@ -484,8 +484,9 @@ class BuildConfig:
         per build directory, but ``bsp_root.name`` alone is not: for nxp/ti it is
         the family literal (two checkouts share ``nxp``) and for meta-avocado
         ``machine`` degenerates to ``"generic"``. An 8-char digest of the
-        resolved ``bsp_root`` path is appended so a global ``local_tmpdir_base``
-        never maps two distinct checkouts onto one tmp. The base is absolutized
+        resolved TOPDIR (``bsp_root/build_dir_name``) is appended so neither two
+        distinct checkouts nor two qcom distros under one checkout ever map onto
+        one tmp. The base is absolutized
         so a relative knob value resolves identically for the diagnostics and
         the injected ``local.conf`` line (bitbake resolves a relative local.conf
         TMPDIR against TOPDIR, bakar against its cwd - they would disagree).
@@ -505,7 +506,13 @@ class BuildConfig:
         """
         if self.local_tmpdir_base and self.host_mode:
             base = Path(os.path.abspath(os.path.expanduser(self.local_tmpdir_base)))
-            digest = hashlib.sha256(os.path.abspath(self.bsp_root).encode()).hexdigest()[:8]
+            # Digest the full TOPDIR (bsp_root/build_dir_name), not bsp_root
+            # alone: for qcom bsp_root is workspace/qcom for every distro and
+            # only build_dir_name (build-<distro>) varies, so a bsp_root-only
+            # digest would collapse two distros onto one tmp. TOPDIR is the
+            # exact per-build-directory uniqueness domain.
+            topdir = os.path.abspath(self.bsp_root / self.build_dir_name)
+            digest = hashlib.sha256(topdir.encode()).hexdigest()[:8]
             return base / f"{self.bsp_root.name}-{self.machine}-{digest}"
         tmp_leaf = "tmp-glibc" if self.bsp_family == "qcom" else "tmp"
         return self.bsp_root / self.build_dir_name / tmp_leaf

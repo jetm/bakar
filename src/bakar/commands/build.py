@@ -194,7 +194,10 @@ def _run_bbsetup_build(
     console.print(f"[bold]::[/] bakar build [bbsetup] {setup_dir}")
 
     if ctx.clean:
-        tmp_dir = cfg.bsp_root / "build" / "tmp"
+        # resolved_tmpdir follows a host-mode local_tmpdir_base override off to
+        # node-local disk; a hardcoded bsp_root/build/tmp would delete the empty
+        # workspace path and strand the redirected (~200G) tmp.
+        tmp_dir = cfg.resolved_tmpdir
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir)
             console.print(f"[green]removed[/] {tmp_dir}")

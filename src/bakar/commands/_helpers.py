@@ -469,6 +469,15 @@ def _clean_build_dir(cfg: BuildConfig) -> None:
         parallel_rmtree(build_dir, description=f"Removing {build_dir.name}/")
         console.print(f"[green]removed[/] {build_dir}")
 
+    # A host-mode local_tmpdir_base override relocates the build TMPDIR to
+    # node-local disk, outside build_dir; wiping build_dir alone would strand
+    # it. is_relative_to is False exactly when the override is active (the
+    # unset default resolves under build_dir and was already removed above).
+    tmpdir = cfg.resolved_tmpdir
+    if not tmpdir.is_relative_to(build_dir) and tmpdir.exists():
+        parallel_rmtree(tmpdir, description=f"Removing {tmpdir.name}/ (local TMPDIR)")
+        console.print(f"[green]removed[/] {tmpdir}")
+
 
 # ---------------------------------------------------------------------------
 # BSP dispatch

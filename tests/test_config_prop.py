@@ -198,3 +198,36 @@ def test_resolved_tmpdir_distinct_across_nxp_workspaces() -> None:
     assert a.bsp_root.name == b.bsp_root.name == "nxp"
     assert a.machine == b.machine
     assert a.resolved_tmpdir != b.resolved_tmpdir
+
+
+@pytest.mark.unit
+def test_resolved_tmpdir_distinct_across_qcom_distros() -> None:
+    """Two qcom distros in one checkout, same machine, never share one tmp.
+
+    qcom ``bsp_root`` is ``workspace/qcom`` for every distro; only
+    ``build_dir_name`` (``build-<distro>``) varies. Keying the digest on the
+    full TOPDIR (``bsp_root/build_dir_name``) rather than ``bsp_root`` alone is
+    what keeps the two distros' resolved TMPDIRs distinct.
+    """
+
+    def _qcom(distro: str) -> BuildConfig:
+        return BuildConfig(
+            workspace=Path("/ws"),
+            bsp_family="qcom",
+            machine="qcs6490-rb3gen2-core-kit",
+            distro=distro,
+            image="core-image-minimal",
+            manifest="",
+            repo_url="",
+            repo_branch="scarthgap",
+            kas_container_image="",
+            host_mode=True,
+            local_tmpdir_base="/local/tmp",
+        )
+
+    a = _qcom("qcom-wayland")
+    b = _qcom("qcom-x11")
+    assert a.bsp_root == b.bsp_root  # both workspace/qcom
+    assert a.machine == b.machine
+    assert a.build_dir_name != b.build_dir_name  # build-qcom-wayland vs build-qcom-x11
+    assert a.resolved_tmpdir != b.resolved_tmpdir
