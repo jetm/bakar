@@ -37,6 +37,7 @@ from bakar.steps.kas_build import (
     _find_oe_eventlog,
     _finish_step,
     _inject_literal_ccache,
+    _inject_local_tmpdir,
     _resolve_user_yaml,
     _run_kas_dump,
     _strip_branch_from_dump,
@@ -898,6 +899,96 @@ def test_shipped_ccache_overlay_has_no_work_path() -> None:
 
     text = (importlib.resources.files("bakar") / "overlays" / "bakar-tuning-ccache.yml").read_text(encoding="utf-8")
     assert "/work" not in text
+
+
+# ---------------------------------------------------------------------------
+# _inject_local_tmpdir
+# ---------------------------------------------------------------------------
+
+_TMPDIR_OVERLAY = (
+    'local_conf_header:\n  zz-bakar-10-base: |\n    BB_NUMBER_THREADS = "4"\n    INHERIT += "buildstats"\n'
+)
+
+
+def _tmpdir_cfg(tmp_path: Path, *, host_mode: bool, knob: str | None) -> BuildConfig:
+    """NXP cfg with the ``local_tmpdir_base`` knob set to ``knob``."""
+    return replace(_make_nxp_cfg(tmp_path, host_mode=host_mode), local_tmpdir_base=knob)
+
+
+def test_inject_local_tmpdir_noop_when_knob_unset(tmp_path: Path) -> None:
+    """Knob unset (None) -> text is returned byte-for-byte, even in host mode."""
+    cfg = _tmpdir_cfg(tmp_path, host_mode=True, knob=None)
+    assert _inject_local_tmpdir(cfg, _TMPDIR_OVERLAY) == _TMPDIR_OVERLAY
+
+
+def test_inject_local_tmpdir_noop_when_not_host_mode(tmp_path: Path) -> None:
+    """Knob set but container mode -> no injection (the override is host-only)."""
+    cfg = _tmpdir_cfg(tmp_path, host_mode=False, knob=str(tmp_path / "local-tmp"))
+    assert _inject_local_tmpdir(cfg, _TMPDIR_OVERLAY) == _TMPDIR_OVERLAY
+
+
+def test_inject_local_tmpdir_appends_resolved_path(tmp_path: Path) -> None:
+    """Knob set + host mode -> one TMPDIR line at ``<base>/<bsp_root.name>-<machine>``."""
+    base = tmp_path / "local-tmp"
+    cfg = _tmpdir_cfg(tmp_path, host_mode=True, knob=str(base))
+
+    result = _inject_local_tmpdir(cfg, _TMPDIR_OVERLAY)
+
+    expected = base / f"{cfg.bsp_root.name}-{cfg.machine}"
+    assert f'TMPDIR = "{expected}"' in result
+    assert result.count("TMPDIR =") == 1
+
+
+def test_inject_local_tmpdir_idempotent(tmp_path: Path) -> None:
+    """Re-running the injector on already-injected text leaves exactly one line."""
+    cfg = _tmpdir_cfg(tmp_path, host_mode=True, knob=str(tmp_path / "local-tmp"))
+
+    once = _inject_local_tmpdir(cfg, _TMPDIR_OVERLAY)
+    twice = _inject_local_tmpdir(cfg, once)
+
+    assert once == twice
+    assert twice.count("TMPDIR =") == 1
+
+
+def test_materialize_main_overlay_injects_single_tmpdir(tmp_path: Path) -> None:
+    """The main overlay gets the TMPDIR line; a re-materialize keeps it to one."""
+    base = tmp_path / "local-tmp"
+    cfg = _tmpdir_cfg(tmp_path, host_mode=True, knob=str(base))
+    src = tmp_path / "bakar-tuning-nxp.yml"
+    src.write_text(_TMPDIR_OVERLAY, encoding="utf-8")
+
+    rel = materialize_overlay(cfg, src, is_main_overlay=True)
+    materialize_overlay(cfg, src, is_main_overlay=True)
+    text = (cfg.bsp_root / rel).read_text(encoding="utf-8")
+
+    expected = base / f"{cfg.bsp_root.name}-{cfg.machine}"
+    assert f'TMPDIR = "{expected}"' in text
+    assert text.count("TMPDIR =") == 1
+
+
+def test_materialize_extra_overlays_carry_no_tmpdir(tmp_path: Path) -> None:
+    """With sccache+mold enabled, only the main overlay carries TMPDIR: the
+    merged local.conf across all overlays has exactly one TMPDIR line."""
+    base = tmp_path / "local-tmp"
+    cfg = replace(
+        _make_nxp_cfg(tmp_path, host_mode=True),
+        local_tmpdir_base=str(base),
+        sccache_dist=True,
+        mold=True,
+    )
+    main = tmp_path / "bakar-tuning-nxp.yml"
+    main.write_text(_TMPDIR_OVERLAY, encoding="utf-8")
+    sccache = tmp_path / "bakar-tuning-sccache.yml"
+    sccache.write_text(_TMPDIR_OVERLAY, encoding="utf-8")
+    mold = tmp_path / "bakar-tuning-mold.yml"
+    mold.write_text(_TMPDIR_OVERLAY, encoding="utf-8")
+
+    main_rel = materialize_overlay(cfg, main, is_main_overlay=True)
+    sccache_rel = materialize_overlay(cfg, sccache)
+    mold_rel = materialize_overlay(cfg, mold)
+
+    merged = "".join((cfg.bsp_root / rel).read_text(encoding="utf-8") for rel in (main_rel, sccache_rel, mold_rel))
+    assert merged.count("TMPDIR =") == 1
 
 
 # ---------------------------------------------------------------------------

@@ -343,6 +343,34 @@ def _inject_literal_mold(cfg: BuildConfig, text: str) -> str:
     return _append_local_conf_lines(text, lines)
 
 
+def _inject_local_tmpdir(cfg: BuildConfig, text: str) -> str:
+    """Append a literal ``TMPDIR`` assignment to the main tuning overlay's
+    ``local_conf_header`` block, redirecting the build tmp to node-local disk.
+
+    Fires only when ``local_tmpdir_base`` is set AND the build is host mode -
+    otherwise returns ``text`` unchanged so an unset-knob build is byte-for-byte
+    identical to today. ``cfg.resolved_tmpdir`` is itself host-mode-gated, but
+    the no-op is enforced here independently so the injector cannot ever emit a
+    workspace-relative ``TMPDIR`` line for a build that never asked for one.
+
+    bitbake reads ``TMPDIR`` from ``local.conf`` (weak ``?=`` default in
+    bitbake.conf, overridden by the hard local.conf assignment), so the
+    ``local_conf_header`` channel is the reliable one - the same one
+    :func:`_inject_literal_sccache` uses; ``TMPDIR`` is not a kas-read variable
+    and the env passthrough allowlist never forwards it.
+
+    Wired into the MAIN tuning overlay only (not the sccache/ccache/mold
+    extras), since kas merges every overlay's header block and injecting into
+    the shared chain would emit N duplicate ``TMPDIR`` lines. A regex guard
+    keeps a re-materialize from doubling the line (mirroring
+    :func:`_inject_literal_sccache`)."""
+    if not cfg.local_tmpdir_base or not cfg.host_mode:
+        return text
+    if re.search(r"^\s*TMPDIR\s*=", text, re.MULTILINE):
+        return text
+    return _append_local_conf_lines(text, [f'TMPDIR = "{cfg.resolved_tmpdir}"'])
+
+
 # The base overlays statically strip rm_work (default off while bakar is in
 # use); _inject_rm_work deletes that whole block when [build] rm_work is opted
 # back on. The block spans its comment through the USER_CLASSES line, so the
@@ -367,7 +395,7 @@ def _inject_rm_work(cfg: BuildConfig, text: str) -> str:
     return _RM_WORK_BLOCK_RE.sub("", text)
 
 
-def materialize_overlay(cfg: BuildConfig, overlay_source: Path) -> Path:
+def materialize_overlay(cfg: BuildConfig, overlay_source: Path, *, is_main_overlay: bool = False) -> Path:
     """Copy ``overlay_source`` into ``<bsp_root>/.bakar/overlays/``.
 
     Returns the path *relative to* ``cfg.bsp_root`` so callers can
@@ -385,6 +413,11 @@ def materialize_overlay(cfg: BuildConfig, overlay_source: Path) -> Path:
     configs in the same repo (or outside any repo) and sidesteps the
     bind-mount issue where a symlink target outside ``KAS_WORK_DIR``
     dangles inside the kas-container view.
+
+    ``is_main_overlay`` gates the ``TMPDIR`` injection to the single main
+    tuning overlay (the ``overlay_source`` from ``KasBuildContext``), never the
+    sccache/ccache/mold extras, so the merged local.conf carries exactly one
+    ``TMPDIR`` line.
     """
     overlay_dir = cfg.bsp_root / _OVERLAY_DIR_RELPATH
     overlay_dir.mkdir(parents=True, exist_ok=True)
@@ -409,6 +442,11 @@ def materialize_overlay(cfg: BuildConfig, overlay_source: Path) -> Path:
                 cfg.effective_ccache_dir.mkdir(parents=True, exist_ok=True)
         if overlay_source.name == "bakar-tuning-mold.yml":
             injected = _inject_literal_mold(cfg, injected)
+        # TMPDIR goes on the main overlay only: kas merges every overlay's
+        # local_conf_header block, so injecting into the shared chain would emit
+        # one duplicate TMPDIR line per extra overlay.
+        if is_main_overlay:
+            injected = _inject_local_tmpdir(cfg, injected)
         if injected != original:
             dest.write_text(injected, encoding="utf-8")
     return dest.relative_to(cfg.bsp_root)
@@ -828,13 +866,13 @@ def _build_kas_arg(
         materialize_layer(cfg, _MOLD_LAYER_NAME)
     if cfg.is_meta_avocado:
         _setup_meta_avocado_build_dir(cfg)
-        overlay_rel = materialize_overlay(cfg, overlay_source)
+        overlay_rel = materialize_overlay(cfg, overlay_source, is_main_overlay=True)
         extra_overlay_rels = [materialize_overlay(cfg, p) for p in extra_overlays or []]
         wrapper = _write_meta_avocado_wrapper(cfg, kas_yaml)
         dump = _run_kas_dump(cfg, wrapper, overlay_rel, extra_overlay_rels)
         return str(dump)
     kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
-    overlay_rel = materialize_overlay(cfg, overlay_source)
+    overlay_rel = materialize_overlay(cfg, overlay_source, is_main_overlay=True)
     if extra_overlays:
         extra_rels = [materialize_overlay(cfg, p) for p in extra_overlays]
         return ":".join([str(kas_yaml_rel), str(overlay_rel), *[str(r) for r in extra_rels]])
