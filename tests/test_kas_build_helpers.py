@@ -688,6 +688,52 @@ def test_copy_oe_eventlog_copies_when_primary_absent(tmp_path: Path) -> None:
     assert log.eventlog_path.read_text() == '{"oe":true}'
 
 
+def test_find_oe_eventlog_uses_override_tmpdir_when_knob_set(tmp_path: Path) -> None:
+    """Knob set + host mode -> the fallback scans under the override base, not bsp_root/build/tmp."""
+    base = tmp_path / "local-tmp"
+    cfg = replace(_make_nxp_cfg(tmp_path, host_mode=True), local_tmpdir_base=str(base))
+    log = RunLogger(runs_dir=cfg.runs_dir)
+    log.run_dir.mkdir(parents=True, exist_ok=True)
+    elog_dir = cfg.resolved_tmpdir / "log" / "eventlog"
+    elog_dir.mkdir(parents=True)
+    time.sleep(0.01)
+    oe_file = elog_dir / "20260604150000.json"
+    oe_file.write_text('{"oe":true}')
+    # The stale workspace-relative path must not be consulted at all.
+    assert not (cfg.bsp_root / "build" / "tmp" / "log" / "eventlog").exists()
+    assert _find_oe_eventlog(cfg, log) == oe_file
+
+
+def test_find_oe_eventlog_uses_workspace_tmpdir_when_knob_unset(tmp_path: Path) -> None:
+    """Knob unset -> the fallback still scans bsp_root/build/tmp/log/eventlog (unchanged)."""
+    cfg = _make_nxp_cfg(tmp_path)
+    log = RunLogger(runs_dir=cfg.runs_dir)
+    log.run_dir.mkdir(parents=True, exist_ok=True)
+    elog_dir = cfg.bsp_root / "build" / "tmp" / "log" / "eventlog"
+    assert elog_dir == cfg.resolved_tmpdir / "log" / "eventlog"
+    elog_dir.mkdir(parents=True)
+    time.sleep(0.01)
+    oe_file = elog_dir / "20260604150000.json"
+    oe_file.write_text('{"oe":true}')
+    assert _find_oe_eventlog(cfg, log) == oe_file
+
+
+def test_deploy_dir_uses_override_tmpdir_when_knob_set(tmp_path: Path) -> None:
+    """The deploy dir routed through resolved_tmpdir lands under the override base."""
+    base = tmp_path / "local-tmp"
+    cfg = replace(_make_nxp_cfg(tmp_path, host_mode=True), local_tmpdir_base=str(base))
+    deploy = cfg.resolved_tmpdir / "deploy" / "images" / cfg.machine
+    assert deploy == base / f"{cfg.bsp_root.name}-{cfg.machine}" / "deploy" / "images" / cfg.machine
+    assert cfg.bsp_root / "build" / "tmp" not in deploy.parents
+
+
+def test_deploy_dir_unchanged_when_knob_unset(tmp_path: Path) -> None:
+    """Knob unset -> the deploy dir resolves under bsp_root/build/tmp exactly as today."""
+    cfg = _make_nxp_cfg(tmp_path)
+    deploy = cfg.resolved_tmpdir / "deploy" / "images" / cfg.machine
+    assert deploy == cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
+
+
 # ---------------------------------------------------------------------------
 # persist_run_artifacts
 # ---------------------------------------------------------------------------

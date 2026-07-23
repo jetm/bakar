@@ -772,7 +772,7 @@ def regenerate_yaml(cfg: BuildConfig, log: RunLogger, *, bsp: BspModel) -> None:
     )
     write_yaml(opts)
     log.step_ok("gen_kas", yaml=str(output))
-    artifact = f"build/tmp/deploy/images/{cfg.machine}/{cfg.image}-{cfg.machine}.wic"
+    artifact = f"{cfg.resolved_tmpdir}/deploy/images/{cfg.machine}/{cfg.image}-{cfg.machine}.wic"
     sys.stdout.write(f"INFO     artifact: {artifact}\n")
     sys.stdout.flush()
 
@@ -1693,7 +1693,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         outcome = _run_pty_with_ui(cmd, cfg, log, ui, stop_event, show_layers=show_layers, output_mode=ctx.output_mode)
         rc, stall_tasks = outcome.rc, outcome.stall_tasks
         if rc == 0:
-            deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
+            deploy = cfg.resolved_tmpdir / "deploy" / "images" / cfg.machine
             log.step_ok("kas_build", deploy_dir=str(deploy), exit_code=rc)
             _autocalibrate_psi(cfg, psi_peaks, log)
         else:
@@ -1731,7 +1731,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
             # a terminal event anyway so events.jsonl never dead-ends at
             # step_start and `bakar triage` has something to find.
             if rc == 0:
-                deploy = cfg.bsp_root / "build" / "tmp" / "deploy" / "images" / cfg.machine
+                deploy = cfg.resolved_tmpdir / "deploy" / "images" / cfg.machine
                 log.step_ok("kas_build", deploy_dir=str(deploy), exit_code=rc)
             else:
                 log.step_fail(
@@ -2192,7 +2192,7 @@ def _find_oe_eventlog(cfg: BuildConfig, log: RunLogger) -> Path | None:
     finishes writing its event log, making the log appear older than the
     watermark.
     """
-    eventlog_dir = cfg.bsp_root / "build" / "tmp" / "log" / "eventlog"
+    eventlog_dir = cfg.resolved_tmpdir / "log" / "eventlog"
     if not eventlog_dir.is_dir():
         return None
     try:
