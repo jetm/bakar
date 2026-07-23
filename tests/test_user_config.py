@@ -448,3 +448,22 @@ def test_load_user_config_parses_buildtools_dirs_table(tmp_path: Path) -> None:
 def test_missing_file_buildtools_dirs_defaults_to_none(tmp_path: Path) -> None:
     result = load_user_config(tmp_path / "nonexistent.toml")
     assert result.buildtools_dirs is None
+
+
+def test_local_tmpdir_base_surfaces_on_resolved_config(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text('[build]\nlocal_tmpdir_base = "/x"\n')
+
+    cfg = load_user_config(config_file)
+
+    assert cfg.local_tmpdir_base == "/x"
+    assert isinstance(cfg.local_tmpdir_base, str)
+
+
+def test_local_tmpdir_base_absent_yields_none(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("[build]\ndoctor = true\n")
+
+    cfg = load_user_config(config_file)
+
+    assert cfg.local_tmpdir_base is None

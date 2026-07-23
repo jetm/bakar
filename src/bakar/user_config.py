@@ -23,6 +23,7 @@ _STR_FIELDS = {
     "kas_container_image",
     "dl_dir",
     "sstate_dir",
+    "local_tmpdir_base",
     "sstate_mirrors",
     "sstate_mirror_url",
     "scheduler",
@@ -98,6 +99,7 @@ class UserConfig:
     show_doctor_report: bool = True
     dl_dir: str | None = None
     sstate_dir: str | None = None
+    local_tmpdir_base: str | None = None
     sstate_mirrors: str | None = None
     sstate_mirror_url: str | None = None
     scheduler: str | None = None
@@ -244,6 +246,7 @@ _BUILD_KEYS = {
     "show_doctor_report": "show_doctor_report",
     "dl_dir": "dl_dir",
     "sstate_dir": "sstate_dir",
+    "local_tmpdir_base": "local_tmpdir_base",
     "sstate_mirrors": "sstate_mirrors",
     "sstate_mirror_url": "sstate_mirror_url",
     "scheduler": "scheduler",
