@@ -973,6 +973,13 @@ def test_inject_local_tmpdir_noop_when_not_host_mode(tmp_path: Path) -> None:
     assert _inject_local_tmpdir(cfg, _TMPDIR_OVERLAY) == _TMPDIR_OVERLAY
 
 
+def test_inject_local_tmpdir_rejects_local_conf_injection_chars(tmp_path: Path) -> None:
+    """A quote in the base would break out of the quoted TMPDIR line -> ValueError, not a broken conf."""
+    cfg = _tmpdir_cfg(tmp_path, host_mode=True, knob=str(tmp_path / 'ev"il'))
+    with pytest.raises(ValueError, match="unsafe for local"):
+        _inject_local_tmpdir(cfg, _TMPDIR_OVERLAY)
+
+
 def test_inject_local_tmpdir_appends_resolved_path(tmp_path: Path) -> None:
     """Knob set + host mode -> one TMPDIR line at ``<base>/<bsp_root.name>-<machine>``."""
     base = tmp_path / "local-tmp"

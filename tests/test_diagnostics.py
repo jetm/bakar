@@ -1174,6 +1174,32 @@ def test_check_workspace_filesystem_vfat_override_base_blocks(monkeypatch: pytes
     assert "xattrs" in result.message
 
 
+def test_check_workspace_filesystem_symlinked_tmpdir_base_to_nfs_blocks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A local-looking local_tmpdir_base symlinked onto NFS is judged by its target -> BLOCK.
+
+    Without resolving symlinks the lexical (local) path would classify as the
+    root mount and wrongly PASS while bitbake follows the link to NFS and aborts.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    nfs_target = tmp_path / "nfs-target"
+    nfs_target.mkdir()
+    link = tmp_path / "local-link"
+    link.symlink_to(nfs_target)
+    mounts = (
+        f"none / overlay rw 0 0\n"
+        f"none {workspace.resolve()} ext4 rw 0 0\n"
+        f"server:/export {nfs_target.resolve()} nfs rw 0 0\n"
+    )
+    _patch_proc_mounts(monkeypatch, mounts)
+    cfg = _fs_cfg(workspace, local_tmpdir_base=str(link), host_mode=True)
+    result = check_workspace_filesystem(cfg)
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+
+
 def test_check_workspace_filesystem_unknown_fs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Workspace on tmpfs -> PASS at WARN with an 'unrecognized' message."""
     workspace = tmp_path / "ws"

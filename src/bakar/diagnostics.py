@@ -1735,7 +1735,12 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
         )
     _ws_source, ws_mount, ws_fstype, _ws_opts = ws_entry
 
-    tmpdir = cfg.resolved_tmpdir
+    # Resolve symlinks (strict=False tolerates the not-yet-created machine leaf):
+    # a local_tmpdir_base symlinked onto an NFS target would otherwise be
+    # classified by its lexical local path and wrongly PASS while bitbake follows
+    # the link to NFS and aborts. The workspace above is resolved for the same
+    # reason.
+    tmpdir = cfg.resolved_tmpdir.resolve(strict=False)
     tmp_entry = _mount_entry_in(mounts_raw, tmpdir)
     tmp_fstype = tmp_entry[2] if tmp_entry is not None else None
     tmp_mount = tmp_entry[1] if tmp_entry is not None else None

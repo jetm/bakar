@@ -368,7 +368,17 @@ def _inject_local_tmpdir(cfg: BuildConfig, text: str) -> str:
         return text
     if re.search(r"^\s*TMPDIR\s*=", text, re.MULTILINE):
         return text
-    return _append_local_conf_lines(text, [f'TMPDIR = "{cfg.resolved_tmpdir}"'])
+    tmpdir = str(cfg.resolved_tmpdir)
+    # The value lands inside a quoted bitbake assignment. A quote, backslash, or
+    # control char in local_tmpdir_base/machine would terminate the string and
+    # inject arbitrary local.conf statements (or make the overlay unparsable).
+    # Fail fast on the misconfiguration rather than emitting a broken conf.
+    if any(c in tmpdir for c in '"\\\n\r\x00'):
+        raise ValueError(
+            f"local_tmpdir_base resolves to a path unsafe for local.conf injection "
+            f"(contains a quote, backslash, or control character): {tmpdir!r}"
+        )
+    return _append_local_conf_lines(text, [f'TMPDIR = "{tmpdir}"'])
 
 
 # The base overlays statically strip rm_work (default off while bakar is in
