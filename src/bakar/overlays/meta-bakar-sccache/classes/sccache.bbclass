@@ -207,15 +207,21 @@ sccache_write_rustc_shim () {
 # never asked for:
 #   1. TOOLCHAIN_NATIVE - a recipe (e.g. oe-core's libcxx/compiler-rt native
 #      builds) selects clang-native.bbclass for its own native build.
-#   2. TCOVERRIDE - a recipe (e.g. chromium-gn.inc's "also build the parts
-#      that are run on the host with clang") mirrors ITS OWN target-side
-#      clang choice into BUILD_CC via a :toolchain-clang override, keyed on
-#      clang.bbclass's TCOVERRIDE = "toolchain-clang" (oe-core's canonical
-#      "target uses clang" signal - see clang.bbclass/gcc.bbclass).
-# Pick clang whenever either signal fires, so :forcevariable only re-adds
-# ${CCACHE} and never changes which toolchain actually runs.
-BUILD_CC:forcevariable = "${CCACHE}${BUILD_PREFIX}${@bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang', bb.utils.contains('TCOVERRIDE', 'toolchain-clang', 'clang', 'gcc', d), d)} ${BUILD_CC_ARCH}"
-BUILD_CXX:forcevariable = "${CCACHE}${BUILD_PREFIX}${@bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang++', bb.utils.contains('TCOVERRIDE', 'toolchain-clang', 'clang++', 'g++', d), d)} ${BUILD_CC_ARCH}"
+#   2. the toolchain-clang override - a recipe (e.g. chromium-gn.inc's "also
+#      build the parts that are run on the host with clang") mirrors ITS OWN
+#      target-side clang choice into BUILD_CC via a :toolchain-clang override.
+#      This one CANNOT be read with bb.utils.contains('OVERRIDES', ...):
+#      OVERRIDES is colon-delimited but bb.utils.contains splits on whitespace,
+#      so 'toolchain-clang' never matches a token and the check always falls
+#      through to gcc. Use a real :forcevariable:toolchain-clang override,
+#      which fires exactly when toolchain-clang is active - mirroring how the
+#      recipe set BUILD_CC:toolchain-clang in the first place.
+# Either signal yields clang, so :forcevariable only re-adds ${CCACHE} and
+# never changes which toolchain actually runs.
+BUILD_CC:forcevariable = "${CCACHE}${BUILD_PREFIX}${@bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang', 'gcc', d)} ${BUILD_CC_ARCH}"
+BUILD_CC:forcevariable:toolchain-clang = "${CCACHE}${BUILD_PREFIX}clang ${BUILD_CC_ARCH}"
+BUILD_CXX:forcevariable = "${CCACHE}${BUILD_PREFIX}${@bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang++', 'g++', d)} ${BUILD_CC_ARCH}"
+BUILD_CXX:forcevariable:toolchain-clang = "${CCACHE}${BUILD_PREFIX}clang++ ${BUILD_CC_ARCH}"
 
 # Put sccache on bitbake's task PATH. OE restricts each task's PATH to sysroot
 # bins plus the HOSTTOOLS allowlist (tmp/hosttools/); the host /usr/bin/sccache
