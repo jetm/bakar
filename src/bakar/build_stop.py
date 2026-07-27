@@ -1142,13 +1142,20 @@ def stop_build(
     - reading a peer's PID number and signalling whatever local process holds
     it would be strictly worse than the file-deletion race this gate exists to
     prevent elsewhere. The gate is consulted FIRST, before the run-dir scan
-    even starts: on ``"peer-held"`` this prints which host owns the build and
-    returns ``False`` without touching anything; on ``"unattributable"`` or
-    ``"shared-inaction"`` ownership cannot be confirmed either way, so the
-    stop is refused the same way. Only a ``None`` verdict (this node owns the
-    marker, or the filesystem is confirmed local) lets the rest of this
-    function run. ``cfg=None`` (no ``BuildConfig`` available) skips the gate
-    entirely and preserves prior node-local-only behavior.
+    even starts: on ``"peer-held"`` or ``"unattributable"`` this refuses
+    immediately and returns ``False`` without touching anything, since either
+    verdict means a live-looking lock exists and ownership cannot be
+    confirmed. ``"shared-inaction"`` is different: the lock reads absent, so
+    the common case is simply "nothing is building" - refusing immediately
+    here misreports an idle shared workspace as an ownership conflict. That
+    verdict is instead saved as ``advisory_refusal`` and the scan below
+    proceeds; the genuinely-idle path resolves to "no running build found" the
+    same as a ``None`` verdict, while the advisory refusal still hard-blocks
+    the signal-sending code further down if the scan turns up something that
+    looks like a live build. Only a ``None`` verdict (this node owns the
+    marker, or the filesystem is confirmed local) skips the gate entirely.
+    ``cfg=None`` (no ``BuildConfig`` available) skips the gate entirely and
+    preserves prior node-local-only behavior.
 
     Scans run dirs under ``bsp_root/<build_dir_name>/runs`` newest-first and
     targets the first whose build is still live (host: a verified live PGID;
@@ -1168,18 +1175,27 @@ def stop_build(
     record (``build.pid`` + ``build.meta.json``) is always removed before
     returning.
     """
+    advisory_refusal: LockRefusal | None = None
     if cfg is not None:
         refusal = lock_mutation_guard(cfg)
         if refusal is not None:
-            if refusal.reason == "peer-held":
-                host = escape(refusal.host) if refusal.host else "another host"
-                print(f"build owned by {host}; run `bakar stop` there")
-            else:
-                print(
-                    f"cannot confirm this node owns the build lock ({refusal.reason}); "
-                    "refusing to send any signal - resolve ownership manually"
-                )
-            return False
+            if refusal.reason in ("peer-held", "unattributable"):
+                if refusal.reason == "peer-held":
+                    host = escape(refusal.host) if refusal.host else "another host"
+                    print(f"build owned by {host}; run `bakar stop` there")
+                else:
+                    print(
+                        f"cannot confirm this node owns the build lock ({refusal.reason}); "
+                        "refusing to send any signal - resolve ownership manually"
+                    )
+                return False
+            # "shared-inaction": the lock reads absent, so this is most often a
+            # genuinely idle workspace - fall through to the scan below rather
+            # than refusing before even looking. The scan's own idempotent
+            # "nothing running" path (and _report_stale_cleanup's own guard)
+            # already handles the idle case safely; this refusal is enforced
+            # again immediately before any signal would actually be sent.
+            advisory_refusal = refusal
 
     build_dir_name = cfg.build_dir_name if cfg is not None else "build"
     runs_dir = bsp_root / build_dir_name / "runs"
@@ -1233,6 +1249,12 @@ def stop_build(
                     print("no running build" + ("; cleaned stale lock/socket" if removed else ""))
                     return True
                 print("wrapper process gone; a detached cooker is still running - escalating")
+            if advisory_refusal is not None:
+                print(
+                    f"cannot confirm this node owns the build lock ({advisory_refusal.reason}); "
+                    "refusing to send any signal - resolve ownership manually"
+                )
+                return False
             if not force:
                 if pgid is not None and pgid > 0:
                     print(f"Sent SIGINT to build PGID {pgid}...")
@@ -1283,6 +1305,13 @@ def stop_build(
             removed = _report_stale_cleanup(run_dir, cfg)
             print("no running build container" + ("; cleaned stale lock/socket" if removed else ""))
             return True
+
+        if advisory_refusal is not None:
+            print(
+                f"cannot confirm this node owns the build lock ({advisory_refusal.reason}); "
+                "refusing to send any signal - resolve ownership manually"
+            )
+            return False
 
         status = _stop_container(
             runtime,
