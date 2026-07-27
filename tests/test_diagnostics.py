@@ -1381,6 +1381,14 @@ def test_nfs_lookup_cache_bounded_low_actimeo() -> None:
     assert not diagnostics._nfs_lookup_cache_bounded("rw,hard,vers=4.2")
 
 
+def test_nfs_lookup_cache_bounded_kernel_abbreviated_pos() -> None:
+    """A real NFS4 mount reports ``lookupcache=pos`` in /proc/mounts, not the
+    long ``lookupcache=positive`` form a user writes in fstab. The kernel
+    abbreviates it, so the check must recognize the abbreviated form or every
+    correctly-configured mount false-WARNs."""
+    assert diagnostics._nfs_lookup_cache_bounded("rw,vers=4.2,lookupcache=pos,hard")
+
+
 def test_is_path_on_nfs_nfs4_true(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """An nfs4 mount covering the path -> True."""
     target = tmp_path / "ws"

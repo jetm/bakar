@@ -1703,7 +1703,12 @@ def _mount_entry_in(mounts_raw: str, path: Path) -> tuple[str, str, str, str] | 
 # NFS mount options that bound negative-lookup (absence) caching. Without one
 # of these -- or a low attribute-cache timeout -- a client can report a file as
 # still-absent for the full attribute timeout after a peer created it.
-_NFS_BOUNDED_LOOKUP_OPTS: frozenset[str] = frozenset({"lookupcache=positive", "lookupcache=none"})
+# Real kernels normalize "positive" -> "pos" when reporting mount options in
+# /proc/mounts (the source of truth this check reads -- NOT /etc/fstab or
+# whatever a user passed to `mount`), so "lookupcache=pos" MUST be present or
+# every correctly-configured "lookupcache=positive" mount false-WARNs. Keep
+# "lookupcache=positive" too, for synthetic option strings built in tests.
+_NFS_BOUNDED_LOOKUP_OPTS: frozenset[str] = frozenset({"lookupcache=positive", "lookupcache=pos", "lookupcache=none"})
 
 # An attribute-cache timeout at or below this many seconds counts as bounded.
 _NFS_LOW_ACTIMEO_SECONDS = 10
