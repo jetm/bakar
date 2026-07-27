@@ -246,8 +246,15 @@ def _make_cfg(
     sccache_dist: bool = False,
     sccache_scheduler_url: str | None = None,
 ) -> BuildConfig:
+    """A container-mode cfg for the parallelism-var emission tests.
+
+    BB_NUMBER_THREADS/PARALLEL_MAKE are emitted the same way in both modes;
+    the host path additionally requires a provisioned bitbake bin directory
+    that is irrelevant to the vars under test.
+    """
     return make_build_config(
         workspace=workspace,
+        host_mode=False,
         repo_branch="scarthgap",
         kas_container_image="jetm/kas-build-env:latest",
         nproc=nproc,

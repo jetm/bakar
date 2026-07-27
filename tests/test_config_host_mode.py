@@ -234,3 +234,34 @@ def test_workspace_toml_still_parses_host_mode_key(tmp_path: Path) -> None:
 
     cfg = resolve(workspace=tmp_path, bsp_family="nxp", user_config=UserConfig(), workspace_config=wc)
     assert cfg.host_mode is True
+
+
+@pytest.mark.unit
+def test_dataclass_default_matches_resolver_default(tmp_path: Path) -> None:
+    """A BuildConfig built without naming a mode agrees with resolve()'s default.
+
+    The two defaults drifted apart once host became the structural default:
+    resolve() returned host while the dataclass field still defaulted to
+    container, so any direct BuildConfig(...) silently got the opt-in path. Pin
+    them together - a future edit to either default now has to move both.
+    """
+    from bakar.config import BuildConfig
+
+    direct = BuildConfig(
+        workspace=tmp_path,
+        bsp_family="nxp",
+        machine="imx8mp-var-dart",
+        distro="fsl-imx-xwayland",
+        image="core-image-minimal",
+        manifest="imx-6.6.52-2.2.2.xml",
+        repo_url="https://example.invalid/repo.git",
+        repo_branch="imx-6.6.52-2.2.2",
+        kas_container_image="jetm/kas-build-env:latest",
+    )
+    resolved = resolve(
+        workspace=_workspace(tmp_path),
+        bsp_family="nxp",
+        user_config=UserConfig(),
+        workspace_config=WorkspaceConfig(),
+    )
+    assert direct.host_mode is resolved.host_mode is True

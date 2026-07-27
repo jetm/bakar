@@ -35,9 +35,16 @@ _needs_bash = pytest.mark.skipif(not _HAS_BASH, reason="bash not available")
 
 
 def _make_cfg(workspace: Path, family: str, manifest: str = "imx-6.12.49-2.2.0.xml") -> BuildConfig:
-    """Construct a minimal BuildConfig for ``family`` rooted at ``workspace``."""
+    """Construct a minimal container-mode BuildConfig for ``family``.
+
+    The family-dispatch cases below assert the ``kas-container`` spelling of
+    the sync and build steps, so they pin the container path explicitly;
+    ``test_host_mode_sync_step_uses_plain_kas_checkout`` overrides it to cover
+    the default host path.
+    """
     return BuildConfig(
         workspace=workspace,
+        host_mode=False,
         bsp_family=family,
         machine="imx95-var-dart",
         distro="fsl-imx-xwayland",

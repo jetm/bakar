@@ -45,8 +45,16 @@ def _stub_doctor_checks():
 
 
 def _make_cfg(workspace: Path, *, use_hashequiv: bool = False) -> BuildConfig:
+    """A container-mode generic cfg for the build-wiring tests in this module.
+
+    These cases assert overlay materialization, run-dir bookkeeping and PID
+    handling around a faked kas-container subprocess; the host path would
+    additionally demand a provisioned bitbake bin directory none of them set
+    up. Pinning the mode keeps them testing the wiring they were written for.
+    """
     return BuildConfig(
         workspace=workspace,
+        host_mode=False,
         bsp_family="generic",
         machine="generic",
         distro="generic",

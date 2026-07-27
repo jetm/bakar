@@ -31,9 +31,17 @@ pytestmark = pytest.mark.unit
 
 
 def _cfg(workspace: Path, family: str = "nxp") -> BuildConfig:
+    """A container-mode cfg for the stress-parse command-shape tests.
+
+    The host path injects BB_PYTHON3 and a generated ``host-mode.conf`` into
+    the bitbake invocation; the assertions below spell out the container
+    command exactly. ``test_host_mode_*`` covers the host spelling by
+    overriding this via ``dataclasses.replace``.
+    """
     if family == "ti":
         return BuildConfig(
             workspace=workspace,
+            host_mode=False,
             bsp_family="ti",
             machine="am62x-var-som",
             distro="arago",
@@ -45,6 +53,7 @@ def _cfg(workspace: Path, family: str = "nxp") -> BuildConfig:
         )
     return BuildConfig(
         workspace=workspace,
+        host_mode=False,
         bsp_family="nxp",
         machine="imx95-var-dart",
         distro="fsl-imx-xwayland",

@@ -80,8 +80,16 @@ def _make_tuning_cfg(
     sstate_dir: str | None = None,
     dl_dir: str | None = None,
 ) -> BuildConfig:
+    """A container-mode cfg for the tuning-var emission tests.
+
+    The vars under test (BB_PRESSURE_MAX_*, BB_SCHEDULER, SSTATE_DIR) are
+    emitted identically in both modes, but the host path additionally requires
+    a provisioned bitbake bin directory that these tests have no reason to
+    fake. Pin the container path rather than inherit the host default.
+    """
     return BuildConfig(
         workspace=workspace,
+        host_mode=False,
         bsp_family="nxp",  # type: ignore[arg-type]
         machine="imx8mp-var-dart",
         distro="fsl-imx-xwayland",

@@ -1007,9 +1007,16 @@ def test_check_git_global_config_git_missing(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def _kas_yaml_cfg(yaml_path: Path) -> BuildConfig:
-    """BuildConfig whose ``kas_yaml`` resolves to ``yaml_path`` via override."""
+    """Container-mode BuildConfig whose ``kas_yaml`` resolves to ``yaml_path``.
+
+    ``check_kas_yaml_syntax`` branches on the mode - container mode needs a
+    host ``kas`` binary to lint the YAML and SKIPs at BLOCK without one, which
+    is what ``test_check_kas_yaml_syntax_kas_missing`` asserts. Pin the mode so
+    that case stays reachable.
+    """
     return BuildConfig(
         workspace=yaml_path.parent,
+        host_mode=False,
         bsp_family="generic",
         machine="qemux86-64",
         distro="poky",

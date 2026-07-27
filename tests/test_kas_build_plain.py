@@ -73,9 +73,16 @@ def test_shim_console_prints_plain_status_without_ansi() -> None:
 
 
 def _make_cfg(workspace: Path) -> BuildConfig:
-    """Construct a minimal NXP BuildConfig rooted at ``workspace``."""
+    """Construct a minimal container-mode NXP BuildConfig rooted at ``workspace``.
+
+    These tests assert step_ok/step_fail event bookkeeping around the shell and
+    build wrappers, which is mode-independent. The container path is pinned so
+    they do not have to provision the bitbake bin directory the host path
+    requires.
+    """
     return BuildConfig(
         workspace=workspace,
+        host_mode=False,
         bsp_family="nxp",
         machine="imx95-var-dart",
         distro="fsl-imx-xwayland",
