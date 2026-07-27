@@ -67,6 +67,20 @@ paths = ["src/bakar/diagnostics.py"]
 # forbidden rule below caps the top of its allowed import set.
 
 [[modules]]
+name = "lock_authority"
+paths = ["src/bakar/build_stop.py"]
+# build_stop.py: per-run build-process lifecycle + the shared bitbake
+# lock-ownership gate (lock_mutation_guard). It matched no group before this
+# change, leaving its edges silently ungoverned. It has the same bidirectional
+# deferred-import shape as `core` (diagnostics): diagnostics imports
+# build_stop at module level (used by check_container_runtime), and
+# build_stop's lock_mutation_guard imports diagnostics.is_path_on_nfs inside
+# its own function body to avoid a circular import. Like `model` and `core`,
+# it is placed in its own group OUTSIDE the layers order so those genuinely
+# cross-layer edges are ungoverned (SUGGESTION) rather than false-positive
+# CRITICAL layer violations, instead of leaving it unclassified by accident.
+
+[[modules]]
 name = "analysis"
 paths = [
   "src/bakar/triage.py",

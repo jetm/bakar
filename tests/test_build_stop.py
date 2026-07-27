@@ -15,13 +15,19 @@ import json
 import os
 import signal
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
 from rich.console import Console
 
 from bakar import build_stop
+from tests.conftest import make_build_config
+
+if TYPE_CHECKING:
+    from bakar.config import BuildConfig
 
 pytestmark = pytest.mark.unit
 
@@ -1317,3 +1323,159 @@ def test_stop_build_host_returns_false_when_verify_finds_survivor(
 
     assert build_stop.stop_build(tmp_path) is False
     assert not (run_dir / "build.pid").exists()
+
+
+# --- lock-ownership gate -----------------------------------------------
+
+
+def _cfg_with_build_dir(tmp_path: Path) -> tuple[BuildConfig, Path]:
+    """An NXP BuildConfig whose TOPDIR (bsp_root/build_dir_name) exists on disk."""
+    cfg = make_build_config(workspace=tmp_path)
+    build_dir = cfg.bsp_root / cfg.build_dir_name
+    build_dir.mkdir(parents=True, exist_ok=True)
+    return cfg, build_dir
+
+
+def test_lock_marker_path_uses_build_dir_name(tmp_path: Path) -> None:
+    """lock_marker_path is rooted at bsp_root/build_dir_name, not a hardcoded 'build'."""
+    cfg, build_dir = _cfg_with_build_dir(tmp_path)
+
+    assert build_stop.lock_marker_path(cfg) == build_dir / ".bakar-lock-host"
+
+
+def test_read_marker_owner_none_when_absent(tmp_path: Path) -> None:
+    """No marker file at all -> None (never a peer)."""
+    cfg, _build_dir = _cfg_with_build_dir(tmp_path)
+
+    assert build_stop.read_marker_owner(cfg) is None
+
+
+def test_read_marker_owner_none_when_empty(tmp_path: Path) -> None:
+    """A whitespace-only marker (e.g. a truncated write) -> None."""
+    cfg, build_dir = _cfg_with_build_dir(tmp_path)
+    (build_dir / ".bakar-lock-host").write_text("   \n")
+
+    assert build_stop.read_marker_owner(cfg) is None
+
+
+def test_read_marker_owner_none_when_torn_multiline(tmp_path: Path) -> None:
+    """A torn/concurrent write leaving two hostnames on separate lines is garbled, never a peer."""
+    cfg, build_dir = _cfg_with_build_dir(tmp_path)
+    (build_dir / ".bakar-lock-host").write_text("hosta\nhostb\n")
+
+    assert build_stop.read_marker_owner(cfg) is None
+
+
+def test_read_marker_owner_returns_stripped_hostname(tmp_path: Path) -> None:
+    """A well-formed marker returns the stripped hostname."""
+    cfg, build_dir = _cfg_with_build_dir(tmp_path)
+    (build_dir / ".bakar-lock-host").write_text("  some-host  \n")
+
+    assert build_stop.read_marker_owner(cfg) == "some-host"
+
+
+def test_lock_mutation_guard_peer_held(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A marker naming another host refuses as peer-held, regardless of lock/fs state."""
+    cfg, build_dir = _cfg_with_build_dir(tmp_path)
+    (build_dir / ".bakar-lock-host").write_text("peer-host\n")
+    monkeypatch.setattr(build_stop.socket, "gethostname", lambda: "this-host")
+
+    refusal = build_stop.lock_mutation_guard(cfg)
+
+    assert refusal is not None
+    assert refusal.reason == "peer-held"
+    assert refusal.host == "peer-host"
+
+
+def test_lock_mutation_guard_local_marker_is_safe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A marker naming this host is unconditionally safe (None), no fs/lock check needed."""
+    cfg, build_dir = _cfg_with_build_dir(tmp_path)
+    (build_dir / ".bakar-lock-host").write_text("this-host\n")
+    monkeypatch.setattr(build_stop.socket, "gethostname", lambda: "this-host")
+
+    assert build_stop.lock_mutation_guard(cfg) is None
+
+
+def test_lock_mutation_guard_garbled_marker_never_classifies_as_peer_held(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A garbled (torn multiline) marker must never classify as peer-held."""
+    cfg, build_dir = _cfg_with_build_dir(tmp_path)
+    (build_dir / ".bakar-lock-host").write_text("hosta\nhostb\n")
+    monkeypatch.setattr(build_stop.socket, "gethostname", lambda: "this-host")
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    refusal = build_stop.lock_mutation_guard(cfg)
+
+    assert refusal is None or refusal.reason != "peer-held"
+
+
+def test_lock_mutation_guard_unattributable_lock_present_shared_fs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No reliable owner + lock PRESENT + shared/unknown fs -> unattributable."""
+    cfg, build_dir = _cfg_with_build_dir(tmp_path)
+    (build_dir / "bitbake.lock").write_text("4242\n")
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: True)
+
+    refusal = build_stop.lock_mutation_guard(cfg)
+
+    assert refusal is not None
+    assert refusal.reason == "unattributable"
+
+
+def test_lock_mutation_guard_shared_inaction_lock_absent_shared_fs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No reliable owner + lock ABSENT + shared/unknown fs -> shared-inaction, not a bare None.
+
+    A bare None here would let a caller run a blind unconditional unlink on the
+    strength of an absence view that NFS negative-lookup caching can make stale
+    for up to ~60s after a peer creates the lock.
+    """
+    cfg, _build_dir = _cfg_with_build_dir(tmp_path)
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: None)
+
+    refusal = build_stop.lock_mutation_guard(cfg)
+
+    assert refusal is not None
+    assert refusal.reason == "shared-inaction"
+
+
+def test_lock_mutation_guard_none_when_confirmed_local(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No reliable owner but the filesystem is CONFIRMED local -> safe (None)."""
+    cfg, build_dir = _cfg_with_build_dir(tmp_path)
+    (build_dir / "bitbake.lock").write_text("4242\n")
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    assert build_stop.lock_mutation_guard(cfg) is None
+
+
+def test_stale_bitbake_files_includes_hashserve_sock() -> None:
+    """The gate-owned stale-file set includes hashserve.sock (parity with kas_build._remove_all)."""
+    assert "hashserve.sock" in build_stop._STALE_BITBAKE_FILES
+
+
+def test_import_bakar_diagnostics_no_import_cycle() -> None:
+    """import bakar.diagnostics must succeed: build_stop must not import it at module level."""
+    result = subprocess.run(
+        [sys.executable, "-c", "import bakar.diagnostics"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_import_bakar_build_stop_no_import_cycle() -> None:
+    """import bakar.build_stop must also succeed standalone."""
+    result = subprocess.run(
+        [sys.executable, "-c", "import bakar.build_stop"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr

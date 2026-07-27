@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import time
 from dataclasses import dataclass
@@ -23,12 +24,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 
 from bakar.eventlog import running_tasks
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import Literal
 
     from bakar.config import BuildConfig
     from bakar.eventlog import RunningTask
@@ -44,7 +47,7 @@ _RUN_ID_LABEL_KEY = "bakar.run_id"
 # Stale bitbake artifacts left in the build TOPDIR by a forced/killed cooker.
 # A stale ``bitbake.lock`` blocks the next build ("Cannot lock ... bitbake.lock").
 # ``bitbake-cookerdaemon.log`` is a diagnostic log (like kas.log) and is kept.
-_STALE_BITBAKE_FILES = ("bitbake.lock", "bitbake.sock")
+_STALE_BITBAKE_FILES = ("bitbake.lock", "bitbake.sock", "hashserve.sock")
 
 # Wait-loop tuning. The graceful wait is UNBOUNDED (no grace cap); these only
 # govern the live-progress view and the runtime-death guard, never how long we
@@ -894,6 +897,142 @@ def _escalate_host(pgid: int | None, run_dir: Path | None = None) -> list[_Kille
                 killed.append(_KilledProc(pid, "SIGKILL", cmdline))
                 print(f"  SIGKILL pid {pid} ({_short_cmd(cmdline)})")
     return killed
+
+
+# ---------------------------------------------------------------------------
+# Lock-ownership gate.
+#
+# On a shared NFS TOPDIR (see ``tmpdir-local-override``), every node-local
+# liveness probe below (os.kill/os.killpg/argv scan) is meaningless against a
+# PID owned by a different fleet node: two nodes can each build a distinct
+# TOPDIR from one shared checkout, so a peer's live ``bitbake.lock`` must
+# never be read, deleted, or have its PID signalled by another node. The
+# primitives here are the single shared gate every lock mutator (this
+# module's stale-file cleanup, the doctor preflight, the stress-parse wipe)
+# and every lock acquirer (``run_build``, ``run_shell_live``,
+# ``run_shell_capture``) consults before touching the lock/socket files or a
+# PID read from them.
+# ---------------------------------------------------------------------------
+
+_LOCK_MARKER_FILENAME = ".bakar-lock-host"
+
+
+@dataclass(frozen=True)
+class LockRefusal:
+    """Why a lock mutator/acquirer refused to touch the build's lock state.
+
+    ``reason`` is one of four verdicts:
+
+    - ``"peer-held"`` - the ownership marker names another fleet node.
+    - ``"held-locally"`` - this node owns the marker (or is the sole
+      candidate on a confirmed-local filesystem) but a live cooker is using
+      the lock. Not produced by :func:`lock_mutation_guard` itself (which has
+      no activity probe); reserved for callers that layer an activity check
+      on top, e.g. ``clear_stale_bitbake_locks``.
+    - ``"unattributable"`` - no reliable owner (marker absent or garbled) and
+      ``bitbake.lock`` is present on a shared or unverifiable filesystem.
+    - ``"shared-inaction"`` - no reliable owner and the lock reads absent on
+      a shared or unverifiable filesystem. NFS negative-lookup caching can
+      report a peer's freshly-created lock as absent for up to ~60s, so a
+      bare "safe" verdict here would let a caller run a blind unconditional
+      unlink on the strength of that stale absence view.
+    """
+
+    reason: Literal["peer-held", "held-locally", "unattributable", "shared-inaction"]
+    host: str | None = None
+    pid: int | None = None
+    detail: str = ""
+
+
+@dataclass
+class LockClearOutcome:
+    """Result of a stale-lock clearing attempt: what was removed, if anything.
+
+    ``refusal`` is ``None`` when the clear proceeded (``removed`` may still be
+    empty - nothing was stale). A non-``None`` ``refusal`` means nothing was
+    touched: ``removed`` is always ``[]`` in that case.
+    """
+
+    removed: list[Path]
+    refusal: LockRefusal | None = None
+    note: str = ""
+
+
+def lock_marker_path(cfg: BuildConfig) -> Path:
+    """Path to the ownership marker for ``cfg``'s TOPDIR.
+
+    Lives at ``bsp_root/build_dir_name/.bakar-lock-host`` - the resolved
+    TOPDIR, not a hardcoded ``"build"`` (qcom's BUILDDIR is
+    ``build-<distro>``; see :attr:`BuildConfig.build_dir_name`).
+    """
+    return cfg.bsp_root / cfg.build_dir_name / _LOCK_MARKER_FILENAME
+
+
+def read_marker_owner(cfg: BuildConfig) -> str | None:
+    """Read the hostname recorded in the ownership marker, or ``None``.
+
+    ``None`` covers every case that must NEVER be treated as a peer: the
+    marker is absent, empty, unreadable (``OSError``), or torn/garbled (an
+    interrupted write left embedded control bytes or more than one line of
+    content). A garbled marker is unattributable, never a foreign owner - a
+    partial write from this node's own crash must not read as a peer lock.
+    """
+    try:
+        raw = lock_marker_path(cfg).read_text()
+    except OSError:
+        return None
+    owner = raw.strip()
+    if not owner or "\n" in owner or "\x00" in owner or not owner.isprintable():
+        return None
+    return owner
+
+
+def lock_mutation_guard(cfg: BuildConfig) -> LockRefusal | None:
+    """Return why ``cfg``'s lock/socket state must not be touched, or ``None``.
+
+    ``None`` means the mutation (or the signal, for ``bakar stop``) is safe.
+    Four verdicts, evaluated in order:
+
+    1. The marker names a host other than this one -> ``"peer-held"``.
+    2. The marker names this host -> ``None`` (this node owns the lock
+       unconditionally, regardless of filesystem or lock-file state).
+    3. The marker is absent/garbled, ``bitbake.lock`` is PRESENT, and the
+       TOPDIR is on a shared or unverifiable filesystem -> ``"unattributable"``.
+    4. The marker is absent/garbled, ``bitbake.lock`` is ABSENT, and the
+       TOPDIR is on a shared or unverifiable filesystem -> ``"shared-inaction"``.
+    5. Otherwise (marker absent/garbled but the filesystem is CONFIRMED
+       local) -> ``None``.
+
+    Reaches :func:`bakar.diagnostics.is_path_on_nfs` via a DEFERRED import
+    inside this function body, never at module level: ``diagnostics.py``
+    already imports this module (``build_stop``) at module level for
+    ``check_container_runtime``, so a module-level reverse import here would
+    be a deterministic circular import that breaks the first
+    ``import bakar.diagnostics``. That existing import is load-bearing and
+    must not be deferred to "fix" this - only this direction defers.
+    """
+    from bakar.diagnostics import is_path_on_nfs
+
+    owner = read_marker_owner(cfg)
+    if owner is not None:
+        if owner != socket.gethostname():
+            return LockRefusal(reason="peer-held", host=owner, detail=f"lock marker names {escape(owner)}")
+        return None
+
+    build_dir = cfg.bsp_root / cfg.build_dir_name
+    nfs = is_path_on_nfs(build_dir)
+    shared_or_unknown = nfs is not False  # True (nfs) or None (unverifiable) both fail closed
+    if not shared_or_unknown:
+        return None
+    if (build_dir / "bitbake.lock").exists():
+        return LockRefusal(
+            reason="unattributable",
+            detail="lock present, no reliable owner, shared/unverifiable filesystem",
+        )
+    return LockRefusal(
+        reason="shared-inaction",
+        detail="lock absent, no reliable owner, shared/unverifiable filesystem",
+    )
 
 
 def _clean_stale_bitbake_files(run_dir: Path) -> list[Path]:
