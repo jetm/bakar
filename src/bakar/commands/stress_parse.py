@@ -10,14 +10,18 @@ import typer
 from rich.table import Table
 
 import bakar.commands._app as _state
+from bakar.bsp_detect import machine_from_yaml
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     WorkspaceOption,
+    _combine_overlays_with_tuning,
     _dispatch_bsp,
+    _dispatch_from_yaml,
     _overlay_for,
-    _workspace_from_cwd,
+    _resolve_workspace,
     global_container_mode,
     global_host_mode,
+    split_kas_yaml_arg,
 )
 from bakar.config import BSPSpec, resolve
 from bakar.observability import RunLogger
@@ -28,6 +32,14 @@ from bakar.steps import stress_parse as step_stress_parse
 
 @app.command("stress-parse")
 def stress_parse(
+    kas_yaml: Annotated[
+        str | None,
+        typer.Argument(
+            help="Optional kas YAML (BYO form) for BYO/generic workspaces with no "
+            "manifest to dispatch from. Colon-separated overlays are supported: "
+            "main.yml:overlay.yml.",
+        ),
+    ] = None,
     runs: Annotated[
         int,
         typer.Option("--runs", "-n", help="Number of bitbake -p iterations to run."),
@@ -87,10 +99,17 @@ def stress_parse(
     ``<bsp>/build/runs/<run-id>/stress-parse/``. Exits non-zero if any
     iteration tripped a signature.
 
+    Two forms, mirroring ``bakar build``: manifest-driven (``--manifest``)
+    for NXP/TI workspaces, or BYO (a positional kas YAML) for generic
+    workspaces with no manifest to dispatch from - e.g. ``bakar
+    stress-parse meta-avocado/kas/machine/qemux86-64.yml``. The two forms
+    are mutually exclusive: passing both exits non-zero.
+
     Assumes the workspace is already synced (run ``bakar build`` once
-    first); applies the bitbake override and regenerates the kas YAML
-    before looping. Skips the doctor pre-flight - the user opts into
-    stress-parse explicitly.
+    first); applies the bitbake override (skipped in BYO generic mode)
+    and regenerates the kas YAML (skipped in BYO mode - the user's YAML
+    is already the source) before looping. Skips the doctor pre-flight -
+    the user opts into stress-parse explicitly.
     """
     if runs < 1:
         console.print("[red]--runs must be >= 1[/]")
@@ -107,8 +126,25 @@ def stress_parse(
             console.print(f"[red]--python: not an executable file: {python_executable}[/]")
             raise typer.Exit(code=2)
 
-    family, bsp = _dispatch_bsp(manifest)
-    ws = workspace or _workspace_from_cwd()
+    byo_form = kas_yaml is not None
+    if byo_form and manifest is not None:
+        console.print("[red]choose either a positional kas YAML or --manifest, not both[/]")
+        raise typer.Exit(code=2)
+
+    main_yaml, user_extras = split_kas_yaml_arg(kas_yaml if byo_form else None)
+
+    if byo_form:
+        family, bsp = _dispatch_from_yaml(main_yaml)
+    else:
+        family, bsp = _dispatch_bsp(manifest)
+
+    # BYO kas YAMLs carry the real MACHINE; without an explicit --machine the
+    # family default ("generic") would otherwise land the artifacts path on a
+    # nonexistent deploy/images/generic dir.
+    if byo_form and machine is None:
+        machine = machine_from_yaml(main_yaml)
+
+    ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
@@ -120,12 +156,15 @@ def stress_parse(
             host_mode=host_mode,
             container_mode=container_mode,
         ),
+        kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
     )
     overlay_source = _overlay_for(bsp)
+    extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
 
+    label_bit = f"BYO {kas_yaml}" if byo_form else f"{cfg.machine} / {cfg.image}"
     console.print(
-        f"[bold]::[/] bakar stress-parse [{family}] {cfg.machine} / {cfg.image} "
+        f"[bold]::[/] bakar stress-parse [{family}] {label_bit} "
         f"target={target} runs={runs}"
         + (f" parse-threads={parse_threads}" if parse_threads is not None else "")
         + (" [host-mode]" if host_mode else "")
@@ -135,13 +174,18 @@ def stress_parse(
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
     with RunLogger(runs_dir=cfg.runs_dir) as log:
-        step_override.apply(cfg, log)
-        step_kas.regenerate_yaml(cfg, log, bsp=bsp)
+        if family == "generic":
+            log.step_skip("bitbake_override", reason="generic mode")
+        else:
+            step_override.apply(cfg, log)
+        if not byo_form:
+            step_kas.regenerate_yaml(cfg, log, bsp=bsp)
         summary = step_stress_parse.run(
             cfg,
             log,
             bsp=bsp,
             overlay_source=overlay_source,
+            extra_overlays=extra_overlays,
             runs=runs,
             target=target,
             parse_threads=parse_threads,

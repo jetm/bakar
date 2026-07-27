@@ -272,11 +272,12 @@ def run(
     cfg: BuildConfig,
     log: RunLogger,
     *,
-    bsp: BspModel,
+    bsp: BspModel | None,
     overlay_source: Path,
     runs: int,
     target: str,
     parse_threads: int | None,
+    extra_overlays: list[Path] | None = None,
     label: str | None = None,
     python_executable: Path | None = None,
 ) -> dict:
@@ -290,7 +291,9 @@ def run(
     ``overlay_source`` is the path to the static tuning overlay; passed
     through to :func:`bakar.steps.kas_build.run_shell_capture`
     on every iteration so each parse-only run carries the same tuning
-    block as a real build.
+    block as a real build. ``extra_overlays`` are additional kas YAML
+    overlays (BYO colon-separated overlays plus cfg's opt-in tuning
+    overlays) layered on top, mirroring the BYO combine in ``build.py``.
 
     ``label`` tags the resulting ``summary.json`` so a multi-run sweep
     (e.g. patch-ablation matrix or CPython version sweep) can be
@@ -352,7 +355,7 @@ def run(
             runtime_cleared=runtime_was_cleared,
         )
         t0 = time.monotonic()
-        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source)
+        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source, extra_overlays=list(extra_overlays or []))
         rc = step_kas.run_shell_capture(
             kas_ctx,
             command,

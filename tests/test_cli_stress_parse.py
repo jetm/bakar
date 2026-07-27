@@ -251,3 +251,95 @@ def test_stress_parse_target_flag_forwarded(runner: CliRunner, tmp_path: Path, m
 
     assert result.exit_code == 0, result.output
     assert mock_run.call_args.kwargs["target"] == "core-image-minimal"
+
+
+# ---------------------------------------------------------------------------
+# BYO (bring-your-own kas YAML) dispatch
+#
+# Mirrors ``bakar build``'s BYO form: a positional kas YAML instead of
+# ``--manifest``, for generic workspaces (e.g. meta-avocado) with no
+# manifest to dispatch a BSP family from.
+# ---------------------------------------------------------------------------
+
+
+def _make_generic_yaml(tmp_path: Path) -> Path:
+    """A kas YAML with no NXP/TI machine signal -> dispatches to 'generic'."""
+    yaml_path = tmp_path / "qemux86-64.yml"
+    yaml_path.write_text("machine: qemux86-64\n")
+    return yaml_path
+
+
+def test_stress_parse_byo_positional_kas_yaml_dispatches_without_manifest(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A positional kas YAML (no ``--manifest``) resolves via generic dispatch.
+
+    Regression: before this, omitting ``--manifest`` fell through to the NXP
+    manifest default and crashed deep in ``kas.py:parse_manifest`` with a
+    ``FileNotFoundError`` on a nonexistent ``.repo/manifests/imx-*.xml``.
+    """
+    workspace = _make_workspace(tmp_path)
+    monkeypatch.chdir(workspace)
+    kas_yaml = _make_generic_yaml(workspace)
+    override_p, kas_p, stress_p = _patch_steps(summary=_clean_summary(1))
+
+    with override_p as mock_apply, kas_p as mock_regen, stress_p as mock_run:
+        result = runner.invoke(app, ["stress-parse", "--runs", "1", str(kas_yaml)])
+
+    assert result.exit_code == 0, result.output
+    assert mock_run.call_count == 1
+    # generic mode skips both the bitbake override and the manifest-driven
+    # kas YAML regeneration - the user's YAML is already the source.
+    assert mock_apply.call_count == 0
+    assert mock_regen.call_count == 0
+
+
+def test_stress_parse_byo_and_manifest_together_exits_2(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Passing both a positional kas YAML and ``--manifest`` is rejected."""
+    workspace = _make_workspace(tmp_path)
+    monkeypatch.chdir(workspace)
+    kas_yaml = _make_generic_yaml(workspace)
+    override_p, kas_p, stress_p = _patch_steps(summary=_clean_summary(1))
+
+    with override_p as mock_apply, kas_p as mock_regen, stress_p as mock_run:
+        result = runner.invoke(
+            app,
+            ["stress-parse", str(kas_yaml), "--manifest", "imx-6.6.52-2.2.2.xml"],
+        )
+
+    assert result.exit_code == 2, result.output
+    assert "choose either a positional kas YAML or --manifest, not both" in result.output
+    assert mock_apply.call_count == 0
+    assert mock_regen.call_count == 0
+    assert mock_run.call_count == 0
+
+
+def test_stress_parse_byo_colon_overlay_reaches_extra_overlays(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``main.yml:overlay.yml`` threads the overlay into step_stress_parse.run's extra_overlays.
+
+    Mirrors the ``bakar bitbake`` colon-overlay wiring test
+    (``tests/test_kas_colon_overlay.py::test_bitbake_colon_arg_extra_overlay_in_ctx``):
+    the user-supplied overlay must actually reach the step call, not just
+    parse without error.
+    """
+    workspace = _make_workspace(tmp_path)
+    monkeypatch.chdir(workspace)
+    kas_yaml = _make_generic_yaml(workspace)
+    overlay = workspace / "bringup.yml"
+    overlay.write_text("header:\n  version: 14\n")
+    kas_arg = f"{kas_yaml}:{overlay}"
+
+    override_p, kas_p, stress_p = _patch_steps(summary=_clean_summary(1))
+
+    with override_p, kas_p, stress_p as mock_run:
+        result = runner.invoke(app, ["stress-parse", "--runs", "1", kas_arg])
+
+    assert result.exit_code == 0, result.output
+    extra_overlays = mock_run.call_args.kwargs["extra_overlays"]
+    assert any(p.resolve() == overlay.resolve() for p in extra_overlays), (
+        f"user overlay not found in extra_overlays: {extra_overlays!r}"
+    )
