@@ -1,6 +1,8 @@
 # bakar shell
 
-Drop into a `kas-container shell` for the project, or run a single command inside it.
+Drop into a `kas shell` for the project, or run a single command inside it. The
+shell runs on the host by default; opt into `kas-container shell` with the
+global `--container` flag.
 
 ## Synopsis
 
@@ -16,7 +18,7 @@ bakar shell [KAS_YAML] [OPTIONS]
 | `--manifest` | `-f` | Manifest filename for BSP family dispatch |
 | `--workspace` | `-w` | Workspace root override |
 
-`--host` (bypass kas-container, run plain `kas shell` on the host) is a **global** option, so it goes *before* the subcommand: `bakar --host shell ...`. Placing it after `shell` is rejected by the CLI parser.
+`--container` (route the shell through `kas-container` instead of the default host `kas shell`) is a **global** option, so it goes *before* the subcommand: `bakar --container shell ...`. Placing it after `shell` is rejected by the CLI parser. The older `--host` flag is a retained no-op alias for the already-default host path.
 
 ## Examples
 

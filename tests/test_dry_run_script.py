@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -111,6 +112,19 @@ def test_generic_sync_step_uses_checkout(tmp_path: Path) -> None:
     cfg, kas_yaml, overlay = _prepare(tmp_path, "generic")
     script = generate_dry_run_script(cfg, kas_yaml, overlay)
     assert "kas-container checkout" in script, script
+
+
+def test_host_mode_sync_step_uses_plain_kas_checkout(tmp_path: Path) -> None:
+    """A host-mode script checks out with plain ``kas``, never ``kas-container``.
+
+    The emitted script has to run on a machine with no container runtime, so
+    the checkout step must follow ``host_mode`` exactly as the build step does.
+    """
+    cfg, kas_yaml, overlay = _prepare(tmp_path, "bbsetup")
+    cfg = replace(cfg, host_mode=True)
+    script = generate_dry_run_script(cfg, kas_yaml, overlay)
+    assert "kas checkout" in script, script
+    assert "kas-container" not in script, script
 
 
 def test_build_step_present(tmp_path: Path) -> None:

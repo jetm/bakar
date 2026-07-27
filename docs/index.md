@@ -6,13 +6,13 @@
 |---------|-----|-----------|
 | `setup` | [setup.md](setup.md) | Prepare the host once: profile, remediate doctor host checks, persist `[host]` config |
 | `init` | [init.md](init.md) | Interactive wizard: scaffold a new workspace and write `.bakar.toml` |
-| `build` | [build.md](build.md) | Full pipeline: doctor, sync, gen-kas, kas-container build |
+| `build` | [build.md](build.md) | Full pipeline: doctor, sync, gen-kas, kas build |
 | `sync` | [sync.md](sync.md) | Sync sources without building |
 | `gen-kas` | [gen-kas.md](gen-kas.md) | Regenerate kas YAML from manifest |
 | `bitbake` | [bitbake.md](bitbake.md) | Run a single recipe or task through bitbake, with run logging |
 | `clean-recipe` | [bitbake.md](bitbake.md) | Clean one recipe's sstate (`bitbake -c cleansstate`) |
 | `rebuild` | [bitbake.md](bitbake.md) | Rebuild one recipe from scratch (`cleansstate` then build) |
-| `shell` | [shell.md](shell.md) | Interactive kas-container shell or one-shot command |
+| `shell` | [shell.md](shell.md) | Interactive kas shell or one-shot command |
 | `run` | [run.md](run.md) | Boot avocado-os image in QEMU (meta-avocado only) |
 | `stop` | [stop.md](stop.md) | Gracefully halt a running build (SIGINT, then escalate) |
 | `clean` | [clean.md](clean.md) | Remove the build directory |
@@ -121,7 +121,7 @@
 bakar doctor    - pre-flight (runs automatically before build)
 bakar sync      - fetch/update sources
 bakar gen-kas   - translate manifest → kas YAML
-bakar build     - all of the above, then kas-container build
+bakar build     - all of the above, then kas build
 ```
 
 Related: [build.md](build.md), [sync.md](sync.md), [gen-kas.md](gen-kas.md), [doctor.md](doctor.md)
@@ -180,7 +180,7 @@ Related: [lock.md](lock.md), [diff.md](diff.md), [drift.md](drift.md), [changelo
 ### Shell and scripting
 
 ```text
-bakar shell     - interactive or one-shot kas-container shell
+bakar shell     - interactive or one-shot kas shell
 bakar for-all   - run a command in every source repo (parity with kas for-all-repos)
 ```
 

@@ -47,7 +47,9 @@ one).
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `show_doctor_report` | bool | `true` | Show the pre-flight doctor report before every build and sync. Set to `false` to print only build-blocking issues; the global `--hide-doctor-report` flag does the same for one invocation. Doctor checks always run - a BLOCK-severity failure aborts regardless. |
-| `kas_container_image` | string | `jetm/kas-build-env:latest` | kas-container image tag. Overridden by a workspace `.bakar.toml` `[build]` value and by the `KAS_CONTAINER_IMAGE` env var. |
+| `container` | bool | `false` | Route builds through `kas-container` instead of running `kas` on the host. Host execution is the default; this is the opt-in. Overridden by a workspace `.bakar.toml` `[build]` value, by `BAKAR_CONTAINER`, and by the global `--container` flag. |
+| `host_mode` | bool | `false` | Retained back-compat alias that forces host execution. Host is already the default, so this is a no-op; existing configs keep parsing. Superseded by `container`. |
+| `kas_container_image` | string | `jetm/kas-build-env:latest` | kas-container image tag. Names the image used once the container path is opted into via `container`; setting it does not select the container. Overridden by a workspace `.bakar.toml` `[build]` value and by the `KAS_CONTAINER_IMAGE` env var. |
 | `dl_dir` | string | *(not set)* | Override `DL_DIR` (shared download cache path). Passed to kas-container as an env var. |
 | `sstate_dir` | string | *(not set)* | Override `SSTATE_DIR` (sstate cache path). Passed to kas-container as an env var. |
 | `sstate_mirrors` | string | *(not set)* | Raw `SSTATE_MIRRORS` value passed to the build. Use `sstate_mirror_url` unless you need full control over the mirror syntax. |
@@ -186,7 +188,7 @@ A top-level table (not under `[defaults]`) that overrides the user
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `kas_container_image` | string | Workspace override for the kas-container image tag. Setting it also disables host-mode auto-enable (the workspace has a container setup). |
+| `kas_container_image` | string | Workspace override for the kas-container image tag. Names the image used once the container path is opted into; it does not select the container on its own. |
 
 ### `[host]`
 
@@ -279,7 +281,9 @@ still take precedence over env vars.
 
 | Variable | Description |
 |----------|-------------|
-| `KAS_CONTAINER_IMAGE` | Override the kas-container image for one invocation. Takes precedence over both the workspace `.bakar.toml` `[build]` value and `build.kas_container_image` in the user config. |
+| `BAKAR_CONTAINER` | Set to `1` to route the build through `kas-container` for one invocation. Host execution is the default; this is the opt-in, equivalent to the global `--container` flag. Beats the workspace and user `[build] container` toggles. |
+| `BAKAR_HOST_MODE` | Retained back-compat alias forcing host execution. Host is already the default, so this is a no-op. |
+| `KAS_CONTAINER_IMAGE` | Override the kas-container image for one invocation. Takes precedence over both the workspace `.bakar.toml` `[build]` value and `build.kas_container_image` in the user config. Names the image only; it does not select the container path. |
 
 ### bitbake-override
 

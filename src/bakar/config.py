@@ -312,8 +312,13 @@ class BuildConfig:
     repo_url: str
     repo_branch: str
     kas_container_image: str
-    # When True, kas-container is bypassed and plain `kas shell` is invoked
-    # directly on the host to rule out kas-container/Docker as the parser-fork-race environment.
+    # True runs kas directly on the host; False routes the build through
+    # kas-container. Host is the effective default: resolve() returns
+    # host_mode=True unless an explicit container opt-in (--container,
+    # BAKAR_CONTAINER, or a [build] container toggle) selects the container.
+    # This field default stays False only because direct BuildConfig(...)
+    # constructions - almost entirely tests - predate the flip and assert
+    # container behavior; it is NOT the mode a real invocation resolves to.
     host_mode: bool = False
     kas_yaml_override: Path | None = field(default=None)
     # Build-tuning fields sourced from config.toml [build]. These carry the

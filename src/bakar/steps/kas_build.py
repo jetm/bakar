@@ -1,9 +1,19 @@
-"""Regenerate the kas YAML and run `kas-container build`.
+"""Regenerate the kas YAML and run the kas build.
 
 The YAML generator lives in :mod:`bakar.kas`; this step wraps it
 plus the build invocation, and layers in
 the static tuning overlay (``overlays/bakar-tuning-<bsp>.yml``)
 on top of whatever kas YAML the caller passes in.
+
+Two execution modes share every code path here. Host mode invokes ``kas``
+directly and is the default; container mode invokes ``kas-container`` and is
+reached only through an explicit opt-in (``--container``, ``BAKAR_CONTAINER``,
+or a ``[build] container`` toggle). The mode is carried on
+``BuildConfig.host_mode`` and selects only the executable name plus the
+container-specific extras noted below - path translation into ``/work``, the
+runtime label used by ``bakar stop``, and the ``KAS_RUNTIME_ARGS`` handling.
+Everything else - overlays, parallelism, PTY, UI parsing, telemetry - is
+mode-independent.
 
 A pseudo-TTY is allocated for the kas-container subprocess so that
 ``kas-container``'s ``[ -t 1 ]`` check passes and it attaches ``-t -i`` on
@@ -1217,10 +1227,14 @@ def _sync_step_lines(cfg: BuildConfig, kas_arg: str) -> list[str]:
     """Return the family-correct sync-step command lines.
 
     Branches on ``cfg.bsp_family``: ``repo init`` + ``repo sync`` for nxp,
-    the oe-layertool setup script for ti, and ``kas-container checkout`` for
+    the oe-layertool setup script for ti, and ``kas checkout`` for
     bbsetup/generic (and any other family). The commands match what a real
     sync would invoke (see :mod:`bakar.commands.sync` and
     :func:`bakar.steps.ti_layertool._build_layertool_cmd`).
+
+    The checkout step honours ``cfg.host_mode`` the same way the build step
+    does, so a script generated for the default host path stays runnable on a
+    machine with no container runtime installed.
     """
     if cfg.bsp_family == "nxp":
         nproc = shlex.quote(os.environ.get("NPROC", str(os.cpu_count() or 8)))
@@ -1237,7 +1251,8 @@ def _sync_step_lines(cfg: BuildConfig, kas_arg: str) -> list[str]:
         layertool = " ".join(_build_layertool_cmd(cfg))
         layertool_dir = cfg.workspace / "ti" / "oe-layertool"
         return [f"(cd {shlex.quote(str(layertool_dir))} && {layertool})"]
-    return [f"kas-container checkout {shlex.quote(kas_arg)}"]
+    exe = "kas" if cfg.host_mode else "kas-container"
+    return [f"{exe} checkout {shlex.quote(kas_arg)}"]
 
 
 def generate_dry_run_script(
@@ -1805,7 +1820,11 @@ def _run_pty_with_ui(
 
 
 def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None, show_layers: bool = False) -> int:
-    """Run `kas-container build <kas_yaml>:<overlay>` with the measurement harness.
+    """Run `kas build <kas_yaml>:<overlay>` with the measurement harness.
+
+    The executable is `kas` on the host (the default) or `kas-container`
+    when the container path is opted into; everything below that choice -
+    overlays, PTY, UI, telemetry - is identical in both modes.
 
     Returns the build exit code. Does not raise - caller decides how to
     react to a nonzero status.
@@ -2000,13 +2019,14 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
 
 
 def run_shell_live(ctx: KasBuildContext, command: str) -> int:
-    """Run ``kas-container shell -c <command>`` with the live knotty UI.
+    """Run ``kas shell -c <command>`` with the live knotty UI.
 
     Sister to :func:`run_shell_capture`, but instead of capturing output to
     a file it pumps the child's PTY through :func:`_run_pty_with_ui` so the
     user sees knotty's live progress bar. Used for non-interactive
     ``bakar bitbake`` invocations (anything that is not ``devshell`` or
-    ``listtasks``). Returns the kas-container exit code.
+    ``listtasks``). Runs ``kas`` on the host by default, ``kas-container``
+    when the container path is opted into; returns the child's exit code.
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
     log.step_start("kas_shell_live", command=command, host_mode=cfg.host_mode)

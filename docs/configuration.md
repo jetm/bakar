@@ -28,8 +28,11 @@ The same file may also carry a top-level `[build]` table (not under
 `[defaults]`) with `kas_container_image`, overriding the user `config.toml`
 `[build]` value for this workspace: precedence is workspace `.bakar.toml`
 `[build]` > user `config.toml` `[build]` > built-in default, with the
-`KAS_CONTAINER_IMAGE` env var still beating all three. A workspace
-`kas_container_image` also disables host-mode auto-enable.
+`KAS_CONTAINER_IMAGE` env var still beating all three. Setting
+`kas_container_image` does not select the container path - it only names the
+image used once the container is opted into via `--container`,
+`BAKAR_CONTAINER`, or a `[build] container` toggle. Builds run `kas` on the
+host by default.
 
 A top-level `[host]` table (not under `[defaults]`) likewise overrides the user
 `config.toml` `[host]` doctor thresholds for this workspace: precedence is
