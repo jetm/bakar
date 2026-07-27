@@ -1116,6 +1116,10 @@ def _verify_clean(
     node cannot know whether that PID even belongs to bitbake."""
     topdir = run_dir.parent.parent
     reasons: list[str] = []
+    # stop_build already refuses before the run-dir scan on any guard verdict,
+    # so this re-check only ever sees a refusal in the narrow TOCTOU window
+    # where ownership changes between stop_build's initial check and this
+    # later call (see design.md's Non-Goals). Not dead code.
     refusal = lock_mutation_guard(cfg) if cfg is not None else None
     cooker = _collect_build_pids(topdir, pgid).cooker
     if cooker:
@@ -1172,8 +1176,9 @@ def stop_build(
     Ctrl-C or ``force`` escalates). Container mode resolves the container via
     its recorded label and stops it through the runtime daemon, without
     touching the wrapper PGID; ``grace_seconds`` applies there too. The launch
-    record (``build.pid`` + ``build.meta.json``) is always removed before
-    returning.
+    record (``build.pid`` + ``build.meta.json``) is removed before returning
+    on every path that reaches the run-dir scan; a refused stop (see above)
+    returns before that point and leaves the launch record untouched.
     """
     if cfg is not None:
         refusal = lock_mutation_guard(cfg)

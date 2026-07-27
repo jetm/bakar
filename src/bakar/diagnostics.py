@@ -1071,7 +1071,8 @@ def check_bitbake_locks(cfg: BuildConfig) -> CheckResult:
                 f"bitbake.lock held by {escape(refusal.host or 'unknown host')} (peer node) - a build is running there",
                 fix_hint="wait for the peer build, or build a different machine/TOPDIR",
             )
-        # unattributable / shared-inaction
+        # unattributable (shared-inaction routes through the _ok path above,
+        # not this BLOCK branch)
         return _fail(
             "bitbake-locks",
             Severity.BLOCK,
@@ -1738,6 +1739,7 @@ def is_path_on_nfs(path: Path) -> bool | None:
     as local would run a node-local PID probe against a PID number owned by a
     peer fleet node and unlink that peer's live lock mid-build.
     """
+    path = path.resolve(strict=False)
     try:
         mounts_raw = Path("/proc/mounts").read_text()
     except OSError:
@@ -1751,9 +1753,12 @@ def is_path_on_nfs(path: Path) -> bool | None:
 def _nfs_lookup_cache_bounded(opts: str) -> bool:
     """True when NFS mount ``opts`` bound how long a stale absence view lives.
 
-    Either an explicit ``lookupcache=positive``/``lookupcache=none``, or an
-    attribute-cache timeout of at most :data:`_NFS_LOW_ACTIMEO_SECONDS`
-    seconds. An unparseable timeout value counts as unbounded.
+    Either an explicit ``lookupcache=positive``/``lookupcache=pos``/
+    ``lookupcache=none`` (the kernel reports the abbreviated ``pos`` form in
+    ``/proc/mounts``, while ``positive`` is what users type in fstab/mount
+    options), or an attribute-cache timeout of at most
+    :data:`_NFS_LOW_ACTIMEO_SECONDS` seconds. An unparseable timeout value
+    counts as unbounded.
     """
     entries = [opt.strip() for opt in opts.split(",")]
     if any(opt in _NFS_BOUNDED_LOOKUP_OPTS for opt in entries):
@@ -1877,7 +1882,8 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
                 f"(mount options: {ws_opts}): a peer node's lock file can read as absent for the "
                 "full attribute timeout",
                 fix_hint=(
-                    "Remount the workspace with lookupcache=positive (or a low actimeo, e.g. actimeo=10) "
+                    "Remount the workspace with lookupcache=positive (reported as lookupcache=pos "
+                    "in /proc/mounts) (or a low actimeo, e.g. actimeo=10) "
                     "so lock-file absence is judged on a fresh view, then re-run."
                 ),
             )

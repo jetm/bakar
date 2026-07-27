@@ -2060,7 +2060,7 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
     # and bakar triage has a terminal event to find.
     rc: int | None = None
     completed = False
-    lock_refused = False
+    terminated = False
     outcome: _PtyOutcome | None = None
     try:
         try:
@@ -2068,11 +2068,11 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
                 outcome = _run_pty_with_ui(cmd, cfg, log, ui, stop_event, output_mode=ctx.output_mode)
         except LockHeldByPeerError as exc:
             rc = 1
-            lock_refused = True
             log.step_fail(
                 "kas_shell_live",
                 reason=f"bitbake lock claimed by peer host {escape(exc.host)} during acquire; aborting before launch",
             )
+            terminated = True
             return rc
         rc = outcome.rc
         completed = True
@@ -2087,7 +2087,7 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
         if outcome is not None:
             _print_cache_summary(log, outcome.cache_backend, outcome.cache_doc, ctx.output_mode)
         actual_rc = rc if rc is not None else -1
-        if not lock_refused:
+        if not terminated:
             if completed and actual_rc == 0:
                 log.step_ok("kas_shell_live", exit_code=actual_rc)
             else:
