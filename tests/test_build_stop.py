@@ -1479,3 +1479,234 @@ def test_import_bakar_build_stop_no_import_cycle() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+# --- bakar stop gates PID trust, not just files (task 3.1) -----------------
+
+
+def _make_run_dir_for_cfg(cfg: BuildConfig, run_id: str = "20260618-120000") -> Path:
+    """Create ``cfg.bsp_root/cfg.build_dir_name/runs/<run_id>`` and return it."""
+    run_dir = cfg.bsp_root / cfg.build_dir_name / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    return run_dir
+
+
+def _record_kill_pid(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+    """Patch build_stop._kill_pid to record (pid, sig) calls instead of signalling."""
+    calls: list[tuple[int, int]] = []
+
+    def fake_kill_pid(pid: int, sig: int) -> bool:
+        calls.append((pid, sig))
+        return True
+
+    monkeypatch.setattr(build_stop, "_kill_pid", fake_kill_pid)
+    return calls
+
+
+def _forbid_wait_and_escalate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail the test if the graceful-wait/escalation ladder is ever reached.
+
+    A peer-held (or unattributable/shared-inaction) refusal must return before
+    ``stop_build`` gets anywhere near ``_graceful_wait``/``_escalate_host`` - if
+    either fires, the gate did not actually short-circuit the stop.
+    """
+
+    def _fail_wait(**_kwargs: object) -> str:
+        pytest.fail("_graceful_wait must not be reached when the ownership gate refuses")
+
+    def _fail_escalate(*_args: object, **_kwargs: object) -> list[object]:
+        pytest.fail("_escalate_host must not be reached when the ownership gate refuses")
+
+    monkeypatch.setattr(build_stop, "_graceful_wait", _fail_wait)
+    monkeypatch.setattr(build_stop, "_escalate_host", _fail_escalate)
+
+
+@pytest.mark.parametrize("reason", ["peer-held", "unattributable", "shared-inaction"])
+def test_stop_build_sends_zero_signals_on_any_refusal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reason: str,
+) -> None:
+    """A refusing guard (any of the three refusal reasons) sends ZERO signals.
+
+    The falsifier for this task is any SIGINT/SIGTERM/SIGKILL reaching
+    ``_kill_pid``/``os.killpg`` when the marker names a peer, or when
+    ownership is unattributable/shared-inaction - all three must refuse the
+    whole stop before any signal is sent, never just gate file cleanup.
+    """
+    cfg = make_build_config(workspace=tmp_path)
+    run_dir = _make_run_dir_for_cfg(cfg)
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+
+    monkeypatch.setattr(
+        build_stop,
+        "lock_mutation_guard",
+        lambda _cfg: build_stop.LockRefusal(reason=reason, host="peer-host" if reason == "peer-held" else None),
+    )
+    killpg_calls = _record_killpg(monkeypatch)
+    kill_pid_calls = _record_kill_pid(monkeypatch)
+    _forbid_wait_and_escalate(monkeypatch)
+
+    result = build_stop.stop_build(cfg.bsp_root, cfg)
+
+    assert result is False
+    assert killpg_calls == []
+    assert kill_pid_calls == []
+    # The refusal must fire before any run-dir/pidfile bookkeeping runs.
+    assert (run_dir / "build.pid").exists()
+
+
+def test_stop_build_local_marker_stop_path_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A local (or None-guard) marker leaves today's stop path unchanged.
+
+    Mirrors ``test_stop_build_sigint_then_clean_exit`` but drives the same
+    scenario through the ``cfg``-aware call, confirming the guard passing
+    (``None``) does not alter the SIGINT-then-clean-exit behavior.
+    """
+    cfg = make_build_config(workspace=tmp_path)
+    run_dir = _make_run_dir_for_cfg(cfg)
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+
+    monkeypatch.setattr(build_stop, "lock_mutation_guard", lambda _cfg: None)
+    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+    calls = _record_killpg(monkeypatch)
+
+    assert build_stop.stop_build(cfg.bsp_root, cfg) is True
+
+    assert calls == [(4242, signal.SIGINT)]
+    assert not (run_dir / "build.pid").exists()
+
+
+def test_stop_build_no_cfg_skips_gate_and_uses_hardcoded_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cfg=None (the legacy call shape) skips the gate entirely - back-compat."""
+    run_dir = _make_run_dir(tmp_path)
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+
+    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+    calls = _record_killpg(monkeypatch)
+
+    assert build_stop.stop_build(tmp_path) is True
+
+    assert calls == [(4242, signal.SIGINT)]
+
+
+def test_stop_build_uses_build_dir_name_for_runs_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stop_build scans ``bsp_root/cfg.build_dir_name/runs``, not a hardcoded 'build'.
+
+    Uses the qcom family, whose ``build_dir_name`` is ``build-<distro>`` - the
+    hardcoded ``"build"`` path would scan a nonexistent directory and report
+    "no running build" even though a run dir exists.
+    """
+    cfg = make_build_config(bsp_family="qcom", distro="qcom-wayland", workspace=tmp_path)
+    assert cfg.build_dir_name == "build-qcom-wayland"
+    run_dir = _make_run_dir_for_cfg(cfg)
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+    # Confirm the hardcoded legacy path does NOT exist, so a pass here can only
+    # be explained by using cfg.build_dir_name.
+    assert not (cfg.bsp_root / "build" / "runs").exists()
+
+    monkeypatch.setattr(build_stop, "lock_mutation_guard", lambda _cfg: None)
+    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+    calls = _record_killpg(monkeypatch)
+
+    assert build_stop.stop_build(cfg.bsp_root, cfg) is True
+
+    assert calls == [(4242, signal.SIGINT)]
+
+
+def test_report_stale_cleanup_leaves_files_on_refusal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_report_stale_cleanup removes nothing when the ownership gate refuses.
+
+    Even though the node-local argv holder-scan would see no holder (empty
+    process set) - the argv scan alone cannot see a peer's processes on a
+    shared TOPDIR, so the gate refusal must win.
+    """
+    cfg, build_dir = _cfg_with_build_dir(tmp_path)
+    run_dir = build_dir / "runs" / "20260618-120000"
+    run_dir.mkdir(parents=True)
+    (build_dir / "bitbake.lock").write_text("4242\n")
+    (build_dir / "bitbake.sock").write_text("")
+
+    monkeypatch.setattr(
+        build_stop,
+        "lock_mutation_guard",
+        lambda _cfg: build_stop.LockRefusal(reason="peer-held", host="peer-host"),
+    )
+
+    removed = build_stop._report_stale_cleanup(run_dir, cfg)
+
+    assert removed == []
+    assert (build_dir / "bitbake.lock").exists()
+    assert (build_dir / "bitbake.sock").exists()
+
+
+def test_report_stale_cleanup_no_cfg_unchanged(tmp_path: Path) -> None:
+    """cfg=None preserves the pre-guard node-local-only behavior."""
+    run_dir = _make_run_dir(tmp_path)
+    build_dir = run_dir.parent.parent
+    (build_dir / "bitbake.lock").write_text("4242\n")
+
+    removed = build_stop._report_stale_cleanup(run_dir)
+
+    assert removed == [build_dir / "bitbake.lock"]
+    assert not (build_dir / "bitbake.lock").exists()
+
+
+def test_verify_clean_excludes_gate_refused_files_and_skips_liveness_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gate-refused cleanup must not be reported as an incomplete stop.
+
+    Correctly refusing to touch a peer's lock is the SUCCESSFUL outcome of
+    ``bakar stop`` in that scenario - _verify_clean must exclude the
+    gate-refused lock/socket files from its "still present" set and skip the
+    server-liveness probe (a node-local PID read this node does not own).
+    """
+    cfg, build_dir = _cfg_with_build_dir(tmp_path)
+    run_dir = build_dir / "runs" / "20260618-120000"
+    run_dir.mkdir(parents=True)
+    (build_dir / "bitbake.lock").write_text("4242\n")
+
+    monkeypatch.setattr(
+        build_stop,
+        "lock_mutation_guard",
+        lambda _cfg: build_stop.LockRefusal(reason="peer-held", host="peer-host"),
+    )
+    # If the liveness probe were NOT skipped, this would inject a failure reason.
+    monkeypatch.setattr(build_stop, "_bitbake_server_alive", lambda _rd: True)
+
+    reasons = build_stop._verify_clean(run_dir, None, cfg=cfg)
+
+    assert reasons == []
+
+
+def test_verify_clean_no_cfg_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """cfg=None preserves prior behavior: a live bitbake-server IS reported."""
+    run_dir = _make_run_dir(tmp_path)
+    build_dir = run_dir.parent.parent
+    (build_dir / "bitbake.lock").write_text("4242\n")
+
+    monkeypatch.setattr(build_stop, "_bitbake_server_alive", lambda _rd: True)
+
+    reasons = build_stop._verify_clean(run_dir, None)
+
+    assert any("bitbake-server" in r for r in reasons)

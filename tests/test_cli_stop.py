@@ -46,7 +46,7 @@ def test_stop_no_args(runner: _CliRunner, workspace: Path, monkeypatch: pytest.M
     """``stop`` with no args exits 0 and calls stop_build once with force=False."""
     calls: list[tuple[Path, bool]] = []
 
-    def _rec(bsp_root: Path, force: bool, grace_seconds: float = 0) -> bool:
+    def _rec(bsp_root: Path, cfg: object = None, *, force: bool = False, grace_seconds: float = 0) -> bool:
         calls.append((bsp_root, force))
         return True
 
@@ -63,7 +63,7 @@ def test_stop_force(runner: _CliRunner, workspace: Path, monkeypatch: pytest.Mon
     """``stop --force`` calls stop_build with force=True."""
     calls: list[tuple[Path, bool]] = []
 
-    def _rec(bsp_root: Path, force: bool, grace_seconds: float = 0) -> bool:
+    def _rec(bsp_root: Path, cfg: object = None, *, force: bool = False, grace_seconds: float = 0) -> bool:
         calls.append((bsp_root, force))
         return True
 
@@ -94,7 +94,7 @@ def test_stop_explicit_workspace(
 
     calls: list[tuple[Path, bool]] = []
 
-    def _rec(bsp_root: Path, force: bool, grace_seconds: float = 0) -> bool:
+    def _rec(bsp_root: Path, cfg: object = None, *, force: bool = False, grace_seconds: float = 0) -> bool:
         calls.append((bsp_root, force))
         return True
 
@@ -130,7 +130,7 @@ def test_stop_byo_positional_yaml(
 
     calls: list[tuple[Path, bool]] = []
 
-    def _rec(bsp_root: Path, force: bool, grace_seconds: float = 0) -> bool:
+    def _rec(bsp_root: Path, cfg: object = None, *, force: bool = False, grace_seconds: float = 0) -> bool:
         calls.append((bsp_root, force))
         return True
 
@@ -156,7 +156,7 @@ def test_stop_yaml_and_manifest_conflict(
     monkeypatch.setattr(
         stop_cmd.build_stop,
         "stop_build",
-        lambda bsp_root, force, grace_seconds=0: calls.append((bsp_root, force)),
+        lambda bsp_root, cfg=None, *, force=False, grace_seconds=0: calls.append((bsp_root, force)),
     )
 
     result = runner.invoke(app, ["stop", str(yaml), "--manifest", "imx-6.6.52-2.2.2.xml"])
@@ -178,7 +178,9 @@ def test_stop_returns_false_exits_nonzero(
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
 
-    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", lambda bsp_root, force, grace_seconds=0: False)
+    monkeypatch.setattr(
+        stop_cmd.build_stop, "stop_build", lambda bsp_root, cfg=None, *, force=False, grace_seconds=0: False
+    )
 
     result = runner.invoke(app, ["stop", str(yaml)])
 
@@ -198,7 +200,9 @@ def test_stop_returns_true_exits_zero(
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
 
-    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", lambda bsp_root, force, grace_seconds=0: True)
+    monkeypatch.setattr(
+        stop_cmd.build_stop, "stop_build", lambda bsp_root, cfg=None, *, force=False, grace_seconds=0: True
+    )
 
     result = runner.invoke(app, ["stop", str(yaml)])
 
@@ -226,7 +230,7 @@ def test_stop_force_returns_false_exits_nonzero(
 
     calls: list[tuple[Path, bool]] = []
 
-    def _rec(bsp_root: Path, force: bool, grace_seconds: float = 0) -> bool:
+    def _rec(bsp_root: Path, cfg: object = None, *, force: bool = False, grace_seconds: float = 0) -> bool:
         calls.append((bsp_root, force))
         return False
 
@@ -246,7 +250,7 @@ def test_stop_timeout_overrides_config_default(
     """``stop --timeout 45`` threads grace_seconds=45 to stop_build regardless of config."""
     calls: list[tuple[Path, bool, float]] = []
 
-    def _rec(bsp_root: Path, force: bool, grace_seconds: float = 0) -> bool:
+    def _rec(bsp_root: Path, cfg: object = None, *, force: bool = False, grace_seconds: float = 0) -> bool:
         calls.append((bsp_root, force, grace_seconds))
         return True
 
@@ -277,7 +281,7 @@ def test_stop_no_timeout_falls_back_to_config_stop_grace_seconds(
 
     calls: list[tuple[Path, bool, float]] = []
 
-    def _rec(bsp_root: Path, force: bool, grace_seconds: float = 0) -> bool:
+    def _rec(bsp_root: Path, cfg: object = None, *, force: bool = False, grace_seconds: float = 0) -> bool:
         calls.append((bsp_root, force, grace_seconds))
         return True
 

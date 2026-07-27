@@ -1061,14 +1061,26 @@ def _clean_stale_bitbake_files(run_dir: Path) -> list[Path]:
     return removed
 
 
-def _report_stale_cleanup(run_dir: Path) -> list[Path]:
+def _report_stale_cleanup(run_dir: Path, cfg: BuildConfig | None = None) -> list[Path]:
     """Remove stale bitbake lock/socket - only when nothing holds them - and log.
+
+    ``cfg`` gates the removal on the shared ownership marker BEFORE the
+    node-local argv holder-check: the argv scan alone cannot see a peer
+    node's processes on a shared TOPDIR, so a refusal here must win over an
+    empty (falsely-clear) local scan. ``cfg=None`` (no ``BuildConfig``
+    available) skips the gate and preserves prior node-local-only behavior.
 
     A live process whose argv references this build's ``bitbake.lock`` /
     ``bitbake.sock`` is a holder; removing the lock out from under a running
     cooker would corrupt an in-flight build, so removal is gated on the
     argv-scan being empty. Returns the paths actually removed ([] when a holder
-    is present or nothing was stale)."""
+    is present, ownership is refused, or nothing was stale)."""
+    if cfg is not None:
+        refusal = lock_mutation_guard(cfg)
+        if refusal is not None:
+            detail = f" ({escape(refusal.host)})" if refusal.host else ""
+            print(f"leaving bitbake.lock/bitbake.sock in place: ownership refused - {refusal.reason}{detail}")
+            return []
     topdir = run_dir.parent.parent
     holders = _collect_build_pids(topdir, None).cooker
     if holders:
@@ -1086,38 +1098,66 @@ def _verify_clean(
     *,
     runtime: str | None = None,
     container_label: str | None = None,
+    cfg: BuildConfig | None = None,
 ) -> list[str]:
     """Return reasons the build is NOT fully stopped ([] means verified clean).
 
     Confirms every target class named in the escalation is gone: the argv-scoped
     cooker/workers, the wrapper process group, bitbake-server's detached PID,
     the build container (when a label is known), and the stale ``bitbake.lock``
-    / ``bitbake.sock``. ``bakar stop`` reports success only when this is empty."""
+    / ``bitbake.sock``. ``bakar stop`` reports success only when this is empty.
+
+    ``cfg`` makes this refusal-aware: when the shared ownership gate refuses
+    (peer-held/unattributable/shared-inaction), the stale lock/socket files
+    that ``_report_stale_cleanup`` correctly left untouched are NOT reported
+    as "still present" (that refusal is itself a successful stop, not a
+    failure), and the ``bitbake-server`` liveness probe - a node-local PID
+    read from a lock this node does not own - is skipped entirely, since this
+    node cannot know whether that PID even belongs to bitbake."""
     topdir = run_dir.parent.parent
     reasons: list[str] = []
+    refusal = lock_mutation_guard(cfg) if cfg is not None else None
     cooker = _collect_build_pids(topdir, pgid).cooker
     if cooker:
         reasons.append(f"bitbake cooker/worker still running (pids {sorted(cooker)})")
     if pgid is not None and pgid > 0 and _pgid_alive(pgid):
         reasons.append(f"build process group {pgid} still alive")
-    if _bitbake_server_alive(run_dir):
+    if refusal is None and _bitbake_server_alive(run_dir):
         reasons.append("bitbake-server (from bitbake.lock) still alive")
     if runtime is not None and container_label is not None and _container_id(runtime, container_label) is not None:
         reasons.append("build container still running")
-    reasons.extend(f"{name} still present in {topdir}" for name in _STALE_BITBAKE_FILES if (topdir / name).exists())
+    if refusal is None:
+        reasons.extend(f"{name} still present in {topdir}" for name in _STALE_BITBAKE_FILES if (topdir / name).exists())
     return reasons
 
 
-def stop_build(bsp_root: Path, *, force: bool = False, grace_seconds: float = 0) -> bool:
+def stop_build(
+    bsp_root: Path, cfg: BuildConfig | None = None, *, force: bool = False, grace_seconds: float = 0
+) -> bool:
     """Stop the most recent build, targeting it by execution mode.
 
-    Scans run dirs under ``bsp_root/build/runs`` newest-first and targets the
-    first whose build is still live (host: a verified live PGID; container: a
-    recorded container label). Taking only the lexically-latest run missed a
-    live build whenever a later clean-recipe or second build left a newer but
-    finished run dir. Returns ``True`` when a build was targeted (host PGID
-    signalled or container stopped), ``False`` when none is targetable (no run
-    dir, or every run is finished/unresolvable).
+    ``cfg`` gates PID trust, not just file mutation: on a shared NFS TOPDIR,
+    ``bitbake.lock`` is also a kill-target selector with no identity check, so
+    a peer-owned marker must refuse the ENTIRE stop before any signal is sent
+    - reading a peer's PID number and signalling whatever local process holds
+    it would be strictly worse than the file-deletion race this gate exists to
+    prevent elsewhere. The gate is consulted FIRST, before the run-dir scan
+    even starts: on ``"peer-held"`` this prints which host owns the build and
+    returns ``False`` without touching anything; on ``"unattributable"`` or
+    ``"shared-inaction"`` ownership cannot be confirmed either way, so the
+    stop is refused the same way. Only a ``None`` verdict (this node owns the
+    marker, or the filesystem is confirmed local) lets the rest of this
+    function run. ``cfg=None`` (no ``BuildConfig`` available) skips the gate
+    entirely and preserves prior node-local-only behavior.
+
+    Scans run dirs under ``bsp_root/<build_dir_name>/runs`` newest-first and
+    targets the first whose build is still live (host: a verified live PGID;
+    container: a recorded container label). Taking only the lexically-latest
+    run missed a live build whenever a later clean-recipe or second build left
+    a newer but finished run dir. Returns ``True`` when a build was targeted
+    (host PGID signalled or container stopped), ``False`` when none is
+    targetable (no run dir, every run is finished/unresolvable, or the
+    ownership gate refused).
 
     Host mode sends SIGINT then waits (via ``_graceful_wait``) until the PGID
     is gone, escalating through SIGTERM -> SIGKILL on Ctrl-C, ``force``, or
@@ -1128,7 +1168,21 @@ def stop_build(bsp_root: Path, *, force: bool = False, grace_seconds: float = 0)
     record (``build.pid`` + ``build.meta.json``) is always removed before
     returning.
     """
-    runs_dir = bsp_root / "build" / "runs"
+    if cfg is not None:
+        refusal = lock_mutation_guard(cfg)
+        if refusal is not None:
+            if refusal.reason == "peer-held":
+                host = escape(refusal.host) if refusal.host else "another host"
+                print(f"build owned by {host}; run `bakar stop` there")
+            else:
+                print(
+                    f"cannot confirm this node owns the build lock ({refusal.reason}); "
+                    "refusing to send any signal - resolve ownership manually"
+                )
+            return False
+
+    build_dir_name = cfg.build_dir_name if cfg is not None else "build"
+    runs_dir = bsp_root / build_dir_name / "runs"
     try:
         run_dirs = sorted(runs_dir.iterdir())
     except OSError:
@@ -1175,7 +1229,7 @@ def stop_build(bsp_root: Path, *, force: bool = False, grace_seconds: float = 0)
                 # stop: clear any stale lock/sock and succeed (requirement 5).
                 topdir = run_dir.parent.parent
                 if not _collect_build_pids(topdir, None).cooker and not _bitbake_server_alive(run_dir):
-                    removed = _report_stale_cleanup(run_dir)
+                    removed = _report_stale_cleanup(run_dir, cfg)
                     print("no running build" + ("; cleaned stale lock/socket" if removed else ""))
                     return True
                 print("wrapper process gone; a detached cooker is still running - escalating")
@@ -1197,8 +1251,8 @@ def stop_build(bsp_root: Path, *, force: bool = False, grace_seconds: float = 0)
                 label = f"PGID {pgid}" if pgid else "detached cooker"
                 print(f"Force-stopping build ({label}) - SIGTERM -> SIGKILL...")
                 _escalate_host(pgid, run_dir)
-            _report_stale_cleanup(run_dir)
-            reasons = _verify_clean(run_dir, pgid)
+            _report_stale_cleanup(run_dir, cfg)
+            reasons = _verify_clean(run_dir, pgid, cfg=cfg)
             if reasons:
                 print("stop incomplete - the following remain:")
                 for reason in reasons:
@@ -1226,7 +1280,7 @@ def stop_build(bsp_root: Path, *, force: bool = False, grace_seconds: float = 0)
         if cid is None:
             # No live container: idempotent clean-tree stop - clear any stale
             # lock/sock and succeed (requirement 5).
-            removed = _report_stale_cleanup(run_dir)
+            removed = _report_stale_cleanup(run_dir, cfg)
             print("no running build container" + ("; cleaned stale lock/socket" if removed else ""))
             return True
 
@@ -1242,8 +1296,8 @@ def stop_build(bsp_root: Path, *, force: bool = False, grace_seconds: float = 0)
         if status == "lost_runtime":
             return False
 
-        _report_stale_cleanup(run_dir)
-        reasons = _verify_clean(run_dir, None, runtime=runtime, container_label=record.container_label)
+        _report_stale_cleanup(run_dir, cfg)
+        reasons = _verify_clean(run_dir, None, runtime=runtime, container_label=record.container_label, cfg=cfg)
         if reasons:
             print("stop incomplete - the following remain:")
             for reason in reasons:

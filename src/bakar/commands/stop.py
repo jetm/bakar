@@ -64,6 +64,6 @@ def stop(
         user_config=_state._USER_CONFIG,
     )
     grace_seconds = timeout if timeout is not None else cfg.stop_grace_seconds
-    stopped = build_stop.stop_build(cfg.bsp_root, force=force, grace_seconds=grace_seconds)
+    stopped = build_stop.stop_build(cfg.bsp_root, cfg, force=force, grace_seconds=grace_seconds)
     if not stopped:
         raise typer.Exit(code=1)
