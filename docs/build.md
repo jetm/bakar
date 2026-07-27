@@ -198,6 +198,21 @@ permanently with `bakar settings set build.scope false`. When `systemd-run`
 or the user manager is unavailable (e.g. a minimal CI container), bakar warns
 once and runs the build unwrapped.
 
+The scope unit name is derived from the workspace + machine, so a second build
+of the same target in the same tree deliberately collides with the still-running
+scope rather than racing it. One case looked like that collision but was not: a
+*finished* `bakar bitbake` run leaves bitbake's memory-resident cooker
+(`bitbake-server`) alive by design, and it alone kept the scope `active`, so the
+next identical run failed with
+`Unit bakar-bitbake-<hash>.scope was already loaded or has a fragment file`
+before any bitbake output appeared. bakar now
+inspects the scope's cgroup before launching: when nothing but that idle cooker
+remains it stops the unit and proceeds (logged as `reclaimed idle build scope`;
+the next run re-parses, since the daemon's in-memory cache goes with it). A
+scope containing a live `kas`/`bitbake` client or any `bitbake-worker` is never
+touched, so a genuinely concurrent build still collides - and if the cgroup
+cannot be read, bakar assumes the scope is busy and leaves it alone.
+
 This hardening addresses build **session-survival** (plus host responsiveness,
 and opt-in memory containment). It does not prevent filesystem/kernel faults
 (e.g. an XFS root-fs corruption panic), which are tracked separately - no cgroup control changes

@@ -2002,6 +2002,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
                 deploy = cfg.resolved_tmpdir / "deploy" / "images" / cfg.machine
                 log.step_ok("kas_build", deploy_dir=str(deploy), exit_code=rc)
             else:
+                _report_opaque_failure(log, ui)
                 log.step_fail(
                     "kas_build",
                     reason=_build_fail_reason(rc, stall_tasks),
@@ -2016,6 +2017,40 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         disk_sampler.join(timeout=5)
         log.persist_disk_samples(disk_samples)
     return rc if rc is not None else -1
+
+
+# How many trailing kas.log lines to surface for an otherwise-silent failure.
+_OPAQUE_FAILURE_TAIL_LINES = 15
+
+
+def _report_opaque_failure(log: RunLogger, ui: BuildUIState) -> None:
+    """Print the tail of ``kas.log`` when a failure produced no on-screen diagnosis.
+
+    A launch-time failure - a transient-scope collision, a missing
+    ``kas``/``kas-container``, a kas config error - kills the child before
+    bitbake emits a single event, so the live UI closes on ``0 warnings, 0
+    errors`` and the step_fail carries only ``exit_code=1``. The real message
+    lands in ``kas.log``, which a user has no reason to open. Surface its tail
+    so the cause is on screen instead.
+
+    No-op when the UI already reported a genuine bitbake failure (a task failure
+    or any counted error), so a normal recipe failure is not followed by a
+    redundant log dump. Best-effort: a missing or unreadable log stays silent.
+    """
+    if ui.had_task_failures or ui.error_count:
+        return
+    try:
+        content = log.kas_log_path.read_text(errors="replace")
+    except OSError:
+        return
+    tail = [line for line in content.splitlines() if line.strip()][-_OPAQUE_FAILURE_TAIL_LINES:]
+    if not tail:
+        return
+    log.console.print(f"no bitbake output; last lines of {log.kas_log_path}:")
+    for line in tail:
+        # markup=False/highlight=False: log text may contain '[' that Rich would
+        # otherwise parse as markup and raise MarkupError on.
+        log.console.print(f"  {line}", markup=False, highlight=False)
 
 
 def run_shell_live(ctx: KasBuildContext, command: str) -> int:
@@ -2091,10 +2126,12 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
             if completed and actual_rc == 0:
                 log.step_ok("kas_shell_live", exit_code=actual_rc)
             else:
+                _report_opaque_failure(log, ui)
                 log.step_fail(
                     "kas_shell_live",
                     reason=f"exit_code={actual_rc}" if completed else "wrapper-crash",
                     exit_code=actual_rc,
+                    kas_log=str(log.kas_log_path),
                 )
     return actual_rc
 

@@ -106,6 +106,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -156,7 +157,9 @@ def scope_unit_name(cfg: BuildConfig, unit_suffix: str) -> str:
 
     Keyed on the effective BSP root plus the machine so two builds of the same
     target in the same tree share one unit name (a useful guard: a second such
-    build would collide with the still-running scope), while different
+    build would collide with the still-running scope - an *idle* scope left
+    holding only bitbake's cooker daemon is reclaimed first, see
+    :func:`_reclaim_idle_scope`), while different
     workspaces/targets get distinct units and distinct
     ``journalctl --user -u <unit>`` streams. The path is hashed rather than
     embedded so the result is always a legal unit name regardless of the
@@ -220,6 +223,123 @@ def _scope_properties(cfg: BuildConfig) -> list[str]:
     return props
 
 
+# cgroup v2 root and procfs root, injectable so the readers below are testable
+# against a fake tree without a live systemd.
+_CGROUP_ROOT = Path("/sys/fs/cgroup")
+_PROC_ROOT = Path("/proc")
+
+# A scope whose cgroup holds ONLY processes matching this marker is idle, not
+# building. bitbake's memory-resident cooker (``bitbake-server``) deliberately
+# outlives its client - with ``BB_SERVER_TIMEOUT=0`` it never times out - so it
+# alone keeps the cgroup non-empty, and therefore the unit `active running`,
+# long after the build finished. Matching ``bitbake-server`` specifically (not a
+# bare ``bitbake``) is what keeps a ``bitbake-worker`` or a ``bin/bitbake``
+# client from reading as idle; the same UI-vs-server cmdline distinction
+# ``build_stop`` already relies on.
+_IDLE_COOKER_MARKER = "bitbake-server"
+
+
+def _proc_cmdline(pid: int, *, proc_root: Path = _PROC_ROOT) -> str | None:
+    """Return ``pid``'s space-joined argv, or None when it cannot be read.
+
+    None means "unidentifiable" (the process exited, or procfs is unreadable);
+    callers must treat that as "assume busy" rather than "assume idle".
+    """
+    try:
+        raw = (proc_root / str(pid) / "cmdline").read_bytes()
+    except OSError:
+        return None
+    return raw.replace(b"\x00", b" ").decode("utf-8", "replace")
+
+
+def _scope_cgroup_procs(unit: str, *, cgroup_root: Path = _CGROUP_ROOT) -> list[int] | None:
+    """Return the PIDs inside ``unit``'s cgroup, or None when undeterminable.
+
+    Resolves the unit's cgroup path via ``systemctl --user show -p ControlGroup``
+    and reads ``cgroup.procs`` directly, rather than parsing ``systemd-cgls``
+    tree-drawing output. Returns None - meaning "unknown", which callers MUST
+    treat as busy - when systemctl is missing or errors, the unit is not loaded
+    (empty ControlGroup), or the cgroup file is unreadable. An empty list is a
+    real answer: the unit exists and holds no processes.
+    """
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "show", "--property=ControlGroup", "--value", unit],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    # stdout may be None when a caller/test stubs subprocess.run with a bare
+    # CompletedProcess; treat that as "unknown" rather than raising.
+    relative = (result.stdout or "").strip()
+    if not relative.startswith("/"):
+        # Empty (unit not loaded) or an unexpected shape; do not guess.
+        return None
+    try:
+        raw = (cgroup_root / relative.lstrip("/") / "cgroup.procs").read_text()
+    except OSError:
+        return None
+    pids: list[int] = []
+    for token in raw.split():
+        try:
+            pids.append(int(token))
+        except ValueError:
+            return None
+    return pids
+
+
+def _scope_is_idle(unit: str) -> bool:
+    """True only when ``unit``'s cgroup holds nothing but idle bitbake cookers.
+
+    Fails CLOSED: any process whose cmdline cannot be read, or that is not a
+    ``bitbake-server``, makes this False so the caller leaves the scope alone.
+    A genuinely concurrent build always has its ``kas``/``sh`` client (and
+    usually ``bitbake-worker``s) in the cgroup for the whole run, so it can
+    never be mistaken for idle - which is what preserves the deliberate
+    same-config collision guard.
+    """
+    pids = _scope_cgroup_procs(unit)
+    if pids is None:
+        return False
+    for pid in pids:
+        cmdline = _proc_cmdline(pid)
+        if cmdline is None or _IDLE_COOKER_MARKER not in cmdline:
+            return False
+    return True
+
+
+def _reclaim_idle_scope(unit: str) -> bool:
+    """Stop ``unit`` when only bitbake's persistent cooker is holding it open.
+
+    Complements :func:`_reset_stale_scope`, which flushes an inactive or failed
+    unit but correctly declines to touch an `active` one. A finished
+    ``bakar bitbake`` run leaves the scope active anyway, because the cooker
+    daemon it spawned outlives the client and keeps the cgroup non-empty - so
+    the next identical invocation collided with a scope that had no build in it.
+    Reclaiming costs the daemon's in-memory parse cache (the next run re-parses),
+    which is the same price the documented ``systemctl --user stop`` workaround
+    pays, and is only paid when the scope is provably idle.
+
+    Returns True when the unit was stopped. Best-effort: a missing systemctl or
+    an unreadable cgroup leaves the scope untouched and returns False.
+    """
+    if not _scope_is_idle(unit):
+        return False
+    try:
+        subprocess.run(
+            ["systemctl", "--user", "stop", unit],
+            check=False,
+            capture_output=True,
+        )
+    except OSError:
+        return False
+    return True
+
+
 def _reset_stale_scope(unit: str) -> None:
     """Flush a lingering transient scope named ``unit`` before re-creating it.
 
@@ -262,7 +382,9 @@ def wrap_build_command(
 
     ``--collect`` GCs the transient unit on a clean failure, but a hard-killed
     build can still leave the config-hash-named unit lingering, so
-    :func:`_reset_stale_scope` flushes it first (see there); ``--quiet``
+    :func:`_reset_stale_scope` flushes it first (see there), and
+    :func:`_reclaim_idle_scope` runs ahead of that to release a scope left
+    `active` by nothing but bitbake's persistent cooker; ``--quiet``
     suppresses systemd-run's own "Running as unit" chatter (the
     live UI owns the terminal), with the unit name and its journal command
     logged to the run log instead.
@@ -297,6 +419,12 @@ def wrap_build_command(
         )
 
     unit = scope_unit_name(cfg, unit_suffix)
+    # Order matters: reclaim the active-but-idle case first (a finished run whose
+    # cooker daemon still holds the cgroup), then flush an inactive/failed unit.
+    if _reclaim_idle_scope(unit):
+        log.info(
+            f"reclaimed idle build scope {unit} (only bitbake's persistent cooker remained; the next run re-parses)"
+        )
     _reset_stale_scope(unit)
     prefix = ["systemd-run", "--user", "--scope", "--quiet", "--collect", f"--unit={unit}"]
     for prop in _scope_properties(cfg):

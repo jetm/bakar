@@ -431,3 +431,204 @@ def test_run_shell_live_scopes_the_command(tmp_path: Path, monkeypatch: pytest.M
     assert rc == 0
     assert captured[0][0] == "systemd-run", f"bitbake command was not scoped: {captured[0]!r}"
     assert "bakar-bitbake-" in " ".join(captured[0])
+
+
+# ---------------------------------------------------------------------------
+# idle-scope reclaim (bitbake's persistent cooker holding a finished scope open)
+# ---------------------------------------------------------------------------
+#
+# Regression: `bakar bitbake <recipe>` succeeded, then the identical re-run died
+# in ~0.3s with "Unit bakar-bitbake-<hash>.scope was already loaded". The scope
+# stayed `active running` because bitbake's memory-resident cooker
+# (bitbake-server, BB_SERVER_TIMEOUT=0) outlives its client and was the only
+# process left in the cgroup - so `reset-failed` correctly declined to touch an
+# active unit and the collision stood. Observed cgroup at the time held exactly
+# one pid whose cmdline was ".../bin/bitbake-server ... bitbake.sock 0 0 None 0".
+
+_SERVER_CMDLINE = (
+    "/opt/buildtools/sysroots/x86_64-pokysdk-linux/usr/bin/python3 "
+    "/ws/bitbake/bin/bitbake-server decafbad 3 5 /ws/build/bitbake-cookerdaemon.log "
+    "/ws/build/bitbake.lock /ws/build/bitbake.sock 0 0 None 0"
+)
+_CLIENT_CMDLINE = "kas shell /ws/avocado-bakar.yml -c bitbake chromium-ozone-wayland"
+_WORKER_CMDLINE = "/ws/bitbake/bin/bitbake-worker decafbad"
+
+
+def _fake_cgroup(monkeypatch: pytest.MonkeyPatch, procs: dict[int, str] | None) -> None:
+    """Point the idle probe at a fake cgroup: pid -> cmdline, or None = unknown."""
+    monkeypatch.setattr(
+        build_scope,
+        "_scope_cgroup_procs",
+        lambda _unit: None if procs is None else sorted(procs),
+    )
+    monkeypatch.setattr(build_scope, "_proc_cmdline", lambda pid: procs.get(pid) if procs else None)
+
+
+def test_scope_idle_when_only_bitbake_server_remains(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cgroup holding just the cooker daemon is idle and reclaimable."""
+    _fake_cgroup(monkeypatch, {689374: _SERVER_CMDLINE})
+
+    assert build_scope._scope_is_idle("bakar-bitbake-deadbeef") is True
+
+
+def test_scope_not_idle_when_live_client_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Constraint 1/2: a genuinely running build must never read as idle.
+
+    The kas client lives for the whole build, so its presence alongside the
+    server is what keeps a concurrent same-config build colliding correctly
+    instead of being reaped.
+    """
+    _fake_cgroup(monkeypatch, {100: _CLIENT_CMDLINE, 689374: _SERVER_CMDLINE})
+
+    assert build_scope._scope_is_idle("bakar-bitbake-deadbeef") is False
+
+
+def test_scope_not_idle_when_worker_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bitbake-worker means tasks are executing - not idle."""
+    _fake_cgroup(monkeypatch, {689374: _SERVER_CMDLINE, 689400: _WORKER_CMDLINE})
+
+    assert build_scope._scope_is_idle("bakar-bitbake-deadbeef") is False
+
+
+def test_scope_not_idle_when_cmdline_unreadable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail closed: an unidentifiable process is assumed busy, never reaped."""
+    monkeypatch.setattr(build_scope, "_scope_cgroup_procs", lambda _unit: [4242])
+    monkeypatch.setattr(build_scope, "_proc_cmdline", lambda _pid: None)
+
+    assert build_scope._scope_is_idle("bakar-bitbake-deadbeef") is False
+
+
+def test_scope_not_idle_when_cgroup_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unit absent / systemctl unavailable -> unknown -> assumed busy."""
+    _fake_cgroup(monkeypatch, None)
+
+    assert build_scope._scope_is_idle("bakar-bitbake-deadbeef") is False
+
+
+def test_reclaim_stops_unit_only_when_idle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The idle case issues `systemctl --user stop <unit>`; the busy case does not."""
+    calls: list[list[str]] = []
+
+    def _record(argv: list[str], *_a: object, **_k: object) -> subprocess.CompletedProcess:
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(build_scope.subprocess, "run", _record)
+
+    monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: True)
+    assert build_scope._reclaim_idle_scope("bakar-bitbake-deadbeef") is True
+    assert calls == [["systemctl", "--user", "stop", "bakar-bitbake-deadbeef"]]
+
+    calls.clear()
+    monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: False)
+    assert build_scope._reclaim_idle_scope("bakar-bitbake-deadbeef") is False
+    assert calls == []  # a busy scope is never stopped
+
+
+def test_reclaim_survives_missing_systemctl(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Best-effort: no systemctl binary is a no-op, not a crash."""
+
+    def _boom(*_a: object, **_k: object) -> subprocess.CompletedProcess:
+        raise OSError("no systemctl")
+
+    monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: True)
+    monkeypatch.setattr(build_scope.subprocess, "run", _boom)
+
+    assert build_scope._reclaim_idle_scope("bakar-bitbake-deadbeef") is False
+
+
+def test_wrap_reclaims_idle_scope_before_reset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """wrap stops an idle scope, then reset-failed's it, before launching."""
+    monkeypatch.setattr(build_scope, "systemd_run_available", lambda: True)
+    monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: True)
+    calls: list[list[str]] = []
+
+    def _record(argv: list[str], *_a: object, **_k: object) -> subprocess.CompletedProcess:
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(build_scope.subprocess, "run", _record)
+    cfg = _cfg(tmp_path)
+    unit = build_scope.scope_unit_name(cfg, "bitbake")
+    log = _FakeLog()
+
+    build_scope.wrap_build_command(_CMD, cfg, log, unit_suffix="bitbake")
+
+    stop = ["systemctl", "--user", "stop", unit]
+    reset = ["systemctl", "--user", "reset-failed", unit]
+    assert stop in calls
+    assert reset in calls
+    assert calls.index(stop) < calls.index(reset)  # reclaim precedes the flush
+    assert any("reclaimed idle build scope" in msg for msg in log.infos)
+
+
+def test_wrap_leaves_busy_scope_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Constraint 1: a scope with a live build is never stopped by wrap."""
+    monkeypatch.setattr(build_scope, "systemd_run_available", lambda: True)
+    monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: False)
+    calls: list[list[str]] = []
+
+    def _record(argv: list[str], *_a: object, **_k: object) -> subprocess.CompletedProcess:
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(build_scope.subprocess, "run", _record)
+    cfg = _cfg(tmp_path)
+    unit = build_scope.scope_unit_name(cfg, "bitbake")
+
+    build_scope.wrap_build_command(_CMD, cfg, _FakeLog(), unit_suffix="bitbake")
+
+    assert ["systemctl", "--user", "stop", unit] not in calls
+
+
+# --- _scope_cgroup_procs / _proc_cmdline against a fake tree ----------------
+
+
+def test_scope_cgroup_procs_reads_pids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ControlGroup is resolved via systemctl, then cgroup.procs is read directly."""
+    rel = "/user.slice/user-1000.slice/user@1000.service/app.slice/bakar-bitbake-x.scope"
+    cg = tmp_path / rel.lstrip("/")
+    cg.mkdir(parents=True)
+    (cg / "cgroup.procs").write_text("689374\n689400\n")
+    monkeypatch.setattr(
+        build_scope.subprocess,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess([], 0, stdout=f"{rel}\n"),
+    )
+
+    assert build_scope._scope_cgroup_procs("u", cgroup_root=tmp_path) == [689374, 689400]
+
+
+def test_scope_cgroup_procs_none_when_unit_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unloaded unit reports an empty ControlGroup -> unknown, not empty."""
+    monkeypatch.setattr(
+        build_scope.subprocess,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess([], 0, stdout="\n"),
+    )
+
+    assert build_scope._scope_cgroup_procs("u") is None
+
+
+def test_scope_cgroup_procs_none_when_stdout_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A CompletedProcess with stdout=None must not raise (defensive)."""
+    monkeypatch.setattr(
+        build_scope.subprocess,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess([], 0),
+    )
+
+    assert build_scope._scope_cgroup_procs("u") is None
+
+
+def test_proc_cmdline_reads_nul_separated_argv(tmp_path: Path) -> None:
+    """/proc/<pid>/cmdline is NUL-separated; it is joined with spaces."""
+    (tmp_path / "4242").mkdir()
+    (tmp_path / "4242" / "cmdline").write_bytes(b"python3\x00bitbake-server\x00decafbad\x00")
+
+    assert build_scope._proc_cmdline(4242, proc_root=tmp_path) == "python3 bitbake-server decafbad "
+
+
+def test_proc_cmdline_none_when_absent(tmp_path: Path) -> None:
+    """A vanished pid yields None (caller treats it as busy, never as idle)."""
+    assert build_scope._proc_cmdline(999999, proc_root=tmp_path) is None
