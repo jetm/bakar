@@ -9,6 +9,7 @@ verify command.
 
 from __future__ import annotations
 
+import re
 import textwrap
 from typing import TYPE_CHECKING
 
@@ -755,18 +756,13 @@ def test_sccache_class_routes_build_compiler_through_sccache() -> None:
     """
     text = _sccache_bbclass_text()
 
-    assert (
-        'BUILD_CC:forcevariable = "${CCACHE}${BUILD_PREFIX}'
-        "${@bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang', "
-        "bb.utils.contains('TCOVERRIDE', 'toolchain-clang', 'clang', 'gcc', d), d)}"
-        ' ${BUILD_CC_ARCH}"' in text
-    )
-    assert (
-        'BUILD_CXX:forcevariable = "${CCACHE}${BUILD_PREFIX}'
-        "${@bb.utils.contains('TOOLCHAIN_NATIVE', 'clang', 'clang++', "
-        "bb.utils.contains('TCOVERRIDE', 'toolchain-clang', 'clang++', 'g++', d), d)}"
-        ' ${BUILD_CC_ARCH}"' in text
-    )
+    # Every BUILD_CC/BUILD_CXX definition must carry ${CCACHE}, including the
+    # :toolchain-clang overrides. Scanning all of them rather than naming two
+    # literals means a future override added without ${CCACHE} fails here too.
+    defs = [ln for ln in text.splitlines() if re.match(r"^BUILD_(CC|CXX)[:\w-]*:forcevariable[:\w-]* = ", ln)]
+    assert len(defs) >= 4, f"expected the base + toolchain-clang defs, got {defs!r}"
+    missing = [ln for ln in defs if "${CCACHE}" not in ln]
+    assert not missing, f"BUILD_CC/CXX definitions without ${{CCACHE}} stay local: {missing!r}"
 
 
 @pytest.mark.unit
@@ -805,13 +801,26 @@ def test_sccache_class_respects_target_clang_toolchain_override() -> None:
     failed with a wall of "g++: error: unrecognized command-line option" for
     every clang-only flag (-fcolor-diagnostics, --target=..., -mllvm, ...)
     baked into the GN-generated build command. This is the falsifier: a
-    TOOLCHAIN_NATIVE-only check, with no TCOVERRIDE fallback, would still
+    TOOLCHAIN_NATIVE-only check, with no toolchain-clang branch, would still
     force this recipe's native compiler onto gcc.
+
+    The branch must be a real ``:forcevariable:toolchain-clang`` override, not
+    a ``bb.utils.contains`` probe of OVERRIDES/TCOVERRIDE: OVERRIDES is
+    colon-delimited while bb.utils.contains splits on whitespace, so
+    'toolchain-clang' never matches a token and such a probe silently always
+    falls through to gcc. That spelling is asserted absent below, because it
+    reads as working while doing nothing.
     """
     text = _sccache_bbclass_text()
 
-    assert "bb.utils.contains('TCOVERRIDE', 'toolchain-clang', 'clang', 'gcc', d)" in text
-    assert "bb.utils.contains('TCOVERRIDE', 'toolchain-clang', 'clang++', 'g++', d)" in text
+    assert 'BUILD_CC:forcevariable:toolchain-clang = "${CCACHE}${BUILD_PREFIX}clang ${BUILD_CC_ARCH}"' in text
+    assert 'BUILD_CXX:forcevariable:toolchain-clang = "${CCACHE}${BUILD_PREFIX}clang++ ${BUILD_CC_ARCH}"' in text
+
+    # Comments are excluded: the class documents the whitespace-vs-colon
+    # pitfall in prose, and that explanation must not trip the check.
+    code = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+    assert "bb.utils.contains('OVERRIDES'" not in code
+    assert "bb.utils.contains('TCOVERRIDE'" not in code
 
 
 @pytest.mark.unit
