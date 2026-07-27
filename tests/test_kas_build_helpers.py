@@ -18,6 +18,7 @@ testable logic seam and remain ``# pragma: no cover`` in the source.
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 import time
 from dataclasses import replace
@@ -27,9 +28,12 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from bakar import build_stop
 from bakar.config import BuildConfig
 from bakar.observability import RunLogger
 from bakar.steps.kas_build import (
+    KasBuildContext,
+    LockHeldByPeerError,
     _autocalibrate_psi,
     _build_env,
     _build_fail_reason,
@@ -44,8 +48,10 @@ from bakar.steps.kas_build import (
     _write_meta_avocado_wrapper,
     clear_stale_bitbake_locks,
     copy_oe_eventlog_to_run_dir,
+    lock_owner_marker,
     materialize_overlay,
     persist_run_artifacts,
+    run_build,
 )
 from bakar.user_config import load_user_config
 
@@ -53,7 +59,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 pytestmark = pytest.mark.unit
-
 
 # ---------------------------------------------------------------------------
 # Config fixtures
@@ -451,8 +456,16 @@ def _seed_build_dir(cfg: BuildConfig) -> Path:
     return build_dir
 
 
+def _write_marker(cfg: BuildConfig, host: str) -> Path:
+    """Write ``host`` into the ownership marker and return its path."""
+    marker = build_stop.lock_marker_path(cfg)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(host, encoding="utf-8")
+    return marker
+
+
 def test_clear_stale_bitbake_locks_dead_pid_lock_is_removed(tmp_path: Path) -> None:
-    """A lock owned by a dead PID is removed and reported."""
+    """A lock owned by a dead PID is removed and reported (confirmed-local fs, no marker)."""
     cfg = _make_nxp_cfg(tmp_path)
     build = _seed_build_dir(cfg)
     lock = build / "bitbake.lock"
@@ -461,15 +474,19 @@ def test_clear_stale_bitbake_locks_dead_pid_lock_is_removed(tmp_path: Path) -> N
     def _raise_dead(_pid: int, _sig: int) -> None:
         raise ProcessLookupError
 
-    with patch("bakar.steps.kas_build.os.kill", side_effect=_raise_dead):
-        removed = clear_stale_bitbake_locks(cfg)
+    with (
+        patch("bakar.steps.kas_build.os.kill", side_effect=_raise_dead),
+        patch("bakar.steps.kas_build.is_path_on_nfs", return_value=False),
+    ):
+        outcome = clear_stale_bitbake_locks(cfg)
 
-    assert lock in removed
+    assert lock in outcome.removed
+    assert outcome.refusal is None
     assert not lock.exists()
 
 
 def test_clear_stale_bitbake_locks_orphan_sockets_removed_with_no_lock(tmp_path: Path) -> None:
-    """Sockets present without a lock file are removed unconditionally."""
+    """Sockets present without a lock file are removed unconditionally (confirmed-local fs)."""
     cfg = _make_nxp_cfg(tmp_path)
     build = _seed_build_dir(cfg)
     bb_sock = build / "bitbake.sock"
@@ -478,16 +495,18 @@ def test_clear_stale_bitbake_locks_orphan_sockets_removed_with_no_lock(tmp_path:
     hs_sock.write_text("", encoding="utf-8")
     assert not (build / "bitbake.lock").exists()
 
-    removed = clear_stale_bitbake_locks(cfg)
+    with patch("bakar.steps.kas_build.is_path_on_nfs", return_value=False):
+        outcome = clear_stale_bitbake_locks(cfg)
 
-    assert bb_sock in removed
-    assert hs_sock in removed
+    assert bb_sock in outcome.removed
+    assert hs_sock in outcome.removed
+    assert outcome.refusal is None
     assert not bb_sock.exists()
     assert not hs_sock.exists()
 
 
 def test_clear_stale_bitbake_locks_live_bitbake_pid_leaves_lock(tmp_path: Path) -> None:
-    """A live PID whose ``/proc`` cmdline contains ``bitbake`` is left alone."""
+    """A live, ACTIVE PID whose ``/proc`` cmdline contains ``bitbake`` refuses as held-locally (row 5)."""
     cfg = _make_nxp_cfg(tmp_path)
     build = _seed_build_dir(cfg)
     lock = build / "bitbake.lock"
@@ -510,20 +529,28 @@ def test_clear_stale_bitbake_locks_live_bitbake_pid_leaves_lock(tmp_path: Path) 
             return b"bitbake-server\x00--server-only\x00"
         return real_read_bytes(self)  # type: ignore[arg-type]
 
+    # Activity beyond the bare server PID (a worker) - genuine held-locally.
+    active_procs = build_stop._ScopedProcs(cooker=frozenset({1234}), all_pids=frozenset({1234, 1235}))
+
     with (
         patch("bakar.steps.kas_build.os.kill", return_value=None),
         patch("bakar.steps.kas_build.Path.exists", new=fake_exists),
         patch("bakar.steps.kas_build.Path.read_bytes", new=fake_read_bytes),
+        patch("bakar.steps.kas_build.is_path_on_nfs", return_value=False),
+        patch("bakar.steps.kas_build.build_stop._collect_build_pids", return_value=active_procs),
     ):
-        removed = clear_stale_bitbake_locks(cfg)
+        outcome = clear_stale_bitbake_locks(cfg)
 
-    assert removed == []
+    assert outcome.removed == []
+    assert outcome.refusal is not None
+    assert outcome.refusal.reason == "held-locally"
+    assert outcome.refusal.pid == 1234
     assert lock.exists()
     assert lock.read_text(encoding="utf-8").strip() == "1234"
 
 
 def test_clear_stale_bitbake_locks_live_non_bitbake_pid_removes_lock(tmp_path: Path) -> None:
-    """A live PID whose cmdline is NOT bitbake gets the lock removed."""
+    """A live PID whose cmdline is NOT bitbake gets the lock removed (row 5, reused PID)."""
     cfg = _make_nxp_cfg(tmp_path)
     build = _seed_build_dir(cfg)
     lock = build / "bitbake.lock"
@@ -546,21 +573,440 @@ def test_clear_stale_bitbake_locks_live_non_bitbake_pid_removes_lock(tmp_path: P
         patch("bakar.steps.kas_build.os.kill", return_value=None),
         patch("bakar.steps.kas_build.Path.exists", new=fake_exists),
         patch("bakar.steps.kas_build.Path.read_bytes", new=fake_read_bytes),
+        patch("bakar.steps.kas_build.is_path_on_nfs", return_value=False),
     ):
-        removed = clear_stale_bitbake_locks(cfg)
+        outcome = clear_stale_bitbake_locks(cfg)
 
-    assert lock in removed
+    assert lock in outcome.removed
+    assert outcome.refusal is None
     assert not lock.exists()
 
 
 def test_clear_stale_bitbake_locks_no_lock_no_sockets_returns_empty(tmp_path: Path) -> None:
-    """When neither lock nor sockets exist, the cleaner returns an empty list."""
+    """When neither lock nor sockets exist, the cleaner returns an empty removed list."""
     cfg = _make_nxp_cfg(tmp_path)
     _seed_build_dir(cfg)
 
-    removed = clear_stale_bitbake_locks(cfg)
+    with patch("bakar.steps.kas_build.is_path_on_nfs", return_value=False):
+        outcome = clear_stale_bitbake_locks(cfg)
 
-    assert removed == []
+    assert outcome.removed == []
+    assert outcome.refusal is None
+
+
+def test_clear_stale_bitbake_locks_peer_marker_no_lock_refuses_and_touches_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Row 1: a foreign marker refuses, and the marker file is left byte-identical."""
+    cfg = _make_nxp_cfg(tmp_path)
+    _seed_build_dir(cfg)
+    marker = _write_marker(cfg, "peer-host")
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
+
+    outcome = clear_stale_bitbake_locks(cfg)
+
+    assert outcome.removed == []
+    assert outcome.refusal is not None
+    assert outcome.refusal.reason == "peer-held"
+    assert outcome.refusal.host == "peer-host"
+    # The critical regression check: the marker itself must be untouched.
+    assert marker.read_text(encoding="utf-8") == "peer-host"
+
+
+def test_clear_stale_bitbake_locks_peer_marker_lock_present_refuses_and_removes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Row 1 also fires with a lock present: nothing gets removed."""
+    cfg = _make_nxp_cfg(tmp_path)
+    build = _seed_build_dir(cfg)
+    lock = build / "bitbake.lock"
+    lock.write_text("4242\n", encoding="utf-8")
+    _write_marker(cfg, "peer-host")
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
+
+    outcome = clear_stale_bitbake_locks(cfg)
+
+    assert outcome.removed == []
+    assert outcome.refusal is not None
+    assert outcome.refusal.reason == "peer-held"
+    assert lock.exists()
+
+
+def test_clear_stale_bitbake_locks_garbled_marker_never_classified_as_peer_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A torn/multiline marker is garbled -> treated as absent, never peer-held."""
+    cfg = _make_nxp_cfg(tmp_path)
+    build_dir = _seed_build_dir(cfg)
+    marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("hosta\nhostb\n", encoding="utf-8")
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
+
+    with patch("bakar.steps.kas_build.is_path_on_nfs", return_value=False):
+        outcome = clear_stale_bitbake_locks(cfg)
+
+    assert outcome.refusal is None or outcome.refusal.reason != "peer-held"
+    assert not (build_dir / "bitbake.lock").exists()
+
+
+def test_clear_stale_bitbake_locks_empty_lock_not_removed_local_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty/unparseable lock is a server mid-startup, never removed (row 3)."""
+    cfg = _make_nxp_cfg(tmp_path)
+    build = _seed_build_dir(cfg)
+    lock = build / "bitbake.lock"
+    lock.write_text("", encoding="utf-8")
+    _write_marker(cfg, "this-host")
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
+
+    outcome = clear_stale_bitbake_locks(cfg)
+
+    assert outcome.removed == []
+    assert outcome.refusal is None
+    assert lock.exists()
+
+
+def test_clear_stale_bitbake_locks_empty_lock_not_removed_no_marker_confirmed_local(
+    tmp_path: Path,
+) -> None:
+    """Row 5: an unparseable lock on a confirmed-local fs is left intact, no refusal."""
+    cfg = _make_nxp_cfg(tmp_path)
+    build = _seed_build_dir(cfg)
+    lock = build / "bitbake.lock"
+    lock.write_text("not-a-pid\n", encoding="utf-8")
+
+    with patch("bakar.steps.kas_build.is_path_on_nfs", return_value=False):
+        outcome = clear_stale_bitbake_locks(cfg)
+
+    assert outcome.removed == []
+    assert outcome.refusal is None
+    assert lock.exists()
+
+
+def test_clear_stale_bitbake_locks_local_marker_live_pid_refuses_held_locally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Row 3: a local-owned marker with a live, ACTIVE bitbake PID refuses; nothing removed."""
+    cfg = _make_nxp_cfg(tmp_path)
+    build = _seed_build_dir(cfg)
+    lock = build / "bitbake.lock"
+    lock.write_text("1234\n", encoding="utf-8")
+    _write_marker(cfg, "this-host")
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
+
+    real_read_bytes = type(lock).read_bytes
+    real_exists = type(lock).exists
+
+    def fake_exists(self: object) -> bool:
+        if str(self) == "/proc/1234/cmdline":
+            return True
+        return real_exists(self)  # type: ignore[arg-type]
+
+    def fake_read_bytes(self: object) -> bytes:
+        if str(self) == "/proc/1234/cmdline":
+            return b"bitbake-server\x00--server-only\x00"
+        return real_read_bytes(self)  # type: ignore[arg-type]
+
+    # Activity beyond the bare server PID (a worker) - genuine held-locally.
+    active_procs = build_stop._ScopedProcs(cooker=frozenset({1234}), all_pids=frozenset({1234, 1235}))
+
+    with (
+        patch("bakar.steps.kas_build.os.kill", return_value=None),
+        patch("bakar.steps.kas_build.Path.exists", new=fake_exists),
+        patch("bakar.steps.kas_build.Path.read_bytes", new=fake_read_bytes),
+        patch("bakar.steps.kas_build.build_stop._collect_build_pids", return_value=active_procs),
+    ):
+        outcome = clear_stale_bitbake_locks(cfg)
+
+    assert outcome.removed == []
+    assert outcome.refusal is not None
+    assert outcome.refusal.reason == "held-locally"
+    assert outcome.refusal.pid == 1234
+    assert lock.exists()
+
+
+def test_clear_stale_bitbake_locks_local_marker_idle_pid_not_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Row 3: a local-owned marker with a live but IDLE bitbake PID is NOT held-locally.
+
+    A bare cookerdaemon (no worker/client descendants) is bitbake's warm-daemon
+    reconnect happy path - refusing here would regress the next build on this
+    node into a refusal instead of a reconnect.
+    """
+    cfg = _make_nxp_cfg(tmp_path)
+    build = _seed_build_dir(cfg)
+    lock = build / "bitbake.lock"
+    lock.write_text("1234\n", encoding="utf-8")
+    _write_marker(cfg, "this-host")
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
+
+    real_read_bytes = type(lock).read_bytes
+    real_exists = type(lock).exists
+
+    def fake_exists(self: object) -> bool:
+        if str(self) == "/proc/1234/cmdline":
+            return True
+        return real_exists(self)  # type: ignore[arg-type]
+
+    def fake_read_bytes(self: object) -> bytes:
+        if str(self) == "/proc/1234/cmdline":
+            return b"bitbake-server\x00--server-only\x00"
+        return real_read_bytes(self)  # type: ignore[arg-type]
+
+    # Only the bare server PID - no worker/client descendants.
+    idle_procs = build_stop._ScopedProcs(cooker=frozenset({1234}), all_pids=frozenset({1234}))
+
+    with (
+        patch("bakar.steps.kas_build.os.kill", return_value=None),
+        patch("bakar.steps.kas_build.Path.exists", new=fake_exists),
+        patch("bakar.steps.kas_build.Path.read_bytes", new=fake_read_bytes),
+        patch("bakar.steps.kas_build.build_stop._collect_build_pids", return_value=idle_procs),
+    ):
+        outcome = clear_stale_bitbake_locks(cfg)
+
+    assert outcome.removed == []
+    assert outcome.refusal is None
+    assert lock.exists()
+
+
+def test_clear_stale_bitbake_locks_local_marker_dead_pid_removes_lock_and_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Row 3: a local-owned marker with a dead PID removes the lock AND the marker."""
+    cfg = _make_nxp_cfg(tmp_path)
+    build = _seed_build_dir(cfg)
+    lock = build / "bitbake.lock"
+    lock.write_text("999999\n", encoding="utf-8")
+    marker = _write_marker(cfg, "this-host")
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
+
+    def _raise_dead(_pid: int, _sig: int) -> None:
+        raise ProcessLookupError
+
+    with patch("bakar.steps.kas_build.os.kill", side_effect=_raise_dead):
+        outcome = clear_stale_bitbake_locks(cfg)
+
+    assert lock in outcome.removed
+    assert outcome.refusal is None
+    assert not lock.exists()
+    assert not marker.exists()
+
+
+def test_clear_stale_bitbake_locks_no_marker_lock_present_live_bitbake_confirmed_local_refuses(
+    tmp_path: Path,
+) -> None:
+    """Row 5's new behavior: no marker + a live, ACTIVE bitbake lock on confirmed-local fs refuses."""
+    cfg = _make_nxp_cfg(tmp_path)
+    build = _seed_build_dir(cfg)
+    lock = build / "bitbake.lock"
+    lock.write_text("1234\n", encoding="utf-8")
+
+    real_read_bytes = type(lock).read_bytes
+    real_exists = type(lock).exists
+
+    def fake_exists(self: object) -> bool:
+        if str(self) == "/proc/1234/cmdline":
+            return True
+        return real_exists(self)  # type: ignore[arg-type]
+
+    def fake_read_bytes(self: object) -> bytes:
+        if str(self) == "/proc/1234/cmdline":
+            return b"bitbake-server\x00--server-only\x00"
+        return real_read_bytes(self)  # type: ignore[arg-type]
+
+    # Activity beyond the bare server PID (a worker) - genuine held-locally.
+    active_procs = build_stop._ScopedProcs(cooker=frozenset({1234}), all_pids=frozenset({1234, 1235}))
+
+    with (
+        patch("bakar.steps.kas_build.os.kill", return_value=None),
+        patch("bakar.steps.kas_build.Path.exists", new=fake_exists),
+        patch("bakar.steps.kas_build.Path.read_bytes", new=fake_read_bytes),
+        patch("bakar.steps.kas_build.is_path_on_nfs", return_value=False),
+        patch("bakar.steps.kas_build.build_stop._collect_build_pids", return_value=active_procs),
+    ):
+        outcome = clear_stale_bitbake_locks(cfg)
+
+    assert outcome.removed == []
+    assert outcome.refusal is not None
+    assert outcome.refusal.reason == "held-locally"
+
+
+def test_clear_stale_bitbake_locks_no_marker_lock_present_idle_bitbake_confirmed_local_not_refused(
+    tmp_path: Path,
+) -> None:
+    """Row 5: a live but IDLE bitbake lock (bare cookerdaemon, no worker/client) is NOT held-locally.
+
+    bitbake's warm-daemon reconnect is a documented happy path (stress-parse
+    relies on it staying up); refusing here would regress the next build to
+    a refusal instead of a reconnect.
+    """
+    cfg = _make_nxp_cfg(tmp_path)
+    build = _seed_build_dir(cfg)
+    lock = build / "bitbake.lock"
+    lock.write_text("1234\n", encoding="utf-8")
+
+    real_read_bytes = type(lock).read_bytes
+    real_exists = type(lock).exists
+
+    def fake_exists(self: object) -> bool:
+        if str(self) == "/proc/1234/cmdline":
+            return True
+        return real_exists(self)  # type: ignore[arg-type]
+
+    def fake_read_bytes(self: object) -> bytes:
+        if str(self) == "/proc/1234/cmdline":
+            return b"bitbake-server\x00--server-only\x00"
+        return real_read_bytes(self)  # type: ignore[arg-type]
+
+    # Only the bare server PID - no worker/client descendants.
+    idle_procs = build_stop._ScopedProcs(cooker=frozenset({1234}), all_pids=frozenset({1234}))
+
+    with (
+        patch("bakar.steps.kas_build.os.kill", return_value=None),
+        patch("bakar.steps.kas_build.Path.exists", new=fake_exists),
+        patch("bakar.steps.kas_build.Path.read_bytes", new=fake_read_bytes),
+        patch("bakar.steps.kas_build.is_path_on_nfs", return_value=False),
+        patch("bakar.steps.kas_build.build_stop._collect_build_pids", return_value=idle_procs),
+    ):
+        outcome = clear_stale_bitbake_locks(cfg)
+
+    assert outcome.removed == []
+    assert outcome.refusal is None
+    assert lock.exists()
+
+
+def test_clear_stale_bitbake_locks_no_marker_lock_present_shared_fs_unattributable(
+    tmp_path: Path,
+) -> None:
+    """Row 4: no marker + lock present + shared/unverifiable fs refuses (unattributable)."""
+    cfg = _make_nxp_cfg(tmp_path)
+    build = _seed_build_dir(cfg)
+    lock = build / "bitbake.lock"
+    lock.write_text("4242\n", encoding="utf-8")
+
+    with patch("bakar.steps.kas_build.is_path_on_nfs", return_value=True):
+        outcome = clear_stale_bitbake_locks(cfg)
+
+    assert outcome.removed == []
+    assert outcome.refusal is not None
+    assert outcome.refusal.reason == "unattributable"
+    assert lock.exists()
+
+
+def test_clear_stale_bitbake_locks_no_marker_lock_absent_shared_fs_no_deletion(
+    tmp_path: Path,
+) -> None:
+    """Row 7: no marker + lock absent + shared/unverifiable fs never deletes leftover sockets."""
+    cfg = _make_nxp_cfg(tmp_path)
+    build = _seed_build_dir(cfg)
+    bb_sock = build / "bitbake.sock"
+    bb_sock.write_text("", encoding="utf-8")
+
+    with patch("bakar.steps.kas_build.is_path_on_nfs", return_value=None):
+        outcome = clear_stale_bitbake_locks(cfg)
+
+    assert outcome.removed == []
+    assert outcome.refusal is None
+    assert bb_sock.exists()
+
+
+# ---------------------------------------------------------------------------
+# lock_owner_marker
+# ---------------------------------------------------------------------------
+
+
+def test_lock_owner_marker_writes_local_hostname_when_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _make_nxp_cfg(tmp_path)
+    _seed_build_dir(cfg)
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
+    log = RunLogger(runs_dir=cfg.runs_dir)
+
+    with lock_owner_marker(cfg, log):
+        marker = build_stop.lock_marker_path(cfg)
+        assert marker.exists()
+        assert marker.read_text(encoding="utf-8") == "this-host"
+
+
+def test_lock_owner_marker_raises_on_foreign_marker_and_skips_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _make_nxp_cfg(tmp_path)
+    _seed_build_dir(cfg)
+    _write_marker(cfg, "peer-host")
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
+    log = RunLogger(runs_dir=cfg.runs_dir)
+
+    entered_body = False
+    with pytest.raises(LockHeldByPeerError) as exc_info, lock_owner_marker(cfg, log):
+        entered_body = True
+
+    assert entered_body is False
+    assert exc_info.value.host == "peer-host"
+
+
+def test_lock_owner_marker_removes_marker_when_lock_gone_on_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _make_nxp_cfg(tmp_path)
+    _seed_build_dir(cfg)
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
+    log = RunLogger(runs_dir=cfg.runs_dir)
+
+    with lock_owner_marker(cfg, log):
+        pass
+
+    assert not build_stop.lock_marker_path(cfg).exists()
+
+
+def test_lock_owner_marker_leaves_marker_when_lock_still_present_on_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _make_nxp_cfg(tmp_path)
+    build = _seed_build_dir(cfg)
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
+    log = RunLogger(runs_dir=cfg.runs_dir)
+
+    with lock_owner_marker(cfg, log):
+        (build / "bitbake.lock").write_text("1234\n", encoding="utf-8")
+
+    assert build_stop.lock_marker_path(cfg).exists()
+
+
+# ---------------------------------------------------------------------------
+# Acquirer abort-on-refusal (run_build)
+# ---------------------------------------------------------------------------
+
+
+def test_run_build_aborts_without_launch_or_marker_on_lock_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refusal from ``clear_stale_bitbake_locks`` aborts before any bitbake launch.
+
+    No marker is written and ``_run_pty_with_ui`` (the actual launch) is
+    never called - the refusal check runs before the marker CM and before
+    the command is even assembled.
+    """
+    cfg = _make_nxp_cfg(tmp_path)
+    _seed_build_dir(cfg)
+    refusal = build_stop.LockRefusal(reason="peer-held", host="peer-host")
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.clear_stale_bitbake_locks",
+        lambda _cfg: build_stop.LockClearOutcome(removed=[], refusal=refusal),
+    )
+
+    def _fail_if_launched(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("_run_pty_with_ui must not be called after a lock refusal")
+
+    monkeypatch.setattr("bakar.steps.kas_build._run_pty_with_ui", _fail_if_launched)
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        ctx = KasBuildContext(cfg=cfg, log=log, kas_yaml=tmp_path / "user.yml", overlay_source=tmp_path / "overlay.yml")
+        rc = run_build(ctx)
+
+    assert rc == 1
+    assert not build_stop.lock_marker_path(cfg).exists()
 
 
 # ---------------------------------------------------------------------------

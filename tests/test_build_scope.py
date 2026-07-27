@@ -386,7 +386,9 @@ def _capture_run_build_cmd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **cf
         captured.append(cmd)
         return _PtyOutcome(rc=0)
 
-    monkeypatch.setattr(step_kas, "clear_stale_bitbake_locks", lambda cfg: [])
+    monkeypatch.setattr(
+        step_kas, "clear_stale_bitbake_locks", lambda cfg: step_kas.build_stop.LockClearOutcome(removed=[])
+    )
     monkeypatch.setattr(step_kas.build_stop, "check_unclean_stop", lambda *a, **kw: None)
     monkeypatch.setattr(step_kas, "persist_run_artifacts", lambda *a, **kw: None)
     monkeypatch.setattr(step_kas, "_run_pty_with_ui", fake_pty)

@@ -851,7 +851,9 @@ def test_run_build_invokes_check_unclean_stop(
     recorded: list[Path] = []
 
     monkeypatch.setattr(step_kas.build_stop, "check_unclean_stop", lambda bsp_root, console: recorded.append(bsp_root))
-    monkeypatch.setattr(step_kas, "clear_stale_bitbake_locks", lambda cfg: [])
+    monkeypatch.setattr(
+        step_kas, "clear_stale_bitbake_locks", lambda cfg: step_kas.build_stop.LockClearOutcome(removed=[])
+    )
     monkeypatch.setattr(step_kas, "_run_pty_with_ui", lambda *a, **kw: _PtyOutcome(rc=0))
 
     with RunLogger(runs_dir=tmp_path / "runs") as log:
@@ -885,7 +887,9 @@ def test_run_build_writes_then_removes_build_pid(
     monkeypatch.setattr(step_kas.build_stop, "write_pid", rec_write)
     monkeypatch.setattr(step_kas.build_stop, "remove_pid", rec_remove)
     monkeypatch.setattr(step_kas.build_stop, "check_unclean_stop", lambda *a, **kw: None)
-    monkeypatch.setattr(step_kas, "clear_stale_bitbake_locks", lambda cfg: [])
+    monkeypatch.setattr(
+        step_kas, "clear_stale_bitbake_locks", lambda cfg: step_kas.build_stop.LockClearOutcome(removed=[])
+    )
 
     class _FakeProc:
         pid = 424242
