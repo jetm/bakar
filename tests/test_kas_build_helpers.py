@@ -17,6 +17,8 @@ testable logic seam and remain ``# pragma: no cover`` in the source.
 
 from __future__ import annotations
 
+import contextlib
+import json
 import os
 import socket
 import subprocess
@@ -52,6 +54,7 @@ from bakar.steps.kas_build import (
     materialize_overlay,
     persist_run_artifacts,
     run_build,
+    run_shell_live,
 )
 from bakar.user_config import load_user_config
 
@@ -1007,6 +1010,51 @@ def test_run_build_aborts_without_launch_or_marker_on_lock_refusal(
 
     assert rc == 1
     assert not build_stop.lock_marker_path(cfg).exists()
+
+
+def test_run_shell_live_single_terminal_event_on_lock_refusal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``LockHeldByPeerError`` raised during marker acquisition logs exactly one terminal event.
+
+    ``run_shell_live`` must not also fall through to the ``finally`` block's
+    fallback step_ok/step_fail - that would emit a contradictory second
+    ``step_fail`` (reason ``wrapper-crash``) for what is really a clean,
+    deliberate ownership refusal, and would make ``bakar triage`` misreport
+    the refusal as a crash.
+    """
+    cfg = _make_nxp_cfg(tmp_path)
+    bsp_root = cfg.bsp_root
+    kas_yaml = bsp_root / "build.yml"
+    kas_yaml.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
+    overlay = bsp_root / "overlay.yml"
+    overlay.write_text("header:\n  version: 14\n")
+
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.clear_stale_bitbake_locks",
+        lambda _cfg: build_stop.LockClearOutcome(removed=[], refusal=None),
+    )
+
+    def _fail_if_launched(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("_run_pty_with_ui must not be called after a lock refusal")
+
+    monkeypatch.setattr("bakar.steps.kas_build._run_pty_with_ui", _fail_if_launched)
+
+    @contextlib.contextmanager
+    def _fake_lock_owner_marker(_cfg: object, _log: object):  # type: ignore[no-untyped-def]
+        raise LockHeldByPeerError(host="peer-host")
+        yield  # pragma: no cover - unreachable, required to keep this a generator
+
+    monkeypatch.setattr("bakar.steps.kas_build.lock_owner_marker", _fake_lock_owner_marker)
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        ctx = KasBuildContext(cfg=cfg, log=log, kas_yaml=kas_yaml, overlay_source=overlay)
+        rc = run_shell_live(ctx, "bitbake core-image-minimal")
+        events_path = log.events_path
+
+    assert rc == 1
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line]
+    fail_events = [e for e in events if e.get("event") == "step_fail" and e.get("step") == "kas_shell_live"]
+    assert len(fail_events) == 1, f"expected exactly one step_fail for kas_shell_live, got {fail_events!r}"
+    assert "peer host" in fail_events[0]["reason"]
 
 
 # ---------------------------------------------------------------------------
