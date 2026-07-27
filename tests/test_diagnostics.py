@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from bakar import diagnostics
+from bakar import build_stop, diagnostics
 from bakar.config import BuildConfig
 from bakar.diagnostics import (
     _DOCKER_CHECKS,
@@ -530,23 +530,12 @@ def test_scope_checks_in_shared_checks_not_docker_checks() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Regression tests for the `except A, B:` Python 2 syntax fix
+# check_bitbake_locks: defers entirely to clear_stale_bitbake_locks
 # ---------------------------------------------------------------------------
 
 
-def test_check_bitbake_locks_handles_oserror(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """An OSError reading bitbake.lock must hit the cleanup branch, not crash.
-
-    Before the fix, ``except ValueError, OSError:`` was parsed as Python 2
-    syntax (``except ValueError as OSError:``) so an OSError would propagate
-    as an unhandled exception. The fix is ``except (ValueError, OSError):``.
-    """
-    build_dir = tmp_path / "ti" / "build"
-    build_dir.mkdir(parents=True)
-    lock = build_dir / "bitbake.lock"
-    lock.write_text("12345")
-
-    cfg = BuildConfig(
+def _make_ti_cfg(tmp_path: Path) -> BuildConfig:
+    return BuildConfig(
         workspace=tmp_path,
         bsp_family="ti",
         machine="am62x-var-som",
@@ -558,26 +547,122 @@ def test_check_bitbake_locks_handles_oserror(tmp_path: Path, monkeypatch: pytest
         kas_container_image="jetm/kas-build-env:latest",
     )
 
-    real_read_text = Path.read_text
 
-    def _raising_read_text(self: Path, *args: object, **kwargs: object) -> str:
-        if self == lock:
-            raise OSError("simulated I/O failure")
-        return real_read_text(self, *args, **kwargs)
+def test_check_bitbake_locks_reports_removal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-refusing outcome with removed files renders a PASS listing them."""
+    cfg = _make_ti_cfg(tmp_path)
+    lock = tmp_path / "ti" / "build" / "bitbake.lock"
 
-    monkeypatch.setattr(Path, "read_text", _raising_read_text)
-    # Stub the cleanup helper - the parallel bug at kas_build.py:319 would
-    # otherwise propagate the OSError through and mask the diagnostics fix.
     monkeypatch.setattr(
         "bakar.steps.kas_build.clear_stale_bitbake_locks",
-        lambda _cfg: [lock],
+        lambda _cfg: build_stop.LockClearOutcome(removed=[lock], note="PID gone"),
     )
 
     result = check_bitbake_locks(cfg)
 
     assert result.status == Status.PASS
     assert result.severity == Severity.BLOCK
-    assert "unreadable" in result.message
+    assert "removed" in result.message
+    assert "bitbake.lock" in result.message
+    assert "PID gone" in result.message
+
+
+def test_check_bitbake_locks_no_stale_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No refusal and nothing removed renders the unchanged no-op PASS."""
+    cfg = _make_ti_cfg(tmp_path)
+
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.clear_stale_bitbake_locks",
+        lambda _cfg: build_stop.LockClearOutcome(removed=[]),
+    )
+
+    result = check_bitbake_locks(cfg)
+
+    assert result.status == Status.PASS
+    assert result.severity == Severity.BLOCK
+    assert result.message == "no stale locks or sockets"
+
+
+def test_check_bitbake_locks_held_locally(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A held-locally refusal reports BLOCK with the PID, not a removal."""
+    cfg = _make_ti_cfg(tmp_path)
+
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.clear_stale_bitbake_locks",
+        lambda _cfg: build_stop.LockClearOutcome(
+            removed=[], refusal=build_stop.LockRefusal(reason="held-locally", pid=12345)
+        ),
+    )
+
+    result = check_bitbake_locks(cfg)
+
+    assert result.status == Status.FAIL
+    assert result.severity == Severity.BLOCK
+    assert "held by PID 12345" in result.message
+    assert "removed" not in result.message
+
+
+def test_check_bitbake_locks_peer_held(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A peer-held refusal reports BLOCK naming the peer host, not a removal."""
+    cfg = _make_ti_cfg(tmp_path)
+
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.clear_stale_bitbake_locks",
+        lambda _cfg: build_stop.LockClearOutcome(
+            removed=[], refusal=build_stop.LockRefusal(reason="peer-held", host="pc2-gene-x670e")
+        ),
+    )
+
+    result = check_bitbake_locks(cfg)
+
+    assert result.status == Status.FAIL
+    assert result.severity == Severity.BLOCK
+    assert "held by pc2-gene-x670e (peer node)" in result.message
+    assert "removed" not in result.message
+    assert result.fix_hint is not None
+    assert "peer" in result.fix_hint
+
+
+@pytest.mark.parametrize("reason", ["unattributable", "shared-inaction"])
+def test_check_bitbake_locks_unattributable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reason: str) -> None:
+    """unattributable/shared-inaction refusals report BLOCK with a manual-clear hint."""
+    cfg = _make_ti_cfg(tmp_path)
+
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.clear_stale_bitbake_locks",
+        lambda _cfg: build_stop.LockClearOutcome(removed=[], refusal=build_stop.LockRefusal(reason=reason)),
+    )
+
+    result = check_bitbake_locks(cfg)
+
+    assert result.status == Status.FAIL
+    assert result.severity == Severity.BLOCK
+    assert "could not be confirmed" in result.message
+    assert result.fix_hint is not None
+    assert "manually" in result.fix_hint
+
+
+def test_check_bitbake_locks_no_local_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """check_bitbake_locks must not run its own liveness probe or unlink sockets.
+
+    Before this change the function read the lock's PID and called
+    ``os.kill``/inspected ``/proc/<pid>/cmdline`` itself, and directly
+    unlinked orphaned sockets when the lock was absent. It now defers
+    entirely to ``clear_stale_bitbake_locks`` - so ``os.kill`` and
+    ``Path.unlink`` must never be invoked from within this function.
+    """
+    cfg = _make_ti_cfg(tmp_path)
+
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.clear_stale_bitbake_locks",
+        lambda _cfg: build_stop.LockClearOutcome(removed=[]),
+    )
+
+    with patch("os.kill") as mock_kill, patch.object(Path, "unlink") as mock_unlink:
+        check_bitbake_locks(cfg)
+
+    mock_kill.assert_not_called()
+    mock_unlink.assert_not_called()
 
 
 def test_read_sysctl_returns_none_on_missing_file() -> None:

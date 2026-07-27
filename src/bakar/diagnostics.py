@@ -33,6 +33,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rich.markup import escape
+
 from bakar import build_scope, build_stop
 from bakar.config import BuildConfig
 from bakar.kas import parse_bblayers
@@ -1042,54 +1044,51 @@ def check_nproc(cfg: BuildConfig) -> CheckResult:
 def check_bitbake_locks(cfg: BuildConfig) -> CheckResult:
     """Remove stale bitbake lock and socket files and report the result.
 
-    A crashed build leaves bitbake.lock, bitbake.sock, and hashserve.sock
-    behind. This check auto-repairs: if the owning PID is gone all three
-    are removed. If a live bitbake holds the lock the check fails with BLOCK
-    so the user knows a build is in progress.
+    Defers entirely to :func:`bakar.steps.kas_build.clear_stale_bitbake_locks`,
+    which is the host-aware lock authority: on a shared NFS TOPDIR a "stale"
+    lock may belong to a live build on a peer fleet node, so ownership is
+    checked before any removal happens. This check has no probe or unlink
+    logic of its own - it just renders the returned
+    :class:`bakar.build_stop.LockClearOutcome` as a :class:`CheckResult`.
     """
     from bakar.steps.kas_build import clear_stale_bitbake_locks
 
-    build_dir = cfg.bsp_root / "build"
-    lock = build_dir / "bitbake.lock"
-    sockets = [build_dir / "bitbake.sock", build_dir / "hashserve.sock"]
-    stale_sockets = [s for s in sockets if s.exists() or s.is_socket()]
+    outcome = clear_stale_bitbake_locks(cfg)
+    refusal = outcome.refusal
 
-    if not lock.exists():
-        if stale_sockets:
-            for s in stale_sockets:
-                s.unlink(missing_ok=True)
-            names = ", ".join(s.name for s in stale_sockets)
-            return _ok("bitbake-locks", Severity.BLOCK, f"orphaned sockets removed: {names}")
-        return _ok("bitbake-locks", Severity.BLOCK, "no stale locks or sockets")
-
-    try:
-        pid = int(lock.read_text().strip())
-    except ValueError, OSError:
-        removed = clear_stale_bitbake_locks(cfg)
-        names = ", ".join(p.name for p in removed)
-        return _ok("bitbake-locks", Severity.BLOCK, f"unreadable lock and sockets removed: {names}")
-
-    try:
-        os.kill(pid, 0)
-        cmdline_path = Path(f"/proc/{pid}/cmdline")
-        if cmdline_path.exists():
-            cmdline = cmdline_path.read_bytes().replace(b"\x00", b" ").decode(errors="replace")
-            if "bitbake" not in cmdline.lower():
-                removed = clear_stale_bitbake_locks(cfg)
-                names = ", ".join(p.name for p in removed)
-                return _ok("bitbake-locks", Severity.BLOCK, f"stale files removed (PID {pid} reused): {names}")
+    if refusal is not None:
+        if refusal.reason == "held-locally":
+            return _fail(
+                "bitbake-locks",
+                Severity.BLOCK,
+                f"bitbake.lock held by PID {refusal.pid} - another build is running",
+                fix_hint="wait for the running build to finish or kill it, then re-run doctor",
+            )
+        if refusal.reason == "peer-held":
+            return _fail(
+                "bitbake-locks",
+                Severity.BLOCK,
+                f"bitbake.lock held by {escape(refusal.host or 'unknown host')} (peer node) - a build is running there",
+                fix_hint="wait for the peer build, or build a different machine/TOPDIR",
+            )
+        # unattributable / shared-inaction
         return _fail(
             "bitbake-locks",
             Severity.BLOCK,
-            f"bitbake.lock held by PID {pid} - another build is running",
-            fix_hint="wait for the running build to finish or kill it, then re-run doctor",
+            "bitbake.lock ownership could not be confirmed on a shared filesystem",
+            fix_hint=(
+                "verify no fleet node is building this TOPDIR, "
+                "then remove bitbake.lock/bitbake.sock/hashserve.sock manually"
+            ),
         )
-    except ProcessLookupError:
-        removed = clear_stale_bitbake_locks(cfg)
-        names = ", ".join(p.name for p in removed)
-        return _ok("bitbake-locks", Severity.BLOCK, f"stale files removed (PID {pid} gone): {names}")
-    except PermissionError:
-        return _skip("bitbake-locks", Severity.BLOCK, f"cannot signal PID {pid} to check liveness")
+
+    if outcome.removed:
+        names = ", ".join(p.name for p in outcome.removed)
+        if outcome.note:
+            return _ok("bitbake-locks", Severity.BLOCK, f"stale files removed: {names} ({outcome.note})")
+        return _ok("bitbake-locks", Severity.BLOCK, f"stale files removed: {names}")
+
+    return _ok("bitbake-locks", Severity.BLOCK, "no stale locks or sockets")
 
 
 # ---------------------------------------------------------------------------
