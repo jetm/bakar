@@ -1506,7 +1506,7 @@ def _record_kill_pid(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
 def _forbid_wait_and_escalate(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fail the test if the graceful-wait/escalation ladder is ever reached.
 
-    A peer-held (or unattributable/shared-inaction) refusal must return before
+    A peer-held/unattributable/shared-inaction refusal must return before
     ``stop_build`` gets anywhere near ``_graceful_wait``/``_escalate_host`` - if
     either fires, the gate did not actually short-circuit the stop.
     """
@@ -1521,22 +1521,23 @@ def _forbid_wait_and_escalate(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(build_stop, "_escalate_host", _fail_escalate)
 
 
-@pytest.mark.parametrize("reason", ["peer-held", "unattributable"])
+@pytest.mark.parametrize("reason", ["peer-held", "unattributable", "shared-inaction"])
 def test_stop_build_sends_zero_signals_on_any_refusal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     reason: str,
 ) -> None:
-    """A hard-refusing guard (peer-held or unattributable) sends ZERO signals.
+    """Any hard-refusing guard verdict sends ZERO signals and touches nothing.
 
     The falsifier for this task is any SIGINT/SIGTERM/SIGKILL reaching
-    ``_kill_pid``/``os.killpg`` when the marker names a peer, or when
-    ownership is unattributable - both must refuse the whole stop before any
-    signal is sent, and before the run-dir scan even starts. ``shared-inaction``
-    is NOT included here - it is an advisory refusal that only blocks the
-    signal-sending code once the scan confirms something live is present; see
-    ``test_stop_build_shared_inaction_idle_reports_no_running_build`` and
-    ``test_stop_build_shared_inaction_with_live_build_refuses_zero_signals``.
+    ``_kill_pid``/``os.killpg`` when the marker names a peer, ownership is
+    unattributable, or the lock reads absent on a shared/unverifiable
+    filesystem (``shared-inaction``) - all three must refuse the whole stop
+    before any signal is sent, and before the run-dir scan even starts.
+    ``shared-inaction`` gets no special fall-through: the node-local scan
+    that would otherwise run has no way to distinguish a genuinely idle
+    workspace from a peer's live build hidden by NFS negative-lookup
+    caching, so it refuses just as hard as the other two verdicts.
     """
     cfg = make_build_config(workspace=tmp_path)
     run_dir = _make_run_dir_for_cfg(cfg)
@@ -1558,79 +1559,7 @@ def test_stop_build_sends_zero_signals_on_any_refusal(
     assert kill_pid_calls == []
     # The refusal must fire before any run-dir/pidfile bookkeeping runs.
     assert (run_dir / "build.pid").exists()
-
-
-def test_stop_build_shared_inaction_idle_reports_no_running_build(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """shared-inaction on a genuinely idle workspace is NOT an ownership conflict.
-
-    The lock reads absent and nothing is actually running (no live wrapper, no
-    argv-scoped cooker, no bitbake-server) - this is the common everyday idle
-    state on a shared NFS workspace. It must resolve to the same "no running
-    build" outcome as a ``None`` guard verdict, not the ownership-refusal
-    message, and it must not falsely claim a stale-lock cleanup happened.
-    """
-    cfg = make_build_config(workspace=tmp_path)
-    run_dir = _make_run_dir_for_cfg(cfg)
-    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
-
-    monkeypatch.setattr(
-        build_stop,
-        "lock_mutation_guard",
-        lambda _cfg: build_stop.LockRefusal(reason="shared-inaction"),
-    )
-    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (False, None, False))
-    monkeypatch.setattr(build_stop, "_bitbake_server_alive", lambda _rd: False)
-    monkeypatch.setattr(
-        build_stop,
-        "_collect_build_pids",
-        lambda _topdir, _pgid: build_stop._ScopedProcs(cooker=frozenset(), all_pids=frozenset()),
-    )
-    killpg_calls = _record_killpg(monkeypatch)
-    kill_pid_calls = _record_kill_pid(monkeypatch)
-    _forbid_wait_and_escalate(monkeypatch)
-
-    result = build_stop.stop_build(cfg.bsp_root, cfg)
-
-    assert result is True
-    assert killpg_calls == []
-    assert kill_pid_calls == []
-    assert not (run_dir / "build.pid").exists()
-
-
-def test_stop_build_shared_inaction_with_live_build_refuses_zero_signals(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """shared-inaction still blocks signalling once the scan finds a live build.
-
-    A stale absence view (NFS negative-lookup caching) can make the lock read
-    absent even though a build is actually live. The advisory refusal must
-    still hard-block the signal-sending code once the wrapper is confirmed
-    live, sending ZERO signals - the same safety property the immediate
-    refusal path provides for peer-held/unattributable.
-    """
-    cfg = make_build_config(workspace=tmp_path)
-    run_dir = _make_run_dir_for_cfg(cfg)
-    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
-
-    monkeypatch.setattr(
-        build_stop,
-        "lock_mutation_guard",
-        lambda _cfg: build_stop.LockRefusal(reason="shared-inaction"),
-    )
-    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
-    killpg_calls = _record_killpg(monkeypatch)
-    kill_pid_calls = _record_kill_pid(monkeypatch)
-    _forbid_wait_and_escalate(monkeypatch)
-
-    result = build_stop.stop_build(cfg.bsp_root, cfg)
-
-    assert result is False
-    assert killpg_calls == []
-    assert kill_pid_calls == []
+    assert (run_dir / "build.meta.json").exists()
 
 
 def test_stop_build_local_marker_stop_path_unchanged(
