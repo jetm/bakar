@@ -1701,6 +1701,72 @@ def _mount_entry_in(mounts_raw: str, path: Path) -> tuple[str, str, str, str] | 
     return None
 
 
+# NFS mount options that bound negative-lookup (absence) caching. Without one
+# of these -- or a low attribute-cache timeout -- a client can report a file as
+# still-absent for the full attribute timeout after a peer created it.
+_NFS_BOUNDED_LOOKUP_OPTS: frozenset[str] = frozenset({"lookupcache=positive", "lookupcache=none"})
+
+# An attribute-cache timeout at or below this many seconds counts as bounded.
+_NFS_LOW_ACTIMEO_SECONDS = 10
+
+# Attribute-cache timeout options that bound how long a stale absence view can
+# survive. ``acdirmax`` is included because directory-entry caching is what
+# actually governs negative lookups.
+_NFS_ACTIMEO_OPTS: tuple[str, ...] = ("actimeo", "acregmax", "acdirmax")
+
+
+def is_path_on_nfs(path: Path) -> bool | None:
+    """Tri-state: is ``path`` backed by an nfs/nfs4 mount?
+
+    Returns:
+        ``True`` - the longest-prefix ``/proc/mounts`` entry covering ``path``
+        names an nfs/nfs4 filesystem.
+
+        ``False`` - a covering entry exists and names some other filesystem, so
+        the path is CONFIRMED local to this node.
+
+        ``None`` - the filesystem could not be determined: ``/proc/mounts`` is
+        unreadable, or no entry covers the path.
+
+    ``None`` is deliberately distinct from ``False``, and callers MUST treat it
+    as shared (fail closed). This helper backs a deletion guard for
+    ``bitbake.lock``, not an advisory: a caller that read an undetermined path
+    as local would run a node-local PID probe against a PID number owned by a
+    peer fleet node and unlink that peer's live lock mid-build.
+    """
+    try:
+        mounts_raw = Path("/proc/mounts").read_text()
+    except OSError:
+        return None
+    entry = _mount_entry_in(mounts_raw, path)
+    if entry is None:
+        return None
+    return entry[2] in _FS_NFS
+
+
+def _nfs_lookup_cache_bounded(opts: str) -> bool:
+    """True when NFS mount ``opts`` bound how long a stale absence view lives.
+
+    Either an explicit ``lookupcache=positive``/``lookupcache=none``, or an
+    attribute-cache timeout of at most :data:`_NFS_LOW_ACTIMEO_SECONDS`
+    seconds. An unparseable timeout value counts as unbounded.
+    """
+    entries = [opt.strip() for opt in opts.split(",")]
+    if any(opt in _NFS_BOUNDED_LOOKUP_OPTS for opt in entries):
+        return True
+    for opt in entries:
+        key, _, value = opt.partition("=")
+        if key not in _NFS_ACTIMEO_OPTS or not value:
+            continue
+        try:
+            seconds = int(value)
+        except ValueError:
+            continue
+        if seconds <= _NFS_LOW_ACTIMEO_SECONDS:
+            return True
+    return False
+
+
 def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
     """Judge BOTH the workspace-root fstype AND the resolved-``TMPDIR`` fstype.
 
@@ -1716,8 +1782,10 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
       This is a ``Severity.WARN`` FAIL.
 
     A workspace on nfs/nfs4 with a local resolved ``TMPDIR`` is the new
-    supported capability and PASSes. All-local or unrecognized fstypes PASS
-    exactly as before.
+    supported capability and PASSes - unless the NFS mount leaves
+    negative-lookup caching unbounded, which is a ``Severity.WARN`` FAIL
+    because the bitbake-lock ownership guard judges a peer's lock by its
+    absence. All-local or unrecognized fstypes PASS exactly as before.
     """
     name = "workspace-filesystem"
     try:
@@ -1733,7 +1801,7 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
             Severity.WARN,
             f"no mountpoint covers {workspace} in /proc/mounts",
         )
-    _ws_source, ws_mount, ws_fstype, _ws_opts = ws_entry
+    _ws_source, ws_mount, ws_fstype, ws_opts = ws_entry
 
     # Resolve symlinks (strict=False tolerates the not-yet-created machine leaf):
     # a local_tmpdir_base symlinked onto an NFS target would otherwise be
@@ -1792,6 +1860,22 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
                 name,
                 Severity.WARN,
                 f"workspace on {ws_fstype} at {ws_mount}; TMPDIR {tmpdir} resolves to no mount - verify it is local",
+            )
+        # The bitbake-lock ownership guard reasons about a lock file's absence
+        # across fleet nodes. Unbounded negative-lookup caching lets a stale
+        # "absent" view survive for the full attribute timeout, so that part of
+        # the safety argument must not stay silent.
+        if not _nfs_lookup_cache_bounded(ws_opts):
+            return _fail(
+                name,
+                Severity.WARN,
+                f"workspace on {ws_fstype} at {ws_mount} without bounded negative-lookup caching "
+                f"(mount options: {ws_opts}): a peer node's lock file can read as absent for the "
+                "full attribute timeout",
+                fix_hint=(
+                    "Remount the workspace with lookupcache=positive (or a low actimeo, e.g. actimeo=10) "
+                    "so lock-file absence is judged on a fresh view, then re-run."
+                ),
             )
         return _ok(
             name,

@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
+from bakar import diagnostics
 from bakar.config import BuildConfig
 from bakar.diagnostics import (
     _DOCKER_CHECKS,
@@ -1125,7 +1126,7 @@ def test_check_workspace_filesystem_nfs_local_tmpdir_passes(monkeypatch: pytest.
     local_base.mkdir()
     mounts = (
         f"none / overlay rw 0 0\n"
-        f"server:/export {workspace.resolve()} nfs rw 0 0\n"
+        f"server:/export {workspace.resolve()} nfs rw,lookupcache=positive 0 0\n"
         f"none {local_base.resolve()} ext4 rw 0 0\n"
     )
     _patch_proc_mounts(monkeypatch, mounts)
@@ -1229,6 +1230,116 @@ def test_check_workspace_filesystem_unreadable(monkeypatch: pytest.MonkeyPatch, 
     assert result.status is Status.SKIP
     assert result.severity is Severity.WARN
     assert "unreadable" in result.message
+
+
+def test_check_workspace_filesystem_nfs_unbounded_lookupcache_warns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A bare nfs4 workspace mount -> FAIL @ WARN naming the lookupcache remedy.
+
+    The lock-ownership guard reasons about a lock file's absence; unbounded
+    negative-lookup caching makes that view stale, so it must not stay silent.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    local_base = tmp_path / "local-tmp"
+    local_base.mkdir()
+    mounts = (
+        f"none / overlay rw 0 0\n"
+        f"server:/export {workspace.resolve()} nfs4 rw,hard,vers=4.2 0 0\n"
+        f"none {local_base.resolve()} ext4 rw 0 0\n"
+    )
+    _patch_proc_mounts(monkeypatch, mounts)
+    cfg = _fs_cfg(workspace, local_tmpdir_base=str(local_base), host_mode=True)
+    result = check_workspace_filesystem(cfg)
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.WARN
+    assert "negative-lookup caching" in result.message
+    assert result.fix_hint is not None
+    assert "lookupcache=positive" in result.fix_hint
+
+
+def test_check_workspace_filesystem_nfs_lookupcache_positive_no_warning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The same nfs4 mount WITH ``lookupcache=positive`` -> PASS, no warning."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    local_base = tmp_path / "local-tmp"
+    local_base.mkdir()
+    mounts = (
+        f"none / overlay rw 0 0\n"
+        f"server:/export {workspace.resolve()} nfs4 rw,hard,lookupcache=positive 0 0\n"
+        f"none {local_base.resolve()} ext4 rw 0 0\n"
+    )
+    _patch_proc_mounts(monkeypatch, mounts)
+    cfg = _fs_cfg(workspace, local_tmpdir_base=str(local_base), host_mode=True)
+    result = check_workspace_filesystem(cfg)
+    assert result.status is Status.PASS
+    assert "negative-lookup caching" not in result.message
+
+
+def test_nfs_lookup_cache_bounded_low_actimeo() -> None:
+    """A low ``actimeo``/``acregmax`` bounds absence caching; a high one does not."""
+    assert diagnostics._nfs_lookup_cache_bounded("rw,actimeo=10")
+    assert diagnostics._nfs_lookup_cache_bounded("rw,acregmax=3,hard")
+    assert diagnostics._nfs_lookup_cache_bounded("rw,lookupcache=none")
+    assert not diagnostics._nfs_lookup_cache_bounded("rw,actimeo=600")
+    assert not diagnostics._nfs_lookup_cache_bounded("rw,actimeo=abc")
+    assert not diagnostics._nfs_lookup_cache_bounded("rw,hard,vers=4.2")
+
+
+def test_is_path_on_nfs_nfs4_true(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """An nfs4 mount covering the path -> True."""
+    target = tmp_path / "ws"
+    target.mkdir()
+    _patch_proc_mounts(monkeypatch, f"none / overlay rw 0 0\nsrv:/e {target.resolve()} nfs4 rw 0 0\n")
+    assert diagnostics.is_path_on_nfs(target) is True
+
+
+def test_is_path_on_nfs_ext4_false(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A confirmed-local ext4 mount -> False (the only value that permits deletion)."""
+    target = tmp_path / "ws"
+    target.mkdir()
+    _patch_proc_mounts(monkeypatch, f"none / overlay rw 0 0\n/dev/sda1 {target.resolve()} ext4 rw 0 0\n")
+    assert diagnostics.is_path_on_nfs(target) is False
+
+
+def test_is_path_on_nfs_unreadable_mounts_none(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Unreadable ``/proc/mounts`` -> None, never False.
+
+    False here would be a fail-OPEN regression: a degraded host would run a
+    node-local PID probe against a peer node's PID and delete its live lock.
+    """
+    target = tmp_path / "ws"
+    target.mkdir()
+    real_read_text = Path.read_text
+
+    def fake_read_text(self: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if str(self) == "/proc/mounts":
+            raise OSError("permission denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+    assert diagnostics.is_path_on_nfs(target) is None
+
+
+def test_is_path_on_nfs_uncovered_path_none(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """No ``/proc/mounts`` entry covers the path -> None (fail closed)."""
+    target = tmp_path / "ws"
+    target.mkdir()
+    _patch_proc_mounts(monkeypatch, "none /nowhere-else tmpfs rw 0 0\n")
+    assert diagnostics.is_path_on_nfs(target) is None
+
+
+def test_fs_allow_excludes_nfs() -> None:
+    """nfs/nfs4 must never be a permitted local filesystem.
+
+    Asserted on the set itself rather than by grepping the source, which is
+    fragile against reformatting.
+    """
+    assert "nfs" not in diagnostics._FS_ALLOW
+    assert "nfs4" not in diagnostics._FS_ALLOW
 
 
 def test_check_docker_version_modern_passes() -> None:
