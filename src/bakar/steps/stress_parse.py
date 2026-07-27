@@ -23,6 +23,9 @@ import sys
 import time
 from typing import TYPE_CHECKING
 
+from rich.markup import escape
+
+from bakar import build_stop
 from bakar.fork_race_signatures import FORK_RACE_SIGNATURES
 from bakar.steps import bitbake_override as step_override
 from bakar.steps import kas_build as step_kas
@@ -88,8 +91,8 @@ def _clear_bitbake_runtime(cfg: BuildConfig, log: RunLogger, iteration: int) -> 
     ``upstream-bitbake`` source mid-experiment (probes, fix attempts):
 
     * **Long-running cookerdaemon**: ``bitbake -p`` reconnects to an
-      existing daemon if ``<bsp>/build/bitbake.lock`` claims one is
-      alive. That daemon imported ``bb.cooker`` (and friends) at its
+      existing daemon if ``<bsp>/<build_dir_name>/bitbake.lock`` claims one
+      is alive. That daemon imported ``bb.cooker`` (and friends) at its
       own startup; the in-memory bytecode is frozen for its lifetime,
       so source edits made AFTER the daemon spawned never take effect
       until the daemon exits. Wiping the lock + the unix socket forces
@@ -104,22 +107,38 @@ def _clear_bitbake_runtime(cfg: BuildConfig, log: RunLogger, iteration: int) -> 
       ``<bsp>/upstream-bitbake/`` the cache dirs are pure build
       artifact - safe to wipe.
 
+    The lock/socket removal is gated on
+    :func:`bakar.build_stop.lock_mutation_guard`: on a shared NFS TOPDIR a
+    peer fleet node's live ``bitbake.lock`` must never be unlinked by this
+    node's stress test. On any refusal the lock/socket removal is skipped
+    entirely and logged; the cache-dir and ``__pycache__`` wipe below still
+    run unconditionally so the stress test's actual purpose (forcing a
+    re-parse) is preserved even when the lock/socket step is skipped.
+
     Returns ``True`` if anything was actually removed, ``False`` if the
     workspace was already clean (typical first-iteration state).
     """
     cleared_any = False
 
-    for runtime_path in (
-        cfg.bsp_root / "build" / "bitbake.lock",
-        cfg.bsp_root / "build" / "bitbake.sock",
-    ):
-        if runtime_path.exists() or runtime_path.is_symlink():
-            try:
-                runtime_path.unlink()
-            except OSError:
-                continue
-            log.info(f"stress-parse[{iteration:02d}]: removed {runtime_path}")
-            cleared_any = True
+    refusal = build_stop.lock_mutation_guard(cfg)
+    if refusal is not None:
+        log.info(
+            f"stress-parse[{iteration:02d}]: skipping bitbake.lock/sock removal "
+            f"({escape(refusal.reason)}): {escape(refusal.detail)}"
+        )
+    else:
+        build_dir = cfg.bsp_root / cfg.build_dir_name
+        for runtime_path in (
+            build_dir / "bitbake.lock",
+            build_dir / "bitbake.sock",
+        ):
+            if runtime_path.exists() or runtime_path.is_symlink():
+                try:
+                    runtime_path.unlink()
+                except OSError:
+                    continue
+                log.info(f"stress-parse[{iteration:02d}]: removed {runtime_path}")
+                cleared_any = True
 
     override_root = cfg.bsp_root / "upstream-bitbake"
     if override_root.is_dir():

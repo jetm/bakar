@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from bakar import build_stop
 from bakar.config import BuildConfig
 from bakar.observability import RunLogger
 from bakar.steps import stress_parse
@@ -635,6 +636,99 @@ def test_python_executable_propagates_to_command_and_summary(
     assert f"BB_PYTHON3={fake_python}" in calls[0]["command"]
     assert calls[0]["python_executable"] == fake_python
     assert summary["python_executable"] == str(fake_python)
+
+
+def test_peer_owned_lock_skips_unlink_but_cache_wipe_still_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A peer-held ``lock_mutation_guard`` refusal skips the lock/sock unlink.
+
+    The lock/socket files must survive the call, while the parse-cache wipe
+    (the stress test's actual purpose - forcing bitbake to re-parse) still
+    runs unconditionally.
+    """
+    cfg = _cfg(tmp_path)
+    cfg.runs_dir.mkdir(parents=True, exist_ok=True)
+    build_dir = cfg.bsp_root / cfg.build_dir_name
+    build_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = build_dir / "bitbake.lock"
+    sock_path = build_dir / "bitbake.sock"
+    lock_path.write_text("12345\n")
+    sock_path.write_text("")
+    cache_dir = cfg.bsp_root / "build" / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "bb_codeparser.dat").write_text("stale-marker")
+
+    refusal = build_stop.LockRefusal(reason="peer-held", host="peer-host", detail="lock marker names peer-host")
+    monkeypatch.setattr(stress_parse.build_stop, "lock_mutation_guard", lambda _cfg: refusal)
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        runtime_cleared = stress_parse._clear_bitbake_runtime(cfg, log, 1)
+        cache_cleared = stress_parse._clear_parse_cache(cfg, log, 1)
+
+    assert lock_path.exists()
+    assert sock_path.exists()
+    assert not runtime_cleared
+    assert cache_cleared
+    assert not cache_dir.is_dir()
+
+
+def test_local_marker_lock_unlink_proceeds_as_before(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A safe (``None``) guard verdict leaves the lock/sock removal unchanged."""
+    cfg = _cfg(tmp_path)
+    cfg.runs_dir.mkdir(parents=True, exist_ok=True)
+    build_dir = cfg.bsp_root / cfg.build_dir_name
+    build_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = build_dir / "bitbake.lock"
+    sock_path = build_dir / "bitbake.sock"
+    lock_path.write_text("12345\n")
+    sock_path.write_text("")
+
+    monkeypatch.setattr(stress_parse.build_stop, "lock_mutation_guard", lambda _cfg: None)
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        runtime_cleared = stress_parse._clear_bitbake_runtime(cfg, log, 1)
+
+    assert not lock_path.exists()
+    assert not sock_path.exists()
+    assert runtime_cleared
+
+
+def test_lock_removal_uses_build_dir_name_not_hardcoded_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """qcom's ``build-<distro>`` TOPDIR is used, not a hardcoded ``"build"``."""
+    cfg = BuildConfig(
+        workspace=tmp_path,
+        bsp_family="qcom",
+        machine="exmp-q911",
+        distro="qcom-wayland",
+        image="qcom-multimedia-image",
+        manifest="qcom-manifest.xml",
+        repo_url="https://example.invalid/none.git",
+        repo_branch="scarthgap",
+        kas_container_image="jetm/kas-build-env:latest",
+    )
+    assert cfg.build_dir_name == "build-qcom-wayland"
+    cfg.runs_dir.mkdir(parents=True, exist_ok=True)
+    correct_build_dir = cfg.bsp_root / cfg.build_dir_name
+    correct_build_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = correct_build_dir / "bitbake.lock"
+    sock_path = correct_build_dir / "bitbake.sock"
+    lock_path.write_text("12345\n")
+    sock_path.write_text("")
+    # A stray "build" dir must NOT be the one consulted.
+    wrong_build_dir = cfg.bsp_root / "build"
+    wrong_build_dir.mkdir(parents=True, exist_ok=True)
+    (wrong_build_dir / "bitbake.lock").write_text("99999\n")
+
+    monkeypatch.setattr(stress_parse.build_stop, "lock_mutation_guard", lambda _cfg: None)
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        runtime_cleared = stress_parse._clear_bitbake_runtime(cfg, log, 1)
+
+    assert not lock_path.exists()
+    assert not sock_path.exists()
+    assert (wrong_build_dir / "bitbake.lock").exists()
+    assert runtime_cleared
 
 
 def test_python_executable_omitted_when_unset(
