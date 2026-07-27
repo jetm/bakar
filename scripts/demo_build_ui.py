@@ -8,6 +8,24 @@ Run from the repo root with no arguments to record the GIF:
 VHS invokes this same script in ``--demo`` mode internally to drive the Rich
 Live UI inside its virtual terminal. Requirements: vhs, ttyd, ffmpeg,
 IosevkaTerm Nerd Font.
+
+When the build UI changes, update ``_run_demo`` below to match the new phase
+structure. Parts that must stay in sync but aren't obvious from a local diff:
+
+- ``_TAPE``: the embedded VHS settings. Bump ``Set Height`` if task rows are
+  clipped in the recorded GIF; bump ``Sleep 13000ms`` if ``_run_demo``'s total
+  duration changes (recording stops at that mark, so a longer demo gets cut
+  off).
+- Both a ``_setscene(n)`` and a ``_task(n)`` call must fire at least once each
+  - together they flip the UI's breadcrumb through parse -> setscene -> tasks;
+  dropping either leaves a phase never shown on screen.
+- The glibc backdate (``ui._running[...].start -= 3725``) puts that row into
+  bold red with a drift timer. The backdated start must exceed 4x the median
+  start-to-now delta of the other rows still running at that point, or the
+  drift threshold in ``build_ui.py`` won't trip and the row renders normally.
+- The final ``time.sleep(5.0)`` in ``_run_demo`` holds the last frame so the
+  stuck row is legible; it must stay within ``_TAPE``'s ``Sleep`` budget above
+  or the hold gets truncated mid-recording.
 """
 
 from __future__ import annotations
