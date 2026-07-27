@@ -1,6 +1,6 @@
 # Six groups by architectural role:
-#  foundation  — pure data/config/parsers, no outward bakar imports
-#  model       — bsp_model.py: central domain model, intentionally used
+#  foundation  - pure data/config/parsers, no outward bakar imports
+#  model       - bsp_model.py: central domain model, intentionally used
 #                across layers. The arch checker (ast.walk) treats both
 #                TYPE_CHECKING guards and function-body deferred imports as
 #                real edges, so bsp_model is placed in its own group outside
@@ -8,11 +8,11 @@
 #                Edges to/from model are ungoverned (SUGGESTION) rather than
 #                layer violations. Two explicit forbidden rules still cap the
 #                top of the model's allowed import set.
-#  steps       — subprocess wrappers; import foundation only at module level;
+#  steps       - subprocess wrappers; import foundation only at module level;
 #                bsp_model.BspModel/BuildConfig used under TYPE_CHECKING
-#  core        — diagnostics.py: pre-flight checks (import foundation + model)
-#  analysis    — triage / report / layers (import foundation; sit below steps in layer order)
-#  commands    — CLI orchestrators (import everything)
+#  core        - diagnostics.py: pre-flight checks (import foundation + model)
+#  analysis    - triage / report / layers (import foundation; sit below steps in layer order)
+#  commands    - CLI orchestrators (import everything)
 
 [architecture]
 name = "bakar"

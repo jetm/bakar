@@ -2,7 +2,7 @@
 
 Route bitbake's C/C++ `do_compile` work through an [sccache-dist](https://github.com/mozilla/sccache/blob/main/docs/DistributedQuickstart.md) scheduler so a cold Yocto build can pool cores across machines on the LAN. bakar configures only the **client**: it appends the sccache overlay, exports the scheduler URL into the build, and verifies reachability in `bakar doctor`. The **scheduler** and **build-server** are long-lived host services you manage with systemd.
 
-This runbook covers the operator setup and **Phase 1**: single-PC validation, where the scheduler, build-server, and sccache client all run on one machine. Phase 1 derisks the wiring (does `CCACHE = "sccache "` actually route `CC` through sccache? does Linux auto-packaging ship Yocto's per-recipe cross-toolchain?) before adding a second machine. The same client knob — `--sccache-scheduler URL` — is identical for a 1-node, 2-node, or N-node office cluster; growth is operator-side (register another build-server with the scheduler).
+This runbook covers the operator setup and **Phase 1**: single-PC validation, where the scheduler, build-server, and sccache client all run on one machine. Phase 1 derisks the wiring (does `CCACHE = "sccache "` actually route `CC` through sccache? does Linux auto-packaging ship Yocto's per-recipe cross-toolchain?) before adding a second machine. The same client knob - `--sccache-scheduler URL` - is identical for a 1-node, 2-node, or N-node office cluster; growth is operator-side (register another build-server with the scheduler).
 
 ## Architecture
 
@@ -10,7 +10,7 @@ This runbook covers the operator setup and **Phase 1**: single-PC validation, wh
 |-----------|------|---------|------------|-------|
 | Scheduler | 10600 | unprivileged user | systemd (operator) | reachable on the LAN |
 | Build-server | 10501 | **root** | systemd (operator) | bubblewrap (`bwrap`) |
-| Client | — | your user | bakar (overlay + env) | `sccache` on PATH, `~/.config/sccache/config` |
+| Client | - | your user | bakar (overlay + env) | `sccache` on PATH, `~/.config/sccache/config` |
 
 The scheduler hands compile jobs from clients to build-servers. The build-server runs each compile inside a bubblewrap sandbox, so it needs root and the `bwrap` binary. On Linux, sccache auto-packages the in-use compiler and ships it to the build-server, which is what lets Yocto's per-recipe cross-toolchains compile remotely without static per-toolchain config.
 
@@ -18,11 +18,11 @@ The scheduler hands compile jobs from clients to build-servers. The build-server
 
 bakar owns the client side only:
 
-- When `cfg.use_sccache_dist` is true, `bakar build` appends `overlays/bakar-tuning-sccache.yml`, which sets `CCACHE = "sccache "`, `INHERIT:remove = "ccache"` (ccache and sccache are mutually-exclusive launchers — chaining them double-wraps `CC`), and exports `SCCACHE_DIST_SCHEDULER_URL` from the env bakar passes in.
+- When `cfg.use_sccache_dist` is true, `bakar build` appends `overlays/bakar-tuning-sccache.yml`, which sets `CCACHE = "sccache "`, `INHERIT:remove = "ccache"` (ccache and sccache are mutually-exclusive launchers - chaining them double-wraps `CC`), and exports `SCCACHE_DIST_SCHEDULER_URL` from the env bakar passes in.
 - `_build_env` exports `BAKAR_SCCACHE_SCHEDULER_URL = cfg.sccache_scheduler_url` into the build, but only when distributed compile is enabled. A disabled build is byte-for-byte unchanged: ccache stays as today.
 - `bakar doctor` runs the `sccache-dist` check (see [doctor integration](#doctor-integration)).
 
-bakar does **not** start, supervise, or configure the scheduler or build-server — those are root services and stay out of bakar entirely. The overlay's exported env var carries the scheduler URL, but the sccache client still reads its auth token and full dist config from `~/.config/sccache/config`. You set that file up once, below.
+bakar does **not** start, supervise, or configure the scheduler or build-server - those are root services and stay out of bakar entirely. The overlay's exported env var carries the scheduler URL, but the sccache client still reads its auth token and full dist config from `~/.config/sccache/config`. You set that file up once, below.
 
 ## Prerequisites
 
@@ -50,7 +50,7 @@ sccache-dist auth generate-jwt-hs256-server-token \
 
 For Phase 1 the build-server listens on loopback (`127.0.0.1:10501`). For Phase 2 regenerate the server token against the build-server's LAN address.
 
-### 2. Scheduler config — `/etc/sccache/scheduler.toml`
+### 2. Scheduler config - `/etc/sccache/scheduler.toml`
 
 ```toml
 public_addr = "127.0.0.1:10600"
@@ -64,7 +64,7 @@ type = "jwt_hs256"
 secret_key = "<SECRET_KEY>"
 ```
 
-### 3. Build-server config — `/etc/sccache/server.toml`
+### 3. Build-server config - `/etc/sccache/server.toml`
 
 ```toml
 cache_dir = "/tmp/sccache-toolchains"
@@ -83,7 +83,7 @@ token = "<SERVER_JWT>"
 
 The `overlay` builder runs each compile inside bubblewrap; `bwrap_path` must point at the installed `bwrap`. Confirm `ls /usr/bin/bwrap` before starting the unit.
 
-### 4. Client config — `~/.config/sccache/config`
+### 4. Client config - `~/.config/sccache/config`
 
 ```toml
 [dist]
@@ -147,7 +147,7 @@ SCCACHE_CONF=~/.config/sccache/config sccache --start-server
 sccache --dist-status
 ```
 
-`--dist-status` must report a `SchedulerStatus` with at least one server, not `"Disabled"`. `"Disabled"` means the client never loaded the dist config — check `SCCACHE_CONF` points at the file from step 4 and that `[dist].scheduler_url` is set.
+`--dist-status` must report a `SchedulerStatus` with at least one server, not `"Disabled"`. `"Disabled"` means the client never loaded the dist config - check `SCCACHE_CONF` points at the file from step 4 and that `[dist].scheduler_url` is set.
 
 ### 7. Trivial compile proof
 
@@ -159,9 +159,9 @@ SCCACHE_CONF=~/.config/sccache/config sccache cc -c /tmp/t.c -o /tmp/t.o
 sccache --show-stats
 ```
 
-`--show-stats` should show a non-zero compile-request count and, if distribution is working, a non-zero "Successful distributed compiles" line. If everything is local-only here, distribution will not work for the Yocto build either — fix the scheduler/server before continuing.
+`--show-stats` should show a non-zero compile-request count and, if distribution is working, a non-zero "Successful distributed compiles" line. If everything is local-only here, distribution will not work for the Yocto build either - fix the scheduler/server before continuing.
 
-## Phase 1 — single-PC validation
+## Phase 1 - single-PC validation
 
 With the scheduler, build-server, and client all up on this one PC, run the wrynose build in host mode through bakar:
 
@@ -200,7 +200,7 @@ An empty `CCACHE`, or a `CC` with no `sccache` prefix, means the overlay's `CCAC
 sccache --show-stats
 ```
 
-The compile-request count must be `> 0` after the build. Zero requests means nothing routed through sccache despite the prefix — re-check `SCCACHE_CONF` and that the build env carried `BAKAR_SCCACHE_SCHEDULER_URL`.
+The compile-request count must be `> 0` after the build. Zero requests means nothing routed through sccache despite the prefix - re-check `SCCACHE_CONF` and that the build env carried `BAKAR_SCCACHE_SCHEDULER_URL`.
 
 **3. The image built correctly.**
 
@@ -218,7 +218,7 @@ grep -rh '^Elapsed time' "$BS"/*/do_compile 2>/dev/null | \
   awk '{s+=$4} END{print "do_compile elapsed (s):", s}'
 ```
 
-Record `do_compile` CPU-time as a fraction of total build CPU-time. If compile is a minority of total, note in the result that distribution may not be worth pursuing to Phase 2 — that is a legitimate falsification of the whole approach, not a failure of this task.
+Record `do_compile` CPU-time as a fraction of total build CPU-time. If compile is a minority of total, note in the result that distribution may not be worth pursuing to Phase 2 - that is a legitimate falsification of the whole approach, not a failure of this task.
 
 ### When a check fails
 
@@ -235,7 +235,7 @@ Record `do_compile` CPU-time as a fraction of total build CPU-time. If compile i
 
 | Condition | Result |
 |-----------|--------|
-| `[build] sccache_dist = false` (or unset) | SKIP (INFO) — nothing to verify, build unchanged |
+| `[build] sccache_dist = false` (or unset) | SKIP (INFO) - nothing to verify, build unchanged |
 | Enabled, `sccache` binary missing from PATH | FAIL (BLOCK) → install sccache |
 | Enabled, no scheduler URL set | FAIL (BLOCK) → set `[build] sccache_scheduler_url` or pass `--sccache-scheduler` |
 | Enabled, scheduler URL has no host:port | FAIL (BLOCK) → use a URL like `http://localhost:10600` |
@@ -262,9 +262,9 @@ bakar cluster-info
 
 The scheduler URL resolves from `--scheduler`, then the global `--sccache-scheduler`, then `sccache_scheduler_url` in config. `--json` emits a machine-readable document (`reachable`, `scheduler_url`, `error`, `capacity`); the command exits 1 when the scheduler is unreachable or `sccache` is not installed.
 
-`cluster-info` prints a per-node breakdown — each build-server's address, CPU count, and in-flight jobs — when the scheduler exposes a per-server array in its status response. The stock upstream scheduler returns only the aggregate counts (server count, total CPUs, jobs in progress) and the `nodes:` block is omitted; a scheduler that adds the per-server array (as the source build this runbook uses does) gets the node list with no further change to `cluster-info`.
+`cluster-info` prints a per-node breakdown - each build-server's address, CPU count, and in-flight jobs - when the scheduler exposes a per-server array in its status response. The stock upstream scheduler returns only the aggregate counts (server count, total CPUs, jobs in progress) and the `nodes:` block is omitted; a scheduler that adds the per-server array (as the source build this runbook uses does) gets the node list with no further change to `cluster-info`.
 
-`cluster-info` is a one-shot snapshot. To watch the cluster *and* the build together while a build runs — per-node job load, the daemon's cache/distributed/fell-back counts, and bitbake task progress in one refreshing view (or `--json`/NDJSON for CI) — use [`bakar monitor`](monitor.md).
+`cluster-info` is a one-shot snapshot. To watch the cluster *and* the build together while a build runs - per-node job load, the daemon's cache/distributed/fell-back counts, and bitbake task progress in one refreshing view (or `--json`/NDJSON for CI) - use [`bakar monitor`](monitor.md).
 
 ## Configuration
 
@@ -278,7 +278,7 @@ Set via `bakar settings set build.sccache_dist true` and `bakar settings set bui
 
 ## See also
 
-- [build.md](build.md) — doctor runs automatically before every build
-- [doctor.md](doctor.md) — the doctor gate that runs the `sccache-dist` check
-- [hashserv.md](hashserv.md) — the host-gateway / `--add-host` plumbing the container path reuses for the in-container client
-- [configuration.md](configuration.md) — `[build] sccache_dist` / `sccache_scheduler_url` resolution order
+- [build.md](build.md) - doctor runs automatically before every build
+- [doctor.md](doctor.md) - the doctor gate that runs the `sccache-dist` check
+- [hashserv.md](hashserv.md) - the host-gateway / `--add-host` plumbing the container path reuses for the in-container client
+- [configuration.md](configuration.md) - `[build] sccache_dist` / `sccache_scheduler_url` resolution order

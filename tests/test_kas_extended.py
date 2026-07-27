@@ -200,7 +200,7 @@ def test_parse_manifest_omits_layers_when_repo_has_empty_set(tmp_path: Path) -> 
 
 
 # ---------------------------------------------------------------------------
-# build_yaml_dict — manifest+bblayers and skip_manifest with bblayers paths
+# build_yaml_dict - manifest+bblayers and skip_manifest with bblayers paths
 # ---------------------------------------------------------------------------
 
 
@@ -280,7 +280,7 @@ def test_build_yaml_dict_manifest_path_uses_parse_manifest(tmp_path: Path) -> No
 
 
 # ---------------------------------------------------------------------------
-# write_yaml — atomic write, comment header, deterministic body
+# write_yaml - atomic write, comment header, deterministic body
 # ---------------------------------------------------------------------------
 
 
@@ -358,7 +358,7 @@ def test_write_yaml_is_deterministic(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# translate_bbsetup_config — error branches not covered by test_bbsetup.py
+# translate_bbsetup_config - error branches not covered by test_bbsetup.py
 # ---------------------------------------------------------------------------
 
 

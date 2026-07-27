@@ -11,7 +11,7 @@
 #
 # The mirror URL must be the base URL of an sstate mirror that serves artifacts
 # under the /all/PATH layout (the Yocto Project autobuilder convention). The
-# official Yocto Project mirror is http://sstate.yoctoproject.org — pass it
+# official Yocto Project mirror is http://sstate.yoctoproject.org - pass it
 # directly as --sstate-mirror or set sstate_mirror_url in config.toml.
 #
 # The mirror URL is supplied at build time via the BAKAR_SSTATE_MIRROR_URL

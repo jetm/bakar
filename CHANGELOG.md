@@ -136,7 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bakar cluster-info` now shows the per-language cache hit/miss breakdown and labels per-language cache (`cache[<lang>]`) separately from the aggregate per-node distribution (`dist[<node>]`), so a per-language miss count is no longer misread as that language having distributed to a node.
 - The end-of-build sccache summary now breaks cache hits and misses down per language (C/C++, Rust, Assembler), each with its own hit-rate percentage, instead of reporting only aggregate totals.
 - The `bakar build` live UI now surfaces cluster and cache status during the build: sccache-dist builds show a cluster-load line plus the in-daemon cache/distribution line, and ccache builds show a ccache hit/miss line, so distribution health is visible without running `bakar monitor` in a second window.
-- `bakar monitor` now shows runqueue progress (`<done>/<total> tasks (<n> left) <pct>%`) and a real elapsed clock derived from the run directory, counts setscene re-runs separately from real task failures (a noisy-but-healthy build no longer reads as collapsing), and reports the managed `hashserv`/`prserv` addresses — or the central-tier endpoints when configured — each with a liveness probe.
+- `bakar monitor` now shows runqueue progress (`<done>/<total> tasks (<n> left) <pct>%`) and a real elapsed clock derived from the run directory, counts setscene re-runs separately from real task failures (a noisy-but-healthy build no longer reads as collapsing), and reports the managed `hashserv`/`prserv` addresses - or the central-tier endpoints when configured - each with a liveness probe.
 
 ### Changed
 
@@ -243,7 +243,7 @@ reported with actionable fix hints before the build starts.
 
 ### Added
 
-- Added `bakar setup`, a once-per-machine host preparation command that profiles the host, maps failing `bakar doctor` host-environment checks to remediation actions, and applies them: unprivileged actions (kas install via `uv tool install`, docker image pull, git identity, cache directory creation) run inline; privileged actions (sysctl drop-in, docker `daemon.json` merge, `systemctl enable --now docker`, `usermod -aG docker`) are assembled into a single auditable `set -euo pipefail` script piped to one confirmed `sudo bash -s` via stdin — never written to disk. `--dry-run` prints the host profile and the full generated script without touching anything. `--yes` skips the confirm gate and requires passwordless sudo, exiting non-zero with a clear message if unavailable rather than hanging on a prompt. See [docs/setup.md](docs/setup.md).
+- Added `bakar setup`, a once-per-machine host preparation command that profiles the host, maps failing `bakar doctor` host-environment checks to remediation actions, and applies them: unprivileged actions (kas install via `uv tool install`, docker image pull, git identity, cache directory creation) run inline; privileged actions (sysctl drop-in, docker `daemon.json` merge, `systemctl enable --now docker`, `usermod -aG docker`) are assembled into a single auditable `set -euo pipefail` script piped to one confirmed `sudo bash -s` via stdin - never written to disk. `--dry-run` prints the host profile and the full generated script without touching anything. `--yes` skips the confirm gate and requires passwordless sudo, exiting non-zero with a clear message if unavailable rather than hanging on a prompt. See [docs/setup.md](docs/setup.md).
 - Added a `[host]` configuration section (in both `~/.config/bakar/config.toml` and workspace `.bakar.toml`) that controls the thresholds `bakar doctor` host-environment checks compare against: `host.inotify_instances`, `host.inotify_watches`, `host.swappiness_max`, `host.nofile_soft`, and `host.mem_min_gb`. Defaults equal the values doctor previously hardcoded, so verdicts are unchanged until a value is written. Precedence is workspace `.bakar.toml` `[host]` > user `config.toml` `[host]` > built-in floor. All five keys are accessible via `bakar settings set/get/unset`. See [docs/settings.md](docs/settings.md), [docs/config-reference.md](docs/config-reference.md).
 - `bakar setup` writes the applied sysctl and docker ulimit values to the global `[host]` config so a follow-up `bakar doctor` verifies the machine against what `setup` applied.
 - `bakar setup` remediates the sysctl check by writing a removable `/etc/sysctl.d/99-bakar.conf` drop-in (never `/etc/sysctl.conf`) covering `fs.inotify.max_user_instances`, `fs.inotify.max_user_watches`, `fs.inotify.max_queued_events`, `vm.swappiness`, and `fs.file-max`, then reloading with `sysctl --system`.
@@ -286,7 +286,7 @@ reported with actionable fix hints before the build starts.
 
 ### Changed
 
-- The live build UI now commits the pipeline header, sstate ratio, and failure count into the scrollback **above** each task failure's output: when bitbake's first error line for a task is detected on the PTY feed, the Live region is stopped before that line prints, streams the failure block as plain output, then restarts — so the log reads top-to-bottom without the status frame landing below the error text.
+- The live build UI now commits the pipeline header, sstate ratio, and failure count into the scrollback **above** each task failure's output: when bitbake's first error line for a task is detected on the PTY feed, the Live region is stopped before that line prints, streams the failure block as plain output, then restarts - so the log reads top-to-bottom without the status frame landing below the error text.
 - Failure alert blocks now print below the frozen frame as a self-contained group (✗ FAILED line, host log path, last 15 log lines) rather than as a line above the live region; the count is deduplicated so a failure detected via the PTY head line and later confirmed by a `TaskFailed` event does not increment the counter twice.
 - The sstate reuse line in the live build UI was moved from between the build bar and the task table to directly after the pipeline breadcrumb, so the display reads top-to-bottom: pipeline state → cache reuse → progress bar → task table.
 - The error message shown when a kas YAML cannot be classified now mentions `header.includes` as a valid alternative to `machine:` and `repos:`.
@@ -310,7 +310,7 @@ reported with actionable fix hints before the build starts.
 - The setscene reuse line now renders as a percentage with a will-build count ("92% sstate (412 cached, 38 will build)") instead of a raw ratio, making remaining work visible at a glance.
 - Stuck-task highlighting now uses per-recipe historical baseline means (yellow past 2×, red past 4×) when available, and shows a drift timer on tasks that exceed 4× their reference. Without a baseline file the previous median-based path is unchanged.
 - Task-timing baselines are now keyed by `<recipe>:<task>` (version/revision suffix stripped) so different recipes never share a baseline, and a version bump retains its history. Files from the previous schema are discarded and re-accumulated in one build.
-- PSI pressure thresholds in `config.toml` are stored as percentages (0–100) and converted to bitbake's microseconds-per-second unit (0–1,000,000) at the environment boundary, correcting a mismatch where a calibrated value of 20 (percent) was passed to bitbake as 20 µs/s instead of 200,000 µs/s.
+- PSI pressure thresholds in `config.toml` are stored as percentages (0-100) and converted to bitbake's microseconds-per-second unit (0-1,000,000) at the environment boundary, correcting a mismatch where a calibrated value of 20 (percent) was passed to bitbake as 20 µs/s instead of 200,000 µs/s.
 - PSI autocalibration is now ratchet-up-only: thresholds are raised when an unthrottled build observes higher peaks, but never lowered. A light or heavily cached build no longer drops thresholds that were trained on a heavier workload. To recalibrate from scratch, delete the `pressure_max_*` keys.
 - The `nproc` doctor check now reports the derived `BB_NUMBER_THREADS`, `PARALLEL_MAKE`, and `BB_NUMBER_PARSE_THREADS` values alongside the raw `NPROC`, and notes any user overrides found in `local.conf`.
 - The global build timer is now rendered inline directly after the build pipeline segment (bold foreground) rather than right-aligned at the far terminal edge in a dim style.
@@ -414,7 +414,7 @@ reported with actionable fix hints before the build starts.
 ### Added
 
 - `bakar report` now displays an sstate cache summary (hit/miss counts and percentages) when `--show-sstate` is passed or `layers.show_sstate_summary` is set to `true` via `bakar settings set`
-- `bakar report` now displays a buildhistory section (image size, top packages by size, package count, dirty layers) when a `buildhistory` directory is present in the workspace — no flag required, the data's presence is the gate
+- `bakar report` now displays a buildhistory section (image size, top packages by size, package count, dirty layers) when a `buildhistory` directory is present in the workspace - no flag required, the data's presence is the gate
 - `bakar build` now prints the sstate cache summary after a successful build when `layers.show_sstate_summary` is enabled, mirroring the existing `show_hashes` / `--show-layers` behavior
 - Added `layers.show_sstate_summary` setting, persistable via `bakar settings set layers.show_sstate_summary true`
 - `bakar report` now finds test runs under `build-*/build/runs` (e.g. meta-avocado and custom build-dir BYO workspaces), preventing silent fallback to a stale generic run
@@ -546,7 +546,7 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 
 ### Added
 
-- Persistent user configuration via `~/.config/bakar/config.toml` — set default machine, distro, image, manifest, repo URL, and container image without exporting environment variables on every shell session. An absent file falls back to built-in defaults and is never auto-created.
+- Persistent user configuration via `~/.config/bakar/config.toml` - set default machine, distro, image, manifest, repo URL, and container image without exporting environment variables on every shell session. An absent file falls back to built-in defaults and is never auto-created.
 - `examples/config.toml` reference file with every available key commented out and annotated; copying it to `~/.config/bakar/config.toml` is inert until a key is uncommented.
 - `--show-layers` flag and `show_hashes` config key to print each layer's git short hash and branch after a build, mirroring what bitbake logs. The layers table now also includes the bitbake version.
 - Layer hash collection now supports generic kas YAML builds that use `${TOPDIR}`-relative layer paths (e.g. `${TOPDIR}/../layers/<repo>`), in addition to the existing NXP/TI `/sources/`-based layout.
@@ -584,8 +584,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 
 ### Added
 - First release published to PyPI. Install with `uv tool install bakar` or `pip install bakar`.
-- Python 3.14 added to the supported version matrix (3.11–3.14).
-- GitHub Actions CI workflow: test matrix across Python 3.11–3.14, ruff lint, ty type-check.
+- Python 3.14 added to the supported version matrix (3.11-3.14).
+- GitHub Actions CI workflow: test matrix across Python 3.11-3.14, ruff lint, ty type-check.
 - Automated PyPI publishing via OIDC Trusted Publisher on version-tag push, with a GitHub release
   created from the matching CHANGELOG section.
 - `RELEASING.md`: step-by-step release guide covering PyPI Trusted Publisher setup and the

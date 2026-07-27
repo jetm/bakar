@@ -106,7 +106,7 @@ def _render_diffsigs(text: str) -> None:
             )
         elif basehash_changed:
             console.print(
-                "  [dim](basehash changed independently — task function or referenced code changed)[/dim]",
+                "  [dim](basehash changed independently - task function or referenced code changed)[/dim]",
                 highlight=False,
             )
         console.print()

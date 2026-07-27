@@ -1,6 +1,6 @@
 """Unit tests for ``bakar.steps.build_ui``.
 
-All tests operate on ``BuildUIState`` directly — no subprocess, no PTY, no Rich
+All tests operate on ``BuildUIState`` directly - no subprocess, no PTY, no Rich
 console rendering required. The module under test parses knotty's non-interactive
 fallback output lines, drives a SETUP/BUILD phase state machine, reconstructs the
 live running-task set from lifecycle events, and returns passthrough strings for
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# SETUP phase — parse and cache progress
+# SETUP phase - parse and cache progress
 # ---------------------------------------------------------------------------
 
 
@@ -62,7 +62,7 @@ def test_setup_phase_render_only_setup_bar() -> None:
 
 
 # ---------------------------------------------------------------------------
-# BUILD phase transition — Running [setscene] task N of M
+# BUILD phase transition - Running [setscene] task N of M
 # ---------------------------------------------------------------------------
 
 
@@ -135,7 +135,7 @@ def test_global_timer_backdated_to_bakar_start() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Running-task set reconstruction — Started / Succeeded / Failed
+# Running-task set reconstruction - Started / Succeeded / Failed
 # ---------------------------------------------------------------------------
 
 
@@ -214,7 +214,7 @@ def test_unrecognized_line_returns_none() -> None:
 
 
 # ---------------------------------------------------------------------------
-# make_renderable — BUILD phase Group composition
+# make_renderable - BUILD phase Group composition
 # ---------------------------------------------------------------------------
 
 
@@ -297,7 +297,7 @@ def test_make_renderable_column_widths_never_shrink() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Graphics helpers — task styling and stuck detection
+# Graphics helpers - task styling and stuck detection
 # ---------------------------------------------------------------------------
 
 
@@ -415,7 +415,7 @@ def test_task_table_capped_with_overflow_line() -> None:
 
 
 # ---------------------------------------------------------------------------
-# stall_report — wedged-task detection via running-task log freshness
+# stall_report - wedged-task detection via running-task log freshness
 # ---------------------------------------------------------------------------
 
 
@@ -583,7 +583,7 @@ def test_make_renderable_no_cache_badge_by_default() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Cache-backend classification badge — make_renderable / reset-cycle
+# Cache-backend classification badge - make_renderable / reset-cycle
 # ---------------------------------------------------------------------------
 
 

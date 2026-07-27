@@ -65,7 +65,7 @@ diffsigs: busybox do_compile
 
 Root cause:
   WORKDIR changed
-  (basehash changed independently — task function or referenced code changed)
+  (basehash changed independently - task function or referenced code changed)
 
 Rebuild chain  (2 levels deep):
   busybox:do_compile  ← requested

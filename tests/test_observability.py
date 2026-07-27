@@ -44,7 +44,7 @@ def test_step_start_writes_header_to_console_log(tmp_path: Path) -> None:
         content = log.console_path.read_text()
 
     assert "kas_build" in content
-    # UTC ISO timestamp — look for the 'T' separating date and time
+    # UTC ISO timestamp - look for the 'T' separating date and time
     lines = [ln for ln in content.splitlines() if "kas_build" in ln and ln.startswith("──")]
     assert len(lines) >= 1, f"no header line found in:\n{content}"
     header = lines[0]

@@ -97,7 +97,7 @@ class PresetEntry:
             if self.manifest and self.branches:
                 raise ValueError(
                     f"PresetEntry '{self.name}': single 'manifest' cannot be paired with plural 'branches'"
-                    " — use 'manifests' and 'branches' together for multi-release builds"
+                    " - use 'manifests' and 'branches' together for multi-release builds"
                 )
 
     def resolve(self) -> list[PresetSpec]:

@@ -183,7 +183,7 @@ def test_dollar_in_env_values_is_literal(tmp_path: Path, monkeypatch: pytest.Mon
     monkeypatch.setenv("KAS_EXTRA", "literal-$NOT_EXPANDED-value")
     cfg, kas_yaml, overlay = _prepare(tmp_path, "nxp")
     script = generate_dry_run_script(cfg, kas_yaml, overlay)
-    # shlex.quote produces 'literal-$NOT_EXPANDED-value' — dollar is literal inside single quotes.
+    # shlex.quote produces 'literal-$NOT_EXPANDED-value' - dollar is literal inside single quotes.
     assert "'literal-$NOT_EXPANDED-value'" in script, script
     # Must NOT add a spurious backslash inside the single quotes.
     assert "\\$" not in script, script

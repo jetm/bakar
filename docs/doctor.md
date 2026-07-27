@@ -40,7 +40,7 @@ Checks cover:
 - Kas YAML syntax (`kas dump` parse check)
 - BSP-specific checks (repo manifest validity for NXP)
 - PSI pressure support (kernel feature check, threshold calibration)
-- Persistent hashserv daemon (when `[build] hashserv = true` — PID + TCP probe; see [hashserv.md](hashserv.md))
+- Persistent hashserv daemon (when `[build] hashserv = true` - PID + TCP probe; see [hashserv.md](hashserv.md))
 - sstate hash leak (host-specific variables that corrupt sstate task signatures)
 
 ## sstate hash-leak check

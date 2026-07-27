@@ -23,7 +23,7 @@ Unknown keys are rejected by `bakar settings set` but silently ignored when the
 file is loaded directly (future keys added by a newer bakar won't break an older
 one).
 
-### `[defaults.nxp]` — NXP i.MX default targets
+### `[defaults.nxp]` - NXP i.MX default targets
 
 | Key | Type | Built-in default | Description |
 |-----|------|-----------------|-------------|
@@ -33,7 +33,7 @@ one).
 | `manifest` | string | `imx-6.6.52-2.2.2.xml` | Default repo manifest filename. Overridden by `--manifest`/`-f` or `BAKAR_MANIFEST`. |
 | `repo_url` | string | `https://github.com/varigit/variscite-bsp-platform.git` | Override the variscite-bsp-platform manifest repo URL. Overridden by `BAKAR_REPO_URL`. |
 
-### `[defaults.ti]` — TI Sitara default targets
+### `[defaults.ti]` - TI Sitara default targets
 
 | Key | Type | Built-in default | Description |
 |-----|------|-----------------|-------------|
@@ -42,7 +42,7 @@ one).
 | `image` | string | `var-thin-image` | Default image target. Overridden by `--image`/`-i` or `BAKAR_IMAGE`. |
 | `manifest` | string | *(long Processor SDK filename)* | Default oe-layertool config filename. Overridden by `--manifest`/`-f` or `BAKAR_MANIFEST`. |
 
-### `[build]` — build pipeline behaviour
+### `[build]` - build pipeline behaviour
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -55,7 +55,7 @@ one).
 | `sstate_mirrors` | string | *(not set)* | Raw `SSTATE_MIRRORS` value passed to the build. Use `sstate_mirror_url` unless you need full control over the mirror syntax. |
 | `sstate_mirror_url` | string | *(not set)* | HTTP(S) sstate/downloads mirror URL. When set, bakar activates the shared-cache overlay (`bakar-tuning-shared-cache.yml`), which wires `SSTATE_MIRRORS` to `<url>/all/PATH;downloadfilename=PATH` and sets `BB_HASHSERVE_UPSTREAM`. Equivalent to passing `--sstate-mirror` on every invocation. The Yocto Project public mirror (`http://sstate.yoctoproject.org`) works without any additional config. |
 | `scheduler` | string | *(not set)* | BitBake task scheduler: `speed` (maximize parallelism) or `completion` (minimize task switches). |
-| `pressure_max_cpu` | float | *(not set)* | PSI cpu avg10 pressure threshold (0–100). Exported to the build as `BB_PRESSURE_MAX_CPU` converted to bitbake's stall-microseconds-per-second scale (percent × 10,000); bitbake stops launching new tasks while the measured stall rate exceeds it. Must be `>= 1`. Generate calibrated values with `psi_autocalibrate`. |
+| `pressure_max_cpu` | float | *(not set)* | PSI cpu avg10 pressure threshold (0-100). Exported to the build as `BB_PRESSURE_MAX_CPU` converted to bitbake's stall-microseconds-per-second scale (percent × 10,000); bitbake stops launching new tasks while the measured stall rate exceeds it. Must be `>= 1`. Generate calibrated values with `psi_autocalibrate`. |
 | `pressure_max_io` | float | *(not set)* | PSI io avg10 threshold. Same semantics as `pressure_max_cpu`. |
 | `pressure_max_memory` | float | *(not set)* | PSI memory avg10 threshold. Same semantics as `pressure_max_cpu`. |
 | `psi_autocalibrate` | bool | `false` | When `true`, bakar samples `/proc/pressure` during each build and writes updated `pressure_max_*` values back to this file after completion. The first build bootstraps the values; subsequent builds only raise a threshold (from an unthrottled measurement), never lower it, so a light sstate-cached build cannot over-throttle the next cold one. Delete the `pressure_max_*` keys to recalibrate from scratch. |
@@ -79,7 +79,7 @@ one).
 | `parallel_make` | int | *(falls back to `nproc`)* | Compile `-j` (`PARALLEL_MAKE`), decoupled from recipe concurrency. Size it to the total cores available to compilation - for an sccache-dist cluster that is the sum across all build servers, so compile jobs spill to remote nodes. Exported as `BAKAR_PARALLEL_MAKE`. Must be `> 0`. |
 | `bb_number_threads` | int | *(falls back to `nproc`)* | Recipe concurrency (`BB_NUMBER_THREADS`; `BB_NUMBER_PARSE_THREADS` follows it), decoupled from compile `-j`. Size it to local RAM - too many parallel recipes OOM a full image build. Exported as `BAKAR_BB_NUMBER_THREADS`. Must be `> 0`. |
 
-### `[host]` — doctor host-environment thresholds
+### `[host]` - doctor host-environment thresholds
 
 Floors and ceilings the `bakar doctor` host-environment checks compare live
 system state against (`check_sysctl`, `check_docker_ulimits`, `check_memory`).
@@ -95,7 +95,7 @@ workspace `.bakar.toml` `[host]` > user `config.toml` `[host]` > built-in floor.
 | `nofile_soft` | int | `8192` | Floor for the Docker daemon's `default-ulimits` `nofile` soft limit. Must be `> 0`. |
 | `mem_min_gb` | float | `16.0` | Minimum available-plus-swap memory floor in GB. Must be `> 0`. |
 
-### `[layers]` — display preferences
+### `[layers]` - display preferences
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -222,7 +222,7 @@ Custom board families that extend a built-in BSP preset. Vendor entries are
 checked before built-in regexes: the first entry whose `manifest_regex` matches
 the manifest filename wins.
 
-Edited by hand — there is no `bakar settings` integration for this file.
+Edited by hand - there is no `bakar settings` integration for this file.
 An absent file produces an empty vendor list.
 
 | Field | Type | Required | Description |
@@ -312,8 +312,8 @@ built-in defaults.
 
 ## See also
 
-- [settings.md](settings.md) — `bakar settings` CLI (read/write config.toml)
-- [configuration.md](configuration.md) — resolution order, narrative overview
-- [workspace.md](workspace.md) — workspace detection, BSP families, directory layout
-- [hashserv.md](hashserv.md) — `build.hashserv` persistent daemon details
-- [doctor.md](doctor.md) — `build.show_doctor_report` and `pressure_max_*` pre-flight checks
+- [settings.md](settings.md) - `bakar settings` CLI (read/write config.toml)
+- [configuration.md](configuration.md) - resolution order, narrative overview
+- [workspace.md](workspace.md) - workspace detection, BSP families, directory layout
+- [hashserv.md](hashserv.md) - `build.hashserv` persistent daemon details
+- [doctor.md](doctor.md) - `build.show_doctor_report` and `pressure_max_*` pre-flight checks
