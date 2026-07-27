@@ -1776,6 +1776,101 @@ def _nfs_lookup_cache_bounded(opts: str) -> bool:
     return False
 
 
+# Active NFS delegations on the build device before a local build is judged
+# harmful. A handful is normal churn from a peer that just read a few files;
+# tens of thousands means the export has handed out read delegations across the
+# whole tree, and every conflicting local open pays a recall.
+_NFS_DELEG_WARN_THRESHOLD = 500
+
+# Kernel lease-break timeout, i.e. the worst-case stall per conflicting open.
+_LEASE_BREAK_TIME_PATH = Path("/proc/sys/fs/lease-break-time")
+
+
+def _deleg_counts(locks_raw: str, device: tuple[int, int]) -> tuple[int, int]:
+    """Return ``(on_device, total)`` NFS delegation counts from ``/proc/locks`` text.
+
+    ``/proc/locks`` renders a delegation as ``N: DELEG ACTIVE READ <pid>
+    <major>:<minor>:<inode> ...`` with the device numbers in HEX (``103:02`` is
+    259:2). Lines that do not parse are skipped rather than aborting the count -
+    the file is a best-effort diagnostic, not a contract.
+    """
+    on_device = total = 0
+    for line in locks_raw.splitlines():
+        fields = line.split()
+        if len(fields) < 6 or "DELEG" not in fields:
+            continue
+        total += 1
+        parts = fields[5].split(":")
+        if len(parts) < 3:
+            continue
+        try:
+            if (int(parts[0], 16), int(parts[1], 16)) == device:
+                on_device += 1
+        except ValueError:
+            continue
+    return on_device, total
+
+
+def check_nfs_delegations(cfg: BuildConfig) -> CheckResult:
+    """Warn when this host exports the build tree and holds NFS delegations on it.
+
+    When ``nfsd`` has handed a peer read delegations covering the build
+    directory, every *local* open that conflicts with one must recall it first.
+    The opening thread blocks in the kernel's ``__break_lease`` for up to
+    ``/proc/sys/fs/lease-break-time`` seconds (45 by default) per file. bitbake's
+    parse touches thousands of files, so a build on a heavily delegated tree
+    stops looking like a build at all: the cooker sits at ~0% CPU with no parser
+    children and no progress, while the client's keepalive pings keep answering
+    "Still alive!" - indistinguishable from a hang unless you look at
+    ``/proc/locks``.
+
+    This is a ``Severity.WARN`` FAIL, never a BLOCK: the build is not guaranteed
+    to stall (it depends on which files the recall actually conflicts with), and
+    the condition clears on its own once the peer returns the delegations.
+    SKIPs cleanly when nfsd is not running or the kernel files are unreadable,
+    so a host that exports nothing never pays for this check.
+    """
+    name = "nfs-delegations"
+    try:
+        locks_raw = Path("/proc/locks").read_text()
+    except OSError as exc:
+        return _skip(name, Severity.WARN, f"/proc/locks unreadable: {exc}")
+
+    topdir = cfg.resolved_tmpdir.resolve(strict=False)
+    probe = topdir if topdir.exists() else cfg.workspace.resolve()
+    try:
+        stat_result = probe.stat()
+    except OSError as exc:
+        return _skip(name, Severity.WARN, f"cannot stat {probe}: {exc}")
+    device = (os.major(stat_result.st_dev), os.minor(stat_result.st_dev))
+
+    on_device, total = _deleg_counts(locks_raw, device)
+    if on_device < _NFS_DELEG_WARN_THRESHOLD:
+        return _ok(
+            name,
+            Severity.WARN,
+            f"{on_device} NFS delegations on the build device ({total} host-wide)",
+        )
+
+    try:
+        lease_break = _LEASE_BREAK_TIME_PATH.read_text().strip()
+    except OSError:
+        lease_break = "45"
+    return _fail(
+        name,
+        Severity.WARN,
+        f"{on_device} active NFS delegations on the build device ({probe}); a local build can stall "
+        f"up to {lease_break}s per conflicting file while the kernel recalls each one",
+        fix_hint=(
+            "This host is exporting the build tree over NFS and a peer holds read delegations on it. "
+            "Unmount the export on the peer (or stop its build) and re-check, or disable delegations "
+            "on this host with `echo 0 > /proc/sys/fs/leases-enable` (root) before building locally. "
+            "A stalled build shows a ~0% CPU cooker with no parser children and threads in "
+            "__break_lease (check: grep -c DELEG /proc/locks)."
+        ),
+    )
+
+
 def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
     """Judge BOTH the workspace-root fstype AND the resolved-``TMPDIR`` fstype.
 
@@ -3014,6 +3109,11 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_git_global_config,
     check_kas_yaml_syntax,
     check_workspace_filesystem,
+    # WARN: this host exports the build tree over NFS and a peer holds
+    # delegations on it, so local opens stall in __break_lease. Distinct from
+    # check_workspace_filesystem, which judges the fstype of a build whose
+    # workspace is an NFS *client* mount - this one fires on the NFS *server*.
+    check_nfs_delegations,
     check_docker_version,
     check_docker_storage_driver,
     check_ccache_health,

@@ -2453,3 +2453,97 @@ def test_shared_cache_mounts_proc_mounts_unreadable_keeps_prior_target_problems(
     assert result.severity == Severity.BLOCK
     assert "missing" in result.message
     assert "unreadable" in result.message
+
+
+# ---------------------------------------------------------------------------
+# check_nfs_delegations
+# ---------------------------------------------------------------------------
+#
+# Observed incident: a `bakar bitbake chromium-ozone-wayland` sat for minutes
+# with a ~0% CPU cooker, no parser children, and only keepalive pings in
+# bitbake-cookerdaemon.log. /proc/locks held 32156 DELEG entries (31875 on the
+# build device) because this host exports the tree over NFS and the peer held
+# read delegations; the parse thread was blocked in the kernel's __break_lease
+# waiting on a recall (lease-break-time = 45s per conflicting file).
+
+# Real /proc/locks shape; device numbers are HEX ("103:02" == 259:2).
+_DELEG_LINE = "{n}: DELEG  ACTIVE    READ 1570 103:02:{inode} 0 EOF"
+_OTHER_DEV_LINE = "{n}: DELEG  ACTIVE    READ 1570 008:01:{inode} 0 EOF"
+
+
+def _locks_text(on_device: int, other_device: int = 0) -> str:
+    lines = [_DELEG_LINE.format(n=i, inode=1000 + i) for i in range(on_device)]
+    lines += [_OTHER_DEV_LINE.format(n=900 + i, inode=2000 + i) for i in range(other_device)]
+    lines.append("999: POSIX  ADVISORY  WRITE 123 103:02:4242 0 EOF")  # not a delegation
+    return "\n".join(lines) + "\n"
+
+
+def test_deleg_counts_matches_only_the_build_device() -> None:
+    """Hex device fields are decoded and only the build device is counted."""
+    from bakar.diagnostics import _deleg_counts
+
+    on_device, total = _deleg_counts(_locks_text(on_device=5, other_device=3), (259, 2))
+
+    assert on_device == 5
+    assert total == 8  # every DELEG line, both devices; the POSIX lock excluded
+
+
+def test_deleg_counts_skips_unparseable_lines() -> None:
+    """A malformed line is skipped, not fatal - /proc/locks is best-effort."""
+    from bakar.diagnostics import _deleg_counts
+
+    raw = "0: DELEG  ACTIVE    READ 1570 zz:qq:1 0 EOF\n" + _DELEG_LINE.format(n=1, inode=7) + "\n"
+
+    on_device, total = _deleg_counts(raw, (259, 2))
+
+    assert on_device == 1
+    assert total == 2
+
+
+def test_nfs_delegations_pass_when_few(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A handful of delegations is normal peer churn and passes."""
+    from bakar.diagnostics import check_nfs_delegations
+
+    cfg = dataclasses.replace(_cfg(), workspace=tmp_path)
+    monkeypatch.setattr("bakar.diagnostics._deleg_counts", lambda _raw, _dev: (3, 3))
+    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "")
+
+    result = check_nfs_delegations(cfg)
+
+    assert result.status == Status.PASS
+    assert "3 NFS delegations" in result.message
+
+
+def test_nfs_delegations_warn_when_tree_is_delegated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A heavily delegated build device warns and explains the __break_lease stall."""
+    from bakar.diagnostics import check_nfs_delegations
+
+    cfg = dataclasses.replace(_cfg(), workspace=tmp_path)
+    monkeypatch.setattr("bakar.diagnostics._deleg_counts", lambda _raw, _dev: (31875, 32156))
+    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "45\n")
+
+    result = check_nfs_delegations(cfg)
+
+    assert result.status == Status.FAIL
+    assert result.severity == Severity.WARN  # never blocks: the stall is not guaranteed
+    assert "31875 active NFS delegations" in result.message
+    assert "45s per conflicting file" in result.message
+    assert result.fix_hint is not None
+    assert "__break_lease" in result.fix_hint
+
+
+def test_nfs_delegations_skips_when_locks_unreadable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No /proc/locks (non-Linux, restricted container) skips instead of failing."""
+    from bakar.diagnostics import check_nfs_delegations
+
+    cfg = dataclasses.replace(_cfg(), workspace=tmp_path)
+
+    def _boom(self: Path, *_a: object, **_k: object) -> str:
+        raise OSError("no /proc/locks")
+
+    monkeypatch.setattr(Path, "read_text", _boom)
+
+    result = check_nfs_delegations(cfg)
+
+    assert result.status == Status.SKIP
+    assert "unreadable" in result.message
