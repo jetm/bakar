@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-07-27
+
+### Added
+- Added `local_tmpdir_base` configuration option to redirect BitBake's `TMPDIR` to a node-local filesystem (e.g., for NFS-backed workspaces where bitbake rejects NFS-resident `TMPDIR` paths). When set in `[build]` of the user config or `.bakar.toml`, the build tmp is placed at `<local_tmpdir_base>/<bsp_root>-<machine>` and the `--clean` paths follow the redirect automatically.
+- Added `stress-parse` support for bring-your-own kas YAML: passing a positional kas YAML (with optional colon-separated overlay chaining) now works without a `--manifest`, enabling stress-parse on meta-avocado and generic kas-only projects.
+- Added `bakar doctor` pre-flight checks for the systemd build scope: warns when no reachable user manager is available (build runs unscoped, losing session-survival and OOM-victim protection) and when resource-control weights (`scope_cpu_weight`/`scope_io_weight`) are re-enabled in config.
+- Added NFS-safe lock-ownership markers (`.bakar-lock-host`) so that on a shared NFS `TOPDIR` a fleet node never deletes, signals, or overwrites a lock file belonging to a live build on a peer node.
+- Added `bakar doctor` workspace-filesystem check for NFS negative-lookup caching: warns when an NFS mount lacks a bounding `lookupcache` option or a sufficiently low attribute-cache timeout, which can cause one fleet node to mis-observe a peer's live lock as absent.
+- Added `bakar doctor` cgroup v2 pre-flight check: warns when resource-control properties are configured but the host runs a cgroup v1 or hybrid hierarchy where those properties are silently ineffective.
+
+### Changed
+- The buildtools-extended cache is now keyed on the Yocto release codename (e.g., `scarthgap`) read from `meta/conf/layer.conf` instead of the oe-core HEAD commit hash, so a provisioned toolchain stays valid across all commits on the same release branch.
+- `scope_memory_high` and `scope_memory_max` now default to `0.0` (disabled). Memory ceilings are opt-in; a default build runs under no cgroup memory limits, avoiding soft-lockup panics and zram-spill stalls on workstation-class hosts. `MemorySwapMax=0` is now emitted only when `scope_memory_max` is explicitly set.
+- `scope_cpu_weight` and `scope_io_weight` now default to `0` (disabled). CPU/IO cgroup controller weights are opt-in; enabling them on a default install was causing I/O priority-inversion stalls that hung the interactive session during heavy builds such as Chromium.
+- `MemoryHigh` is now emitted only when `scope_memory_max` is also set; a `scope_memory_high`-only configuration is warned about and ignored rather than emitting a partial cap that can cause reclaim-and-swap thrash.
+- `bakar stop` now respects lock-ownership markers: it refuses to scan run directories, read PIDs, send signals, or remove launch records when the owning host cannot be confirmed, printing the holding host name instead.
+- The `bakar doctor` bitbake-lock check now delegates all ownership determination and removal to `clear_stale_bitbake_locks`, producing accurate, actionable diagnostics for peer-held, unattributable, and locally-held lock states instead of performing a separate local PID probe.
+- The `bakar doctor` workspace-filesystem check now distinguishes two independent failure axes: a resolved `TMPDIR` on NFS is a `BLOCK`-level failure (matching bitbake's own sanity abort), while a workspace on a non-network blocking filesystem (vfat, exfat, ntfs) remains a `WARN`. A workspace on NFS with a confirmed local `TMPDIR` override now passes.
+- The `--dry-run-script` checkout step now uses `kas build` (host mode) or `kas-container checkout` (container mode) to match the actual invocation, rather than always emitting `kas-container checkout`.
+- Host mode is now the documented and structural default; documentation corrected to reflect that `kas_container_image` no longer auto-selects the container path and that container mode requires an explicit opt-in (`--container`, `BAKAR_CONTAINER`, or `[build] container`).
+- Workspace root resolution for generated build YAMLs (e.g., `build-qemux86-64/avocado-bakar.yml`) now correctly walks up to the first ancestor holding `.bakar.toml` or a `meta-avocado/` subdirectory, so `--on` dispatch and `KAS_WORK_DIR` target the real workspace root.
+- `bakar build --on <host> --delete` now preserves remote-only directory checkouts that are absent on the local side, excluding them from the rsync `--delete` sweep instead of silently wiping them.
+- The `kas dump` doctor check now runs with `KAS_WORK_DIR` pinned to the workspace root, preventing spurious validation failures when invoked from a per-machine build subdirectory.
+- The chromium family (`chromium-ozone-wayland`, `chromium-x11`, `qtwebengine`) is removed from the sccache distributed-build allow-list; these recipes build locally with the unwrapped compiler to avoid `rustc -Clinker` failures caused by a space-separated sccache wrapper.
+- The NFS `lookupcache=positive` diagnostic now also recognises the kernel-abbreviated form `lookupcache=pos` as a correctly bounded configuration, eliminating false warnings on properly configured mounts.
+
+### Fixed
+- Fixed a hard system freeze: a stale transient build scope left by a SIGKILL, OOM, or reaper no longer blocks the next same-config build with a cryptic exit 1; `reset-failed` is run before scope creation to flush the dead unit.
+- Fixed `is_meta_avocado` mis-classifying generated build YAMLs as non-meta-avocado builds, which caused `KAS_WORK_DIR` to point at the build subdirectory and prevented kas from resolving root-level layer checkouts.
+- Fixed the `_remote_only_dirs` helper crashing with `FileNotFoundError` when the local workspace path does not exist on the current host (e.g., in CI), falling back to no extra excludes instead of aborting the dispatch.
+- Fixed `stress-parse` lock and socket removal using the hardcoded path `build/` instead of the configured `build_dir_name`, which caused it to miss the correct directory for BSP families such as `qcom-wayland`.
+- Fixed a duplicate terminal event emitted when a lock-ownership refusal (`LockHeldByPeerError`) occurred during build launch; the outcome is now reported exactly once with the correct reason instead of also emitting a spurious `wrapper-crash` event.
+- Fixed `bakar stop` hardcoding the run-directory path to `"build"`, causing it to scan the wrong directory for BSP families that produce a `build-<distro>` directory.
+- Fixed `is_path_on_nfs` not resolving symlinks before comparing against `/proc/mounts` mount points, which could cause a symlinked NFS path to be reported as local and bypass the lock-ownership safety check.
+
 ## [0.23.0] - 2026-07-20
 
 ### Added
@@ -609,7 +644,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/jetm/bakar/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/jetm/bakar/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/jetm/bakar/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/jetm/bakar/compare/v0.20.0...v0.21.0
