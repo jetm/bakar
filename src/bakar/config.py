@@ -406,6 +406,15 @@ class BuildConfig:
     # Default off, so a build is byte-for-byte unchanged until the user opts in.
     mold: bool = field(default=False)
     mold_mode: Literal["list", "global", "baseline", "baseline-global"] = "list"
+    # Host-provided uninative tarball. When True *and* the host environment
+    # qualifies (host mode, Arch-family distro, fragment installed - see
+    # _uninative_extra_overlays), the tuning stack requires the fragment the
+    # yocto-uninative-tarball package installs, pointing uninative at a tarball
+    # built from the host's own glibc rather than the Yocto Project's.
+    # Default off: enabling it changes NATIVELSBSTRING to "universal" and so
+    # changes sstate signatures, which must be an explicit choice rather than a
+    # consequence of which packages happen to be installed on the build host.
+    uninative: bool = field(default=False)
     # Bind address for the workspace cache services (hashserv, prserv). None
     # means localhost-only (single-node default); set to a cluster-reachable IP
     # so other nodes can share one hashserv/prserv. See user_config.cluster_bind_host.
@@ -1047,6 +1056,11 @@ def resolve(
         sccache_scheduler_url=user_config.sccache_scheduler_url if user_config else None,
         mold=resolved_mold,
         mold_mode=resolved_mold_mode,
+        uninative=pick_bool(
+            "BAKAR_UNINATIVE",
+            ws_val=None,
+            user_val=user_config.uninative if user_config is not None else False,
+        ),
         cluster_bind_host=user_config.cluster_bind_host if user_config else None,
         bb_hashserve=user_config.bb_hashserve if user_config else None,
         prserv_host=user_config.prserv_host if user_config else None,

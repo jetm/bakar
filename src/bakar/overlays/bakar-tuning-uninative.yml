@@ -1,0 +1,43 @@
+# Host-provided uninative tarball overlay.
+#
+# Never auto-loaded; bakar appends it only when all three of these hold (see
+# _uninative_extra_overlays in commands/_helpers.py):
+#
+#   - the build runs in host mode,
+#   - the host is Arch Linux or an Arch derivative,
+#   - /usr/share/yocto-uninative/uninative.inc exists.
+#
+# What it does: points uninative at a tarball built from the same glibc commit
+# the host ships, instead of the Yocto Project's published one. oe-core's
+# yocto-uninative.inc caps UNINATIVE_MAXGLIBCVERSION at a release that trails
+# the host's glibc, and uninative disables itself (bb.warn only) when the host
+# libc is newer than that cap. Building the tarball from the host's own glibc
+# makes the two versions equal by construction, so the cap can never be the
+# thing that turns uninative off.
+#
+# The fragment is generated and installed by the yocto-uninative-tarball Arch
+# package, which recomputes the tarball checksum on every glibc bump; nothing
+# here is hand-maintained. `require` rather than `include` on purpose: if the
+# package is uninstalled between overlay selection and parse, the build should
+# fail loudly rather than quietly fall back to the Yocto Project tarball and
+# produce differently-signed sstate.
+#
+# Container mode is excluded deliberately, not by oversight. The fragment
+# carries absolute host paths (UNINATIVE_URL is a file:// URL under /usr/share),
+# and kas-container builds run in an image where that path does not exist, so
+# requiring it there would fail at parse time.
+#
+# Adds no layer, so there is no repos entry - only a local_conf_header.
+
+header:
+  version: 21
+
+local_conf_header:
+  # Sort-last key (see bakar-tuning-generic): 70 orders uninative after the
+  # accelerator stack (10 base < 20 ccache < 30 hashequiv < 40 shared-cache <
+  # 50 sccache < 60 mold < 70 uninative). Position is not load-bearing today -
+  # the fragment touches only UNINATIVE_* variables, which nothing else here
+  # sets - but keeping it last matches the convention and leaves room for a
+  # future overlay that wants to override it.
+  zz-bakar-70-uninative: |
+    require /usr/share/yocto-uninative/uninative.inc

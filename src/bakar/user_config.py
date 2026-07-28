@@ -41,6 +41,7 @@ _BOOL_FIELDS = {
     "psi_autocalibrate",
     "sccache_dist",
     "mold",
+    "uninative",
     "cluster",
     "ccache",
     "rm_work",
@@ -109,6 +110,10 @@ class UserConfig:
     # meta-bakar-mold layer and inherits mold.bbclass; resolve()'s accelerator
     # tier (CLI --mold > BAKAR_MOLD env > this config value > default) reads it.
     mold: bool = False
+    # Host-provided uninative tarball enable toggle (default off). Only has an
+    # effect on an Arch-family host in host mode with the yocto-uninative-tarball
+    # package installed; see _uninative_extra_overlays for the full gate.
+    uninative: bool = False
     # Address the workspace cache services (hashserv, prserv) bind to so other
     # cluster nodes can reach them. None keeps the safe localhost-only default;
     # set it to the node's cluster-reachable IP (e.g. the direct-link address)
@@ -253,6 +258,7 @@ _BUILD_KEYS = {
     "sccache_dist": "sccache_dist",
     "sccache_scheduler_url": "sccache_scheduler_url",
     "mold": "mold",
+    "uninative": "uninative",
     "cluster_bind_host": "cluster_bind_host",
     "bb_hashserve": "bb_hashserve",
     "prserv_host": "prserv_host",

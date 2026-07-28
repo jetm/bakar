@@ -285,6 +285,62 @@ def _mold_extra_overlays(cfg: BuildConfig) -> list[Path]:
     return _conditional_overlay(cfg.mold, "bakar-tuning-mold.yml")
 
 
+# Where the yocto-uninative-tarball Arch package installs its bitbake fragment.
+# Its presence is the opt-in signal: the package exists only for Arch-family
+# hosts, and installing it is a deliberate act, so no separate config toggle.
+_UNINATIVE_FRAGMENT = Path("/usr/share/yocto-uninative/uninative.inc")
+
+# Module-level so tests can point host detection at a fixture file.
+_UNINATIVE_OS_RELEASE = Path("/etc/os-release")
+
+
+def _host_is_arch_like() -> bool:
+    """Return True when the build host is Arch Linux or an Arch derivative.
+
+    Reads ID and ID_LIKE from /etc/os-release and looks for ``arch`` in either.
+    CachyOS reports ``ID=cachyos`` with ``ID_LIKE=arch``, so matching ID_LIKE
+    covers the derivatives (CachyOS, EndeavourOS, Manjaro) without enumerating
+    them. Returns False when /etc/os-release is absent or unreadable, which is
+    the safe direction: the overlay is skipped rather than required on a host
+    that cannot have the package installed.
+    """
+    try:
+        text = _UNINATIVE_OS_RELEASE.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    ids: set[str] = set()
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() in ("ID", "ID_LIKE"):
+            ids.update(value.strip().strip('"').strip("'").split())
+    return "arch" in ids
+
+
+def _uninative_extra_overlays(cfg: BuildConfig) -> list[Path]:
+    """Return the uninative overlay path for host-mode builds on Arch-like hosts.
+
+    Points uninative at a tarball built from the host's own glibc commit, so
+    oe-core's UNINATIVE_MAXGLIBCVERSION cap (which trails the host libc on a
+    rolling distro) can never silently disable uninative and change sstate
+    signatures mid-stream.
+
+    Four conditions, all required:
+
+    - ``cfg.uninative`` - explicit opt-in. Without it the selection would depend
+      on which packages happen to be installed on the build host, so the same
+      config would produce different sstate signatures on two machines. Enabling
+      uninative sets NATIVELSBSTRING to "universal", so it must be a decision.
+    - ``cfg.host_mode`` - the fragment's UNINATIVE_URL is a ``file://`` URL
+      under /usr/share, which does not exist inside the kas-container image;
+      requiring it in container mode would fail at parse time.
+    - Arch-family host - the only distro the providing package targets.
+    - Fragment present - the package is actually installed.
+    """
+    if not (cfg.uninative and cfg.host_mode and _host_is_arch_like() and _UNINATIVE_FRAGMENT.is_file()):
+        return []
+    return _conditional_overlay(True, "bakar-tuning-uninative.yml")
+
+
 def _ccache_extra_overlays(cfg: BuildConfig) -> list[Path]:
     """Return the ccache overlay path whenever ``[build] ccache`` is on.
 
@@ -315,14 +371,16 @@ def _tuning_extra_overlays(cfg: BuildConfig) -> list[Path]:
     """Return all opt-in tuning overlay paths for cfg.
 
     cache-classify (always on) + host (host-mode rpm isolation) + ccache (when
-    effective) + hashequiv + shared-cache + sccache + mold. The cache-classify
-    overlay is unconditional so plain-ccache builds still get the cache-hit
-    emitter; every other entry is gated on its toggle. List order does not set
-    local.conf precedence - kas sorts local_conf_header by key, and the bakar
-    overlays use sort-last ``zz-bakar-NN-*`` keys so the numeric segment decides
-    (base < ccache < hashequiv < shared-cache < sccache < ``zz-bakar-60-mold``).
-    The host overlay adds only a layer (no local_conf_header), so its position
-    is immaterial."""
+    effective) + hashequiv + shared-cache + sccache + mold + uninative. The
+    cache-classify overlay is unconditional so plain-ccache builds still get the
+    cache-hit emitter; every other entry is gated on its toggle. List order does
+    not set local.conf precedence - kas sorts local_conf_header by key, and the
+    bakar overlays use sort-last ``zz-bakar-NN-*`` keys so the numeric segment
+    decides (base < ccache < hashequiv < shared-cache < sccache < mold <
+    ``zz-bakar-70-uninative``). The host overlay adds only a layer (no
+    local_conf_header), so its position is immaterial. The uninative overlay is
+    gated on the host environment rather than a config toggle - see
+    ``_uninative_extra_overlays``."""
     return [
         _overlay_dir() / "bakar-tuning-cache-classify.yml",
         *_host_extra_overlays(cfg),
@@ -331,6 +389,7 @@ def _tuning_extra_overlays(cfg: BuildConfig) -> list[Path]:
         *_shared_cache_extra_overlays(cfg),
         *_sccache_extra_overlays(cfg),
         *_mold_extra_overlays(cfg),
+        *_uninative_extra_overlays(cfg),
     ]
 
 
