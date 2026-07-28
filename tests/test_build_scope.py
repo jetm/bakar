@@ -514,6 +514,7 @@ def test_reclaim_stops_unit_only_when_idle(monkeypatch: pytest.MonkeyPatch) -> N
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setattr(build_scope.subprocess, "run", _record)
+    monkeypatch.setattr(build_scope, "_scope_loaded", lambda _unit: True)
 
     monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: True)
     assert build_scope._reclaim_idle_scope("bakar-bitbake-deadbeef") is True
@@ -521,8 +522,113 @@ def test_reclaim_stops_unit_only_when_idle(monkeypatch: pytest.MonkeyPatch) -> N
 
     calls.clear()
     monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: False)
-    assert build_scope._reclaim_idle_scope("bakar-bitbake-deadbeef") is False
+    assert (
+        build_scope._reclaim_idle_scope(
+            "bakar-bitbake-deadbeef",
+            settle_timeout=0,
+            sleep=lambda _s: None,
+        )
+        is False
+    )
     assert calls == []  # a busy scope is never stopped
+
+
+def _incrementing_clock():
+    """A monotonic clock stub yielding 0.0, 1.0, 2.0, ... so waits are hermetic."""
+    state = {"n": -1.0}
+
+    def _clock() -> float:
+        state["n"] += 1.0
+        return state["n"]
+
+    return _clock
+
+
+def test_reclaim_no_wait_when_unit_not_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The common case (no scope loaded) must not sleep at all.
+
+    The settle wait only exists to outlast a dying previous build; gating it on
+    LoadState keeps an ordinary build from paying for it.
+    """
+    slept: list[float] = []
+    monkeypatch.setattr(build_scope, "_scope_loaded", lambda _unit: False)
+    monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: pytest.fail("must not probe the cgroup"))
+
+    result = build_scope._reclaim_idle_scope("bakar-bitbake-deadbeef", sleep=slept.append)
+
+    assert result is False
+    assert slept == []
+
+
+def test_reclaim_waits_out_a_draining_previous_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ctrl-C then immediate re-run: the corpse drains, then the scope is reclaimed.
+
+    Reproduces the reported failure - the interrupted build's kas client and its
+    32 parser processes are still alive for a few seconds, so the scope reads
+    busy even though no build is running there.
+    """
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        build_scope.subprocess,
+        "run",
+        lambda argv, *_a, **_k: calls.append(list(argv)) or subprocess.CompletedProcess(argv, 0),
+    )
+    monkeypatch.setattr(build_scope, "_scope_loaded", lambda _unit: True)
+    # Busy for the first three polls (client + parsers dying), then drained.
+    states = iter([False, False, False, True])
+    monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: next(states, True))
+    notes: list[str] = []
+
+    result = build_scope._reclaim_idle_scope(
+        "bakar-bitbake-deadbeef",
+        sleep=lambda _s: None,
+        clock=_incrementing_clock(),
+        notify=notes.append,
+        settle_timeout=30,
+    )
+
+    assert result is True
+    assert ["systemctl", "--user", "stop", "bakar-bitbake-deadbeef"] in calls
+    assert any("still draining" in n for n in notes)  # announced once, not per poll
+    assert len(notes) == 1
+
+
+def test_reclaim_gives_up_on_a_genuinely_concurrent_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Constraint 1: a scope that never drains is left alone so the launch collides."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        build_scope.subprocess,
+        "run",
+        lambda argv, *_a, **_k: calls.append(list(argv)) or subprocess.CompletedProcess(argv, 0),
+    )
+    monkeypatch.setattr(build_scope, "_scope_loaded", lambda _unit: True)
+    monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: False)  # a real build, never idle
+
+    result = build_scope._reclaim_idle_scope(
+        "bakar-bitbake-deadbeef",
+        sleep=lambda _s: None,
+        clock=_incrementing_clock(),
+        settle_timeout=5,
+    )
+
+    assert result is False
+    assert ["systemctl", "--user", "stop", "bakar-bitbake-deadbeef"] not in calls
+
+
+def test_reclaim_stops_waiting_when_unit_disappears(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A scope that unloads itself mid-wait ends the wait immediately."""
+    loaded = iter([True, True, False])
+    monkeypatch.setattr(build_scope, "_scope_loaded", lambda _unit: next(loaded, False))
+    monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: False)
+
+    result = build_scope._reclaim_idle_scope(
+        "bakar-bitbake-deadbeef",
+        sleep=lambda _s: None,
+        clock=_incrementing_clock(),
+        settle_timeout=60,
+    )
+
+    assert result is False
 
 
 def test_reclaim_survives_missing_systemctl(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -540,6 +646,7 @@ def test_reclaim_survives_missing_systemctl(monkeypatch: pytest.MonkeyPatch) -> 
 def test_wrap_reclaims_idle_scope_before_reset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """wrap stops an idle scope, then reset-failed's it, before launching."""
     monkeypatch.setattr(build_scope, "systemd_run_available", lambda: True)
+    monkeypatch.setattr(build_scope, "_scope_loaded", lambda _unit: True)
     monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: True)
     calls: list[list[str]] = []
 

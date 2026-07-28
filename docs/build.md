@@ -213,6 +213,16 @@ scope containing a live `kas`/`bitbake` client or any `bitbake-worker` is never
 touched, so a genuinely concurrent build still collides - and if the cgroup
 cannot be read, bakar assumes the scope is busy and leaves it alone.
 
+Interrupting a build with Ctrl-C and immediately re-running it lands in a
+related window: the previous build's `kas` client and its parser processes are
+still shutting down, so the scope reads as busy even though no build is running
+in it. bakar waits up to 15 seconds for such a scope to drain before giving up
+(logged as `still draining from a previous run`), which is long enough for the
+interrupted processes to exit and short enough that a genuinely concurrent
+build - which never drains - still collides as intended. The wait only happens
+when a unit of that name is actually loaded, so an ordinary build never pays
+for it.
+
 This hardening addresses build **session-survival** (plus host responsiveness,
 and opt-in memory containment). It does not prevent filesystem/kernel faults
 (e.g. an XFS root-fs corruption panic), which are tracked separately - no cgroup control changes

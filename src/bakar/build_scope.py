@@ -106,10 +106,13 @@ import hashlib
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from bakar.config import BuildConfig
     from bakar.observability import RunLogger
 
@@ -238,6 +241,13 @@ _PROC_ROOT = Path("/proc")
 # ``build_stop`` already relies on.
 _IDLE_COOKER_MARKER = "bitbake-server"
 
+# How long to wait for a scope left behind by an interrupted build to drain
+# before concluding it holds a genuinely concurrent build. Ctrl-C leaves the
+# kas client and its parser processes (32 of them on this tree) dying for a few
+# seconds; a real build never drains, so it still collides after this window.
+_SCOPE_SETTLE_SECONDS = 15.0
+_SCOPE_SETTLE_POLL = 0.5
+
 
 def _proc_cmdline(pid: int, *, proc_root: Path = _PROC_ROOT) -> str | None:
     """Return ``pid``'s space-joined argv, or None when it cannot be read.
@@ -312,23 +322,80 @@ def _scope_is_idle(unit: str) -> bool:
     return True
 
 
-def _reclaim_idle_scope(unit: str) -> bool:
-    """Stop ``unit`` when only bitbake's persistent cooker is holding it open.
+def _scope_loaded(unit: str) -> bool:
+    """True when systemd still has ``unit`` loaded, so creating it would collide.
+
+    A transient scope stays loaded for a moment after its processes exit, and
+    ``systemd-run --unit=<name>`` fails with "already loaded or has a fragment
+    file" for the whole of that window. This is the gate that keeps the settle
+    wait in :func:`_reclaim_idle_scope` free in the common case: when no unit is
+    loaded there is nothing to collide with, so there is nothing to wait for.
+    """
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "show", "--property=LoadState", "--value", unit],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
+    if result.returncode != 0:
+        return False
+    return (result.stdout or "").strip() == "loaded"
+
+
+def _reclaim_idle_scope(
+    unit: str,
+    *,
+    settle_timeout: float = _SCOPE_SETTLE_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    notify: Callable[[str], None] | None = None,
+) -> bool:
+    """Stop ``unit`` once nothing but bitbake's persistent cooker holds it open.
 
     Complements :func:`_reset_stale_scope`, which flushes an inactive or failed
     unit but correctly declines to touch an `active` one. A finished
     ``bakar bitbake`` run leaves the scope active anyway, because the cooker
     daemon it spawned outlives the client and keeps the cgroup non-empty - so
     the next identical invocation collided with a scope that had no build in it.
-    Reclaiming costs the daemon's in-memory parse cache (the next run re-parses),
-    which is the same price the documented ``systemctl --user stop`` workaround
-    pays, and is only paid when the scope is provably idle.
 
-    Returns True when the unit was stopped. Best-effort: a missing systemctl or
-    an unreadable cgroup leaves the scope untouched and returns False.
+    The wait matters as much as the check. Interrupting a build with Ctrl-C and
+    immediately re-running it lands in a window where the *previous* build's
+    ``kas`` client and its parser processes are still shutting down: they are
+    genuinely alive, so the scope reads as busy, but they are a corpse rather
+    than a concurrent build. Polling until the scope drains turns that into a
+    successful launch, while a real concurrent build never drains and so still
+    collides after ``settle_timeout`` - which is the deliberate guard, not a
+    bug. The wait is gated on the unit actually being loaded, so an ordinary
+    build with no scope present pays nothing.
+
+    Reclaiming costs the cooker's in-memory parse cache (the next run
+    re-parses), the same price the manual ``systemctl --user stop`` workaround
+    pays, and only when the scope is provably idle.
+
+    Returns True when the unit was stopped. Best-effort throughout: a missing
+    systemctl or an unreadable cgroup leaves the scope untouched.
     """
-    if not _scope_is_idle(unit):
+    if not _scope_loaded(unit):
         return False
+
+    deadline = clock() + settle_timeout
+    announced = False
+    while not _scope_is_idle(unit):
+        if clock() >= deadline:
+            # Still busy after the grace window: treat it as a real concurrent
+            # build and let the launch collide, exactly as designed.
+            return False
+        if notify is not None and not announced:
+            announced = True
+            notify(f"scope {unit} is still draining from a previous run; waiting up to {settle_timeout:.0f}s")
+        sleep(_SCOPE_SETTLE_POLL)
+        if not _scope_loaded(unit):
+            # It went away on its own mid-wait; nothing left to reclaim.
+            return False
+
     try:
         subprocess.run(
             ["systemctl", "--user", "stop", unit],
@@ -421,7 +488,7 @@ def wrap_build_command(
     unit = scope_unit_name(cfg, unit_suffix)
     # Order matters: reclaim the active-but-idle case first (a finished run whose
     # cooker daemon still holds the cgroup), then flush an inactive/failed unit.
-    if _reclaim_idle_scope(unit):
+    if _reclaim_idle_scope(unit, notify=log.info):
         log.info(
             f"reclaimed idle build scope {unit} (only bitbake's persistent cooker remained; the next run re-parses)"
         )

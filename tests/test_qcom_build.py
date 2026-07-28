@@ -253,7 +253,7 @@ def test_qcom_build_wraps_in_systemd_scope(tmp_path: Path, monkeypatch: pytest.M
     # subprocess.run drives Popen as a context manager); both behaviors are
     # covered in test_build_scope.
     monkeypatch.setattr("bakar.build_scope._reset_stale_scope", lambda _unit: None)
-    monkeypatch.setattr("bakar.build_scope._reclaim_idle_scope", lambda _unit: False)
+    monkeypatch.setattr("bakar.build_scope._reclaim_idle_scope", lambda _unit, **_kw: False)
     cfg = replace(_qcom_cfg(tmp_path), scope=True)
     log = _FakeLogger(tmp_path)
     recorder = _PopenRecorder(returncode=0)
