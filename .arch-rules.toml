@@ -25,6 +25,7 @@ paths = [
   "src/bakar/config.py",
   "src/bakar/observability.py",
   "src/bakar/fork_race_signatures.py",
+  "src/bakar/kas_errors.py",
   "src/bakar/user_config.py",
   "src/bakar/vendor_config.py",
   "src/bakar/bsp_detect.py",
