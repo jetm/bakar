@@ -29,7 +29,7 @@ from bakar.commands._helpers import (
     split_kas_yaml_arg,
 )
 from bakar.config import BSPSpec, resolve
-from bakar.inspect_parse import extract_var_history, parse_getvar_value
+from bakar.inspect_parse import extract_var_history
 from bakar.observability import RunLogger
 from bakar.steps.kas_build import KasBuildContext, run_shell_capture
 
@@ -55,7 +55,7 @@ def getvar(
         typer.Option(
             "--unexpanded",
             "-u",
-            help="Print the value before ${...} expansion (passed to bitbake-getvar as -e).",
+            help="Print the value before ${...} expansion (passed to bitbake-getvar as -u).",
         ),
     ] = False,
     history: Annotated[
@@ -85,7 +85,7 @@ def getvar(
     With ``--recipe``, scopes to that recipe's parse context.
 
     ``--unexpanded`` prints the value before ``${...}`` substitution by
-    passing the ``-e`` flag to ``bitbake-getvar``.
+    passing the ``-u`` flag to ``bitbake-getvar``.
 
     ``--history`` uses ``bitbake -e`` to capture the full include-chain
     history and shows the ordered list of ``file:line`` source locations
@@ -133,9 +133,11 @@ def _run_getvar(
 ) -> None:
     """Run ``bitbake-getvar`` and print the result."""
     # Build the bitbake-getvar command.
-    # -u flag: print unexpanded value.
+    # --value: print the bare value with no provenance comment block.
+    # --ignore-undefined: an unset variable is an empty value, not an error.
+    # -u: print unexpanded value (bitbake rejects it without --value).
     # -r <recipe>: scope to recipe parse context.
-    parts = ["bitbake-getvar"]
+    parts = ["bitbake-getvar", "--value", "--ignore-undefined"]
     if unexpanded:
         parts.append("-u")
     if recipe:
@@ -154,12 +156,10 @@ def _run_getvar(
             console.print(raw)
         raise typer.Exit(code=rc)
 
-    # Extract the value from bitbake-getvar output.
-    # bitbake-getvar emits lines like:
-    #   # $MACHINE
-    #   #   set /path/to/local.conf:5
-    #   MACHINE="imx8mp-lpddr4-evk"
-    value = parse_getvar_value(raw, var)
+    # ``--value`` makes bitbake print the bare value and nothing else. Drop only
+    # the single trailing newline it adds - a multi-line value (a shell function
+    # body) may legitimately end in blank lines.
+    value = raw.removesuffix("\n")
 
     if output_json:
         doc: dict = {"var": var, "value": value}
@@ -167,7 +167,7 @@ def _run_getvar(
             doc["recipe"] = recipe
         typer.echo(json.dumps(doc, indent=2))
     else:
-        console.print(value, highlight=False)
+        typer.echo(value)
 
 
 def _run_history(
@@ -204,8 +204,8 @@ def _run_history(
         return
 
     if not locations:
-        console.print("no history recorded", highlight=False)
+        typer.echo("no history recorded")
     else:
         console.print(f"[bold]{var}[/] history (include-chain order):")
         for loc in locations:
-            console.print(f"  {loc}", highlight=False)
+            typer.echo(f"  {loc}")

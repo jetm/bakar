@@ -38,21 +38,11 @@ pytestmark = pytest.mark.unit
 _MANIFEST = "imx-6.6.52-2.2.0.xml"
 _VAR = "MACHINE"
 
-# Fixture: bitbake-getvar output for MACHINE
-_GETVAR_OUTPUT = """\
-# $MACHINE
-#   set /path/to/build/conf/local.conf:5
-#     "imx8mp-lpddr4-evk"
-MACHINE="imx8mp-lpddr4-evk"
-"""
+# Fixture: bitbake-getvar --value output for MACHINE
+_GETVAR_OUTPUT = "imx8mp-lpddr4-evk\n"
 
-# Fixture: bitbake-getvar --unexpanded (-e) output for IMAGE_INSTALL
-_GETVAR_UNEXPANDED_OUTPUT = """\
-# $IMAGE_INSTALL
-#   set /path/to/build/conf/local.conf:20
-#     "${CORE_IMAGE_EXTRA_INSTALL}"
-IMAGE_INSTALL="${CORE_IMAGE_EXTRA_INSTALL}"
-"""
+# Fixture: bitbake-getvar --value -u output for IMAGE_INSTALL
+_GETVAR_UNEXPANDED_OUTPUT = "${CORE_IMAGE_EXTRA_INSTALL}\n"
 
 # Fixture: bitbake -e output (subset of env dump) with MACHINE history
 _BITBAKE_E_OUTPUT = """\
@@ -250,11 +240,7 @@ def test_getvar_global_prints_value(runner: _CliRunner, nxp_workspace: Path) -> 
 @pytest.mark.unit
 def test_getvar_recipe_scopes_to_recipe(runner: _CliRunner, nxp_workspace: Path) -> None:
     """``--recipe`` passes -r <recipe> to bitbake-getvar."""
-    recipe_output = """\
-# $IMAGE_INSTALL
-#   set /path/to/core-image-minimal.bb:10
-IMAGE_INSTALL="packagegroup-core-boot"
-"""
+    recipe_output = "packagegroup-core-boot\n"
     calls: list[dict] = []
     fake = _make_fake_capture([(recipe_output, 0)], calls)
 
@@ -311,9 +297,10 @@ def test_getvar_unexpanded_forwards_flag(runner: _CliRunner, nxp_workspace: Path
 
     assert result.exit_code == 0, result.output
     assert len(calls) == 1
-    # The -e flag must appear in the bitbake-getvar command
+    # The -u flag must appear as its own token: a substring check would also
+    # match the "-u" inside "--ignore-undefined" and assert nothing.
     cmd = calls[0]["command"]
-    assert "-u" in cmd
+    assert "-u" in cmd.split()
     # Output contains the unexpanded value
     assert "${CORE_IMAGE_EXTRA_INSTALL}" in result.output
 
@@ -521,7 +508,7 @@ def test_getvar_json_no_history_is_empty_list(runner: _CliRunner, nxp_workspace:
 @pytest.mark.unit
 def test_getvar_json_recipe_key_present(runner: _CliRunner, nxp_workspace: Path) -> None:
     """``--recipe --json`` output includes the recipe key."""
-    recipe_output = 'IMAGE_INSTALL="pkg-a"\n'
+    recipe_output = "pkg-a\n"
     calls: list[dict] = []
     fake = _make_fake_capture([(recipe_output, 0)], calls)
 
