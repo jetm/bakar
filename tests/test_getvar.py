@@ -16,6 +16,8 @@ and returns a configurable exit code, letting the tests verify:
 - JSON output includes the required keys.
 - The stream contract: the resolved value lands on stdout, verbatim and
   unstyled, and never on stderr.
+- Unset-versus-failed exit semantics, both flag spellings (``--flag`` and the
+  inline ``VAR[flag]``), and that ``-f`` still means ``--manifest``.
 """
 
 from __future__ import annotations
@@ -784,3 +786,242 @@ def test_getvar_sccache_dist_flag_applies_overlay(
     assert len(calls) == 1
     names = [p.name for p in calls[0]["extra_overlays"]]
     assert "bakar-tuning-sccache.yml" in names, names
+
+
+# ---------------------------------------------------------------------------
+# Unset vs failed, flag spellings, verbatim values
+#
+# Every assertion here reads ``result.stdout`` / ``result.stderr`` separately
+# and inspects the recorded command at token level via ``shlex.split``: a
+# passing exit code alone cannot show that the right bitbake invocation was
+# built, and ``result.output`` interleaves the two streams.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_getvar_unset_variable_exits_0_with_empty_stdout(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """An unset variable is an empty answer, not a failed query.
+
+    Under ``--ignore-undefined`` bitbake prints nothing and exits 0 for a
+    variable that was never set. ``SSTATE_MIRRORS`` reported as an error is the
+    defect this guards.
+    """
+    calls: list[dict] = []
+    fake = _make_fake_split_capture("", "", 0, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", "SSTATE_MIRRORS", "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.strip() == ""
+    assert "--ignore-undefined" in shlex.split(calls[0]["command"])
+
+
+@pytest.mark.unit
+def test_getvar_failed_query_still_exits_nonzero(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """A genuinely failed bitbake call keeps its non-zero status.
+
+    The unset-is-fine change must not swallow real failures: exit status
+    reports "bitbake could not be asked", output reports "the variable has no
+    value", and the two signals stay distinct.
+    """
+    calls: list[dict] = []
+    fake = _make_fake_split_capture("", "ERROR: ParseError at conf/local.conf:3\n", 1, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", _VAR, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code != 0
+    assert "ParseError" in result.stderr
+
+
+@pytest.mark.unit
+def test_getvar_flag_option_and_inline_bracket_build_identical_commands(
+    runner: _CliRunner, nxp_workspace: Path
+) -> None:
+    """``--flag x86_64 VAR`` and ``VAR[x86_64]`` normalise to one query."""
+    checksum = "e4c5c1a1a9f13c5c9c3b4e3a4a6b0f2f4b8c0d1e2f3a4b5c6d7e8f90a1b2c3d4"
+    calls: list[dict] = []
+    fake = _make_fake_split_capture(f"{checksum}\n", "", 0, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        flag_result = runner.invoke(
+            app,
+            [
+                "getvar",
+                "UNINATIVE_CHECKSUM",
+                "--flag",
+                "x86_64",
+                "--manifest",
+                _MANIFEST,
+                "--workspace",
+                str(nxp_workspace),
+            ],
+        )
+        inline_result = runner.invoke(
+            app,
+            [
+                "getvar",
+                "UNINATIVE_CHECKSUM[x86_64]",
+                "--manifest",
+                _MANIFEST,
+                "--workspace",
+                str(nxp_workspace),
+            ],
+        )
+
+    assert flag_result.exit_code == 0, flag_result.stderr
+    assert inline_result.exit_code == 0, inline_result.stderr
+    assert calls[0]["command"] == calls[1]["command"]
+    tokens = shlex.split(calls[0]["command"])
+    assert tokens[tokens.index("-f") + 1] == "x86_64"
+    assert tokens[-1] == "UNINATIVE_CHECKSUM"
+    assert checksum in flag_result.stdout
+    assert checksum in inline_result.stdout
+
+
+@pytest.mark.unit
+def test_getvar_bare_name_of_flag_only_variable_exits_0(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """``UNINATIVE_CHECKSUM`` with no flag has no value, and that is not a failure."""
+    calls: list[dict] = []
+    fake = _make_fake_split_capture("", "", 0, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", "UNINATIVE_CHECKSUM", "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.strip() == ""
+    assert "-f" not in shlex.split(calls[0]["command"])
+
+
+@pytest.mark.unit
+def test_getvar_dash_f_still_means_manifest(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """``-f <manifest>`` keeps resolving the MANIFEST, not a variable flag.
+
+    ``--flag`` is long-only precisely because ``-f`` is ``--manifest`` here and
+    across 23 command modules, and ``bakar getvar MACHINE -f <manifest>`` is the
+    form printed in ``docs/getvar.md``.
+    """
+    calls: list[dict] = []
+    manifests: list[str] = []
+
+    def fake_capture(ctx, command, stdout_path, *, step="kas_shell_capture", python_executable=None, stderr_path=None):
+        stdout_path.parent.mkdir(parents=True, exist_ok=True)
+        stdout_path.write_text(_GETVAR_OUTPUT)
+        manifests.append(ctx.cfg.manifest)
+        calls.append({"command": command})
+        return 0
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake_capture):
+        result = runner.invoke(
+            app,
+            ["getvar", _VAR, "-f", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code == 0, result.stderr
+    assert manifests == [_MANIFEST]
+    tokens = shlex.split(calls[0]["command"])
+    assert "-f" not in tokens
+    assert _MANIFEST not in tokens
+    assert "imx8mp-lpddr4-evk" in result.stdout
+
+
+@pytest.mark.unit
+def test_getvar_value_with_quotes_is_verbatim_on_stdout(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """Embedded quote characters survive with no escaping added or removed."""
+    quoted_value = 'BusyBox "the Swiss Army knife" of \'embedded\' Linux \\"escaped\\"'
+    calls: list[dict] = []
+    fake = _make_fake_split_capture(f"{quoted_value}\n", "", 0, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            [
+                "getvar",
+                "SUMMARY",
+                "--recipe",
+                "busybox",
+                "--manifest",
+                _MANIFEST,
+                "--workspace",
+                str(nxp_workspace),
+            ],
+        )
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.splitlines() == [quoted_value]
+
+
+@pytest.mark.unit
+def test_getvar_unexpanded_with_flag_option_builds_full_token_set(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """``--unexpanded --flag`` sends -u, --value, -f and the flag name, exiting 0.
+
+    The flag-valued form is the option combination that made ``--unexpanded``
+    broken today (bitbake rejects ``-u`` without ``--value``), so it is asserted
+    on its own rather than left to the global form.
+    """
+    calls: list[dict] = []
+    fake = _make_fake_split_capture("${WORKDIR}/md5\n", "", 0, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            [
+                "getvar",
+                "SRC_URI",
+                "--flag",
+                "md5sum",
+                "--unexpanded",
+                "--recipe",
+                "busybox",
+                "--manifest",
+                _MANIFEST,
+                "--workspace",
+                str(nxp_workspace),
+            ],
+        )
+
+    assert result.exit_code == 0, result.stderr
+    tokens = shlex.split(calls[0]["command"])
+    assert "-u" in tokens
+    assert "--value" in tokens
+    assert tokens[tokens.index("-f") + 1] == "md5sum"
+
+
+@pytest.mark.unit
+def test_getvar_unexpanded_with_inline_bracket_builds_full_token_set(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """``--unexpanded 'VAR[flag]'`` sends the same token set as the ``--flag`` form."""
+    calls: list[dict] = []
+    fake = _make_fake_split_capture("${WORKDIR}/md5\n", "", 0, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            [
+                "getvar",
+                "SRC_URI[md5sum]",
+                "--unexpanded",
+                "--recipe",
+                "busybox",
+                "--manifest",
+                _MANIFEST,
+                "--workspace",
+                str(nxp_workspace),
+            ],
+        )
+
+    assert result.exit_code == 0, result.stderr
+    tokens = shlex.split(calls[0]["command"])
+    assert "-u" in tokens
+    assert "--value" in tokens
+    assert tokens[tokens.index("-f") + 1] == "md5sum"
+    assert tokens[-1] == "SRC_URI"
