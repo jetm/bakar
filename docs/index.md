@@ -25,7 +25,7 @@
 | `monitor` | [monitor.md](monitor.md) | One-view live watch: cluster load, dist stats, task progress |
 | `layers` | [layers.md](layers.md) | Print layer git hashes, branches, priority, and build status |
 | `show` | [show.md](show.md) | Print resolved build picture: config, overlays, layers, sources, command |
-| `getvar` | [getvar.md](getvar.md) | Resolve a bitbake variable and show where it was set |
+| `getvar` | [getvar.md](getvar.md) | Resolve a bitbake variable (or a `--flag` of one) and show where it was set; value on stdout, diagnostics on stderr |
 | `inspect` | [inspect.md](inspect.md) | Deep per-recipe report: identity, sources, paths, inherits, packages, deps |
 | `graph` | [graph.md](graph.md) | Analyze a recipe's dependency graph: blast radius, longest chain, cycles |
 | `diffsigs` | [diffsigs.md](diffsigs.md) | Show what changed in a task signature (why did this rebuild) |
@@ -75,7 +75,8 @@
 
 **Inspecting the build before or after:**
 - What machine/distro/image will resolve: [show.md](show.md)
-- What a variable resolves to and where it was set: [getvar.md](getvar.md)
+- What a variable (or one of its flags, via `--flag`) resolves to and where it was set: [getvar.md](getvar.md)
+- Capture a resolved value in a script (`v=$(bakar getvar MACHINE ...)`): [getvar.md](getvar.md) - the value goes to stdout, progress and errors to stderr
 - What a recipe pulls in (packages, deps, paths): [inspect.md](inspect.md)
 - Per-layer priority, compat, and provided recipes: [layers.md](layers.md) (`layers inspect`)
 - Project-level MACHINE, DISTRO, thread/mirror config: [layers.md](layers.md) (`layers status`)
@@ -131,6 +132,7 @@ Related: [build.md](build.md), [sync.md](sync.md), [gen-kas.md](gen-kas.md), [do
 ```text
 bakar show              - resolved config, overlays, layers, sources (local, no container)
 bakar getvar <VAR>      - variable resolution and provenance via bitbake-getvar / bitbake -e
+                          (--flag FLAG or VAR[FLAG] for a flag; value on stdout, diagnostics on stderr)
 bakar inspect <recipe>  - per-recipe report: identity, sources, paths, inherits, packages, deps
 bakar layers inspect    - per-layer priority, compat, version, provides
 bakar layers status     - project summary: MACHINE, DISTRO, threads, mirrors, hashserv
