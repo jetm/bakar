@@ -234,7 +234,7 @@ def test_getvar_global_prints_value(runner: _CliRunner, nxp_workspace: Path) -> 
     assert "-r" not in calls[0]["command"]
     assert _VAR in calls[0]["command"]
     # Resolved value appears in output
-    assert "imx8mp-lpddr4-evk" in result.output
+    assert "imx8mp-lpddr4-evk" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +272,7 @@ def test_getvar_recipe_scopes_to_recipe(runner: _CliRunner, nxp_workspace: Path)
     assert "core-image-minimal" in cmd
     assert "IMAGE_INSTALL" in cmd
     # Value appears in output
-    assert "packagegroup-core-boot" in result.output
+    assert "packagegroup-core-boot" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +307,7 @@ def test_getvar_unexpanded_forwards_flag(runner: _CliRunner, nxp_workspace: Path
     cmd = calls[0]["command"]
     assert "-u" in cmd.split()
     # Output contains the unexpanded value
-    assert "${CORE_IMAGE_EXTRA_INSTALL}" in result.output
+    assert "${CORE_IMAGE_EXTRA_INSTALL}" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -335,8 +335,8 @@ def test_getvar_history_prints_source_locations(runner: _CliRunner, nxp_workspac
     assert "-e" in cmd
     assert "bitbake-getvar" not in cmd
     # Both source locations appear in output
-    assert "local.conf:5" in result.output
-    assert "imx8mp-lpddr4-evk.conf:1" in result.output
+    assert "local.conf:5" in result.stdout
+    assert "imx8mp-lpddr4-evk.conf:1" in result.stdout
 
 
 @pytest.mark.unit
@@ -389,7 +389,7 @@ def test_getvar_history_no_history_exits_0_with_message(runner: _CliRunner, nxp_
         )
 
     assert result.exit_code == 0, result.output
-    assert "no history recorded" in result.output
+    assert "no history recorded" in result.stdout
 
 
 # ---------------------------------------------------------------------------

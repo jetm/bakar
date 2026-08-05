@@ -226,7 +226,7 @@ def _run_getvar(
     parts = ["bitbake-getvar", "--value", "--ignore-undefined"]
     if unexpanded:
         parts.append("-u")
-    if flag:
+    if flag is not None:
         parts += ["-f", shlex.quote(flag)]
     if recipe:
         parts += ["-r", shlex.quote(recipe)]
@@ -244,7 +244,7 @@ def _run_getvar(
     if rc != 0:
         diagnostics = err_path.read_text(errors="replace") if err_path.exists() else ""
         err_doc: dict = {"var": var}
-        if flag:
+        if flag is not None:
             err_doc["flag"] = flag
         if recipe:
             err_doc["recipe"] = recipe
@@ -257,7 +257,7 @@ def _run_getvar(
 
     if output_json:
         doc: dict = {"var": var, "value": value}
-        if flag:
+        if flag is not None:
             doc["flag"] = flag
         if recipe:
             doc["recipe"] = recipe
