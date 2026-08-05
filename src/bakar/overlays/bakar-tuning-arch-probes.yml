@@ -33,6 +33,29 @@
 # reproducible builds." libidn2 is one upstream missed, because their build
 # hosts do not ship idn2.h.
 #
+# CMAKE_DISABLE_FIND_PACKAGE_Libidn2 covers the newer cmcurl, where none of the
+# three flags above reaches anything. cmake 4.3.1 dropped check_library_exists
+# for the probe and calls find_package(Libidn2 QUIET) instead
+# (Utilities/cmcurl/CMakeLists.txt:1408), which changes what is overridable:
+#
+#   :101   set(USE_LIBIDN2 ON)      - a normal variable, so the option() at
+#                                     :1404 never reaches the cache (CMP0077)
+#                                     and -DUSE_LIBIDN2=0 is inert
+#   :1405  set(HAVE_IDN2_H OFF)     - normal variables again, shadowing the
+#   :1406  set(HAVE_LIBIDN2 OFF)      cache seeds
+#   :1411  set(HAVE_IDN2_H 1)       - and these overwrite them outright once
+#   :1412  set(HAVE_LIBIDN2 1)        find_package reports LIBIDN2_FOUND
+#
+# LIBIDN2_FOUND is the only state left that decides the outcome, so the find
+# itself has to fail. Keep both spellings: the seeds still contain the older
+# check_library_exists cmcurl, and neither is harmful where the other applies.
+#
+# The newer probe also fails earlier and differently - do_compile cannot find
+# idn2.h, rather than do_install failing to load libidn2.so.0 - and that
+# failure does not need uninative, so meta-avocado-distro carries the same
+# flag unconditionally. This overlay keeps it for the Arch host-mode path so
+# the containment does not depend on which layer stack is in use.
+#
 # nghttp2 is another, and it is NOT handled here: oe-core carries no
 # USE_NGHTTP2 containment at wrynose (recipes-devtools/cmake/cmake/ holds only
 # cmake-setup.py, environment.d-cmake.sh and the two toolchain templates), so
@@ -65,4 +88,4 @@ local_conf_header:
   # containments after uninative (70), which is the overlay that decides which
   # loader the resulting native binaries run under in the first place.
   zz-bakar-80-arch-probes: |
-    EXTRA_OECMAKE:append:pn-cmake-native = " -DUSE_LIBIDN2=0 -DHAVE_LIBIDN2=0 -DHAVE_IDN2_H=0"
+    EXTRA_OECMAKE:append:pn-cmake-native = " -DUSE_LIBIDN2=0 -DHAVE_LIBIDN2=0 -DHAVE_IDN2_H=0 -DCMAKE_DISABLE_FIND_PACKAGE_Libidn2=1"
