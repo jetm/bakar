@@ -7,13 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-08-05
+
 ### Added
 - Added a `bakar doctor` pre-flight check for NFS delegations on the build device. When this host exports the build tree over NFS and a peer holds read delegations on it, every conflicting local open must recall one first, blocking in the kernel's `__break_lease` for up to `/proc/sys/fs/lease-break-time` seconds (45 by default) per file. A parse touching thousands of files then makes the build indistinguishable from a hang - a ~0% CPU cooker with no parser children while keepalive pings keep answering "Still alive!" - with the cause visible only in `/proc/locks`. The check counts delegations on the build directory's device and warns above 500. `Severity.WARN`, never a block: the stall depends on which files actually conflict, and it clears once the peer returns the delegations.
+- Added `bakar getvar --flag FLAG` and the inline `VAR[FLAG]` spelling to query BitBake variable flags (e.g. `do_compile[noexec]`, `UNINATIVE_CHECKSUM[x86_64]`). Both forms normalise to the same `bitbake-getvar -f FLAG VAR` call. Supplying both at once exits 2; combining `--flag` with `--history` exits 2. Note: `-f` remains `--manifest`; `--flag` is long-only.
+- `bakar getvar` now writes the resolved value to stdout and all diagnostics (kas progress banners, error text, phase labels) to stderr, so `v=$(bakar getvar MACHINE -f ...)` works correctly in scripts without capturing diagnostic noise. `--history` source locations also go to stdout; the heading goes to stderr.
+- Added a `uninative` user-config toggle (`bakar settings set build.uninative true`, env `BAKAR_UNINATIVE`). When enabled on an Arch-family host in host mode with the `yocto-uninative-tarball` package installed, bakar appends a new overlay that points uninative at a tarball built from the host's own glibc commit, preventing oe-core's `UNINATIVE_MAXGLIBCVERSION` cap from silently disabling uninative and invalidating shared sstate caches mid-stream. Default off: enabling it changes `NATIVELSBSTRING` to `"universal"` and must be an explicit per-workspace decision. Container-mode builds are excluded because the fragment embeds absolute host paths absent inside the kas-container image.
 
 ### Fixed
 - Fixed `bakar bitbake <recipe>` failing on the second run of the same target with `Failed to start transient scope unit: Unit bakar-bitbake-<hash>.scope was already loaded or has a fragment file`. bitbake's memory-resident cooker (`bitbake-server`) deliberately outlives its client, and as the only process left in the scope's cgroup it kept the unit `active running` after the build had finished, so the existing `reset-failed` cleanup correctly declined to touch it and the deliberate same-config collision guard fired against a scope with no build in it. bakar now inspects the scope's cgroup before launching and stops the unit only when nothing but that idle cooker remains. A scope holding a live `kas`/`bitbake` client or a `bitbake-worker` is never touched - so a genuinely concurrent same-config build still collides as intended - and an unreadable cgroup is treated as busy.
 - Interrupting a build with Ctrl-C and immediately re-running it no longer fails with `Unit bakar-<suffix>-<hash>.scope was already loaded or has a fragment file`. The interrupted build's `kas` client and its parser processes are still exiting at that moment, so the scope reads as busy and the idle-scope reclaim above declined to touch it. bakar now waits up to 15 seconds for a loaded scope to drain before treating it as a concurrent build. The wait is gated on a unit of that name actually being loaded, so an ordinary build never pays for it, and a genuinely concurrent build never drains and so still collides as designed.
 - A build that fails before bitbake produces any output (a scope collision, a missing `kas`/`kas-container`, a kas config error) now prints the tail of `kas.log` instead of only `exit_code=1` with a misleading `0 warnings, 0 errors` and a `bitbake event feed inactive` warning. The real error previously appeared only in `kas.log`, which users had no reason to open. The dump is suppressed when the live UI already reported a genuine bitbake failure.
+- `bakar getvar` failure output previously truncated and corrupted error messages at 80 columns (Rich's non-TTY wrap width) and interpreted bracketed text such as `[sha]` as markup, causing kas `RepoRefError` messages to lose the repository name, branch, and commit hash and leaving only an orphan fragment like `as commit`. Failure text is now written verbatim through `typer.echo` to stderr, with a phase label (`checkout`, `parse`, `build`, or `undetermined`) prepended. `--json` mode extends the error document with `phase` and `error` fields carrying the same information in machine-readable form.
+- `bakar getvar` now passes `--value --ignore-undefined` to `bitbake-getvar`, so an unset variable returns an empty value and exits 0 rather than exiting non-zero. Exit 0 now exclusively means "the query ran"; a non-zero exit always means the query could not be dispatched or bitbake itself failed - never that a variable was absent.
 
 ## [0.24.0] - 2026-07-27
 
@@ -652,7 +659,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/jetm/bakar/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/jetm/bakar/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/jetm/bakar/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/jetm/bakar/compare/v0.21.0...v0.22.0
