@@ -29,11 +29,35 @@ be synced and the container image must be available.
 |------|-------|-------------|
 | `--recipe` | `-r` | Resolve the variable within this recipe's parse context |
 | `--unexpanded` | `-u` | Print the value before `${...}` expansion |
+| `--flag` | | Resolve a variable flag instead of the variable itself - equivalent to `VAR[FLAG]` |
 | `--history` | | Show the ordered list of files and lines where the variable was set across the include chain |
 | `--manifest` | `-f` | Manifest filename for BSP family dispatch (NXP `.xml` or TI `.txt`) |
 | `--machine` | `-m` | Override the target machine |
 | `--workspace` | `-w` | Workspace root override |
 | `--json` | | Emit a JSON document instead of formatted text |
+
+`--flag` is long-only. bakar's `-f` is `--manifest` and always has been; the
+short `-f` that selects a flag belongs to `bitbake-getvar` inside the container,
+not to `bakar getvar`.
+
+## Output streams
+
+The resolved value goes to **stdout**. Every diagnostic - kas progress banners,
+container chatter, error text, the failure phase label - goes to **stderr**.
+Command substitution and stderr suppression therefore both work as expected:
+
+```bash
+v=$(bakar getvar MACHINE -f imx-6.12.49-2.2.0.xml)
+bakar getvar MACHINE -f imx-6.12.49-2.2.0.xml 2>/dev/null
+```
+
+`--history` follows the same split: the `file:line` locations (or the
+`no history recorded` line) go to stdout, while the
+`<VAR> history (include-chain order):` heading is a diagnostic and goes to
+stderr, so a piped `--history` run yields a clean list of locations.
+
+With `--json`, stdout carries exactly one JSON document - the success document
+on a successful query, the ERROR document on a failed one - and nothing else.
 
 ## Modes
 
@@ -68,6 +92,32 @@ bakar getvar WORKDIR -f imx-6.12.49-2.2.0.xml --unexpanded
 # prints something like: ${TMPDIR}/work/${MULTIMACH_TARGET_SYS}/${PN}/${EXTENDPE}${PV}-${PR}
 ```
 
+### Variable flags
+
+A variable flag (`VAR[FLAG]` in BitBake metadata) is queried either with the
+`--flag` option or with the inline bracket spelling. Both normalise to the same
+`bitbake-getvar -f FLAG VAR` call inside the container:
+
+```bash
+bakar getvar do_compile --flag noexec -f imx-6.12.49-2.2.0.xml -r busybox
+bakar getvar 'do_compile[noexec]' -f imx-6.12.49-2.2.0.xml -r busybox
+```
+
+Quote the inline form. `[` and `]` are glob characters in fish and zsh, and an
+unquoted `do_compile[noexec]` is either rewritten or rejected by the shell
+before `bakar` ever sees it. bash leaves a non-matching pattern alone, so the
+unquoted form happens to work there - quote it anyway so the command stays
+portable.
+
+Supplying `--flag` and the inline form at once exits 2, as does a malformed
+bracket expression such as `VAR[` or `[FLAG]`. `--flag` cannot be combined with
+`--history`: `bitbake -e` records assignments to the variable itself and carries
+no per-flag history, so that combination exits 2 rather than silently answering
+for the bare variable name.
+
+An unset flag on a set variable is not an error - it prints an empty value and
+exits 0, exactly like an unset variable.
+
 ### History (include-chain provenance)
 
 `--history` runs `bitbake -e` (or `bitbake -e <recipe>` when `--recipe` is also
@@ -94,22 +144,48 @@ is not an error.
 
 ## JSON output
 
-`--json` emits a single JSON document. The shape depends on the mode:
+`--json` emits a single JSON document on stdout. The shape depends on the mode
+and on whether the query ran:
 
-**Without `--history`:**
+**Success, without `--history`:**
 
 ```text
 var     string  variable name
-value   string  resolved value
+value   string  resolved value (empty string when the variable or flag is unset)
+flag    string  flag name (present only when --flag or the inline VAR[FLAG] form was used)
 recipe  string  recipe name (present only when --recipe was given)
 ```
 
-**With `--history`:**
+**Success, with `--history`:**
 
 ```text
 var      string        variable name
 history  array[string] ordered file:line source locations (empty array when no history)
 recipe   string        recipe name (present only when --recipe was given)
+```
+
+**ERROR document** (emitted when the underlying `bitbake-getvar` or `bitbake -e`
+call fails; `bakar` exits with that call's exit code):
+
+```text
+var     string  variable name
+flag    string  flag name (present only when a flag was queried)
+recipe  string  recipe name (present only when --recipe was given)
+phase   string  one of checkout, parse, build, undetermined
+error   string  the verbatim captured failure text, unwrapped and unformatted
+```
+
+`phase` attributes the failure to a stage of the kas run: `checkout` means the
+repos named by the manifest could not be fetched or pinned, `parse` means the
+metadata failed to parse, `build` means a task failed, and `undetermined` means
+no known signature matched - bakar never guesses a phase.
+
+The ERROR document has no `value` or `history` key; the presence of `error`
+distinguishes it. The same failure text and phase label are also written to
+stderr in plain form, so a non-JSON caller sees the full error verbatim.
+
+```bash
+bakar getvar MACHINE -f imx-6.12.49-2.2.0.xml --json | jq -r '.phase // "ok"'
 ```
 
 ## kas-container requirement
@@ -119,16 +195,28 @@ recipe   string        recipe name (present only when --recipe was given)
 requires bitbake to parse the full recipe environment, which can take longer
 than a plain `bitbake-getvar` call.
 
+Without `--history`, `getvar` invokes `bitbake-getvar --value --ignore-undefined`.
+Both options require **bitbake 2.6.0 or newer**. The built-in NXP and TI
+defaults (scarthgap, walnascar) ship bitbake 2.8 and are fine; a bring-your-own
+kas YAML pinned to an older release such as kirkstone (bitbake 2.0) is not. On
+an older bitbake the call fails with an
+`unrecognized arguments: --ignore-undefined` error on stderr and `getvar`
+forwards that exit code; use `bakar shell` and run `bitbake-getvar` by hand on
+such a workspace.
+
 `getvar` is read-only: it does not modify the build directory, sstate, or any
 workspace files.
 
 ## Exit codes
 
+Exit 0 means the query ran. A non-zero exit is reserved for a query that could
+not run - it never means "the variable is unset".
+
 | Code | Meaning |
 |------|---------|
-| 0 | Value (or history) printed; `--history` with no history comments exits 0 with "no history recorded" |
-| 2 | No workspace found from the current directory and no `--workspace` given |
-| other | Underlying `bitbake-getvar` or `bitbake -e` call failed; exit code is forwarded |
+| 0 | The query ran. Covers a resolved value, an unset variable, and an unset flag; the latter two print an empty line and an empty `value` in `--json`. `--history` with no history comments also exits 0 with "no history recorded" |
+| 2 | The query could not be formed or dispatched: no workspace found and no `--workspace` given, `--flag` combined with the inline `VAR[FLAG]` form, a malformed bracket expression, or `--flag` combined with `--history` |
+| other | The underlying `bitbake-getvar` or `bitbake -e` call failed; its exit code is forwarded and the verbatim failure text plus a phase label go to stderr |
 
 ## Examples
 
@@ -141,6 +229,18 @@ bakar getvar IMAGE_INSTALL -f imx-6.12.49-2.2.0.xml --recipe core-image-minimal
 
 # Show the unexpanded (pre-substitution) value of WORKDIR for a recipe
 bakar getvar WORKDIR -f imx-6.12.49-2.2.0.xml --recipe busybox --unexpanded
+
+# Read a variable flag, long-option form
+bakar getvar do_compile --flag noexec -f imx-6.12.49-2.2.0.xml --recipe busybox
+
+# Same query, inline form - quote it, the brackets are globs in fish and zsh
+bakar getvar 'do_compile[noexec]' -f imx-6.12.49-2.2.0.xml --recipe busybox
+
+# Capture the value in a shell variable - diagnostics stay on stderr
+machine=$(bakar getvar MACHINE -f imx-6.12.49-2.2.0.xml)
+
+# Silence kas progress chatter and keep only the value
+bakar getvar MACHINE -f imx-6.12.49-2.2.0.xml 2>/dev/null
 
 # Show where BB_NUMBER_THREADS was set across the include chain
 bakar getvar BB_NUMBER_THREADS -f imx-6.12.49-2.2.0.xml --history
