@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import shlex
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 
@@ -30,6 +30,7 @@ from bakar.commands._helpers import (
 )
 from bakar.config import BSPSpec, resolve
 from bakar.inspect_parse import extract_var_history
+from bakar.kas_errors import classify
 from bakar.observability import RunLogger
 from bakar.steps.kas_build import KasBuildContext, run_shell_capture
 
@@ -169,6 +170,42 @@ def _normalize_flag_query(var: str, flag: str | None) -> tuple[str, str | None]:
     return name, inline_flag
 
 
+def _report_failure(
+    tool: str,
+    rc: int,
+    captures: list[str],
+    output_json: bool,
+    doc: dict,
+) -> NoReturn:
+    """Reproduce a failed kas/bitbake invocation verbatim and exit ``rc``.
+
+    The captured text is emitted through :func:`typer.echo` rather than the
+    Rich console on purpose. Rich wraps at width 80 when stdout is not a
+    TTY and consumes ``[...]`` as markup, which is what reduced a kas
+    ``RepoRefError`` to the orphan fragment ``<sha> as commit`` and dropped
+    the repository and branch names identifying it as a checkout failure.
+
+    The phase label from :func:`bakar.kas_errors.classify` precedes the
+    verbatim block so the attribution is read first no matter how long the
+    error runs. Diagnostics go to stderr; only the ``--json`` error
+    document goes to stdout, keeping that stream a single well-formed
+    document.
+    """
+    error_text = "\n".join(part.rstrip("\n") for part in captures if part.strip())
+    phase = classify(error_text)
+
+    typer.echo(f"{tool} failed (exit {rc}) [phase: {phase}]", err=True)
+    if error_text:
+        typer.echo(error_text, err=True)
+
+    if output_json:
+        doc["phase"] = phase
+        doc["error"] = error_text
+        typer.echo(json.dumps(doc, indent=2))
+
+    raise typer.Exit(code=rc)
+
+
 def _run_getvar(
     kas_ctx: KasBuildContext,
     log: RunLogger,
@@ -205,13 +242,13 @@ def _run_getvar(
     raw = capture_path.read_text(errors="replace") if capture_path.exists() else ""
 
     if rc != 0:
-        console.print(f"[red]bitbake-getvar failed (exit {rc}).[/]")
         diagnostics = err_path.read_text(errors="replace") if err_path.exists() else ""
-        if diagnostics.strip():
-            console.print(diagnostics)
-        if raw.strip():
-            console.print(raw)
-        raise typer.Exit(code=rc)
+        err_doc: dict = {"var": var}
+        if flag:
+            err_doc["flag"] = flag
+        if recipe:
+            err_doc["recipe"] = recipe
+        _report_failure("bitbake-getvar", rc, [diagnostics, raw], output_json, err_doc)
 
     # ``--value`` makes bitbake print the bare value and nothing else. Drop only
     # the single trailing newline it adds - a multi-line value (a shell function
@@ -243,15 +280,17 @@ def _run_history(
     command = " ".join(parts)
 
     capture_path = log.run_dir / f"getvar-history-{var}.log"
-    rc = run_shell_capture(kas_ctx, command, capture_path, step="getvar_history")
+    err_path = log.run_dir / f"getvar-history-{var}.err"
+    rc = run_shell_capture(kas_ctx, command, capture_path, step="getvar_history", stderr_path=err_path)
 
     env_text = capture_path.read_text(errors="replace") if capture_path.exists() else ""
 
     if rc != 0:
-        console.print(f"[red]bitbake -e failed (exit {rc}).[/]")
-        if env_text.strip():
-            console.print(env_text)
-        raise typer.Exit(code=rc)
+        diagnostics = err_path.read_text(errors="replace") if err_path.exists() else ""
+        err_doc: dict = {"var": var}
+        if recipe:
+            err_doc["recipe"] = recipe
+        _report_failure("bitbake -e", rc, [diagnostics, env_text], output_json, err_doc)
 
     locations = extract_var_history(env_text, var)
 
