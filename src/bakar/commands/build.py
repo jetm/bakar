@@ -101,7 +101,8 @@ def _finish_build(cfg, log, rc: int, machine: str) -> None:
     builds, the bbsetup-translated machine for the bbsetup path.
     """
     if rc != 0:
-        console.print(f"[red]kas-container build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details.")
+        exe = "kas" if cfg.host_mode else "kas-container"
+        console.print(f"[red]{exe} build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details.")
         raise typer.Exit(code=rc)
     # resolved_tmpdir is the single source of truth for the build TMPDIR: it
     # honors a local_tmpdir_base override (so the banner points at the real
