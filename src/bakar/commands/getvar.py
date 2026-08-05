@@ -58,6 +58,13 @@ def getvar(
             help="Print the value before ${...} expansion (passed to bitbake-getvar as -u).",
         ),
     ] = False,
+    flag: Annotated[
+        str | None,
+        typer.Option(
+            "--flag",
+            help="Resolve a variable flag instead of the variable itself; equivalent to VAR[FLAG].",
+        ),
+    ] = None,
     history: Annotated[
         bool,
         typer.Option(
@@ -87,6 +94,12 @@ def getvar(
     ``--unexpanded`` prints the value before ``${...}`` substitution by
     passing the ``-u`` flag to ``bitbake-getvar``.
 
+    Flag-valued variables are queried either with ``--flag FLAG`` or with
+    the inline spelling ``VAR[FLAG]``; both normalise to the same
+    ``bitbake-getvar -f FLAG VAR`` call. Supplying both at once exits 2.
+    Note that bakar's ``-f`` remains ``--manifest``; ``--flag`` is
+    long-only.
+
     ``--history`` uses ``bitbake -e`` to capture the full include-chain
     history and shows the ordered list of ``file:line`` source locations
     where the variable was set or appended. Prints ``no history recorded``
@@ -96,6 +109,15 @@ def getvar(
     from a failing bitbake call is surfaced as an error rather than printed
     as success.
     """
+    var, flag = _normalize_flag_query(var, flag)
+
+    # ``--history`` reads the include chain out of ``bitbake -e``, which
+    # records variable assignments and has no per-flag history. Refuse the
+    # combination rather than silently answering for the bare name.
+    if flag and history:
+        console.print("[red]--history cannot be combined with a variable flag query[/]")
+        raise typer.Exit(code=2)
+
     main_yaml, user_extras = split_kas_yaml_arg(kas_yaml)
     family, bsp, main_yaml, manifest = _normalize_dispatch(main_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
@@ -120,7 +142,31 @@ def getvar(
         if history:
             _run_history(kas_ctx, log, var, recipe, output_json)
         else:
-            _run_getvar(kas_ctx, log, var, recipe, unexpanded, output_json)
+            _run_getvar(kas_ctx, log, var, recipe, unexpanded, output_json, flag)
+
+
+def _normalize_flag_query(var: str, flag: str | None) -> tuple[str, str | None]:
+    """Fold the inline ``VAR[FLAG]`` spelling into the ``--flag`` form.
+
+    Both spellings must reach :func:`_run_getvar` as the same
+    ``(name, flag)`` pair so there is only one query path. Supplying both
+    at once is ambiguous rather than redundant - ``FOO[a] --flag b`` has no
+    sensible reading - so it exits 2.
+    """
+    if "[" not in var:
+        return var, flag
+
+    name, _, bracketed = var.partition("[")
+    inline_flag = bracketed.removesuffix("]") if bracketed.endswith("]") else ""
+    if not name or not inline_flag:
+        console.print(f"[red]malformed variable flag syntax:[/] {var} (expected VAR[FLAG])")
+        raise typer.Exit(code=2)
+
+    if flag is not None:
+        console.print("[red]pass either --flag or the inline VAR[FLAG] form, not both[/]")
+        raise typer.Exit(code=2)
+
+    return name, inline_flag
 
 
 def _run_getvar(
@@ -130,6 +176,7 @@ def _run_getvar(
     recipe: str | None,
     unexpanded: bool,
     output_json: bool,
+    flag: str | None = None,
 ) -> None:
     """Run ``bitbake-getvar`` and print the result."""
     # Build the bitbake-getvar command.
@@ -137,9 +184,13 @@ def _run_getvar(
     # --ignore-undefined: an unset variable is an empty value, not an error.
     # -u: print unexpanded value (bitbake rejects it without --value).
     # -r <recipe>: scope to recipe parse context.
+    # -f <flag>: read a variable flag (bitbake's own short option, unrelated
+    #   to bakar's -f/--manifest).
     parts = ["bitbake-getvar", "--value", "--ignore-undefined"]
     if unexpanded:
         parts.append("-u")
+    if flag:
+        parts += ["-f", shlex.quote(flag)]
     if recipe:
         parts += ["-r", shlex.quote(recipe)]
     parts.append(shlex.quote(var))
@@ -169,6 +220,8 @@ def _run_getvar(
 
     if output_json:
         doc: dict = {"var": var, "value": value}
+        if flag:
+            doc["flag"] = flag
         if recipe:
             doc["recipe"] = recipe
         typer.echo(json.dumps(doc, indent=2))
