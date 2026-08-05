@@ -1025,3 +1025,188 @@ def test_getvar_unexpanded_with_inline_bracket_builds_full_token_set(runner: _Cl
     assert "--value" in tokens
     assert tokens[tokens.index("-f") + 1] == "md5sum"
     assert tokens[-1] == "SRC_URI"
+
+
+# ---------------------------------------------------------------------------
+# Verbatim kas errors and phase attribution
+#
+# The reported defect: a kas ``RepoRefError`` routed through the stderr Rich
+# console came back as the single orphan line ``82cf21bc... as commit``. Rich
+# wraps at width 80 when not attached to a TTY, so the message lost the word
+# "Branch", the repository name, and the fact that it was a checkout failure -
+# the surviving tail read as noise and was dismissed as such.
+#
+# ``_CHECKOUT_ERROR_LINE`` is kas's own spelling from ``kas/repos.py:547-550``
+# on ONE line, because that is how it reaches a caller at runtime. A fixture
+# re-wrapped at some other column is a different string and would classify as
+# ``undetermined``, quietly turning every checkout assertion below into a test
+# of the wrapping rather than of the classifier.
+# ---------------------------------------------------------------------------
+
+_CHECKOUT_ERROR_LINE = (
+    'Branch "2.8-avocado" in repository "bitbake" does not contain commit "82cf21bc6d1a2941c2dd292ecea327031a247a8b"'
+)
+
+_KAS_CHECKOUT_LOG = "\n".join(
+    [
+        "INFO     - kas 4.4",
+        "INFO     - Repository bitbake cloned",
+        f"ERROR    - {_CHECKOUT_ERROR_LINE}",
+        "INFO     - Cleaning up",
+    ]
+)
+
+
+@pytest.mark.unit
+def test_getvar_kas_checkout_error_reaches_stderr_intact(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """Every line of a multi-line kas checkout error survives, in original order."""
+    calls: list[dict] = []
+    fake = _make_fake_split_capture("", f"{_KAS_CHECKOUT_LOG}\n", 1, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", _VAR, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code != 0
+    err_lines = result.stderr.splitlines()
+    expected = _KAS_CHECKOUT_LOG.splitlines()
+    assert all(line in err_lines for line in expected)
+    # Original order, not merely presence: a reordered log misattributes which
+    # step the failure interrupted.
+    positions = [err_lines.index(line) for line in expected]
+    assert positions == sorted(positions)
+
+
+@pytest.mark.unit
+def test_getvar_kas_error_line_past_80_chars_is_not_split(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """The long checkout line stays one stderr line rather than wrapping at 80."""
+    calls: list[dict] = []
+    fake = _make_fake_split_capture("", f"{_KAS_CHECKOUT_LOG}\n", 1, calls)
+    assert len(_CHECKOUT_ERROR_LINE) > 80
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", _VAR, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code != 0
+    matching = [line for line in result.stderr.splitlines() if _CHECKOUT_ERROR_LINE in line]
+    assert len(matching) == 1
+
+
+@pytest.mark.unit
+def test_getvar_kas_error_keeps_repo_branch_and_full_hash(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """Repository, branch, and the full 40-char commit id all survive.
+
+    The original report lost all three, leaving ``82cf21bc... as commit`` - a
+    fragment a caller cannot act on.
+    """
+    calls: list[dict] = []
+    fake = _make_fake_split_capture("", f"{_KAS_CHECKOUT_LOG}\n", 1, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", _VAR, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code != 0
+    assert '"bitbake"' in result.stderr
+    assert '"2.8-avocado"' in result.stderr
+    assert "82cf21bc6d1a2941c2dd292ecea327031a247a8b" in result.stderr
+
+
+@pytest.mark.unit
+def test_getvar_kas_error_phase_label_precedes_verbatim_block(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """stderr names the checkout phase, and does so before the error text."""
+    calls: list[dict] = []
+    fake = _make_fake_split_capture("", f"{_KAS_CHECKOUT_LOG}\n", 1, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", _VAR, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code != 0
+    err = result.stderr
+    assert "checkout" in err
+    assert err.index("checkout") < err.index(_CHECKOUT_ERROR_LINE)
+
+
+@pytest.mark.unit
+def test_getvar_bracketed_error_text_survives_verbatim(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """Square-bracketed text is not consumed as Rich markup."""
+    bracketed = "ERROR    - kas: unknown option [--foo] in section [bar]"
+    calls: list[dict] = []
+    fake = _make_fake_split_capture("", f"{bracketed}\n", 1, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", _VAR, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code != 0
+    assert bracketed in result.stderr.splitlines()
+
+
+@pytest.mark.unit
+def test_getvar_failure_leaves_stdout_empty_without_json(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """Without --json a failure writes nothing to stdout - the payload stream stays clean."""
+    calls: list[dict] = []
+    fake = _make_fake_split_capture("", f"{_KAS_CHECKOUT_LOG}\n", 1, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", _VAR, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+
+
+@pytest.mark.unit
+def test_getvar_json_failure_emits_phase_and_full_error_on_stdout(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """--json on failure puts one parseable document on stdout, phase and error included."""
+    calls: list[dict] = []
+    fake = _make_fake_split_capture("", f"{_KAS_CHECKOUT_LOG}\n", 1, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", _VAR, "--json", "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code != 0
+    doc = json.loads(result.stdout)
+    assert doc["phase"] == "checkout"
+    for line in _KAS_CHECKOUT_LOG.splitlines():
+        assert line in doc["error"]
+
+
+@pytest.mark.unit
+def test_getvar_unrecognised_failure_reports_undetermined_phase(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """An unmatched failure is labelled ``undetermined`` rather than guessed at.
+
+    A confident wrong attribution recreates the original defect with the added
+    authority of a label.
+    """
+    noise = "ERROR    - something nobody has a signature for yet"
+    calls: list[dict] = []
+    fake = _make_fake_split_capture("", f"{noise}\n", 1, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", _VAR, "--json", "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code != 0
+    doc = json.loads(result.stdout)
+    assert doc["phase"] == "undetermined"
+    assert noise in doc["error"]
