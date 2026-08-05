@@ -14,11 +14,14 @@ and returns a configurable exit code, letting the tests verify:
 - History path with no history comments: exits 0, prints "no history recorded".
 - Non-zero bitbake exit is surfaced as an error, not treated as success.
 - JSON output includes the required keys.
+- The stream contract: the resolved value lands on stdout, verbatim and
+  unstyled, and never on stderr.
 """
 
 from __future__ import annotations
 
 import json
+import shlex
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -478,6 +481,129 @@ def test_getvar_failure_surfaces_stderr_diagnostics(runner: _CliRunner, nxp_work
 
     assert result.exit_code != 0
     assert "ParseError in recipe" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Stream contract: the resolved value is stdout-only, verbatim, unstyled
+#
+# These assert on ``result.stdout`` and ``result.stderr`` separately and never
+# on ``result.output``: under click 8.3 ``result.output`` is the two streams
+# interleaved, so an ``in result.output`` assertion passes identically whether
+# the value is echoed to stdout or printed through the stderr Rich console and
+# therefore proves nothing about the stream split.
+#
+# Not covered here: whether diagnostics are *styled* on an interactive
+# terminal. Under ``CliRunner`` neither stream is a TTY, so Rich emits no ANSI
+# on either one; the styled-diagnostics half of the contract is an E2E check.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_getvar_value_lands_on_stdout_only(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """The resolved value goes to stdout and never leaks onto stderr."""
+    calls: list[dict] = []
+    fake = _make_fake_split_capture(_GETVAR_OUTPUT, "INFO: kas is doing something\n", 0, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", _VAR, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code == 0, result.stderr
+    assert "imx8mp-lpddr4-evk" in result.stdout
+    assert "imx8mp-lpddr4-evk" not in result.stderr
+
+
+@pytest.mark.unit
+def test_getvar_long_value_is_one_unwrapped_stdout_line(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """A value past 80 chars stays a single stdout line.
+
+    The stderr Rich console wraps at width 80 when not attached to a TTY. A
+    value routed through it comes back split across lines, which is what turned
+    a kas error into an orphan fragment in the original report.
+    """
+    long_value = (
+        "/opt/toolchain/sysroots/x86_64-pokysdk-linux/usr/bin/aarch64-poky-linux/aarch64-poky-linux-gcc"
+        " --sysroot=/opt/sysroot"
+    )
+    assert len(long_value) > 80
+    calls: list[dict] = []
+    fake = _make_fake_split_capture(f"{long_value}\n", "", 0, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", "CC", "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.splitlines() == [long_value]
+
+
+@pytest.mark.unit
+def test_getvar_square_brackets_survive_verbatim_on_stdout(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """Square brackets in a value are not eaten as Rich markup."""
+    bracket_value = "ERROR: [Errno 2] no such file; tune [red]arm[/] variant"
+    calls: list[dict] = []
+    fake = _make_fake_split_capture(f"{bracket_value}\n", "", 0, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", "TUNE_FEATURES", "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.splitlines() == [bracket_value]
+
+
+@pytest.mark.unit
+def test_getvar_stdout_carries_no_ansi_escapes(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """The value payload is never styled, so stdout stays pipe-safe."""
+    calls: list[dict] = []
+    fake = _make_fake_split_capture(_GETVAR_OUTPUT, "", 0, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", _VAR, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code == 0, result.stderr
+    assert "\x1b[" not in result.stdout
+
+
+@pytest.mark.unit
+def test_getvar_unexpanded_exits_0_with_token_level_flags(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """``--unexpanded`` exits 0 and builds the documented bitbake-getvar token set.
+
+    Token membership via ``shlex.split``, not substring: ``"-u" in cmd`` is a
+    false-green because ``-u`` occurs inside ``--ignore-undefined``.
+    """
+    calls: list[dict] = []
+    fake = _make_fake_split_capture(_GETVAR_UNEXPANDED_OUTPUT, "", 0, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            [
+                "getvar",
+                "IMAGE_INSTALL",
+                "--unexpanded",
+                "--manifest",
+                _MANIFEST,
+                "--workspace",
+                str(nxp_workspace),
+            ],
+        )
+
+    assert result.exit_code == 0, result.stderr
+    tokens = shlex.split(calls[0]["command"])
+    assert "-u" in tokens
+    assert "--value" in tokens
+    assert "--ignore-undefined" in tokens
+    assert "${CORE_IMAGE_EXTRA_INSTALL}" in result.stdout
 
 
 # ---------------------------------------------------------------------------
