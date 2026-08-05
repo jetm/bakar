@@ -94,3 +94,27 @@ def test_build_exits_zero_on_success(
     result = runner.invoke(app, ["build", str(byo_yaml)])
 
     assert result.exit_code == 0
+
+
+def test_build_never_reports_success_when_kas_fails(
+    runner: CliRunner,
+    byo_yaml: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A build whose declared pin cannot be checked out must not look like a success.
+
+    For the byo form kas does the checkout inside ``kas build``, so bakar has no
+    task-phase entry point of its own to assert against: an unresolvable pin
+    reaches bakar only as a non-zero rc. What bakar *can* be held to is that the
+    rc short-circuits ``_finish_build`` before its tail - so on top of the
+    non-zero exit, neither the success line nor the artifacts path is printed.
+    Exit status alone would not catch a regression that printed
+    ``artifacts: ...`` and only afterwards raised.
+    """
+    monkeypatch.setattr(build_cmd.step_kas, "run_build", lambda ctx, **kw: 1)
+
+    result = runner.invoke(app, ["build", str(byo_yaml)])
+
+    assert result.exit_code != 0
+    assert "build succeeded" not in result.output
+    assert "artifacts:" not in result.output
