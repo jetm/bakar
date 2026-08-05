@@ -8,11 +8,29 @@
 # build host's ABI-incompatible /usr/lib/rpm-plugins during do_rootfs; see
 # meta-bakar-host/recipes-devtools/rpm/rpm_%.bbappend.
 #
-# The layer carries only a bbappend (auto-applied once the layer is on
-# BBLAYERS), so there is no INHERIT or local_conf_header - just the repos entry.
+# The local_conf_header covers the same ground for a failure that needs a
+# variable rather than a bbappend: dnf-native cannot resolve the inherited
+# locale inside the build environment and falls back to C. The rootfs assembles
+# fine, but oe/rootfs.py's log_check matches the word "Failed" and promotes the
+# warning to a hard do_rootfs failure, so a build whose every task succeeded
+# still exits non-zero.
+#
+# Gated on host mode alone, not on the Arch+uninative gate that
+# bakar-tuning-arch-probes uses: nothing here involves the uninative loader, and
+# a container build gets the image's own locale rather than inheriting the
+# host's. Over-applying it is harmless - on a host that never emits the message
+# the pattern simply matches nothing.
+#
+# oe/rootfs.py splits IMAGE_LOG_CHECK_EXCLUDES on " ", so a multi-word regex is
+# shredded into fragments that each match far more than intended. The pattern
+# spells its spaces as "." for that reason.
 
 header:
   version: 21
+
+local_conf_header:
+  zz-bakar-90-host-log-check: |
+    IMAGE_LOG_CHECK_EXCLUDES += "Failed.to.set.locale"
 
 repos:
   # bakar materializes this layer next to the overlay under .bakar/; the relative
