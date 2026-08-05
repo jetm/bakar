@@ -341,6 +341,41 @@ def _uninative_extra_overlays(cfg: BuildConfig) -> list[Path]:
     return _conditional_overlay(True, "bakar-tuning-uninative.yml")
 
 
+def _arch_probe_extra_overlays(cfg: BuildConfig) -> list[Path]:
+    """Return the host-probe containment overlay for host-mode builds on Arch-like hosts.
+
+    Arch-family distros ship development headers in the base system that
+    Debian-family hosts keep in separate -dev packages. Native recipes running
+    their own configure probes (cmake-native's bundled cmcurl calls
+    check_library_exists(idn2 ...), which searches the default linker path
+    rather than the native sysroot) then link a host library that nothing
+    stages into recipe-sysroot-native, producing a binary the uninative loader
+    cannot start.
+
+    Shares ``_uninative_extra_overlays``' gate, minus the fragment check, and
+    that coupling is causal rather than convenience. A leaked host library is
+    only fatal because uninative swapped the program interpreter: the uninative
+    loader searches RUNPATH and its own sysroot, never the host's default
+    paths, so it refuses a /usr/lib library the host loader would have resolved
+    without complaint. Turning uninative on for an Arch host is what turns
+    these probe leaks into build failures, so the containment belongs on the
+    same switch.
+
+    Three conditions, all required:
+
+    - ``cfg.uninative`` - without it native binaries keep the host loader,
+      which finds the leaked library and builds fine. Gating here also keeps
+      the tuning stack independent of the machine running the build, so the
+      same config cannot yield different sstate signatures on two hosts.
+    - ``cfg.host_mode`` - container builds run on a clean image, so no host
+      header can leak into a probe in the first place.
+    - Arch-family host - a Debian-family host does not ship the headers, so
+      applying this would change task signatures for no benefit.
+    """
+    gate = cfg.uninative and cfg.host_mode and _host_is_arch_like()
+    return _conditional_overlay(gate, "bakar-tuning-arch-probes.yml")
+
+
 def _ccache_extra_overlays(cfg: BuildConfig) -> list[Path]:
     """Return the ccache overlay path whenever ``[build] ccache`` is on.
 
@@ -390,6 +425,7 @@ def _tuning_extra_overlays(cfg: BuildConfig) -> list[Path]:
         *_sccache_extra_overlays(cfg),
         *_mold_extra_overlays(cfg),
         *_uninative_extra_overlays(cfg),
+        *_arch_probe_extra_overlays(cfg),
     ]
 
 
