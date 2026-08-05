@@ -28,11 +28,11 @@ def make_fake_run_shell_capture(payloads: list[tuple[str, int]], calls: list[dic
     """
     payload_iter = iter(payloads)
 
-    def fake_capture(ctx, command, stdout_path, *, step="kas_shell_capture", python_executable=None):
+    def fake_capture(ctx, command, stdout_path, *, step="kas_shell_capture", python_executable=None, stderr_path=None):
         text, rc = next(payload_iter)
         stdout_path.parent.mkdir(parents=True, exist_ok=True)
         stdout_path.write_text(text)
-        calls.append({"command": command, "stdout_path": stdout_path})
+        calls.append({"command": command, "stdout_path": stdout_path, "stderr_path": stderr_path})
         return rc
 
     return fake_capture

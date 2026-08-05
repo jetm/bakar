@@ -48,7 +48,7 @@ import sysconfig
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -90,6 +90,7 @@ from bakar.triage import _translate_container_path, write_error_report
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from typing import IO
 
     from rich.console import Console
 
@@ -2655,6 +2656,7 @@ def run_shell_capture(
     *,
     step: str = "kas_shell_capture",
     python_executable: Path | None = None,
+    stderr_path: Path | None = None,
 ) -> int:
     """Run ``kas-container shell -c <command>`` with output captured to file.
 
@@ -2662,6 +2664,14 @@ def run_shell_capture(
     :func:`_build_env`; the only difference is that stdout and stderr
     are merged and redirected to ``stdout_path`` instead of inheriting
     the parent terminal. Returns the kas-container exit code.
+
+    Pass ``stderr_path`` to split the two streams instead: stdout stays
+    clean in ``stdout_path`` and kas's own diagnostics (INFO progress
+    chatter, error text) land in ``stderr_path``. Callers that treat the
+    whole capture as a payload - ``bakar getvar`` reading
+    ``bitbake-getvar --value`` - need the split; callers that scan the
+    merged log for failure signatures (triage, stress-parse) must not
+    pass it.
 
     Used by :mod:`bakar.steps.stress_parse` to capture each
     ``bitbake -p`` iteration's output to its own log file for offline
@@ -2685,8 +2695,15 @@ def run_shell_capture(
     exe = "kas" if cfg.host_mode else "kas-container"
     cmd = [exe, *_ccache_args(cfg), "shell", kas_arg, "-c", command]
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
+    if stderr_path is not None:
+        stderr_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with lock_owner_marker(cfg, log), stdout_path.open("wb") as fh:
+        with ExitStack() as stack:
+            stack.enter_context(lock_owner_marker(cfg, log))
+            fh = stack.enter_context(stdout_path.open("wb"))
+            stderr_target: int | IO[bytes] = subprocess.STDOUT
+            if stderr_path is not None:
+                stderr_target = stack.enter_context(stderr_path.open("wb"))
             proc = subprocess.Popen(
                 cmd,
                 cwd=cfg.bsp_root,
@@ -2696,7 +2713,7 @@ def run_shell_capture(
                     eventlog_path=_container_eventlog_path(cfg, log),
                 ),
                 stdout=fh,
-                stderr=subprocess.STDOUT,
+                stderr=stderr_target,
             )
             rc = proc.wait()
     except LockHeldByPeerError as exc:

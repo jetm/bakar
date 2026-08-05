@@ -145,13 +145,19 @@ def _run_getvar(
     parts.append(shlex.quote(var))
     command = " ".join(parts)
 
+    # kas writes its own INFO progress chatter to stderr. Split it into a
+    # sibling capture so the stdout file holds nothing but the value.
     capture_path = log.run_dir / f"getvar-{var}.log"
-    rc = run_shell_capture(kas_ctx, command, capture_path, step="getvar")
+    err_path = log.run_dir / f"getvar-{var}.err"
+    rc = run_shell_capture(kas_ctx, command, capture_path, step="getvar", stderr_path=err_path)
 
     raw = capture_path.read_text(errors="replace") if capture_path.exists() else ""
 
     if rc != 0:
         console.print(f"[red]bitbake-getvar failed (exit {rc}).[/]")
+        diagnostics = err_path.read_text(errors="replace") if err_path.exists() else ""
+        if diagnostics.strip():
+            console.print(diagnostics)
         if raw.strip():
             console.print(raw)
         raise typer.Exit(code=rc)

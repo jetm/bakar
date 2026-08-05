@@ -77,7 +77,7 @@ def _make_fake_capture_ctx(payloads: list[tuple[str, int]], calls: list[dict]):
     """
     payload_iter = iter(payloads)
 
-    def fake_capture(ctx, command, stdout_path, *, step="kas_shell_capture", python_executable=None):
+    def fake_capture(ctx, command, stdout_path, *, step="kas_shell_capture", python_executable=None, stderr_path=None):
         text, rc = next(payload_iter)
         stdout_path.parent.mkdir(parents=True, exist_ok=True)
         stdout_path.write_text(text)
@@ -423,6 +423,61 @@ def test_getvar_history_nonzero_exit_surfaces_error(runner: _CliRunner, nxp_work
 
     assert result.exit_code != 0
     assert len(calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# stdout / stderr split
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_split_capture(stdout_text: str, stderr_text: str, rc: int, calls: list[dict]):
+    """Fake capture that writes distinct payloads to the stdout and stderr files."""
+
+    def fake_capture(ctx, command, stdout_path, *, step="kas_shell_capture", python_executable=None, stderr_path=None):
+        stdout_path.parent.mkdir(parents=True, exist_ok=True)
+        stdout_path.write_text(stdout_text)
+        if stderr_path is not None:
+            stderr_path.parent.mkdir(parents=True, exist_ok=True)
+            stderr_path.write_text(stderr_text)
+        calls.append({"command": command, "stdout_path": stdout_path, "stderr_path": stderr_path})
+        return rc
+
+    return fake_capture
+
+
+@pytest.mark.unit
+def test_getvar_value_excludes_kas_stderr_chatter(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """kas INFO progress lines go to the stderr capture, never into the printed value."""
+    calls: list[dict] = []
+    fake = _make_fake_split_capture(_GETVAR_OUTPUT, "INFO: kas is doing something\n", 0, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", _VAR, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert calls[0]["stderr_path"] is not None
+    assert calls[0]["stderr_path"] != calls[0]["stdout_path"]
+    assert result.output.strip() == "imx8mp-lpddr4-evk"
+    assert "INFO: kas" not in result.output
+
+
+@pytest.mark.unit
+def test_getvar_failure_surfaces_stderr_diagnostics(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """On a non-zero exit the kas/bitbake error text from stderr is shown."""
+    calls: list[dict] = []
+    fake = _make_fake_split_capture("", "ERROR: ParseError in recipe\n", 1, calls)
+
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["getvar", "BADVAR", "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code != 0
+    assert "ParseError in recipe" in result.output
 
 
 # ---------------------------------------------------------------------------

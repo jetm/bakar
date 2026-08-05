@@ -164,6 +164,9 @@ known-first-party = ["bakar"]
 "tests/test_build_parallelism_derivation.py" = ["PLR0913"]
 "tests/test_measure.py" = ["PLR0913"]
 "tests/test_build_parallelism_config.py" = ["PLR0913"]
+# Fake run_shell_capture stand-ins mirror the real signature - many params by design.
+"tests/_fakes.py" = ["PLR0913"]
+"tests/test_getvar.py" = ["PLR0913"]
 
 [tool.ty.rules]
 # Noisy without full type annotations - project uses gradual typing
