@@ -32,7 +32,12 @@ from bakar.config import BSPSpec, resolve
 from bakar.inspect_parse import extract_var_history
 from bakar.kas_errors import classify
 from bakar.observability import RunLogger
-from bakar.steps.kas_build import KasBuildContext, run_shell_capture
+from bakar.steps.kas_build import (
+    KasBuildContext,
+    _lock_refusal_message,
+    clear_stale_bitbake_locks,
+    run_shell_capture,
+)
 
 
 @app.command("getvar")
@@ -135,6 +140,18 @@ def getvar(
     cfg = apply_mold_overrides(cfg)
     overlay_source = _overlay_for(bsp)
     extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
+    # Refuse before RunLogger, not inside it. run_shell_capture performs the
+    # same check, but only after __enter__ has created runs/<timestamp>/ -
+    # so a getvar issued against a live build left an empty run directory
+    # with no kas.log, and `ls -t runs/ | head -1` then picked that instead
+    # of the running build's own directory. getvar is a read-only query and
+    # has nothing to report when it cannot start, so it should leave no
+    # trace at all.
+    lock_outcome = clear_stale_bitbake_locks(cfg)
+    if lock_outcome.refusal is not None:
+        console.print(f"[red]{_lock_refusal_message(lock_outcome.refusal)}[/]")
+        raise typer.Exit(1)
+
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
