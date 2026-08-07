@@ -168,10 +168,20 @@ def scope_unit_name(cfg: BuildConfig, unit_suffix: str) -> str:
     embedded so the result is always a legal unit name regardless of the
     workspace path's characters. ``unit_suffix`` (``build`` vs ``bitbake``)
     keeps a full build and a recipe-level bitbake run from sharing a unit.
+
+    The ``.scope`` suffix is part of the name and is not optional. ``systemd-run
+    --scope`` infers the unit type from the flag, so a bare ``--unit=bakar-x``
+    still creates ``bakar-x.scope`` - but every *other* tool resolves an
+    unsuffixed name to ``.service``. An unsuffixed name therefore made
+    ``systemctl show`` report ``LoadState=not-found`` for a scope that was
+    loaded and active, silently defeating both :func:`_reclaim_idle_scope` and
+    :func:`_reset_stale_scope` (each ``check=False``, so the "Unit
+    bakar-x.service not loaded" error never surfaced), and made the
+    ``journalctl`` hint printed at launch return "-- No entries --".
     """
     key = f"{cfg.bsp_root}\0{cfg.machine}".encode()
     digest = hashlib.sha256(key).hexdigest()[:10]
-    return f"bakar-{unit_suffix}-{digest}"
+    return f"bakar-{unit_suffix}-{digest}.scope"
 
 
 def _fraction_to_percent(fraction: float) -> int | None:

@@ -153,7 +153,18 @@ def test_unit_name_is_legal_charset(tmp_path: Path) -> None:
     weird.mkdir()
     name = build_scope.scope_unit_name(_cfg(weird), "build")
     assert name.startswith("bakar-build-")
-    assert all(c.isalnum() or c == "-" for c in name)
+    stem = name.removesuffix(".scope")
+    assert all(c.isalnum() or c == "-" for c in stem)
+
+
+def test_unit_name_carries_scope_suffix(tmp_path: Path) -> None:
+    """systemctl/journalctl resolve an unsuffixed name to .service, not .scope.
+
+    Without the suffix every systemctl probe reports LoadState=not-found for a
+    scope that is loaded and active, so the reclaim and reset paths silently
+    no-op and the printed journalctl hint returns "-- No entries --".
+    """
+    assert build_scope.scope_unit_name(_cfg(tmp_path), "build").endswith(".scope")
 
 
 # ---------------------------------------------------------------------------
@@ -686,6 +697,32 @@ def test_wrap_leaves_busy_scope_alone(tmp_path: Path, monkeypatch: pytest.Monkey
     build_scope.wrap_build_command(_CMD, cfg, _FakeLog(), unit_suffix="bitbake")
 
     assert ["systemctl", "--user", "stop", unit] not in calls
+
+
+def test_systemctl_argv_uses_scope_suffixed_unit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every systemctl call must name the .scope unit, not a bare stem.
+
+    An unsuffixed name resolves to .service, so the probes report not-found and
+    the stop/reset calls fail with "Unit ... not loaded" - all silently, since
+    each call is check=False.
+    """
+    monkeypatch.setattr(build_scope, "systemd_run_available", lambda: True)
+    monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: True)
+    monkeypatch.setattr(build_scope, "_scope_loaded", lambda _unit: True)
+    calls: list[list[str]] = []
+
+    def _record(argv: list[str], *_a: object, **_k: object) -> subprocess.CompletedProcess:
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(build_scope.subprocess, "run", _record)
+
+    build_scope.wrap_build_command(_CMD, _cfg(tmp_path), _FakeLog(), unit_suffix="build")
+
+    systemctl = [argv for argv in calls if argv[:1] == ["systemctl"]]
+    assert systemctl, "expected at least one systemctl call"
+    for argv in systemctl:
+        assert argv[-1].endswith(".scope"), argv
 
 
 # --- _scope_cgroup_procs / _proc_cmdline against a fake tree ----------------

@@ -182,8 +182,14 @@ not a zram thrash). With the ceilings off (the default) the build's memory
 behaves exactly as it did before the scope existed.
 
 The unit name is stable per workspace+target and its lifecycle (start/stop,
-OOM kills) is visible with `journalctl --user -u <unit>` (the run log prints
-the exact command). The run log (`kas.log`) is written as before.
+resource accounting, OOM kills) is visible with `journalctl --user -u <unit>`
+(the run log prints the exact command). Use the unit name verbatim: it ends in
+`.scope`, and `systemctl`/`journalctl` resolve an unsuffixed name to `.service`
+instead, which reports "-- No entries --" for a scope that is running.
+
+That journal carries the unit's lifecycle, not the build's output - expect a
+handful of lines per run, not a live task stream. Build output goes to the run
+log (`kas.log`) as before; `bakar log` tails it.
 
 Host vs container mode: an opted-in memory ceiling only bites in host mode,
 where kas runs bitbake directly under the scope. In container mode the heavy

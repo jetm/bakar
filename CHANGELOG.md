@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The systemd scope unit name now carries its `.scope` suffix. `systemd-run` infers the unit type from `--scope` and so still created `bakar-<suffix>-<hash>.scope`, but every other systemd tool resolves an unsuffixed name to `.service` - so bakar's own `systemctl show -p LoadState` reported `not-found` for a scope that was loaded and active, `-p ControlGroup` came back empty, and `stop`/`reset-failed` failed with "Unit ... .service not loaded". Every one of those calls is best-effort with captured output, so the errors never surfaced. This silently disabled both stale-scope cleanups shipped in 0.25.0 (the idle-cooker reclaim and the Ctrl-C drain wait, whose `LoadState` gate never opened) as well as the older `reset-failed` flush, which is why the "unit already loaded" collision kept recurring. The `journalctl --user -u <unit>` hint printed at launch was unusable for the same reason - it named a `.service` and answered "-- No entries --" during a running build.
+
 ## [0.25.0] - 2026-08-05
 
 ### Added
