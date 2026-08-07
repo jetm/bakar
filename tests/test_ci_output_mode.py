@@ -71,6 +71,45 @@ def test_plain_has_no_ansi(tmp_path) -> None:
     assert "tasks=12/40" in out
 
 
+def test_plain_controller_exposes_vertical_overflow() -> None:
+    """The failure-freeze path is shared with the Rich branch, so the stub needs it.
+
+    _process_line reads live.vertical_overflow before the freeze and writes it
+    back after the restart; without the attribute plain mode would AttributeError
+    on the first failed task.
+    """
+    ui = BuildUIState(start_monotonic=time.monotonic())
+    console = Console(no_color=True, force_terminal=False, file=StringIO())
+    live = _PlainFrameController(ui, console, threading.Event())
+    saved = live.vertical_overflow
+    live.vertical_overflow = "visible"
+    live.vertical_overflow = saved
+    assert live.vertical_overflow == "ellipsis"
+
+
+def test_rich_live_stop_clobbers_vertical_overflow() -> None:
+    """Pins the Rich behaviour the freeze/restart restore exists to undo.
+
+    Live.stop() sets vertical_overflow="visible" so its final frame renders
+    uncropped, and never restores it. Because kas_build restarts the Live after
+    a task failure, every later frame would then render uncropped and Rich's
+    cursor-up erase - sized for a panel taller than the terminal - overshoots,
+    stacking a fresh panel per refresh instead of redrawing in place.
+
+    If this test ever fails, Rich stopped clobbering the value and the manual
+    restore in _process_line can go.
+    """
+    from rich.live import Live
+    from rich.text import Text
+
+    console = Console(force_terminal=True, file=StringIO())
+    live = Live(get_renderable=lambda: Text("frame"), console=console, refresh_per_second=8)
+    live.start()
+    assert live.vertical_overflow == "ellipsis"
+    live.stop()
+    assert live.vertical_overflow == "visible"
+
+
 def test_plain_status_throttles(monkeypatch) -> None:
     # The tick is the throttle: many rapid state changes must emit ~window/interval
     # lines, not one per change.

@@ -1341,7 +1341,8 @@ class _PlainFrameController:
     """Frame controller for plain (CI) output: no Rich ``Live``, a throttled status thread.
 
     Exposes the exact surface the PTY closures call on a Rich ``Live`` - ``console``,
-    ``stop()``, ``start(*, refresh=False)``, and a writable ``transient`` attribute - as
+    ``stop()``, ``start(*, refresh=False)``, and writable ``transient`` /
+    ``vertical_overflow`` attributes - as
     no-ops / plain writes, so ``_run_pty_with_ui``'s body runs unchanged. As a context
     manager it starts a daemon thread that prints ``ui.plain_status_line()`` on a fixed
     ``_PLAIN_STATUS_INTERVAL`` tick and joins it on exit (before the caller prints its
@@ -1351,6 +1352,9 @@ class _PlainFrameController:
     def __init__(self, ui: BuildUIState, console: Console, stop_event: threading.Event) -> None:
         self.console = console
         self.transient = False
+        # Read and written by the failure-freeze path, which is shared with the
+        # Rich branch; plain mode has no live region for it to affect.
+        self.vertical_overflow = "ellipsis"
         self._ui = ui
         self._stop_event = stop_event
         self._thread: threading.Thread | None = None
@@ -1508,9 +1512,14 @@ def _run_pty_with_ui(
             )
 
             live_frozen = False
+            # Rich's Live.stop() sets vertical_overflow="visible" so its final
+            # frame renders uncropped, and never puts it back. The freeze below
+            # restarts the Live afterwards, so the value has to be carried
+            # across the stop by hand - see the restore at the restart site.
+            frozen_overflow = "ellipsis"
 
             def _process_line(line: str) -> None:  # pragma: no cover
-                nonlocal live_frozen
+                nonlocal live_frozen, frozen_overflow
                 kas_log.write(line + "\n")
                 kas_log.flush()
                 msg = ui.process_line(line)
@@ -1519,6 +1528,7 @@ def _run_pty_with_ui(
                 # frame (pipeline, sstate, failure count) into the
                 # scrollback above the failure text about to stream.
                 if not live_frozen and ui.take_fail_freeze():
+                    frozen_overflow = live.vertical_overflow
                     live.stop()
                     live_frozen = True
                 if msg:
@@ -1535,6 +1545,12 @@ def _run_pty_with_ui(
                 # will arrive).
                 if live_frozen and (alerts or ui.take_pending_restart()):
                     live.start(refresh=True)
+                    # Undo Live.stop()'s one-way flip to "visible". Left alone,
+                    # every later frame renders uncropped, so Rich's cursor-up
+                    # erase is sized for a panel taller than the terminal,
+                    # overshoots, and each refresh stacks a fresh copy of the
+                    # panel instead of redrawing in place.
+                    live.vertical_overflow = frozen_overflow
                     live_frozen = False
                     ui.notify_restarted()
 
