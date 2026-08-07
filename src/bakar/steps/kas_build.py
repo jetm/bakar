@@ -58,7 +58,7 @@ import yaml
 from rich.live import Live
 from rich.markup import escape
 
-from bakar import build_scope, build_stop, hashserv, prserv, sccache_server, task_timings, tuning
+from bakar import build_scope, build_stop, hashserv, journal, prserv, sccache_server, task_timings, tuning
 from bakar.cache_render import (
     build_end_summary_plain,
     build_end_summary_rich,
@@ -1448,6 +1448,7 @@ def _run_pty_with_ui(
     *,
     show_layers: bool = False,
     output_mode: OutputMode = OutputMode.RICH,
+    scope_unit: str | None = None,
 ) -> _PtyOutcome:
     """Run ``cmd`` under a PTY, pumping its output into ``ui`` live.
 
@@ -1474,6 +1475,9 @@ def _run_pty_with_ui(
     # Per-build cache delta for the build-end summary, filled at teardown.
     cache_backend: str | None = None
     cache_doc: dict | None = None
+    # Declared up here so the finally can close the run's journal record even if
+    # setup raised before the emitter was built.
+    emitter: journal.JournalEmitter | None = None
     master_fd, slave_fd = pty.openpty()  # pragma: no cover
     try:
         with log.kas_log_path.open("w", encoding="utf-8", buffering=1) as kas_log:
@@ -1531,6 +1535,18 @@ def _run_pty_with_ui(
                     frozen_overflow = live.vertical_overflow
                     live.stop()
                     live_frozen = True
+                    # Emitted at the freeze rather than at build end so the
+                    # failure is timestamped when it happened - a stop_on_error
+                    # build keeps running for minutes afterwards while already
+                    # -started tasks drain.
+                    if emitter is not None:
+                        report = ui.journal_report()
+                        emitter.send(
+                            "task_failed",
+                            f"task failed: {report.get('first_failure', 'unknown')}",
+                            priority=journal.PRIORITY_ERROR,
+                            **report,
+                        )
                 if msg:
                     live.console.print(msg)
                 info = ui.take_pending_log()
@@ -1689,6 +1705,47 @@ def _run_pty_with_ui(
             last_ccache_doc: list = [None]
             first_ccache_doc: list = [None]
 
+            # Structured milestones only - the build's output stays in kas.log.
+            # scope_unit is the join key: it lets a reader line these records up
+            # against systemd's own "Consumed ... CPU time" / OOM / memory-peak
+            # lines for the same unit, which is the correlation a log file cannot
+            # provide. Created after the cache-doc holders above so the build_end
+            # record in the finally can always read them.
+            emitter = journal.JournalEmitter(
+                {
+                    "run_id": log.run_id,
+                    "machine": cfg.machine or "",
+                    "workspace": str(cfg.bsp_root),
+                    **({"scope_unit": scope_unit} if scope_unit else {}),
+                },
+                enabled=cfg.journal,
+            )
+            emitter.send(
+                "build_start",
+                f"build started: machine={cfg.machine} workspace={cfg.bsp_root}",
+                **journal.health_fields(cfg.resolved_tmpdir),
+            )
+
+            def _journal_progress() -> None:  # pragma: no cover - timing-driven daemon thread
+                """Emit one full progress snapshot per ``journal_interval`` tick.
+
+                Level-sampled rather than event-driven on purpose: the value is a
+                record that keeps arriving on a predictable cadence, so a run that
+                stopped moving shows up as an unchanged snapshot instead of as
+                silence, which is indistinguishable from a finished build.
+                """
+                if not emitter.enabled:
+                    return
+                while not stop_event.wait(timeout=max(1, cfg.journal_interval)):
+                    report = ui.journal_report()
+                    emitter.send(
+                        "progress",
+                        "build progress: " + " ".join(f"{k}={v}" for k, v in report.items()),
+                        **report,
+                        **journal.health_fields(cfg.resolved_tmpdir),
+                        **journal.cache_fields(last_daemon_doc[0], last_ccache_doc[0]),
+                    )
+
             def _cache_probe() -> None:  # pragma: no cover
                 # Refresh the cluster/cache header lines shown in the build UI.
                 # sccache-dist builds show the cluster + sccache daemon lines;
@@ -1760,6 +1817,8 @@ def _run_pty_with_ui(
                 error_watchdog.start()
                 cache_probe = threading.Thread(target=_cache_probe, daemon=True)  # pragma: no cover
                 cache_probe.start()
+                journal_progress = threading.Thread(target=_journal_progress, daemon=True)  # pragma: no cover
+                journal_progress.start()
                 try:
                     rc = proc.wait()
                 except KeyboardInterrupt:
@@ -1823,6 +1882,20 @@ def _run_pty_with_ui(
                     # container error): keep a collapsed closing status.
                     ui.finish_failed()
     finally:
+        # In the finally so an aborted or crashed run still closes its record;
+        # a start with no end is exactly the shape that makes a journal timeline
+        # unreadable. emitter is absent only if setup raised before it existed.
+        if emitter is not None:
+            report = ui.journal_report()
+            emitter.send(
+                "build_end",
+                f"build finished: rc={rc} " + " ".join(f"{k}={v}" for k, v in report.items()),
+                priority=journal.PRIORITY_INFO if rc == 0 else journal.PRIORITY_WARNING,
+                rc=rc,
+                **report,
+                **journal.cache_fields(last_daemon_doc[0], last_ccache_doc[0]),
+            )
+            emitter.close()
         build_stop.remove_pid(log.run_dir)
         if slave_fd != -1:
             try:
@@ -1966,7 +2039,14 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         try:
             with lock_owner_marker(cfg, log):
                 outcome = _run_pty_with_ui(
-                    cmd, cfg, log, ui, stop_event, show_layers=show_layers, output_mode=ctx.output_mode
+                    cmd,
+                    cfg,
+                    log,
+                    ui,
+                    stop_event,
+                    show_layers=show_layers,
+                    output_mode=ctx.output_mode,
+                    scope_unit=build_scope.active_scope_unit(cfg, "build"),
                 )
         except LockHeldByPeerError as exc:
             rc = 1
@@ -2117,7 +2197,15 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
     try:
         try:
             with lock_owner_marker(cfg, log):
-                outcome = _run_pty_with_ui(cmd, cfg, log, ui, stop_event, output_mode=ctx.output_mode)
+                outcome = _run_pty_with_ui(
+                    cmd,
+                    cfg,
+                    log,
+                    ui,
+                    stop_event,
+                    output_mode=ctx.output_mode,
+                    scope_unit=build_scope.active_scope_unit(cfg, "bitbake"),
+                )
         except LockHeldByPeerError as exc:
             rc = 1
             log.step_fail(

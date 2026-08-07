@@ -56,6 +56,8 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.scope_oom_score_adjust": "750",
         "build.scope_cpu_weight": "40",
         "build.scope_io_weight": "0",
+        "build.journal": "false",
+        "build.journal_interval": "600",
         "build.hashserv": "true",
         "build.ccache_shared": "true",
         "build.ccache_dir": "/data/ccache",

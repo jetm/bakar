@@ -191,6 +191,55 @@ That journal carries the unit's lifecycle, not the build's output - expect a
 handful of lines per run, not a live task stream. Build output goes to the run
 log (`kas.log`) as before; `bakar log` tails it.
 
+### Journal milestone records
+
+Alongside systemd's own lines, bakar emits a small set of structured records so
+a run's shape is queryable next to the scope's resource accounting. Build output
+is deliberately excluded: journald rate-limits to 10,000 messages per 30s by
+default and drops the excess silently, and a scope unit cannot raise that limit
+(`LogRateLimitIntervalSec` is an exec-context property a scope has no way to
+set). Set `journal = false` to turn the records off - worth doing on a host whose
+journal is already at its `SystemMaxUse` cap and evicting.
+
+| Event | When |
+|-------|------|
+| `build_start` | Once, with machine, workspace, and host health |
+| `progress` | Every `journal_interval` seconds (default 300) |
+| `task_failed` | At the failure, not at build end - a `stop_on_error` build keeps draining for minutes afterwards |
+| `build_end` | Once, including on an abort or crash |
+
+Every record carries `BAKAR_RUN_ID`, `BAKAR_MACHINE`, `BAKAR_WORKSPACE`, and -
+when the build is actually scoped - `BAKAR_SCOPE_UNIT`, which is the join key
+back to systemd's `Consumed ... CPU time` and OOM lines for the same unit.
+
+A `progress` record adds build state (`BAKAR_TASKS_DONE`, `BAKAR_TASKS_TOTAL`,
+`BAKAR_PCT`, `BAKAR_SSTATE_PCT`, `BAKAR_RUNNING`, `BAKAR_WARNINGS`,
+`BAKAR_ERRORS`), host health (`BAKAR_LOAD1`, `BAKAR_PSI_CPU`, `BAKAR_PSI_IO`,
+`BAKAR_PSI_MEMORY`, `BAKAR_MEM_AVAIL_MB`, `BAKAR_SWAP_USED_MB`,
+`BAKAR_DISK_FREE_GB`), and cache health (`BAKAR_SCCACHE_HIT_PCT`,
+`BAKAR_SCCACHE_VERDICT`, `BAKAR_CCACHE_HIT_PCT`). The health fields answer the
+question a log file cannot: whether a slow build is saturated or idle and stuck,
+and whether its cache quietly stopped hitting.
+
+Because they are real journal fields rather than text, they filter and extract
+directly:
+
+```bash
+# Follow one run's milestones
+journalctl --user BAKAR_RUN_ID=20260807-101500 -f
+
+# Every task failure across all builds this week
+journalctl --user BAKAR_EVENT=task_failed --since "1 week ago"
+
+# Progress against host pressure, one line per sample
+journalctl --user BAKAR_EVENT=progress --since today \
+  -o json --output-fields=BAKAR_PCT,BAKAR_PSI_IO,BAKAR_SCCACHE_HIT_PCT
+```
+
+The `progress` snapshot is level-sampled on a fixed tick rather than emitted on
+change, so a build that stopped moving shows up as an unchanged record rather
+than as silence - which is indistinguishable from a build that finished.
+
 Host vs container mode: an opted-in memory ceiling only bites in host mode,
 where kas runs bitbake directly under the scope. In container mode the heavy
 work runs inside the `docker`/`podman` container, whose processes live in the

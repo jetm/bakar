@@ -184,6 +184,19 @@ def scope_unit_name(cfg: BuildConfig, unit_suffix: str) -> str:
     return f"bakar-{unit_suffix}-{digest}.scope"
 
 
+def active_scope_unit(cfg: BuildConfig, unit_suffix: str) -> str | None:
+    """Return the unit name when this build will actually be scoped, else None.
+
+    Mirrors :func:`wrap_build_command`'s gate the same way :func:`scope_env`
+    does, so a caller can label telemetry with the unit only when one really
+    exists. Naming a unit that was never created would send a reader to an empty
+    ``journalctl`` and cost more than the missing field.
+    """
+    if not cfg.scope or not systemd_run_available():
+        return None
+    return scope_unit_name(cfg, unit_suffix)
+
+
 def _fraction_to_percent(fraction: float) -> int | None:
     """Convert a ``[0, 1]`` RAM fraction to a systemd percentage, or None to omit.
 

@@ -50,6 +50,7 @@ _BOOL_FIELDS = {
     "host_mode",
     "stop_on_error",
     "scope",
+    "journal",
 }
 _INT_FIELDS: set[str] = {
     "stall_abort_secs",
@@ -64,6 +65,7 @@ _INT_FIELDS: set[str] = {
     "scope_oom_score_adjust",
     "scope_cpu_weight",
     "scope_io_weight",
+    "journal_interval",
 }
 # The three [build] parallelism knobs; all require a strictly positive value.
 _PARALLELISM_FIELDS = {"nproc", "parallel_make", "bb_number_threads"}
@@ -192,6 +194,11 @@ class UserConfig:
     # 0 omits the property.
     scope_cpu_weight: int = 0
     scope_io_weight: int = 0
+    # Structured milestone records to the systemd journal; build output stays in
+    # kas.log. See bakar.journal. journal_interval is the progress-snapshot
+    # period in seconds.
+    journal: bool = True
+    journal_interval: int = 300
     hashserv: bool = False
     ccache_shared: bool = False
     ccache_dir: str | None = None
@@ -276,6 +283,8 @@ _BUILD_KEYS = {
     "stop_grace_seconds": "stop_grace_seconds",
     "stop_on_error": "stop_on_error",
     "scope": "scope",
+    "journal": "journal",
+    "journal_interval": "journal_interval",
     "scope_memory_high": "scope_memory_high",
     "scope_memory_max": "scope_memory_max",
     "scope_oom_score_adjust": "scope_oom_score_adjust",

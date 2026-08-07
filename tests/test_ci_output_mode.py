@@ -52,6 +52,35 @@ def test_explicit_rich_override_wins_under_ci() -> None:
 # --- Integration behaviors referenced by the threat model (task 8.1) -----------
 
 
+def test_journal_report_carries_typed_progress() -> None:
+    """The journal snapshot returns values, not a line, so journalctl can filter on them."""
+    ui = BuildUIState(start_monotonic=time.monotonic())
+    ui.process_line("Running task 12 of 40")
+    report = ui.journal_report()
+    assert report["tasks_done"] == 12
+    assert report["tasks_total"] == 40
+    assert report["pct"] == "30.0"
+    assert isinstance(report["elapsed_s"], int)
+
+
+def test_journal_report_omits_total_before_bitbake_reports_one() -> None:
+    """Total is None until bitbake announces it; emit no field rather than a guess."""
+    report = BuildUIState(start_monotonic=time.monotonic()).journal_report()
+    assert "tasks_total" not in report
+    assert "pct" not in report
+    assert report["tasks_done"] == 0
+
+
+def test_journal_report_bounds_the_running_sample() -> None:
+    """A wide host can run tens of tasks; a journal record is a single datagram."""
+    ui = BuildUIState(start_monotonic=time.monotonic())
+    for i in range(12):
+        ui.process_line(f"recipe pkg-{i}-1.0: task do_compile: Started")
+    report = ui.journal_report()
+    assert report["running"] == 12
+    assert len(str(report["running_sample"]).split(",")) <= 5
+
+
 def test_plain_has_no_ansi(tmp_path) -> None:
     # Drive a plain-mode frame controller with a fed build state (stand-in for the
     # PTY feed) and assert the emitted status carries no ANSI escape and no glyph.

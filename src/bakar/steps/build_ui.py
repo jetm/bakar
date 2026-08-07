@@ -1124,3 +1124,55 @@ class BuildUIState:
                 return None
             self._plain_last_line = line
         return line
+
+    def journal_report(self) -> dict[str, object]:
+        """Return the current build state as structured fields for the journal.
+
+        Reads the same ``_lock``-guarded state as :meth:`plain_status_line` and
+        :meth:`make_renderable`, but returns values rather than a formatted line
+        so ``journalctl`` can filter and sort on them (``BAKAR_TASKS_DONE``,
+        ``BAKAR_PCT``) instead of forcing callers to re-parse a string. Never
+        dedups: unlike the plain status line this is emitted on a slow fixed
+        interval, and an unchanged snapshot is itself the signal that a build has
+        stopped moving.
+        """
+        now = time.monotonic()
+        with self._lock:
+            phase = self._phase
+            stage = self._stage
+            kind = self._kind
+            setscene_covered = self._setscene_covered
+            setscene_total = self._setscene_total
+            running = sorted(self._running)
+            task = self._build_progress.tasks[0] if self._build_progress.tasks else None
+            completed = int(task.completed) if task is not None else 0
+            total = task.total if task is not None else None
+            elapsed = int(now - self._start_monotonic)
+            warn_count = self.warn_count
+            error_count = self.error_count
+            failures = list(self._failures)
+
+        report: dict[str, object] = {
+            "phase": stage if phase is _Phase.SETUP else (kind or "tasks"),
+            "elapsed_s": elapsed,
+            "tasks_done": completed,
+            "running": len(running),
+            "warnings": warn_count,
+            "errors": error_count,
+            "failed_tasks": len(failures),
+        }
+        if total is not None:
+            report["tasks_total"] = int(total)
+            if total:
+                report["pct"] = f"{completed / total * 100:.1f}"
+        if setscene_total > 0:
+            report["sstate_pct"] = int(setscene_covered / setscene_total * 100)
+        # Bounded: the running set can be tens of tasks wide on a big host, and a
+        # journal record is a datagram, so carry a readable sample plus the count
+        # rather than the whole set.
+        if running:
+            report["running_sample"] = ",".join(running[:5])
+        if failures:
+            recipe, taskname = failures[0]
+            report["first_failure"] = f"{recipe}:{taskname}"
+        return report
