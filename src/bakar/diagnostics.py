@@ -1973,6 +1973,171 @@ def check_uninative_mirror_hit(cfg: BuildConfig) -> CheckResult:
     return _ok(name, Severity.WARN, f"cached payload {cached} links into the fragment's mirror at {target}")
 
 
+# Subdirectory the per-node ceiling records live in, created under the shared
+# cache root. A dedicated, clearly-named directory keeps these records out of
+# bitbake's own namespace: sstate stores its artifacts under two-character
+# hash-prefix directories and DL_DIR under checksum-named ones, so a spelled-out
+# name collides with neither and is obvious to a human browsing the export.
+_UNINATIVE_CEILING_DIRNAME = "bakar-uninative-ceilings"
+
+
+def _uninative_ceiling_root(cfg: BuildConfig) -> Path | None:
+    """Resolve the shared directory the per-node ceiling records rendezvous in.
+
+    Reuses the effective-dir resolution :func:`check_shared_cache_mounts` applies
+    (env wins over config, sstate preferred over downloads) rather than a new
+    config field, because that check already validates in cluster mode that these
+    dirs are writable NFS mounts - so the rendezvous point is one this node and
+    every peer provably share. Returns None when neither resolves to a directory
+    that exists, which the caller reports as a WARN: with nowhere to publish, the
+    check cannot make a claim either way.
+    """
+    for value in (os.environ.get("SSTATE_DIR") or cfg.sstate_dir, os.environ.get("DL_DIR") or cfg.dl_dir):
+        if not value:
+            continue
+        root = Path(value)
+        if root.is_dir():
+            return root / _UNINATIVE_CEILING_DIRNAME
+    return None
+
+
+def check_uninative_cluster_consistency(cfg: BuildConfig) -> CheckResult:
+    """Cluster-mode: BLOCK when a peer node resolved a different uninative ceiling.
+
+    Every node sharing the sstate export must agree on
+    ``UNINATIVE_MAXGLIBCVERSION``: the value participates in native task hashes,
+    so two nodes carrying different ceilings populate one cache with artifacts
+    built against incompatible loader assumptions, and the corruption only
+    surfaces later as an unresolvable version node on whichever node pulls the
+    other's sstate.
+
+    The rendezvous is a record on the shared mount, not an ssh probe of a peer
+    list. An ssh probe was considered and rejected: ``--on <host>`` is
+    per-invocation so a probe would need a new persistent peer list to maintain,
+    and an ssh failure cannot distinguish "peer offline" from "key rotated" from
+    "network partition" - all three collapse to a WARN, which blunts the gate.
+    The shared mount already exists, is already validated writable by
+    :func:`check_shared_cache_mounts`, and survives a peer being renamed or
+    re-IP'd.
+
+    THE ORDERING IS THE POINT AND MUST NOT BE SIMPLIFIED AWAY. This node's record
+    is written FIRST, then every sibling is read and compared. That is what makes
+    the check a preventer rather than a logger: the node whose ceiling just moved
+    publishes its new value, sees every peer still on the old one, and blocks
+    ITSELF - which is exactly the node that must refuse to build. Returning PASS
+    on the strength of a successful write would let that node poison the shared
+    cache and leave the peers to discover it.
+
+    A lone record is a PASS ("no peer has reported yet"), because a single-node
+    cluster or a first run is not a disagreement. An unreadable or malformed peer
+    record is a WARN naming it, never silent agreement - an unparsed record is
+    indistinguishable from one that disagrees.
+    """
+    name = "uninative-cluster-ceiling"
+    skip_reason = _uninative_gate(cfg)
+    if skip_reason is not None:
+        return _skip(name, Severity.INFO, skip_reason)
+
+    fragment = parse_uninative_fragment()
+    if not fragment.present:
+        return _skip(name, Severity.INFO, f"{fragment.path} is not installed (see uninative-fragment)")
+    if fragment.error is not None:
+        return _skip(name, Severity.INFO, f"cannot read this node's ceiling: {fragment.error}")
+    ceiling = fragment.max_glibc or ""
+
+    root = _uninative_ceiling_root(cfg)
+    if root is None:
+        return _fail(
+            name,
+            Severity.WARN,
+            "cluster mode is on but neither SSTATE_DIR nor DL_DIR resolves to an existing directory, so "
+            "this node cannot publish its uninative ceiling for the peers to compare against",
+            fix_hint="Set [build] sstate_dir (or SSTATE_DIR) to the shared NFS export; see shared-mounts.",
+        )
+
+    node = socket.gethostname()
+    record = root / f"{node}.json"
+    # Overwrite this node's own record rather than appending a new one, so the
+    # directory holds exactly one current ceiling per node however many times the
+    # check runs. Written via a temp file plus os.replace so an interrupted write
+    # cannot leave a truncated record for a peer to read as a disagreement.
+    payload = json.dumps(
+        {"node": node, "ceiling": ceiling, "written": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
+        indent=2,
+    )
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{node}.", suffix=".json", dir=root)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload + "\n")
+            os.replace(tmp_name, record)
+        except OSError:
+            Path(tmp_name).unlink(missing_ok=True)
+            raise
+    except OSError as exc:
+        return _fail(
+            name,
+            Severity.WARN,
+            f"cannot publish this node's uninative ceiling {ceiling} to {root}: {exc}; peers have nothing "
+            "to compare against, so a ceiling mismatch across the cluster would go undetected",
+            fix_hint=f"Make {root.parent} writable from this node (see shared-mounts).",
+        )
+
+    disagreements: list[str] = []
+    unreadable: list[str] = []
+    peers: list[str] = []
+    for entry in sorted(root.glob("*.json")):
+        if entry.name == record.name:
+            continue
+        try:
+            parsed = json.loads(entry.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            unreadable.append(f"{entry.name}: {exc}")
+            continue
+        peer_ceiling = parsed.get("ceiling") if isinstance(parsed, dict) else None
+        if not isinstance(peer_ceiling, str) or not peer_ceiling:
+            unreadable.append(f"{entry.name}: declares no ceiling")
+            continue
+        peer_node = parsed.get("node") if isinstance(parsed.get("node"), str) else entry.stem
+        peers.append(peer_node)
+        if peer_ceiling != ceiling:
+            disagreements.append(f"{peer_node} reports {peer_ceiling}, this node ({node}) resolved {ceiling}")
+
+    if disagreements:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            "uninative ceiling disagrees across the cluster: "
+            + "; ".join(disagreements)
+            + f"; the value feeds native task hashes, so building would mix incompatible artifacts into {root.parent}",
+            fix_hint=(
+                "Install the same yocto-uninative-tarball build on every node, then re-run doctor on each so "
+                "their records agree before any of them builds."
+            ),
+        )
+    if unreadable:
+        return _fail(
+            name,
+            Severity.WARN,
+            f"this node published ceiling {ceiling} to {record}, but a peer record could not be read: "
+            + "; ".join(unreadable)
+            + "; an unparsed record cannot be counted as agreement",
+            fix_hint=f"Inspect or delete the unreadable record(s) under {root}.",
+        )
+    if not peers:
+        return _ok(
+            name,
+            Severity.BLOCK,
+            f"published ceiling {ceiling} to {record}; no peer has reported yet",
+        )
+    return _ok(
+        name,
+        Severity.BLOCK,
+        f"ceiling {ceiling} matches every peer that has reported ({', '.join(sorted(peers))})",
+    )
+
+
 # ---------------------------------------------------------------------------
 # mold C++20 build-compiler gate (mold-linker-toolchain)
 # ---------------------------------------------------------------------------
@@ -3719,6 +3884,7 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_central_hashserv,
     check_central_prserv,
     check_shared_cache_mounts,
+    check_uninative_cluster_consistency,
 )
 
 # Docker-dependent checks from ``SHARED_CHECKS``. Filtered out of
@@ -3746,6 +3912,11 @@ _CLUSTER_CHECKS: tuple[CheckFunc, ...] = (
     check_central_hashserv,
     check_central_prserv,
     check_shared_cache_mounts,
+    # Cluster-only despite its "Uninative wiring" report group: it publishes and
+    # compares per-node ceiling records on the shared mount, which only exists
+    # (and only matters) in cluster mode. Membership here is what keeps it out of
+    # a single-node run's output entirely.
+    check_uninative_cluster_consistency,
 )
 
 
@@ -3806,6 +3977,7 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "uninative-checksum",
             "uninative-dldir-links",
             "uninative-mirror-hit",
+            "uninative-cluster-ceiling",
         ),
     ),
     (
@@ -3863,6 +4035,7 @@ _CHECK_METADATA: tuple[tuple[CheckFunc, str, Severity], ...] = (
     (check_central_hashserv, "central-hashserv", Severity.BLOCK),
     (check_central_prserv, "central-prserv", Severity.BLOCK),
     (check_shared_cache_mounts, "shared-mounts", Severity.BLOCK),
+    (check_uninative_cluster_consistency, "uninative-cluster-ceiling", Severity.BLOCK),
     # NXP-only (BspModel.doctor_extras)
     (check_forks_linux_imx, "forks-linux-imx", Severity.INFO),
     (check_manifest_consistency, "manifest", Severity.INFO),
