@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import tempfile
 import time
@@ -2344,8 +2345,17 @@ def _is_elf(path: Path) -> bool:
     Reading four bytes beats shelling out to ``file`` per path: a native work
     tree holds thousands of scripts, headers and stamps, and only the ELF ones
     are worth an ``objdump`` process.
+
+    The regular-file gate is not an optimisation. ``os.walk`` lists a FIFO
+    among its files, opening one for reading blocks until a writer appears,
+    and this open carries no timeout - a named pipe left under a recipe's work
+    directory, or restored from an sstate tarball, would hang the whole check.
+    ``S_ISREG`` on an ``lstat`` excludes FIFOs, sockets and device nodes in one
+    condition, without a signal or a thread.
     """
     try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return False
         with path.open("rb") as handle:
             return handle.read(4) == b"\x7fELF"
     except OSError:

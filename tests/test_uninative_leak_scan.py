@@ -1248,3 +1248,64 @@ def test_neutralization_does_not_reach_the_values_the_scan_compares() -> None:
     """
     assert "_neutralized" not in inspect.getsource(diagnostics._read_elf)
     assert "_neutralized" not in inspect.getsource(diagnostics._resolve_needed)
+
+
+# --- Reading only regular files -------------------------------------------
+#
+# A FIFO is the one entry ``os.walk`` lists among its files that an ELF-magic
+# read cannot survive: opening one for reading blocks until a writer appears,
+# and ``_is_elf``'s open carries no timeout. A recipe or an upstream test suite
+# leaving a named pipe under its work directory is enough - tar and pseudo both
+# preserve FIFOs, so an sstate restore reproduces it. The module's pytest
+# timeout is what turns a regression here into a failure rather than a hung
+# suite.
+
+
+@pytest.mark.unit
+def test_is_elf_refuses_a_fifo(tmp_path: Path) -> None:
+    """The type gate answers before the open, so the blocking read never happens."""
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+
+    assert diagnostics._is_elf(fifo) is False
+
+
+@pytest.mark.unit
+def test_is_elf_refuses_a_directory(tmp_path: Path) -> None:
+    """Non-regular is the condition, not FIFO specifically."""
+    assert diagnostics._is_elf(tmp_path) is False
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_a_fifo_beside_an_artifact_does_not_hang_or_hide_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The pipe is skipped and the real artifact beside it still counts as scanned."""
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    artifact = _place(_work_tree(cfg), "zlib-native", _CLEAN)
+    os.mkfifo(artifact.parent / "pipe")
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert result.status is Status.PASS
+    assert "in 1 dynamically linked native artifact(s)" in result.message
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_a_tree_of_only_fifos_skips_rather_than_passing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Skipping the pipe leaves no evidence, and no evidence is the zero-evidence SKIP.
+
+    Not a PASS: the walk read nothing, so it cannot vouch for the tree.
+    """
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    pipe_dir = _work_tree(cfg) / "zlib-native" / "1.0" / "image" / "usr" / "bin"
+    pipe_dir.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(pipe_dir / "pipe")
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert result.status is Status.SKIP
+    assert result.status is not Status.PASS
+    assert "holds no dynamically linked native artifact this scan could read" in result.message
