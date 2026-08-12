@@ -579,7 +579,11 @@ def test_checksum_skips_when_the_fragment_is_absent(monkeypatch: pytest.MonkeyPa
 
 @pytest.mark.unit
 def test_all_three_checks_are_registered_under_one_group() -> None:
-    """The three checks ship in SHARED_CHECKS, the metadata table, and one group."""
+    """The three checks ship in SHARED_CHECKS with BLOCK severity in the metadata table.
+
+    Grouping is asserted once, for every uninative check, by
+    ``test_every_new_check_is_grouped`` in tests/test_uninative_leak_scan.py.
+    """
     names = ("uninative-fragment", "uninative-glibc", "uninative-checksum")
     funcs = (
         diagnostics.check_uninative_fragment,
@@ -590,9 +594,3 @@ def test_all_three_checks_are_registered_under_one_group() -> None:
 
     metadata = {name: severity for func, name, severity in diagnostics._CHECK_METADATA if func in funcs}
     assert metadata == dict.fromkeys(names, Severity.BLOCK)
-
-    groups = dict(diagnostics.CHECK_GROUPS)
-    # Leading members of the group rather than the whole of it: the DL_DIR cache
-    # checks join the same group, so pinning the full tuple here would make an
-    # addition to the group fail a test about these three checks.
-    assert groups["Uninative wiring"][: len(names)] == names
