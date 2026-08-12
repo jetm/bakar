@@ -40,7 +40,7 @@ def _neutralise_cache_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SSTATE_DIR", raising=False)
 
 
-def _cfg(*, host_mode: bool = True, uninative: bool = True) -> BuildConfig:
+def _cfg(*, host_mode: bool = True, uninative: bool = True, cluster: bool = False) -> BuildConfig:
     """Return a minimal BuildConfig for the uninative cache-state checks."""
     return BuildConfig(
         workspace=Path("/tmp"),
@@ -54,6 +54,7 @@ def _cfg(*, host_mode: bool = True, uninative: bool = True) -> BuildConfig:
         kas_container_image="img:latest",
         host_mode=host_mode,
         uninative=uninative,
+        cluster=cluster,
     )
 
 
@@ -149,7 +150,11 @@ def test_repair_preserves_valid_download(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
     assert result.name == "uninative-dldir-links"
     assert result.status is Status.FAIL
-    assert result.severity is Severity.BLOCK
+    # WARN, not BLOCK: the tree is healthy again by the time the check returns,
+    # and it runs inside the build pre-flight gate, where a BLOCK would abort
+    # the build on a condition this same run just repaired. FAIL still stands so
+    # the operator learns a cached artifact was deleted under them.
+    assert result.severity is Severity.WARN
     assert str(broken) in result.message
     assert "1 uninative cache entry" in result.message
 
@@ -163,6 +168,36 @@ def test_repair_preserves_valid_download(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert valid_stamp.is_file()
     assert dldir.is_dir()
     assert sorted(p.name for p in dldir.iterdir()) == [_OTHER_CHECKSUM]
+
+
+@pytest.mark.unit
+def test_cluster_mode_reports_dangling_entry_without_removing_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """On a shared DL_DIR the entry is reported, never deleted.
+
+    The payload link is an absolute path into the writing node's own /usr/share
+    mirror, so a peer's entry reads dangling from here while resolving perfectly
+    on the node that wrote it. Removing it would destroy a live peer's cache and
+    race its in-flight fetch, so cluster mode reports and leaves it in place.
+    """
+    _patch_host(monkeypatch, tmp_path)
+    dldir = _set_dl_dir(monkeypatch, tmp_path)
+    entry = _entry(dldir, _CHECKSUM)
+    broken_link = entry / _TARBALL
+    broken_link.symlink_to(tmp_path / "gone" / _TARBALL)
+    stamp = entry / f"{_TARBALL}.done"
+    stamp.write_text("")
+
+    result = diagnostics.check_uninative_dldir_links(_cfg(cluster=True))
+
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert "peer" in result.message
+    # The whole point: nothing was destroyed.
+    assert entry.is_dir()
+    assert broken_link.is_symlink()
+    assert stamp.is_file()
 
 
 @pytest.mark.unit

@@ -1860,6 +1860,7 @@ def check_uninative_dldir_links(cfg: BuildConfig) -> CheckResult:
 
     removed: list[str] = []
     failures: list[str] = []
+    shared: list[str] = []
     try:
         entries = sorted(dldir.iterdir())
     except OSError as exc:
@@ -1876,8 +1877,26 @@ def check_uninative_dldir_links(cfg: BuildConfig) -> CheckResult:
         # tree it is scoped to.
         if entry.is_symlink() or not entry.is_dir():
             continue
-        dangling = [c for c in sorted(entry.iterdir()) if c.is_symlink() and not c.exists()]
+        # Guarded because a shared DL_DIR routinely holds entries owned by
+        # another uid at mode 0700. Unguarded, one such entry raises out of the
+        # whole check and it is reported as an internal crash - losing both the
+        # actionable message below and any record of what was already removed.
+        try:
+            children = sorted(entry.iterdir())
+        except OSError as exc:
+            failures.append(f"{entry}: {exc}")
+            continue
+        dangling = [c for c in children if c.is_symlink() and not c.exists()]
         if not dangling:
+            continue
+        if cfg.cluster:
+            # The payload link is an absolute host-local path into this node's
+            # own /usr/share mirror, so on a SHARED DL_DIR a peer's entry reads
+            # dangling from here while resolving perfectly on the node that
+            # wrote it. Removing it would destroy a live peer's cache entry and
+            # race its in-flight fetch. Report instead: the owning node repairs
+            # its own entry on its next run.
+            shared.append(f"{entry} (payload link {', '.join(d.name for d in dangling)} does not resolve here)")
             continue
         try:
             shutil.rmtree(entry)
@@ -1895,15 +1914,34 @@ def check_uninative_dldir_links(cfg: BuildConfig) -> CheckResult:
             "makes uninative skip its fetch and silently disable itself mid-build",
             fix_hint="Remove the listed entry directories by hand so the next build refetches the payload.",
         )
-    if removed:
+    if shared:
         return _fail(
             name,
             Severity.BLOCK,
+            f"{len(shared)} uninative cache entr{'y' if len(shared) == 1 else 'ies'} under the shared "
+            f"{dldir} hold a payload link that does not resolve on this node: {'; '.join(shared)}; left "
+            "in place because the link is an absolute path into the writing node's own mirror, so "
+            "removing it here would destroy a peer's live cache entry",
+            fix_hint=(
+                "Run bakar doctor on the node that owns the entry so it repairs its own cache, or remove "
+                "the listed entries by hand once no peer is using them."
+            ),
+        )
+    if removed:
+        # WARN rather than BLOCK: the tree is healthy again by the time this
+        # returns, and this check runs inside the build pre-flight gate
+        # (_helpers.py run_all), where a BLOCK would abort the build on a
+        # condition this same run already fixed - a hard failure that a bare
+        # re-run then passes. The FAIL status still surfaces the removal,
+        # because a cached artifact was deleted under the operator.
+        return _fail(
+            name,
+            Severity.WARN,
             f"removed {len(removed)} uninative cache entr{'y' if len(removed) == 1 else 'ies'} whose "
             f"mirrored payload had been deleted under it: {'; '.join(removed)}; the entry's .done stamp "
             "went with it, so the next build refetches instead of skipping the fetch and disabling "
             "uninative silently",
-            fix_hint="Re-run the build; the fetch now repopulates the entry from the fragment's mirror.",
+            fix_hint="No action needed; the next build repopulates the entry from the fragment's mirror.",
         )
     return _ok(name, Severity.BLOCK, f"every mirrored payload link under {dldir} resolves")
 
@@ -2067,10 +2105,25 @@ def check_uninative_cluster_consistency(cfg: BuildConfig) -> CheckResult:
     )
     try:
         root.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(prefix=f".{node}.", suffix=".json", dir=root)
+        # Widened past the umask default for the same reason the record is: a
+        # peer running under a different uid has to create its own record here.
+        os.chmod(root, 0o755)
+        # The peer scan globs "*.json", and pathlib's glob does NOT skip
+        # dotfiles - so a ".json" suffix here would make an orphaned temp file
+        # (left by a kill between the write and the replace) read back as a peer
+        # carrying this node's own hostname and a stale ceiling, which is a
+        # permanent self-disagreement BLOCK no package install can clear.
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{node}.", suffix=".json.tmp", dir=root)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(payload + "\n")
+            # mkstemp creates 0600 and os.replace preserves it, but this
+            # directory exists to be read by peers that may run under a
+            # different uid on a non-squashed export. Left at 0600 the peers'
+            # reads raise PermissionError, land in `unreadable`, and the check
+            # degrades to WARN - failing OPEN on the one condition it exists to
+            # block. Same reason the directory is widened below.
+            os.chmod(tmp_name, 0o644)
             os.replace(tmp_name, record)
         except OSError:
             Path(tmp_name).unlink(missing_ok=True)
@@ -2217,12 +2270,28 @@ def _read_elf(reader: str, path: Path) -> _ElfInfo | None:
             [reader, "-T", "-p", str(path)],
             capture_output=True,
             text=True,
+            # An artifact's .dynstr can hold bytes that are not valid UTF-8, and
+            # a decode failure here raises UnicodeDecodeError - a ValueError,
+            # which the except below does not catch - so one odd vendor blob
+            # would crash the whole check instead of costing one unread file.
+            # Every pattern applied to the output is byte-agnostic, so replacing
+            # the undecodable bytes loses nothing.
+            errors="replace",
             timeout=30,
             check=False,
         )
     except OSError, subprocess.TimeoutExpired:
         return None
     if out.returncode != 0:
+        # A relocatable object or a static binary has no dynamic section, so the
+        # reader exits non-zero with "not a dynamic object". That is emphatically
+        # not a read failure: such a file cannot reference a versioned dynamic
+        # symbol at all, so it contributes nothing rather than counting as
+        # unread. A real work tree holds thousands of .o files under
+        # <pn>/<pv>/build/, and counting them as unread would return an
+        # unconditional WARN on every healthy tree and bury the genuine findings.
+        if "not a dynamic object" in out.stderr:
+            return _ElfInfo(nodes=frozenset(), needed=(), runpaths=())
         return None
     return _ElfInfo(
         nodes=frozenset(_GLIBC_NODE_RE.findall(out.stdout)),
