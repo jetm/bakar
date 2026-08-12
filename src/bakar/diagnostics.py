@@ -2195,12 +2195,67 @@ def check_uninative_cluster_consistency(cfg: BuildConfig) -> CheckResult:
 # post-build native artifact leak scan (uninative-leak-scan)
 # ---------------------------------------------------------------------------
 
-# Version nodes are named ``GLIBC_<maj>.<min>`` in both the dynamic symbol table
-# and the version reference/definition sections, so one pattern covers whichever
-# section the reader prints them in.
+# Requirements come from ``objdump -p``'s ``Version References:`` block, which
+# renders ``DT_VERNEED`` and therefore holds requirements and nothing else.
+#
+# The tempting shortcut is ``objdump -T``'s parenthesisation, and it is wrong.
+# ``objdump`` parenthesises a version node when the symbol's version binding is
+# non-default (``VERSYM_HIDDEN``), which binutils sets for undefined symbols AND
+# for compat definitions - so a definition at a real ``.text`` address prints
+# parenthesised too. Measured on ``libc.so.6``: 537 parenthesised symbols are
+# not ``*UND*``, and the parenthesised maximum runs several releases above what
+# ``DT_VERNEED`` says libc actually needs. Anything derived from the parenthesis
+# is an upper bound on requirements, not a measure of them.
+#
+# Section is no discriminator either: a copy-relocated libc data object lives in
+# the executable's own ``.bss`` rather than ``*UND*`` and is still a requirement
+# (``/usr/bin/ls`` carries eight, ``optarg`` and friends). ``DT_VERNEED`` names
+# all eight, which is the point of reading it instead.
+_VERNEED_HEADER = "Version References:"
+_DYNAMIC_HEADER = "Dynamic Section:"
+# Every string this module matches in objdump's output - both block headers
+# above and the "not a dynamic object" stderr - is a gettext msgid in bfd, and
+# bfd ships translations (fr, es, da, fi and a dozen more under
+# /usr/share/locale/*/LC_MESSAGES/bfd.mo). Unpinned, a French desktop reads
+# zero version nodes out of every artifact and this BLOCK-severity gate returns
+# an all-clear over a tree it never understood.
+#
+# LANGUAGE is pinned as well as LC_ALL because gettext consults it first, and
+# the documented condition for ignoring it is a locale of exactly "C" or
+# "POSIX" - which C.UTF-8 is not. glibc 2.42 does ignore LANGUAGE under
+# LC_ALL=C.UTF-8 (measured against binutils 2.46 for LANGUAGE=fr, fr_FR and
+# fr_FR:fr), so this entry is redundant there; it is kept because that
+# behaviour is an implementation detail of one libc and the documented rule
+# does not promise it. Blanking is the portable disarm: gettext treats an empty
+# LANGUAGE as unset. C.UTF-8 rather than C to match steps/qcom_common.py's
+# existing pin and keep a UTF-8-capable child.
+_READER_ENV: dict[str, str] = {"LC_ALL": "C.UTF-8", "LANGUAGE": ""}
+# ``GLIBC_PRIVATE`` carries no version digits and so is excluded by construction:
+# an unversioned node cannot be compared against a dotted ceiling.
 _GLIBC_NODE_RE = re.compile(r"\bGLIBC_(\d+(?:\.\d+)+)\b")
 _ELF_NEEDED_RE = re.compile(r"^\s*NEEDED\s+(\S+)\s*$", re.MULTILINE)
 _ELF_RUNPATH_RE = re.compile(r"^\s*(?:RUNPATH|RPATH)\s+(\S+)\s*$", re.MULTILINE)
+
+
+def _required_glibc_nodes(dump: str) -> frozenset[str]:
+    """Glibc version nodes named in ``dump``'s ``Version References:`` block.
+
+    The block runs to the first line that is non-empty and not indented. Parsed
+    on that indentation rather than on a column layout, because the entry lines
+    carry a hash, flags and an index whose widths ``objdump`` is free to change.
+    """
+    block: list[str] = []
+    inside = False
+    for line in dump.splitlines():
+        if line.startswith(_VERNEED_HEADER):
+            inside = True
+            continue
+        if inside:
+            if line and not line.startswith((" ", "\t")):
+                break
+            block.append(line)
+    return frozenset(_GLIBC_NODE_RE.findall("\n".join(block)))
+
 
 # Where a DT_NEEDED soname is looked for when no RUNPATH/RPATH names it. Not a
 # full loader emulation: enough to tell "resolves to a host library" from
@@ -2229,6 +2284,10 @@ class _NativeLeak:
 
 @dataclass(frozen=True)
 class _ElfInfo:
+    # False when the dump carried no dynamic section: a relocatable .o or a
+    # static binary. Such a file states no requirement at all, so it is not
+    # evidence about the tree either way - see _scan_native_tree.
+    dynamic: bool
     nodes: frozenset[str]
     needed: tuple[str, ...]
     runpaths: tuple[str, ...]
@@ -2258,18 +2317,29 @@ def _is_elf(path: Path) -> bool:
 
 
 def _read_elf(reader: str, path: Path) -> _ElfInfo | None:
-    """Read ``path``'s glibc version nodes, DT_NEEDED entries and RUNPATH.
+    """Read ``path``'s required glibc version nodes, DT_NEEDED entries and RUNPATH.
 
-    One reader invocation for all three (``-T`` prints the dynamic symbol table,
-    ``-p`` the dynamic section) so a tree of thousands of artifacts pays one
-    process each rather than two. None when the reader failed, which the caller
-    treats as unread rather than clean.
+    All three come out of ``-p`` alone: ``DT_VERNEED``, ``DT_NEEDED`` and
+    ``DT_RUNPATH`` are all in the dynamic section. ``-T`` used to be passed for
+    the version nodes and is not, now that requirements are read from
+    ``Version References:`` - dropping it also drops the dynamic symbol table,
+    which for ``libc.so.6`` is 240 KB of stdout per invocation against 6 KB for
+    ``-p``. None when the reader failed, which the caller treats as unread
+    rather than clean.
+
+    The reader runs under a pinned locale (``_READER_ENV``) because every string
+    matched below is a translated bfd message.
     """
     try:
         out = subprocess.run(
-            [reader, "-T", "-p", str(path)],
+            [reader, "-p", str(path)],
             capture_output=True,
             text=True,
+            # Every string parsed out of this dump is an English bfd msgid; see
+            # _READER_ENV. text=True decodes with the PARENT interpreter's
+            # encoding, so overriding the child's locale does not touch the
+            # errors="replace" contract below.
+            env={**os.environ, **_READER_ENV},
             # An artifact's .dynstr can hold bytes that are not valid UTF-8, and
             # a decode failure here raises UnicodeDecodeError - a ValueError,
             # which the except below does not catch - so one odd vendor blob
@@ -2283,18 +2353,20 @@ def _read_elf(reader: str, path: Path) -> _ElfInfo | None:
     except OSError, subprocess.TimeoutExpired:
         return None
     if out.returncode != 0:
-        # A relocatable object or a static binary has no dynamic section, so the
-        # reader exits non-zero with "not a dynamic object". That is emphatically
-        # not a read failure: such a file cannot reference a versioned dynamic
-        # symbol at all, so it contributes nothing rather than counting as
-        # unread. A real work tree holds thousands of .o files under
-        # <pn>/<pv>/build/, and counting them as unread would return an
-        # unconditional WARN on every healthy tree and bury the genuine findings.
+        # A relocatable object or a static binary has no dynamic section. Under
+        # ``-p`` alone this binutils exits 0 with an empty dump, which already
+        # yields the non-dynamic _ElfInfo below; the branch stays for a reader
+        # that still errors, because without it a work tree's thousands of .o
+        # files under <pn>/<pv>/build/ would all count as unread and return an
+        # unconditional WARN on every healthy tree. The stderr string is a bfd
+        # msgid and so is translated on a localised host, which _READER_ENV
+        # above pins away along with the block headers.
         if "not a dynamic object" in out.stderr:
-            return _ElfInfo(nodes=frozenset(), needed=(), runpaths=())
+            return _ElfInfo(dynamic=False, nodes=frozenset(), needed=(), runpaths=())
         return None
     return _ElfInfo(
-        nodes=frozenset(_GLIBC_NODE_RE.findall(out.stdout)),
+        dynamic=_DYNAMIC_HEADER in out.stdout,
+        nodes=_required_glibc_nodes(out.stdout),
         needed=tuple(dict.fromkeys(_ELF_NEEDED_RE.findall(out.stdout))),
         runpaths=tuple(_ELF_RUNPATH_RE.findall(out.stdout)),
     )
@@ -2369,7 +2441,8 @@ def _scan_native_tree(
 ) -> tuple[list[_NativeLeak], list[str], int]:
     """Walk ``work`` for ELF artifacts leaking a node above ``ceiling``.
 
-    Returns ``(leaks, unresolved, scanned)``. Each artifact contributes its own
+    Returns ``(leaks, unresolved, scanned)``, where ``scanned`` counts only the
+    artifacts that had a dynamic section to read. Each artifact contributes its own
     version nodes AND the nodes of every DT_NEEDED dependency that resolves
     outside ``sanctioned`` - a host library built against the host glibc carries
     the fault one edge away while the artifact's own nodes look clean, which is
@@ -2382,7 +2455,15 @@ def _scan_native_tree(
     unresolved: list[str] = []
     dep_cache: dict[Path, frozenset[str] | None] = {}
     scanned = 0
-    for root, _dirs, files in os.walk(work, followlinks=False):
+    for root, dirs, files in os.walk(work, followlinks=False):
+        # Sorted at the source rather than on the accumulated findings: the
+        # report truncates at _LEAK_REPORT_LIMIT, so readdir order would decide
+        # which findings get named. Sorting here also pins `scanned` traversal
+        # order and any accumulator added later. This yields a deterministic
+        # order, not lexicographic full-path order - os.walk is top-down, so a
+        # directory's own files precede everything in its subdirectories.
+        dirs.sort()
+        files.sort()
         for filename in files:
             artifact = Path(root) / filename
             # Symlinks are skipped rather than followed: the target is walked on
@@ -2392,6 +2473,14 @@ def _scan_native_tree(
             info = _read_elf(reader, artifact)
             if info is None:
                 unresolved.append(f"{artifact} could not be read by {reader}")
+                continue
+            if not info.dynamic:
+                # A relocatable .o or a static binary. It names no version node
+                # and no DT_NEEDED, so every loop below is empty for it - but
+                # counting it would let a tree holding nothing but leftover .o
+                # files clear the zero-evidence floor and PASS a BLOCK-severity
+                # gate on files that state no requirement at all. `scanned` has
+                # to mean "artifacts that could have carried a leak".
                 continue
             scanned += 1
             recipe = _producing_recipe(work, artifact)
@@ -2490,7 +2579,6 @@ def check_uninative_leak(cfg: BuildConfig) -> CheckResult:
             Severity.INFO,
             f"{work} does not exist, so nothing has been built to scan for glibc leaks yet",
         )
-
     reader = _elf_reader()
     if reader is None:
         return _skip(
@@ -2512,6 +2600,33 @@ def check_uninative_leak(cfg: BuildConfig) -> CheckResult:
 
     leaks, unresolved, scanned = _scan_native_tree(work, reader, ceiling, tuple(sanctioned))
 
+    if scanned == 0:
+        # Derived from what the walk read, not from what the config permits: a
+        # tree stripped by an rm_work inherited from the distro or from
+        # local.conf leaves bakar's own config flag False, and a PASS here is a
+        # BLOCK-severity all-clear over zero evidence. Zero is the only
+        # defensible floor - one dynamically linked artifact is evidence, and
+        # any higher threshold would be a guess about how large a work tree
+        # ought to be.
+        detail = (
+            f"{work} exists but holds no dynamically linked native artifact this scan could read, so it "
+            "can support no claim either way; the usual cause is rm_work, which deletes each recipe's work "
+            "directory as soon as that recipe finishes - run `bakar settings unset build.rm_work` (and "
+            "check whether the distro or local.conf inherits rm_work) for a build whose output this gate "
+            "has to vouch for"
+        )
+        if unresolved:
+            # rm_work leaves an empty tree, not an unreadable one, so a
+            # non-empty list here contradicts the reason above and has to travel
+            # with it. Folded into the SKIP rather than evaluated ahead of this
+            # guard so the zero-evidence verdict stays a SKIP: with nothing
+            # readable there is no scanned population for a WARN to be about.
+            detail += (
+                f"; separately, {len(unresolved)} path(s) under it could not be read at all, which rm_work "
+                "does not explain: " + _leak_report(unresolved)
+            )
+        return _skip(name, Severity.INFO, detail)
+
     if leaks:
         recipes = sorted({leak.recipe for leak in leaks})
         return _fail(
@@ -2531,7 +2646,8 @@ def check_uninative_leak(cfg: BuildConfig) -> CheckResult:
         return _fail(
             name,
             Severity.WARN,
-            f"scanned {scanned} native artifact(s) under {work} against ceiling {ceiling_text} with no leak "
+            f"scanned {scanned} dynamically linked native artifact(s) under {work} against ceiling "
+            f"{ceiling_text} with no leak "
             f"found, but {len(unresolved)} dependenc(y/ies) could not be checked: "
             + _leak_report(unresolved)
             + "; an unchecked dependency is not evidence of a clean tree",
@@ -2543,8 +2659,8 @@ def check_uninative_leak(cfg: BuildConfig) -> CheckResult:
     return _ok(
         name,
         Severity.BLOCK,
-        f"no glibc version node above the uninative ceiling {ceiling_text} in {scanned} native artifact(s) "
-        f"scanned under {work}",
+        f"no glibc version node above the uninative ceiling {ceiling_text} in {scanned} dynamically linked "
+        f"native artifact(s) scanned under {work}",
     )
 
 
