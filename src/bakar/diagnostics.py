@@ -2537,16 +2537,153 @@ def _producing_recipe(work: Path, artifact: Path) -> str:
     return relative.parts[0] if relative.parts else "unknown"
 
 
+# The native work tree is ``<tmpdir>/work/x86_64-linux`` by construction (see
+# check_uninative_leak), so anything this build produced there is an x86-64 ELF
+# under the SysV or Linux ABI. EM_X86_64 and ELFOSABI_NONE/ELFOSABI_LINUX out of
+# the ELF header, read directly rather than through objdump because the whole
+# question is one field and the dump is already parsed for other reasons.
+_HOST_ELF_MACHINE = 62
+_HOST_ELF_OSABI = frozenset({0, 3})
+
+# Why a declared dependency that resolved to nothing is not reported as
+# unchecked. Stable keys: they are counted per scan and named in the verdict.
+_UNCHECKED_PROVIDED = "provided elsewhere under the work tree"
+_UNCHECKED_FOREIGN = "declared by a non-host-platform artifact"
+_UNCHECKED_NO_GLIBC = "declared by an artifact stating no glibc requirement"
+
+
+def _host_platform_elf(path: Path) -> bool:
+    """True when ``path``'s ELF header names the platform this build runs on.
+
+    Fails open - an unreadable or truncated header returns True - because this
+    only ever decides whether to stay silent about a dependency, and silence
+    must never be the default when the evidence is missing.
+    """
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(20)
+    except OSError:
+        return True
+    if len(head) < 20:
+        return True
+    machine = int.from_bytes(head[18:20], "little" if head[5] == 1 else "big")
+    return head[7] in _HOST_ELF_OSABI and machine == _HOST_ELF_MACHINE
+
+
+def _provided_file_names(work: Path) -> frozenset[str]:
+    """Every file name present anywhere under ``work``.
+
+    Names only, never paths: the membership test this feeds is keyed on an
+    artifact-controlled soname, and a set lookup joins nothing onto a directory
+    and stats nothing, so it cannot reach a path the confinement in
+    ``_resolve_needed`` would refuse. That is the reason it is a name index
+    rather than a search - a "look for this soname under the tree" helper would
+    be a second unbounded join, reopening the door task 1.1 closed.
+
+    Costs one extra traversal of the work tree (measured 422k entries, a few
+    seconds) against the 36k reader invocations the scan itself spends. Built
+    before the walk rather than during it so a provider that sorts after its
+    consumer still counts, and so ``unresolved`` keeps its walk order.
+    """
+    names: set[str] = set()
+    for _root, _dirs, files in os.walk(work, followlinks=False):
+        names.update(files)
+    return frozenset(names)
+
+
+def _unchecked_reason(
+    artifact: Path,
+    soname: str,
+    info: _ElfInfo,
+    provided: frozenset[str],
+) -> str | None:
+    """Why a dependency that resolved to no file need not alarm the operator.
+
+    None means it must, and the caller reports it. This narrows the WARN
+    trigger; it never lowers the severity, and it never applies to a dependency
+    the confinement refused - an out-of-scope entry is the only operator-visible
+    output that confinement has, and the `shadow-native` shape design.md
+    Decision 6 describes would be swallowed by two of the predicates below if
+    they were ever allowed near it: it is staged under `sysroot-destdir/`, and
+    both sonames its foreign RUNPATH names exist inside its own work directory.
+
+    Every predicate is justified by a counted class from a sweep of a real
+    236-recipe tree (`build-qemuarm64`, 118,549 DT_NEEDED entries, 118,361
+    resolved, 188 not). Attributed to the first predicate that matches:
+
+    * ``_UNCHECKED_PROVIDED`` - 133. The build itself ships a file of that name
+      somewhere under the work tree; the RPATH just names a staging location it
+      is not at (`image/`, `sysroot-destdir/`, `.libs/`, a cleaned recipe
+      sysroot). Nothing is lost by staying quiet: the walk reads that provider
+      on its own, so the edge is covered - just not through this join.
+    * ``_UNCHECKED_FOREIGN`` - 36. The artifact is not an x86-64 Linux ELF
+      (NetBSD/FreeBSD/Solaris libc, Android liblog and friends, all fixtures
+      inside an upstream source tarball). It cannot load under the uninative
+      loader on any host, so what it declares says nothing about the ceiling.
+    * ``_UNCHECKED_NO_GLIBC`` - 14. The artifact requires no glibc version node
+      at all, so it is not linked against the glibc this ceiling is about.
+
+    Five of the 188 keep raising WARN, and should. Three reach this function and
+    are reported as resolving to no file: `libselinux.so.1` and `libcallback1.so`
+    are carried by neither the host nor the build, which is exactly the "looked
+    for it, found nothing" fact the branch exists to state. Two never reach it -
+    cmake-native's big-endian `RunCMake/file-RPATH` fixtures, whose `/sample/rpath`
+    RUNPATH the confinement refuses, so they are reported out of scope instead.
+    They are inside the 188 (before confinement they resolved to no file, like
+    the rest), just attributed elsewhere: a classification that does not model
+    the refusal will score them under ``_UNCHECKED_FOREIGN`` and read 38 there
+    and no separate term, which sums to the same total.
+
+    133 + 36 + 14 + 3 + 2 = 188.
+
+    Distinct and NOT in that sum: the foreign-RPATH edges design.md Decision 6
+    accepts as the confinement's cost. Those resolve today, so confinement adds
+    them as new out-of-scope reports rather than reclassifying an existing miss.
+    On this host they number ZERO, not the four Decision 6 measured -
+    `shadow-native`'s `libsubid.so.5` does carry an absolute RUNPATH into a
+    foreign build directory, but refusal is per candidate directory, so
+    `libattr.so.1` and `libbsd.so.0` resolve under `/usr/lib` on the next
+    candidate and never become out-of-scope reports at all. Expect that count to
+    move with what the host has installed.
+
+    A later reader can re-run the classification against a fresh tree; a large
+    shift in the residue is drift or a new defect rather than noise.
+
+    Deliberately NOT a predicate on where the artifact sits in the work tree:
+    excluding `image/`, `build/` and `sysroot-destdir/` covers all 188 and looks
+    justified, but essentially every artifact in a native work tree lives under
+    one of those, so it would silence the channel permanently.
+    """
+    if os.path.basename(soname) in provided:
+        return _UNCHECKED_PROVIDED
+    if not _host_platform_elf(artifact):
+        return _UNCHECKED_FOREIGN
+    if not info.nodes:
+        return _UNCHECKED_NO_GLIBC
+    return None
+
+
+def _unchecked_note(excluded: dict[str, int]) -> str:
+    """Name what the scan chose not to report, so the narrowing stays visible."""
+    if not excluded:
+        return ""
+    parts = ", ".join(f"{count} {reason}" for reason, count in sorted(excluded.items()))
+    total = sum(excluded.values())
+    return f"; {total} further declared dependenc(y/ies) resolved to no file and are not counted as unchecked: {parts}"
+
+
 def _scan_native_tree(
     work: Path,
     reader: str,
     ceiling: tuple[int, ...],
     sanctioned: tuple[Path, ...],
-) -> tuple[list[_NativeLeak], list[str], int]:
+) -> tuple[list[_NativeLeak], list[str], int, dict[str, int]]:
     """Walk ``work`` for ELF artifacts leaking a node above ``ceiling``.
 
-    Returns ``(leaks, unresolved, scanned)``, where ``scanned`` counts only the
-    artifacts that had a dynamic section to read. Each artifact contributes its own
+    Returns ``(leaks, unresolved, scanned, excluded)``, where ``scanned`` counts
+    only the artifacts that had a dynamic section to read and ``excluded`` counts,
+    per reason, the dependencies that resolved to nothing but that
+    ``_unchecked_reason`` accounts for. Each artifact contributes its own
     version nodes AND the nodes of every DT_NEEDED dependency that resolves
     outside ``sanctioned`` - a host library built against the host glibc carries
     the fault one edge away while the artifact's own nodes look clean, which is
@@ -2557,8 +2694,10 @@ def _scan_native_tree(
     """
     leaks: list[_NativeLeak] = []
     unresolved: list[str] = []
+    excluded: dict[str, int] = {}
     dep_cache: dict[Path, frozenset[str] | None] = {}
     scanned = 0
+    provided = _provided_file_names(work)
     # The only places a declared dependency may resolve to. Fixed before the
     # walk and never derived from an artifact: a root read out of an artifact's
     # own RUNPATH, or matched by work-tree path shape, would be a root any local
@@ -2608,6 +2747,13 @@ def _scan_native_tree(
                             f"which lands outside the scanned roots and is out of scope"
                         )
                     else:
+                        # Only ever consulted for an entry the scan looked for
+                        # and did not find. A refused one took the branch above
+                        # and is never offered here.
+                        reason = _unchecked_reason(artifact, soname, info, provided)
+                        if reason is not None:
+                            excluded[reason] = excluded.get(reason, 0) + 1
+                            continue
                         unresolved.append(
                             f"{_neutralized(artifact)} (recipe {_neutralized(recipe)}) "
                             f"declares {_neutralized(soname)}, which resolves to no file"
@@ -2639,7 +2785,7 @@ def _scan_native_tree(
                     )
                     for node in _nodes_above(dep_nodes, ceiling)
                 )
-    return leaks, unresolved, scanned
+    return leaks, unresolved, scanned, excluded
 
 
 def _leak_report(items: list[str]) -> str:
@@ -2722,7 +2868,7 @@ def check_uninative_leak(cfg: BuildConfig) -> CheckResult:
     if gcc is not None:
         sanctioned.append(gcc.parents[2])
 
-    leaks, unresolved, scanned = _scan_native_tree(work, reader, ceiling, tuple(sanctioned))
+    leaks, unresolved, scanned, excluded = _scan_native_tree(work, reader, ceiling, tuple(sanctioned))
 
     if scanned == 0:
         # Derived from what the walk read, not from what the config permits: a
@@ -2759,7 +2905,11 @@ def check_uninative_leak(cfg: BuildConfig) -> CheckResult:
             f"{len(leaks)} glibc version node(s) above the uninative ceiling {ceiling_text} in {work}: "
             + _leak_report([leak.describe() for leak in leaks])
             + "; such artifacts cannot load under the uninative loader, and any of their output already "
-            "published to a shared sstate mirror carries the fault to every node that reuses it",
+            "published to a shared sstate mirror carries the fault to every node that reuses it"
+            # Every verdict the walk can reach carries the record, so narrowing
+            # the warning never costs the operator the fact that an edge went
+            # unfollowed - least of all on the verdict they will act on.
+             + _unchecked_note(excluded),
             fix_hint=(
                 "Discard the cached output of the affected recipe(s) with 'bitbake -c cleansstate "
                 # Recipe names are work-tree path components, so the fix hint is
@@ -2777,7 +2927,8 @@ def check_uninative_leak(cfg: BuildConfig) -> CheckResult:
             f"{ceiling_text} with no leak "
             f"found, but {len(unresolved)} dependenc(y/ies) could not be checked: "
             + _leak_report(unresolved)
-            + "; an unchecked dependency is not evidence of a clean tree",
+            + "; an unchecked dependency is not evidence of a clean tree"
+            + _unchecked_note(excluded),
             fix_hint=(
                 "Inspect the named dependencies by hand; a host library the loader cannot find here is also "
                 "one bitbake's native tasks may not find."
@@ -2787,7 +2938,7 @@ def check_uninative_leak(cfg: BuildConfig) -> CheckResult:
         name,
         Severity.BLOCK,
         f"no glibc version node above the uninative ceiling {ceiling_text} in {scanned} dynamically linked "
-        f"native artifact(s) scanned under {work}",
+        f"native artifact(s) scanned under {work}" + _unchecked_note(excluded),
     )
 
 

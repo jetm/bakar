@@ -173,6 +173,25 @@ def _place(work: Path, recipe: str, source: Path) -> Path:
     return target
 
 
+def _foreign_elf_header() -> bytes:
+    """A 20-byte ELF header naming a platform this host does not run.
+
+    ``ELFOSABI_NETBSD`` (2) and ``EM_SPARCV9`` (43), which is what the upstream
+    test fixtures the scan trips over look like. Only the two fields
+    ``_host_platform_elf`` reads are meaningful; the rest is the fixed prologue
+    it needs to reach them and the magic ``_is_elf`` matches on.
+    """
+    header = bytearray(20)
+    header[0:4] = b"\x7fELF"
+    header[4] = 2  # ELFCLASS64
+    header[5] = 1  # ELFDATA2LSB
+    header[6] = 1  # EV_CURRENT
+    header[7] = 2  # ELFOSABI_NETBSD
+    header[16:18] = (2).to_bytes(2, "little")  # ET_EXEC
+    header[18:20] = (43).to_bytes(2, "little")  # EM_SPARCV9
+    return bytes(header)
+
+
 def _dotted(version: tuple[int, ...]) -> str:
     """Render a parsed version tuple back into the fragment's dotted form."""
     return ".".join(str(part) for part in version)
@@ -1008,11 +1027,19 @@ def test_symlink_out_of_a_permitted_root_is_refused(tmp_path: Path) -> None:
     assert refused is True
 
 
-def _crafted_reader(needed: tuple[str, ...]) -> object:
-    """A ``_read_elf`` stand-in declaring ``needed`` for every artifact."""
+def _crafted_reader(needed: tuple[str, ...], nodes: frozenset[str] = frozenset({"2.2.5"})) -> object:
+    """A ``_read_elf`` stand-in declaring ``needed`` for every artifact.
+
+    The default node set is not decoration. A real dynamically linked x86-64
+    artifact requires at least one glibc version node, and ``_unchecked_reason``
+    treats an artifact requiring none as unable to bear on the ceiling - so a
+    stand-in declaring an empty node set would silently opt every test using it
+    out of the unresolved branch it is trying to exercise. ``2.2.5`` is the
+    oldest node glibc emits and sits below every ceiling used here.
+    """
 
     def fake(reader: str, path: Path) -> diagnostics._ElfInfo:
-        return diagnostics._ElfInfo(dynamic=True, nodes=frozenset(), needed=needed, runpaths=())
+        return diagnostics._ElfInfo(dynamic=True, nodes=nodes, needed=needed, runpaths=())
 
     return fake
 
@@ -1309,3 +1336,230 @@ def test_a_tree_of_only_fifos_skips_rather_than_passing(monkeypatch: pytest.Monk
     assert result.status is Status.SKIP
     assert result.status is not Status.PASS
     assert "holds no dynamically linked native artifact this scan could read" in result.message
+
+
+# --- the narrowed unresolved warning ----------------------------------------
+#
+# Measured on a real 236-recipe tree: 118,549 DT_NEEDED entries, 118,361
+# resolved, 188 not - so the WARN branch fired on every healthy build and the
+# channel carried no information. ``_unchecked_reason`` excludes 183 of the 188
+# through three named predicates, leaving 5 to raise WARN: 3 reported as
+# resolving to no file, and 2 the confinement refuses and reports out of scope.
+# The sweep and its classification live in the change's design, and the counts
+# are restated where the predicates are defined so a later reader can re-run
+# them.
+#
+# The predicates are what these tests pin. The two things that must NOT happen
+# are that a genuinely missing library goes quiet, and that an entry the
+# confinement refused is swallowed - the second is not hypothetical, because the
+# `shadow-native` shape design.md Decision 6 describes matches two predicates on
+# its face.
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_a_dependency_matching_no_predicate_still_warns(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The branch is narrowed, not suppressed: a real miss still reaches the operator."""
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    _place(_work_tree(cfg), "zlib-native", _CLEAN)
+    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libbakar-absent.so.9",)))
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.WARN
+    assert "declares libbakar-absent.so.9, which resolves to no file" in result.message
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_a_soname_the_build_provides_elsewhere_is_not_unchecked(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The RPATH names a staging location; the walk reads the provider anyway."""
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    work = _work_tree(cfg)
+    _place(work, "readline-native", _CLEAN)
+    provider = work / "ncurses-native" / "1.0" / "recipe-sysroot-native" / "usr" / "lib"
+    provider.mkdir(parents=True)
+    (provider / "libncurses.so.5").write_bytes(b"placed by a sibling native recipe")
+    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libncurses.so.5",)))
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert result.status is Status.PASS
+    assert "libncurses.so.5" not in result.message
+    assert "1 provided elsewhere under the work tree" in result.message
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_a_foreign_platform_artifact_is_not_unchecked(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A NetBSD fixture in an upstream source tree cannot load under any uninative loader."""
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    fixture_dir = _work_tree(cfg) / "rust-native" / "1.0" / "sources" / "test" / "Inputs"
+    fixture_dir.mkdir(parents=True)
+    (fixture_dir / "hello-netbsd").write_bytes(_foreign_elf_header())
+    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libc.so.12",)))
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert result.status is Status.PASS
+    assert "libc.so.12" not in result.message
+    assert "1 declared by a non-host-platform artifact" in result.message
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_an_artifact_requiring_no_glibc_node_is_not_unchecked(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Nothing it declares can bear on a glibc ceiling it states no requirement against."""
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    _place(_work_tree(cfg), "zlib-native", _CLEAN)
+    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libbakar-absent.so.9",), nodes=frozenset()))
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert result.status is Status.PASS
+    assert "1 declared by an artifact stating no glibc requirement" in result.message
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_an_out_of_scope_dependency_survives_every_predicate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The measured `shadow-native` shape: refused by confinement, and both predicates fit.
+
+    ``libsubid.so.5`` is staged under ``sysroot-destdir/`` and BOTH sonames its
+    absolute foreign RUNPATH refuses exist inside shadow-native's own work
+    directory - so a location rule and the provided-elsewhere rule each swallow
+    exactly the four edges that are the confinement's only operator-visible
+    output. They must not: the rule only ever sees an entry the scan looked for
+    and did not find.
+    """
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    staged = _work_tree(cfg) / "shadow-native" / "4.18" / "sysroot-destdir" / "usr" / "lib"
+    staged.mkdir(parents=True)
+    shutil.copy2(_CLEAN, staged / "libsubid.so.5")
+    own = _work_tree(cfg) / "shadow-native" / "4.18" / "image" / "usr" / "lib"
+    own.mkdir(parents=True)
+    for soname in ("libattr.so.1", "libbsd.so.0"):
+        (own / soname).write_bytes(b"shadow-native's own copy")
+    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(
+        diagnostics,
+        "_read_elf",
+        lambda reader, path: diagnostics._ElfInfo(
+            dynamic=True,
+            nodes=frozenset({"2.2.5"}),
+            needed=("libattr.so.1", "libbsd.so.0"),
+            runpaths=("/etc",),
+        ),
+    )
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.WARN
+    assert "declares libattr.so.1, which lands outside the scanned roots and is out of scope" in result.message
+    assert "declares libbsd.so.0, which lands outside the scanned roots and is out of scope" in result.message
+    assert "not counted as unchecked" not in result.message
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_an_excluded_dependency_is_still_recorded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Narrowing the warning must not hide the fact that an edge went unfollowed."""
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    _place(_work_tree(cfg), "zlib-native", _CLEAN)
+    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(
+        diagnostics,
+        "_read_elf",
+        _crafted_reader(("libbakar-absent.so.9", "libbakar-other.so.1"), nodes=frozenset()),
+    )
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert "2 further declared dependenc(y/ies) resolved to no file and are not counted as unchecked" in result.message
+
+
+@pytest.mark.unit
+def test_the_predicates_never_reach_the_filesystem_with_a_crafted_soname(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, is_file_spy: list[Path]
+) -> None:
+    """The provided-elsewhere test is a name lookup, so it joins and stats nothing.
+
+    A "search the recipe's tree for this soname" helper would have been a second
+    unbounded join on an artifact-controlled string, reopening the door the
+    confinement closes. The spy is what proves this one is not.
+    """
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    _place(_work_tree(cfg), "zlib-native", _CLEAN)
+    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("/etc/shadow", "../../../etc/passwd")))
+
+    diagnostics.check_uninative_leak(cfg)
+
+    escapees = [path for path in is_file_spy if not Path(os.path.normpath(path)).is_relative_to(tmp_path)]
+    assert escapees == [], escapees
+
+
+@pytest.mark.unit
+def test_host_platform_elf_reads_the_machine_and_abi_fields(tmp_path: Path) -> None:
+    """A crafted header is legitimate here: this helper reads two header fields.
+
+    The module's no-synthesised-ELF rule is about proving a reader mock agrees
+    with itself, which needs a whole dynamic section. ``_host_platform_elf``
+    reads ``e_ident[EI_OSABI]`` and ``e_machine`` and nothing else, and no
+    toolchain on this host can be asked to emit a NetBSD SPARC binary.
+    """
+    foreign = tmp_path / "foreign"
+    foreign.write_bytes(_foreign_elf_header())
+
+    assert diagnostics._host_platform_elf(foreign) is False
+    assert diagnostics._host_platform_elf(_CLEAN) is True
+
+
+@pytest.mark.unit
+def test_host_platform_elf_fails_open_on_an_unreadable_header(tmp_path: Path) -> None:
+    """Missing evidence must never be grounds to stay silent about a dependency."""
+    truncated = tmp_path / "truncated"
+    truncated.write_bytes(b"\x7fELF")
+
+    assert diagnostics._host_platform_elf(truncated) is True
+    assert diagnostics._host_platform_elf(tmp_path / "absent") is True
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_the_block_verdict_records_the_exclusion_too(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A leak verdict is the one the operator acts on, so it carries the record too."""
+    _patch_host(monkeypatch, tmp_path, max_glibc="2.0")
+    cfg = _cfg(tmp_path)
+    work = _work_tree(cfg)
+    _place(work, "zlib-native", _CLEAN)
+    provider = work / "ncurses-native" / "1.0" / "recipe-sysroot-native" / "usr" / "lib"
+    provider.mkdir(parents=True)
+    (provider / "libncurses.so.5").write_bytes(b"placed by a sibling native recipe")
+    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(
+        diagnostics,
+        "_read_elf",
+        _crafted_reader(("libncurses.so.5",), nodes=frozenset({"2.34"})),
+    )
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert "1 provided elsewhere under the work tree" in result.message
