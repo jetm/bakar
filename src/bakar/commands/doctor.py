@@ -40,6 +40,13 @@ def doctor(
         bool,
         typer.Option("--json", "-j", help="Output results as JSON instead of formatted table."),
     ] = False,
+    post_build: Annotated[
+        bool,
+        typer.Option(
+            "--post-build",
+            help="Also run checks that inspect a finished build's native tree; off by default since they need one.",
+        ),
+    ] = False,
 ) -> None:
     """Run every diagnostic check and exit non-zero on BLOCK failures."""
     setup_dir = _bbsetup_workspace(workspace) if kas_yaml is None and manifest is None else None
@@ -50,7 +57,7 @@ def doctor(
             user_config=_state._USER_CONFIG,
         )
         cfg = apply_mold_overrides(cfg)
-        results = run_all(cfg, None)
+        results = run_all(cfg, None, post_build=post_build)
         if output_json:
             _print_json(results)
         else:
@@ -68,7 +75,7 @@ def doctor(
         user_config=_state._USER_CONFIG,
     )
     cfg = apply_mold_overrides(cfg)
-    results = run_all(cfg, bsp)
+    results = run_all(cfg, bsp, post_build=post_build)
     if output_json:
         _print_json(results)
     else:
