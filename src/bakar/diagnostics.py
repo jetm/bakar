@@ -2266,6 +2266,37 @@ _HOST_LIB_DIRS: tuple[str, ...] = ("/usr/lib", "/usr/lib64", "/lib", "/lib64", "
 # so a systemically broken tree reports a readable verdict instead of megabytes.
 _LEAK_REPORT_LIMIT = 10
 
+# C0 (including ESC), DEL and C1. A soname is matched with ``\S+``, which admits
+# ESC, so an artifact can carry a full OSC sequence through the reader intact.
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+# Long enough for a real work-tree path (measured around 120 characters) with
+# room to spare, short enough that a crafted name cannot flood the report.
+_ARTIFACT_TEXT_LIMIT = 240
+
+
+def _neutralized(value: object) -> str:
+    """Render an artifact-derived value safe to put in a ``CheckResult`` message.
+
+    Everything the leak scan reports - the artifact path, the recipe name, the
+    declared soname, the path a dependency resolved to - is read out of a file in
+    the work tree, and ``_print_diagnosis`` hands the message to a markup-enabled
+    Rich table. So a directory named ``foo[/]bar`` raises ``MarkupError`` and
+    destroys the whole doctor report rather than one row, ``[on red blink]``
+    forges report formatting, and an ESC in a soname rewrites the operator's
+    terminal title. Three defences, in this order: strip the control characters,
+    bound the length, then escape markup - escaping last so the backslashes it
+    inserts are neither stripped nor counted against the bound.
+
+    Applied where a message is BUILT, never inside ``_read_elf``: containment
+    tests, the ``dep_cache`` key and node comparisons all have to keep comparing
+    the bytes the artifact actually declared.
+    """
+    text = _CONTROL_RE.sub("", str(value))
+    if len(text) > _ARTIFACT_TEXT_LIMIT:
+        text = text[:_ARTIFACT_TEXT_LIMIT] + "..."
+    return escape(text)
+
 
 @dataclass(frozen=True)
 class _NativeLeak:
@@ -2275,11 +2306,16 @@ class _NativeLeak:
     recipe: str
     node: str
     # "the artifact itself", or "dependency <path>" - the operator's first
-    # question is whether the recipe emitted this or merely linked it.
+    # question is whether the recipe emitted this or merely linked it. Already
+    # neutralized component-wise where it is built, so describe() must not
+    # neutralize it again and double-escape.
     source: str
 
     def describe(self) -> str:
-        return f"{self.artifact} (recipe {self.recipe}) reaches GLIBC_{self.node} via {self.source}"
+        return (
+            f"{_neutralized(self.artifact)} (recipe {_neutralized(self.recipe)}) "
+            f"reaches GLIBC_{_neutralized(self.node)} via {self.source}"
+        )
 
 
 @dataclass(frozen=True)
@@ -2535,7 +2571,7 @@ def _scan_native_tree(
                 continue
             info = _read_elf(reader, artifact)
             if info is None:
-                unresolved.append(f"{artifact} could not be read by {reader}")
+                unresolved.append(f"{_neutralized(artifact)} could not be read by {reader}")
                 continue
             if not info.dynamic:
                 # A relocatable .o or a static binary. It names no version node
@@ -2557,11 +2593,15 @@ def _scan_native_tree(
                 if dependency is None:
                     if refused:
                         unresolved.append(
-                            f"{artifact} (recipe {recipe}) declares {soname}, "
+                            f"{_neutralized(artifact)} (recipe {_neutralized(recipe)}) "
+                            f"declares {_neutralized(soname)}, "
                             f"which lands outside the scanned roots and is out of scope"
                         )
                     else:
-                        unresolved.append(f"{artifact} (recipe {recipe}) declares {soname}, which resolves to no file")
+                        unresolved.append(
+                            f"{_neutralized(artifact)} (recipe {_neutralized(recipe)}) "
+                            f"declares {_neutralized(soname)}, which resolves to no file"
+                        )
                     continue
                 if _within_any(dependency, sanctioned):
                     continue
@@ -2572,7 +2612,9 @@ def _scan_native_tree(
                 dep_nodes = dep_cache[resolved]
                 if dep_nodes is None:
                     unresolved.append(
-                        f"{artifact} (recipe {recipe}) declares {soname} at {resolved}, which {reader} could not read"
+                        f"{_neutralized(artifact)} (recipe {_neutralized(recipe)}) "
+                        f"declares {_neutralized(soname)} at {_neutralized(resolved)}, "
+                        f"which {reader} could not read"
                     )
                     continue
                 leaks.extend(
@@ -2580,7 +2622,10 @@ def _scan_native_tree(
                         artifact=artifact,
                         recipe=recipe,
                         node=node,
-                        source=f"dependency {soname} at {resolved}",
+                        # Neutralized per component here rather than in
+                        # describe(), so the bound applies to each artifact-derived
+                        # part instead of to the sentence as a whole.
+                        source=f"dependency {_neutralized(soname)} at {_neutralized(resolved)}",
                     )
                     for node in _nodes_above(dep_nodes, ceiling)
                 )
@@ -2707,7 +2752,10 @@ def check_uninative_leak(cfg: BuildConfig) -> CheckResult:
             "published to a shared sstate mirror carries the fault to every node that reuses it",
             fix_hint=(
                 "Discard the cached output of the affected recipe(s) with 'bitbake -c cleansstate "
-                + " ".join(recipes)
+                # Recipe names are work-tree path components, so the fix hint is
+                # artifact-derived too - and _print_diagnosis renders it through
+                # markup just like the message.
+                + " ".join(_neutralized(recipe) for recipe in recipes)
                 + "', then find why the compile escaped the buildtools toolchain before rebuilding."
             ),
         )

@@ -32,6 +32,8 @@ no test here can reach the operator's real caches.
 
 from __future__ import annotations
 
+import inspect
+import io
 import os
 import re
 import shutil
@@ -40,13 +42,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from rich.markup import escape
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
 from bakar import diagnostics
 from bakar.config import BuildConfig
-from bakar.diagnostics import _VERNEED_HEADER, BuildtoolsToolchain, Severity, Status
+from bakar.diagnostics import _VERNEED_HEADER, BuildtoolsToolchain, CheckResult, Severity, Status
 
 _OBJDUMP = shutil.which("objdump")
 requires_objdump = pytest.mark.skipif(_OBJDUMP is None, reason="the scan needs objdump to read ELF fixtures")
@@ -1084,3 +1087,164 @@ def test_a_refused_candidate_never_reaches_the_filesystem(monkeypatch: pytest.Mo
     assert resolved is None
     assert refused is True
     assert seen == [], "a lexically refused candidate was resolved against the filesystem"
+
+
+# --- neutralization of artifact-derived report text -------------------------
+#
+# Same reasoning as the block above: none of this is about ELF bytes. A crafted
+# soname or a crafted directory name is reached by monkeypatching ``_read_elf``
+# and by naming real directories, neither of which asks a toolchain to emit
+# something no toolchain emits.
+
+
+def _render(result: CheckResult) -> str:
+    """Render one CheckResult through the real doctor table and return the text.
+
+    Goes through ``_print_diagnosis`` rather than a hand-built table because the
+    whole point is that ``r.message`` lands in a markup-enabled cell there. A
+    local imitation would keep passing if that ever changed.
+    """
+    from rich.console import Console
+
+    from bakar.commands._helpers import _print_diagnosis
+
+    buffer = io.StringIO()
+    console = Console(file=buffer, width=400, force_terminal=False)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("bakar.commands.console", console)
+        _print_diagnosis([result])
+    return buffer.getvalue()
+
+
+@pytest.mark.unit
+def test_neutralized_escapes_markup() -> None:
+    """A closing tag must survive as text, not as markup Rich tries to close."""
+    assert diagnostics._neutralized("foo[/]bar") == r"foo\[/]bar"
+    assert diagnostics._neutralized("[on red blink]") == r"\[on red blink]"
+
+
+@pytest.mark.unit
+def test_neutralized_strips_control_characters() -> None:
+    """ESC, C0 and C1 go, because ``\\S+`` matches them and OSC-0 retitles a terminal."""
+    assert diagnostics._neutralized("lib\x1b]0;pwned\x07z.so") == "lib]0;pwnedz.so"
+    assert diagnostics._neutralized("a\x00b\x7fc\x9fd") == "abcd"
+
+
+@pytest.mark.unit
+def test_neutralized_bounds_length() -> None:
+    """One crafted name must not flood a report the operator has to read."""
+    rendered = diagnostics._neutralized("x" * 5000)
+
+    assert len(rendered) == diagnostics._ARTIFACT_TEXT_LIMIT + len("...")
+    assert rendered.endswith("...")
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_crafted_soname_does_not_abort_the_report(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``[/]`` in a declared soname renders literally instead of raising MarkupError.
+
+    Unescaped it raises ``rich.errors.MarkupError: closing tag '[/]' has nothing
+    to close`` out of ``_print_diagnosis``, which discards the entire doctor
+    report - every finding already made - rather than one row.
+    """
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    _place(_work_tree(cfg), "zlib-native", _CLEAN)
+    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("lib[/]z.so.1\x1b]0;pwned\x07",)))
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert "\x1b" not in result.message
+    assert r"lib\[/]z.so.1]0;pwned" in result.message
+    assert "lib[/]z.so.1" in _render(result)
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_crafted_artifact_path_does_not_abort_the_report(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The artifact path is artifact-derived too, and spans directory names.
+
+    A single component cannot hold a ``/``, so the ``[/]`` a crafted tree needs
+    is spelled across two of them - which is why escaping the recipe name alone
+    would not be enough.
+    """
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    target_dir = _work_tree(cfg) / "zlib[" / "]native" / "1.0"
+    target_dir.mkdir(parents=True)
+    shutil.copy2(_CLEAN, target_dir / _CLEAN.name)
+    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libbakar-absent.so.9",)))
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert r"zlib\[/]native" in result.message
+    assert "zlib[/]native" in _render(result)
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_resolved_dependency_path_is_neutralized(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The path a dependency resolved to is artifact-derived through the join."""
+    _patch_host(monkeypatch, tmp_path, max_glibc="2.0")
+    cfg = _cfg(tmp_path)
+    work = _work_tree(cfg)
+    artifact = _place(work, "zlib-native", _CLEAN)
+    dep_dir = work / "dep[" / "]lib"
+    dep_dir.mkdir(parents=True)
+    dependency = dep_dir / "libz.so.1"
+    dependency.write_bytes(b"\x7fELF")
+
+    def fake(reader: str, path: Path) -> diagnostics._ElfInfo:
+        if path == artifact:
+            return diagnostics._ElfInfo(dynamic=True, nodes=frozenset(), needed=(str(dependency),), runpaths=())
+        return diagnostics._ElfInfo(dynamic=True, nodes=frozenset({"2.99"}), needed=(), runpaths=())
+
+    monkeypatch.setattr(diagnostics, "_read_elf", fake)
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert f"dependency {escape(str(dependency))} at {escape(str(dependency))}" in result.message
+    assert str(dependency) not in result.message
+    assert "dep[/]lib" in _render(result)
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_recipe_name_reaches_message_and_fix_hint_neutralized(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The recipe name is a work-tree path component, so it is artifact-derived.
+
+    It reaches the operator twice - inside the message and inside the
+    remediation hint - and ``_print_diagnosis`` renders both through markup.
+    """
+    _patch_host(monkeypatch, tmp_path, max_glibc="2.0")
+    cfg = _cfg(tmp_path)
+    _place(_work_tree(cfg), "[bold red]zlib-native", _CLEAN)
+    monkeypatch.setattr(
+        diagnostics,
+        "_read_elf",
+        lambda reader, path: diagnostics._ElfInfo(dynamic=True, nodes=frozenset({"2.99"}), needed=(), runpaths=()),
+    )
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert result.fix_hint is not None
+    assert r"(recipe \[bold red]zlib-native)" in result.message
+    assert r"cleansstate \[bold red]zlib-native" in result.fix_hint
+    rendered = _render(result)
+    assert "(recipe [bold red]zlib-native)" in rendered
+    assert "cleansstate [bold red]zlib-native" in rendered
+
+
+@pytest.mark.unit
+def test_neutralization_does_not_reach_the_values_the_scan_compares() -> None:
+    """Only what is printed is neutralized; what is reasoned about stays byte-exact.
+
+    ``_read_elf`` returning escaped text would change the ``dep_cache`` key, the
+    containment tests and the node comparisons - the scan would be checking a
+    string no artifact declared.
+    """
+    assert "_neutralized" not in inspect.getsource(diagnostics._read_elf)
+    assert "_neutralized" not in inspect.getsource(diagnostics._resolve_needed)
