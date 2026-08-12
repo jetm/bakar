@@ -2139,6 +2139,347 @@ def check_uninative_cluster_consistency(cfg: BuildConfig) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# post-build native artifact leak scan (uninative-leak-scan)
+# ---------------------------------------------------------------------------
+
+# Version nodes are named ``GLIBC_<maj>.<min>`` in both the dynamic symbol table
+# and the version reference/definition sections, so one pattern covers whichever
+# section the reader prints them in.
+_GLIBC_NODE_RE = re.compile(r"\bGLIBC_(\d+(?:\.\d+)+)\b")
+_ELF_NEEDED_RE = re.compile(r"^\s*NEEDED\s+(\S+)\s*$", re.MULTILINE)
+_ELF_RUNPATH_RE = re.compile(r"^\s*(?:RUNPATH|RPATH)\s+(\S+)\s*$", re.MULTILINE)
+
+# Where a DT_NEEDED soname is looked for when no RUNPATH/RPATH names it. Not a
+# full loader emulation: enough to tell "resolves to a host library" from
+# "resolves to nothing", which is the only distinction the scan makes.
+_HOST_LIB_DIRS: tuple[str, ...] = ("/usr/lib", "/usr/lib64", "/lib", "/lib64", "/usr/local/lib")
+
+# Findings are enumerated in the message; past this many the tail is summarized
+# so a systemically broken tree reports a readable verdict instead of megabytes.
+_LEAK_REPORT_LIMIT = 10
+
+
+@dataclass(frozen=True)
+class _NativeLeak:
+    """One version node above the ceiling, and where it was reached from."""
+
+    artifact: Path
+    recipe: str
+    node: str
+    # "the artifact itself", or "dependency <path>" - the operator's first
+    # question is whether the recipe emitted this or merely linked it.
+    source: str
+
+    def describe(self) -> str:
+        return f"{self.artifact} (recipe {self.recipe}) reaches GLIBC_{self.node} via {self.source}"
+
+
+@dataclass(frozen=True)
+class _ElfInfo:
+    nodes: frozenset[str]
+    needed: tuple[str, ...]
+    runpaths: tuple[str, ...]
+
+
+def _elf_reader() -> str | None:
+    """Resolve the ELF reader the scan needs, or None when none is installed.
+
+    Its own function so the check can report a SKIP naming the missing tool
+    rather than PASSing a tree it never read.
+    """
+    return shutil.which("objdump")
+
+
+def _is_elf(path: Path) -> bool:
+    """True when ``path`` starts with the ELF magic.
+
+    Reading four bytes beats shelling out to ``file`` per path: a native work
+    tree holds thousands of scripts, headers and stamps, and only the ELF ones
+    are worth an ``objdump`` process.
+    """
+    try:
+        with path.open("rb") as handle:
+            return handle.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
+def _read_elf(reader: str, path: Path) -> _ElfInfo | None:
+    """Read ``path``'s glibc version nodes, DT_NEEDED entries and RUNPATH.
+
+    One reader invocation for all three (``-T`` prints the dynamic symbol table,
+    ``-p`` the dynamic section) so a tree of thousands of artifacts pays one
+    process each rather than two. None when the reader failed, which the caller
+    treats as unread rather than clean.
+    """
+    try:
+        out = subprocess.run(
+            [reader, "-T", "-p", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except OSError, subprocess.TimeoutExpired:
+        return None
+    if out.returncode != 0:
+        return None
+    return _ElfInfo(
+        nodes=frozenset(_GLIBC_NODE_RE.findall(out.stdout)),
+        needed=tuple(dict.fromkeys(_ELF_NEEDED_RE.findall(out.stdout))),
+        runpaths=tuple(_ELF_RUNPATH_RE.findall(out.stdout)),
+    )
+
+
+def _runpath_dirs(info: _ElfInfo, artifact: Path) -> list[str]:
+    """Expand an artifact's RUNPATH/RPATH into candidate directories.
+
+    ``$ORIGIN`` is expanded because uninative-relocated native binaries carry
+    origin-relative RPATHs into their recipe sysroot; leaving it literal would
+    make every such dependency look unresolvable.
+    """
+    dirs: list[str] = []
+    for entry in info.runpaths:
+        for part in entry.split(":"):
+            if not part:
+                continue
+            dirs.append(part.replace("$ORIGIN", str(artifact.parent)).replace("${ORIGIN}", str(artifact.parent)))
+    return dirs
+
+
+def _resolve_needed(soname: str, search_dirs: list[str]) -> Path | None:
+    """First existing file named ``soname`` under ``search_dirs``, else None."""
+    for directory in search_dirs:
+        candidate = Path(directory) / soname
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _within_any(path: Path, roots: tuple[Path, ...]) -> bool:
+    """True when ``path`` lies under one of ``roots``, symlinks resolved."""
+    resolved = Path(os.path.realpath(path))
+    for root in roots:
+        try:
+            if resolved.is_relative_to(Path(os.path.realpath(root))):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _nodes_above(nodes: frozenset[str], ceiling: tuple[int, ...]) -> list[str]:
+    """The version nodes in ``nodes`` that exceed ``ceiling``."""
+    above: list[str] = []
+    for node in nodes:
+        parsed = _version_tuple(node)
+        if parsed is not None and parsed > ceiling:
+            above.append(node)
+    return sorted(above, key=lambda n: _version_tuple(n) or ())
+
+
+def _producing_recipe(work: Path, artifact: Path) -> str:
+    """Name the recipe that built ``artifact`` from its work-tree path.
+
+    ``<work>/x86_64-linux/<pn>/<pv>/...`` (``bitbake.conf``'s ``WORKDIR``), so
+    the first component under the native work tree is the recipe name - which is
+    what the cache-discard remediation has to name.
+    """
+    try:
+        relative = artifact.relative_to(work)
+    except ValueError:
+        return "unknown"
+    return relative.parts[0] if relative.parts else "unknown"
+
+
+def _scan_native_tree(
+    work: Path,
+    reader: str,
+    ceiling: tuple[int, ...],
+    sanctioned: tuple[Path, ...],
+) -> tuple[list[_NativeLeak], list[str], int]:
+    """Walk ``work`` for ELF artifacts leaking a node above ``ceiling``.
+
+    Returns ``(leaks, unresolved, scanned)``. Each artifact contributes its own
+    version nodes AND the nodes of every DT_NEEDED dependency that resolves
+    outside ``sanctioned`` - a host library built against the host glibc carries
+    the fault one edge away while the artifact's own nodes look clean, which is
+    the whole reason this is not a one-line symbol grep.
+
+    Dependency results are cached by resolved path so a libc referenced by five
+    hundred artifacts is read once.
+    """
+    leaks: list[_NativeLeak] = []
+    unresolved: list[str] = []
+    dep_cache: dict[Path, frozenset[str] | None] = {}
+    scanned = 0
+    for root, _dirs, files in os.walk(work, followlinks=False):
+        for filename in files:
+            artifact = Path(root) / filename
+            # Symlinks are skipped rather than followed: the target is walked on
+            # its own, and following would double the reader invocations.
+            if artifact.is_symlink() or not _is_elf(artifact):
+                continue
+            info = _read_elf(reader, artifact)
+            if info is None:
+                unresolved.append(f"{artifact} could not be read by {reader}")
+                continue
+            scanned += 1
+            recipe = _producing_recipe(work, artifact)
+            leaks.extend(
+                _NativeLeak(artifact=artifact, recipe=recipe, node=node, source="the artifact itself")
+                for node in _nodes_above(info.nodes, ceiling)
+            )
+            search_dirs = [*_runpath_dirs(info, artifact), *_HOST_LIB_DIRS]
+            for soname in info.needed:
+                dependency = _resolve_needed(soname, search_dirs)
+                if dependency is None:
+                    unresolved.append(f"{artifact} (recipe {recipe}) declares {soname}, which resolves to no file")
+                    continue
+                if _within_any(dependency, sanctioned):
+                    continue
+                resolved = Path(os.path.realpath(dependency))
+                if resolved not in dep_cache:
+                    dep_info = _read_elf(reader, resolved)
+                    dep_cache[resolved] = dep_info.nodes if dep_info is not None else None
+                dep_nodes = dep_cache[resolved]
+                if dep_nodes is None:
+                    unresolved.append(
+                        f"{artifact} (recipe {recipe}) declares {soname} at {resolved}, which {reader} could not read"
+                    )
+                    continue
+                leaks.extend(
+                    _NativeLeak(
+                        artifact=artifact,
+                        recipe=recipe,
+                        node=node,
+                        source=f"dependency {soname} at {resolved}",
+                    )
+                    for node in _nodes_above(dep_nodes, ceiling)
+                )
+    return leaks, unresolved, scanned
+
+
+def _leak_report(items: list[str]) -> str:
+    """Join finding lines, summarizing the tail past ``_LEAK_REPORT_LIMIT``."""
+    if len(items) <= _LEAK_REPORT_LIMIT:
+        return "; ".join(items)
+    head = "; ".join(items[:_LEAK_REPORT_LIMIT])
+    return f"{head}; and {len(items) - _LEAK_REPORT_LIMIT} more"
+
+
+def check_uninative_leak(cfg: BuildConfig) -> CheckResult:
+    """Post-build: no native artifact references a glibc node above the ceiling.
+
+    The whole uninative override rests on the claim that every native compile
+    goes through the buildtools gcc, so nothing can emit a version node the
+    uninative loader cannot resolve. This is the only check that tests the claim
+    against real output rather than asserting it: it walks the native work tree
+    after a build and compares every version node it can reach against the
+    fragment's ``UNINATIVE_MAXGLIBCVERSION``.
+
+    Reaching means two things, not one. An artifact's own nodes are the obvious
+    half; the half that actually bites is a DT_NEEDED edge to a host library
+    (``/usr/lib/libz.so`` and friends that ``ASSUME_PROVIDED``/``HOSTTOOLS`` let
+    a configure script find). That library was built against the host glibc, so
+    under the uninative loader it needs a node uninative's libc does not define -
+    while the artifact's own symbol table reads clean. Checking only the artifact
+    would report a false all-clear for exactly the failure mode this exists for.
+
+    Post-build only (``_POST_BUILD_CHECKS``): the walk costs a full native tree
+    traversal, and before a build there is nothing in it to read.
+    """
+    name = "uninative-leak"
+    skip_reason = _uninative_gate(cfg)
+    if skip_reason is not None:
+        return _skip(name, Severity.INFO, skip_reason)
+
+    fragment = parse_uninative_fragment()
+    if not fragment.present:
+        return _skip(name, Severity.INFO, f"{fragment.path} is not installed (see uninative-fragment)")
+    if fragment.error:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"cannot resolve the glibc ceiling to scan against: {fragment.error}",
+            fix_hint="Reinstall or rebuild yocto-uninative-tarball; its generated fragment is malformed.",
+        )
+    ceiling_text = fragment.max_glibc or ""
+    ceiling = _version_tuple(ceiling_text)
+    if ceiling is None:
+        return _skip(
+            name,
+            Severity.INFO,
+            f"the fragment declares UNINATIVE_MAXGLIBCVERSION {ceiling_text!r}, which is not a dotted "
+            "numeric version, so there is no ceiling to compare against",
+        )
+
+    work = cfg.resolved_tmpdir / "work" / "x86_64-linux"
+    if not work.is_dir():
+        return _skip(
+            name,
+            Severity.INFO,
+            f"{work} does not exist, so nothing has been built to scan for glibc leaks yet",
+        )
+
+    reader = _elf_reader()
+    if reader is None:
+        return _skip(
+            name,
+            Severity.INFO,
+            f"no ELF reader is available (objdump is not on PATH), so {work} cannot be scanned for "
+            "glibc leaks; this is unscanned, not clean",
+        )
+
+    # The two trees whose libraries are sanctioned by construction: the pinned
+    # buildtools sysroot every native compile is supposed to go through, and the
+    # uninative sysroot whose loader will load the result.
+    sanctioned: list[Path] = [cfg.resolved_tmpdir / "sysroots-uninative"]
+    release_key = resolve_oe_core_release_key(cfg.workspace)
+    toolchain = detect_buildtools(release_key=release_key)
+    gcc = _buildtools_gcc(toolchain) if toolchain.present else None
+    if gcc is not None:
+        sanctioned.append(gcc.parents[2])
+
+    leaks, unresolved, scanned = _scan_native_tree(work, reader, ceiling, tuple(sanctioned))
+
+    if leaks:
+        recipes = sorted({leak.recipe for leak in leaks})
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"{len(leaks)} glibc version node(s) above the uninative ceiling {ceiling_text} in {work}: "
+            + _leak_report([leak.describe() for leak in leaks])
+            + "; such artifacts cannot load under the uninative loader, and any of their output already "
+            "published to a shared sstate mirror carries the fault to every node that reuses it",
+            fix_hint=(
+                "Discard the cached output of the affected recipe(s) with 'bitbake -c cleansstate "
+                + " ".join(recipes)
+                + "', then find why the compile escaped the buildtools toolchain before rebuilding."
+            ),
+        )
+    if unresolved:
+        return _fail(
+            name,
+            Severity.WARN,
+            f"scanned {scanned} native artifact(s) under {work} against ceiling {ceiling_text} with no leak "
+            f"found, but {len(unresolved)} dependenc(y/ies) could not be checked: "
+            + _leak_report(unresolved)
+            + "; an unchecked dependency is not evidence of a clean tree",
+            fix_hint=(
+                "Inspect the named dependencies by hand; a host library the loader cannot find here is also "
+                "one bitbake's native tasks may not find."
+            ),
+        )
+    return _ok(
+        name,
+        Severity.BLOCK,
+        f"no glibc version node above the uninative ceiling {ceiling_text} in {scanned} native artifact(s) "
+        f"scanned under {work}",
+    )
+
+
+# ---------------------------------------------------------------------------
 # mold C++20 build-compiler gate (mold-linker-toolchain)
 # ---------------------------------------------------------------------------
 
@@ -3880,6 +4221,10 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     # the same host-mode/Arch gate as the three above, so likewise host-pure.
     check_uninative_dldir_links,
     check_uninative_mirror_hit,
+    # BLOCK: the post-build native-artifact leak scan. Listed here so it shares
+    # the one assembly path and the crash isolation, but filtered out of every
+    # run that did not ask for post-build checks; see _POST_BUILD_CHECKS.
+    check_uninative_leak,
     check_mold_compiler,
     check_central_hashserv,
     check_central_prserv,
@@ -3918,6 +4263,15 @@ _CLUSTER_CHECKS: tuple[CheckFunc, ...] = (
     # a single-node run's output entirely.
     check_uninative_cluster_consistency,
 )
+
+
+# Post-build checks, filtered out of run_all unless its ``post_build`` argument
+# is True. Unlike _DOCKER_CHECKS and _CLUSTER_CHECKS the gate is the caller's
+# explicit request rather than config: these read what a build produced, so a
+# pre-flight run has nothing for them to read and would pay a full native-tree
+# walk for a guaranteed skip. Membership is what keeps them out of an ordinary
+# ``bakar doctor`` and out of the pre-flight gate inside ``bakar build``.
+_POST_BUILD_CHECKS: tuple[CheckFunc, ...] = (check_uninative_leak,)
 
 
 # Single source of the pre-flight report's grouping and sort order. Each check
@@ -3978,6 +4332,7 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "uninative-dldir-links",
             "uninative-mirror-hit",
             "uninative-cluster-ceiling",
+            "uninative-leak",
         ),
     ),
     (
@@ -4031,6 +4386,7 @@ _CHECK_METADATA: tuple[tuple[CheckFunc, str, Severity], ...] = (
     (check_uninative_checksum, "uninative-checksum", Severity.BLOCK),
     (check_uninative_dldir_links, "uninative-dldir-links", Severity.BLOCK),
     (check_uninative_mirror_hit, "uninative-mirror-hit", Severity.WARN),
+    (check_uninative_leak, "uninative-leak", Severity.BLOCK),
     (check_mold_compiler, "mold-compiler", Severity.BLOCK),
     (check_central_hashserv, "central-hashserv", Severity.BLOCK),
     (check_central_prserv, "central-prserv", Severity.BLOCK),
@@ -4074,7 +4430,7 @@ def group_results(results: list[CheckResult]) -> list[tuple[str, list[CheckResul
     return grouped
 
 
-def run_all(cfg: BuildConfig, bsp: BspModel | None = None) -> list[CheckResult]:
+def run_all(cfg: BuildConfig, bsp: BspModel | None = None, *, post_build: bool = False) -> list[CheckResult]:
     """Run every applicable check, return results in order.
 
     When ``bsp`` is provided, the assembled list is
@@ -4093,6 +4449,12 @@ def run_all(cfg: BuildConfig, bsp: BspModel | None = None) -> list[CheckResult]:
     are appended after the shared checks (bbsetup has no ``BspModel``,
     so it cannot carry them via ``doctor_extras``). The host-mode filter
     still applies to the combined list afterward.
+
+    ``post_build`` is additive rather than a mode switch: False (the default)
+    filters ``_POST_BUILD_CHECKS`` out, True leaves them in alongside every
+    pre-flight check, so a post-build run is a superset of an ordinary one.
+    Keyword-only with a default so the existing two-argument callers and test
+    stubs keep working untouched.
     """
     if bsp is None:
         checks: tuple[CheckFunc, ...] = SHARED_CHECKS
@@ -4104,6 +4466,8 @@ def run_all(cfg: BuildConfig, bsp: BspModel | None = None) -> list[CheckResult]:
         checks = tuple(c for c in checks if c not in _DOCKER_CHECKS)
     if not cfg.cluster:
         checks = tuple(c for c in checks if c not in _CLUSTER_CHECKS)
+    if not post_build:
+        checks = tuple(c for c in checks if c not in _POST_BUILD_CHECKS)
     results: list[CheckResult] = []
     for check in checks:
         try:
