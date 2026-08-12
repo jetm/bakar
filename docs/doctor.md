@@ -140,6 +140,13 @@ pick up. The second path is the one that bites, because such an artifact's own
 symbol table reads clean while the library it pulls in was built against the host
 glibc.
 
+> **Known limitation.** The dependency half of this comparison currently reads
+> the versions a host library *defines* rather than the versions the artifact
+> *requires* from it, so on a host whose libc defines nodes above the ceiling it
+> reports most recipes as leaking. Treat a `uninative-leak` BLOCK as a prompt to
+> investigate, not as proof of a leak, until that is corrected. The six
+> pre-flight uninative checks above are unaffected.
+
 Two lesser outcomes are not a clean bill of health. When `objdump` is absent the
 check skips and says so - unscanned, not clean. When some dependency cannot be
 resolved it reports WARN naming it, because an unchecked dependency is not
