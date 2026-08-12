@@ -1786,6 +1786,194 @@ def check_uninative_checksum(cfg: BuildConfig) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# uninative DL_DIR cache state (uninative-dldir-links, uninative-mirror-hit)
+# ---------------------------------------------------------------------------
+
+
+def _uninative_tarball_name(version: str) -> str:
+    """Name the payload file uninative expects inside a cache entry.
+
+    Mirrors ``UNINATIVE_TARBALL`` (``uninative.bbclass:11``),
+    ``${BUILD_ARCH}-nativesdk-libc-${UNINATIVE_VERSION}.tar.xz``, with the same
+    hardcoded ``x86_64`` the checksum check already assumes - the providing
+    package ships an x86_64 payload and declares only
+    ``UNINATIVE_CHECKSUM[x86_64]``, so there is no other arch to name.
+    """
+    return f"x86_64-nativesdk-libc-{version}.tar.xz"
+
+
+def _uninative_dldir(cfg: BuildConfig) -> Path | None:
+    """Resolve ``<DL_DIR>/uninative``, or None when no usable DL_DIR exists.
+
+    ``UNINATIVE_DLDIR ?= "${DL_DIR}/uninative/"`` (``uninative.bbclass:16``).
+    DL_DIR precedence copies ``check_shared_cache_mounts`` (env wins over
+    config) so these checks judge the same directory the build will actually
+    write into rather than a second opinion about it.
+
+    Returns None for an absent, relative, or filesystem-root DL_DIR. That guard
+    is load-bearing rather than defensive: :func:`check_uninative_dldir_links`
+    deletes directories under the returned path, and a DL_DIR that resolved to
+    ``/`` would point the repair at ``/uninative`` on a host that never had one.
+    """
+    dl = os.environ.get("DL_DIR") or cfg.dl_dir
+    if not dl:
+        return None
+    root = Path(dl)
+    if not root.is_absolute() or len(root.parts) <= 1:
+        return None
+    return root / "uninative"
+
+
+def check_uninative_dldir_links(cfg: BuildConfig) -> CheckResult:
+    """Delete uninative cache entries whose mirrored payload link has gone dangling.
+
+    The cache is one directory per checksum holding the payload plus a sibling
+    ``<tarball>.done`` stamp (``uninative.bbclass:53-56``). With a ``file://``
+    UNINATIVE_URL the payload is a *symlink* into the mirror, so a routine
+    ``pacman -Syu`` of yocto-uninative-tarball deletes the file the link points
+    at and leaves the link dangling with its ``.done`` stamp intact.
+
+    Nothing self-heals from there. The stamp makes ``uninative.bbclass:56`` skip
+    the entire fetch block - including the bbclass' own broken-symlink cleanup
+    at lines 89-91 - so the untar at line 105 fails, and lines 124-128 catch the
+    CalledProcessError, downgrade it to a ``bb.warn``, and silently disable
+    uninative for the rest of the build. NATIVELSBSTRING stops being universal
+    and every later fresh-TMPDIR build repeats the same silent degradation.
+
+    Removing the entry directory takes the stamp with it, which is the whole
+    repair: the next build finds no stamp and re-runs the fetch. The removal is
+    scoped to the entry holding a dangling link so a sibling entry for another
+    checksum - a payload that still resolves - survives untouched. The verdict
+    is a FAIL rather than a PASS even though the tree is now healthy, because
+    the operator should know a cached artifact was deleted under them.
+    """
+    name = "uninative-dldir-links"
+    skip_reason = _uninative_gate(cfg)
+    if skip_reason is not None:
+        return _skip(name, Severity.INFO, skip_reason)
+
+    dldir = _uninative_dldir(cfg)
+    if dldir is None:
+        return _skip(name, Severity.INFO, "no DL_DIR resolves from the environment or config")
+    if not dldir.is_dir():
+        return _ok(name, Severity.BLOCK, f"{dldir} does not exist yet; the next build populates it")
+
+    removed: list[str] = []
+    failures: list[str] = []
+    try:
+        entries = sorted(dldir.iterdir())
+    except OSError as exc:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"cannot list the uninative cache {dldir}: {exc}",
+            fix_hint=f"Check the permissions on {dldir}, or remove it so the next build refetches.",
+        )
+
+    for entry in entries:
+        # A direct child of <DL_DIR>/uninative, a real directory rather than a
+        # symlink to one, so the removal can never follow a link out of the
+        # tree it is scoped to.
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        dangling = [c for c in sorted(entry.iterdir()) if c.is_symlink() and not c.exists()]
+        if not dangling:
+            continue
+        try:
+            shutil.rmtree(entry)
+        except OSError as exc:
+            failures.append(f"{entry} (holding {', '.join(str(d) for d in dangling)}): {exc}")
+            continue
+        removed.append(f"{entry} (payload link {', '.join(d.name for d in dangling)} resolved to nothing)")
+
+    if failures:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"{len(failures)} uninative cache entr{'y' if len(failures) == 1 else 'ies'} hold a dangling "
+            f"payload link and could not be removed: {'; '.join(failures)}; the surviving .done stamp "
+            "makes uninative skip its fetch and silently disable itself mid-build",
+            fix_hint="Remove the listed entry directories by hand so the next build refetches the payload.",
+        )
+    if removed:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"removed {len(removed)} uninative cache entr{'y' if len(removed) == 1 else 'ies'} whose "
+            f"mirrored payload had been deleted under it: {'; '.join(removed)}; the entry's .done stamp "
+            "went with it, so the next build refetches instead of skipping the fetch and disabling "
+            "uninative silently",
+            fix_hint="Re-run the build; the fetch now repopulates the entry from the fragment's mirror.",
+        )
+    return _ok(name, Severity.BLOCK, f"every mirrored payload link under {dldir} resolves")
+
+
+def check_uninative_mirror_hit(cfg: BuildConfig) -> CheckResult:
+    """Report whether the cached payload came from the local mirror or the network.
+
+    With a ``file://`` UNINATIVE_URL bitbake's fetcher resolves ``localpath`` to
+    the mirror file itself, so ``localpath != tarballpath`` and
+    ``uninative.bbclass:80-94`` links the cache entry into the mirror. A network
+    fetch instead leaves a regular file. A symlink resolving under the
+    fragment's own mirror root is therefore the only positive evidence that the
+    payload in use is the one this host's glibc invariant was checked against.
+
+    A network-fetched payload is a WARN, not a BLOCK: the tarball still matches
+    the checksum the fragment declares (``check_uninative_checksum`` owns that
+    comparison), so the build is correct - what is lost is the offline,
+    reproducible path the mirror exists to provide.
+    """
+    name = "uninative-mirror-hit"
+    skip_reason = _uninative_gate(cfg)
+    if skip_reason is not None:
+        return _skip(name, Severity.INFO, skip_reason)
+
+    fragment = parse_uninative_fragment()
+    if not fragment.present:
+        return _skip(name, Severity.INFO, f"{fragment.path} is not installed (see uninative-fragment)")
+    if fragment.error is not None:
+        return _skip(name, Severity.INFO, f"cannot locate the mirror: {fragment.error}")
+
+    parsed = urllib.parse.urlparse(fragment.url or "")
+    if parsed.scheme != "file" or not parsed.path:
+        return _skip(name, Severity.INFO, f"UNINATIVE_URL {fragment.url!r} is not a local mirror")
+    mirror_root = Path(parsed.path)
+
+    dldir = _uninative_dldir(cfg)
+    if dldir is None:
+        return _skip(name, Severity.INFO, "no DL_DIR resolves from the environment or config")
+    # The entry directory is named after the declared checksum
+    # (``uninative.bbclass:53``), so the cached path is derivable rather than
+    # something to go hunting for.
+    cached = dldir / (fragment.checksum or "") / _uninative_tarball_name(fragment.version or "")
+    if not cached.exists() and not cached.is_symlink():
+        return _skip(name, Severity.INFO, f"nothing cached at {cached} yet")
+    if not cached.exists():
+        return _skip(name, Severity.INFO, f"{cached} is a dangling link (see uninative-dldir-links)")
+
+    if not cached.is_symlink():
+        return _fail(
+            name,
+            Severity.WARN,
+            f"{cached} is a regular file, so the payload was fetched over the network rather than "
+            f"linked from the fragment's mirror at {mirror_root}; the checksum still matches but the "
+            "offline path the mirror exists to provide is not in use",
+            fix_hint=f"Confirm {mirror_root} holds the payload and that PREMIRRORS are not overriding it.",
+        )
+    target = cached.resolve()
+    if not target.is_relative_to(mirror_root.resolve()):
+        return _fail(
+            name,
+            Severity.WARN,
+            f"{cached} links to {target}, which is outside the fragment's mirror root {mirror_root}; "
+            "the payload in use is not the one the package shipped and validated against this host's "
+            "glibc",
+            fix_hint=f"Remove {cached.parent} so the next build refetches from {mirror_root}.",
+        )
+    return _ok(name, Severity.WARN, f"cached payload {cached} links into the fragment's mirror at {target}")
+
+
+# ---------------------------------------------------------------------------
 # mold C++20 build-compiler gate (mold-linker-toolchain)
 # ---------------------------------------------------------------------------
 
@@ -3523,6 +3711,10 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_uninative_fragment,
     check_uninative_glibc,
     check_uninative_checksum,
+    # BLOCK + WARN: the state of the uninative payload cache under DL_DIR. Share
+    # the same host-mode/Arch gate as the three above, so likewise host-pure.
+    check_uninative_dldir_links,
+    check_uninative_mirror_hit,
     check_mold_compiler,
     check_central_hashserv,
     check_central_prserv,
@@ -3608,7 +3800,13 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # interleaved with sysctl and cgroup findings.
     (
         "Uninative wiring",
-        ("uninative-fragment", "uninative-glibc", "uninative-checksum"),
+        (
+            "uninative-fragment",
+            "uninative-glibc",
+            "uninative-checksum",
+            "uninative-dldir-links",
+            "uninative-mirror-hit",
+        ),
     ),
     (
         "Workspace & build config",
@@ -3659,6 +3857,8 @@ _CHECK_METADATA: tuple[tuple[CheckFunc, str, Severity], ...] = (
     (check_uninative_fragment, "uninative-fragment", Severity.BLOCK),
     (check_uninative_glibc, "uninative-glibc", Severity.BLOCK),
     (check_uninative_checksum, "uninative-checksum", Severity.BLOCK),
+    (check_uninative_dldir_links, "uninative-dldir-links", Severity.BLOCK),
+    (check_uninative_mirror_hit, "uninative-mirror-hit", Severity.WARN),
     (check_mold_compiler, "mold-compiler", Severity.BLOCK),
     (check_central_hashserv, "central-hashserv", Severity.BLOCK),
     (check_central_prserv, "central-prserv", Severity.BLOCK),

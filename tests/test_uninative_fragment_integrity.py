@@ -592,4 +592,7 @@ def test_all_three_checks_are_registered_under_one_group() -> None:
     assert metadata == dict.fromkeys(names, Severity.BLOCK)
 
     groups = dict(diagnostics.CHECK_GROUPS)
-    assert groups["Uninative wiring"] == names
+    # Leading members of the group rather than the whole of it: the DL_DIR cache
+    # checks join the same group, so pinning the full tuple here would make an
+    # addition to the group fail a test about these three checks.
+    assert groups["Uninative wiring"][: len(names)] == names
