@@ -856,3 +856,231 @@ def test_every_new_check_is_grouped() -> None:
 
     grouped = {name for _group, names in diagnostics.CHECK_GROUPS for name in names}
     assert registered <= grouped, f"ungrouped uninative checks: {sorted(registered - grouped)}"
+
+
+# --- dependency-resolution confinement -------------------------------------
+#
+# The module docstring's rule against synthesised ELF is about ELF BYTES: a
+# hand-crafted header would only prove the reader mock agrees with itself. It
+# does not extend to resolution logic, which never touches a byte of ELF. No
+# real toolchain can be made to emit ``NEEDED /etc/shadow``, so these tests
+# drive ``_resolve_needed`` directly and reach the end-to-end reporting path by
+# monkeypatching ``_read_elf`` to return crafted ``_ElfInfo`` values.
+
+
+@pytest.fixture
+def is_file_spy(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Record every path ``Path.is_file`` is called on.
+
+    The lexical-then-resolved ordering inside ``_resolve_needed`` is invisible
+    in the return value - both orders refuse the same candidates. This spy is
+    the only thing that distinguishes them: a refused candidate must never be
+    stat'd, or the refusal is distinguishable from a miss and the oracle is
+    still open.
+    """
+    seen: list[Path] = []
+    real = Path.is_file
+
+    def recording(self: Path, *args: object, **kwargs: object) -> bool:
+        seen.append(self)
+        return real(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "is_file", recording)
+    return seen
+
+
+@pytest.mark.unit
+def test_absolute_soname_is_refused_not_resolved(is_file_spy: list[Path]) -> None:
+    """``NEEDED /etc/shadow`` must not resolve: the join discards the directory."""
+    permitted = (Path("/usr/lib"),)
+
+    resolved, refused = diagnostics._resolve_needed("/etc/shadow", ["/usr/lib"], permitted)
+
+    assert resolved is None
+    assert refused is True
+    assert Path("/etc/shadow") not in is_file_spy
+    assert all(path.is_relative_to("/usr/lib") for path in is_file_spy), is_file_spy
+
+
+@pytest.mark.unit
+def test_runpath_alone_reaches_no_arbitrary_path(is_file_spy: list[Path]) -> None:
+    """A bare soname plus a hostile RUNPATH is refused with no separator in sight."""
+    permitted = (Path("/usr/lib"),)
+
+    resolved, refused = diagnostics._resolve_needed("shadow", ["/etc"], permitted)
+
+    assert resolved is None
+    assert refused is True
+    assert is_file_spy == []
+
+
+@pytest.mark.unit
+def test_traversal_out_of_a_permitted_root_is_refused(is_file_spy: list[Path]) -> None:
+    """``..`` chains are folded away before the containment test, not after."""
+    permitted = (Path("/usr/lib"),)
+
+    resolved, refused = diagnostics._resolve_needed("../../etc/shadow", ["/usr/lib"], permitted)
+
+    assert resolved is None
+    assert refused is True
+    assert is_file_spy == []
+
+
+@pytest.mark.unit
+def test_permitted_root_containment_is_per_component() -> None:
+    """``/usr/libexec`` is not inside ``/usr/lib``; a prefix test would say it is."""
+    assert not diagnostics._lexically_within(Path("/usr/libexec/foo.so"), (Path("/usr/lib"),))
+    assert diagnostics._lexically_within(Path("/usr/lib/foo.so"), (Path("/usr/lib"),))
+
+
+@pytest.mark.unit
+def test_doubled_leading_slash_stays_in_root() -> None:
+    """``normpath`` keeps exactly two leading slashes; a legitimate lib must still resolve."""
+    assert diagnostics._lexically_within(Path("//usr/lib/libz.so.1"), (Path("/usr/lib"),))
+
+
+@pytest.mark.unit
+def test_bare_soname_under_a_permitted_root_still_resolves(tmp_path: Path) -> None:
+    """The common case is untouched: a plain soname found under a permitted root."""
+    libdir = tmp_path / "usr" / "lib"
+    libdir.mkdir(parents=True)
+    (libdir / "libz.so.1").write_bytes(b"\x7fELF")
+
+    resolved, refused = diagnostics._resolve_needed("libz.so.1", [str(libdir)], (libdir,))
+
+    assert resolved == libdir / "libz.so.1"
+    assert refused is False
+
+
+@pytest.mark.unit
+def test_path_qualified_soname_inside_a_root_resolves(tmp_path: Path) -> None:
+    """A path-qualified ``DT_NEEDED`` is legal ELF and must still resolve.
+
+    GNU ld emits it for any library linked by absolute path with no
+    ``DT_SONAME``. Refusing it outright - the guard reverted in ``582087f`` -
+    demotes a genuine leak from BLOCK to WARN.
+    """
+    work = tmp_path / "work"
+    target = work / "foo-native" / "1.0" / "libbar.so"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"\x7fELF")
+
+    resolved, refused = diagnostics._resolve_needed(str(target), ["/usr/lib"], (work,))
+
+    assert resolved == target
+    assert refused is False
+
+
+@pytest.mark.unit
+def test_one_refused_candidate_does_not_abort_the_lookup(tmp_path: Path) -> None:
+    """A foreign RPATH ahead of the host directories must not lose the real hit.
+
+    Measured on a real tree: ``pseudo-native``'s ``pseudodb`` carries the
+    relative RPATH ``../../sqlite3-native/usr/lib`` while its dependencies all
+    resolve under ``/usr/lib`` on the next iteration.
+    """
+    libdir = tmp_path / "usr" / "lib"
+    libdir.mkdir(parents=True)
+    (libdir / "libz.so.1").write_bytes(b"\x7fELF")
+
+    resolved, refused = diagnostics._resolve_needed("libz.so.1", ["/etc", "../relative", str(libdir)], (libdir,))
+
+    assert resolved == libdir / "libz.so.1"
+    assert refused is False
+
+
+@pytest.mark.unit
+def test_symlink_out_of_a_permitted_root_is_refused(tmp_path: Path) -> None:
+    """A link inside a permitted root pointing out of one is caught after realpath."""
+    libdir = tmp_path / "usr" / "lib"
+    libdir.mkdir(parents=True)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "libz.so.1").write_bytes(b"\x7fELF")
+    (libdir / "libz.so.1").symlink_to(outside / "libz.so.1")
+
+    resolved, refused = diagnostics._resolve_needed("libz.so.1", [str(libdir)], (libdir,))
+
+    assert resolved is None
+    assert refused is True
+
+
+def _crafted_reader(needed: tuple[str, ...]) -> object:
+    """A ``_read_elf`` stand-in declaring ``needed`` for every artifact."""
+
+    def fake(reader: str, path: Path) -> diagnostics._ElfInfo:
+        return diagnostics._ElfInfo(dynamic=True, nodes=frozenset(), needed=needed, runpaths=())
+
+    return fake
+
+
+@pytest.mark.unit
+@requires_objdump
+@pytest.mark.parametrize("soname", ["/etc/shadow", "/etc/bakar-does-not-exist"], ids=["exists", "absent"])
+def test_out_of_scope_dependency_is_reported_and_never_stat_ed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    is_file_spy: list[Path],
+    soname: str,
+) -> None:
+    """An out-of-scope dependency reads the same whether or not the path exists.
+
+    That equality is the point: differing outcomes are exactly the file-existence
+    oracle the confinement closes. The entry still joins ``unresolved`` - dropping
+    it would let a crafted artifact hide a real edge.
+    """
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    artifact = _place(_work_tree(cfg), "zlib-native", _CLEAN)
+    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader((soname,)))
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.WARN
+    expected = (
+        f"{artifact} (recipe zlib-native) declares {soname}, which lands outside the scanned roots and is out of scope"
+    )
+    assert expected in result.message
+    assert "resolves to no file" not in result.message
+    assert not [path for path in is_file_spy if Path(os.path.normpath(path)).is_relative_to("/etc")], is_file_spy
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_unresolved_and_out_of_scope_read_differently(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A missing library and a refused one are different facts, worded differently."""
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    _place(_work_tree(cfg), "zlib-native", _CLEAN)
+    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libbakar-absent.so.9", "/etc/shadow")))
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert "declares libbakar-absent.so.9, which resolves to no file" in result.message
+    assert "declares /etc/shadow, which lands outside the scanned roots and is out of scope" in result.message
+
+
+@pytest.mark.unit
+def test_a_refused_candidate_never_reaches_the_filesystem(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The lexical stage runs BEFORE symlink resolution, and the order matters.
+
+    ``realpath`` on an attacker-named path stats its intermediate components -
+    a weaker oracle than ``is_file`` but still one - so a candidate refused
+    lexically must never be handed to it. Nothing in the return value
+    distinguishes the two orderings; this spy is what does.
+    """
+    seen: list[str] = []
+    real = os.path.realpath
+
+    def recording(path: object, *args: object, **kwargs: object) -> str:
+        seen.append(str(path))
+        return real(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os.path, "realpath", recording)
+
+    resolved, refused = diagnostics._resolve_needed("/etc/shadow", ["/usr/lib"], (Path("/usr/lib"),))
+
+    assert resolved is None
+    assert refused is True
+    assert seen == [], "a lexically refused candidate was resolved against the filesystem"

@@ -2388,13 +2388,71 @@ def _runpath_dirs(info: _ElfInfo, artifact: Path) -> list[str]:
     return dirs
 
 
-def _resolve_needed(soname: str, search_dirs: list[str]) -> Path | None:
-    """First existing file named ``soname`` under ``search_dirs``, else None."""
+def _normalized(path: Path) -> Path:
+    """``path`` with ``.``/``..`` folded away, without touching the filesystem.
+
+    ``os.path.normpath`` preserves exactly two leading slashes (POSIX leaves
+    ``//foo`` implementation-defined), so ``//usr/lib/libz.so.1`` would compare
+    unequal to the ``/usr/lib`` root and a legitimate host library would be
+    refused. Collapse the doubled root before comparing.
+    """
+    text = os.path.normpath(str(path))
+    while text.startswith("//"):
+        text = text[1:]
+    return Path(text)
+
+
+def _lexically_within(path: Path, roots: tuple[Path, ...]) -> bool:
+    """True when ``path`` names a location under one of ``roots``, on text alone.
+
+    No filesystem access at all: this is what decides whether a candidate is
+    ever stat'd, so a refused candidate must be indistinguishable from a name
+    the scan looked for and did not find. Containment is per path component -
+    a string prefix test would admit ``/usr/libexec/...`` against ``/usr/lib``.
+    """
+    normalized = _normalized(path)
+    return any(normalized.is_relative_to(_normalized(root)) for root in roots)
+
+
+def _resolve_needed(soname: str, search_dirs: list[str], permitted: tuple[Path, ...]) -> tuple[Path | None, bool]:
+    """Resolve ``soname`` under ``search_dirs``, confined to ``permitted``.
+
+    Returns ``(path, refused)``, a tri-state: a path when the soname resolved,
+    ``(None, False)`` when every candidate was looked for and not found, and
+    ``(None, True)`` when a candidate was refused for landing outside the
+    permitted roots and nothing else resolved. The caller reports the last case
+    as out of scope, which is a different fact from a missing library.
+
+    Both operands of the join come from the artifact's own ``.dynstr`` - the
+    soname, and the run paths ``_runpath_dirs`` expands - so an unconfined join
+    lets a file in the work tree steer the scan onto any readable path and get
+    that path echoed into the operator's report. The guard is an allowlist on
+    where the join LANDED rather than a refusal of either input: a
+    path-qualified ``DT_NEEDED`` is legal ELF that GNU ld emits for a library
+    linked by absolute path with no ``DT_SONAME``, and refusing it outright
+    demotes a genuine leak to a warning.
+
+    A refused candidate directory only skips that candidate; the loop continues,
+    because a real artifact carries a foreign or CWD-relative RPATH ahead of the
+    host directories that resolve it fine.
+    """
+    refused = False
     for directory in search_dirs:
         candidate = Path(directory) / soname
+        # Lexically first, and the order is load-bearing: resolving symlinks
+        # first would stat the intermediate components of an attacker-named
+        # path, a weaker oracle but still one.
+        if not _lexically_within(candidate, permitted):
+            refused = True
+            continue
+        # Then again with symlinks resolved, which catches a link inside a
+        # permitted root pointing out of one.
+        if not _within_any(candidate, permitted):
+            refused = True
+            continue
         if candidate.is_file():
-            return candidate
-    return None
+            return candidate, False
+    return None, refused
 
 
 def _within_any(path: Path, roots: tuple[Path, ...]) -> bool:
@@ -2455,6 +2513,11 @@ def _scan_native_tree(
     unresolved: list[str] = []
     dep_cache: dict[Path, frozenset[str] | None] = {}
     scanned = 0
+    # The only places a declared dependency may resolve to. Fixed before the
+    # walk and never derived from an artifact: a root read out of an artifact's
+    # own RUNPATH, or matched by work-tree path shape, would be a root any local
+    # user can satisfy, which is the oracle this closes.
+    permitted: tuple[Path, ...] = tuple(Path(d) for d in _HOST_LIB_DIRS) + sanctioned + (work,)
     for root, dirs, files in os.walk(work, followlinks=False):
         # Sorted at the source rather than on the accumulated findings: the
         # report truncates at _LEAK_REPORT_LIMIT, so readdir order would decide
@@ -2490,9 +2553,15 @@ def _scan_native_tree(
             )
             search_dirs = [*_runpath_dirs(info, artifact), *_HOST_LIB_DIRS]
             for soname in info.needed:
-                dependency = _resolve_needed(soname, search_dirs)
+                dependency, refused = _resolve_needed(soname, search_dirs, permitted)
                 if dependency is None:
-                    unresolved.append(f"{artifact} (recipe {recipe}) declares {soname}, which resolves to no file")
+                    if refused:
+                        unresolved.append(
+                            f"{artifact} (recipe {recipe}) declares {soname}, "
+                            f"which lands outside the scanned roots and is out of scope"
+                        )
+                    else:
+                        unresolved.append(f"{artifact} (recipe {recipe}) declares {soname}, which resolves to no file")
                     continue
                 if _within_any(dependency, sanctioned):
                     continue
