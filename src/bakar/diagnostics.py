@@ -17,6 +17,7 @@ same assembled list via :func:`run_all`.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -1391,6 +1392,396 @@ def check_host_preflight(cfg: BuildConfig) -> CheckResult:
         name,
         Severity.BLOCK,
         f"buildtools-extended present and uninative loader runs ({toolchain.detail})",
+    )
+
+
+# ---------------------------------------------------------------------------
+# uninative fragment integrity (uninative-fragment-integrity)
+# ---------------------------------------------------------------------------
+
+# Where the yocto-uninative-tarball Arch package installs its bitbake fragment,
+# and the file host detection reads. Both mirror the constants of the same name
+# in commands/_helpers.py rather than importing them: .arch-rules.toml declares
+# `core` -> `commands` forbidden ("diagnostics must not depend on the CLI layer
+# (prevents an upward cycle)"), so importing would invert the layering. Kept at
+# module level so tests can repoint them at fixtures.
+_UNINATIVE_FRAGMENT = Path("/usr/share/yocto-uninative/uninative.inc")
+_UNINATIVE_OS_RELEASE = Path("/etc/os-release")
+
+# Assignments the fragment emits. The optional ``:forcevariable`` suffix is part
+# of the variable name for the two values the package must win outright against
+# oe-core's own defaults, and ``[x86_64]`` is a varflag on the checksum, so both
+# have to be tolerated by the same pattern.
+_UNINATIVE_ASSIGN_RE = re.compile(
+    r"^\s*(?P<var>UNINATIVE_[A-Z_]+)(?::forcevariable)?(?:\[(?P<flag>[^\]]+)\])?\s*=\s*\"(?P<value>[^\"]*)\"",
+)
+
+# (variable, varflag, attribute) for every value the checks below consume. The
+# tarball's glibc is read from UNINATIVE_MAXGLIBCVERSION and nowhere else:
+# UNINATIVE_TARBALL_GLIBC exists neither in the shipped fragment nor in oe-core,
+# so a parser hunting for it would find nothing and degrade to a permanent pass.
+# UNINATIVE_VERSION carries an Arch release counter and a git hash
+# ("2.44+r5+g7cba77790f32") that defeat numeric comparison, so it names the
+# payload file and the installed version but never feeds the comparator.
+_UNINATIVE_REQUIRED: tuple[tuple[str, str | None, str], ...] = (
+    ("UNINATIVE_VERSION", None, "version"),
+    ("UNINATIVE_MAXGLIBCVERSION", None, "max_glibc"),
+    ("UNINATIVE_CHECKSUM", "x86_64", "checksum"),
+    ("UNINATIVE_URL", None, "url"),
+)
+
+
+@dataclass(frozen=True)
+class UninativeFragment:
+    """Values declared by the installed uninative fragment, or why they are missing.
+
+    Three states, and the callers must treat them differently:
+
+    * ``present`` False - the package is not installed. Only
+      :func:`check_uninative_fragment` reports on that; the other checks skip so
+      one missing package produces one finding rather than three.
+    * ``present`` True with ``error`` set - the fragment is on disk but does not
+      declare something the checks read. This is the state that must never
+      degrade to a pass: a safety gate that silently stops comparing is
+      indistinguishable from a gate that always agrees, so every consumer BLOCKs.
+    * ``present`` True with ``error`` None - all four values parsed.
+    """
+
+    path: Path
+    present: bool = False
+    version: str | None = None
+    max_glibc: str | None = None
+    checksum: str | None = None
+    url: str | None = None
+    error: str | None = None
+
+
+def parse_uninative_fragment(path: Path | None = None) -> UninativeFragment:
+    """Read the installed fragment once and return everything the checks need.
+
+    One parser feeds all three integrity checks because the fragment is generated
+    by a PKGBUILD this project does not own, and a restructured fragment is the
+    most likely way these checks break (assumption A5). One reader means one
+    place to update, and one place where "present but incomplete" is turned into
+    a loud failure instead of three chances to get it wrong.
+    """
+    fragment = _UNINATIVE_FRAGMENT if path is None else path
+    if not fragment.is_file():
+        return UninativeFragment(path=fragment, present=False, error=f"{fragment} is not installed")
+    try:
+        text = fragment.read_text(encoding="utf-8")
+    except OSError as exc:
+        return UninativeFragment(path=fragment, present=True, error=f"{fragment} is unreadable: {exc}")
+
+    assignments: dict[tuple[str, str | None], str] = {}
+    for line in text.splitlines():
+        match = _UNINATIVE_ASSIGN_RE.match(line)
+        if match:
+            assignments[(match["var"], match["flag"])] = match["value"].strip()
+
+    values: dict[str, str] = {}
+    missing: list[str] = []
+    for var, flag, attr in _UNINATIVE_REQUIRED:
+        value = assignments.get((var, flag))
+        if value:
+            values[attr] = value
+        else:
+            missing.append(var if flag is None else f"{var}[{flag}]")
+    if missing:
+        return UninativeFragment(
+            path=fragment,
+            present=True,
+            error=f"{fragment} declares no {', '.join(missing)}",
+        )
+    return UninativeFragment(path=fragment, present=True, error=None, **values)
+
+
+def _host_is_arch_like() -> bool:
+    """Return True when the build host is Arch Linux or an Arch derivative.
+
+    Reads ID and ID_LIKE from /etc/os-release and looks for ``arch`` in either,
+    so the derivatives (CachyOS reports ``ID=cachyos ID_LIKE=arch``,
+    EndeavourOS, Manjaro) are covered without enumerating them. Returns False
+    when the file is absent or unreadable, which skips the uninative checks
+    rather than demanding a package the host cannot install.
+
+    Duplicated from ``commands/_helpers.py`` for the layering reason recorded on
+    :data:`_UNINATIVE_OS_RELEASE` above.
+    """
+    try:
+        text = _UNINATIVE_OS_RELEASE.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    ids: set[str] = set()
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() in ("ID", "ID_LIKE"):
+            ids.update(value.strip().strip('"').strip("'").split())
+    return "arch" in ids
+
+
+def _uninative_gate(cfg: BuildConfig) -> str | None:
+    """Return None when the uninative checks apply, else why they do not.
+
+    Shares ``_uninative_extra_overlays``' gate (``commands/_helpers.py:319``)
+    minus its ``_UNINATIVE_FRAGMENT.is_file()`` condition, exactly as
+    ``_arch_probe_extra_overlays`` (``_helpers.py:344``) already does. The
+    omission is load-bearing rather than a simplification: with the fragment
+    condition included, the check whose whole purpose is to report a missing
+    fragment would skip itself precisely when the fragment is missing.
+
+    Gating on ``cfg.host_mode`` alone the way :func:`check_host_preflight` does
+    would instead fire on every Debian host that never enables the feature.
+    """
+    if not cfg.uninative:
+        return "[build] uninative is off; no host uninative tarball is wired in"
+    if not cfg.host_mode:
+        return "container build; the fragment's file:// mirror does not exist inside the image"
+    if not _host_is_arch_like():
+        return "host is not Arch-family; the providing package targets Arch only"
+    return None
+
+
+def _version_tuple(value: str) -> tuple[int, ...] | None:
+    """Split a dotted version into integer components, or None when non-numeric.
+
+    Integer-tuple comparison rather than string comparison because string order
+    ranks ``2.9`` above ``2.44``, which is the exact comparison the glibc
+    invariant makes. Deliberately no ``packaging`` dependency for a single
+    two-component comparison, matching the Docker version check's precedent.
+    """
+    parts = value.strip().split(".")
+    if not all(part.isdigit() for part in parts):
+        return None
+    return tuple(int(part) for part in parts)
+
+
+def _buildtools_sysroot_glibc(cfg: BuildConfig) -> tuple[str | None, str]:
+    """Resolve the glibc version of the pinned buildtools sysroot.
+
+    Returns ``(version, detail)`` where a None version means no sysroot glibc
+    could be resolved and ``detail`` says why, so the caller reports a SKIP
+    naming the reason instead of a verdict it cannot support.
+
+    The sysroot's own ``libc.so.6`` prints its release version when executed,
+    which is the version any native binary linked by that sysroot's gcc can emit
+    version nodes for. Located relative to the gcc :func:`_buildtools_gcc`
+    already resolves (``<sysroot>/usr/bin/gcc``) so both the already-sourced and
+    the env-script layouts land on the same sysroot root.
+    """
+    release_key = resolve_oe_core_release_key(cfg.workspace)
+    toolchain = detect_buildtools(release_key=release_key)
+    if not toolchain.present:
+        return None, f"no buildtools toolchain ({toolchain.detail})"
+    gcc = _buildtools_gcc(toolchain)
+    if gcc is None:
+        return None, f"buildtools present ({toolchain.detail}) but its native gcc is not locatable"
+    sysroot = gcc.parents[2]
+    candidates = (
+        sysroot / "lib" / "libc.so.6",
+        sysroot / "lib64" / "libc.so.6",
+        sysroot / "usr" / "lib" / "libc.so.6",
+    )
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            out = subprocess.run([str(candidate)], capture_output=True, text=True, timeout=10, check=False)
+        except OSError as exc:
+            return None, f"{candidate} is not runnable: {exc}"
+        found = re.search(r"release version (\d+(?:\.\d+)*)", out.stdout)
+        if found:
+            return found.group(1), str(candidate)
+        return None, f"{candidate} printed no recognizable release version"
+    return None, f"no libc.so.6 under {sysroot}"
+
+
+def check_uninative_fragment(cfg: BuildConfig) -> CheckResult:
+    """Assert the yocto-uninative-tarball fragment is installed when uninative is on.
+
+    ``_uninative_extra_overlays`` gates overlay selection on the fragment being a
+    file, so an absent package does not fail the build - it silently drops the
+    whole uninative wiring and the build proceeds with oe-core's own
+    UNINATIVE_MAXGLIBCVERSION cap, changing sstate signatures without a word.
+    The ``require`` inside the overlay only fails loudly in the window between
+    selection and parse, which that gate never opens. Preflight is therefore the
+    only place the silent drop is observable.
+    """
+    name = "uninative-fragment"
+    skip_reason = _uninative_gate(cfg)
+    if skip_reason is not None:
+        return _skip(name, Severity.INFO, skip_reason)
+
+    fragment = parse_uninative_fragment()
+    if not fragment.present:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"[build] uninative is on but {fragment.path} is absent, so the uninative overlay is "
+            "not selected and the wiring is silently skipped - the build would run against "
+            "oe-core's own glibc cap with different sstate signatures",
+            fix_hint="Install the yocto-uninative-tarball package, or set [build] uninative = false.",
+        )
+    if fragment.error is not None:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"the installed uninative fragment is incomplete: {fragment.error}",
+            fix_hint="Reinstall or rebuild yocto-uninative-tarball; its generated fragment is malformed.",
+        )
+    return _ok(
+        name,
+        Severity.BLOCK,
+        f"uninative fragment installed at {fragment.path} (version {fragment.version}, "
+        f"glibc ceiling {fragment.max_glibc})",
+    )
+
+
+def check_uninative_glibc(cfg: BuildConfig) -> CheckResult:
+    """Assert the uninative tarball's glibc is at least the buildtools sysroot's.
+
+    The tarball ships the dynamic loader every ``-native`` binary runs under, and
+    that loader can only resolve version nodes up to its own glibc. The
+    buildtools sysroot's gcc is what links those binaries, so its glibc is the
+    ceiling on the nodes they can emit. Tarball glibc below sysroot glibc means a
+    native binary can reference a symbol version its own loader does not have,
+    which surfaces as an unrelated-looking runtime failure deep in a do_compile.
+
+    This is NOT oe-core's comparison. ``uninative.bbclass:99`` compares the
+    tarball against the *host* glibc and the providing package's pacman hook
+    warns on the same pair at upgrade time; both are about whether uninative
+    stays enabled. This one is about whether the enabled tarball is new enough
+    for the toolchain, and must not be deduplicated against either.
+    """
+    name = "uninative-glibc"
+    skip_reason = _uninative_gate(cfg)
+    if skip_reason is not None:
+        return _skip(name, Severity.INFO, skip_reason)
+
+    fragment = parse_uninative_fragment()
+    if not fragment.present:
+        return _skip(name, Severity.INFO, f"{fragment.path} is not installed (see uninative-fragment)")
+    if fragment.error is not None:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"cannot verify the glibc invariant: {fragment.error}",
+            fix_hint="Reinstall or rebuild yocto-uninative-tarball; its generated fragment is malformed.",
+        )
+
+    sysroot_glibc, detail = _buildtools_sysroot_glibc(cfg)
+    if sysroot_glibc is None:
+        return _skip(name, Severity.INFO, f"buildtools sysroot glibc unresolved: {detail}")
+
+    pin = _version_tuple(fragment.max_glibc or "")
+    sysroot = _version_tuple(sysroot_glibc)
+    if pin is None or sysroot is None:
+        return _skip(
+            name,
+            Severity.INFO,
+            f"non-numeric glibc version (tarball {fragment.max_glibc!r}, sysroot {sysroot_glibc!r})",
+        )
+
+    if pin < sysroot:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"the uninative tarball caps glibc at {fragment.max_glibc}, but the buildtools sysroot "
+            f"that links every native binary ships glibc {sysroot_glibc} ({detail}); those binaries "
+            f"can emit GLIBC_{sysroot_glibc} version nodes that the tarball's own loader cannot "
+            "resolve, so the tarball's ceiling must be at least the sysroot's",
+            fix_hint=(
+                "Rebuild yocto-uninative-tarball against a glibc at least as new as the buildtools "
+                "sysroot's, or pin buildtools to a release built against an older glibc."
+            ),
+        )
+    if pin == sysroot:
+        return _ok(
+            name,
+            Severity.BLOCK,
+            f"uninative tarball glibc {fragment.max_glibc} exactly matches the buildtools sysroot's "
+            f"({detail}); the invariant holds with no headroom, so the next buildtools bump breaks it "
+            "unless the tarball is rebuilt in the same step",
+        )
+    return _ok(
+        name,
+        Severity.BLOCK,
+        f"uninative tarball glibc {fragment.max_glibc} is above the buildtools sysroot's "
+        f"{sysroot_glibc} ({detail}); the loader resolves every node those binaries can emit, and "
+        f"a buildtools bump stays safe up to glibc {fragment.max_glibc}",
+    )
+
+
+def check_uninative_checksum(cfg: BuildConfig) -> CheckResult:
+    """Assert the mirrored payload hashes to the checksum the fragment declares.
+
+    The comparison is fragment-declared checksum against the SHA-256 of the
+    tarball actually sitting in the fragment's own mirror. There is deliberately
+    nothing to compare against oe-core: ``yocto-uninative.inc:16`` assigns
+    ``UNINATIVE_CHECKSUM[x86_64] ?=`` (weak) while the fragment assigns it
+    plainly from local.conf, which parses first - so the fragment's value wins
+    outright, oe-core's is never consulted, and the two differing is the expected
+    state rather than a fault.
+
+    A mismatch or an absent payload is a BLOCK because uninative's fetch keys on
+    the checksum: bitbake would either refuse the tarball mid-parse or fall back
+    to a network fetch of a tarball this host's glibc was never validated against.
+    """
+    name = "uninative-checksum"
+    skip_reason = _uninative_gate(cfg)
+    if skip_reason is not None:
+        return _skip(name, Severity.INFO, skip_reason)
+
+    fragment = parse_uninative_fragment()
+    if not fragment.present:
+        return _skip(name, Severity.INFO, f"{fragment.path} is not installed (see uninative-fragment)")
+    if fragment.error is not None:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"cannot verify the payload checksum: {fragment.error}",
+            fix_hint="Reinstall or rebuild yocto-uninative-tarball; its generated fragment is malformed.",
+        )
+
+    url = fragment.url or ""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "file" or not parsed.path:
+        return _skip(name, Severity.INFO, f"UNINATIVE_URL {url!r} is not a local mirror; nothing to hash here")
+    payload = Path(parsed.path) / f"x86_64-nativesdk-libc-{fragment.version}.tar.xz"
+    if not payload.is_file():
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"the fragment points UNINATIVE_URL at {url} but {payload} is absent, so uninative "
+            "would fall back to a network fetch of a tarball this host's glibc was never "
+            "validated against",
+            fix_hint="Reinstall yocto-uninative-tarball to restore its mirrored payload.",
+        )
+
+    try:
+        with payload.open("rb") as handle:
+            digest = hashlib.file_digest(handle, "sha256")
+    except OSError as exc:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"cannot read the mirrored payload {payload}: {exc}",
+            fix_hint="Reinstall yocto-uninative-tarball to restore its mirrored payload.",
+        )
+    actual = digest.hexdigest()
+    if actual != fragment.checksum:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"the fragment declares UNINATIVE_CHECKSUM[x86_64] = {fragment.checksum} but "
+            f"{payload} hashes to {actual}; uninative keys its fetch on the declared value, so the "
+            "mirrored tarball would be rejected or silently replaced by a network fetch",
+            fix_hint="Reinstall or rebuild yocto-uninative-tarball so its fragment and payload agree.",
+        )
+    return _ok(
+        name,
+        Severity.BLOCK,
+        f"mirrored payload {payload} matches the fragment's declared checksum {actual}",
     )
 
 
@@ -3125,6 +3516,13 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_sstate_hash_leak,
     check_override_syntax,
     check_host_preflight,
+    # BLOCK x3: the host uninative tarball's wiring, glibc invariant, and payload
+    # integrity. All three self-skip unless [build] uninative is on in host mode
+    # on an Arch-family host, so they are host-pure and stay out of
+    # _DOCKER_CHECKS and _CLUSTER_CHECKS.
+    check_uninative_fragment,
+    check_uninative_glibc,
+    check_uninative_checksum,
     check_mold_compiler,
     check_central_hashserv,
     check_central_prserv,
@@ -3204,6 +3602,14 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "mold-compiler",
         ),
     ),
+    # Its own group rather than folded into "Host tuning": these read one
+    # installed package's fragment and report on a single wiring chain, so a
+    # reader diagnosing a uninative problem wants them adjacent rather than
+    # interleaved with sysctl and cgroup findings.
+    (
+        "Uninative wiring",
+        ("uninative-fragment", "uninative-glibc", "uninative-checksum"),
+    ),
     (
         "Workspace & build config",
         ("git-global-config", "kas-yaml-syntax", "override-syntax", "bitbake-override", "bitbake-locks"),
@@ -3250,6 +3656,9 @@ _CHECK_METADATA: tuple[tuple[CheckFunc, str, Severity], ...] = (
     (check_sstate_hash_leak, "sstate-hash-leak", Severity.WARN),
     (check_override_syntax, "override-syntax", Severity.BLOCK),
     (check_host_preflight, "host-preflight", Severity.BLOCK),
+    (check_uninative_fragment, "uninative-fragment", Severity.BLOCK),
+    (check_uninative_glibc, "uninative-glibc", Severity.BLOCK),
+    (check_uninative_checksum, "uninative-checksum", Severity.BLOCK),
     (check_mold_compiler, "mold-compiler", Severity.BLOCK),
     (check_central_hashserv, "central-hashserv", Severity.BLOCK),
     (check_central_prserv, "central-prserv", Severity.BLOCK),
