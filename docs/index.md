@@ -17,7 +17,7 @@
 | `stop` | [stop.md](stop.md) | Gracefully halt a running build (SIGINT, then escalate) |
 | `clean` | [clean.md](clean.md) | Remove the build directory |
 | `clean-cache` | [clean-cache.md](clean-cache.md) | Prune stale sstate and ccache entries by age |
-| `doctor` | [doctor.md](doctor.md) | Run pre-flight checks |
+| `doctor` | [doctor.md](doctor.md) | Run pre-flight checks (add `--post-build` to also scan a finished build's native tree) |
 | `triage` | [triage.md](triage.md) | Post-mortem a failed build |
 | `report` | [report.md](report.md) | Summarize a completed build run |
 | `insights` | [insights.md](insights.md) | Per-recipe/per-task analytics: sstate, timing, pressure, disk |
