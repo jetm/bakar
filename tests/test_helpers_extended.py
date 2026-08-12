@@ -279,6 +279,37 @@ def test_print_diagnosis_all_pass_prints_summary(capsys: pytest.CaptureFixture[s
     assert "2/2 checks passed" in err
 
 
+def test_print_diagnosis_all_pass_surfaces_a_message_carrying_detail(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An all-PASS run still shows what a long PASS message counted.
+
+    The ``uninative-leak`` narrowing rests on nothing being hidden - every
+    excluded dependency is counted and named in the verdict on PASS as well as
+    on FAIL and WARN. The all-PASS path prints no table, so without this the
+    counts reach ``result.message`` and never reach the operator. A short PASS
+    message stays quiet so the summary line is not buried.
+    """
+    detail = (
+        "no glibc version node above the uninative ceiling 2.41 in 36269 dynamically linked native "
+        "artifact(s) scanned under /build/tmp/work/x86_64-linux; 183 further declared dependenc(y/ies) "
+        "resolved to no file and are not counted as unchecked: 118 provided elsewhere under the work tree"
+    )
+    results = [
+        CheckResult(name="docker", severity=Severity.BLOCK, status=Status.PASS, message="ok"),
+        CheckResult(name="uninative-leak", severity=Severity.BLOCK, status=Status.PASS, message=detail),
+    ]
+
+    _print_diagnosis(results)
+
+    err = " ".join(capsys.readouterr().err.split())
+    assert "2/2 checks passed" in err
+    assert "uninative-leak" in err
+    assert "183 further declared dependenc(y/ies)" in err
+    assert "118 provided elsewhere under the work tree" in err
+    assert "docker" not in err
+
+
 def test_print_diagnosis_with_fail_renders_table_and_hint(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

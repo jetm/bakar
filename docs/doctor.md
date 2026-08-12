@@ -101,7 +101,7 @@ wiring took effect and that the raised ceiling is safe.
 | `uninative-dldir-links` | BLOCK | No cache entry under `<DL_DIR>/uninative` holds a dangling payload link | Repairs itself by removing the entry, which clears its `.done` stamp; re-run the build to refetch |
 | `uninative-mirror-hit` | WARN | The cached payload is a symlink into the fragment's own mirror rather than a network fetch | Confirm the mirror holds the payload and that `PREMIRRORS` is not overriding it |
 | `uninative-cluster-ceiling` | BLOCK | Every node on the shared mount resolved the same ceiling | Install the same `yocto-uninative-tarball` build on every node, then re-run doctor on each |
-| `uninative-leak` | BLOCK | No native artifact in the finished build's work tree requires a glibc version node above the ceiling, directly or through a `DT_NEEDED` dependency | `bitbake -c cleansstate` the named recipes, then find why the compile escaped the buildtools toolchain |
+| `uninative-leak` | BLOCK | No native artifact in the finished build's work tree requires a glibc version node above the ceiling, directly or through a `DT_NEEDED` dependency that resolves inside the permitted roots (see the confinement note below) | `bitbake -c cleansstate` the named recipes, then find why the compile escaped the buildtools toolchain |
 
 ### Why `uninative-fragment` blocks
 
@@ -205,6 +205,17 @@ directory was refused and none of them resolved. Containment is tested
 lexically before the filesystem is touched, so a refused candidate is never
 stat'd and cannot be told apart from a name that was looked for and not found.
 
+That refusal is not free. A refused candidate could have been a genuine leak: a
+dependency that only a run path outside the permitted roots would ever have
+found is no longer read at all, so if that dependency is what carries a node
+above the ceiling, the check now reports the edge out of scope - a WARN - where
+it used to block. The exposure is host-dependent. Where the same library is also
+installed under a permitted root, nothing is lost; where it lives only under a
+devtoolset, Nix or Homebrew-on-Linux prefix, the run path was the only route to
+it and that edge is given up. Read the table row above with this bound in mind:
+what the check asserts is that no artifact requires a node above the ceiling
+through an edge it was allowed to follow.
+
 That per-candidate rule is what decides the cost. A native recipe can bake an
 absolute `DT_RUNPATH` naming whichever work tree first produced its sstate
 package, and a shared `sstate_dir` republishes that binary into other build
@@ -234,9 +245,10 @@ finishes, and the skip message says so and points at
 inherited from the distro or from `local.conf`, where bakar's own setting reads
 false. When some dependency cannot be resolved it reports WARN naming it,
 because an unchecked dependency is not evidence of a clean tree; and a
-dependency whose candidate directories all lay outside the permitted roots is
-reported out of scope, which is a different fact from a library that was looked
-for and not found. When nothing was scanned *and* something was unreadable, the
+dependency is reported out of scope when at least one of the locations it named
+lay outside the permitted roots and none of the others resolved it, which is a
+different fact from a library that was looked for and not found. When nothing
+was scanned *and* something was unreadable, the
 unreadable paths travel with the skip rather than being dropped for a cause that
 does not explain them.
 
@@ -245,14 +257,20 @@ raise it, each justified by a counted class from a sweep of a real 236-recipe
 `build-qemuarm64` tree (118,549 `DT_NEEDED` entries, 188 of them unresolved): a
 soname the build itself provides elsewhere under the work tree, where the run
 path only names a staging location the file is not at and the walk reads that
-provider on its own (133); an artifact that is not a host-platform ELF and so
-cannot load under the uninative loader on any host, whatever it declares (36);
-and an artifact that requires no glibc version node at all, so it is not linked
-against the glibc this ceiling is about (14). Five of the 188 still raise WARN,
-and should. Nothing is hidden by the narrowing: every excluded dependency is
-still counted and named by class in the verdict message, on PASS, FAIL and WARN
-alike, and no class of it is ever applied to a dependency the confinement
-refused.
+provider on its own (118); an artifact that is not a host-platform ELF and so
+cannot load under the uninative loader on any host, whatever it declares (51);
+and an artifact that states no glibc version requirement of its own, so it is
+not the product of a native compile through the buildtools toolchain - every
+such compile emits at least one glibc node - and an edge it fails to resolve is
+not evidence about the output this ceiling governs (14). Read that third one as
+a judgement about which artifacts the gate is about, not as a deduction about
+their dependencies: an artifact's own empty node set says nothing about what its
+dependency requires, which is the same non-implication that keeps the
+`DT_NEEDED` walk alive above. The rest of the 188 are three still raising WARN,
+as they should, and two reported out of scope by the confinement. Nothing is
+hidden by the narrowing: every excluded dependency is still counted and named by
+class in the verdict message, on PASS, FAIL and WARN alike, and no class of it
+is ever applied to a dependency the confinement refused.
 
 The reader runs under a pinned `LC_ALL`/`LANGUAGE`. Every string the scan
 matches in `objdump`'s output - the `Version References:` and

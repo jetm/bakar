@@ -703,11 +703,29 @@ def _normalize_dispatch(
 # ---------------------------------------------------------------------------
 
 
+# Above this, a passing check's message is carrying evidence rather than
+# restating the condition it just confirmed. See _print_diagnosis.
+_PASS_NOTE_MIN_CHARS = 120
+
+
 def _print_diagnosis(results: list[CheckResult]) -> None:
     from bakar.commands import console
 
     if all(r.status is Status.PASS for r in results):
         console.print(f"doctor: {len(results)}/{len(results)} checks passed")
+        # The all-PASS path prints no table, so any detail a passing check
+        # carried would be lost here. The rule: surface a PASS message only
+        # when it is longer than _PASS_NOTE_MIN_CHARS. A check that merely
+        # confirms its own condition says so in a few words ("no stale locks or
+        # sockets"), and reprinting those would bury the summary line; a
+        # message that runs long is carrying counted evidence instead - the
+        # uninative-leak scan's artifact count and its per-class tally of the
+        # dependencies it chose not to report, whose whole safety argument is
+        # that nothing is hidden. Rendered with markup enabled, exactly as the
+        # table below renders it, because the message arrives pre-neutralized.
+        for r in results:
+            if len(r.message) > _PASS_NOTE_MIN_CHARS:
+                console.print(f"  [bold]{r.name}[/]: {r.message}")
         return
     table = Table(title="Pre-flight diagnosis", show_edge=False)
     table.add_column("Check", no_wrap=True)

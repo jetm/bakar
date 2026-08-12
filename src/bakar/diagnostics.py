@@ -29,7 +29,7 @@ import tempfile
 import time
 import tomllib
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -2267,13 +2267,57 @@ _HOST_LIB_DIRS: tuple[str, ...] = ("/usr/lib", "/usr/lib64", "/lib", "/lib64", "
 # so a systemically broken tree reports a readable verdict instead of megabytes.
 _LEAK_REPORT_LIMIT = 10
 
-# C0 (including ESC), DEL and C1. A soname is matched with ``\S+``, which admits
-# ESC, so an artifact can carry a full OSC sequence through the reader intact.
-_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# Everything stripped out of artifact-derived text, in one pass:
+#
+# * C0 (including ESC), DEL and C1. A soname is matched with ``\S+``, which
+#   admits ESC, so an artifact can carry a full OSC sequence through the reader
+#   intact.
+# * The surrogate block. ``os.walk`` and ``Path`` decode an undecodable
+#   filesystem byte with ``surrogateescape``, yielding a lone U+DC80-U+DCFF that
+#   no UTF-8 encoder will accept - and the doctor gate writes the report to
+#   ``diagnosis.txt`` BEFORE rendering it, so one such name raises
+#   ``UnicodeEncodeError`` there and takes the whole gate, and the build, with
+#   it rather than garbling a row.
+# * The Unicode ``Cf`` format characters: the bidi overrides (U+202A-U+202E,
+#   U+2066-U+2069) let a crafted name render as a different path, and the
+#   zero-width ones hide a difference entirely. ``re`` has no category escape,
+#   so the ranges are spelled out; a test walks the whole code space against
+#   ``unicodedata`` so a future assignment fails here instead of leaking.
+# * U+2028 and U+2029, which Rich renders as a line break - one crafted name
+#   splits a table cell into two rendered rows, which is how a forged finding
+#   gets its own line.
+# * The report's own entry separator (see ``_ENTRY_SEPARATOR``), so that a
+#   boundary between findings can only be produced by ``_leak_report``.
+_CONTROL_RE = re.compile(
+    "["
+    "\x00-\x1f\x7f-\x9f"
+    "\ud800-\udfff"
+    "\u00ad\u0600-\u0605\u061c\u06dd\u070f\u0890-\u0891\u08e2\u180e"
+    "\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb"
+    "\U000110bd\U000110cd\U00013430-\U0001343f\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
+    "\U000e0001\U000e0020-\U000e007f"
+    "\u2028\u2029"
+    "\u2022"
+    "]"
+)
 
-# Long enough for a real work-tree path (measured around 120 characters) with
-# room to spare, short enough that a crafted name cannot flood the report.
-_ARTIFACT_TEXT_LIMIT = 240
+# Bounds one artifact-derived string so a crafted name cannot flood a report the
+# operator has to read. Measured on a real native work tree: 3,520 of its ELF
+# artifacts exceed 240 characters and the longest path is 445, because
+# ``sysroot-destdir/`` embeds a second absolute copy of the work path and so
+# roughly doubles it. The bound sits well clear of that, and when it does fire
+# the ELISION takes the MIDDLE - a path truncated at its tail names a directory
+# rather than a file and matches nothing the operator can look up.
+_ARTIFACT_TEXT_LIMIT = 1024
+_ELISION = "..."
+
+# What separates one finding from the next in a report. ``_neutralized`` strips
+# this character from every artifact-derived string, so an entry boundary can
+# only be produced by ``_leak_report`` - a directory named
+# ``a) reaches GLIBC_2.99 via the artifact itself; `` otherwise renders one
+# leaked artifact as two findings, the second naming a library that was never
+# read.
+_ENTRY_SEPARATOR = " • "
 
 
 def _neutralized(value: object) -> str:
@@ -2284,10 +2328,12 @@ def _neutralized(value: object) -> str:
     the work tree, and ``_print_diagnosis`` hands the message to a markup-enabled
     Rich table. So a directory named ``foo[/]bar`` raises ``MarkupError`` and
     destroys the whole doctor report rather than one row, ``[on red blink]``
-    forges report formatting, and an ESC in a soname rewrites the operator's
-    terminal title. Three defences, in this order: strip the control characters,
-    bound the length, then escape markup - escaping last so the backslashes it
-    inserts are neither stripped nor counted against the bound.
+    forges report formatting, an ESC in a soname rewrites the operator's terminal
+    title, and an undecodable byte in a filename kills the gate at the point it
+    writes the report to disk. Three defences, in this order: strip the
+    characters ``_CONTROL_RE`` names, bound the length, then escape markup -
+    escaping last so the backslashes it inserts are neither stripped nor counted
+    against the bound.
 
     Applied where a message is BUILT, never inside ``_read_elf``: containment
     tests, the ``dep_cache`` key and node comparisons all have to keep comparing
@@ -2295,7 +2341,9 @@ def _neutralized(value: object) -> str:
     """
     text = _CONTROL_RE.sub("", str(value))
     if len(text) > _ARTIFACT_TEXT_LIMIT:
-        text = text[:_ARTIFACT_TEXT_LIMIT] + "..."
+        keep = _ARTIFACT_TEXT_LIMIT - len(_ELISION)
+        head = keep // 2
+        text = text[:head] + _ELISION + text[len(text) - (keep - head) :]
     return escape(text)
 
 
@@ -2378,7 +2426,10 @@ def _read_elf(reader: str, path: Path) -> _ElfInfo | None:
     """
     try:
         out = subprocess.run(
-            [reader, "-p", str(path)],
+            # "--" so the guarantee is local: every path reaching here is
+            # absolute today, but that invariant is established two call sites
+            # away and a name beginning with "-" would otherwise read as a flag.
+            [reader, "-p", "--", str(path)],
             capture_output=True,
             text=True,
             # Every string parsed out of this dump is an English bfd msgid; see
@@ -2455,19 +2506,55 @@ def _lexically_within(path: Path, roots: tuple[Path, ...]) -> bool:
     ever stat'd, so a refused candidate must be indistinguishable from a name
     the scan looked for and did not find. Containment is per path component -
     a string prefix test would admit ``/usr/libexec/...`` against ``/usr/lib``.
+
+    ``roots`` must already be normalized and symlink-resolved. Resolving them
+    here would be both a per-candidate cost on constants and, worse, a lie: this
+    stage runs before any filesystem access by design, so a root spelled through
+    a symlink has to have been canonicalised by the caller or a legitimate
+    in-root path is refused and silently falls through to the host libraries.
+    ``_resolve_roots`` is what does it, once, before the walk.
     """
     normalized = _normalized(path)
-    return any(normalized.is_relative_to(_normalized(root)) for root in roots)
+    return any(normalized.is_relative_to(root) for root in roots)
+
+
+def _resolve_roots(roots: Iterable[Path]) -> tuple[Path, ...]:
+    """Canonicalise containment roots once, for ``_lexically_within``/``_within_any``.
+
+    Every root the scan uses is spelled by whoever configured it - ``work`` comes
+    from ``abspath`` and the sanctioned trees from ``OECORE_NATIVE_SYSROOT`` or a
+    release directory - so none of them is guaranteed symlink-free. Resolving
+    them per candidate was roughly 1.4M redundant ``realpath`` calls on
+    constants over one real tree; resolving them here is once per scan.
+
+    BOTH spellings are kept, the one given and the resolved one, because the
+    lexical stage compares text and a candidate may legitimately arrive in
+    either. Dropping the given spelling refuses a real hit under
+    ``/usr/lib64`` on a host where that is a link to ``/usr/lib``, and the
+    candidate then falls through to whatever the next search directory holds -
+    silently rebinding the edge to the host libc and reporting a false leak with
+    no out-of-scope line to explain it. Dropping the resolved spelling is the
+    mirror failure for a sanctioned tree reached through a link. Admitting both
+    is not a widening: a root is trusted by construction, and the second stage
+    still re-tests the RESOLVED candidate against this same set.
+    """
+    both: list[Path] = []
+    for root in roots:
+        for spelling in (_normalized(root), _normalized(Path(os.path.realpath(root)))):
+            if spelling not in both:
+                both.append(spelling)
+    return tuple(both)
 
 
 def _resolve_needed(soname: str, search_dirs: list[str], permitted: tuple[Path, ...]) -> tuple[Path | None, bool]:
     """Resolve ``soname`` under ``search_dirs``, confined to ``permitted``.
 
-    Returns ``(path, refused)``, a tri-state: a path when the soname resolved,
-    ``(None, False)`` when every candidate was looked for and not found, and
-    ``(None, True)`` when a candidate was refused for landing outside the
-    permitted roots and nothing else resolved. The caller reports the last case
-    as out of scope, which is a different fact from a missing library.
+    ``permitted`` must come from ``_resolve_roots``. Returns ``(path, refused)``,
+    a tri-state: the resolved path when the soname resolved, ``(None, False)``
+    when every candidate was looked for and not found, and ``(None, True)`` when
+    a candidate was refused for landing outside the permitted roots and nothing
+    else resolved. The caller reports the last case as out of scope, which is a
+    different fact from a missing library.
 
     Both operands of the join come from the artifact's own ``.dynstr`` - the
     soname, and the run paths ``_runpath_dirs`` expands - so an unconfined join
@@ -2479,12 +2566,31 @@ def _resolve_needed(soname: str, search_dirs: list[str], permitted: tuple[Path, 
     demotes a genuine leak to a warning.
 
     A refused candidate directory only skips that candidate; the loop continues,
-    because a real artifact carries a foreign or CWD-relative RPATH ahead of the
-    host directories that resolve it fine.
+    because a real artifact carries a foreign RPATH ahead of the host directories
+    that resolve it fine.
+
+    The path returned is the RESOLVED one, and it is the value containment was
+    tested on. Returning the pre-``realpath`` spelling for the caller to resolve
+    again reopens the hole this closes: the second resolution is unconfined, and
+    it happens after the check, so swapping a symlink in between redirects the
+    reader onto an arbitrary path - measured, ``objdump`` ran on ``/etc/shadow``.
+    Resolving once is not a complete answer either, because ``objdump`` opens by
+    path afterwards and a swap of a path COMPONENT after the check can still
+    redirect it; closing that needs an fd handed to the reader and is out of
+    proportion to a check that reads a build's own work tree.
     """
     refused = False
     for directory in search_dirs:
         candidate = Path(directory) / soname
+        # A CWD-relative search directory can never be inside an absolute root,
+        # so it is skipped rather than refused: "the linker recorded a relative
+        # RPATH" is not the same fact as "this landed outside the scanned
+        # roots", and reporting it as the latter bypasses _unchecked_reason.
+        # Tested on the candidate rather than on the directory, so a
+        # path-qualified soname under a relative RPATH is still judged on where
+        # it actually lands.
+        if not candidate.is_absolute():
+            continue
         # Lexically first, and the order is load-bearing: resolving symlinks
         # first would stat the intermediate components of an attacker-named
         # path, a weaker oracle but still one.
@@ -2493,24 +2599,22 @@ def _resolve_needed(soname: str, search_dirs: list[str], permitted: tuple[Path, 
             continue
         # Then again with symlinks resolved, which catches a link inside a
         # permitted root pointing out of one.
-        if not _within_any(candidate, permitted):
+        final = Path(os.path.realpath(candidate))
+        if not _lexically_within(final, permitted):
             refused = True
             continue
-        if candidate.is_file():
-            return candidate, False
+        if final.is_file():
+            return final, False
     return None, refused
 
 
 def _within_any(path: Path, roots: tuple[Path, ...]) -> bool:
-    """True when ``path`` lies under one of ``roots``, symlinks resolved."""
-    resolved = Path(os.path.realpath(path))
-    for root in roots:
-        try:
-            if resolved.is_relative_to(Path(os.path.realpath(root))):
-                return True
-        except OSError:
-            continue
-    return False
+    """True when ``path`` lies under one of ``roots``, symlinks resolved.
+
+    ``roots`` must come from ``_resolve_roots``; see ``_lexically_within``.
+    """
+    resolved = _normalized(Path(os.path.realpath(path)))
+    return any(resolved.is_relative_to(root) for root in roots)
 
 
 def _nodes_above(nodes: frozenset[str], ceiling: tuple[int, ...]) -> list[str]:
@@ -2555,11 +2659,23 @@ _UNCHECKED_NO_GLIBC = "declared by an artifact stating no glibc requirement"
 def _host_platform_elf(path: Path) -> bool:
     """True when ``path``'s ELF header names the platform this build runs on.
 
-    Fails open - an unreadable or truncated header returns True - because this
-    only ever decides whether to stay silent about a dependency, and silence
-    must never be the default when the evidence is missing.
+    Fails open - an unreadable, truncated or non-regular file returns True -
+    because this only ever decides whether to stay silent about a dependency,
+    and silence must never be the default when the evidence is missing. Note the
+    polarity: the ``S_ISREG`` gate below returns the OPPOSITE of the one in
+    ``_is_elf``. There it excludes a FIFO from being read at all; here it means
+    "no evidence", and the caller reads ``if not _host_platform_elf(...)`` to
+    suppress a warning, so returning False for a pipe would silently drop
+    dependencies instead of reporting them.
+
+    Its own type gate rather than leaning on ``_is_elf``'s: the two are separated
+    by a whole ``_read_elf`` subprocess, so the window in which a regular file
+    could be replaced by a pipe is roughly five hundred times wider than the one
+    ``_is_elf`` closes, and the open below blocks until a writer appears.
     """
     try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return True
         with path.open("rb") as handle:
             head = handle.read(20)
     except OSError:
@@ -2570,25 +2686,21 @@ def _host_platform_elf(path: Path) -> bool:
     return head[7] in _HOST_ELF_OSABI and machine == _HOST_ELF_MACHINE
 
 
-def _provided_file_names(work: Path) -> frozenset[str]:
-    """Every file name present anywhere under ``work``.
+@dataclass(frozen=True)
+class _Unclassified:
+    """An unresolved dependency held back until the walk has finished.
 
-    Names only, never paths: the membership test this feeds is keyed on an
-    artifact-controlled soname, and a set lookup joins nothing onto a directory
-    and stats nothing, so it cannot reach a path the confinement in
-    ``_resolve_needed`` would refuse. That is the reason it is a name index
-    rather than a search - a "look for this soname under the tree" helper would
-    be a second unbounded join, reopening the door task 1.1 closed.
-
-    Costs one extra traversal of the work tree (measured 422k entries, a few
-    seconds) against the 36k reader invocations the scan itself spends. Built
-    before the walk rather than during it so a provider that sorts after its
-    consumer still counts, and so ``unresolved`` keeps its walk order.
+    ``_unchecked_reason``'s first predicate asks what the walk read elsewhere
+    under the work tree, and a provider that sorts after its consumer is only
+    known once the walk is over. Deferring the classification is what buys that,
+    and it costs nothing: these are held in ``unresolved``'s own list, in walk
+    order, and turned into their message in place.
     """
-    names: set[str] = set()
-    for _root, _dirs, files in os.walk(work, followlinks=False):
-        names.update(files)
-    return frozenset(names)
+
+    artifact: Path
+    recipe: str
+    soname: str
+    info: _ElfInfo
 
 
 def _unchecked_reason(
@@ -2602,26 +2714,37 @@ def _unchecked_reason(
     None means it must, and the caller reports it. This narrows the WARN
     trigger; it never lowers the severity, and it never applies to a dependency
     the confinement refused - an out-of-scope entry is the only operator-visible
-    output that confinement has, and the `shadow-native` shape design.md
-    Decision 6 describes would be swallowed by two of the predicates below if
-    they were ever allowed near it: it is staged under `sysroot-destdir/`, and
-    both sonames its foreign RUNPATH names exist inside its own work directory.
+    output that confinement has, and the `shadow-native` shape would be
+    swallowed by two of the predicates below if they were ever allowed near it:
+    it is staged under `sysroot-destdir/`, and both sonames its foreign RUNPATH
+    names exist inside its own work directory.
 
     Every predicate is justified by a counted class from a sweep of a real
     236-recipe tree (`build-qemuarm64`, 118,549 DT_NEEDED entries, 118,361
     resolved, 188 not). Attributed to the first predicate that matches:
 
-    * ``_UNCHECKED_PROVIDED`` - 133. The build itself ships a file of that name
-      somewhere under the work tree; the RPATH just names a staging location it
-      is not at (`image/`, `sysroot-destdir/`, `.libs/`, a cleaned recipe
-      sysroot). Nothing is lost by staying quiet: the walk reads that provider
-      on its own, so the edge is covered - just not through this join.
-    * ``_UNCHECKED_FOREIGN`` - 36. The artifact is not an x86-64 Linux ELF
+    * ``_UNCHECKED_PROVIDED`` - 118. The walk itself read an ELF of that name
+      somewhere else under the work tree; the RPATH just names a staging
+      location it is not at (`image/`, `sysroot-destdir/`, `.libs/`, a cleaned
+      recipe sysroot). Nothing is lost by staying quiet: that provider's own
+      nodes were compared against the ceiling on its own turn, so the edge is
+      covered - just not through this join.
+    * ``_UNCHECKED_FOREIGN`` - 51. The artifact is not an x86-64 Linux ELF
       (NetBSD/FreeBSD/Solaris libc, Android liblog and friends, all fixtures
       inside an upstream source tarball). It cannot load under the uninative
       loader on any host, so what it declares says nothing about the ceiling.
-    * ``_UNCHECKED_NO_GLIBC`` - 14. The artifact requires no glibc version node
-      at all, so it is not linked against the glibc this ceiling is about.
+    * ``_UNCHECKED_NO_GLIBC`` - 14. The artifact states no glibc version
+      requirement of its own, so it is not the product of a native compile
+      through the buildtools toolchain - every such compile emits at least one
+      glibc node - and an edge it fails to resolve is not evidence about output
+      this ceiling governs. NOTE what this does NOT say: it does not follow from
+      the artifact's own empty node set that the dependency has none. That
+      inference is the exact non-implication `docs/doctor.md` cites as the
+      reason the DT_NEEDED walk cannot be deleted, and a counterexample sits in
+      this very tree - an lldb minidump fixture with no nodes of its own
+      declaring `libstdc++.so.6`, which on this host carries nodes up to 2.38.
+      The predicate is a judgement about which artifacts the gate is about, not
+      a deduction about their dependencies.
 
     Five of the 188 keep raising WARN, and should. Three reach this function and
     are reported as resolving to no file: `libselinux.so.1` and `libcallback1.so`
@@ -2631,17 +2754,16 @@ def _unchecked_reason(
     RUNPATH the confinement refuses, so they are reported out of scope instead.
     They are inside the 188 (before confinement they resolved to no file, like
     the rest), just attributed elsewhere: a classification that does not model
-    the refusal will score them under ``_UNCHECKED_FOREIGN`` and read 38 there
+    the refusal will score them under ``_UNCHECKED_FOREIGN`` and read 53 there
     and no separate term, which sums to the same total.
 
-    133 + 36 + 14 + 3 + 2 = 188.
+    118 + 51 + 14 + 3 + 2 = 188.
 
-    Distinct and NOT in that sum: the foreign-RPATH edges design.md Decision 6
-    accepts as the confinement's cost. Those resolve today, so confinement adds
-    them as new out-of-scope reports rather than reclassifying an existing miss.
-    On this host they number ZERO, not the four Decision 6 measured -
-    `shadow-native`'s `libsubid.so.5` does carry an absolute RUNPATH into a
-    foreign build directory, but refusal is per candidate directory, so
+    Distinct and NOT in that sum: the foreign-RPATH edges the confinement gives
+    up. Those resolve today, so confinement adds them as new out-of-scope
+    reports rather than reclassifying an existing miss. On this host they number
+    ZERO - `shadow-native`'s `libsubid.so.5` does carry an absolute RUNPATH into
+    a foreign build directory, but refusal is per candidate directory, so
     `libattr.so.1` and `libbsd.so.0` resolve under `/usr/lib` on the next
     candidate and never become out-of-scope reports at all. Expect that count to
     move with what the host has installed.
@@ -2691,18 +2813,35 @@ def _scan_native_tree(
 
     Dependency results are cached by resolved path so a libc referenced by five
     hundred artifacts is read once.
+
+    The provider index ``_unchecked_reason`` consults is accumulated by this one
+    walk rather than by a pre-pass, and holds only names the walk actually READ:
+    a non-symlink ELF regular file, or a symlink to one inside the tree. A
+    pre-pass over every name under ``work`` was both a second full traversal
+    (2,329,148 entries, 1.3 seconds, 43 MB) and a false claim - of its 133
+    suppressions, 105 named nothing the walk ever read and 15 named no ELF at
+    all, among them 68 zero-byte `libc++.so` fixtures. Names only, never paths:
+    the membership test is keyed on an artifact-controlled soname, and a set
+    lookup joins nothing onto a directory and stats nothing, so it cannot reach
+    a path the confinement in ``_resolve_needed`` refuses. A "search the tree
+    for this soname" helper would be exactly that second unbounded join.
     """
     leaks: list[_NativeLeak] = []
-    unresolved: list[str] = []
+    # Holds finished message lines and, in walk order among them, the
+    # dependencies whose classification needs the finished provider index.
+    pending: list[str | _Unclassified] = []
     excluded: dict[str, int] = {}
     dep_cache: dict[Path, frozenset[str] | None] = {}
     scanned = 0
-    provided = _provided_file_names(work)
+    provided: set[str] = set()
     # The only places a declared dependency may resolve to. Fixed before the
     # walk and never derived from an artifact: a root read out of an artifact's
     # own RUNPATH, or matched by work-tree path shape, would be a root any local
-    # user can satisfy, which is the oracle this closes.
-    permitted: tuple[Path, ...] = tuple(Path(d) for d in _HOST_LIB_DIRS) + sanctioned + (work,)
+    # user can satisfy, which is the oracle this closes. Symlinks resolved here,
+    # once, because the lexical stage of the confinement cannot do it later.
+    work_root = _resolve_roots([work])
+    sanctioned = _resolve_roots(sanctioned)
+    permitted: tuple[Path, ...] = _resolve_roots(Path(d) for d in _HOST_LIB_DIRS) + sanctioned + work_root
     for root, dirs, files in os.walk(work, followlinks=False):
         # Sorted at the source rather than on the accumulated findings: the
         # report truncates at _LEAK_REPORT_LIMIT, so readdir order would decide
@@ -2714,13 +2853,23 @@ def _scan_native_tree(
         files.sort()
         for filename in files:
             artifact = Path(root) / filename
-            # Symlinks are skipped rather than followed: the target is walked on
-            # its own, and following would double the reader invocations.
-            if artifact.is_symlink() or not _is_elf(artifact):
+            # Symlinks are not read: the target is walked on its own, and
+            # following would double the reader invocations. The NAME still
+            # counts as provided when the target is an ELF inside the tree,
+            # because that is precisely the case where the walk reads it - a
+            # soname is usually spelled by the versioned symlink beside the
+            # real file (`libmicrohttpd.so.12` -> `libmicrohttpd.so.12.0.2`).
+            if artifact.is_symlink():
+                target = Path(os.path.realpath(artifact))
+                if _lexically_within(target, work_root) and _is_elf(target):
+                    provided.add(filename)
                 continue
+            if not _is_elf(artifact):
+                continue
+            provided.add(filename)
             info = _read_elf(reader, artifact)
             if info is None:
-                unresolved.append(f"{_neutralized(artifact)} could not be read by {reader}")
+                pending.append(f"{_neutralized(artifact)} could not be read by {reader}")
                 continue
             if not info.dynamic:
                 # A relocatable .o or a static binary. It names no version node
@@ -2741,33 +2890,31 @@ def _scan_native_tree(
                 dependency, refused = _resolve_needed(soname, search_dirs, permitted)
                 if dependency is None:
                     if refused:
-                        unresolved.append(
+                        pending.append(
                             f"{_neutralized(artifact)} (recipe {_neutralized(recipe)}) "
                             f"declares {_neutralized(soname)}, "
                             f"which lands outside the scanned roots and is out of scope"
                         )
                     else:
-                        # Only ever consulted for an entry the scan looked for
-                        # and did not find. A refused one took the branch above
-                        # and is never offered here.
-                        reason = _unchecked_reason(artifact, soname, info, provided)
-                        if reason is not None:
-                            excluded[reason] = excluded.get(reason, 0) + 1
-                            continue
-                        unresolved.append(
-                            f"{_neutralized(artifact)} (recipe {_neutralized(recipe)}) "
-                            f"declares {_neutralized(soname)}, which resolves to no file"
-                        )
+                        # Held back, never classified here: a provider that
+                        # sorts after its consumer is not in `provided` yet.
+                        # A refused entry took the branch above and is never
+                        # offered to `_unchecked_reason` at all.
+                        pending.append(_Unclassified(artifact=artifact, recipe=recipe, soname=soname, info=info))
                     continue
                 if _within_any(dependency, sanctioned):
                     continue
-                resolved = Path(os.path.realpath(dependency))
+                # Already the resolved path, and already the value the
+                # confinement was tested on - see _resolve_needed. Resolving it
+                # a second time here is what let a swapped symlink steer the
+                # reader onto an arbitrary path after the check had passed.
+                resolved = dependency
                 if resolved not in dep_cache:
                     dep_info = _read_elf(reader, resolved)
                     dep_cache[resolved] = dep_info.nodes if dep_info is not None else None
                 dep_nodes = dep_cache[resolved]
                 if dep_nodes is None:
-                    unresolved.append(
+                    pending.append(
                         f"{_neutralized(artifact)} (recipe {_neutralized(recipe)}) "
                         f"declares {_neutralized(soname)} at {_neutralized(resolved)}, "
                         f"which {reader} could not read"
@@ -2785,15 +2932,38 @@ def _scan_native_tree(
                     )
                     for node in _nodes_above(dep_nodes, ceiling)
                 )
+    unresolved: list[str] = []
+    frozen = frozenset(provided)
+    for item in pending:
+        if isinstance(item, str):
+            unresolved.append(item)
+            continue
+        reason = _unchecked_reason(item.artifact, item.soname, item.info, frozen)
+        if reason is not None:
+            excluded[reason] = excluded.get(reason, 0) + 1
+            continue
+        unresolved.append(
+            f"{_neutralized(item.artifact)} (recipe {_neutralized(item.recipe)}) "
+            f"declares {_neutralized(item.soname)}, which resolves to no file"
+        )
     return leaks, unresolved, scanned, excluded
 
 
 def _leak_report(items: list[str]) -> str:
-    """Join finding lines, summarizing the tail past ``_LEAK_REPORT_LIMIT``."""
+    """Join finding lines, summarizing the tail past ``_LEAK_REPORT_LIMIT``.
+
+    The join is what makes an entry boundary, so the separator has to be a
+    character no entry can contain - otherwise a directory named
+    ``a) reaches GLIBC_2.99 via the artifact itself; `` renders one leaked
+    artifact as two findings, the second naming a library nothing ever read,
+    with only the header's count as a tell. ``_neutralized`` strips
+    ``_ENTRY_SEPARATOR``'s character from every artifact-derived string, so a
+    boundary can only come from here.
+    """
     if len(items) <= _LEAK_REPORT_LIMIT:
-        return "; ".join(items)
-    head = "; ".join(items[:_LEAK_REPORT_LIMIT])
-    return f"{head}; and {len(items) - _LEAK_REPORT_LIMIT} more"
+        return _ENTRY_SEPARATOR.join(items)
+    head = _ENTRY_SEPARATOR.join(items[:_LEAK_REPORT_LIMIT])
+    return f"{head}{_ENTRY_SEPARATOR}and {len(items) - _LEAK_REPORT_LIMIT} more"
 
 
 def check_uninative_leak(cfg: BuildConfig) -> CheckResult:

@@ -968,9 +968,11 @@ def test_bare_soname_under_a_permitted_root_still_resolves(tmp_path: Path) -> No
     libdir.mkdir(parents=True)
     (libdir / "libz.so.1").write_bytes(b"\x7fELF")
 
-    resolved, refused = diagnostics._resolve_needed("libz.so.1", [str(libdir)], (libdir,))
+    resolved, refused = diagnostics._resolve_needed("libz.so.1", [str(libdir)], diagnostics._resolve_roots([libdir]))
 
-    assert resolved == libdir / "libz.so.1"
+    # realpath on both sides: _resolve_needed returns the RESOLVED path, and
+    # tmp_path is only symlink-free by accident of this host.
+    assert resolved == Path(os.path.realpath(libdir / "libz.so.1"))
     assert refused is False
 
 
@@ -979,17 +981,17 @@ def test_path_qualified_soname_inside_a_root_resolves(tmp_path: Path) -> None:
     """A path-qualified ``DT_NEEDED`` is legal ELF and must still resolve.
 
     GNU ld emits it for any library linked by absolute path with no
-    ``DT_SONAME``. Refusing it outright - the guard reverted in ``582087f`` -
-    demotes a genuine leak from BLOCK to WARN.
+    ``DT_SONAME``. Refusing it outright - a guard on the soname containing a path
+    separator, tried once and reverted - demotes a genuine leak from BLOCK to WARN.
     """
     work = tmp_path / "work"
     target = work / "foo-native" / "1.0" / "libbar.so"
     target.parent.mkdir(parents=True)
     target.write_bytes(b"\x7fELF")
 
-    resolved, refused = diagnostics._resolve_needed(str(target), ["/usr/lib"], (work,))
+    resolved, refused = diagnostics._resolve_needed(str(target), ["/usr/lib"], diagnostics._resolve_roots([work]))
 
-    assert resolved == target
+    assert resolved == Path(os.path.realpath(target))
     assert refused is False
 
 
@@ -1005,9 +1007,11 @@ def test_one_refused_candidate_does_not_abort_the_lookup(tmp_path: Path) -> None
     libdir.mkdir(parents=True)
     (libdir / "libz.so.1").write_bytes(b"\x7fELF")
 
-    resolved, refused = diagnostics._resolve_needed("libz.so.1", ["/etc", "../relative", str(libdir)], (libdir,))
+    resolved, refused = diagnostics._resolve_needed(
+        "libz.so.1", ["/etc", "../relative", str(libdir)], diagnostics._resolve_roots([libdir])
+    )
 
-    assert resolved == libdir / "libz.so.1"
+    assert resolved == Path(os.path.realpath(libdir / "libz.so.1"))
     assert refused is False
 
 
@@ -1021,7 +1025,7 @@ def test_symlink_out_of_a_permitted_root_is_refused(tmp_path: Path) -> None:
     (outside / "libz.so.1").write_bytes(b"\x7fELF")
     (libdir / "libz.so.1").symlink_to(outside / "libz.so.1")
 
-    resolved, refused = diagnostics._resolve_needed("libz.so.1", [str(libdir)], (libdir,))
+    resolved, refused = diagnostics._resolve_needed("libz.so.1", [str(libdir)], diagnostics._resolve_roots([libdir]))
 
     assert resolved is None
     assert refused is True
@@ -1162,8 +1166,36 @@ def test_neutralized_bounds_length() -> None:
     """One crafted name must not flood a report the operator has to read."""
     rendered = diagnostics._neutralized("x" * 5000)
 
-    assert len(rendered) == diagnostics._ARTIFACT_TEXT_LIMIT + len("...")
-    assert rendered.endswith("...")
+    assert len(rendered) == diagnostics._ARTIFACT_TEXT_LIMIT
+    assert diagnostics._ELISION in rendered
+
+
+@pytest.mark.unit
+def test_the_bound_clears_a_real_work_tree_path() -> None:
+    """A real path must never be truncated: the truncation names nothing on disk.
+
+    Measured on one native work tree, 3,520 ELF artifacts exceeded the old
+    240-character bound and the longest path ran to 445 - ``sysroot-destdir/``
+    embeds a second absolute copy of the work path and so roughly doubles it.
+    """
+    longest_measured = "/" + "a" * 444
+
+    assert diagnostics._neutralized(longest_measured) == longest_measured
+
+
+@pytest.mark.unit
+def test_the_bound_elides_the_middle_not_the_tail() -> None:
+    """The basename survives, so an over-long name is still recognisable.
+
+    Lopping off the tail leaves a directory prefix that matches nothing the
+    operator can look up, and reads as if that were the whole path.
+    """
+    crafted = "/work/" + "x" * 5000 + "/libcrafted.so.1"
+
+    rendered = diagnostics._neutralized(crafted)
+
+    assert rendered.startswith("/work/xxx")
+    assert rendered.endswith("/libcrafted.so.1")
 
 
 @pytest.mark.unit
@@ -1352,8 +1384,7 @@ def test_a_tree_of_only_fifos_skips_rather_than_passing(monkeypatch: pytest.Monk
 # The predicates are what these tests pin. The two things that must NOT happen
 # are that a genuinely missing library goes quiet, and that an entry the
 # confinement refused is swallowed - the second is not hypothetical, because the
-# `shadow-native` shape design.md Decision 6 describes matches two predicates on
-# its face.
+# `shadow-native` shape matches two predicates on its face.
 
 
 @pytest.mark.unit
@@ -1378,14 +1409,22 @@ def test_a_dependency_matching_no_predicate_still_warns(monkeypatch: pytest.Monk
 def test_a_soname_the_build_provides_elsewhere_is_not_unchecked(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The RPATH names a staging location; the walk reads the provider anyway."""
+    """The RPATH names a staging location; the walk reads the provider anyway.
+
+    The provider is a real ELF, and that is the whole justification: the index
+    holds only what the walk READ, so a name carried by a script, a stamp or a
+    zero-byte fixture must NOT suppress anything - see
+    ``test_a_name_carried_by_no_elf_does_not_suppress_the_warning``. Both
+    artifacts here declare the soname and both are excluded, which is why the
+    count is two.
+    """
     _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
     cfg = _cfg(tmp_path)
     work = _work_tree(cfg)
     _place(work, "readline-native", _CLEAN)
     provider = work / "ncurses-native" / "1.0" / "recipe-sysroot-native" / "usr" / "lib"
     provider.mkdir(parents=True)
-    (provider / "libncurses.so.5").write_bytes(b"placed by a sibling native recipe")
+    shutil.copy2(_CLEAN, provider / "libncurses.so.5")
     monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
     monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libncurses.so.5",)))
 
@@ -1393,7 +1432,7 @@ def test_a_soname_the_build_provides_elsewhere_is_not_unchecked(
 
     assert result.status is Status.PASS
     assert "libncurses.so.5" not in result.message
-    assert "1 provided elsewhere under the work tree" in result.message
+    assert "2 provided elsewhere under the work tree" in result.message
 
 
 @pytest.mark.unit
@@ -1451,7 +1490,9 @@ def test_an_out_of_scope_dependency_survives_every_predicate(monkeypatch: pytest
     own = _work_tree(cfg) / "shadow-native" / "4.18" / "image" / "usr" / "lib"
     own.mkdir(parents=True)
     for soname in ("libattr.so.1", "libbsd.so.0"):
-        (own / soname).write_bytes(b"shadow-native's own copy")
+        # Real ELFs, or the provided-elsewhere predicate would not fit them at
+        # all and the test would stop covering the trap it is named for.
+        shutil.copy2(_CLEAN, own / soname)
     monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
     monkeypatch.setattr(
         diagnostics,
@@ -1550,7 +1591,7 @@ def test_the_block_verdict_records_the_exclusion_too(monkeypatch: pytest.MonkeyP
     _place(work, "zlib-native", _CLEAN)
     provider = work / "ncurses-native" / "1.0" / "recipe-sysroot-native" / "usr" / "lib"
     provider.mkdir(parents=True)
-    (provider / "libncurses.so.5").write_bytes(b"placed by a sibling native recipe")
+    shutil.copy2(_CLEAN, provider / "libncurses.so.5")
     monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
     monkeypatch.setattr(
         diagnostics,
@@ -1562,4 +1603,483 @@ def test_the_block_verdict_records_the_exclusion_too(monkeypatch: pytest.MonkeyP
 
     assert result.status is Status.FAIL
     assert result.severity is Severity.BLOCK
-    assert "1 provided elsewhere under the work tree" in result.message
+    assert "2 provided elsewhere under the work tree" in result.message
+
+
+# --- what neutralization has to survive on the way OUT of the process --------
+#
+# Everything below fails on an encode or on a rendered layout, not on a
+# substring of ``r.message``. ``_render`` writes into an ``io.StringIO``, which
+# holds ``str`` and never encodes, so it CANNOT catch a character that is only
+# fatal at encode time - and the doctor gate encodes first, in
+# ``diag_path.write_text``, before anything is rendered at all.
+
+
+@pytest.mark.unit
+def test_neutralized_strips_every_format_character() -> None:
+    """Walks the whole code space against ``unicodedata`` rather than a sample.
+
+    ``_CONTROL_RE`` spells the ``Cf`` ranges out because ``re`` has no category
+    escape, so the class is a snapshot of one Unicode version. This is what
+    turns the next assignment into a failure here instead of a bidi override
+    reaching the operator's terminal.
+    """
+    import unicodedata
+
+    missed = [
+        code
+        for code in range(0x110000)
+        if unicodedata.category(chr(code)) == "Cf" and diagnostics._CONTROL_RE.sub("", chr(code)) != ""
+    ]
+
+    assert missed == [], [hex(code) for code in missed]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "char",
+    ["\u202e", "\u202d", "\u202b", "\u2066", "\u2069", "\u200b", "\u200e", "\u200f", "\u00ad", "\ufeff"],
+    ids=["rlo", "lro", "rle", "lri", "pdi", "zwsp", "lrm", "rlm", "shy", "bom"],
+)
+def test_neutralized_strips_the_bidi_and_zero_width_controls(char: str) -> None:
+    """A name that renders as a different path is a forged finding, not a garbled one."""
+    assert diagnostics._neutralized(f"lib{char}z.so") == "libz.so"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("char", ["\u2028", "\u2029"], ids=["ls", "ps"])
+def test_a_line_separator_does_not_split_a_rendered_row(monkeypatch: pytest.MonkeyPatch, char: str) -> None:
+    """Rich breaks the line on these, so one crafted name would render as two rows."""
+    assert diagnostics._neutralized(f"lib{char}z.so") == "libz.so"
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_an_undecodable_filename_does_not_kill_the_doctor_gate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A filesystem byte that is not UTF-8 must not take the gate down with it.
+
+    ``os.walk`` decodes such a byte with ``surrogateescape``, yielding a lone
+    surrogate that no UTF-8 encoder accepts. ``_run_doctor_gate`` writes the
+    report to ``diagnosis.txt`` BEFORE rendering it, so an unstripped surrogate
+    raises ``UnicodeEncodeError`` there and aborts the gate and the build.
+
+    Rendering through ``io.StringIO`` cannot catch this: a ``StringIO`` holds
+    ``str`` and never encodes. Both halves below therefore encode for real - a
+    ``write_text`` to disk, and a console over a UTF-8 byte stream.
+    """
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    target_dir = _work_tree(cfg) / os.fsdecode(b"zlib\xff-native") / "1.0"
+    target_dir.mkdir(parents=True)
+    shutil.copy2(_CLEAN, target_dir / _CLEAN.name)
+    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libbakar-absent.so.9",)))
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    (tmp_path / "diagnosis.txt").write_text(result.message)
+    assert result.fix_hint is not None
+    (tmp_path / "hint.txt").write_text(result.fix_hint)
+
+    from rich.console import Console
+
+    from bakar.commands._helpers import _print_diagnosis
+
+    stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", write_through=True)
+    console = Console(file=stream, width=400, force_terminal=False)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("bakar.commands.console", console)
+        _print_diagnosis([result])
+
+
+@pytest.mark.unit
+def test_a_surrogate_is_stripped_rather_than_replaced() -> None:
+    """The whole surrogate block goes, not just the ``surrogateescape`` sub-range."""
+    assert diagnostics._neutralized("lib\udcffz.so") == "libz.so"
+    assert diagnostics._neutralized("lib\ud800z.so") == "libz.so"
+    diagnostics._neutralized("lib\udcffz.so").encode("utf-8")
+
+
+# --- the report's entry boundary --------------------------------------------
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_a_crafted_artifact_path_cannot_forge_a_second_finding(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """One leaked artifact must render as one finding, whatever it is named.
+
+    Measured: a directory named ``a) reaches GLIBC_2.99 via the artifact
+    itself; `` (trailing space) turned one leak into two report entries under a
+    ``"; "`` join, the fabricated one naming ``/usr/lib/libc.so.6``, with only
+    the header count as a tell. The soname is not a vector - ``_ELF_NEEDED_RE``
+    drops any name containing whitespace - but a path component carries it.
+    """
+    _patch_host(monkeypatch, tmp_path, max_glibc="2.0")
+    cfg = _cfg(tmp_path)
+    forged = "a) reaches GLIBC_2.99 via the artifact itself; "
+    target_dir = _work_tree(cfg) / forged / "1.0"
+    target_dir.mkdir(parents=True)
+    shutil.copy2(_CLEAN, target_dir / _CLEAN.name)
+    monkeypatch.setattr(
+        diagnostics,
+        "_read_elf",
+        lambda reader, path: diagnostics._ElfInfo(dynamic=True, nodes=frozenset({"2.99"}), needed=(), runpaths=()),
+    )
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert result.message.count(diagnostics._ENTRY_SEPARATOR) == 0
+    assert "1 glibc version node(s)" in result.message
+
+
+@pytest.mark.unit
+def test_the_entry_separator_cannot_survive_neutralization() -> None:
+    """The invariant the boundary rests on, stated as one assertion."""
+    separator = diagnostics._ENTRY_SEPARATOR.strip()
+
+    assert separator
+    assert separator not in diagnostics._neutralized(f"lib{separator}z.so")
+
+
+@pytest.mark.unit
+def test_leak_report_separates_on_the_unforgeable_character() -> None:
+    """Two entries, two boundaries; the tail summary uses the same separator."""
+    joined = diagnostics._leak_report(["one", "two"])
+
+    assert joined == f"one{diagnostics._ENTRY_SEPARATOR}two"
+
+    truncated = diagnostics._leak_report([str(index) for index in range(diagnostics._LEAK_REPORT_LIMIT + 3)])
+
+    assert truncated.endswith(f"{diagnostics._ENTRY_SEPARATOR}and 3 more")
+
+
+# --- resolution is done ONCE, and the resolved value is what is used ---------
+
+
+@pytest.mark.unit
+def test_resolve_needed_returns_the_resolved_path(tmp_path: Path) -> None:
+    """The caller must not have to resolve again - see the TOCTOU note below."""
+    libdir = tmp_path / "usr" / "lib"
+    libdir.mkdir(parents=True)
+    real = tmp_path / "usr" / "lib" / "libz.so.1.2.13"
+    real.write_bytes(b"\x7fELF")
+    (libdir / "libz.so.1").symlink_to(real)
+
+    resolved, refused = diagnostics._resolve_needed("libz.so.1", [str(libdir)], diagnostics._resolve_roots([tmp_path]))
+
+    assert refused is False
+    assert resolved == Path(os.path.realpath(real))
+
+
+@pytest.mark.unit
+def test_the_scan_never_resolves_a_dependency_a_second_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A second ``realpath`` at the call site is unconfined and lands after the check.
+
+    Reproduced before the fix: with the un-resolved candidate returned and
+    re-resolved by ``_scan_native_tree``, a symlink swapped between the two
+    steps put ``objdump`` on ``/etc/shadow``. The reader still opens by path
+    afterwards, so a swap of a path COMPONENT can still redirect it; closing
+    that needs an fd handed to the reader.
+
+    Spied rather than read out of ``inspect.getsource``: a source-text
+    assertion only sees a literal in one function body, so it cannot observe a
+    re-resolution reached through a helper and would keep passing after a
+    refactor moved one there.
+    """
+    seen: list[str] = []
+    real = os.path.realpath
+
+    def recording(path: object, *args: object, **kwargs: object) -> str:
+        seen.append(str(path))
+        return real(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    libdir = Path("/usr/lib")
+    monkeypatch.setattr(os.path, "realpath", recording)
+    resolved, refused = diagnostics._resolve_needed("libc.so.6", [str(libdir)], diagnostics._resolve_roots([libdir]))
+
+    assert refused is False
+    assert resolved is not None
+    settled = str(resolved)
+    assert seen.count(settled) <= 1, f"the settled dependency path was resolved again: {seen}"
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_a_swap_after_confinement_never_reaches_the_reader(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The reader must be handed the path confinement tested, not a later reading of it.
+
+    The isolated test above pins ``_resolve_needed``; this one pins the CALLER,
+    which is where the defect actually was. A second ``realpath`` in
+    ``_scan_native_tree`` cannot be caught by counting resolutions, because
+    without a swap it returns the same path - so simulate the swap: every
+    resolution of the settled dependency after the first returns a poisoned
+    path. If the caller re-resolves, that poisoned path is what it reads.
+    """
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    work = _work_tree(cfg)
+    _place(work, "zlib-native", _CLEAN)
+    hostlib = tmp_path / "hostlib"
+    hostlib.mkdir()
+    shutil.copy2(_CLEAN, hostlib / "libz.so.1")
+    poisoned = str(tmp_path / "poisoned")
+
+    settled = os.path.realpath(hostlib / "libz.so.1")
+    real = os.path.realpath
+    resolutions: list[str] = []
+
+    def swapping(path: object, *args: object, **kwargs: object) -> str:
+        out = real(path, *args, **kwargs)  # type: ignore[arg-type]
+        if out == settled:
+            resolutions.append(out)
+            if len(resolutions) > 1:
+                return poisoned
+        return out
+
+    read: list[str] = []
+    crafted = _crafted_reader(("libz.so.1",))
+
+    def recording_reader(reader: str, path: Path) -> diagnostics._ElfInfo | None:
+        read.append(str(path))
+        return crafted(reader, path)
+
+    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", (str(hostlib),))
+    monkeypatch.setattr(diagnostics, "_read_elf", recording_reader)
+    monkeypatch.setattr(os.path, "realpath", swapping)
+
+    diagnostics.check_uninative_leak(cfg)
+
+    assert settled in read, "the dependency was never read, so the test proves nothing"
+    assert poisoned not in read, "the reader was handed a path resolved after the confinement check"
+
+
+# --- what the provider index may and may not contain ------------------------
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_a_name_carried_by_no_elf_does_not_suppress_the_warning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The index holds what the walk READ, so a stamp of that name proves nothing.
+
+    Measured against a name-only index over one real tree: of 133 suppressions,
+    105 named nothing the walk ever read and 15 named no ELF at all - 68
+    zero-byte ``libc++.so`` fixtures and a WebAssembly ``libdl.so`` stub among
+    them. The claim in the suppression's own wording, that the walk reads the
+    provider on its own, was false for those.
+    """
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    work = _work_tree(cfg)
+    _place(work, "readline-native", _CLEAN)
+    decoy = work / "ncurses-native" / "1.0" / "image" / "usr" / "lib"
+    decoy.mkdir(parents=True)
+    (decoy / "libncurses.so.5").write_bytes(b"")
+    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libncurses.so.5",)))
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.WARN
+    assert "declares libncurses.so.5, which resolves to no file" in result.message
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_a_symlink_to_an_elf_in_the_tree_counts_as_provided(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A soname is usually spelled by the versioned link, not by the real file.
+
+    ``libmicrohttpd.so.12`` -> ``libmicrohttpd.so.12.0.2`` is the shape, and the
+    walk does read the target - so the name is covered even though the link
+    itself is never opened.
+    """
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    work = _work_tree(cfg)
+    _place(work, "consumer-native", _CLEAN)
+    libdir = work / "libmicrohttpd-native" / "1.0" / "image" / "usr" / "lib"
+    libdir.mkdir(parents=True)
+    shutil.copy2(_CLEAN, libdir / "libmicrohttpd.so.12.0.2")
+    (libdir / "libmicrohttpd.so.12").symlink_to(libdir / "libmicrohttpd.so.12.0.2")
+    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libmicrohttpd.so.12",)))
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert result.status is Status.PASS
+    assert "provided elsewhere under the work tree" in result.message
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_a_symlink_out_of_the_tree_does_not_count_as_provided(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The walk does not read a target outside the work tree, so it covers nothing."""
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    work = _work_tree(cfg)
+    _place(work, "consumer-native", _CLEAN)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    shutil.copy2(_CLEAN, outside / "libbakar-elsewhere.so.1")
+    libdir = work / "other-native" / "1.0" / "image" / "usr" / "lib"
+    libdir.mkdir(parents=True)
+    (libdir / "libbakar-elsewhere.so.1").symlink_to(outside / "libbakar-elsewhere.so.1")
+    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libbakar-elsewhere.so.1",)))
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert result.status is Status.FAIL
+    assert "declares libbakar-elsewhere.so.1, which resolves to no file" in result.message
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_a_provider_sorting_after_its_consumer_still_counts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Classification is deferred to after the walk, which is what buys this.
+
+    Under a pre-pass the property came free; accumulating the index during the
+    walk only preserves it because the unresolved entries are held back.
+    ``aaa-native`` sorts first, so its consumer is read before the provider in
+    ``zzz-native`` exists in the index at all.
+    """
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    work = _work_tree(cfg)
+    _place(work, "aaa-native", _CLEAN)
+    later = work / "zzz-native" / "1.0" / "image" / "usr" / "lib"
+    later.mkdir(parents=True)
+    shutil.copy2(_CLEAN, later / "libbakar-late.so.1")
+    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libbakar-late.so.1",)))
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert result.status is Status.PASS
+    assert "provided elsewhere under the work tree" in result.message
+
+
+@pytest.mark.unit
+def test_the_scan_walks_the_work_tree_once() -> None:
+    """The pre-pass cost a second full traversal - 2,329,148 entries on one tree."""
+    source = inspect.getsource(diagnostics._scan_native_tree)
+
+    assert source.count("os.walk(") == 1
+    assert not hasattr(diagnostics, "_provided_file_names")
+
+
+# --- a relative RUNPATH is a miss, not a refusal ----------------------------
+
+
+@pytest.mark.unit
+def test_a_relative_search_directory_is_skipped_not_refused(tmp_path: Path) -> None:
+    """``../../sqlite3-native/usr/lib`` is CWD-relative, not an escape attempt.
+
+    A relative candidate can never be ``is_relative_to`` an absolute root, so
+    reporting it as refused labels a linker artefact as a security refusal AND
+    routes it past ``_unchecked_reason`` entirely.
+    """
+    resolved, refused = diagnostics._resolve_needed(
+        "libz.so.1", ["../../sqlite3-native/usr/lib"], diagnostics._resolve_roots([tmp_path])
+    )
+
+    assert resolved is None
+    assert refused is False
+
+
+@pytest.mark.unit
+def test_a_path_qualified_soname_under_a_relative_runpath_is_still_judged_on_where_it_lands() -> None:
+    """The absoluteness test is on the candidate, not on the search directory."""
+    resolved, refused = diagnostics._resolve_needed(
+        "/etc/shadow", ["../relative"], diagnostics._resolve_roots([Path("/usr/lib")])
+    )
+
+    assert resolved is None
+    assert refused is True
+
+
+@pytest.mark.unit
+@requires_objdump
+def test_a_relative_runpath_miss_still_consults_the_predicates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """It reaches the normal not-found path, so a foreign artifact is still excluded."""
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    fixture_dir = _work_tree(cfg) / "rust-native" / "1.0" / "sources" / "test" / "Inputs"
+    fixture_dir.mkdir(parents=True)
+    (fixture_dir / "hello-netbsd").write_bytes(_foreign_elf_header())
+    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(
+        diagnostics,
+        "_read_elf",
+        lambda reader, path: diagnostics._ElfInfo(
+            dynamic=True, nodes=frozenset({"2.2.5"}), needed=("libc.so.12",), runpaths=("../lib",)
+        ),
+    )
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert result.status is Status.PASS
+    assert "out of scope" not in result.message
+    assert "1 declared by a non-host-platform artifact" in result.message
+
+
+# --- the sanctioned/permitted roots are canonicalised once -------------------
+
+
+@pytest.mark.unit
+def test_a_root_reached_through_a_symlink_is_permitted_either_way(tmp_path: Path) -> None:
+    """Both spellings are roots, or a real hit falls through to the host libraries.
+
+    The lexical stage compares text and runs first with ``continue``, so it can
+    never be rescued later. Keeping only one spelling silently rebinds an edge
+    from the uninative libc to the HOST libc and reports a false BLOCK with no
+    out-of-scope line to explain it.
+    """
+    real = tmp_path / "real-sysroot" / "usr" / "lib"
+    real.mkdir(parents=True)
+    (real / "libz.so.1").write_bytes(b"\x7fELF")
+    link = tmp_path / "linked-sysroot"
+    link.symlink_to(tmp_path / "real-sysroot")
+
+    roots = diagnostics._resolve_roots([link])
+
+    assert diagnostics._lexically_within(link / "usr" / "lib" / "libz.so.1", roots)
+    assert diagnostics._lexically_within(real / "libz.so.1", roots)
+
+
+@pytest.mark.unit
+def test_resolve_roots_does_not_resolve_per_candidate() -> None:
+    """The helpers take pre-resolved roots; resolving inside them was ~1.4M calls."""
+    assert "realpath(root)" not in inspect.getsource(diagnostics._within_any)
+    assert "realpath" not in inspect.getsource(diagnostics._lexically_within)
+
+
+# --- _host_platform_elf must not block, and must not invert its polarity -----
+
+
+@pytest.mark.unit
+@pytest.mark.timeout(10)
+def test_host_platform_elf_refuses_to_open_a_fifo(tmp_path: Path) -> None:
+    """Opening a FIFO for reading blocks until a writer appears, with no timeout.
+
+    ``_is_elf`` guards its own open, but a whole ``_read_elf`` subprocess runs
+    between the two - a window roughly five hundred times wider than the one
+    ``_is_elf`` closes.
+    """
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+
+    assert diagnostics._host_platform_elf(fifo) is True
+
+
+@pytest.mark.unit
+def test_host_platform_elf_fails_open_on_a_non_regular_file(tmp_path: Path) -> None:
+    """The polarity is the opposite of ``_is_elf``'s, and getting it wrong goes quiet.
+
+    The caller reads ``if not _host_platform_elf(...)`` to SUPPRESS a warning,
+    so copying ``_is_elf``'s ``return False`` for a non-regular file would drop
+    dependencies from the report instead of reporting them.
+    """
+    assert diagnostics._host_platform_elf(tmp_path) is True
+    assert diagnostics._is_elf(tmp_path) is False
