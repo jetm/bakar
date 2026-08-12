@@ -180,7 +180,46 @@ duplicate attribution when something is wrong, with one underlying artifact
 reported under its producing recipe and again under each consumer's sysroot,
 which is the attribution the per-recipe `cleansstate` remediation needs anyway.
 
-Three lesser outcomes are not a clean bill of health. When `objdump` is absent
+A declared dependency is resolved only inside a fixed allowlist of roots: the
+host library directories, the two sanctioned trees above, and the native work
+tree itself. A candidate landing anywhere else is refused, and the dependency is
+reported as out of scope rather than read. The roots are fixed before the walk
+and never derived from anything the tree contains. The reason is that *both*
+operands of the resolution join come from the artifact's own dynamic string
+table - the declared name from `DT_NEEDED`, and the search directories from
+`DT_RUNPATH`/`DT_RPATH` - so an unconfined join lets a file in the work tree
+steer the scan onto any readable path and get that path echoed back into the
+operator's report. Confining only the declared name would not close it: a bare
+`NEEDED shadow` under `RUNPATH=/etc` reaches an arbitrary path with no
+separator in the declared name at all.
+
+The guard is an allowlist on where the join landed, not a refusal of
+path-qualified dependency names. A path-qualified `DT_NEEDED` is legal ELF -
+GNU ld emits one for any library linked by absolute path with no `DT_SONAME` -
+and such an entry must still resolve when its path lies inside a permitted
+root; refusing it outright would demote a genuine leak to a warning. Refusal is
+per candidate directory rather than per dependency: a refused candidate is
+skipped and the loop continues, so a later candidate can still resolve the same
+dependency, and it is reported out of scope only when at least one candidate
+directory was refused and none of them resolved. Containment is tested
+lexically before the filesystem is touched, so a refused candidate is never
+stat'd and cannot be told apart from a name that was looked for and not found.
+
+That per-candidate rule is what decides the cost. A native recipe can bake an
+absolute `DT_RUNPATH` naming whichever work tree first produced its sstate
+package, and a shared `sstate_dir` republishes that binary into other build
+directories where the run path is foreign. `shadow-native` is the real-world
+instance of that shape: `libsubid.so.5` carries such a path. Whether it costs
+coverage depends on what the host has installed - here the foreign candidate is
+skipped and `libattr.so.1` and `libbsd.so.0` resolve under `/usr/lib` on the
+next candidate, so no `shadow-native` dependency reports out of scope. Measured
+on a 236-recipe `build-qemuarm64` tree the confinement produced two out-of-scope
+entries in total, both cmake-native's big-endian
+`Tests/RunCMake/file-RPATH/ELF/elf32msb.bin` and `elf64msb.bin`, whose
+`DT_RUNPATH` is the literal `/sample/rpath` - upstream test fixtures rather than
+build output. Expect that count to move with the host.
+
+Four lesser outcomes are not a clean bill of health. When `objdump` is absent
 the check skips and says so - unscanned, not clean. When the walk completes
 having read no dynamically linked native artifact it also skips, because a
 BLOCK-severity all-clear over zero evidence is worth less than an admission
@@ -194,9 +233,26 @@ finishes, and the skip message says so and points at
 `bakar settings unset build.rm_work` - noting that the class can equally be
 inherited from the distro or from `local.conf`, where bakar's own setting reads
 false. When some dependency cannot be resolved it reports WARN naming it,
-because an unchecked dependency is not evidence of a clean tree; when nothing
-was scanned *and* something was unreadable, the unreadable paths travel with
-the skip rather than being dropped for a cause that does not explain them.
+because an unchecked dependency is not evidence of a clean tree; and a
+dependency whose candidate directories all lay outside the permitted roots is
+reported out of scope, which is a different fact from a library that was looked
+for and not found. When nothing was scanned *and* something was unreadable, the
+unreadable paths travel with the skip rather than being dropped for a cause that
+does not explain them.
+
+That WARN trigger is narrower than "did not resolve". Three classes no longer
+raise it, each justified by a counted class from a sweep of a real 236-recipe
+`build-qemuarm64` tree (118,549 `DT_NEEDED` entries, 188 of them unresolved): a
+soname the build itself provides elsewhere under the work tree, where the run
+path only names a staging location the file is not at and the walk reads that
+provider on its own (133); an artifact that is not a host-platform ELF and so
+cannot load under the uninative loader on any host, whatever it declares (36);
+and an artifact that requires no glibc version node at all, so it is not linked
+against the glibc this ceiling is about (14). Five of the 188 still raise WARN,
+and should. Nothing is hidden by the narrowing: every excluded dependency is
+still counted and named by class in the verdict message, on PASS, FAIL and WARN
+alike, and no class of it is ever applied to a dependency the confinement
+refused.
 
 The reader runs under a pinned `LC_ALL`/`LANGUAGE`. Every string the scan
 matches in `objdump`'s output - the `Version References:` and
