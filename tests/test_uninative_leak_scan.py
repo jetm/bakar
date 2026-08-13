@@ -1456,6 +1456,42 @@ def test_a_foreign_platform_artifact_is_not_unchecked(monkeypatch: pytest.Monkey
 
 @pytest.mark.unit
 @requires_objdump
+def test_an_unreadable_header_reports_rather_than_suppresses(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The fail-open guard must fail towards REPORTING, and the polarity is easy to read backwards.
+
+    `_host_platform_elf` returns True when it cannot read a header, and the
+    caller suppresses on `not _host_platform_elf(...)` - so missing evidence
+    declines to suppress and the dependency still reaches the operator. A
+    reviewer read this the other way and reported it as silently swallowing a
+    warning; nothing at the caller level pinned which way round it goes, which
+    is what this asserts. Getting it backwards would make an unreadable artifact
+    silence its own dependency inside a BLOCK-severity gate.
+
+    The header is short rather than permission-denied on purpose: chmod 000
+    would make `_is_elf` skip the artifact during the walk, so the scan would
+    never reach the predicate under test, and the test would pass while proving
+    nothing.
+    """
+    _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
+    cfg = _cfg(tmp_path)
+    stub = _work_tree(cfg) / "zlib-native" / "1.0" / "image" / "usr" / "lib"
+    stub.mkdir(parents=True)
+    # Passes _is_elf's four-byte magic test, too short for _host_platform_elf's
+    # twenty-byte header read.
+    (stub / "libtruncated.so").write_bytes(b"\x7fELF")
+    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libbakar-absent.so.9",)))
+
+    result = diagnostics.check_uninative_leak(cfg)
+
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.WARN
+    assert "libbakar-absent.so.9" in result.message
+    assert "non-host-platform" not in result.message
+
+
+@pytest.mark.unit
+@requires_objdump
 def test_an_artifact_requiring_no_glibc_node_is_not_unchecked(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Nothing it declares can bear on a glibc ceiling it states no requirement against."""
     _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
