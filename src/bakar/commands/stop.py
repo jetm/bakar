@@ -14,6 +14,7 @@ from bakar.commands._helpers import (
     WorkspaceOption,
     _normalize_dispatch,
     _resolve_workspace,
+    split_kas_yaml_arg,
 )
 from bakar.config import BSPSpec, resolve
 
@@ -24,7 +25,10 @@ def stop(
         Path | None,
         typer.Argument(
             exists=False,
-            help="Optional kas YAML; runs live next to it under <yaml-parent>/build/runs/.",
+            help=(
+                "Optional kas YAML, including the colon-joined overlay form "
+                "accepted by `bakar build`. Pass the same spec that started the build."
+            ),
         ),
     ] = None,
     workspace: WorkspaceOption = None,
@@ -50,10 +54,25 @@ def stop(
 ) -> None:
     """Gracefully stop the running build for this workspace's BSP.
 
-    Pass a positional kas YAML for BYO builds (``bakar stop my.yml``);
-    runs live next to the YAML under ``<yaml-parent>/build/runs/`` and
-    the workspace lookup is skipped.
+    Pass a positional kas YAML for BYO builds (``bakar stop my.yml``), or the
+    same colon-joined spec that started the build
+    (``bakar stop machine.yml:feature.yml``).
+
+    Runs live under ``<bsp_root>/<build_dir_name>/runs/``, and ``bsp_root``
+    depends on the family the head YAML resolves to - for a meta-avocado build
+    that is ``workspace/build-<yaml-stem>``, NOT the YAML's own parent, since
+    those YAMLs live inside the ``meta-avocado/`` source tree. Passing the
+    generated ``build-<machine>/avocado-bakar.yml`` instead of the source YAML
+    resolves a different family and therefore a different (empty) runs dir.
     """
+    # Split the colon-joined overlay form before dispatching, exactly as `build`
+    # does. Stopping a build is done by re-typing the spec that started it, and
+    # that spec is routinely `machine.yml:feature-a.yml:feature-b.yml`. Unsplit,
+    # the whole string reaches _dispatch_from_yaml as one Path, fails is_file()
+    # and exits 2 with "kas YAML not found" - so a build launched with overlays
+    # had no supported way to be stopped. Extras are discarded: only the head
+    # YAML determines the family and therefore where the run dir lives.
+    kas_yaml, _extra_overlays = split_kas_yaml_arg(kas_yaml)
     family, _bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
     cfg = resolve(
