@@ -992,11 +992,29 @@ def resolve(
 
     resolved_mold, resolved_mold_mode = _resolve_mold(user_config=user_config)
 
+    # A BYO kas YAML declares its own machine, so read it rather than letting the
+    # family default answer. For the generic family that default is the literal
+    # "generic" (see _FamilyDefaults), and local_tmpdir is keyed on
+    # <bsp_root.name>-<machine>-<digest> - so a command that resolved "generic"
+    # operated in a different TMPDIR than the build it was following up on, against
+    # a deploy tree that had never held a full image. `bakar build` avoided this by
+    # threading machine_from_yaml() into its own BSPSpec; nothing else did, which
+    # made build the odd one out instead of the reference.
+    #
+    # Slotted into spec.machine's position rather than lower in the chain, because
+    # that is exactly where build put it - matching build is the point, and a
+    # different rank here would trade one disagreement for a subtler one.
+    yaml_machine: str | None = None
+    if spec.machine is None and kas_yaml is not None:
+        from bakar.bsp_detect import machine_from_yaml
+
+        yaml_machine = machine_from_yaml(kas_yaml)
+
     return BuildConfig(
         workspace=workspace.resolve(),
         bsp_family=bsp_family,
         machine=pick(
-            spec.machine,
+            spec.machine or yaml_machine,
             "BAKAR_MACHINE",
             fd.ws_machine,
             preset.machine if preset is not None else None,

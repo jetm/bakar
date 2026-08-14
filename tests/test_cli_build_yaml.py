@@ -209,7 +209,15 @@ def test_generic_resolve_accepts_minimal_args(tmp_path: Path) -> None:
     assert cfg.bsp_family == "generic"
     assert cfg.bsp_root == pilots.resolve()
     assert cfg.kas_yaml == yaml.resolve()
-    assert cfg.machine == "generic"
+    # The YAML declares a machine, so resolve() reads it rather than falling back
+    # to the family default. This assertion used to read "generic": resolve()
+    # ignored the YAML and only `build` derived the machine, by threading
+    # machine_from_yaml() into its own BSPSpec. Every other command therefore
+    # resolved a different machine - and, because the tmpdir is keyed on it, a
+    # different TMPDIR - than the build it was following up on. See
+    # tests/test_config_machine_from_yaml.py for the degenerate case that still
+    # yields "generic": no kas YAML at all, where there is nothing to read.
+    assert cfg.machine == "qemuarm64"
     assert cfg.manifest == ""
     assert cfg.repo_branch == ""
 
