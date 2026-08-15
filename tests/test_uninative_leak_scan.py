@@ -32,6 +32,7 @@ no test here can reach the operator's real caches.
 
 from __future__ import annotations
 
+import functools
 import inspect
 import io
 import os
@@ -39,7 +40,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import pytest
 from rich.markup import escape
@@ -60,23 +61,160 @@ _CLEAN = Path("/usr/bin/true")
 _SECOND = Path("/usr/bin/ls")
 
 
+def _resolve_host_lib(soname: str) -> Path | None:
+    """Find ``soname`` in the directories the scan itself searches.
+
+    Returns the resolved path, because that is what the scan reports. On a
+    merged-/usr host the first hit is typically under /lib while the scan names
+    the same file under /usr/lib, and a test asserting on the message needs the
+    spelling the message actually uses.
+    """
+    for directory in diagnostics._HOST_LIB_DIRS:
+        candidate = Path(directory) / soname
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
 def _find_host_libc() -> Path:
     """Locate the host's libc the same way the scan does.
 
     Hardcoding /usr/lib/libc.so.6 is an Arch-ism: on a multiarch host (Debian,
-    Ubuntu, and so the CI runner) libc lives in /usr/lib/<gnu-triplet>. Search
-    the same directories the scan searches so this fixture tracks the product
-    rather than one distribution's layout. Falls back to the Arch path so the
-    ``.exists()`` skip guards below still read naturally when nothing is found.
+    Ubuntu, and so the CI runner) libc lives in /usr/lib/<gnu-triplet>. Falls
+    back to the Arch path so the ``.exists()`` skip guards below still read
+    naturally when nothing is found.
     """
-    for directory in diagnostics._HOST_LIB_DIRS:
-        candidate = Path(directory) / "libc.so.6"
-        if candidate.is_file():
-            return candidate
-    return Path("/usr/lib/libc.so.6")
+    return _resolve_host_lib("libc.so.6") or Path("/usr/lib/libc.so.6")
 
 
 _HOST_LIBC = _find_host_libc()
+
+# Bounds the pair search below. Every entry costs one objdump per binary plus
+# one per dependency, and a qualifying pair turns up in the first handful on
+# both a stock Arch and a stock Ubuntu.
+_PAIR_SCAN_LIMIT = 250
+
+
+def _is_elf(path: Path) -> bool:
+    """Cheap magic-byte test, so the scan budget is not spent on shell scripts.
+
+    /usr/bin is full of small wrapper scripts, and they are exactly the entries a
+    smallest-first ordering reaches first: without this the whole scan limit was
+    consumed before a single ELF binary was examined.
+    """
+    try:
+        with path.open("rb") as handle:
+            return handle.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
+class _LeakPair(NamedTuple):
+    """A host binary and the DT_NEEDED edge that outranks it."""
+
+    artifact: Path
+    soname: str
+    dependency: Path
+    # (soname, resolved path) per edge. The soname is kept because a resolved
+    # path can carry a different basename - libfoo.so.1 is often a symlink to
+    # libfoo.so.1.2.3 - and a copy into a sanctioned tree has to land under the
+    # name the artifact actually asks the loader for.
+    dependencies: tuple[tuple[str, Path], ...]
+
+
+@functools.cache
+def _leak_pair() -> _LeakPair | None:
+    """A host binary whose highest-requiring dependency outranks the binary itself.
+
+    The DT_NEEDED tests need a ceiling strictly between an artifact's own highest
+    glibc requirement and a dependency's, so the artifact reads clean and only
+    the edge can trip the gate. Which binaries offer that is a fact about the
+    host, not about bakar: on Arch a stock ``libc.so.6`` requires a node above
+    ``/usr/bin/true``, while on Debian and Ubuntu libc requires only 2.3 - below
+    anything built against a modern toolchain - so hardcoding the pair as
+    ``(/usr/bin/true, libc)`` pinned these tests to one distribution's glibc
+    packaging and failed on every other.
+
+    Three properties the callers depend on, so they are established here rather
+    than re-checked at each use:
+
+    * EVERY DT_NEEDED of the artifact resolves, so a scan of it reports no
+      unresolved-dependency warning that would mask the result under test.
+    * The returned dependency is the highest-requiring one, so a ceiling set at
+      its requirement is above every other edge too - which is what lets the
+      requirements-only test assert a clean tree.
+    * Smallest binaries first, so the copy each test makes stays cheap and the
+      choice is deterministic per host.
+    """
+    reader = diagnostics._elf_reader()
+    if reader is None:
+        return None
+
+    def _max_node(info: object) -> tuple[int, ...] | None:
+        parsed = _parsed_nodes(info.nodes)  # ty: ignore[unresolved-attribute]
+        return max(parsed) if parsed else None
+
+    candidates: list[tuple[int, str, Path]] = []
+    for directory in ("/usr/bin", "/bin"):
+        try:
+            entries = list(Path(directory).iterdir())
+        except OSError:
+            continue
+        for path in entries:
+            try:
+                if path.is_symlink() or not path.is_file() or not _is_elf(path):
+                    continue
+                candidates.append((path.stat().st_size, str(path), path))
+            except OSError:
+                continue
+
+    fallback: _LeakPair | None = None
+    for _size, _name, artifact in sorted(candidates)[:_PAIR_SCAN_LIMIT]:
+        info = diagnostics._read_elf(reader, artifact)
+        if info is None:
+            continue
+        own = _max_node(info)
+        if own is None or not info.needed:
+            continue
+        resolved: list[tuple[str, Path]] = []
+        for soname in info.needed:
+            dependency = _resolve_host_lib(soname)
+            if dependency is None:
+                break
+            resolved.append((soname, dependency))
+        else:
+            ranked: list[tuple[tuple[int, ...], str, Path]] = []
+            for soname, dependency in resolved:
+                dep_info = diagnostics._read_elf(reader, dependency)
+                dep_max = None if dep_info is None else _max_node(dep_info)
+                if dep_max is not None:
+                    ranked.append((dep_max, soname, dependency))
+            if not ranked:
+                continue
+            dep_max, soname, dependency = max(ranked)
+            if dep_max <= own:
+                continue
+            found = _LeakPair(artifact, soname, dependency, tuple(resolved))
+            # Any qualifying pair satisfies two of the three callers. The third
+            # also needs a dependency carrying compat definitions above its own
+            # highest requirement, or it can prove nothing and skips - so keep
+            # looking for one, and settle for the first qualifying pair only if
+            # the scan runs out. libc is the usual winner, which is what the
+            # hardcoded pair used to get for free on a non-multiarch host.
+            required, parenthesised = _host_max_nodes(dependency)
+            if required is not None and parenthesised is not None and parenthesised > required:
+                return found
+            if fallback is None:
+                fallback = found
+    return fallback
+
+
+def _require_leak_pair() -> _LeakPair:
+    pair = _leak_pair()
+    if pair is None:
+        pytest.skip("no host binary has a DT_NEEDED dependency requiring a higher glibc node than itself")
+    return pair
+
 
 _VERSION = "2.44+r5+g7cba77790f32"
 _CHECKSUM = "ab" * 32
@@ -450,11 +588,17 @@ def test_objdump_format_pin() -> None:
     required = _highest(referenced)
     assert parenthesised is not None
     assert required is not None
-    assert parenthesised > required, (
-        f"{_HOST_LIBC} parenthesises up to {parenthesised} while requiring at most {required}; "
-        "an equal or inverted pair would mean the discredited parenthesis rule no longer "
-        "overcounts here and the discriminating test has nothing left to discriminate"
-    )
+    if parenthesised <= required:
+        # The same environment fact the discriminating test skips on, and it
+        # only became reachable once _HOST_LIBC started resolving on multiarch
+        # hosts. Debian's libc parenthesises nothing above its highest
+        # requirement, so the discredited rule does not overcount here and there
+        # is no overcount to pin. The definition check above - the trap this
+        # test exists for - has already run and still asserts.
+        pytest.skip(
+            f"{_HOST_LIBC} parenthesises up to {_dotted(parenthesised)} while requiring at most "
+            f"{_dotted(required)}, so the parenthesis rule does not overcount on this host"
+        )
 
 
 @pytest.mark.unit
@@ -610,22 +754,21 @@ def test_leak_via_dt_needed_edge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ``test_dt_needed_edge_counts_requirements_only`` precisely so its skip cannot
     take this test down with it.
     """
-    if not _HOST_LIBC.exists():
-        pytest.skip(f"{_HOST_LIBC} is absent, so there is no libc edge to follow")
-    required, _parenthesised = _host_max_nodes(_HOST_LIBC)
+    pair = _require_leak_pair()
+    required, _parenthesised = _host_max_nodes(pair.dependency)
     if required is None:
-        pytest.skip(f"{_HOST_LIBC} requires no glibc version node, so there is no ceiling to calibrate")
+        pytest.skip(f"{pair.dependency} requires no glibc version node, so there is no ceiling to calibrate")
 
     cfg = _cfg(tmp_path)
-    artifact = _place(_work_tree(cfg), "zlib-native", _CLEAN)
+    artifact = _place(_work_tree(cfg), "zlib-native", pair.artifact)
 
-    _patch_host(monkeypatch, tmp_path, max_glibc=_ceiling_between(_CLEAN, _HOST_LIBC))
+    _patch_host(monkeypatch, tmp_path, max_glibc=_ceiling_between(pair.artifact, pair.dependency))
     tripped = diagnostics.check_uninative_leak(cfg)
 
     assert tripped.status is Status.FAIL
     assert tripped.severity is Severity.BLOCK
     assert "the artifact itself" not in tripped.message
-    assert f"dependency libc.so.6 at {_HOST_LIBC}" in tripped.message
+    assert f"dependency {pair.soname} at {pair.dependency}" in tripped.message
     assert f"{artifact} (recipe zlib-native)" in tripped.message
 
 
@@ -640,32 +783,31 @@ def test_dt_needed_edge_counts_requirements_only(monkeypatch: pytest.MonkeyPatch
     form makes libc contribute a node above this ceiling and turns the PASS into
     a FAIL. Both figures are read off the host at run time.
     """
-    if not _HOST_LIBC.exists():
-        pytest.skip(f"{_HOST_LIBC} is absent, so there is no libc edge to follow")
-    required, parenthesised = _host_max_nodes(_HOST_LIBC)
+    pair = _require_leak_pair()
+    required, parenthesised = _host_max_nodes(pair.dependency)
     if required is None:
-        pytest.skip(f"{_HOST_LIBC} requires no glibc version node, so there is no ceiling to calibrate")
+        pytest.skip(f"{pair.dependency} requires no glibc version node, so there is no ceiling to calibrate")
     if parenthesised is None or parenthesised <= required:
         # An environment fact, not a defect: with no parenthesised node above
         # the highest real requirement the two extractions agree here and this
         # test would pass while discriminating nothing.
         pytest.skip(
-            f"{_HOST_LIBC} parenthesises no node above its highest requirement {_dotted(required)}, "
+            f"{pair.dependency} parenthesises no node above its highest requirement {_dotted(required)}, "
             "so the corrected and parenthesised extractions are indistinguishable on this host"
         )
 
     cfg = _cfg(tmp_path)
-    _place(_work_tree(cfg), "zlib-native", _CLEAN)
+    _place(_work_tree(cfg), "zlib-native", pair.artifact)
 
     _patch_host(monkeypatch, tmp_path, max_glibc=_dotted(required))
     clean = diagnostics.check_uninative_leak(cfg)
 
     assert clean.status is Status.PASS, (
-        f"at libc's highest real requirement {_dotted(required)} the tree must be clean; a FAIL here "
-        f"means the extraction is counting up to its highest parenthesised node {_dotted(parenthesised)}, "
-        "which covers compat definitions the artifact never calls"
+        f"at {pair.soname}'s highest real requirement {_dotted(required)} the tree must be clean; a FAIL "
+        f"here means the extraction is counting up to its highest parenthesised node "
+        f"{_dotted(parenthesised)}, which covers compat definitions the artifact never calls"
     )
-    assert "libc.so.6" not in clean.message
+    assert pair.soname not in clean.message
 
 
 @pytest.mark.unit
@@ -678,14 +820,19 @@ def test_dependency_inside_buildtools_sysroot_is_sanctioned(monkeypatch: pytest.
     whose libraries are safe by construction because the loader that will load
     the artifact comes from there.
     """
-    ceiling = _ceiling_between(_CLEAN, _HOST_LIBC)
+    pair = _require_leak_pair()
+    ceiling = _ceiling_between(pair.artifact, pair.dependency)
     _patch_host(monkeypatch, tmp_path, max_glibc=ceiling)
     cfg = _cfg(tmp_path)
-    _place(_work_tree(cfg), "zlib-native", _CLEAN)
+    _place(_work_tree(cfg), "zlib-native", pair.artifact)
 
     sanctioned_lib = cfg.resolved_tmpdir / "sysroots-uninative" / "lib"
     sanctioned_lib.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(_HOST_LIBC, sanctioned_lib / _HOST_LIBC.name)
+    # Every dependency, not just the outranking one: with _HOST_LIB_DIRS narrowed
+    # to the sanctioned tree, any edge left outside it resolves to nothing and
+    # raises an unresolved-dependency warning that would mask the PASS.
+    for soname, dependency in pair.dependencies:
+        shutil.copy2(dependency, sanctioned_lib / soname)
     monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", (str(sanctioned_lib),))
 
     result = diagnostics.check_uninative_leak(cfg)
@@ -1902,9 +2049,14 @@ def test_the_scan_never_resolves_a_dependency_a_second_time(monkeypatch: pytest.
         seen.append(str(path))
         return real(path, *args, **kwargs)  # type: ignore[arg-type]
 
-    libdir = Path("/usr/lib")
+    # The host's real libc directory, not a hardcoded /usr/lib: a multiarch host
+    # keeps libc under /usr/lib/<triplet>, where the literal would resolve to
+    # nothing and the assertions below would read as a regression.
+    libdir = _HOST_LIBC.parent
     monkeypatch.setattr(os.path, "realpath", recording)
-    resolved, refused = diagnostics._resolve_needed("libc.so.6", [str(libdir)], diagnostics._resolve_roots([libdir]))
+    resolved, refused = diagnostics._resolve_needed(
+        _HOST_LIBC.name, [str(libdir)], diagnostics._resolve_roots([libdir])
+    )
 
     assert refused is False
     assert resolved is not None
