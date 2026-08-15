@@ -32,6 +32,10 @@ import urllib.parse
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
+
+# Bound as a name rather than importing the module: a loop variable named `glob`
+# already exists in this file, and shadowing it would mean an unrelated rename.
+from glob import iglob
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -2258,10 +2262,85 @@ def _required_glibc_nodes(dump: str) -> frozenset[str]:
     return frozenset(_GLIBC_NODE_RE.findall("\n".join(block)))
 
 
+# Bound on `include` recursion in ld.so.conf. The format allows an include to
+# pull in a glob that includes further files; a cycle would otherwise hang the
+# doctor on a malformed host config.
+_LD_CONF_MAX_DEPTH = 4
+_LD_SO_CONF = Path("/etc/ld.so.conf")
+
+
+def _ld_so_conf_dirs(conf: Path = _LD_SO_CONF, *, depth: int = 0, seen: set[Path] | None = None) -> list[str]:
+    """Library directories this host's own dynamic loader searches.
+
+    Read rather than guessed. A fixed tuple is simply wrong on a multiarch
+    distribution: Debian and Ubuntu put libc in ``/usr/lib/<gnu-triplet>``, and
+    no hardcoded list can name that directory for every architecture. Asking the
+    loader's own configuration answers the question the scan is actually posing
+    - "where would THIS host resolve this DT_NEEDED" - and keeps answering it
+    when a distribution moves its libraries.
+
+    Deliberately not derived from ``sysconfig``'s ``MULTIARCH``: that reflects
+    how the running Python was built, and a relocatable interpreter (uv's
+    python-build-standalone, which is what CI runs) does not set it on a host
+    that is nonetheless multiarch.
+
+    Never raises. An absent or unreadable config yields nothing and leaves the
+    static floor below in place, which is the right answer on a host that has no
+    glibc loader config to begin with.
+    """
+    if depth > _LD_CONF_MAX_DEPTH:
+        return []
+    seen = set() if seen is None else seen
+    marker = conf.resolve(strict=False)
+    if marker in seen:
+        return []
+    seen.add(marker)
+    try:
+        raw = conf.read_text(errors="replace")
+    except OSError:
+        return []
+    dirs: list[str] = []
+    for line in raw.splitlines():
+        entry = line.split("#", 1)[0].strip()
+        if not entry:
+            continue
+        head, _, rest = entry.partition(" ")
+        if head == "include":
+            pattern = rest.strip()
+            if not pattern:
+                continue
+            # A relative include is relative to the including file, not to the
+            # doctor's working directory.
+            if not pattern.startswith("/"):
+                pattern = str(conf.parent / pattern)
+            for included in sorted(iglob(pattern)):
+                dirs += _ld_so_conf_dirs(Path(included), depth=depth + 1, seen=seen)
+            continue
+        dirs.append(entry)
+    return dirs
+
+
+def _unique(values: Iterable[str]) -> tuple[str, ...]:
+    """Order-preserving dedup, so the search order stays the declared one."""
+    return tuple(dict.fromkeys(values))
+
+
 # Where a DT_NEEDED soname is looked for when no RUNPATH/RPATH names it. Not a
 # full loader emulation: enough to tell "resolves to a host library" from
 # "resolves to nothing", which is the only distinction the scan makes.
-_HOST_LIB_DIRS: tuple[str, ...] = ("/usr/lib", "/usr/lib64", "/lib", "/lib64", "/usr/local/lib")
+#
+# The static entries are a floor for hosts with no loader config; the rest comes
+# from the host's ld.so.conf. Without the latter, every artifact on a Debian or
+# Ubuntu host reports its libc as unresolved, because libc.so.6 lives in
+# /usr/lib/<triplet> and nothing here would name it.
+#
+# Also the allowlist of permitted roots for dependency resolution (see
+# _resolve_needed): widening it from root-owned loader config does not reopen
+# the file-existence oracle that confinement closed, since an attacker who can
+# write /etc/ld.so.conf.d has already won.
+_HOST_LIB_DIRS: tuple[str, ...] = _unique(
+    ("/usr/lib", "/usr/lib64", "/lib", "/lib64", "/usr/local/lib", *_ld_so_conf_dirs())
+)
 
 # Findings are enumerated in the message; past this many the tail is summarized
 # so a systemically broken tree reports a readable verdict instead of megabytes.

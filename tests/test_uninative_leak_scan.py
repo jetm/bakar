@@ -58,7 +58,25 @@ requires_objdump = pytest.mark.skipif(_OBJDUMP is None, reason="the scan needs o
 # libc, which makes the calibrated-ceiling leak test depend on one edge.
 _CLEAN = Path("/usr/bin/true")
 _SECOND = Path("/usr/bin/ls")
-_HOST_LIBC = Path("/usr/lib/libc.so.6")
+
+
+def _find_host_libc() -> Path:
+    """Locate the host's libc the same way the scan does.
+
+    Hardcoding /usr/lib/libc.so.6 is an Arch-ism: on a multiarch host (Debian,
+    Ubuntu, and so the CI runner) libc lives in /usr/lib/<gnu-triplet>. Search
+    the same directories the scan searches so this fixture tracks the product
+    rather than one distribution's layout. Falls back to the Arch path so the
+    ``.exists()`` skip guards below still read naturally when nothing is found.
+    """
+    for directory in diagnostics._HOST_LIB_DIRS:
+        candidate = Path(directory) / "libc.so.6"
+        if candidate.is_file():
+            return candidate
+    return Path("/usr/lib/libc.so.6")
+
+
+_HOST_LIBC = _find_host_libc()
 
 _VERSION = "2.44+r5+g7cba77790f32"
 _CHECKSUM = "ab" * 32
@@ -294,6 +312,62 @@ def _version_references(dump: str) -> set[str]:
 
 
 @pytest.mark.unit
+def test_ld_so_conf_supplies_the_multiarch_dir(tmp_path: Path) -> None:
+    """A Debian/Ubuntu host keeps libc in /usr/lib/<triplet>; the floor cannot name it.
+
+    Built as a fake config tree rather than read off this host, so the case is
+    covered on a non-multiarch machine too - which is exactly the asymmetry that
+    let the gap ship: it is invisible on Arch and breaks every artifact on
+    Ubuntu.
+    """
+    conf_d = tmp_path / "ld.so.conf.d"
+    conf_d.mkdir()
+    (conf_d / "x86_64-linux-gnu.conf").write_text(
+        "# Multiarch support\n/usr/lib/x86_64-linux-gnu\n/lib/x86_64-linux-gnu\n"
+    )
+    conf = tmp_path / "ld.so.conf"
+    conf.write_text(f"include {conf_d}/*.conf\n")
+
+    assert diagnostics._ld_so_conf_dirs(conf) == ["/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu"]
+
+
+def test_ld_so_conf_include_is_relative_to_the_including_file(tmp_path: Path) -> None:
+    """A bare `include ld.so.conf.d/*.conf` must not glob the process CWD."""
+    conf_d = tmp_path / "ld.so.conf.d"
+    conf_d.mkdir()
+    (conf_d / "local.conf").write_text("/opt/lib\n")
+    conf = tmp_path / "ld.so.conf"
+    conf.write_text("include ld.so.conf.d/*.conf\n")
+
+    assert diagnostics._ld_so_conf_dirs(conf) == ["/opt/lib"]
+
+
+def test_ld_so_conf_survives_an_include_cycle(tmp_path: Path) -> None:
+    """A config that includes itself must terminate rather than hang the doctor."""
+    conf = tmp_path / "ld.so.conf"
+    conf.write_text(f"/usr/lib/first\ninclude {conf}\n")
+
+    assert diagnostics._ld_so_conf_dirs(conf) == ["/usr/lib/first"]
+
+
+def test_ld_so_conf_absent_yields_nothing(tmp_path: Path) -> None:
+    """No loader config (musl, a stripped container) leaves the static floor alone."""
+    assert diagnostics._ld_so_conf_dirs(tmp_path / "nope") == []
+
+
+def test_ld_so_conf_ignores_comments_and_blank_lines(tmp_path: Path) -> None:
+    conf = tmp_path / "ld.so.conf"
+    conf.write_text("# a comment\n\n/usr/lib/real   # trailing\n   \n")
+
+    assert diagnostics._ld_so_conf_dirs(conf) == ["/usr/lib/real"]
+
+
+def test_host_lib_dirs_are_deduplicated() -> None:
+    """ld.so.conf routinely repeats a floor entry; search order must stay stable."""
+    assert len(diagnostics._HOST_LIB_DIRS) == len(set(diagnostics._HOST_LIB_DIRS))
+    assert diagnostics._HOST_LIB_DIRS[0] == "/usr/lib"
+
+
 def test_version_references_block_is_bounded() -> None:
     """The block parser stops at the next section instead of running to EOF.
 
