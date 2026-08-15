@@ -260,13 +260,31 @@ scope rather than racing it. One case looked like that collision but was not: a
 (`bitbake-server`) alive by design, and it alone kept the scope `active`, so the
 next identical run failed with
 `Unit bakar-bitbake-<hash>.scope was already loaded or has a fragment file`
-before any bitbake output appeared. bakar now
-inspects the scope's cgroup before launching: when nothing but that idle cooker
-remains it stops the unit and proceeds (logged as `reclaimed idle build scope`;
-the next run re-parses, since the daemon's in-memory cache goes with it). A
-scope containing a live `kas`/`bitbake` client or any `bitbake-worker` is never
-touched, so a genuinely concurrent build still collides - and if the cgroup
-cannot be read, bakar assumes the scope is busy and leaves it alone.
+before any bitbake output appeared. bakar now inspects the scope's cgroup before
+launching, and when nothing but that idle cooker remains it takes one of two
+routes depending on whether this run carries cgroup resource controls:
+
+| Resource controls | What happens | Cost |
+|-------------------|--------------|------|
+| None (the default) | Launch under a run-scoped unit name, leaving the cooker alive | None - the parse cache carries over |
+| `scope_memory_max` set | Stop the unit, then reuse the stable name | The cooker dies and the next run re-parses |
+
+The split exists because a memory ceiling that does not contain the process
+doing the allocating is not a ceiling: with controls configured the cooker has
+to run inside *this* run's cgroup, and that is worth a re-parse. With no
+controls configured the scope's remaining jobs are session-survival, which
+applies to the client being launched, and `oom_score_adj`, which the surviving
+cooker already inherited at fork and keeps - so stopping it would buy a unit
+name and cost a full re-parse of every recipe.
+
+A scope containing a live `kas`/`bitbake` client or any `bitbake-worker` takes
+neither route: it keeps the stable name and is left to collide, so a genuinely
+concurrent build still fails fast. If the cgroup cannot be read, bakar assumes
+the scope is busy and leaves it alone.
+
+Because the launched unit is not always the config-derived one, read the name
+bakar logs (or `BAKAR_SCOPE_UNIT` in the journal records) rather than deriving
+it yourself.
 
 Interrupting a build with Ctrl-C and immediately re-running it lands in a
 related window: the previous build's `kas` client and its parser processes are

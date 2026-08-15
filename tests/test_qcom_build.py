@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from bakar import build_scope
 from bakar.commands.build import _BuildCtx, _run_manifest_build
 from bakar.config import (
     DEFAULT_QCOM_MANIFEST,
@@ -253,7 +254,8 @@ def test_qcom_build_wraps_in_systemd_scope(tmp_path: Path, monkeypatch: pytest.M
     # subprocess.run drives Popen as a context manager); both behaviors are
     # covered in test_build_scope.
     monkeypatch.setattr("bakar.build_scope._reset_stale_scope", lambda _unit: None)
-    monkeypatch.setattr("bakar.build_scope._reclaim_idle_scope", lambda _unit, **_kw: False)
+    # No scope present, so the launch takes the config-derived name unchanged.
+    monkeypatch.setattr("bakar.build_scope._settle_scope", lambda _unit, **_kw: build_scope.SCOPE_ABSENT)
     cfg = replace(_qcom_cfg(tmp_path), scope=True)
     log = _FakeLogger(tmp_path)
     recorder = _PopenRecorder(returncode=0)

@@ -2046,7 +2046,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
                     stop_event,
                     show_layers=show_layers,
                     output_mode=ctx.output_mode,
-                    scope_unit=build_scope.active_scope_unit(cfg, "build"),
+                    scope_unit=build_scope.unit_from_command(cmd),
                 )
         except LockHeldByPeerError as exc:
             rc = 1
@@ -2204,7 +2204,7 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
                     ui,
                     stop_event,
                     output_mode=ctx.output_mode,
-                    scope_unit=build_scope.active_scope_unit(cfg, "bitbake"),
+                    scope_unit=build_scope.unit_from_command(cmd),
                 )
         except LockHeldByPeerError as exc:
             rc = 1

@@ -30,9 +30,12 @@ pytestmark = pytest.mark.unit
 class _FakeLog:
     """Captures ``warn``/``info`` so the wrapper's logging can be asserted."""
 
-    def __init__(self) -> None:
+    def __init__(self, run_id: str = "20260815-101500") -> None:
         self.warns: list[str] = []
         self.infos: list[str] = []
+        # wrap_build_command reads this to name a run-scoped unit when it steps
+        # around an idle scope instead of stopping it.
+        self.run_id = run_id
 
     def warn(self, msg: str) -> None:
         self.warns.append(msg)
@@ -516,8 +519,8 @@ def test_scope_not_idle_when_cgroup_unknown(monkeypatch: pytest.MonkeyPatch) -> 
     assert build_scope._scope_is_idle("bakar-bitbake-deadbeef") is False
 
 
-def test_reclaim_stops_unit_only_when_idle(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The idle case issues `systemctl --user stop <unit>`; the busy case does not."""
+def test_settle_classifies_idle_and_busy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Classification only: settling never stops anything itself."""
     calls: list[list[str]] = []
 
     def _record(argv: list[str], *_a: object, **_k: object) -> subprocess.CompletedProcess:
@@ -528,20 +531,30 @@ def test_reclaim_stops_unit_only_when_idle(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(build_scope, "_scope_loaded", lambda _unit: True)
 
     monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: True)
-    assert build_scope._reclaim_idle_scope("bakar-bitbake-deadbeef") is True
-    assert calls == [["systemctl", "--user", "stop", "bakar-bitbake-deadbeef"]]
+    assert build_scope._settle_scope("bakar-bitbake-deadbeef.scope") == build_scope.SCOPE_IDLE
 
-    calls.clear()
     monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: False)
     assert (
-        build_scope._reclaim_idle_scope(
-            "bakar-bitbake-deadbeef",
+        build_scope._settle_scope(
+            "bakar-bitbake-deadbeef.scope",
             settle_timeout=0,
             sleep=lambda _s: None,
         )
-        is False
+        == build_scope.SCOPE_BUSY
     )
-    assert calls == []  # a busy scope is never stopped
+    assert calls == [], "settling must not mutate the unit"
+
+
+def test_stop_scope_issues_systemctl_stop(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        build_scope.subprocess,
+        "run",
+        lambda argv, *_a, **_k: calls.append(list(argv)) or subprocess.CompletedProcess(argv, 0),
+    )
+
+    assert build_scope._stop_scope("bakar-bitbake-deadbeef.scope") is True
+    assert calls == [["systemctl", "--user", "stop", "bakar-bitbake-deadbeef.scope"]]
 
 
 def _incrementing_clock():
@@ -565,9 +578,9 @@ def test_reclaim_no_wait_when_unit_not_loaded(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(build_scope, "_scope_loaded", lambda _unit: False)
     monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: pytest.fail("must not probe the cgroup"))
 
-    result = build_scope._reclaim_idle_scope("bakar-bitbake-deadbeef", sleep=slept.append)
+    result = build_scope._settle_scope("bakar-bitbake-deadbeef.scope", sleep=slept.append)
 
-    assert result is False
+    assert result == build_scope.SCOPE_ABSENT
     assert slept == []
 
 
@@ -590,16 +603,16 @@ def test_reclaim_waits_out_a_draining_previous_build(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: next(states, True))
     notes: list[str] = []
 
-    result = build_scope._reclaim_idle_scope(
-        "bakar-bitbake-deadbeef",
+    result = build_scope._settle_scope(
+        "bakar-bitbake-deadbeef.scope",
         sleep=lambda _s: None,
         clock=_incrementing_clock(),
         notify=notes.append,
         settle_timeout=30,
     )
 
-    assert result is True
-    assert ["systemctl", "--user", "stop", "bakar-bitbake-deadbeef"] in calls
+    assert result == build_scope.SCOPE_IDLE
+    assert calls == [], "settling classifies; the caller decides what to do"
     assert any("still draining" in n for n in notes)  # announced once, not per poll
     assert len(notes) == 1
 
@@ -615,15 +628,15 @@ def test_reclaim_gives_up_on_a_genuinely_concurrent_build(monkeypatch: pytest.Mo
     monkeypatch.setattr(build_scope, "_scope_loaded", lambda _unit: True)
     monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: False)  # a real build, never idle
 
-    result = build_scope._reclaim_idle_scope(
-        "bakar-bitbake-deadbeef",
+    result = build_scope._settle_scope(
+        "bakar-bitbake-deadbeef.scope",
         sleep=lambda _s: None,
         clock=_incrementing_clock(),
         settle_timeout=5,
     )
 
-    assert result is False
-    assert ["systemctl", "--user", "stop", "bakar-bitbake-deadbeef"] not in calls
+    assert result == build_scope.SCOPE_BUSY
+    assert ["systemctl", "--user", "stop", "bakar-bitbake-deadbeef.scope"] not in calls
 
 
 def test_reclaim_stops_waiting_when_unit_disappears(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -632,14 +645,14 @@ def test_reclaim_stops_waiting_when_unit_disappears(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(build_scope, "_scope_loaded", lambda _unit: next(loaded, False))
     monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: False)
 
-    result = build_scope._reclaim_idle_scope(
-        "bakar-bitbake-deadbeef",
+    result = build_scope._settle_scope(
+        "bakar-bitbake-deadbeef.scope",
         sleep=lambda _s: None,
         clock=_incrementing_clock(),
         settle_timeout=60,
     )
 
-    assert result is False
+    assert result == build_scope.SCOPE_ABSENT
 
 
 def test_reclaim_survives_missing_systemctl(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -651,26 +664,56 @@ def test_reclaim_survives_missing_systemctl(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: True)
     monkeypatch.setattr(build_scope.subprocess, "run", _boom)
 
-    assert build_scope._reclaim_idle_scope("bakar-bitbake-deadbeef") is False
+    assert build_scope._stop_scope("bakar-bitbake-deadbeef.scope") is False
 
 
-def test_wrap_reclaims_idle_scope_before_reset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """wrap stops an idle scope, then reset-failed's it, before launching."""
+def _idle_scope(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Present a loaded, idle scope and record every systemctl call wrap makes."""
     monkeypatch.setattr(build_scope, "systemd_run_available", lambda: True)
     monkeypatch.setattr(build_scope, "_scope_loaded", lambda _unit: True)
     monkeypatch.setattr(build_scope, "_scope_is_idle", lambda _unit: True)
     calls: list[list[str]] = []
+    monkeypatch.setattr(
+        build_scope.subprocess,
+        "run",
+        lambda argv, *_a, **_k: calls.append(list(argv)) or subprocess.CompletedProcess(argv, 0),
+    )
+    return calls
 
-    def _record(argv: list[str], *_a: object, **_k: object) -> subprocess.CompletedProcess:
-        calls.append(list(argv))
-        return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(build_scope.subprocess, "run", _record)
+def test_wrap_keeps_the_cooker_when_no_resource_controls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default path must not kill the previous run's cooker for a name.
+
+    With no cgroup controls configured, the scope's remaining jobs are
+    session-survival (which applies to the client launched here) and
+    oom_score_adj (which the surviving cooker already carries). Stopping it
+    would buy a unit name and cost a full re-parse.
+    """
+    calls = _idle_scope(monkeypatch)
     cfg = _cfg(tmp_path)
+    stable = build_scope.scope_unit_name(cfg, "bitbake")
+    log = _FakeLog(run_id="20260815-101500")
+
+    out = build_scope.wrap_build_command(_CMD, cfg, log, unit_suffix="bitbake")
+
+    assert ["systemctl", "--user", "stop", stable] not in calls
+    launched = build_scope.unit_from_command(out)
+    assert launched == f"{stable.removesuffix('.scope')}-20260815-101500.scope"
+    assert any("leaving" in msg and "parse cache" in msg for msg in log.infos)
+
+
+def test_wrap_reclaims_idle_scope_when_controls_are_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With a MemoryMax set, the cooker must run inside THIS run's cgroup.
+
+    A ceiling that does not contain the process doing the allocating is not a
+    ceiling, so here the re-parse is worth paying and the scope is stopped.
+    """
+    calls = _idle_scope(monkeypatch)
+    cfg = _cfg(tmp_path, scope_memory_max=0.8)
     unit = build_scope.scope_unit_name(cfg, "bitbake")
     log = _FakeLog()
 
-    build_scope.wrap_build_command(_CMD, cfg, log, unit_suffix="bitbake")
+    out = build_scope.wrap_build_command(_CMD, cfg, log, unit_suffix="bitbake")
 
     stop = ["systemctl", "--user", "stop", unit]
     reset = ["systemctl", "--user", "reset-failed", unit]
@@ -678,6 +721,8 @@ def test_wrap_reclaims_idle_scope_before_reset(tmp_path: Path, monkeypatch: pyte
     assert reset in calls
     assert calls.index(stop) < calls.index(reset)  # reclaim precedes the flush
     assert any("reclaimed idle build scope" in msg for msg in log.infos)
+    # Stopping frees the stable name, so no run-scoped fallback is needed.
+    assert build_scope.unit_from_command(out) == unit
 
 
 def test_wrap_leaves_busy_scope_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

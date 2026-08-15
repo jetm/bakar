@@ -161,8 +161,9 @@ def scope_unit_name(cfg: BuildConfig, unit_suffix: str) -> str:
     Keyed on the effective BSP root plus the machine so two builds of the same
     target in the same tree share one unit name (a useful guard: a second such
     build would collide with the still-running scope - an *idle* scope left
-    holding only bitbake's cooker daemon is reclaimed first, see
-    :func:`_reclaim_idle_scope`), while different
+    holding only bitbake's cooker daemon is classified first, see
+    :func:`_settle_scope`, and may be stepped around rather than reused), while
+    different
     workspaces/targets get distinct units and distinct
     ``journalctl --user -u <unit>`` streams. The path is hashed rather than
     embedded so the result is always a legal unit name regardless of the
@@ -174,7 +175,7 @@ def scope_unit_name(cfg: BuildConfig, unit_suffix: str) -> str:
     still creates ``bakar-x.scope`` - but every *other* tool resolves an
     unsuffixed name to ``.service``. An unsuffixed name therefore made
     ``systemctl show`` report ``LoadState=not-found`` for a scope that was
-    loaded and active, silently defeating both :func:`_reclaim_idle_scope` and
+    loaded and active, silently defeating both :func:`_settle_scope` and
     :func:`_reset_stale_scope` (each ``check=False``, so the "Unit
     bakar-x.service not loaded" error never surfaced), and made the
     ``journalctl`` hint printed at launch return "-- No entries --".
@@ -184,17 +185,20 @@ def scope_unit_name(cfg: BuildConfig, unit_suffix: str) -> str:
     return f"bakar-{unit_suffix}-{digest}.scope"
 
 
-def active_scope_unit(cfg: BuildConfig, unit_suffix: str) -> str | None:
-    """Return the unit name when this build will actually be scoped, else None.
+def unit_from_command(cmd: list[str]) -> str | None:
+    """Return the scope unit ``cmd`` will run under, or None when it is unscoped.
 
-    Mirrors :func:`wrap_build_command`'s gate the same way :func:`scope_env`
-    does, so a caller can label telemetry with the unit only when one really
-    exists. Naming a unit that was never created would send a reader to an empty
-    ``journalctl`` and cost more than the missing field.
+    Read off the wrapped command rather than recomputed from the config, because
+    :func:`wrap_build_command` does not always launch under the config-derived
+    name: an idle scope makes it fall back to a run-scoped one. A second
+    derivation would agree with it only most of the time, and telemetry that
+    names the wrong unit is worse than telemetry that names none - it sends a
+    reader to an empty ``journalctl`` while looking authoritative.
     """
-    if not cfg.scope or not systemd_run_available():
-        return None
-    return scope_unit_name(cfg, unit_suffix)
+    for token in cmd:
+        if token.startswith("--unit="):
+            return token.removeprefix("--unit=")
+    return None
 
 
 def _fraction_to_percent(fraction: float) -> int | None:
@@ -351,7 +355,7 @@ def _scope_loaded(unit: str) -> bool:
     A transient scope stays loaded for a moment after its processes exit, and
     ``systemd-run --unit=<name>`` fails with "already loaded or has a fragment
     file" for the whole of that window. This is the gate that keeps the settle
-    wait in :func:`_reclaim_idle_scope` free in the common case: when no unit is
+    wait in :func:`_settle_scope` free in the common case: when no unit is
     loaded there is nothing to collide with, so there is nothing to wait for.
     """
     try:
@@ -368,63 +372,68 @@ def _scope_loaded(unit: str) -> bool:
     return (result.stdout or "").strip() == "loaded"
 
 
-def _reclaim_idle_scope(
+# Verdicts from _settle_scope, in the order the launch path cares about.
+SCOPE_ABSENT = "absent"
+SCOPE_IDLE = "idle"
+SCOPE_BUSY = "busy"
+
+
+def _settle_scope(
     unit: str,
     *,
     settle_timeout: float = _SCOPE_SETTLE_SECONDS,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     notify: Callable[[str], None] | None = None,
-) -> bool:
-    """Stop ``unit`` once nothing but bitbake's persistent cooker holds it open.
+) -> str:
+    """Classify ``unit`` as absent, idle, or busy - waiting out a drain first.
 
-    Complements :func:`_reset_stale_scope`, which flushes an inactive or failed
-    unit but correctly declines to touch an `active` one. A finished
-    ``bakar bitbake`` run leaves the scope active anyway, because the cooker
-    daemon it spawned outlives the client and keeps the cgroup non-empty - so
-    the next identical invocation collided with a scope that had no build in it.
+    A finished ``bakar bitbake`` run leaves its scope *active*: the cooker daemon
+    outlives the client and keeps the cgroup non-empty, so the next identical
+    invocation would collide with a scope that has no build in it.
+    :func:`_reset_stale_scope` cannot help there - it flushes an inactive or
+    failed unit and correctly declines to touch an active one.
 
     The wait matters as much as the check. Interrupting a build with Ctrl-C and
     immediately re-running it lands in a window where the *previous* build's
-    ``kas`` client and its parser processes are still shutting down: they are
-    genuinely alive, so the scope reads as busy, but they are a corpse rather
-    than a concurrent build. Polling until the scope drains turns that into a
-    successful launch, while a real concurrent build never drains and so still
-    collides after ``settle_timeout`` - which is the deliberate guard, not a
-    bug. The wait is gated on the unit actually being loaded, so an ordinary
-    build with no scope present pays nothing.
+    ``kas`` client and its parser processes are still shutting down: genuinely
+    alive, so the scope reads busy, but a corpse rather than a concurrent build.
+    Polling until it drains turns that into a successful launch, while a real
+    concurrent build never drains and is still reported busy after
+    ``settle_timeout`` - the deliberate guard, not a bug. Gated on the unit
+    actually being loaded, so an ordinary build with no scope pays nothing.
 
-    Reclaiming costs the cooker's in-memory parse cache (the next run
-    re-parses), the same price the manual ``systemctl --user stop`` workaround
-    pays, and only when the scope is provably idle.
-
-    Returns True when the unit was stopped. Best-effort throughout: a missing
-    systemctl or an unreadable cgroup leaves the scope untouched.
+    Deciding what to DO about an idle scope is the caller's, because the two
+    available answers cost different things: see :func:`wrap_build_command`.
     """
     if not _scope_loaded(unit):
-        return False
+        return SCOPE_ABSENT
 
     deadline = clock() + settle_timeout
     announced = False
     while not _scope_is_idle(unit):
         if clock() >= deadline:
-            # Still busy after the grace window: treat it as a real concurrent
-            # build and let the launch collide, exactly as designed.
-            return False
+            return SCOPE_BUSY
         if notify is not None and not announced:
             announced = True
             notify(f"scope {unit} is still draining from a previous run; waiting up to {settle_timeout:.0f}s")
         sleep(_SCOPE_SETTLE_POLL)
         if not _scope_loaded(unit):
-            # It went away on its own mid-wait; nothing left to reclaim.
-            return False
+            # It went away on its own mid-wait.
+            return SCOPE_ABSENT
+    return SCOPE_IDLE
 
+
+def _stop_scope(unit: str) -> bool:
+    """Stop ``unit``, taking every process in its cgroup with it.
+
+    For an idle build scope that means killing bitbake's persistent cooker, and
+    with it the in-memory parse cache the next run would have reused. Only worth
+    paying when the new run needs the cooker inside its own cgroup - see
+    :func:`wrap_build_command`.
+    """
     try:
-        subprocess.run(
-            ["systemctl", "--user", "stop", unit],
-            check=False,
-            capture_output=True,
-        )
+        subprocess.run(["systemctl", "--user", "stop", unit], check=False, capture_output=True)
     except OSError:
         return False
     return True
@@ -472,12 +481,14 @@ def wrap_build_command(
 
     ``--collect`` GCs the transient unit on a clean failure, but a hard-killed
     build can still leave the config-hash-named unit lingering, so
-    :func:`_reset_stale_scope` flushes it first (see there), and
-    :func:`_reclaim_idle_scope` runs ahead of that to release a scope left
-    `active` by nothing but bitbake's persistent cooker; ``--quiet``
-    suppresses systemd-run's own "Running as unit" chatter (the
-    live UI owns the terminal), with the unit name and its journal command
-    logged to the run log instead.
+    :func:`_reset_stale_scope` flushes it; :func:`_settle_scope` runs ahead of
+    that to classify a scope left `active` by nothing but bitbake's persistent
+    cooker, and the branch below decides whether to stop it or step around it.
+    ``--quiet`` suppresses systemd-run's own "Running as unit" chatter (the live
+    UI owns the terminal), with the unit name and its journal command logged to
+    the run log instead. The launched unit is therefore not always
+    :func:`scope_unit_name`'s value - read it back with
+    :func:`unit_from_command` rather than deriving it a second time.
 
     The wrapper preserves the launch contract ``bakar stop`` relies on:
     ``systemd-run --scope`` exec-chains into the command, so the ``Popen``
@@ -509,15 +520,43 @@ def wrap_build_command(
         )
 
     unit = scope_unit_name(cfg, unit_suffix)
-    # Order matters: reclaim the active-but-idle case first (a finished run whose
-    # cooker daemon still holds the cgroup), then flush an inactive/failed unit.
-    if _reclaim_idle_scope(unit, notify=log.info):
-        log.info(
-            f"reclaimed idle build scope {unit} (only bitbake's persistent cooker remained; the next run re-parses)"
-        )
+    properties = _scope_properties(cfg)
+    # An idle scope - one holding nothing but the previous run's cooker daemon -
+    # blocks this launch on its name alone. There are two ways past it, and they
+    # cost different things:
+    #
+    #   Stop it. The cooker dies with the cgroup and the next run re-parses from
+    #   scratch. Worth it ONLY when this run carries resource controls, because a
+    #   cooker inherited from the previous scope sits outside them and a
+    #   MemoryMax that does not contain the process doing the allocating is not a
+    #   ceiling at all.
+    #
+    #   Step around it. Take a run-scoped name and leave the cooker alive, so its
+    #   in-memory parse cache carries into this run. With no resource controls
+    #   configured - the default - the scope's remaining jobs are
+    #   session-survival, which applies to the client being launched here, and
+    #   oom_score_adj, which the surviving cooker already inherited at fork and
+    #   keeps. Stopping it would buy a name and cost a full re-parse.
+    #
+    # A BUSY scope takes neither branch: it keeps the stable name and is left to
+    # collide, which is the concurrent-same-config guard working as designed.
+    verdict = _settle_scope(unit, notify=log.info)
+    if verdict == SCOPE_IDLE:
+        if properties:
+            if _stop_scope(unit):
+                log.info(
+                    f"reclaimed idle build scope {unit} (only bitbake's persistent cooker remained; "
+                    "the next run re-parses) so this run's resource controls contain the cooker"
+                )
+        else:
+            unit = f"{unit.removesuffix('.scope')}-{log.run_id}.scope"
+            log.info(
+                f"idle build scope held by the previous run's cooker; launching as {unit} and leaving "
+                "the cooker alive so its parse cache carries over"
+            )
     _reset_stale_scope(unit)
     prefix = ["systemd-run", "--user", "--scope", "--quiet", "--collect", f"--unit={unit}"]
-    for prop in _scope_properties(cfg):
+    for prop in properties:
         prefix += ["--property", prop]
 
     inner = cmd
