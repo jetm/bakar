@@ -157,20 +157,22 @@ def pick_bool(env_key: str, *, ws_val: bool | None, user_val: bool) -> bool:
     return user_val
 
 
-def pick_host_toggle(
+def pick_bool_tristate(
     env_key: str,
     *,
     ws_val: bool | None,
     user_val: bool | None,
 ) -> bool | None:
-    """Resolve the explicit ``host_mode`` toggle, tri-state.
+    """Resolve a tri-state boolean toggle, env > workspace > user.
 
     Mirrors :func:`pick_bool`'s env > workspace > user ordering, but returns
-    ``None`` when no tier explicitly sets the toggle so the caller can fall
-    through to container auto-detection. A set ``BAKAR_HOST_MODE`` env var wins
-    (``1/true/yes/on`` truthy, else falsy); then the workspace ``.bakar.toml``
-    value when not ``None`` (its "unset" sentinel); then the user config value
-    when not ``None``. The CLI ``--host`` flag is applied above this helper.
+    ``None`` when no tier explicitly sets the toggle, letting the caller fall
+    through to its own default or auto-detection. A set ``env_key`` env var
+    wins (``1/true/yes/on`` truthy, else falsy); then ``ws_val`` when not
+    ``None`` (its "unset" sentinel); then ``user_val`` when not ``None``.
+    Callers apply any higher-precedence CLI flag above this helper - e.g.
+    the explicit container/host toggle at this module's ``effective_host_mode``
+    call site.
     """
     env_val = os.environ.get(env_key)
     if env_val is not None and env_val.strip() != "":
@@ -955,7 +957,7 @@ def resolve(
     # opt-in for the host path). Explicit container toggle resolved env >
     # workspace [build] container > user config container; None means no tier
     # set it, so the default (host) stands.
-    explicit_container_toggle = pick_host_toggle(
+    explicit_container_toggle = pick_bool_tristate(
         "BAKAR_CONTAINER",
         ws_val=workspace_config.container if workspace_config is not None else None,
         user_val=user_config.container if user_config is not None else None,
