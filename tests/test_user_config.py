@@ -26,9 +26,9 @@ def test_missing_file_returns_defaults(tmp_path: Path) -> None:
     assert result.show_hashes is False
 
 
-def test_user_config_ccache_default_disabled() -> None:
-    """A bare ``UserConfig()`` has ``ccache`` off by default."""
-    assert UserConfig().ccache is False
+def test_user_config_ccache_default_unset() -> None:
+    """A bare ``UserConfig()`` leaves ``ccache`` unset (tri-state None)."""
+    assert UserConfig().ccache is None
 
 
 def test_full_file_populates_every_field(tmp_path: Path) -> None:

@@ -138,10 +138,15 @@ class UserConfig:
     # hits 65% (3603/42090 -> 5939/42090) but bought only 2% wall-clock (26.7 ->
     # 26.2 min) even over local disk, and bakar's NFS-shared ccache_dir measured
     # 2.3x slower cold-build wall-clock than local disk at a comparable ~8.7% hit
-    # rate. effective ccache is gated off whenever sccache_dist is set (mutually
-    # exclusive launchers). rm_work default off:
+    # rate. None means "not set in config.toml", distinguishable from an explicit
+    # false; the effective default is resolved by config.py's resolve() (which
+    # is conditional on sccache_dist), not by this field's own default alone.
+    # `use_ccache` (the derived parallelism-dominant-launcher marker), not the
+    # raw ccache toggle, goes False whenever sccache_dist is set (mutually
+    # exclusive launchers) - the raw toggle here stays on and continues to
+    # drive overlay selection. rm_work default off:
     # while bakar is in use the tuning stack strips rm_work so work dirs survive.
-    ccache: bool = False
+    ccache: bool | None = None
     rm_work: bool = False
     # Live build UI: load per-task timing baselines and color drifting tasks.
     # Default off so a fresh checkout renders no misleading drift.
