@@ -1012,6 +1012,22 @@ def resolve(
 
         yaml_machine = machine_from_yaml(kas_yaml)
 
+    resolved_sccache_dist = pick_bool(
+        "BAKAR_SCCACHE_DIST",
+        ws_val=None,
+        user_val=user_config.sccache_dist if user_config is not None else False,
+    )
+    # An explicit ccache setting at any tier (env, workspace, or user config)
+    # always wins. Only when nothing sets it anywhere does ccache fall through
+    # to matching resolved_sccache_dist, so a --sccache-dist build keeps its
+    # local-cache tail for non-allowlisted recipes without needing an
+    # explicit `ccache = true`.
+    resolved_ccache = pick_bool_tristate(
+        "BAKAR_CCACHE",
+        ws_val=workspace_config.ccache if workspace_config is not None else None,
+        user_val=user_config.ccache if user_config is not None else None,
+    )
+
     return BuildConfig(
         workspace=workspace.resolve(),
         bsp_family=bsp_family,
@@ -1077,11 +1093,7 @@ def resolve(
         ccache_dir=user_config.ccache_dir if user_config else None,
         psi_autocalibrate=user_config.psi_autocalibrate if user_config else False,
         sstate_mirror_url=user_config.sstate_mirror_url if user_config else None,
-        sccache_dist=pick_bool(
-            "BAKAR_SCCACHE_DIST",
-            ws_val=None,
-            user_val=user_config.sccache_dist if user_config is not None else False,
-        ),
+        sccache_dist=resolved_sccache_dist,
         sccache_scheduler_url=user_config.sccache_scheduler_url if user_config else None,
         mold=resolved_mold,
         mold_mode=resolved_mold_mode,
@@ -1098,11 +1110,7 @@ def resolve(
             ws_val=None,
             user_val=user_config.cluster if user_config is not None else False,
         ),
-        ccache=pick_bool(
-            "BAKAR_CCACHE",
-            ws_val=workspace_config.ccache if workspace_config is not None else None,
-            user_val=user_config.ccache if user_config is not None else False,
-        ),
+        ccache=resolved_ccache if resolved_ccache is not None else resolved_sccache_dist,
         rm_work=pick_bool(
             "BAKAR_RM_WORK",
             ws_val=workspace_config.rm_work if workspace_config is not None else None,
