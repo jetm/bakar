@@ -133,10 +133,15 @@ class UserConfig:
     # from bb_hashserve/prserv_host being set, which can point one node at the
     # central tier for warm-cache reads without cluster intent.
     cluster: bool = False
-    # ccache enable toggle (default on); effective ccache is gated off whenever
-    # sccache_dist is set (mutually exclusive launchers). rm_work default off:
+    # ccache enable toggle (default OFF as of the 2026-08-20 yocto-bench.py A/B
+    # campaign on core-image-minimal/qemux86-64: cold-to-warm reuse raised ccache
+    # hits 65% (3603/42090 -> 5939/42090) but bought only 2% wall-clock (26.7 ->
+    # 26.2 min) even over local disk, and bakar's NFS-shared ccache_dir measured
+    # 2.3x slower cold-build wall-clock than local disk at a comparable ~8.7% hit
+    # rate. effective ccache is gated off whenever sccache_dist is set (mutually
+    # exclusive launchers). rm_work default off:
     # while bakar is in use the tuning stack strips rm_work so work dirs survive.
-    ccache: bool = True
+    ccache: bool = False
     rm_work: bool = False
     # Live build UI: load per-task timing baselines and color drifting tasks.
     # Default off so a fresh checkout renders no misleading drift.
