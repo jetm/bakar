@@ -502,6 +502,70 @@ def test_resolve_use_ccache_false_when_ccache_disabled(tmp_path) -> None:
     assert cfg.use_ccache is False
 
 
+def test_resolve_ccache_unset_falls_back_to_sccache_dist_true(tmp_path) -> None:
+    """With ccache unset at the user tier, sccache_dist=True resolves ccache True."""
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(sccache_dist=True))
+
+    assert cfg.ccache is True
+
+
+def test_resolve_ccache_unset_falls_back_to_sccache_dist_false(tmp_path) -> None:
+    """With ccache unset at the user tier, sccache_dist=False resolves ccache False."""
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(sccache_dist=False))
+
+    assert cfg.ccache is False
+
+
+def test_resolve_ccache_explicit_false_wins_over_sccache_dist_true(tmp_path) -> None:
+    """An explicit ccache=False is not overridden by sccache_dist=True."""
+    cfg = resolve(
+        workspace=_workspace(tmp_path),
+        bsp_family="nxp",
+        user_config=UserConfig(ccache=False, sccache_dist=True),
+    )
+
+    assert cfg.ccache is False
+
+
+def test_resolve_ccache_explicit_true_wins_over_sccache_dist_false(tmp_path) -> None:
+    """An explicit ccache=True is not overridden by sccache_dist=False."""
+    cfg = resolve(
+        workspace=_workspace(tmp_path),
+        bsp_family="nxp",
+        user_config=UserConfig(ccache=True, sccache_dist=False),
+    )
+
+    assert cfg.ccache is True
+
+
+def test_resolve_ccache_workspace_false_wins_over_user_sccache_dist_fallback(tmp_path) -> None:
+    """A workspace-tier ccache=False outranks the user tier's sccache_dist fallback."""
+    cfg = resolve(
+        workspace=_workspace(tmp_path),
+        bsp_family="nxp",
+        user_config=UserConfig(sccache_dist=True),
+        workspace_config=WorkspaceConfig(ccache=False),
+    )
+
+    assert cfg.ccache is False
+
+
+def test_resolve_ccache_env_false_wins_over_sccache_dist_fallback(tmp_path, monkeypatch) -> None:
+    """BAKAR_CCACHE=0 beats the sccache_dist fallback when ccache is unset everywhere."""
+    monkeypatch.setenv("BAKAR_CCACHE", "0")
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(sccache_dist=True))
+
+    assert cfg.ccache is False
+
+
+def test_resolve_ccache_env_true_wins_over_sccache_dist_false(tmp_path, monkeypatch) -> None:
+    """BAKAR_CCACHE=1 beats sccache_dist=False."""
+    monkeypatch.setenv("BAKAR_CCACHE", "1")
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(sccache_dist=False))
+
+    assert cfg.ccache is True
+
+
 # ---------------------------------------------------------------------------
 # resolve() bsp_family None sentinel and preset/family conflict tests
 # ---------------------------------------------------------------------------
