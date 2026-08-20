@@ -566,6 +566,26 @@ def test_resolve_ccache_env_true_wins_over_sccache_dist_false(tmp_path, monkeypa
     assert cfg.ccache is True
 
 
+def test_resolve_sccache_dist_override_flag_resolves_ccache_true(tmp_path) -> None:
+    """The --sccache-dist CLI flag alone (no config anywhere) sets sccache_dist and ccache both True."""
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", sccache_dist_override=True)
+
+    assert cfg.sccache_dist is True
+    assert cfg.ccache is True
+
+
+def test_resolve_sccache_dist_override_flag_loses_to_explicit_ccache_false(tmp_path) -> None:
+    """An explicit [build] ccache=false still wins over the --sccache-dist CLI-flag override."""
+    cfg = resolve(
+        workspace=_workspace(tmp_path),
+        bsp_family="nxp",
+        sccache_dist_override=True,
+        user_config=UserConfig(ccache=False),
+    )
+
+    assert cfg.ccache is False
+
+
 # ---------------------------------------------------------------------------
 # resolve() bsp_family None sentinel and preset/family conflict tests
 # ---------------------------------------------------------------------------

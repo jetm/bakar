@@ -772,7 +772,16 @@ def test_getvar_sccache_dist_flag_applies_overlay(
     CC --recipe <target> --sccache-dist`` resolve the same value a
     --sccache-dist build runs, so the launcher swap can be verified by
     inspection. No UserConfig is set here, proving the flag alone enables it.
+
+    Pins a bare default ``UserConfig()`` (``ccache`` and ``sccache_dist`` both
+    unset) so the assertions below are independent of the developer's real
+    ``~/.config/bakar/config.toml`` - which may itself set ``ccache``/
+    ``sccache_dist`` explicitly and would otherwise make this test's outcome
+    machine-dependent.
     """
+    from bakar.user_config import UserConfig
+
+    monkeypatch.setattr("bakar.commands._app._load_user_config_safe", UserConfig)
     calls: list[dict] = []
     fake = _make_fake_capture_ctx([(_GETVAR_OUTPUT, 0)], calls)
 
@@ -786,6 +795,10 @@ def test_getvar_sccache_dist_flag_applies_overlay(
     assert len(calls) == 1
     names = [p.name for p in calls[0]["extra_overlays"]]
     assert "bakar-tuning-sccache.yml" in names, names
+    # No [build] ccache / sccache_dist is configured anywhere here, so the
+    # --sccache-dist flag's ccache fallback (config.py resolve()) must also
+    # select the ccache tuning overlay alongside the sccache one.
+    assert "bakar-tuning-ccache.yml" in names, names
 
 
 # ---------------------------------------------------------------------------

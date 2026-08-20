@@ -229,6 +229,35 @@ def test_user_overlay_named_in_build_log(
     assert "bakar-tuning-host.yml" in text
 
 
+def test_sccache_dist_flag_applies_ccache_overlay(
+    runner: _CliRunner,
+    workspace: Path,
+    generic_yaml: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The global ``--sccache-dist`` flag alone selects the ccache tuning overlay.
+
+    With no ``[build] ccache`` / ``sccache_dist`` set anywhere, ``resolve()``'s
+    fallback makes ``cfg.ccache`` follow the CLI-flag-driven ``cfg.sccache_dist``,
+    so the hybrid tail (ccache for non-allowlisted recipes) is not silently lost
+    under the sccache-dist path. ``--sccache-dist`` is a global Typer callback
+    option, so it must precede the ``build`` subcommand on the argv line.
+    """
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    monkeypatch.setattr(build_cmd.step_kas, "run_build", lambda ctx, **kw: 0)
+
+    result = runner.invoke(app, ["--sccache-dist", "build", str(generic_yaml)])
+
+    assert result.exit_code == 0, result.output
+
+    events = list(tmp_path.glob("**/events.jsonl"))
+    assert events, "no events.jsonl written"
+    text = "\n".join(p.read_text() for p in events)
+    assert "bakar-tuning-ccache.yml" in text
+    assert "bakar-tuning-sccache.yml" in text
+
+
 # ---------------------------------------------------------------------------
 # --target override threading
 # ---------------------------------------------------------------------------
