@@ -435,13 +435,13 @@ class BuildConfig:
     # Explicit cluster-mode opt-in (default off); the single gating signal for the
     # cluster preflight checks. See user_config.cluster.
     cluster: bool = field(default=False)
-    # ccache enable toggle (default on). ccache and sccache co-exist as a hybrid:
+    # ccache enable toggle (default off). ccache and sccache co-exist as a hybrid:
     # the ccache overlay is selected whenever this flag is on (INCLUDING under
     # sccache_dist), so ccache is the local object cache for the non-allowlisted
     # recipe tail while sccache distributes the allowlisted heavy recipes.
     # use_ccache stays the parallelism-dominant-launcher marker (this flag AND NOT
-    # sccache_dist). Set ccache=False to disable ccache outright.
-    ccache: bool = field(default=True)
+    # sccache_dist). Set ccache=True to opt back into ccache.
+    ccache: bool = field(default=False)
     # When False (the default while bakar is in use) the tuning stack strips
     # rm_work from both INHERIT and USER_CLASSES so recipe work dirs survive
     # (stone provisioning depends on previously-built native binaries). Set
@@ -1099,7 +1099,7 @@ def resolve(
         ccache=pick_bool(
             "BAKAR_CCACHE",
             ws_val=workspace_config.ccache if workspace_config is not None else None,
-            user_val=user_config.ccache if user_config is not None else True,
+            user_val=user_config.ccache if user_config is not None else False,
         ),
         rm_work=pick_bool(
             "BAKAR_RM_WORK",
