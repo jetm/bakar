@@ -347,13 +347,6 @@ def test_resolve_ccache_default_false_rm_work_default_false(tmp_path) -> None:
     assert cfg.rm_work is False
 
 
-def test_resolve_ccache_default_disabled(tmp_path) -> None:
-    """Without any user config or workspace override, ccache resolves to False."""
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
-
-    assert cfg.ccache is False
-
-
 def test_resolve_stop_on_error_default_true(tmp_path) -> None:
     """Without configs, stop_on_error defaults on (mirrors stall_abort_secs's enabled-by-default shape)."""
     cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
@@ -391,6 +384,13 @@ def test_resolve_ccache_user_config_disables(tmp_path) -> None:
     cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(ccache=False))
 
     assert cfg.ccache is False
+
+
+def test_resolve_ccache_user_config_enables(tmp_path) -> None:
+    """Global config.toml [build] ccache=true opts back into ccache against the new off-by-default."""
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=UserConfig(ccache=True))
+
+    assert cfg.ccache is True
 
 
 def test_resolve_rm_work_user_config_enables(tmp_path) -> None:

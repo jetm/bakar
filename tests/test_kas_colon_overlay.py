@@ -345,9 +345,9 @@ def test_bitbake_colon_arg_extra_overlay_in_ctx(
     assert result.exit_code == 0, result.output
     assert len(calls) == 1
     # host_mode defaults on (host isolation overlay appended), cache-classify is
-    # unconditional, and ccache defaults on - filter the always-on base stack to
-    # assert the user colon-overlay forwarding in isolation.
-    base_stack = {"bakar-tuning-host.yml", "bakar-tuning-cache-classify.yml", "bakar-tuning-ccache.yml"}
+    # unconditional, and ccache now defaults off - filter the always-on base
+    # stack to assert the user colon-overlay forwarding in isolation.
+    base_stack = {"bakar-tuning-host.yml", "bakar-tuning-cache-classify.yml"}
     extras = [o for o in calls[0]["extra_overlays"] if o.name not in base_stack]
     assert len(extras) == 1
     assert extras[0].resolve() == overlay_yaml.resolve()
@@ -378,9 +378,9 @@ def test_bitbake_single_yaml_no_extras(
 
     assert result.exit_code == 0, result.output
     # host_mode defaults on (host isolation overlay appended), cache-classify is
-    # unconditional, and ccache defaults on - assert no USER extra overlays
+    # unconditional, and ccache now defaults off - assert no USER extra overlays
     # beyond that always-on base stack.
-    base_stack = {"bakar-tuning-host.yml", "bakar-tuning-cache-classify.yml", "bakar-tuning-ccache.yml"}
+    base_stack = {"bakar-tuning-host.yml", "bakar-tuning-cache-classify.yml"}
     user_extras = [o for o in calls[0]["extra_overlays"] if o.name not in base_stack]
     assert user_extras == []
 

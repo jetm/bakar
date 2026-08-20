@@ -1,6 +1,6 @@
 # ccache tuning overlay.
 #
-# Added by bakar whenever [build] ccache is on (the default), INCLUDING when
+# Added by bakar whenever [build] ccache is on (off by default), INCLUDING when
 # sccache-dist is on. ccache and sccache both drive the same OE launcher slot
 # (the CCACHE variable), but they are COMPLEMENTARY under the hybrid: ccache is
 # the local object cache for the non-allowlisted recipe tail while sccache

@@ -203,8 +203,8 @@ def test_user_overlay_named_in_build_log(
     is in the merge. Asserts on the structured events.jsonl message (the Rich
     console soft-wraps long paths, which would make a console substring match
     fragile). With hashserv=False the stack is exactly 5: my.yml, the generic
-    tuning base, bringup.yml, the default-on ccache tuning overlay, and the
-    host-mode isolation overlay.
+    tuning base, bringup.yml, the always-on cache-classify tuning overlay, and
+    the host-mode isolation overlay.
     """
     _stub_user_config_loader(monkeypatch, hashserv=False)
     monkeypatch.setattr(build_cmd.step_kas, "run_build", lambda ctx, **kw: 0)
@@ -219,14 +219,13 @@ def test_user_overlay_named_in_build_log(
     events = list(tmp_path.glob("**/events.jsonl"))
     assert events, "no events.jsonl written"
     text = "\n".join(p.read_text() for p in events)
-    # 6 overlays: the user YAML, the generic base, the user's bringup.yml, the
-    # always-on cache-classify tuning overlay, the default-on ccache tuning
-    # overlay (ccache defaults true, sccache off), and the host-mode isolation
+    # 5 overlays: the user YAML, the generic base, the user's bringup.yml, the
+    # always-on cache-classify tuning overlay, and the host-mode isolation
     # overlay (host_mode defaults on with no container image configured).
-    assert "merging 6 overlays" in text
+    # ccache is off by default, so its tuning overlay is not in this stack.
+    assert "merging 5 overlays" in text
     assert "bringup.yml" in text
     assert "bakar-tuning-cache-classify.yml" in text
-    assert "bakar-tuning-ccache.yml" in text
     assert "bakar-tuning-host.yml" in text
 
 
