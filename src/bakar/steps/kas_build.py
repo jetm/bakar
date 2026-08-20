@@ -2362,6 +2362,22 @@ def _provision_buildtools(cfg: BuildConfig, passthrough: dict[str, str]) -> None
     # BB_PYTHON3 too for any sub-invocation that honors it.
     if sdk_bin:
         passthrough["BB_PYTHON3"] = str(Path(sdk_bin) / "python3")
+        # That python has its cert path baked in as the SDK's own build path
+        # (/usr/local/oe-sdk-hardcoded-buildpath/...), which does not survive
+        # relocation, so ssl.get_default_verify_paths() reports cafile=None and
+        # every HTTPS verify under it fails. The tarball ships a usable bundle
+        # and nothing points at it: cve-update-nvd2-native's do_fetch burns its
+        # five retries on CERTIFICATE_VERIFY_FAILED and leaves whatever CVE
+        # database it already had, which reads as a fresh scan against months-old
+        # advisories. An explicit value wins - a corporate trust store is not in
+        # the SDK's bundle, and overriding it would break the fetch it fixes.
+        if "SSL_CERT_FILE" not in passthrough:
+            ca_bundle = Path(sdk_bin).parent.parent / "etc" / "ssl" / "certs" / "ca-certificates.crt"
+            # Only when it is really there: openssl treats an unreadable
+            # SSL_CERT_FILE as an empty trust store, so a wrong path is worse
+            # than none.
+            if ca_bundle.is_file():
+                passthrough["SSL_CERT_FILE"] = str(ca_bundle)
 
 
 def _apply_host_mode_env(
@@ -2452,7 +2468,12 @@ def _build_env(
     passthrough = {
         k: v
         for k, v in os.environ.items()
-        if k.startswith(("KAS_", "BB_", "SSTATE_", "DL_", "NPROC", "PATH", "HOME", "USER", "SDKMACHINE"))
+        # SSL_CERT_FILE so an operator who names a trust store keeps it: the
+        # buildtools default below is a fallback for the relocated SDK's missing
+        # one, not a policy about which CAs to trust.
+        if k.startswith(
+            ("KAS_", "BB_", "SSTATE_", "DL_", "NPROC", "PATH", "HOME", "USER", "SDKMACHINE", "SSL_CERT_FILE")
+        )
     }
     # PATH might not have leaked via the startswith rule if the shell
     # exported it without prefix; ensure it is present.

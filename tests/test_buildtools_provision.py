@@ -457,3 +457,83 @@ def test_provision_resolves_release_scoped_install(tmp_path: Path, monkeypatch: 
     kas_build._provision_buildtools(cfg, passthrough)
 
     assert str(toolbin) in passthrough["PATH"]
+
+
+# ---------------------------------------------------------------------------
+# SSL_CERT_FILE
+#
+# The buildtools python is built with its cert path baked in as the SDK's own
+# build path (/usr/local/oe-sdk-hardcoded-buildpath/...), which does not exist
+# once the tarball is relocated. ssl.get_default_verify_paths() then reports
+# cafile=None, so every HTTPS verify under that interpreter fails - observed as
+# cve-update-nvd2-native's do_fetch giving up after five retries on
+# CERTIFICATE_VERIFY_FAILED and leaving a months-stale CVE database in place.
+# The tarball does ship a usable bundle; it just is not pointed at.
+# ---------------------------------------------------------------------------
+
+
+def _with_ca_bundle(sysroot: Path) -> Path:
+    """Create the CA bundle the buildtools tarball ships under a sysroot."""
+    bundle = sysroot / "etc" / "ssl" / "certs" / "ca-certificates.crt"
+    bundle.parent.mkdir(parents=True, exist_ok=True)
+    bundle.write_text("-----BEGIN CERTIFICATE-----\n")
+    return bundle
+
+
+def test_provision_points_ssl_cert_file_at_the_sdk_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """env-script path: SSL_CERT_FILE names the bundle shipped under the sysroot."""
+    sysroot = _sdk_env_script(tmp_path)
+    bundle = _with_ca_bundle(sysroot)
+    monkeypatch.setenv(diagnostics.BUILDTOOLS_DIR_ENV, str(tmp_path))
+    cfg = _make_cfg(tmp_path, host_mode=True)
+    passthrough: dict[str, str] = {"PATH": "/usr/bin:/bin"}
+
+    kas_build._provision_buildtools(cfg, passthrough)
+
+    assert passthrough["SSL_CERT_FILE"] == str(bundle)
+
+
+def test_provision_points_ssl_cert_file_already_sourced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """already-sourced path: derived from OECORE_NATIVE_SYSROOT, same bundle."""
+    sysroot = tmp_path / "sysroot"
+    gcc = sysroot / "usr" / "bin" / "gcc"
+    gcc.parent.mkdir(parents=True)
+    gcc.write_text("#!/bin/sh\n")
+    bundle = _with_ca_bundle(sysroot)
+    monkeypatch.setenv("OECORE_NATIVE_SYSROOT", str(sysroot))
+    cfg = _make_cfg(tmp_path, host_mode=True)
+    passthrough: dict[str, str] = {"PATH": "/usr/bin:/bin"}
+
+    kas_build._provision_buildtools(cfg, passthrough)
+
+    assert passthrough["SSL_CERT_FILE"] == str(bundle)
+
+
+def test_provision_leaves_ssl_cert_file_unset_when_no_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No bundle under the sysroot means no var - pointing at a missing file
+    would turn a verify failure into a confusing one, and openssl treats an
+    unreadable SSL_CERT_FILE as no trust store at all.
+    """
+    _sdk_env_script(tmp_path)
+    monkeypatch.setenv(diagnostics.BUILDTOOLS_DIR_ENV, str(tmp_path))
+    cfg = _make_cfg(tmp_path, host_mode=True)
+    passthrough: dict[str, str] = {"PATH": "/usr/bin:/bin"}
+
+    kas_build._provision_buildtools(cfg, passthrough)
+
+    assert "SSL_CERT_FILE" not in passthrough
+
+
+def test_provision_does_not_override_an_explicit_ssl_cert_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An operator who named a trust store keeps it - a corporate MITM bundle is
+    the case that matters, and the SDK bundle would not carry its root.
+    """
+    sysroot = _sdk_env_script(tmp_path)
+    _with_ca_bundle(sysroot)
+    monkeypatch.setenv(diagnostics.BUILDTOOLS_DIR_ENV, str(tmp_path))
+    cfg = _make_cfg(tmp_path, host_mode=True)
+    passthrough: dict[str, str] = {"PATH": "/usr/bin:/bin", "SSL_CERT_FILE": "/etc/corp/ca.pem"}
+
+    kas_build._provision_buildtools(cfg, passthrough)
+
+    assert passthrough["SSL_CERT_FILE"] == "/etc/corp/ca.pem"
