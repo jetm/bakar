@@ -163,11 +163,10 @@ def _run_bbsetup_build(
             container_mode=ctx.container_mode,
         ),
         user_config=_state._USER_CONFIG,
+        sccache_dist_override=True if ctx.sccache_dist else None,
     )
     if ctx.sstate_mirror is not None:
         cfg = replace(cfg, sstate_mirror_url=ctx.sstate_mirror)
-    if ctx.sccache_dist:
-        cfg = replace(cfg, sccache_dist=True)
     if ctx.sccache_scheduler is not None:
         cfg = replace(cfg, sccache_scheduler_url=ctx.sccache_scheduler)
     cfg = apply_mold_overrides(cfg)
@@ -443,11 +442,10 @@ def _run_single_preset_release(
         kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
         preset=active_preset,
+        sccache_dist_override=True if sccache_dist else None,
     )
     if sstate_mirror is not None:
         cfg = replace(cfg, sstate_mirror_url=sstate_mirror)
-    if sccache_dist:
-        cfg = replace(cfg, sccache_dist=True)
     if sccache_scheduler is not None:
         cfg = replace(cfg, sccache_scheduler_url=sccache_scheduler)
     cfg = apply_mold_overrides(cfg)
@@ -822,11 +820,10 @@ def build(
         kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
         preset=active_preset,
+        sccache_dist_override=True if sccache_dist else None,
     )
     if sstate_mirror is not None:
         cfg = replace(cfg, sstate_mirror_url=sstate_mirror)
-    if sccache_dist:
-        cfg = replace(cfg, sccache_dist=True)
     if sccache_scheduler is not None:
         cfg = replace(cfg, sccache_scheduler_url=sccache_scheduler)
     cfg = apply_mold_overrides(cfg)

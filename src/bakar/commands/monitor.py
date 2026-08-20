@@ -52,6 +52,7 @@ from bakar.commands._helpers import (
     apply_mold_overrides,
     apply_sccache_overrides,
     global_output_mode_override,
+    global_sccache_dist_override,
 )
 from bakar.commands.log import _resolve_run_dir
 from bakar.config import BSPSpec, BuildConfig, resolve
@@ -564,6 +565,7 @@ def monitor(
         spec=BSPSpec(manifest=None),
         kas_yaml=kas_yaml,
         user_config=_state._USER_CONFIG,
+        sccache_dist_override=global_sccache_dist_override(),
     )
     cfg = apply_sccache_overrides(cfg)
     cfg = apply_mold_overrides(cfg)

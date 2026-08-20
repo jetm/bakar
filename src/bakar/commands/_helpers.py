@@ -460,16 +460,14 @@ def global_output_mode_override() -> OutputMode | None:
 
 
 def apply_sccache_overrides(cfg: BuildConfig) -> BuildConfig:
-    """Apply the global ``--sccache-dist`` / ``--sccache-scheduler`` flags to cfg.
+    """Apply the global ``--sccache-scheduler`` flag to cfg.
 
-    Mirrors the per-command threading build used before these became global
-    callback options: enable the sccache overlay and, when given, point the
-    client at the scheduler URL. A no-op when neither global flag is set.
+    Now that ``--sccache-dist`` is threaded into ``resolve()`` directly via
+    ``sccache_dist_override``, this only points the client at the scheduler
+    URL when one is given. A no-op when the global flag is not set.
     """
     import bakar.commands._app as _state
 
-    if _state._SCCACHE_DIST:
-        cfg = replace(cfg, sccache_dist=True)
     if _state._SCCACHE_SCHEDULER is not None:
         cfg = replace(cfg, sccache_scheduler_url=_state._SCCACHE_SCHEDULER)
     return cfg
@@ -483,6 +481,18 @@ def global_no_scope() -> bool:
     import bakar.commands._app as _state
 
     return _state._NO_SCOPE
+
+
+def global_sccache_dist_override() -> bool | None:
+    """Return the global ``--sccache-dist`` override, or None if not set.
+
+    A late import avoids a circular dependency between ``_helpers`` and ``_app``.
+    """
+    import bakar.commands._app as _state
+
+    if _state._SCCACHE_DIST:
+        return True
+    return None
 
 
 def apply_scope_override(cfg: BuildConfig) -> BuildConfig:

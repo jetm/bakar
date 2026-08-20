@@ -20,6 +20,7 @@ from bakar.commands._helpers import (
     apply_sccache_overrides,
     global_container_mode,
     global_host_mode,
+    global_sccache_dist_override,
     split_kas_yaml_arg,
 )
 from bakar.config import BSPSpec, resolve
@@ -65,6 +66,7 @@ def dump(
         spec=BSPSpec(manifest=manifest, host_mode=global_host_mode(), container_mode=global_container_mode()),
         kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
+        sccache_dist_override=global_sccache_dist_override(),
     )
     cfg = apply_sccache_overrides(cfg)
     cfg = apply_mold_overrides(cfg)
