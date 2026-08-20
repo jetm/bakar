@@ -31,10 +31,13 @@ def _build_command_str(cfg, overlay_source: Path, extra_overlays: list[Path]) ->
     from the resolved config fields.
     """
     exe = "kas" if cfg.host_mode else "kas-container"
-    ccache_host = cfg.effective_ccache_dir
-    runtime_flag = f"-v {ccache_host}:/work/ccache:rw"
+    runtime_flag = ""
+    if cfg.ccache:
+        ccache_host = cfg.effective_ccache_dir
+        runtime_flag = f"-v {ccache_host}:/work/ccache:rw"
     if cfg.use_hashequiv:
         runtime_flag += " --add-host=host.docker.internal:host-gateway"
+    runtime_flag = runtime_flag.strip()
 
     # kas_yaml relative to bsp_root when not overridden; full path otherwise.
     kas_yaml_str = str(cfg.kas_yaml)
@@ -42,7 +45,7 @@ def _build_command_str(cfg, overlay_source: Path, extra_overlays: list[Path]) ->
     parts = [f"{kas_yaml_str}:{overlay_name}", *[f".bakar/overlays/{p.name}" for p in extra_overlays]]
     kas_arg = ":".join(parts)
 
-    if cfg.host_mode:
+    if cfg.host_mode or not runtime_flag:
         cmd_parts = [exe, "build", kas_arg]
     else:
         cmd_parts = [exe, "--runtime-args", runtime_flag, "build", kas_arg]

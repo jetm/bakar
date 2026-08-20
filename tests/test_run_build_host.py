@@ -38,9 +38,11 @@ def _make_cfg(workspace: Path, *, host_mode: bool = False) -> BuildConfig:
     """Construct a minimal BuildConfig.
 
     Mirrors :func:`tests.test_kas_env._make_cfg`; the fields not exercised
-    here are filled with plausible NXP values.
+    here are filled with plausible NXP values. ``ccache=True`` so
+    ``test_run_build_command_list_starts_with_selected_exe``'s
+    container-mode assertion has a non-empty ``--runtime-args`` to check.
     """
-    return make_build_config(workspace=workspace, host_mode=host_mode)
+    return make_build_config(workspace=workspace, host_mode=host_mode, ccache=True)
 
 
 def _select_exe(cfg: BuildConfig) -> str:

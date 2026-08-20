@@ -1540,7 +1540,13 @@ def test_check_docker_storage_driver_skips_when_unreachable() -> None:
 
 
 def _ccache_cfg(workspace: Path) -> BuildConfig:
-    """BuildConfig pinning ``workspace`` so ``cfg.workspace / 'ccache'`` is deterministic."""
+    """BuildConfig pinning ``workspace`` so ``cfg.workspace / 'ccache'`` is deterministic.
+
+    ``ccache=True`` explicitly: these tests exercise the cache-directory
+    health mechanics (populated/missing/threshold), not the ccache-enabled
+    gate itself (see test_check_ccache_health_ccache_disabled_skips below),
+    so they must not inherit BuildConfig's off-by-default ccache value.
+    """
     return BuildConfig(
         workspace=workspace,
         bsp_family="generic",
@@ -1551,7 +1557,20 @@ def _ccache_cfg(workspace: Path) -> BuildConfig:
         repo_url="https://example.invalid/none.git",
         repo_branch="scarthgap",
         kas_container_image="jetm/kas-build-env:latest",
+        ccache=True,
     )
+
+
+def test_check_ccache_health_ccache_disabled_skips(tmp_path: Path) -> None:
+    """ccache disabled ([build] ccache = false, the default) -> SKIP at WARN severity."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "ccache").mkdir()
+    cfg = dataclasses.replace(_ccache_cfg(workspace), ccache=False)
+    result = check_ccache_health(cfg)
+    assert result.status is Status.SKIP
+    assert result.severity is Severity.WARN
+    assert "disabled" in result.message
 
 
 def test_check_ccache_health_absent(tmp_path: Path) -> None:

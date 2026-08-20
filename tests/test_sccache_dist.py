@@ -1566,11 +1566,16 @@ def _container_sccache_cfg(workspace: Path, *, scheduler_url: str = "http://loca
 
 
 def _container_cfg_no_sccache(workspace: Path) -> object:
-    """A container-mode BuildConfig with sccache and hashequiv both off."""
+    """A container-mode BuildConfig with sccache and hashequiv both off.
+
+    ``ccache=True`` so the falsifier guard below has a non-empty
+    ``--runtime-args`` string to check for the absence of sccache/host-gateway
+    content; ccache off (the default) would make ``_ccache_args`` return ``[]``.
+    """
     from dataclasses import replace
 
     cfg = _sccache_build_cfg(workspace, sccache_dist=False)
-    return replace(cfg, host_mode=False)  # type: ignore[arg-type]
+    return replace(cfg, host_mode=False, ccache=True)  # type: ignore[arg-type]
 
 
 @pytest.mark.unit

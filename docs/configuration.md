@@ -119,7 +119,8 @@ stop_on_error = true
 # so OEEquivHash sstate equivalence accumulates across builds.
 hashserv = true
 
-# ccache location. Per-workspace (<workspace>/ccache) by default. Set
+# ccache is off by default (see the `ccache` key below) - ccache_shared and
+# ccache_dir only take effect once ccache is explicitly enabled. Set
 # ccache_shared to reuse one cache across every workspace (cross-BSP hits,
 # less disk), defaulting to ~/.cache/bakar/ccache. ccache_dir pins an explicit
 # shared path and takes precedence over ccache_shared.
@@ -131,6 +132,7 @@ hashserv = true
 # (it overrides the overlay value) when you share across several workspaces.
 ccache_shared = true
 # ccache_dir = "/mnt/yocto-cache/ccache"
+ccache = true
 
 # Doctor host-environment thresholds. Defaults equal the values doctor
 # previously hardcoded, so an absent [host] table is a no-op. A workspace

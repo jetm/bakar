@@ -24,7 +24,7 @@ pytestmark = pytest.mark.unit
 
 
 def _make_cfg(workspace: Path, bsp_family: str = "nxp", *, host_mode: bool = False) -> BuildConfig:
-    return make_build_config(workspace=workspace, bsp_family=bsp_family, host_mode=host_mode)
+    return make_build_config(workspace=workspace, bsp_family=bsp_family, host_mode=host_mode, ccache=True)
 
 
 def test_ccache_args_container_mode_returns_flag(tmp_path: Path) -> None:
@@ -208,6 +208,7 @@ def _hashequiv_cfg(
         kas_container_image="jetm/kas-build-env:5.2-f40",
         host_mode=host_mode,
         use_hashequiv=use_hashequiv,
+        ccache=True,
     )
 
 
@@ -311,6 +312,15 @@ def test_build_env_central_prserv_host_preferred_over_per_workspace_daemon(
 def test_runtime_args_host_mode_returns_empty(tmp_path: Path) -> None:
     """Host mode: no container runtime args at all."""
     cfg = _hashequiv_cfg(tmp_path, use_hashequiv=True, host_mode=True)
+    assert _ccache_args(cfg) == []
+
+
+def test_runtime_args_container_ccache_disabled_no_hashserv_returns_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ccache off (the default) + use_hashequiv False: no --runtime-args at all."""
+    cfg = _hashequiv_cfg(tmp_path, use_hashequiv=False, host_mode=False)
+    cfg = replace(cfg, ccache=False)
     assert _ccache_args(cfg) == []
 
 

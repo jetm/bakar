@@ -3921,11 +3921,17 @@ def check_ccache_health(cfg: BuildConfig) -> CheckResult:
     >=90% full so the user can grow ``max_size`` or clear the cache before
     the next build wastes cycles.
 
-    SKIP when the ccache directory has not been populated yet, the
-    ``ccache`` binary is missing, the stats command fails, or the stats
-    output predates the 4.0 machine-readable keys.
+    SKIP when ccache is disabled (``[build] ccache = false``, mirroring
+    :func:`check_shared_cache_mounts`'s ``cfg.ccache`` gate - a populated
+    cache dir surviving from before ccache was disabled would otherwise
+    still get a fullness WARN for a feature nothing writes to anymore), the
+    ccache directory has not been populated yet, the ``ccache`` binary is
+    missing, the stats command fails, or the stats output predates the 4.0
+    machine-readable keys.
     """
     name = "ccache-health"
+    if not cfg.ccache:
+        return _skip(name, Severity.WARN, "ccache disabled ([build] ccache = false)")
     ccache_dir = cfg.effective_ccache_dir
     if not ccache_dir.exists():
         return _skip(

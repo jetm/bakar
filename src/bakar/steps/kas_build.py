@@ -712,32 +712,42 @@ def _ccache_args(
     defaults before its option-parsing loop, so injecting the flag via an env
     var is silently discarded.  The ``--runtime-args`` CLI flag (processed
     after the reset) is the only reliable injection point.  Returns an empty
-    list for host-mode builds where no container is involved.
+    list for host-mode builds where no container is involved, and also when
+    no runtime arg ends up needed at all (ccache disabled and none of
+    hashequiv / sccache-dist / eventlog / run_id apply).
 
-    The returned list is shaped as exactly two elements: ``--runtime-args``
-    followed by a single concatenated string value. kas-container parses
-    ``--runtime-args`` as one string; emitting two ``--runtime-args`` pairs
-    would let the second occurrence overwrite the first.
+    The returned list, when non-empty, is shaped as exactly two elements:
+    ``--runtime-args`` followed by a single concatenated string value.
+    kas-container parses ``--runtime-args`` as one string; emitting two
+    ``--runtime-args`` pairs would let the second occurrence overwrite the
+    first.
 
-    The string always contains the workspace ccache bind mount. When
-    ``cfg.use_hashequiv`` is True, ``--add-host=host.docker.internal:gateway``
-    is appended so the container can reach the hashserv daemon on the host
-    bridge. When ``eventlog_path`` is provided, ``-e BB_DEFAULT_EVENTLOG=<path>``
-    is appended so bitbake inside the container writes its event log to the
-    run-dir path that is bind-mounted under ``/work``. kas-container only
-    forwards a fixed env-var allowlist into Docker, so this is the only
-    reliable way to pass ``BB_DEFAULT_EVENTLOG`` through.
+    The string contains the workspace ccache bind mount only when
+    ``cfg.ccache`` is enabled - mounting and creating that directory for a
+    disabled feature would be pure waste, and on bakar's NFS-shared
+    ``ccache_dir`` topology a needless mount there is exactly the cost this
+    default was changed to avoid. When ``cfg.use_hashequiv`` is True,
+    ``--add-host=host.docker.internal:gateway`` is appended so the container
+    can reach the hashserv daemon on the host bridge. When ``eventlog_path``
+    is provided, ``-e BB_DEFAULT_EVENTLOG=<path>`` is appended so bitbake
+    inside the container writes its event log to the run-dir path that is
+    bind-mounted under ``/work``. kas-container only forwards a fixed
+    env-var allowlist into Docker, so this is the only reliable way to pass
+    ``BB_DEFAULT_EVENTLOG`` through.
 
-    Creates the host-side ccache directory when absent so the Docker
-    bind-mount never targets a missing path. When ``dry_run`` is True, the
-    directory is not created so a preview invocation has no filesystem effect.
+    Creates the host-side ccache directory when ccache is enabled and absent
+    so the Docker bind-mount never targets a missing path. When ``dry_run``
+    is True, the directory is not created so a preview invocation has no
+    filesystem effect.
     """
     if cfg.host_mode:
         return []
-    ccache_host = cfg.effective_ccache_dir
-    if not dry_run:
-        ccache_host.mkdir(parents=True, exist_ok=True)
-    runtime_args = f"-v {ccache_host}:/work/ccache:rw"
+    runtime_args = ""
+    if cfg.ccache:
+        ccache_host = cfg.effective_ccache_dir
+        if not dry_run:
+            ccache_host.mkdir(parents=True, exist_ok=True)
+        runtime_args = f"-v {ccache_host}:/work/ccache:rw"
     # Always add the host mapping when hashequiv is enabled: _build_env calls
     # ensure_running() after _ccache_args, so the daemon may not be alive yet on
     # the first build. The flag is harmless when the daemon is absent and
@@ -780,6 +790,9 @@ def _ccache_args(
         runtime_args += f" -e BB_DEFAULT_EVENTLOG={eventlog_path}"
     if run_id is not None:
         runtime_args += f" --label {build_stop.run_id_label(run_id)}"
+    runtime_args = runtime_args.strip()
+    if not runtime_args:
+        return []
     return ["--runtime-args", runtime_args]
 
 

@@ -250,9 +250,16 @@ def test_ccache_args_host_mode_returns_empty(tmp_path: Path) -> None:
     assert _ccache_args(cfg) == []
 
 
-def test_ccache_args_container_mode_returns_two_element_list(tmp_path: Path) -> None:
-    """Container mode emits exactly two elements: the flag and one string value."""
+def test_ccache_args_container_mode_ccache_disabled_returns_empty(tmp_path: Path) -> None:
+    """Container mode with ccache off (the default) emits no --runtime-args at all."""
     cfg = _make_nxp_cfg(tmp_path, host_mode=False)
+    assert cfg.ccache is False
+    assert _ccache_args(cfg) == []
+
+
+def test_ccache_args_container_mode_returns_two_element_list(tmp_path: Path) -> None:
+    """Container mode with ccache enabled emits exactly two elements: the flag and one string value."""
+    cfg = replace(_make_nxp_cfg(tmp_path, host_mode=False), ccache=True)
     args = _ccache_args(cfg)
     assert len(args) == 2
     assert args[0] == "--runtime-args"
