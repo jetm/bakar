@@ -339,12 +339,19 @@ def test_resolve_host_mem_min_gb_stays_float(tmp_path) -> None:
     assert isinstance(cfg.host_mem_min_gb, float)
 
 
-def test_resolve_ccache_default_true_rm_work_default_false(tmp_path) -> None:
-    """Without configs, ccache defaults on and rm_work defaults off."""
+def test_resolve_ccache_default_false_rm_work_default_false(tmp_path) -> None:
+    """Without configs, ccache defaults off and rm_work defaults off."""
     cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
 
-    assert cfg.ccache is True
+    assert cfg.ccache is False
     assert cfg.rm_work is False
+
+
+def test_resolve_ccache_default_disabled(tmp_path) -> None:
+    """Without any user config or workspace override, ccache resolves to False."""
+    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+
+    assert cfg.ccache is False
 
 
 def test_resolve_stop_on_error_default_true(tmp_path) -> None:
