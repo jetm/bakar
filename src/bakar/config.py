@@ -842,6 +842,7 @@ def resolve(
     workspace_config: WorkspaceConfig | None = None,
     preset: PresetEntry | None = None,
     family_is_explicit: bool = True,
+    sccache_dist_override: bool | None = None,
 ) -> BuildConfig:
     """Resolve BuildConfig from CLI flags, env vars, config, and family defaults.
 
@@ -1012,11 +1013,14 @@ def resolve(
 
         yaml_machine = machine_from_yaml(kas_yaml)
 
-    resolved_sccache_dist = pick_bool(
-        "BAKAR_SCCACHE_DIST",
-        ws_val=None,
-        user_val=user_config.sccache_dist if user_config is not None else False,
-    )
+    if sccache_dist_override is not None:
+        resolved_sccache_dist = sccache_dist_override
+    else:
+        resolved_sccache_dist = pick_bool(
+            "BAKAR_SCCACHE_DIST",
+            ws_val=None,
+            user_val=user_config.sccache_dist if user_config is not None else False,
+        )
     # An explicit ccache setting at any tier (env, workspace, or user config)
     # always wins. Only when nothing sets it anywhere does ccache fall through
     # to matching resolved_sccache_dist, so a --sccache-dist build keeps its
