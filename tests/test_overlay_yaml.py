@@ -163,6 +163,7 @@ def test_generic_overlay_declares_pythonmalloc_env(generic_overlay: dict) -> Non
         "SDKMACHINE": None,
         "BAKAR_PARALLEL_MAKE": None,
         "BAKAR_BB_NUMBER_THREADS": None,
+        "SSL_CERT_FILE": None,
         "PATH": None,
     }
 
