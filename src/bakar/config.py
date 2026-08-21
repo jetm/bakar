@@ -144,10 +144,13 @@ def pick_bool(env_key: str, *, ws_val: bool | None, user_val: bool) -> bool:
     """Resolve a boolean knob with precedence env > workspace > global.
 
     Mirrors :func:`pick`'s ordering for the bool tier used by ``rm_work`` and
-    ``ccache``: a set ``BAKAR_*`` env var wins (``1/true/yes/on`` truthy, else
-    falsy), then the workspace ``.bakar.toml`` value when not ``None`` (its
-    "unset" sentinel), then the global config value (``UserConfig`` always
-    carries a concrete bool - its built-in default when the key is absent).
+    other flat-default fields (``ccache`` now uses :func:`pick_bool_tristate`
+    instead, since its "unset" default depends on the resolved
+    ``sccache_dist`` value rather than a flat default): a set ``BAKAR_*`` env
+    var wins (``1/true/yes/on`` truthy, else falsy), then the workspace
+    ``.bakar.toml`` value when not ``None`` (its "unset" sentinel), then the
+    global config value (``UserConfig`` always carries a concrete bool - its
+    built-in default when the key is absent).
     """
     env_val = os.environ.get(env_key)
     if env_val is not None and env_val.strip() != "":
@@ -194,8 +197,11 @@ def _resolve_mold(
     config > default off. The mode is always ``list`` at this tier - the CLI
     ``--mold`` / ``--mold-baseline`` overrides (and the baseline mode they
     select) are applied above ``resolve()`` via
-    :func:`bakar.commands._helpers.apply_mold_overrides`, mirroring how the
-    global ``--sccache-dist`` flag is folded in after resolution.
+    :func:`bakar.commands._helpers.apply_mold_overrides`. Unlike mold, the
+    global ``--sccache-dist`` flag is threaded INTO ``resolve()`` itself via
+    its ``sccache_dist_override`` parameter, not folded in afterward - ccache's
+    own resolution depends on the resolved ``sccache_dist`` value, so the flag
+    has to be visible before ``resolve()`` returns.
     """
     resolved = pick_bool(
         "BAKAR_MOLD",
@@ -891,6 +897,15 @@ def resolve(
     mold`` config > default off, always ``list`` mode); the CLI ``--mold`` /
     ``--mold-baseline`` overrides are folded into the returned config above
     ``resolve()`` via :func:`bakar.commands._helpers.apply_mold_overrides`.
+
+    ``sccache_dist_override`` threads the global ``--sccache-dist`` CLI flag
+    into ``sccache_dist``'s own resolution: when not ``None`` it wins over the
+    ``BAKAR_SCCACHE_DIST`` env var and ``user_config.sccache_dist``. ``ccache``
+    then falls back to whatever ``sccache_dist`` resolved to (from any tier,
+    including this override) whenever ``ccache`` itself is unset at every tier
+    - so a plain ``--sccache-dist`` build keeps its local-cache tail for
+    non-allowlisted recipes without an explicit ``ccache = true``. An explicit
+    ``ccache`` setting at any tier always wins over this fallback.
     """
 
     if spec is None:

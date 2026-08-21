@@ -119,8 +119,10 @@ stop_on_error = true
 # so OEEquivHash sstate equivalence accumulates across builds.
 hashserv = true
 
-# ccache is off by default (see the `ccache` key below) - ccache_shared and
-# ccache_dir only take effect once ccache is explicitly enabled. Set
+# ccache is off by default for plain builds, but follows sccache_dist when
+# unset (on under --sccache-dist, serving non-allowlisted recipes) - see the
+# `ccache` key below. ccache_shared and ccache_dir only take effect once
+# ccache is active, whether set explicitly or via that fallback. Set
 # ccache_shared to reuse one cache across every workspace (cross-BSP hits,
 # less disk), defaulting to ~/.cache/bakar/ccache. ccache_dir pins an explicit
 # shared path and takes precedence over ccache_shared.

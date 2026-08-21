@@ -17,6 +17,7 @@ from bakar.commands._helpers import (
     _print_diagnosis,
     _resolve_workspace,
     apply_mold_overrides,
+    global_sccache_dist_override,
 )
 from bakar.config import BSPSpec, resolve
 from bakar.diagnostics import any_blocking_failure, run_all
@@ -55,6 +56,7 @@ def doctor(
             workspace=setup_dir,
             bsp_family="bbsetup",
             user_config=_state._USER_CONFIG,
+            sccache_dist_override=global_sccache_dist_override(),
         )
         cfg = apply_mold_overrides(cfg)
         results = run_all(cfg, None, post_build=post_build)
@@ -73,6 +75,7 @@ def doctor(
         spec=BSPSpec(manifest=manifest),
         kas_yaml=kas_yaml,
         user_config=_state._USER_CONFIG,
+        sccache_dist_override=global_sccache_dist_override(),
     )
     cfg = apply_mold_overrides(cfg)
     results = run_all(cfg, bsp, post_build=post_build)

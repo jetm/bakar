@@ -62,7 +62,7 @@ All keys use dotted notation (`section.subsection.key`).
 | `build.hashserv` | bool | Persistent workspace-scoped bitbake-hashserv daemon (default: `false`). See [hashserv.md](hashserv.md). |
 | `build.ccache_shared` | bool | Share one ccache across all workspaces instead of per-workspace (default: `false`). Defaults the cache to `~/.cache/bakar/ccache`. |
 | `build.ccache_dir` | string | Explicit ccache directory (a shared location of your choosing); overrides `ccache_shared` and the per-workspace default. |
-| `build.ccache` | bool | Enable ccache (default: `false`). Mutually exclusive with `sccache_dist`. |
+| `build.ccache` | bool | Enable the ccache overlay. When unset, follows `sccache_dist` (on when it's on, off otherwise); set explicitly to override either way. |
 | `build.sccache_dist` | bool | Route C/C++ `do_compile` through sccache-dist (default: `false`). See [sccache-dist.md](sccache-dist.md). |
 | `build.sccache_scheduler_url` | string | sccache-dist scheduler URL (e.g. `http://localhost:10600`) |
 | `build.rm_work` | bool | Strip each recipe's WORKDIR after it builds (default: `false`; off while bakar is in use) |

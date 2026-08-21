@@ -16,6 +16,7 @@ from bakar.commands._helpers import (
     _overlay_for,
     _resolve_workspace,
     _tuning_extra_overlays,
+    global_sccache_dist_override,
 )
 from bakar.config import BSPSpec, resolve
 from bakar.layers import collect_layer_hashes, discover_source_repos
@@ -92,6 +93,7 @@ def show(
         spec=BSPSpec(manifest=manifest),
         kas_yaml=kas_yaml,
         user_config=_state._USER_CONFIG,
+        sccache_dist_override=global_sccache_dist_override(),
     )
     overlay_source = _overlay_for(bsp)
     extra_overlays = _tuning_extra_overlays(cfg)

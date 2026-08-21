@@ -37,6 +37,7 @@ from bakar.commands._helpers import (
     global_container_mode,
     global_host_mode,
     global_output_mode_override,
+    global_sccache_dist_override,
     split_kas_yaml_arg,
 )
 from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, compose_preset_output_path, resolve
@@ -163,7 +164,7 @@ def _run_bbsetup_build(
             container_mode=ctx.container_mode,
         ),
         user_config=_state._USER_CONFIG,
-        sccache_dist_override=True if ctx.sccache_dist else None,
+        sccache_dist_override=global_sccache_dist_override(),
     )
     if ctx.sstate_mirror is not None:
         cfg = replace(cfg, sstate_mirror_url=ctx.sstate_mirror)
@@ -442,7 +443,7 @@ def _run_single_preset_release(
         kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
         preset=active_preset,
-        sccache_dist_override=True if sccache_dist else None,
+        sccache_dist_override=global_sccache_dist_override(),
     )
     if sstate_mirror is not None:
         cfg = replace(cfg, sstate_mirror_url=sstate_mirror)
@@ -820,7 +821,7 @@ def build(
         kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
         preset=active_preset,
-        sccache_dist_override=True if sccache_dist else None,
+        sccache_dist_override=global_sccache_dist_override(),
     )
     if sstate_mirror is not None:
         cfg = replace(cfg, sstate_mirror_url=sstate_mirror)

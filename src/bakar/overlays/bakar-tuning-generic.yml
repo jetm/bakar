@@ -68,7 +68,9 @@ local_conf_header:
   # bakar section after the workspace's own keys - bakar's plain `=` then wins.
   # The numeric segment orders bakar's own overlays (10 base < 20 ccache < 30
   # hashequiv < 40 shared-cache < 50 sccache). ccache config lives in the
-  # conditional bakar-tuning-ccache overlay now (mutually exclusive with sccache).
+  # conditional bakar-tuning-ccache overlay now; it is co-selected alongside
+  # sccache by default (hybrid: ccache covers the non-allowlisted recipe
+  # tail, sccache the allowlisted heavy ones).
   zz-bakar-10-base: |
     # Decoupled parallelism: recipe concurrency (task + parse threads) is sized
     # to local RAM, compile -j to a distributed-compile cluster. bakar injects

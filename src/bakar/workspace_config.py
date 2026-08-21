@@ -62,7 +62,9 @@ class WorkspaceConfig:
     # the user config then the built-in default in config.resolve()).
     kas_container_image: str | None = None
     # [build] booleans, workspace tier. None = not set -> user config -> default
-    # (ccache default False, rm_work default False) in config.resolve().
+    # in config.resolve() (rm_work default False; ccache's "nothing set
+    # anywhere" default follows the resolved sccache_dist value instead of a
+    # flat False).
     ccache: bool | None = None
     rm_work: bool | None = None
     # Live build UI drift coloring, workspace tier. None = not set -> user config
