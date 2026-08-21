@@ -390,7 +390,11 @@ def test_full_dry_run_lists_ccache_wipe_without_deleting(tmp_path: Path, monkeyp
     result = runner.invoke(app, ["clean-cache", "--full", "--ccache-dir", str(ccache), "-n"])
 
     assert result.exit_code == 0, result.output
-    assert str(ccache) in result.output, result.output
+    # Rich soft-wraps at the console width, and pytest-xdist's tmp_path names
+    # carry an extra popen-gwN segment that pushes this path past the wrap
+    # point - mid-word, with no space at the break. Strip ALL whitespace
+    # (not just collapse it) so a wrapped path still matches as a substring.
+    assert str(ccache).replace(" ", "") in "".join(result.output.split()), result.output
     assert ccache.exists() and (ccache / "keep").exists(), "dry run must not delete the ccache dir"
 
 
