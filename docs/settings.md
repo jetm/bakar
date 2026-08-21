@@ -62,6 +62,8 @@ All keys use dotted notation (`section.subsection.key`).
 | `build.hashserv` | bool | Persistent workspace-scoped bitbake-hashserv daemon (default: `false`). See [hashserv.md](hashserv.md). |
 | `build.ccache_shared` | bool | Share one ccache across all workspaces instead of per-workspace (default: `false`). Defaults the cache to `~/.cache/bakar/ccache`. |
 | `build.ccache_dir` | string | Explicit ccache directory (a shared location of your choosing); overrides `ccache_shared` and the per-workspace default. |
+| `build.feed_shared` | bool | Render the local package feed into one shared location instead of per-workspace (default: `false`). Defaults the feed to `~/.local/share/bakar/feed`. |
+| `build.feed_dir` | string | Explicit package feed root; overrides `feed_shared` and the per-workspace default. Point this at a large volume - the feed grows on every build. |
 | `build.ccache` | bool | Enable the ccache overlay. When unset, follows `sccache_dist` (on when it's on, off otherwise); set explicitly to override either way. |
 | `build.sccache_dist` | bool | Route C/C++ `do_compile` through sccache-dist (default: `false`). See [sccache-dist.md](sccache-dist.md). |
 | `build.sccache_scheduler_url` | string | sccache-dist scheduler URL (e.g. `http://localhost:10600`) |

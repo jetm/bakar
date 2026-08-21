@@ -61,6 +61,8 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.hashserv": "true",
         "build.ccache_shared": "true",
         "build.ccache_dir": "/data/ccache",
+        "build.feed_shared": "true",
+        "build.feed_dir": "/data/feed",
         "build.buildtools_dir": "/some/dir",
         "build.local_tmpdir_base": "/mnt/nvme/tmp",
         "build.psi_autocalibrate": "true",

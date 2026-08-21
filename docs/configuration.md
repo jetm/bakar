@@ -136,6 +136,19 @@ ccache_shared = true
 # ccache_dir = "/mnt/yocto-cache/ccache"
 ccache = true
 
+# Local package feed root. Per-workspace at <workspace>/_feed unless you opt in.
+# feed_shared reuses one feed across every workspace, defaulting to
+# ~/.local/share/bakar/feed - the XDG data home rather than the cache home,
+# because a served feed must not be evicted under a client mid-resolve.
+# feed_dir pins an explicit root and takes precedence over feed_shared.
+#
+# Sharing is what makes a multi-machine feed correct: the release-global
+# toolchain repository only lists the union of every machine when they all
+# render into a common root. Per-workspace roots make each machine's render of
+# that repository replace the previous one instead, and nothing errors.
+# feed_shared = true
+# feed_dir = "/mnt/big-volume/avocado-feed"
+
 # Doctor host-environment thresholds. Defaults equal the values doctor
 # previously hardcoded, so an absent [host] table is a no-op. A workspace
 # .bakar.toml [host] table overrides these; both override the built-in floor.

@@ -118,6 +118,32 @@ def shared_ccache_dir(ccache_dir: str | None, *, ccache_shared: bool) -> Path | 
     return None
 
 
+def shared_feed_dir(feed_dir: str | None, *, feed_shared: bool) -> Path | None:
+    """Resolve a non-per-workspace package feed directory, or None for per-workspace.
+
+    Mirrors :func:`shared_ccache_dir`: an explicit ``feed_dir`` wins; otherwise
+    ``feed_shared`` selects a single feed under the XDG data home
+    (``~/.local/share/bakar/feed``). Returns None when neither is set, signalling
+    the caller to use the per-workspace default.
+
+    The data home, not the cache home, because a rendered feed is served output
+    rather than a cache: a client resolving a package location from repository
+    metadata expects the pool entry to still be there, so this is not a directory
+    anything may evict behind the reader's back.
+
+    No mount point is hardcoded here on purpose. A real deployment puts the feed
+    on a large volume, and which volume that is belongs in config rather than in
+    this function - so the deployment path arrives as an explicit ``feed_dir``.
+    """
+    if feed_dir:
+        return Path(feed_dir).expanduser()
+    if feed_shared:
+        data_home = os.environ.get("XDG_DATA_HOME")
+        base = Path(data_home) if data_home else Path.home() / ".local" / "share"
+        return base / "bakar" / "feed"
+    return None
+
+
 def pick(
     arg: str | None,
     env_key: str,
@@ -394,6 +420,12 @@ class BuildConfig:
     # the environment (it overrides the overlay) when sharing widely.
     ccache_shared: bool = field(default=False)
     ccache_dir: str | None = field(default=None)
+    # Local package feed location. Per-workspace by default; opt into a single
+    # shared feed via [build] feed_shared, or pin an explicit path via [build]
+    # feed_dir. See shared_feed_dir() for why the shared default is the XDG data
+    # home rather than the cache home.
+    feed_shared: bool = field(default=False)
+    feed_dir: str | None = field(default=None)
     # When True, `bakar build` samples /proc/pressure during the build and writes
     # the recommended pressure_max_* back to config.toml.
     psi_autocalibrate: bool = field(default=False)
@@ -481,6 +513,22 @@ class BuildConfig:
         so a shared cache yields cross-workspace hits without path-keyed misses.
         """
         return shared_ccache_dir(self.ccache_dir, ccache_shared=self.ccache_shared) or self.workspace / "ccache"
+
+    @property
+    def effective_feed_dir(self) -> Path:
+        """Root of the local package feed this workspace renders into.
+
+        Per-workspace by default (``<workspace>/_feed``), so two workspaces do
+        not render into one another's feed. An explicit ``feed_dir`` is honored
+        verbatim; otherwise ``feed_shared`` selects a single feed under the XDG
+        data home that every workspace accumulates into.
+
+        The shared case is the useful one for a multi-machine feed: one release's
+        toolchain repository is release-global, so machines have to render into a
+        common root for it to list the union of them rather than whichever
+        machine rendered last.
+        """
+        return shared_feed_dir(self.feed_dir, feed_shared=self.feed_shared) or self.workspace / "_feed"
 
     @property
     def hashserv_state_key(self) -> Path:
@@ -1110,6 +1158,8 @@ def resolve(
         use_hashequiv=user_config.hashserv if user_config else False,
         ccache_shared=user_config.ccache_shared if user_config else False,
         ccache_dir=user_config.ccache_dir if user_config else None,
+        feed_shared=user_config.feed_shared if user_config else False,
+        feed_dir=user_config.feed_dir if user_config else None,
         psi_autocalibrate=user_config.psi_autocalibrate if user_config else False,
         sstate_mirror_url=user_config.sstate_mirror_url if user_config else None,
         sccache_dist=resolved_sccache_dist,

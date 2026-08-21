@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added `[build] feed_dir` and `[build] feed_shared` to configure where a local package feed is rendered, resolved by the same precedence as the existing ccache pair: an explicit `feed_dir` wins, `feed_shared` otherwise selects one location every workspace reuses, and with neither set the feed stays per-workspace at `<workspace>/_feed`. The shared default is `~/.local/share/bakar/feed` - the XDG data home rather than the cache home, because a rendered feed is served output and a client resolving a package location from repository metadata expects the pool entry to still be there, not to have been evicted behind it. No mount point is named in source: a real feed grows on every build and is expensive to re-render, so which volume it lives on is a config decision. Sharing is also what makes a multi-machine feed correct - the release-global toolchain repository only lists the union of every machine when they render into a common root, and per-workspace roots make each machine's render replace the previous one with nothing erroring.
+
 ## [0.26.0] - 2026-08-21
 
 ### Added

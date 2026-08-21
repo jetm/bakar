@@ -28,6 +28,7 @@ _STR_FIELDS = {
     "sstate_mirror_url",
     "scheduler",
     "ccache_dir",
+    "feed_dir",
     "buildtools_dir",
     "sccache_scheduler_url",
     "cluster_bind_host",
@@ -38,6 +39,7 @@ _BOOL_FIELDS = {
     "show_sstate_summary",
     "hashserv",
     "ccache_shared",
+    "feed_shared",
     "psi_autocalibrate",
     "sccache_dist",
     "mold",
@@ -212,6 +214,18 @@ class UserConfig:
     hashserv: bool = False
     ccache_shared: bool = False
     ccache_dir: str | None = None
+    # Local package feed location. Per-workspace by default; opt into a single
+    # shared feed across all workspaces via [build] feed_shared, or pin an
+    # explicit path via [build] feed_dir. Unlike ccache the shared default sits
+    # under the XDG *data* home, because a rendered feed is derived output that
+    # is served, not a cache that can be evicted mid-serve.
+    #
+    # An explicit feed_dir is the path that carries a real deployment: the feed
+    # grows on every build and is expensive to re-render, so it usually belongs
+    # on a large volume rather than on whichever filesystem the workspace or the
+    # data home happens to sit on.
+    feed_shared: bool = False
+    feed_dir: str | None = None
     # Persisted location of the buildtools-extended toolchain installed by
     # `bakar setup`. detect_buildtools() reads it as a fallback after the
     # BAKAR_BUILDTOOLS_DIR env var so host builds survive into a new shell.
@@ -303,6 +317,8 @@ _BUILD_KEYS = {
     "hashserv": "hashserv",
     "ccache_shared": "ccache_shared",
     "ccache_dir": "ccache_dir",
+    "feed_shared": "feed_shared",
+    "feed_dir": "feed_dir",
     "buildtools_dir": "buildtools_dir",
     "psi_autocalibrate": "psi_autocalibrate",
     "nproc": "nproc",
