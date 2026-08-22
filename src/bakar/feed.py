@@ -316,9 +316,22 @@ def sync_paths(  # noqa: PLR0913 - the path pair replaces the config a discovere
         channel=channel,
     )
 
-    roots = parse_repo_map(deploy_dir / "avocado-repo.map")
-    for root in roots:
+    declared = parse_repo_map(deploy_dir / "avocado-repo.map")
+    rendered: list[str] = []
+    unstaged: list[str] = []
+
+    for root in declared:
         staged = staged_base / root
+        # A map declares every repo root the machine COULD publish, and a root
+        # whose contributing arch directories are all absent from THIS build
+        # stages nothing. The renderer tolerates an empty staged directory but
+        # exits non-zero on a missing one, so rendering it would fail the whole
+        # sync over a repo the build simply did not produce. Observed on the real
+        # imx93 tree: its map declares sdk/imx93-frdm while the only arch dir
+        # feeding that root does not exist in the deploy tree.
+        if not staged.is_dir():
+            unstaged.append(root)
+            continue
         render_repo(scripts=scripts, staged=staged, channel_root=channel_dir, subpath=root)
         render_repo(
             scripts=scripts,
@@ -326,11 +339,14 @@ def sync_paths(  # noqa: PLR0913 - the path pair replaces the config a discovere
             channel_root=channel_dir,
             subpath=f"{_SNAPSHOTS_DIR}/{snap}/{root}",
         )
+        rendered.append(root)
 
     pointer = write_latest_pointer(channel_dir, snap)
     return {
         "snapshot": snap,
         "channel_root": channel_dir,
-        "repos": roots,
+        "repos": rendered,
+        "declared": declared,
+        "unstaged": unstaged,
         "pointer": pointer,
     }

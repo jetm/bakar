@@ -90,6 +90,11 @@ def _sync_machine(tmp_path: Path, scripts: Path, machine: str) -> None:
         feed_dir=str(tmp_path / "feed"),
         machine=machine,
     )
+    # Stand in for the staging script, which is mocked here: sync skips a repo
+    # root with no staged tree, because the renderer exits non-zero on a missing
+    # one. Both machines stage into the SAME root, which is the property tested.
+    for root in ("sdk/all", f"target/{machine}"):
+        (tmp_path / "feed-stage" / "2026" / "edge" / root).mkdir(parents=True, exist_ok=True)
     sync(
         cfg,
         deploy_dir=_deploy(tmp_path, machine),

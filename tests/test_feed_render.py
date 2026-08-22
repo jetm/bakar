@@ -41,6 +41,18 @@ def _deploy(tmp_path: Path) -> Path:
     return deploy
 
 
+def _stage(tmp_path: Path, roots: tuple[str, ...], *, release: str, channel: str) -> None:
+    """Create the staged directories the staging script would have made.
+
+    Needed because these tests mock ``subprocess``, so the real staging script
+    never runs and leaves nothing on disk. ``sync`` skips a repo root with no
+    staged tree - the renderer exits non-zero on a missing one - so a test that
+    stubs staging has to stand in for its effect or every root is skipped.
+    """
+    for root in roots:
+        (tmp_path / "feed-stage" / release / channel / root).mkdir(parents=True, exist_ok=True)
+
+
 def _scripts(tmp_path: Path) -> Path:
     """Create a ``meta-avocado/scripts`` dir holding both driven scripts."""
     scripts = tmp_path / "meta-avocado" / "scripts"
@@ -124,6 +136,7 @@ def test_sync_renders_every_repo_root_head_and_snapshot(tmp_path, monkeypatch) -
     monkeypatch.setattr(subprocess, "run", rec)
     deploy, scripts = _deploy(tmp_path), _scripts(tmp_path)
     cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
+    _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
 
     sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
 
@@ -146,6 +159,7 @@ def test_sync_snapshot_subpath_is_deeper_by_exactly_the_snapshot_prefix(tmp_path
     monkeypatch.setattr(subprocess, "run", rec)
     deploy, scripts = _deploy(tmp_path), _scripts(tmp_path)
     cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
+    _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
 
     sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
 
@@ -159,6 +173,7 @@ def test_sync_writes_the_latest_pointer_after_every_render(tmp_path, monkeypatch
     monkeypatch.setattr(subprocess, "run", _Recorder())
     deploy, scripts = _deploy(tmp_path), _scripts(tmp_path)
     cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
+    _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
 
     sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
 
@@ -179,6 +194,7 @@ def test_sync_interrupted_mid_render_leaves_no_pointer(tmp_path, monkeypatch) ->
     monkeypatch.setattr(subprocess, "run", _Recorder(fail_on=5))
     deploy, scripts = _deploy(tmp_path), _scripts(tmp_path)
     cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
+    _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
 
     with pytest.raises(subprocess.CalledProcessError):
         sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
@@ -201,6 +217,7 @@ def test_sync_interrupted_leaves_a_prior_pointer_untouched(tmp_path, monkeypatch
     monkeypatch.setattr(subprocess, "run", _Recorder(fail_on=5))
     deploy, scripts = _deploy(tmp_path), _scripts(tmp_path)
     cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
+    _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
 
     with pytest.raises(subprocess.CalledProcessError):
         sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
@@ -214,11 +231,62 @@ def test_sync_stages_before_it_renders(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(subprocess, "run", rec)
     deploy, scripts = _deploy(tmp_path), _scripts(tmp_path)
     cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
+    _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
 
     sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
 
     assert rec.calls[0][0].endswith("repo-stage-rpms.sh")
     assert all("--subpath" not in c for c in rec.calls[:1])
+
+
+def test_sync_skips_a_repo_root_that_was_never_staged(tmp_path, monkeypatch) -> None:
+    """A declared repo with no staged tree is skipped, not rendered.
+
+    A build's map declares every repo root the machine COULD publish, but a root
+    whose arch source directories are all absent from that build stages nothing.
+    The renderer tolerates an empty staged directory and hard-exits on a missing
+    one, so rendering it fails the whole sync over a repo the build simply did
+    not produce. Observed on the real imx93 tree, whose map declares
+    ``sdk/imx93-frdm`` while its only contributing arch dir does not exist.
+    """
+    rec = _Recorder()
+    monkeypatch.setattr(subprocess, "run", rec)
+    deploy = tmp_path / "build" / "tmp" / "deploy" / "rpm"
+    deploy.mkdir(parents=True)
+    (deploy / "avocado-repo.map").write_text(
+        "repo=$releasever/sdk/all\nrepo=$releasever/sdk/never-staged\nrepo=$releasever/target/qemux86-64\n"
+    )
+    scripts = _scripts(tmp_path)
+    cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
+    _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
+
+    # _stage above created sdk/all and target/qemux86-64 only, so
+    # sdk/never-staged has no directory - which is the case under test.
+    result = sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+
+    assert "sdk/never-staged" not in rec.subpaths()
+    assert "snapshots/SNAP/sdk/never-staged" not in rec.subpaths()
+    assert result["unstaged"] == ["sdk/never-staged"]
+
+
+def test_sync_still_writes_the_pointer_when_a_repo_was_unstaged(tmp_path, monkeypatch) -> None:
+    """An unstaged repo is not a failure, so the snapshot is still announced.
+
+    Treating it as one would make a machine that legitimately publishes fewer
+    repos than its map declares unable to sync at all.
+    """
+    monkeypatch.setattr(subprocess, "run", _Recorder())
+    deploy = tmp_path / "build" / "tmp" / "deploy" / "rpm"
+    deploy.mkdir(parents=True)
+    (deploy / "avocado-repo.map").write_text("repo=$releasever/sdk/all\nrepo=$releasever/sdk/never-staged\n")
+    scripts = _scripts(tmp_path)
+    cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
+    _stage(tmp_path, ("sdk/all",), release="2026", channel="edge")
+
+    sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+
+    pointer = tmp_path / "feed" / "2026" / "edge" / "snapshots-latest.json"
+    assert pointer.is_file()
 
 
 def test_sync_points_each_render_at_that_repos_staged_subtree(tmp_path, monkeypatch) -> None:
@@ -231,6 +299,7 @@ def test_sync_points_each_render_at_that_repos_staged_subtree(tmp_path, monkeypa
     monkeypatch.setattr(subprocess, "run", rec)
     deploy, scripts = _deploy(tmp_path), _scripts(tmp_path)
     cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
+    _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
 
     sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
 
