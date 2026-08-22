@@ -52,6 +52,49 @@ def invoking_cwd() -> Path:
     return _INVOCATION.get("cwd", Path.cwd())
 
 
+def logical_path(physical: Path) -> Path:
+    """Map a physical path back to the logical path the shell is standing in.
+
+    ``os.getcwd()`` and :meth:`Path.resolve` both flatten symlinks. That is
+    right for anything used locally and wrong for anything sent to another
+    machine, because a resolved path is only guaranteed to exist on the node
+    whose filesystem layout produced it.
+
+    The cluster this matters for mounts one shared workspace at the same
+    home-relative path on every node, while on the node that owns the storage
+    that path is a symlink onto the storage volume. Resolving therefore yields a
+    path that exists on exactly one machine, and ``--on`` mirrors the tree to the
+    remote at the SAME absolute path before ``cd``-ing to it - so a resolved path
+    fails there with ``mkdir ... No such file or directory``.
+
+    ``PWD`` is the shell's own record of the logical route taken, so it is the
+    only available source for the unresolved spelling. It is shell-maintained
+    rather than kernel-maintained, so it is trusted only when it is absolute AND
+    still resolves to a prefix of ``physical``; a relative, stale or unrelated
+    value returns ``physical`` unchanged. Inventing a logical path that exists
+    nowhere would be worse than a physical one that at least exists locally.
+    """
+    pwd = os.environ.get("PWD")
+    if not pwd:
+        return physical
+    logical = Path(pwd)
+    if not logical.is_absolute():
+        return physical
+    try:
+        anchor = Path(os.path.realpath(logical))
+    except OSError:
+        return physical
+    if not anchor.is_dir():
+        return physical
+    if physical == anchor:
+        return logical
+    try:
+        relative = physical.relative_to(anchor)
+    except ValueError:
+        return physical
+    return logical / relative
+
+
 def _enter_workspace(workspace: Path | None) -> Path | None:
     """Resolve, validate, and chdir into an explicit ``-w``/``--workspace`` path.
 

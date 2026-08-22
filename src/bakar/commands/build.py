@@ -648,9 +648,24 @@ def build(
             ws_root = _resolve_workspace(workspace, family=_on_family)
         else:
             ws_root = _bbsetup_workspace(workspace) or _workspace_from_cwd()
+        # Both paths are sent to the remote - ws_root as the rsync destination,
+        # invoking_cwd as the directory the remote build runs from - so each has
+        # to name a directory that exists THERE. Resolving them (which getcwd
+        # and detect_kas_workspace both do) yields paths that only exist on the
+        # node whose layout produced them: a shared workspace mounted at a
+        # home-relative path on every node is a symlink onto the storage volume
+        # on the node that owns it. See logical_path.
+        from bakar.commands._helpers import logical_path
         from bakar.steps.remote_dispatch import dispatch_remote_build
 
-        rc = dispatch_remote_build(on, ws_root, invoking_cwd, sys.argv[1:], sccache_dist=sccache_dist, assume_yes=yes)
+        rc = dispatch_remote_build(
+            on,
+            logical_path(ws_root),
+            logical_path(invoking_cwd),
+            sys.argv[1:],
+            sccache_dist=sccache_dist,
+            assume_yes=yes,
+        )
         raise typer.Exit(code=rc)
     # Resolve the active preset (if any) before dispatch.
     # PresetEntry is used only as a local variable type annotation.
