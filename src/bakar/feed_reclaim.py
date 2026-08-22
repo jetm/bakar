@@ -95,6 +95,85 @@ class ReclaimPlan:
         return sum(c.size for c in self.eligible)
 
 
+@dataclass(frozen=True)
+class ReclaimResult:
+    """What a reclaim did, or would have done when it was only previewing."""
+
+    applied: bool
+    deleted: list[Path] = field(default_factory=list)
+    """Paths removed. In preview mode, the paths that WOULD be removed."""
+
+    skipped: list[tuple[Path, str]] = field(default_factory=list)
+    """Paths the plan approved that were not removed, with why."""
+
+    retained: list[Candidate] = field(default_factory=list)
+    emptied: list[Path] = field(default_factory=list)
+    """Directories left holding no package at all - a tree that must be rebuilt."""
+
+    freed_bytes: int = 0
+
+
+def apply_reclaim(plan: ReclaimPlan, *, confirm: bool = False) -> ReclaimResult:
+    """Delete the plan's eligible candidates, but only when asked.
+
+    Preview is the DEFAULT because the failure is irreversible and asymmetric: a
+    retained duplicate costs disk, a wrongly deleted package costs a multi-hour
+    rebuild. Calling this without ``confirm`` reports exactly what it would do
+    and touches nothing.
+
+    Operates on the plan rather than re-deriving eligibility, which is what
+    makes "the preview and the deletion agree" true by construction instead of
+    by two computations happening to match.
+
+    Each file is re-hashed immediately before removal. The plan may be minutes
+    old, a build may have rewritten a package in the meantime, and the promise
+    is to delete the bytes that were previewed - not whatever now sits at those
+    paths. A file whose content moved is skipped and reported.
+    """
+    if not confirm:
+        return ReclaimResult(
+            applied=False,
+            deleted=[c.path for c in plan.eligible],
+            retained=list(plan.retained),
+            freed_bytes=plan.reclaimable_bytes,
+        )
+
+    deleted: list[Path] = []
+    skipped: list[tuple[Path, str]] = []
+    freed = 0
+
+    for candidate in plan.eligible:
+        if not candidate.path.is_file():
+            skipped.append((candidate.path, "no longer present"))
+            continue
+        if candidate.sha256 is not None and sha256_file(candidate.path) != candidate.sha256:
+            skipped.append((candidate.path, "content changed since the preview; the previewed bytes are gone"))
+            continue
+        candidate.path.unlink()
+        deleted.append(candidate.path)
+        freed += candidate.size
+
+    return ReclaimResult(
+        applied=True,
+        deleted=deleted,
+        skipped=skipped,
+        retained=list(plan.retained),
+        emptied=_emptied_dirs(deleted),
+        freed_bytes=freed,
+    )
+
+
+def _emptied_dirs(deleted: list[Path]) -> list[Path]:
+    """Directories that hold no package after a reclaim.
+
+    Reported because a build tree stripped of its packages is no longer usable
+    as one directly - it has to be rebuilt or restaged - and that is a
+    consequence an operator should read in the result rather than discover on
+    the next build.
+    """
+    return sorted({p.parent for p in deleted if not any(p.parent.glob("*.rpm"))})
+
+
 def sha256_file(path: Path) -> str:
     """Hash a file in chunks, since package files run to tens of megabytes."""
     digest = hashlib.sha256()
