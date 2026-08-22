@@ -36,6 +36,9 @@ identically no matter how the feed is configured.
 
 from __future__ import annotations
 
+import json
+import subprocess
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from bakar.bsp_detect import detect_kas_workspace
@@ -66,6 +69,21 @@ _EXT_SUFFIX = "-ext"
 # substitutes. Carrying it into a subpath would create a literal `$releasever`
 # directory in the feed.
 _RELEASEVER_PREFIX = "$releasever/"
+
+# Scripts driven rather than reimplemented. See the module docstring for why.
+_STAGE_SCRIPT = "repo-stage-rpms.sh"
+_RENDER_SCRIPT = "render-pool-local.py"
+
+# What avocado-cli reads to auto-pin a runtime. Its schema is two fields, `id`
+# and an optional `created`; matched against the live production body rather
+# than invented here.
+_LATEST_POINTER = "snapshots-latest.json"
+
+# Immutable snapshots live under this prefix inside the channel root. The
+# renderer needs no knowledge of it: a snapshot subpath is simply deeper, and
+# the pool reference it derives from subpath depth still lands on the channel
+# root's single `_pkgs`.
+_SNAPSHOTS_DIR = "snapshots"
 
 
 def resolve_feed_root(cfg: BuildConfig) -> Path:
@@ -165,3 +183,126 @@ def parse_repo_map(map_path: Path) -> list[str]:
             continue
         roots.append(root)
     return roots
+
+
+def snapshot_id(*, now: datetime | None = None) -> str:
+    """Return a snapshot identifier: a sortable UTC stamp.
+
+    Sortable so retention can order snapshots without parsing, and UTC so two
+    machines syncing into one feed cannot mint ids that sort by local offset.
+    """
+    moment = now or datetime.now(UTC)
+    return moment.strftime("%Y%m%dT%H%M%SZ")
+
+
+def stage_build(
+    *,
+    deploy_dir: Path,
+    stage_root: Path,
+    scripts: Path,
+    release: str,
+    channel: str,
+) -> Path:
+    """Stage a finished build's RPMs and return the staged release/channel root.
+
+    ``release`` and ``channel`` are passed to the script as one ``releasever``
+    argument because the script expands ``$releasever`` inside each map value -
+    so the staged tree already carries the prefix, and the renderer can be
+    pointed straight at ``<stage>/<release>/<channel>/<repo root>``.
+
+    Staging is a tar-pipe of the whole deploy directory with no incremental
+    mode, which is tolerable for an inner loop and deliberately not optimised
+    until it hurts.
+    """
+    subprocess.run(
+        [str(scripts / _STAGE_SCRIPT), str(deploy_dir), str(stage_root), f"{release}/{channel}"],
+        check=True,
+    )
+    return stage_root / release / channel
+
+
+def render_repo(*, scripts: Path, staged: Path, channel_root: Path, subpath: str) -> None:
+    """Render one repository's metadata from its staged tree.
+
+    A repository is rendered from its OWN staged subtree. Handing the renderer
+    the whole stage root would make every repository contain every other
+    repository's packages.
+    """
+    subprocess.run(
+        [
+            str(scripts / _RENDER_SCRIPT),
+            "--staged",
+            str(staged),
+            "--channel-root",
+            str(channel_root),
+            "--subpath",
+            subpath,
+        ],
+        check=True,
+    )
+
+
+def write_latest_pointer(channel_root: Path, snapshot: str, *, now: datetime | None = None) -> Path:
+    """Announce ``snapshot`` as the newest one and return the pointer path.
+
+    Called only after every repository in that snapshot has rendered - see
+    :func:`sync`.
+    """
+    moment = now or datetime.now(UTC)
+    channel_root.mkdir(parents=True, exist_ok=True)
+    pointer = channel_root / _LATEST_POINTER
+    pointer.write_text(json.dumps({"id": snapshot, "created": moment.strftime("%Y-%m-%dT%H:%M:%SZ")}) + "\n")
+    return pointer
+
+
+def sync(  # noqa: PLR0913 - deploy_dir and scripts stay explicit so consolidation can reuse this against a discovered tree it cannot derive from one config
+    cfg: BuildConfig,
+    *,
+    deploy_dir: Path,
+    scripts: Path,
+    release: str = DEFAULT_RELEASE,
+    channel: str = DEFAULT_CHANNEL,
+    snapshot: str | None = None,
+) -> dict[str, object]:
+    """Stage a build and render every repository it declares, head and snapshot.
+
+    Ordering is the contract. Each repository is rendered twice - once at its
+    head subpath and once under ``snapshots/<id>/`` - and the pointer naming the
+    snapshot is written LAST, after every repository has rendered.
+
+    That ordering is what makes an interrupted sync safe. The pointer is what a
+    client pins against, so announcing a snapshot whose repositories are still
+    missing hands out a pin that cannot resolve; leaving the pointer absent, or
+    still naming the previous snapshot, is the correct failure. Nothing here
+    catches the subprocess failure for the same reason - the exception must
+    propagate before the pointer write is reached.
+    """
+    snap = snapshot or snapshot_id()
+    feed_root = resolve_feed_root(cfg)
+    channel_dir = channel_root(feed_root, release=release, channel=channel)
+    staged_base = stage_build(
+        deploy_dir=deploy_dir,
+        stage_root=resolve_stage_root(cfg),
+        scripts=scripts,
+        release=release,
+        channel=channel,
+    )
+
+    roots = parse_repo_map(deploy_dir / "avocado-repo.map")
+    for root in roots:
+        staged = staged_base / root
+        render_repo(scripts=scripts, staged=staged, channel_root=channel_dir, subpath=root)
+        render_repo(
+            scripts=scripts,
+            staged=staged,
+            channel_root=channel_dir,
+            subpath=f"{_SNAPSHOTS_DIR}/{snap}/{root}",
+        )
+
+    pointer = write_latest_pointer(channel_dir, snap)
+    return {
+        "snapshot": snap,
+        "channel_root": channel_dir,
+        "repos": roots,
+        "pointer": pointer,
+    }
