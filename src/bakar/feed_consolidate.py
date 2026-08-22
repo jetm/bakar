@@ -38,7 +38,7 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from bakar.feed import parse_repo_map
+from bakar.feed import parse_repo_map, sync_paths
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -124,6 +124,68 @@ def discover_trees(search_roots: list[Path]) -> list[DiscoveredTree]:
                 )
             )
     return trees
+
+
+def consolidate(  # noqa: PLR0913 - the roots, the scripts and an optional release override are each independent
+    trees: list[DiscoveredTree],
+    *,
+    feed_root: Path,
+    stage_root: Path,
+    scripts: Path,
+    release: str | None = None,
+    channel: str | None = None,
+    snapshot: str | None = None,
+) -> list[dict[str, object]]:
+    """Sync every discovered tree into one feed, returning a result per tree.
+
+    Each tree is filed under the release and channel IT declared, so two trees
+    from different releases cannot land on top of each other. An explicit
+    ``release``/``channel`` overrides that for every tree, which is how an
+    operator consolidates local builds - they all declare ``dev/local`` - into
+    the channel a client is configured to fetch.
+
+    A tree that declared nothing and got no override is SKIPPED with a reason,
+    never filed under a guess. Choosing a plausible release for it would put its
+    packages at a path no target resolves, which reads as a successful
+    consolidation and serves nothing.
+
+    Trees are synced in order and each is independent, so a failure part-way
+    leaves the trees already synced intact and correctly announced - their
+    pointer writes have completed. The exception propagates rather than being
+    collected, because a half-consolidated feed the caller believes is whole is
+    worse than one it knows stopped.
+    """
+    results: list[dict[str, object]] = []
+
+    for tree in trees:
+        tree_release = release or tree.release
+        tree_channel = channel or tree.channel
+        if not tree_release or not tree_channel:
+            results.append(
+                {
+                    "tree": tree.deploy_dir,
+                    "machine": tree.machine,
+                    "skipped": (
+                        "no release/channel declared by the build and none supplied; "
+                        "filing it under a guessed release would publish packages "
+                        "where no target resolves them"
+                    ),
+                }
+            )
+            continue
+
+        outcome = sync_paths(
+            feed_root=feed_root,
+            stage_root=stage_root,
+            deploy_dir=tree.deploy_dir,
+            scripts=scripts,
+            release=tree_release,
+            channel=tree_channel,
+            snapshot=snapshot,
+        )
+        results.append({"tree": tree.deploy_dir, "machine": tree.machine, **outcome})
+
+    return results
 
 
 def consolidation_savings(trees: list[DiscoveredTree]) -> dict[str, int]:

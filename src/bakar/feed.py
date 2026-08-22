@@ -277,12 +277,40 @@ def sync(  # noqa: PLR0913 - deploy_dir and scripts stay explicit so consolidati
     catches the subprocess failure for the same reason - the exception must
     propagate before the pointer write is reached.
     """
+    return sync_paths(
+        feed_root=resolve_feed_root(cfg),
+        stage_root=resolve_stage_root(cfg),
+        deploy_dir=deploy_dir,
+        scripts=scripts,
+        release=release,
+        channel=channel,
+        snapshot=snapshot,
+    )
+
+
+def sync_paths(  # noqa: PLR0913 - the path pair replaces the config a discovered tree does not have
+    *,
+    feed_root: Path,
+    stage_root: Path,
+    deploy_dir: Path,
+    scripts: Path,
+    release: str = DEFAULT_RELEASE,
+    channel: str = DEFAULT_CHANNEL,
+    snapshot: str | None = None,
+) -> dict[str, object]:
+    """Sync against explicit roots rather than a resolved build configuration.
+
+    The same operation as :func:`sync`, addressed by path. Consolidation walks
+    build trees it discovered on disk, which have no configuration to resolve -
+    they are somebody else's finished builds - so it needs to name the feed and
+    stage roots directly. :func:`sync` is the thin wrapper that derives both
+    from a config for the ordinary in-workspace case.
+    """
     snap = snapshot or snapshot_id()
-    feed_root = resolve_feed_root(cfg)
     channel_dir = channel_root(feed_root, release=release, channel=channel)
     staged_base = stage_build(
         deploy_dir=deploy_dir,
-        stage_root=resolve_stage_root(cfg),
+        stage_root=stage_root,
         scripts=scripts,
         release=release,
         channel=channel,
