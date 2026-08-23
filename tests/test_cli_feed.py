@@ -538,8 +538,14 @@ def test_gc_reports_a_snapshot_it_failed_to_remove(cli: CliRunner, cfg) -> None:
 
 
 def test_doctor_is_registered_and_runs_without_a_kas_yaml(cli: CliRunner, cfg) -> None:
-    """A first-time user needs "can this machine do it" before anything else."""
-    with _patch_cfg(cfg):
+    """A first-time user needs "can this machine do it" before anything else.
+
+    Tools are stubbed present: this asserts the verb is wired and reports, not
+    that whatever host runs the suite happens to have createrepo_c installed.
+    Without the stub the test passes on a dev box and fails on CI, which is a
+    statement about the runner rather than about bakar.
+    """
+    with _patch_cfg(cfg), _tools_present():
         result = cli.invoke(app, ["feed", "doctor"])
 
     assert result.exit_code == 0
@@ -584,7 +590,10 @@ def test_doctor_checks_host_tools_when_no_workspace_resolves(cli: CliRunner) -> 
     before any workspace exists. Reporting the workspace error instead sends a
     first-time user after the wrong problem.
     """
-    with mock.patch("bakar.commands.feed._resolve_cfg", side_effect=typer.Exit(code=2)):
+    with (
+        mock.patch("bakar.commands.feed._resolve_cfg", side_effect=typer.Exit(code=2)),
+        _tools_present(),
+    ):
         result = cli.invoke(app, ["feed", "doctor"])
 
     assert result.exit_code == 0
