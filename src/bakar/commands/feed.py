@@ -105,23 +105,38 @@ def doctor(
 ) -> None:
     """Check everything a feed sync needs, without touching the feed.
 
-    Runs with or without a kas YAML: without one it answers "can this machine
-    build a feed at all", which is what a first-time user on an unknown OS needs
-    before anything else.
+    Runs with or without a kas YAML, and without a workspace at all: the host
+    tools are the tier a first-time user needs first, and that question has an
+    answer before any workspace exists. Refusing to answer it because workspace
+    detection failed would make the first command run after `pip install bakar`
+    report the wrong problem.
     """
-    cfg = _resolve_cfg(workspace, kas_yaml)
     scripts: Path | None = None
     deploy: Path | None = None
-    if kas_yaml is not None:
-        deploy = _deploy_dir(cfg)
-        try:
-            scripts = feed_mod.meta_avocado_scripts(kas_yaml)
-        except FileNotFoundError:
-            scripts = None
+    feed_root: Path | None = None
+    stage_root: Path | None = None
+
+    try:
+        cfg = _resolve_cfg(workspace, kas_yaml)
+    except typer.Exit, SystemExit:
+        # _resolve_workspace prints its own diagnosis and raises typer.Exit(2).
+        # click is deliberately not caught: typer no longer depends on it, so
+        # naming it would be an undeclared import for an exception that cannot
+        # reach this frame.
+        console.print("continuing with host prerequisites only\n")
+    else:
+        feed_root = feed_mod.resolve_feed_root(cfg)
+        stage_root = feed_mod.resolve_stage_root(cfg)
+        if kas_yaml is not None:
+            deploy = _deploy_dir(cfg)
+            try:
+                scripts = feed_mod.meta_avocado_scripts(kas_yaml)
+            except FileNotFoundError:
+                scripts = None
 
     results = feed_preflight.preflight(
-        feed_root=feed_mod.resolve_feed_root(cfg),
-        stage_root=feed_mod.resolve_stage_root(cfg),
+        feed_root=feed_root,
+        stage_root=stage_root,
         scripts=scripts,
         deploy_dir=deploy,
     )
@@ -134,7 +149,12 @@ def doctor(
 
     if feed_preflight.blocking(results):
         raise typer.Exit(code=1)
-    if kas_yaml is None:
+    if feed_root is None:
+        console.print(
+            "host prerequisites met; run from a workspace (or pass --workspace) to also check "
+            "the feed paths, and add a kas YAML for the layer checkout and build output"
+        )
+    elif kas_yaml is None:
         console.print("host prerequisites met; pass a kas YAML to also check the layer checkout and build output")
 
 

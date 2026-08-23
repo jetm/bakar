@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `bakar feed doctor` now answers with no workspace at all. It resolved a `BuildConfig` first, so the first command after `pip install bakar` reported "Not inside a BSP workspace" instead of checking the host tools - and "can this machine build a feed" is exactly the question that has an answer before any workspace exists. The host tier (interpreter, platform, `createrepo_c`, bash, tar) now runs regardless and keeps its exit code; the feed-path and build-output tiers are skipped and say so.
+
 ## [0.27.0] - 2026-08-23
 
 ### Added

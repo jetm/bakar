@@ -232,8 +232,8 @@ def check_platform() -> CheckResult:
 
 def preflight(  # noqa: PLR0913 - each argument scopes a different tier of the check, and collapsing them into an object would hide which tiers a caller opted into
     *,
-    feed_root: Path,
-    stage_root: Path,
+    feed_root: Path | None = None,
+    stage_root: Path | None = None,
     scripts: Path | None = None,
     deploy_dir: Path | None = None,
     release: str | None = None,
@@ -241,9 +241,12 @@ def preflight(  # noqa: PLR0913 - each argument scopes a different tier of the c
 ) -> list[CheckResult]:
     """Run every prerequisite check and return the results, in report order.
 
-    Everything past the host tools is optional so this can also answer "is this
-    machine capable of building a feed at all" before any workspace is known -
-    which is what ``bakar feed doctor`` asks with no kas YAML.
+    EVERY argument is optional, including the roots. The host tools are the tier
+    a first-time user needs first - "can this machine build a feed at all" - and
+    that question has an answer before any workspace exists. Requiring a resolved
+    config to reach it would make the first command someone runs after
+    ``pip install bakar`` fail on workspace detection instead of telling them
+    which package is missing.
     """
     results = [check_interpreter(), check_platform(), check_createrepo(), *check_shell_tools()]
     if scripts is not None or deploy_dir is not None:
@@ -252,7 +255,8 @@ def preflight(  # noqa: PLR0913 - each argument scopes a different tier of the c
         results.append(check_build_output(deploy_dir))
         if release is not None and channel is not None:
             results.append(check_release_channel(deploy_dir, release, channel))
-    results.extend(check_writable(feed_root, stage_root))
+    if feed_root is not None and stage_root is not None:
+        results.extend(check_writable(feed_root, stage_root))
     return results
 
 

@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from bakar import feed_retention
@@ -573,3 +574,42 @@ def test_sync_runs_preflight_and_stages_nothing_when_it_blocks(cli: CliRunner, c
     assert result.exit_code == 1
     assert "prerequisite(s) missing; nothing was staged" in result.output
     synced.assert_not_called()
+
+
+def test_doctor_checks_host_tools_when_no_workspace_resolves(cli: CliRunner) -> None:
+    """The first command after `pip install bakar`, run from anywhere.
+
+    Workspace detection failing must not hide the answer to "can this machine
+    build a feed at all" - that question is about host tools and has an answer
+    before any workspace exists. Reporting the workspace error instead sends a
+    first-time user after the wrong problem.
+    """
+    with mock.patch("bakar.commands.feed._resolve_cfg", side_effect=typer.Exit(code=2)):
+        result = cli.invoke(app, ["feed", "doctor"])
+
+    assert result.exit_code == 0
+    assert "host prerequisites only" in result.output
+    assert "createrepo_c" in result.output
+    assert "run from a workspace" in result.output
+
+
+def test_doctor_still_blocks_on_a_missing_tool_with_no_workspace(cli: CliRunner) -> None:
+    """The host tier must keep its teeth when the workspace tier is skipped."""
+    with (
+        mock.patch("bakar.commands.feed._resolve_cfg", side_effect=typer.Exit(code=2)),
+        mock.patch("bakar.feed_preflight.shutil.which", return_value=None),
+    ):
+        result = cli.invoke(app, ["feed", "doctor"])
+
+    assert result.exit_code == 1
+    assert "FAIL createrepo_c" in result.output
+
+
+def test_preflight_omits_the_root_checks_when_no_roots_are_given() -> None:
+    from bakar import feed_preflight
+
+    names = {r.name for r in feed_preflight.preflight()}
+
+    assert "createrepo_c" in names
+    assert "feed root" not in names
+    assert "stage root" not in names
