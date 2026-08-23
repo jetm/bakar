@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.1] - 2026-08-23
+
 ### Fixed
 - `bakar feed doctor` now answers with no workspace at all. It resolved a `BuildConfig` first, so the first command after `pip install bakar` reported "Not inside a BSP workspace" instead of checking the host tools - and "can this machine build a feed" is exactly the question that has an answer before any workspace exists. The host tier (interpreter, platform, `createrepo_c`, bash, tar) now runs regardless and keeps its exit code; the feed-path and build-output tiers are skipped and say so.
 
@@ -672,7 +674,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.27.1...HEAD
+[0.27.1]: https://github.com/jetm/bakar/compare/v0.27.0...v0.27.1
 [0.27.0]: https://github.com/jetm/bakar/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/jetm/bakar/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/jetm/bakar/compare/v0.24.0...v0.25.0

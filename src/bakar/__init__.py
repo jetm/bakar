@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-__version__ = "0.27.0"
+__version__ = "0.27.1"
 
 
 def package_identity() -> str:
