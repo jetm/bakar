@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING
 from bakar.bsp_detect import detect_kas_workspace
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from pathlib import Path
 
     from bakar.config import BuildConfig
@@ -84,6 +85,12 @@ _LATEST_POINTER = "snapshots-latest.json"
 # the pool reference it derives from subpath depth still lands on the channel
 # root's single `_pkgs`.
 _SNAPSHOTS_DIR = "snapshots"
+
+# Where per-machine repositories live inside a channel, and therefore where the
+# per-machine snapshot pointer goes. Matches avocado-cli's `machine_short`
+# convention: the leading `avocado-` is already stripped by the repo map, so
+# `target/qemux86-64` rather than `target/avocado-qemux86-64`.
+_TARGET_DIR = "target"
 
 
 def resolve_feed_root(cfg: BuildConfig) -> Path:
@@ -242,17 +249,61 @@ def render_repo(*, scripts: Path, staged: Path, channel_root: Path, subpath: str
     )
 
 
-def write_latest_pointer(channel_root: Path, snapshot: str, *, now: datetime | None = None) -> Path:
-    """Announce ``snapshot`` as the newest one and return the pointer path.
+def pointer_machines(repos: Iterable[str]) -> list[str]:
+    """Return the machines a pointer must be written for, given rendered repos.
 
-    Called only after every repository in that snapshot has rendered - see
-    :func:`sync`.
+    A machine is one that published a ``target/<machine>`` repository. Extension
+    repositories are excluded: ``target/<machine>-ext`` belongs TO a machine and
+    is not one, so treating it as one would publish a pointer at
+    ``target/<machine>-ext/`` that no client ever reads.
+    """
+    machines = {
+        root.removeprefix(f"{_TARGET_DIR}/")
+        for root in repos
+        if root.startswith(f"{_TARGET_DIR}/") and not root.endswith(_EXT_SUFFIX)
+    }
+    return sorted(machines)
+
+
+def write_latest_pointer(
+    channel_root: Path,
+    snapshot: str,
+    *,
+    machines: Iterable[str],
+    now: datetime | None = None,
+) -> list[Path]:
+    """Announce ``snapshot`` as the newest one, per machine, and return the paths.
+
+    One pointer per machine at ``<channel>/target/<machine>/snapshots-latest.json``,
+    because that is where the only consumer looks. avocado-cli composes the URL
+    as ``{release}/{channel}/target/<machine>/snapshots-latest.json``
+    (``utils/snapshot.rs:86``), and its module docstring calls the pointer
+    "published per (channel, target)".
+
+    A single pointer at the channel root is not a near-miss, it is invisible:
+    avocado-cli treats a 404 here as "feed without snapshots" and falls back to
+    tracking the live head while recording no pin at all. So the snapshot
+    machinery would appear to work and pin nothing, which is the failure mode
+    worth avoiding over an outright error.
+
+    Nothing in ``meta-avocado`` writes this file - the publish pipeline does - so
+    avocado-cli's reader is the authority on its location, not the layer.
+
+    Called only after every repository in that snapshot has rendered, so an
+    interrupted sync leaves the previous pointer rather than announcing a
+    snapshot whose repositories are missing. See :func:`sync`.
     """
     moment = now or datetime.now(UTC)
-    channel_root.mkdir(parents=True, exist_ok=True)
-    pointer = channel_root / _LATEST_POINTER
-    pointer.write_text(json.dumps({"id": snapshot, "created": moment.strftime("%Y-%m-%dT%H:%M:%SZ")}) + "\n")
-    return pointer
+    body = json.dumps({"id": snapshot, "created": moment.strftime("%Y-%m-%dT%H:%M:%SZ")}) + "\n"
+
+    written: list[Path] = []
+    for machine in machines:
+        target = channel_root / _TARGET_DIR / machine
+        target.mkdir(parents=True, exist_ok=True)
+        pointer = target / _LATEST_POINTER
+        pointer.write_text(body)
+        written.append(pointer)
+    return written
 
 
 def sync(  # noqa: PLR0913 - deploy_dir and scripts stay explicit so consolidation can reuse this against a discovered tree it cannot derive from one config
@@ -341,12 +392,14 @@ def sync_paths(  # noqa: PLR0913 - the path pair replaces the config a discovere
         )
         rendered.append(root)
 
-    pointer = write_latest_pointer(channel_dir, snap)
+    machines = pointer_machines(rendered)
+    pointers = write_latest_pointer(channel_dir, snap, machines=machines)
     return {
         "snapshot": snap,
         "channel_root": channel_dir,
         "repos": rendered,
         "declared": declared,
         "unstaged": unstaged,
-        "pointer": pointer,
+        "machines": machines,
+        "pointers": pointers,
     }

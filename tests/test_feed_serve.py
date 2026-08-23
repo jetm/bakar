@@ -245,20 +245,18 @@ def test_status_on_a_never_synced_feed_reports_empty_rather_than_failing(tmp_pat
 
     assert status["targets"] == []
     assert status["pool_entries"] == 0
-    assert status["snapshot"] is None
+    assert status["snapshots"] == []
 
 
 def test_status_reports_the_announced_snapshot(tmp_path) -> None:
     """The snapshot a client would pin is the one the pointer names."""
     feed = _feed(tmp_path, machines=("qemux86-64",))
-    channel = feed / "dev" / "local"
-    (channel / "snapshots-latest.json").write_text(
-        json.dumps({"id": "20260822T210520Z", "created": "2026-08-22T21:05:20Z"})
-    )
+    pointer = feed / "dev" / "local" / "target" / "qemux86-64" / "snapshots-latest.json"
+    pointer.write_text(json.dumps({"id": "20260822T210520Z", "created": "2026-08-22T21:05:20Z"}))
 
     status = feed_status(feed, release="dev", channel="local", port=8080)
 
-    assert status["snapshot"] == "20260822T210520Z"
+    assert status["snapshots"] == ["20260822T210520Z"]
 
 
 def test_status_tolerates_an_unreadable_pointer(tmp_path) -> None:
@@ -268,6 +266,6 @@ def test_status_tolerates_an_unreadable_pointer(tmp_path) -> None:
     the feed being wrong.
     """
     feed = _feed(tmp_path, machines=("qemux86-64",))
-    (feed / "dev" / "local" / "snapshots-latest.json").write_text("{not json")
+    (feed / "dev" / "local" / "target" / "qemux86-64" / "snapshots-latest.json").write_text("{not json")
 
-    assert feed_status(feed, release="dev", channel="local", port=8080)["snapshot"] is None
+    assert feed_status(feed, release="dev", channel="local", port=8080)["snapshots"] == []

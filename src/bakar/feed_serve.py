@@ -48,7 +48,7 @@ from typing import TYPE_CHECKING
 
 from bakar.feed import DEFAULT_CHANNEL, DEFAULT_RELEASE, channel_root
 from bakar.feed_index import derive_targets
-from bakar.feed_retention import pinned_snapshot, pool_entries
+from bakar.feed_retention import pinned_snapshots, pool_entries
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -256,7 +256,7 @@ def feed_status(
         "channel_root": channel_dir,
         "targets": list(derive_targets(channel_dir)),
         "pool_entries": len(pool_entries(channel_dir)),
-        "snapshot": pinned_snapshot(channel_dir),
+        "snapshots": sorted(pinned_snapshots(channel_dir)),
         "serving": serving,
         "url": f"http://localhost:{shown_port}",
     }

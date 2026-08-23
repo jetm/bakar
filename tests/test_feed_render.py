@@ -177,7 +177,7 @@ def test_sync_writes_the_latest_pointer_after_every_render(tmp_path, monkeypatch
 
     sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
 
-    pointer = tmp_path / "feed" / "2026" / "edge" / "snapshots-latest.json"
+    pointer = tmp_path / "feed" / "2026" / "edge" / "target" / "qemux86-64" / "snapshots-latest.json"
     body = json.loads(pointer.read_text())
     assert body["id"] == "SNAP"
     assert body["created"].endswith("Z")
@@ -199,7 +199,7 @@ def test_sync_interrupted_mid_render_leaves_no_pointer(tmp_path, monkeypatch) ->
     with pytest.raises(subprocess.CalledProcessError):
         sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
 
-    pointer = tmp_path / "feed" / "2026" / "edge" / "snapshots-latest.json"
+    pointer = tmp_path / "feed" / "2026" / "edge" / "target" / "qemux86-64" / "snapshots-latest.json"
     assert not pointer.exists()
 
 
@@ -210,8 +210,8 @@ def test_sync_interrupted_leaves_a_prior_pointer_untouched(tmp_path, monkeypatch
     a snapshot that never finished, and lose the last one that did.
     """
     channel = tmp_path / "feed" / "2026" / "edge"
-    channel.mkdir(parents=True)
-    pointer = channel / "snapshots-latest.json"
+    (channel / "target" / "qemux86-64").mkdir(parents=True)
+    pointer = channel / "target" / "qemux86-64" / "snapshots-latest.json"
     pointer.write_text(json.dumps({"id": "OLD", "created": "2026-08-01T00:00:00Z"}))
 
     monkeypatch.setattr(subprocess, "run", _Recorder(fail_on=5))
@@ -278,15 +278,84 @@ def test_sync_still_writes_the_pointer_when_a_repo_was_unstaged(tmp_path, monkey
     monkeypatch.setattr(subprocess, "run", _Recorder())
     deploy = tmp_path / "build" / "tmp" / "deploy" / "rpm"
     deploy.mkdir(parents=True)
-    (deploy / "avocado-repo.map").write_text("repo=$releasever/sdk/all\nrepo=$releasever/sdk/never-staged\n")
+    (deploy / "avocado-repo.map").write_text(
+        "repo=$releasever/sdk/all\nrepo=$releasever/target/qemux86-64\nrepo=$releasever/sdk/never-staged\n"
+    )
+    scripts = _scripts(tmp_path)
+    cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
+    _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
+
+    sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+
+    pointer = tmp_path / "feed" / "2026" / "edge" / "target" / "qemux86-64" / "snapshots-latest.json"
+    assert pointer.is_file()
+
+
+def test_a_sync_that_rendered_no_machine_repo_writes_no_pointer(tmp_path, monkeypatch) -> None:
+    """The pointer is per machine, so with no machine there is nothing to pin.
+
+    A build publishing only release-global repositories (sdk/all) has no
+    ``target/<machine>`` for avocado-cli to look under, and inventing a
+    channel-root pointer would put one where nothing reads it.
+    """
+    monkeypatch.setattr(subprocess, "run", _Recorder())
+    deploy = tmp_path / "build" / "tmp" / "deploy" / "rpm"
+    deploy.mkdir(parents=True)
+    (deploy / "avocado-repo.map").write_text("repo=$releasever/sdk/all\n")
     scripts = _scripts(tmp_path)
     cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
     _stage(tmp_path, ("sdk/all",), release="2026", channel="edge")
 
+    result = sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+
+    assert result["machines"] == []
+    assert result["pointers"] == []
+    assert not list((tmp_path / "feed" / "2026" / "edge").rglob("snapshots-latest.json"))
+
+
+def test_an_extension_repo_is_not_treated_as_a_machine(tmp_path, monkeypatch) -> None:
+    """``target/<m>-ext`` belongs TO a machine and is not one.
+
+    Reading it as a machine would publish a pointer at ``target/<m>-ext/`` that
+    no client ever reads.
+    """
+    monkeypatch.setattr(subprocess, "run", _Recorder())
+    deploy = tmp_path / "build" / "tmp" / "deploy" / "rpm"
+    deploy.mkdir(parents=True)
+    (deploy / "avocado-repo.map").write_text(
+        "repo=$releasever/target/qemux86-64\nrepo=$releasever/target/qemux86-64-ext\n"
+    )
+    scripts = _scripts(tmp_path)
+    cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
+    _stage(tmp_path, ("target/qemux86-64", "target/qemux86-64-ext"), release="2026", channel="edge")
+
+    result = sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+
+    assert result["machines"] == ["qemux86-64"]
+    channel = tmp_path / "feed" / "2026" / "edge"
+    assert (channel / "target" / "qemux86-64" / "snapshots-latest.json").is_file()
+    assert not (channel / "target" / "qemux86-64-ext" / "snapshots-latest.json").exists()
+
+
+def test_the_pointer_lands_where_avocado_cli_reads_it(tmp_path, monkeypatch) -> None:
+    """Pins against avocado-cli's own URL contract, not against our layout.
+
+    ``utils/snapshot.rs:86`` composes
+    ``{release}/{channel}/target/<machine>/snapshots-latest.json``. A pointer at
+    the channel root is not a near-miss: a 404 there makes avocado-cli fall back
+    to tracking the live head and record NO pin, so snapshot pinning silently
+    does nothing instead of failing.
+    """
+    monkeypatch.setattr(subprocess, "run", _Recorder())
+    deploy, scripts = _deploy(tmp_path), _scripts(tmp_path)
+    cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
+    _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
+
     sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
 
-    pointer = tmp_path / "feed" / "2026" / "edge" / "snapshots-latest.json"
-    assert pointer.is_file()
+    channel = tmp_path / "feed" / "2026" / "edge"
+    assert (channel / "target" / "qemux86-64" / "snapshots-latest.json").is_file()
+    assert not (channel / "snapshots-latest.json").exists(), "a channel-root pointer is read by nothing"
 
 
 def test_sync_points_each_render_at_that_repos_staged_subtree(tmp_path, monkeypatch) -> None:

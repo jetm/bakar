@@ -63,6 +63,23 @@ def _with_repo_map(cfg) -> Path:
     return deploy
 
 
+def _real_scripts(tmp_path: Path) -> Path:
+    """A scripts dir the preflight accepts: both files present and executable."""
+    directory = tmp_path / "meta-avocado" / "scripts"
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in ("render-pool-local.py", "repo-stage-rpms.sh"):
+        path = directory / name
+        path.write_text("#!/bin/sh\n")
+        path.chmod(0o755)
+    return directory
+
+
+def _tools_present():
+    """Stub every external tool as present, so preflight is not the thing under
+    test in a sync test."""
+    return mock.patch("bakar.feed_preflight.shutil.which", side_effect=lambda tool: f"/usr/bin/{tool}")
+
+
 # --- registration ----------------------------------------------------------
 
 
@@ -92,11 +109,16 @@ def test_sync_requires_a_kas_yaml(cli: CliRunner) -> None:
 
 def test_sync_refuses_a_deploy_tree_with_no_repo_map(cli: CliRunner, cfg, tmp_path: Path) -> None:
     """No map means the build produced no feed. Staging it would render nothing."""
-    with _patch_cfg(cfg):
+    with (
+        _patch_cfg(cfg),
+        _tools_present(),
+        mock.patch("bakar.commands.feed.feed_mod.meta_avocado_scripts", return_value=_real_scripts(tmp_path)),
+    ):
         result = cli.invoke(app, ["feed", "sync", str(_yaml(tmp_path))])
 
     assert result.exit_code == 1
-    assert "no avocado-repo.map" in result.output
+    assert "no RPM deploy directory" in result.output
+    assert "nothing was staged" in result.output
 
 
 def test_sync_stages_from_the_rpm_deploy_dir(cli: CliRunner, cfg, tmp_path: Path) -> None:
@@ -105,7 +127,8 @@ def test_sync_stages_from_the_rpm_deploy_dir(cli: CliRunner, cfg, tmp_path: Path
 
     with (
         _patch_cfg(cfg),
-        mock.patch("bakar.commands.feed.feed_mod.meta_avocado_scripts", return_value=tmp_path / "scripts"),
+        _tools_present(),
+        mock.patch("bakar.commands.feed.feed_mod.meta_avocado_scripts", return_value=_real_scripts(tmp_path)),
         mock.patch("bakar.commands.feed.feed_mod.sync") as synced,
     ):
         synced.return_value = {
@@ -114,7 +137,8 @@ def test_sync_stages_from_the_rpm_deploy_dir(cli: CliRunner, cfg, tmp_path: Path
             "repos": ["target/qemux86-64"],
             "declared": ["target/qemux86-64"],
             "unstaged": [],
-            "pointer": Path("pointer"),
+            "machines": ["qemux86-64"],
+            "pointers": [Path("target/qemux86-64/snapshots-latest.json")],
         }
         result = cli.invoke(app, ["feed", "sync", str(_yaml(tmp_path))])
 
@@ -128,7 +152,8 @@ def test_sync_reports_declared_but_unbuilt_repos_without_failing(cli: CliRunner,
 
     with (
         _patch_cfg(cfg),
-        mock.patch("bakar.commands.feed.feed_mod.meta_avocado_scripts", return_value=tmp_path / "scripts"),
+        _tools_present(),
+        mock.patch("bakar.commands.feed.feed_mod.meta_avocado_scripts", return_value=_real_scripts(tmp_path)),
         mock.patch("bakar.commands.feed.feed_mod.sync") as synced,
     ):
         synced.return_value = {
@@ -137,7 +162,8 @@ def test_sync_reports_declared_but_unbuilt_repos_without_failing(cli: CliRunner,
             "repos": [],
             "declared": ["sdk/imx93-frdm"],
             "unstaged": ["sdk/imx93-frdm"],
-            "pointer": Path("pointer"),
+            "machines": [],
+            "pointers": [],
         }
         result = cli.invoke(app, ["feed", "sync", str(_yaml(tmp_path))])
 
@@ -152,6 +178,7 @@ def test_sync_names_a_missing_scripts_checkout_instead_of_raising(cli: CliRunner
 
     with (
         _patch_cfg(cfg),
+        _tools_present(),
         mock.patch(
             "bakar.commands.feed.feed_mod.meta_avocado_scripts",
             side_effect=FileNotFoundError("meta-avocado scripts not found at /nowhere"),
@@ -160,7 +187,7 @@ def test_sync_names_a_missing_scripts_checkout_instead_of_raising(cli: CliRunner
         result = cli.invoke(app, ["feed", "sync", str(_yaml(tmp_path))])
 
     assert result.exit_code == 1
-    assert "meta-avocado scripts not found" in result.output
+    assert "no meta-avocado checkout" in result.output
     assert "Traceback" not in result.output
 
 
@@ -170,7 +197,8 @@ def test_sync_reports_a_failed_render_script_rather_than_a_traceback(cli: CliRun
 
     with (
         _patch_cfg(cfg),
-        mock.patch("bakar.commands.feed.feed_mod.meta_avocado_scripts", return_value=tmp_path / "scripts"),
+        _tools_present(),
+        mock.patch("bakar.commands.feed.feed_mod.meta_avocado_scripts", return_value=_real_scripts(tmp_path)),
         mock.patch(
             "bakar.commands.feed.feed_mod.sync",
             side_effect=subprocess.CalledProcessError(2, ["/scripts/render-pool-local.py", "--staged"]),
@@ -385,8 +413,10 @@ def test_gc_says_so_when_there_is_nothing_to_do(cli: CliRunner, cfg) -> None:
 def test_gc_warns_when_the_pin_is_unknown(cli: CliRunner, cfg, feed_root: Path) -> None:
     """An existing-but-unparseable pointer is not the same as no pointer."""
     channel = feed_root / "2024" / "edge"
-    (channel / "snapshots-latest.json").write_text("{ not json")
-    plan = _plan(cfg, kept_snapshots=["20260823T000000Z"])
+    pointer = channel / "target" / "qemux86-64" / "snapshots-latest.json"
+    pointer.parent.mkdir(parents=True)
+    pointer.write_text("{ not json")
+    plan = _plan(cfg, kept_snapshots=["20260823T000000Z"], unreadable_pointers=[pointer])
 
     with (
         _patch_cfg(cfg),
@@ -395,7 +425,8 @@ def test_gc_warns_when_the_pin_is_unknown(cli: CliRunner, cfg, feed_root: Path) 
         result = cli.invoke(app, _gc_args())
 
     assert result.exit_code == 0
-    assert "does not name a snapshot" in result.output
+    assert "name no snapshot" in result.output
+    assert "no snapshot will be removed" in result.output
 
 
 def test_gc_reports_suppressed_pool_reclaim(cli: CliRunner, cfg) -> None:
@@ -500,3 +531,45 @@ def test_gc_reports_a_snapshot_it_failed_to_remove(cli: CliRunner, cfg) -> None:
 
     assert result.exit_code == 0
     assert "FAILED to remove" in result.output
+
+
+# --- doctor ----------------------------------------------------------------
+
+
+def test_doctor_is_registered_and_runs_without_a_kas_yaml(cli: CliRunner, cfg) -> None:
+    """A first-time user needs "can this machine do it" before anything else."""
+    with _patch_cfg(cfg):
+        result = cli.invoke(app, ["feed", "doctor"])
+
+    assert result.exit_code == 0
+    assert "createrepo_c" in result.output
+    assert "host prerequisites met" in result.output
+
+
+def test_doctor_exits_nonzero_when_a_prerequisite_is_missing(cli: CliRunner, cfg) -> None:
+    with (
+        _patch_cfg(cfg),
+        mock.patch("bakar.feed_preflight.shutil.which", return_value=None),
+    ):
+        result = cli.invoke(app, ["feed", "doctor"])
+
+    assert result.exit_code == 1
+    assert "FAIL createrepo_c" in result.output
+
+
+def test_sync_runs_preflight_and_stages_nothing_when_it_blocks(cli: CliRunner, cfg, tmp_path: Path) -> None:
+    """The whole point: a missing native binary must not surface as a traceback
+    from inside a half-finished stage."""
+    _with_repo_map(cfg)
+
+    with (
+        _patch_cfg(cfg),
+        mock.patch("bakar.commands.feed.feed_mod.meta_avocado_scripts", return_value=tmp_path / "scripts"),
+        mock.patch("bakar.feed_preflight.shutil.which", return_value=None),
+        mock.patch("bakar.commands.feed.feed_mod.sync") as synced,
+    ):
+        result = cli.invoke(app, ["feed", "sync", str(_yaml(tmp_path))])
+
+    assert result.exit_code == 1
+    assert "prerequisite(s) missing; nothing was staged" in result.output
+    synced.assert_not_called()

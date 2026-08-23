@@ -86,12 +86,24 @@ def feed(tmp_path: Path) -> Path:
         only = _pool_add(channel, f"only in {stamp}".encode())
         _render(channel / "snapshots" / stamp / "target" / "qemux86-64", [shared, only], depth=4)
 
-    (channel / "snapshots-latest.json").write_text(json.dumps({"id": "20260803T000000Z"}) + "\n")
+    _pin(channel, "20260803T000000Z")
     return root
 
 
 def _channel(feed_root: Path) -> Path:
     return feed_root / "2024" / "edge"
+
+
+def _pointer(channel: Path, machine: str = "qemux86-64") -> Path:
+    """The per-machine pointer path avocado-cli actually reads."""
+    return channel / "target" / machine / "snapshots-latest.json"
+
+
+def _pin(channel: Path, snapshot: str, machine: str = "qemux86-64") -> Path:
+    pointer = _pointer(channel, machine)
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_text(json.dumps({"id": snapshot}) + "\n")
+    return pointer
 
 
 # --- snapshot selection ----------------------------------------------------
@@ -119,11 +131,11 @@ def test_the_pinned_snapshot_is_never_removed(feed: Path) -> None:
     without consuming the by-age slot - so the newest survives too.
     """
     channel = _channel(feed)
-    (channel / "snapshots-latest.json").write_text(json.dumps({"id": "20260801T000000Z"}) + "\n")
+    _pin(channel, "20260801T000000Z")
 
     plan = feed_retention.plan_retention(channel, feed_root=feed, keep=1)
 
-    assert plan.pinned == "20260801T000000Z"
+    assert plan.pinned == ["20260801T000000Z"]
     assert "20260801T000000Z" not in plan.removed_snapshots
     assert plan.removed_snapshots == ["20260802T000000Z"]
     assert set(plan.kept_snapshots) == {"20260801T000000Z", "20260803T000000Z"}
@@ -132,18 +144,19 @@ def test_the_pinned_snapshot_is_never_removed(feed: Path) -> None:
 def test_an_unparseable_pointer_removes_nothing(feed: Path) -> None:
     """The pin is unknown, not absent. Guessing would delete what clients use."""
     channel = _channel(feed)
-    (channel / "snapshots-latest.json").write_text("{ this is not json")
+    _pointer(channel).write_text("{ this is not json")
 
     plan = feed_retention.plan_retention(channel, feed_root=feed, keep=1)
 
     assert plan.removed_snapshots == []
-    assert plan.pinned is None
+    assert plan.pinned == []
+    assert plan.unreadable_pointers == [_pointer(channel)]
 
 
 def test_an_absent_pointer_still_allows_retention(feed: Path) -> None:
     """Distinct from the unparseable case: nothing is pinned, so age decides."""
     channel = _channel(feed)
-    (channel / "snapshots-latest.json").unlink()
+    _pointer(channel).unlink()
 
     plan = feed_retention.plan_retention(channel, feed_root=feed, keep=1)
 
@@ -268,7 +281,7 @@ def test_a_primary_with_bad_gzip_magic_suppresses_pool_reclaim(tmp_path: Path) -
     channel.mkdir(parents=True)
     live = _pool_add(channel, b"a package the live repo needs")
     _render(channel / "target" / "qemux86-64", [live], depth=2, primary_bytes=b"this is not gzip at all")
-    (channel / "snapshots-latest.json").write_text(json.dumps({"id": "20260803T000000Z"}) + "\n")
+    _pin(channel, "20260803T000000Z")
 
     plan = feed_retention.plan_retention(channel, feed_root=root, keep=1)
 

@@ -68,6 +68,7 @@ _SNAPSHOTS_DIR = "snapshots"
 _REPODATA = "repodata"
 _INDEX = "repomd.xml"
 _POOL_DIR = "_pkgs"
+_TARGET_DIR = "target"
 
 # What repomd.xml names, so the live triple can be told from its predecessors.
 # Relative to the repodata directory, which is how the renderer writes them.
@@ -120,8 +121,13 @@ class RetentionPlan:
     kept_snapshots: list[str] = field(default_factory=list)
     removed_snapshots: list[str] = field(default_factory=list)
 
-    pinned: str | None = None
-    """The snapshot the pointer names. Never appears in ``removed_snapshots``."""
+    pinned: list[str] = field(default_factory=list)
+    """Every snapshot some machine's pointer names. None appears in
+    ``removed_snapshots``."""
+
+    unreadable_pointers: list[Path] = field(default_factory=list)
+    """Pointers that exist but name no snapshot. Non-empty means the pin is
+    unknown, so no snapshot was removed at all."""
 
     stale_metadata: list[Path] = field(default_factory=list)
     orphan_pool: list[Path] = field(default_factory=list)
@@ -194,24 +200,48 @@ class RetentionResult:
         return not self.dangling and not self.unreadable_primaries
 
 
-def pinned_snapshot(channel_root: Path) -> str | None:
-    """Return the snapshot id the pointer names, or None when there is none.
+def pointer_paths(channel_root: Path) -> list[Path]:
+    """Return every per-machine pointer file present, sorted.
 
-    A malformed pointer answers None rather than raising, but see
-    :func:`plan_retention` - None here does not mean "nothing is pinned", it
-    means the pin is unknown, and those must not be treated alike.
+    One per machine at ``target/<machine>/snapshots-latest.json`` - the location
+    avocado-cli reads. There is deliberately no channel-root pointer: see
+    :func:`bakar.feed.write_latest_pointer`.
     """
+    target = channel_root / _TARGET_DIR
+    if not target.is_dir():
+        return []
+    return sorted(p for machine in sorted(target.iterdir()) if (p := machine / _POINTER).is_file())
+
+
+def _pointer_id(pointer: Path) -> str | None:
+    """Return the snapshot id a single pointer names, or None if unreadable."""
     try:
-        pointer = json.loads((channel_root / _POINTER).read_text(encoding="utf-8"))
+        body = json.loads(pointer.read_text(encoding="utf-8"))
     except OSError, ValueError:
         return None
-    identifier = pointer.get("id") if isinstance(pointer, dict) else None
+    identifier = body.get("id") if isinstance(body, dict) else None
     return identifier if isinstance(identifier, str) else None
 
 
-def pointer_present(channel_root: Path) -> bool:
-    """True when a pointer file exists, regardless of whether it parses."""
-    return (channel_root / _POINTER).is_file()
+def pinned_snapshots(channel_root: Path) -> set[str]:
+    """Return every snapshot id some machine's pointer names.
+
+    A set rather than one value because the pointer is per machine, so two
+    machines can legitimately pin different snapshots - a target that has not
+    been rebuilt still pins the older one, and removing it would break that
+    target alone while every other machine looked fine.
+    """
+    return {snapshot for pointer in pointer_paths(channel_root) if (snapshot := _pointer_id(pointer)) is not None}
+
+
+def unreadable_pointers(channel_root: Path) -> list[Path]:
+    """Return pointers that exist but do not name a snapshot.
+
+    Distinct from absent. An absent pointer means nothing is pinned; one that
+    cannot be read means the pin is UNKNOWN, and the two must not be treated
+    alike - see :func:`plan_retention`.
+    """
+    return [pointer for pointer in pointer_paths(channel_root) if _pointer_id(pointer) is None]
 
 
 def list_snapshots(channel_root: Path) -> list[str]:
@@ -398,24 +428,27 @@ def plan_retention(
 ) -> RetentionPlan:
     """Decide what a retention run would remove, touching nothing.
 
-    ``keep`` counts snapshots retained by age. The pinned snapshot is retained
+    ``keep`` counts snapshots retained by age. EVERY pinned snapshot is retained
     on top of that count rather than consuming one of its slots, so asking to
-    keep one snapshot never removes the one clients are pinning.
+    keep one snapshot never removes one a client is pinning. Pins are plural
+    because the pointer is per machine: a target nobody has rebuilt still pins
+    an older snapshot, and dropping it would break that one target while every
+    other machine kept working.
 
-    An absent pointer means no snapshot is pinned and retention proceeds. A
-    pointer that exists but does not parse is different: the pin is unknown, so
-    no snapshot is removed at all. Guessing here would delete the pinned
-    snapshot exactly when the file naming it is already damaged.
+    No pointer at all means nothing is pinned and retention proceeds. A pointer
+    that exists but does not parse is different: the pin is unknown, so no
+    snapshot is removed at all. Guessing here would delete the pinned snapshot
+    exactly when the file naming it is already damaged.
     """
     snapshots = list_snapshots(channel_root)
-    pinned = pinned_snapshot(channel_root)
-    pin_unknown = pinned is None and pointer_present(channel_root)
+    pinned = pinned_snapshots(channel_root)
+    damaged_pointers = unreadable_pointers(channel_root)
 
-    if pin_unknown:
+    if damaged_pointers:
         removed: list[str] = []
     else:
         by_age_kept = set(snapshots[-keep:] if keep > 0 else [])
-        removed = [s for s in snapshots if s not in by_age_kept and s != pinned]
+        removed = [s for s in snapshots if s not in by_age_kept and s not in pinned]
 
     kept = [s for s in snapshots if s not in set(removed)]
     doomed = [channel_root / _SNAPSHOTS_DIR / snap for snap in removed]
@@ -435,12 +468,13 @@ def plan_retention(
         channel_root=channel_root,
         kept_snapshots=kept,
         removed_snapshots=removed,
-        pinned=pinned,
+        pinned=sorted(pinned),
         stale_metadata=stale,
         orphan_pool=orphans,
         unreadable_indexes=sorted(set(unreadable_indexes) | set(scan.unreadable_indexes)),
         unreadable_primaries=scan.unreadable_primaries,
         foreign_snapshot_entries=foreign_snapshot_entries(channel_root),
+        unreadable_pointers=damaged_pointers,
     )
 
 

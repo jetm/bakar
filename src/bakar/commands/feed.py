@@ -32,10 +32,11 @@ import typer
 
 import bakar.commands._app as _state
 from bakar import feed as feed_mod
-from bakar import feed_index, feed_retention, feed_serve
+from bakar import feed_index, feed_preflight, feed_retention, feed_serve
 from bakar.commands._app import app, console
 from bakar.commands._helpers import WorkspaceOption, _dispatch_bsp, _dispatch_from_yaml, _resolve_workspace
 from bakar.config import BuildConfig, resolve
+from bakar.diagnostics import Status
 
 feed_app = typer.Typer(
     help="Manage the local package feed (sync/index/serve/stop/status/gc).",
@@ -76,6 +77,67 @@ def _resolve_cfg(workspace: Path | None = None, kas_yaml: Path | None = None) ->
     )
 
 
+def _report_preflight(results: list) -> bool:
+    """Print prerequisite results and return whether any of them blocks.
+
+    Only prints the passing INFO lines and every failure - a wall of green ticks
+    on the common path buries the one line that matters.
+    """
+    blockers = feed_preflight.blocking(results)
+    failures = [r for r in results if r.status is Status.FAIL]
+
+    for result in failures:
+        console.print(f"[{result.severity}] {result.name}: {result.message}")
+        if result.fix_hint:
+            console.print(f"    -> {result.fix_hint}")
+
+    if blockers:
+        console.print(
+            f"{len(blockers)} prerequisite(s) missing; nothing was staged. Run `bakar feed doctor` after fixing them."
+        )
+    return bool(blockers)
+
+
+@feed_app.command("doctor")
+def doctor(
+    kas_yaml: OptionalKasYaml = None,
+    workspace: WorkspaceOption = None,
+) -> None:
+    """Check everything a feed sync needs, without touching the feed.
+
+    Runs with or without a kas YAML: without one it answers "can this machine
+    build a feed at all", which is what a first-time user on an unknown OS needs
+    before anything else.
+    """
+    cfg = _resolve_cfg(workspace, kas_yaml)
+    scripts: Path | None = None
+    deploy: Path | None = None
+    if kas_yaml is not None:
+        deploy = _deploy_dir(cfg)
+        try:
+            scripts = feed_mod.meta_avocado_scripts(kas_yaml)
+        except FileNotFoundError:
+            scripts = None
+
+    results = feed_preflight.preflight(
+        feed_root=feed_mod.resolve_feed_root(cfg),
+        stage_root=feed_mod.resolve_stage_root(cfg),
+        scripts=scripts,
+        deploy_dir=deploy,
+    )
+
+    for result in results:
+        mark = "ok  " if result.status is Status.PASS else "FAIL"
+        console.print(f"{mark} {result.name}: {result.message}")
+        if result.fix_hint:
+            console.print(f"     -> {result.fix_hint}")
+
+    if feed_preflight.blocking(results):
+        raise typer.Exit(code=1)
+    if kas_yaml is None:
+        console.print("host prerequisites met; pass a kas YAML to also check the layer checkout and build output")
+
+
 def _deploy_dir(cfg: BuildConfig) -> Path:
     """Return the RPM deploy directory the build wrote.
 
@@ -96,18 +158,24 @@ def sync(
     """Stage a finished build and render every repository it declares."""
     cfg = _resolve_cfg(workspace, kas_yaml)
     deploy = _deploy_dir(cfg)
-    if not (deploy / "avocado-repo.map").is_file():
-        console.print(
-            f"no avocado-repo.map under {deploy}: this build has not produced a package "
-            "feed. Build the image first, or point --workspace at the build that did."
-        )
-        raise typer.Exit(code=1)
 
     try:
         scripts = feed_mod.meta_avocado_scripts(kas_yaml)
-    except FileNotFoundError as exc:
-        console.print(str(exc))
-        raise typer.Exit(code=1) from exc
+    except FileNotFoundError:
+        scripts = None
+
+    # Every prerequisite at once, before anything is staged. The feed depends on
+    # a native binary and two shell tools that pip cannot install, so a
+    # first-time run on a fresh machine typically fails several checks - and
+    # surfacing them one exception at a time costs a round trip each.
+    results = feed_preflight.preflight(
+        feed_root=feed_mod.resolve_feed_root(cfg),
+        stage_root=feed_mod.resolve_stage_root(cfg),
+        scripts=scripts,
+        deploy_dir=deploy,
+    )
+    if _report_preflight(results) or scripts is None:
+        raise typer.Exit(code=1)
 
     console.print(f"feed: {feed_mod.resolve_feed_root(cfg)}")
     try:
@@ -134,6 +202,7 @@ def sync(
     console.print(f"snapshot: {result['snapshot']}")
     console.print(f"channel:  {result['channel_root']}")
     console.print(f"rendered: {', '.join(result['repos']) or '(none)'}")
+    console.print(f"pinned:   {', '.join(result['machines']) or '(no machine repo rendered)'}")
     if result["unstaged"]:
         # Declared-but-absent is normal - a map lists what a machine could
         # publish - so this is reported rather than treated as a failure.
@@ -225,7 +294,7 @@ def status(
     console.print(f"channel:  {report['channel_root']}")
     console.print(f"targets:  {', '.join(targets) or '(none)'}")
     console.print(f"packages: {report['pool_entries']}")
-    console.print(f"snapshot: {report['snapshot'] or '(none)'}")
+    console.print(f"snapshot: {', '.join(report['snapshots']) or '(none)'}")
     console.print(f"serving:  {'yes, ' + str(report['url']) if report['serving'] else 'no'}")
 
     # The stage root is a fourth growth source and `gc` does not touch it, so
@@ -278,10 +347,11 @@ def gc(
 
     plan = feed_retention.plan_retention(channel_dir, feed_root=feed_root, keep=keep)
 
-    if plan.pinned is None and feed_retention.pointer_present(channel_dir):
+    if plan.unreadable_pointers:
         console.print(
-            f"{channel_dir / 'snapshots-latest.json'} exists but does not name a snapshot, "
-            "so which one clients are pinning is unknown; no snapshot will be removed"
+            f"{len(plan.unreadable_pointers)} pointer(s) exist but name no snapshot, so which "
+            f"ones clients are pinning is unknown; no snapshot will be removed. "
+            f"First: {plan.unreadable_pointers[0]}"
         )
 
     if plan.foreign_snapshot_entries:
