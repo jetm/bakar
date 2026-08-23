@@ -26,6 +26,7 @@ import bakar.commands.diffsigs
 import bakar.commands.doctor
 import bakar.commands.drift
 import bakar.commands.dump
+import bakar.commands.feed
 import bakar.commands.for_all
 import bakar.commands.gen_kas
 import bakar.commands.getvar
