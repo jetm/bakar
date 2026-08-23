@@ -173,6 +173,8 @@ def sync(
         stage_root=feed_mod.resolve_stage_root(cfg),
         scripts=scripts,
         deploy_dir=deploy,
+        release=release,
+        channel=channel,
     )
     if _report_preflight(results) or scripts is None:
         raise typer.Exit(code=1)

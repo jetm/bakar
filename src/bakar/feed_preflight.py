@@ -147,6 +147,45 @@ def check_build_output(deploy_dir: Path) -> CheckResult:
     return _ok("avocado-repo.map", str(repo_map))
 
 
+def check_release_channel(deploy_dir: Path, release: str, channel: str) -> CheckResult:
+    """The requested release/channel must match what the build declares.
+
+    ``DISTRO_CODENAME`` IS ``release/channel`` - it is what dnf expands
+    ``$releasever`` to, so it decides the path a client composes. bakar's own
+    defaults are ``2024/edge``, which is right for some builds and wrong for
+    others: the live feed is ``dev/local``. Rendering into the wrong pair
+    produces a perfectly valid feed at a path nothing will ever ask for, and
+    every symptom appears on the client side minutes later.
+
+    Skipped rather than guessed when the build records no usable codename -
+    ``_split_codename`` deliberately refuses a codename with no separator, and
+    inventing a channel for it would be the same error one level down.
+    """
+    from bakar.feed_consolidate import _read_testdata, _split_codename
+
+    # testdata sits under deploy/images/<machine>/, a sibling of deploy/rpm.
+    declared = _read_testdata(deploy_dir.parent).get("DISTRO_CODENAME")
+    want_release, want_channel = _split_codename(declared)
+
+    if want_release is None or want_channel is None:
+        return CheckResult(
+            name="release/channel",
+            severity=Severity.INFO,
+            status=Status.SKIP,
+            message=f"build declares no usable DISTRO_CODENAME; rendering into {release}/{channel} as asked",
+        )
+
+    if (want_release, want_channel) != (release, channel):
+        return _fail(
+            "release/channel",
+            f"build declares DISTRO_CODENAME={want_release}/{want_channel} but this sync targets "
+            f"{release}/{channel} - the feed would render where no client looks",
+            f"pass --release {want_release} --channel {want_channel}",
+        )
+
+    return _ok("release/channel", f"{release}/{channel} matches the build's DISTRO_CODENAME")
+
+
 def check_writable(feed_root: Path, stage_root: Path) -> list[CheckResult]:
     """Both roots must be creatable and writable.
 
@@ -191,16 +230,18 @@ def check_platform() -> CheckResult:
     return _ok("platform", f"{platform.system()} {platform.machine()}", severity=Severity.INFO)
 
 
-def preflight(
+def preflight(  # noqa: PLR0913 - each argument scopes a different tier of the check, and collapsing them into an object would hide which tiers a caller opted into
     *,
     feed_root: Path,
     stage_root: Path,
     scripts: Path | None = None,
     deploy_dir: Path | None = None,
+    release: str | None = None,
+    channel: str | None = None,
 ) -> list[CheckResult]:
     """Run every prerequisite check and return the results, in report order.
 
-    ``scripts`` and ``deploy_dir`` are optional so this can also answer "is this
+    Everything past the host tools is optional so this can also answer "is this
     machine capable of building a feed at all" before any workspace is known -
     which is what ``bakar feed doctor`` asks with no kas YAML.
     """
@@ -209,6 +250,8 @@ def preflight(
         results.extend(check_scripts(scripts))
     if deploy_dir is not None:
         results.append(check_build_output(deploy_dir))
+        if release is not None and channel is not None:
+            results.append(check_release_channel(deploy_dir, release, channel))
     results.extend(check_writable(feed_root, stage_root))
     return results
 

@@ -7,6 +7,7 @@ worse than no check, because it reports readiness that was never established.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import TYPE_CHECKING
 
@@ -256,3 +257,66 @@ def test_preflight_on_a_ready_machine_blocks_nothing(monkeypatch, roots, scripts
     results = feed_preflight.preflight(feed_root=feed_root, stage_root=stage_root, scripts=scripts, deploy_dir=deploy)
 
     assert feed_preflight.blocking(results) == []
+
+
+# --- release/channel must match the build ---------------------------------
+
+
+def _with_codename(deploy: Path, codename: str) -> None:
+    """Write testdata where the build records it: deploy/images/<machine>/."""
+    images = deploy.parent / "images" / "avocado-qemux86-64"
+    images.mkdir(parents=True, exist_ok=True)
+    (images / "avocado-image.testdata.json").write_text(json.dumps({"DISTRO_CODENAME": codename}))
+
+
+def test_a_release_channel_mismatch_blocks(deploy: Path) -> None:
+    """DISTRO_CODENAME IS release/channel - it is what dnf expands $releasever
+    to, so the wrong pair renders a valid feed where no client looks."""
+    _with_codename(deploy, "dev/local")
+
+    result = feed_preflight.check_release_channel(deploy, "2024", "edge")
+
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert result.fix_hint == "pass --release dev --channel local"
+
+
+def test_a_matching_release_channel_passes(deploy: Path) -> None:
+    _with_codename(deploy, "dev/local")
+
+    assert feed_preflight.check_release_channel(deploy, "dev", "local").status is Status.PASS
+
+
+def test_no_codename_is_skipped_rather_than_guessed(deploy: Path) -> None:
+    """A codename with no separator names a release and no channel; inventing
+    `edge` for it would be the same class of guess."""
+    _with_codename(deploy, "scarthgap")
+
+    result = feed_preflight.check_release_channel(deploy, "2024", "edge")
+
+    assert result.status is Status.SKIP
+    assert result.severity is Severity.INFO
+
+
+def test_absent_testdata_is_skipped_not_failed(deploy: Path) -> None:
+    assert feed_preflight.check_release_channel(deploy, "2024", "edge").status is Status.SKIP
+
+
+def test_preflight_skips_the_pair_check_when_not_given_one(roots, scripts, deploy, monkeypatch) -> None:
+    monkeypatch.setattr(feed_preflight.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    _with_codename(deploy, "dev/local")
+    feed_root, stage_root = roots
+
+    without = feed_preflight.preflight(feed_root=feed_root, stage_root=stage_root, scripts=scripts, deploy_dir=deploy)
+    with_pair = feed_preflight.preflight(
+        feed_root=feed_root,
+        stage_root=stage_root,
+        scripts=scripts,
+        deploy_dir=deploy,
+        release="2024",
+        channel="edge",
+    )
+
+    assert "release/channel" not in {r.name for r in without}
+    assert feed_preflight.blocking(without) == []
+    assert len(feed_preflight.blocking(with_pair)) == 1
