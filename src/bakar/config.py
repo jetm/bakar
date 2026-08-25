@@ -41,6 +41,15 @@ def _overlay_dir() -> Path:
 # Any of these can be overridden by BAKAR_* env vars; CLI flags override env.
 # ---------------------------------------------------------------------------
 
+# Workspace-relative directory names a per-workspace feed occupies. Named here
+# rather than spelled at each use because two modules need them to agree:
+# ``effective_feed_dir`` builds the default feed path from the first, and remote
+# dispatch keeps both out of an ``rsync --delete``. A rename that updated only
+# one of those would silently start deleting remote feeds again.
+WORKSPACE_FEED_DIRNAME = "_feed"
+FEED_STAGE_SUFFIX = "-stage"
+WORKSPACE_FEED_STAGE_DIRNAME = f"{WORKSPACE_FEED_DIRNAME}{FEED_STAGE_SUFFIX}"
+
 DEFAULT_NXP_MACHINE = "imx8mp-var-dart"
 DEFAULT_NXP_DISTRO = "fsl-imx-xwayland"
 DEFAULT_NXP_IMAGE = "core-image-minimal"
@@ -528,7 +537,7 @@ class BuildConfig:
         common root for it to list the union of them rather than whichever
         machine rendered last.
         """
-        return shared_feed_dir(self.feed_dir, feed_shared=self.feed_shared) or self.workspace / "_feed"
+        return shared_feed_dir(self.feed_dir, feed_shared=self.feed_shared) or self.workspace / WORKSPACE_FEED_DIRNAME
 
     @property
     def hashserv_state_key(self) -> Path:

@@ -26,6 +26,8 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
+from bakar.config import WORKSPACE_FEED_DIRNAME, WORKSPACE_FEED_STAGE_DIRNAME
+
 # stderr so `bakar build --on <host> > log` keeps chrome (preview, prompts,
 # run-id) out of the piped build log, matching the project convention in
 # commands/_app.py.
@@ -48,6 +50,30 @@ RSYNC_EXCLUDES: tuple[str, ...] = (
     "**/.venv/",
     "**/__pycache__/",
     "**/*.pyc",
+    # The package feed and its staging sibling. Unlike everything above these
+    # are not caches: a feed accumulates across syncs, holds every retained
+    # snapshot plus the content pool they reference, and cannot be rebuilt from
+    # the local tree - so `--delete` destroying it costs the snapshots
+    # themselves, not just the time to regenerate them. A remote feed is
+    # reachable whenever someone runs `bakar feed sync` on a node that is also
+    # an `--on` target, which is the ordinary way a second builder gets one.
+    #
+    # Anchored at the workspace root, matching the outputs above rather than the
+    # `**/` patterns, because only the workspace-relative default lands inside
+    # the mirror: a configured `feed_dir`, and the `feed_shared` XDG location,
+    # both sit outside it and rsync never sees them. Anchoring also keeps a
+    # source directory that merely shares the name deeper in a layer mirroring
+    # normally.
+    #
+    # NO TRAILING SLASH, unlike every cache pattern above. A trailing slash makes
+    # rsync match directories only, and a feed is routinely a SYMLINK onto a
+    # storage volume rather than a real directory - which is how it is set up on
+    # the two-node cluster. Measured: with `/_feed/` the symlink is deleted and
+    # with `/_feed` it survives, while a real directory survives either way. The
+    # slashed form would therefore have protected the case that does not occur
+    # and missed the one that does.
+    f"/{WORKSPACE_FEED_DIRNAME}",
+    f"/{WORKSPACE_FEED_STAGE_DIRNAME}",
 )
 
 

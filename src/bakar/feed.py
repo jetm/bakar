@@ -42,6 +42,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from bakar.bsp_detect import detect_kas_workspace
+from bakar.config import FEED_STAGE_SUFFIX
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -59,7 +60,7 @@ DEFAULT_CHANNEL = "edge"
 # Suffix appended to the feed root's own name to derive the stage root. A suffix
 # on the sibling rather than a subdirectory: `<feed>/_stage` would be inside the
 # served tree.
-_STAGE_SUFFIX = "-stage"
+_STAGE_SUFFIX = FEED_STAGE_SUFFIX
 
 # Extension repositories are advertised by the index but never staged from a
 # build - their content comes from `avocado ext package`. Staging one here would
