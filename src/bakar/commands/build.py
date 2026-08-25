@@ -15,6 +15,8 @@ from rich.console import Console
 from rich.table import Table
 
 import bakar.commands._app as _state
+from bakar import feed as feed_mod
+from bakar import feed_ops, feed_preflight
 from bakar.bsp_detect import machine_from_yaml
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
@@ -41,6 +43,7 @@ from bakar.commands._helpers import (
     split_kas_yaml_arg,
 )
 from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, compose_preset_output_path, resolve
+from bakar.diagnostics import Status
 from bakar.fmt import fmt_duration
 from bakar.kas import translate_bbsetup_config, write_bbsetup_yaml
 from bakar.observability import RunLogger
@@ -95,11 +98,22 @@ def _open_run_logger(cfg) -> RunLogger:
     return RunLogger(runs_dir=cfg.runs_dir, render_console=_plain_render_console())
 
 
-def _finish_build(cfg, log, rc: int, machine: str) -> None:
+def _finish_build(cfg, log, rc: int, machine: str, feed: _FeedRequest | None = None) -> None:
     """Shared build tail: rc check + triage hint, sstate summary, success line, artifacts path.
 
     ``machine`` names the deploy/images subdir - ``cfg.machine`` for byo/manifest
     builds, the bbsetup-translated machine for the bbsetup path.
+
+    ``feed`` drives a sync then an index once the build has succeeded. The work
+    sits here rather than in the callers because this function already returns
+    early on a non-zero rc: a failed build cannot reach it, so "success only"
+    holds for every call site including ones added later, rather than depending
+    on each remembering to guard. A partial deploy staged into the feed would
+    render a repository the index then advertises as installable.
+
+    A dry run is NOT such a success and the callers filter it out before this
+    point, because ``run_build`` returns 0 after printing its preview - so rc
+    alone cannot tell "built" from "never ran".
     """
     if rc != 0:
         exe = "kas" if cfg.host_mode else "kas-container"
@@ -114,6 +128,103 @@ def _finish_build(cfg, log, rc: int, machine: str) -> None:
         _print_sstate_summary(log.run_dir / "kas.log")
     console.print(f"[bold green]build succeeded[/] in {fmt_duration(time.monotonic() - log.start_monotonic)}")
     console.print(f"artifacts: {deploy}")
+
+    if feed is not None:
+        _sync_feed(cfg, feed)
+
+
+@dataclass(frozen=True)
+class _FeedRequest:
+    """What ``--feed`` needs to run: the build's YAML and where to render it."""
+
+    kas_yaml: Path
+    release: str
+    channel: str
+
+
+def _resolve_feed_request(
+    cfg,
+    *,
+    feed: bool,
+    dry_run: bool,
+    release: str,
+    channel: str,
+) -> _FeedRequest | None:
+    """Return the feed request for this build, or None when --feed must not run.
+
+    Two reasons it returns None with the flag set. A dry run is one: ``run_build``
+    prints its preview and returns 0, so rc alone reads it as a success, and
+    syncing would stage whatever a PREVIOUS build happened to leave in the deploy
+    tree and repin every client onto a fresh snapshot of stale RPMs - from a
+    command documented to exit before invoking kas.
+
+    The other is a failed prerequisite. The checks run HERE, before the build,
+    rather than where ``bakar feed sync`` runs them, because this path's whole
+    economics differ: a missing ``createrepo_c`` discovered after a multi-hour
+    build costs that build's wall clock to learn, while the same probe costs
+    milliseconds now. A blocking result refuses the whole command rather than
+    downgrading to a warning - the user asked for a feed, and finding out at the
+    end that they cannot have one is the outcome being avoided.
+    """
+    if not feed:
+        return None
+    if dry_run:
+        console.print("[yellow]--dry-run: skipping --feed[/] (no build ran, so there is nothing new to stage).")
+        return None
+
+    # release/channel are passed so the codename cross-check runs here too: a
+    # --feed-release that disagrees with the build's DISTRO_CODENAME renders into
+    # a channel no client resolves, and that is worth catching before the build
+    # rather than after it.
+    results = feed_ops.preflight_results(cfg, cfg.kas_yaml, release=release, channel=channel)
+    if feed_preflight.blocking(results):
+        console.print("[red]--feed cannot run: the feed prerequisites are not met.[/]")
+        for result in results:
+            if result.status is Status.PASS:
+                continue
+            console.print(f"FAIL {result.name}: {result.message}")
+            if result.fix_hint:
+                console.print(f"     -> {result.fix_hint}")
+        console.print("Fix the above, or drop --feed to build without touching the feed.")
+        raise typer.Exit(code=2)
+
+    return _FeedRequest(kas_yaml=cfg.kas_yaml, release=release, channel=channel)
+
+
+def _sync_feed(cfg, request: _FeedRequest) -> None:
+    """Stage the finished build into the feed, then rewrite ``targets.json``.
+
+    Failures here do not fail the build. The build itself succeeded and its
+    artifacts are on disk; turning a feed problem into a non-zero build exit
+    would discard hours of work over a step the user can repeat with
+    ``bakar feed sync``. The reason is printed with that hint instead.
+
+    The except clause is deliberately broad. The paragraph above states an
+    absolute - no feed problem fails the build - and a tuple of the failures
+    currently anticipated does not implement it: ``parse_repo_map`` reads the map
+    with no encoding, so one non-UTF-8 byte raises ``UnicodeDecodeError`` (a
+    ``ValueError``, not an ``OSError``) and a signature drift in the feed layer
+    raises ``TypeError``. Either would escape a narrow tuple and reach the user
+    as a traceback AFTER "build succeeded" has printed, which is the one outcome
+    this path exists to prevent.
+    """
+    try:
+        result = feed_ops.sync_then_index(
+            cfg,
+            request.kas_yaml,
+            release=request.release,
+            channel=request.channel,
+        )
+    except Exception as exc:  # noqa: BLE001 - see the docstring: the contract is absolute
+        console.print(f"[yellow]build succeeded but the feed was not updated:[/] {feed_ops.describe_failure(exc)}")
+        console.print(
+            f"Re-run `bakar feed sync --release {request.release} --channel {request.channel} "
+            f"{request.kas_yaml}` once the cause is fixed; the build output is untouched."
+        )
+        return
+    console.print(f"feed: snapshot {result['snapshot']} pinned for {', '.join(result['machines']) or '(none)'}")
+    if result["unstaged"]:
+        console.print(f"declared but not built: {', '.join(result['unstaged'])}")
 
 
 def _preset_completer(incomplete: str) -> list[str]:
@@ -267,6 +378,11 @@ class _BuildCtx:
     keep_going: bool
     skip_sync: bool
     target: str | None = None
+    # The resolved feed request when --feed was passed, else None. Carried as the
+    # resolved object rather than a bool because the kas YAML it names is not
+    # always the positional argument - a preset supplies one too - so the
+    # resolution has to happen once, where both sources are in scope.
+    feed: _FeedRequest | None = None
 
 
 def _run_byo_build(
@@ -298,7 +414,7 @@ def _run_byo_build(
         extra_overlays=ctx.extra_overlays,
         show_layers=ctx.effective_show_layers and not ctx.dry_run,
     )
-    _finish_build(cfg, log, rc, cfg.machine)
+    _finish_build(cfg, log, rc, cfg.machine, feed=ctx.feed)
 
 
 def _run_manifest_build(
@@ -596,6 +712,22 @@ def build(
             help="Skip the rsync --delete confirmation prompt for --on dispatch (non-interactive).",
         ),
     ] = False,
+    feed: Annotated[
+        bool,
+        typer.Option(
+            "--feed",
+            help="On build success, stage the RPMs into the local package feed and rewrite its "
+            "index. A failed build never syncs, and neither does --dry-run.",
+        ),
+    ] = False,
+    feed_release: Annotated[
+        str,
+        typer.Option("--feed-release", help="Feed release directory for --feed (see `bakar feed sync`)."),
+    ] = feed_mod.DEFAULT_RELEASE,
+    feed_channel: Annotated[
+        str,
+        typer.Option("--feed-channel", help="Feed channel directory for --feed (see `bakar feed sync`)."),
+    ] = feed_mod.DEFAULT_CHANNEL,
 ) -> None:
     """Run the build pipeline idempotently.
 
@@ -621,6 +753,19 @@ def build(
     container_mode = global_container_mode()
     sccache_dist = _state._SCCACHE_DIST
     sccache_scheduler = _state._SCCACHE_SCHEDULER
+
+    # --feed writes into THIS host's feed, and --on moves the build to another
+    # one. Allowing the combination renders the feed on the remote, where the
+    # local `bakar feed serve` cannot see it - and where the next --on dispatch's
+    # `rsync -a --delete` deletes it, because the feed roots are not in
+    # RSYNC_EXCLUDES. Refusing beats silently building something that a later,
+    # unrelated command destroys.
+    if feed and on is not None:
+        console.print(
+            "[red]--feed cannot be combined with --on[/]: the feed would be rendered on the remote host. "
+            "Build with --on, then run `bakar feed sync` there, or build locally."
+        )
+        raise typer.Exit(code=2)
 
     # --on <host>: dispatch the entire build to a remote node instead of building
     # locally. Runs before any form-specific branch (preset, bbsetup, byo/manifest)
@@ -702,6 +847,24 @@ def build(
             elif active_preset.manifests:
                 manifest = active_preset.manifests[0]
 
+    # --feed validation, deliberately AFTER preset resolution: a bbsetup/generic
+    # preset assigns kas_yaml just above, so testing the positional argument any
+    # earlier refuses `--preset X --feed` for a preset that names a YAML - telling
+    # the user their invocation is malformed when it is merely early.
+    if feed:
+        if kas_yaml is None:
+            console.print("[red]--feed needs a kas YAML[/]: it names the build whose RPMs are staged.")
+            raise typer.Exit(code=2)
+        if active_preset is not None and _is_multi_release(active_preset):
+            # One sync stages one deploy tree, and a multi-release fan-out
+            # produces several. Refusing beats the alternative that shipped
+            # first, where the flag was silently dropped and the build reported
+            # success over an untouched feed.
+            console.print(
+                "[red]--feed cannot be combined with a multi-release preset[/]: each release would need its own "
+                "sync. Build the releases, then run `bakar feed sync` per release."
+            )
+            raise typer.Exit(code=2)
     # Multi-release fan-out: when a preset defines more than one release,
     # run each release sequentially, collect results, print a summary table,
     # and exit with code 1 if any release failed.
@@ -883,6 +1046,7 @@ def build(
         keep_going=keep_going,
         skip_sync=skip_sync,
         target=target,
+        feed=_resolve_feed_request(cfg, feed=feed, dry_run=dry_run, release=feed_release, channel=feed_channel),
     )
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)

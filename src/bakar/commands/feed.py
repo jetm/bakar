@@ -32,7 +32,7 @@ import typer
 
 import bakar.commands._app as _state
 from bakar import feed as feed_mod
-from bakar import feed_index, feed_preflight, feed_retention, feed_serve
+from bakar import feed_index, feed_ops, feed_preflight, feed_retention, feed_serve
 from bakar.commands._app import app, console
 from bakar.commands._helpers import WorkspaceOption, _dispatch_bsp, _dispatch_from_yaml, _resolve_workspace
 from bakar.config import BuildConfig, resolve
@@ -111,11 +111,6 @@ def doctor(
     detection failed would make the first command run after `pip install bakar`
     report the wrong problem.
     """
-    scripts: Path | None = None
-    deploy: Path | None = None
-    feed_root: Path | None = None
-    stage_root: Path | None = None
-
     try:
         cfg = _resolve_cfg(workspace, kas_yaml)
     except typer.Exit, SystemExit:
@@ -124,22 +119,9 @@ def doctor(
         # naming it would be an undeclared import for an exception that cannot
         # reach this frame.
         console.print("continuing with host prerequisites only\n")
-    else:
-        feed_root = feed_mod.resolve_feed_root(cfg)
-        stage_root = feed_mod.resolve_stage_root(cfg)
-        if kas_yaml is not None:
-            deploy = _deploy_dir(cfg)
-            try:
-                scripts = feed_mod.meta_avocado_scripts(kas_yaml)
-            except FileNotFoundError:
-                scripts = None
+        cfg = None
 
-    results = feed_preflight.preflight(
-        feed_root=feed_root,
-        stage_root=stage_root,
-        scripts=scripts,
-        deploy_dir=deploy,
-    )
+    results = feed_ops.preflight_results(cfg, kas_yaml)
 
     for result in results:
         mark = "ok  " if result.status is Status.PASS else "FAIL"
@@ -149,23 +131,13 @@ def doctor(
 
     if feed_preflight.blocking(results):
         raise typer.Exit(code=1)
-    if feed_root is None:
+    if cfg is None:
         console.print(
             "host prerequisites met; run from a workspace (or pass --workspace) to also check "
             "the feed paths, and add a kas YAML for the layer checkout and build output"
         )
     elif kas_yaml is None:
         console.print("host prerequisites met; pass a kas YAML to also check the layer checkout and build output")
-
-
-def _deploy_dir(cfg: BuildConfig) -> Path:
-    """Return the RPM deploy directory the build wrote.
-
-    ``avocado-repo.map`` sits here rather than one level up, and the map is what
-    declares which repositories a sync renders - so this is the directory the
-    feed stages from, not ``deploy`` itself.
-    """
-    return cfg.resolved_tmpdir / "deploy" / "rpm"
 
 
 @feed_app.command("sync")
@@ -177,25 +149,13 @@ def sync(
 ) -> None:
     """Stage a finished build and render every repository it declares."""
     cfg = _resolve_cfg(workspace, kas_yaml)
-    deploy = _deploy_dir(cfg)
-
-    try:
-        scripts = feed_mod.meta_avocado_scripts(kas_yaml)
-    except FileNotFoundError:
-        scripts = None
+    scripts = feed_ops.scripts_dir(kas_yaml)
 
     # Every prerequisite at once, before anything is staged. The feed depends on
     # a native binary and two shell tools that pip cannot install, so a
     # first-time run on a fresh machine typically fails several checks - and
     # surfacing them one exception at a time costs a round trip each.
-    results = feed_preflight.preflight(
-        feed_root=feed_mod.resolve_feed_root(cfg),
-        stage_root=feed_mod.resolve_stage_root(cfg),
-        scripts=scripts,
-        deploy_dir=deploy,
-        release=release,
-        channel=channel,
-    )
+    results = feed_ops.preflight_results(cfg, kas_yaml, release=release, channel=channel)
     if _report_preflight(results) or scripts is None:
         raise typer.Exit(code=1)
 
@@ -203,22 +163,18 @@ def sync(
     try:
         result = feed_mod.sync(
             cfg,
-            deploy_dir=deploy,
+            deploy_dir=feed_ops.deploy_dir(cfg),
             scripts=scripts,
             release=release,
             channel=channel,
         )
-    except subprocess.CalledProcessError as exc:
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
         # The staging and render scripts run with check=True. A non-zero exit
         # leaves the snapshot pointer unwritten by design, so the feed is intact;
-        # what the user needs is which script failed, not a traceback.
-        console.print(
-            f"feed sync failed: {Path(exc.cmd[0]).name} exited {exc.returncode}. "
-            "The snapshot pointer was not written, so the feed still serves the previous snapshot."
-        )
-        raise typer.Exit(code=1) from exc
-    except FileNotFoundError as exc:
-        console.print(f"feed sync failed: {exc}")
+        # what the user needs is which script failed, not a traceback. The
+        # message is shared with `bakar build --feed` so the two paths cannot
+        # drift into describing the same failure differently.
+        console.print(f"feed sync failed: {feed_ops.describe_failure(exc)}")
         raise typer.Exit(code=1) from exc
 
     console.print(f"snapshot: {result['snapshot']}")
