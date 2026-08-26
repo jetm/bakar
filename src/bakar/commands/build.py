@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, replace
@@ -15,7 +16,7 @@ from rich.console import Console
 from rich.table import Table
 
 import bakar.commands._app as _state
-from bakar import cve_report, feed_ops, feed_preflight
+from bakar import cve_report, feed_ops, feed_preflight, sbom_publish
 from bakar import feed as feed_mod
 from bakar.bsp_detect import machine_from_yaml
 from bakar.commands._app import app, console
@@ -105,6 +106,7 @@ def _finish_build(
     machine: str,
     feed: _FeedRequest | None = None,
     cve: _CveRequest | None = None,
+    sbom: _SbomRequest | None = None,
 ) -> None:
     """Shared build tail: rc check + triage hint, sstate summary, success line, artifacts path.
 
@@ -151,6 +153,12 @@ def _finish_build(
     # pick up.
     if cve is not None:
         _generate_cve_report(cfg, cve, machine)
+
+    # Also before the feed sync, and for a sharper reason than the CVE report's:
+    # this produces the document a later publish step puts INTO the feed, so it
+    # has to exist and be checked before anything publishes.
+    if sbom is not None:
+        _filter_image_sbom(cfg, sbom)
 
     if feed is not None:
         _sync_feed(cfg, feed)
@@ -241,6 +249,94 @@ def _generate_cve_report(cfg, request: _CveRequest, machine: str) -> None:
         return
 
     console.print(f"CVE report: {cve_report.report_path(cfg, machine)}")
+
+
+@dataclass(frozen=True)
+class _SbomRequest:
+    """What ``--sbom`` needs to run: the workspace holding meta-avocado-sbom."""
+
+    workspace: Path
+
+
+def _resolve_sbom_request(cfg, *, sbom: bool, dry_run: bool) -> _SbomRequest | None:
+    """Return the SBOM request for this build, or None when ``--sbom`` must not run.
+
+    The missing-prerequisite case EXITS rather than returning None, which is the
+    one place this diverges from ``--cve``. A checkout without the filter can
+    never produce a publishable document, and that is knowable in a stat now
+    versus a whole build's wall clock at the end - the same argument ``--feed``
+    makes about ``createrepo_c``.
+
+    Skipping instead would be worse than either: the per-image document exists
+    whether or not the filter does, it carries vulnerability data (measured: 868
+    ``security_*`` nodes and 303 CVE identifiers), and a silent skip leaves the
+    user believing an SBOM step ran.
+    """
+    if not sbom:
+        return None
+    if dry_run:
+        console.print("[yellow]--dry-run: skipping --sbom[/] (no build ran, so there is no document to filter).")
+        return None
+
+    lib = sbom_publish.sbom_lib_dir(cfg.workspace)
+    if not sbom_publish.has_filter(lib):
+        console.print(
+            f"[red]--sbom cannot run: no publication filter at {lib}[/]. The per-image SPDX document "
+            "carries vulnerability data and must be filtered before it can be published, and this "
+            "meta-avocado checkout does not carry the filter that does it."
+        )
+        console.print("Update meta-avocado, or drop --sbom to build without producing a publishable inventory.")
+        raise typer.Exit(code=2)
+
+    return _SbomRequest(workspace=cfg.workspace)
+
+
+def _filter_image_sbom(cfg, request: _SbomRequest) -> None:
+    """Filter the build's per-image SPDX into a publishable inventory.
+
+    Does not fail the build on any outcome, matching ``_sync_feed`` and
+    ``_generate_cve_report``: the build succeeded and its artifacts are on disk.
+
+    The independent leak check after the filter runs is not redundant with the
+    filter's own ``--check``. It answers a narrower question at the moment that
+    matters - is THIS file safe to publish - and it fails closed on a document it
+    cannot read, because an unparseable file is not a file with no CVEs in it.
+    """
+    images = sbom_publish.images_dir(cfg)
+    documents = sbom_publish.find_image_sboms(images)
+    if not documents:
+        console.print(
+            f"[yellow]--sbom: no per-image SBOM under {images}[/]. A distro build only emits one when "
+            "the image recipe's do_build is reached; check that avocado-distro depends on it."
+        )
+        return
+
+    out_dir = cfg.resolved_tmpdir / "deploy" / "avocado-sbom"
+    cmd, env = sbom_publish.filter_command(sbom_publish.sbom_lib_dir(request.workspace), images, out_dir)
+    try:
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
+    except OSError as exc:
+        console.print(f"[yellow]build succeeded but the SBOM was not filtered:[/] {exc}")
+        return
+
+    if result.returncode != 0:
+        console.print(
+            f"[yellow]build succeeded but the SBOM filter exited {result.returncode}[/]: "
+            f"{(result.stderr or '').strip().splitlines()[-1] if (result.stderr or '').strip() else 'no output'}"
+        )
+        return
+
+    filtered = sbom_publish.find_image_sboms(out_dir)
+    leaks = [reason for document in filtered for reason in sbom_publish.vulnerability_leaks(document)]
+    if leaks:
+        console.print("[red]--sbom: the filtered document is not publishable.[/] It still carries:")
+        for reason in leaks:
+            console.print(f"  {reason}")
+        console.print("Do NOT publish it. This is a filter defect or a document shape it did not anticipate.")
+        return
+
+    for document in filtered:
+        console.print(f"SBOM (publishable): {document}")
 
 
 @dataclass(frozen=True)
@@ -497,6 +593,10 @@ class _BuildCtx:
     # unlike ``feed`` above: what the report run needs is the kas context, and
     # that does not exist until the build path has built one.
     cve: bool = False
+    # The resolved --sbom request, or None. An object rather than a bool because
+    # its prerequisite is checked before the build, so the check has already run
+    # by the time this is assembled.
+    sbom: _SbomRequest | None = None
 
 
 def _run_byo_build(
@@ -537,6 +637,7 @@ def _run_byo_build(
         # The same overlays this build ran with, not the context's own field -
         # see _CveRequest.
         cve=_CveRequest(kas_ctx=kas_ctx, extra_overlays=ctx.extra_overlays) if ctx.cve else None,
+        sbom=ctx.sbom,
     )
 
 
@@ -859,6 +960,16 @@ def build(
             "unpatched CVEs. Needs kas/feature/cve-check.yml stacked onto the build; skips with a "
             "note when the build carries no cve-check results. Neither a failed build nor --dry-run "
             "produces a report.",
+        ),
+    ] = False,
+    sbom: Annotated[
+        bool,
+        typer.Option(
+            "--sbom",
+            help="On build success, filter the per-image SPDX document into a publishable inventory "
+            "under deploy/avocado-sbom. Needs kas/feature/sbom.yml stacked onto the build and a "
+            "meta-avocado checkout carrying the publication filter; refuses up front when the filter "
+            "is absent, because the unfiltered document carries vulnerability data.",
         ),
     ] = False,
 ) -> None:
@@ -1196,6 +1307,7 @@ def build(
         target=target,
         feed=_resolve_feed_request(cfg, feed=feed, dry_run=dry_run, release=feed_release, channel=feed_channel),
         cve=_resolve_cve_request(cve=cve, dry_run=dry_run),
+        sbom=_resolve_sbom_request(cfg, sbom=sbom, dry_run=dry_run),
     )
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
