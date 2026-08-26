@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-08-26
+
+### Added
+- Added `--feed`, `--feed-release`, and `--feed-channel` options to `bakar build` to automatically stage RPM artifacts into the package feed and update the repository index upon successful builds.
+
+### Fixed
+- Fixed remote dispatch (`bakar build --on`) deleting remote package feed directories and symlinks during workspace synchronization.
+
 ## [0.27.1] - 2026-08-23
 
 ### Fixed
@@ -674,7 +682,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.27.1...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/jetm/bakar/compare/v0.27.1...v0.28.0
 [0.27.1]: https://github.com/jetm/bakar/compare/v0.27.0...v0.27.1
 [0.27.0]: https://github.com/jetm/bakar/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/jetm/bakar/compare/v0.25.0...v0.26.0
