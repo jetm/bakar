@@ -117,6 +117,7 @@ def sync_then_index(
     *,
     release: str = feed.DEFAULT_RELEASE,
     channel: str = feed.DEFAULT_CHANNEL,
+    sboms: list[Path] | None = None,
 ) -> dict[str, object]:
     """Stage a finished build, render what it declares, then rewrite the index.
 
@@ -140,6 +141,7 @@ def sync_then_index(
         scripts=feed.meta_avocado_scripts(kas_yaml),
         release=release,
         channel=channel,
+        sboms=sboms,
     )
     result["index"] = feed_index.write_targets_index(Path(str(result["channel_root"])))
     return result

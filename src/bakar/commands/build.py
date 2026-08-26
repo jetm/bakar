@@ -157,11 +157,13 @@ def _finish_build(
     # Also before the feed sync, and for a sharper reason than the CVE report's:
     # this produces the document a later publish step puts INTO the feed, so it
     # has to exist and be checked before anything publishes.
-    if sbom is not None:
-        _filter_image_sbom(cfg, sbom)
+    filtered_sboms = _filter_image_sbom(cfg, sbom) if sbom is not None else []
 
     if feed is not None:
-        _sync_feed(cfg, feed)
+        # Only what THIS invocation filtered and checked reaches the feed. Reading
+        # the output directory instead would publish whatever a previous run left
+        # there, including a document produced before the filter was updated.
+        _sync_feed(cfg, feed, sboms=filtered_sboms)
 
 
 # The recipe in meta-avocado-sbom. EXCLUDE_FROM_WORLD, so naming it explicitly
@@ -291,7 +293,7 @@ def _resolve_sbom_request(cfg, *, sbom: bool, dry_run: bool) -> _SbomRequest | N
     return _SbomRequest(workspace=cfg.workspace)
 
 
-def _filter_image_sbom(cfg, request: _SbomRequest) -> None:
+def _filter_image_sbom(cfg, request: _SbomRequest) -> list[Path]:
     """Filter the build's per-image SPDX into a publishable inventory.
 
     Does not fail the build on any outcome, matching ``_sync_feed`` and
@@ -309,7 +311,7 @@ def _filter_image_sbom(cfg, request: _SbomRequest) -> None:
             f"[yellow]--sbom: no per-image SBOM under {images}[/]. A distro build only emits one when "
             "the image recipe's do_build is reached; check that avocado-distro depends on it."
         )
-        return
+        return []
 
     out_dir = cfg.resolved_tmpdir / "deploy" / "avocado-sbom"
     cmd, env = sbom_publish.filter_command(sbom_publish.sbom_lib_dir(request.workspace), images, out_dir)
@@ -317,14 +319,14 @@ def _filter_image_sbom(cfg, request: _SbomRequest) -> None:
         result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
     except OSError as exc:
         console.print(f"[yellow]build succeeded but the SBOM was not filtered:[/] {exc}")
-        return
+        return []
 
     if result.returncode != 0:
         console.print(
             f"[yellow]build succeeded but the SBOM filter exited {result.returncode}[/]: "
             f"{(result.stderr or '').strip().splitlines()[-1] if (result.stderr or '').strip() else 'no output'}"
         )
-        return
+        return []
 
     filtered = sbom_publish.find_image_sboms(out_dir)
     leaks = [reason for document in filtered for reason in sbom_publish.vulnerability_leaks(document)]
@@ -333,10 +335,11 @@ def _filter_image_sbom(cfg, request: _SbomRequest) -> None:
         for reason in leaks:
             console.print(f"  {reason}")
         console.print("Do NOT publish it. This is a filter defect or a document shape it did not anticipate.")
-        return
+        return []
 
     for document in filtered:
         console.print(f"SBOM (publishable): {document}")
+    return filtered
 
 
 @dataclass(frozen=True)
@@ -397,7 +400,7 @@ def _resolve_feed_request(
     return _FeedRequest(kas_yaml=cfg.kas_yaml, release=release, channel=channel)
 
 
-def _sync_feed(cfg, request: _FeedRequest) -> None:
+def _sync_feed(cfg, request: _FeedRequest, *, sboms: list[Path] | None = None) -> None:
     """Stage the finished build into the feed, then rewrite ``targets.json``.
 
     Failures here do not fail the build. The build itself succeeded and its
@@ -420,6 +423,7 @@ def _sync_feed(cfg, request: _FeedRequest) -> None:
             request.kas_yaml,
             release=request.release,
             channel=request.channel,
+            sboms=sboms,
         )
     except Exception as exc:  # noqa: BLE001 - see the docstring: the contract is absolute
         console.print(f"[yellow]build succeeded but the feed was not updated:[/] {feed_ops.describe_failure(exc)}")

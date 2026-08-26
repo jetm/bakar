@@ -41,6 +41,7 @@ import subprocess
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from bakar import feed_sbom
 from bakar.bsp_detect import detect_kas_workspace
 from bakar.config import FEED_STAGE_SUFFIX
 
@@ -315,6 +316,7 @@ def sync(  # noqa: PLR0913 - deploy_dir and scripts stay explicit so consolidati
     release: str = DEFAULT_RELEASE,
     channel: str = DEFAULT_CHANNEL,
     snapshot: str | None = None,
+    sboms: list[Path] | None = None,
 ) -> dict[str, object]:
     """Stage a build and render every repository it declares, head and snapshot.
 
@@ -337,6 +339,7 @@ def sync(  # noqa: PLR0913 - deploy_dir and scripts stay explicit so consolidati
         release=release,
         channel=channel,
         snapshot=snapshot,
+        sboms=sboms,
     )
 
 
@@ -349,6 +352,7 @@ def sync_paths(  # noqa: PLR0913 - the path pair replaces the config a discovere
     release: str = DEFAULT_RELEASE,
     channel: str = DEFAULT_CHANNEL,
     snapshot: str | None = None,
+    sboms: list[Path] | None = None,
 ) -> dict[str, object]:
     """Sync against explicit roots rather than a resolved build configuration.
 
@@ -393,6 +397,13 @@ def sync_paths(  # noqa: PLR0913 - the path pair replaces the config a discovere
         )
         rendered.append(root)
 
+    # BEFORE the pointer, for the same reason every repository is rendered before
+    # it. A consumer reads the pointer, derives snapshots/<id>/sbom/ from the id
+    # it names, and fetches. Publishing afterwards leaves a window in which that
+    # derived path 404s - and unlike a missing repository, nothing else in a sync
+    # would report it, because the packages resolve perfectly.
+    published_sboms = feed_sbom.publish_sbom(channel_dir, snap, list(sboms or []))
+
     machines = pointer_machines(rendered)
     pointers = write_latest_pointer(channel_dir, snap, machines=machines)
     return {
@@ -403,4 +414,5 @@ def sync_paths(  # noqa: PLR0913 - the path pair replaces the config a discovere
         "unstaged": unstaged,
         "machines": machines,
         "pointers": pointers,
+        "sboms": published_sboms,
     }
