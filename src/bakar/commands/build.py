@@ -15,8 +15,8 @@ from rich.console import Console
 from rich.table import Table
 
 import bakar.commands._app as _state
+from bakar import cve_report, feed_ops, feed_preflight
 from bakar import feed as feed_mod
-from bakar import feed_ops, feed_preflight
 from bakar.bsp_detect import machine_from_yaml
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
@@ -98,7 +98,14 @@ def _open_run_logger(cfg) -> RunLogger:
     return RunLogger(runs_dir=cfg.runs_dir, render_console=_plain_render_console())
 
 
-def _finish_build(cfg, log, rc: int, machine: str, feed: _FeedRequest | None = None) -> None:
+def _finish_build(
+    cfg,
+    log,
+    rc: int,
+    machine: str,
+    feed: _FeedRequest | None = None,
+    cve: _CveRequest | None = None,
+) -> None:
     """Shared build tail: rc check + triage hint, sstate summary, success line, artifacts path.
 
     ``machine`` names the deploy/images subdir - ``cfg.machine`` for byo/manifest
@@ -110,6 +117,13 @@ def _finish_build(cfg, log, rc: int, machine: str, feed: _FeedRequest | None = N
     holds for every call site including ones added later, rather than depending
     on each remembering to guard. A partial deploy staged into the feed would
     render a repository the index then advertises as installable.
+
+    ``cve`` is the context the build just ran with, present only when ``--cve``
+    was passed. The report is produced by a SECOND bitbake invocation derived
+    from it, for the same reason it sits here rather than in the image graph:
+    ``avocado-cve-report`` joins cve-check results across the whole tree, so a
+    run scheduled alongside the ``do_cve_check`` tasks it reads would summarise a
+    scan still in progress.
 
     A dry run is NOT such a success and the callers filter it out before this
     point, because ``run_build`` returns 0 after printing its preview - so rc
@@ -129,8 +143,104 @@ def _finish_build(cfg, log, rc: int, machine: str, feed: _FeedRequest | None = N
     console.print(f"[bold green]build succeeded[/] in {fmt_duration(time.monotonic() - log.start_monotonic)}")
     console.print(f"artifacts: {deploy}")
 
+    # Before the feed sync: this reads the build tree and writes one JSON beside
+    # the images, while the sync publishes that tree outward. Keeping every
+    # build-tree step ahead of the publish keeps the order readable, and the two
+    # do not otherwise interact - the report recipe inherits ``nopackages`` and
+    # deletes its install and sysroot tasks, so it adds no RPM the feed could
+    # pick up.
+    if cve is not None:
+        _generate_cve_report(cfg, cve, machine)
+
     if feed is not None:
         _sync_feed(cfg, feed)
+
+
+# The recipe in meta-avocado-sbom. EXCLUDE_FROM_WORLD, so naming it explicitly
+# is the only way to reach it.
+_CVE_REPORT_TARGET = "avocado-cve-report"
+
+
+@dataclass(frozen=True)
+class _CveRequest:
+    """What ``--cve`` needs to run: the build's kas context and its overlays.
+
+    The overlays are carried separately because ``run_build`` layers them from
+    its keyword argument and never reads ``KasBuildContext.extra_overlays``. A
+    report run derived from the context alone would therefore build against the
+    bare YAML - and ``kas/feature/cve-check.yml``, which is what puts
+    ``meta-avocado-sbom`` in bblayers, is normally stacked with colon syntax and
+    arrives as exactly one of these overlays. Dropping them makes
+    ``avocado-cve-report`` an unknown target on the one invocation the flag is
+    for.
+    """
+
+    kas_ctx: KasBuildContext
+    extra_overlays: list[Path]
+
+
+def _resolve_cve_request(*, cve: bool, dry_run: bool) -> bool:
+    """Report whether ``--cve`` should run after this build.
+
+    The dry-run filter lives here rather than at the rc check for the same
+    reason ``--feed``'s does: ``run_build`` prints its preview and returns 0, so
+    rc reads a dry run as a success. Producing a report then would summarise
+    whatever a PREVIOUS build left in ``CVE_CHECK_DIR`` - a valid-looking
+    document describing a package set this invocation never wrote, from a
+    command documented to exit before invoking kas.
+
+    Unlike ``--feed`` there is no prerequisite probe to run up front. The
+    prerequisite is cve-check data, which does not exist until the build has
+    run, and the cost of finding out late is bounded: the check is a ``glob``
+    and the build's artifacts are already on disk either way. ``--feed``'s
+    pre-build gate exists because a missing ``createrepo_c`` costs a whole
+    build's wall clock to learn, which does not apply here.
+    """
+    if not cve:
+        return False
+    if dry_run:
+        console.print("[yellow]--dry-run: skipping --cve[/] (no build ran, so there is nothing to report on).")
+        return False
+    return True
+
+
+def _generate_cve_report(cfg, request: _CveRequest, machine: str) -> None:
+    """Run ``avocado-cve-report`` against the finished build.
+
+    Skips rather than fails when the build carries no cve-check results. That is
+    the ordinary shape of a build without ``kas/feature/cve-check.yml`` stacked,
+    and the recipe would answer it with a ``bb.fatal`` after a full kas startup -
+    a minute spent learning what a ``glob`` already established.
+
+    A failure in the run itself does not fail the build, matching ``_sync_feed``:
+    the build succeeded and its artifacts are on disk, and turning a post-step
+    failure into a non-zero exit discards that over something the user can
+    repeat with the one command named in the message.
+    """
+    cve_dir = cve_report.cve_data_dir(cfg, machine)
+    if not cve_report.has_cve_data(cve_dir):
+        console.print(
+            f"[yellow]--cve: no cve-check results in {cve_dir}[/], so there is nothing to report on. "
+            "Stack `kas/feature/cve-check.yml` onto the build and run it again."
+        )
+        return
+
+    # dry_run is forced off rather than inherited: the caller already filtered a
+    # dry run out, so a True here could only be stale - and would print a preview
+    # while this function reported a report as produced.
+    rc = step_kas.run_build(
+        replace(request.kas_ctx, target=_CVE_REPORT_TARGET, dry_run=False),
+        extra_overlays=request.extra_overlays,
+    )
+    if rc != 0:
+        console.print(
+            f"[yellow]build succeeded but the CVE report was not produced[/] "
+            f"({_CVE_REPORT_TARGET} exited {rc}). "
+            f"Re-run `bakar build {cfg.kas_yaml} -t {_CVE_REPORT_TARGET}` to see why."
+        )
+        return
+
+    console.print(f"CVE report: {cve_report.report_path(cfg, machine)}")
 
 
 @dataclass(frozen=True)
@@ -383,6 +493,10 @@ class _BuildCtx:
     # always the positional argument - a preset supplies one too - so the
     # resolution has to happen once, where both sources are in scope.
     feed: _FeedRequest | None = None
+    # Whether --cve survived resolution. A bool rather than a resolved object,
+    # unlike ``feed`` above: what the report run needs is the kas context, and
+    # that does not exist until the build path has built one.
+    cve: bool = False
 
 
 def _run_byo_build(
@@ -414,7 +528,16 @@ def _run_byo_build(
         extra_overlays=ctx.extra_overlays,
         show_layers=ctx.effective_show_layers and not ctx.dry_run,
     )
-    _finish_build(cfg, log, rc, cfg.machine, feed=ctx.feed)
+    _finish_build(
+        cfg,
+        log,
+        rc,
+        cfg.machine,
+        feed=ctx.feed,
+        # The same overlays this build ran with, not the context's own field -
+        # see _CveRequest.
+        cve=_CveRequest(kas_ctx=kas_ctx, extra_overlays=ctx.extra_overlays) if ctx.cve else None,
+    )
 
 
 def _run_manifest_build(
@@ -728,6 +851,16 @@ def build(
         str,
         typer.Option("--feed-channel", help="Feed channel directory for --feed (see `bakar feed sync`)."),
     ] = feed_mod.DEFAULT_CHANNEL,
+    cve: Annotated[
+        bool,
+        typer.Option(
+            "--cve",
+            help="On build success, run avocado-cve-report to correlate the runtime packages with "
+            "unpatched CVEs. Needs kas/feature/cve-check.yml stacked onto the build; skips with a "
+            "note when the build carries no cve-check results. Neither a failed build nor --dry-run "
+            "produces a report.",
+        ),
+    ] = False,
 ) -> None:
     """Run the build pipeline idempotently.
 
@@ -863,6 +996,21 @@ def build(
             console.print(
                 "[red]--feed cannot be combined with a multi-release preset[/]: each release would need its own "
                 "sync. Build the releases, then run `bakar feed sync` per release."
+            )
+            raise typer.Exit(code=2)
+
+    # Same placement argument as --feed above, and the same byo-only reach: the
+    # report run is derived from the kas context, which the qcom path never
+    # builds and the multi-release fan-out builds once per release. Refusing
+    # beats reporting success over a report that was never produced.
+    if cve:
+        if kas_yaml is None:
+            console.print("[red]--cve needs a kas YAML[/]: it names the build the report describes.")
+            raise typer.Exit(code=2)
+        if active_preset is not None and _is_multi_release(active_preset):
+            console.print(
+                "[red]--cve cannot be combined with a multi-release preset[/]: each release produces its own "
+                "report. Build the releases, then run `bakar build <yaml> -t avocado-cve-report` per release."
             )
             raise typer.Exit(code=2)
     # Multi-release fan-out: when a preset defines more than one release,
@@ -1047,6 +1195,7 @@ def build(
         skip_sync=skip_sync,
         target=target,
         feed=_resolve_feed_request(cfg, feed=feed, dry_run=dry_run, release=feed_release, channel=feed_channel),
+        cve=_resolve_cve_request(cve=cve, dry_run=dry_run),
     )
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
