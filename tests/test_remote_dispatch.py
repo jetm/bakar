@@ -8,11 +8,13 @@ later task; nothing here touches a live host.
 
 from __future__ import annotations
 
+import inspect
 import shlex
 from pathlib import Path
 
 import pytest
 
+from bakar import observability
 from bakar.steps.remote_dispatch import (
     RSYNC_EXCLUDES,
     assert_safe_workspace,
@@ -246,7 +248,30 @@ def test_remote_script_emits_dispatch_start_marker() -> None:
     # fences run-id discovery against a stale previous run.
     script = build_remote_script(["build"], Path("/tmp/ws"), {}, sccache_off=True)
     lines = script.splitlines()
-    assert lines[1] == 'echo "BAKAR_DISPATCH_START=$(date -u +%Y%m%d-%H%M%S)"'
+    assert lines[1] == 'echo "BAKAR_DISPATCH_START=$(date +%Y%m%d-%H%M%S)"'
+
+
+def test_dispatch_start_marker_uses_the_same_clock_as_run_ids() -> None:
+    # The marker is string-compared against a run DIRECTORY NAME, and those are
+    # named by RunLog.run_id from `datetime.now()` - the remote's LOCAL clock,
+    # not UTC. So the marker has to read the same clock or the comparison spans
+    # two of them.
+    #
+    # It used to say `date -u`. West of UTC that makes every run dir the remote
+    # just created sort BELOW the marker, so a perfectly good build is discarded
+    # as stale and reported as "no remote run dir was created - the build failed
+    # before starting" while it is still running. Observed at UTC-6: run dir
+    # 20260827-081347 against marker 20260827-141347.
+    #
+    # East of UTC the same bug fails the other way and is quieter: a genuinely
+    # stale run dir sorts ABOVE the marker and gets surfaced as this build's.
+    script = build_remote_script(["build"], Path("/tmp/ws"), {}, sccache_off=True)
+    assert "date -u" not in script
+    assert "$(date +%Y%m%d-%H%M%S)" in script
+
+    # Pin the other half of the invariant: if run ids ever move to UTC, this
+    # test should fail rather than let the two drift apart again.
+    assert "datetime.now()" in inspect.getsource(observability.RunLogger)
 
 
 # ---------------------------------------------------------------------------

@@ -163,9 +163,19 @@ def build_remote_script(remote_argv: list[str], cwd: Path, env_vars: dict[str, s
     exec_line = "exec " + " ".join([*env_tokens, "bakar", shlex.join(remote_argv)])
     # BAKAR_DISPATCH_START fences run-id discovery: a discovered run dir older
     # than this remote-clock timestamp predates the dispatch and is discarded.
+    #
+    # LOCAL time, deliberately - `date`, not `date -u`. The marker is only ever
+    # string-compared against a run DIRECTORY NAME, and those come from
+    # RunLog.run_id, which formats `datetime.now()` - the remote's local clock.
+    # Reading UTC here compared two different clocks: at UTC-6 every run dir the
+    # remote had just created sorted below the marker, so a running build was
+    # discarded as stale and reported as "no remote run dir was created - the
+    # build failed before starting". East of UTC it fails the other way and more
+    # quietly, surfacing a genuinely stale run as this build's.
+    #
     # `|| exit 1`: if the replicated cwd is missing on the remote, fail loudly
     # instead of silently running the build in $HOME (the wrong directory).
-    return f'cd {shlex.quote(str(cwd))} || exit 1\necho "BAKAR_DISPATCH_START=$(date -u +%Y%m%d-%H%M%S)"\n{exec_line}'
+    return f'cd {shlex.quote(str(cwd))} || exit 1\necho "BAKAR_DISPATCH_START=$(date +%Y%m%d-%H%M%S)"\n{exec_line}'
 
 
 def assert_safe_workspace(ws_root: Path) -> None:
