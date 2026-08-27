@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-08-27
+
+### Fixed
+
+- Fixed `bakar build` rejecting an entry kas YAML that lives in a repository beside `meta-avocado` rather than inside it. kas refuses to concatenate config files across repositories, so a config in another repo has to include the `meta-avocado` one and become the entry point; that shape previously failed with "kas YAML ... is not inside a meta-avocado repository".
+- Fixed the build directory for such an entry YAML landing inside its own repository instead of a sibling `build-<stem>` directory.
+- Fixed `MACHINE` going unresolved for a config reached through a `{repo, file}` include, which sent artifacts and the CVE report to `deploy/images/generic`.
+
 ## [0.29.0] - 2026-08-27
 
 ### Added
