@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-08-27
+
+### Added
+
+- Added `--cve` flag to `bakar build` to generate a CVE report correlating runtime packages with unpatched vulnerabilities upon build completion.
+- Added `--sbom` flag to `bakar build` to filter per-image SPDX documents into publishable inventories under `deploy/avocado-sbom`.
+- Added automatic publication of filtered SBOM inventories into package feed snapshots when combining `--sbom` with `--feed`.
+
 ## [0.28.0] - 2026-08-26
 
 ### Added
@@ -682,7 +690,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.29.0...HEAD
+[0.29.0]: https://github.com/jetm/bakar/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/jetm/bakar/compare/v0.27.1...v0.28.0
 [0.27.1]: https://github.com/jetm/bakar/compare/v0.27.0...v0.27.1
 [0.27.0]: https://github.com/jetm/bakar/compare/v0.26.0...v0.27.0
