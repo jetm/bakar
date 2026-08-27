@@ -189,6 +189,44 @@ def test_write_meta_avocado_wrapper_returns_bsp_root_wrapper_path(tmp_path: Path
     assert include["file"] == "kas/machine/qemux86-64.yml"
 
 
+def test_write_meta_avocado_wrapper_names_the_repo_the_yaml_lives_in(tmp_path: Path) -> None:
+    """An entry YAML in a repo beside meta-avocado is included from *that* repo.
+
+    An entitled build starts from a private repo that includes the public
+    meta-avocado config across repos, because kas refuses to concatenate config
+    files belonging to two different repositories. The wrapper has to name the
+    repo the entry file actually lives in; naming meta-avocado would point kas
+    at a file that is not there.
+    """
+    meta = tmp_path / "meta-avocado"
+    (meta / "kas").mkdir(parents=True)
+    private = tmp_path / "meta-avocado-cve"
+    private.mkdir()
+    entry = private / "qemuarm64-sbom-cve.yml"
+    entry.write_text("header:\n  version: 16\n", encoding="utf-8")
+    cfg = BuildConfig(
+        workspace=tmp_path,
+        bsp_family="generic",  # type: ignore[arg-type]
+        machine="generic",
+        distro="generic",
+        image="generic",
+        manifest="",
+        repo_url="",
+        repo_branch="",
+        kas_container_image="jetm/kas-build-env:latest",
+        kas_yaml_override=entry,
+    )
+    cfg.bsp_root.mkdir(parents=True, exist_ok=True)
+
+    wrapper = _write_meta_avocado_wrapper(cfg, entry)
+
+    parsed = yaml.safe_load(wrapper.read_text(encoding="utf-8"))
+    include = parsed["header"]["includes"][0]
+    assert include["repo"] == "meta-avocado-cve"
+    assert include["file"] == "qemuarm64-sbom-cve.yml"
+    assert parsed["repos"]["meta-avocado-cve"]["path"] == "meta-avocado-cve"
+
+
 def test_write_meta_avocado_wrapper_raises_outside_meta_avocado(tmp_path: Path) -> None:
     """A YAML outside any ``meta-avocado`` parent triggers ``RuntimeError``."""
     cfg = _make_nxp_cfg(tmp_path)

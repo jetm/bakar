@@ -172,6 +172,62 @@ def test_materialize_overlay_replaces_existing_symlink(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_bsp_root_is_a_sibling_build_dir_for_an_entry_yaml_beside_meta_avocado(
+    tmp_path: Path,
+) -> None:
+    """A source entry YAML in a repo beside meta-avocado gets its own build dir.
+
+    Only the *generated* build YAML sits in the directory kas should run from.
+    A source YAML never does, wherever its repo is - putting the build tree
+    inside that repo would leave tmp/ and the deploy dirs sitting in someone's
+    checkout.
+    """
+    (tmp_path / "meta-avocado" / "kas").mkdir(parents=True)
+    private = tmp_path / "meta-avocado-cve"
+    private.mkdir()
+    entry = private / "qemuarm64-sbom-cve.yml"
+    entry.write_text("header:\n  version: 16\n")
+
+    cfg = BuildConfig(
+        workspace=tmp_path,
+        bsp_family="generic",
+        machine="generic",
+        distro="generic",
+        image="generic",
+        manifest="",
+        repo_url="",
+        repo_branch="",
+        kas_container_image="kasproject/kas:latest",
+        kas_yaml_override=entry,
+    )
+
+    assert cfg.bsp_root == tmp_path / "build-qemuarm64-sbom-cve"
+
+
+def test_bsp_root_is_its_own_dir_for_a_generated_build_yaml(tmp_path: Path) -> None:
+    """The generated build YAML already sits in its build dir; keep it there."""
+    (tmp_path / "meta-avocado" / "kas").mkdir(parents=True)
+    build_dir = tmp_path / "build-qemuarm64-sbom-cve"
+    build_dir.mkdir()
+    generated = build_dir / "avocado-bakar.yml"
+    generated.write_text("header:\n  version: 16\n")
+
+    cfg = BuildConfig(
+        workspace=tmp_path,
+        bsp_family="generic",
+        machine="generic",
+        distro="generic",
+        image="generic",
+        manifest="",
+        repo_url="",
+        repo_branch="",
+        kas_container_image="kasproject/kas:latest",
+        kas_yaml_override=generated,
+    )
+
+    assert cfg.bsp_root == build_dir
+
+
 def test_generic_bsp_root_is_yaml_parent(tmp_path: Path) -> None:
     """Generic mode falls back to the YAML's parent dir as bsp_root."""
     pilots = tmp_path / "pilots" / "0005-hardening"

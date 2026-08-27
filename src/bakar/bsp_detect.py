@@ -187,12 +187,43 @@ def machine_from_yaml(yaml_path: Path, _depth: int = 0) -> str | None:
     if isinstance(includes, list) and includes and _depth < _MAX_INCLUDE_DEPTH:
         resolved: str | None = None
         for inc in includes:
-            if isinstance(inc, str):
-                hit = machine_from_yaml(yaml_path.parent / inc, _depth=_depth + 1)
-                if hit:
-                    resolved = hit
+            target = _include_target(inc, yaml_path, data)
+            if target is None:
+                continue
+            hit = machine_from_yaml(target, _depth=_depth + 1)
+            if hit:
+                resolved = hit
         return resolved
     return None
+
+
+def _include_target(inc: object, yaml_path: Path, data: dict) -> Path | None:
+    """Resolve one ``header.includes`` entry to a path, or None to skip it.
+
+    A string include is relative to the including file. A ``{repo, file}``
+    include names another repository, which is the only form kas offers for
+    reaching a config in a different repo - it refuses to concatenate config
+    files across repositories, so an entry YAML that pulls in a config from
+    elsewhere has to use this. The repo's location comes from the same file's
+    ``repos:`` section, whose ``path`` is relative to the workspace root.
+
+    Returns None for a form that cannot be placed rather than guessing, so the
+    caller falls back to the family default instead of reporting a machine
+    derived from a directory that does not exist.
+    """
+    if isinstance(inc, str):
+        return yaml_path.parent / inc
+    if not isinstance(inc, dict):
+        return None
+    repo_name, file_rel = inc.get("repo"), inc.get("file")
+    if not isinstance(repo_name, str) or not isinstance(file_rel, str):
+        return None
+    repos = data.get("repos")
+    entry = repos.get(repo_name) if isinstance(repos, dict) else None
+    repo_rel = entry.get("path") if isinstance(entry, dict) else None
+    if not isinstance(repo_rel, str):
+        return None
+    return detect_kas_workspace(yaml_path) / repo_rel / file_rel
 
 
 def is_bbsetup_workspace(path: Path) -> bool:

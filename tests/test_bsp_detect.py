@@ -355,6 +355,52 @@ def test_machine_from_yaml_missing_file_returns_none(tmp_path: Path) -> None:
     assert machine_from_yaml(tmp_path / "nope.yml") is None
 
 
+def test_machine_from_yaml_follows_a_cross_repo_include(tmp_path: Path) -> None:
+    """A ``{repo, file}`` include carries the machine just as a string one does.
+
+    An entry YAML in one repo can only reach a config in another through this
+    form - kas refuses to concatenate across repositories - so skipping it
+    leaves the machine unresolved and the deploy paths pointing at
+    ``images/generic``, a directory no build writes.
+    """
+    meta = tmp_path / "meta-avocado"
+    (meta / "kas").mkdir(parents=True)
+    (meta / "kas" / "machine.yml").write_text("machine: avocado-qemuarm64\n", encoding="utf-8")
+    private = tmp_path / "meta-avocado-cve"
+    private.mkdir()
+    entry = private / "entry.yml"
+    entry.write_text(
+        "header:\n"
+        "  includes:\n"
+        "    - repo: meta-avocado\n"
+        "      file: kas/machine.yml\n"
+        "repos:\n"
+        "  meta-avocado:\n"
+        "    path: meta-avocado\n",
+        encoding="utf-8",
+    )
+
+    assert machine_from_yaml(entry) == "avocado-qemuarm64"
+
+
+def test_machine_from_yaml_ignores_a_cross_repo_include_it_cannot_place(
+    tmp_path: Path,
+) -> None:
+    """An unresolvable ``{repo, file}`` include is skipped, not guessed at.
+
+    Returning None lets the caller fall back to the family default, which is
+    the documented contract; inventing a path would point the artifacts at a
+    directory that does not exist and report it as the machine.
+    """
+    entry = tmp_path / "entry.yml"
+    entry.write_text(
+        "header:\n  includes:\n    - repo: nowhere\n      file: kas/machine.yml\n",
+        encoding="utf-8",
+    )
+
+    assert machine_from_yaml(entry) is None
+
+
 def test_machine_from_yaml_unparseable_returns_none(tmp_path: Path) -> None:
     p = _write(tmp_path, "machine: [unterminated\n")
     assert machine_from_yaml(p) is None

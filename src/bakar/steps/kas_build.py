@@ -71,7 +71,7 @@ from bakar.cache_render import (
     render_cluster,
     render_sccache_cache,
 )
-from bakar.config import _overlay_dir
+from bakar.config import GENERATED_BUILD_YAML, _overlay_dir
 from bakar.diagnostics import (
     BUILDTOOLS_DIR_ENV,
     detect_buildtools,
@@ -552,32 +552,54 @@ def _setup_meta_avocado_build_dir(cfg: BuildConfig) -> None:
 def _write_meta_avocado_wrapper(cfg: BuildConfig, kas_yaml: Path) -> Path:
     """Write a wrapper YAML that includes the machine YAML via repo reference.
 
-    The wrapper is the single top-level file fed to ``kas dump``. It
-    declares meta-avocado as a local repo so kas can resolve the
-    ``repo: meta-avocado`` include. The overlay is passed separately as
+    The wrapper is the single top-level file fed to ``kas dump``. It declares
+    the entry YAML's own repo as a local repo so kas can resolve the
+    ``repo: <name>`` include. The overlay is passed separately as
     the second colon-joined argument to ``kas dump`` (both wrapper and
     overlay live in ``bsp_root``, which shares the same git root, so
     the same-repo check passes).
 
+    The entry YAML is usually inside meta-avocado itself, but it need not be: a
+    build can start from a repo beside it that pulls the public config in with a
+    cross-repo ``include``. That indirection is not a preference - kas rejects
+    concatenating config files from two different repositories outright, so a
+    config living in another repo cannot be appended to a meta-avocado one and
+    has to be the entry point instead.
+
     Returns the wrapper path (``bsp_root/avocado-wrapper.yml``).
     """
     abs_yaml = kas_yaml.resolve()
+    repo_dir: Path | None = None
     for parent in [abs_yaml, *abs_yaml.parents]:
         if parent.name == "meta-avocado":
-            yaml_in_meta = abs_yaml.relative_to(parent)
+            repo_dir = parent
             break
-    else:
+    if repo_dir is None:
+        # Look for the entry YAML in a repo checked out beside meta-avocado.
+        # Anchored on meta-avocado's own parent rather than on cfg.workspace,
+        # because the repos are not always directly under it - a manifest
+        # checkout nests them one level down, in sources/.
+        meta = cfg.workspace / "meta-avocado"
+        if meta.is_dir():
+            siblings = meta.resolve().parent
+            for parent in abs_yaml.parents:
+                if parent.parent == siblings:
+                    repo_dir = parent
+                    break
+    if repo_dir is None:
         raise RuntimeError(f"kas YAML {kas_yaml} is not inside a meta-avocado repository")
+    repo_name = repo_dir.name
+    yaml_in_repo = abs_yaml.relative_to(repo_dir)
     wrapper = cfg.bsp_root / "avocado-wrapper.yml"
     wrapper.write_text(
         "header:\n"
         "  version: 16\n"
         "  includes:\n"
-        "    - repo: meta-avocado\n"
-        f"      file: {yaml_in_meta.as_posix()}\n"
+        f"    - repo: {repo_name}\n"
+        f"      file: {yaml_in_repo.as_posix()}\n"
         "repos:\n"
-        "  meta-avocado:\n"
-        "    path: meta-avocado\n",
+        f"  {repo_name}:\n"
+        f"    path: {repo_name}\n",
         encoding="utf-8",
     )
     return wrapper
@@ -638,7 +660,7 @@ def _run_kas_dump(
         text=True,
         check=False,
     )
-    dump = cfg.bsp_root / "avocado-bakar.yml"
+    dump = cfg.bsp_root / GENERATED_BUILD_YAML
     if result.returncode == 0:
         dump.write_text(result.stdout, encoding="utf-8")
         _strip_branch_from_dump(dump)

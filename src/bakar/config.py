@@ -46,6 +46,12 @@ def _overlay_dir() -> Path:
 # ``effective_feed_dir`` builds the default feed path from the first, and remote
 # dispatch keeps both out of an ``rsync --delete``. A rename that updated only
 # one of those would silently start deleting remote feeds again.
+# The flattened config bakar writes into the build dir. Named here rather than
+# inline because bsp_root branches on it: it is the one kas YAML that already
+# sits in the directory kas should run from, which is what separates it from
+# every source YAML.
+GENERATED_BUILD_YAML = "avocado-bakar.yml"
+
 WORKSPACE_FEED_DIRNAME = "_feed"
 FEED_STAGE_SUFFIX = "-stage"
 WORKSPACE_FEED_STAGE_DIRNAME = f"{WORKSPACE_FEED_DIRNAME}{FEED_STAGE_SUFFIX}"
@@ -685,12 +691,16 @@ class BuildConfig:
         """
         if self.bsp_family == "generic" and self.kas_yaml_override is not None:
             if self.is_meta_avocado:
-                # Source YAMLs live deep inside meta-avocado/, so kas needs a
-                # sibling build dir. A generated build YAML already sits in its
-                # build dir, so its own parent is the bsp_root.
-                if "meta-avocado" in self.kas_yaml_override.resolve().parts:
-                    return self.workspace / f"build-{self.kas_yaml_override.stem}"
-                return self.kas_yaml_override.resolve().parent
+                # The generated build YAML is the one file that already sits in
+                # the directory kas should run from, so it keeps its own parent.
+                # Every other YAML is a source file and gets a sibling build dir
+                # - keyed on the generated name rather than on the path holding
+                # a "meta-avocado" component, because an entry YAML can live in
+                # a repo beside meta-avocado and must not turn that checkout
+                # into a build tree.
+                if self.kas_yaml_override.name == GENERATED_BUILD_YAML:
+                    return self.kas_yaml_override.resolve().parent
+                return self.workspace / f"build-{self.kas_yaml_override.stem}"
             return self.kas_yaml_override.parent
         if self.bsp_family == "bbsetup":
             return self.workspace
