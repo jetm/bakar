@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.2] - 2026-09-03
+
 ### Added
 
 - Added `bakar stop --on <host>` to stop a build dispatched with `bakar build --on <host>`. A detached build outlives the terminal that started it, so Ctrl-C there no longer reaches it; the new flag walks the same SIGINT-then-stop ladder the local stop does, and needs no workspace or run-id. It stops one build: a host that takes `--on` dispatches is a shared builder, so when several are running they are listed and nothing is signalled until you pass `--all`.
@@ -710,7 +712,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.29.2...HEAD
+[0.29.2]: https://github.com/jetm/bakar/compare/v0.29.0...v0.29.2
 [0.29.0]: https://github.com/jetm/bakar/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/jetm/bakar/compare/v0.27.1...v0.28.0
 [0.27.1]: https://github.com/jetm/bakar/compare/v0.27.0...v0.27.1
