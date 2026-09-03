@@ -1,5 +1,18 @@
 [lint]
-exclude = ["**/generated/**"]
+# Three markdown files here are symlinks OUT of the repository, into devtool:
+#   ARCHITECTURE.md         -> devtool/claude/architecture/bakar.md
+#   CLAUDE.md               -> devtool/generated/CLAUDE-bakar.md (generated)
+#   .claude/rules/python.md -> devtool/claude/rules/python.md (a shared rule)
+#
+# They pass today, which is exactly when to exclude them: a finding introduced
+# on devtool's side would block a commit here against a file this repo cannot
+# fix, and "fixing" it would mean editing another repository through a link.
+exclude = [
+  "**/generated/**",
+  "ARCHITECTURE.md",
+  "CLAUDE.md",
+  ".claude/rules/python.md",
+]
 rules = [
   "MD001",
   "MD003",
@@ -18,7 +31,6 @@ rules = [
   "MD027",
   "MD028",
   "MD029",
-  "MD030",
   "MD033",
   "MD034",
   "MD035",
@@ -30,8 +42,19 @@ rules = [
   "MD047",
 ]
 
-# MD002/MD005/MD006/MD007/MD010 dropped: mado bugs/false positives; MD010 has no code_blocks=false option
+# MD002/MD005/MD006/MD007/MD010/MD030 dropped: mado bugs/false positives.
+#   MD010 has no code_blocks=false option.
+#   MD030 fires on every two-digit ordered marker. A file whose whole content is
+#   "10. **Ten**" - one space after the marker - is reported, while the same item
+#   numbered "9." passes. Nothing here triggers it yet, which is the reason to
+#   drop it now: the finding arrives the first time a doc reaches a tenth
+#   numbered step, as a block with nothing to fix and no inline suppression.
 # MD013/MD022/MD031/MD032/MD036/MD041 dropped: intentional style (see markdown.md)
+#
+# MD009 stays enabled here, unlike in devtool and devspec. It was dropped there
+# for the trailing space in RFC 3676 "-- " signature delimiters inside
+# email-reply templates; this repo has no such templates, so the rule is doing
+# real work rather than misfiring.
 
 [lint.md024]
 allow-different-nesting = true
