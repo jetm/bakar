@@ -520,9 +520,19 @@ class FakeSubprocess:
         # Both the preflight probe and the stop script ride `ssh <host> bash -s`;
         # they are told apart by what is written to stdin, exactly as the remote
         # host would tell them apart.
+        # EVERY remote payload now rides `ssh <host> bash -s` stdin, so argv is
+        # identical for all of them and stdin is the only discriminator - which
+        # is exactly how the remote host tells them apart too. Order matters:
+        # the unit LISTING and the stop SCRIPT both contain "systemctl --user",
+        # and matching the stop branch first made a listing return no stdout,
+        # so a live dispatch reported "no detached bakar build is running".
         if argv[0] == "ssh" and argv[-1] == "-s":
+            if stdin_script and "list-units" in stdin_script:
+                return _Result(self.systemctl_rc, stdout=self.systemctl_stdout)
             if stdin_script and "systemctl --user" in stdin_script:
                 return _Result(self.stop_rc)
+            if stdin_script and stdin_script.lstrip().startswith("find "):
+                return _Result(0, stdout=self.find_stdout)
             return _Result(self.reachable_rc, stdout=self.remote_version, stderr=self.reachable_stderr)
         if argv[0] == "bakar" and "--version" in argv:
             return _Result(0, stdout=self.local_version)
@@ -534,10 +544,6 @@ class FakeSubprocess:
             return _Result(self.dry_rsync_rc, stdout=preview)
         if argv[0] == "rsync":
             return _Result(self.rsync_rc)
-        if argv[0] == "ssh" and "find" in argv[-1]:
-            return _Result(0, stdout=self.find_stdout)
-        if argv[0] == "ssh" and "systemctl" in argv[-1]:
-            return _Result(self.systemctl_rc, stdout=self.systemctl_stdout)
         return _Result(0)
 
     def Popen(self, argv, **kwargs) -> _FakeProc:  # noqa: N802
@@ -739,7 +745,7 @@ def test_dispatch_run_id_from_failure_stream(fake_sp: FakeSubprocess, capsys: py
     assert "20260716-120000" in out
     assert f"ssh {HOST} bakar triage 20260716-120000" in out
     # A failure must NOT trigger the newest-run-dir find discovery.
-    assert not any(kind == "run" and "find" in argv[-1] for kind, argv in fake_sp.calls)
+    assert not any((inp or "").lstrip().startswith("find ") for inp in fake_sp.run_inputs)
 
 
 def test_dispatch_run_id_from_success_discovery(fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]) -> None:
@@ -753,7 +759,7 @@ def test_dispatch_run_id_from_success_discovery(fake_sp: FakeSubprocess, capsys:
     assert "20260716-235959" in out
     assert f"ssh {HOST} bakar triage 20260716-235959" in out
     # Success path performs the discovery ssh(find).
-    assert any(kind == "run" and "find" in argv[-1] for kind, argv in fake_sp.calls)
+    assert any((inp or "").lstrip().startswith("find ") for inp in fake_sp.run_inputs)
 
 
 def test_confirm_failed_preview_aborts(fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]) -> None:
@@ -781,7 +787,7 @@ def test_dispatch_failure_without_triage_falls_back_to_discovery(
     out = _cap.out + _cap.err
     assert "20260716-333333" in out
     # Discovery ran because the stream did not yield the run-id.
-    assert any(kind == "run" and "find" in argv[-1] for kind, argv in fake_sp.calls)
+    assert any((inp or "").lstrip().startswith("find ") for inp in fake_sp.run_inputs)
 
 
 def test_dispatch_unsafe_workspace_aborts_cleanly(fake_sp: FakeSubprocess) -> None:
@@ -1412,7 +1418,7 @@ def test_stop_remote_dispatch_refuses_to_kill_more_than_one_build(
     assert "ddeeff.service" in out
     assert "--all" in out
     # Nothing was signalled: the only ssh call is the read-only listing.
-    assert [argv for argv in _run_call_argvs(fake_sp) if argv[-1] == "-s"] == []
+    assert not any("systemctl --user stop" in (inp or "") for inp in fake_sp.run_inputs)
 
 
 def test_stop_remote_dispatch_all_opts_into_stopping_every_build(fake_sp: FakeSubprocess) -> None:
@@ -1485,3 +1491,44 @@ def test_remote_only_dirs_missing_local_workspace_yields_empty(tmp_path: Path, m
     fake = _ListingSubprocess(0, "meta-avocado/\nopenembedded-core/\n")
     monkeypatch.setattr(rd, "subprocess", fake)
     assert rd._remote_only_dirs(missing, HOST) == []
+
+
+def test_every_ssh_invocation_delivers_its_payload_via_bash_s() -> None:
+    """No remote payload may ride as an ``ssh <host> <cmd>`` argument.
+
+    The remote login shell is fish, so a command string handed to ssh is
+    executed by fish rather than bash. Anything past a single simple command
+    then misbehaves silently: `_discover_newest_run_id`'s find - with `-o`,
+    `-prune`, `-printf` and a pipe - produced NO output under fish while
+    working under bash, so run-id discovery returned None and a build that had
+    just succeeded was announced as "no remote run dir was created - the build
+    failed before starting".
+
+    This walks the module AST rather than grepping for the sites that were
+    wrong when it was written, so it fails on a NEW call site too. An earlier
+    "drift detector" in this file only asserted that two hardcoded tokens
+    appeared in both places and could not actually detect drift; this one can.
+    """
+    import ast
+
+    from bakar.steps import remote_dispatch as rd
+
+    tree = ast.parse(Path(rd.__file__).read_text())
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if getattr(node.func, "attr", None) not in {"run", "Popen"}:
+            continue
+        if not node.args or not isinstance(node.args[0], ast.List):
+            continue
+        consts = [e.value for e in node.args[0].elts if isinstance(e, ast.Constant)]
+        if not consts or consts[0] != "ssh":
+            continue
+        if "bash" not in consts or "-s" not in consts:
+            offenders.append(ast.unparse(node.args[0]))
+
+    assert offenders == [], (
+        "ssh invocation(s) pass a command string to the remote LOGIN shell (fish) "
+        f"instead of delivering it to `bash -s` over stdin: {offenders}"
+    )

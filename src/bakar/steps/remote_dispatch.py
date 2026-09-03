@@ -476,6 +476,33 @@ def _local_bakar_version() -> str | None:
     return result.stdout.strip() or None
 
 
+def _ssh_bash_capture(host: str, script: str, *, batch_mode: bool = True) -> subprocess.CompletedProcess[str]:
+    """Run ``script`` on ``host`` through ``bash -s`` and capture its output.
+
+    Every remote payload in this module goes over stdin to ``bash -s`` rather
+    than as an ``ssh <host> '<cmd>'`` argument, for the reason the module
+    docstring gives: a command string is executed by the remote LOGIN shell,
+    which is fish on the builder this is written against.
+
+    That is not theoretical. ``_discover_newest_run_id``'s find - which uses
+    ``-o``, ``-prune``, ``-printf`` and a pipe - produced NO output under fish
+    while working under bash, so run-id discovery returned None and a build
+    that had just succeeded was announced as "no remote run dir was created -
+    the build failed before starting".
+
+    Payloads that fish happens to parse identically today (a bare ``ls``, a
+    bare ``systemctl``) are routed through here too, deliberately. Leaving them
+    on the login-shell path keeps a standing trap where adding one operator to
+    an existing command breaks it silently, and the breakage surfaces nowhere
+    near the edit.
+    """
+    argv = ["ssh"]
+    if batch_mode:
+        argv += ["-o", "BatchMode=yes"]
+    argv += [host, "bash", "-s"]
+    return subprocess.run(argv, input=script, capture_output=True, text=True, check=False)
+
+
 def _remote_child_dirs(host: str, ws_root: Path) -> list[str] | None:
     """List the immediate child directory names of ``ws_root`` on ``host``.
 
@@ -486,12 +513,7 @@ def _remote_child_dirs(host: str, ws_root: Path) -> list[str] | None:
     so the caller can fall back to no extra excludes.
     """
     cmd = f"ls -1p {shlex.quote(str(ws_root))}"
-    result = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", host, cmd],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = _ssh_bash_capture(host, cmd)
     if result.returncode != 0:
         return None
     return [ln[:-1] for ln in result.stdout.splitlines() if ln.endswith("/")]
@@ -805,7 +827,9 @@ def _discover_newest_run_id(host: str, ws_root: Path) -> str | None:
         "-type d -name .git -prune -o "
         "-type d -path '*/build/runs/20*' -prune -printf '%T@ %p\\n' | sort -rn | head -1"
     )
-    result = subprocess.run(["ssh", host, find_cmd], capture_output=True, text=True, check=False)
+    # No BatchMode here, preserving this helper's pre-existing ssh behaviour;
+    # only the SHELL the payload lands in changes.
+    result = _ssh_bash_capture(host, find_cmd, batch_mode=False)
     line = result.stdout.strip()
     if not line:
         return None
@@ -954,12 +978,7 @@ def _running_dispatch_units(host: str) -> list[str] | None:
     loop or a redirect must use the stdin form (see the module docstring).
     """
     cmd = "systemctl --user list-units --all --plain --no-legend 'bakar-dispatch-*.service'"
-    result = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", host, cmd],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = _ssh_bash_capture(host, cmd)
     if result.returncode != 0:
         console.print(f"[red]could not query {host}[/] for detached builds.")
         if result.stderr.strip():
