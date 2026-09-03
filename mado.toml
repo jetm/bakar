@@ -49,8 +49,19 @@ rules = [
 #   numbered "9." passes. Nothing here triggers it yet, which is the reason to
 #   drop it now: the finding arrives the first time a doc reaches a tenth
 #   numbered step, as a block with nothing to fix and no inline suppression.
+#   THIS ONE EXPIRES. Fixed upstream by akiomik/mado#363, merged 2026-08-05,
+#   after the 0.3.1 release we run - the fix exists and has simply not shipped.
+#   Re-enable MD030 on the first release past 0.3.1 rather than leaving it here
+#   to read as a permanent verdict on the rule.
 # MD013/MD022/MD031/MD032/MD036/MD041 dropped: intentional style (see markdown.md)
 #
+# MD038 stays ENABLED, with one known false positive (akiomik/mado#391): any
+# code span delimited by two or more backticks is reported even with no padding,
+# so a span that must CONTAIN a backtick cannot satisfy it. Write those as a
+# single span with no inner backticks. The rule is worth keeping regardless - it
+# catches spans split across a line break, which render the newline as a space
+# and corrupt quoted command output.
+
 # MD009 stays enabled here, unlike in devtool and devspec. It was dropped there
 # for the trailing space in RFC 3676 "-- " signature delimiters inside
 # email-reply templates; this repo has no such templates, so the rule is doing
