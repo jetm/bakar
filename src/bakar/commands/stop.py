@@ -17,6 +17,12 @@ from bakar.commands._helpers import (
     split_kas_yaml_arg,
 )
 from bakar.config import BSPSpec, resolve
+from bakar.steps import remote_dispatch
+
+# Matches config.py's stop_grace_seconds default. A remote stop resolves no
+# BuildConfig - the build is on the other host - so the configured value is not
+# reachable here and the default has to be restated.
+_REMOTE_STOP_GRACE_SECONDS = 30
 
 
 @app.command("stop")
@@ -51,6 +57,27 @@ def stop(
             ),
         ),
     ] = None,
+    on: Annotated[
+        str | None,
+        typer.Option(
+            "--on",
+            help=(
+                "Stop the detached build dispatched to this host with `bakar build --on <host>`. "
+                "Refuses and lists them when more than one is running; add --all to stop every one."
+            ),
+        ),
+    ] = None,
+    all_units: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help=(
+                "With --on, stop every detached build on the host instead of refusing "
+                "when more than one is running. On a shared builder the others are "
+                "someone else's build."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Gracefully stop the running build for this workspace's BSP.
 
@@ -65,6 +92,17 @@ def stop(
     generated ``build-<machine>/avocado-bakar.yml`` instead of the source YAML
     resolves a different family and therefore a different (empty) runs dir.
     """
+    # A remote build runs under a transient unit on the other host and outlives
+    # the terminal that dispatched it, so nothing local identifies it: no run
+    # dir, no PID file, no workspace to resolve. Short-circuit before any of that
+    # is looked up - this is routinely typed from wherever the user happens to
+    # be, having lost the dispatching terminal.
+    if on is not None:
+        grace = timeout if timeout is not None else _REMOTE_STOP_GRACE_SECONDS
+        if not remote_dispatch.stop_remote_dispatch(on, force=force, grace_seconds=grace, stop_all=all_units):
+            raise typer.Exit(code=1)
+        return
+
     # Split the colon-joined overlay form before dispatching, exactly as `build`
     # does. Stopping a build is done by re-typing the spec that started it, and
     # that spec is routinely `machine.yml:feature-a.yml:feature-b.yml`. Unsplit,

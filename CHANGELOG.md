@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added `bakar stop --on <host>` to stop a build dispatched with `bakar build --on <host>`. A detached build outlives the terminal that started it, so Ctrl-C there no longer reaches it; the new flag walks the same SIGINT-then-stop ladder the local stop does, and needs no workspace or run-id. It stops one build: a host that takes `--on` dispatches is a shared builder, so when several are running they are listed and nothing is signalled until you pass `--all`.
+
+### Fixed
+
+- Fixed `bakar build --on <host>` losing the remote build when the local dispatcher died. The build ran as a child of the ssh session, so sshd's SIGHUP killed it - observed taking down a 50-minute build. It now runs under a transient `systemd-run --user` unit on the remote and the local side only tails its log, so a Ctrl-C, a dropped link or a killed dispatcher costs the log stream and nothing else. Remotes without a usable `systemd-run --user` fall back to the previous behaviour.
+- The detached build's log and exit-code sentinel live under the remote's `$XDG_RUNTIME_DIR` (0700, per-user) rather than `/tmp`. The log path is disclosed in the transient unit's argv and the `.rc` sentinel does not exist until the build ends, so on a world-writable `/tmp` any other local user could write it and make a failed build report success.
+- The transient unit carries the ssh session's `SSH_AUTH_SOCK`, proxy and TLS trust-store variables. A transient unit inherits the user manager's environment, not the session's, so a `protocol=ssh` fetch with an agent-forwarded key, or a fetch through a corporate proxy, failed on the detached path only.
+- Losing the remote log stream exits 75 rather than 255, and no longer prints run-id triage narration about a build that is healthy and still running. 255 is a code a remote build can genuinely produce, so the two were indistinguishable.
+- The log follower no longer declares a healthy build lost seconds after dispatch: `systemd-run` returns when the job is enqueued, and the liveness backstop read `activating` as gone. It now treats `activating` as live, requires several consecutive failed probes, and carries the launch script's own manager-bus guards.
+
 ## [0.29.1] - 2026-08-27
 
 ### Fixed

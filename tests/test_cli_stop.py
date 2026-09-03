@@ -291,3 +291,85 @@ def test_stop_no_timeout_falls_back_to_config_stop_grace_seconds(
 
     assert result.exit_code == 0, result.output
     assert calls == [(workspace / "nxp", False, 30)]
+
+
+def test_stop_on_host_stops_the_remote_dispatch(runner: _CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``stop --on <host>`` stops the detached build on that host, not a local one."""
+    calls: list[tuple[str, bool, float]] = []
+
+    def _rec(host: str, *, force: bool = False, grace_seconds: float = 0, stop_all: bool = False) -> bool:
+        calls.append((host, force, grace_seconds))
+        return True
+
+    monkeypatch.setattr(stop_cmd.remote_dispatch, "stop_remote_dispatch", _rec)
+
+    def _boom(*a: object, **k: object) -> bool:
+        raise AssertionError("--on must not signal a local build")
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", _boom)
+
+    result = runner.invoke(app, ["stop", "--on", "pc2", "--timeout", "45"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [("pc2", False, 45.0)]
+
+
+def test_stop_on_host_needs_no_workspace(runner: _CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A remote stop resolves nothing locally: the build is on the other host.
+
+    Run from a directory that is not a bakar workspace at all - which is exactly
+    where someone reaches for it, having lost the terminal that dispatched.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(stop_cmd.remote_dispatch, "stop_remote_dispatch", lambda host, **k: True)
+
+    result = runner.invoke(app, ["stop", "--on", "pc2"])
+
+    assert result.exit_code == 0, result.output
+
+
+def test_stop_on_host_exits_nonzero_when_nothing_was_running(
+    runner: _CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(stop_cmd.remote_dispatch, "stop_remote_dispatch", lambda host, **k: False)
+
+    result = runner.invoke(app, ["stop", "--on", "pc2"])
+
+    assert result.exit_code == 1
+
+
+def test_stop_on_host_forwards_force(runner: _CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, bool, float]] = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        stop_cmd.remote_dispatch,
+        "stop_remote_dispatch",
+        lambda host, *, force=False, grace_seconds=0, stop_all=False: (
+            calls.append((host, force, grace_seconds)),
+            True,
+        )[1],
+    )
+
+    result = runner.invoke(app, ["stop", "--on", "pc2", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [("pc2", True, 30)]
+
+
+def test_stop_on_host_defaults_to_a_single_build(runner: _CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without ``--all`` the remote stop must not opt into killing every build.
+
+    On a shared builder the other running dispatch units are someone else's
+    in-flight build, so the default has to be the conservative one.
+    """
+    seen: list[bool] = []
+    monkeypatch.setattr(
+        stop_cmd.remote_dispatch,
+        "stop_remote_dispatch",
+        lambda host, *, force=False, grace_seconds=0, stop_all=False: (seen.append(stop_all), True)[1],
+    )
+
+    assert runner.invoke(app, ["stop", "--on", "pc2"]).exit_code == 0
+    assert runner.invoke(app, ["stop", "--on", "pc2", "--all"]).exit_code == 0
+    assert seen == [False, True]

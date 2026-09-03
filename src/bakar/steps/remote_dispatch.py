@@ -7,20 +7,30 @@ destination. The orchestration section (host preflight, confirm gate, rsync
 transfer, live remote-build streaming, and run-id surfacing) drives ssh/rsync
 subprocesses; it is exercised with a mocked ``subprocess`` and no live remote.
 
-The remote command is delivered over ``ssh <host> bash -s`` stdin rather than
-``ssh <host> '<cmd>'`` (the remote login shell is fish, where a bare
-``NAME=value`` prefix silently fails) or ``ssh <host> bash -lc '<cmd>'`` (which
-mangles argv via quote-loss). fish parses only the two tokens ``bash -s``; the
-script body reaches bash unmodified.
+EVERY generated script - the launch, the log follower and the stop ladder - is
+delivered over ``ssh <host> bash -s`` stdin rather than ``ssh <host> '<cmd>'``
+(the remote login shell is fish, where a bare ``NAME=value`` prefix silently
+fails) or ``ssh <host> bash -lc '<cmd>'`` (which mangles argv via quote-loss).
+fish parses only the two tokens ``bash -s``; the script body reaches bash
+unmodified.
+
+The argument form is not merely lossy, it is fatal, and worse than it looks:
+fish validates the WHOLE buffer before running any of it, so a script carrying
+one ``waited=0`` runs nothing at all - not even the lines above the offender.
+The one exception here is :func:`_running_dispatch_units`, whose payload is a
+single ``systemctl`` command that fish parses identically to bash; anything with
+an assignment, a loop or a redirect must use the stdin form.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import secrets
 import shlex
 import subprocess
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 
 import typer
@@ -143,11 +153,92 @@ def strip_dispatch_options(local_args: list[str]) -> list[str]:
     return result
 
 
-def build_remote_script(remote_argv: list[str], cwd: Path, env_vars: dict[str, str], *, sccache_off: bool) -> str:
+# Where a detached dispatch parks its log and exit-code sentinel. NOT the
+# workspace: the next `--on` dispatch mirrors it with `rsync --delete`, so a log
+# living there would be destroyed by the very next build - and `bakar stop --on`
+# has to find the sentinel of a build whose workspace has already moved on.
+#
+# NOT /tmp either, which is what this used to be. /tmp is drwxrwxrwt, the log
+# path is disclosed in the transient unit's argv (world-readable via /proc), and
+# the `.rc` sentinel does not exist until the build ENDS - so any other local
+# user had the whole build duration to `printf '0\n' > /tmp/<name>.log.rc` and
+# make a failed build report success, or to pre-place a symlink there and get a
+# truncate primitive pointed anywhere the build user can write.
+# $XDG_RUNTIME_DIR is 0700 and per-user, so neither is reachable.
+#
+# Its value is a property of the remote session, so this is a shell EXPRESSION
+# the remote bash expands, not a path the dispatcher can compute. That costs
+# nothing here: the detached branch is already gated on XDG_RUNTIME_DIR being
+# non-empty (its systemd-run probe needs it), so it is guaranteed set wherever
+# this is used, and the launch script reports the EXPANDED path back in its
+# BAKAR_DISPATCH_LOG marker so the follower and `stop` resolve the same file.
+_DISPATCH_LOG_DIR_EXPR = '"$XDG_RUNTIME_DIR"'
+
+
+def remote_log_expr(unit: str) -> str:
+    """Return the remote shell expression for ``unit``'s detached dispatch log.
+
+    Derived from the unit name rather than echoed back and parsed, so the script
+    that writes the log and the marker that reports it agree without a round
+    trip. ``unit`` is quoted for the same reason its siblings in the generated
+    script are: it is public API, and an unquoted interpolation into a `>`
+    redirect is a shell-injection hole waiting for the first caller that passes
+    something other than :func:`dispatch_unit_name`'s output.
+    """
+    return f"{_DISPATCH_LOG_DIR_EXPR}/{shlex.quote(f'{unit}.log')}"
+
+
+# Session environment forwarded into the transient unit, beyond PATH. A
+# transient unit inherits the USER MANAGER's environment, not this ssh session's,
+# so the old coupled `exec` form carried these silently and the detached form
+# dropped them just as silently: a `SRC_URI = "git://...;protocol=ssh"` fetch
+# with an agent-forwarded key, or any fetch through a corporate proxy, breaks on
+# the detached path ONLY - i.e. exactly on the hosts this feature targets.
+#
+# An allowlist rather than a wholesale copy of the ssh environment: the unit
+# outlives the session, and dragging that session's whole environment into a
+# long-lived unit is how a stale DISPLAY or SSH_CONNECTION ends up confusing a
+# build hours after the session that set them is gone.
+_FORWARDED_SESSION_VARS: tuple[str, ...] = (
+    "SSH_AUTH_SOCK",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "LANG",
+    "LC_ALL",
+)
+
+
+def dispatch_unit_name(now: datetime | None = None) -> str:
+    """Return a fresh transient-unit name for one remote dispatch.
+
+    The timestamp is the DISPATCHER's clock, unlike the ``BAKAR_DISPATCH_START``
+    marker below: this string is never compared against a remote run-id, it only
+    has to be unique per dispatch. The random suffix covers two dispatchers
+    hitting the same host within the same second, which the timestamp alone
+    would collide on.
+    """
+    stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
+    return f"bakar-dispatch-{stamp}-{secrets.token_hex(3)}"
+
+
+def build_remote_script(
+    remote_argv: list[str],
+    cwd: Path,
+    env_vars: dict[str, str],
+    *,
+    sccache_off: bool,
+    unit: str | None = None,
+) -> str:
     """Generate the bash script fed to ``ssh <host> bash -s`` over stdin.
 
     The script changes into the invoking cwd (replicated on the identical-path
-    remote), echoes a machine-clock dispatch-start marker, and ``exec``s
+    remote), echoes a machine-clock dispatch-start marker, and runs
     ``env <forwarded> bakar <argv>``. ``env_vars`` are the local ``BAKAR_*`` /
     ``KAS_*`` vars forwarded so the remote resolves the same build as the local
     one would; each is emitted sorted and shlex-quoted. When ``sccache_off`` is
@@ -155,12 +246,73 @@ def build_remote_script(remote_argv: list[str], cwd: Path, env_vars: dict[str, s
     over any forwarded ``BAKAR_SCCACHE_DIST`` (env(1) applies ``NAME=value``
     tokens left-to-right, last assignment wins); when False the token is omitted
     and a forwarded ``--sccache-dist`` wins by CLI-over-env precedence.
+
+    The build runs under a transient ``systemd-run --user`` unit, NOT as a child
+    of the ssh session. As an ssh child it died with the session: when the local
+    dispatcher was killed, sshd SIGHUP'd the session and took a 50-minute build
+    down with it ("Keyboard Interrupt, closing down" then bitbake exit -15). A
+    transient unit is owned by the remote user manager, so a dropped link, a
+    local Ctrl-C or a reaped dispatcher costs the log stream and nothing else.
+
+    Both forms are emitted and the REMOTE picks between them, because whether
+    ``systemd-run --user`` works is a property of the remote host that the local
+    side cannot answer. The availability probe mirrors
+    :func:`bakar.build_scope.systemd_run_available` (binary, ``XDG_RUNTIME_DIR``,
+    then a throwaway scope, since on WSL and in minimal containers the first two
+    pass while ``--user`` cannot reach the manager bus); when it fails the script
+    falls through to the original ``exec`` form rather than failing the dispatch.
     """
+    unit = unit or dispatch_unit_name()
+    log = remote_log_expr(unit)
     env_tokens = ["env"]
     env_tokens += [shlex.quote(f"{name}={env_vars[name]}") for name in sorted(env_vars)]
     if sccache_off:
         env_tokens.append("BAKAR_SCCACHE_DIST=0")
-    exec_line = "exec " + " ".join([*env_tokens, "bakar", shlex.join(remote_argv)])
+    build_cmd = " ".join([*env_tokens, "bakar", shlex.join(remote_argv)])
+    exec_line = "exec " + build_cmd
+    # The unit is `--collect`ed the moment it exits, so `systemctl show` cannot
+    # be relied on to still carry ExecMainStatus - the wrapper writes the exit
+    # code to a sentinel beside the log instead. The sentinel is also what tells
+    # the local follower the build is over, so it must be written LAST, after
+    # the log is complete.
+    wrapped = f"{build_cmd} >{log} 2>&1; rc=$?; printf '%s\\n' \"$rc\" >{log}.rc; exit $rc"
+    # The allowlist is materialised on the REMOTE, into an array, because the
+    # values live there: `${!v}` reads the session's value and the `[ -n ]` guard
+    # keeps an unset var from becoming an empty-string OVERRIDE, which is not the
+    # same as leaving it alone (an empty https_proxy disables a proxy the manager
+    # environment might otherwise have supplied). An array rather than a flat
+    # string so a value containing a space stays one argv element.
+    setenv_lines = [
+        "  setenv=()",
+        f"  for v in {' '.join(shlex.quote(name) for name in _FORWARDED_SESSION_VARS)}; do",
+        '    if [ -n "${!v:-}" ]; then setenv+=("--setenv=$v=${!v}"); fi',
+        "  done",
+    ]
+    detached = " ".join(
+        [
+            "exec systemd-run --user",
+            f"--unit={shlex.quote(unit)}",
+            "--collect",
+            "--same-dir",
+            "--quiet",
+            # A transient unit inherits the USER MANAGER's environment, not this
+            # ssh session's, and bakar is a uv tool on ~/.local/bin - absent from
+            # the manager's PATH on a normal box. Hand over the session PATH,
+            # which preflight_remote has already proven carries bakar.
+            '--setenv=PATH="$PATH"',
+            # The wrapper writes the log and the rc sentinel under
+            # $XDG_RUNTIME_DIR, and it runs as the unit's own bash. Forward the
+            # value explicitly rather than betting on the user manager carrying
+            # it: the follower resolves the same path from the marker below, and
+            # the two must not be able to disagree.
+            '--setenv=XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"',
+            '"${setenv[@]}"',
+            "--",
+            "bash",
+            "-c",
+            shlex.quote(wrapped),
+        ]
+    )
     # BAKAR_DISPATCH_START fences run-id discovery: a discovered run dir older
     # than this remote-clock timestamp predates the dispatch and is discarded.
     #
@@ -175,7 +327,40 @@ def build_remote_script(remote_argv: list[str], cwd: Path, env_vars: dict[str, s
     #
     # `|| exit 1`: if the replicated cwd is missing on the remote, fail loudly
     # instead of silently running the build in $HOME (the wrong directory).
-    return f'cd {shlex.quote(str(cwd))} || exit 1\necho "BAKAR_DISPATCH_START=$(date +%Y%m%d-%H%M%S)"\n{exec_line}'
+    #
+    # The unit/log markers are echoed BEFORE the launch so the local side holds
+    # them even when systemd-run itself then fails to start the unit.
+    return "\n".join(
+        [
+            f"cd {shlex.quote(str(cwd))} || exit 1",
+            'echo "BAKAR_DISPATCH_START=$(date +%Y%m%d-%H%M%S)"',
+            'if command -v systemd-run >/dev/null 2>&1 && [ -n "${XDG_RUNTIME_DIR:-}" ] &&'
+            " systemd-run --user --scope --quiet -- true >/dev/null 2>&1; then",
+            # printf with a literal format, not `echo "...={unit}"`: inside double
+            # quotes an interpolated unit carrying `$(...)` would be COMMAND
+            # SUBSTITUTED on the remote. Only tests pass `unit` today, but it is
+            # public API and every one of its siblings here is already quoted.
+            f"  printf 'BAKAR_DISPATCH_UNIT=%s\\n' {shlex.quote(unit)}",
+            # The log marker reports the EXPANDED path, so the follower and
+            # `bakar stop --on` never have to re-derive $XDG_RUNTIME_DIR
+            # themselves and cannot resolve a different file than the wrapper
+            # writes.
+            f"  printf 'BAKAR_DISPATCH_LOG=%s\\n' {log}",
+            # Detaching only buys anything while the user manager lives. Without
+            # `loginctl enable-linger` that manager is stopped when the user's
+            # last session ends, taking its transient units - and the build -
+            # with it, which is the failure this whole path exists to remove.
+            # Report the condition rather than enabling linger unasked: that is a
+            # persistent change to the remote host and nobody here can consent to
+            # it. Reported, not fixed, so the caller can turn it into a hint.
+            '  loginctl show-user "$USER" -p Linger --value 2>/dev/null | grep -qx yes ||'
+            ' echo "BAKAR_DISPATCH_WARN=linger-disabled"',
+            *setenv_lines,
+            f"  {detached}",
+            "fi",
+            exec_line,
+        ]
+    )
 
 
 def assert_safe_workspace(ws_root: Path) -> None:
@@ -199,7 +384,57 @@ def assert_safe_workspace(ws_root: Path) -> None:
 
 
 _RUN_ID_RE = re.compile(r"bakar triage (\S+)")
-_DISPATCH_START_RE = re.compile(r"BAKAR_DISPATCH_START=(\d{8}-\d{6})")
+# Anchored at line start, and deliberately not re.MULTILINE - the scanned stream
+# IS the build's own output, so an unanchored `.search` let any build that
+# happens to print `BAKAR_DISPATCH_RC=0` (a bitbake environment dump, a recipe
+# that greps bakar's sources) forge a dispatch result. No attacker required.
+# Anchoring is necessary but not sufficient: see the phase gate in
+# :func:`_stream_remote_build` and the delay buffer in :func:`_follow_remote_log`.
+_DISPATCH_START_RE = re.compile(r"^BAKAR_DISPATCH_START=(\d{8}-\d{6})")
+_DISPATCH_UNIT_RE = re.compile(r"^BAKAR_DISPATCH_UNIT=(\S+)")
+_DISPATCH_LOG_RE = re.compile(r"^BAKAR_DISPATCH_LOG=(\S+)")
+_DISPATCH_RC_RE = re.compile(r"^BAKAR_DISPATCH_RC=(\d+)")
+_DISPATCH_WARN_RE = re.compile(r"^BAKAR_DISPATCH_WARN=(\S+)")
+# The follower could not read a usable exit status: no sentinel, an empty one, or
+# one holding something that is not an integer. All three mean the same thing -
+# the build's exit status is unknown - and none of them means the build failed.
+_DISPATCH_LOST_RE = re.compile(r"^BAKAR_DISPATCH_LOST=")
+
+# Follower loop tuning. The poll is coarse on purpose: it only decides how soon
+# the follower notices the build is over, never how fast output arrives (that is
+# tail -F's job), and a tight poll would spend an ssh round trip per second for
+# the length of a Yocto build.
+_FOLLOW_POLL_SECONDS = 5
+_FOLLOW_SENTINEL_GRACE_SECONDS = 3
+_FOLLOW_DRAIN_SECONDS = 1
+
+# Consecutive failed liveness probes before the follower concludes the unit is
+# gone. More than one because a single probe is not a verdict: the bus can hiccup,
+# and the window between the unit exiting and the wrapper flushing the sentinel
+# reads as "gone" exactly once on a perfectly healthy build.
+_FOLLOW_LIVENESS_MISSES = 3
+
+# Placeholder rc paired with ``finished=False`` out of :func:`_follow_remote_log`.
+# It is never surfaced as an exit code - callers branch on ``finished`` - because
+# a lost stream is not a build result and must not be indistinguishable from a
+# build that genuinely exited 255.
+_FOLLOW_LOST_RC = 255
+
+# bakar's own exit code when the log stream was lost. Distinct from every code a
+# remote build can produce (255 included), so a script wrapping
+# `bakar build --on <host>` can tell "I do not know how the build ended, and it
+# is still running" apart from "the build failed". 75 is sysexits' EX_TEMPFAIL:
+# a temporary failure of the transport, retryable by re-attaching.
+_DISPATCH_LOST_EXIT = 75
+
+
+def _first_match(pattern: re.Pattern[str], lines: list[str]) -> str | None:
+    """Return the first capture of ``pattern`` across ``lines``, or None."""
+    for line in lines:
+        match = pattern.search(line)
+        if match:
+            return match.group(1)
+    return None
 
 
 def preflight_remote(host: str) -> tuple[bool, str | None]:
@@ -335,16 +570,14 @@ def confirm_destructive_sync(
     return typer.confirm(f"Mirror the workspace to {host} (rsync --delete)?")
 
 
-def _stream_remote_build(host: str, script: str) -> tuple[int, list[str]]:
-    """Feed ``script`` to ``ssh <host> bash -s`` over stdin, streaming stdout.
+def _ssh_bash_popen(host: str) -> subprocess.Popen:
+    """Open a non-PTY ``ssh <host> bash -s`` with stdin/stdout piped.
 
-    Non-PTY ``Popen``: the script is written to stdin and closed, then stdout is
-    read line-by-line and echoed live. The remote bakar sees a non-TTY and
-    renders plain output. Returns the remote exit code and the captured lines
-    (for run-id parsing). ``errors="replace"`` matches kas_build's decode
-    convention so a non-UTF-8 byte in Yocto output cannot crash the stream.
+    The remote bakar sees a non-TTY and renders plain output. ``errors="replace"``
+    matches kas_build's decode convention so a non-UTF-8 byte in Yocto output
+    cannot crash the stream.
     """
-    proc = subprocess.Popen(
+    return subprocess.Popen(
         ["ssh", host, "bash", "-s"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -353,22 +586,208 @@ def _stream_remote_build(host: str, script: str) -> tuple[int, list[str]]:
         encoding="utf-8",
         errors="replace",
     )
+
+
+def build_follow_script(unit: str, log: str) -> str:
+    """Generate the bash script that tails a detached dispatch's log.
+
+    Tailing is deliberately all this does: the follower owns no part of the
+    build's lifecycle, so killing it (Ctrl-C, a dropped link, a reaped agent)
+    costs the stream and leaves the transient unit running.
+
+    ``tail -F`` rather than ``-f`` because the log may not exist yet when the
+    follower attaches - systemd-run returns as soon as the unit is queued, a
+    beat before the wrapper's first redirect creates the file.
+
+    The loop ends on the rc sentinel, with the unit's own liveness as the
+    backstop: a unit killed hard enough to skip the sentinel would otherwise
+    leave the follower waiting forever on a file nobody will write. The grace
+    sleep after that covers the window where the build has exited but the
+    wrapper has not yet flushed the sentinel.
+
+    That backstop carries the launch script's own guards, because it is the same
+    probe: no ``XDG_RUNTIME_DIR`` and no reachable manager bus means the liveness
+    signal cannot be READ, which is not the same as the unit being gone, and a
+    follower that confuses the two declares a healthy build lost.
+    """
+    q_log = shlex.quote(log)
+    q_unit = shlex.quote(f"{unit}.service")
+    return "\n".join(
+        [
+            f"tail -n +1 -F {q_log} 2>/dev/null &",
+            "tail_pid=$!",
+            # When the bus is unreachable there is no liveness signal to read, so
+            # trust the rc sentinel alone rather than a probe that fails for a
+            # reason that has nothing to do with the build.
+            "probe=1",
+            '[ -n "${XDG_RUNTIME_DIR:-}" ] || probe=0',
+            f"systemctl --user show -p ActiveState --value {q_unit} >/dev/null 2>&1 || probe=0",
+            "misses=0",
+            f"while [ ! -e {q_log}.rc ]; do",
+            '  if [ "$probe" = 1 ]; then',
+            f"    state=$(systemctl --user show -p ActiveState --value {q_unit} 2>/dev/null)",
+            '    case "$state" in',
+            # `activating` counts as live, exactly as _running_dispatch_units
+            # already treats it: systemd-run returns when the job is ENQUEUED, so
+            # the first poll routinely lands on a unit that has not reached
+            # `active` yet. `is-active --quiet` calls that non-zero, which used to
+            # declare a healthy build lost a few seconds after dispatch.
+            "      active|activating|reloading|deactivating) misses=0 ;;",
+            "      *) misses=$((misses+1)) ;;",
+            "    esac",
+            # One failed probe is not a verdict; the gap between the unit exiting
+            # and the wrapper flushing the sentinel reads as "gone" exactly once.
+            f'    if [ "$misses" -ge {_FOLLOW_LIVENESS_MISSES} ]; then',
+            f"      sleep {_FOLLOW_SENTINEL_GRACE_SECONDS}",
+            "      break",
+            "    fi",
+            "  fi",
+            f"  sleep {_FOLLOW_POLL_SECONDS}",
+            "done",
+            # Let tail drain what the build wrote between the last poll and now.
+            f"sleep {_FOLLOW_DRAIN_SECONDS}",
+            "kill $tail_pid 2>/dev/null",
+            "wait $tail_pid 2>/dev/null",
+            f"rc=$(cat {q_log}.rc 2>/dev/null)",
+            # A missing, empty or non-numeric sentinel all mean the same thing:
+            # the build's exit status is unknown. Defaulting to a number here
+            # reported "the build exited 255" for a sentinel that was merely
+            # truncated, which is a build failure the user then went hunting for.
+            'case "$rc" in',
+            "  ''|*[!0-9]*) echo \"BAKAR_DISPATCH_LOST=1\" ;;",
+            '  *) echo "BAKAR_DISPATCH_RC=$rc" ;;',
+            "esac",
+        ]
+    )
+
+
+def _follow_remote_log(host: str, unit: str, log: str) -> tuple[int, list[str], bool]:
+    """Stream a detached dispatch's log back and return ``(rc, tail, finished)``.
+
+    ``finished`` is False when the follower ended without the rc sentinel - a
+    dropped link or a killed follower. That is not a build failure and must not
+    be reported as one: the build is still running under its transient unit.
+    """
+    proc = _ssh_bash_popen(host)
+    assert proc.stdin is not None and proc.stdout is not None  # PIPE is set above
+    try:
+        proc.stdin.write(build_follow_script(unit, log))
+        proc.stdin.close()
+    except BrokenPipeError:
+        console.print(f"[red]connection to {host} lost[/] before the log follower was delivered.")
+        return _FOLLOW_LOST_RC, [], False
+    captured: deque[str] = deque(maxlen=200)
+    rc: int | None = None
+    # One-line delay buffer: only the stream's FINAL line is eligible to be the
+    # rc sentinel, because the follow script echoes it last, after tail is dead.
+    # The stream being scanned IS the build's log, so anchoring the pattern is
+    # not enough on its own - a bitbake environment dump prints
+    # `BAKAR_DISPATCH_RC=0` at column 0 and would otherwise forge a successful
+    # result for a build that failed.
+    pending: str | None = None
+    for line in proc.stdout:
+        if pending is not None:
+            print(pending, end="")
+            captured.append(pending)
+        pending = line
+    if pending is not None:
+        match = _DISPATCH_RC_RE.search(pending)
+        if match:
+            # Transport, not build output: consume it rather than echoing it.
+            rc = int(match.group(1))
+        elif not _DISPATCH_LOST_RE.search(pending):
+            print(pending, end="")
+            captured.append(pending)
+    proc.wait()
+    if rc is None:
+        return _FOLLOW_LOST_RC, list(captured), False
+    return rc, list(captured), True
+
+
+def _stream_remote_build(host: str, script: str) -> tuple[int, list[str], bool]:
+    """Run the dispatch script on ``host`` and stream the build's output back.
+
+    Which of the script's two forms the remote took decides what happens here,
+    and the script says so: a ``BAKAR_DISPATCH_UNIT`` marker on the launch stream
+    means the build detached into a transient unit, so its output arrives over a
+    second ssh tailing the log (:func:`_follow_remote_log`) and its exit code
+    over the rc sentinel. Without the marker the remote fell back to the coupled
+    ``exec`` form and this stream IS the build's, read to completion as before.
+
+    Returns ``(rc, captured, finished)``. ``finished`` is False only when the log
+    stream was lost, i.e. ``rc`` is NOT the build's exit status; it is plumbed out
+    rather than encoded in ``rc`` so a lost stream can never be mistaken for a
+    build that genuinely exited with the same number.
+
+    The launch lines are kept whole and prepended to the follower's bounded tail:
+    the ``BAKAR_DISPATCH_START`` fence rides on the launch stream, and a shared
+    bounded tail would evict it on any build long enough to matter. Only the
+    launch PHASE feeds that list, so the fallback path - where this stream is the
+    build's own, unbounded output - cannot grow it without limit.
+    """
+    proc = _ssh_bash_popen(host)
     assert proc.stdin is not None and proc.stdout is not None  # PIPE is set above
     try:
         proc.stdin.write(script)
         proc.stdin.close()
     except BrokenPipeError:
         # ssh exited between preflight and the write (host rebooted, agent
-        # expired): report cleanly instead of a raw traceback.
+        # expired): report cleanly instead of a raw traceback. finished=True -
+        # the build never started, so 255 IS the answer here, not a placeholder.
         console.print(f"[red]connection to {host} lost[/] before the build script was delivered.")
-        return 255, []
+        return 255, [], True
     # Bounded: only the tail is needed (the `bakar triage <id>` hint rides near
     # the end on failure), so cap memory on a long/verbose Yocto build stream.
     captured: deque[str] = deque(maxlen=200)
+    launch: list[str] = []
+    # The launch markers are echoed consecutively at the head of the stream,
+    # before anything else runs. Past the first line that is not one of them the
+    # remote took the fallback `exec` form and THIS STREAM IS THE BUILD'S - where
+    # a `BAKAR_DISPATCH_UNIT=x` line is build output, and honouring it would make
+    # the code discard the real `proc.wait()` rc, announce a detach that never
+    # happened, and follow a unit that does not exist.
+    in_launch_phase = True
     for line in proc.stdout:
+        if in_launch_phase:
+            if _DISPATCH_UNIT_RE.search(line) or _DISPATCH_LOG_RE.search(line) or _DISPATCH_WARN_RE.search(line):
+                # Transport, not build output.
+                launch.append(line)
+                continue
+            if _DISPATCH_START_RE.search(line):
+                launch.append(line)
+                print(line, end="")
+                continue
+            in_launch_phase = False
         print(line, end="")
         captured.append(line)
-    return proc.wait(), list(captured)
+    rc = proc.wait()
+
+    unit = _first_match(_DISPATCH_UNIT_RE, launch)
+    log = _first_match(_DISPATCH_LOG_RE, launch)
+    if unit is None or log is None:
+        return rc, [*launch, *captured], True
+    if rc != 0:
+        # The markers are echoed before systemd-run runs, so they arrive even
+        # when the unit fails to start. Following a log that will never be
+        # written would hang until the user gives up.
+        console.print(f"[red]the remote build did not start on {host}[/] (launch exit {rc}).")
+        return rc, [*launch, *captured], True
+
+    console.print(f"remote build detached as [bold]{unit}[/] on {host}; following {log}")
+    if _first_match(_DISPATCH_WARN_RE, launch) == "linger-disabled":
+        console.print(
+            f"[yellow]{host} has no linger enabled[/] - its user manager, and this build with it, "
+            f"may be stopped when your last ssh session there closes.\n"
+            f"fix it once:  ssh {host} loginctl enable-linger"
+        )
+    follow_rc, follow_lines, finished = _follow_remote_log(host, unit, log)
+    if not finished:
+        console.print(
+            f"[yellow]lost the log stream from {host}[/] - the build keeps running under {unit}.\n"
+            f"re-attach:  ssh {host} tail -F {log}\n"
+            f"stop it:    bakar stop --on {host}"
+        )
+    return follow_rc, [*launch, *follow_lines], finished
 
 
 def _discover_newest_run_id(host: str, ws_root: Path) -> str | None:
@@ -403,12 +822,7 @@ def _surface_run_id(host: str, ws_root: Path, captured: list[str], rc: int) -> N
     before creating its own run dir), so it is discarded rather than surfaced as
     a misleading stale id.
     """
-    dispatch_start: str | None = None
-    for line in captured:
-        m = _DISPATCH_START_RE.search(line)
-        if m:
-            dispatch_start = m.group(1)
-            break
+    dispatch_start = _first_match(_DISPATCH_START_RE, captured)
 
     run_id: str | None = None
     if rc != 0:
@@ -507,11 +921,176 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
     env_vars = {k: v for k, v in os.environ.items() if k.startswith(("BAKAR_", "KAS_"))}
     script = build_remote_script(strip_dispatch_options(local_args), cwd, env_vars, sccache_off=not sccache_dist)
     try:
-        rc, captured = _stream_remote_build(host, script)
+        rc, captured, finished = _stream_remote_build(host, script)
     except KeyboardInterrupt:
         console.print("[yellow]Ctrl-C does not stop the remote build[/] - it keeps running on the host.")
-        console.print(f"stop it:    ssh {host} bakar stop")
+        console.print(f"stop it:    bakar stop --on {host}  (or: ssh {host} bakar stop)")
         console.print(f"triage it:  ssh {host} bakar triage <run-id>")
         return 130
+    if not finished:
+        # A lost log stream is a transport failure, not a build result: the build
+        # is still running under its unit and its exit status is unknown.
+        # _surface_run_id would take its `rc != 0` branch here and narrate a
+        # healthy in-flight build as "no remote run dir was created - the build
+        # failed before starting", sending someone hunting an error that does not
+        # exist. _stream_remote_build has already printed the re-attach/stop
+        # advice, which is the only actionable thing there is to say.
+        return _DISPATCH_LOST_EXIT
     _surface_run_id(host, ws_root, captured, rc)
     return rc
+
+
+def _running_dispatch_units(host: str) -> list[str] | None:
+    """Return the active detached dispatch units on ``host``, or None on failure.
+
+    ``--all`` so a unit that has already exited is still listed, then filtered on
+    the ACTIVE column: ``systemctl stop`` on a dead unit succeeds and would
+    report a build stopped that nobody stopped.
+
+    Delivered as an ssh ARGUMENT rather than over ``bash -s``, unlike every other
+    script here, and safely so: the payload is a single command whose only
+    metacharacters are the single quotes around the unit glob, which the remote
+    login fish parses identically to bash. Anything carrying an assignment, a
+    loop or a redirect must use the stdin form (see the module docstring).
+    """
+    cmd = "systemctl --user list-units --all --plain --no-legend 'bakar-dispatch-*.service'"
+    result = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", host, cmd],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        console.print(f"[red]could not query {host}[/] for detached builds.")
+        if result.stderr.strip():
+            console.print(result.stderr.strip(), markup=False)
+        return None
+    units: list[str] = []
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        # UNIT LOAD ACTIVE SUB DESCRIPTION, with a leading bullet on a unit
+        # systemd wants to draw attention to - split() leaves that as its own
+        # field, so anchor on the unit name and read ACTIVE two fields along.
+        # Positionally, not by scanning for the word: DESCRIPTION is the unit's
+        # command line, which for a bakar dispatch carries the whole build
+        # invocation and can contain "active" as a bare token.
+        name = next((f for f in fields if f.endswith(".service")), None)
+        if name is None:
+            continue
+        active = fields[fields.index(name) + 2 :][:1]
+        # `activating` counts: a unit that is still starting is a build about to
+        # run, and skipping it reports "nothing to stop" for a live dispatch.
+        if active and active[0] in {"active", "activating"}:
+            units.append(name)
+    return units
+
+
+def build_stop_units_script(units: list[str], *, force: bool, grace_seconds: float) -> str:
+    """Generate the bash script that stops detached dispatch ``units``.
+
+    Walks the same ladder as the local ``bakar stop``: SIGINT first, because
+    bitbake drains its running tasks and writes its run log on it, and only
+    ``systemctl stop`` (SIGTERM to the whole cgroup) once the grace period is
+    spent. ``--force`` skips straight to the hard stop, which costs the run log.
+
+    One script rather than a call per step: each step is an ssh round trip, and
+    the grace wait belongs on the remote where the unit is - a local wait would
+    keep stopping dependent on a link that may drop, which is the coupling this
+    whole change exists to remove.
+
+    ``grace_seconds`` of 0 or less waits unbounded, matching what ``--timeout 0``
+    means for the local stop. A bounded loop with a 0 limit would mean the
+    opposite - no wait at all - and hard-stop the build a moment after the SIGINT
+    that was meant to let it drain.
+
+    A FRACTIONAL grace still waits. The bound is counted in tenths of a second
+    rather than seconds because ``int(0.5)`` is 0, which generated
+    ``[ "$waited" -lt 0 ]`` - a loop that never runs, so ``--timeout 0.5`` skipped
+    the graceful wait entirely and hard-stopped immediately: the exact behaviour
+    documented for ``--timeout 0``, and the opposite of what a positive grace
+    asks for. The poll step shrinks to match a sub-2s grace and stays at 2s above
+    it, so the common 30s case keeps its original cadence and fork count.
+    """
+    lines = [f"for unit in {' '.join(shlex.quote(u) for u in units)}; do"]
+    if not force:
+        lines += ['  systemctl --user kill --signal=SIGINT "$unit" 2>/dev/null']
+        if grace_seconds > 0:
+            limit_tenths = max(1, round(grace_seconds * 10))
+            step_tenths = min(20, limit_tenths)
+            step = f"{step_tenths / 10:g}"
+            lines += [
+                "  waited=0",
+                f'  while [ "$waited" -lt {limit_tenths} ] && systemctl --user is-active --quiet "$unit"; do',
+                f"    sleep {step}",
+                f"    waited=$((waited+{step_tenths}))",
+                "  done",
+            ]
+        else:
+            lines += [
+                '  while systemctl --user is-active --quiet "$unit"; do',
+                "    sleep 2",
+                "  done",
+            ]
+    lines += [
+        '  if systemctl --user is-active --quiet "$unit"; then',
+        '    systemctl --user stop "$unit"',
+        "  fi",
+        "done",
+    ]
+    return "\n".join(lines)
+
+
+def stop_remote_dispatch(host: str, *, force: bool, grace_seconds: float, stop_all: bool = False) -> bool:
+    """Stop the detached build running on ``host``. Returns True if one was.
+
+    A detached build with no kill path is its own trap: it outlives the terminal
+    that started it by design, so the ordinary Ctrl-C no longer reaches it.
+
+    Stops exactly ONE build unless ``stop_all``. A host that takes `--on`
+    dispatches is by definition a shared builder, and every other running
+    ``bakar-dispatch-*`` unit on it is somebody else's build - killing those
+    without being asked destroys work nobody offered up. When more than one is
+    running, they are listed and nothing is signalled, so the caller can name
+    ``--all`` deliberately.
+
+    Returns False when nothing was running, so the caller exits nonzero the same
+    way a local ``bakar stop`` with no build does.
+    """
+    if host.startswith("-"):
+        console.print(f"[red]invalid host {host!r}[/]: must not begin with '-' (it would parse as an ssh option).")
+        return False
+
+    units = _running_dispatch_units(host)
+    if units is None:
+        return False
+    if not units:
+        console.print(f"no detached bakar build is running on {host}.")
+        return False
+    if len(units) > 1 and not stop_all:
+        console.print(f"[yellow]{len(units)} detached bakar builds are running on {host}[/]:")
+        for name in units:
+            console.print(f"  {name}")
+        console.print(
+            "refusing to stop more than one - on a shared builder the others are "
+            f"someone else's in-flight build.\nstop them all:  bakar stop --on {host} --all"
+        )
+        return False
+
+    console.print(f"stopping {len(units)} detached build(s) on {host}: {', '.join(units)}")
+    script = build_stop_units_script(units, force=force, grace_seconds=grace_seconds)
+    # Over `bash -s` stdin, NOT `ssh <host> <script>`. The remote login shell is
+    # fish, so an argument form is run as `fish -c '<script>'`: `waited=0` is
+    # "Unsupported use of '='" there, and fish validates the WHOLE buffer before
+    # executing anything - so nothing ran at all, not even the SIGINT, and this
+    # kill path was silently non-functional. Same reason the build path delivers
+    # its script this way; see the module docstring.
+    result = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", host, "bash", "-s"],
+        input=script,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        console.print(f"[red]stop failed on {host}[/] (exit {result.returncode}).")
+        return False
+    return True

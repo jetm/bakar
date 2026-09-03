@@ -355,17 +355,49 @@ bakar --sccache-dist build meta-avocado/kas/machine/qemux86-64.yml --on pc2 --ye
    precedence. The remote command is delivered fish-safely as a script over
    stdin to `ssh <host> bash -s` (the remote login shell is fish, which mangles
    a naive `ssh <host> '<cmd>'` or `bash -lc` invocation).
-5. **Live streaming + run-id** - the remote build output streams to your terminal
-   as it runs. On completion bakar prints the remote run-id and a copy-pasteable
+5. **Detach** - the remote build runs under a transient
+   `systemd-run --user --unit=bakar-dispatch-<timestamp>` unit, not as a child of
+   the ssh session. A child dies with the session: when the local dispatcher was
+   killed, sshd sent SIGHUP and took a 50-minute build with it. Under a transient
+   unit the build belongs to the remote user manager, so a local Ctrl-C, a
+   dropped link or a dead dispatcher costs you the log stream and nothing more.
+   On a remote where `systemd-run --user` is unavailable (no systemd, no user
+   runtime dir), the script falls back to the old coupled form rather than
+   failing the dispatch - the build then still dies with the session.
+
+   Detaching holds only while the remote user manager lives. Without lingering,
+   systemd stops that manager when your last session on the host ends, taking
+   its transient units with it - so bakar checks and prints a hint when the
+   remote user has no linger. Enable it once per build host:
+   `ssh <host> loginctl enable-linger`. bakar does not enable it for you: it is a
+   persistent change to someone else's machine.
+   The unit also carries your ssh session's `SSH_AUTH_SOCK`, proxy and TLS
+   trust-store variables, which a transient unit would otherwise not inherit -
+   without them a `SRC_URI = "git://...;protocol=ssh"` fetch or a fetch through
+   a corporate proxy would fail on the detached path only.
+6. **Live streaming + run-id** - the build writes to
+   `$XDG_RUNTIME_DIR/<unit>.log` on the remote (0700 and per-user, so another
+   local user cannot forge the exit-code sentinel that sits beside it) and your
+   terminal tails it. Losing that tail does not touch the build; re-attach with
+   `ssh <host> tail -F <the log path bakar printed>`. On completion bakar
+   prints the remote run-id and a copy-pasteable
    `ssh <host> bakar triage <run-id>` line so you (or Claude, over ssh) can
    inspect the run remotely.
-6. **Exit propagation** - a non-zero remote build exits the local command with
-   the same code; the failure message points at the remote triage command.
+7. **Exit propagation** - a non-zero remote build exits the local command with
+   the same code; the failure message points at the remote triage command. The
+   code comes from a sentinel file the remote wrapper writes beside the log, not
+   from the ssh session, which exits as soon as the unit starts. Losing the log
+   stream exits **75** instead: that is a transport failure, not a build result,
+   and the build is still running - so it has to be distinguishable from a build
+   that genuinely exited 255.
 
-A single `--on` dispatch opens up to four ssh connections (preflight, rsync's
-own ssh, the build session, and the run-id discovery find). On a high-latency
-link, a `~/.ssh/config` entry with `ControlMaster auto` and a `ControlPersist`
-window amortizes them onto one shared connection.
+Stop a detached build with `bakar stop --on <host>` - see [stop.md](stop.md).
+Ctrl-C on the dispatching terminal no longer reaches it.
+
+A single `--on` dispatch opens up to five ssh connections (preflight, rsync's
+own ssh, the launch, the log follower, and the run-id discovery find). On a
+high-latency link, a `~/.ssh/config` entry with `ControlMaster auto` and a
+`ControlPersist` window amortizes them onto one shared connection.
 
 ## On failure
 

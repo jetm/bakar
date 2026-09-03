@@ -18,6 +18,8 @@ bakar stop [OPTIONS] [KAS_YAML]
 
 | Flag | Description |
 |------|-------------|
+| `--on` | Stop the detached build dispatched to this host with `bakar build --on <host>`; resolves nothing locally, so it works from any directory |
+| `--all` | With `--on`, stop every detached build on the host instead of refusing when more than one is running |
 | `--force` | Skip the SIGINT grace period and escalate straight to the scoped SIGTERM -> SIGKILL reaper |
 | `--timeout` | Auto-escalate after this many seconds of graceful waiting instead of waiting for a Ctrl-C. Defaults to `[build] stop_grace_seconds` (30s); `0` waits unbounded |
 | `--manifest`, `-f` | Manifest filename used to resolve the BSP family (NXP/TI); mutually exclusive with a positional `KAS_YAML` |
@@ -40,6 +42,39 @@ bakar stop --force
 
 # Bound the graceful wait explicitly (auto-escalate after 10s)
 bakar stop --timeout 10
+
+# Stop a build dispatched with `bakar build --on pc2`
+bakar stop --on pc2
+```
+
+## Stopping a remote build (`--on <host>`)
+
+A build dispatched with `bakar build --on <host>` runs on the remote under a
+transient `bakar-dispatch-*` systemd user unit and deliberately outlives the
+terminal that started it, so Ctrl-C there no longer reaches it.
+`bakar stop --on <host>` is its kill path.
+
+It needs no workspace, no kas YAML and no run-id: it lists the host's active
+`bakar-dispatch-*.service` units over ssh and walks the same ladder the local
+stop does - `SIGINT` first, so bitbake drains its running tasks and writes its
+run log, then `systemctl --user stop` once `--timeout` seconds (default 30) are
+spent. `--timeout 0` waits unbounded, as it does locally. `--force` skips
+straight to the hard stop and costs you the run log.
+
+Exits 1 when no detached build is running on that host, matching a local
+`bakar stop` with no build to stop.
+
+It stops exactly one build. A host that takes `--on` dispatches is a shared
+builder by definition, so a second running `bakar-dispatch-*` unit is somebody
+else's work: when more than one is running, bakar lists them and signals
+nothing. Pass `--all` to stop every one deliberately.
+
+```bash
+# Refuses and lists them when two builds are running on pc2
+bakar stop --on pc2
+
+# Stop all of them
+bakar stop --on pc2 --all
 ```
 
 ## What it does

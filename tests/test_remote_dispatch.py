@@ -10,16 +10,19 @@ from __future__ import annotations
 
 import inspect
 import shlex
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from bakar import observability
+from bakar import build_scope, observability
 from bakar.steps.remote_dispatch import (
     RSYNC_EXCLUDES,
     assert_safe_workspace,
     build_remote_script,
     build_rsync_argv,
+    remote_log_expr,
     strip_dispatch_options,
 )
 
@@ -27,6 +30,22 @@ pytestmark = pytest.mark.unit
 
 WS = Path("/home/tiamarin/repos/work/peridio-scarthgap-build")
 HOST = "pc2"
+
+
+def _bash_syntax_error(script: str) -> str | None:
+    """Return bash's complaint about ``script``, or None when it parses.
+
+    Every script this module generates is delivered to a REMOTE bash, so nothing
+    local ever executes it and a substring assertion is the only thing standing
+    between a generated script and the host. That is exactly how the stop script
+    shipped as bash prose handed to a fish login shell: `"loginctl" in script`
+    passes whatever interpreter the string is eventually fed to.
+    """
+    bash = shutil.which("bash")
+    if bash is None:  # pragma: no cover - bash is present on every supported host
+        pytest.skip("bash is not installed")
+    result = subprocess.run([bash, "-n"], input=script, text=True, capture_output=True, check=False)
+    return None if result.returncode == 0 else (result.stderr.strip() or f"bash -n exit {result.returncode}")
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +294,117 @@ def test_dispatch_start_marker_uses_the_same_clock_as_run_ids() -> None:
 
 
 # ---------------------------------------------------------------------------
+# build_remote_script: detachment from the ssh session
+# ---------------------------------------------------------------------------
+
+
+def test_remote_script_detaches_the_build_from_the_ssh_session() -> None:
+    # The build must NOT be a plain child of `ssh <host> bash -s`: when the
+    # local dispatcher dies, sshd SIGHUPs the session and a child build dies
+    # with it (observed: a 50-minute cryptsetup-var build killed by "Keyboard
+    # Interrupt, closing down" / bitbake exit -15). Under a transient user unit
+    # the build is reparented to the user manager and survives.
+    script = build_remote_script(["build", "my.yml"], Path("/tmp/ws"), {}, sccache_off=True, unit="bakar-dispatch-u1")
+    assert "systemd-run --user --unit=bakar-dispatch-u1" in script
+    assert "--collect" in script
+    assert "--same-dir" in script
+
+
+def test_remote_script_emits_parseable_unit_and_log_markers() -> None:
+    # The local side references the unit (to poll it and to stop it) and tails
+    # the log, so both have to arrive over the launch stream in a parseable form.
+    # printf with a LITERAL format, not an interpolating `echo "...=$unit"`: the
+    # unit is public API and inside double quotes a `$(...)` in it would be
+    # command-substituted on the remote.
+    script = build_remote_script(["build"], Path("/tmp/ws"), {}, sccache_off=True, unit="bakar-dispatch-u2")
+    log = remote_log_expr("bakar-dispatch-u2")
+    assert "printf 'BAKAR_DISPATCH_UNIT=%s\\n' bakar-dispatch-u2" in script
+    assert f"printf 'BAKAR_DISPATCH_LOG=%s\\n' {log}" in script
+
+
+def test_remote_script_quotes_the_unit_everywhere_it_interpolates_it() -> None:
+    # `unit` is public API and reaches a `systemd-run --unit=`, a printf argument
+    # and a `>` redirect. Its siblings in the same function (cwd, env tokens,
+    # remote_argv) are all shlex-quoted; leaving this one bare was the odd one
+    # out, and only tests pass a hand-written unit today.
+    evil = "u$(touch /tmp/pwned) x"
+    script = build_remote_script(["build"], Path("/tmp/ws"), {}, sccache_off=True, unit=evil)
+    assert f"--unit={shlex.quote(evil)}" in script
+    assert f"printf 'BAKAR_DISPATCH_UNIT=%s\\n' {shlex.quote(evil)}" in script
+    assert shlex.quote(f"{evil}.log") in script
+    assert _bash_syntax_error(script) is None
+
+
+def test_remote_script_records_the_build_exit_code_in_a_sentinel() -> None:
+    # The unit is `--collect`ed away once it exits, so `systemctl show` cannot be
+    # trusted to still hold the exit status. The wrapper writes it to a sentinel
+    # file beside the log instead, which is also what ends the local follower.
+    script = build_remote_script(["build"], Path("/tmp/ws"), {}, sccache_off=True, unit="bakar-dispatch-u3")
+    log = remote_log_expr("bakar-dispatch-u3")
+    assert f"{log}.rc" in script
+
+
+def test_dispatch_log_lives_under_the_per_user_runtime_dir_not_tmp() -> None:
+    # /tmp is drwxrwxrwt and the log path is disclosed in the unit's argv
+    # (world-readable via /proc), while the `.rc` sentinel does not exist until
+    # the build ENDS - so any other local user had the whole build duration to
+    # `printf '0\n' > /tmp/<name>.log.rc` and make a failed build report success,
+    # or to pre-place a symlink there for a truncate primitive.
+    # $XDG_RUNTIME_DIR is 0700 and per-user.
+    assert remote_log_expr("bakar-dispatch-u7").startswith('"$XDG_RUNTIME_DIR"/')
+    script = build_remote_script(["build"], Path("/tmp/ws"), {}, sccache_off=True, unit="bakar-dispatch-u7")
+    assert "/tmp/bakar-dispatch-u7.log" not in script
+    # The unit's own bash writes the log, so it must resolve the same value the
+    # follower does rather than betting on the user manager carrying it.
+    assert '--setenv=XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"' in script
+
+
+def test_remote_script_forwards_session_env_the_transient_unit_would_lose() -> None:
+    # A transient unit inherits the USER MANAGER's environment, not the ssh
+    # session's. The old coupled `exec` form carried these silently; the detached
+    # form dropped them just as silently, so an agent-forwarded ssh key or a
+    # corporate proxy broke on the detached path only - i.e. exactly on the hosts
+    # this feature targets.
+    script = build_remote_script(["build"], Path("/tmp/ws"), {}, sccache_off=True, unit="bakar-dispatch-u8")
+    for name in ("SSH_AUTH_SOCK", "https_proxy", "NO_PROXY", "SSL_CERT_FILE", "LC_ALL"):
+        assert name in script
+    # Guarded on non-empty: an unset var must be left alone, not turned into an
+    # empty-string OVERRIDE (an empty https_proxy disables a proxy rather than
+    # deferring to whatever the manager environment holds).
+    assert 'if [ -n "${!v:-}" ]; then setenv+=("--setenv=$v=${!v}"); fi' in script
+    assert '"${setenv[@]}"' in script
+
+
+def test_remote_script_falls_back_to_exec_when_systemd_run_unavailable() -> None:
+    # A remote with no systemd-run or no user runtime dir (WSL, a minimal
+    # container) must still build - falling back to the old coupled `exec` form
+    # rather than failing the dispatch. The fallback is the script's last line,
+    # reached when the availability probe's `if` does not exec.
+    script = build_remote_script(["build", "my.yml"], Path("/tmp/ws"), {}, sccache_off=True, unit="bakar-dispatch-u4")
+    lines = script.splitlines()
+    assert lines[-1] == "exec env BAKAR_SCCACHE_DIST=0 bakar build my.yml"
+    assert lines[-2] == "fi"
+
+
+def test_remote_script_probe_mirrors_the_local_availability_check() -> None:
+    # The remote probe cannot call systemd_run_available() - it runs in bash on
+    # another host - so it mirrors it. Pin the mirror: both check the binary,
+    # XDG_RUNTIME_DIR, and then actually create a throwaway scope, because on
+    # WSL and in minimal containers the first two pass while --user cannot reach
+    # the manager bus. If the Python probe grows a fourth precondition this test
+    # should fail rather than let the two drift apart.
+    script = build_remote_script(["build"], Path("/tmp/ws"), {}, sccache_off=True, unit="bakar-dispatch-u5")
+    # Sliced out of the module source rather than read off the attribute: the
+    # suite-wide autouse fixture in conftest replaces systemd_run_available with
+    # a `lambda: False`, so inspect.getsource on the attribute returns the stub.
+    probe_src = inspect.getsource(build_scope).split("def systemd_run_available", 1)[1].split("\ndef ", 1)[0]
+    for token in ("systemd-run", "XDG_RUNTIME_DIR"):
+        assert token in probe_src
+        assert token in script
+    assert "--user --scope --quiet" in script
+
+
+# ---------------------------------------------------------------------------
 # assert_safe_workspace
 # ---------------------------------------------------------------------------
 
@@ -368,12 +498,31 @@ class FakeSubprocess:
         self.popen_kwargs: dict = {}
         self.broken_pipe = False
         self.last_proc: _FakeProc | None = None
+        # Second and later Popens are the detached-dispatch log follower; left
+        # None every Popen replays the launch stream (the fallback path, which
+        # only ever opens one).
+        self.follow_lines: list[str] | None = None
+        self.follow_rc = 0
+        self.procs: list[_FakeProc] = []
+        self.systemctl_stdout = ""
+        self.systemctl_rc = 0
+        self.stop_rc = 0
+        # Every `subprocess.run` call's `input=` kwarg, positionally aligned with
+        # `calls`. The scripts that matter are delivered over `bash -s` stdin, not
+        # as an ssh argument, so argv alone no longer shows what was run.
+        self.run_inputs: list[str | None] = []
 
     def run(self, argv, **kwargs) -> _Result:
         argv = list(argv)
         self.calls.append(("run", argv))
-        # Preflight: ssh -o BatchMode=yes <host> bash -s (probe over non-login bash).
+        stdin_script = kwargs.get("input")
+        self.run_inputs.append(stdin_script)
+        # Both the preflight probe and the stop script ride `ssh <host> bash -s`;
+        # they are told apart by what is written to stdin, exactly as the remote
+        # host would tell them apart.
         if argv[0] == "ssh" and argv[-1] == "-s":
+            if stdin_script and "systemctl --user" in stdin_script:
+                return _Result(self.stop_rc)
             return _Result(self.reachable_rc, stdout=self.remote_version, stderr=self.reachable_stderr)
         if argv[0] == "bakar" and "--version" in argv:
             return _Result(0, stdout=self.local_version)
@@ -387,13 +536,20 @@ class FakeSubprocess:
             return _Result(self.rsync_rc)
         if argv[0] == "ssh" and "find" in argv[-1]:
             return _Result(0, stdout=self.find_stdout)
+        if argv[0] == "ssh" and "systemctl" in argv[-1]:
+            return _Result(self.systemctl_rc, stdout=self.systemctl_stdout)
         return _Result(0)
 
     def Popen(self, argv, **kwargs) -> _FakeProc:  # noqa: N802
         self.calls.append(("Popen", list(argv)))
         self.popen_kwargs = kwargs
-        self.last_proc = _FakeProc(self.popen_lines, self.popen_rc, broken=self.broken_pipe)
-        return self.last_proc
+        if self.procs and self.follow_lines is not None:
+            proc = _FakeProc(self.follow_lines, self.follow_rc, broken=self.broken_pipe)
+        else:
+            proc = _FakeProc(self.popen_lines, self.popen_rc, broken=self.broken_pipe)
+        self.procs.append(proc)
+        self.last_proc = proc
+        return proc
 
 
 from bakar.steps import remote_dispatch as rd  # noqa: E402
@@ -418,6 +574,15 @@ def fake_sp(monkeypatch: pytest.MonkeyPatch) -> FakeSubprocess:
 
 def _run_call_argvs(fake: FakeSubprocess) -> list[list[str]]:
     return [argv for kind, argv in fake.calls if kind == "run"]
+
+
+def _last_remote_stdin(fake: FakeSubprocess) -> str:
+    """Return the last script delivered over an ``ssh ... bash -s`` stdin."""
+    pairs = list(zip(_run_call_argvs(fake), fake.run_inputs, strict=True))
+    for argv, stdin_script in reversed(pairs):
+        if argv[0] == "ssh" and argv[-1] == "-s" and stdin_script:
+            return stdin_script
+    raise AssertionError("no script was delivered over ssh bash -s stdin")
 
 
 def _real_rsync_index(fake: FakeSubprocess) -> int:
@@ -874,6 +1039,441 @@ def test_remote_only_dirs_ssh_failure_yields_empty(tmp_path: Path, monkeypatch: 
     fake = _ListingSubprocess(255, "")
     monkeypatch.setattr(rd, "subprocess", fake)
     assert rd._remote_only_dirs(tmp_path, HOST) == []
+
+
+# --- detached dispatch: the local side follows the log, it does not own it ---
+
+
+_DETACHED_LAUNCH = [
+    "BAKAR_DISPATCH_START=20260716-120000\n",
+    "BAKAR_DISPATCH_UNIT=bakar-dispatch-20260716-120000-aabbcc\n",
+    "BAKAR_DISPATCH_LOG=/tmp/bakar-dispatch-20260716-120000-aabbcc.log\n",
+]
+
+
+def test_dispatch_detached_launch_tails_the_remote_log(fake_sp: FakeSubprocess) -> None:
+    # The launch ssh returns as soon as the unit is started, so the build's
+    # output arrives over a SECOND ssh that tails the log. Losing that follower
+    # costs the stream and nothing else - which is the whole point of detaching.
+    fake_sp.popen_lines = _DETACHED_LAUNCH
+    fake_sp.follow_lines = ["compiling\n", "BAKAR_DISPATCH_RC=0\n"]
+    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-235959\n"
+    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    assert rc == 0
+    popens = [argv for kind, argv in fake_sp.calls if kind == "Popen"]
+    assert len(popens) == 2
+    follow_script = fake_sp.procs[1].stdin.buffer
+    assert "tail -n +1 -F /tmp/bakar-dispatch-20260716-120000-aabbcc.log" in follow_script
+    assert "bakar-dispatch-20260716-120000-aabbcc.service" in follow_script
+
+
+def test_dispatch_detached_exit_code_comes_from_the_sentinel(fake_sp: FakeSubprocess) -> None:
+    # The launch ssh exits 0 the moment the unit starts, so its exit code says
+    # nothing about the build. The build's own code rides back in the follower's
+    # BAKAR_DISPATCH_RC line, written from the remote rc sentinel.
+    fake_sp.popen_lines = _DETACHED_LAUNCH
+    fake_sp.popen_rc = 0
+    fake_sp.follow_lines = ["boom\n", "BAKAR_DISPATCH_RC=42\n"]
+    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    assert rc == 42
+
+
+def test_dispatch_detached_rc_line_is_not_echoed_to_the_user(
+    fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The sentinel line is transport, not build output.
+    fake_sp.popen_lines = _DETACHED_LAUNCH
+    fake_sp.follow_lines = ["real build output\n", "BAKAR_DISPATCH_RC=0\n"]
+    rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    _cap = capsys.readouterr()
+    out = _cap.out + _cap.err
+    assert "real build output" in out
+    assert "BAKAR_DISPATCH_RC" not in out
+
+
+def test_dispatch_detached_lost_follower_says_the_build_survives(
+    fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A dropped link ends the follower with no sentinel line. That is NOT a build
+    # failure, and reporting it as one would send someone hunting a build error
+    # that never happened - so say plainly that the build is still running and
+    # name the command that stops it.
+    #
+    # This used to assert `rc == 255`, which contradicted its own comment: 255 is
+    # the exit code a remote build can genuinely produce, so a caller could not
+    # tell "the build failed with 255" from "I lost the stream and do not know how
+    # it ended". _DISPATCH_LOST_EXIT is outside that space.
+    fake_sp.popen_lines = _DETACHED_LAUNCH
+    fake_sp.follow_lines = ["partial output\n"]
+    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    assert rc == rd._DISPATCH_LOST_EXIT
+    assert rc != 255
+    _cap = capsys.readouterr()
+    out = _cap.out + _cap.err
+    assert "keeps running" in out
+    assert f"bakar stop --on {HOST}" in out
+
+
+def test_dispatch_lost_stream_does_not_narrate_a_build_failure(
+    fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # _surface_run_id takes its `rc != 0` branch on a lost stream and, finding no
+    # newer run dir, prints "no remote run dir was created - the build failed
+    # before starting" about a build that is healthy and still running. A lost
+    # stream must not reach it at all.
+    fake_sp.popen_lines = _DETACHED_LAUNCH
+    fake_sp.follow_lines = ["compiling\n"]
+    fake_sp.find_stdout = ""
+    rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    _cap = capsys.readouterr()
+    out = _cap.out + _cap.err
+    assert "the build failed before starting" not in out
+    assert "remote run-id" not in out
+
+
+def test_follower_broken_pipe_is_a_lost_stream_not_a_build_failure(
+    fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The follower's OWN stdin write can break - the link drops between launching
+    # the unit and attaching the tail. The build is already running at that point,
+    # so this is the same lost-stream case as an absent sentinel, and the only
+    # path that was previously untested.
+    fake_sp.broken_pipe = True
+    _rc, tail, finished = rd._follow_remote_log(HOST, "u", "/run/user/1000/u.log")
+    assert finished is False
+    assert tail == []
+    _cap = capsys.readouterr()
+    assert f"connection to {HOST} lost" in _cap.out + _cap.err
+
+
+@pytest.mark.parametrize("sentinel_line", ["BAKAR_DISPATCH_LOST=1\n", "not-a-number\n"])
+def test_dispatch_malformed_rc_sentinel_is_a_lost_stream(fake_sp: FakeSubprocess, sentinel_line: str) -> None:
+    # A truncated or garbage `.rc` means the build's exit status is UNKNOWN. It
+    # used to split two ways, both wrong: an empty sentinel defaulted to 255 and
+    # was reported as a build that failed with 255, while garbage produced no
+    # match and was reported as a lost connection. Neither is a build result, so
+    # both take the lost-stream path.
+    fake_sp.popen_lines = _DETACHED_LAUNCH
+    fake_sp.follow_lines = ["output\n", sentinel_line]
+    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    assert rc == rd._DISPATCH_LOST_EXIT
+
+
+def test_follow_script_treats_an_activating_unit_as_live() -> None:
+    # systemd-run returns when the job is ENQUEUED, so the first poll routinely
+    # lands on a unit that has not reached `active` yet. `is-active --quiet` is
+    # non-zero for `activating`, which declared a healthy build lost about four
+    # seconds after dispatch. _running_dispatch_units already counts it as live
+    # for the same reason.
+    script = rd.build_follow_script("u", "/run/user/1000/u.log")
+    assert "activating" in script
+    assert "is-active --quiet" not in script
+
+
+def test_follow_script_does_not_conclude_gone_from_one_failed_probe() -> None:
+    # The window between the unit exiting and the wrapper flushing the sentinel
+    # reads as "gone" exactly once on a perfectly healthy build.
+    script = rd.build_follow_script("u", "/run/user/1000/u.log")
+    assert "misses=$((misses+1))" in script
+    assert f'[ "$misses" -ge {rd._FOLLOW_LIVENESS_MISSES} ]' in script
+    assert rd._FOLLOW_LIVENESS_MISSES > 1
+
+
+def test_follow_script_carries_the_launch_scripts_manager_bus_guards() -> None:
+    # The backstop is the same probe the launch script gates on. Without
+    # XDG_RUNTIME_DIR or a reachable manager bus the liveness signal cannot be
+    # READ, which is not the same as the unit being gone - and a follower that
+    # confuses the two declares a live build lost on every poll.
+    script = rd.build_follow_script("u", "/run/user/1000/u.log")
+    assert "XDG_RUNTIME_DIR:-" in script
+    assert "probe=0" in script
+
+
+def test_follow_script_reports_a_malformed_sentinel_as_lost_not_as_an_exit_code() -> None:
+    # The remote half of the case above: `${rc:-255}` turned an EMPTY sentinel
+    # into the string "255", which the local side then read as a real exit code.
+    script = rd.build_follow_script("u", "/run/user/1000/u.log")
+    assert "BAKAR_DISPATCH_LOST=1" in script
+    assert "${rc:-255}" not in script
+
+
+def test_build_stream_ignores_dispatch_markers_after_the_launch_phase(fake_sp: FakeSubprocess) -> None:
+    # On the fallback path this stream IS the build's own output. A bitbake
+    # environment dump, or a recipe that greps bakar's sources, prints
+    # `BAKAR_DISPATCH_UNIT=...` - and honouring it made the code discard the real
+    # proc.wait() rc, announce a detach that never happened, and open a follower
+    # against a unit that does not exist.
+    fake_sp.popen_lines = [
+        "BAKAR_DISPATCH_START=20260716-120000\n",
+        "NOTE: recipe foo: compiling\n",
+        "BAKAR_DISPATCH_UNIT=forged\n",
+        "BAKAR_DISPATCH_LOG=/tmp/forged.log\n",
+    ]
+    fake_sp.popen_rc = 3
+    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    assert rc == 3
+    # One Popen: no follower was opened against the forged unit.
+    assert len([argv for kind, argv in fake_sp.calls if kind == "Popen"]) == 1
+
+
+def test_follower_ignores_a_forged_rc_line_in_the_build_output(fake_sp: FakeSubprocess) -> None:
+    # The followed stream IS the build's log, so an anchored pattern alone is not
+    # enough - only the stream's LAST line, which the follow script writes after
+    # tail is dead, is eligible to be the sentinel.
+    fake_sp.popen_lines = _DETACHED_LAUNCH
+    fake_sp.follow_lines = ["BAKAR_DISPATCH_RC=0\n", "ERROR: build failed\n", "BAKAR_DISPATCH_RC=1\n"]
+    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    assert rc == 1
+
+
+def test_launch_buffer_stays_bounded_on_the_fallback_path(fake_sp: FakeSubprocess) -> None:
+    # The `launch` list used to receive EVERY build line. On the detached path it
+    # holds five; on the systemd-run-unavailable fallback it received the whole
+    # Yocto stream, bypassing the sibling deque(maxlen=200) whose comment is
+    # exactly "cap memory on a long/verbose Yocto build stream".
+    fake_sp.popen_lines = ["BAKAR_DISPATCH_START=20260716-120000\n", *[f"line {i}\n" for i in range(5000)]]
+    rc, captured, finished = rd._stream_remote_build(HOST, "script")
+    assert finished is True
+    assert rc == 0
+    # The dispatch-start fence survives (it rides the launch phase) while the
+    # build stream itself stays capped at the deque bound.
+    assert captured[0].startswith("BAKAR_DISPATCH_START=")
+    assert len(captured) <= 201
+
+
+def test_remote_script_warns_when_the_remote_user_has_no_linger() -> None:
+    # Without `loginctl enable-linger`, the user manager is stopped when the
+    # user's last session ends - taking its transient units, and the detached
+    # build, with it. That is the exact failure this change exists to remove, so
+    # it must be visible rather than silent: the script reports the condition and
+    # the local side turns it into an actionable hint.
+    script = build_remote_script(["build"], Path("/tmp/ws"), {}, sccache_off=True, unit="bakar-dispatch-u6")
+    assert "loginctl" in script
+    assert "BAKAR_DISPATCH_WARN=linger-disabled" in script
+
+
+def test_dispatch_detached_surfaces_the_linger_warning(
+    fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_sp.popen_lines = [*_DETACHED_LAUNCH, "BAKAR_DISPATCH_WARN=linger-disabled\n"]
+    fake_sp.follow_lines = ["BAKAR_DISPATCH_RC=0\n"]
+    rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    _cap = capsys.readouterr()
+    out = _cap.out + _cap.err
+    assert f"ssh {HOST} loginctl enable-linger" in out
+    # The marker itself is transport, not something to echo raw.
+    assert "BAKAR_DISPATCH_WARN" not in out
+
+
+def test_dispatch_detached_failed_launch_is_not_followed(fake_sp: FakeSubprocess) -> None:
+    # The markers are echoed BEFORE systemd-run runs, so they are present even
+    # when the unit fails to start. A nonzero launch means there is no unit to
+    # follow; tailing a log that will never appear would hang forever.
+    fake_sp.popen_lines = _DETACHED_LAUNCH
+    fake_sp.popen_rc = 1
+    fake_sp.follow_lines = ["must not be reached\n"]
+    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    assert rc == 1
+    assert len([argv for kind, argv in fake_sp.calls if kind == "Popen"]) == 1
+
+
+def test_dispatch_detached_keeps_the_dispatch_start_fence(
+    fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The marker rides on the LAUNCH stream while the build output rides on the
+    # follower's, and only the follower's tail is bounded. Both have to reach
+    # run-id surfacing or a long build would evict the fence and resurrect the
+    # stale-run-id bug the fence exists to prevent.
+    fake_sp.popen_lines = _DETACHED_LAUNCH
+    fake_sp.follow_lines = [*[f"line {i}\n" for i in range(500)], "BAKAR_DISPATCH_RC=0\n"]
+    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000\n"
+    rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    _cap = capsys.readouterr()
+    out = _cap.out + _cap.err
+    # 20260716-000000 predates the 20260716-120000 dispatch-start marker.
+    assert "no remote run dir was created" in out
+
+
+# --- bakar stop --on <host>: the kill path for a detached build --------------
+
+
+def test_stop_remote_dispatch_signals_then_stops_running_units(fake_sp: FakeSubprocess) -> None:
+    fake_sp.systemctl_stdout = "bakar-dispatch-20260716-120000-aabbcc.service loaded active running\n"
+    assert rd.stop_remote_dispatch(HOST, force=False, grace_seconds=30) is True
+    stop_cmd = _last_remote_stdin(fake_sp)
+    # SIGINT first (bitbake drains gracefully on it), `systemctl stop` only after
+    # the grace period - the same ladder the local `bakar stop` walks.
+    assert "--signal=SIGINT" in stop_cmd
+    assert "systemctl --user stop" in stop_cmd
+    assert stop_cmd.index("--signal=SIGINT") < stop_cmd.index("systemctl --user stop")
+    assert "bakar-dispatch-20260716-120000-aabbcc.service" in stop_cmd
+
+
+def test_stop_script_is_delivered_over_bash_stdin_not_as_an_ssh_argument(fake_sp: FakeSubprocess) -> None:
+    # The remote LOGIN shell is fish, so `ssh <host> '<script>'` runs it as
+    # `fish -c '<script>'`. Measured against real fish: `waited=0` is
+    # "fish: Unsupported use of '='" -> exit 127, and fish validates the whole
+    # buffer BEFORE executing, so nothing ran at all - not even the SIGINT. The
+    # only kill path a detached build has was completely non-functional.
+    fake_sp.systemctl_stdout = "bakar-dispatch-20260716-120000-aabbcc.service loaded active running\n"
+    assert rd.stop_remote_dispatch(HOST, force=False, grace_seconds=30) is True
+    ssh_calls = [argv for argv in _run_call_argvs(fake_sp) if argv[0] == "ssh"]
+    delivery = ssh_calls[-1]
+    assert delivery == ["ssh", "-o", "BatchMode=yes", HOST, "bash", "-s"]
+    # And the script itself went to stdin, not into argv.
+    assert "systemctl --user" in _last_remote_stdin(fake_sp)
+
+
+def test_stop_remote_dispatch_force_skips_the_grace_period(fake_sp: FakeSubprocess) -> None:
+    fake_sp.systemctl_stdout = "bakar-dispatch-20260716-120000-aabbcc.service loaded active running\n"
+    assert rd.stop_remote_dispatch(HOST, force=True, grace_seconds=30) is True
+    stop_cmd = _last_remote_stdin(fake_sp)
+    assert "--signal=SIGINT" not in stop_cmd
+    assert "systemctl --user stop" in stop_cmd
+
+
+def test_stop_remote_dispatch_reports_when_nothing_is_running(
+    fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_sp.systemctl_stdout = ""
+    assert rd.stop_remote_dispatch(HOST, force=False, grace_seconds=30) is False
+    _cap = capsys.readouterr()
+    out = _cap.out + _cap.err
+    assert "no detached bakar build" in out
+
+
+def test_stop_remote_dispatch_catches_a_still_starting_unit(fake_sp: FakeSubprocess) -> None:
+    # `activating` is a unit that has been queued but not yet reached active.
+    # Skipping it reports "nothing to stop" for a build that is about to run,
+    # and the user reasonably concludes it is already gone.
+    fake_sp.systemctl_stdout = "bakar-dispatch-20260716-120000-aabbcc.service loaded activating start\n"
+    assert rd.stop_remote_dispatch(HOST, force=False, grace_seconds=30) is True
+
+
+def test_stop_remote_dispatch_reads_the_active_column_not_the_description(fake_sp: FakeSubprocess) -> None:
+    # The DESCRIPTION column is the unit's own command line, so for a bakar
+    # dispatch it carries the whole build invocation - and a recipe or path with
+    # "active" in it would otherwise resurrect a dead unit as a running one.
+    fake_sp.systemctl_stdout = (
+        "bakar-dispatch-20260716-120000-aabbcc.service loaded inactive dead "
+        "[systemd-run] bakar bitbake -c build active\n"
+    )
+    assert rd.stop_remote_dispatch(HOST, force=False, grace_seconds=30) is False
+
+
+def test_stop_script_waits_unbounded_when_grace_is_zero() -> None:
+    # `--timeout 0` documents an unbounded graceful wait (docs/stop.md), and the
+    # local stop honours it. A bounded loop with a 0 limit means the opposite -
+    # no wait at all - so the SIGINT would be followed instantly by the hard
+    # stop, costing the run log the graceful path exists to preserve.
+    script = rd.build_stop_units_script(["bakar-dispatch-u.service"], force=False, grace_seconds=0)
+    assert "--signal=SIGINT" in script
+    assert "-lt 0" not in script
+    assert "waited" not in script
+
+
+def test_stop_remote_dispatch_ignores_inactive_units(fake_sp: FakeSubprocess) -> None:
+    # `list-units --all` lists a unit that has already exited too; stopping one
+    # is a no-op that would report success for a build nobody stopped.
+    fake_sp.systemctl_stdout = "bakar-dispatch-20260716-120000-aabbcc.service loaded inactive dead\n"
+    assert rd.stop_remote_dispatch(HOST, force=False, grace_seconds=30) is False
+
+
+def test_stop_remote_dispatch_rejects_hyphen_prefixed_host(fake_sp: FakeSubprocess) -> None:
+    # Same injection guard the dispatch path carries: a leading '-' would parse
+    # as an ssh option.
+    assert rd.stop_remote_dispatch("-oProxyCommand=evil", force=False, grace_seconds=30) is False
+    assert fake_sp.calls == []
+
+
+def test_stop_remote_dispatch_ssh_failure_is_not_a_success(fake_sp: FakeSubprocess) -> None:
+    fake_sp.systemctl_rc = 255
+    assert rd.stop_remote_dispatch(HOST, force=False, grace_seconds=30) is False
+
+
+_TWO_UNITS = (
+    "bakar-dispatch-20260716-120000-aabbcc.service loaded active running\n"
+    "bakar-dispatch-20260716-130000-ddeeff.service loaded active running\n"
+)
+
+
+def test_stop_remote_dispatch_refuses_to_kill_more_than_one_build(
+    fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A host that accepts `--on` dispatches is a shared builder by definition, so
+    # the second running unit is somebody else's build. `bakar stop --on <host>`
+    # advertises "the detached build", singular, and used to kill every one of
+    # them with no confirmation.
+    fake_sp.systemctl_stdout = _TWO_UNITS
+    assert rd.stop_remote_dispatch(HOST, force=False, grace_seconds=30) is False
+    _cap = capsys.readouterr()
+    out = _cap.out + _cap.err
+    assert "aabbcc.service" in out
+    assert "ddeeff.service" in out
+    assert "--all" in out
+    # Nothing was signalled: the only ssh call is the read-only listing.
+    assert [argv for argv in _run_call_argvs(fake_sp) if argv[-1] == "-s"] == []
+
+
+def test_stop_remote_dispatch_all_opts_into_stopping_every_build(fake_sp: FakeSubprocess) -> None:
+    fake_sp.systemctl_stdout = _TWO_UNITS
+    assert rd.stop_remote_dispatch(HOST, force=False, grace_seconds=30, stop_all=True) is True
+    script = _last_remote_stdin(fake_sp)
+    assert "aabbcc.service" in script
+    assert "ddeeff.service" in script
+
+
+def test_stop_script_still_waits_for_a_fractional_grace() -> None:
+    # `int(0.5)` is 0, so `--timeout 0.5` generated `[ "$waited" -lt 0 ]` - a loop
+    # that never runs. The graceful wait was skipped entirely and the hard stop
+    # landed a moment after the SIGINT, which is what `--timeout 0` documents and
+    # the opposite of what a positive grace asks for.
+    script = rd.build_stop_units_script(["u.service"], force=False, grace_seconds=0.5)
+    assert "-lt 0 ]" not in script
+    assert "waited=0" in script
+    assert "sleep 0.5" in script
+    assert _bash_syntax_error(script) is None
+
+
+def test_stop_script_keeps_its_two_second_cadence_for_the_default_grace() -> None:
+    # The fractional fix counts in tenths; the common 30s case must not turn into
+    # 150 systemctl forks.
+    script = rd.build_stop_units_script(["u.service"], force=False, grace_seconds=30)
+    assert "sleep 2\n" in script
+    assert "waited=$((waited+20))" in script
+    assert "-lt 300 ]" in script
+
+
+# --- generated scripts must PARSE, not merely contain the right substrings ----
+
+
+@pytest.mark.parametrize(
+    ("name", "script_factory"),
+    [
+        (
+            "launch",
+            lambda: rd.build_remote_script(
+                ["build", "my.yml"],
+                Path("/tmp/ws"),
+                {"BAKAR_MACHINE": "imx8mp", "KAS_WORK_DIR": "/tmp/k"},
+                sccache_off=True,
+                unit="bakar-dispatch-u9",
+            ),
+        ),
+        ("follow", lambda: rd.build_follow_script("bakar-dispatch-u9", "/run/user/1000/bakar-dispatch-u9.log")),
+        ("stop", lambda: rd.build_stop_units_script(["a.service", "b.service"], force=False, grace_seconds=30)),
+        ("stop-force", lambda: rd.build_stop_units_script(["a.service"], force=True, grace_seconds=30)),
+        ("stop-unbounded", lambda: rd.build_stop_units_script(["a.service"], force=False, grace_seconds=0)),
+    ],
+)
+def test_every_generated_script_is_valid_bash(name: str, script_factory) -> None:
+    # Nothing local ever runs these - they are written to a remote bash's stdin -
+    # so without this the only check on them is `"loginctl" in script`. That is
+    # precisely how the stop script shipped as bash prose handed to a fish login
+    # shell: a substring assertion passes whatever interpreter eventually reads
+    # the string.
+    error = _bash_syntax_error(script_factory())
+    assert error is None, f"{name} script is not valid bash: {error}"
 
 
 def test_remote_only_dirs_missing_local_workspace_yields_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
