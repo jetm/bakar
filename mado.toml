@@ -4,11 +4,20 @@
 #   CLAUDE.md               -> devtool/generated/CLAUDE-bakar.md (generated)
 #   .claude/rules/python.md -> devtool/claude/rules/python.md (a shared rule)
 #
-# They pass today, which is exactly when to exclude them: a finding introduced
-# on devtool's side would block a commit here against a file this repo cannot
-# fix, and "fixing" it would mean editing another repository through a link.
+# A finding introduced on devtool's side would otherwise block a commit here
+# against a file this repo cannot fix, and "fixing" it would mean editing
+# another repository through a link.
+#
+# All three are already gitignored, and mado honours .gitignore, so none of
+# these entries changes the result today. They stay because that behaviour is
+# unsettled upstream - akiomik/mado#346 is open on whether .gitignore should
+# apply without a real git repository - and because a run over an export or a
+# git-less checkout would see them with nothing else to stop it.
+#
+# There is no generated/ directory in this repository, so no entry for one. That
+# pattern was carried over from devtool, which does have the directory and needs
+# it; here it named a path that does not exist.
 exclude = [
-  "**/generated/**",
   "ARCHITECTURE.md",
   "CLAUDE.md",
   ".claude/rules/python.md",
