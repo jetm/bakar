@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.3] - 2026-09-03
+
+### Fixed
+
+- Fixed false build failure reports during remote dispatch when the remote host uses a non-Bash login shell (such as Fish).
+
 ## [0.29.2] - 2026-09-03
 
 ### Added
@@ -712,7 +718,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.29.2...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.29.3...HEAD
+[0.29.3]: https://github.com/jetm/bakar/compare/v0.29.2...v0.29.3
 [0.29.2]: https://github.com/jetm/bakar/compare/v0.29.0...v0.29.2
 [0.29.0]: https://github.com/jetm/bakar/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/jetm/bakar/compare/v0.27.1...v0.28.0
