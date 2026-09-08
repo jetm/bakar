@@ -460,7 +460,6 @@ class _BbsetupCtx:
     keep_going: bool
     show_layers: bool
     sstate_mirror: str | None
-    sccache_dist: bool = False
     sccache_scheduler: str | None = None
     target: str | None = None
     dry_run_script: str | None = None
@@ -739,7 +738,6 @@ def _run_single_preset_release(
     clean: bool,
     show_layers: bool,
     sstate_mirror: str | None,
-    sccache_dist: bool = False,
     sccache_scheduler: str | None = None,
     target: str | None = None,
 ) -> int:
@@ -1163,7 +1161,6 @@ def build(
                 clean=clean,
                 show_layers=show_layers,
                 sstate_mirror=sstate_mirror,
-                sccache_dist=sccache_dist,
                 sccache_scheduler=sccache_scheduler,
                 target=target,
             )
@@ -1208,7 +1205,6 @@ def build(
                 keep_going=keep_going,
                 show_layers=show_layers,
                 sstate_mirror=sstate_mirror,
-                sccache_dist=sccache_dist,
                 sccache_scheduler=sccache_scheduler,
                 target=target,
                 dry_run_script=dry_run_script,
