@@ -2344,7 +2344,7 @@ def test_probe_build_daemon_uses_detect_runtime_not_hardcoded_docker(
     """``probe_build_daemon`` resolves the runtime via ``build_stop.detect_runtime``
     instead of hardcoding ``"docker"``, so a podman host's ``ps``/``exec`` argv
     uses ``podman``."""
-    monkeypatch.setattr("bakar.diagnostics.build_stop.detect_runtime", lambda: "podman")
+    monkeypatch.setattr("bakar.probes.build_stop.detect_runtime", lambda: "podman")
 
     seen_cmds: list[list[str]] = []
 
