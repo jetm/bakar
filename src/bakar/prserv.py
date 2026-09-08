@@ -33,7 +33,6 @@ tracks liveness by TCP-probing the listen port rather than by a Popen PID.
 
 from __future__ import annotations
 
-import socket
 import subprocess
 import time
 from contextlib import suppress
@@ -84,25 +83,6 @@ def _state_dir(state_key: Path) -> Path:
     return state_key / _STATE_SUBDIR
 
 
-def _probe_host(bind_host: str) -> str:
-    """Return the address to TCP-probe for ``bind_host``.
-
-    0.0.0.0 (and empty) are bind-only addresses, so probe loopback for them;
-    a specific host (localhost or a cluster IP) is probed directly.
-    """
-    return "127.0.0.1" if bind_host in ("0.0.0.0", "") else bind_host
-
-
-def _probe(host: str, port: int, *, timeout: float = 0.5) -> bool:
-    """Return True iff a TCP connection to ``host:port`` succeeds."""
-    try:
-        sock = socket.create_connection((host, port), timeout=timeout)
-    except OSError:
-        return False
-    sock.close()
-    return True
-
-
 def _clean_stale_pidfiles(port: int) -> None:
     """Remove any ``/tmp/PRServer_*_<port>.pid`` left by a crashed daemon.
 
@@ -125,7 +105,7 @@ def binary_available(binary_root: Path) -> bool:
 
 def is_running(state_key: Path, *, bind_host: str = "localhost") -> bool:
     """Return True iff the daemon for ``state_key`` is listening on its port."""
-    return _probe(_probe_host(bind_host), _workspace_port(state_key))
+    return central_service.is_listening(bind_host, _workspace_port(state_key))
 
 
 def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "localhost") -> str | None:
@@ -145,8 +125,7 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
     ``<state_dir>/prserv.stderr`` and any stale pidfile is cleared).
     """
     port = _workspace_port(state_key)
-    probe = _probe_host(bind_host)
-    if _probe(probe, port):
+    if central_service.is_listening(bind_host, port):
         return f"{bind_host}:{port}"
 
     binary = _find_binary(binary_root)
@@ -183,7 +162,7 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
 
     deadline = time.monotonic() + _STARTUP_PROBE_DEADLINE_SECONDS
     while time.monotonic() < deadline:
-        if _probe(probe, port):
+        if central_service.is_listening(bind_host, port):
             return f"{bind_host}:{port}"
         time.sleep(0.1)
 
@@ -201,7 +180,7 @@ def stop(state_key: Path, *, binary_root: Path, bind_host: str = "localhost") ->
     keep the accumulated PR history. Any stale pidfile is cleared afterwards.
     """
     port = _workspace_port(state_key)
-    if not _probe(_probe_host(bind_host), port):
+    if not central_service.is_listening(bind_host, port):
         _clean_stale_pidfiles(port)
         return False
 

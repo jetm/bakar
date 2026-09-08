@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar import prserv
+from bakar import central_service, prserv
 from bakar.prserv import _find_binary, _workspace_port
 
 if TYPE_CHECKING:
@@ -59,7 +59,7 @@ def test_find_binary_returns_none_when_absent(tmp_path: Path) -> None:
 
 def test_ensure_running_returns_addr_when_already_listening(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A reachable daemon short-circuits: return the address, never spawn."""
-    monkeypatch.setattr(prserv.socket, "create_connection", lambda _addr, timeout: _FakeSocket())
+    monkeypatch.setattr(central_service.socket, "create_connection", lambda _addr, timeout: _FakeSocket())
 
     def _must_not_spawn(*_a: object, **_k: object) -> object:
         raise AssertionError("ensure_running must not spawn when already reachable")
@@ -84,7 +84,7 @@ def test_ensure_running_spawns_and_binds_cluster_host(tmp_path: Path, monkeypatc
         captured["probe_addr"] = addr
         return _FakeSocket()
 
-    monkeypatch.setattr(prserv.socket, "create_connection", _probe)
+    monkeypatch.setattr(central_service.socket, "create_connection", _probe)
 
     def _fake_popen(args: list[str], **_k: object) -> object:
         captured["args"] = args
@@ -113,5 +113,20 @@ def test_ensure_running_returns_none_when_binary_missing(tmp_path: Path, monkeyp
         del timeout
         raise OSError("down")
 
-    monkeypatch.setattr(prserv.socket, "create_connection", _always_fail)
+    monkeypatch.setattr(central_service.socket, "create_connection", _always_fail)
     assert prserv.ensure_running(tmp_path, binary_root=tmp_path) is None
+
+
+def test_is_running_probes_loopback_for_bind_only_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """0.0.0.0 is a bind-only address: probing it directly would report down."""
+    probed: list[tuple[str, int]] = []
+
+    def _probe(addr: tuple[str, int], timeout: float) -> _FakeSocket:
+        del timeout
+        probed.append(addr)
+        return _FakeSocket()
+
+    monkeypatch.setattr(central_service.socket, "create_connection", _probe)
+
+    assert prserv.is_running(tmp_path, bind_host="0.0.0.0") is True
+    assert probed == [("127.0.0.1", _workspace_port(tmp_path))]
