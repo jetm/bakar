@@ -9,6 +9,7 @@ target dir exists and is writable.
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 
 from bakar.setup.actions.base import Action, RunCommand
@@ -87,4 +88,4 @@ def test_is_satisfied_false_when_a_dir_is_not_writable(tmp_path) -> None:
             return
             assert CacheDirsAction([writable, readonly]).is_satisfied(make_host_profile()) is False
     finally:
-        os.chmod(readonly, 0o700)
+        os.chmod(readonly, stat.S_IRWXU)

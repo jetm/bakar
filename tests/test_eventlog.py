@@ -71,6 +71,10 @@ class _StubDiskUsageSample:
 
 def _encode_event(obj: object) -> str:
     """base64(pickle(obj)) - the wire format of an event log ``vars`` payload."""
+    # Encodes a stub this module just built, to reproduce bitbake's own wire
+    # format. The rule guards against UNpickling untrusted input; re-encoding
+    # as JSON would delete the format under test.
+    # nosemgrep: python.lang.security.deserialization.pickle.avoid-pickle
     return base64.b64encode(pickle.dumps(obj)).decode("ascii")
 
 
