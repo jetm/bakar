@@ -11,7 +11,9 @@ caller could hand ``_resolve_needed`` an allowlist nothing canonicalised.
 The second is the set of names ``bakar.diagnostics`` still exposes, and the
 two ``RELOCATED_*`` lists that record names deliberately NOT re-exported from
 the module a symbol left. Those lists start empty and are extended - as data,
-never as logic - by each extraction.
+never as logic - by each extraction. ``BUILD_RE_EXPORTED_NAMES`` records the
+inverse for ``bakar.commands.build``: names that moved but must stay reachable
+through it, because callers and tests still read them there.
 
 The third is the guard the two lists depend on: patching an absent attribute
 must raise. If any patch form this repository uses tolerated a missing name, a
@@ -85,6 +87,28 @@ RELOCATED_SYMBOLS: list[tuple[str, str]] = [
 # Same contract, for names that have moved off ``bakar.commands.build``.
 RELOCATED_BUILD_SYMBOLS: list[tuple[str, str]] = []
 
+# The INVERSE contract: names that moved off ``bakar.commands.build`` but must
+# stay reachable through it. Tests reach them as module attributes
+# (``build_mod._CveRequest``) and ``_finish_build``/``build()`` still read them
+# as bare names, so dropping the re-export breaks callers rather than tidying
+# the surface. Extend this list - not the test body - when a move keeps a name.
+BUILD_RE_EXPORTED_NAMES: tuple[str, ...] = (
+    "_CVE_REPORT_TARGET",
+    "_CveRequest",
+    "_resolve_cve_request",
+    "_generate_cve_report",
+    "_SbomRequest",
+    "_resolve_sbom_request",
+    "_filter_image_sbom",
+    "_FeedRequest",
+    "_resolve_feed_request",
+    "_sync_feed",
+    # Not moved symbols but module objects the sbom/cve tests patch THROUGH
+    # ``bakar.commands.build`` to reach the post-build steps.
+    "subprocess",
+    "step_kas",
+)
+
 # Public surface ``bakar.diagnostics`` must keep exposing regardless of what
 # moves out of it.
 DIAGNOSTICS_PUBLIC_NAMES: tuple[str, ...] = (
@@ -135,6 +159,11 @@ def test_relocated_build_symbols_are_not_re_exported() -> None:
         if hasattr(import_module(module_path), symbol)
     ]
     assert not still_present, f"relocated names re-exported from their origin: {still_present}"
+
+
+@pytest.mark.parametrize("name", BUILD_RE_EXPORTED_NAMES)
+def test_build_re_exported_surface_is_intact(name: str) -> None:
+    assert hasattr(import_module("bakar.commands.build"), name), f"bakar.commands.build lost {name}"
 
 
 def test_patching_an_absent_attribute_raises(monkeypatch: pytest.MonkeyPatch) -> None:
