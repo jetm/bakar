@@ -215,18 +215,32 @@ order = [
 ]
 reason = "CLI orchestrators → subprocess wrappers → read/compute layer → pure data/config"
 
+# ONE rule per family, not one rule listing all four. A `layers` order is total,
+# so a single `[commands, steps, setup, insights, feed, mold, foundation]` rule
+# would ORDER the families against each other - permitting setup -> feed while
+# the `independent` rule below forbids it. The checker reports that as
+# "conflicting rules for edge setup->feed" and fails the config outright.
+# Naming one family per rule keeps each family's position relative to commands,
+# steps and foundation while leaving family-to-family edges to `independent`.
 [[rules]]
 type = "layers"
-order = [
-  "commands",
-  "steps",
-  "setup",
-  "insights",
-  "feed",
-  "mold",
-  "foundation",
-]
-reason = "the same stack for the feature families, which sit beside analysis rather than below it"
+order = ["commands", "steps", "setup", "foundation"]
+reason = "host-provisioning planner sits beside analysis, above foundation"
+
+[[rules]]
+type = "layers"
+order = ["commands", "steps", "insights", "foundation"]
+reason = "build analysers sit beside analysis, above foundation"
+
+[[rules]]
+type = "layers"
+order = ["commands", "steps", "feed", "foundation"]
+reason = "package-feed pipeline sits beside analysis, above foundation"
+
+[[rules]]
+type = "layers"
+order = ["commands", "steps", "mold", "foundation"]
+reason = "mold linker instrumentation sits beside analysis, above foundation"
 
 # The four feature families are peers: none may import another, in either
 # direction. `independent` forbids every ordered pair, which a `layers` order
