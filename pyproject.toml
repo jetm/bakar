@@ -118,7 +118,6 @@ extend-select = [
   "S110",  # try-except-pass
   "TRY300",  # try-consider-else
   "TRY004",  # type-check-without-type-error
-  "FURB192",  # sorted()[0] where min()/max() says it directly
 ]
 ignore = [
   "SIM102",  # Use single if statement - often reduces readability
