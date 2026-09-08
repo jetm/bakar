@@ -135,21 +135,17 @@ def test_suggestion_string_describes_root_cause() -> None:
 
 
 def test_triage_suggestions_consume_shared_signatures() -> None:
-    """triage.py must use the shared list rather than a private regex.
+    """triage.py must route fork-race matching through ``scan``.
 
     Catches a future refactor that re-introduces a hardcoded inline
-    pattern next to the suggestion string.
+    pattern next to the suggestion string - whether as a private regex
+    or as a joined alternation rebuilt from FORK_RACE_SIGNATURES.
     """
     from bakar import triage
 
-    fork_race_entries = [
-        (pat, sug)
-        for pat, sug in triage._SUGGESTIONS  # type: ignore[attr-defined]
-        if sug == FORK_RACE_SUGGESTION
-    ]
-    assert len(fork_race_entries) == 1, (
-        "triage._SUGGESTIONS must carry exactly one fork-race entry wired to FORK_RACE_SUGGESTION"
+    assert not [sug for _pat, sug in triage._SUGGESTIONS if sug == FORK_RACE_SUGGESTION], (  # type: ignore[attr-defined]
+        "triage._SUGGESTIONS must not carry a fork-race regex; scan() owns that pattern set"
     )
-    pattern, _ = fork_race_entries[0]
     for line in (line for _expected, line in POSITIVE_CASES):
-        assert pattern.search(line), f"triage's combined regex missed {line!r}"
+        hits = triage._match_suggestions(line)  # type: ignore[attr-defined]
+        assert hits.count(FORK_RACE_SUGGESTION) == 1, f"triage did not suggest the fork-race fix for {line!r}"

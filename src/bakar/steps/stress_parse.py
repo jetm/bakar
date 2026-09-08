@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 from rich.markup import escape
 
 from bakar import build_stop
-from bakar.fork_race_signatures import FORK_RACE_SIGNATURES
+from bakar.fork_race_signatures import scan
 from bakar.steps import bitbake_override as step_override
 from bakar.steps import kas_build as step_kas
 from bakar.steps.kas_build import KasBuildContext
@@ -163,13 +163,7 @@ def _scan_log(log_path: Path) -> list[dict[str, str]]:
     if not log_path.is_file():
         return []
     text = log_path.read_text(errors="replace")
-    hits: list[dict[str, str]] = [
-        {"pattern": pattern.pattern, "match": line}
-        for line in text.splitlines()
-        for pattern in FORK_RACE_SIGNATURES
-        if pattern.search(line)
-    ]
-    return hits
+    return [{"pattern": pattern.pattern, "match": line} for pattern, line in scan(text)]
 
 
 def _build_command(

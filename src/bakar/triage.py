@@ -16,10 +16,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from bakar.fork_race_signatures import (
-    FORK_RACE_SIGNATURES,
-    FORK_RACE_SUGGESTION,
-)
+from bakar.fork_race_signatures import FORK_RACE_SUGGESTION, scan
 from bakar.observability import last_run_event
 
 _ERROR_REPORT_FILENAME = "error-report.json"
@@ -156,15 +153,6 @@ _SUGGESTIONS: list[tuple[re.Pattern[str], str]] = [
         "Fetch failure: retry, or add a PREMIRROR for the recipe's upstream URL.",
     ),
     (
-        # Manifestations of the fork-in-multi-threaded-program race in
-        # bitbake's parser. Patterns live in
-        # bakar.fork_race_signatures so the empirical stress-test
-        # harness in steps/stress_parse.py shares the same set; new
-        # variants only need adding once.
-        re.compile("|".join(p.pattern for p in FORK_RACE_SIGNATURES)),
-        FORK_RACE_SUGGESTION,
-    ),
-    (
         re.compile(r"/bin/sh: \d+: ccache [^:]+: not found"),
         "cmake ccache launcher quoted wrong (meta-oe renderdoc-style bug). "
         'Override CMAKE_CXX_COMPILER_LAUNCHER:pn-<recipe> = "" and '
@@ -223,6 +211,14 @@ _SUGGESTIONS: list[tuple[re.Pattern[str], str]] = [
 
 def _match_suggestions(text: str) -> list[str]:
     hits: list[str] = []
+    # The fork-race symptoms are matched by fork_race_signatures.scan rather
+    # than by a _SUGGESTIONS entry: scan is the single owner of that pattern
+    # set, shared with the stress-parse harness. It is checked first because
+    # a torn parser worker is build-infrastructure breakage, not a recipe
+    # fault, so it is the more actionable line to lead with. scan reports one
+    # hit per (pattern, line); the suggestion string is emitted once.
+    if scan(text):
+        hits.append(FORK_RACE_SUGGESTION)
     for pattern, suggestion in _SUGGESTIONS:
         if pattern.search(text):
             hits.append(suggestion)
