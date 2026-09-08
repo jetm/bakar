@@ -23,6 +23,8 @@
 | `insights` | [insights.md](insights.md) | Per-recipe/per-task analytics: sstate, timing, pressure, disk |
 | `log` | [log.md](log.md) | Tail a run log live |
 | `monitor` | [monitor.md](monitor.md) | One-view live watch: cluster load, dist stats, task progress |
+| `cluster-info` | [cluster-info.md](cluster-info.md) | Print live sccache-dist scheduler capacity: servers, CPUs, jobs in flight |
+| `sched-triage` | [sched-triage.md](sched-triage.md) | Post-hoc cluster-utilisation report from the scheduler journal and client error log |
 | `layers` | [layers.md](layers.md) | Print layer git hashes, branches, priority, and build status |
 | `show` | [show.md](show.md) | Print resolved build picture: config, overlays, layers, sources, command |
 | `getvar` | [getvar.md](getvar.md) | Resolve a bitbake variable (or a `--flag` of one) and show where it was set; value on stdout, diagnostics on stderr |
@@ -38,8 +40,10 @@
 | `changelog` | [changelog.md](changelog.md) | Generate release notes between two pinned workspace states |
 | `prefetch` | [prefetch.md](prefetch.md) | Pre-fetch recipe sources into DL_DIR |
 | `mirror` | [mirror.md](mirror.md) | Seed a premirror `git2_*.tar.gz` tarball from a git URL (host-side) |
+| `feed` | [feed.md](feed.md) | Manage the local package feed: stage, index, serve, and prune a build's RPMs |
 | `dump` | [dump.md](dump.md) | Inspect the resolved kas YAML |
 | `hashserv` | [hashserv.md](hashserv.md) | Manage the persistent bitbake-hashserv daemon |
+| `prserv` | [prserv.md](prserv.md) | Manage the workspace-scoped bitbake-prserv daemon that keeps package revisions monotonic |
 | `bitbake-override` | [bitbake-override.md](bitbake-override.md) | Swap BSP-bundled bitbake for upstream |
 | `stress-parse` | [stress-parse.md](stress-parse.md) | Stress-test bitbake parser fork race |
 | Configuration | [configuration.md](configuration.md) | Env vars, config.toml, vendors.toml, telemetry layout |
@@ -63,6 +67,8 @@
 - Find what went wrong: [triage.md](triage.md)
 - Watch a running build (tail one log): [log.md](log.md)
 - Watch a running build (cluster + dist + task progress in one view): [monitor.md](monitor.md)
+- See how much sccache-dist cluster capacity is available right now: [cluster-info.md](cluster-info.md)
+- Explain after the fact why a build distributed poorly: [sched-triage.md](sched-triage.md)
 - Check if the environment is sane: [doctor.md](doctor.md)
 - Rebuild or re-run a task on one recipe: [bitbake.md](bitbake.md)
 - Wipe one recipe's sstate and rebuild it in one go: [bitbake.md](bitbake.md) (`rebuild`)
@@ -110,6 +116,8 @@
 - Boot a QEMU image from the build directory: [run.md](run.md)
 - Reproduce and measure the bitbake parser race: [stress-parse.md](stress-parse.md)
 - Persistent hash equivalence across builds: [hashserv.md](hashserv.md)
+- Keep package revisions monotonic across a wiped build tree: [prserv.md](prserv.md)
+- Publish a finished build's RPMs as a local package feed: [feed.md](feed.md)
 - Run a build on an idle remote node (mirror the tree, build over ssh): [build.md](build.md) (`--on <host>`)
 
 ---
@@ -161,9 +169,11 @@ bakar triage    - surface the failing recipe/task from bitbake-events.json (--ru
 bakar report    - summarize a completed run (timing, image size, layers)
 bakar insights  - per-recipe/per-task analytics: sstate, timing, pressure, disk
 bakar layers    - print layer git hashes without running anything
+bakar cluster-info  - live sccache-dist scheduler capacity: servers, CPUs, jobs in flight
+bakar sched-triage  - post-hoc cluster-utilisation report from the scheduler journal and client error log
 ```
 
-Related: [log.md](log.md), [monitor.md](monitor.md), [triage.md](triage.md), [report.md](report.md), [insights.md](insights.md), [layers.md](layers.md)
+Related: [log.md](log.md), [monitor.md](monitor.md), [triage.md](triage.md), [report.md](report.md), [insights.md](insights.md), [layers.md](layers.md), [cluster-info.md](cluster-info.md), [sched-triage.md](sched-triage.md)
 
 ### Reproducibility
 
@@ -206,9 +216,26 @@ Related: [settings.md](settings.md), [presets.md](presets.md), [configuration.md
 bakar clean             - remove build/ to force a from-scratch build
 bakar clean-cache       - prune stale sstate and ccache entries by age
 bakar hashserv          - manage the persistent bitbake-hashserv daemon
+bakar prserv            - manage the workspace-scoped bitbake-prserv daemon
+bakar feed              - stage, index, serve and prune the local package feed
 bakar bitbake-override  - swap BSP-bundled bitbake for upstream
 bakar run               - boot avocado-os QEMU image (meta-avocado only)
 bakar stress-parse      - stress-test bitbake parser fork race
 ```
 
-Related: [clean.md](clean.md), [clean-cache.md](clean-cache.md), [hashserv.md](hashserv.md), [bitbake-override.md](bitbake-override.md), [run.md](run.md), [stress-parse.md](stress-parse.md)
+Related: [clean.md](clean.md), [clean-cache.md](clean-cache.md), [hashserv.md](hashserv.md), [prserv.md](prserv.md), [feed.md](feed.md), [bitbake-override.md](bitbake-override.md), [run.md](run.md), [stress-parse.md](stress-parse.md)
+
+---
+
+## Capability notes
+
+Delivery records for behaviour that has no command page of its own. Each is an
+archived note rather than a reference page - the gloss below carries the
+substance, the page carries the provenance.
+
+| Capability | Note | What it covers |
+|------------|------|----------------|
+| Local package feed | [capabilities/local-package-feed.md](capabilities/local-package-feed.md) | Staging, pooled rendering, index derivation, snapshot minting and static serving - see [feed.md](feed.md) for the commands |
+| Feed consolidation | [capabilities/feed-consolidation.md](capabilities/feed-consolidation.md) | Merging scattered RPM deploy trees into one canonical feed under a verification gate (no CLI surface today) |
+| Feed retention | [capabilities/feed-retention.md](capabilities/feed-retention.md) | Bounding pool and snapshot growth for a feed written on every build |
+| ccache under sccache-dist | [capabilities/ccache-sccache-dist-default.md](capabilities/ccache-sccache-dist-default.md) | Why `[build] ccache` defaults to the resolved `sccache_dist` value instead of `false` when no tier sets it |
