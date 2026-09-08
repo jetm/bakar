@@ -14,13 +14,13 @@ from typing import TYPE_CHECKING
 import pytest
 
 from bakar.cli import app
+from bakar.observability import last_run_event
 from bakar.triage import (
-    _last_event_matching,
     _match_suggestions,
     _scan_recipe_errors,
-    _tail,
     analyse,
     find_runs,
+    tail_lines,
 )
 from tests.conftest import SAMPLE_EVENTS_JSONL, SAMPLE_KAS_LOG
 
@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 def test_last_event_matching_returns_step_fail(fake_run_dir: Path) -> None:
     events = fake_run_dir / "events.jsonl"
 
-    rec = _last_event_matching(events, "step_fail")
+    rec = last_run_event(events, lambda r: r.get("event") == "step_fail")
 
     assert rec is not None
     assert rec["event"] == "step_fail"
@@ -45,7 +45,7 @@ def test_last_event_matching_returns_step_fail(fake_run_dir: Path) -> None:
 def test_last_event_matching_returns_none_for_unknown_event(fake_run_dir: Path) -> None:
     events = fake_run_dir / "events.jsonl"
 
-    assert _last_event_matching(events, "step_does_not_exist") is None
+    assert last_run_event(events, lambda r: r.get("event") == "step_does_not_exist") is None
 
 
 @pytest.mark.unit
@@ -53,7 +53,7 @@ def test_tail_returns_last_n_lines(tmp_path: Path) -> None:
     log = tmp_path / "multi.log"
     log.write_text("one\ntwo\nthree\nfour\nfive\n")
 
-    assert _tail(log, n=2) == ["four", "five"]
+    assert tail_lines(log, n=2) == ["four", "five"]
 
 
 @pytest.mark.unit
@@ -61,7 +61,7 @@ def test_tail_returns_all_lines_when_n_exceeds_file(tmp_path: Path) -> None:
     log = tmp_path / "short.log"
     log.write_text("alpha\nbeta\ngamma\n")
 
-    result = _tail(log, n=100)
+    result = tail_lines(log, n=100)
 
     assert result == ["alpha", "beta", "gamma"]
 

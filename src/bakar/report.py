@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bakar.layers import collect_layer_hashes
+from bakar.observability import last_run_event
 from bakar.task_rollup import FamilyStat, compute_task_rollup
-from bakar.triage import _last_event_matching
 
 if TYPE_CHECKING:
     from bakar.config import BuildConfig
@@ -340,18 +340,13 @@ def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
     """
     events_path = run_dir / "events.jsonl"
 
-    run_start = _last_event_matching(events_path, "run_start")
-    run_end = _last_event_matching(events_path, "run_end")
+    run_start = last_run_event(events_path, lambda rec: rec.get("event") == "run_start")
+    run_end = last_run_event(events_path, lambda rec: rec.get("event") == "run_end")
 
-    step_ok = None
-    if events_path.is_file():
-        for line in events_path.read_text().splitlines():
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if rec.get("event") == "step_ok" and rec.get("step") == "kas_build":
-                step_ok = rec
+    step_ok = last_run_event(
+        events_path,
+        lambda rec: rec.get("event") == "step_ok" and rec.get("step") == "kas_build",
+    )
 
     status = "success" if step_ok is not None else "failure"
     deploy_dir = step_ok.get("deploy_dir") if step_ok else None

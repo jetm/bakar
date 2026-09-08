@@ -28,6 +28,7 @@ from rich.markup import escape
 from rich.panel import Panel
 
 from bakar.eventlog import running_tasks
+from bakar.observability import iter_run_events
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1329,35 +1330,29 @@ def _interrupted_step(run_dir: Path) -> str | None:
     ``step_fail`` / ``step_skip``) and a coarse ``step`` label such as
     ``kas_build`` (NOT a recipe name). A step whose ``step_start`` has no
     matching terminal event is the interrupted step. Returns ``None`` when the
-    file is absent, unreadable, contains no unmatched ``step_start``, or any
-    line fails to parse.
+    file is absent, unreadable, or contains no unmatched ``step_start``.
+
+    An unparseable line is skipped rather than aborting the read: this runs on
+    the interrupted-build path, which is exactly when the log ends in a
+    half-written record, so giving up on it would report "no interrupted step"
+    for the one case the lookup exists to answer.
     """
     events_path = run_dir / _EVENTS_FILENAME
-    try:
-        raw = events_path.read_text()
-    except OSError:
-        return None
 
     started: list[str] = []
     ended: set[str] = set()
-    for raw_line in raw.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except ValueError, TypeError:
-            return None
-        if not isinstance(obj, dict):
-            return None
-        event = obj.get("event")
-        step = obj.get("step")
-        if not isinstance(step, str):
-            continue
-        if event == "step_start":
-            started.append(step)
-        elif event in ("step_ok", "step_fail", "step_skip"):
-            ended.add(step)
+    try:
+        for obj in iter_run_events(events_path):
+            event = obj.get("event")
+            step = obj.get("step")
+            if not isinstance(step, str):
+                continue
+            if event == "step_start":
+                started.append(step)
+            elif event in ("step_ok", "step_fail", "step_skip"):
+                ended.add(step)
+    except OSError:
+        return None
 
     for step in started:
         if step not in ended:

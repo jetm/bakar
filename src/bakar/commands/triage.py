@@ -12,13 +12,14 @@ import typer
 from bakar.bsp_detect import detect_kas_workspace, is_meta_avocado_yaml
 from bakar.commands._app import app, console
 from bakar.commands._helpers import WorkspaceOption, _bbsetup_workspace, _find_run, _workspace_from_cwd
-from bakar.triage import _last_event_matching, _tail, _translate_container_path, analyse
+from bakar.observability import last_run_event
+from bakar.triage import analyse, tail_lines, translate_container_path
 
 _BITBAKE_EVENTS_FILENAME = "bitbake-events.json"
 
 # Tail length for the structured logfile excerpt. Reuses the same count
-# analyse()/_tail() applies to the kas.log / recipe-log excerpts today
-# (bakar.triage._tail default and the n=60 call sites) so the structured
+# analyse()/tail_lines() applies to the kas.log / recipe-log excerpts today
+# (bakar.triage.tail_lines default and the n=60 call sites) so the structured
 # path renders the same amount of context as the legacy fallback.
 _LOGFILE_EXCERPT_LINES = 60
 
@@ -34,7 +35,7 @@ def _run_has_failure(run_dir: Path) -> bool:
     """
     if _read_structured_failures(run_dir):
         return True
-    return _last_event_matching(run_dir / "events.jsonl", "step_fail") is not None
+    return last_run_event(run_dir / "events.jsonl", lambda rec: rec.get("event") == "step_fail") is not None
 
 
 def _read_structured_failures(run_dir: Path) -> list[dict] | None:
@@ -64,7 +65,7 @@ def _read_structured_failures(run_dir: Path) -> list[dict] | None:
 
 def _print_structured_failures(failures: list[dict], workspace: Path) -> None:
     """Render the structured failure records, resolving each container
-    ``logfile`` to a host path via the shared ``_translate_container_path``
+    ``logfile`` to a host path via the shared ``translate_container_path``
     helper before reading its tail.
     """
     for failure in failures:
@@ -75,7 +76,7 @@ def _print_structured_failures(failures: list[dict], workspace: Path) -> None:
         logfile = failure.get("logfile")
         if not logfile:
             continue
-        host_path = Path(_translate_container_path(str(logfile), workspace))
+        host_path = Path(translate_container_path(str(logfile), workspace))
         # Containment guard: logfile comes from bitbake-events.json, which a
         # crafted artifact could point at a host file outside the build tree
         # (e.g. a secret). Only read paths that resolve under the workspace.
@@ -84,7 +85,7 @@ def _print_structured_failures(failures: list[dict], workspace: Path) -> None:
         except ValueError, OSError:
             console.print(f"[dim]logfile outside workspace, not read: {host_path}[/]")
             continue
-        tail = _tail(host_path, _LOGFILE_EXCERPT_LINES)
+        tail = tail_lines(host_path, _LOGFILE_EXCERPT_LINES)
         if not tail:
             console.print(f"[dim]logfile (unreadable on host): {host_path}[/]")
             continue

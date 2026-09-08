@@ -29,7 +29,7 @@ responsive during long compile phases.
 The live UI never re-displays the in-container recipe-log path
 (``/work/.../log.do_<task>``); raw kas.log lines are streamed through
 unchanged. Container-to-host recipe-log path translation lives in
-:func:`bakar.triage._translate_container_path` and is applied only by
+:func:`bakar.triage.translate_container_path` and is applied only by
 ``bakar triage`` when it surfaces the failing recipe log. No host-path
 rewrite is needed here.
 """
@@ -86,7 +86,7 @@ from bakar.kas import KasGenOptions, write_yaml
 from bakar.output_mode import OutputMode
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
 from bakar.steps.build_ui import BuildUIState, _fmt_stall
-from bakar.triage import _translate_container_path, write_error_report
+from bakar.triage import translate_container_path, write_error_report
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -2062,7 +2062,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     # its warn/error counts even if _run_pty_with_ui raises before returning.
     ui = BuildUIState(
         start_monotonic=log.start_monotonic,
-        logfile_translator=(None if cfg.host_mode else lambda p: _translate_container_path(p, cfg.bsp_root)),
+        logfile_translator=(None if cfg.host_mode else lambda p: translate_container_path(p, cfg.bsp_root)),
         timings_path=timings_path,
         show_baseline_drift=cfg.show_baseline_drift,
     )
@@ -2214,7 +2214,7 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
 
     ui = BuildUIState(
         start_monotonic=log.start_monotonic,
-        logfile_translator=(None if cfg.host_mode else lambda p: _translate_container_path(p, cfg.bsp_root)),
+        logfile_translator=(None if cfg.host_mode else lambda p: translate_container_path(p, cfg.bsp_root)),
         timings_path=task_timings.timings_path_for(cfg.bsp_root, cfg.machine, host_mode=cfg.host_mode),
         show_baseline_drift=cfg.show_baseline_drift,
     )

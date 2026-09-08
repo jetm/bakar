@@ -13,7 +13,7 @@ in ``src/bakar``:
   because ``workspace.parse_manifest_pins`` filters on those exact two
   attributes (``src/bakar/workspace.py:106-110``).
 - ``SAMPLE_EVENTS_JSONL`` uses ``event``/``step``/``reason`` keys because
-  ``triage._last_event_matching`` filters on ``rec.get("event")`` and
+  ``observability.last_run_event`` filters on ``rec.get("event")`` and
   ``analyse`` reads ``step``/``reason`` (``src/bakar/triage.py:53,209-210``).
 - ``SAMPLE_KAS_LOG`` includes an ``ERROR: <recipe> do_compile: ...`` line
   matching ``_RECIPE_ERROR_RE`` (``src/bakar/triage.py:101-105``).
@@ -249,7 +249,7 @@ MINIMAL_NXP_MANIFEST = """\
 """.format(sha_a="a" * 40, sha_b="b" * 40)
 
 # Two JSON lines: a step_start and a matching step_fail for the same
-# step. triage._last_event_matching scans for event=="step_fail" and
+# step. observability.last_run_event scans for event=="step_fail" and
 # analyse() reads step/reason off the resulting record.
 SAMPLE_EVENTS_JSONL = (
     '{"event": "step_start", "step": "kas-build", "ts": "2026-05-29T12:00:00Z"}\n'

@@ -20,6 +20,7 @@ from bakar.fork_race_signatures import (
     FORK_RACE_SIGNATURES,
     FORK_RACE_SUGGESTION,
 )
+from bakar.observability import last_run_event
 
 _ERROR_REPORT_FILENAME = "error-report.json"
 
@@ -43,20 +44,6 @@ class TriageReport:
     recipe_errors: list[RecipeError]
 
 
-def _last_event_matching(events_path: Path, event_name: str) -> dict | None:
-    last: dict | None = None
-    if not events_path.is_file():
-        return None
-    for line in events_path.read_text().splitlines():
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if rec.get("event") == event_name:
-            last = rec
-    return last
-
-
 def _bitbake_override_summary(events_path: Path) -> str | None:
     """Return a one-line note describing override state during the run.
 
@@ -65,16 +52,10 @@ def _bitbake_override_summary(events_path: Path) -> str | None:
     Returns ``None`` when no event is present (older bakar runs, or the
     step never executed in this pipeline).
     """
-    if not events_path.is_file():
-        return None
-    last: dict | None = None
-    for line in events_path.read_text().splitlines():
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if rec.get("step") == "bitbake_override" and rec.get("event") in ("step_ok", "step_skip"):
-            last = rec
+    last = last_run_event(
+        events_path,
+        lambda rec: rec.get("step") == "bitbake_override" and rec.get("event") in ("step_ok", "step_skip"),
+    )
     if last is None:
         return None
     if last.get("event") == "step_ok":
@@ -85,7 +66,7 @@ def _bitbake_override_summary(events_path: Path) -> str | None:
     return f"bitbake-override skipped during this run: {last.get('reason', 'unknown')}"
 
 
-def _tail(path: Path, n: int = 80, *, text: str | None = None) -> list[str]:
+def tail_lines(path: Path, n: int = 80, *, text: str | None = None) -> list[str]:
     if text is None:
         if not path.is_file():
             return []
@@ -137,7 +118,7 @@ def _scan_recipe_errors(kas_log: Path, cap: int = 10, *, text: str | None = None
     return out
 
 
-def _translate_container_path(container_path: str, workspace: Path) -> str:
+def translate_container_path(container_path: str, workspace: Path) -> str:
     """Rewrite a leading ``/work/`` container prefix to a host path under
     ``workspace``.
 
@@ -163,7 +144,7 @@ def _find_recipe_log(kas_log: Path, workspace: Path, *, text: str | None = None)
         if not m:
             continue
         container_path = m.group("path")
-        host_path = Path(_translate_container_path(container_path, workspace))
+        host_path = Path(translate_container_path(container_path, workspace))
         if host_path.is_file():
             return host_path
     return None
@@ -259,8 +240,8 @@ def write_error_report(run_dir: Path, cfg, exit_code: int) -> None:
     the original build failure exit code is never masked.
     """
     kas_log = run_dir / "kas.log"
-    tail_lines = _tail(kas_log, 60)
-    tail_text = "\n".join(tail_lines)
+    kas_tail = tail_lines(kas_log, 60)
+    tail_text = "\n".join(kas_tail)
     recipe_errors = _scan_recipe_errors(kas_log)
     suggestions = _match_suggestions(tail_text)
 
@@ -270,7 +251,7 @@ def write_error_report(run_dir: Path, cfg, exit_code: int) -> None:
         "distro": cfg.distro,
         "bsp_family": cfg.bsp_family,
         "exit_code": exit_code,
-        "kas_log_tail": tail_lines,
+        "kas_log_tail": kas_tail,
         "recipe_errors": [{"recipe": e.recipe, "task": e.task, "excerpt": e.excerpt} for e in recipe_errors],
         "suggestions": suggestions,
     }
@@ -313,10 +294,10 @@ def analyse(run_dir: Path, workspace: Path) -> TriageReport:
             # error-report.json; derive them the same way the live-parse path
             # does so the two paths produce equivalent output.
             kas_log = run_dir / "kas.log"
-            fail = _last_event_matching(events_path, "step_fail")
+            fail = last_run_event(events_path, lambda rec: rec.get("event") == "step_fail")
             fail_reason: str | None = fail.get("reason") if fail else None
             recipe_log = _find_recipe_log(kas_log, workspace)
-            recipe_log_tail = _tail(recipe_log, 60) if recipe_log else []
+            recipe_log_tail = tail_lines(recipe_log, 60) if recipe_log else []
             # Recompute suggestions over combined text (table order) so the fast
             # path produces the same ordering as the live-parse path.
             suggestions = _match_suggestions("\n".join(kas_log_tail + recipe_log_tail))
@@ -342,13 +323,13 @@ def analyse(run_dir: Path, workspace: Path) -> TriageReport:
     # instead of each re-reading the file.
     kas_text = kas_log.read_text(errors="replace") if kas_log.is_file() else ""
 
-    fail = _last_event_matching(events_path, "step_fail")
+    fail = last_run_event(events_path, lambda rec: rec.get("event") == "step_fail")
     failing_step = fail.get("step") if fail else None
     fail_reason = fail.get("reason") if fail else None
 
-    kas_log_tail = _tail(kas_log, 60, text=kas_text)
+    kas_log_tail = tail_lines(kas_log, 60, text=kas_text)
     recipe_log = _find_recipe_log(kas_log, workspace, text=kas_text)
-    recipe_log_tail = _tail(recipe_log, 60) if recipe_log else []
+    recipe_log_tail = tail_lines(recipe_log, 60) if recipe_log else []
     recipe_errors = _scan_recipe_errors(kas_log, text=kas_text)
 
     suggestions_text = "\n".join(kas_log_tail + recipe_log_tail)

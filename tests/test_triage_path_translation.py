@@ -1,6 +1,6 @@
 """Tests for the container-to-host recipe-log path translation in triage.
 
-``_translate_container_path`` is the shared helper extracted from
+``translate_container_path`` is the shared helper extracted from
 ``_find_recipe_log``; both are exercised against synthetic ``tmp_path``
 fixtures so the tests never touch the real host filesystem. The kas.log
 sample mirrors the ``Logfile of failure stored in: /work/...`` shape that
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from bakar.triage import _find_recipe_log, _translate_container_path
+from bakar.triage import _find_recipe_log, translate_container_path
 
 
 @pytest.mark.unit
@@ -22,7 +22,7 @@ def test_translate_container_path_rewrites_work_prefix(tmp_path: Path) -> None:
     workspace = tmp_path / "nxp"
     container_path = "/work/build/tmp/deploy/linux-imx/temp/log.do_compile"
 
-    result = _translate_container_path(container_path, workspace)
+    result = translate_container_path(container_path, workspace)
 
     assert result == f"{workspace}/build/tmp/deploy/linux-imx/temp/log.do_compile"
     assert result.startswith(str(workspace) + "/")
@@ -37,9 +37,9 @@ def test_translate_container_path_passes_non_work_unchanged(tmp_path: Path) -> N
     workspace = tmp_path / "nxp"
     host_path = str(tmp_path / "some" / "host" / "log.do_compile")
 
-    assert _translate_container_path(host_path, workspace) == host_path
+    assert translate_container_path(host_path, workspace) == host_path
     # A leading "/workspace" must not be mistaken for the "/work/" prefix.
-    assert _translate_container_path("/workspace/foo", workspace) == "/workspace/foo"
+    assert translate_container_path("/workspace/foo", workspace) == "/workspace/foo"
 
 
 @pytest.mark.unit
@@ -52,7 +52,7 @@ def test_find_recipe_log_returns_translated_host_path(tmp_path: Path) -> None:
     """
     workspace = tmp_path / "nxp"
     container_path = "/work/build/tmp/deploy/linux-imx/temp/log.do_compile"
-    expected = Path(_translate_container_path(container_path, workspace))
+    expected = Path(translate_container_path(container_path, workspace))
     expected.parent.mkdir(parents=True)
     expected.write_text("do_compile failed\n")
 
