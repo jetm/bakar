@@ -242,40 +242,22 @@ type = "layers"
 order = ["commands", "steps", "mold", "foundation"]
 reason = "mold linker instrumentation sits beside analysis, above foundation"
 
-# The four feature families are peers: none may import another, in either
-# direction. `independent` forbids every ordered pair, which a `layers` order
-# cannot express - an order would silently permit half of those pairs.
+# analysis and the four feature families are all peers: none may import
+# another, in EITHER direction. `independent` forbids every ordered pair, which
+# a `layers` order cannot express - an order would silently permit half of them.
+#
+# analysis belongs in this set, not in a separate list of one-directional
+# `forbidden` rules. Four `forbidden` rules from analysis to each family cover
+# only the analysis -> family direction; family -> analysis is then governed by
+# nothing, because no layers order holds both (analysis sits in the main order,
+# the families in their own) and an `independent` that excluded analysis never
+# reached those pairs. Measured: with the rules written that way, a
+# `from bakar import triage` added to src/bakar/setup/plan.py reported
+# "no violations" - the exact edge the prose above forbids.
 [[rules]]
 type = "independent"
-modules = ["setup", "insights", "feed", "mold"]
-reason = "peer feature families; a dependency between two of them belongs in foundation"
-
-# analysis must not grow a dependency on a feature family. Neither layers rule
-# governs these edges (analysis appears in one, the families in the other), so
-# each is named explicitly - the same idiom used to cap `model` and `core`.
-[[rules]]
-type = "forbidden"
-from = "analysis"
-to = "setup"
-reason = "triage/report/layers must not depend on the host provisioner"
-
-[[rules]]
-type = "forbidden"
-from = "analysis"
-to = "insights"
-reason = "triage/report/layers must not depend on the insights analysers"
-
-[[rules]]
-type = "forbidden"
-from = "analysis"
-to = "feed"
-reason = "triage/report/layers must not depend on the package-feed pipeline"
-
-[[rules]]
-type = "forbidden"
-from = "analysis"
-to = "mold"
-reason = "triage/report/layers must not depend on the mold link tooling"
+modules = ["analysis", "setup", "insights", "feed", "mold"]
+reason = "peer read/compute layer and feature families; a dependency between any two belongs in foundation"
 
 # model: cap the top of its allowed import set
 [[rules]]
