@@ -6,7 +6,7 @@ fail_fast: false
 repos:
   # Ruff - Python linting & formatting
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.5
+    rev: v0.16.6
     hooks:
       - id: ruff-format
       - id: ruff-check
@@ -14,7 +14,7 @@ repos:
 
   # uv - Lockfile validation
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.12.9
+    rev: 0.12.10
     hooks:
       - id: uv-lock
 
@@ -50,7 +50,11 @@ repos:
     hooks:
       - id: ty
         name: ty type check
-        entry: uv run ty check src/
+        # --exit-zero-on-warning gates on ERRORS only. Bare `ty check` exits 1
+        # on a warnings-only tree, and this project is gradually typed, so
+        # without the flag any new advisory diagnostic blocks every Python
+        # commit. Errors still fail the hook.
+        entry: uv run ty check --exit-zero-on-warning src/
         language: system
         types: [python]
         pass_filenames: false
