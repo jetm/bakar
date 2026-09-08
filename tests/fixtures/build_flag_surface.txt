@@ -1,0 +1,23 @@
+kas_yaml | argument | aliases= | required=False | flag=False | default=None | help=
+--machine,-m | option | aliases= | required=False | flag=False | default=None | help=e.g. imx8mp-var-dart, am62x-var-som
+--distro,-d | option | aliases= | required=False | flag=False | default=None | help=e.g. fsl-imx-xwayland, arago
+--image,-i | option | aliases= | required=False | flag=False | default=None | help=e.g. core-image-minimal, var-thin-image
+--target,-t | option | aliases= | required=False | flag=False | default=None | help=kas target override (kas build --target <TARGET>), e.g. avocado-complete; unset builds the YAML's own target
+--manifest,-f | option | aliases= | required=False | flag=False | default=None | help=manifest filename (NXP imx-*.xml or TI processor-sdk-*-config_var<N>.txt)
+--branch,-b | option | aliases= | required=False | flag=False | default=None | help=branch override; inferred from manifest filename when omitted
+--skip-sync | option | aliases= | required=False | flag=True | default=False | help=Skip sync (repo init+sync for NXP, oe-layertool for TI)
+--dry-run,-n | option | aliases= | required=False | flag=True | default=False | help=Regenerate YAML and exit before invoking kas/kas-container build
+--keep-going,-k | option | aliases= | required=False | flag=True | default=False | help=Pass -k to bitbake: continue building other targets when one fails
+--clean | option | aliases= | required=False | flag=True | default=False | help=Remove <bsp>/build/ before running the pipeline (forces a from-scratch build).
+--workspace,-w | option | aliases= | required=False | flag=False | default=None | help=Workspace root; auto-detected if omitted
+--show-layers | option | aliases= | required=False | flag=True | default=False | help=Print layer git hashes before build.
+--sstate-mirror | option | aliases= | required=False | flag=False | default=None | help=HTTP sstate/downloads mirror URL; enables the shared-cache overlay
+--dry-run-script | option | aliases= | required=False | flag=False | default=None | help=Write a runnable bash script reproducing this build to PATH, or to stdout when PATH is '-'. Does not build. The existing --dry-run/-n preview behavior is unchanged.
+--preset | option | aliases= | required=False | flag=False | default=None | help=Named preset from config.toml; additive with explicit flags (explicit flags win).
+--on | option | aliases= | required=False | flag=False | default=None | help=Dispatch the build to a remote host (ssh alias or user@ip) instead of building locally: mirror the working tree with rsync, run the build there, stream logs, and surface the remote run-id. Unset builds locally.
+--yes,-y | option | aliases= | required=False | flag=True | default=False | help=Skip the rsync --delete confirmation prompt for --on dispatch (non-interactive).
+--feed | option | aliases= | required=False | flag=True | default=False | help=On build success, stage the RPMs into the local package feed and rewrite its index. A failed build never syncs, and neither does --dry-run.
+--feed-release | option | aliases= | required=False | flag=False | default='2024' | help=Feed release directory for --feed (see `bakar feed sync`).
+--feed-channel | option | aliases= | required=False | flag=False | default='edge' | help=Feed channel directory for --feed (see `bakar feed sync`).
+--cve | option | aliases= | required=False | flag=True | default=False | help=On build success, run avocado-cve-report to correlate the runtime packages with unpatched CVEs. Needs kas/feature/cve-check.yml stacked onto the build; skips with a note when the build carries no cve-check results. Neither a failed build nor --dry-run produces a report.
+--sbom | option | aliases= | required=False | flag=True | default=False | help=On build success, filter the per-image SPDX document into a publishable inventory under deploy/avocado-sbom. Needs kas/feature/sbom.yml stacked onto the build and a meta-avocado checkout carrying the publication filter; refuses up front when the filter is absent, because the unfiltered document carries vulnerability data.
