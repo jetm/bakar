@@ -46,6 +46,7 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
+from bakar import central_service
 from bakar.feed import DEFAULT_CHANNEL, DEFAULT_RELEASE, channel_root
 from bakar.feed_index import derive_targets
 from bakar.feed_retention import pinned_snapshots, pool_entries
@@ -91,21 +92,6 @@ def serve_argv(feed_root: Path, *, port: int = DEFAULT_PORT, bind: str = DEFAULT
         "--directory",
         str(feed_root),
     ]
-
-
-def _probe_host(bind: str) -> str:
-    """Return the address to TCP-probe for ``bind`` (mirrors prserv)."""
-    return "127.0.0.1" if bind in ("0.0.0.0", "") else bind
-
-
-def _probe(host: str, port: int, *, timeout: float = 0.5) -> bool:
-    """Return True iff a TCP connection to ``host:port`` succeeds."""
-    try:
-        sock = socket.create_connection((host, port), timeout=timeout)
-    except OSError:
-        return False
-    sock.close()
-    return True
 
 
 def _read_state(feed_root: Path) -> dict[str, object]:
@@ -191,14 +177,13 @@ def start_serving(feed_root: Path, *, port: int = DEFAULT_PORT, bind: str = DEFA
         start_new_session=True,
     )
 
-    probe = _probe_host(bind)
     deadline = time.monotonic() + _STARTUP_PROBE_DEADLINE_SECONDS
     while time.monotonic() < deadline:
         # Death is checked FIRST: a child that already exited did not bind, no
         # matter what now answers on the port.
         if process.poll() is not None:
             return None
-        if _probe(probe, port):
+        if central_service.is_listening(bind, port):
             _statefile(feed_root).write_text(
                 json.dumps({"pid": process.pid, "port": port, "bind": bind}) + "\n",
                 encoding="utf-8",
