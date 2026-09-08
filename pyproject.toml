@@ -121,6 +121,11 @@ extend-select = [
   "S110",  # try-except-pass
   "TRY300",  # try-consider-else
   "TRY004",  # type-check-without-type-error
+  # Stable since ruff 0.16.0, which this project now floors at - so it enforces
+  # without `preview = true`. It was removed earlier in this change while ruff
+  # was still 0.15.x, where reaching it meant enabling preview and taking 196
+  # unrelated findings with it. That trade no longer applies.
+  "FURB192",  # sorted()[0] where min()/max() says it directly
 ]
 ignore = [
   "SIM102",  # Use single if statement - often reduces readability

@@ -197,8 +197,13 @@ bakar feed gc --keep 5 --confirm
   never staged from a build; their content comes from the extension packaging
   flow.
 - `src/bakar/feed_consolidate.py` and `src/bakar/feed_reclaim.py` back the
-  consolidation and reclaim capabilities below, but neither is reachable from a
-  `bakar feed` subcommand today - there is no CLI surface for them to document.
+  consolidation and reclaim capabilities below, but neither exposes a `bakar feed`
+  subcommand, so there is no CLI surface for them to document. They differ in
+  whether the module is live: `feed_consolidate` is imported by
+  `feed_preflight.py:164` (for `_read_testdata` and `_split_codename`), which
+  `bakar feed doctor` and `bakar feed sync` both run - so the module is on a hot
+  path even though its own public API has no caller. `feed_reclaim` has no
+  production importer at all. Do not read "no CLI surface" as "safe to delete".
 
 ## See also
 

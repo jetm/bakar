@@ -12,12 +12,21 @@
 #                bsp_model.BspModel/BuildConfig used under TYPE_CHECKING
 #  core        - diagnostics.py: pre-flight checks (import foundation + model)
 #  analysis    - triage / report / layers / renderers (import foundation; sit
-#                below steps in layer order)
+#                below steps in layer order, BESIDE the feature families)
 #  setup       - host-provisioning planner and its action classes
 #  insights    - per-dimension build analysers behind `bakar insights`
 #  feed        - package-feed publishing pipeline
 #  mold        - mold linker instrumentation
+#  lock_authority - build_stop.py: per-run process lifecycle and the shared
+#                bitbake lock-ownership gate, consulted by both steps and
+#                commands. Sits OUTSIDE the layers order for that reason.
 #  commands    - CLI orchestrators (import everything)
+#  tests       - tests/**, exempt: never a violation source
+#
+# That is the full set: twelve groups, all twelve named above. An omission here
+# is not cosmetic - this comment is the only human-readable index of the group
+# vocabulary, so a group missing from it gets its modules filed elsewhere or
+# left unclassified, which is exactly how coverage erodes.
 #
 # Seven modules are deliberately left unclassified: task_timings, eventlog, fmt,
 # graph_analyze, inspect_parse, pin_state, preset_config. They are foundation-like
@@ -135,12 +144,11 @@ paths = ["src/bakar/setup/**"]
 
 [[modules]]
 name = "insights"
-paths = [
-  "src/bakar/insights_disk.py",
-  "src/bakar/insights_pressure.py",
-  "src/bakar/insights_sstate.py",
-  "src/bakar/insights_timing.py",
-]
+paths = ["src/bakar/insights_*.py"]
+# A glob, matching its sibling families feed_*.py and mold_*.py. Enumerating the
+# four literally meant a new insights_*.py would match no group: ungoverned
+# imports, and module coverage silently dropping under a threshold with enough
+# slack to absorb it.
 # Per-dimension analysers behind `bakar insights`. Consumed only by
 # commands/insights.py; they import foundation (psi, task_rollup) and the
 # deliberately ungoverned parsers task_timings/graph_analyze.
@@ -182,28 +190,78 @@ exempt = true  # never a violation source
 # Main dependency stack (outermost → innermost):
 # commands may import everything below it
 # steps may import analysis, the feature families, foundation
-# analysis may import the feature families and foundation
+# analysis may import foundation only
 # setup / insights / feed / mold may import foundation only
 # foundation may not import anything above it (bsp_model ref is deferred, ungoverned)
 # core (diagnostics), model (bsp_model) and lock_authority (build_stop) sit
 # OUTSIDE the order - see their module comments above.
+#
+# TWO layers rules rather than one eight-entry order. A `layers` order is TOTAL:
+# every entry may import every entry below it. Folding analysis and the four
+# feature families into one order therefore encoded the opposite of the intent -
+# analysis sat above the families, which PERMITS analysis → feed, the very edge
+# the prose forbids. It also imposed a ranking on four modules documented as
+# unordered peers, making setup → feed legal and feed → setup CRITICAL.
+# Splitting the stack leaves analysis ↔ family edges ungoverned by either order,
+# so the `forbidden` rules below state the prohibition explicitly and the
+# `independent` rule states the peer invariant in both directions.
 [[rules]]
 type = "layers"
 order = [
   "commands",
   "steps",
   "analysis",
+  "foundation",
+]
+reason = "CLI orchestrators → subprocess wrappers → read/compute layer → pure data/config"
+
+[[rules]]
+type = "layers"
+order = [
+  "commands",
+  "steps",
   "setup",
   "insights",
   "feed",
   "mold",
   "foundation",
 ]
-reason = "CLI orchestrators → subprocess wrappers → read/compute layer → feature families → pure data/config"
-# setup / insights / feed / mold are peer feature families: none imports another,
-# so their relative order carries no constraint. They sit below analysis because
-# analysis must not grow a dependency on a feature family, and above foundation
-# because each imports from it.
+reason = "the same stack for the feature families, which sit beside analysis rather than below it"
+
+# The four feature families are peers: none may import another, in either
+# direction. `independent` forbids every ordered pair, which a `layers` order
+# cannot express - an order would silently permit half of those pairs.
+[[rules]]
+type = "independent"
+modules = ["setup", "insights", "feed", "mold"]
+reason = "peer feature families; a dependency between two of them belongs in foundation"
+
+# analysis must not grow a dependency on a feature family. Neither layers rule
+# governs these edges (analysis appears in one, the families in the other), so
+# each is named explicitly - the same idiom used to cap `model` and `core`.
+[[rules]]
+type = "forbidden"
+from = "analysis"
+to = "setup"
+reason = "triage/report/layers must not depend on the host provisioner"
+
+[[rules]]
+type = "forbidden"
+from = "analysis"
+to = "insights"
+reason = "triage/report/layers must not depend on the insights analysers"
+
+[[rules]]
+type = "forbidden"
+from = "analysis"
+to = "feed"
+reason = "triage/report/layers must not depend on the package-feed pipeline"
+
+[[rules]]
+type = "forbidden"
+from = "analysis"
+to = "mold"
+reason = "triage/report/layers must not depend on the mold link tooling"
 
 # model: cap the top of its allowed import set
 [[rules]]

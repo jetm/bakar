@@ -229,9 +229,10 @@ Related: [clean.md](clean.md), [clean-cache.md](clean-cache.md), [hashserv.md](h
 
 ## Capability notes
 
-Delivery records for behaviour that has no command page of its own. Each is an
+Delivery records for capabilities that span several commands or none. Each is an
 archived note rather than a reference page - the gloss below carries the
-substance, the page carries the provenance.
+substance, the page carries the provenance. Where a capability does have a
+command page, the gloss links it.
 
 | Capability | Note | What it covers |
 |------------|------|----------------|
