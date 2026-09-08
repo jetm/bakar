@@ -35,7 +35,11 @@ pytestmark = pytest.mark.unit
 # Names that have MOVED off ``bakar.diagnostics`` and must not be re-exported
 # from it. Each entry is a ``(module_path, symbol_name)`` pair. Extend this
 # list - not the test body - when an extraction removes a name.
-RELOCATED_SYMBOLS: list[tuple[str, str]] = []
+RELOCATED_SYMBOLS: list[tuple[str, str]] = [
+    ("bakar.diagnostics", "_NFS_BOUNDED_LOOKUP_OPTS"),
+    ("bakar.diagnostics", "_NFS_LOW_ACTIMEO_SECONDS"),
+    ("bakar.diagnostics", "_NFS_ACTIMEO_OPTS"),
+]
 
 # Same contract, for names that have moved off ``bakar.commands.build``.
 RELOCATED_BUILD_SYMBOLS: list[tuple[str, str]] = []
