@@ -39,6 +39,8 @@ RELOCATED_SYMBOLS: list[tuple[str, str]] = [
     ("bakar.diagnostics", "_NFS_BOUNDED_LOOKUP_OPTS"),
     ("bakar.diagnostics", "_NFS_LOW_ACTIMEO_SECONDS"),
     ("bakar.diagnostics", "_NFS_ACTIMEO_OPTS"),
+    ("bakar.diagnostics", "_BUILDTOOLS_ENV_SCRIPT_GLOB"),
+    ("bakar.diagnostics", "load_user_config"),
 ]
 
 # Same contract, for names that have moved off ``bakar.commands.build``.

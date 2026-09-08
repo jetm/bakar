@@ -109,7 +109,7 @@ def _no_config_buildtools(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OECORE_NATIVE_SYSROOT", raising=False)
     monkeypatch.delenv("BAKAR_BUILDTOOLS_DIR", raising=False)
     monkeypatch.setattr(
-        "bakar.diagnostics.load_user_config",
+        "bakar.buildtools.load_user_config",
         lambda: SimpleNamespace(buildtools_dir=None, buildtools_dirs={}),
     )
 

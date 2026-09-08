@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar import diagnostics
+from bakar import buildtools, diagnostics
 from bakar.steps import kas_build
 from bakar.user_config import UserConfig
 from tests.conftest import make_build_config
@@ -48,7 +48,7 @@ def _clear_buildtools_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.delenv("OECORE_NATIVE_SYSROOT", raising=False)
     monkeypatch.delenv(diagnostics.BUILDTOOLS_DIR_ENV, raising=False)
-    monkeypatch.setattr(diagnostics, "load_user_config", UserConfig)
+    monkeypatch.setattr(buildtools, "load_user_config", UserConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ def test_detect_via_config_when_env_unset(tmp_path: Path, monkeypatch: pytest.Mo
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
     _toolchain_dir(cfg_dir)
-    monkeypatch.setattr(diagnostics, "load_user_config", lambda: UserConfig(buildtools_dir=str(cfg_dir)))
+    monkeypatch.setattr(buildtools, "load_user_config", lambda: UserConfig(buildtools_dir=str(cfg_dir)))
 
     tc = diagnostics.detect_buildtools()
 
@@ -129,7 +129,7 @@ def test_detect_env_wins_over_config(tmp_path: Path, monkeypatch: pytest.MonkeyP
     cfg_dir.mkdir()
     _toolchain_dir(cfg_dir)
     monkeypatch.setenv(diagnostics.BUILDTOOLS_DIR_ENV, str(env_dir))
-    monkeypatch.setattr(diagnostics, "load_user_config", lambda: UserConfig(buildtools_dir=str(cfg_dir)))
+    monkeypatch.setattr(buildtools, "load_user_config", lambda: UserConfig(buildtools_dir=str(cfg_dir)))
 
     tc = diagnostics.detect_buildtools()
 
@@ -318,7 +318,7 @@ def test_detect_via_release_scoped_config(tmp_path: Path, monkeypatch: pytest.Mo
     release_dir.mkdir()
     _toolchain_dir(release_dir)
     monkeypatch.setattr(
-        diagnostics,
+        buildtools,
         "load_user_config",
         lambda: UserConfig(buildtools_dirs={"wrynose-abc123": str(release_dir)}),
     )
@@ -339,7 +339,7 @@ def test_detect_release_scoped_does_not_fall_back_to_flat_config(
     flat_dir.mkdir()
     _toolchain_dir(flat_dir)
     monkeypatch.setattr(
-        diagnostics,
+        buildtools,
         "load_user_config",
         lambda: UserConfig(buildtools_dir=str(flat_dir), buildtools_dirs={}),
     )
@@ -448,7 +448,7 @@ def test_provision_resolves_release_scoped_install(tmp_path: Path, monkeypatch: 
     install_dir.mkdir()
     (install_dir / "environment-setup-x86_64-pokysdk-linux").write_text("export PATH=" + str(toolbin) + ":$PATH\n")
     monkeypatch.setattr(
-        "bakar.diagnostics.load_user_config",
+        "bakar.buildtools.load_user_config",
         lambda: UserConfig(buildtools_dirs={release_key: str(install_dir)}),
     )
 

@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar import diagnostics
+from bakar import buildtools, diagnostics
 from bakar.steps import kas_build
 from bakar.user_config import UserConfig
 from tests.conftest import make_build_config
@@ -95,7 +95,7 @@ def test_bitbake_bin_path_ti_is_sources_bitbake_bin(tmp_path: Path) -> None:
 def _clear_buildtools_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OECORE_NATIVE_SYSROOT", raising=False)
     monkeypatch.delenv(diagnostics.BUILDTOOLS_DIR_ENV, raising=False)
-    monkeypatch.setattr(diagnostics, "load_user_config", UserConfig)
+    monkeypatch.setattr(buildtools, "load_user_config", UserConfig)
 
 
 def _install_fake_toolchain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:

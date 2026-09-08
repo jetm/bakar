@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar import diagnostics
+from bakar import buildtools, diagnostics
 from bakar.diagnostics import Severity, Status, check_host_preflight
 from bakar.user_config import UserConfig
 from tests.conftest import make_build_config
@@ -166,7 +166,7 @@ def test_passes_via_release_scoped_config_entry(tmp_path: Path, monkeypatch: pyt
     install_dir.mkdir()
     (install_dir / "environment-setup-x86_64-pokysdk-linux").write_text("export OECORE_NATIVE_SYSROOT=/x\n")
     monkeypatch.setattr(
-        diagnostics,
+        buildtools,
         "load_user_config",
         lambda: UserConfig(buildtools_dirs={release_key: str(install_dir)}),
     )
@@ -188,7 +188,7 @@ def test_fails_when_flat_config_set_but_release_key_entry_absent(
     flat_dir.mkdir()
     (flat_dir / "environment-setup-x86_64-pokysdk-linux").write_text("export OECORE_NATIVE_SYSROOT=/x\n")
     monkeypatch.setattr(
-        diagnostics,
+        buildtools,
         "load_user_config",
         lambda: UserConfig(buildtools_dir=str(flat_dir), buildtools_dirs={}),
     )
