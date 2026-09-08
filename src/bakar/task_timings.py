@@ -24,6 +24,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from bakar.task_rollup import tasks_from
+
 DEFAULT_TIMINGS_PATH = Path.home() / ".local/state/bakar/task-timings.json"
 
 # Scoped baseline files live under this directory, one per build context.
@@ -151,9 +153,10 @@ def _welford_update(entry: dict, x: float) -> None:
 def update_from_events(events_json: Path, timings_path: Path) -> None:
     """Fold per-task durations from a normalized events artifact into the file.
 
-    Reads ``events_json`` (the ``bitbake-events.json`` schema: a top-level
-    ``tasks`` list whose entries carry ``recipe``, ``task``, ``started`` and
-    ``completed`` epoch-second timestamps). For each task with both timestamps
+    Reads ``events_json`` through :func:`bakar.task_rollup.tasks_from`, which
+    owns the ``bitbake-events.json`` schema (a top-level ``tasks`` list whose
+    entries carry ``recipe``, ``task``, ``started`` and ``completed``
+    epoch-second timestamps). For each task with both timestamps
     present and a non-negative duration, updates the baseline keyed by
     :func:`baseline_key` (``"<recipe-sans-version>:<task>"``) via
     :func:`_welford_update`.
@@ -163,19 +166,8 @@ def update_from_events(events_json: Path, timings_path: Path) -> None:
     absent, and a missing or malformed existing file is tolerated by starting
     from an empty baseline.
     """
-    try:
-        with events_json.open("r", encoding="utf-8") as fh:
-            artifact = json.load(fh)
-    except OSError, ValueError:
-        return
-    if not isinstance(artifact, dict):
-        return
-    task_rows = artifact.get("tasks")
-    if not isinstance(task_rows, list):
-        return
-
     durations: list[tuple[str, float]] = []
-    for row in task_rows:
+    for row in tasks_from(events_json):
         if not isinstance(row, dict):
             continue
         name = row.get("task")

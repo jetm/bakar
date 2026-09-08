@@ -63,13 +63,17 @@ def _is_go_recipe(recipe: str) -> bool:
     return recipe in ("go", "golang") or recipe.startswith(("go-", "golang-"))
 
 
-def _tasks_from(source: Path | str | list) -> list:
+def tasks_from(source: Path | str | list) -> list:
     """Return the task rows from an artifact path or an already-parsed list.
 
     A list is used verbatim. A path is read as the ``bitbake-events.json``
     schema (a dict with a top-level ``tasks`` list). Any error - missing file,
     malformed JSON, wrong shape - yields an empty list so callers never guard
-    the read, mirroring :func:`bakar.task_timings.update_from_events`.
+    the read.
+
+    This is the sole reader of the artifact's ``tasks`` list;
+    :func:`bakar.task_timings.update_from_events` routes through it rather than
+    opening the file a second time.
     """
     if isinstance(source, list):
         return source
@@ -82,6 +86,12 @@ def _tasks_from(source: Path | str | list) -> list:
         return []
     rows = artifact.get("tasks")
     return rows if isinstance(rows, list) else []
+
+
+# devtool-debt: back-compat alias for the pre-promotion private name, which
+# insights_timing and insights_sstate still import. Ceiling: those two callers.
+# Upgrade trigger: they switch to ``tasks_from``, at which point delete this.
+_tasks_from = tasks_from
 
 
 def compute_task_rollup(source: Path | str | list) -> TaskRollup:
@@ -99,7 +109,7 @@ def compute_task_rollup(source: Path | str | list) -> TaskRollup:
     counts: dict[str, int] = dict.fromkeys(ALL_FAMILIES, 0)
     go_compile_seconds = 0.0
 
-    for row in _tasks_from(source):
+    for row in tasks_from(source):
         if not isinstance(row, dict):
             continue
         task = row.get("task")
