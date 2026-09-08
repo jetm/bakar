@@ -39,14 +39,14 @@ bakar = "bakar.cli:main"
 
 [dependency-groups]
 dev = [
-  "hypothesis>=6.0",
-  "pre-commit",
-  "pytest>=9",
+  "hypothesis>=6.167",
+  "pre-commit>=4.6.2",
+  "pytest>=9.1",
   "pytest-cov>=6",
-  "pytest-randomly",
+  "pytest-randomly>=5",
   "pytest-timeout",
   "pytest-xdist",
-  "ruff",
+  "ruff>=0.16",
   "ty>=0.0.79",
 ]
 
