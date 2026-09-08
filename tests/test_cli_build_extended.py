@@ -143,7 +143,7 @@ def _make_subprocess_router(
 def patched_detect(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force ``workspace.detect`` to a state that runs sync and setup_env."""
     monkeypatch.setattr(
-        "bakar.commands.build.detect",
+        "bakar.commands._build_flavors.detect",
         lambda cfg: _state_needing_sync_and_setup(),
     )
 

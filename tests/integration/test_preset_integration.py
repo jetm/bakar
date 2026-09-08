@@ -19,6 +19,7 @@ import pytest
 
 import bakar.commands._app as _state
 from bakar.cli import app
+from bakar.commands import _build_flavors as flavors_cmd
 from bakar.commands import build as build_cmd
 from bakar.preset_config import PresetEntry, load_presets
 from bakar.user_config import UserConfig
@@ -147,8 +148,12 @@ def _stub_build_infra(monkeypatch: pytest.MonkeyPatch) -> dict:
 
     monkeypatch.setattr(build_cmd, "_dispatch_bsp", fake_dispatch_bsp)
     monkeypatch.setattr(build_cmd, "_dispatch_from_yaml", fake_dispatch_yaml)
+    # build() and _run_single_preset_release each read these from their own
+    # module globals, so stubbing one module leaves the other on the real one.
+    monkeypatch.setattr(flavors_cmd, "_dispatch_bsp", fake_dispatch_bsp)
+    monkeypatch.setattr(flavors_cmd, "_dispatch_from_yaml", fake_dispatch_yaml)
     monkeypatch.setattr(build_cmd.step_kas, "run_build", fake_run_build)
-    monkeypatch.setattr("bakar.commands.build.detect", fake_detect)
+    monkeypatch.setattr("bakar.commands._build_flavors.detect", fake_detect)
     return captured
 
 
@@ -189,6 +194,7 @@ def test_nxp_preset_dispatches_via_bsp(
         return original_resolve(**kwargs)
 
     monkeypatch.setattr(build_cmd, "resolve", capturing_resolve)
+    monkeypatch.setattr(flavors_cmd, "resolve", capturing_resolve)
 
     result = runner.invoke(app, ["build", "--preset", "imx8mp-scarthgap", "--dry-run"])
 

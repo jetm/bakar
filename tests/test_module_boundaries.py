@@ -103,10 +103,24 @@ BUILD_RE_EXPORTED_NAMES: tuple[str, ...] = (
     "_FeedRequest",
     "_resolve_feed_request",
     "_sync_feed",
-    # Not moved symbols but module objects the sbom/cve tests patch THROUGH
-    # ``bakar.commands.build`` to reach the post-build steps.
+    # The flavor dispatchers and the two frozen contexts they read, moved to
+    # ``bakar.commands._build_flavors``. ``build()`` calls every one as a bare
+    # name and tests patch ``build_mod._run_single_preset_release`` to count
+    # dispatches, so the origin path has to keep resolving.
+    "_preset_completer",
+    "_BbsetupCtx",
+    "_run_bbsetup_build",
+    "_BuildCtx",
+    "_run_byo_build",
+    "_run_manifest_build",
+    "_is_multi_release",
+    "_run_single_preset_release",
+    # Not moved symbols but module objects the sbom/cve/qcom tests patch THROUGH
+    # ``bakar.commands.build`` to reach the post-build and step modules.
     "subprocess",
     "step_kas",
+    "step_override",
+    "step_qcom_build",
 )
 
 # Public surface ``bakar.diagnostics`` must keep exposing regardless of what

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import bakar.commands._build_flavors as flavors
 import bakar.commands.build as build
 from bakar.output_mode import OutputMode
 
@@ -50,9 +51,14 @@ def test_render_console_none_in_rich(monkeypatch) -> None:
 
 def test_every_build_site_threads_the_mode() -> None:
     # No construction site may be left on the RICH default / shared console.
-    src = Path(build.__file__).read_text(encoding="utf-8")
+    # The two factories stay on build.py next to the console and RunLogger the
+    # other tests here patch, but the flavor dispatchers that call them live in
+    # _build_flavors, so the counts only close when both sources are read. A
+    # single-module count would silently drop the three dispatcher call sites -
+    # exactly the sites this test exists to hold.
+    src = Path(build.__file__).read_text(encoding="utf-8") + Path(flavors.__file__).read_text(encoding="utf-8")
     # Exactly one KasBuildContext(/RunLogger(runs_dir=cfg.runs_dir construction may
-    # exist in the whole module: the one inside the factory below. A stray ad hoc
+    # exist across both modules: the one inside the factory below. A stray ad hoc
     # construction added outside the factories bumps these counts and fails here.
     assert src.count("KasBuildContext(") == 1
     assert src.count("RunLogger(runs_dir=cfg.runs_dir") == 1

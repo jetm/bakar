@@ -32,6 +32,7 @@ import pytest
 import typer
 
 from bakar import cve_report
+from bakar.commands import _build_flavors as flavors_mod
 from bakar.commands import build as build_mod
 
 if TYPE_CHECKING:
@@ -197,7 +198,7 @@ def test_the_byo_path_hands_over_the_overlays_the_build_ran_with(
     """
     _write_cve_data(cfg)
     overlays = [Path("/overlays/cve-check.yml")]
-    monkeypatch.setattr(build_mod, "_run_doctor_gate", lambda *_a, **_kw: None)
+    monkeypatch.setattr(flavors_mod, "_run_doctor_gate", lambda *_a, **_kw: None)
 
     build_mod._run_byo_build(
         cfg,

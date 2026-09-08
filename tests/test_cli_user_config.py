@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 import bakar.commands._app as app_module
+import bakar.commands._build_flavors as flavors_module
 import bakar.commands._helpers as helpers_module
 import bakar.commands.build as build_module
 from bakar.cli import app
@@ -69,7 +70,7 @@ def _stub_build_steps(monkeypatch: pytest.MonkeyPatch) -> None:
     to override (default: no layers).
     """
     monkeypatch.setattr(helpers_module, "run_all", lambda cfg, bsp: [])
-    monkeypatch.setattr(build_module, "detect", lambda cfg: _synced_state())
+    monkeypatch.setattr(flavors_module, "detect", lambda cfg: _synced_state())
     monkeypatch.setattr(build_module.step_override, "apply", lambda cfg, log=None, **kw: None)
     monkeypatch.setattr(build_module.step_kas, "regenerate_yaml", lambda cfg, log, *, bsp: None)
     monkeypatch.setattr(helpers_module, "collect_layer_hashes", lambda cfg: [])

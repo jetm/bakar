@@ -66,10 +66,11 @@ def _run(*, show_layers: bool, dry_run: bool, tmp_path: Path) -> tuple[MagicMock
     log.run_id = "20260603-000000"
 
     with (
-        patch("bakar.commands.build._run_doctor_gate", parent.run_doctor_gate),
-        patch("bakar.commands.build._print_layer_hashes", print_layer_hashes),
+        patch("bakar.commands._build_flavors._run_doctor_gate", parent.run_doctor_gate),
+        patch("bakar.commands._build_flavors._print_layer_hashes", print_layer_hashes),
         patch("bakar.commands.build.step_kas.run_build", run_build),
         patch("bakar.commands.build.console", parent.console),
+        patch("bakar.commands._build_flavors.console", parent.console),
     ):
         _run_byo_build(cfg, log, _ctx(show_layers=show_layers, dry_run=dry_run, tmp_path=tmp_path))
 

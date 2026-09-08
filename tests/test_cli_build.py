@@ -19,6 +19,7 @@ import pytest
 import bakar.commands._app as _state
 import bakar.steps.kas_build as step_kas
 from bakar.cli import app
+from bakar.commands import _build_flavors as flavors_cmd
 from bakar.commands import build as build_cmd
 from bakar.commands._helpers import _hashequiv_extra_overlays, _overlay_dir
 from bakar.config import BuildConfig
@@ -500,9 +501,13 @@ def _stub_dispatchers(monkeypatch: pytest.MonkeyPatch) -> dict:
 
     monkeypatch.setattr(build_cmd, "_dispatch_bsp", fake_dispatch_bsp)
     monkeypatch.setattr(build_cmd, "_dispatch_from_yaml", fake_dispatch_yaml)
+    # build() and _run_single_preset_release each read these from their own
+    # module globals, so stubbing one module leaves the other on the real one.
+    monkeypatch.setattr(flavors_cmd, "_dispatch_bsp", fake_dispatch_bsp)
+    monkeypatch.setattr(flavors_cmd, "_dispatch_from_yaml", fake_dispatch_yaml)
     monkeypatch.setattr(build_cmd.step_kas, "run_build", fake_run_build)
     # Patch 'detect' where it's used in the build command module.
-    monkeypatch.setattr("bakar.commands.build.detect", fake_detect)
+    monkeypatch.setattr("bakar.commands._build_flavors.detect", fake_detect)
     return captured
 
 
@@ -571,6 +576,7 @@ def test_preset_explicit_image_overrides_preset(
         return cfg
 
     monkeypatch.setattr(build_mod, "resolve", capturing_resolve)
+    monkeypatch.setattr(flavors_cmd, "resolve", capturing_resolve)
     _stub_dispatchers(monkeypatch)
 
     result = runner.invoke(
@@ -617,6 +623,8 @@ def test_preset_dispatch_bbsetup_uses_dispatch_from_yaml(
 
     monkeypatch.setattr(build_mod, "_dispatch_from_yaml", fake_dispatch_yaml)
     monkeypatch.setattr(build_mod, "_dispatch_bsp", fake_dispatch_bsp)
+    monkeypatch.setattr(flavors_cmd, "_dispatch_from_yaml", fake_dispatch_yaml)
+    monkeypatch.setattr(flavors_cmd, "_dispatch_bsp", fake_dispatch_bsp)
 
     # Also stub run_build to prevent container invocation.
     monkeypatch.setattr(build_mod.step_kas, "run_build", lambda ctx, *, extra_overlays=None, show_layers=False: 0)
@@ -654,6 +662,7 @@ def test_nxp_preset_output_path_contains_manifest_version(
         return original_resolve(**kwargs)
 
     monkeypatch.setattr(build_mod, "resolve", capturing_resolve)
+    monkeypatch.setattr(flavors_cmd, "resolve", capturing_resolve)
     _stub_dispatchers(monkeypatch)
 
     result = runner.invoke(app, ["build", "--preset", "imx8mp-scarthgap", "--dry-run"])

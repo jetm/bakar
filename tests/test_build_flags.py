@@ -276,6 +276,7 @@ def test_command_help_lists_dry_run_flag(command: str) -> None:
 
 def test_preset_completer_empty_returns_all(monkeypatch: pytest.MonkeyPatch) -> None:
     """Empty incomplete string returns all preset names."""
+    import bakar.commands._build_flavors as flavors_mod
     import bakar.commands.build as build_mod
     from bakar.preset_config import PresetEntry
 
@@ -284,6 +285,7 @@ def test_preset_completer_empty_returns_all(monkeypatch: pytest.MonkeyPatch) -> 
         PresetEntry(name="avocado-qemux86-64", family="bbsetup", kas_yaml="/path/to/qemux86-64.yml"),
     ]
     monkeypatch.setattr(build_mod, "load_presets", lambda: fake_presets)
+    monkeypatch.setattr(flavors_mod, "load_presets", lambda: fake_presets)
 
     result = build_mod._preset_completer("")
     assert result == ["imx8mp-scarthgap", "avocado-qemux86-64"]
@@ -291,6 +293,7 @@ def test_preset_completer_empty_returns_all(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_preset_completer_prefix_filters(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prefix 'im' returns only names starting with 'im'."""
+    import bakar.commands._build_flavors as flavors_mod
     import bakar.commands.build as build_mod
     from bakar.preset_config import PresetEntry
 
@@ -299,6 +302,7 @@ def test_preset_completer_prefix_filters(monkeypatch: pytest.MonkeyPatch) -> Non
         PresetEntry(name="avocado-qemux86-64", family="bbsetup", kas_yaml="/path/to/qemux86-64.yml"),
     ]
     monkeypatch.setattr(build_mod, "load_presets", lambda: fake_presets)
+    monkeypatch.setattr(flavors_mod, "load_presets", lambda: fake_presets)
 
     result = build_mod._preset_completer("im")
     assert result == ["imx8mp-scarthgap"]
@@ -306,9 +310,11 @@ def test_preset_completer_prefix_filters(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_preset_completer_no_presets_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     """When load_presets returns an empty list, completer returns []."""
+    import bakar.commands._build_flavors as flavors_mod
     import bakar.commands.build as build_mod
 
     monkeypatch.setattr(build_mod, "load_presets", list)
+    monkeypatch.setattr(flavors_mod, "load_presets", list)
 
     result = build_mod._preset_completer("")
     assert result == []
