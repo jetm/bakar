@@ -1,4 +1,4 @@
-# Six groups by architectural role:
+# Groups by architectural role:
 #  foundation  - pure data/config/parsers, no outward bakar imports
 #  model       - bsp_model.py: central domain model, intentionally used
 #                across layers. The arch checker (ast.walk) treats both
@@ -11,8 +11,18 @@
 #  steps       - subprocess wrappers; import foundation only at module level;
 #                bsp_model.BspModel/BuildConfig used under TYPE_CHECKING
 #  core        - diagnostics.py: pre-flight checks (import foundation + model)
-#  analysis    - triage / report / layers (import foundation; sit below steps in layer order)
+#  analysis    - triage / report / layers / renderers (import foundation; sit
+#                below steps in layer order)
+#  setup       - host-provisioning planner and its action classes
+#  insights    - per-dimension build analysers behind `bakar insights`
+#  feed        - package-feed publishing pipeline
+#  mold        - mold linker instrumentation
 #  commands    - CLI orchestrators (import everything)
+#
+# Seven modules are deliberately left unclassified: task_timings, eventlog, fmt,
+# graph_analyze, inspect_parse, pin_state, preset_config. They are foundation-like
+# parsers whose placement is an open design question, not an oversight - see the
+# improve-tooling-and-docs design's Open Questions.
 
 [architecture]
 name = "bakar"
@@ -36,6 +46,20 @@ paths = [
   "src/bakar/hashserv.py",
   "src/bakar/psi.py",
   "src/bakar/output_mode.py",
+  # Long-running service managers. hashserv.py (already above) imports
+  # central_service, which imports daemon_log; prserv and sccache_server sit on
+  # the same shelf. All four import nothing outward, so they belong with the
+  # other pure-data/config modules rather than in a layer of their own.
+  "src/bakar/central_service.py",
+  "src/bakar/daemon_log.py",
+  "src/bakar/prserv.py",
+  "src/bakar/sccache_server.py",
+  # Leaf helpers with no outward bakar imports, consumed by steps/ and above.
+  "src/bakar/build_scope.py",
+  "src/bakar/gitutil.py",
+  "src/bakar/journal.py",
+  "src/bakar/task_rollup.py",
+  "src/bakar/tuning.py",
 ]
 
 [[modules]]
@@ -87,6 +111,13 @@ paths = [
   "src/bakar/triage.py",
   "src/bakar/report.py",
   "src/bakar/layers.py",
+  # Read/compute renderers over build output: same role as triage/report.
+  # cache_render formats the diagnostics report dataclasses; that edge lands on
+  # `core`, which sits outside the layers order and is therefore ungoverned.
+  "src/bakar/cache_render.py",
+  "src/bakar/cve_report.py",
+  "src/bakar/sbom_publish.py",
+  "src/bakar/sched_triage.py",
 ]
 
 [[modules]]
@@ -94,10 +125,53 @@ name = "steps"
 paths = ["src/bakar/steps/**"]
 
 [[modules]]
+name = "setup"
+paths = ["src/bakar/setup/**"]
+# Host-provisioning planner and its action classes. Only commands/setup.py and
+# diagnostics (core, outside the layers order) import it; it imports foundation
+# (config, user_config, hashserv, prserv) plus diagnostics. It is a sibling of
+# analysis rather than part of it - nothing in analysis reaches into setup - so
+# it gets its own entry in the layers order below analysis.
+
+[[modules]]
+name = "insights"
+paths = [
+  "src/bakar/insights_disk.py",
+  "src/bakar/insights_pressure.py",
+  "src/bakar/insights_sstate.py",
+  "src/bakar/insights_timing.py",
+]
+# Per-dimension analysers behind `bakar insights`. Consumed only by
+# commands/insights.py; they import foundation (psi, task_rollup) and the
+# deliberately ungoverned parsers task_timings/graph_analyze.
+
+[[modules]]
+name = "feed"
+paths = ["src/bakar/feed.py", "src/bakar/feed_*.py"]
+# Package-feed publishing pipeline (feed, feed_index, feed_ops, feed_preflight,
+# feed_publish, feed_reclaim, feed_retention, feed_sbom, feed_serve,
+# feed_consolidate). Cross-imports inside the family are intentional and
+# ungoverned; outward it reaches only foundation (config, bsp_detect) and
+# diagnostics (core, outside the order). Nothing below commands imports it.
+
+[[modules]]
+name = "mold"
+paths = ["src/bakar/mold_*.py"]
+# mold linker instrumentation: mold_linkstats parses link statistics,
+# mold_verify checks the linker wiring. Both are self-contained - no bakar
+# imports in either direction today - so the group exists to declare the
+# boundary rather than to govern an existing edge.
+
+[[modules]]
 name = "commands"
 paths = [
   "src/bakar/commands/**",
   "src/bakar/cli.py",
+  "src/bakar/__main__.py",
+  # fsremove imports commands._app.console for its progress output, so it is
+  # CLI-coupled by construction and only commands/ imports it. Placing it in
+  # foundation would make that a genuine foundation -> commands layer violation.
+  "src/bakar/fsremove.py",
 ]
 
 [[modules]]
@@ -106,15 +180,30 @@ paths = ["tests/**"]
 exempt = true  # never a violation source
 
 # Main dependency stack (outermost → innermost):
-# commands may import steps, analysis, foundation (and core + model, ungoverned)
-# steps may import analysis, foundation (and core + model refs, ungoverned)
-# analysis may import foundation only
+# commands may import everything below it
+# steps may import analysis, the feature families, foundation
+# analysis may import the feature families and foundation
+# setup / insights / feed / mold may import foundation only
 # foundation may not import anything above it (bsp_model ref is deferred, ungoverned)
-# core (diagnostics) sits OUTSIDE the order - see its module comment above.
+# core (diagnostics), model (bsp_model) and lock_authority (build_stop) sit
+# OUTSIDE the order - see their module comments above.
 [[rules]]
 type = "layers"
-order = ["commands", "steps", "analysis", "foundation"]
-reason = "CLI orchestrators → subprocess wrappers → read/compute layer → pure data/config"
+order = [
+  "commands",
+  "steps",
+  "analysis",
+  "setup",
+  "insights",
+  "feed",
+  "mold",
+  "foundation",
+]
+reason = "CLI orchestrators → subprocess wrappers → read/compute layer → feature families → pure data/config"
+# setup / insights / feed / mold are peer feature families: none imports another,
+# so their relative order carries no constraint. They sit below analysis because
+# analysis must not grow a dependency on a feature family, and above foundation
+# because each imports from it.
 
 # model: cap the top of its allowed import set
 [[rules]]
