@@ -8,11 +8,33 @@ need a real workspace.
 from __future__ import annotations
 
 from pathlib import Path
+from types import FunctionType
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 
 from bakar.bsp_model import BspModel, detect_bsp_family, get_model
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from bakar.bsp_model import DoctorCheck
+
+
+def _check_names(checks: Iterable[DoctorCheck]) -> set[str]:
+    """Names of a model's doctor extras.
+
+    ``DoctorCheck`` is ``Callable[..., Any]``, which carries no ``__name__``;
+    every entry is in fact a module-level function, so assert that and read
+    the name off the narrowed type.
+    """
+    names = set()
+    for fn in checks:
+        assert isinstance(fn, FunctionType), f"doctor extra is not a function: {fn!r}"
+        names.add(fn.__name__)
+    return names
+
 
 pytestmark = pytest.mark.unit
 
@@ -124,7 +146,7 @@ def test_get_model_nxp() -> None:
     assert "git" not in bsp.required_host_tools  # repo is the NXP gate
     assert bsp.kas_template.workspace_subdir == "nxp"
     # NXP doctor extras should include the linux-imx fork check
-    extras = {fn.__name__ for fn in bsp.doctor_extras}
+    extras = _check_names(bsp.doctor_extras)
     assert "check_forks_linux_imx" in extras
     assert "check_manifest_consistency" in extras
     assert "check_git_object_cache" in extras
@@ -145,7 +167,7 @@ def test_get_model_ti() -> None:
     assert "repo" not in bsp.required_host_tools  # TI does not use repo-tool
     assert bsp.kas_template.workspace_subdir == "ti"
     # TI doctor extras should include the four ti_* checks
-    extras = {fn.__name__ for fn in bsp.doctor_extras}
+    extras = _check_names(bsp.doctor_extras)
     assert "check_ti_layertool_present" in extras
     assert "check_ti_layertool_config_consistency" in extras
     assert "check_forks_ti_linux_kernel" in extras

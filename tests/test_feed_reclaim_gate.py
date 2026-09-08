@@ -134,6 +134,7 @@ def test_a_pooled_but_unreferenced_package_is_retained(tmp_path) -> None:
     plan = plan_reclaim([source], channel_root=channel, feed_root=tmp_path / "feed")
 
     assert plan.eligible == []
+    assert plan.retained[0].reason is not None
     assert "no repository" in plan.retained[0].reason
 
 
@@ -147,6 +148,7 @@ def test_a_package_absent_from_the_pool_is_retained(tmp_path) -> None:
     plan = plan_reclaim([source], channel_root=channel, feed_root=tmp_path / "feed")
 
     assert plan.eligible == []
+    assert plan.retained[0].reason is not None
     assert "not in the pool" in plan.retained[0].reason
 
 
@@ -200,6 +202,7 @@ def test_the_feeds_own_pool_is_never_a_source(tmp_path) -> None:
     plan = plan_reclaim([pool_entry], channel_root=channel, feed_root=tmp_path / "feed")
 
     assert plan.eligible == []
+    assert plan.retained[0].reason is not None
     assert "inside the feed" in plan.retained[0].reason
 
 
@@ -244,6 +247,7 @@ def test_an_exported_path_is_not_eligible_without_an_override(tmp_path) -> None:
     )
 
     assert plan.eligible == []
+    assert plan.retained[0].reason is not None
     assert "exported" in plan.retained[0].reason
 
 

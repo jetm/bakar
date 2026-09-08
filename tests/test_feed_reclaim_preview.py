@@ -214,4 +214,5 @@ def test_retained_candidates_survive_into_the_result(tmp_path) -> None:
     result = apply_reclaim(plan_reclaim(sources, channel_root=channel, feed_root=feed), confirm=True)
 
     assert len(result.retained) == 1
+    assert result.retained[0].reason is not None
     assert "not in the pool" in result.retained[0].reason

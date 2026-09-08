@@ -11,7 +11,7 @@ import subprocess
 
 from bakar.setup.actions.base import Action, RunCommand
 from bakar.setup.actions.git import GitConfigAction
-from tests.conftest import make_host_profile
+from tests.conftest import make_host_profile, run_commands
 
 
 def _fake_run(stdout: str, returncode: int = 0):
@@ -30,7 +30,7 @@ def test_git_action_is_an_action_remediating_git_global_config() -> None:
 
 def test_operations_write_identity_without_global() -> None:
     """Both ops use plain `git config`, never `--global` or `--local`."""
-    ops = GitConfigAction("you@example.com", "Your Name").operations()
+    ops = run_commands(GitConfigAction("you@example.com", "Your Name").operations())
     assert ops == [
         RunCommand(argv=["git", "config", "user.email", "you@example.com"], needs_root=False),
         RunCommand(argv=["git", "config", "user.name", "Your Name"], needs_root=False),
@@ -44,8 +44,7 @@ def test_operations_target_probe_dir_when_given() -> None:
     """With a probe_dir the writes run ``git -C <dir> config`` so they land where the
     check reads - a sub-repo where the includeIf per-tree identity resolves - and a
     non-global write there succeeds instead of aborting outside a repo."""
-    ops = GitConfigAction("you@example.com", "Your Name", probe_dir="/ws/layer").operations()
-
+    ops = run_commands(GitConfigAction("you@example.com", "Your Name", probe_dir="/ws/layer").operations())
     assert [op.argv for op in ops] == [
         ["git", "-C", "/ws/layer", "config", "user.email", "you@example.com"],
         ["git", "-C", "/ws/layer", "config", "user.name", "Your Name"],
@@ -57,7 +56,7 @@ def test_operations_target_probe_dir_when_given() -> None:
 
 def test_operations_use_constructor_values() -> None:
     """The email/name come verbatim from the constructor, not config reads."""
-    ops = GitConfigAction("dev@bakar.test", "Dev Person").operations()
+    ops = run_commands(GitConfigAction("dev@bakar.test", "Dev Person").operations())
     assert ops[0].argv[-1] == "dev@bakar.test"
     assert ops[1].argv[-1] == "Dev Person"
 

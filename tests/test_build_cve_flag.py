@@ -26,12 +26,16 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
 import typer
 
 from bakar import cve_report
 from bakar.commands import build as build_mod
+
+if TYPE_CHECKING:
+    from bakar.steps.kas_build import KasBuildContext
 
 pytestmark = pytest.mark.unit
 
@@ -96,7 +100,7 @@ def runs(monkeypatch: pytest.MonkeyPatch) -> list[tuple[object, dict]]:
     ``extra_overlays`` from its KEYWORD and never from the context's own field -
     so a context that carries them is not the same as a call that passes them.
     """
-    recorded: list[tuple[object, dict]] = []
+    recorded: list[tuple[KasBuildContext, dict]] = []
 
     def record(ctx, **kwargs):
         recorded.append((ctx, kwargs))
@@ -106,7 +110,7 @@ def runs(monkeypatch: pytest.MonkeyPatch) -> list[tuple[object, dict]]:
     return recorded
 
 
-def _contexts(recorded: list[tuple[object, dict]]) -> list[object]:
+def _contexts(recorded: list[tuple[KasBuildContext, dict]]) -> list[KasBuildContext]:
     return [ctx for ctx, _kwargs in recorded]
 
 

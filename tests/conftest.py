@@ -33,6 +33,7 @@ from bakar import cache_render
 from bakar.commands._app import app
 from bakar.config import BuildConfig
 from bakar.report import ReportSummary
+from bakar.setup.actions.base import RunCommand, WriteFile
 from bakar.setup.profile import HostProfile
 from bakar.steps import build_ui
 
@@ -63,6 +64,22 @@ _BASE_HOST_PROFILE: dict[str, object] = {
 def make_host_profile(**overrides: object) -> HostProfile:
     """A prepared-host ``HostProfile`` by default; override fields to simulate gaps."""
     return HostProfile(**{**_BASE_HOST_PROFILE, **overrides})
+
+
+def run_commands(ops: Sequence[RunCommand | WriteFile]) -> list[RunCommand]:
+    """Assert every operation is a ``RunCommand`` and return them as such.
+
+    ``Action.operations()`` returns ``list[RunCommand | WriteFile]``, so a test
+    reading ``op.argv`` off the result is asserting the shape as well as the
+    contents. Stating that as an assertion keeps the claim checked at runtime
+    instead of leaving it implicit in an attribute access that would raise
+    ``AttributeError`` on a ``WriteFile``.
+    """
+    commands = []
+    for op in ops:
+        assert isinstance(op, RunCommand), f"expected a RunCommand operation, got {op!r}"
+        commands.append(op)
+    return commands
 
 
 # Minimal NXP BuildConfig defaults (the imx8mp / 6.6.52 / 5.2-f40 host-mode shape
@@ -215,6 +232,7 @@ def _no_systemd_scope_probe(request, monkeypatch):
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
 # Two synthetic projects pinned to 40-hex-char SHAs.  parse_manifest_pins

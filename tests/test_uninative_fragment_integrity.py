@@ -287,7 +287,10 @@ def test_container_mode_skips(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
 def test_version_tuple_orders_numerically_not_lexically() -> None:
     """2.44 outranks 2.9, which string comparison gets backwards."""
     assert diagnostics._version_tuple("2.44") == (2, 44)
-    assert diagnostics._version_tuple("2.9") < diagnostics._version_tuple("2.44")
+    lower = diagnostics._version_tuple("2.9")
+    higher = diagnostics._version_tuple("2.44")
+    assert lower is not None and higher is not None
+    assert lower < higher
     assert diagnostics._version_tuple(" 2.41 ") == (2, 41)
 
 

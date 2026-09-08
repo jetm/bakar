@@ -42,6 +42,9 @@ if TYPE_CHECKING:
 
     from typer.testing import CliRunner
 
+    from bakar.config import BuildConfig
+
+
 pytestmark = pytest.mark.unit
 
 
@@ -213,14 +216,14 @@ def _invoke_build_with_overrides(
     runner: CliRunner,
     nxp_workspace: Path,
     extra_args: list[str],
-) -> tuple[int, list[object]]:
+) -> tuple[int, list[BuildConfig]]:
     """Drive ``bakar build`` with the step seams short-circuited.
 
     Returns ``(exit_code, captured_cfgs)``. Each captured cfg is the
     ``BuildConfig`` passed to ``step_kas.run_build`` - the assertion is then
     ``cfg.machine`` / ``cfg.distro`` / ``cfg.image`` matches the flag value.
     """
-    captured: list[object] = []
+    captured: list[BuildConfig] = []
 
     def record_run_build(ctx, *_args: object, **_kwargs: object) -> int:  # type: ignore[no-untyped-def]
         captured.append(ctx.cfg)
@@ -252,7 +255,7 @@ def test_build_machine_flag_overrides_default(
 
     assert exit_code == 0
     assert len(captured) == 1
-    assert captured[0].machine == "imx95-var-dart"  # type: ignore[attr-defined]
+    assert captured[0].machine == "imx95-var-dart"
 
 
 def test_build_distro_flag_overrides_default(
@@ -265,7 +268,7 @@ def test_build_distro_flag_overrides_default(
 
     assert exit_code == 0
     assert len(captured) == 1
-    assert captured[0].distro == "fsl-imx-wayland"  # type: ignore[attr-defined]
+    assert captured[0].distro == "fsl-imx-wayland"
 
 
 def test_build_image_flag_overrides_default(
@@ -278,7 +281,7 @@ def test_build_image_flag_overrides_default(
 
     assert exit_code == 0
     assert len(captured) == 1
-    assert captured[0].image == "core-image-base"  # type: ignore[attr-defined]
+    assert captured[0].image == "core-image-base"
 
 
 # ---------------------------------------------------------------------------

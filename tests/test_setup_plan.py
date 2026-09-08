@@ -301,7 +301,7 @@ def test_build_forces_host_mode_off_so_docker_checks_run(monkeypatch: pytest.Mon
         lambda *, workspace, user_config, **_kw: _ResolvedCfg(kas_container_image="img:1", host_mode=True),
     )
 
-    def _capturing_run_all(cfg: object, _bsp: object) -> list[CheckResult]:
+    def _capturing_run_all(cfg: _ResolvedCfg, _bsp: object) -> list[CheckResult]:
         seen["host_mode"] = cfg.host_mode
         return []
 

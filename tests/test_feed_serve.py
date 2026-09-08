@@ -144,7 +144,9 @@ def test_starting_records_a_live_pid_and_the_bound_port(tmp_path) -> None:
         assert pid is not None
         assert is_serving(feed) is True
         assert recorded_port(feed) == port
-        assert feed_status(feed, release="dev", channel="local")["url"].endswith(f":{port}")
+        url = feed_status(feed, release="dev", channel="local")["url"]
+        assert isinstance(url, str)
+        assert url.endswith(f":{port}")
     finally:
         stop_serving(feed)
 
@@ -231,7 +233,9 @@ def test_status_reports_the_feed_shape(tmp_path) -> None:
     assert status["feed_root"] == feed
     assert status["targets"] == ["imx93-frdm", "qemux86-64"]
     assert status["pool_entries"] == 3
-    assert status["url"].endswith(":8080")
+    url = status["url"]
+    assert isinstance(url, str)
+    assert url.endswith(":8080")
     assert status["serving"] is False
 
 

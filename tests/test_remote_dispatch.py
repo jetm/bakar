@@ -713,6 +713,7 @@ def test_dispatch_script_strips_on_and_sets_sccache_off(fake_sp: FakeSubprocess)
     rd.dispatch_remote_build(
         HOST, WS, Path("/home/tiamarin/ws"), ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True
     )
+    assert fake_sp.last_proc is not None
     script = fake_sp.last_proc.stdin.buffer
     # ssh bash -s stdin, never bash -lc.
     assert ("Popen", ["ssh", HOST, "bash", "-s"]) in fake_sp.calls
@@ -727,6 +728,7 @@ def test_dispatch_sccache_dist_opt_in_omits_env_token(fake_sp: FakeSubprocess) -
     rd.dispatch_remote_build(
         HOST, WS, Path("/home/tiamarin/ws"), ["build", "my.yml", "--on", HOST], sccache_dist=True, assume_yes=True
     )
+    assert fake_sp.last_proc is not None
     script = fake_sp.last_proc.stdin.buffer
     assert "BAKAR_SCCACHE_DIST=0" not in script
     assert "exec env bakar build my.yml" in script

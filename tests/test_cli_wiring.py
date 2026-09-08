@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import click
 import pytest
 import typer
 
@@ -22,9 +23,21 @@ pytestmark = pytest.mark.unit
 REQUIRED_COMMANDS = {"show", "getvar", "inspect", "diffsigs", "layers", "drift", "changelog"}
 
 
+def _click_group() -> click.Group:
+    """The shared app as a Click group.
+
+    ``typer.main.get_command`` is declared to return ``click.Command``, which
+    carries no ``commands`` map; a Typer app with subcommands converts to a
+    ``click.Group``, so assert that rather than assuming it.
+    """
+    command = typer.main.get_command(app)
+    assert isinstance(command, click.Group), f"app did not convert to a Click group: {command!r}"
+    return command
+
+
 def test_all_commands_in_click_map() -> None:
     """All five inspection commands appear in the Click command map."""
-    click_app = typer.main.get_command(app)
+    click_app = _click_group()
     registered = set(click_app.commands.keys())
     missing = REQUIRED_COMMANDS - registered
     assert not missing, f"Commands not registered: {missing}"
@@ -65,5 +78,5 @@ def test_malformed_preset_exits_2(runner: CliRunner, monkeypatch) -> None:
 
 def test_presets_subapp_registered() -> None:
     """The presets sub-app is registered on the shared Typer app."""
-    click_app = typer.main.get_command(app)
+    click_app = _click_group()
     assert "presets" in click_app.commands, f"'presets' not in registered groups: {list(click_app.commands.keys())}"

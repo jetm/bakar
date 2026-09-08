@@ -323,7 +323,9 @@ def test_ensure_running_binds_to_cluster_host(
     url = hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path, bind_host="10.42.0.1")
 
     assert url == f"ws://10.42.0.1:{expected_port}"
-    assert f"ws://10.42.0.1:{expected_port}" in captured["args"]
+    popen_args = captured["args"]
+    assert isinstance(popen_args, list)
+    assert f"ws://10.42.0.1:{expected_port}" in popen_args
     # a specific (non-0.0.0.0) bind host is also the probe target
     assert captured["probe_addr"] == ("10.42.0.1", expected_port)
 

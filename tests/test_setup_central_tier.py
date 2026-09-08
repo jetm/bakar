@@ -17,6 +17,7 @@ from bakar import central_service, hashserv, prserv
 from bakar.setup.actions import central_tier
 from bakar.setup.actions.base import Action, RunCommand
 from bakar.setup.actions.central_tier import CentralTierAction, CentralTierConfig
+from tests.conftest import run_commands
 
 _BIND = "10.42.0.1"
 
@@ -176,9 +177,8 @@ def test_operations_enables_both_systemd_units(tmp_path) -> None:
 
 
 def test_operations_bootstrap_both_databases_unprivileged() -> None:
-    ops = CentralTierAction(_cfg()).operations()
+    ops = run_commands(CentralTierAction(_cfg()).operations())
     assert len(ops) == 3
-    assert all(isinstance(op, RunCommand) for op in ops)
     createdb_ops = [op for op in ops if "createdb" in " ".join(op.argv)]
     assert len(createdb_ops) == 2
     assert all(op.needs_root is False for op in createdb_ops)

@@ -15,6 +15,7 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
+from rich.table import Column, Table
 from rich.text import Text
 
 from bakar import cache_render
@@ -29,6 +30,32 @@ from bakar.steps.build_ui import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+def _task_table(ui: BuildUIState) -> Table:
+    """The running-task table, which is always the last renderable in the frame.
+
+    ``Group.renderables`` is a list of any renderable, so the position alone
+    does not say the entry is a ``Table``; assert it rather than reading
+    ``.columns`` off whatever happens to be last.
+    """
+    table = ui.make_renderable().renderables[-1]
+    assert isinstance(table, Table), f"last renderable is not the task table: {table!r}"
+    return table
+
+
+def _text_cells(column: Column) -> list[Text]:
+    """A column's cells, which the task table always fills with ``Text``.
+
+    ``Column._cells`` is typed as any renderable, so reading ``.plain`` or
+    ``.style`` off an entry asserts the cell type as well as its content.
+    """
+    cells = []
+    for cell in column._cells:
+        assert isinstance(cell, Text), f"column holds a non-Text cell: {cell!r}"
+        cells.append(cell)
+    return cells
+
 
 # ---------------------------------------------------------------------------
 # SETUP phase - parse and cache progress
@@ -254,9 +281,9 @@ def test_make_renderable_sort_by_elapsed_desc() -> None:
     ui._running["b:do_fetch"] = _RunTask(pf="pkg-b-2.0-r0", task="do_fetch", start=base - 60)
     ui._running["c:do_install"] = _RunTask(pf="pkg-c-3.0-r0", task="do_install", start=base - 120)
 
-    table = ui.make_renderable().renderables[-1]
+    table = _task_table(ui)
     # Columns: 0=spinner, 1=icon, 2=cache-backend badge, 3=pf, 4=task, 5=elapsed; cells are Text.
-    pf_cells = [c.plain for c in table.columns[3]._cells]
+    pf_cells = [c.plain for c in _text_cells(table.columns[3])]
     assert pf_cells[0] == "pkg-c-3.0-r0", f"Expected base-120 task first, got {pf_cells}"
     assert pf_cells[-1] == "pkg-a-1.0-r0", f"Expected base-5 task last, got {pf_cells}"
 
@@ -267,8 +294,8 @@ def test_make_renderable_strips_do_prefix() -> None:
     ui.process_line("NOTE: Running task 1200 of 9005 (/x.bb:do_compile)")
     ui._running["glibc:do_compile"] = _RunTask(pf="glibc-2.39-r0", task="do_compile", start=time.monotonic())
 
-    table = ui.make_renderable().renderables[-1]
-    task_cells = [c.plain for c in table.columns[4]._cells]
+    table = _task_table(ui)
+    task_cells = [c.plain for c in _text_cells(table.columns[4])]
     assert task_cells[0] == "compile"
 
 
@@ -287,12 +314,12 @@ def test_make_renderable_column_widths_never_shrink() -> None:
     ui._running["a:do_compile"] = _RunTask(pf=long_pf, task="do_compile", start=base - 60)
     ui._running["b:do_fetch"] = _RunTask(pf="tiny-1.0-r0", task="do_fetch", start=base - 5)
 
-    table = ui.make_renderable().renderables[-1]
+    table = _task_table(ui)
     wide = table.columns[3].width
     assert wide == len(long_pf), "pf column must fit the longest recipe untruncated"
 
     del ui._running["a:do_compile"]
-    table = ui.make_renderable().renderables[-1]
+    table = _task_table(ui)
     assert table.columns[3].width == wide, "pf column must not shrink after the long recipe finishes"
 
 
@@ -603,9 +630,9 @@ def test_make_renderable_cache_badge_distinct_per_backend() -> None:
     ui._running["c:do_compile"] = _RunTask(pf="pkg-c-1.0-r0", task="do_compile", start=base - 2, cache_backend="none")
     ui._running["d:do_compile"] = _RunTask(pf="pkg-d-1.0-r0", task="do_compile", start=base - 1, cache_backend=None)
 
-    table = ui.make_renderable().renderables[-1]
+    table = _task_table(ui)
     # Columns: 0=spinner, 1=icon, 2=cache-backend badge, 3=pf, 4=task, 5=elapsed.
-    badge_cells = table.columns[2]._cells
+    badge_cells = _text_cells(table.columns[2])
     glyphs = [c.plain for c in badge_cells]
     styles = [str(c.style) for c in badge_cells]
 

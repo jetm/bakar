@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from rich.text import Text
 
 from bakar.eventlog import _CACHE_BACKEND_EVENT_TYPE, _METADATA_EVENT, _decode_line, _EventStub
 from bakar.steps.build_ui import (
@@ -319,7 +320,7 @@ def test_setscene_line_rendered_when_covered() -> None:
     assert ui._phase is _Phase.BUILD
 
     renderables = list(ui.make_renderable().renderables)
-    texts = [r for r in renderables if hasattr(r, "plain")]
+    texts = [r for r in renderables if isinstance(r, Text)]
     # Rendered as a ratio: pct = int(300 / 320 * 100) = 93.
     sstate = [r for r in texts if "93% sstate (300 cached, 20 will build)" in r.plain]
     assert sstate
@@ -646,6 +647,7 @@ def test_finish_checks_reached_segments_with_durations() -> None:
     scene.taskfile = "/path/to/glibc.bb"
     ui.process_event(_EVT_SCENE_TASK_STARTED, scene)
     with ui._lock:
+        assert ui._scene_started_at is not None
         ui._scene_started_at -= 122
     ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, _runqueue_stub({"total": 450}))
     ui.finish()

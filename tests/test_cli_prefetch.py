@@ -28,6 +28,8 @@ if TYPE_CHECKING:
 
     from typer.testing import CliRunner as _CliRunner
 
+    from bakar.config import BuildConfig
+
 pytestmark = pytest.mark.unit
 
 
@@ -36,7 +38,7 @@ class _ShellStub:
 
     def __init__(self, rc: int = 0) -> None:
         self.rc = rc
-        self.cfg = None
+        self.cfg: BuildConfig | None = None
         self.command: str | None = None
         self.called = False
 
@@ -102,6 +104,7 @@ def test_prefetch_invokes_runall_fetch_with_image(
     assert stub.command is not None
     assert "bitbake --runall=fetch" in stub.command
     # The resolved image must appear in the fetch command string.
+    assert stub.cfg is not None
     assert stub.cfg.image in stub.command
 
 

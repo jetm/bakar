@@ -13,7 +13,7 @@ from pathlib import Path
 
 from bakar.setup.actions.base import Action, RunCommand
 from bakar.setup.actions.cache import CacheDirsAction
-from tests.conftest import make_host_profile
+from tests.conftest import make_host_profile, run_commands
 
 
 def test_cache_action_is_an_action_remediating_cache_dirs() -> None:
@@ -31,7 +31,7 @@ def test_cache_action_is_unprivileged() -> None:
 
 def test_operation_is_a_single_mkdir_p_never_sudo() -> None:
     dirs = [Path("/home/u/.cache/bakar/sstate"), Path("/home/u/.cache/bakar/dl")]
-    ops = CacheDirsAction(dirs).operations()
+    ops = run_commands(CacheDirsAction(dirs).operations())
     assert ops == [
         RunCommand(argv=["mkdir", "-p", str(dirs[0]), str(dirs[1])], needs_root=False),
     ]

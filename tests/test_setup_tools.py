@@ -23,7 +23,7 @@ from bakar.setup.actions.tools import (
     KasInstallAction,
     docker_engine_advice,
 )
-from tests.conftest import make_host_profile
+from tests.conftest import make_host_profile, run_commands
 
 
 def test_kas_action_is_an_action_remediating_host_tools() -> None:
@@ -35,7 +35,7 @@ def test_kas_action_is_an_action_remediating_host_tools() -> None:
 
 def test_kas_installs_via_uv_tool_never_a_distro_package() -> None:
     """kas always installs through `uv tool install`, never pacman/apt/dnf."""
-    ops = KasInstallAction().operations()
+    ops = run_commands(KasInstallAction().operations())
     assert ops == [RunCommand(argv=["uv", "tool", "install", "kas"], needs_root=False)]
     argv = ops[0].argv
     assert argv[:3] == ["uv", "tool", "install"]

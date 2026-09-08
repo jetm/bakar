@@ -25,11 +25,39 @@ FIXTURE = Path(__file__).parent / "fixtures" / "bitbake_eventlog.json"
 
 
 class _StubStats:
-    """Stand-in for bb.runqueue's runQueueStats (decoded via the stub unpickler)."""
+    """Stand-in for bb.runqueue's runQueueStats (decoded via the stub unpickler).
+
+    The attributes are annotation-only: each test assigns the subset the event
+    class it stands in for actually carries, so nothing is bound at class level.
+    """
+
+    total: int
+    completed: int
+    active: int
+    setscene_total: int
 
 
 class _StubEvent:
-    """Stand-in for a bitbake event carrying a ``stats`` attribute."""
+    """Stand-in for a bitbake event, carrying whichever fields a test needs.
+
+    Annotation-only, as for :class:`_StubStats` - the union of every field the
+    bitbake event classes under test read, none of them bound at class level.
+    """
+
+    stats: _StubStats
+    time: float
+    type: str
+    _package: str
+    _task: str
+    _localdata: str
+    cpu: float
+    io: float
+    memory: float
+    disk_usage: dict[str, _StubDiskUsageSample]
+    _dev: str
+    _type: str
+    _free: int
+    _mountpoint: str
 
 
 class _StubDiskUsageSample:
