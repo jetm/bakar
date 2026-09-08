@@ -86,6 +86,6 @@ def test_is_satisfied_false_when_a_dir_is_not_writable(tmp_path) -> None:
         # assertion in that case rather than emit a false failure.
         if os.access(readonly, os.W_OK):
             return
-            assert CacheDirsAction([writable, readonly]).is_satisfied(make_host_profile()) is False
+        assert CacheDirsAction([writable, readonly]).is_satisfied(make_host_profile()) is False
     finally:
         os.chmod(readonly, stat.S_IRWXU)
