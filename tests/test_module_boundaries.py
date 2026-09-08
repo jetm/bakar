@@ -28,7 +28,7 @@ from unittest import mock
 import pytest
 
 from bakar import diagnostics
-from bakar.diagnostics import _resolve_needed, _resolve_roots
+from bakar.elfscan import _resolve_needed, _resolve_roots
 
 pytestmark = pytest.mark.unit
 
@@ -44,6 +44,42 @@ RELOCATED_SYMBOLS: list[tuple[str, str]] = [
     ("bakar.diagnostics", "_format_capacity"),
     ("bakar.diagnostics", "_query_sccache_daemon"),
     ("bakar.diagnostics", "_probe_host_uds_daemon"),
+    ("bakar.diagnostics", "_DYNAMIC_HEADER"),
+    ("bakar.diagnostics", "_READER_ENV"),
+    ("bakar.diagnostics", "_GLIBC_NODE_RE"),
+    ("bakar.diagnostics", "_ELF_NEEDED_RE"),
+    ("bakar.diagnostics", "_ELF_RUNPATH_RE"),
+    ("bakar.diagnostics", "_required_glibc_nodes"),
+    ("bakar.diagnostics", "_LD_CONF_MAX_DEPTH"),
+    ("bakar.diagnostics", "_LD_SO_CONF"),
+    ("bakar.diagnostics", "_ld_so_conf_dirs"),
+    ("bakar.diagnostics", "_unique"),
+    ("bakar.diagnostics", "_HOST_LIB_DIRS"),
+    ("bakar.diagnostics", "_LEAK_REPORT_LIMIT"),
+    ("bakar.diagnostics", "_CONTROL_RE"),
+    ("bakar.diagnostics", "_ARTIFACT_TEXT_LIMIT"),
+    ("bakar.diagnostics", "_ELISION"),
+    ("bakar.diagnostics", "_ENTRY_SEPARATOR"),
+    ("bakar.diagnostics", "_NativeLeak"),
+    ("bakar.diagnostics", "_ElfInfo"),
+    ("bakar.diagnostics", "_is_elf"),
+    ("bakar.diagnostics", "_read_elf"),
+    ("bakar.diagnostics", "_runpath_dirs"),
+    ("bakar.diagnostics", "_normalized"),
+    ("bakar.diagnostics", "_lexically_within"),
+    ("bakar.diagnostics", "_resolve_roots"),
+    ("bakar.diagnostics", "_resolve_needed"),
+    ("bakar.diagnostics", "_within_any"),
+    ("bakar.diagnostics", "_nodes_above"),
+    ("bakar.diagnostics", "_producing_recipe"),
+    ("bakar.diagnostics", "_HOST_ELF_MACHINE"),
+    ("bakar.diagnostics", "_HOST_ELF_OSABI"),
+    ("bakar.diagnostics", "_UNCHECKED_PROVIDED"),
+    ("bakar.diagnostics", "_UNCHECKED_FOREIGN"),
+    ("bakar.diagnostics", "_UNCHECKED_NO_GLIBC"),
+    ("bakar.diagnostics", "_host_platform_elf"),
+    ("bakar.diagnostics", "_Unclassified"),
+    ("bakar.diagnostics", "_unchecked_reason"),
 ]
 
 # Same contract, for names that have moved off ``bakar.commands.build``.

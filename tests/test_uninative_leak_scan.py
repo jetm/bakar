@@ -48,7 +48,7 @@ from rich.markup import escape
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-from bakar import diagnostics
+from bakar import diagnostics, elfscan
 from bakar.config import BuildConfig
 from bakar.diagnostics import _VERNEED_HEADER, BuildtoolsToolchain, CheckResult, Severity, Status
 
@@ -69,7 +69,7 @@ def _resolve_host_lib(soname: str) -> Path | None:
     the same file under /usr/lib, and a test asserting on the message needs the
     spelling the message actually uses.
     """
-    for directory in diagnostics._HOST_LIB_DIRS:
+    for directory in elfscan._HOST_LIB_DIRS:
         candidate = Path(directory) / soname
         if candidate.is_file():
             return candidate.resolve()
@@ -146,7 +146,7 @@ def _leak_pair() -> _LeakPair | None:
     * Smallest binaries first, so the copy each test makes stays cheap and the
       choice is deterministic per host.
     """
-    reader = diagnostics._elf_reader()
+    reader = elfscan._elf_reader()
     if reader is None:
         return None
 
@@ -170,7 +170,7 @@ def _leak_pair() -> _LeakPair | None:
 
     fallback: _LeakPair | None = None
     for _size, _name, artifact in sorted(candidates)[:_PAIR_SCAN_LIMIT]:
-        info = diagnostics._read_elf(reader, artifact)
+        info = elfscan._read_elf(reader, artifact)
         if info is None:
             continue
         own = _max_node(info)
@@ -185,7 +185,7 @@ def _leak_pair() -> _LeakPair | None:
         else:
             ranked: list[tuple[tuple[int, ...], str, Path]] = []
             for soname, dependency in resolved:
-                dep_info = diagnostics._read_elf(reader, dependency)
+                dep_info = elfscan._read_elf(reader, dependency)
                 dep_max = None if dep_info is None else _max_node(dep_info)
                 if dep_max is not None:
                     ranked.append((dep_max, soname, dependency))
@@ -355,7 +355,7 @@ def _dotted(version: tuple[int, ...]) -> str:
 
 def _parsed_nodes(nodes: Iterable[str]) -> list[tuple[int, ...]]:
     """Parse dotted node strings, dropping anything unparseable."""
-    return [v for v in (diagnostics._version_tuple(n) for n in nodes) if v is not None]
+    return [v for v in (elfscan._version_tuple(n) for n in nodes) if v is not None]
 
 
 def _max_required_node(path: Path) -> tuple[int, ...]:
@@ -365,9 +365,9 @@ def _max_required_node(path: Path) -> tuple[int, ...]:
     against the ceiling. It is emphatically not the highest node ``path``
     mentions: ``libc.so.6`` mentions every node it defines.
     """
-    reader = diagnostics._elf_reader()
+    reader = elfscan._elf_reader()
     assert reader is not None
-    info = diagnostics._read_elf(reader, path)
+    info = elfscan._read_elf(reader, path)
     assert info is not None, f"{path} could not be read by {reader}"
     parsed = _parsed_nodes(info.nodes)
     assert parsed, f"{path} requires no glibc version node"
@@ -433,7 +433,7 @@ def _version_references(dump: str) -> set[str]:
     """``GLIBC_`` nodes named in ``objdump -p``'s ``Version References`` block.
 
     That block is ``DT_VERNEED`` and holds requirements only, which is what the
-    scan now reads. Parsed independently of ``diagnostics._required_glibc_nodes``
+    scan now reads. Parsed independently of ``elfscan._required_glibc_nodes``
     so the calibration cannot inherit a bug from the parser it calibrates.
     """
     block: list[str] = []
@@ -466,7 +466,7 @@ def test_ld_so_conf_supplies_the_multiarch_dir(tmp_path: Path) -> None:
     conf = tmp_path / "ld.so.conf"
     conf.write_text(f"include {conf_d}/*.conf\n")
 
-    assert diagnostics._ld_so_conf_dirs(conf) == ["/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu"]
+    assert elfscan._ld_so_conf_dirs(conf) == ["/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu"]
 
 
 def test_ld_so_conf_include_is_relative_to_the_including_file(tmp_path: Path) -> None:
@@ -477,7 +477,7 @@ def test_ld_so_conf_include_is_relative_to_the_including_file(tmp_path: Path) ->
     conf = tmp_path / "ld.so.conf"
     conf.write_text("include ld.so.conf.d/*.conf\n")
 
-    assert diagnostics._ld_so_conf_dirs(conf) == ["/opt/lib"]
+    assert elfscan._ld_so_conf_dirs(conf) == ["/opt/lib"]
 
 
 def test_ld_so_conf_survives_an_include_cycle(tmp_path: Path) -> None:
@@ -485,25 +485,25 @@ def test_ld_so_conf_survives_an_include_cycle(tmp_path: Path) -> None:
     conf = tmp_path / "ld.so.conf"
     conf.write_text(f"/usr/lib/first\ninclude {conf}\n")
 
-    assert diagnostics._ld_so_conf_dirs(conf) == ["/usr/lib/first"]
+    assert elfscan._ld_so_conf_dirs(conf) == ["/usr/lib/first"]
 
 
 def test_ld_so_conf_absent_yields_nothing(tmp_path: Path) -> None:
     """No loader config (musl, a stripped container) leaves the static floor alone."""
-    assert diagnostics._ld_so_conf_dirs(tmp_path / "nope") == []
+    assert elfscan._ld_so_conf_dirs(tmp_path / "nope") == []
 
 
 def test_ld_so_conf_ignores_comments_and_blank_lines(tmp_path: Path) -> None:
     conf = tmp_path / "ld.so.conf"
     conf.write_text("# a comment\n\n/usr/lib/real   # trailing\n   \n")
 
-    assert diagnostics._ld_so_conf_dirs(conf) == ["/usr/lib/real"]
+    assert elfscan._ld_so_conf_dirs(conf) == ["/usr/lib/real"]
 
 
 def test_host_lib_dirs_are_deduplicated() -> None:
     """ld.so.conf routinely repeats a floor entry; search order must stay stable."""
-    assert len(diagnostics._HOST_LIB_DIRS) == len(set(diagnostics._HOST_LIB_DIRS))
-    assert diagnostics._HOST_LIB_DIRS[0] == "/usr/lib"
+    assert len(elfscan._HOST_LIB_DIRS) == len(set(elfscan._HOST_LIB_DIRS))
+    assert elfscan._HOST_LIB_DIRS[0] == "/usr/lib"
 
 
 def test_version_references_block_is_bounded() -> None:
@@ -533,15 +533,15 @@ def test_version_references_block_is_bounded() -> None:
         "\tGLIBC_2.98 \n"
     )
 
-    assert diagnostics._required_glibc_nodes(dump) == {"2.4"}, (
+    assert elfscan._required_glibc_nodes(dump) == {"2.4"}, (
         "the parser must stop at 'Version definitions:' - taking GLIBC_2.99 or GLIBC_2.98 means "
         "it ran past the block and is counting definitions again"
     )
     # GLIBC_PRIVATE carries no version digits, so it drops out by construction
     # rather than by a special case; an unversioned node has no dotted form to
     # compare against the ceiling.
-    assert "PRIVATE" not in "".join(diagnostics._required_glibc_nodes(dump))
-    assert diagnostics._required_glibc_nodes("Dynamic Section:\n  NEEDED libc.so.6\n") == frozenset()
+    assert "PRIVATE" not in "".join(elfscan._required_glibc_nodes(dump))
+    assert elfscan._required_glibc_nodes("Dynamic Section:\n  NEEDED libc.so.6\n") == frozenset()
 
 
 @pytest.mark.unit
@@ -563,7 +563,7 @@ def test_objdump_format_pin() -> None:
     )
     referenced = _version_references(listed)
     assert referenced, f"{_HOST_LIBC} listed no GLIBC_ node under {_VERNEED_HEADER}"
-    assert referenced == diagnostics._required_glibc_nodes(listed), (
+    assert referenced == elfscan._required_glibc_nodes(listed), (
         "the scan's own block parser disagrees with this test's on real objdump output"
     )
 
@@ -618,7 +618,7 @@ def test_reader_output_is_locale_immune(monkeypatch: pytest.MonkeyPatch, overlay
     where the translation is not installed there is nothing to prove and the
     case skips rather than passing vacuously.
     """
-    reader = diagnostics._elf_reader()
+    reader = elfscan._elf_reader()
     assert reader is not None
     baseline = _version_references(_objdump("-p", str(_CLEAN)))
     assert baseline, f"{_CLEAN} lists no GLIBC_ node under {_VERNEED_HEADER} even in English"
@@ -629,7 +629,7 @@ def test_reader_output_is_locale_immune(monkeypatch: pytest.MonkeyPatch, overlay
 
     for key, value in overlay.items():
         monkeypatch.setenv(key, value)
-    info = diagnostics._read_elf(reader, _CLEAN)
+    info = elfscan._read_elf(reader, _CLEAN)
 
     assert info is not None
     assert set(info.nodes) == baseline, (
@@ -667,9 +667,9 @@ def test_object_files_are_not_counted_as_evidence(monkeypatch: pytest.MonkeyPatc
     if not stray.is_file() or stray.read_bytes()[:4] != b"\x7fELF":
         pytest.skip("no working C compiler here, so there is no relocatable object to plant")
 
-    reader = diagnostics._elf_reader()
+    reader = elfscan._elf_reader()
     assert reader is not None
-    info = diagnostics._read_elf(reader, stray)
+    info = elfscan._read_elf(reader, stray)
     assert info is not None, "a relocatable object must read as non-dynamic, not as unreadable"
     assert not info.dynamic
 
@@ -833,7 +833,7 @@ def test_dependency_inside_buildtools_sysroot_is_sanctioned(monkeypatch: pytest.
     # raises an unresolved-dependency warning that would mask the PASS.
     for soname, dependency in pair.dependencies:
         shutil.copy2(dependency, sanctioned_lib / soname)
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", (str(sanctioned_lib),))
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", (str(sanctioned_lib),))
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -848,7 +848,7 @@ def test_unresolvable_dependency_warns(monkeypatch: pytest.MonkeyPatch, tmp_path
     _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
     cfg = _cfg(tmp_path)
     _place(_work_tree(cfg), "zlib-native", _CLEAN)
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", ())
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -874,7 +874,7 @@ def test_unreadable_dependency_warns_not_blocks(monkeypatch: pytest.MonkeyPatch,
     fake_libs = tmp_path / "fake-libs"
     fake_libs.mkdir()
     (fake_libs / _HOST_LIBC.name).write_bytes(b"not an ELF file at all")
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", (str(fake_libs),))
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", (str(fake_libs),))
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -902,7 +902,7 @@ def test_multiple_simultaneous_leaks_are_all_reported(monkeypatch: pytest.Monkey
     # Far more than _LEAK_REPORT_LIMIT findings, so the message must stay
     # bounded rather than enumerate every node of two binaries plus their libc.
     assert " more" in result.message
-    assert result.message.count(";") <= diagnostics._LEAK_REPORT_LIMIT + 2
+    assert result.message.count(";") <= elfscan._LEAK_REPORT_LIMIT + 2
 
 
 @pytest.mark.unit
@@ -936,7 +936,7 @@ def test_truncated_report_names_findings_deterministically(monkeypatch: pytest.M
 
     cfg = _cfg(tmp_path)
     work = _work_tree(cfg)
-    planted = [_place(work, f"leak{index:02d}-native", _CLEAN) for index in range(diagnostics._LEAK_REPORT_LIMIT + 2)]
+    planted = [_place(work, f"leak{index:02d}-native", _CLEAN) for index in range(elfscan._LEAK_REPORT_LIMIT + 2)]
     if os.listdir(work) == sorted(os.listdir(work)):
         pytest.skip("this filesystem enumerates the planted names in lexicographic order already")
 
@@ -946,7 +946,7 @@ def test_truncated_report_names_findings_deterministically(monkeypatch: pytest.M
     sanctioned_lib = cfg.resolved_tmpdir / "sysroots-uninative" / "lib"
     sanctioned_lib.mkdir(parents=True, exist_ok=True)
     shutil.copy2(_HOST_LIBC, sanctioned_lib / _HOST_LIBC.name)
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", (str(sanctioned_lib),))
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", (str(sanctioned_lib),))
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -954,7 +954,7 @@ def test_truncated_report_names_findings_deterministically(monkeypatch: pytest.M
     assert result.severity is Severity.BLOCK
     assert " more" in result.message
     named = re.findall(r"(\S+) \(recipe leak\d\d-native\)", result.message)
-    assert named == [str(path) for path in sorted(planted)][: diagnostics._LEAK_REPORT_LIMIT]
+    assert named == [str(path) for path in sorted(planted)][: elfscan._LEAK_REPORT_LIMIT]
 
 
 @pytest.mark.unit
@@ -1137,7 +1137,7 @@ def test_absolute_soname_is_refused_not_resolved(is_file_spy: list[Path]) -> Non
     """``NEEDED /etc/shadow`` must not resolve: the join discards the directory."""
     permitted = (Path("/usr/lib"),)
 
-    resolved, refused = diagnostics._resolve_needed("/etc/shadow", ["/usr/lib"], permitted)
+    resolved, refused = elfscan._resolve_needed("/etc/shadow", ["/usr/lib"], permitted)
 
     assert resolved is None
     assert refused is True
@@ -1150,7 +1150,7 @@ def test_runpath_alone_reaches_no_arbitrary_path(is_file_spy: list[Path]) -> Non
     """A bare soname plus a hostile RUNPATH is refused with no separator in sight."""
     permitted = (Path("/usr/lib"),)
 
-    resolved, refused = diagnostics._resolve_needed("shadow", ["/etc"], permitted)
+    resolved, refused = elfscan._resolve_needed("shadow", ["/etc"], permitted)
 
     assert resolved is None
     assert refused is True
@@ -1162,7 +1162,7 @@ def test_traversal_out_of_a_permitted_root_is_refused(is_file_spy: list[Path]) -
     """``..`` chains are folded away before the containment test, not after."""
     permitted = (Path("/usr/lib"),)
 
-    resolved, refused = diagnostics._resolve_needed("../../etc/shadow", ["/usr/lib"], permitted)
+    resolved, refused = elfscan._resolve_needed("../../etc/shadow", ["/usr/lib"], permitted)
 
     assert resolved is None
     assert refused is True
@@ -1172,14 +1172,14 @@ def test_traversal_out_of_a_permitted_root_is_refused(is_file_spy: list[Path]) -
 @pytest.mark.unit
 def test_permitted_root_containment_is_per_component() -> None:
     """``/usr/libexec`` is not inside ``/usr/lib``; a prefix test would say it is."""
-    assert not diagnostics._lexically_within(Path("/usr/libexec/foo.so"), (Path("/usr/lib"),))
-    assert diagnostics._lexically_within(Path("/usr/lib/foo.so"), (Path("/usr/lib"),))
+    assert not elfscan._lexically_within(Path("/usr/libexec/foo.so"), (Path("/usr/lib"),))
+    assert elfscan._lexically_within(Path("/usr/lib/foo.so"), (Path("/usr/lib"),))
 
 
 @pytest.mark.unit
 def test_doubled_leading_slash_stays_in_root() -> None:
     """``normpath`` keeps exactly two leading slashes; a legitimate lib must still resolve."""
-    assert diagnostics._lexically_within(Path("//usr/lib/libz.so.1"), (Path("/usr/lib"),))
+    assert elfscan._lexically_within(Path("//usr/lib/libz.so.1"), (Path("/usr/lib"),))
 
 
 @pytest.mark.unit
@@ -1189,7 +1189,7 @@ def test_bare_soname_under_a_permitted_root_still_resolves(tmp_path: Path) -> No
     libdir.mkdir(parents=True)
     (libdir / "libz.so.1").write_bytes(b"\x7fELF")
 
-    resolved, refused = diagnostics._resolve_needed("libz.so.1", [str(libdir)], diagnostics._resolve_roots([libdir]))
+    resolved, refused = elfscan._resolve_needed("libz.so.1", [str(libdir)], elfscan._resolve_roots([libdir]))
 
     # realpath on both sides: _resolve_needed returns the RESOLVED path, and
     # tmp_path is only symlink-free by accident of this host.
@@ -1210,7 +1210,7 @@ def test_path_qualified_soname_inside_a_root_resolves(tmp_path: Path) -> None:
     target.parent.mkdir(parents=True)
     target.write_bytes(b"\x7fELF")
 
-    resolved, refused = diagnostics._resolve_needed(str(target), ["/usr/lib"], diagnostics._resolve_roots([work]))
+    resolved, refused = elfscan._resolve_needed(str(target), ["/usr/lib"], elfscan._resolve_roots([work]))
 
     assert resolved == Path(os.path.realpath(target))
     assert refused is False
@@ -1228,8 +1228,8 @@ def test_one_refused_candidate_does_not_abort_the_lookup(tmp_path: Path) -> None
     libdir.mkdir(parents=True)
     (libdir / "libz.so.1").write_bytes(b"\x7fELF")
 
-    resolved, refused = diagnostics._resolve_needed(
-        "libz.so.1", ["/etc", "../relative", str(libdir)], diagnostics._resolve_roots([libdir])
+    resolved, refused = elfscan._resolve_needed(
+        "libz.so.1", ["/etc", "../relative", str(libdir)], elfscan._resolve_roots([libdir])
     )
 
     assert resolved == Path(os.path.realpath(libdir / "libz.so.1"))
@@ -1246,7 +1246,7 @@ def test_symlink_out_of_a_permitted_root_is_refused(tmp_path: Path) -> None:
     (outside / "libz.so.1").write_bytes(b"\x7fELF")
     (libdir / "libz.so.1").symlink_to(outside / "libz.so.1")
 
-    resolved, refused = diagnostics._resolve_needed("libz.so.1", [str(libdir)], diagnostics._resolve_roots([libdir]))
+    resolved, refused = elfscan._resolve_needed("libz.so.1", [str(libdir)], elfscan._resolve_roots([libdir]))
 
     assert resolved is None
     assert refused is True
@@ -1263,8 +1263,8 @@ def _crafted_reader(needed: tuple[str, ...], nodes: frozenset[str] = frozenset({
     oldest node glibc emits and sits below every ceiling used here.
     """
 
-    def fake(reader: str, path: Path) -> diagnostics._ElfInfo:
-        return diagnostics._ElfInfo(dynamic=True, nodes=nodes, needed=needed, runpaths=())
+    def fake(reader: str, path: Path) -> elfscan._ElfInfo:
+        return elfscan._ElfInfo(dynamic=True, nodes=nodes, needed=needed, runpaths=())
 
     return fake
 
@@ -1287,7 +1287,7 @@ def test_out_of_scope_dependency_is_reported_and_never_stat_ed(
     _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
     cfg = _cfg(tmp_path)
     artifact = _place(_work_tree(cfg), "zlib-native", _CLEAN)
-    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader((soname,)))
+    monkeypatch.setattr(elfscan, "_read_elf", _crafted_reader((soname,)))
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -1308,7 +1308,7 @@ def test_unresolved_and_out_of_scope_read_differently(monkeypatch: pytest.Monkey
     _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
     cfg = _cfg(tmp_path)
     _place(_work_tree(cfg), "zlib-native", _CLEAN)
-    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libbakar-absent.so.9", "/etc/shadow")))
+    monkeypatch.setattr(elfscan, "_read_elf", _crafted_reader(("libbakar-absent.so.9", "/etc/shadow")))
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -1334,7 +1334,7 @@ def test_a_refused_candidate_never_reaches_the_filesystem(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(os.path, "realpath", recording)
 
-    resolved, refused = diagnostics._resolve_needed("/etc/shadow", ["/usr/lib"], (Path("/usr/lib"),))
+    resolved, refused = elfscan._resolve_needed("/etc/shadow", ["/usr/lib"], (Path("/usr/lib"),))
 
     assert resolved is None
     assert refused is True
@@ -1371,24 +1371,24 @@ def _render(result: CheckResult) -> str:
 @pytest.mark.unit
 def test_neutralized_escapes_markup() -> None:
     """A closing tag must survive as text, not as markup Rich tries to close."""
-    assert diagnostics._neutralized("foo[/]bar") == r"foo\[/]bar"
-    assert diagnostics._neutralized("[on red blink]") == r"\[on red blink]"
+    assert elfscan._neutralized("foo[/]bar") == r"foo\[/]bar"
+    assert elfscan._neutralized("[on red blink]") == r"\[on red blink]"
 
 
 @pytest.mark.unit
 def test_neutralized_strips_control_characters() -> None:
     """ESC, C0 and C1 go, because ``\\S+`` matches them and OSC-0 retitles a terminal."""
-    assert diagnostics._neutralized("lib\x1b]0;pwned\x07z.so") == "lib]0;pwnedz.so"
-    assert diagnostics._neutralized("a\x00b\x7fc\x9fd") == "abcd"
+    assert elfscan._neutralized("lib\x1b]0;pwned\x07z.so") == "lib]0;pwnedz.so"
+    assert elfscan._neutralized("a\x00b\x7fc\x9fd") == "abcd"
 
 
 @pytest.mark.unit
 def test_neutralized_bounds_length() -> None:
     """One crafted name must not flood a report the operator has to read."""
-    rendered = diagnostics._neutralized("x" * 5000)
+    rendered = elfscan._neutralized("x" * 5000)
 
-    assert len(rendered) == diagnostics._ARTIFACT_TEXT_LIMIT
-    assert diagnostics._ELISION in rendered
+    assert len(rendered) == elfscan._ARTIFACT_TEXT_LIMIT
+    assert elfscan._ELISION in rendered
 
 
 @pytest.mark.unit
@@ -1401,7 +1401,7 @@ def test_the_bound_clears_a_real_work_tree_path() -> None:
     """
     longest_measured = "/" + "a" * 444
 
-    assert diagnostics._neutralized(longest_measured) == longest_measured
+    assert elfscan._neutralized(longest_measured) == longest_measured
 
 
 @pytest.mark.unit
@@ -1413,7 +1413,7 @@ def test_the_bound_elides_the_middle_not_the_tail() -> None:
     """
     crafted = "/work/" + "x" * 5000 + "/libcrafted.so.1"
 
-    rendered = diagnostics._neutralized(crafted)
+    rendered = elfscan._neutralized(crafted)
 
     assert rendered.startswith("/work/xxx")
     assert rendered.endswith("/libcrafted.so.1")
@@ -1431,7 +1431,7 @@ def test_crafted_soname_does_not_abort_the_report(monkeypatch: pytest.MonkeyPatc
     _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
     cfg = _cfg(tmp_path)
     _place(_work_tree(cfg), "zlib-native", _CLEAN)
-    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("lib[/]z.so.1\x1b]0;pwned\x07",)))
+    monkeypatch.setattr(elfscan, "_read_elf", _crafted_reader(("lib[/]z.so.1\x1b]0;pwned\x07",)))
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -1454,7 +1454,7 @@ def test_crafted_artifact_path_does_not_abort_the_report(monkeypatch: pytest.Mon
     target_dir = _work_tree(cfg) / "zlib[" / "]native" / "1.0"
     target_dir.mkdir(parents=True)
     shutil.copy2(_CLEAN, target_dir / _CLEAN.name)
-    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libbakar-absent.so.9",)))
+    monkeypatch.setattr(elfscan, "_read_elf", _crafted_reader(("libbakar-absent.so.9",)))
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -1475,12 +1475,12 @@ def test_resolved_dependency_path_is_neutralized(monkeypatch: pytest.MonkeyPatch
     dependency = dep_dir / "libz.so.1"
     dependency.write_bytes(b"\x7fELF")
 
-    def fake(reader: str, path: Path) -> diagnostics._ElfInfo:
+    def fake(reader: str, path: Path) -> elfscan._ElfInfo:
         if path == artifact:
-            return diagnostics._ElfInfo(dynamic=True, nodes=frozenset(), needed=(str(dependency),), runpaths=())
-        return diagnostics._ElfInfo(dynamic=True, nodes=frozenset({"2.99"}), needed=(), runpaths=())
+            return elfscan._ElfInfo(dynamic=True, nodes=frozenset(), needed=(str(dependency),), runpaths=())
+        return elfscan._ElfInfo(dynamic=True, nodes=frozenset({"2.99"}), needed=(), runpaths=())
 
-    monkeypatch.setattr(diagnostics, "_read_elf", fake)
+    monkeypatch.setattr(elfscan, "_read_elf", fake)
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -1503,9 +1503,9 @@ def test_recipe_name_reaches_message_and_fix_hint_neutralized(monkeypatch: pytes
     cfg = _cfg(tmp_path)
     _place(_work_tree(cfg), "[bold red]zlib-native", _CLEAN)
     monkeypatch.setattr(
-        diagnostics,
+        elfscan,
         "_read_elf",
-        lambda reader, path: diagnostics._ElfInfo(dynamic=True, nodes=frozenset({"2.99"}), needed=(), runpaths=()),
+        lambda reader, path: elfscan._ElfInfo(dynamic=True, nodes=frozenset({"2.99"}), needed=(), runpaths=()),
     )
 
     result = diagnostics.check_uninative_leak(cfg)
@@ -1526,8 +1526,8 @@ def test_neutralization_does_not_reach_the_values_the_scan_compares() -> None:
     containment tests and the node comparisons - the scan would be checking a
     string no artifact declared.
     """
-    assert "_neutralized" not in inspect.getsource(diagnostics._read_elf)
-    assert "_neutralized" not in inspect.getsource(diagnostics._resolve_needed)
+    assert "_neutralized" not in inspect.getsource(elfscan._read_elf)
+    assert "_neutralized" not in inspect.getsource(elfscan._resolve_needed)
 
 
 # --- Reading only regular files -------------------------------------------
@@ -1547,13 +1547,13 @@ def test_is_elf_refuses_a_fifo(tmp_path: Path) -> None:
     fifo = tmp_path / "pipe"
     os.mkfifo(fifo)
 
-    assert diagnostics._is_elf(fifo) is False
+    assert elfscan._is_elf(fifo) is False
 
 
 @pytest.mark.unit
 def test_is_elf_refuses_a_directory(tmp_path: Path) -> None:
     """Non-regular is the condition, not FIFO specifically."""
-    assert diagnostics._is_elf(tmp_path) is False
+    assert elfscan._is_elf(tmp_path) is False
 
 
 @pytest.mark.unit
@@ -1615,8 +1615,8 @@ def test_a_dependency_matching_no_predicate_still_warns(monkeypatch: pytest.Monk
     _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
     cfg = _cfg(tmp_path)
     _place(_work_tree(cfg), "zlib-native", _CLEAN)
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
-    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libbakar-absent.so.9",)))
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(elfscan, "_read_elf", _crafted_reader(("libbakar-absent.so.9",)))
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -1646,8 +1646,8 @@ def test_a_soname_the_build_provides_elsewhere_is_not_unchecked(
     provider = work / "ncurses-native" / "1.0" / "recipe-sysroot-native" / "usr" / "lib"
     provider.mkdir(parents=True)
     shutil.copy2(_CLEAN, provider / "libncurses.so.5")
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
-    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libncurses.so.5",)))
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(elfscan, "_read_elf", _crafted_reader(("libncurses.so.5",)))
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -1665,8 +1665,8 @@ def test_a_foreign_platform_artifact_is_not_unchecked(monkeypatch: pytest.Monkey
     fixture_dir = _work_tree(cfg) / "rust-native" / "1.0" / "sources" / "test" / "Inputs"
     fixture_dir.mkdir(parents=True)
     (fixture_dir / "hello-netbsd").write_bytes(_foreign_elf_header())
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
-    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libc.so.12",)))
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(elfscan, "_read_elf", _crafted_reader(("libc.so.12",)))
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -1700,8 +1700,8 @@ def test_an_unreadable_header_reports_rather_than_suppresses(monkeypatch: pytest
     # Passes _is_elf's four-byte magic test, too short for _host_platform_elf's
     # twenty-byte header read.
     (stub / "libtruncated.so").write_bytes(b"\x7fELF")
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
-    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libbakar-absent.so.9",)))
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(elfscan, "_read_elf", _crafted_reader(("libbakar-absent.so.9",)))
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -1718,8 +1718,8 @@ def test_an_artifact_requiring_no_glibc_node_is_not_unchecked(monkeypatch: pytes
     _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
     cfg = _cfg(tmp_path)
     _place(_work_tree(cfg), "zlib-native", _CLEAN)
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
-    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libbakar-absent.so.9",), nodes=frozenset()))
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(elfscan, "_read_elf", _crafted_reader(("libbakar-absent.so.9",), nodes=frozenset()))
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -1750,11 +1750,11 @@ def test_an_out_of_scope_dependency_survives_every_predicate(monkeypatch: pytest
         # Real ELFs, or the provided-elsewhere predicate would not fit them at
         # all and the test would stop covering the trap it is named for.
         shutil.copy2(_CLEAN, own / soname)
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", ())
     monkeypatch.setattr(
-        diagnostics,
+        elfscan,
         "_read_elf",
-        lambda reader, path: diagnostics._ElfInfo(
+        lambda reader, path: elfscan._ElfInfo(
             dynamic=True,
             nodes=frozenset({"2.2.5"}),
             needed=("libattr.so.1", "libbsd.so.0"),
@@ -1778,9 +1778,9 @@ def test_an_excluded_dependency_is_still_recorded(monkeypatch: pytest.MonkeyPatc
     _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
     cfg = _cfg(tmp_path)
     _place(_work_tree(cfg), "zlib-native", _CLEAN)
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", ())
     monkeypatch.setattr(
-        diagnostics,
+        elfscan,
         "_read_elf",
         _crafted_reader(("libbakar-absent.so.9", "libbakar-other.so.1"), nodes=frozenset()),
     )
@@ -1803,8 +1803,8 @@ def test_the_predicates_never_reach_the_filesystem_with_a_crafted_soname(
     _patch_host(monkeypatch, tmp_path, max_glibc=_UNREACHABLE_CEILING)
     cfg = _cfg(tmp_path)
     _place(_work_tree(cfg), "zlib-native", _CLEAN)
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
-    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("/etc/shadow", "../../../etc/passwd")))
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(elfscan, "_read_elf", _crafted_reader(("/etc/shadow", "../../../etc/passwd")))
 
     diagnostics.check_uninative_leak(cfg)
 
@@ -1824,8 +1824,8 @@ def test_host_platform_elf_reads_the_machine_and_abi_fields(tmp_path: Path) -> N
     foreign = tmp_path / "foreign"
     foreign.write_bytes(_foreign_elf_header())
 
-    assert diagnostics._host_platform_elf(foreign) is False
-    assert diagnostics._host_platform_elf(_CLEAN) is True
+    assert elfscan._host_platform_elf(foreign) is False
+    assert elfscan._host_platform_elf(_CLEAN) is True
 
 
 @pytest.mark.unit
@@ -1834,8 +1834,8 @@ def test_host_platform_elf_fails_open_on_an_unreadable_header(tmp_path: Path) ->
     truncated = tmp_path / "truncated"
     truncated.write_bytes(b"\x7fELF")
 
-    assert diagnostics._host_platform_elf(truncated) is True
-    assert diagnostics._host_platform_elf(tmp_path / "absent") is True
+    assert elfscan._host_platform_elf(truncated) is True
+    assert elfscan._host_platform_elf(tmp_path / "absent") is True
 
 
 @pytest.mark.unit
@@ -1849,9 +1849,9 @@ def test_the_block_verdict_records_the_exclusion_too(monkeypatch: pytest.MonkeyP
     provider = work / "ncurses-native" / "1.0" / "recipe-sysroot-native" / "usr" / "lib"
     provider.mkdir(parents=True)
     shutil.copy2(_CLEAN, provider / "libncurses.so.5")
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", ())
     monkeypatch.setattr(
-        diagnostics,
+        elfscan,
         "_read_elf",
         _crafted_reader(("libncurses.so.5",), nodes=frozenset({"2.34"})),
     )
@@ -1886,7 +1886,7 @@ def test_neutralized_strips_every_format_character() -> None:
     missed = [
         code
         for code in range(0x110000)
-        if unicodedata.category(chr(code)) == "Cf" and diagnostics._CONTROL_RE.sub("", chr(code)) != ""
+        if unicodedata.category(chr(code)) == "Cf" and elfscan._CONTROL_RE.sub("", chr(code)) != ""
     ]
 
     assert missed == [], [hex(code) for code in missed]
@@ -1900,14 +1900,14 @@ def test_neutralized_strips_every_format_character() -> None:
 )
 def test_neutralized_strips_the_bidi_and_zero_width_controls(char: str) -> None:
     """A name that renders as a different path is a forged finding, not a garbled one."""
-    assert diagnostics._neutralized(f"lib{char}z.so") == "libz.so"
+    assert elfscan._neutralized(f"lib{char}z.so") == "libz.so"
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("char", ["\u2028", "\u2029"], ids=["ls", "ps"])
 def test_a_line_separator_does_not_split_a_rendered_row(monkeypatch: pytest.MonkeyPatch, char: str) -> None:
     """Rich breaks the line on these, so one crafted name would render as two rows."""
-    assert diagnostics._neutralized(f"lib{char}z.so") == "libz.so"
+    assert elfscan._neutralized(f"lib{char}z.so") == "libz.so"
 
 
 @pytest.mark.unit
@@ -1929,7 +1929,7 @@ def test_an_undecodable_filename_does_not_kill_the_doctor_gate(monkeypatch: pyte
     target_dir = _work_tree(cfg) / os.fsdecode(b"zlib\xff-native") / "1.0"
     target_dir.mkdir(parents=True)
     shutil.copy2(_CLEAN, target_dir / _CLEAN.name)
-    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libbakar-absent.so.9",)))
+    monkeypatch.setattr(elfscan, "_read_elf", _crafted_reader(("libbakar-absent.so.9",)))
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -1951,9 +1951,9 @@ def test_an_undecodable_filename_does_not_kill_the_doctor_gate(monkeypatch: pyte
 @pytest.mark.unit
 def test_a_surrogate_is_stripped_rather_than_replaced() -> None:
     """The whole surrogate block goes, not just the ``surrogateescape`` sub-range."""
-    assert diagnostics._neutralized("lib\udcffz.so") == "libz.so"
-    assert diagnostics._neutralized("lib\ud800z.so") == "libz.so"
-    diagnostics._neutralized("lib\udcffz.so").encode("utf-8")
+    assert elfscan._neutralized("lib\udcffz.so") == "libz.so"
+    assert elfscan._neutralized("lib\ud800z.so") == "libz.so"
+    elfscan._neutralized("lib\udcffz.so").encode("utf-8")
 
 
 # --- the report's entry boundary --------------------------------------------
@@ -1977,36 +1977,36 @@ def test_a_crafted_artifact_path_cannot_forge_a_second_finding(monkeypatch: pyte
     target_dir.mkdir(parents=True)
     shutil.copy2(_CLEAN, target_dir / _CLEAN.name)
     monkeypatch.setattr(
-        diagnostics,
+        elfscan,
         "_read_elf",
-        lambda reader, path: diagnostics._ElfInfo(dynamic=True, nodes=frozenset({"2.99"}), needed=(), runpaths=()),
+        lambda reader, path: elfscan._ElfInfo(dynamic=True, nodes=frozenset({"2.99"}), needed=(), runpaths=()),
     )
 
     result = diagnostics.check_uninative_leak(cfg)
 
-    assert result.message.count(diagnostics._ENTRY_SEPARATOR) == 0
+    assert result.message.count(elfscan._ENTRY_SEPARATOR) == 0
     assert "1 glibc version node(s)" in result.message
 
 
 @pytest.mark.unit
 def test_the_entry_separator_cannot_survive_neutralization() -> None:
     """The invariant the boundary rests on, stated as one assertion."""
-    separator = diagnostics._ENTRY_SEPARATOR.strip()
+    separator = elfscan._ENTRY_SEPARATOR.strip()
 
     assert separator
-    assert separator not in diagnostics._neutralized(f"lib{separator}z.so")
+    assert separator not in elfscan._neutralized(f"lib{separator}z.so")
 
 
 @pytest.mark.unit
 def test_leak_report_separates_on_the_unforgeable_character() -> None:
     """Two entries, two boundaries; the tail summary uses the same separator."""
-    joined = diagnostics._leak_report(["one", "two"])
+    joined = elfscan._leak_report(["one", "two"])
 
-    assert joined == f"one{diagnostics._ENTRY_SEPARATOR}two"
+    assert joined == f"one{elfscan._ENTRY_SEPARATOR}two"
 
-    truncated = diagnostics._leak_report([str(index) for index in range(diagnostics._LEAK_REPORT_LIMIT + 3)])
+    truncated = elfscan._leak_report([str(index) for index in range(elfscan._LEAK_REPORT_LIMIT + 3)])
 
-    assert truncated.endswith(f"{diagnostics._ENTRY_SEPARATOR}and 3 more")
+    assert truncated.endswith(f"{elfscan._ENTRY_SEPARATOR}and 3 more")
 
 
 # --- resolution is done ONCE, and the resolved value is what is used ---------
@@ -2021,7 +2021,7 @@ def test_resolve_needed_returns_the_resolved_path(tmp_path: Path) -> None:
     real.write_bytes(b"\x7fELF")
     (libdir / "libz.so.1").symlink_to(real)
 
-    resolved, refused = diagnostics._resolve_needed("libz.so.1", [str(libdir)], diagnostics._resolve_roots([tmp_path]))
+    resolved, refused = elfscan._resolve_needed("libz.so.1", [str(libdir)], elfscan._resolve_roots([tmp_path]))
 
     assert refused is False
     assert resolved == Path(os.path.realpath(real))
@@ -2054,9 +2054,7 @@ def test_the_scan_never_resolves_a_dependency_a_second_time(monkeypatch: pytest.
     # nothing and the assertions below would read as a regression.
     libdir = _HOST_LIBC.parent
     monkeypatch.setattr(os.path, "realpath", recording)
-    resolved, refused = diagnostics._resolve_needed(
-        _HOST_LIBC.name, [str(libdir)], diagnostics._resolve_roots([libdir])
-    )
+    resolved, refused = elfscan._resolve_needed(_HOST_LIBC.name, [str(libdir)], elfscan._resolve_roots([libdir]))
 
     assert refused is False
     assert resolved is not None
@@ -2100,12 +2098,12 @@ def test_a_swap_after_confinement_never_reaches_the_reader(monkeypatch: pytest.M
     read: list[str] = []
     crafted = _crafted_reader(("libz.so.1",))
 
-    def recording_reader(reader: str, path: Path) -> diagnostics._ElfInfo | None:
+    def recording_reader(reader: str, path: Path) -> elfscan._ElfInfo | None:
         read.append(str(path))
         return crafted(reader, path)
 
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", (str(hostlib),))
-    monkeypatch.setattr(diagnostics, "_read_elf", recording_reader)
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", (str(hostlib),))
+    monkeypatch.setattr(elfscan, "_read_elf", recording_reader)
     monkeypatch.setattr(os.path, "realpath", swapping)
 
     diagnostics.check_uninative_leak(cfg)
@@ -2137,8 +2135,8 @@ def test_a_name_carried_by_no_elf_does_not_suppress_the_warning(
     decoy = work / "ncurses-native" / "1.0" / "image" / "usr" / "lib"
     decoy.mkdir(parents=True)
     (decoy / "libncurses.so.5").write_bytes(b"")
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
-    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libncurses.so.5",)))
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(elfscan, "_read_elf", _crafted_reader(("libncurses.so.5",)))
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -2164,8 +2162,8 @@ def test_a_symlink_to_an_elf_in_the_tree_counts_as_provided(monkeypatch: pytest.
     libdir.mkdir(parents=True)
     shutil.copy2(_CLEAN, libdir / "libmicrohttpd.so.12.0.2")
     (libdir / "libmicrohttpd.so.12").symlink_to(libdir / "libmicrohttpd.so.12.0.2")
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
-    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libmicrohttpd.so.12",)))
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(elfscan, "_read_elf", _crafted_reader(("libmicrohttpd.so.12",)))
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -2187,8 +2185,8 @@ def test_a_symlink_out_of_the_tree_does_not_count_as_provided(monkeypatch: pytes
     libdir = work / "other-native" / "1.0" / "image" / "usr" / "lib"
     libdir.mkdir(parents=True)
     (libdir / "libbakar-elsewhere.so.1").symlink_to(outside / "libbakar-elsewhere.so.1")
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
-    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libbakar-elsewhere.so.1",)))
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(elfscan, "_read_elf", _crafted_reader(("libbakar-elsewhere.so.1",)))
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -2213,8 +2211,8 @@ def test_a_provider_sorting_after_its_consumer_still_counts(monkeypatch: pytest.
     later = work / "zzz-native" / "1.0" / "image" / "usr" / "lib"
     later.mkdir(parents=True)
     shutil.copy2(_CLEAN, later / "libbakar-late.so.1")
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
-    monkeypatch.setattr(diagnostics, "_read_elf", _crafted_reader(("libbakar-late.so.1",)))
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(elfscan, "_read_elf", _crafted_reader(("libbakar-late.so.1",)))
 
     result = diagnostics.check_uninative_leak(cfg)
 
@@ -2225,7 +2223,7 @@ def test_a_provider_sorting_after_its_consumer_still_counts(monkeypatch: pytest.
 @pytest.mark.unit
 def test_the_scan_walks_the_work_tree_once() -> None:
     """The pre-pass cost a second full traversal - 2,329,148 entries on one tree."""
-    source = inspect.getsource(diagnostics._scan_native_tree)
+    source = inspect.getsource(elfscan._scan_native_tree)
 
     assert source.count("os.walk(") == 1
     assert not hasattr(diagnostics, "_provided_file_names")
@@ -2242,8 +2240,8 @@ def test_a_relative_search_directory_is_skipped_not_refused(tmp_path: Path) -> N
     reporting it as refused labels a linker artefact as a security refusal AND
     routes it past ``_unchecked_reason`` entirely.
     """
-    resolved, refused = diagnostics._resolve_needed(
-        "libz.so.1", ["../../sqlite3-native/usr/lib"], diagnostics._resolve_roots([tmp_path])
+    resolved, refused = elfscan._resolve_needed(
+        "libz.so.1", ["../../sqlite3-native/usr/lib"], elfscan._resolve_roots([tmp_path])
     )
 
     assert resolved is None
@@ -2253,8 +2251,8 @@ def test_a_relative_search_directory_is_skipped_not_refused(tmp_path: Path) -> N
 @pytest.mark.unit
 def test_a_path_qualified_soname_under_a_relative_runpath_is_still_judged_on_where_it_lands() -> None:
     """The absoluteness test is on the candidate, not on the search directory."""
-    resolved, refused = diagnostics._resolve_needed(
-        "/etc/shadow", ["../relative"], diagnostics._resolve_roots([Path("/usr/lib")])
+    resolved, refused = elfscan._resolve_needed(
+        "/etc/shadow", ["../relative"], elfscan._resolve_roots([Path("/usr/lib")])
     )
 
     assert resolved is None
@@ -2270,11 +2268,11 @@ def test_a_relative_runpath_miss_still_consults_the_predicates(monkeypatch: pyte
     fixture_dir = _work_tree(cfg) / "rust-native" / "1.0" / "sources" / "test" / "Inputs"
     fixture_dir.mkdir(parents=True)
     (fixture_dir / "hello-netbsd").write_bytes(_foreign_elf_header())
-    monkeypatch.setattr(diagnostics, "_HOST_LIB_DIRS", ())
+    monkeypatch.setattr(elfscan, "_HOST_LIB_DIRS", ())
     monkeypatch.setattr(
-        diagnostics,
+        elfscan,
         "_read_elf",
-        lambda reader, path: diagnostics._ElfInfo(
+        lambda reader, path: elfscan._ElfInfo(
             dynamic=True, nodes=frozenset({"2.2.5"}), needed=("libc.so.12",), runpaths=("../lib",)
         ),
     )
@@ -2304,17 +2302,17 @@ def test_a_root_reached_through_a_symlink_is_permitted_either_way(tmp_path: Path
     link = tmp_path / "linked-sysroot"
     link.symlink_to(tmp_path / "real-sysroot")
 
-    roots = diagnostics._resolve_roots([link])
+    roots = elfscan._resolve_roots([link])
 
-    assert diagnostics._lexically_within(link / "usr" / "lib" / "libz.so.1", roots)
-    assert diagnostics._lexically_within(real / "libz.so.1", roots)
+    assert elfscan._lexically_within(link / "usr" / "lib" / "libz.so.1", roots)
+    assert elfscan._lexically_within(real / "libz.so.1", roots)
 
 
 @pytest.mark.unit
 def test_resolve_roots_does_not_resolve_per_candidate() -> None:
     """The helpers take pre-resolved roots; resolving inside them was ~1.4M calls."""
-    assert "realpath(root)" not in inspect.getsource(diagnostics._within_any)
-    assert "realpath" not in inspect.getsource(diagnostics._lexically_within)
+    assert "realpath(root)" not in inspect.getsource(elfscan._within_any)
+    assert "realpath" not in inspect.getsource(elfscan._lexically_within)
 
 
 # --- _host_platform_elf must not block, and must not invert its polarity -----
@@ -2332,7 +2330,7 @@ def test_host_platform_elf_refuses_to_open_a_fifo(tmp_path: Path) -> None:
     fifo = tmp_path / "pipe"
     os.mkfifo(fifo)
 
-    assert diagnostics._host_platform_elf(fifo) is True
+    assert elfscan._host_platform_elf(fifo) is True
 
 
 @pytest.mark.unit
@@ -2343,5 +2341,5 @@ def test_host_platform_elf_fails_open_on_a_non_regular_file(tmp_path: Path) -> N
     so copying ``_is_elf``'s ``return False`` for a non-regular file would drop
     dependencies from the report instead of reporting them.
     """
-    assert diagnostics._host_platform_elf(tmp_path) is True
-    assert diagnostics._is_elf(tmp_path) is False
+    assert elfscan._host_platform_elf(tmp_path) is True
+    assert elfscan._is_elf(tmp_path) is False
