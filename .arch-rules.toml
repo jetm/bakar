@@ -157,8 +157,8 @@ paths = ["src/bakar/insights_*.py"]
 name = "feed"
 paths = ["src/bakar/feed.py", "src/bakar/feed_*.py"]
 # Package-feed publishing pipeline (feed, feed_index, feed_ops, feed_preflight,
-# feed_publish, feed_reclaim, feed_retention, feed_sbom, feed_serve,
-# feed_consolidate). Cross-imports inside the family are intentional and
+# feed_retention, feed_sbom, feed_serve, feed_consolidate). Cross-imports
+# inside the family are intentional and
 # ungoverned; outward it reaches only foundation (config, bsp_detect) and
 # diagnostics (core, outside the order). Nothing below commands imports it.
 

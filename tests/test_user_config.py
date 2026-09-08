@@ -418,19 +418,21 @@ def test_set_host_mem_min_gb_non_positive_raises(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_buildtools_dirs_round_trip(tmp_path: Path) -> None:
-    from bakar.user_config import get_buildtools_dir_for_release, set_buildtools_dir_for_release
+def test_buildtools_dirs_accumulate_across_releases(tmp_path: Path) -> None:
+    from bakar.user_config import set_buildtools_dir_for_release
 
     config_file = tmp_path / "config.toml"
-    assert get_buildtools_dir_for_release("wrynose-abc123", config_file) is None
+    assert load_user_config(config_file).buildtools_dirs is None
 
     set_buildtools_dir_for_release("wrynose-abc123", "/opt/bt/wrynose", config_file)
-    assert get_buildtools_dir_for_release("wrynose-abc123", config_file) == "/opt/bt/wrynose"
+    assert load_user_config(config_file).buildtools_dirs == {"wrynose-abc123": "/opt/bt/wrynose"}
 
     # A second release key coexists without clobbering the first.
     set_buildtools_dir_for_release("scarthgap-def456", "/opt/bt/scarthgap", config_file)
-    assert get_buildtools_dir_for_release("wrynose-abc123", config_file) == "/opt/bt/wrynose"
-    assert get_buildtools_dir_for_release("scarthgap-def456", config_file) == "/opt/bt/scarthgap"
+    assert load_user_config(config_file).buildtools_dirs == {
+        "wrynose-abc123": "/opt/bt/wrynose",
+        "scarthgap-def456": "/opt/bt/scarthgap",
+    }
 
 
 def test_load_user_config_parses_buildtools_dirs_table(tmp_path: Path) -> None:

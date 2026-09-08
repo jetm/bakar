@@ -1,10 +1,9 @@
 """Unit tests for bakar.steps.ti_layertool and bakar.steps.ti_setup_env.
 
 Covers the extracted argv/text helpers (``_build_layertool_cmd``,
-``_strip_dl_dir``), the small filesystem helpers (``_record_active_config``,
-``reset_sources``), the ``_set_or_replace`` regex-driven text transform in
-``ti_setup_env``, and the full ``ti_setup_env.run`` flow on a ``tmp_path``
-workspace.
+``_strip_dl_dir``), the small filesystem helper ``_record_active_config``, the
+``_set_or_replace`` regex-driven text transform in ``ti_setup_env``, and the
+full ``ti_setup_env.run`` flow on a ``tmp_path`` workspace.
 
 All tests are hermetic: no subprocess is invoked anywhere (``ti_setup_env.run``
 makes no subprocess call by design, and the layertool helpers under test here
@@ -191,7 +190,7 @@ def test_strip_dl_dir_missing_file_is_noop(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _record_active_config and reset_sources
+# _record_active_config
 # ---------------------------------------------------------------------------
 
 
@@ -218,34 +217,6 @@ def test_record_active_config_overwrites_previous(tmp_path: Path) -> None:
 
     tracked = tmp_path / "ti" / "conf" / "active-config.txt"
     assert tracked.read_text() == cfg_new.manifest + "\n"
-
-
-def test_reset_sources_removes_sources_and_marker(tmp_path: Path) -> None:
-    """Wipes ``ti/sources/`` and ``ti/conf/active-config.txt``; idempotent."""
-    cfg = _ti_cfg(tmp_path)
-    ti = tmp_path / "ti"
-    sources = ti / "sources" / "oe-core"
-    sources.mkdir(parents=True)
-    (sources / "oe-init-build-env").write_text("# stub\n")
-    conf_dir = ti / "conf"
-    conf_dir.mkdir(parents=True)
-    tracked = conf_dir / "active-config.txt"
-    tracked.write_text(cfg.manifest + "\n")
-
-    ti_layertool.reset_sources(cfg)
-
-    assert not (ti / "sources").exists()
-    assert not tracked.exists()
-
-
-def test_reset_sources_noop_on_clean_workspace(tmp_path: Path) -> None:
-    """Running on a workspace with neither sources nor tracked file is a no-op."""
-    cfg = _ti_cfg(tmp_path)
-
-    # Must not raise even though nothing exists.
-    ti_layertool.reset_sources(cfg)
-
-    assert not (tmp_path / "ti" / "sources").exists()
 
 
 # ---------------------------------------------------------------------------

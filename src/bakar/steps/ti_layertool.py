@@ -22,7 +22,6 @@ can skip the script when the requested config already matches.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 from typing import TYPE_CHECKING
 
@@ -145,19 +144,3 @@ def populate(
         len([p for p in (ti_root / "sources").iterdir() if p.is_dir()]) if (ti_root / "sources").is_dir() else 0
     )
     log.step_ok("ti_layertool", sources=sources_count, config=cfg.manifest)
-
-
-def reset_sources(cfg: BuildConfig) -> None:
-    """Remove ``ti/sources/`` and ``ti/conf/active-config.txt``.
-
-    Convenience helper for users who want to force a from-scratch
-    populate; not called from the build pipeline. Equivalent of
-    ``rm -rf`` followed by a fresh ``oe-layertool-setup.sh``.
-    """
-    ti_root = cfg.workspace / "ti"
-    sources = ti_root / "sources"
-    if sources.is_dir():
-        shutil.rmtree(sources)
-    tracked = ti_root / "conf" / "active-config.txt"
-    if tracked.is_file():
-        tracked.unlink()

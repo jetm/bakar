@@ -698,19 +698,6 @@ def unset_setting(key: str, path: Path | None = None) -> None:
     _dump_raw(config_path, data)
 
 
-def get_buildtools_dir_for_release(release_key: str, path: Path | None = None) -> str | None:
-    """Return the persisted buildtools dir for one oe-core release, or None if unset."""
-    data = _load_raw(_config_path(path))
-    build = data.get("build")
-    if not isinstance(build, dict):
-        return None
-    dirs = build.get("buildtools_dirs")
-    if not isinstance(dirs, dict):
-        return None
-    value = dirs.get(release_key)
-    return value if isinstance(value, str) else None
-
-
 def set_buildtools_dir_for_release(release_key: str, value: str, path: Path | None = None) -> None:
     """Persist one release's buildtools dir under [build.buildtools_dirs].
 

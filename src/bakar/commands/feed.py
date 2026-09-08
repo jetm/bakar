@@ -13,8 +13,8 @@ against a feed the operator did not mean is not a failure they would otherwise
 see.
 
 ``gc`` previews by default and needs ``--confirm`` to remove anything. That
-asymmetry is deliberate and matches ``feed_reclaim``: a retained snapshot costs
-disk, a wrongly removed pool entry costs a rebuild.
+asymmetry is deliberate: a retained snapshot costs disk, a wrongly removed pool
+entry costs a rebuild.
 
 Library failures are translated here rather than allowed to propagate. The feed
 modules raise on a missing scripts checkout and let ``subprocess`` raise on a

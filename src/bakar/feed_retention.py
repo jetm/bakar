@@ -38,8 +38,7 @@ aborts the run mid-way. :func:`_read_primary` catches both.
 
 Pool orphans are computed against the POST-removal reference set, not measured
 after the fact, so a preview and the run that follows it are one computation
-rather than two that can disagree - the same property
-:mod:`bakar.feed_reclaim` holds for build trees.
+rather than two that can disagree.
 
 Scope is deliberately asymmetric between the two halves. References are gathered
 across the whole feed root, because a retained repository in another release may
@@ -481,9 +480,8 @@ def plan_retention(
 def apply_retention(plan: RetentionPlan, *, feed_root: Path, confirm: bool = False) -> RetentionResult:
     """Carry out the plan, but only when asked.
 
-    Preview is the default for the same reason it is in
-    :mod:`bakar.feed_reclaim`: a retained snapshot costs disk, a wrongly removed
-    pool entry costs a rebuild.
+    Preview is the default because the two errors are not symmetric: a retained
+    snapshot costs disk, a wrongly removed pool entry costs a rebuild.
 
     Every removal is reported only after it succeeded, and freed bytes are
     counted the same way - a snapshot tree that could not be removed appears in
@@ -586,9 +584,7 @@ def _resolves_inside(path: Path, parent: Path, *, unknown: bool) -> bool:
     required argument on purpose. The safe direction differs by caller - a
     reclaim gate wants "assume inside, do not delete", a skip list wants "assume
     outside, keep scanning" - and the two are opposite. An implicit default here
-    is how one caller silently inherits the other's polarity;
-    :mod:`bakar.feed_reclaim` has its own copy of this and defaults the other
-    way, which is exactly the trap.
+    is how one caller silently inherits the other's polarity.
     """
     try:
         return path.resolve().is_relative_to(parent.resolve())
