@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from bakar.observability import RunLogger
+from bakar.observability import RunEventStats, RunLogger, iter_run_events, last_run_event
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -410,3 +410,72 @@ def test_persist_disk_samples_noop_when_unwritable(tmp_path: Path) -> None:
         log.disk_samples_path.mkdir(parents=True, exist_ok=True)
         log.persist_disk_samples(samples)  # must not raise
         assert log.disk_samples_path.is_dir()
+
+
+@pytest.mark.unit
+def test_iter_run_events_yields_records_in_order(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text('{"event": "step_start", "step": "a"}\n{"event": "step_ok", "step": "a"}\n')
+    assert [r["event"] for r in iter_run_events(events)] == ["step_start", "step_ok"]
+
+
+@pytest.mark.unit
+def test_iter_run_events_missing_file_yields_nothing(tmp_path: Path) -> None:
+    stats = RunEventStats()
+    assert list(iter_run_events(tmp_path / "absent.jsonl", stats=stats)) == []
+    assert stats.skipped == 0
+
+
+@pytest.mark.unit
+def test_iter_run_events_skips_truncated_final_line(tmp_path: Path) -> None:
+    """An interrupted build's half-written last line must not hide the prefix."""
+    events = tmp_path / "events.jsonl"
+    events.write_text('{"event": "step_start", "step": "kas_build"}\n{"event": "step_')
+    stats = RunEventStats()
+    records = list(iter_run_events(events, stats=stats))
+    assert [r["step"] for r in records] == ["kas_build"]
+    assert stats.skipped == 1
+
+
+@pytest.mark.unit
+def test_iter_run_events_distinguishes_corrupt_from_empty(tmp_path: Path) -> None:
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("")
+    corrupt = tmp_path / "corrupt.jsonl"
+    corrupt.write_text("not json\nalso not json\n")
+
+    empty_stats = RunEventStats()
+    corrupt_stats = RunEventStats()
+    assert list(iter_run_events(empty, stats=empty_stats)) == []
+    assert list(iter_run_events(corrupt, stats=corrupt_stats)) == []
+    assert empty_stats.skipped == 0
+    assert corrupt_stats.skipped == 2
+
+
+@pytest.mark.unit
+def test_iter_run_events_skips_non_object_json(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text('42\n{"event": "step_ok"}\n')
+    stats = RunEventStats()
+    assert [r["event"] for r in iter_run_events(events, stats=stats)] == ["step_ok"]
+    assert stats.skipped == 1
+
+
+@pytest.mark.unit
+def test_last_run_event_returns_final_match(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        '{"event": "step_fail", "step": "sync"}\n'
+        '{"event": "step_ok", "step": "gen_kas"}\n'
+        '{"event": "step_fail", "step": "kas_build"}\n'
+    )
+    last = last_run_event(events, lambda rec: rec.get("event") == "step_fail")
+    assert last is not None
+    assert last["step"] == "kas_build"
+
+
+@pytest.mark.unit
+def test_last_run_event_none_when_no_match(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text('{"event": "step_ok", "step": "sync"}\n')
+    assert last_run_event(events, lambda rec: rec.get("event") == "step_fail") is None

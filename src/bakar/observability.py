@@ -29,6 +29,7 @@ from rich.logging import RichHandler
 from bakar import eventlog
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
 console = Console(stderr=True)
@@ -334,3 +335,68 @@ class RunLogger:
             )
         except (OSError, ValueError) as exc:  # best-effort; must never break a build
             self.warn(f"failed to persist task timings: {exc}")
+
+
+@dataclass
+class RunEventStats:
+    """Out-parameter recording how many ``events.jsonl`` lines failed to parse.
+
+    The readers below skip an unparseable line so an interrupted build - whose
+    log ends in a half-written record - still reads back from its intact
+    prefix. The cost of skipping is that a wholly corrupt log looks exactly
+    like an empty one. A caller that needs to tell those apart passes an
+    instance here and reads ``skipped`` afterwards.
+    """
+
+    skipped: int = 0
+
+
+def iter_run_events(
+    events_path: Path,
+    *,
+    stats: RunEventStats | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Yield every parsed record in ``events.jsonl``, in file order.
+
+    A line that is not a JSON object is skipped and reading continues with the
+    remainder; pass ``stats`` to learn how many were dropped. A missing file
+    yields nothing, which is not a skip - there were no lines to drop.
+    """
+    if not events_path.is_file():
+        return
+    # errors="replace" because a build killed mid-write can leave a partial
+    # UTF-8 sequence at EOF; that must degrade to one unparseable line rather
+    # than making the whole intact prefix unreadable.
+    with events_path.open(encoding="utf-8", errors="replace") as fh:
+        for raw_line in fh:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                if stats is not None:
+                    stats.skipped += 1
+                continue
+            if not isinstance(rec, dict):
+                if stats is not None:
+                    stats.skipped += 1
+                continue
+            yield rec
+
+
+def last_run_event(
+    events_path: Path,
+    predicate: Callable[[dict[str, Any]], bool],
+    *,
+    stats: RunEventStats | None = None,
+) -> dict[str, Any] | None:
+    """Return the last record in ``events.jsonl`` satisfying ``predicate``.
+
+    Shares :func:`iter_run_events`' skip policy, including ``stats``.
+    """
+    last: dict[str, Any] | None = None
+    for rec in iter_run_events(events_path, stats=stats):
+        if predicate(rec):
+            last = rec
+    return last
