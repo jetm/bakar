@@ -23,7 +23,8 @@ from typing import TYPE_CHECKING
 import pytest
 from rich.console import Console
 
-from bakar import build_stop
+from bakar import build_stop, observability, report, triage
+from bakar.commands import triage as commands_triage
 from tests.conftest import make_build_config
 
 if TYPE_CHECKING:
@@ -691,6 +692,121 @@ def test_interrupted_step_none_when_all_terminated(tmp_path: Path) -> None:
     )
 
     assert build_stop._interrupted_step(run_dir) is None
+
+
+# --- truncated / corrupt events.jsonl ---------------------------------------
+
+
+def _write_interrupted_events(run_dir: Path) -> None:
+    """Write an ``events.jsonl`` shaped like a build killed mid-write.
+
+    Every line but the last is intact; the last is a half-written JSON
+    fragment, which is what a SIGKILL between ``write`` and the trailing
+    newline leaves behind. The prefix records a completed ``kas_build``, a
+    failed ``cve`` step, and an ``sbom`` step that never terminated - so each
+    consumer of this log has a distinct, non-trivial answer to give.
+    """
+    lines = [
+        json.dumps({"event": "run_start", "ts": "2026-06-18T12:00:00"}),
+        json.dumps({"event": "step_start", "step": "sync"}),
+        json.dumps({"event": "step_ok", "step": "sync"}),
+        json.dumps({"event": "step_start", "step": "kas_build"}),
+        json.dumps({"event": "step_ok", "step": "kas_build", "deploy_dir": "/work/build/deploy"}),
+        json.dumps({"event": "step_start", "step": "cve"}),
+        json.dumps({"event": "step_fail", "step": "cve", "reason": "cve db unavailable"}),
+        json.dumps({"event": "step_start", "step": "sbom"}),
+    ]
+    truncated = '{"event": "step_ok", "step": "sb'
+    (run_dir / "events.jsonl").write_text("\n".join(lines) + "\n" + truncated)
+
+
+def test_interrupted_step_named_despite_truncated_final_line(tmp_path: Path) -> None:
+    """A half-written final line does not hide the step from the intact prefix.
+
+    This is the regression this whole consolidation exists for: the reader runs
+    on the interrupted-build path, which is exactly when the log ends
+    mid-record. Aborting on that line reports "no interrupted step" for the one
+    case the lookup answers.
+    """
+    run_dir = _make_run_dir(tmp_path)
+    _write_interrupted_events(run_dir)
+
+    assert build_stop._interrupted_step(run_dir) == "sbom"
+
+
+def test_truncated_final_line_skipped_not_fatal(tmp_path: Path) -> None:
+    """The shared reader drops exactly the truncated line and keeps the rest."""
+    run_dir = _make_run_dir(tmp_path)
+    _write_interrupted_events(run_dir)
+
+    stats = observability.RunEventStats()
+    records = list(observability.iter_run_events(run_dir / "events.jsonl", stats=stats))
+
+    assert stats.skipped == 1
+    assert [rec["event"] for rec in records] == [
+        "run_start",
+        "step_start",
+        "step_ok",
+        "step_start",
+        "step_ok",
+        "step_start",
+        "step_fail",
+        "step_start",
+    ]
+
+
+def test_all_consumers_agree_on_truncated_log(tmp_path: Path) -> None:
+    """The four ``events.jsonl`` consumers read the same intact prefix.
+
+    One policy now serves all of them, so none may diverge on a log whose only
+    defect is a truncated tail. Each assertion below names a value that only a
+    skipping reader can produce - an aborting one yields ``None``/``failure``
+    for every one of them.
+    """
+    run_dir = _make_run_dir(tmp_path)
+    _write_interrupted_events(run_dir)
+    cfg = make_build_config(workspace=tmp_path)
+
+    assert build_stop._interrupted_step(run_dir) == "sbom"
+
+    summary = report.assemble_report(run_dir, cfg)
+    assert summary.status == "success"
+    assert summary.deploy_dir == "/work/build/deploy"
+
+    assert commands_triage._run_has_failure(run_dir) is True
+
+    triaged = triage.analyse(run_dir, tmp_path)
+    assert triaged.failing_step == "cve"
+    assert triaged.fail_reason == "cve db unavailable"
+
+
+def test_wholly_corrupt_log_distinguishable_from_empty(tmp_path: Path) -> None:
+    """A log where nothing parses reports skips; an empty or absent one does not.
+
+    Skipping is what keeps a truncated tail readable, and the cost is that a
+    wholly corrupt log otherwise looks identical to one with no events at all.
+    ``RunEventStats.skipped`` is the escape hatch that keeps those apart.
+    """
+    corrupt_dir = _make_run_dir(tmp_path, "20260618-130000")
+    (corrupt_dir / "events.jsonl").write_text('{"event": "step_st\nnot json at all\n[1, 2, 3]\n')
+
+    corrupt_stats = observability.RunEventStats()
+    corrupt_events = list(observability.iter_run_events(corrupt_dir / "events.jsonl", stats=corrupt_stats))
+    assert corrupt_events == []
+    assert corrupt_stats.skipped == 3
+    assert build_stop._interrupted_step(corrupt_dir) is None
+
+    empty_dir = _make_run_dir(tmp_path, "20260618-140000")
+    (empty_dir / "events.jsonl").write_text("")
+
+    empty_stats = observability.RunEventStats()
+    assert list(observability.iter_run_events(empty_dir / "events.jsonl", stats=empty_stats)) == []
+    assert empty_stats.skipped == 0
+
+    absent_dir = _make_run_dir(tmp_path, "20260618-150000")
+    absent_stats = observability.RunEventStats()
+    assert list(observability.iter_run_events(absent_dir / "events.jsonl", stats=absent_stats)) == []
+    assert absent_stats.skipped == 0
 
 
 def test_check_unclean_stop_no_pidfile_silent(tmp_path: Path) -> None:
