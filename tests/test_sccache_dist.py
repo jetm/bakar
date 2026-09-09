@@ -1735,7 +1735,7 @@ def test_container_inject_still_exports_conf_not_uds(tmp_path: Path, monkeypatch
 
 @pytest.mark.unit
 def test_parse_cluster_status_reads_aggregate() -> None:
-    from bakar.diagnostics import _parse_cluster_status
+    from bakar.probes import _parse_cluster_status
 
     cap = _parse_cluster_status(
         '{"SchedulerStatus":["http://h:10600/",{"num_servers":2,"num_cpus":64,"in_progress":7}]}'
@@ -1750,7 +1750,7 @@ def test_parse_cluster_status_reads_aggregate() -> None:
 
 @pytest.mark.unit
 def test_parse_cluster_status_returns_none_on_garbage() -> None:
-    from bakar.diagnostics import _parse_cluster_status
+    from bakar.probes import _parse_cluster_status
 
     assert _parse_cluster_status("not json") is None
     assert _parse_cluster_status('{"unexpected":true}') is None
@@ -1760,7 +1760,7 @@ def test_parse_cluster_status_returns_none_on_garbage() -> None:
 def test_parse_cluster_status_picks_up_servers_when_present() -> None:
     """A forked scheduler may add a per-server array; parse it so the node table
     lights up without a bakar change."""
-    from bakar.diagnostics import _parse_cluster_status
+    from bakar.probes import _parse_cluster_status
 
     cap = _parse_cluster_status(
         '{"SchedulerStatus":["http://h:10600/",{"num_servers":1,"num_cpus":32,"in_progress":0,"servers":[{"id":"a"}]}]}'

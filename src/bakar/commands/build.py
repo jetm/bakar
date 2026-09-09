@@ -3,12 +3,6 @@
 from __future__ import annotations
 
 import os
-
-# Nothing in this module reads subprocess since the post-build steps moved to
-# _post_build. It stays because tests/test_build_sbom_flag.py (103, 163, 179)
-# patch `build_mod.subprocess.run` - the module object reached through this
-# name, which the filter in _post_build then uses.
-import subprocess  # noqa: F401
 import sys
 import time
 from dataclasses import replace
@@ -86,9 +80,10 @@ from bakar.commands._helpers import (
 # Re-exported, not merely imported. Tests reach these as attributes of this
 # module (build_mod._CveRequest, build_mod._SbomRequest, build_mod._FeedRequest)
 # and _finish_build below reads several as bare names, so every name the
-# post-build steps define stays resolvable here.
+# post-build steps define stays resolvable here. A name meeting neither
+# criterion does not belong: _CVE_REPORT_TARGET was re-exported and pinned in
+# the same commit, so its pin was the only thing justifying it.
 from bakar.commands._post_build import (
-    _CVE_REPORT_TARGET,  # noqa: F401 - re-exported for build_mod attribute access
     _CveRequest,
     _FeedRequest,
     _filter_image_sbom,
@@ -106,11 +101,18 @@ from bakar.output_mode import OutputMode, resolve_output_mode
 from bakar.preset_config import load_presets
 
 # step_override and step_qcom_build are read only by the flavor dispatchers in
-# _build_flavors now. They stay here for the same reason subprocess above does:
-# tests/test_cli_build_extended.py, tests/test_build_manifest_show_layers.py and
-# tests/test_qcom_build.py patch `bakar.commands.build.step_override.apply` and
-# `.step_qcom_build.run`, which reach the shared step MODULE through this name -
-# so the dispatchers see the patch, but only while this path still resolves.
+# _build_flavors now. They stay because tests/test_cli_build_extended.py,
+# tests/test_build_manifest_show_layers.py, tests/test_qcom_build.py and
+# tests/test_cli_user_config.py patch `bakar.commands.build.step_override.apply`
+# and `.step_qcom_build.run` - ATTRIBUTE patches, which mutate the shared step
+# module and are therefore seen by the dispatchers wherever they live.
+#
+# The NAME form no longer binds. Patching `bakar.commands.build.step_override`
+# itself rebinds a global nothing reads: _run_manifest_build lives in
+# _build_flavors and resolves the name from THAT module. It used to bind, when
+# the dispatcher was defined here. The patch still resolves, so the failure is
+# silent - the real step runs. test_module_boundaries pins the object identity
+# these attribute patches depend on.
 from bakar.steps import bitbake_override as step_override  # noqa: F401
 from bakar.steps import kas_build as step_kas
 from bakar.steps import qcom_build as step_qcom_build  # noqa: F401

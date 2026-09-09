@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import bakar.commands._build_flavors as flavors
+import bakar.commands._build_options as build_options
+import bakar.commands._post_build as post_build
 import bakar.commands.build as build
 from bakar.output_mode import OutputMode
 
@@ -56,7 +58,14 @@ def test_every_build_site_threads_the_mode() -> None:
     # _build_flavors, so the counts only close when both sources are read. A
     # single-module count would silently drop the three dispatcher call sites -
     # exactly the sites this test exists to hold.
-    src = Path(build.__file__).read_text(encoding="utf-8") + Path(flavors.__file__).read_text(encoding="utf-8")
+    #
+    # Read ALL FOUR modules carved out of the original build.py, not just the two
+    # that construct anything today. _post_build already holds a KasBuildContext
+    # field and drives a second bitbake invocation, which makes it the likeliest
+    # home for a future construction; scoped to two files, one added there would
+    # default to RICH and the shared console with these counts unchanged. The two
+    # extra sources contribute zero, so the numbers below are unaffected.
+    src = "".join(Path(mod.__file__).read_text(encoding="utf-8") for mod in (build, flavors, post_build, build_options))
     # Exactly one KasBuildContext(/RunLogger(runs_dir=cfg.runs_dir construction may
     # exist across both modules: the one inside the factory below. A stray ad hoc
     # construction added outside the factories bumps these counts and fails here.

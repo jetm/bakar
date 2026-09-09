@@ -19,7 +19,8 @@ import pytest
 import bakar.commands._app as _state
 import bakar.commands.cluster_info as cluster_info_module
 from bakar.cli import app
-from bakar.diagnostics import ClusterCapacity, ClusterReport
+from bakar.diagnostics import ClusterReport
+from bakar.probes import ClusterCapacity
 
 if TYPE_CHECKING:
     from typer.testing import CliRunner as _CliRunner

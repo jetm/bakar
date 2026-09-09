@@ -32,6 +32,7 @@ import pytest
 import typer
 
 from bakar import sbom_publish
+from bakar.commands import _post_build as post_build
 from bakar.commands import build as build_mod
 
 pytestmark = pytest.mark.unit
@@ -100,7 +101,7 @@ def runs(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         )
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(build_mod.subprocess, "run", record)
+    monkeypatch.setattr(post_build.subprocess, "run", record)
     return recorded
 
 
@@ -160,7 +161,7 @@ def test_a_leaking_filter_output_is_refused_rather_than_reported_as_published(
         )
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(build_mod.subprocess, "run", leaky)
+    monkeypatch.setattr(post_build.subprocess, "run", leaky)
 
     build_mod._finish_build(cfg, log_stub, 0, MACHINE, sbom=build_mod._SbomRequest(workspace=cfg.workspace))
 
@@ -176,7 +177,7 @@ def test_a_failing_filter_does_not_fail_the_build(
     _install_filter(cfg)
     _write_image_sbom(cfg)
     monkeypatch.setattr(
-        build_mod.subprocess,
+        post_build.subprocess,
         "run",
         lambda *_a, **_kw: SimpleNamespace(returncode=1, stdout="", stderr="boom"),
     )

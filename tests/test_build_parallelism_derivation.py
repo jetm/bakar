@@ -119,7 +119,7 @@ def test_sccache_dist_feeds_cluster_cpus_into_parallel_make(tmp_path: Path, monk
     """
     import types
 
-    from bakar import diagnostics
+    from bakar import probes
     from bakar.steps import kas_build
     from bakar.steps.kas_build import _build_env
 
@@ -131,7 +131,7 @@ def test_sccache_dist_feeds_cluster_cpus_into_parallel_make(tmp_path: Path, monk
         "probe_cluster",
         lambda url: types.SimpleNamespace(
             reachable=True,
-            capacity=diagnostics.ClusterCapacity(num_servers=2, num_cpus=64, in_progress=0),
+            capacity=probes.ClusterCapacity(num_servers=2, num_cpus=64, in_progress=0),
             error=None,
         ),
     )

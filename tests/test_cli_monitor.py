@@ -22,7 +22,8 @@ import pytest
 import bakar.commands.monitor as monitor_module
 import bakar.eventlog as eventlog_module
 from bakar.cli import app
-from bakar.diagnostics import BuildDaemonReport, CcacheReport, ClusterCapacity, ClusterReport
+from bakar.diagnostics import BuildDaemonReport, CcacheReport, ClusterReport
+from bakar.probes import ClusterCapacity
 
 if TYPE_CHECKING:
     from pathlib import Path

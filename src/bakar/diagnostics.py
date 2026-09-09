@@ -50,14 +50,14 @@ from bakar.buildtools import (
 )
 from bakar.config import BuildConfig
 
-# Only the names the staying ``check_uninative_leak`` reads as bare names, plus
-# ``_VERNEED_HEADER``, which tests/test_uninative_leak_scan.py imports through
-# this path. ``_read_elf`` and ``_HOST_LIB_DIRS`` are deliberately absent: a
-# leak-scan stub left aimed at ``bakar.diagnostics`` must raise, because the
-# alternative is the real reader walking an empty tree and passing its own "no
-# leak" assertion.
+# Only the names the staying ``check_uninative_leak`` reads as bare names.
+# ``_read_elf`` and ``_HOST_LIB_DIRS`` are deliberately absent: a leak-scan stub
+# left aimed at ``bakar.diagnostics`` must raise, because the alternative is the
+# real reader walking an empty tree and passing its own "no leak" assertion.
+# ``_VERNEED_HEADER`` is absent for the same reason - its only reader is
+# ``elfscan`` itself, so a stub aimed at this path would have reached none while
+# reading as though it had taken.
 from bakar.elfscan import (
-    _VERNEED_HEADER,  # noqa: F401
     _elf_reader,
     _leak_report,
     _neutralized,
@@ -80,19 +80,22 @@ from bakar.mounts import (
 )
 
 # Only ``_parse_cluster_capacity`` and ``_query_cluster_capacity`` have readers
-# left in this module. The rest are re-exported because production code and
-# tests reach them through ``bakar.diagnostics``: ``cache_render`` and
-# ``commands/monitor`` type-annotate the report dataclasses, ``steps/kas_build``
-# and ``commands/cluster_info`` import the three probes, and
-# ``commands/clean_cache`` plus several tests patch ``bakar.diagnostics.<name>``.
+# left in this module. The rest are re-exported because PRODUCTION code reaches
+# them through ``bakar.diagnostics``: ``cache_render`` and ``commands/monitor``
+# type-annotate the three report dataclasses, ``steps/kas_build`` and
+# ``commands/cluster_info`` import the three probes, and ``commands/clean_cache``
+# resolves ``probe_cluster`` through a call-time deferred import.
+# A name whose only caller is a test does NOT belong here. A stub aimed at this
+# path would reach no reader at all while reading as though it had taken, which
+# is the failure the elfscan block above exists to prevent - and one the
+# not-re-exported inventory cannot catch, because the name is present rather
+# than absent. ``ClusterCapacity``, ``_parse_cluster_status`` and
+# ``_build_daemon_report_from_stats`` were dropped for exactly that reason.
 from bakar.probes import (
     BuildDaemonReport,  # noqa: F401
     CcacheReport,  # noqa: F401
-    ClusterCapacity,  # noqa: F401
     ClusterReport,  # noqa: F401
-    _build_daemon_report_from_stats,  # noqa: F401
     _parse_cluster_capacity,
-    _parse_cluster_status,  # noqa: F401
     _query_cluster_capacity,
     probe_build_daemon,  # noqa: F401
     probe_ccache,  # noqa: F401
@@ -2201,6 +2204,13 @@ def check_uninative_leak(cfg: BuildConfig) -> CheckResult:
                 # Recipe names are work-tree path components, so the fix hint is
                 # artifact-derived too - and _print_diagnosis renders it through
                 # markup just like the message.
+                #
+                # This is elfscan's neutralization invariant reaching outside
+                # elfscan: the other ten call sites live there, so a stub aimed
+                # at `bakar.diagnostics._neutralized` covers this one and misses
+                # those. Before the split all eleven sat in this module and one
+                # stub reached them all. Stub `bakar.elfscan._neutralized` when
+                # the assertion is about scan messages.
                 + " ".join(_neutralized(recipe) for recipe in recipes)
                 + "', then find why the compile escaped the buildtools toolchain before rebuilding."
             ),

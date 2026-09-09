@@ -109,6 +109,13 @@ RELOCATED_SYMBOLS: list[tuple[str, str]] = [
     ("bakar.diagnostics", "_host_platform_elf"),
     ("bakar.diagnostics", "_Unclassified"),
     ("bakar.diagnostics", "_unchecked_reason"),
+    # Dropped as surplus: each had no production importer and no reader left in
+    # ``diagnostics``, so a stub aimed at the origin would have reached nothing
+    # while reading as though it had taken.
+    ("bakar.diagnostics", "_VERNEED_HEADER"),
+    ("bakar.diagnostics", "ClusterCapacity"),
+    ("bakar.diagnostics", "_parse_cluster_status"),
+    ("bakar.diagnostics", "_build_daemon_report_from_stats"),
 ]
 
 # Same contract, for names that have moved off ``bakar.commands.build``.
@@ -119,8 +126,12 @@ RELOCATED_BUILD_SYMBOLS: list[tuple[str, str]] = []
 # (``build_mod._CveRequest``) and ``_finish_build``/``build()`` still read them
 # as bare names, so dropping the re-export breaks callers rather than tidying
 # the surface. Extend this list - not the test body - when a move keeps a name.
+#
+# A name meeting NEITHER criterion does not belong here. ``_CVE_REPORT_TARGET``
+# was listed once: its re-export and this pin landed in the same commit, so the
+# pin was the only thing keeping it alive and could never have failed for the
+# reason this test gives.
 BUILD_RE_EXPORTED_NAMES: tuple[str, ...] = (
-    "_CVE_REPORT_TARGET",
     "_CveRequest",
     "_resolve_cve_request",
     "_generate_cve_report",
@@ -142,9 +153,10 @@ BUILD_RE_EXPORTED_NAMES: tuple[str, ...] = (
     "_run_manifest_build",
     "_is_multi_release",
     "_run_single_preset_release",
-    # Not moved symbols but module objects the sbom/cve/qcom tests patch THROUGH
-    # ``bakar.commands.build`` to reach the post-build and step modules.
-    "subprocess",
+    # Not moved symbols but module objects the cve/qcom/layers tests patch
+    # THROUGH ``bakar.commands.build`` to reach the step modules. ``subprocess``
+    # is deliberately NOT here: the sbom tests now patch it through
+    # ``_post_build``, the module that actually calls it.
     "step_kas",
     "step_override",
     "step_qcom_build",
@@ -287,6 +299,28 @@ def test_build_re_exported_surface_is_intact(name: str) -> None:
     assert hasattr(import_module("bakar.commands.build"), name), f"bakar.commands.build lost {name}"
 
 
+@pytest.mark.parametrize("name", ["step_override", "step_qcom_build", "step_kas"])
+def test_step_module_aliases_are_the_same_object(name: str) -> None:
+    """The step aliases on ``build`` and ``_build_flavors`` must be one object.
+
+    Several tests patch ``bakar.commands.build.step_override.apply`` and expect
+    the dispatchers in ``_build_flavors`` to see it. That works only because both
+    names bind the SAME module object, so the attribute write lands once and is
+    visible from either path. Identity is the whole mechanism, and nothing else
+    asserts it.
+
+    The NAME form is a different matter and does not work: rebinding
+    ``bakar.commands.build.step_override`` itself only replaces a global that no
+    longer has a reader, because the dispatchers moved and resolve the name in
+    their own module. It resolves and does nothing, so the failure is silent -
+    which is why the attribute-patch seam is worth pinning rather than assuming.
+    """
+    build = import_module("bakar.commands.build")
+    flavors = import_module("bakar.commands._build_flavors")
+
+    assert getattr(build, name) is getattr(flavors, name)
+
+
 def test_patching_an_absent_attribute_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """All three patch forms used here must reject a name that is gone."""
     assert not hasattr(diagnostics, _ABSENT_ATTR)
@@ -337,17 +371,43 @@ def test_build_annotations_resolve_at_runtime() -> None:
     """Every ``build()`` annotation must be resolvable outside TYPE_CHECKING.
 
     Typer reads a command signature through ``inspect.signature(eval_str=True)``,
-    so an alias hidden behind ``if TYPE_CHECKING:`` raises
-    ``RuntimeError: Type not yet supported`` when the command is built. Scoped to
-    ``build`` on purpose: ``_post_build._CveRequest`` is annotated with a
-    deliberately TYPE_CHECKING-guarded ``KasBuildContext`` and would fail a
-    package-wide sweep for an unrelated reason.
+    so an alias hidden behind ``if TYPE_CHECKING:`` fails when the command is
+    built. The error is ``NameError: name '<alias>' is not defined``, raised
+    while resolving the signature - NOT the ``RuntimeError: Type not yet
+    supported`` that a dataclass-typed parameter produces further in. Measured on
+    typer 0.25.1; the two are different failures and only the NameError is
+    reachable from this rule.
     """
     build = import_module("bakar.commands.build").build
 
     hints = get_type_hints(build, include_extras=True)
 
     assert set(inspect.signature(build).parameters) <= set(hints)
+
+
+def test_post_build_request_annotations_resolve_at_runtime() -> None:
+    """The moved request dataclasses must resolve as they did before the split.
+
+    ``build.py`` imported ``KasBuildContext``, ``_FeedRequest`` and
+    ``_SbomRequest`` unguarded, so ``get_type_hints`` on the dataclasses
+    annotated with them succeeded. Re-guarding any of them during a later move
+    would narrow that silently, since nothing in the CLI path resolves these
+    hints - only a serializer or an introspection helper would notice.
+
+    ``_BuildCtx`` is resolved with ``BspModel`` supplied, because THAT guard is
+    load-bearing and pre-dates the split: ``_build_flavors`` has no runtime
+    ``bakar.bsp_model`` import and the old ``build.py`` did not either, so
+    ``_BuildCtx`` raised ``NameError`` on it before this change too. Supplying it
+    isolates the request types, which are the names the split moved.
+    """
+    bsp_model = import_module("bakar.bsp_model")
+    post_build = import_module("bakar.commands._post_build")
+    flavors = import_module("bakar.commands._build_flavors")
+
+    assert "kas_ctx" in get_type_hints(post_build._CveRequest)
+
+    ctx_hints = get_type_hints(flavors._BuildCtx, localns={"BspModel": bsp_model.BspModel})
+    assert {"feed", "sbom"} <= set(ctx_hints)
 
 
 def _dotted(module_path: str) -> str:

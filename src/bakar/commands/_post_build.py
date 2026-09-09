@@ -10,7 +10,6 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import typer
 
@@ -19,9 +18,13 @@ from bakar.commands._app import console
 from bakar.diagnostics import Status
 from bakar.steps import kas_build as step_kas
 
-if TYPE_CHECKING:
-    from bakar.steps.kas_build import KasBuildContext
-
+# Runtime, not TYPE_CHECKING-guarded. ``_CveRequest.kas_ctx`` is annotated with
+# it, and guarding the name makes ``typing.get_type_hints`` on that dataclass
+# raise NameError - a narrowing against the pre-split ``build.py``, which
+# imported it unguarded. The guard also defers nothing, since ``step_kas`` above
+# is the same module at runtime. TC001 is ignored for this package precisely so
+# this import can stay here.
+from bakar.steps.kas_build import KasBuildContext
 
 # The recipe in meta-avocado-sbom. EXCLUDE_FROM_WORLD, so naming it explicitly
 # is the only way to reach it.

@@ -50,7 +50,8 @@ if TYPE_CHECKING:
 
 from bakar import diagnostics, elfscan
 from bakar.config import BuildConfig
-from bakar.diagnostics import _VERNEED_HEADER, BuildtoolsToolchain, CheckResult, Severity, Status
+from bakar.diagnostics import BuildtoolsToolchain, CheckResult, Severity, Status
+from bakar.elfscan import _VERNEED_HEADER
 
 _OBJDUMP = shutil.which("objdump")
 requires_objdump = pytest.mark.skipif(_OBJDUMP is None, reason="the scan needs objdump to read ELF fixtures")

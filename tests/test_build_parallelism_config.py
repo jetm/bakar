@@ -436,7 +436,7 @@ def test_resolve_parallelism_sccache_dist_uses_cluster_cpus(tmp_path: Path, monk
     cluster cpu count (the container literal feeds the whole cluster), not nproc."""
     import types
 
-    from bakar import diagnostics
+    from bakar import probes
     from bakar.steps import kas_build
 
     _clear_parallelism_env(monkeypatch)
@@ -446,7 +446,7 @@ def test_resolve_parallelism_sccache_dist_uses_cluster_cpus(tmp_path: Path, monk
         "probe_cluster",
         lambda url: types.SimpleNamespace(
             reachable=True,
-            capacity=diagnostics.ClusterCapacity(num_servers=2, num_cpus=64, in_progress=0),
+            capacity=probes.ClusterCapacity(num_servers=2, num_cpus=64, in_progress=0),
             error=None,
         ),
     )
@@ -463,7 +463,7 @@ def test_inject_literal_parallelism_bakes_cluster_sized_pm(tmp_path: Path, monke
     container path that the BAKAR_* env var cannot reach (kas scrubs it)."""
     import types
 
-    from bakar import diagnostics
+    from bakar import probes
     from bakar.steps import kas_build
 
     _clear_parallelism_env(monkeypatch)
@@ -473,7 +473,7 @@ def test_inject_literal_parallelism_bakes_cluster_sized_pm(tmp_path: Path, monke
         "probe_cluster",
         lambda url: types.SimpleNamespace(
             reachable=True,
-            capacity=diagnostics.ClusterCapacity(num_servers=2, num_cpus=64, in_progress=0),
+            capacity=probes.ClusterCapacity(num_servers=2, num_cpus=64, in_progress=0),
             error=None,
         ),
     )

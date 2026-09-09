@@ -23,7 +23,6 @@ from bakar.diagnostics import (
     CheckResult,
     Severity,
     Status,
-    _build_daemon_report_from_stats,
     _read_sysctl,
     any_blocking_failure,
     check_bbsetup_config_sources,
@@ -45,6 +44,7 @@ from bakar.diagnostics import (
     run_all,
     split_host_port,
 )
+from bakar.probes import _build_daemon_report_from_stats
 
 pytestmark = pytest.mark.unit
 

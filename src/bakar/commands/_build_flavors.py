@@ -40,7 +40,12 @@ from bakar.commands._helpers import (
     global_sccache_dist_override,
     split_kas_yaml_arg,
 )
-from bakar.commands._post_build import _CveRequest
+
+# Runtime, not TYPE_CHECKING-guarded: ``_BuildCtx`` is annotated with the two
+# request types, and guarding them narrows ``get_type_hints`` against the
+# pre-split ``build.py``. ``_CveRequest`` already makes this a runtime import,
+# so the guard deferred nothing.
+from bakar.commands._post_build import _CveRequest, _FeedRequest, _SbomRequest
 from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, compose_preset_output_path, resolve
 from bakar.kas import translate_bbsetup_config, write_bbsetup_yaml
 from bakar.preset_config import load_presets
@@ -51,7 +56,6 @@ from bakar.workspace import detect
 
 if TYPE_CHECKING:
     from bakar.bsp_model import BspModel
-    from bakar.commands._post_build import _FeedRequest, _SbomRequest
 
 
 def _preset_completer(incomplete: str) -> list[str]:
