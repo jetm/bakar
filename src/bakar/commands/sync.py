@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
@@ -88,6 +89,29 @@ def _run_sync_body(cfg, log, *, bsp, family, effective_show_layers) -> None:
         _print_layer_hashes(cfg)
 
 
+@dataclass(frozen=True)
+class _SyncCtx:
+    """The ten ``sync`` CLI parameters, packed for :func:`_sync_impl`.
+
+    Typer cannot bind a dataclass-annotated parameter, so the command keeps
+    its ten annotated parameters and packs them here in its body. Field names
+    match the parameter names one-for-one; a transposition is caught by
+    ``test_sync_ctx_carries_every_flag_unchanged`` and by the per-flag
+    ``test_sync_ctx_sets_only_the_flag_passed``.
+    """
+
+    machine: str | None
+    distro: str | None
+    image: str | None
+    manifest: str | None
+    branch: str | None
+    clean: bool
+    workspace: Path | None
+    show_layers: bool
+    dry_run: bool
+    dry_run_script: str | None
+
+
 @app.command()
 def sync(
     machine: Annotated[str | None, typer.Option("--machine", "-m")] = None,
@@ -141,26 +165,56 @@ def sync(
     bitbake-setup workspaces are initialized externally via
     ``bitbake-setup init``; ``bakar sync`` fails fast for them.
     """
-    if _bbsetup_workspace(workspace) is not None:
+    _sync_impl(
+        _SyncCtx(
+            machine=machine,
+            distro=distro,
+            image=image,
+            manifest=manifest,
+            branch=branch,
+            clean=clean,
+            workspace=workspace,
+            show_layers=show_layers,
+            dry_run=dry_run,
+            dry_run_script=dry_run_script,
+        )
+    )
+
+
+def _sync_impl(ctx: _SyncCtx) -> None:
+    """Run the sync described by ``ctx``.
+
+    Split out of :func:`sync` so the command holds only its ten annotated
+    Typer parameters. Kept in this module because the tests patch
+    ``bakar.commands.sync.detect``, which the helpers below read as a bare
+    name - a bare-name read resolves in the module where the reader lives.
+    """
+    if _bbsetup_workspace(ctx.workspace) is not None:
         console.print(
             "[red]bitbake-setup workspaces are initialized with `bitbake-setup init`[/] - run that first, then retry"
         )
         raise typer.Exit(code=2)
 
-    family, bsp = _dispatch_bsp(manifest)
-    ws = workspace or _workspace_from_cwd()
+    family, bsp = _dispatch_bsp(ctx.manifest)
+    ws = ctx.workspace or _workspace_from_cwd()
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
-        spec=BSPSpec(machine=machine, distro=distro, image=image, manifest=manifest, repo_branch=branch),
+        spec=BSPSpec(
+            machine=ctx.machine,
+            distro=ctx.distro,
+            image=ctx.image,
+            manifest=ctx.manifest,
+            repo_branch=ctx.branch,
+        ),
         user_config=_state._USER_CONFIG,
     )
 
-    if dry_run:
+    if ctx.dry_run:
         _print_dry_run(cfg, family)
         raise typer.Exit(code=0)
 
-    if dry_run_script is not None:
+    if ctx.dry_run_script is not None:
         from bakar.steps.kas_build import generate_dry_run_script
 
         overlay_source = _overlay_for(bsp)
@@ -176,20 +230,20 @@ def sync(
         except ValueError as exc:
             console.print(f"[red]Cannot generate dry-run script:[/] {exc}")
             raise typer.Exit(code=2) from None
-        if dry_run_script == "-":
+        if ctx.dry_run_script == "-":
             sys.stdout.write(script)
         else:
-            Path(dry_run_script).write_text(script, encoding="utf-8")
+            Path(ctx.dry_run_script).write_text(script, encoding="utf-8")
         raise typer.Exit(code=0)
 
     if "KAS_CONTAINER_IMAGE" not in os.environ and cfg.kas_container_image != DEFAULT_CONTAINER_IMAGE:
         console.print(f"[dim]container image from config: {cfg.kas_container_image}[/]")
 
-    effective_show_layers = show_layers or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_hashes)
+    effective_show_layers = ctx.show_layers or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_hashes)
 
     console.print(f"[bold]::[/] bakar sync [{family}] manifest={cfg.manifest}")
 
-    if clean:
+    if ctx.clean:
         _clean_build_dir(cfg)
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)

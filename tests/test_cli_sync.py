@@ -315,3 +315,114 @@ def test_sync_dry_run_without_script_writes_no_file(
     after = set((fake_workspace).rglob("*.sh"))
     assert result.exit_code == 0, result.output
     assert after == before, f"unexpected script file(s) written: {after - before}"
+
+
+def test_sync_ctx_carries_every_flag_unchanged(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every _SyncCtx field equals the flag ``sync()`` was invoked with.
+
+    Packing ten CLI parameters into a context is wrong in a way nothing else
+    here sees: transpose two fields or drop one and the command still runs,
+    ``--help`` is unchanged, and every other test stays green. This one
+    captures the context object and compares it field-by-field against a flag
+    set where no value is the default."""
+    import dataclasses
+
+    import bakar.commands.sync as sync_mod
+
+    ws_dir = tmp_path / "ctx-workspace"
+    ws_dir.mkdir()
+
+    captured: list[object] = []
+    monkeypatch.setattr(sync_mod, "_sync_impl", captured.append)
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "--machine",
+            "ctx-machine",
+            "--distro",
+            "ctx-distro",
+            "--image",
+            "ctx-image",
+            "--manifest",
+            "ctx-manifest.xml",
+            "--branch",
+            "ctx-branch",
+            "--clean",
+            "--workspace",
+            str(ws_dir),
+            "--show-layers",
+            "--dry-run",
+            "--dry-run-script",
+            "ctx-script.sh",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(captured) == 1, f"expected one ctx, got {len(captured)}"
+    ctx = captured[0]
+
+    expected = {
+        "machine": "ctx-machine",
+        "distro": "ctx-distro",
+        "image": "ctx-image",
+        "manifest": "ctx-manifest.xml",
+        "branch": "ctx-branch",
+        "clean": True,
+        "workspace": ws_dir.resolve(),
+        "show_layers": True,
+        "dry_run": True,
+        "dry_run_script": "ctx-script.sh",
+    }
+    for field, want in expected.items():
+        assert getattr(ctx, field) == want, f"_SyncCtx.{field}: expected {want!r}, got {getattr(ctx, field)!r}"
+    # Guards against a field being added to the dataclass but left unasserted.
+    assert {f.name for f in dataclasses.fields(ctx)} == set(expected)
+
+
+@pytest.mark.parametrize(
+    ("flag", "field"),
+    [
+        ("--clean", "clean"),
+        ("--show-layers", "show_layers"),
+        ("--dry-run", "dry_run"),
+    ],
+)
+def test_sync_ctx_sets_only_the_flag_passed(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    flag: str,
+    field: str,
+) -> None:
+    """One boolean at a time: the named field is set and its neighbours are not.
+
+    The all-flags test above gives every boolean the same value, so a
+    transposition between two of them is invisible to it. Passing exactly one
+    boolean flag per case makes the values differ, which is what catches a
+    swapped pair."""
+    import dataclasses
+
+    import bakar.commands.sync as sync_mod
+
+    bool_fields = [f.name for f in dataclasses.fields(sync_mod._SyncCtx) if f.type == "bool"]
+    assert field in bool_fields, f"{field} is not a bool field of _SyncCtx"
+
+    captured: list[object] = []
+    monkeypatch.setattr(sync_mod, "_sync_impl", captured.append)
+
+    result = runner.invoke(app, ["sync", flag])
+
+    assert result.exit_code == 0, result.output
+    assert len(captured) == 1, f"expected one ctx, got {len(captured)}"
+    ctx = captured[0]
+
+    for name in bool_fields:
+        want = name == field
+        assert getattr(ctx, name) is want, (
+            f"passing {flag} should set only {field}: _SyncCtx.{name} is {getattr(ctx, name)!r}"
+        )
