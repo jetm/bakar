@@ -101,11 +101,16 @@ from bakar.output_mode import OutputMode, resolve_output_mode
 from bakar.preset_config import load_presets
 
 # step_override and step_qcom_build are read only by the flavor dispatchers in
-# _build_flavors now. They stay because tests/test_cli_build_extended.py,
-# tests/test_build_manifest_show_layers.py, tests/test_qcom_build.py and
-# tests/test_cli_user_config.py patch `bakar.commands.build.step_override.apply`
-# and `.step_qcom_build.run` - ATTRIBUTE patches, which mutate the shared step
-# module and are therefore seen by the dispatchers wherever they live.
+# _build_flavors now. They stay because several tests patch
+# `bakar.commands.build.step_override.apply` and `.step_qcom_build.run` -
+# ATTRIBUTE patches, which mutate the shared step module and are therefore seen
+# by the dispatchers wherever they live.
+#
+# Of the files that patch this way, only tests/test_build_manifest_show_layers.py
+# was measured to FAIL when the seam is broken; the sites in
+# test_cli_build_extended.py, test_qcom_build.py and test_cli_user_config.py
+# patch it but pass either way. Do not read the number of patch sites as the
+# number of tests holding this - it is one.
 #
 # The NAME form no longer binds. Patching `bakar.commands.build.step_override`
 # itself rebinds a global nothing reads: _run_manifest_build lives in

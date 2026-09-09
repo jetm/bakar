@@ -176,14 +176,23 @@ def _filter_image_sbom(cfg, request: _SbomRequest) -> list[Path]:
     out_dir = cfg.resolved_tmpdir / "deploy" / "avocado-sbom"
     cmd, env = sbom_publish.filter_command(sbom_publish.sbom_lib_dir(request.workspace), images, out_dir)
     try:
-        # No shell and no injection surface: filter_command is typed
-        # ``-> tuple[list[str], dict[str, str]]`` and returns an argv LIST, which
-        # subprocess.run executes directly rather than through /bin/sh. argv[0] is
-        # sys.executable or the literal "python3" and argv[1:3] are constants, so
-        # the only caller-derived elements are the two paths - and they are
-        # separate argv members, which cannot open a second command however they
-        # are spelled. The rule fires on any non-literal first argument and does
-        # not distinguish the list form from a shell string.
+        # No shell: filter_command is typed ``-> tuple[list[str], dict[str, str]]``
+        # and returns an argv LIST, which subprocess.run executes directly rather
+        # than through /bin/sh. argv[0] is always the literal "python3"
+        # (sbom_publish.py builds a sys.executable ternary and then overwrites it
+        # unconditionally, so the ternary is dead), argv[1:3] are constants, and
+        # the two caller-derived paths are separate argv members that cannot open
+        # a second command however they are spelled. The rule fires on any
+        # non-literal first argument and does not distinguish list from shell.
+        #
+        # ARGV is not the whole surface, and the rule does not look at the rest.
+        # filter_command also derives env["PYTHONPATH"] from request.workspace, so
+        # the MODULE this runs comes from a caller-supplied directory: executing
+        # the workspace's own publication filter is the design, not an oversight.
+        # That is a trust decision about the workspace, not an injection - the
+        # operator who passes --workspace can already run python directly - but it
+        # is the part a reader auditing "does anything caller-controlled reach
+        # execution here" needs, and argv-list form says nothing about it.
         #
         # The directive must stay on the line directly above the call: opengrep
         # only associates it with the line it precedes, so moving the prose

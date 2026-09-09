@@ -116,10 +116,26 @@ RELOCATED_SYMBOLS: list[tuple[str, str]] = [
     ("bakar.diagnostics", "ClusterCapacity"),
     ("bakar.diagnostics", "_parse_cluster_status"),
     ("bakar.diagnostics", "_build_daemon_report_from_stats"),
+    # The probes took the last module-level reader of build_stop with them, so
+    # diagnostics dropped the binding. Pinned because a re-export would silently
+    # revive the stale patch path: tests/test_diagnostics.py patches
+    # bakar.probes.build_stop.detect_runtime, and the bakar.diagnostics spelling
+    # it replaced would start resolving again while intercepting nothing.
+    ("bakar.diagnostics", "build_stop"),
 ]
 
-# Same contract, for names that have moved off ``bakar.commands.build``.
-RELOCATED_BUILD_SYMBOLS: list[tuple[str, str]] = []
+# Same contract, for names that have moved off ``bakar.commands.build``. Not
+# empty any more: the post-review pass dropped two names from that module's
+# re-export block, and a drop without a pin is exactly the surplus re-export it
+# removed, free to come back unopposed.
+RELOCATED_BUILD_SYMBOLS: list[tuple[str, str]] = [
+    # Re-exported for a build_mod attribute access that never existed; its
+    # re-export and the assertion pinning it landed in the same commit.
+    ("bakar.commands.build", "_CVE_REPORT_TARGET"),
+    # Retained so build_mod.subprocess resolved for three sbom patch sites. They
+    # patch _post_build.subprocess now - the module that actually calls it.
+    ("bakar.commands.build", "subprocess"),
+]
 
 # The INVERSE contract: names that moved off ``bakar.commands.build`` but must
 # stay reachable through it. Tests reach them as module attributes
@@ -299,26 +315,38 @@ def test_build_re_exported_surface_is_intact(name: str) -> None:
     assert hasattr(import_module("bakar.commands.build"), name), f"bakar.commands.build lost {name}"
 
 
-@pytest.mark.parametrize("name", ["step_override", "step_qcom_build", "step_kas"])
-def test_step_module_aliases_are_the_same_object(name: str) -> None:
-    """The step aliases on ``build`` and ``_build_flavors`` must be one object.
+def test_build_flavors_reaches_steps_through_the_module_object() -> None:
+    """``_build_flavors`` must import step MODULES, never their members.
 
     Several tests patch ``bakar.commands.build.step_override.apply`` and expect
-    the dispatchers in ``_build_flavors`` to see it. That works only because both
-    names bind the SAME module object, so the attribute write lands once and is
-    visible from either path. Identity is the whole mechanism, and nothing else
-    asserts it.
+    the dispatchers in ``_build_flavors`` to see it. That works because the
+    attribute write lands on the shared ``bakar.steps.*`` module object, which
+    both modules merely alias - so the patch is visible wherever the call is
+    made from.
 
-    The NAME form is a different matter and does not work: rebinding
-    ``bakar.commands.build.step_override`` itself only replaces a global that no
-    longer has a reader, because the dispatchers moved and resolve the name in
-    their own module. It resolves and does nothing, so the failure is silent -
-    which is why the attribute-patch seam is worth pinning rather than assuming.
+    A member import breaks it silently. ``from bakar.steps.bitbake_override
+    import apply`` binds the FUNCTION at import time, and the dispatcher then
+    calls that binding: the patch still writes to the module attribute, still
+    resolves, and reaches nothing. The real step runs against the test's
+    workspace and the assertion passes.
+
+    Asserting the import FORM is what makes this falsifiable. An earlier version
+    of this test compared ``build.step_override is _build_flavors.step_override``
+    and could not fail: both names come from ``sys.modules`` by construction, so
+    the identity holds even after a dispatcher has been rewritten to bypass them
+    entirely. Applying exactly that rewrite left all three of its cases green.
     """
-    build = import_module("bakar.commands.build")
-    flavors = import_module("bakar.commands._build_flavors")
+    source = inspect.getsource(import_module("bakar.commands._build_flavors"))
 
-    assert getattr(build, name) is getattr(flavors, name)
+    member_imports = [
+        line.strip() for line in source.splitlines() if line.startswith("from bakar.steps.") and " import " in line
+    ]
+
+    assert not member_imports, (
+        "_build_flavors must alias step MODULES (from bakar.steps import x as step_x), "
+        f"not import their members - these bind at import time and defeat the "
+        f"attribute-patch seam: {member_imports}"
+    )
 
 
 def test_patching_an_absent_attribute_raises(monkeypatch: pytest.MonkeyPatch) -> None:

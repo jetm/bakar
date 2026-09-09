@@ -151,6 +151,14 @@ paths = ["src/bakar/build_stop.py"]
 # import makes `import bakar.probes` die on a partially initialized module;
 # test_extracted_module_imports_first_in_a_fresh_interpreter catches it.
 #
+# The cycle is not the only reason, and on its own it is removable: is_path_on_nfs
+# is defined in bakar.mounts, which imports nothing from bakar, so importing it
+# from there at module level closes no cycle and every module still imports
+# clean. The non-removable reason is that four tests patch the string
+# "bakar.diagnostics.is_path_on_nfs" and depend on call-time resolution through
+# that path. See build_stop.lock_mutation_guard's docstring, which carries the
+# whole argument.
+#
 # This comment used to describe the cycle as diagnostics -> build_stop, via a
 # function called check_container_runtime. That function has never existed, and
 # diagnostics stopped importing build_stop at module level when the probes moved

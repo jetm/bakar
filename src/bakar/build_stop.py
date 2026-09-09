@@ -1005,13 +1005,25 @@ def lock_mutation_guard(cfg: BuildConfig) -> LockRefusal | None:
        local) -> ``None``.
 
     Reaches :func:`bakar.diagnostics.is_path_on_nfs` via a DEFERRED import
-    inside this function body, never at module level. The cycle it breaks is
-    ``probes -> build_stop -> diagnostics -> probes``: :mod:`bakar.probes`
-    imports this module at module level (``probe_build_daemon`` calls
-    :func:`detect_runtime`), and ``diagnostics`` imports ``probes`` at module
-    level in turn. Hoisting this import makes ``import bakar.probes`` fail with
-    a partially initialized module; the other two edges are load-bearing and
-    must not be deferred to "fix" it - only this direction defers.
+    inside this function body, never at module level. Two separate reasons, and
+    only the second survives a determined tidy-up.
+
+    The cycle: ``probes -> build_stop -> diagnostics -> probes``.
+    :mod:`bakar.probes` imports this module at module level
+    (``probe_build_daemon`` calls :func:`detect_runtime`) and ``diagnostics``
+    imports ``probes`` at module level in turn, so hoisting this import as
+    written makes ``import bakar.probes`` fail on a partially initialized module.
+
+    That reason is removable and must not be relied on alone. ``is_path_on_nfs``
+    is DEFINED in :mod:`bakar.mounts`, which imports nothing from ``bakar``, so
+    ``from bakar.mounts import is_path_on_nfs`` at module level closes no cycle
+    and every module still imports clean. **Do not make that change.** Four
+    tests patch the string ``"bakar.diagnostics.is_path_on_nfs"``
+    (tests/test_build_stop.py) and rely on this deferred import resolving the
+    attribute at CALL time. Retarget the import at the defining module and those
+    four patches keep resolving, stop intercepting, and leave this guard reading
+    the developer's real ``/proc/mounts`` - the same silent seam
+    :func:`bakar.mounts.is_path_on_nfs` documents for ``_mount_entry_in``.
     """
     from bakar.diagnostics import is_path_on_nfs
 

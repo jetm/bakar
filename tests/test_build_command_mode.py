@@ -60,11 +60,17 @@ def test_every_build_site_threads_the_mode() -> None:
     # exactly the sites this test exists to hold.
     #
     # Read ALL FOUR modules carved out of the original build.py, not just the two
-    # that construct anything today. _post_build already holds a KasBuildContext
-    # field and drives a second bitbake invocation, which makes it the likeliest
-    # home for a future construction; scoped to two files, one added there would
-    # default to RICH and the shared console with these counts unchanged. The two
-    # extra sources contribute zero, so the numbers below are unaffected.
+    # that construct anything today - _post_build and _build_options contribute
+    # zero to every count below, so widening the source set does not move the
+    # numbers.
+    #
+    # Know what this does NOT catch. The counts match four exact SPELLINGS, so a
+    # construction written any other way escapes them wherever it lives.
+    # _post_build derives its context with replace(request.kas_ctx, ...) rather
+    # than calling KasBuildContext(, and RunLogger(runs_dir=cfg.runs_dir matches
+    # one kwarg order only. Widening the file set closed a file-scope gap; it did
+    # not turn a literal count into a semantic one, and a future ad-hoc context
+    # spelled differently still lands on the shared console unremarked.
     src = "".join(Path(mod.__file__).read_text(encoding="utf-8") for mod in (build, flavors, post_build, build_options))
     # Exactly one KasBuildContext(/RunLogger(runs_dir=cfg.runs_dir construction may
     # exist across both modules: the one inside the factory below. A stray ad hoc
