@@ -17,6 +17,7 @@ import shlex
 import shutil
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -627,6 +628,22 @@ def _run_full_reset(
     _log("cold-reset complete")
 
 
+@dataclass(frozen=True)
+class _CleanCacheCtx:
+    """CLI flags for one ``clean-cache`` invocation."""
+
+    older_than: int
+    sstate_dir: Path | None
+    ccache_dir: Path | None
+    build_dir: Path | None
+    full: bool
+    sstate: bool
+    ccache: bool
+    yes: bool
+    dry_run: bool
+    force: bool
+
+
 @app.command(name="clean-cache")
 def clean_cache(
     older_than: Annotated[
@@ -696,15 +713,40 @@ def clean_cache(
     it) unless --force is given, and verifies the sccache-dist server is serving
     again before returning.
     """
-    if full:
+    _clean_cache_impl(
+        _CleanCacheCtx(
+            older_than=older_than,
+            sstate_dir=sstate_dir,
+            ccache_dir=ccache_dir,
+            build_dir=build_dir,
+            full=full,
+            sstate=sstate,
+            ccache=ccache,
+            yes=yes,
+            dry_run=dry_run,
+            force=force,
+        )
+    )
+
+
+def _clean_cache_impl(ctx: _CleanCacheCtx) -> None:
+    """Body of ``clean-cache``, kept in this module so bare-name patches reach it."""
+    if ctx.full:
         console.print(
             "[yellow]--full:[/] total cold-reset; the age-based prune options "
             "(--older-than / --sstate / --ccache) are ignored.",
         )
-        _run_full_reset(sstate_dir, build_dir, ccache_dir, yes, dry_run, force)
+        _run_full_reset(
+            sstate_override=ctx.sstate_dir,
+            build_dir_override=ctx.build_dir,
+            ccache_override=ctx.ccache_dir,
+            yes=ctx.yes,
+            dry_run=ctx.dry_run,
+            force=ctx.force,
+        )
         return
 
-    if not sstate and not ccache:
+    if not ctx.sstate and not ctx.ccache:
         console.print("[yellow]Nothing to do[/] (both --no-sstate and --no-ccache).")
         raise typer.Exit
 
@@ -713,8 +755,8 @@ def clean_cache(
     sstate_effective: Path | None = None
     stale: list[Path] = []
     sstate_total = 0
-    if sstate:
-        sstate_effective = _resolve_sstate_dir(sstate_dir)
+    if ctx.sstate:
+        sstate_effective = _resolve_sstate_dir(ctx.sstate_dir)
         if sstate_effective is None:
             console.print(
                 "[red]SSTATE_DIR not set.[/] Export it as an env var or add "
@@ -736,25 +778,25 @@ def clean_cache(
                 )
                 time_label = "mtime (creation date)"
             console.print(f"Time basis : {time_label}")
-            console.print(f"Threshold  : {older_than} days")
+            console.print(f"Threshold  : {ctx.older_than} days")
             stat_attr = "st_atime" if use_atime else "st_mtime"
-            cutoff_ts = time.time() - older_than * 86_400
+            cutoff_ts = time.time() - ctx.older_than * 86_400
             stale, sstate_total = _scan_stale_files(sstate_effective, stat_attr, cutoff_ts)
             if stale:
                 console.print(
-                    f"sstate     : [bold]{len(stale):,}[/] files older than {older_than} days, "
+                    f"sstate     : [bold]{len(stale):,}[/] files older than {ctx.older_than} days, "
                     f"totalling [bold]{_fmt_size(sstate_total)}[/]"
                 )
             else:
-                console.print(f"[green]sstate: Nothing to remove.[/] No files older than {older_than} days.")
+                console.print(f"[green]sstate: Nothing to remove.[/] No files older than {ctx.older_than} days.")
             sstate_ok = True
 
     # --- plan ccache ---
     ccache_ok = False
     ccache_effective: Path | None = None
     ccache_before: int | None = None
-    if ccache:
-        ccache_effective = _resolve_ccache_dir(ccache_dir)
+    if ctx.ccache:
+        ccache_effective = _resolve_ccache_dir(ctx.ccache_dir)
         if ccache_effective is None:
             console.print(
                 "[yellow]ccache:[/] no cache directory (not in a workspace and no "
@@ -773,21 +815,21 @@ def clean_cache(
     if not sstate_ok and not ccache_ok:
         raise typer.Exit(code=2)
 
-    if dry_run:
+    if ctx.dry_run:
         console.print()
-        console.print(f"Dry run - no changes made (would evict ccache entries older than {older_than} days).")
+        console.print(f"Dry run - no changes made (would evict ccache entries older than {ctx.older_than} days).")
         return
 
     actions: list[str] = []
     if sstate_ok and stale:
         actions.append(f"delete {len(stale):,} sstate files ({_fmt_size(sstate_total)})")
     if ccache_ok:
-        actions.append(f"evict ccache entries older than {older_than} days")
+        actions.append(f"evict ccache entries older than {ctx.older_than} days")
     if not actions:
         return
 
     console.print()
-    if not yes:
+    if not ctx.yes:
         confirmed = typer.confirm("Proceed to " + " and ".join(actions) + "?")
         if not confirmed:
             console.print("Aborted.")
@@ -800,14 +842,14 @@ def clean_cache(
             console.print(f"sstate: removed {empty_dirs} empty directories")
 
     if ccache_ok and ccache_effective is not None:
-        if _ccache_evict(ccache_effective, older_than):
+        if _ccache_evict(ccache_effective, ctx.older_than):
             after = _ccache_size_kib(ccache_effective)
             if ccache_before is not None and after is not None:
                 freed_str = _fmt_size(max(0, ccache_before - after) * 1024)
                 console.print(
-                    f"[green]ccache: evicted[/] entries older than {older_than} days ([bold]{freed_str}[/] freed)"
+                    f"[green]ccache: evicted[/] entries older than {ctx.older_than} days ([bold]{freed_str}[/] freed)"
                 )
             else:
-                console.print(f"[green]ccache: evicted[/] entries older than {older_than} days")
+                console.print(f"[green]ccache: evicted[/] entries older than {ctx.older_than} days")
         else:
             console.print("[red]ccache: eviction failed[/] (see ccache output)")

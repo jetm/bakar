@@ -522,3 +522,104 @@ def test_full_verify_distribution_warns_when_no_server(tmp_path: Path, monkeypat
 
     assert result.exit_code == 0, result.output
     assert "degraded" in result.output
+
+
+def test_clean_cache_ctx_carries_every_flag_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every _CleanCacheCtx field equals the flag clean-cache was invoked with.
+
+    The rest of this file asserts on printed output and filesystem effects, none
+    of which would notice a field transposed or dropped while packing the ten
+    parameters into the context. This one captures the context object itself and
+    compares it field-by-field against a flag set where no value is the default.
+    """
+    import dataclasses
+
+    import bakar.commands.clean_cache as cc
+
+    captured: list[cc._CleanCacheCtx] = []
+    monkeypatch.setattr(cc, "_clean_cache_impl", captured.append)
+
+    sstate = tmp_path / "ctx-sstate"
+    ccache = tmp_path / "ctx-ccache"
+    build = tmp_path / "ctx-build"
+
+    result = runner.invoke(
+        app,
+        [
+            "clean-cache",
+            "--older-than",
+            "7",
+            "--sstate-dir",
+            str(sstate),
+            "--ccache-dir",
+            str(ccache),
+            "--build-dir",
+            str(build),
+            "--full",
+            "--no-sstate",
+            "--no-ccache",
+            "--yes",
+            "--dry-run",
+            "--force",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(captured) == 1, f"expected one ctx, got {len(captured)}"
+
+    expected = {
+        "older_than": 7,
+        "sstate_dir": sstate,
+        "ccache_dir": ccache,
+        "build_dir": build,
+        "full": True,
+        "sstate": False,
+        "ccache": False,
+        "yes": True,
+        "dry_run": True,
+        "force": True,
+    }
+    ctx = captured[0]
+    for field, want in expected.items():
+        got = getattr(ctx, field)
+        assert got == want, f"_CleanCacheCtx.{field}: expected {want!r}, got {got!r}"
+    # Guards against a field being added to the dataclass but left unasserted.
+    assert {f.name for f in dataclasses.fields(ctx)} == set(expected)
+
+
+@pytest.mark.parametrize(
+    ("flag", "field"),
+    [
+        ("--full", "full"),
+        ("--no-sstate", "sstate"),
+        ("--no-ccache", "ccache"),
+        ("--yes", "yes"),
+        ("--dry-run", "dry_run"),
+        ("--force", "force"),
+    ],
+)
+def test_clean_cache_ctx_boolean_flags_are_not_transposed(
+    flag: str,
+    field: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One boolean flag at a time moves exactly one _CleanCacheCtx field.
+
+    The all-flipped test above cannot catch a transposition between two booleans,
+    because flipping every one of them off its default gives them all the same
+    value. Setting one flag per invocation pins each field to its own flag.
+    """
+    import bakar.commands.clean_cache as cc
+
+    captured: list[cc._CleanCacheCtx] = []
+    monkeypatch.setattr(cc, "_clean_cache_impl", captured.append)
+
+    result = runner.invoke(app, ["clean-cache", flag])
+    assert result.exit_code == 0, result.output
+
+    defaults = {"full": False, "sstate": True, "ccache": True, "yes": False, "dry_run": False, "force": False}
+    expected = {**defaults, field: not defaults[field]}
+    ctx = captured[0]
+    for name, want in expected.items():
+        got = getattr(ctx, name)
+        assert got == want, f"{flag} -> _CleanCacheCtx.{name}: expected {want!r}, got {got!r}"
