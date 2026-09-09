@@ -77,7 +77,11 @@ def _parse_show_recipes(text: str) -> dict[str, str]:
         # Lines inside a recipe block are indented
         if in_recipe_block and line.startswith((" ", "\t")) and stripped:
             parts = stripped.split()
-            if parts and not result["layer"]:
+            # No emptiness guard on result["layer"]: the break below ends the
+            # loop at the first layer line reached, so the field is always still
+            # empty here. Testing it reads as if the loop scanned on for a first
+            # hit, which it has not done since the break was added.
+            if parts:
                 result["layer"] = parts[0]
                 result["version"] = parts[1] if len(parts) > 1 else ""
             break  # first layer entry is the preferred provider

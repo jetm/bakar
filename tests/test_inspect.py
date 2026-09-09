@@ -488,3 +488,46 @@ def test_machine_flag_accepted(runner: _CliRunner, nxp_workspace: Path) -> None:
         )
 
     assert result.exit_code == 0, result.output
+
+
+# --- _parse_show_recipes -----------------------------------------------------
+#
+# The parser stops at the FIRST layer line it reaches, which is what makes an
+# "only set this if unset" guard on result["layer"] dead code. These tests pin
+# that invariant directly, so moving the break makes the guard question live
+# again with a failing test rather than silently.
+
+
+def test_show_recipes_takes_the_first_layer_and_its_version() -> None:
+    from bakar.commands.inspect import _parse_show_recipes
+
+    parsed = _parse_show_recipes("busybox:\n  meta-oe        1.36.1\n")
+
+    assert parsed["layer"] == "meta-oe"
+    assert parsed["version"] == "1.36.1"
+
+
+def test_show_recipes_ignores_layers_after_the_first() -> None:
+    """The first entry is the preferred provider; later ones must not overwrite it."""
+    from bakar.commands.inspect import _parse_show_recipes
+
+    parsed = _parse_show_recipes(
+        "busybox:\n  meta-oe        1.36.1\n  meta-other     1.35.0\ncoreutils:\n  meta-third     9.4\n"
+    )
+
+    assert parsed["layer"] == "meta-oe"
+    assert parsed["version"] == "1.36.1"
+
+
+def test_show_recipes_layer_without_a_version_yields_empty_version() -> None:
+    from bakar.commands.inspect import _parse_show_recipes
+
+    assert _parse_show_recipes("busybox:\n  meta-oe\n")["version"] == ""
+
+
+def test_show_recipes_with_no_recipe_block_returns_empty_fields() -> None:
+    from bakar.commands.inspect import _parse_show_recipes
+
+    parsed = _parse_show_recipes("=== Available recipes: ===\n")
+
+    assert parsed == {"layer": "", "version": "", "recipe_file": "", "bbappends": ""}
