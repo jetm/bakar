@@ -24,7 +24,9 @@ nothing.
 
 from __future__ import annotations
 
+import inspect
 from importlib import import_module
+from typing import get_type_hints
 from unittest import mock
 
 import pytest
@@ -192,3 +194,20 @@ def test_patching_an_absent_attribute_raises(monkeypatch: pytest.MonkeyPatch) ->
 
     with pytest.raises(AttributeError):
         mock.patch(f"bakar.diagnostics.{_ABSENT_ATTR}").start()
+
+
+def test_build_annotations_resolve_at_runtime() -> None:
+    """Every ``build()`` annotation must be resolvable outside TYPE_CHECKING.
+
+    Typer reads a command signature through ``inspect.signature(eval_str=True)``,
+    so an alias hidden behind ``if TYPE_CHECKING:`` raises
+    ``RuntimeError: Type not yet supported`` when the command is built. Scoped to
+    ``build`` on purpose: ``_post_build._CveRequest`` is annotated with a
+    deliberately TYPE_CHECKING-guarded ``KasBuildContext`` and would fail a
+    package-wide sweep for an unrelated reason.
+    """
+    build = import_module("bakar.commands.build").build
+
+    hints = get_type_hints(build, include_extras=True)
+
+    assert set(inspect.signature(build).parameters) <= set(hints)

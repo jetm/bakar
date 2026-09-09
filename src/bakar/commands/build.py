@@ -39,6 +39,29 @@ from bakar.commands._build_flavors import (
     _run_manifest_build,
     _run_single_preset_release,
 )
+from bakar.commands._build_options import (
+    BranchOption,
+    CleanOption,
+    CveOption,
+    DistroOption,
+    DryRunOption,
+    DryRunScriptOption,
+    FeedChannelOption,
+    FeedOption,
+    FeedReleaseOption,
+    ImageOption,
+    KasYamlArgument,
+    KeepGoingOption,
+    MachineOption,
+    ManifestOption,
+    OnOption,
+    SbomOption,
+    ShowLayersOption,
+    SkipSyncOption,
+    SstateMirrorOption,
+    TargetOption,
+    YesOption,
+)
 from bakar.commands._helpers import (
     WorkspaceOption,
     _bbsetup_workspace,
@@ -202,82 +225,25 @@ def _finish_build(
 
 @app.command()
 def build(
-    kas_yaml: Annotated[
-        str | None,
-        typer.Argument(
-            help="Optional kas YAML (BYO form). Colon-separated overlays are supported: "
-            "main.yml:overlay.yml. When set, sync/setup-env/gen-kas are skipped.",
-        ),
-    ] = None,
-    machine: Annotated[str | None, typer.Option("--machine", "-m", help="e.g. imx8mp-var-dart, am62x-var-som")] = None,
-    distro: Annotated[str | None, typer.Option("--distro", "-d", help="e.g. fsl-imx-xwayland, arago")] = None,
-    image: Annotated[
-        str | None,
-        typer.Option("--image", "-i", help="e.g. core-image-minimal, var-thin-image"),
-    ] = None,
-    target: Annotated[
-        str | None,
-        typer.Option(
-            "--target",
-            "-t",
-            help="kas target override (kas build --target <TARGET>), e.g. avocado-complete; "
-            "unset builds the YAML's own target",
-        ),
-    ] = None,
-    manifest: Annotated[
-        str | None,
-        typer.Option(
-            "--manifest",
-            "-f",
-            help="manifest filename (NXP imx-*.xml or TI processor-sdk-*-config_var<N>.txt)",
-        ),
-    ] = None,
-    branch: Annotated[
-        str | None,
-        typer.Option(
-            "--branch",
-            "-b",
-            help="branch override; inferred from manifest filename when omitted",
-        ),
-    ] = None,
-    skip_sync: Annotated[
-        bool, typer.Option("--skip-sync", help="Skip sync (repo init+sync for NXP, oe-layertool for TI)")
-    ] = False,
-    dry_run: Annotated[
-        bool, typer.Option("--dry-run", "-n", help="Regenerate YAML and exit before invoking kas/kas-container build")
-    ] = False,
-    keep_going: Annotated[
-        bool,
-        typer.Option(
-            "--keep-going",
-            "-k",
-            help="Pass -k to bitbake: continue building other targets when one fails",
-        ),
-    ] = False,
-    clean: Annotated[
-        bool,
-        typer.Option(
-            "--clean",
-            help="Remove <bsp>/build/ before running the pipeline (forces a from-scratch build).",
-        ),
-    ] = False,
+    kas_yaml: KasYamlArgument = None,
+    machine: MachineOption = None,
+    distro: DistroOption = None,
+    image: ImageOption = None,
+    target: TargetOption = None,
+    manifest: ManifestOption = None,
+    branch: BranchOption = None,
+    skip_sync: SkipSyncOption = False,
+    dry_run: DryRunOption = False,
+    keep_going: KeepGoingOption = False,
+    clean: CleanOption = False,
     workspace: WorkspaceOption = None,
-    show_layers: Annotated[
-        bool,
-        typer.Option("--show-layers", help="Print layer git hashes before build."),
-    ] = False,
-    sstate_mirror: Annotated[
-        str | None,
-        typer.Option("--sstate-mirror", help="HTTP sstate/downloads mirror URL; enables the shared-cache overlay"),
-    ] = None,
-    dry_run_script: Annotated[
-        str | None,
-        typer.Option(
-            "--dry-run-script",
-            help="Write a runnable bash script reproducing this build to PATH, or to stdout when PATH is '-'. "
-            "Does not build. The existing --dry-run/-n preview behavior is unchanged.",
-        ),
-    ] = None,
+    show_layers: ShowLayersOption = False,
+    sstate_mirror: SstateMirrorOption = None,
+    dry_run_script: DryRunScriptOption = None,
+    # Inline rather than aliased: the completer lives in ``_build_flavors``,
+    # which back-imports this module, so reaching it from ``_build_options``
+    # would close a cycle that breaks when ``_build_options`` is imported
+    # first. See that module's docstring.
     preset: Annotated[
         str | None,
         typer.Option(
@@ -286,59 +252,13 @@ def build(
             help="Named preset from config.toml; additive with explicit flags (explicit flags win).",
         ),
     ] = None,
-    on: Annotated[
-        str | None,
-        typer.Option(
-            "--on",
-            help="Dispatch the build to a remote host (ssh alias or user@ip) instead of building "
-            "locally: mirror the working tree with rsync, run the build there, stream logs, and "
-            "surface the remote run-id. Unset builds locally.",
-        ),
-    ] = None,
-    yes: Annotated[
-        bool,
-        typer.Option(
-            "--yes",
-            "-y",
-            help="Skip the rsync --delete confirmation prompt for --on dispatch (non-interactive).",
-        ),
-    ] = False,
-    feed: Annotated[
-        bool,
-        typer.Option(
-            "--feed",
-            help="On build success, stage the RPMs into the local package feed and rewrite its "
-            "index. A failed build never syncs, and neither does --dry-run.",
-        ),
-    ] = False,
-    feed_release: Annotated[
-        str,
-        typer.Option("--feed-release", help="Feed release directory for --feed (see `bakar feed sync`)."),
-    ] = feed_mod.DEFAULT_RELEASE,
-    feed_channel: Annotated[
-        str,
-        typer.Option("--feed-channel", help="Feed channel directory for --feed (see `bakar feed sync`)."),
-    ] = feed_mod.DEFAULT_CHANNEL,
-    cve: Annotated[
-        bool,
-        typer.Option(
-            "--cve",
-            help="On build success, run avocado-cve-report to correlate the runtime packages with "
-            "unpatched CVEs. Needs kas/feature/cve-check.yml stacked onto the build; skips with a "
-            "note when the build carries no cve-check results. Neither a failed build nor --dry-run "
-            "produces a report.",
-        ),
-    ] = False,
-    sbom: Annotated[
-        bool,
-        typer.Option(
-            "--sbom",
-            help="On build success, filter the per-image SPDX document into a publishable inventory "
-            "under deploy/avocado-sbom. Needs kas/feature/sbom.yml stacked onto the build and a "
-            "meta-avocado checkout carrying the publication filter; refuses up front when the filter "
-            "is absent, because the unfiltered document carries vulnerability data.",
-        ),
-    ] = False,
+    on: OnOption = None,
+    yes: YesOption = False,
+    feed: FeedOption = False,
+    feed_release: FeedReleaseOption = feed_mod.DEFAULT_RELEASE,
+    feed_channel: FeedChannelOption = feed_mod.DEFAULT_CHANNEL,
+    cve: CveOption = False,
+    sbom: SbomOption = False,
 ) -> None:
     """Run the build pipeline idempotently.
 
