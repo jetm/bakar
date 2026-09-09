@@ -91,3 +91,85 @@ def test_main_buildtools_missing_returns_1_clean(
     assert "Error:" in captured.err
     assert "buildtools-extended" in captured.err
     assert "╭" not in captured.err
+
+
+class TestGlobalCallbackPublishesModuleState:
+    """The ``@app.callback()`` shim must still publish its flags as module globals.
+
+    Readers resolve them as attributes on ``bakar.commands._app`` at call time
+    (``_state._SCCACHE_DIST`` in commands/build.py, ``global_host_mode()`` and
+    friends in commands/_helpers.py), so a context object that carries the values
+    without assigning them back leaves every reader on its import-time default.
+    """
+
+    _GLOBALS = (
+        "_HIDE_DOCTOR_REPORT",
+        "_HOST_MODE",
+        "_CONTAINER_MODE",
+        "_NO_SCOPE",
+        "_SCCACHE_DIST",
+        "_SCCACHE_SCHEDULER",
+        "_MOLD",
+        "_MOLD_BASELINE",
+        "_MOLD_GLOBAL",
+        "_OUTPUT_MODE_OVERRIDE",
+    )
+
+    @pytest.fixture(autouse=True)
+    def _restore(self):
+        import bakar.commands._app as state
+
+        saved = {name: getattr(state, name) for name in self._GLOBALS}
+        try:
+            yield
+        finally:
+            for name, value in saved.items():
+                setattr(state, name, value)
+
+    @staticmethod
+    def _invoke(*args: str):
+        from typer.testing import CliRunner
+
+        import bakar.cli  # noqa: F401 - registers every subcommand on the shared app
+        import bakar.commands._app as state
+
+        result = CliRunner().invoke(state.app, [*args, "doctor", "--help"])
+        assert result.exit_code == 0, result.output
+        return state
+
+    def test_sccache_flags_land_on_module_globals(self) -> None:
+        state = self._invoke("--sccache-dist", "--sccache-scheduler", "http://localhost:10600")
+        assert state._SCCACHE_DIST is True
+        assert state._SCCACHE_SCHEDULER == "http://localhost:10600"
+
+    def test_host_mode_lands_on_module_global(self) -> None:
+        from bakar.commands._helpers import global_host_mode
+
+        state = self._invoke("--host")
+        assert state._HOST_MODE is True
+        assert global_host_mode() is True
+
+    def test_container_mode_lands_on_module_global(self) -> None:
+        from bakar.commands._helpers import global_container_mode
+
+        state = self._invoke("--container")
+        assert state._CONTAINER_MODE is True
+        assert global_container_mode() is True
+
+    def test_output_mode_override_lands_on_module_global(self) -> None:
+        from bakar.output_mode import OutputMode
+
+        state = self._invoke("--plain")
+        assert state._OUTPUT_MODE_OVERRIDE is OutputMode.PLAIN
+
+    def test_remaining_globals_land_on_module_globals(self) -> None:
+        state = self._invoke("--hide-doctor-report", "--no-scope", "--mold")
+        assert state._HIDE_DOCTOR_REPORT is True
+        assert state._NO_SCOPE is True
+        assert state._MOLD is True
+
+    def test_startup_hooks_still_populate_presets_and_vendors(self) -> None:
+        state = self._invoke()
+        assert state._PRESETS is not None
+        assert state._VENDORS is not None
+        assert state._USER_CONFIG is not None

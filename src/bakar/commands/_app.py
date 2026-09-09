@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated
 
 import typer
@@ -86,6 +87,65 @@ def _version(value: bool) -> None:
         raise typer.Exit
 
 
+@dataclass(frozen=True)
+class _GlobalOptions:
+    """The top-level callback's flags, packed for ``_main_impl``.
+
+    ``--version`` is absent on purpose: it is an eager option handled entirely by
+    the ``_version`` callback, which exits before ``_main`` runs.
+    """
+
+    hide_doctor_report: bool
+    host: bool
+    container: bool
+    no_scope: bool
+    sccache_dist: bool
+    sccache_scheduler: str | None
+    mold: bool
+    mold_baseline: bool
+    mold_global: bool
+    plain: bool
+    rich_output: bool
+
+
+def _main_impl(opts: _GlobalOptions) -> None:
+    """Validate the global flags and publish them as module state.
+
+    The assignments below are the load-bearing part: readers resolve these names
+    as attributes on this module at call time (``_state._SCCACHE_DIST`` in
+    commands/build.py, ``global_host_mode()`` and friends in commands/_helpers.py),
+    so holding the values on ``opts`` alone would leave every reader on defaults.
+    """
+    global _USER_CONFIG, _HIDE_DOCTOR_REPORT, _HOST_MODE, _CONTAINER_MODE, _SCCACHE_DIST
+    global _SCCACHE_SCHEDULER, _MOLD, _MOLD_BASELINE, _MOLD_GLOBAL, _OUTPUT_MODE_OVERRIDE, _NO_SCOPE
+    if opts.plain and opts.rich_output:
+        console.print("[red]choose either --plain/--ci or --rich, not both[/]")
+        raise typer.Exit(code=2)
+    # --mold-global + --mold-baseline together request the bfd baseline arm at
+    # global (deny-list) scope, to measure against a global mold build over the
+    # same recipe set. Any other multi-flag combination is contradictory.
+    global_bfd_baseline = opts.mold_global and opts.mold_baseline and not opts.mold
+    if sum([opts.mold, opts.mold_baseline, opts.mold_global]) > 1 and not global_bfd_baseline:
+        console.print(
+            "[red]choose one of --mold, --mold-baseline, --mold-global "
+            "(or --mold-global --mold-baseline for the global bfd baseline)[/]"
+        )
+        raise typer.Exit(code=2)
+    _USER_CONFIG = _load_user_config_safe()
+    _HIDE_DOCTOR_REPORT = opts.hide_doctor_report
+    _HOST_MODE = opts.host
+    _CONTAINER_MODE = opts.container
+    _NO_SCOPE = opts.no_scope
+    _SCCACHE_DIST = opts.sccache_dist
+    _SCCACHE_SCHEDULER = opts.sccache_scheduler
+    _MOLD = opts.mold
+    _MOLD_BASELINE = opts.mold_baseline
+    _MOLD_GLOBAL = opts.mold_global
+    _OUTPUT_MODE_OVERRIDE = OutputMode.PLAIN if opts.plain else (OutputMode.RICH if opts.rich_output else None)
+    _get_vendors()
+    _load_presets_safe()
+
+
 @app.callback()
 def _main(
     version: Annotated[
@@ -160,31 +220,18 @@ def _main(
         typer.Option("--rich", help="Force the Rich live display even when output is not a TTY."),
     ] = False,
 ) -> None:
-    global _USER_CONFIG, _HIDE_DOCTOR_REPORT, _HOST_MODE, _CONTAINER_MODE, _SCCACHE_DIST
-    global _SCCACHE_SCHEDULER, _MOLD, _MOLD_BASELINE, _MOLD_GLOBAL, _OUTPUT_MODE_OVERRIDE, _NO_SCOPE
-    if plain and rich_output:
-        console.print("[red]choose either --plain/--ci or --rich, not both[/]")
-        raise typer.Exit(code=2)
-    # --mold-global + --mold-baseline together request the bfd baseline arm at
-    # global (deny-list) scope, to measure against a global mold build over the
-    # same recipe set. Any other multi-flag combination is contradictory.
-    global_bfd_baseline = mold_global and mold_baseline and not mold
-    if sum([mold, mold_baseline, mold_global]) > 1 and not global_bfd_baseline:
-        console.print(
-            "[red]choose one of --mold, --mold-baseline, --mold-global "
-            "(or --mold-global --mold-baseline for the global bfd baseline)[/]"
+    _main_impl(
+        _GlobalOptions(
+            hide_doctor_report=hide_doctor_report,
+            host=host,
+            container=container,
+            no_scope=no_scope,
+            sccache_dist=sccache_dist,
+            sccache_scheduler=sccache_scheduler,
+            mold=mold,
+            mold_baseline=mold_baseline,
+            mold_global=mold_global,
+            plain=plain,
+            rich_output=rich_output,
         )
-        raise typer.Exit(code=2)
-    _USER_CONFIG = _load_user_config_safe()
-    _HIDE_DOCTOR_REPORT = hide_doctor_report
-    _HOST_MODE = host
-    _CONTAINER_MODE = container
-    _NO_SCOPE = no_scope
-    _SCCACHE_DIST = sccache_dist
-    _SCCACHE_SCHEDULER = sccache_scheduler
-    _MOLD = mold
-    _MOLD_BASELINE = mold_baseline
-    _MOLD_GLOBAL = mold_global
-    _OUTPUT_MODE_OVERRIDE = OutputMode.PLAIN if plain else (OutputMode.RICH if rich_output else None)
-    _get_vendors()
-    _load_presets_safe()
+    )
