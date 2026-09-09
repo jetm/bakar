@@ -1,6 +1,6 @@
 """Executable inventory of the module boundaries this repository relies on.
 
-Three kinds of fact live here, and each is asserted rather than documented so a
+Four kinds of fact live here, and each is asserted rather than documented so a
 later extraction that violates it fails instead of drifting quietly.
 
 The first is a security invariant: ``_resolve_roots`` is the only sanctioned
@@ -20,12 +20,20 @@ must raise. If any patch form this repository uses tolerated a missing name, a
 stale ``monkeypatch``/``mock.patch`` left behind on a moved symbol would
 install a mock nothing reads and the test around it would pass while testing
 nothing.
+
+The fourth is the governance contract with ``.arch-rules.toml``: every module
+an extraction created must be matched by some group, and every declared group
+must still match a file. Both halves fail open rather than loud - an unmatched
+module and a group whose paths match nothing each leave the fitness check
+reporting "no violations" over something it never examined.
 """
 
 from __future__ import annotations
 
 import inspect
+import tomllib
 from importlib import import_module
+from pathlib import Path, PurePosixPath
 from typing import get_type_hints
 from unittest import mock
 
@@ -144,9 +152,32 @@ DIAGNOSTICS_PUBLIC_NAMES: tuple[str, ...] = (
     "SHARED_CHECKS",
 )
 
+# Modules this change extracted. Each must be matched by some group in
+# ``.arch-rules.toml``: a module matching no group has its imports silently
+# ungoverned, which is the failure mode that shipped once already and is
+# invisible to the fitness check itself (it reports "no violations" because it
+# never looked at the file). Extend this list - not the test body - when an
+# extraction adds a module.
+EXTRACTED_MODULES: tuple[str, ...] = (
+    "src/bakar/mounts.py",
+    "src/bakar/buildtools.py",
+    "src/bakar/probes.py",
+    "src/bakar/elfscan.py",
+    "src/bakar/commands/_post_build.py",
+    "src/bakar/commands/_build_flavors.py",
+    "src/bakar/commands/_build_options.py",
+)
+
+_ARCH_RULES = Path(__file__).resolve().parent.parent / ".arch-rules.toml"
+
 # A name no module defines, used to prove each patch form rejects an absent
 # attribute rather than creating one.
 _ABSENT_ATTR = "_bakar_definitely_absent_attribute"
+
+
+def _arch_groups() -> list[dict]:
+    """Return the ``[[modules]]`` blocks declared by the committed rules file."""
+    return tomllib.loads(_ARCH_RULES.read_text(encoding="utf-8"))["modules"]
 
 
 def test_resolve_roots_and_needed_share_a_module() -> None:
@@ -194,6 +225,38 @@ def test_patching_an_absent_attribute_raises(monkeypatch: pytest.MonkeyPatch) ->
 
     with pytest.raises(AttributeError):
         mock.patch(f"bakar.diagnostics.{_ABSENT_ATTR}").start()
+
+
+@pytest.mark.parametrize("module_path", EXTRACTED_MODULES)
+def test_extracted_module_is_matched_by_an_arch_group(module_path: str) -> None:
+    """An extracted module must land in some ``.arch-rules.toml`` group.
+
+    A module matching no group is not a violation - it is worse. The fitness
+    check simply never evaluates its imports and still reports "no violations",
+    so the boundary erodes with nothing failing. Four modules sat in exactly
+    that state between their extraction and this assertion.
+    """
+    target = PurePosixPath(module_path)
+
+    matched = [group["name"] for group in _arch_groups() for pattern in group["paths"] if target.full_match(pattern)]
+
+    assert matched, f"{module_path} matches no group in .arch-rules.toml: its imports are ungoverned"
+
+
+def test_every_arch_group_matches_at_least_one_file() -> None:
+    """A group whose patterns match nothing governs nothing.
+
+    ``mold`` outlived the modules it named: ``src/bakar/mold_*.py`` matched zero
+    files while the group, its layers rule and its ``independent`` entry all
+    stayed behind, so the rule set described a boundary that no longer existed.
+    """
+    repo_root = _ARCH_RULES.parent
+
+    empty = [
+        group["name"] for group in _arch_groups() if not any(any(repo_root.glob(pattern)) for pattern in group["paths"])
+    ]
+
+    assert not empty, f"groups matching no file: {empty}"
 
 
 def test_build_annotations_resolve_at_runtime() -> None:

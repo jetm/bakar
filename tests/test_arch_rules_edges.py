@@ -40,7 +40,7 @@ RULES_FILE = Path(__file__).resolve().parent.parent / ".arch-rules.toml"
 #: Groups that are mutual peers - none may import another, in either direction.
 #: Adding a feature family to ``.arch-rules.toml`` without adding it here (and
 #: to the ``independent`` rule) is meant to fail ``test_peer_set_is_exactly``.
-PEERS = frozenset({"analysis", "setup", "insights", "feed", "mold"})
+PEERS = frozenset({"analysis", "setup", "insights", "feed"})
 
 #: Edges that MUST stay legal. Each is a real dependency direction the stack
 #: relies on; a rule change that forbids one of these has over-tightened.
@@ -56,7 +56,6 @@ LEGAL_EDGES = [
     ("feed", "foundation"),
     ("setup", "foundation"),
     ("insights", "foundation"),
-    ("mold", "foundation"),
 ]
 
 

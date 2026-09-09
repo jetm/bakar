@@ -16,14 +16,13 @@
 #  setup       - host-provisioning planner and its action classes
 #  insights    - per-dimension build analysers behind `bakar insights`
 #  feed        - package-feed publishing pipeline
-#  mold        - mold linker instrumentation
 #  lock_authority - build_stop.py: per-run process lifecycle and the shared
 #                bitbake lock-ownership gate, consulted by both steps and
 #                commands. Sits OUTSIDE the layers order for that reason.
 #  commands    - CLI orchestrators (import everything)
 #  tests       - tests/**, exempt: never a violation source
 #
-# That is the full set: twelve groups, all twelve named above. An omission here
+# That is the full set: eleven groups, all eleven named above. An omission here
 # is not cosmetic - this comment is the only human-readable index of the group
 # vocabulary, so a group missing from it gets its modules filed elsewhere or
 # left unclassified, which is exactly how coverage erodes.
@@ -69,6 +68,17 @@ paths = [
   "src/bakar/journal.py",
   "src/bakar/task_rollup.py",
   "src/bakar/tuning.py",
+  # Extracted out of diagnostics.py. Each is a leaf parser or probe over host
+  # state, and each was checked against its own imports before being filed
+  # here: mounts and elfscan reach nothing in bakar at all; buildtools reaches
+  # only user_config (foundation); probes reaches build_stop (lock_authority,
+  # outside the layers order) at module level and sccache_server (foundation)
+  # inside a function body. No edge from any of the four lands above
+  # foundation, so none of them makes foundation a violation source.
+  "src/bakar/mounts.py",
+  "src/bakar/buildtools.py",
+  "src/bakar/probes.py",
+  "src/bakar/elfscan.py",
 ]
 
 [[modules]]
@@ -95,10 +105,33 @@ paths = ["src/bakar/diagnostics.py"]
 # split_host_port). It has a bidirectional deferred coupling with steps: steps
 # (kas_build) import the probes at module level, and diagnostics imports
 # steps.kas_build.clear_stale_bitbake_locks / steps.bitbake_override.status inside
-# function bodies (diagnostics.py:691,947). Like `model` (bsp_model), it is placed in
+# function bodies (diagnostics.py:697,955). Like `model` (bsp_model), it is placed in
 # its own group OUTSIDE the layers order so those genuinely cross-layer edges are
 # ungoverned (SUGGESTION) rather than false-positive CRITICAL layer violations. The
 # forbidden rule below caps the top of its allowed import set.
+#
+# Measured after the four extractions (mounts, buildtools, probes, elfscan) that
+# shrank this module: the coupling survives, so `core` still cannot join the
+# layers order. Both candidate positions were run against the checker and both
+# fail, in opposite directions:
+#
+#   [commands, steps, core, analysis, foundation]
+#     -> diagnostics.py[L697]: core must not import steps
+#   [commands, core, steps, analysis, foundation]
+#     -> steps/kas_build.py[L75]:    steps must not import core
+#        steps/qcom_common.py[L15]:  steps must not import core
+#
+# A total order has to place core either above or below steps, and each choice
+# turns one existing direction upward. The split reduced module size without
+# restoring layering; that is the finding, and it is not a reason to weaken a
+# rule. Both runs also newly flagged cache_render.py[L18] (analysis -> core) as
+# a type-only advisory, an edge this group's placement currently keeps
+# ungoverned.
+#
+# The steps -> core edges now resolve through re-exports (detect_buildtools
+# really lives in bakar.buildtools), so retargeting them would delete that
+# direction. It would not rescue the experiment on its own - the 697/955 edges
+# remain - but it is the candidate follow-up.
 
 [[modules]]
 name = "lock_authority"
@@ -145,7 +178,7 @@ paths = ["src/bakar/setup/**"]
 [[modules]]
 name = "insights"
 paths = ["src/bakar/insights_*.py"]
-# A glob, matching its sibling families feed_*.py and mold_*.py. Enumerating the
+# A glob, matching its sibling family feed_*.py. Enumerating the
 # four literally meant a new insights_*.py would match no group: ungoverned
 # imports, and module coverage silently dropping under a threshold with enough
 # slack to absorb it.
@@ -161,14 +194,6 @@ paths = ["src/bakar/feed.py", "src/bakar/feed_*.py"]
 # inside the family are intentional and
 # ungoverned; outward it reaches only foundation (config, bsp_detect) and
 # diagnostics (core, outside the order). Nothing below commands imports it.
-
-[[modules]]
-name = "mold"
-paths = ["src/bakar/mold_*.py"]
-# mold linker instrumentation: mold_linkstats parses link statistics,
-# mold_verify checks the linker wiring. Both are self-contained - no bakar
-# imports in either direction today - so the group exists to declare the
-# boundary rather than to govern an existing edge.
 
 [[modules]]
 name = "commands"
@@ -191,16 +216,16 @@ exempt = true  # never a violation source
 # commands may import everything below it
 # steps may import analysis, the feature families, foundation
 # analysis may import foundation only
-# setup / insights / feed / mold may import foundation only
+# setup / insights / feed may import foundation only
 # foundation may not import anything above it (bsp_model ref is deferred, ungoverned)
 # core (diagnostics), model (bsp_model) and lock_authority (build_stop) sit
 # OUTSIDE the order - see their module comments above.
 #
-# TWO layers rules rather than one eight-entry order. A `layers` order is TOTAL:
-# every entry may import every entry below it. Folding analysis and the four
+# TWO layers rules rather than one seven-entry order. A `layers` order is TOTAL:
+# every entry may import every entry below it. Folding analysis and the
 # feature families into one order therefore encoded the opposite of the intent -
 # analysis sat above the families, which PERMITS analysis → feed, the very edge
-# the prose forbids. It also imposed a ranking on four modules documented as
+# the prose forbids. It also imposed a ranking on modules documented as
 # unordered peers, making setup → feed legal and feed → setup CRITICAL.
 # Splitting the stack leaves analysis ↔ family edges ungoverned by either order,
 # so the `forbidden` rules below state the prohibition explicitly and the
@@ -215,8 +240,8 @@ order = [
 ]
 reason = "CLI orchestrators → subprocess wrappers → read/compute layer → pure data/config"
 
-# ONE rule per family, not one rule listing all four. A `layers` order is total,
-# so a single `[commands, steps, setup, insights, feed, mold, foundation]` rule
+# ONE rule per family, not one rule listing all three. A `layers` order is total,
+# so a single `[commands, steps, setup, insights, feed, foundation]` rule
 # would ORDER the families against each other - permitting setup -> feed while
 # the `independent` rule below forbids it. The checker reports that as
 # "conflicting rules for edge setup->feed" and fails the config outright.
@@ -237,17 +262,12 @@ type = "layers"
 order = ["commands", "steps", "feed", "foundation"]
 reason = "package-feed pipeline sits beside analysis, above foundation"
 
-[[rules]]
-type = "layers"
-order = ["commands", "steps", "mold", "foundation"]
-reason = "mold linker instrumentation sits beside analysis, above foundation"
-
-# analysis and the four feature families are all peers: none may import
+# analysis and the three feature families are all peers: none may import
 # another, in EITHER direction. `independent` forbids every ordered pair, which
 # a `layers` order cannot express - an order would silently permit half of them.
 #
 # analysis belongs in this set, not in a separate list of one-directional
-# `forbidden` rules. Four `forbidden` rules from analysis to each family cover
+# `forbidden` rules. One `forbidden` rule from analysis to each family covers
 # only the analysis -> family direction; family -> analysis is then governed by
 # nothing, because no layers order holds both (analysis sits in the main order,
 # the families in their own) and an `independent` that excluded analysis never
@@ -256,7 +276,7 @@ reason = "mold linker instrumentation sits beside analysis, above foundation"
 # "no violations" - the exact edge the prose above forbids.
 [[rules]]
 type = "independent"
-modules = ["analysis", "setup", "insights", "feed", "mold"]
+modules = ["analysis", "setup", "insights", "feed"]
 reason = "peer read/compute layer and feature families; a dependency between any two belongs in foundation"
 
 # model: cap the top of its allowed import set
