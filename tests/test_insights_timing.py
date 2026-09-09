@@ -179,3 +179,79 @@ def test_critical_path_credits_the_head_nodes_own_duration(tmp_path: Path) -> No
     assert report.critical_path.available is True
     assert report.critical_path.chain == ["a", "b"]
     assert report.critical_path.total_seconds == pytest.approx(101.0)
+
+
+def _task(recipe: str, task: str, start: float, end: float) -> dict:
+    return {"recipe": recipe, "task": task, "started": start, "completed": end}
+
+
+def test_regime_reports_the_restored_share(tmp_path: Path) -> None:
+    artifact = {
+        "tasks": [_task("busybox", "do_compile", 0.0, 5.0)],
+        "setscene": {"covered": 786, "notcovered": 999, "total": 2295},
+    }
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json")
+
+    assert report.regime.measured is True
+    assert report.regime.covered == 786
+    assert report.regime.covered_pct == pytest.approx(34.2, abs=0.1)
+    assert "34.2% restored" in report.regime.note
+
+
+def test_zero_covered_with_tasks_is_a_cold_build(tmp_path: Path) -> None:
+    """Nothing restored is a real regime, and must read as measured."""
+    artifact = {
+        "tasks": [_task("busybox", "do_compile", 0.0, 5.0)],
+        "setscene": {"covered": 0, "notcovered": 2023, "total": 2023},
+    }
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json")
+
+    assert report.regime.measured is True
+    assert "cold" in report.regime.note
+
+
+def test_all_zero_setscene_with_no_tasks_is_unmeasured_not_cold(tmp_path: Path) -> None:
+    """The headline falsifier for this section.
+
+    ``bakar.eventlog`` returns a zero-seeded setscene block verbatim when
+    bitbake's raw log is missing, so zeros alone cannot be read as a cold
+    build. An empty task list is the discriminator; without it an unmeasured
+    run is recorded as a measured cold one, on the success path.
+    """
+    artifact = {"tasks": [], "setscene": {"covered": 0, "notcovered": 0, "total": 0}}
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json")
+
+    assert report.regime.measured is False
+    assert "unmeasured" in report.regime.note
+
+
+def test_artifact_without_a_setscene_block_is_unmeasured(tmp_path: Path) -> None:
+    artifact = {"tasks": [_task("busybox", "do_compile", 0.0, 5.0)]}
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json")
+
+    assert report.regime.measured is False
+    assert "no setscene block" in report.regime.note
+
+
+def test_bare_tasks_list_reports_unmeasured_rather_than_guessing(tmp_path: Path) -> None:
+    """A list carries no setscene block, so there is nothing to read."""
+    report = timing_report([_task("busybox", "do_compile", 0.0, 5.0)], baselines_path=tmp_path / "absent.json")
+
+    assert report.regime.measured is False
+    assert "tasks list only" in report.regime.note
+
+
+def test_malformed_setscene_counts_do_not_raise(tmp_path: Path) -> None:
+    artifact = {
+        "tasks": [_task("busybox", "do_compile", 0.0, 5.0)],
+        "setscene": {"covered": "many", "notcovered": None, "total": 10},
+    }
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json")
+
+    assert report.regime.covered == 0
+    assert report.regime.total == 10

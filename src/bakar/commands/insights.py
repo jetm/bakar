@@ -114,6 +114,13 @@ def _render_sstate(report) -> None:
 
 
 def _render_timing(report) -> None:
+    # Printed FIRST, above the durations it qualifies. Every number below is
+    # comparable only against another run in the same regime - 26.4 min cold
+    # against 8.9 min seeded is a 65% swing on this fleet - so a reader who
+    # sees the timings before the regime has already begun the comparison the
+    # regime line exists to prevent.
+    console.print("[bold]regime:[/]")
+    console.print(f"  {report.regime.note}")
     console.print("[bold]timing:[/]")
     if not report.top_slowest:
         console.print("  no timing data found for run")

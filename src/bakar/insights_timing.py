@@ -77,11 +77,45 @@ class CriticalPath:
 
 
 @dataclass(frozen=True)
+class Regime:
+    """Which sstate regime a run was in: how much of it was restored, not built.
+
+    Two builds of the same target in different regimes take wildly different
+    times - measured on this fleet, 26.4 min cold against 8.9 min seeded, a 65%
+    swing - and every other number in this report is only comparable against
+    another run in the SAME regime. A timing report that omits it invites
+    exactly the comparison that cannot be made, which is not hypothetical: this
+    project's benchmark baseline was invalidated when an sstate seed appeared
+    mid-campaign and no run recorded which side of it that run was on.
+
+    ``measured`` is the distinction that matters and it is not the same as
+    ``covered == 0``. ``bakar.eventlog`` seeds this block with zeros and returns
+    it VERBATIM when bitbake's raw event log is missing - a build killed during
+    parsing, or one whose bitbake never emitted the stats - so an all-zero block
+    is indistinguishable by inspection from a genuine cold build where nothing
+    was restored. The discriminator is that the same early return also yields an
+    empty ``tasks`` list, and a build that ran anything has a non-empty one.
+    """
+
+    measured: bool = False
+    covered: int = 0
+    notcovered: int = 0
+    total: int = 0
+    note: str = "regime unknown"
+
+    @property
+    def covered_pct(self) -> float:
+        """Share of tasks restored from sstate, or 0.0 when nothing was counted."""
+        return (100.0 * self.covered / self.total) if self.total else 0.0
+
+
+@dataclass(frozen=True)
 class TimingReport:
     """The timing report: top-N slowest tasks plus the critical-path section."""
 
     top_slowest: list[TaskDuration] = field(default_factory=list)
     critical_path: CriticalPath = field(default_factory=CriticalPath)
+    regime: Regime = field(default_factory=Regime)
 
 
 def _duration_totals(durations: list[TaskDuration]) -> dict[str, float]:
@@ -137,6 +171,42 @@ def _weighted_longest_path(graph: nx.DiGraph, node_weights: dict[str, float]) ->
         cur = predecessor[cur]
     chain.reverse()
     return chain, best[end_node]
+
+
+def _regime_from(artifact: dict | list, task_count: int) -> Regime:
+    """Read the sstate regime out of a normalized event-log artifact.
+
+    ``task_count`` is what separates "nothing was restored" from "nothing was
+    measured" - see :class:`Regime`. Passing an already-parsed ``tasks`` list
+    rather than the whole artifact leaves no block to read, which reports as
+    unmeasured rather than inventing a cold-build claim.
+    """
+    if not isinstance(artifact, dict):
+        return Regime(note="regime unknown: no event-log artifact (tasks list only)")
+    block = artifact.get("setscene")
+    if not isinstance(block, dict):
+        return Regime(note="regime unknown: artifact carries no setscene block")
+
+    def _count(key: str) -> int:
+        value = block.get(key, 0)
+        return value if isinstance(value, int) else 0
+
+    covered, notcovered, total = _count("covered"), _count("notcovered"), _count("total")
+    if covered == 0 and notcovered == 0 and total == 0 and task_count == 0:
+        # The eventlog early-return shape: zeros AND no tasks. Reporting this as
+        # a cold build would record an unmeasured run as a measured one, on the
+        # success path, with nothing warning.
+        return Regime(note="regime unknown: no tasks recorded, so the zeros are unmeasured rather than cold")
+
+    pct = (100.0 * covered / total) if total else 0.0
+    label = "cold" if covered == 0 else f"{pct:.1f}% restored"
+    return Regime(
+        measured=True,
+        covered=covered,
+        notcovered=notcovered,
+        total=total,
+        note=f"{label} ({covered} of {total} tasks from sstate)",
+    )
 
 
 def _compute_critical_path(
@@ -246,4 +316,8 @@ def timing_report(
     if dependency_source is not None:
         critical_path = _compute_critical_path(dependency_source, _duration_totals(durations))
 
-    return TimingReport(top_slowest=top_slowest, critical_path=critical_path)
+    return TimingReport(
+        top_slowest=top_slowest,
+        critical_path=critical_path,
+        regime=_regime_from(artifact, len(durations)),
+    )
