@@ -9,22 +9,29 @@ Two properties nothing else in the suite observes:
    each shimmed command keeps its N annotated parameters and packs them in the
    body.
 
-The internal helpers ``_graceful_wait``, ``_render_sstate_lines`` and
-``_run_pty_with_ui`` are in the table too; ``config.resolve`` follows. Extend
-``REPACKED`` with a case rather than adding a parallel test body. A helper is
-not a Typer command, so its ``typer_params`` is None and the count check is
-skipped for it - a private helper's signature is free to shrink, which is the
-whole point of the repack.
+The non-Typer callables this change repacked are in the table too, private
+(``_graceful_wait``, ``_render_sstate_lines``, ``_run_pty_with_ui``,
+``_run_single_preset_release``) and public (``steps.stress_parse.run``,
+``config.resolve``). Extend ``REPACKED`` with a case rather than adding a
+parallel test body. A non-Typer callable has no CLI surface, so its
+``typer_params`` is None and the count check is skipped for it - such a
+signature is free to shrink, which is the whole point of the repack.
 
-A helper has no shim, so its ``callable_name`` and ``impl_name`` are the same
+That skip is the only one this module is allowed to take, and
+``test_only_skip_is_the_typer_gate`` holds it to that: a skip introduced for any
+other reason turns a silently-unrun assertion into a failure.
+
+A callable with no shim has ``callable_name`` and ``impl_name`` set to the same
 name.
 """
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import importlib
 import inspect
+from pathlib import Path
 from typing import NamedTuple
 
 import pytest
@@ -65,7 +72,24 @@ REPACKED: list[Case] = [
         extra_params=1,
     ),
     Case("bakar.steps.kas_build", "_run_pty_with_ui", "_run_pty_with_ui", "_PtyCtx", None, "ctx"),
+    # ``_run_single_preset_release`` keeps ``active_preset`` and ``spec_index``
+    # outside the pack: they vary per iteration of the caller's loop while the
+    # context does not.
+    Case(
+        "bakar.commands._build_flavors",
+        "_run_single_preset_release",
+        "_run_single_preset_release",
+        "_ReleaseCtx",
+        None,
+        "ctx",
+        extra_params=2,
+    ),
+    # Public, but reached through Python callers rather than Typer.
+    Case("bakar.steps.stress_parse", "run", "run", "StressParseContext", None, "ctx"),
+    Case("bakar.config", "resolve", "resolve", "ResolveRequest", None, "request"),
 ]
+
+NOT_A_TYPER_COMMAND = "{} is not a Typer command"
 
 CASE_IDS = [c.callable_name for c in REPACKED]
 
@@ -114,7 +138,7 @@ def test_impl_takes_exactly_its_context(case: Case) -> None:
 def test_typer_parameter_count_did_not_drop(case: Case) -> None:
     """Every parameter of a Typer command is a user-facing option."""
     if case.typer_params is None:
-        pytest.skip(f"{case.callable_name} is not a Typer command")
+        pytest.skip(NOT_A_TYPER_COMMAND.format(case.callable_name))
 
     mod = importlib.import_module(case.module)
     params = inspect.signature(getattr(mod, case.callable_name)).parameters
@@ -123,3 +147,54 @@ def test_typer_parameter_count_did_not_drop(case: Case) -> None:
         f"{case.module}.{case.callable_name} has {len(params)} parameters, "
         f"baseline is {case.typer_params} - a dropped parameter is a removed CLI option"
     )
+
+
+@pytest.mark.unit
+def test_only_skip_is_the_typer_gate() -> None:
+    """A skip added here for any other reason would hide an unrun assertion.
+
+    The change's skipped count rose because every non-Typer row skips the
+    parameter-count check by design. That is the one licensed skip; anything
+    else in this module is an assertion that stopped running.
+    """
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    skips = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "skip"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "pytest"
+    ]
+    assert skips, "the typer gate's skip disappeared - it is what keeps the non-Typer rows honest"
+
+    for node in skips:
+        reason = node.args[0] if node.args else None
+        assert (
+            isinstance(reason, ast.Call)
+            and isinstance(reason.func, ast.Attribute)
+            and reason.func.attr == "format"
+            and isinstance(reason.func.value, ast.Name)
+            and reason.func.value.id == "NOT_A_TYPER_COMMAND"
+        ), f"pytest.skip on line {node.lineno} does not use NOT_A_TYPER_COMMAND"
+
+
+@pytest.mark.unit
+def test_every_repacked_callable_is_covered() -> None:
+    """The table is the change's inventory, so a missing row is a missing gate."""
+    covered = {(c.module, c.callable_name) for c in REPACKED}
+    expected = {
+        ("bakar.commands._app", "_main"),
+        ("bakar.commands.clean_cache", "clean_cache"),
+        ("bakar.commands.getvar", "getvar"),
+        ("bakar.commands.sync", "sync"),
+        ("bakar.commands.stress_parse", "stress_parse"),
+        ("bakar.commands._build_flavors", "_run_single_preset_release"),
+        ("bakar.commands._helpers", "_render_sstate_lines"),
+        ("bakar.steps.stress_parse", "run"),
+        ("bakar.steps.kas_build", "_run_pty_with_ui"),
+        ("bakar.build_stop", "_graceful_wait"),
+        ("bakar.config", "resolve"),
+    }
+    assert expected <= covered, f"repacked but ungated: {sorted(expected - covered)}"
