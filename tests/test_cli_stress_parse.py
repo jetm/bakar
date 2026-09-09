@@ -117,7 +117,7 @@ def _patch_steps(
 def test_stress_parse_runs_count_matches_flag(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``--runs 4`` propagates to step_stress_parse.run's ``runs=`` kwarg.
+    """``--runs 4`` propagates to the ``runs`` field of step_stress_parse.run's context.
 
     Sequential dispatch: the CLI calls the step once with ``runs=N``. The
     step itself is the loop, so the assertion is on the kwarg, not on call
@@ -132,7 +132,7 @@ def test_stress_parse_runs_count_matches_flag(
 
     assert result.exit_code == 0, result.output
     assert mock_run.call_count == 1, f"expected one dispatch to step.run, got {mock_run.call_count}"
-    assert mock_run.call_args.kwargs["runs"] == 4
+    assert mock_run.call_args.kwargs["ctx"].runs == 4
 
 
 def test_stress_parse_default_runs_is_ten(runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -149,7 +149,7 @@ def test_stress_parse_default_runs_is_ten(runner: CliRunner, tmp_path: Path, mon
         result = runner.invoke(app, ["stress-parse", "--manifest", "imx-6.6.52-2.2.2.xml"])
 
     assert result.exit_code == 0, result.output
-    assert mock_run.call_args.kwargs["runs"] == 10
+    assert mock_run.call_args.kwargs["ctx"].runs == 10
 
 
 def test_stress_parse_race_signature_exits_nonzero(
@@ -250,7 +250,7 @@ def test_stress_parse_target_flag_forwarded(runner: CliRunner, tmp_path: Path, m
         )
 
     assert result.exit_code == 0, result.output
-    assert mock_run.call_args.kwargs["target"] == "core-image-minimal"
+    assert mock_run.call_args.kwargs["ctx"].target == "core-image-minimal"
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +319,7 @@ def test_stress_parse_byo_and_manifest_together_exits_2(
 def test_stress_parse_byo_colon_overlay_reaches_extra_overlays(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``main.yml:overlay.yml`` threads the overlay into step_stress_parse.run's extra_overlays.
+    """``main.yml:overlay.yml`` threads the overlay into the step context's extra_overlays.
 
     Mirrors the ``bakar bitbake`` colon-overlay wiring test
     (``tests/test_kas_colon_overlay.py::test_bitbake_colon_arg_extra_overlay_in_ctx``):
@@ -339,7 +339,249 @@ def test_stress_parse_byo_colon_overlay_reaches_extra_overlays(
         result = runner.invoke(app, ["stress-parse", "--runs", "1", kas_arg])
 
     assert result.exit_code == 0, result.output
-    extra_overlays = mock_run.call_args.kwargs["extra_overlays"]
+    extra_overlays = mock_run.call_args.kwargs["ctx"].extra_overlays
     assert any(p.resolve() == overlay.resolve() for p in extra_overlays), (
         f"user overlay not found in extra_overlays: {extra_overlays!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Context packing: the command's eleven flags, and the ten values it hands
+# the step. Nothing else in this file would notice a field transposed or
+# dropped while packing either one.
+# ---------------------------------------------------------------------------
+
+
+def _fake_python(tmp_path: Path) -> Path:
+    """An executable file ``--python`` will accept."""
+    exe = tmp_path / "ctx-python"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    return exe
+
+
+# Every command flag paired with the _StressParseCtx field it must land in,
+# and the value it carries. Drives both command-context tests below.
+_CTX_FLAG_CASES: list[tuple[list[str], str, object]] = [
+    (["ctx-machine.yml"], "kas_yaml", "ctx-machine.yml"),
+    (["--runs", "7"], "runs", 7),
+    (["--target", "ctx-target"], "target", "ctx-target"),
+    (["--parse-threads", "3"], "parse_threads", 3),
+    (["--machine", "ctx-machine"], "machine", "ctx-machine"),
+    (["--image", "ctx-image"], "image", "ctx-image"),
+    (["--manifest", "ctx-manifest.xml"], "manifest", "ctx-manifest.xml"),
+    (["--branch", "ctx-branch"], "branch", "ctx-branch"),
+    (["--label", "ctx-label"], "label", "ctx-label"),
+]
+
+_CTX_DEFAULTS: dict[str, object] = {
+    "kas_yaml": None,
+    "runs": 10,
+    "target": "world",
+    "parse_threads": None,
+    "machine": None,
+    "image": None,
+    "manifest": None,
+    "branch": None,
+    "workspace": None,
+    "label": None,
+    "python": None,
+}
+
+
+def test_stress_parse_ctx_carries_every_flag_unchanged(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every _StressParseCtx field equals the flag ``stress_parse()`` was invoked with.
+
+    Packing eleven CLI parameters into a context is wrong in a way nothing
+    else here sees: transpose two fields or drop one and the command still
+    runs, ``--help`` is unchanged, and every other test stays green. This one
+    captures the context object and compares it field-by-field against a flag
+    set where no value is the default.
+    """
+    import dataclasses
+
+    import bakar.commands.stress_parse as sp
+
+    workspace = _make_workspace(tmp_path)
+    monkeypatch.chdir(workspace)
+    exe = _fake_python(tmp_path)
+
+    captured: list[sp._StressParseCtx] = []
+    monkeypatch.setattr(sp, "_stress_parse_impl", captured.append)
+
+    argv = ["stress-parse"]
+    expected: dict[str, object] = {}
+    for flag, field, value in _CTX_FLAG_CASES:
+        argv += flag
+        expected[field] = value
+    argv += ["--workspace", str(workspace), "--python", str(exe)]
+    expected["workspace"] = workspace.resolve()
+    expected["python"] = exe
+
+    result = runner.invoke(app, argv)
+
+    assert result.exit_code == 0, result.output
+    assert len(captured) == 1, f"expected one ctx, got {len(captured)}"
+    ctx = captured[0]
+    for field, want in expected.items():
+        got = getattr(ctx, field)
+        assert got == want, f"_StressParseCtx.{field}: expected {want!r}, got {got!r}"
+    # Guards against a field being added to the dataclass but left unasserted.
+    assert {f.name for f in dataclasses.fields(ctx)} == set(expected)
+
+
+@pytest.mark.parametrize("case", _CTX_FLAG_CASES, ids=lambda c: c[1])
+def test_stress_parse_ctx_one_flag_moves_one_field(
+    case: tuple[list[str], str, object],
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One flag at a time moves exactly one _StressParseCtx field.
+
+    The all-flags test above cannot catch a transposition between two fields
+    that share a default - nine of these eleven default to ``None``, so a
+    swapped pair reads as ``None`` on both sides whenever neither flag is
+    passed. Setting one flag per invocation pins each field to its own flag
+    and asserts its neighbours are still at their defaults.
+    """
+    import bakar.commands.stress_parse as sp
+
+    flag, field, value = case
+    workspace = _make_workspace(tmp_path)
+    monkeypatch.chdir(workspace)
+
+    captured: list[sp._StressParseCtx] = []
+    monkeypatch.setattr(sp, "_stress_parse_impl", captured.append)
+
+    result = runner.invoke(app, ["stress-parse", *flag])
+    assert result.exit_code == 0, result.output
+
+    expected = {**_CTX_DEFAULTS, field: value}
+    ctx = captured[0]
+    for name, want in expected.items():
+        got = getattr(ctx, name)
+        assert got == want, f"{flag} -> _StressParseCtx.{name}: expected {want!r}, got {got!r}"
+
+
+# Flags that pass through the command into StressParseContext, paired with the
+# step-context field they must land in.
+_STEP_FLAG_CASES: list[tuple[list[str], str, object]] = [
+    (["--runs", "7"], "runs", 7),
+    (["--target", "ctx-target"], "target", "ctx-target"),
+    (["--parse-threads", "3"], "parse_threads", 3),
+    (["--label", "ctx-label"], "label", "ctx-label"),
+]
+
+_STEP_DEFAULTS: dict[str, object] = {
+    "runs": 10,
+    "target": "world",
+    "parse_threads": None,
+    "label": None,
+    "python_executable": None,
+}
+
+
+def test_stress_parse_step_context_carries_every_value(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every StressParseContext field the command fills matches what was asked for.
+
+    The command packs ten values for the step. ``cfg``, ``log``, ``bsp`` and
+    ``overlay_source`` are derived rather than passed, so they are asserted
+    through the values they carry; the pass-through values are asserted
+    verbatim.
+    """
+    import dataclasses
+
+    from bakar.steps.stress_parse import StressParseContext
+
+    workspace = _make_workspace(tmp_path)
+    monkeypatch.chdir(workspace)
+    exe = _fake_python(tmp_path)
+
+    override_p, kas_p, stress_p = _patch_steps(summary=_clean_summary(7))
+    with override_p, kas_p, stress_p as mock_run:
+        result = runner.invoke(
+            app,
+            [
+                "stress-parse",
+                "--manifest",
+                "imx-6.6.52-2.2.2.xml",
+                "--machine",
+                "ctx-machine",
+                "--image",
+                "ctx-image",
+                "--runs",
+                "7",
+                "--target",
+                "ctx-target",
+                "--parse-threads",
+                "3",
+                "--label",
+                "ctx-label",
+                "--python",
+                str(exe),
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    ctx = mock_run.call_args.kwargs["ctx"]
+    assert isinstance(ctx, StressParseContext)
+
+    assert ctx.runs == 7
+    assert ctx.target == "ctx-target"
+    assert ctx.parse_threads == 3
+    assert ctx.label == "ctx-label"
+    assert ctx.python_executable == exe.resolve()
+    assert ctx.extra_overlays is not None
+    # Derived values: the command resolves these rather than passing them through.
+    assert ctx.cfg.machine == "ctx-machine"
+    assert ctx.cfg.image == "ctx-image"
+    assert ctx.cfg.manifest == "imx-6.6.52-2.2.2.xml"
+    assert ctx.log is not None
+    assert ctx.bsp is not None
+    assert ctx.overlay_source.name.startswith("bakar-tuning")
+    # Guards against a field being added to the step context but left unasserted.
+    assert {f.name for f in dataclasses.fields(ctx)} == {
+        "cfg",
+        "log",
+        "bsp",
+        "overlay_source",
+        "runs",
+        "target",
+        "parse_threads",
+        "extra_overlays",
+        "label",
+        "python_executable",
+    }
+
+
+@pytest.mark.parametrize("case", _STEP_FLAG_CASES, ids=lambda c: c[1])
+def test_stress_parse_step_context_one_flag_moves_one_field(
+    case: tuple[list[str], str, object],
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One flag at a time moves exactly one pass-through StressParseContext field.
+
+    Three of these five default to ``None``, so the all-values test above
+    cannot see a transposition between two of them while both are unset.
+    """
+    flag, field, value = case
+    workspace = _make_workspace(tmp_path)
+    monkeypatch.chdir(workspace)
+
+    override_p, kas_p, stress_p = _patch_steps(summary=_clean_summary(1))
+    with override_p, kas_p, stress_p as mock_run:
+        result = runner.invoke(app, ["stress-parse", "--manifest", "imx-6.6.52-2.2.2.xml", *flag])
+
+    assert result.exit_code == 0, result.output
+    ctx = mock_run.call_args.kwargs["ctx"]
+    expected = {**_STEP_DEFAULTS, field: value}
+    for name, want in expected.items():
+        got = getattr(ctx, name)
+        assert got == want, f"{flag} -> StressParseContext.{name}: expected {want!r}, got {got!r}"

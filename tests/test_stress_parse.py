@@ -173,13 +173,15 @@ def test_all_iterations_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         summary = stress_parse.run(
-            cfg,
-            log,
-            bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
-            runs=10,
-            target="world",
-            parse_threads=None,
+            ctx=stress_parse.StressParseContext(
+                cfg=cfg,
+                log=log,
+                bsp=_bsp_stub(),
+                overlay_source=tmp_path / "bakar-tuning-nxp.yml",
+                runs=10,
+                target="world",
+                parse_threads=None,
+            )
         )
 
     assert summary["runs"] == 10
@@ -207,13 +209,15 @@ def test_one_iteration_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         summary = stress_parse.run(
-            cfg,
-            log,
-            bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
-            runs=5,
-            target="world",
-            parse_threads=None,
+            ctx=stress_parse.StressParseContext(
+                cfg=cfg,
+                log=log,
+                bsp=_bsp_stub(),
+                overlay_source=tmp_path / "bakar-tuning-nxp.yml",
+                runs=5,
+                target="world",
+                parse_threads=None,
+            )
         )
 
     assert summary["passed"] == 4
@@ -231,13 +235,15 @@ def test_summary_json_persisted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         stress_parse.run(
-            cfg,
-            log,
-            bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
-            runs=1,
-            target="world",
-            parse_threads=None,
+            ctx=stress_parse.StressParseContext(
+                cfg=cfg,
+                log=log,
+                bsp=_bsp_stub(),
+                overlay_source=tmp_path / "bakar-tuning-nxp.yml",
+                runs=1,
+                target="world",
+                parse_threads=None,
+            )
         )
         summary_path = log.run_dir / "stress-parse" / "summary.json"
 
@@ -260,13 +266,15 @@ def test_parse_threads_prepended_to_command(tmp_path: Path, monkeypatch: pytest.
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         stress_parse.run(
-            cfg,
-            log,
-            bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
-            runs=1,
-            target="world",
-            parse_threads=1,
+            ctx=stress_parse.StressParseContext(
+                cfg=cfg,
+                log=log,
+                bsp=_bsp_stub(),
+                overlay_source=tmp_path / "bakar-tuning-nxp.yml",
+                runs=1,
+                target="world",
+                parse_threads=1,
+            )
         )
 
     assert (
@@ -285,13 +293,15 @@ def test_custom_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         stress_parse.run(
-            cfg,
-            log,
-            bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
-            runs=1,
-            target="core-image-minimal",
-            parse_threads=None,
+            ctx=stress_parse.StressParseContext(
+                cfg=cfg,
+                log=log,
+                bsp=_bsp_stub(),
+                overlay_source=tmp_path / "bakar-tuning-nxp.yml",
+                runs=1,
+                target="core-image-minimal",
+                parse_threads=None,
+            )
         )
 
     assert (
@@ -309,13 +319,15 @@ def test_per_iteration_logs_written(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         stress_parse.run(
-            cfg,
-            log,
-            bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
-            runs=3,
-            target="world",
-            parse_threads=None,
+            ctx=stress_parse.StressParseContext(
+                cfg=cfg,
+                log=log,
+                bsp=_bsp_stub(),
+                overlay_source=tmp_path / "bakar-tuning-nxp.yml",
+                runs=3,
+                target="world",
+                parse_threads=None,
+            )
         )
         out_dir = log.run_dir / "stress-parse"
 
@@ -334,13 +346,15 @@ def test_ti_bsp_dispatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         summary = stress_parse.run(
-            cfg,
-            log,
-            bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
-            runs=1,
-            target="world",
-            parse_threads=None,
+            ctx=stress_parse.StressParseContext(
+                cfg=cfg,
+                log=log,
+                bsp=_bsp_stub(),
+                overlay_source=tmp_path / "bakar-tuning-nxp.yml",
+                runs=1,
+                target="world",
+                parse_threads=None,
+            )
         )
 
     assert summary["bsp_family"] == "ti"
@@ -357,13 +371,15 @@ def test_variant_b_signature_detected(tmp_path: Path, monkeypatch: pytest.Monkey
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         summary = stress_parse.run(
-            cfg,
-            log,
-            bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
-            runs=1,
-            target="world",
-            parse_threads=None,
+            ctx=stress_parse.StressParseContext(
+                cfg=cfg,
+                log=log,
+                bsp=_bsp_stub(),
+                overlay_source=tmp_path / "bakar-tuning-nxp.yml",
+                runs=1,
+                target="world",
+                parse_threads=None,
+            )
         )
 
     assert summary["failed"] == 1
@@ -420,13 +436,15 @@ def test_cache_cleared_between_iterations(tmp_path: Path, monkeypatch: pytest.Mo
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         summary = stress_parse.run(
-            cfg,
-            log,
-            bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
-            runs=3,
-            target="world",
-            parse_threads=None,
+            ctx=stress_parse.StressParseContext(
+                cfg=cfg,
+                log=log,
+                bsp=_bsp_stub(),
+                overlay_source=tmp_path / "bakar-tuning-nxp.yml",
+                runs=3,
+                target="world",
+                parse_threads=None,
+            )
         )
 
     assert cleared_states == [(True, True), (True, True), (True, True)], (
@@ -446,13 +464,15 @@ def test_cache_clear_no_op_on_first_iteration_with_empty_workspace(
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         summary = stress_parse.run(
-            cfg,
-            log,
-            bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
-            runs=1,
-            target="world",
-            parse_threads=None,
+            ctx=stress_parse.StressParseContext(
+                cfg=cfg,
+                log=log,
+                bsp=_bsp_stub(),
+                overlay_source=tmp_path / "bakar-tuning-nxp.yml",
+                runs=1,
+                target="world",
+                parse_threads=None,
+            )
         )
 
     assert summary["cache_cleared_pre_iter"] == [False]
@@ -522,13 +542,15 @@ def test_runtime_cleared_between_iterations(tmp_path: Path, monkeypatch: pytest.
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         summary = stress_parse.run(
-            cfg,
-            log,
-            bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
-            runs=3,
-            target="world",
-            parse_threads=None,
+            ctx=stress_parse.StressParseContext(
+                cfg=cfg,
+                log=log,
+                bsp=_bsp_stub(),
+                overlay_source=tmp_path / "bakar-tuning-nxp.yml",
+                runs=3,
+                target="world",
+                parse_threads=None,
+            )
         )
 
     assert observed == [(False, False, False, False)] * 3, (
@@ -547,13 +569,15 @@ def test_env_payload_records_parse_threads_override(tmp_path: Path, monkeypatch:
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         summary = stress_parse.run(
-            cfg,
-            log,
-            bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
-            runs=1,
-            target="world",
-            parse_threads=8,
+            ctx=stress_parse.StressParseContext(
+                cfg=cfg,
+                log=log,
+                bsp=_bsp_stub(),
+                overlay_source=tmp_path / "bakar-tuning-nxp.yml",
+                runs=1,
+                target="world",
+                parse_threads=8,
+            )
         )
 
     assert summary["env"]["BB_NUMBER_PARSE_THREADS"] == "8"
@@ -569,14 +593,16 @@ def test_label_propagates_to_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         summary = stress_parse.run(
-            cfg,
-            log,
-            bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
-            runs=1,
-            target="world",
-            parse_threads=None,
-            label="blog-py3.15-D-minimal",
+            ctx=stress_parse.StressParseContext(
+                cfg=cfg,
+                log=log,
+                bsp=_bsp_stub(),
+                overlay_source=tmp_path / "bakar-tuning-nxp.yml",
+                runs=1,
+                target="world",
+                parse_threads=None,
+                label="blog-py3.15-D-minimal",
+            )
         )
 
     assert summary["label"] == "blog-py3.15-D-minimal"
@@ -596,13 +622,15 @@ def test_label_omitted_when_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         summary = stress_parse.run(
-            cfg,
-            log,
-            bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
-            runs=1,
-            target="world",
-            parse_threads=None,
+            ctx=stress_parse.StressParseContext(
+                cfg=cfg,
+                log=log,
+                bsp=_bsp_stub(),
+                overlay_source=tmp_path / "bakar-tuning-nxp.yml",
+                runs=1,
+                target="world",
+                parse_threads=None,
+            )
         )
 
     assert "label" not in summary
@@ -632,14 +660,16 @@ def test_python_executable_propagates_to_command_and_summary(
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         summary = stress_parse.run(
-            cfg,
-            log,
-            bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
-            runs=1,
-            target="world",
-            parse_threads=None,
-            python_executable=fake_python,
+            ctx=stress_parse.StressParseContext(
+                cfg=cfg,
+                log=log,
+                bsp=_bsp_stub(),
+                overlay_source=tmp_path / "bakar-tuning-nxp.yml",
+                runs=1,
+                target="world",
+                parse_threads=None,
+                python_executable=fake_python,
+            )
         )
 
     assert f"BB_PYTHON3={fake_python}" in calls[0]["command"]
@@ -757,13 +787,15 @@ def test_python_executable_omitted_when_unset(
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         summary = stress_parse.run(
-            cfg,
-            log,
-            bsp=_bsp_stub(),
-            overlay_source=tmp_path / "bakar-tuning-nxp.yml",
-            runs=1,
-            target="world",
-            parse_threads=None,
+            ctx=stress_parse.StressParseContext(
+                cfg=cfg,
+                log=log,
+                bsp=_bsp_stub(),
+                overlay_source=tmp_path / "bakar-tuning-nxp.yml",
+                runs=1,
+                target="world",
+                parse_threads=None,
+            )
         )
 
     assert "python_executable" not in summary

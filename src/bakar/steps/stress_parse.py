@@ -21,6 +21,7 @@ import shlex
 import shutil
 import sys
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from rich.markup import escape
@@ -262,20 +263,31 @@ def _env_payload(parse_threads: int | None) -> dict[str, str]:
     return payload
 
 
-def run(
-    cfg: BuildConfig,
-    log: RunLogger,
-    *,
-    bsp: BspModel | None,
-    overlay_source: Path,
-    runs: int,
-    target: str,
-    parse_threads: int | None,
-    extra_overlays: list[Path] | None = None,
-    label: str | None = None,
-    python_executable: Path | None = None,
-) -> dict:
-    """Execute ``runs`` parse-only iterations and return the summary dict.
+@dataclass(frozen=True)
+class StressParseContext:
+    """The ten per-call parameters of :func:`run`, bundled into one object.
+
+    Every field name matches the keyword it replaced, so a call site reads
+    the same either way. Grouping them makes a transposition between two
+    same-typed arguments - ``target`` and ``label``, ``runs`` and
+    ``parse_threads`` - unexpressible at the call site rather than merely
+    tested for.
+    """
+
+    cfg: BuildConfig
+    log: RunLogger
+    bsp: BspModel | None
+    overlay_source: Path
+    runs: int
+    target: str
+    parse_threads: int | None
+    extra_overlays: list[Path] | None = None
+    label: str | None = None
+    python_executable: Path | None = None
+
+
+def run(ctx: StressParseContext) -> dict:
+    """Execute ``ctx.runs`` parse-only iterations and return the summary dict.
 
     Side effects: writes ``run-NN.log`` per iteration and a final
     ``summary.json`` under
@@ -300,6 +312,16 @@ def run(
     without reinstalling bakar under that interpreter. Recorded in
     ``summary.json["python_executable"]`` for the audit trail.
     """
+    cfg = ctx.cfg
+    log = ctx.log
+    overlay_source = ctx.overlay_source
+    runs = ctx.runs
+    target = ctx.target
+    parse_threads = ctx.parse_threads
+    extra_overlays = ctx.extra_overlays
+    label = ctx.label
+    python_executable = ctx.python_executable
+
     out_dir = log.run_dir / "stress-parse"
     out_dir.mkdir(parents=True, exist_ok=True)
 

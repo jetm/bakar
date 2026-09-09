@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
@@ -28,6 +29,29 @@ from bakar.observability import RunLogger
 from bakar.steps import bitbake_override as step_override
 from bakar.steps import kas_build as step_kas
 from bakar.steps import stress_parse as step_stress_parse
+
+
+@dataclass(frozen=True)
+class _StressParseCtx:
+    """The eleven ``stress-parse`` CLI parameters, packed for :func:`_stress_parse_impl`.
+
+    Typer cannot bind a dataclass-annotated parameter, so the command keeps
+    its eleven annotated parameters and packs them here in its body. Field
+    names match the parameter names one-for-one; a transposition is caught by
+    ``test_stress_parse_ctx_carries_every_flag_unchanged``.
+    """
+
+    kas_yaml: str | None
+    runs: int
+    target: str
+    parse_threads: int | None
+    machine: str | None
+    image: str | None
+    manifest: str | None
+    branch: str | None
+    workspace: Path | None
+    label: str | None
+    python: Path | None
 
 
 @app.command("stress-parse")
@@ -111,6 +135,43 @@ def stress_parse(
     is already the source) before looping. Skips the doctor pre-flight -
     the user opts into stress-parse explicitly.
     """
+    _stress_parse_impl(
+        _StressParseCtx(
+            kas_yaml=kas_yaml,
+            runs=runs,
+            target=target,
+            parse_threads=parse_threads,
+            machine=machine,
+            image=image,
+            manifest=manifest,
+            branch=branch,
+            workspace=workspace,
+            label=label,
+            python=python,
+        )
+    )
+
+
+def _stress_parse_impl(ctx: _StressParseCtx) -> None:
+    """Run the stress-parse loop described by ``ctx``.
+
+    Split out of :func:`stress_parse` so the command holds only its eleven
+    annotated Typer parameters. Kept in this module because the tests patch
+    ``step_override``, ``step_kas`` and ``step_stress_parse`` as bare names
+    here.
+    """
+    kas_yaml = ctx.kas_yaml
+    runs = ctx.runs
+    target = ctx.target
+    parse_threads = ctx.parse_threads
+    machine = ctx.machine
+    image = ctx.image
+    manifest = ctx.manifest
+    branch = ctx.branch
+    workspace = ctx.workspace
+    label = ctx.label
+    python = ctx.python
+
     if runs < 1:
         console.print("[red]--runs must be >= 1[/]")
         raise typer.Exit(code=2)
@@ -181,16 +242,18 @@ def stress_parse(
         if not byo_form:
             step_kas.regenerate_yaml(cfg, log, bsp=bsp)
         summary = step_stress_parse.run(
-            cfg,
-            log,
-            bsp=bsp,
-            overlay_source=overlay_source,
-            extra_overlays=extra_overlays,
-            runs=runs,
-            target=target,
-            parse_threads=parse_threads,
-            label=label,
-            python_executable=python_executable,
+            ctx=step_stress_parse.StressParseContext(
+                cfg=cfg,
+                log=log,
+                bsp=bsp,
+                overlay_source=overlay_source,
+                extra_overlays=extra_overlays,
+                runs=runs,
+                target=target,
+                parse_threads=parse_threads,
+                label=label,
+                python_executable=python_executable,
+            )
         )
 
     table = Table(title=f"stress-parse summary ({family})", show_edge=False)
