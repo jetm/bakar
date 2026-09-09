@@ -68,9 +68,9 @@ def test_nxp_path_invokes_repo_manifest_r(
 @pytest.mark.unit
 def test_nxp_default_output_path(runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Without ``--output`` the pinned manifest targets cfg.bsp_root / pinned-manifest.xml."""
-    from bakar.config import resolve
+    from bakar.config import ResolveRequest, resolve
 
-    cfg = resolve(workspace=nxp_workspace, bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=nxp_workspace, bsp_family="nxp"))
     expected = str(cfg.bsp_root / "pinned-manifest.xml")
 
     captured: list[list[str]] = []
@@ -92,9 +92,9 @@ def test_nxp_default_output_path(runner: _CliRunner, nxp_workspace: Path, monkey
 @pytest.mark.unit
 def test_nxp_output_override(runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``--output pinned.xml`` makes the NXP path target that path instead of the default."""
-    from bakar.config import resolve
+    from bakar.config import ResolveRequest, resolve
 
-    cfg = resolve(workspace=nxp_workspace, bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=nxp_workspace, bsp_family="nxp"))
     default = str(cfg.bsp_root / "pinned-manifest.xml")
     custom = nxp_workspace / "pinned.xml"
 

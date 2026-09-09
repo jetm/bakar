@@ -18,7 +18,7 @@ from bakar.commands._helpers import (
     _tuning_extra_overlays,
     global_sccache_dist_override,
 )
-from bakar.config import BSPSpec, resolve
+from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.layers import collect_layer_hashes, discover_source_repos
 
 
@@ -88,12 +88,14 @@ def show(
     family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
     cfg = resolve(
-        workspace=ws,
-        bsp_family=family,
-        spec=BSPSpec(manifest=manifest),
-        kas_yaml=kas_yaml,
-        user_config=_state._USER_CONFIG,
-        sccache_dist_override=global_sccache_dist_override(),
+        ResolveRequest(
+            workspace=ws,
+            bsp_family=family,
+            spec=BSPSpec(manifest=manifest),
+            kas_yaml=kas_yaml,
+            user_config=_state._USER_CONFIG,
+            sccache_dist_override=global_sccache_dist_override(),
+        )
     )
     overlay_source = _overlay_for(bsp)
     extra_overlays = _tuning_extra_overlays(cfg)

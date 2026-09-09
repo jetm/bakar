@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 from bakar import diagnostics
-from bakar.config import BuildConfig, resolve
+from bakar.config import BuildConfig, ResolveRequest, resolve
 from bakar.diagnostics import Severity, Status, check_uninative_cluster_consistency, run_all
 from bakar.user_config import UserConfig
 from bakar.workspace_config import WorkspaceConfig
@@ -227,10 +227,12 @@ def _run_all_cfg(tmp_path: Path, *, cluster: bool) -> BuildConfig:
     cannot become the rendezvous root during a full ``run_all`` sweep.
     """
     return resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        user_config=UserConfig(cluster=cluster, sstate_dir=None, dl_dir=None),
-        workspace_config=WorkspaceConfig(),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            user_config=UserConfig(cluster=cluster, sstate_dir=None, dl_dir=None),
+            workspace_config=WorkspaceConfig(),
+        )
     )
 
 

@@ -16,6 +16,7 @@ from bakar.config import (
     DEFAULT_NXP_MACHINE,
     DEFAULT_NXP_MANIFEST,
     BSPSpec,
+    ResolveRequest,
     resolve,
 )
 from bakar.user_config import UserConfig
@@ -50,9 +51,11 @@ def test_cli_machine_beats_env(tmp_path, monkeypatch):
     monkeypatch.setenv(_MACHINE_VAR, "env-board")
 
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        spec=BSPSpec(machine="my-board"),  # CLI flag
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            spec=BSPSpec(machine="my-board"),  # CLI flag
+        )
     )
 
     assert cfg.machine == "my-board", f"CLI flag 'machine' must override {_MACHINE_VAR}"
@@ -63,9 +66,11 @@ def test_cli_manifest_beats_env(tmp_path, monkeypatch):
     monkeypatch.setenv(_MANIFEST_VAR, "imx-6.12.49-2.2.0.xml")
 
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        spec=BSPSpec(manifest="imx-6.6.52-2.2.2.xml"),  # CLI flag
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            spec=BSPSpec(manifest="imx-6.6.52-2.2.2.xml"),  # CLI flag
+        )
     )
 
     assert cfg.manifest == "imx-6.6.52-2.2.2.xml", f"CLI flag 'manifest' must override {_MANIFEST_VAR}"
@@ -76,9 +81,11 @@ def test_cli_distro_beats_env(tmp_path, monkeypatch):
     monkeypatch.setenv(_DISTRO_VAR, "fsl-imx-wayland")
 
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        spec=BSPSpec(distro="fsl-imx-xwayland"),  # CLI flag
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            spec=BSPSpec(distro="fsl-imx-xwayland"),  # CLI flag
+        )
     )
 
     assert cfg.distro == "fsl-imx-xwayland", f"CLI flag 'distro' must override {_DISTRO_VAR}"
@@ -93,7 +100,7 @@ def test_env_machine_beats_default(tmp_path, monkeypatch):
     """Active machine env var must override the BSP-family default machine."""
     monkeypatch.setenv(_MACHINE_VAR, "imx8mm-var-dart")
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp"))
 
     assert cfg.machine == "imx8mm-var-dart", f"{_MACHINE_VAR} env var must beat default ({DEFAULT_NXP_MACHINE!r})"
     assert cfg.machine != DEFAULT_NXP_MACHINE
@@ -103,7 +110,7 @@ def test_env_manifest_beats_default(tmp_path, monkeypatch):
     """Active manifest env var must override the BSP-family default manifest."""
     monkeypatch.setenv(_MANIFEST_VAR, "imx-6.12.49-2.2.0.xml")
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp"))
 
     assert cfg.manifest == "imx-6.12.49-2.2.0.xml", (
         f"{_MANIFEST_VAR} env var must beat default ({DEFAULT_NXP_MANIFEST!r})"
@@ -114,7 +121,7 @@ def test_env_image_beats_default(tmp_path, monkeypatch):
     """Active image env var must override the BSP-family default image."""
     monkeypatch.setenv(_IMAGE_VAR, "fsl-image-qt5")
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp"))
 
     assert cfg.image == "fsl-image-qt5", f"{_IMAGE_VAR} env var must beat the NXP default image"
 
@@ -123,7 +130,7 @@ def test_no_env_yields_default(tmp_path, monkeypatch):
     """Without CLI flags or env vars the BSP-family default is used."""
     monkeypatch.delenv(_MACHINE_VAR, raising=False)
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp"))
 
     assert cfg.machine == DEFAULT_NXP_MACHINE, "Absent env + no CLI flag must fall back to BSP-family default"
 
@@ -137,7 +144,7 @@ def test_host_mode_auto_enables_when_kas_container_image_absent(tmp_path, monkey
     """Absent KAS_CONTAINER_IMAGE must auto-enable host_mode."""
     monkeypatch.delenv("KAS_CONTAINER_IMAGE", raising=False)
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp"))
 
     assert cfg.host_mode is True, "host_mode must auto-enable when KAS_CONTAINER_IMAGE is absent"
 
@@ -150,7 +157,7 @@ def test_image_alone_does_not_enable_container(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("KAS_CONTAINER_IMAGE", "test/kas-image:latest")
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp"))
 
     assert cfg.host_mode is True, "an image alone must not flip bakar to the container path"
 
@@ -159,7 +166,7 @@ def test_explicit_host_mode_beats_kas_container_image(tmp_path, monkeypatch):
     """Explicit host_mode=True wins even when KAS_CONTAINER_IMAGE is set."""
     monkeypatch.setenv("KAS_CONTAINER_IMAGE", "test/kas-image:latest")
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", spec=BSPSpec(host_mode=True))
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp", spec=BSPSpec(host_mode=True)))
 
     assert cfg.host_mode is True, "Explicit host_mode=True must override KAS_CONTAINER_IMAGE presence"
 
@@ -174,7 +181,7 @@ def test_user_config_machine_beats_default(tmp_path, monkeypatch):
     monkeypatch.delenv(_MACHINE_VAR, raising=False)
     uc = UserConfig(nxp_machine="imx93-var-som")
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc))
 
     assert cfg.machine == "imx93-var-som", "user_config.nxp_machine must beat the built-in default"
     assert cfg.machine != DEFAULT_NXP_MACHINE
@@ -185,7 +192,7 @@ def test_env_machine_beats_user_config(tmp_path, monkeypatch):
     monkeypatch.setenv(_MACHINE_VAR, "env-board")
     uc = UserConfig(nxp_machine="config-board")
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc))
 
     assert cfg.machine == "env-board", f"{_MACHINE_VAR} env var must beat user_config.nxp_machine"
 
@@ -196,10 +203,12 @@ def test_cli_machine_beats_user_config(tmp_path, monkeypatch):
     uc = UserConfig(nxp_machine="config-board")
 
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        spec=BSPSpec(machine="cli-board"),  # CLI flag
-        user_config=uc,
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            spec=BSPSpec(machine="cli-board"),  # CLI flag
+            user_config=uc,
+        )
     )
 
     assert cfg.machine == "cli-board", "CLI flag 'machine' must beat user_config.nxp_machine"
@@ -209,7 +218,7 @@ def test_user_config_container_image_used_when_env_absent(tmp_path, monkeypatch)
     """user_config.container_image is used when KAS_CONTAINER_IMAGE is unset."""
     monkeypatch.delenv("KAS_CONTAINER_IMAGE", raising=False)
     uc = UserConfig(kas_container_image="config/kas-image:latest")
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc))
 
     assert cfg.kas_container_image == "config/kas-image:latest", (
         "user_config.kas_container_image must be used when KAS_CONTAINER_IMAGE is unset"
@@ -223,7 +232,7 @@ def test_env_container_image_beats_user_config(tmp_path, monkeypatch):
     monkeypatch.setenv("KAS_CONTAINER_IMAGE", "env/kas-image:latest")
     uc = UserConfig(kas_container_image="config/kas-image:latest")
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc))
 
     assert cfg.kas_container_image == "env/kas-image:latest", (
         "KAS_CONTAINER_IMAGE env var must beat user_config.kas_container_image"
@@ -236,7 +245,7 @@ def test_workspace_container_image_beats_user_config(tmp_path, monkeypatch):
     (tmp_path / ".bakar.toml").write_text('[build]\nkas_container_image = "ws/kas-image:latest"\n')
     uc = UserConfig(kas_container_image="config/kas-image:latest")
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc))
 
     assert cfg.kas_container_image == "ws/kas-image:latest", (
         "workspace .bakar.toml kas_container_image must beat user_config"
@@ -248,7 +257,7 @@ def test_env_container_image_beats_workspace_config(tmp_path, monkeypatch):
     monkeypatch.setenv("KAS_CONTAINER_IMAGE", "env/kas-image:latest")
     (tmp_path / ".bakar.toml").write_text('[build]\nkas_container_image = "ws/kas-image:latest"\n')
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp"))
 
     assert cfg.kas_container_image == "env/kas-image:latest", (
         "KAS_CONTAINER_IMAGE env var must beat the workspace value (env > workspace)"
@@ -260,7 +269,7 @@ def test_workspace_container_image_does_not_disable_host(tmp_path, monkeypatch):
     monkeypatch.delenv("KAS_CONTAINER_IMAGE", raising=False)
     (tmp_path / ".bakar.toml").write_text('[build]\nkas_container_image = "ws/kas-image:latest"\n')
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp"))
 
     assert cfg.host_mode is True, "a workspace kas_container_image must not flip to container; opt in explicitly"
 
@@ -274,7 +283,7 @@ def test_empty_env_container_image_treated_as_unset(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("KAS_CONTAINER_IMAGE", "")
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp"))
 
     assert cfg.host_mode is True, "An empty KAS_CONTAINER_IMAGE must auto-enable host_mode (treated as unset)"
     assert cfg.kas_container_image == DEFAULT_CONTAINER_IMAGE
@@ -290,7 +299,7 @@ def test_user_config_sstate_dir_reaches_resolved_config(tmp_path, monkeypatch) -
     monkeypatch.delenv("SSTATE_DIR", raising=False)
     uc = UserConfig(sstate_dir="/data/sstate")
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc))
 
     assert cfg.sstate_dir == "/data/sstate"
 
@@ -300,7 +309,7 @@ def test_user_config_dl_dir_reaches_resolved_config(tmp_path, monkeypatch) -> No
     monkeypatch.delenv("DL_DIR", raising=False)
     uc = UserConfig(dl_dir="/data/dl")
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc))
 
     assert cfg.dl_dir == "/data/dl"
 
@@ -309,7 +318,7 @@ def test_user_config_pressure_max_integers_survive_resolution(tmp_path) -> None:
     """pressure_max_cpu/io/memory ints from user_config are preserved as ints on BuildConfig."""
     uc = UserConfig(pressure_max_cpu=60, pressure_max_io=45, pressure_max_memory=20)
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc))
 
     assert cfg.pressure_max_cpu == 60
     assert isinstance(cfg.pressure_max_cpu, int)
@@ -321,7 +330,7 @@ def test_user_config_pressure_max_integers_survive_resolution(tmp_path) -> None:
 
 def test_no_user_config_yields_none_tuning_fields(tmp_path) -> None:
     """Without a user_config, all build-tuning fields are None on BuildConfig."""
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp"))
 
     assert cfg.dl_dir is None
     assert cfg.sstate_dir is None
@@ -348,7 +357,7 @@ def test_workspace_machine_beats_user_config(tmp_path, monkeypatch):
     write_workspace_config(tmp_path, "nxp", {"machine": "workspace-board"})
     uc = UserConfig(nxp_machine="config-board")
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc))
 
     assert cfg.machine == "workspace-board", "workspace .bakar.toml machine must beat user_config.nxp_machine"
 
@@ -358,7 +367,7 @@ def test_env_machine_beats_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv(_MACHINE_VAR, "env-board")
     write_workspace_config(tmp_path, "nxp", {"machine": "workspace-board"})
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp"))
 
     assert cfg.machine == "env-board", f"{_MACHINE_VAR} env var must beat the workspace .bakar.toml machine"
 
@@ -369,9 +378,11 @@ def test_cli_machine_beats_workspace(tmp_path, monkeypatch):
     write_workspace_config(tmp_path, "nxp", {"machine": "workspace-board"})
 
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        spec=BSPSpec(machine="cli-board"),  # CLI flag
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            spec=BSPSpec(machine="cli-board"),  # CLI flag
+        )
     )
 
     assert cfg.machine == "cli-board", "CLI flag 'machine' must beat the workspace .bakar.toml machine"
@@ -382,7 +393,7 @@ def test_workspace_machine_beats_default(tmp_path, monkeypatch):
     monkeypatch.delenv(_MACHINE_VAR, raising=False)
     write_workspace_config(tmp_path, "nxp", {"machine": "workspace-board"})
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp"))
 
     assert cfg.machine == "workspace-board", "workspace .bakar.toml machine must beat the built-in default"
     assert cfg.machine != DEFAULT_NXP_MACHINE
@@ -394,6 +405,6 @@ def test_workspace_absent_falls_through_to_user_config(tmp_path, monkeypatch):
     assert not (tmp_path / ".bakar.toml").exists()
     uc = UserConfig(nxp_machine="config-board")
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc))
 
     assert cfg.machine == "config-board", "absent workspace .bakar.toml must fall through to user_config.nxp_machine"

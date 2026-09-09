@@ -19,7 +19,7 @@ from typer.testing import CliRunner
 
 import bakar.commands.report as report_module
 from bakar.cli import app
-from bakar.config import resolve
+from bakar.config import ResolveRequest, resolve
 from bakar.report import assemble_report
 from tests.conftest import make_report_summary
 
@@ -32,7 +32,7 @@ pytestmark = pytest.mark.unit
 def _nxp_cfg(tmp_path: Path):
     """Resolve an nxp BuildConfig rooted at a tmp_path workspace."""
     (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
-    return resolve(workspace=tmp_path, bsp_family="nxp")
+    return resolve(ResolveRequest(workspace=tmp_path, bsp_family="nxp"))
 
 
 def _write_events(run_dir: Path, records: list[dict]) -> None:

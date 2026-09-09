@@ -143,10 +143,10 @@ def test_find_runs_workspace_root_build(tmp_path: Path) -> None:
 
 def _report_cfg(tmp_path: Path):
     """Resolve an nxp BuildConfig and a run dir rooted at ``tmp_path``."""
-    from bakar.config import resolve
+    from bakar.config import ResolveRequest, resolve
 
     (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
-    cfg = resolve(workspace=tmp_path, bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=tmp_path, bsp_family="nxp"))
     run_dir = tmp_path / "runs" / "20260601-120000"
     run_dir.mkdir(parents=True)
     return run_dir, cfg

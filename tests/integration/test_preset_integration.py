@@ -189,9 +189,9 @@ def test_nxp_preset_dispatches_via_bsp(
     resolved_workspaces: list = []
     original_resolve = build_cmd.resolve
 
-    def capturing_resolve(**kwargs):  # type: ignore[no-untyped-def]
-        resolved_workspaces.append(kwargs.get("workspace"))
-        return original_resolve(**kwargs)
+    def capturing_resolve(request):  # type: ignore[no-untyped-def]
+        resolved_workspaces.append(request.workspace)
+        return original_resolve(request)
 
     monkeypatch.setattr(build_cmd, "resolve", capturing_resolve)
     monkeypatch.setattr(flavors_cmd, "resolve", capturing_resolve)

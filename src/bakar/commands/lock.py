@@ -17,7 +17,7 @@ from bakar.commands._helpers import (
     _overlay_for,
     _resolve_workspace,
 )
-from bakar.config import BSPSpec, resolve
+from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.observability import RunLogger
 from bakar.steps import kas_build as step_kas
 from bakar.steps.kas_build import KasBuildContext
@@ -56,11 +56,13 @@ def lock(
     family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
     cfg = resolve(
-        workspace=ws,
-        bsp_family=family,
-        spec=BSPSpec(manifest=manifest),
-        kas_yaml=kas_yaml,
-        user_config=_state._USER_CONFIG,
+        ResolveRequest(
+            workspace=ws,
+            bsp_family=family,
+            spec=BSPSpec(manifest=manifest),
+            kas_yaml=kas_yaml,
+            user_config=_state._USER_CONFIG,
+        )
     )
 
     if bsp is not None and bsp.manifest_kind == "repo-xml":

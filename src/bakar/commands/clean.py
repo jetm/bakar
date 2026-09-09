@@ -19,7 +19,7 @@ from bakar.commands._helpers import (
     _workspace_from_cwd,
     split_kas_yaml_arg,
 )
-from bakar.config import resolve
+from bakar.config import ResolveRequest, resolve
 
 
 def _resolve_family(
@@ -83,11 +83,13 @@ def clean(
         main_yaml, _extras = split_kas_yaml_arg(kas_yaml)
         family, _bsp = _dispatch_from_yaml(main_yaml)
         ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
-        cfg = resolve(workspace=ws, bsp_family=family, kas_yaml=main_yaml, user_config=_state._USER_CONFIG)
+        cfg = resolve(
+            ResolveRequest(workspace=ws, bsp_family=family, kas_yaml=main_yaml, user_config=_state._USER_CONFIG)
+        )
     else:
         ws = workspace or _workspace_from_cwd()
         family = _resolve_family(bsp, manifest, ws)
-        cfg = resolve(workspace=ws, bsp_family=family, user_config=_state._USER_CONFIG)
+        cfg = resolve(ResolveRequest(workspace=ws, bsp_family=family, user_config=_state._USER_CONFIG))
     if all and cfg.hashserv_state_key == cfg.bsp_root:
         # Stop the hashserv daemon before wiping, but only when it is keyed to
         # this workspace (the no-shared-sstate fallback). When the daemon is

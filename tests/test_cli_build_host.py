@@ -22,7 +22,7 @@ from typer.testing import CliRunner
 
 import bakar.commands._app as cli_module
 from bakar.cli import app
-from bakar.config import BuildConfig
+from bakar.config import BuildConfig, ResolveRequest
 from bakar.config import resolve as real_resolve
 
 if TYPE_CHECKING:
@@ -67,8 +67,8 @@ def _make_generic_yaml(tmp_path: Path) -> Path:
 def _capturing_resolve(captured: list[BuildConfig]):
     """Build a resolve wrapper that records the produced BuildConfig."""
 
-    def _wrapper(**kwargs: object) -> BuildConfig:
-        cfg = real_resolve(**kwargs)  # type: ignore[arg-type]
+    def _wrapper(request: ResolveRequest) -> BuildConfig:
+        cfg = real_resolve(request)
         captured.append(cfg)
         return cfg
 

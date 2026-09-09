@@ -19,7 +19,7 @@ import bakar.commands._app as _state
 from bakar import hashserv
 from bakar.commands._app import app, console
 from bakar.commands._helpers import WorkspaceOption, _dispatch_bsp, _dispatch_from_yaml, _resolve_workspace
-from bakar.config import BuildConfig, resolve
+from bakar.config import BuildConfig, ResolveRequest, resolve
 
 hashserv_app = typer.Typer(
     help="Manage the workspace bitbake-hashserv daemon (start/stop/status).",
@@ -49,10 +49,12 @@ def _resolve_cfg(workspace: Path | None = None, kas_yaml: Path | None = None) ->
         family, _bsp = _dispatch_bsp(None)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
     return resolve(
-        workspace=ws,
-        bsp_family=family,
-        kas_yaml=kas_yaml,
-        user_config=_state._USER_CONFIG,
+        ResolveRequest(
+            workspace=ws,
+            bsp_family=family,
+            kas_yaml=kas_yaml,
+            user_config=_state._USER_CONFIG,
+        )
     )
 
 

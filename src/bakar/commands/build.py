@@ -95,7 +95,7 @@ from bakar.commands._post_build import (
     _SbomRequest,
     _sync_feed,
 )
-from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, compose_preset_output_path, resolve
+from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, ResolveRequest, compose_preset_output_path, resolve
 from bakar.fmt import fmt_duration
 from bakar.observability import RunLogger
 from bakar.output_mode import OutputMode, resolve_output_mode
@@ -539,21 +539,23 @@ def build(
         ws = ws / "build" / compose_preset_output_path(active_preset, 0)
 
     cfg = resolve(
-        workspace=ws,
-        bsp_family=family,
-        spec=BSPSpec(
-            machine=machine,
-            distro=distro,
-            image=image,
-            manifest=manifest,
-            repo_branch=branch,
-            host_mode=host_mode,
-            container_mode=container_mode,
-        ),
-        kas_yaml=main_yaml,
-        user_config=_state._USER_CONFIG,
-        preset=active_preset,
-        sccache_dist_override=global_sccache_dist_override(),
+        ResolveRequest(
+            workspace=ws,
+            bsp_family=family,
+            spec=BSPSpec(
+                machine=machine,
+                distro=distro,
+                image=image,
+                manifest=manifest,
+                repo_branch=branch,
+                host_mode=host_mode,
+                container_mode=container_mode,
+            ),
+            kas_yaml=main_yaml,
+            user_config=_state._USER_CONFIG,
+            preset=active_preset,
+            sccache_dist_override=global_sccache_dist_override(),
+        )
     )
     if sstate_mirror is not None:
         cfg = replace(cfg, sstate_mirror_url=sstate_mirror)

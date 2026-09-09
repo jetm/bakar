@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from bakar.config import resolve
+from bakar.config import ResolveRequest, resolve
 from bakar.layers import LayerHash, collect_layer_hashes
 from tests._fakes import Completed as _Completed
 
@@ -31,7 +31,7 @@ pytestmark = pytest.mark.unit
 def _nxp_cfg(tmp_path: Path):
     """Resolve an nxp BuildConfig rooted at a tmp_path workspace."""
     (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
-    return resolve(workspace=tmp_path, bsp_family="nxp")
+    return resolve(ResolveRequest(workspace=tmp_path, bsp_family="nxp"))
 
 
 def _write_bblayers(cfg, repos: list[str]) -> None:

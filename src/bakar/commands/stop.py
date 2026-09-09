@@ -16,7 +16,7 @@ from bakar.commands._helpers import (
     _resolve_workspace,
     split_kas_yaml_arg,
 )
-from bakar.config import BSPSpec, resolve
+from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.steps import remote_dispatch
 
 # Matches config.py's stop_grace_seconds default. A remote stop resolves no
@@ -114,11 +114,13 @@ def stop(
     family, _bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
     cfg = resolve(
-        workspace=ws,
-        bsp_family=family,
-        spec=BSPSpec(manifest=manifest),
-        kas_yaml=kas_yaml,
-        user_config=_state._USER_CONFIG,
+        ResolveRequest(
+            workspace=ws,
+            bsp_family=family,
+            spec=BSPSpec(manifest=manifest),
+            kas_yaml=kas_yaml,
+            user_config=_state._USER_CONFIG,
+        )
     )
     grace_seconds = timeout if timeout is not None else cfg.stop_grace_seconds
     stopped = build_stop.stop_build(cfg.bsp_root, cfg, force=force, grace_seconds=grace_seconds)

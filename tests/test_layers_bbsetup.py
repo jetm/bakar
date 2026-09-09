@@ -26,7 +26,7 @@ from typer.testing import CliRunner
 
 import bakar.commands.layers  # noqa: F401 - registers sub-app on app
 from bakar.cli import app
-from bakar.config import resolve
+from bakar.config import ResolveRequest, resolve
 from bakar.layers import collect_layer_hashes
 
 if TYPE_CHECKING:
@@ -91,7 +91,7 @@ def _env_dump(values: dict[str, str]) -> str:
 
 def test_bbsetup_layers_resolve_non_empty(tmp_path: Path) -> None:
     """A bbsetup workspace with layers/<repo> git repos yields a real table."""
-    cfg = resolve(workspace=tmp_path, bsp_family="bbsetup")
+    cfg = resolve(ResolveRequest(workspace=tmp_path, bsp_family="bbsetup"))
     repos = ["poky", "meta-openembedded"]
     _write_bbsetup_bblayers(cfg, repos)
     for repo in repos:
@@ -108,7 +108,7 @@ def test_bbsetup_layers_resolve_non_empty(tmp_path: Path) -> None:
 
 def test_bbsetup_missing_layer_dir_omitted(tmp_path: Path) -> None:
     """A repo named in bblayers.conf with no layers/<repo> dir is skipped."""
-    cfg = resolve(workspace=tmp_path, bsp_family="bbsetup")
+    cfg = resolve(ResolveRequest(workspace=tmp_path, bsp_family="bbsetup"))
     _write_bbsetup_bblayers(cfg, ["poky", "ghost"])
     _git_repo(cfg.bsp_root / "layers" / "poky")  # ghost dir intentionally absent
 
@@ -120,7 +120,7 @@ def test_bbsetup_missing_layer_dir_omitted(tmp_path: Path) -> None:
 
 def test_no_bblayers_returns_empty(tmp_path: Path) -> None:
     """A workspace with no bblayers.conf returns [] without raising."""
-    cfg = resolve(workspace=tmp_path, bsp_family="bbsetup")
+    cfg = resolve(ResolveRequest(workspace=tmp_path, bsp_family="bbsetup"))
     assert not cfg.bblayers_conf.is_file()
 
     assert collect_layer_hashes(cfg) == []

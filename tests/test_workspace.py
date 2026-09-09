@@ -21,7 +21,7 @@ from unittest.mock import patch
 import pytest
 
 from bakar import workspace
-from bakar.config import BSPSpec, resolve
+from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.workspace import (
     _cache_dirs_ok,
     _detect_nxp,
@@ -223,7 +223,7 @@ def test_cache_dirs_ok_false_when_missing(monkeypatch: pytest.MonkeyPatch, tmp_p
 
 def test_ensure_tools_returns_empty_when_all_present(fake_workspace: Path) -> None:
     """When ``shutil.which`` finds every binary, the missing list is empty."""
-    cfg = resolve(workspace=fake_workspace, bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=fake_workspace, bsp_family="nxp"))
 
     with patch.object(workspace.shutil, "which", return_value="/usr/bin/dummy"):
         assert ensure_tools(cfg) == []
@@ -231,7 +231,7 @@ def test_ensure_tools_returns_empty_when_all_present(fake_workspace: Path) -> No
 
 def test_ensure_tools_reports_missing_binaries(fake_workspace: Path) -> None:
     """When ``shutil.which`` returns None for a tool, that tool is reported."""
-    cfg = resolve(workspace=fake_workspace, bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=fake_workspace, bsp_family="nxp"))
 
     # Map of "tool present?" -- repo and docker missing, the rest present.
     def fake_which(name: str) -> str | None:
@@ -245,7 +245,7 @@ def test_ensure_tools_reports_missing_binaries(fake_workspace: Path) -> None:
 
 def test_ensure_tools_ti_branch_requires_git(fake_workspace: Path) -> None:
     """TI branch picks ``git`` over ``repo`` in the required-tool list."""
-    cfg = resolve(workspace=fake_workspace, bsp_family="ti")
+    cfg = resolve(ResolveRequest(workspace=fake_workspace, bsp_family="ti"))
 
     def fake_which(name: str) -> str | None:
         return None if name == "git" else f"/usr/bin/{name}"
@@ -272,9 +272,11 @@ def test_detect_nxp_populates_state(fake_workspace: Path) -> None:
     real git binary.
     """
     cfg = resolve(
-        workspace=fake_workspace,
-        bsp_family="nxp",
-        spec=BSPSpec(manifest="imx-6.1.55-2.2.0.xml"),
+        ResolveRequest(
+            workspace=fake_workspace,
+            bsp_family="nxp",
+            spec=BSPSpec(manifest="imx-6.1.55-2.2.0.xml"),
+        )
     )
 
     with patch.object(workspace.subprocess, "run", return_value=_fake_completed("a" * 40 + "\n")):

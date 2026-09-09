@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar.config import BSPSpec, resolve
+from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.user_config import UserConfig
 from bakar.workspace_config import WorkspaceConfig
 
@@ -58,10 +58,12 @@ def _with_image() -> UserConfig:
 def test_unset_config_selects_host(tmp_path: Path) -> None:
     """No toggle anywhere selects host - the structural default, no config needed."""
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        user_config=UserConfig(),
-        workspace_config=WorkspaceConfig(),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            user_config=UserConfig(),
+            workspace_config=WorkspaceConfig(),
+        )
     )
     assert cfg.host_mode is True
 
@@ -74,10 +76,12 @@ def test_configured_image_alone_still_selects_host(tmp_path: Path) -> None:
     gone, so an image without an explicit container opt-in must select host.
     """
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        user_config=_with_image(),
-        workspace_config=WorkspaceConfig(),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            user_config=_with_image(),
+            workspace_config=WorkspaceConfig(),
+        )
     )
     assert cfg.host_mode is True
 
@@ -86,10 +90,12 @@ def test_configured_image_alone_still_selects_host(tmp_path: Path) -> None:
 def test_host_mode_toggle_is_noop_alias(tmp_path: Path) -> None:
     """The retained host_mode toggle only ever forces host; False does NOT mean container."""
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        user_config=UserConfig(host_mode=False),
-        workspace_config=WorkspaceConfig(host_mode=False),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            user_config=UserConfig(host_mode=False),
+            workspace_config=WorkspaceConfig(host_mode=False),
+        )
     )
     assert cfg.host_mode is True
 
@@ -101,10 +107,12 @@ def test_host_mode_toggle_is_noop_alias(tmp_path: Path) -> None:
 def test_user_container_toggle_selects_container(tmp_path: Path) -> None:
     """A user config container = true opts into the kas-container path."""
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        user_config=UserConfig(container=True),
-        workspace_config=WorkspaceConfig(),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            user_config=UserConfig(container=True),
+            workspace_config=WorkspaceConfig(),
+        )
     )
     assert cfg.host_mode is False
 
@@ -113,10 +121,12 @@ def test_user_container_toggle_selects_container(tmp_path: Path) -> None:
 def test_workspace_container_toggle_selects_container(tmp_path: Path) -> None:
     """A workspace [build] container = true opts into the kas-container path."""
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        user_config=UserConfig(),
-        workspace_config=WorkspaceConfig(container=True),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            user_config=UserConfig(),
+            workspace_config=WorkspaceConfig(container=True),
+        )
     )
     assert cfg.host_mode is False
 
@@ -125,11 +135,13 @@ def test_workspace_container_toggle_selects_container(tmp_path: Path) -> None:
 def test_cli_container_flag_selects_container(tmp_path: Path) -> None:
     """CLI --container (spec.container_mode) opts into the container path."""
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        spec=BSPSpec(container_mode=True),
-        user_config=UserConfig(),
-        workspace_config=WorkspaceConfig(),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            spec=BSPSpec(container_mode=True),
+            user_config=UserConfig(),
+            workspace_config=WorkspaceConfig(),
+        )
     )
     assert cfg.host_mode is False
 
@@ -141,11 +153,13 @@ def test_cli_container_flag_selects_container(tmp_path: Path) -> None:
 def test_cli_container_wins_over_cli_host(tmp_path: Path) -> None:
     """When both CLI flags are passed, --container wins (the affirmative request)."""
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        spec=BSPSpec(host_mode=True, container_mode=True),
-        user_config=UserConfig(),
-        workspace_config=WorkspaceConfig(),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            spec=BSPSpec(host_mode=True, container_mode=True),
+            user_config=UserConfig(),
+            workspace_config=WorkspaceConfig(),
+        )
     )
     assert cfg.host_mode is False
 
@@ -154,11 +168,13 @@ def test_cli_container_wins_over_cli_host(tmp_path: Path) -> None:
 def test_cli_host_flag_overrides_container_toggle(tmp_path: Path) -> None:
     """CLI --host forces host even when a config container toggle is set."""
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        spec=BSPSpec(host_mode=True),
-        user_config=UserConfig(container=True),
-        workspace_config=WorkspaceConfig(container=True),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            spec=BSPSpec(host_mode=True),
+            user_config=UserConfig(container=True),
+            workspace_config=WorkspaceConfig(container=True),
+        )
     )
     assert cfg.host_mode is True
 
@@ -168,10 +184,12 @@ def test_env_container_wins_over_workspace_and_user(tmp_path: Path, monkeypatch:
     """BAKAR_CONTAINER=1 forces container, overriding workspace/user toggles."""
     monkeypatch.setenv("BAKAR_CONTAINER", "1")
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        user_config=UserConfig(container=False),
-        workspace_config=WorkspaceConfig(container=False),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            user_config=UserConfig(container=False),
+            workspace_config=WorkspaceConfig(container=False),
+        )
     )
     assert cfg.host_mode is False
 
@@ -181,10 +199,12 @@ def test_env_container_false_overrides_workspace_true(tmp_path: Path, monkeypatc
     """BAKAR_CONTAINER=0 outranks a workspace container=true toggle -> host."""
     monkeypatch.setenv("BAKAR_CONTAINER", "0")
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        user_config=UserConfig(),
-        workspace_config=WorkspaceConfig(container=True),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            user_config=UserConfig(),
+            workspace_config=WorkspaceConfig(container=True),
+        )
     )
     assert cfg.host_mode is True
 
@@ -193,10 +213,12 @@ def test_env_container_false_overrides_workspace_true(tmp_path: Path, monkeypatc
 def test_workspace_container_wins_over_user_container(tmp_path: Path) -> None:
     """Workspace container=false outranks a user container=true toggle -> host."""
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        user_config=UserConfig(container=True),
-        workspace_config=WorkspaceConfig(container=False),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            user_config=UserConfig(container=True),
+            workspace_config=WorkspaceConfig(container=False),
+        )
     )
     assert cfg.host_mode is True
 
@@ -218,7 +240,7 @@ def test_workspace_toml_parses_container_key(tmp_path: Path) -> None:
     wc = load_workspace_config(tmp_path)
     assert wc.container is True
 
-    cfg = resolve(workspace=tmp_path, bsp_family="nxp", user_config=UserConfig(), workspace_config=wc)
+    cfg = resolve(ResolveRequest(workspace=tmp_path, bsp_family="nxp", user_config=UserConfig(), workspace_config=wc))
     assert cfg.host_mode is False
 
 
@@ -232,7 +254,7 @@ def test_workspace_toml_still_parses_host_mode_key(tmp_path: Path) -> None:
     wc = load_workspace_config(tmp_path)
     assert wc.host_mode is True
 
-    cfg = resolve(workspace=tmp_path, bsp_family="nxp", user_config=UserConfig(), workspace_config=wc)
+    cfg = resolve(ResolveRequest(workspace=tmp_path, bsp_family="nxp", user_config=UserConfig(), workspace_config=wc))
     assert cfg.host_mode is True
 
 
@@ -259,9 +281,11 @@ def test_dataclass_default_matches_resolver_default(tmp_path: Path) -> None:
         kas_container_image="jetm/kas-build-env:latest",
     )
     resolved = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        user_config=UserConfig(),
-        workspace_config=WorkspaceConfig(),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            user_config=UserConfig(),
+            workspace_config=WorkspaceConfig(),
+        )
     )
     assert direct.host_mode is resolved.host_mode is True

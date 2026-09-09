@@ -55,7 +55,7 @@ from bakar.commands._helpers import (
     global_sccache_dist_override,
 )
 from bakar.commands.log import _resolve_run_dir
-from bakar.config import BSPSpec, BuildConfig, resolve
+from bakar.config import BSPSpec, BuildConfig, ResolveRequest, resolve
 from bakar.diagnostics import probe_build_daemon, probe_ccache, probe_cluster, split_host_port
 from bakar.eventlog import normalize, running_from_rows
 from bakar.output_mode import OutputMode, resolve_output_mode
@@ -560,12 +560,14 @@ def monitor(
 
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
     cfg = resolve(
-        workspace=ws,
-        bsp_family=family,
-        spec=BSPSpec(manifest=None),
-        kas_yaml=kas_yaml,
-        user_config=_state._USER_CONFIG,
-        sccache_dist_override=global_sccache_dist_override(),
+        ResolveRequest(
+            workspace=ws,
+            bsp_family=family,
+            spec=BSPSpec(manifest=None),
+            kas_yaml=kas_yaml,
+            user_config=_state._USER_CONFIG,
+            sccache_dist_override=global_sccache_dist_override(),
+        )
     )
     cfg = apply_sccache_overrides(cfg)
     cfg = apply_mold_overrides(cfg)

@@ -176,11 +176,11 @@ def test_resolve_use_sccache_dist_false_by_default() -> None:
 @pytest.mark.unit
 def test_resolve_threads_sccache_dist_from_user_config_true(tmp_path: Path) -> None:
     """UserConfig(sccache_dist=True) threads to cfg.sccache_dist is True."""
-    from bakar.config import resolve
+    from bakar.config import ResolveRequest, resolve
 
     uc = UserConfig(sccache_dist=True, sccache_scheduler_url="http://localhost:10600")
 
-    cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = resolve(ResolveRequest(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", user_config=uc))
 
     assert cfg.sccache_dist is True
     assert cfg.sccache_scheduler_url == "http://localhost:10600"
@@ -190,9 +190,9 @@ def test_resolve_threads_sccache_dist_from_user_config_true(tmp_path: Path) -> N
 @pytest.mark.unit
 def test_resolve_sccache_dist_default_false_without_user_config(tmp_path: Path) -> None:
     """Without a user_config, sccache_dist resolves to False and url to None."""
-    from bakar.config import resolve
+    from bakar.config import ResolveRequest, resolve
 
-    cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=_nxp_workspace(tmp_path), bsp_family="nxp"))
 
     assert cfg.sccache_dist is False
     assert cfg.sccache_scheduler_url is None
@@ -209,10 +209,10 @@ def test_resolve_cli_scheduler_overrides_config(tmp_path: Path) -> None:
     """
     from dataclasses import replace
 
-    from bakar.config import resolve
+    from bakar.config import ResolveRequest, resolve
 
     uc = UserConfig(sccache_dist=True, sccache_scheduler_url="http://config-host:10600")
-    cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = resolve(ResolveRequest(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", user_config=uc))
 
     cli_scheduler = "http://cli-host:10600"
     cfg = replace(cfg, sccache_scheduler_url=cli_scheduler)

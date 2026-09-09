@@ -24,7 +24,7 @@ from bakar.commands._helpers import (
     global_host_mode,
     split_kas_yaml_arg,
 )
-from bakar.config import BSPSpec, resolve
+from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.observability import RunLogger
 from bakar.steps import bitbake_override as step_override
 from bakar.steps import kas_build as step_kas
@@ -207,18 +207,20 @@ def _stress_parse_impl(ctx: _StressParseCtx) -> None:
 
     ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
     cfg = resolve(
-        workspace=ws,
-        bsp_family=family,
-        spec=BSPSpec(
-            machine=machine,
-            image=image,
-            manifest=manifest,
-            repo_branch=branch,
-            host_mode=host_mode,
-            container_mode=container_mode,
-        ),
-        kas_yaml=main_yaml,
-        user_config=_state._USER_CONFIG,
+        ResolveRequest(
+            workspace=ws,
+            bsp_family=family,
+            spec=BSPSpec(
+                machine=machine,
+                image=image,
+                manifest=manifest,
+                repo_branch=branch,
+                host_mode=host_mode,
+                container_mode=container_mode,
+            ),
+            kas_yaml=main_yaml,
+            user_config=_state._USER_CONFIG,
+        )
     )
     overlay_source = _overlay_for(bsp)
     extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from bakar.config import BuildConfig, resolve
+from bakar.config import BuildConfig, ResolveRequest, resolve
 from bakar.diagnostics import (
     _DOCKER_CHECKS,
     CHECK_GROUPS,
@@ -70,10 +70,12 @@ def _cfg(**over: object) -> BuildConfig:
 def test_config_default_absent_key_is_non_cluster(tmp_path: Path) -> None:
     """An absent `cluster` key resolves to a non-cluster build."""
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        user_config=UserConfig(),
-        workspace_config=WorkspaceConfig(),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            user_config=UserConfig(),
+            workspace_config=WorkspaceConfig(),
+        )
     )
     assert cfg.cluster is False
 
@@ -82,10 +84,12 @@ def test_config_default_absent_key_is_non_cluster(tmp_path: Path) -> None:
 def test_config_default_cluster_true_when_set(tmp_path: Path) -> None:
     """`cluster = true` resolves to a cluster build."""
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        user_config=UserConfig(cluster=True),
-        workspace_config=WorkspaceConfig(),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            user_config=UserConfig(cluster=True),
+            workspace_config=WorkspaceConfig(),
+        )
     )
     assert cfg.cluster is True
 
@@ -97,10 +101,12 @@ def test_config_default_cluster_true_when_set(tmp_path: Path) -> None:
 def test_gating_central_absent_when_cluster_off(tmp_path: Path) -> None:
     """cluster=False: run_all lists no central check and probes nothing."""
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        user_config=UserConfig(cluster=False),
-        workspace_config=WorkspaceConfig(),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            user_config=UserConfig(cluster=False),
+            workspace_config=WorkspaceConfig(),
+        )
     )
     names = {r.name for r in run_all(cfg)}
     assert "central-hashserv" not in names
@@ -111,10 +117,12 @@ def test_gating_central_absent_when_cluster_off(tmp_path: Path) -> None:
 def test_gating_central_present_when_cluster_on(tmp_path: Path) -> None:
     """cluster=True: the central checks appear in the diagnosis."""
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        user_config=UserConfig(cluster=True),
-        workspace_config=WorkspaceConfig(),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            user_config=UserConfig(cluster=True),
+            workspace_config=WorkspaceConfig(),
+        )
     )
     names = {r.name for r in run_all(cfg)}
     assert "central-hashserv" in names
@@ -197,10 +205,12 @@ _NFS_ENTRY = ("10.42.0.1:/export/sstate", "/mnt/sstate", "nfs", "rw,hard,vers=4"
 def test_gating_shared_mount_absent_when_cluster_off(tmp_path: Path) -> None:
     """cluster=False: run_all lists no shared-mounts check."""
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        user_config=UserConfig(cluster=False),
-        workspace_config=WorkspaceConfig(),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            user_config=UserConfig(cluster=False),
+            workspace_config=WorkspaceConfig(),
+        )
     )
     assert "shared-mounts" not in {r.name for r in run_all(cfg)}
 
@@ -209,10 +219,12 @@ def test_gating_shared_mount_absent_when_cluster_off(tmp_path: Path) -> None:
 def test_gating_shared_mount_present_when_cluster_on(tmp_path: Path) -> None:
     """cluster=True: the shared-mounts check appears."""
     cfg = resolve(
-        workspace=_workspace(tmp_path),
-        bsp_family="nxp",
-        user_config=UserConfig(cluster=True),
-        workspace_config=WorkspaceConfig(),
+        ResolveRequest(
+            workspace=_workspace(tmp_path),
+            bsp_family="nxp",
+            user_config=UserConfig(cluster=True),
+            workspace_config=WorkspaceConfig(),
+        )
     )
     assert "shared-mounts" in {r.name for r in run_all(cfg)}
 

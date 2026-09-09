@@ -15,7 +15,7 @@ from bakar.commands._helpers import (
     _dispatch_bsp,
     _workspace_from_cwd,
 )
-from bakar.config import BSPSpec, resolve
+from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.kas import KasGenOptions, write_bbsetup_yaml, write_yaml
 
 
@@ -71,10 +71,12 @@ def gen_kas(
     family, bsp = _dispatch_bsp(manifest)
     ws = workspace or _workspace_from_cwd()
     cfg = resolve(
-        workspace=ws,
-        bsp_family=family,
-        spec=BSPSpec(machine=machine, distro=distro, image=image, manifest=manifest, repo_branch=branch),
-        user_config=_state._USER_CONFIG,
+        ResolveRequest(
+            workspace=ws,
+            bsp_family=family,
+            spec=BSPSpec(machine=machine, distro=distro, image=image, manifest=manifest, repo_branch=branch),
+            user_config=_state._USER_CONFIG,
+        )
     )
     out_path = output.resolve() if output is not None else cfg.default_kas_yaml
     if dry_run:

@@ -571,8 +571,8 @@ def test_preset_explicit_image_overrides_preset(
 
     original_resolve = build_mod.resolve
 
-    def capturing_resolve(**kwargs):  # type: ignore[no-untyped-def]
-        cfg = original_resolve(**kwargs)
+    def capturing_resolve(request):  # type: ignore[no-untyped-def]
+        cfg = original_resolve(request)
         resolved_configs.append(cfg)
         return cfg
 
@@ -658,9 +658,9 @@ def test_nxp_preset_output_path_contains_manifest_version(
     resolved_workspaces: list = []
     original_resolve = build_mod.resolve
 
-    def capturing_resolve(**kwargs):  # type: ignore[no-untyped-def]
-        resolved_workspaces.append(kwargs.get("workspace"))
-        return original_resolve(**kwargs)
+    def capturing_resolve(request):  # type: ignore[no-untyped-def]
+        resolved_workspaces.append(request.workspace)
+        return original_resolve(request)
 
     monkeypatch.setattr(build_mod, "resolve", capturing_resolve)
     monkeypatch.setattr(flavors_cmd, "resolve", capturing_resolve)

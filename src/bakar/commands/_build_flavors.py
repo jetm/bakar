@@ -46,7 +46,7 @@ from bakar.commands._helpers import (
 # pre-split ``build.py``. ``_CveRequest`` already makes this a runtime import,
 # so the guard deferred nothing.
 from bakar.commands._post_build import _CveRequest, _FeedRequest, _SbomRequest
-from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, compose_preset_output_path, resolve
+from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, ResolveRequest, compose_preset_output_path, resolve
 from bakar.kas import translate_bbsetup_config, write_bbsetup_yaml
 from bakar.preset_config import load_presets
 from bakar.steps import bitbake_override as step_override
@@ -95,17 +95,19 @@ def _run_bbsetup_build(
     Factored out of ``build()`` to keep the main function readable.
     """
     cfg = resolve(
-        workspace=setup_dir,
-        bsp_family="bbsetup",
-        spec=BSPSpec(
-            machine=ctx.machine,
-            distro=ctx.distro,
-            image=ctx.image,
-            host_mode=ctx.host_mode,
-            container_mode=ctx.container_mode,
-        ),
-        user_config=_state._USER_CONFIG,
-        sccache_dist_override=global_sccache_dist_override(),
+        ResolveRequest(
+            workspace=setup_dir,
+            bsp_family="bbsetup",
+            spec=BSPSpec(
+                machine=ctx.machine,
+                distro=ctx.distro,
+                image=ctx.image,
+                host_mode=ctx.host_mode,
+                container_mode=ctx.container_mode,
+            ),
+            user_config=_state._USER_CONFIG,
+            sccache_dist_override=global_sccache_dist_override(),
+        )
     )
     if ctx.sstate_mirror is not None:
         cfg = replace(cfg, sstate_mirror_url=ctx.sstate_mirror)
@@ -399,21 +401,23 @@ def _run_single_preset_release(
         main_yaml = None
 
     cfg = resolve(
-        workspace=ws,
-        bsp_family=family,
-        spec=BSPSpec(
-            machine=ctx.machine or spec.machine or (machine_from_yaml(main_yaml) if byo_form else None),
-            distro=ctx.distro or spec.distro,
-            image=ctx.image or spec.image,
-            manifest=spec.manifest,
-            repo_branch=ctx.branch or spec.branch,
-            host_mode=ctx.host_mode,
-            container_mode=ctx.container_mode,
-        ),
-        kas_yaml=main_yaml,
-        user_config=_state._USER_CONFIG,
-        preset=active_preset,
-        sccache_dist_override=global_sccache_dist_override(),
+        ResolveRequest(
+            workspace=ws,
+            bsp_family=family,
+            spec=BSPSpec(
+                machine=ctx.machine or spec.machine or (machine_from_yaml(main_yaml) if byo_form else None),
+                distro=ctx.distro or spec.distro,
+                image=ctx.image or spec.image,
+                manifest=spec.manifest,
+                repo_branch=ctx.branch or spec.branch,
+                host_mode=ctx.host_mode,
+                container_mode=ctx.container_mode,
+            ),
+            kas_yaml=main_yaml,
+            user_config=_state._USER_CONFIG,
+            preset=active_preset,
+            sccache_dist_override=global_sccache_dist_override(),
+        )
     )
     if ctx.sstate_mirror is not None:
         cfg = replace(cfg, sstate_mirror_url=ctx.sstate_mirror)

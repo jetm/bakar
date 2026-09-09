@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar.config import BSPSpec, resolve
+from bakar.config import BSPSpec, ResolveRequest, resolve
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -42,7 +42,7 @@ def avocado_yaml(tmp_path: Path) -> Path:
 
 def test_machine_derived_from_kas_yaml_when_unset(avocado_yaml: Path, tmp_path: Path) -> None:
     """With no explicit machine, resolve() reads it from the kas YAML."""
-    cfg = resolve(workspace=tmp_path, bsp_family="generic", spec=BSPSpec(), kas_yaml=avocado_yaml)
+    cfg = resolve(ResolveRequest(workspace=tmp_path, bsp_family="generic", spec=BSPSpec(), kas_yaml=avocado_yaml))
 
     assert cfg.machine == "avocado-imx93-frdm"
 
@@ -50,10 +50,12 @@ def test_machine_derived_from_kas_yaml_when_unset(avocado_yaml: Path, tmp_path: 
 def test_explicit_machine_still_wins_over_yaml(avocado_yaml: Path, tmp_path: Path) -> None:
     """An explicit machine (the -m flag) outranks the YAML-derived one."""
     cfg = resolve(
-        workspace=tmp_path,
-        bsp_family="generic",
-        spec=BSPSpec(machine="avocado-qemuarm64"),
-        kas_yaml=avocado_yaml,
+        ResolveRequest(
+            workspace=tmp_path,
+            bsp_family="generic",
+            spec=BSPSpec(machine="avocado-qemuarm64"),
+            kas_yaml=avocado_yaml,
+        )
     )
 
     assert cfg.machine == "avocado-qemuarm64"
@@ -65,7 +67,7 @@ def test_machine_still_degenerates_without_a_yaml(tmp_path: Path) -> None:
     Pinned so the derivation cannot quietly change the non-BYO path, where there
     is no YAML to read a machine out of.
     """
-    cfg = resolve(workspace=tmp_path, bsp_family="generic", spec=BSPSpec(), kas_yaml=None)
+    cfg = resolve(ResolveRequest(workspace=tmp_path, bsp_family="generic", spec=BSPSpec(), kas_yaml=None))
 
     assert cfg.machine == "generic"
 
@@ -78,16 +80,20 @@ def test_bitbake_and_build_agree_on_resolved_tmpdir(avocado_yaml: Path, tmp_path
     so the two disagreed about which tree held the artifacts.
     """
     build_shape = resolve(
-        workspace=tmp_path,
-        bsp_family="generic",
-        spec=BSPSpec(machine="avocado-imx93-frdm"),
-        kas_yaml=avocado_yaml,
+        ResolveRequest(
+            workspace=tmp_path,
+            bsp_family="generic",
+            spec=BSPSpec(machine="avocado-imx93-frdm"),
+            kas_yaml=avocado_yaml,
+        )
     )
     bitbake_shape = resolve(
-        workspace=tmp_path,
-        bsp_family="generic",
-        spec=BSPSpec(),
-        kas_yaml=avocado_yaml,
+        ResolveRequest(
+            workspace=tmp_path,
+            bsp_family="generic",
+            spec=BSPSpec(),
+            kas_yaml=avocado_yaml,
+        )
     )
 
     assert bitbake_shape.machine == build_shape.machine

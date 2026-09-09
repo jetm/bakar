@@ -253,14 +253,14 @@ def test_generic_bsp_root_is_yaml_parent(tmp_path: Path) -> None:
 
 def test_generic_resolve_accepts_minimal_args(tmp_path: Path) -> None:
     """resolve() with bsp_family='generic' fills sensible inert defaults."""
-    from bakar.config import resolve
+    from bakar.config import ResolveRequest, resolve
 
     pilots = tmp_path / "pilot"
     pilots.mkdir()
     yaml = pilots / "kas.yml"
     yaml.write_text("machine: qemuarm64\n")
 
-    cfg = resolve(workspace=tmp_path, bsp_family="generic", kas_yaml=yaml)
+    cfg = resolve(ResolveRequest(workspace=tmp_path, bsp_family="generic", kas_yaml=yaml))
 
     assert cfg.bsp_family == "generic"
     assert cfg.bsp_root == pilots.resolve()

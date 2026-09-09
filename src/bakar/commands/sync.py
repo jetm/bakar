@@ -23,7 +23,7 @@ from bakar.commands._helpers import (
     _tuning_extra_overlays,
     _workspace_from_cwd,
 )
-from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, resolve
+from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, ResolveRequest, resolve
 from bakar.observability import RunLogger
 from bakar.workspace import detect
 
@@ -198,16 +198,18 @@ def _sync_impl(ctx: _SyncCtx) -> None:
     family, bsp = _dispatch_bsp(ctx.manifest)
     ws = ctx.workspace or _workspace_from_cwd()
     cfg = resolve(
-        workspace=ws,
-        bsp_family=family,
-        spec=BSPSpec(
-            machine=ctx.machine,
-            distro=ctx.distro,
-            image=ctx.image,
-            manifest=ctx.manifest,
-            repo_branch=ctx.branch,
-        ),
-        user_config=_state._USER_CONFIG,
+        ResolveRequest(
+            workspace=ws,
+            bsp_family=family,
+            spec=BSPSpec(
+                machine=ctx.machine,
+                distro=ctx.distro,
+                image=ctx.image,
+                manifest=ctx.manifest,
+                repo_branch=ctx.branch,
+            ),
+            user_config=_state._USER_CONFIG,
+        )
     )
 
     if ctx.dry_run:

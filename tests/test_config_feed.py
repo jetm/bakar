@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from bakar.config import resolve, shared_feed_dir
+from bakar.config import ResolveRequest, resolve, shared_feed_dir
 from bakar.user_config import UserConfig
 
 pytestmark = pytest.mark.unit
@@ -28,7 +28,7 @@ def _workspace(tmp_path):
 def test_effective_feed_dir_per_workspace_by_default(tmp_path) -> None:
     """Without opting in, the feed is per-workspace at ``<workspace>/_feed``."""
     ws = _workspace(tmp_path)
-    cfg = resolve(workspace=ws, bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=ws, bsp_family="nxp"))
 
     assert cfg.effective_feed_dir == ws.resolve() / "_feed"
 
@@ -38,7 +38,7 @@ def test_effective_feed_dir_shared_uses_xdg_data(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     uc = UserConfig(feed_shared=True)
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc))
 
     assert cfg.effective_feed_dir == tmp_path / "xdg" / "bakar" / "feed"
 
@@ -52,7 +52,7 @@ def test_effective_feed_dir_explicit_path_wins(tmp_path) -> None:
     """
     uc = UserConfig(feed_shared=True, feed_dir="/mnt/big/avocado-feed")
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc))
 
     assert cfg.effective_feed_dir == Path("/mnt/big/avocado-feed")
 
@@ -65,7 +65,7 @@ def test_effective_feed_dir_expands_user_in_explicit_path(tmp_path) -> None:
     """
     uc = UserConfig(feed_dir="~/yocto-cache/shared-workspace/_feed")
 
-    cfg = resolve(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc))
 
     assert cfg.effective_feed_dir == Path.home() / "yocto-cache/shared-workspace/_feed"
 

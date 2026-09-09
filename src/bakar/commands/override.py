@@ -10,7 +10,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import WorkspaceOption, _dispatch_bsp, _workspace_from_cwd
-from bakar.config import BSPSpec, resolve
+from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.observability import RunLogger
 from bakar.steps import bitbake_override as step_override
 
@@ -73,7 +73,11 @@ def bitbake_override_cmd(
 
     ws = workspace or _workspace_from_cwd()
     family, _bsp = _dispatch_bsp(manifest)
-    cfg = resolve(workspace=ws, bsp_family=family, spec=BSPSpec(manifest=manifest), user_config=_state._USER_CONFIG)
+    cfg = resolve(
+        ResolveRequest(
+            workspace=ws, bsp_family=family, spec=BSPSpec(manifest=manifest), user_config=_state._USER_CONFIG
+        )
+    )
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
 
     if revert_flag:

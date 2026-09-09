@@ -18,7 +18,7 @@ from bakar.commands._helpers import (
     global_container_mode,
     global_host_mode,
 )
-from bakar.config import BSPSpec, resolve
+from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.observability import RunLogger
 from bakar.steps import kas_build as step_kas
 from bakar.steps import run_qemu as step_run
@@ -61,11 +61,13 @@ def shell(
     family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
     cfg = resolve(
-        workspace=ws,
-        bsp_family=family,
-        spec=BSPSpec(manifest=manifest, host_mode=global_host_mode(), container_mode=global_container_mode()),
-        kas_yaml=kas_yaml,
-        user_config=_state._USER_CONFIG,
+        ResolveRequest(
+            workspace=ws,
+            bsp_family=family,
+            spec=BSPSpec(manifest=manifest, host_mode=global_host_mode(), container_mode=global_container_mode()),
+            kas_yaml=kas_yaml,
+            user_config=_state._USER_CONFIG,
+        )
     )
     overlay_source = _overlay_for(bsp)
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
@@ -110,10 +112,12 @@ def run(
     family, _ = _dispatch_from_yaml(main_yaml)
     ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
     cfg = resolve(
-        workspace=ws,
-        bsp_family=family,
-        kas_yaml=main_yaml,
-        user_config=_state._USER_CONFIG,
+        ResolveRequest(
+            workspace=ws,
+            bsp_family=family,
+            kas_yaml=main_yaml,
+            user_config=_state._USER_CONFIG,
+        )
     )
 
     if not cfg.is_meta_avocado:

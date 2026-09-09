@@ -11,7 +11,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import WorkspaceOption, _dispatch_bsp, _resolve_workspace
-from bakar.config import BSPSpec, resolve
+from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.manifest_diff import diff_manifests
 
 
@@ -42,10 +42,12 @@ def diff(
     family, _bsp = _dispatch_bsp(manifest)
     ws = _resolve_workspace(workspace, family=family)
     cfg = resolve(
-        workspace=ws,
-        bsp_family=family,
-        spec=BSPSpec(manifest=manifest),
-        user_config=_state._USER_CONFIG,
+        ResolveRequest(
+            workspace=ws,
+            bsp_family=family,
+            spec=BSPSpec(manifest=manifest),
+            user_config=_state._USER_CONFIG,
+        )
     )
 
     if old.suffix == ".xml" and new.suffix == ".xml":

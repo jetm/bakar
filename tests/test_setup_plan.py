@@ -276,9 +276,9 @@ def test_build_resolves_cfg_when_not_supplied(monkeypatch: pytest.MonkeyPatch) -
     """When cfg is omitted, build() resolves it via config.resolve like doctor."""
     captured: dict[str, object] = {}
 
-    def _fake_resolve(*, workspace, user_config, **_kw):
-        captured["workspace"] = workspace
-        captured["user_config"] = user_config
+    def _fake_resolve(request):
+        captured["workspace"] = request.workspace
+        captured["user_config"] = request.user_config
         return _ResolvedCfg(kas_container_image="resolved/image:1.0")
 
     monkeypatch.setattr(plan_mod.config, "resolve", _fake_resolve)
@@ -298,7 +298,7 @@ def test_build_forces_host_mode_off_so_docker_checks_run(monkeypatch: pytest.Mon
     monkeypatch.setattr(
         plan_mod.config,
         "resolve",
-        lambda *, workspace, user_config, **_kw: _ResolvedCfg(kas_container_image="img:1", host_mode=True),
+        lambda _request: _ResolvedCfg(kas_container_image="img:1", host_mode=True),
     )
 
     def _capturing_run_all(cfg: _ResolvedCfg, _bsp: object) -> list[CheckResult]:

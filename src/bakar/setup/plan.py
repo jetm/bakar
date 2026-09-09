@@ -261,7 +261,7 @@ def build(
     # install. A self-resolved cfg's host_mode (config.py:725) is the effective
     # value; a caller-supplied cfg carries its own.
     if cfg is None:
-        cfg = config.resolve(workspace=Path.cwd(), user_config=user_config)
+        cfg = config.resolve(config.ResolveRequest(workspace=Path.cwd(), user_config=user_config))
         effective_host_mode = bool(getattr(cfg, "host_mode", False))
         # setup prepares the container runtime, so it must always evaluate the
         # docker checks. resolve() auto-detects host_mode=True on a stock host

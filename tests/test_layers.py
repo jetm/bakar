@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
-from bakar.config import resolve
+from bakar.config import ResolveRequest, resolve
 from bakar.layers import (
     LayerHash,
     _find_bitbake_dir,
@@ -46,7 +46,7 @@ pytestmark = pytest.mark.unit
 def _nxp_cfg(tmp_path: Path):
     """Resolve an nxp BuildConfig rooted at a tmp_path workspace."""
     (tmp_path / "nxp").mkdir(parents=True, exist_ok=True)
-    return resolve(workspace=tmp_path, bsp_family="nxp")
+    return resolve(ResolveRequest(workspace=tmp_path, bsp_family="nxp"))
 
 
 def _generic_cfg(tmp_path: Path, kas_yaml: Path):
@@ -55,7 +55,7 @@ def _generic_cfg(tmp_path: Path, kas_yaml: Path):
     Generic mode's ``bsp_root`` derives from the kas yaml's parent dir,
     which is where ``_resolve_bblayers_paths`` walks ``${TOPDIR}`` from.
     """
-    return resolve(workspace=tmp_path, bsp_family="generic", kas_yaml=kas_yaml)
+    return resolve(ResolveRequest(workspace=tmp_path, bsp_family="generic", kas_yaml=kas_yaml))
 
 
 # ---------------------------------------------------------------------------

@@ -949,19 +949,46 @@ def _sstate_mirror_fields(
     return {"sstate_mirrors": seed_mirror_line(seed_dir), "sstate_mirrors_source": "seed"}
 
 
-def resolve(
-    *,
-    workspace: Path,
-    bsp_family: Literal["nxp", "ti", "generic", "bbsetup", "qcom"] | None = None,
-    spec: BSPSpec | None = None,
-    kas_yaml: Path | None = None,
-    user_config: UserConfig | None = None,
-    workspace_config: WorkspaceConfig | None = None,
-    preset: PresetEntry | None = None,
-    family_is_explicit: bool = True,
-    sccache_dist_override: bool | None = None,
-) -> BuildConfig:
+@dataclass(frozen=True, kw_only=True)
+class ResolveRequest:
+    """The nine :func:`resolve` inputs, packed into one argument.
+
+    ``kw_only=True`` keeps the guard the old ``def resolve(*, ...)`` signature
+    carried: nine fields, seven of them defaulting to ``None``, are exactly the
+    shape where a positional transposition is silent. Matches
+    :class:`BSPSpec`, which is kw-only for the same reason.
+
+    Field names match the former keyword-only parameter names one-for-one, so
+    a call site reads the same after the repack - only the wrapper is new.
+    The dataclass is public because every one of ``resolve``'s callers lives
+    in another module and has to name the type, matching
+    :class:`bakar.steps.kas_build.KasBuildContext` and
+    :class:`bakar.steps.stress_parse.StressParseContext`.
+
+    A dropped or renamed field is caught by
+    ``test_resolve_request_carries_the_nine_former_parameters``; a transposed
+    one by ``test_resolve_reads_every_request_field``, which gives each field a
+    distinct value. No two fields share a ``(type, default)`` pair - a swap
+    between such a pair would be invisible to that test - and
+    ``test_resolve_request_has_no_type_default_collision`` fails if a later
+    edit introduces one. All three live in ``tests/test_resolve_request.py``.
+    """
+
+    workspace: Path
+    bsp_family: Literal["nxp", "ti", "generic", "bbsetup", "qcom"] | None = None
+    spec: BSPSpec | None = None
+    kas_yaml: Path | None = None
+    user_config: UserConfig | None = None
+    workspace_config: WorkspaceConfig | None = None
+    preset: PresetEntry | None = None
+    family_is_explicit: bool = True
+    sccache_dist_override: bool | None = None
+
+
+def resolve(request: ResolveRequest) -> BuildConfig:
     """Resolve BuildConfig from CLI flags, env vars, config, and family defaults.
+
+    Every input arrives on ``request``; the names below are its fields.
 
     Precedence, highest to lowest:
     ``CLI flag > BAKAR_* env var > workspace .bakar.toml > user config.toml >
@@ -1018,6 +1045,16 @@ def resolve(
     non-allowlisted recipes without an explicit ``ccache = true``. An explicit
     ``ccache`` setting at any tier always wins over this fallback.
     """
+
+    workspace = request.workspace
+    bsp_family = request.bsp_family
+    spec = request.spec
+    kas_yaml = request.kas_yaml
+    user_config = request.user_config
+    workspace_config = request.workspace_config
+    preset = request.preset
+    family_is_explicit = request.family_is_explicit
+    sccache_dist_override = request.sccache_dist_override
 
     if spec is None:
         spec = BSPSpec()

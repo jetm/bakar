@@ -205,9 +205,11 @@ def test_resolve_carries_parallelism_values(tmp_path: Path, monkeypatch: pytest.
         monkeypatch.delenv(var, raising=False)
 
     cfg = config_mod.resolve(
-        workspace=tmp_path,
-        bsp_family="nxp",
-        user_config=user_config,
+        config_mod.ResolveRequest(
+            workspace=tmp_path,
+            bsp_family="nxp",
+            user_config=user_config,
+        )
     )
 
     assert cfg.nproc == 96
@@ -222,9 +224,11 @@ def test_resolve_defaults_parallelism_to_none(tmp_path: Path, monkeypatch: pytes
         monkeypatch.delenv(var, raising=False)
 
     cfg = config_mod.resolve(
-        workspace=tmp_path,
-        bsp_family="nxp",
-        user_config=load_user_config(tmp_path / "missing.toml"),
+        config_mod.ResolveRequest(
+            workspace=tmp_path,
+            bsp_family="nxp",
+            user_config=load_user_config(tmp_path / "missing.toml"),
+        )
     )
 
     assert cfg.nproc is None

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar.config import resolve
+from bakar.config import ResolveRequest, resolve
 from bakar.user_config import (
     _BOOL_FIELDS,
     _BUILD_KEYS,
@@ -88,7 +88,7 @@ def test_config_mold_registered_in_type_sets() -> None:
 @pytest.mark.unit
 def test_resolve_mold_default_off(tmp_path: Path) -> None:
     """resolve() with no inputs yields mold off in list mode (default-off rollback)."""
-    cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=_nxp_workspace(tmp_path), bsp_family="nxp"))
 
     assert cfg.mold is False
     assert cfg.mold_mode == "list"
@@ -108,7 +108,7 @@ def test_cli_mold_flips_cfg_via_apply(tmp_path: Path, monkeypatch: pytest.Monkey
     monkeypatch.setattr(_state, "_MOLD_BASELINE", False)
     monkeypatch.setattr(_state, "_MOLD_GLOBAL", False)
 
-    cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=_nxp_workspace(tmp_path), bsp_family="nxp"))
     assert cfg.mold is False  # resolve() alone does not see the CLI flag
     cfg = apply_mold_overrides(cfg)
 
@@ -127,7 +127,7 @@ def test_cli_mold_overrides_disabling_user_config(tmp_path: Path, monkeypatch: p
     monkeypatch.setattr(_state, "_MOLD_GLOBAL", False)
     uc = UserConfig(mold=False)
 
-    cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = resolve(ResolveRequest(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", user_config=uc))
     cfg = apply_mold_overrides(cfg)
 
     assert cfg.mold is True
@@ -139,7 +139,7 @@ def test_resolve_env_mold_overrides_disabling_user_config(tmp_path: Path, monkey
     monkeypatch.setenv("BAKAR_MOLD", "1")
     uc = UserConfig(mold=False)
 
-    cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = resolve(ResolveRequest(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", user_config=uc))
 
     assert cfg.mold is True
 
@@ -149,7 +149,7 @@ def test_resolve_mold_from_user_config(tmp_path: Path) -> None:
     """A config-file `mold = true` threads through when no CLI/env override is set."""
     uc = UserConfig(mold=True)
 
-    cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", user_config=uc)
+    cfg = resolve(ResolveRequest(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", user_config=uc))
 
     assert cfg.mold is True
     assert cfg.mold_mode == "list"
@@ -169,7 +169,7 @@ def test_cli_mold_baseline_sets_baseline_mode_via_apply(tmp_path: Path, monkeypa
     monkeypatch.setattr(_state, "_MOLD_BASELINE", True)
     monkeypatch.setattr(_state, "_MOLD_GLOBAL", False)
 
-    cfg = resolve(workspace=_nxp_workspace(tmp_path), bsp_family="nxp")
+    cfg = resolve(ResolveRequest(workspace=_nxp_workspace(tmp_path), bsp_family="nxp"))
     cfg = apply_mold_overrides(cfg)
 
     assert cfg.mold is True

@@ -30,7 +30,7 @@ from bakar.commands._helpers import (
     global_sccache_dist_override,
     split_kas_yaml_arg,
 )
-from bakar.config import BSPSpec, resolve
+from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.inspect_parse import extract_var_history
 from bakar.kas_errors import classify
 from bakar.observability import RunLogger
@@ -178,14 +178,19 @@ def _getvar_impl(ctx: _GetvarCtx) -> None:
     family, bsp, main_yaml, manifest = _normalize_dispatch(main_yaml, ctx.manifest)
     ws = _resolve_workspace(ctx.workspace, kas_yaml=main_yaml, family=family)
     cfg = resolve(
-        workspace=ws,
-        bsp_family=family,
-        spec=BSPSpec(
-            manifest=manifest, machine=ctx.machine, host_mode=global_host_mode(), container_mode=global_container_mode()
-        ),
-        kas_yaml=main_yaml,
-        user_config=_state._USER_CONFIG,
-        sccache_dist_override=global_sccache_dist_override(),
+        ResolveRequest(
+            workspace=ws,
+            bsp_family=family,
+            spec=BSPSpec(
+                manifest=manifest,
+                machine=ctx.machine,
+                host_mode=global_host_mode(),
+                container_mode=global_container_mode(),
+            ),
+            kas_yaml=main_yaml,
+            user_config=_state._USER_CONFIG,
+            sccache_dist_override=global_sccache_dist_override(),
+        )
     )
     cfg = apply_sccache_overrides(cfg)
     cfg = apply_mold_overrides(cfg)

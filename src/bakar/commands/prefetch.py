@@ -17,7 +17,7 @@ from bakar.commands._helpers import (
     _overlay_for,
     _resolve_workspace,
 )
-from bakar.config import BSPSpec, resolve
+from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.kas import write_bbsetup_yaml
 from bakar.observability import RunLogger
 from bakar.steps import kas_build as step_kas
@@ -57,10 +57,12 @@ def prefetch(
     setup_dir = _bbsetup_workspace(workspace) if kas_yaml is None and manifest is None else None
     if setup_dir is not None:
         cfg = resolve(
-            workspace=setup_dir,
-            bsp_family="bbsetup",
-            spec=BSPSpec(machine=machine, image=image),
-            user_config=_state._USER_CONFIG,
+            ResolveRequest(
+                workspace=setup_dir,
+                bsp_family="bbsetup",
+                spec=BSPSpec(machine=machine, image=image),
+                user_config=_state._USER_CONFIG,
+            )
         )
         # Value-based, matching build.py's guard: an explicit --image/BAKAR_IMAGE
         # override must still win, not just the literal "generic"/"" sentinel
@@ -76,11 +78,13 @@ def prefetch(
         family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
         ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
         cfg = resolve(
-            workspace=ws,
-            bsp_family=family,
-            spec=BSPSpec(machine=machine, manifest=manifest, image=image),
-            kas_yaml=kas_yaml,
-            user_config=_state._USER_CONFIG,
+            ResolveRequest(
+                workspace=ws,
+                bsp_family=family,
+                spec=BSPSpec(machine=machine, manifest=manifest, image=image),
+                kas_yaml=kas_yaml,
+                user_config=_state._USER_CONFIG,
+            )
         )
         fetch_target = cfg.image if cfg.image not in ("", "generic") else "core-image-minimal"
         overlay_source = _overlay_for(bsp)

@@ -46,7 +46,7 @@ from bakar.commands._helpers import (
     _find_run,
     _workspace_from_cwd,
 )
-from bakar.config import BSPSpec, resolve
+from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.insights_disk import disk_report
 from bakar.insights_pressure import pressure_report
 from bakar.insights_sstate import sstate_report
@@ -253,17 +253,21 @@ def insights(
     bsp_root_from_run = run_dir.parents[2]
     if family == "generic":
         cfg = resolve(
-            workspace=bsp_root_from_run,
-            bsp_family="bbsetup",
-            spec=BSPSpec(manifest=manifest),
-            user_config=_state._USER_CONFIG,
+            ResolveRequest(
+                workspace=bsp_root_from_run,
+                bsp_family="bbsetup",
+                spec=BSPSpec(manifest=manifest),
+                user_config=_state._USER_CONFIG,
+            )
         )
     else:
         cfg = resolve(
-            workspace=ws_for_cfg,
-            bsp_family=family,
-            spec=BSPSpec(manifest=manifest),
-            user_config=_state._USER_CONFIG,
+            ResolveRequest(
+                workspace=ws_for_cfg,
+                bsp_family=family,
+                spec=BSPSpec(manifest=manifest),
+                user_config=_state._USER_CONFIG,
+            )
         )
     baselines_path = task_timings.timings_path_for(cfg.bsp_root, cfg.machine, host_mode=cfg.host_mode)
 

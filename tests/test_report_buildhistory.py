@@ -18,7 +18,7 @@ import pytest
 
 import bakar.commands.report as report_module
 from bakar.cli import app
-from bakar.config import resolve
+from bakar.config import ResolveRequest, resolve
 from bakar.report import ReportSummary, _parse_buildhistory
 from tests.conftest import make_report_summary
 
@@ -50,7 +50,7 @@ def _write_buildhistory(bsp_root: Path) -> None:
 
 def test_parse_full_tree_resolves_all_fields(tmp_path: Path) -> None:
     """A complete buildhistory tree yields image size, top packages, count, dirty."""
-    cfg = resolve(workspace=tmp_path, bsp_family="bbsetup")
+    cfg = resolve(ResolveRequest(workspace=tmp_path, bsp_family="bbsetup"))
     _write_buildhistory(cfg.bsp_root)
 
     result = _parse_buildhistory(cfg)
@@ -66,14 +66,14 @@ def test_parse_full_tree_resolves_all_fields(tmp_path: Path) -> None:
 
 def test_parse_absent_dir_returns_none(tmp_path: Path) -> None:
     """No buildhistory directory yields ``None`` (no section, no error)."""
-    cfg = resolve(workspace=tmp_path, bsp_family="bbsetup")
+    cfg = resolve(ResolveRequest(workspace=tmp_path, bsp_family="bbsetup"))
 
     assert _parse_buildhistory(cfg) is None
 
 
 def test_parse_malformed_size_line_skipped(tmp_path: Path) -> None:
     """A malformed installed-package-sizes line is skipped, parse does not abort."""
-    cfg = resolve(workspace=tmp_path, bsp_family="bbsetup")
+    cfg = resolve(ResolveRequest(workspace=tmp_path, bsp_family="bbsetup"))
     bh = cfg.bsp_root / "build" / "buildhistory"
     image_dir = bh / "images" / "mach" / "glibc" / "img"
     image_dir.mkdir(parents=True)
@@ -89,7 +89,7 @@ def test_parse_malformed_size_line_skipped(tmp_path: Path) -> None:
 
 def test_parse_gate_on_metadata_revs_only(tmp_path: Path) -> None:
     """A buildhistory dir with only metadata-revs (no images/) still parses."""
-    cfg = resolve(workspace=tmp_path, bsp_family="bbsetup")
+    cfg = resolve(ResolveRequest(workspace=tmp_path, bsp_family="bbsetup"))
     bh = cfg.bsp_root / "build" / "buildhistory"
     bh.mkdir(parents=True)
     (bh / "metadata-revs").write_text(_METADATA_REVS)

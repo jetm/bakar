@@ -18,7 +18,7 @@ from bakar.commands._helpers import (
     _print_layer_hashes,
     _resolve_workspace,
 )
-from bakar.config import BSPSpec, resolve
+from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.inspect_parse import parse_env_vars, parse_layer_conf
 from bakar.kas import parse_bblayers
 from bakar.layers import _parse_bbsetup_layer_repos, collect_layer_hashes
@@ -54,11 +54,13 @@ def _common_options(
     family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
     cfg = resolve(
-        workspace=ws,
-        bsp_family=family,
-        spec=BSPSpec(manifest=manifest),
-        kas_yaml=kas_yaml,
-        user_config=_state._USER_CONFIG,
+        ResolveRequest(
+            workspace=ws,
+            bsp_family=family,
+            spec=BSPSpec(manifest=manifest),
+            kas_yaml=kas_yaml,
+            user_config=_state._USER_CONFIG,
+        )
     )
     return family, bsp, ws, cfg
 
@@ -89,11 +91,13 @@ def layers(
     family, _bsp, _kas_yaml, manifest = _normalize_dispatch(None, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=_kas_yaml, family=family)
     cfg = resolve(
-        workspace=ws,
-        bsp_family=family,
-        spec=BSPSpec(manifest=manifest),
-        kas_yaml=_kas_yaml,
-        user_config=_state._USER_CONFIG,
+        ResolveRequest(
+            workspace=ws,
+            bsp_family=family,
+            spec=BSPSpec(manifest=manifest),
+            kas_yaml=_kas_yaml,
+            user_config=_state._USER_CONFIG,
+        )
     )
 
     hashes = collect_layer_hashes(cfg)

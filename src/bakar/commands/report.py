@@ -20,7 +20,7 @@ from bakar.commands._helpers import (
     _SstateRender,
     _workspace_from_cwd,
 )
-from bakar.config import BSPSpec, resolve
+from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.report import assemble_report
 
 
@@ -97,17 +97,21 @@ def report(
         # as a sentinel triggers is_meta_avocado when the workspace path contains
         # "meta-avocado" as a component, computing the wrong bsp_root.
         cfg = resolve(
-            workspace=bsp_root_from_run,
-            bsp_family="bbsetup",
-            spec=BSPSpec(manifest=manifest),
-            user_config=_state._USER_CONFIG,
+            ResolveRequest(
+                workspace=bsp_root_from_run,
+                bsp_family="bbsetup",
+                spec=BSPSpec(manifest=manifest),
+                user_config=_state._USER_CONFIG,
+            )
         )
     else:
         cfg = resolve(
-            workspace=ws_for_cfg,
-            bsp_family=family,
-            spec=BSPSpec(manifest=manifest),
-            user_config=_state._USER_CONFIG,
+            ResolveRequest(
+                workspace=ws_for_cfg,
+                bsp_family=family,
+                spec=BSPSpec(manifest=manifest),
+                user_config=_state._USER_CONFIG,
+            )
         )
 
     summary = assemble_report(run_dir, cfg)
