@@ -1,6 +1,6 @@
 """Executable inventory of the module boundaries this repository relies on.
 
-Four kinds of fact live here, and each is asserted rather than documented so a
+Six kinds of fact live here, and each is asserted rather than documented so a
 later extraction that violates it fails instead of drifting quietly.
 
 The first is a security invariant: ``_resolve_roots`` is the only sanctioned
@@ -26,11 +26,28 @@ an extraction created must be matched by some group, and every declared group
 must still match a file. Both halves fail open rather than loud - an unmatched
 module and a group whose paths match nothing each leave the fitness check
 reporting "no violations" over something it never examined.
+
+The fifth is that each extracted module imports standalone in a fresh
+interpreter. The rest of the suite imports these modules into one already
+populated ``sys.modules``, which is exactly the condition under which an
+import cycle does not fire; the CLI reaches them through ``cli.py``'s
+registration path instead. Only an interpreter that imports one of them FIRST
+observes the module-level import order an extraction actually changed.
+
+The sixth is that ``bakar.diagnostics`` still DEFINES all 48 ``check_*``
+functions. Only helpers were extracted, so the check surface `bakar doctor`
+walks is meant to be untouched - and that claim is what makes a doctor run
+against a real workspace unnecessary as evidence. The pinned set below was
+taken by diffing the sorted ``^def check_`` lists of ``diagnostics.py`` at
+``e62f601`` (the pre-split commit) and at the end of the split: 48 names on
+both sides, no difference.
 """
 
 from __future__ import annotations
 
 import inspect
+import subprocess
+import sys
 import tomllib
 from importlib import import_module
 from pathlib import Path, PurePosixPath
@@ -168,6 +185,63 @@ EXTRACTED_MODULES: tuple[str, ...] = (
     "src/bakar/commands/_build_options.py",
 )
 
+# The ``check_*`` surface ``bakar doctor`` walks, pinned as it stood at
+# ``e62f601`` - the commit before the first extraction. Nothing in this split
+# was supposed to move a check, only the helpers underneath them. Adding a
+# genuinely new check means extending this list in the same commit.
+DIAGNOSTICS_CHECK_NAMES: frozenset[str] = frozenset(
+    {
+        "check_bbsetup_config_sources",
+        "check_bbsetup_initialized",
+        "check_bitbake_locks",
+        "check_bitbake_override",
+        "check_cache_dirs",
+        "check_ccache_health",
+        "check_central_hashserv",
+        "check_central_prserv",
+        "check_cgroup_v2",
+        "check_container_bitbake",
+        "check_container_image",
+        "check_disk_free",
+        "check_docker_daemon",
+        "check_docker_storage_driver",
+        "check_docker_ulimits",
+        "check_docker_version",
+        "check_forks_linux_imx",
+        "check_forks_ti_linux_kernel",
+        "check_forks_ti_u_boot",
+        "check_git_global_config",
+        "check_git_object_cache",
+        "check_hashserv",
+        "check_host_preflight",
+        "check_host_tools",
+        "check_kas_yaml_syntax",
+        "check_manifest_consistency",
+        "check_memory",
+        "check_mold_compiler",
+        "check_nfs_delegations",
+        "check_nproc",
+        "check_override_syntax",
+        "check_psi_support",
+        "check_sccache_dist",
+        "check_scope_controller_weights",
+        "check_shared_cache_mounts",
+        "check_sstate_hash_leak",
+        "check_sysctl",
+        "check_systemd_scope",
+        "check_ti_layertool_config_consistency",
+        "check_ti_layertool_present",
+        "check_uninative_checksum",
+        "check_uninative_cluster_consistency",
+        "check_uninative_dldir_links",
+        "check_uninative_fragment",
+        "check_uninative_glibc",
+        "check_uninative_leak",
+        "check_uninative_mirror_hit",
+        "check_workspace_filesystem",
+    }
+)
+
 _ARCH_RULES = Path(__file__).resolve().parent.parent / ".arch-rules.toml"
 
 # A name no module defines, used to prove each patch form rejects an absent
@@ -274,3 +348,55 @@ def test_build_annotations_resolve_at_runtime() -> None:
     hints = get_type_hints(build, include_extras=True)
 
     assert set(inspect.signature(build).parameters) <= set(hints)
+
+
+def _dotted(module_path: str) -> str:
+    """Map ``src/bakar/commands/_x.py`` to the importable ``bakar.commands._x``."""
+    return PurePosixPath(module_path).with_suffix("").as_posix().removeprefix("src/").replace("/", ".")
+
+
+@pytest.mark.parametrize("module_path", EXTRACTED_MODULES)
+def test_extracted_module_imports_first_in_a_fresh_interpreter(module_path: str) -> None:
+    """Each extracted module must import standalone, as the FIRST bakar import.
+
+    A plain ``import`` from inside the suite proves nothing here: by the time it
+    runs, ``sys.modules`` already holds every module in the package, so a cycle
+    that would deadlock a cold interpreter resolves from cache instead. The
+    subprocess is the whole test - it is the only context in which the
+    module-level import order an extraction rearranged is actually exercised.
+
+    Two couplings are deliberate and must survive this, not be excluded from it.
+    ``probes`` imports ``build_stop`` at module level while ``build_stop`` reaches
+    ``diagnostics`` through a function-body deferred import, and
+    ``_build_flavors`` binds ``bakar.commands.build`` as a module object on its
+    last line because the moved dispatchers call back into helpers that stayed on
+    ``build.py``. Both are cycles held open by placement alone, which is precisely
+    the kind of arrangement a later edit breaks without noticing.
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", f"import {_dotted(module_path)}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_diagnostics_still_defines_every_check() -> None:
+    """No ``check_*`` function left ``bakar.diagnostics`` during the split.
+
+    This is the executable form of the doctor-output question. Re-running
+    ``bakar doctor -f <manifest>`` to compare PASS/WARN/BLOCK verdicts needs a
+    real workspace and reports on machine state as much as on this code; asserting
+    that the registered check surface is byte-for-byte the same set of functions,
+    still defined in this module rather than re-exported into it, answers the same
+    question with no manifest and no host dependency.
+    """
+    defined = {
+        name
+        for name, value in vars(diagnostics).items()
+        if name.startswith("check_") and inspect.isfunction(value) and value.__module__ == "bakar.diagnostics"
+    }
+
+    assert defined == DIAGNOSTICS_CHECK_NAMES
