@@ -6,18 +6,26 @@ fields ``None`` on an absent line, and skips an unparseable line without
 raising. The command tests drive ``bakar report`` through the Typer
 ``CliRunner`` with module-qualified patches on ``bakar.commands.report`` so no
 real run directory or git state is needed (the recap-archived testing split).
+
+The final block guards ``_render_sstate_lines``/``_SstateRender`` directly: it
+renders to a captured console with a DISTINCT value per count field, so
+transposing any two fields moves a number onto the wrong label and fails.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import io
 import json
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
+from rich.console import Console
 
 import bakar.commands.report as report_module
 from bakar.cli import app
+from bakar.commands._helpers import _render_sstate_lines, _SstateRender
 from bakar.report import ReportSummary, _parse_sstate_summary
 from bakar.user_config import UserConfig
 from tests.conftest import make_report_summary
@@ -153,3 +161,96 @@ def test_json_omits_sstate_fields_without_toggle(
 
     payload = json.loads(result.stdout)
     assert "sstate_wanted" not in payload
+
+
+# ---------------------------------------------------------------------------
+# _render_sstate_lines / _SstateRender value preservation
+# ---------------------------------------------------------------------------
+
+# One DISTINCT value per count field, so transposing any two of them changes
+# the rendered text. Equal values would make a transposition invisible.
+_COUNT_VALUES: dict[str, int] = {
+    "wanted": 12,
+    "local": 3,
+    "mirrors": 45,
+    "missed": 7,
+    "current": 89,
+    "match_pct": 61,
+    "complete_pct": 24,
+}
+
+# The label each count field is rendered under, which is what pins a value to
+# its position in the block.
+_COUNT_LABELS: dict[str, str] = {
+    "wanted": "wanted",
+    "local": "local",
+    "mirrors": "mirrors",
+    "missed": "missed",
+    "current": "current",
+    "match_pct": "match",
+    "complete_pct": "complete",
+}
+
+
+def _render(**overrides: object) -> str:
+    """Render one ``_SstateRender`` to a captured console and return the text."""
+    buffer = io.StringIO()
+    console = Console(file=buffer, width=200, no_color=True, highlight=False)
+    fields = dict(_COUNT_VALUES)
+    fields.update(overrides)
+    _render_sstate_lines(console, render=_SstateRender(**fields))
+    return buffer.getvalue()
+
+
+def test_sstate_render_covers_every_dataclass_field() -> None:
+    """The count table names every non-presentation field of ``_SstateRender``.
+
+    Guards against a field being added or renamed without the value-preservation
+    tests below growing to cover it.
+    """
+    declared = {f.name for f in dataclasses.fields(_SstateRender)}
+    assert declared, "no fields derived from _SstateRender"
+    assert declared == set(_COUNT_VALUES) | {"header_style", "highlight"}
+
+
+def test_render_sstate_lines_carries_each_value_to_its_own_label() -> None:
+    """Every count reaches the line bearing its own label, with all values distinct."""
+    output = _render()
+
+    for field, value in _COUNT_VALUES.items():
+        label = _COUNT_LABELS[field]
+        suffix = "%" if field.endswith("_pct") else ""
+        assert f"{label}: {value}{suffix}" in output, f"{field} lost its position: {output!r}"
+
+
+@pytest.mark.parametrize("field", list(_COUNT_VALUES))
+def test_render_sstate_lines_one_field_at_a_time(field: str) -> None:
+    """With every other count at 0, the one field under test still lands on its own label."""
+    sentinel = 777
+    baseline = dict.fromkeys(_COUNT_VALUES, 0)
+    baseline[field] = sentinel
+
+    output = _render(**baseline)
+
+    label = _COUNT_LABELS[field]
+    suffix = "%" if field.endswith("_pct") else ""
+    assert f"{label}: {sentinel}{suffix}" in output, f"{field} did not reach its label: {output!r}"
+
+
+def _render_with_ansi(header_style: str) -> str:
+    """Render with a colour-capable console so ``header_style`` is observable."""
+    buffer = io.StringIO()
+    console = Console(file=buffer, width=200, force_terminal=True, color_system="standard", highlight=False)
+    _render_sstate_lines(console, render=_SstateRender(**_COUNT_VALUES, header_style=header_style))
+    return buffer.getvalue()
+
+
+def test_render_sstate_lines_header_style_styles_only_the_heading() -> None:
+    """``header_style`` changes the heading line's escapes and leaves the counts alone."""
+    styled = _render_with_ansi("bold").splitlines()
+    plain = _render_with_ansi("").splitlines()
+
+    assert plain[0] == "sstate summary:"
+    assert styled[0] != plain[0]
+    assert "sstate summary:" in styled[0]
+    assert styled[1:] == plain[1:]

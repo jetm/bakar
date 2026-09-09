@@ -8,7 +8,7 @@ from ``cli``.
 from __future__ import annotations
 
 import os
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
 
@@ -864,35 +864,44 @@ def _print_layer_hashes(cfg: BuildConfig, hashes: list[LayerHash] | None = None)
     console.print(layer_hash_table(hashes))
 
 
-def _render_sstate_lines(
-    console: Console,
-    *,
-    wanted: int | None,
-    local: int | None,
-    mirrors: int | None,
-    missed: int | None,
-    current: int | None,
-    match_pct: int | None,
-    complete_pct: int | None,
-    header_style: str = "",
-    highlight: bool = True,
-) -> None:
+@dataclass(frozen=True)
+class _SstateRender:
+    """The seven sstate counts plus the two presentation toggles.
+
+    Packed into one object so the five same-typed count fields are named at
+    every call site and a transposition becomes unexpressible rather than
+    merely untested. ``header_style`` wraps the heading in a Rich markup tag
+    (e.g. ``bold``); empty leaves it plain. ``highlight`` toggles Rich number
+    highlighting.
+    """
+
+    wanted: int | None
+    local: int | None
+    mirrors: int | None
+    missed: int | None
+    current: int | None
+    match_pct: int | None
+    complete_pct: int | None
+    header_style: str = ""
+    highlight: bool = True
+
+
+def _render_sstate_lines(console: Console, *, render: _SstateRender) -> None:
     """Render the 7-field sstate summary block to ``console``.
 
     Shared by the ``report`` command's success summary and
     ``_print_sstate_summary`` so the labels and ordering live in one place.
-    ``header_style`` wraps the heading in a Rich markup tag (e.g. ``bold``);
-    empty leaves it plain. ``highlight`` toggles Rich number highlighting.
     """
-    header = f"[{header_style}]sstate summary:[/]" if header_style else "sstate summary:"
+    highlight = render.highlight
+    header = f"[{render.header_style}]sstate summary:[/]" if render.header_style else "sstate summary:"
     console.print(header, highlight=highlight)
-    console.print(f"  wanted: {wanted}", highlight=highlight)
-    console.print(f"  local: {local}", highlight=highlight)
-    console.print(f"  mirrors: {mirrors}", highlight=highlight)
-    console.print(f"  missed: {missed}", highlight=highlight)
-    console.print(f"  current: {current}", highlight=highlight)
-    console.print(f"  match: {match_pct}%", highlight=highlight)
-    console.print(f"  complete: {complete_pct}%", highlight=highlight)
+    console.print(f"  wanted: {render.wanted}", highlight=highlight)
+    console.print(f"  local: {render.local}", highlight=highlight)
+    console.print(f"  mirrors: {render.mirrors}", highlight=highlight)
+    console.print(f"  missed: {render.missed}", highlight=highlight)
+    console.print(f"  current: {render.current}", highlight=highlight)
+    console.print(f"  match: {render.match_pct}%", highlight=highlight)
+    console.print(f"  complete: {render.complete_pct}%", highlight=highlight)
 
 
 def _print_sstate_summary(kas_log: Path) -> None:
@@ -909,14 +918,16 @@ def _print_sstate_summary(kas_log: Path) -> None:
         return
     _render_sstate_lines(
         console,
-        wanted=sstate["sstate_wanted"],
-        local=sstate["sstate_local"],
-        mirrors=sstate["sstate_mirrors"],
-        missed=sstate["sstate_missed"],
-        current=sstate["sstate_current"],
-        match_pct=sstate["sstate_match_pct"],
-        complete_pct=sstate["sstate_complete_pct"],
-        highlight=False,
+        render=_SstateRender(
+            wanted=sstate["sstate_wanted"],
+            local=sstate["sstate_local"],
+            mirrors=sstate["sstate_mirrors"],
+            missed=sstate["sstate_missed"],
+            current=sstate["sstate_current"],
+            match_pct=sstate["sstate_match_pct"],
+            complete_pct=sstate["sstate_complete_pct"],
+            highlight=False,
+        ),
     )
 
 

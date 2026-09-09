@@ -17,6 +17,7 @@ from bakar.commands._helpers import (
     _find_run,
     _print_layer_hashes,
     _render_sstate_lines,
+    _SstateRender,
     _workspace_from_cwd,
 )
 from bakar.config import BSPSpec, resolve
@@ -192,14 +193,16 @@ def report(
     if effective_show_sstate:
         _render_sstate_lines(
             console,
-            wanted=summary.sstate_wanted,
-            local=summary.sstate_local,
-            mirrors=summary.sstate_mirrors,
-            missed=summary.sstate_missed,
-            current=summary.sstate_current,
-            match_pct=summary.sstate_match_pct,
-            complete_pct=summary.sstate_complete_pct,
-            header_style="bold",
+            render=_SstateRender(
+                wanted=summary.sstate_wanted,
+                local=summary.sstate_local,
+                mirrors=summary.sstate_mirrors,
+                missed=summary.sstate_missed,
+                current=summary.sstate_current,
+                match_pct=summary.sstate_match_pct,
+                complete_pct=summary.sstate_complete_pct,
+                header_style="bold",
+            ),
         )
     if has_buildhistory:
         console.print("[bold]buildhistory:[/]")
