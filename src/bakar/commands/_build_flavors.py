@@ -342,25 +342,32 @@ def _is_multi_release(preset: object) -> bool:
     return len(preset.manifests) > 1 or len(preset.kas_yamls) > 1
 
 
+@dataclass(frozen=True)
+class _ReleaseCtx:
+    """CLI flags for one preset release (resolved before cfg is available)."""
+
+    workspace_root: Path
+    machine: str | None
+    distro: str | None
+    image: str | None
+    branch: str | None
+    host_mode: bool
+    container_mode: bool
+    skip_sync: bool
+    dry_run: bool
+    keep_going: bool
+    clean: bool
+    show_layers: bool
+    sstate_mirror: str | None
+    sccache_scheduler: str | None = None
+    target: str | None = None
+
+
 def _run_single_preset_release(
     active_preset: object,
     spec_index: int,
     *,
-    workspace_root: Path,
-    machine: str | None,
-    distro: str | None,
-    image: str | None,
-    branch: str | None,
-    host_mode: bool,
-    container_mode: bool,
-    skip_sync: bool,
-    dry_run: bool,
-    keep_going: bool,
-    clean: bool,
-    show_layers: bool,
-    sstate_mirror: str | None,
-    sccache_scheduler: str | None = None,
-    target: str | None = None,
+    ctx: _ReleaseCtx,
 ) -> int:
     """Run the full build pipeline for one PresetSpec and return the exit code.
 
@@ -379,7 +386,7 @@ def _run_single_preset_release(
     spec = specs[spec_index]
 
     out_subdir = compose_preset_output_path(active_preset, spec_index)
-    ws = workspace_root / "build" / out_subdir
+    ws = ctx.workspace_root / "build" / out_subdir
 
     byo_form = spec.kas_yaml is not None
     main_yaml: Path | None
@@ -395,44 +402,44 @@ def _run_single_preset_release(
         workspace=ws,
         bsp_family=family,
         spec=BSPSpec(
-            machine=machine or spec.machine or (machine_from_yaml(main_yaml) if byo_form else None),
-            distro=distro or spec.distro,
-            image=image or spec.image,
+            machine=ctx.machine or spec.machine or (machine_from_yaml(main_yaml) if byo_form else None),
+            distro=ctx.distro or spec.distro,
+            image=ctx.image or spec.image,
             manifest=spec.manifest,
-            repo_branch=branch or spec.branch,
-            host_mode=host_mode,
-            container_mode=container_mode,
+            repo_branch=ctx.branch or spec.branch,
+            host_mode=ctx.host_mode,
+            container_mode=ctx.container_mode,
         ),
         kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
         preset=active_preset,
         sccache_dist_override=global_sccache_dist_override(),
     )
-    if sstate_mirror is not None:
-        cfg = replace(cfg, sstate_mirror_url=sstate_mirror)
-    if sccache_scheduler is not None:
-        cfg = replace(cfg, sccache_scheduler_url=sccache_scheduler)
+    if ctx.sstate_mirror is not None:
+        cfg = replace(cfg, sstate_mirror_url=ctx.sstate_mirror)
+    if ctx.sccache_scheduler is not None:
+        cfg = replace(cfg, sccache_scheduler_url=ctx.sccache_scheduler)
     cfg = apply_mold_overrides(cfg)
     cfg = apply_scope_override(cfg)
 
     overlay_source = _overlay_for(bsp)
     extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
 
-    effective_show_layers = show_layers or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_hashes)
+    effective_show_layers = ctx.show_layers or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_hashes)
 
-    ctx = _BuildCtx(
+    build_ctx = _BuildCtx(
         overlay_source=overlay_source,
         extra_overlays=extra_overlays,
         bsp=bsp,
         family=family,
         effective_show_layers=effective_show_layers,
-        dry_run=dry_run,
-        keep_going=keep_going,
-        skip_sync=skip_sync,
-        target=target,
+        dry_run=ctx.dry_run,
+        keep_going=ctx.keep_going,
+        skip_sync=ctx.skip_sync,
+        target=ctx.target,
     )
 
-    if clean:
+    if ctx.clean:
         _clean_build_dir(cfg)
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
@@ -444,9 +451,9 @@ def _run_single_preset_release(
                 f" release_index={spec_index}",
             )
             if byo_form:
-                _run_byo_build(cfg, log, ctx)
+                _run_byo_build(cfg, log, build_ctx)
             else:
-                _run_manifest_build(cfg, log, ctx)
+                _run_manifest_build(cfg, log, build_ctx)
     except typer.Exit as exc:
         return exc.exit_code if exc.exit_code is not None else 1
     except Exception as exc:  # noqa: BLE001 - last-resort CLI handler; unexpected errors must not crash silently

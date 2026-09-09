@@ -12,6 +12,7 @@ Also covers the ``--dry-run-script`` option: writing to a file and to stdout
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING
 
 import pytest
@@ -852,6 +853,120 @@ def test_multi_release_bbsetup_distinct_output_dirs(
     # Each stem should appear in the corresponding output dir name.
     assert "qemux86-64" in captured_subdirs[0], f"expected qemux86-64 stem in first dir: {captured_subdirs[0]!r}"
     assert "qemuarm64" in captured_subdirs[1], f"expected qemuarm64 stem in second dir: {captured_subdirs[1]!r}"
+
+
+def test_multi_release_ctx_carries_every_flag_unchanged(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Every _ReleaseCtx field equals the flag build() was invoked with.
+
+    The two older stubs above bind only the positional arguments and discard
+    ``**kwargs``, so nothing they assert would notice a field dropped or
+    transposed while packing the context. This one captures the context object
+    itself and compares it field-by-field against a flag set where no value is
+    the default.
+    """
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    preset = _make_multi_release_bbsetup_preset(tmp_path)
+    _stub_preset_loader(monkeypatch, [preset])
+
+    import bakar.commands.build as build_mod
+
+    captured: list[object] = []
+
+    def capturing_runner(active_preset, spec_index, **kwargs):  # type: ignore[no-untyped-def]
+        captured.append(kwargs["ctx"])
+        return 0
+
+    monkeypatch.setattr(build_mod, "_run_single_preset_release", capturing_runner)
+
+    ws_dir = tmp_path / "ctx-workspace"
+    ws_dir.mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "--host",
+            "--container",
+            "--sccache-scheduler",
+            "http://sched.example:10600",
+            "build",
+            "--preset",
+            "avocado-all-machines",
+            "--workspace",
+            str(ws_dir),
+            "--machine",
+            "ctx-machine",
+            "--distro",
+            "ctx-distro",
+            "--image",
+            "ctx-image",
+            "--branch",
+            "ctx-branch",
+            "--skip-sync",
+            "--dry-run",
+            "--keep-going",
+            "--clean",
+            "--show-layers",
+            "--sstate-mirror",
+            "http://mirror.example/sstate",
+            "--target",
+            "ctx-target",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(captured) == 2, f"expected one ctx per release, got {len(captured)}"
+
+    expected = {
+        "workspace_root": ws_dir.resolve(),
+        "machine": "ctx-machine",
+        "distro": "ctx-distro",
+        "image": "ctx-image",
+        "branch": "ctx-branch",
+        "host_mode": True,
+        "container_mode": True,
+        "skip_sync": True,
+        "dry_run": True,
+        "keep_going": True,
+        "clean": True,
+        "show_layers": True,
+        "sstate_mirror": "http://mirror.example/sstate",
+        "sccache_scheduler": "http://sched.example:10600",
+        "target": "ctx-target",
+    }
+    for ctx in captured:
+        for field, want in expected.items():
+            assert getattr(ctx, field) == want, f"_ReleaseCtx.{field}: expected {want!r}, got {getattr(ctx, field)!r}"
+    # Guards against a field being added to the dataclass but left unasserted.
+    assert {f.name for f in dataclasses.fields(captured[0])} == set(expected)
+
+
+def test_release_ctx_optional_fields_default_to_none(tmp_path: Path) -> None:
+    """sccache_scheduler and target keep their None defaults after the pack."""
+    from bakar.commands._build_flavors import _ReleaseCtx
+
+    ctx = _ReleaseCtx(
+        workspace_root=tmp_path,
+        machine=None,
+        distro=None,
+        image=None,
+        branch=None,
+        host_mode=False,
+        container_mode=False,
+        skip_sync=False,
+        dry_run=False,
+        keep_going=False,
+        clean=False,
+        show_layers=False,
+        sstate_mirror=None,
+    )
+
+    assert ctx.sccache_scheduler is None
+    assert ctx.target is None
 
 
 # ---------------------------------------------------------------------------
