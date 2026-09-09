@@ -4,12 +4,15 @@ Cover the pure assembly of ``systemd-run --user --scope`` argv (properties,
 oom shim, unit naming, opt-out, and the unavailable fallback) and the wiring
 into ``run_build`` / ``run_shell_live`` that scopes the real build command.
 The subprocess is never launched: the module functions are pure, and the
-integration tests stub ``_run_pty_with_ui`` to capture the argv it would run.
+integration tests stub ``_run_pty_with_ui`` to capture the ``_PtyCtx`` it would
+run, and read the argv off that context's ``cmd`` field.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import subprocess
+import threading
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -19,7 +22,9 @@ import bakar.steps.kas_build as step_kas
 from bakar import build_scope
 from bakar.config import BuildConfig
 from bakar.observability import RunLogger
-from bakar.steps.kas_build import KasBuildContext, _PtyOutcome
+from bakar.output_mode import OutputMode
+from bakar.steps.build_ui import BuildUIState
+from bakar.steps.kas_build import KasBuildContext, _PtyCtx, _PtyOutcome
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -393,11 +398,24 @@ def _run_build_ctx(tmp_path: Path, log: RunLogger, **cfg_overrides: object) -> K
     return KasBuildContext(cfg=cfg, log=log, kas_yaml=kas_yaml, overlay_source=overlay)
 
 
-def _capture_run_build_cmd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **cfg_overrides: object) -> list[str]:
-    captured: list[list[str]] = []
+def _capture_pty_ctx(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    shell_command: str | None = None,
+    show_layers: bool = False,
+    output_mode: OutputMode = OutputMode.RICH,
+    **cfg_overrides: object,
+) -> tuple[_PtyCtx, KasBuildContext]:
+    """Drive a call site and hand back the ``_PtyCtx`` it assembled.
 
-    def fake_pty(cmd, *_a, **_kw):  # type: ignore[no-untyped-def]
-        captured.append(cmd)
+    ``shell_command=None`` drives ``run_build`` (which passes ``show_layers``);
+    a string drives ``run_shell_live`` (which does not).
+    """
+    captured: list[_PtyCtx] = []
+
+    def fake_pty(ctx, *_a, **_kw):  # type: ignore[no-untyped-def]
+        captured.append(ctx)
         return _PtyOutcome(rc=0)
 
     monkeypatch.setattr(
@@ -408,43 +426,131 @@ def _capture_run_build_cmd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **cf
     monkeypatch.setattr(step_kas, "_run_pty_with_ui", fake_pty)
 
     with RunLogger(runs_dir=tmp_path / "runs") as log:
-        ctx = _run_build_ctx(tmp_path, log, **cfg_overrides)
-        rc = step_kas.run_build(ctx)
+        build_ctx = replace(_run_build_ctx(tmp_path, log, **cfg_overrides), output_mode=output_mode)
+        if shell_command is None:
+            rc = step_kas.run_build(build_ctx, show_layers=show_layers)
+        else:
+            rc = step_kas.run_shell_live(build_ctx, shell_command)
     assert rc == 0
-    assert captured, "run_build never called _run_pty_with_ui"
-    return captured[0]
+    assert len(captured) == 1, f"expected one _PtyCtx, got {len(captured)}"
+    return captured[0], build_ctx
+
+
+def _capture_run_build_ctx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **cfg_overrides: object) -> _PtyCtx:
+    return _capture_pty_ctx(tmp_path, monkeypatch, **cfg_overrides)[0]
 
 
 def test_run_build_scopes_the_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    cmd = _capture_run_build_cmd(tmp_path, monkeypatch)
-    assert cmd[0] == "systemd-run", f"build command was not scoped: {cmd!r}"
-    assert "--scope" in cmd
+    ctx = _capture_run_build_ctx(tmp_path, monkeypatch)
+    assert ctx.cmd[0] == "systemd-run", f"build command was not scoped: {ctx.cmd!r}"
+    assert "--scope" in ctx.cmd
     # The kas invocation still ends the argv, so the build itself is unchanged.
-    assert "build" in cmd
+    assert "build" in ctx.cmd
 
 
 def test_run_build_unscoped_when_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    cmd = _capture_run_build_cmd(tmp_path, monkeypatch, scope=False)
-    assert cmd[0] != "systemd-run"
-    assert cmd[0] in ("kas", "kas-container")
+    ctx = _capture_run_build_ctx(tmp_path, monkeypatch, scope=False)
+    assert ctx.cmd[0] != "systemd-run"
+    assert ctx.cmd[0] in ("kas", "kas-container")
 
 
 def test_run_shell_live_scopes_the_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: list[list[str]] = []
+    captured: list[_PtyCtx] = []
 
-    def fake_pty(cmd, *_a, **_kw):  # type: ignore[no-untyped-def]
-        captured.append(cmd)
+    def fake_pty(ctx, *_a, **_kw):  # type: ignore[no-untyped-def]
+        captured.append(ctx)
         return _PtyOutcome(rc=0)
 
     monkeypatch.setattr(step_kas, "_run_pty_with_ui", fake_pty)
     monkeypatch.setattr(step_kas, "persist_run_artifacts", lambda *a, **kw: None)
 
     with RunLogger(runs_dir=tmp_path / "runs") as log:
-        ctx = _run_build_ctx(tmp_path, log)
-        rc = step_kas.run_shell_live(ctx, "bitbake core-image-minimal")
+        build_ctx = _run_build_ctx(tmp_path, log)
+        rc = step_kas.run_shell_live(build_ctx, "bitbake core-image-minimal")
     assert rc == 0
-    assert captured[0][0] == "systemd-run", f"bitbake command was not scoped: {captured[0]!r}"
-    assert "bakar-bitbake-" in " ".join(captured[0])
+    assert captured[0].cmd[0] == "systemd-run", f"bitbake command was not scoped: {captured[0].cmd!r}"
+    assert "bakar-bitbake-" in " ".join(captured[0].cmd)
+
+
+# ---------------------------------------------------------------------------
+# _PtyCtx value preservation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        (None, True, "run_build"),
+        ("bitbake core-image-minimal", False, "run_shell_live"),
+    ],
+    ids=lambda c: c[2],
+)
+def test_pty_ctx_carries_every_field_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: tuple[str | None, bool, str],
+) -> None:
+    """Every ``_PtyCtx`` field equals what the call site meant to pass.
+
+    Packing eight parameters into a context is wrong in a way nothing else
+    here sees: transpose two fields or drop one and the build still runs, the
+    argv is unchanged, and every other test stays green - until a watchdog
+    reads a value it was never given. Both call sites are checked, and no
+    field holds its declared default except ``show_layers`` on the
+    ``run_shell_live`` side, which that call site deliberately never passes.
+    """
+    shell_command, want_show_layers, _label = case
+    ctx, build_ctx = _capture_pty_ctx(
+        tmp_path,
+        monkeypatch,
+        shell_command=shell_command,
+        show_layers=True,
+        output_mode=OutputMode.PLAIN,
+    )
+
+    assert ctx.cmd[0] == "systemd-run", f"cmd is not the scoped argv: {ctx.cmd!r}"
+    assert ctx.cfg is build_ctx.cfg
+    assert ctx.log is build_ctx.log
+    assert isinstance(ctx.ui, BuildUIState), f"ui is {type(ctx.ui).__name__}"
+    assert isinstance(ctx.stop_event, threading.Event), f"stop_event is {type(ctx.stop_event).__name__}"
+    assert ctx.show_layers is want_show_layers
+    assert ctx.output_mode is OutputMode.PLAIN
+    assert ctx.scope_unit is not None and ctx.scope_unit.startswith("bakar-"), f"scope_unit={ctx.scope_unit!r}"
+    # Guards against a field being added to the dataclass but left unasserted.
+    assert {f.name for f in dataclasses.fields(ctx)} == {
+        "cmd",
+        "cfg",
+        "log",
+        "ui",
+        "stop_event",
+        "show_layers",
+        "output_mode",
+        "scope_unit",
+    }
+
+
+def test_pty_ctx_has_no_two_fields_sharing_type_and_default() -> None:
+    """No two ``_PtyCtx`` fields share a type AND a default value.
+
+    That property is what makes the all-fields test above sufficient on its
+    own. Where two fields share a type and a default, giving both the same
+    non-default value hides a transposition between them, and only a
+    one-at-a-time test catches it. Nothing in ``_PtyCtx`` shares a pair today,
+    so this test stands in for that one - and fails the moment a second
+    ``bool = False`` or ``... | None = None`` field lands, which is the signal
+    to add the one-at-a-time test rather than to relax this.
+    """
+    fields = dataclasses.fields(_PtyCtx)
+    # PEP 563: f.type is the annotation SOURCE STRING, not the type object.
+    # Asserting the derivation is non-empty stops this passing vacuously.
+    assert fields, "no fields derived from _PtyCtx"
+    assert all(isinstance(f.type, str) for f in fields)
+
+    groups: dict[tuple[str, object], list[str]] = {}
+    for f in fields:
+        groups.setdefault((f.type, f.default), []).append(f.name)
+    collisions = {key: names for key, names in groups.items() if len(names) > 1}
+    assert not collisions, f"same-typed, same-defaulted _PtyCtx fields need a one-at-a-time test: {collisions}"
 
 
 # ---------------------------------------------------------------------------

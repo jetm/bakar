@@ -1474,18 +1474,34 @@ def _print_cache_summary(log: RunLogger, backend: str | None, doc: dict | None, 
         return
 
 
-def _run_pty_with_ui(
-    cmd: list[str],
-    cfg: BuildConfig,
-    log: RunLogger,
-    ui: BuildUIState,
-    stop_event: threading.Event,
-    *,
-    show_layers: bool = False,
-    output_mode: OutputMode = OutputMode.RICH,
-    scope_unit: str | None = None,
-) -> _PtyOutcome:
-    """Run ``cmd`` under a PTY, pumping its output into ``ui`` live.
+@dataclass(frozen=True, slots=True)
+class _PtyCtx:
+    """The eight :func:`_run_pty_with_ui` parameters, packed into one argument.
+
+    Field names match the former parameter names one-for-one, so the body can
+    unpack the context back into identically-named locals and leave the nine
+    inner closures - the pump, the heartbeat, the event tail, the stall and
+    error watchdogs - reading the same free variables they always did. A
+    transposed or dropped field is caught by
+    ``test_pty_ctx_carries_every_field_unchanged``, which checks both call
+    sites field by field, guarded by
+    ``test_pty_ctx_has_no_two_fields_sharing_type_and_default`` - no two
+    fields here share a type and a default, which is what lets one all-fields
+    test stand in for a one-at-a-time sweep.
+    """
+
+    cmd: list[str]
+    cfg: BuildConfig
+    log: RunLogger
+    ui: BuildUIState
+    stop_event: threading.Event
+    show_layers: bool = False
+    output_mode: OutputMode = OutputMode.RICH
+    scope_unit: str | None = None
+
+
+def _run_pty_with_ui(ctx: _PtyCtx) -> _PtyOutcome:
+    """Run ``ctx.cmd`` under a PTY, pumping its output into ``ctx.ui`` live.
 
     The pump thread writes every line to kas.log for `bakar log` to tail,
     parses bitbake counters into a rich Progress bar, and surfaces
@@ -1505,6 +1521,18 @@ def _run_pty_with_ui(
     do step logging, warn/err printing, PSI calibration, or sampler management -
     the caller owns those.
     """
+    # Unpacked back into identically-named locals on purpose: nine inner
+    # closures below (the pump, the heartbeat, the event tail, the stall and
+    # error watchdogs, ...) read these as free variables. Rebinding them here
+    # keeps every closure body untouched by the repack.
+    cmd = ctx.cmd
+    cfg = ctx.cfg
+    log = ctx.log
+    ui = ctx.ui
+    stop_event = ctx.stop_event
+    show_layers = ctx.show_layers
+    output_mode = ctx.output_mode
+    scope_unit = ctx.scope_unit
     rc: int | None = None
     stall_tasks: list[str] | None = None
     # Per-build cache delta for the build-end summary, filled at teardown.
@@ -2084,14 +2112,16 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         try:
             with lock_owner_marker(cfg, log):
                 outcome = _run_pty_with_ui(
-                    cmd,
-                    cfg,
-                    log,
-                    ui,
-                    stop_event,
-                    show_layers=show_layers,
-                    output_mode=ctx.output_mode,
-                    scope_unit=build_scope.unit_from_command(cmd),
+                    _PtyCtx(
+                        cmd=cmd,
+                        cfg=cfg,
+                        log=log,
+                        ui=ui,
+                        stop_event=stop_event,
+                        show_layers=show_layers,
+                        output_mode=ctx.output_mode,
+                        scope_unit=build_scope.unit_from_command(cmd),
+                    )
                 )
         except LockHeldByPeerError as exc:
             rc = 1
@@ -2243,13 +2273,15 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
         try:
             with lock_owner_marker(cfg, log):
                 outcome = _run_pty_with_ui(
-                    cmd,
-                    cfg,
-                    log,
-                    ui,
-                    stop_event,
-                    output_mode=ctx.output_mode,
-                    scope_unit=build_scope.unit_from_command(cmd),
+                    _PtyCtx(
+                        cmd=cmd,
+                        cfg=cfg,
+                        log=log,
+                        ui=ui,
+                        stop_event=stop_event,
+                        output_mode=ctx.output_mode,
+                        scope_unit=build_scope.unit_from_command(cmd),
+                    )
                 )
         except LockHeldByPeerError as exc:
             rc = 1
