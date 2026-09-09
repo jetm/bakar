@@ -969,6 +969,79 @@ def test_release_ctx_optional_fields_default_to_none(tmp_path: Path) -> None:
     assert ctx.target is None
 
 
+# (global_flags, build_flags, field) - one boolean set per case. `--host` and
+# `--container` are root-callback flags, the rest belong to `build`, so the
+# argv shape differs per case and the tuple carries both halves.
+_RELEASE_BOOL_CASES = [
+    (["--host"], [], "host_mode"),
+    (["--container"], [], "container_mode"),
+    ([], ["--skip-sync"], "skip_sync"),
+    ([], ["--dry-run"], "dry_run"),
+    ([], ["--keep-going"], "keep_going"),
+    ([], ["--clean"], "clean"),
+    ([], ["--show-layers"], "show_layers"),
+]
+
+
+@pytest.mark.parametrize("case", _RELEASE_BOOL_CASES, ids=lambda c: c[2])
+def test_release_ctx_sets_only_the_flag_passed(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    case: tuple[list[str], list[str], str],
+) -> None:
+    """One boolean at a time: the named field is set and its neighbours are not.
+
+    The all-flags test above sets all seven booleans to True, so every one of
+    the 21 pairwise transpositions among them reads back identical and passes.
+    Swapping ``dry_run`` and ``clean`` at the packing site is the concrete
+    case: a ``--dry-run`` multi-release build would take the ``if ctx.clean``
+    branch and delete the build tree. Setting exactly one boolean per case is
+    what makes the values differ, which is what catches a swapped pair.
+
+    Parametrized over one case tuple rather than three separate arguments
+    because a test taking six fixtures trips ruff ``PLR0913``.
+    """
+    import dataclasses
+
+    import bakar.commands.build as build_mod
+    from bakar.commands._build_flavors import _ReleaseCtx
+
+    global_flags, build_flags, field = case
+
+    bool_fields = [f.name for f in dataclasses.fields(_ReleaseCtx) if f.type == "bool"]
+    assert field in bool_fields, f"{field} is not a bool field of _ReleaseCtx"
+
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    preset = _make_multi_release_bbsetup_preset(tmp_path)
+    _stub_preset_loader(monkeypatch, [preset])
+
+    captured: list[object] = []
+
+    def capturing_runner(active_preset, spec_index, **kwargs):  # type: ignore[no-untyped-def]
+        captured.append(kwargs["ctx"])
+        return 0
+
+    monkeypatch.setattr(build_mod, "_run_single_preset_release", capturing_runner)
+
+    result = runner.invoke(
+        app,
+        [*global_flags, "build", "--preset", "avocado-all-machines", *build_flags],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured, "expected at least one _ReleaseCtx"
+    ctx = captured[0]
+
+    for name in bool_fields:
+        want = name == field
+        assert getattr(ctx, name) is want, (
+            f"passing {' '.join([*global_flags, *build_flags])} should set only {field}: "
+            f"_ReleaseCtx.{name} is {getattr(ctx, name)!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # build_stop integration (task 4.3)
 #

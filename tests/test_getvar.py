@@ -1291,3 +1291,48 @@ def test_getvar_ctx_carries_every_flag_unchanged(
         assert getattr(ctx, field) == want, f"_GetvarCtx.{field}: expected {want!r}, got {getattr(ctx, field)!r}"
     # Guards against a field being added to the dataclass but left unasserted.
     assert {f.name for f in dataclasses.fields(ctx)} == set(expected)
+
+
+@pytest.mark.parametrize(
+    ("flag", "field"),
+    [
+        ("--unexpanded", "unexpanded"),
+        ("--history", "history"),
+        ("--json", "output_json"),
+    ],
+)
+def test_getvar_ctx_sets_only_the_flag_passed(
+    runner: _CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    flag: str,
+    field: str,
+) -> None:
+    """One boolean at a time: the named field is set and its neighbours are not.
+
+    The all-flags test above gives every boolean the same value, so a
+    transposition between two of them is invisible to it - swap ``unexpanded``
+    and ``history`` in the pack and it still passes. Passing exactly one
+    boolean flag per case makes the values differ, which is what catches a
+    swapped pair.
+    """
+    import dataclasses
+
+    import bakar.commands.getvar as getvar_mod
+
+    bool_fields = [f.name for f in dataclasses.fields(getvar_mod._GetvarCtx) if f.type == "bool"]
+    assert field in bool_fields, f"{field} is not a bool field of _GetvarCtx"
+
+    captured: list[object] = []
+    monkeypatch.setattr(getvar_mod, "_getvar_impl", captured.append)
+
+    result = runner.invoke(app, ["getvar", "CTX_VAR", flag])
+
+    assert result.exit_code == 0, result.output
+    assert len(captured) == 1, f"expected one ctx, got {len(captured)}"
+    ctx = captured[0]
+
+    for name in bool_fields:
+        want = name == field
+        assert getattr(ctx, name) is want, (
+            f"passing {flag} should set only {field}: _GetvarCtx.{name} is {getattr(ctx, name)!r}"
+        )

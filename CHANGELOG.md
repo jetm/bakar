@@ -16,6 +16,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed `bakar sstate-seed` copying the destination into itself when it sits inside the source. Migrating a flat `.native-seed` into its release-keyed `.native-seed/<release>` is the ordinary upgrade path, and a release codename is never two hex characters, so the destination was taken for a `${NATIVELSBSTRING}` prefix directory and recursed.
 - A build now consumes a populated seed for its release automatically when `sstate_mirrors` is not configured, and says so on the build's first lines. An explicitly configured `sstate_mirrors` always wins and is never appended to. The announcement is deliberate rather than incidental: at 65% of wall-clock, a run that quietly picked up a seed is not comparable with the run before it, and this project already lost a benchmark baseline that way when a seed appeared mid-campaign and no run recorded which side of it that run was on. Only a seed carrying bakar's own marker is wired in, so a half-copied or hand-made directory is never adopted as though bakar had vouched for it.
 
+### Changed
+
+- **BREAKING (Python API).** `bakar.config.resolve()` now takes a single
+  `ResolveRequest` instead of nine keyword-only arguments. A caller written as
+  `resolve(workspace=ws, bsp_family="nxp")` raises
+  `TypeError: resolve() got an unexpected keyword argument 'workspace'` and
+  becomes `resolve(ResolveRequest(workspace=ws, bsp_family="nxp"))`. The field
+  names are unchanged, so the migration is mechanical. `resolve()` is
+  documented in `ARCHITECTURE.md` as a public surface, which is why this is
+  called out here rather than treated as internal.
+- **BREAKING (Python API).** `bakar.steps.stress_parse.run()` takes a single
+  `StressParseContext` instead of ten arguments, on the same terms.
+- No CLI surface moved. Every command keeps its flags, its short flags, its
+  help text and its parameter count; `--help` output is byte-identical to the
+  previous release for all eight commands.
+
 ## [0.29.3] - 2026-09-03
 
 ### Fixed
