@@ -176,6 +176,19 @@ def _filter_image_sbom(cfg, request: _SbomRequest) -> list[Path]:
     out_dir = cfg.resolved_tmpdir / "deploy" / "avocado-sbom"
     cmd, env = sbom_publish.filter_command(sbom_publish.sbom_lib_dir(request.workspace), images, out_dir)
     try:
+        # No shell and no injection surface: filter_command is typed
+        # ``-> tuple[list[str], dict[str, str]]`` and returns an argv LIST, which
+        # subprocess.run executes directly rather than through /bin/sh. argv[0] is
+        # sys.executable or the literal "python3" and argv[1:3] are constants, so
+        # the only caller-derived elements are the two paths - and they are
+        # separate argv members, which cannot open a second command however they
+        # are spelled. The rule fires on any non-literal first argument and does
+        # not distinguish the list form from a shell string.
+        #
+        # The directive must stay on the line directly above the call: opengrep
+        # only associates it with the line it precedes, so moving the prose
+        # between the two silently un-suppresses the finding.
+        # nosemgrep: python.django.security.injection.command.subprocess-injection.subprocess-injection
         result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
     except OSError as exc:
         console.print(f"[yellow]build succeeded but the SBOM was not filtered:[/] {exc}")
