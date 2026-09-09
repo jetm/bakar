@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import json
 import shlex
-from typing import Annotated, NoReturn
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Annotated, NoReturn
 
 import typer
 
@@ -39,6 +40,31 @@ from bakar.steps.kas_build import (
     clear_stale_bitbake_locks,
     run_shell_capture,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+@dataclass(frozen=True)
+class _GetvarCtx:
+    """The ten ``getvar`` CLI parameters, packed for :func:`_getvar_impl`.
+
+    Typer cannot bind a dataclass-annotated parameter, so the command keeps
+    its ten annotated parameters and packs them here in its body. Field names
+    match the parameter names one-for-one; a transposition is caught by
+    ``test_getvar_ctx_carries_every_flag_unchanged``.
+    """
+
+    var: str
+    kas_yaml: str | None
+    recipe: str | None
+    unexpanded: bool
+    flag: str | None
+    history: bool
+    manifest: str | None
+    machine: str | None
+    workspace: Path | None
+    output_json: bool
 
 
 @app.command("getvar")
@@ -116,23 +142,46 @@ def getvar(
     from a failing bitbake call is surfaced as an error rather than printed
     as success.
     """
-    var, flag = _normalize_flag_query(var, flag)
+    _getvar_impl(
+        _GetvarCtx(
+            var=var,
+            kas_yaml=kas_yaml,
+            recipe=recipe,
+            unexpanded=unexpanded,
+            flag=flag,
+            history=history,
+            manifest=manifest,
+            machine=machine,
+            workspace=workspace,
+            output_json=output_json,
+        )
+    )
+
+
+def _getvar_impl(ctx: _GetvarCtx) -> None:
+    """Resolve the variable described by ``ctx``.
+
+    Split out of :func:`getvar` so the command holds only its ten annotated
+    Typer parameters. Kept in this module because the tests patch
+    ``run_shell_capture`` as a bare name here.
+    """
+    var, flag = _normalize_flag_query(ctx.var, ctx.flag)
 
     # ``--history`` reads the include chain out of ``bitbake -e``, which
     # records variable assignments and has no per-flag history. Refuse the
     # combination rather than silently answering for the bare name.
-    if flag and history:
+    if flag and ctx.history:
         console.print("[red]--history cannot be combined with a variable flag query[/]")
         raise typer.Exit(code=2)
 
-    main_yaml, user_extras = split_kas_yaml_arg(kas_yaml)
-    family, bsp, main_yaml, manifest = _normalize_dispatch(main_yaml, manifest)
-    ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
+    main_yaml, user_extras = split_kas_yaml_arg(ctx.kas_yaml)
+    family, bsp, main_yaml, manifest = _normalize_dispatch(main_yaml, ctx.manifest)
+    ws = _resolve_workspace(ctx.workspace, kas_yaml=main_yaml, family=family)
     cfg = resolve(
         workspace=ws,
         bsp_family=family,
         spec=BSPSpec(
-            manifest=manifest, machine=machine, host_mode=global_host_mode(), container_mode=global_container_mode()
+            manifest=manifest, machine=ctx.machine, host_mode=global_host_mode(), container_mode=global_container_mode()
         ),
         kas_yaml=main_yaml,
         user_config=_state._USER_CONFIG,
@@ -159,10 +208,10 @@ def getvar(
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source, extra_overlays=extra_overlays)
 
-        if history:
-            _run_history(kas_ctx, log, var, recipe, output_json)
+        if ctx.history:
+            _run_history(kas_ctx, log, var, ctx.recipe, ctx.output_json)
         else:
-            _run_getvar(kas_ctx, log, var, recipe, unexpanded, output_json, flag)
+            _run_getvar(kas_ctx, log, var, ctx.recipe, ctx.unexpanded, ctx.output_json, flag)
 
 
 def _normalize_flag_query(var: str, flag: str | None) -> tuple[str, str | None]:

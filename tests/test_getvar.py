@@ -1223,3 +1223,71 @@ def test_getvar_unrecognised_failure_reports_undetermined_phase(runner: _CliRunn
     doc = json.loads(result.stdout)
     assert doc["phase"] == "undetermined"
     assert noise in doc["error"]
+
+
+@pytest.mark.unit
+def test_getvar_ctx_carries_every_flag_unchanged(
+    runner: _CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every _GetvarCtx field equals the flag ``getvar()`` was invoked with.
+
+    Packing ten CLI parameters into a context is wrong in a way nothing else
+    here sees: transpose two fields or drop one and the command still runs,
+    ``--help`` is unchanged, and every other test stays green. This one
+    captures the context object and compares it field-by-field against a flag
+    set where no value is the default.
+    """
+    import dataclasses
+
+    import bakar.commands.getvar as getvar_mod
+
+    ws_dir = tmp_path / "ctx-workspace"
+    ws_dir.mkdir()
+
+    captured: list[object] = []
+    monkeypatch.setattr(getvar_mod, "_getvar_impl", captured.append)
+
+    result = runner.invoke(
+        app,
+        [
+            "getvar",
+            "CTX_VAR",
+            "ctx-machine.yml",
+            "--recipe",
+            "ctx-recipe",
+            "--unexpanded",
+            "--flag",
+            "ctxflag",
+            "--history",
+            "--manifest",
+            "ctx-manifest.xml",
+            "--machine",
+            "ctx-machine",
+            "--workspace",
+            str(ws_dir),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(captured) == 1, f"expected one ctx, got {len(captured)}"
+    ctx = captured[0]
+
+    expected = {
+        "var": "CTX_VAR",
+        "kas_yaml": "ctx-machine.yml",
+        "recipe": "ctx-recipe",
+        "unexpanded": True,
+        "flag": "ctxflag",
+        "history": True,
+        "manifest": "ctx-manifest.xml",
+        "machine": "ctx-machine",
+        "workspace": ws_dir.resolve(),
+        "output_json": True,
+    }
+    for field, want in expected.items():
+        assert getattr(ctx, field) == want, f"_GetvarCtx.{field}: expected {want!r}, got {getattr(ctx, field)!r}"
+    # Guards against a field being added to the dataclass but left unasserted.
+    assert {f.name for f in dataclasses.fields(ctx)} == set(expected)
