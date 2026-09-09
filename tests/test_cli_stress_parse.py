@@ -542,13 +542,11 @@ def test_stress_parse_step_context_carries_every_value(
     assert ctx.cfg.image == "ctx-image"
     assert ctx.cfg.manifest == "imx-6.6.52-2.2.2.xml"
     assert ctx.log is not None
-    assert ctx.bsp is not None
     assert ctx.overlay_source.name.startswith("bakar-tuning")
     # Guards against a field being added to the step context but left unasserted.
     assert {f.name for f in dataclasses.fields(ctx)} == {
         "cfg",
         "log",
-        "bsp",
         "overlay_source",
         "runs",
         "target",

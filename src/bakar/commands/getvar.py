@@ -11,7 +11,13 @@ from __future__ import annotations
 import json
 import shlex
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, NoReturn
+
+# Runtime, not TYPE_CHECKING-guarded: ``_GetvarCtx`` annotates a field with
+# ``Path``, and a guarded import leaves ``get_type_hints`` on that dataclass
+# raising ``NameError``. ``_build_flavors`` and ``_post_build`` carry the same
+# note for the same reason. ``TC003`` is already ignored for this package.
+from pathlib import Path
+from typing import Annotated, NoReturn
 
 import typer
 
@@ -40,9 +46,6 @@ from bakar.steps.kas_build import (
     clear_stale_bitbake_locks,
     run_shell_capture,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 @dataclass(frozen=True, kw_only=True)

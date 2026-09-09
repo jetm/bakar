@@ -176,7 +176,6 @@ def test_all_iterations_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
             ctx=stress_parse.StressParseContext(
                 cfg=cfg,
                 log=log,
-                bsp=_bsp_stub(),
                 overlay_source=tmp_path / "bakar-tuning-nxp.yml",
                 runs=10,
                 target="world",
@@ -212,7 +211,6 @@ def test_one_iteration_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
             ctx=stress_parse.StressParseContext(
                 cfg=cfg,
                 log=log,
-                bsp=_bsp_stub(),
                 overlay_source=tmp_path / "bakar-tuning-nxp.yml",
                 runs=5,
                 target="world",
@@ -238,7 +236,6 @@ def test_summary_json_persisted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
             ctx=stress_parse.StressParseContext(
                 cfg=cfg,
                 log=log,
-                bsp=_bsp_stub(),
                 overlay_source=tmp_path / "bakar-tuning-nxp.yml",
                 runs=1,
                 target="world",
@@ -269,7 +266,6 @@ def test_parse_threads_prepended_to_command(tmp_path: Path, monkeypatch: pytest.
             ctx=stress_parse.StressParseContext(
                 cfg=cfg,
                 log=log,
-                bsp=_bsp_stub(),
                 overlay_source=tmp_path / "bakar-tuning-nxp.yml",
                 runs=1,
                 target="world",
@@ -296,7 +292,6 @@ def test_custom_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
             ctx=stress_parse.StressParseContext(
                 cfg=cfg,
                 log=log,
-                bsp=_bsp_stub(),
                 overlay_source=tmp_path / "bakar-tuning-nxp.yml",
                 runs=1,
                 target="core-image-minimal",
@@ -322,7 +317,6 @@ def test_per_iteration_logs_written(tmp_path: Path, monkeypatch: pytest.MonkeyPa
             ctx=stress_parse.StressParseContext(
                 cfg=cfg,
                 log=log,
-                bsp=_bsp_stub(),
                 overlay_source=tmp_path / "bakar-tuning-nxp.yml",
                 runs=3,
                 target="world",
@@ -349,7 +343,6 @@ def test_ti_bsp_dispatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
             ctx=stress_parse.StressParseContext(
                 cfg=cfg,
                 log=log,
-                bsp=_bsp_stub(),
                 overlay_source=tmp_path / "bakar-tuning-nxp.yml",
                 runs=1,
                 target="world",
@@ -374,7 +367,6 @@ def test_variant_b_signature_detected(tmp_path: Path, monkeypatch: pytest.Monkey
             ctx=stress_parse.StressParseContext(
                 cfg=cfg,
                 log=log,
-                bsp=_bsp_stub(),
                 overlay_source=tmp_path / "bakar-tuning-nxp.yml",
                 runs=1,
                 target="world",
@@ -439,7 +431,6 @@ def test_cache_cleared_between_iterations(tmp_path: Path, monkeypatch: pytest.Mo
             ctx=stress_parse.StressParseContext(
                 cfg=cfg,
                 log=log,
-                bsp=_bsp_stub(),
                 overlay_source=tmp_path / "bakar-tuning-nxp.yml",
                 runs=3,
                 target="world",
@@ -467,7 +458,6 @@ def test_cache_clear_no_op_on_first_iteration_with_empty_workspace(
             ctx=stress_parse.StressParseContext(
                 cfg=cfg,
                 log=log,
-                bsp=_bsp_stub(),
                 overlay_source=tmp_path / "bakar-tuning-nxp.yml",
                 runs=1,
                 target="world",
@@ -545,7 +535,6 @@ def test_runtime_cleared_between_iterations(tmp_path: Path, monkeypatch: pytest.
             ctx=stress_parse.StressParseContext(
                 cfg=cfg,
                 log=log,
-                bsp=_bsp_stub(),
                 overlay_source=tmp_path / "bakar-tuning-nxp.yml",
                 runs=3,
                 target="world",
@@ -572,7 +561,6 @@ def test_env_payload_records_parse_threads_override(tmp_path: Path, monkeypatch:
             ctx=stress_parse.StressParseContext(
                 cfg=cfg,
                 log=log,
-                bsp=_bsp_stub(),
                 overlay_source=tmp_path / "bakar-tuning-nxp.yml",
                 runs=1,
                 target="world",
@@ -596,7 +584,6 @@ def test_label_propagates_to_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
             ctx=stress_parse.StressParseContext(
                 cfg=cfg,
                 log=log,
-                bsp=_bsp_stub(),
                 overlay_source=tmp_path / "bakar-tuning-nxp.yml",
                 runs=1,
                 target="world",
@@ -625,7 +612,6 @@ def test_label_omitted_when_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
             ctx=stress_parse.StressParseContext(
                 cfg=cfg,
                 log=log,
-                bsp=_bsp_stub(),
                 overlay_source=tmp_path / "bakar-tuning-nxp.yml",
                 runs=1,
                 target="world",
@@ -663,7 +649,6 @@ def test_python_executable_propagates_to_command_and_summary(
             ctx=stress_parse.StressParseContext(
                 cfg=cfg,
                 log=log,
-                bsp=_bsp_stub(),
                 overlay_source=tmp_path / "bakar-tuning-nxp.yml",
                 runs=1,
                 target="world",
@@ -790,7 +775,6 @@ def test_python_executable_omitted_when_unset(
             ctx=stress_parse.StressParseContext(
                 cfg=cfg,
                 log=log,
-                bsp=_bsp_stub(),
                 overlay_source=tmp_path / "bakar-tuning-nxp.yml",
                 runs=1,
                 target="world",

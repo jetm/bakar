@@ -22,22 +22,24 @@ import shutil
 import sys
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+
+# Runtime, not TYPE_CHECKING-guarded: every name below annotates a field of
+# ``StressParseContext``, and a guarded import leaves ``get_type_hints`` on
+# that dataclass raising ``NameError`` - which is why the noqa is here rather
+# than the import being moved back. ``commands/_build_flavors.py`` and
+# ``commands/_post_build.py`` record the same decision; they need no noqa only
+# because ``TC001``/``TC003`` are ignored for that package.
+from pathlib import Path  # noqa: TC003
 
 from rich.markup import escape
 
 from bakar import build_stop
+from bakar.config import BuildConfig  # noqa: TC001
 from bakar.fork_race_signatures import scan
+from bakar.observability import RunLogger  # noqa: TC001
 from bakar.steps import bitbake_override as step_override
 from bakar.steps import kas_build as step_kas
 from bakar.steps.kas_build import KasBuildContext
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
-    from bakar.bsp_model import BspModel
-    from bakar.config import BuildConfig
-    from bakar.observability import RunLogger
 
 
 def _clear_parse_cache(cfg: BuildConfig, log: RunLogger, iteration: int) -> bool:
@@ -276,7 +278,6 @@ class StressParseContext:
 
     cfg: BuildConfig
     log: RunLogger
-    bsp: BspModel | None
     overlay_source: Path
     runs: int
     target: str

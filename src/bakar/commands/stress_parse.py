@@ -247,7 +247,6 @@ def _stress_parse_impl(ctx: _StressParseCtx) -> None:
             ctx=step_stress_parse.StressParseContext(
                 cfg=cfg,
                 log=log,
-                bsp=bsp,
                 overlay_source=overlay_source,
                 extra_overlays=extra_overlays,
                 runs=runs,

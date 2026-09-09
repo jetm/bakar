@@ -168,6 +168,36 @@ class TestGlobalCallbackPublishesModuleState:
         assert state._NO_SCOPE is True
         assert state._MOLD is True
 
+    @pytest.mark.parametrize(
+        ("flag", "name"),
+        [
+            ("--hide-doctor-report", "_HIDE_DOCTOR_REPORT"),
+            ("--no-scope", "_NO_SCOPE"),
+            ("--mold", "_MOLD"),
+            ("--mold-baseline", "_MOLD_BASELINE"),
+            ("--mold-global", "_MOLD_GLOBAL"),
+        ],
+    )
+    def test_one_boolean_global_at_a_time(self, flag: str, name: str) -> None:
+        """Exactly one flag set, so a transposition between two of them fails.
+
+        The test above passes three flags together and asserts all three are
+        True, which reads the same whichever way two of them are swapped. It
+        also never touched ``_MOLD_BASELINE`` or ``_MOLD_GLOBAL`` at all, even
+        though both appear in this class's save/restore tuple - so writing
+        ``_MOLD_BASELINE = opts.mold_global`` passed the whole suite while
+        ``bakar --mold-global`` selected the bfd-baseline arm of
+        ``apply_mold_overrides`` instead of the global-mold arm.
+        """
+        others = ["_HIDE_DOCTOR_REPORT", "_NO_SCOPE", "_MOLD", "_MOLD_BASELINE", "_MOLD_GLOBAL"]
+        state = self._invoke(flag)
+
+        for other in others:
+            want = other == name
+            assert getattr(state, other) is want, (
+                f"passing {flag} should set only {name}: {other} is {getattr(state, other)!r}"
+            )
+
     def test_startup_hooks_still_populate_presets_and_vendors(self) -> None:
         state = self._invoke()
         assert state._PRESETS is not None

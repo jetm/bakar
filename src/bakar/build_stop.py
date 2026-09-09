@@ -19,6 +19,13 @@ import signal
 import socket
 import subprocess
 import time
+
+# Runtime, not TYPE_CHECKING-guarded: both names annotate fields of
+# ``_WaitCtx``, and a guarded import leaves ``get_type_hints`` on that
+# dataclass raising ``NameError``. That is why the noqa sits here rather than
+# the import moving back. ``Path`` and ``Console`` annotate fields too and are
+# already imported at runtime above, so they need nothing here.
+from collections.abc import Callable  # noqa: TC003
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -27,15 +34,16 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
-from bakar.eventlog import running_tasks
+from bakar.eventlog import (
+    RunningTask,
+    running_tasks,
+)
 from bakar.observability import iter_run_events
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from typing import Literal
 
     from bakar.config import BuildConfig
-    from bakar.eventlog import RunningTask
     from bakar.observability import RunLogger
 
 _PID_FILENAME = "build.pid"

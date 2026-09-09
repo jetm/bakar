@@ -16,14 +16,17 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
+# Runtime, not TYPE_CHECKING-guarded: all three annotate fields of
+# ``ResolveRequest``, and a guarded import leaves ``get_type_hints`` on that
+# dataclass raising ``NameError``. None of the three imports ``bakar.config``,
+# so this closes no cycle - the deferred imports inside ``resolve()`` further
+# down are a separate matter and stay deferred.
+from bakar.preset_config import PresetEntry  # noqa: TC001
 from bakar.sstate_seed import MARKER_NAME, resolve_seed_for_workspace, seed_mirror_line
-
-if TYPE_CHECKING:
-    from bakar.preset_config import PresetEntry
-    from bakar.user_config import UserConfig
-    from bakar.workspace_config import WorkspaceConfig
+from bakar.user_config import UserConfig  # noqa: TC001
+from bakar.workspace_config import WorkspaceConfig  # noqa: TC001
 
 
 def _overlay_dir() -> Path:

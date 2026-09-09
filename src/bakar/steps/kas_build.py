@@ -71,7 +71,12 @@ from bakar.cache_render import (
     render_cluster,
     render_sccache_cache,
 )
-from bakar.config import GENERATED_BUILD_YAML, _overlay_dir
+
+# ``BuildConfig`` is imported at runtime, not under TYPE_CHECKING, because it
+# annotates a field of ``_PtyCtx`` and a guarded import leaves
+# ``get_type_hints`` on that dataclass raising ``NameError``. This module
+# already imports from ``bakar.config`` at runtime, so it adds no dependency.
+from bakar.config import GENERATED_BUILD_YAML, BuildConfig, _overlay_dir
 from bakar.diagnostics import (
     BUILDTOOLS_DIR_ENV,
     detect_buildtools,
@@ -83,6 +88,10 @@ from bakar.diagnostics import (
 )
 from bakar.eventlog import tail_events
 from bakar.kas import KasGenOptions, write_yaml
+
+# Runtime for the same reason as ``BuildConfig`` above: ``RunLogger``
+# annotates a ``_PtyCtx`` field.
+from bakar.observability import RunLogger
 from bakar.output_mode import OutputMode
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
 from bakar.steps.build_ui import BuildUIState, _fmt_stall

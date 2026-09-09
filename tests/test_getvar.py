@@ -1293,6 +1293,23 @@ def test_getvar_ctx_carries_every_flag_unchanged(
     assert {f.name for f in dataclasses.fields(ctx)} == set(expected)
 
 
+def test_getvar_history_with_flag_query_exits_2(runner: _CliRunner) -> None:
+    """``--history`` and ``--flag`` together are refused, not silently answered.
+
+    ``--history`` reads the include chain out of ``bitbake -e``, which records
+    assignments to the bare name and carries no per-flag history, so answering
+    the combination would return the wrong thing rather than nothing. The guard
+    moved from the Typer command into ``_getvar_impl`` during the arity repack
+    and had no test on either side of that move; the context test above stubs
+    the impl away, so it passes this exact argv with exit 0 and gives a reader
+    positive evidence for the opposite behaviour.
+    """
+    result = runner.invoke(app, ["getvar", "MACHINE", "--history", "--flag", "doc"])
+
+    assert result.exit_code == 2, result.output
+    assert "history cannot be combined" in result.output
+
+
 @pytest.mark.parametrize(
     ("flag", "field"),
     [

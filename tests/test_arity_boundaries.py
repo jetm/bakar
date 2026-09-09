@@ -31,6 +31,7 @@ import ast
 import dataclasses
 import importlib
 import inspect
+import typing
 from pathlib import Path
 from typing import NamedTuple
 
@@ -119,6 +120,10 @@ def test_command_impl_and_context_share_a_module(case: Case) -> None:
     # transposition this whole change exists to prevent, reintroduced at the
     # construction site. Ten of the eleven shipped without it.
     assert ctx.__dataclass_params__.kw_only, f"{case.ctx_name} is not kw_only"
+    # A field annotated with a TYPE_CHECKING-only import leaves this raising
+    # NameError, so the dataclass cannot be introspected by anything that walks
+    # it at runtime. Four of the eleven shipped that way.
+    typing.get_type_hints(ctx)
 
 
 @pytest.mark.unit

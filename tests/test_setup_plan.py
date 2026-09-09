@@ -19,6 +19,7 @@ the plan logic is tested without touching the live host.
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -277,6 +278,7 @@ def test_build_resolves_cfg_when_not_supplied(monkeypatch: pytest.MonkeyPatch) -
     captured: dict[str, object] = {}
 
     def _fake_resolve(request):
+        assert request.workspace is not None, "plan.py must pass workspace"
         captured["workspace"] = request.workspace
         captured["user_config"] = request.user_config
         return _ResolvedCfg(kas_container_image="resolved/image:1.0")
@@ -286,6 +288,17 @@ def test_build_resolves_cfg_when_not_supplied(monkeypatch: pytest.MonkeyPatch) -
     result = plan_mod.build(make_host_profile())
 
     assert "workspace" in captured
+    # The pre-repack stub was `lambda *, workspace, user_config, **_kw`, so
+    # "the caller passes user_config" was enforced by binding: omit it and the
+    # call raised TypeError. A request object cannot express that - the field
+    # defaults to None, so a passed None and a dropped argument are the same
+    # object. Asserting the value would fail whenever the profile genuinely has
+    # no user config, so the contract is checked at the call site instead.
+    source = inspect.getsource(plan_mod.build)
+    assert "user_config=user_config" in source, (
+        "plan.py must pass user_config into ResolveRequest; dropping it resolves "
+        "against defaults and nothing at runtime distinguishes that from a None value"
+    )
     pulls = [a for a in result.actions if isinstance(a, DockerPullAction)]
     assert pulls and pulls[0].image == "resolved/image:1.0"
 
