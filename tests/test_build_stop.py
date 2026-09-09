@@ -277,8 +277,8 @@ def test_stop_build_host_ctrl_c_runs_escalation_ladder(
     monkeypatch.setattr(build_stop, "_pgid_alive", _stateful_pgid_alive)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
 
-    def _fake_wait(*, escalate: object, **_kw: object) -> str:
-        escalate()
+    def _fake_wait(*, ctx: build_stop._WaitCtx) -> str:
+        ctx.escalate()
         return "escalated"
 
     monkeypatch.setattr(build_stop, "_graceful_wait", _fake_wait)
@@ -307,8 +307,8 @@ def test_stop_build_grace_seconds_threaded_to_graceful_wait(
 
     captured: dict[str, object] = {}
 
-    def _fake_wait(*, grace_seconds: float = 0, **_kw: object) -> str:
-        captured["grace_seconds"] = grace_seconds
+    def _fake_wait(*, ctx: build_stop._WaitCtx) -> str:
+        captured["grace_seconds"] = ctx.grace_seconds
         return "drained"
 
     monkeypatch.setattr(build_stop, "_graceful_wait", _fake_wait)
@@ -453,8 +453,8 @@ def test_stop_build_liveness_stays_alive_while_bitbake_server_pid_lives(
     # deleted by the cleanup step that only runs once liveness reports dead.
     observed: list[str] = []
 
-    def _fake_wait(*, liveness: object, **_kw: object) -> str:
-        observed.append(liveness())  # type: ignore[misc]
+    def _fake_wait(*, ctx: build_stop._WaitCtx) -> str:
+        observed.append(ctx.liveness())
         return "drained"
 
     monkeypatch.setattr(build_stop, "_graceful_wait", _fake_wait)
@@ -865,15 +865,17 @@ def test_graceful_wait_long_wait_never_auto_escalates() -> None:
     out = Console(record=True, width=100)
 
     status = build_stop._graceful_wait(
-        liveness=_liveness,
-        escalate=lambda: escalate_calls.append(1),
-        target_desc="PGID 4242",
-        run_dir=None,
-        console_out=out,
-        sleep=lambda _s: None,
-        clock=_incrementing_clock(),
-        tasks_reader=lambda _rd: [],
-        install_signal=False,
+        ctx=build_stop._WaitCtx(
+            liveness=_liveness,
+            escalate=lambda: escalate_calls.append(1),
+            target_desc="PGID 4242",
+            run_dir=None,
+            console_out=out,
+            sleep=lambda _s: None,
+            clock=_incrementing_clock(),
+            tasks_reader=lambda _rd: [],
+            install_signal=False,
+        )
     )
 
     assert status == "drained"
@@ -892,15 +894,17 @@ def test_graceful_wait_ends_on_liveness_not_tasks_zero() -> None:
         return v
 
     status = build_stop._graceful_wait(
-        liveness=_counting_liveness,
-        escalate=lambda: None,
-        target_desc="PGID 1",
-        run_dir=SimpleNamespace(),  # non-None so tasks_reader is consulted
-        console_out=Console(record=True, width=100),
-        sleep=lambda _s: None,
-        clock=_incrementing_clock(),
-        tasks_reader=lambda _rd: [],  # tasks==0 immediately
-        install_signal=False,
+        ctx=build_stop._WaitCtx(
+            liveness=_counting_liveness,
+            escalate=lambda: None,
+            target_desc="PGID 1",
+            run_dir=SimpleNamespace(),  # non-None so tasks_reader is consulted
+            console_out=Console(record=True, width=100),
+            sleep=lambda _s: None,
+            clock=_incrementing_clock(),
+            tasks_reader=lambda _rd: [],  # tasks==0 immediately
+            install_signal=False,
+        )
     )
 
     assert status == "drained"
@@ -915,17 +919,19 @@ def test_graceful_wait_frozen_running_set_flips_to_spinner() -> None:
     out = Console(record=True, width=120)
 
     status = build_stop._graceful_wait(
-        liveness=_liveness_from([build_stop._ALIVE, build_stop._ALIVE, build_stop._DEAD]),
-        escalate=lambda: None,
-        target_desc="PGID 4242",
-        run_dir=SimpleNamespace(),
-        console_out=out,
-        sleep=lambda _s: None,
-        clock=_incrementing_clock(),
-        tasks_reader=lambda _rd: frozen,
-        stale_after=1.0,
-        hint_interval=0.0,
-        install_signal=False,
+        ctx=build_stop._WaitCtx(
+            liveness=_liveness_from([build_stop._ALIVE, build_stop._ALIVE, build_stop._DEAD]),
+            escalate=lambda: None,
+            target_desc="PGID 4242",
+            run_dir=SimpleNamespace(),
+            console_out=out,
+            sleep=lambda _s: None,
+            clock=_incrementing_clock(),
+            tasks_reader=lambda _rd: frozen,
+            stale_after=1.0,
+            hint_interval=0.0,
+            install_signal=False,
+        )
     )
 
     text = out.export_text()
@@ -945,16 +951,18 @@ def test_graceful_wait_runtime_death_cap_exits_lost_runtime() -> None:
     escalate_calls: list[int] = []
 
     status = build_stop._graceful_wait(
-        liveness=_always_error,
-        escalate=lambda: escalate_calls.append(1),
-        target_desc="container abc",
-        run_dir=None,
-        console_out=Console(record=True, width=100),
-        error_cap=3,
-        sleep=lambda _s: None,
-        clock=_incrementing_clock(),
-        tasks_reader=lambda _rd: [],
-        install_signal=False,
+        ctx=build_stop._WaitCtx(
+            liveness=_always_error,
+            escalate=lambda: escalate_calls.append(1),
+            target_desc="container abc",
+            run_dir=None,
+            console_out=Console(record=True, width=100),
+            error_cap=3,
+            sleep=lambda _s: None,
+            clock=_incrementing_clock(),
+            tasks_reader=lambda _rd: [],
+            install_signal=False,
+        )
     )
 
     assert status == "lost_runtime"
@@ -967,16 +975,18 @@ def test_graceful_wait_single_transient_error_keeps_waiting() -> None:
     liveness = _liveness_from([build_stop._ERROR, build_stop._ALIVE, build_stop._ERROR, build_stop._DEAD])
 
     status = build_stop._graceful_wait(
-        liveness=liveness,
-        escalate=lambda: None,
-        target_desc="container abc",
-        run_dir=None,
-        console_out=Console(record=True, width=100),
-        error_cap=3,
-        sleep=lambda _s: None,
-        clock=_incrementing_clock(),
-        tasks_reader=lambda _rd: [],
-        install_signal=False,
+        ctx=build_stop._WaitCtx(
+            liveness=liveness,
+            escalate=lambda: None,
+            target_desc="container abc",
+            run_dir=None,
+            console_out=Console(record=True, width=100),
+            error_cap=3,
+            sleep=lambda _s: None,
+            clock=_incrementing_clock(),
+            tasks_reader=lambda _rd: [],
+            install_signal=False,
+        )
     )
 
     assert status == "drained"  # never reached 3 errors in a row
@@ -990,15 +1000,17 @@ def test_graceful_wait_keyboard_interrupt_runs_escalation() -> None:
         raise KeyboardInterrupt
 
     status = build_stop._graceful_wait(
-        liveness=lambda: build_stop._ALIVE,
-        escalate=lambda: escalate_calls.append(1),
-        target_desc="PGID 4242",
-        run_dir=None,
-        console_out=Console(record=True, width=100),
-        sleep=_boom,
-        clock=_incrementing_clock(),
-        tasks_reader=lambda _rd: [],
-        install_signal=False,
+        ctx=build_stop._WaitCtx(
+            liveness=lambda: build_stop._ALIVE,
+            escalate=lambda: escalate_calls.append(1),
+            target_desc="PGID 4242",
+            run_dir=None,
+            console_out=Console(record=True, width=100),
+            sleep=_boom,
+            clock=_incrementing_clock(),
+            tasks_reader=lambda _rd: [],
+            install_signal=False,
+        )
     )
 
     assert status == "escalated"
@@ -1016,16 +1028,18 @@ def test_graceful_wait_grace_seconds_auto_escalates_without_interrupt() -> None:
     escalate_calls: list[int] = []
 
     status = build_stop._graceful_wait(
-        liveness=lambda: build_stop._ALIVE,
-        escalate=lambda: escalate_calls.append(1),
-        target_desc="PGID 4242",
-        run_dir=None,
-        console_out=Console(record=True, width=100),
-        sleep=lambda _s: None,
-        clock=_incrementing_clock(),
-        tasks_reader=lambda _rd: [],
-        install_signal=False,
-        grace_seconds=5,
+        ctx=build_stop._WaitCtx(
+            liveness=lambda: build_stop._ALIVE,
+            escalate=lambda: escalate_calls.append(1),
+            target_desc="PGID 4242",
+            run_dir=None,
+            console_out=Console(record=True, width=100),
+            sleep=lambda _s: None,
+            clock=_incrementing_clock(),
+            tasks_reader=lambda _rd: [],
+            install_signal=False,
+            grace_seconds=5,
+        )
     )
 
     assert status == "escalated"
@@ -1043,20 +1057,153 @@ def test_graceful_wait_grace_seconds_zero_stays_unbounded() -> None:
     escalate_calls: list[int] = []
 
     status = build_stop._graceful_wait(
-        liveness=_liveness,
-        escalate=lambda: escalate_calls.append(1),
-        target_desc="PGID 4242",
-        run_dir=None,
-        console_out=Console(record=True, width=100),
-        sleep=lambda _s: None,
-        clock=_incrementing_clock(),
-        tasks_reader=lambda _rd: [],
-        install_signal=False,
-        grace_seconds=0,
+        ctx=build_stop._WaitCtx(
+            liveness=_liveness,
+            escalate=lambda: escalate_calls.append(1),
+            target_desc="PGID 4242",
+            run_dir=None,
+            console_out=Console(record=True, width=100),
+            sleep=lambda _s: None,
+            clock=_incrementing_clock(),
+            tasks_reader=lambda _rd: [],
+            install_signal=False,
+            grace_seconds=0,
+        )
     )
 
     assert status == "drained"
     assert escalate_calls == []
+
+
+# --- _WaitCtx value preservation at the _stop_container call site ----------
+
+
+def _capture_wait_ctx(monkeypatch: pytest.MonkeyPatch, status: str = "drained") -> list[object]:
+    """Stub ``_graceful_wait`` so the ctx its caller built can be inspected."""
+    captured: list[object] = []
+
+    def _fake_wait(*, ctx: build_stop._WaitCtx) -> str:
+        captured.append(ctx)
+        return status
+
+    monkeypatch.setattr(build_stop, "_graceful_wait", _fake_wait)
+    monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", lambda _rt, _cid: True)
+    return captured
+
+
+def test_stop_container_wait_ctx_carries_every_field_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every _WaitCtx field equals what ``_stop_container`` was called with.
+
+    Packing fourteen keyword-only parameters into a context is wrong in a way
+    the rest of this file cannot see: transpose two fields or drop one and the
+    stop still runs and every other test stays green, because nothing observes
+    the packed values. This captures the context and compares it field-by-field
+    against a call where no argument is the default.
+    """
+    import dataclasses
+
+    run_dir = _make_run_dir(tmp_path)
+    out = Console(record=True, width=100)
+    captured = _capture_wait_ctx(monkeypatch)
+
+    liveness_calls: list[tuple[str, str]] = []
+    escalate_calls: list[tuple[str, str, int]] = []
+
+    def _record_liveness(runtime: str, cid: str) -> str:
+        liveness_calls.append((runtime, cid))
+        return build_stop._ALIVE
+
+    monkeypatch.setattr(build_stop, "_container_liveness", _record_liveness)
+    monkeypatch.setattr(
+        build_stop,
+        "_escalate_container",
+        lambda rt, cid, secs: escalate_calls.append((rt, cid, secs)),
+    )
+
+    build_stop._stop_container(
+        "podman",
+        "cid123",
+        force=False,
+        term_secs=7,
+        run_dir=run_dir,
+        console_out=out,
+        grace_seconds=45,
+    )
+
+    assert len(captured) == 1, f"expected one ctx, got {len(captured)}"
+    ctx = captured[0]
+
+    # The two callables are compared by what they do, not by identity.
+    assert ctx.liveness() == build_stop._ALIVE
+    assert liveness_calls == [("podman", "cid123")]
+    ctx.escalate()
+    assert escalate_calls == [("podman", "cid123", 7)]
+
+    expected = {
+        "target_desc": "container cid123",
+        "run_dir": run_dir,
+        "console_out": out,
+        "grace_seconds": 45,
+        # Fields _stop_container leaves alone must still hold their defaults;
+        # a transposition that overwrites one of these is caught here.
+        "error_cap": build_stop._RUNTIME_ERROR_CAP,
+        "sleep": build_stop.time.sleep,
+        "clock": build_stop.time.monotonic,
+        "tasks_reader": build_stop.running_tasks,
+        "poll_interval": build_stop._STOP_POLL_SECONDS,
+        "stale_after": build_stop._STOP_STALE_SECONDS,
+        "hint_interval": build_stop._STOP_HINT_SECONDS,
+        "install_signal": True,
+    }
+    for field, want in expected.items():
+        assert getattr(ctx, field) == want, f"_WaitCtx.{field}: expected {want!r}, got {getattr(ctx, field)!r}"
+
+    # Guards against a field being added to the dataclass but left unasserted.
+    asserted = set(expected) | {"liveness", "escalate"}
+    assert {f.name for f in dataclasses.fields(ctx)} == asserted
+
+
+@pytest.mark.parametrize(
+    "case",
+    [("run_dir", "console_out"), ("console_out", "run_dir")],
+    ids=lambda c: c[0],
+)
+def test_stop_container_wait_ctx_sets_only_the_none_field_passed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: tuple[str, str],
+) -> None:
+    """One None-defaulting field at a time: it moves and its neighbour does not.
+
+    ``run_dir`` and ``console_out`` share the ``None`` default, so the
+    all-fields test above gives both a non-None value and a transposition
+    between them survives it. Passing exactly one per case makes the values
+    differ, which is what catches a swapped pair.
+    """
+    import dataclasses
+
+    field, neighbour = case
+    none_fields = [f.name for f in dataclasses.fields(build_stop._WaitCtx) if f.default is None]
+    assert field in none_fields, f"{field} is not a None-defaulting field of _WaitCtx"
+    assert neighbour in none_fields, f"{neighbour} is not a None-defaulting field of _WaitCtx"
+
+    values = {
+        "run_dir": _make_run_dir(tmp_path),
+        "console_out": Console(record=True, width=100),
+    }
+    captured = _capture_wait_ctx(monkeypatch)
+
+    build_stop._stop_container("podman", "cid123", force=False, term_secs=7, **{field: values[field]})
+
+    assert len(captured) == 1, f"expected one ctx, got {len(captured)}"
+    ctx = captured[0]
+    assert getattr(ctx, field) is values[field], f"passing {field} should reach _WaitCtx.{field}"
+    assert getattr(ctx, neighbour) is None, (
+        f"passing only {field} left _WaitCtx.{neighbour} as {getattr(ctx, neighbour)!r}"
+    )
 
 
 # --- stop_running_proc regression (unchanged in-process semantics) ---------

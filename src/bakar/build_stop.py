@@ -352,24 +352,34 @@ def _render_spinner(out: Console, elapsed: float, target_desc: str, *, show_hint
     out.print(line)
 
 
-def _graceful_wait(
-    *,
-    liveness: Callable[[], str],
-    escalate: Callable[[], None],
-    target_desc: str,
-    run_dir: Path | None = None,
-    console_out: Console | None = None,
-    error_cap: int = _RUNTIME_ERROR_CAP,
-    sleep: Callable[[float], None] = time.sleep,
-    clock: Callable[[], float] = time.monotonic,
-    tasks_reader: Callable[[Path], list[RunningTask]] = running_tasks,
-    poll_interval: float = _STOP_POLL_SECONDS,
-    stale_after: float = _STOP_STALE_SECONDS,
-    hint_interval: float = _STOP_HINT_SECONDS,
-    install_signal: bool = True,
-    grace_seconds: float = 0,
-) -> str:
-    """Wait until ``liveness()`` says the target is gone, or ``grace_seconds`` elapses.
+@dataclass(frozen=True)
+class _WaitCtx:
+    """The fourteen :func:`_graceful_wait` parameters, packed into one argument.
+
+    Field names match the former keyword-only parameter names one-for-one, so a
+    call site reads the same after the repack. A transposed or dropped field is
+    caught by ``test_wait_ctx_carries_every_field_unchanged`` and by the
+    one-at-a-time ``test_wait_ctx_sets_only_the_field_passed``.
+    """
+
+    liveness: Callable[[], str]
+    escalate: Callable[[], None]
+    target_desc: str
+    run_dir: Path | None = None
+    console_out: Console | None = None
+    error_cap: int = _RUNTIME_ERROR_CAP
+    sleep: Callable[[float], None] = time.sleep
+    clock: Callable[[], float] = time.monotonic
+    tasks_reader: Callable[[Path], list[RunningTask]] = running_tasks
+    poll_interval: float = _STOP_POLL_SECONDS
+    stale_after: float = _STOP_STALE_SECONDS
+    hint_interval: float = _STOP_HINT_SECONDS
+    install_signal: bool = True
+    grace_seconds: float = 0
+
+
+def _graceful_wait(*, ctx: _WaitCtx) -> str:
+    """Wait until ``ctx.liveness()`` says the target is gone, or the grace elapses.
 
     The exit gate is liveness, never ``tasks == 0``: bitbake may still finalize
     (sstate writes, cooker shutdown) after the last task drains, so only a
@@ -395,54 +405,54 @@ def _graceful_wait(
     value, the wait escalates on its own exactly as a Ctrl-C would.
 
     ``clock``/``sleep``/``liveness``/``tasks_reader`` are injectable seams so the
-    branching logic is unit-testable without real sleeps or signals; pass
-    ``install_signal=False`` to skip the SIGINT handler in tests.
+    branching logic is unit-testable without real sleeps or signals; set
+    ``install_signal=False`` on the context to skip the SIGINT handler in tests.
     """
-    out = console_out if console_out is not None else console
-    start = clock()
+    out = ctx.console_out if ctx.console_out is not None else console
+    start = ctx.clock()
     error_streak = 0
     last_signature: frozenset[tuple[str, str]] | None = None
     last_change = start
     last_hint = start
 
     prev_handler = None
-    if install_signal:
+    if ctx.install_signal:
         prev_handler = signal.signal(signal.SIGINT, _wait_sigint_handler)  # pragma: no cover
     try:
         while True:
-            status = liveness()
+            status = ctx.liveness()
             if status == _DEAD:
                 return "drained"
             if status == _ERROR:
                 error_streak += 1
-                if error_streak >= error_cap:
+                if error_streak >= ctx.error_cap:
                     return "lost_runtime"
             else:
                 error_streak = 0
 
-            now = clock()
+            now = ctx.clock()
             elapsed = now - start
-            if grace_seconds > 0 and elapsed >= grace_seconds:
-                escalate()
+            if ctx.grace_seconds > 0 and elapsed >= ctx.grace_seconds:
+                ctx.escalate()
                 return "escalated"
-            tasks = tasks_reader(run_dir) if run_dir is not None else []
+            tasks = ctx.tasks_reader(ctx.run_dir) if ctx.run_dir is not None else []
             signature = frozenset((t.recipe, t.task) for t in tasks)
             if signature != last_signature:
                 last_signature = signature
                 last_change = now
-            stale = (now - last_change) >= stale_after
+            stale = (now - last_change) >= ctx.stale_after
 
             if tasks and not stale:
                 _render_running(out, tasks, elapsed)
             else:
-                show_hint = (now - last_hint) >= hint_interval
+                show_hint = (now - last_hint) >= ctx.hint_interval
                 if show_hint:
                     last_hint = now
-                _render_spinner(out, elapsed, target_desc, show_hint=show_hint)
+                _render_spinner(out, elapsed, ctx.target_desc, show_hint=show_hint)
 
-            sleep(poll_interval)
+            ctx.sleep(ctx.poll_interval)
     except KeyboardInterrupt:
-        escalate()
+        ctx.escalate()
         return "escalated"
     finally:
         if prev_handler is not None:
@@ -495,12 +505,14 @@ def _stop_container(
         if not _sigint_bitbake_in_container(runtime, cid):
             _run_runtime([runtime, "kill", "--signal=SIGINT", cid])
         status = _graceful_wait(
-            liveness=lambda: _container_liveness(runtime, cid),
-            escalate=lambda: _escalate_container(runtime, cid, term_secs),
-            target_desc=f"container {cid}",
-            run_dir=run_dir,
-            console_out=console_out,
-            grace_seconds=grace_seconds,
+            ctx=_WaitCtx(
+                liveness=lambda: _container_liveness(runtime, cid),
+                escalate=lambda: _escalate_container(runtime, cid, term_secs),
+                target_desc=f"container {cid}",
+                run_dir=run_dir,
+                console_out=console_out,
+                grace_seconds=grace_seconds,
+            )
         )
         if status == "lost_runtime":
             print("lost contact with the container runtime")
@@ -1267,11 +1279,13 @@ def stop_build(
                 if bb_pid is not None:
                     _kill_pid(bb_pid, signal.SIGINT)
                 _graceful_wait(
-                    liveness=lambda: _ALIVE if _host_build_alive(pgid, run_dir) else _DEAD,
-                    escalate=lambda: _escalate_host(pgid, run_dir),
-                    target_desc=f"PGID {pgid}" if pgid else "detached cooker",
-                    run_dir=run_dir,
-                    grace_seconds=grace_seconds,
+                    ctx=_WaitCtx(
+                        liveness=lambda: _ALIVE if _host_build_alive(pgid, run_dir) else _DEAD,
+                        escalate=lambda: _escalate_host(pgid, run_dir),
+                        target_desc=f"PGID {pgid}" if pgid else "detached cooker",
+                        run_dir=run_dir,
+                        grace_seconds=grace_seconds,
+                    )
                 )
             else:
                 label = f"PGID {pgid}" if pgid else "detached cooker"
