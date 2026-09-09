@@ -1474,7 +1474,7 @@ def _print_cache_summary(log: RunLogger, backend: str | None, doc: dict | None, 
         return
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _PtyCtx:
     """The eight :func:`_run_pty_with_ui` parameters, packed into one argument.
 

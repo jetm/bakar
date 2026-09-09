@@ -1078,9 +1078,9 @@ def test_graceful_wait_grace_seconds_zero_stays_unbounded() -> None:
 # --- _WaitCtx value preservation at the _stop_container call site ----------
 
 
-def _capture_wait_ctx(monkeypatch: pytest.MonkeyPatch, status: str = "drained") -> list[object]:
+def _capture_wait_ctx(monkeypatch: pytest.MonkeyPatch, status: str = "drained") -> list[build_stop._WaitCtx]:
     """Stub ``_graceful_wait`` so the ctx its caller built can be inspected."""
-    captured: list[object] = []
+    captured: list[build_stop._WaitCtx] = []
 
     def _fake_wait(*, ctx: build_stop._WaitCtx) -> str:
         captured.append(ctx)

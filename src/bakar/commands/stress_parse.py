@@ -31,7 +31,7 @@ from bakar.steps import kas_build as step_kas
 from bakar.steps import stress_parse as step_stress_parse
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _StressParseCtx:
     """The eleven ``stress-parse`` CLI parameters, packed for :func:`_stress_parse_impl`.
 

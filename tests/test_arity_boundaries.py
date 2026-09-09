@@ -114,6 +114,11 @@ def test_command_impl_and_context_share_a_module(case: Case) -> None:
     assert dataclasses.is_dataclass(ctx), f"{case.ctx_name} is not a dataclass"
     assert ctx.__dataclass_params__.frozen, f"{case.ctx_name} is not frozen"
     assert dataclasses.fields(ctx), f"{case.ctx_name} has no fields"
+    # Every signature these contexts replaced was keyword-only, so dropping
+    # kw_only would make the packed fields positionally interchangeable - the
+    # transposition this whole change exists to prevent, reintroduced at the
+    # construction site. Ten of the eleven shipped without it.
+    assert ctx.__dataclass_params__.kw_only, f"{case.ctx_name} is not kw_only"
 
 
 @pytest.mark.unit

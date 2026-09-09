@@ -864,7 +864,7 @@ def _print_layer_hashes(cfg: BuildConfig, hashes: list[LayerHash] | None = None)
     console.print(layer_hash_table(hashes))
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _SstateRender:
     """The seven sstate counts plus the two presentation toggles.
 

@@ -352,7 +352,7 @@ def _render_spinner(out: Console, elapsed: float, target_desc: str, *, show_hint
     out.print(line)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _WaitCtx:
     """The fourteen :func:`_graceful_wait` parameters, packed into one argument.
 

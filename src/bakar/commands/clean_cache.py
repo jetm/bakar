@@ -628,7 +628,7 @@ def _run_full_reset(
     _log("cold-reset complete")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _CleanCacheCtx:
     """CLI flags for one ``clean-cache`` invocation."""
 

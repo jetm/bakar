@@ -263,7 +263,7 @@ def _env_payload(parse_threads: int | None) -> dict[str, str]:
     return payload
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class StressParseContext:
     """The ten per-call parameters of :func:`run`, bundled into one object.
 

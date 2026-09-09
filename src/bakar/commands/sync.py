@@ -89,7 +89,7 @@ def _run_sync_body(cfg, log, *, bsp, family, effective_show_layers) -> None:
         _print_layer_hashes(cfg)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _SyncCtx:
     """The ten ``sync`` CLI parameters, packed for :func:`_sync_impl`.
 

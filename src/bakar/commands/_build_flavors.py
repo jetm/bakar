@@ -344,7 +344,7 @@ def _is_multi_release(preset: object) -> bool:
     return len(preset.manifests) > 1 or len(preset.kas_yamls) > 1
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _ReleaseCtx:
     """CLI flags for one preset release (resolved before cfg is available)."""
 

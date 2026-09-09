@@ -87,7 +87,7 @@ def _version(value: bool) -> None:
         raise typer.Exit
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _GlobalOptions:
     """The top-level callback's flags, packed for ``_main_impl``.
 

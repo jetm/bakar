@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _GetvarCtx:
     """The ten ``getvar`` CLI parameters, packed for :func:`_getvar_impl`.
 
