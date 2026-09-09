@@ -358,8 +358,11 @@ class _WaitCtx:
 
     Field names match the former keyword-only parameter names one-for-one, so a
     call site reads the same after the repack. A transposed or dropped field is
-    caught by ``test_wait_ctx_carries_every_field_unchanged`` and by the
-    one-at-a-time ``test_wait_ctx_sets_only_the_field_passed``.
+    caught by ``test_stop_container_wait_ctx_carries_every_field_unchanged``
+    and by the one-at-a-time
+    ``test_stop_container_wait_ctx_sets_only_the_none_field_passed``. Both
+    drive the ``_stop_container`` call site; the host path at the second
+    construction below has no equivalent field-level test.
     """
 
     liveness: Callable[[], str]
