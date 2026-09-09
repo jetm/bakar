@@ -1981,6 +1981,16 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
 
     build_stop.check_unclean_stop(cfg.bsp_root, log.console)
 
+    if cfg.sstate_mirrors_source == "seed":
+        # Announced because of the size of the effect, not for completeness. A
+        # native seed measured 65% of a cold build's wall-clock here, so a run
+        # that quietly picked one up is not comparable with the run before it -
+        # and this project lost a benchmark baseline to exactly that, when a
+        # seed appeared mid-campaign and no run's output recorded which side of
+        # it that run was on. An explicitly configured SSTATE_MIRRORS is not
+        # announced: someone typed it, so nobody is surprised by it.
+        log.info(f"sstate: consuming the native seed for this release ({cfg.sstate_mirrors})")
+
     log.step_start(
         "kas_build",
         yaml=str(kas_yaml),

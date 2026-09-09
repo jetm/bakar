@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from bakar.config import _sstate_mirror_fields
 from bakar.sstate_seed import (
     MARKER_NAME,
     is_hash_prefix_dir,
@@ -262,3 +263,90 @@ def test_workspace_without_oe_core_resolves_to_the_unknown_bucket(
 
     assert release_key is None
     assert seed.name == "_unknown"
+
+
+def _populated_seed(tmp_path: Path, workspace: Path) -> Path:
+    """Build a real seed for *workspace*'s release under ``tmp_path/sstate``."""
+    src = tmp_path / "build-sstate"
+    _obj(src, "7a/sstate:foo-native:do_compile.tgz")
+    seed_dir, release_key = resolve_seed_for_workspace(workspace, tmp_path / "sstate")
+    populate_seed(src, seed_dir, release_key=release_key)
+    return seed_dir
+
+
+def test_explicit_config_wins_over_a_populated_seed(tmp_path: Path) -> None:
+    """A hand-set SSTATE_MIRRORS is never appended to or replaced.
+
+    Someone who wrote that string chose which mirrors the build consults;
+    silently adding another is how a build starts restoring objects nobody
+    pointed it at.
+    """
+    workspace = tmp_path / "ws"
+    _oe_core(workspace, "scarthgap")
+    _populated_seed(tmp_path, workspace)
+
+    fields = _sstate_mirror_fields("file://.* file:///elsewhere/PATH", str(tmp_path / "sstate"), workspace)
+
+    assert fields["sstate_mirrors"] == "file://.* file:///elsewhere/PATH"
+    assert fields["sstate_mirrors_source"] == "config"
+
+
+def test_populated_seed_is_wired_when_nothing_is_configured(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    _oe_core(workspace, "scarthgap")
+    seed_dir = _populated_seed(tmp_path, workspace)
+
+    fields = _sstate_mirror_fields(None, str(tmp_path / "sstate"), workspace)
+
+    assert fields["sstate_mirrors"] == seed_mirror_line(seed_dir)
+    assert fields["sstate_mirrors_source"] == "seed"
+
+
+def test_bare_seed_directory_without_a_marker_is_not_wired(tmp_path: Path) -> None:
+    """A directory proves nothing about what is in it.
+
+    Only a completed populate run writes the marker, so a half-copied or
+    hand-made directory must not be wired in as though bakar vouched for it.
+    This is also why the pre-existing hand-made seed is not adopted silently.
+    """
+    workspace = tmp_path / "ws"
+    _oe_core(workspace, "scarthgap")
+    seed_dir, _ = resolve_seed_for_workspace(workspace, tmp_path / "sstate")
+    seed_dir.mkdir(parents=True)
+    (seed_dir / "7a").mkdir()
+
+    fields = _sstate_mirror_fields(None, str(tmp_path / "sstate"), workspace)
+
+    assert fields["sstate_mirrors"] is None
+    assert fields["sstate_mirrors_source"] is None
+
+
+def test_no_seed_and_no_config_yields_no_mirrors(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    _oe_core(workspace, "scarthgap")
+
+    fields = _sstate_mirror_fields(None, str(tmp_path / "sstate"), workspace)
+
+    assert fields["sstate_mirrors"] is None
+    assert fields["sstate_mirrors_source"] is None
+
+
+def test_unconfigured_sstate_dir_yields_no_mirrors(tmp_path: Path) -> None:
+    """With no sstate_dir there is nowhere a seed could be, so do not look."""
+    fields = _sstate_mirror_fields(None, None, tmp_path / "ws")
+
+    assert fields["sstate_mirrors"] is None
+    assert fields["sstate_mirrors_source"] is None
+
+
+def test_a_seed_for_another_release_is_not_found(tmp_path: Path) -> None:
+    """Release keying makes staleness structural: the wrong seed is elsewhere."""
+    ws_scarthgap = tmp_path / "sg"
+    ws_wrynose = tmp_path / "wn"
+    _oe_core(ws_scarthgap, "scarthgap")
+    _oe_core(ws_wrynose, "wrynose")
+    _populated_seed(tmp_path, ws_scarthgap)
+
+    fields = _sstate_mirror_fields(None, str(tmp_path / "sstate"), ws_wrynose)
+
+    assert fields["sstate_mirrors"] is None

@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from bakar.sstate_seed import MARKER_NAME, resolve_seed_for_workspace, seed_mirror_line
+
 if TYPE_CHECKING:
     from bakar.preset_config import PresetEntry
     from bakar.user_config import UserConfig
@@ -374,6 +376,15 @@ class BuildConfig:
     dl_dir: str | None = field(default=None)
     sstate_dir: str | None = field(default=None)
     sstate_mirrors: str | None = field(default=None)
+    # Where sstate_mirrors above came from: "config" for an explicitly set
+    # value, "seed" when it was derived from a populated native seed, None when
+    # there are no mirrors at all. Carried rather than re-derived because a seed
+    # is worth ~65% of a cold build's wall-clock, and a build that silently got
+    # that much faster is one nobody can compare against the run before it -
+    # which is exactly how this project's own benchmark split into two
+    # unrecorded regimes. The build announces the "seed" case; nothing else can
+    # tell the two apart once the value is a bare string.
+    sstate_mirrors_source: str | None = field(default=None)
     # Node-local base for the build TMPDIR. When set (and the build is host
     # mode), the build tmp is redirected off the - possibly NFS - source
     # workspace to ``<local_tmpdir_base>/<bsp_root.name>-<machine>`` on local
@@ -905,6 +916,39 @@ def compose_preset_output_path(preset: PresetEntry, release_index: int = 0) -> s
     return "-".join(parts) if parts else "preset"
 
 
+def _sstate_mirror_fields(
+    user_mirrors: str | None,
+    sstate_dir: str | None,
+    workspace: Path,
+) -> dict[str, str | None]:
+    """Resolve SSTATE_MIRRORS, preferring an explicit setting over the seed.
+
+    An explicitly configured ``sstate_mirrors`` always wins and is never
+    appended to. Someone who wrote that string chose which mirrors this build
+    consults, and silently adding another is how a build starts restoring
+    objects nobody pointed it at.
+
+    Otherwise a populated seed for this workspace's oe-core release is used.
+    Presence is tested by the seed's own marker rather than by the directory
+    existing: a bare directory proves nothing about what is in it, while the
+    marker is written only by a completed populate run. That keeps a
+    half-copied or hand-made directory from being wired in as though bakar had
+    vouched for it.
+
+    Staleness needs no check here. Seeds are release-keyed directories, so a
+    seed built for another release is not at this path at all and simply is not
+    found.
+    """
+    if user_mirrors:
+        return {"sstate_mirrors": user_mirrors, "sstate_mirrors_source": "config"}
+    if not sstate_dir:
+        return {"sstate_mirrors": None, "sstate_mirrors_source": None}
+    seed_dir, _ = resolve_seed_for_workspace(workspace, sstate_dir)
+    if not (seed_dir / MARKER_NAME).is_file():
+        return {"sstate_mirrors": None, "sstate_mirrors_source": None}
+    return {"sstate_mirrors": seed_mirror_line(seed_dir), "sstate_mirrors_source": "seed"}
+
+
 def resolve(
     *,
     workspace: Path,
@@ -1156,7 +1200,11 @@ def resolve(
         kas_yaml_override=kas_yaml.resolve() if kas_yaml is not None else None,
         dl_dir=user_config.dl_dir if user_config else None,
         sstate_dir=user_config.sstate_dir if user_config else None,
-        sstate_mirrors=user_config.sstate_mirrors if user_config else None,
+        **_sstate_mirror_fields(
+            user_config.sstate_mirrors if user_config else None,
+            user_config.sstate_dir if user_config else None,
+            workspace,
+        ),
         local_tmpdir_base=user_config.local_tmpdir_base if user_config else None,
         scheduler=user_config.scheduler if user_config else None,
         pressure_max_cpu=user_config.pressure_max_cpu if user_config else None,
