@@ -339,6 +339,47 @@ def test_unconfigured_sstate_dir_yields_no_mirrors(tmp_path: Path) -> None:
     assert fields["sstate_mirrors_source"] is None
 
 
+def test_destination_inside_source_is_not_copied_into_itself(tmp_path: Path) -> None:
+    """Migrating a flat seed into its release-keyed subdirectory is the upgrade path.
+
+    A release codename is never two hex characters, so without the skip the
+    destination reads as a NATIVELSBSTRING prefix directory and is copied
+    wholesale into itself.
+    """
+    flat = tmp_path / ".native-seed"
+    _obj(flat, "7a/sstate:foo-native:do_compile.tgz")
+    _obj(flat, "universal/aa/sstate:bar-native:do_populate_sysroot.tgz")
+    dest = flat / "wrynose"
+    # Pre-populated on purpose. iterdir() order is arbitrary, so a destination
+    # that happens to be visited while still empty copies nothing and the test
+    # passes without the guard doing any work. Seeding it first makes the
+    # self-copy reachable whatever order the entries come back in.
+    _obj(dest, "7a/sstate:preexisting-native:do_compile.tgz")
+
+    result = populate_seed(flat, dest, release_key="wrynose")
+
+    assert (dest / "7a/sstate:foo-native:do_compile.tgz").is_file()
+    assert (dest / "universal/aa/sstate:bar-native:do_populate_sysroot.tgz").is_file()
+    # The destination must not appear beneath itself at any depth.
+    assert not (dest / "wrynose").exists()
+    # The two source objects and their sidecars; the pre-existing file in the
+    # destination is not re-copied from itself.
+    assert result.files == 4
+
+
+def test_repeated_migration_stays_stable(tmp_path: Path) -> None:
+    """Running the same migration twice must not grow the seed."""
+    flat = tmp_path / ".native-seed"
+    _obj(flat, "7a/sstate:foo-native:do_compile.tgz")
+    dest = flat / "wrynose"
+
+    first = populate_seed(flat, dest, release_key="wrynose")
+    second = populate_seed(flat, dest, release_key="wrynose")
+
+    assert first.files == second.files
+    assert not (dest / "wrynose").exists()
+
+
 def test_a_seed_for_another_release_is_not_found(tmp_path: Path) -> None:
     """Release keying makes staleness structural: the wrong seed is elsewhere."""
     ws_scarthgap = tmp_path / "sg"
@@ -350,3 +391,40 @@ def test_a_seed_for_another_release_is_not_found(tmp_path: Path) -> None:
     fields = _sstate_mirror_fields(None, str(tmp_path / "sstate"), ws_wrynose)
 
     assert fields["sstate_mirrors"] is None
+
+
+def test_workspace_flag_rejects_a_tree_without_oe_core(tmp_path: Path) -> None:
+    """--workspace must name a tree the release can actually be read from.
+
+    Accepting any path would put the seed in the _unknown bucket silently,
+    which is the one outcome the release keying exists to avoid.
+    """
+    from typer.testing import CliRunner
+
+    from bakar.commands import app
+
+    result = CliRunner().invoke(app, ["sstate-seed", "--status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "no oe-core under" in result.output
+
+
+def test_workspace_flag_accepts_an_oe_core_tree_that_is_not_a_bakar_workspace(
+    tmp_path: Path,
+) -> None:
+    """The benchmark checkout carries oe-core and no workspace markers.
+
+    It owns the seed that actually pays off, so it has to be nameable without
+    workspace detection recognising it.
+    """
+    from typer.testing import CliRunner
+
+    from bakar.commands import app
+
+    ws = tmp_path / "bench"
+    _oe_core(ws, "wrynose")
+    assert not (ws / ".bakar.toml").exists()
+
+    result = CliRunner().invoke(app, ["sstate-seed", "--status", "--workspace", str(ws)])
+
+    assert "no oe-core under" not in result.output

@@ -192,9 +192,20 @@ def populate_seed(
     if not source.is_dir():
         return SeedResult(0, 0, dest, release_key, source_missing=True)
 
+    # The destination routinely sits INSIDE the source: migrating a flat
+    # ``.native-seed`` into its release-keyed ``.native-seed/<release>`` is the
+    # ordinary upgrade path, and a release codename is never two hex characters,
+    # so the branch below would take the destination for a NATIVELSBSTRING
+    # prefix directory and copy it wholesale into itself. Skipping any entry
+    # that IS or CONTAINS the destination is what makes that case a no-op
+    # instead of a recursive self-copy.
+    dest_resolved = dest.resolve()
     sizes: list[int] = []
     for entry in source.iterdir():
         if not entry.is_dir():
+            continue
+        entry_resolved = entry.resolve()
+        if entry_resolved == dest_resolved or dest_resolved.is_relative_to(entry_resolved):
             continue
         if is_hash_prefix_dir(entry.name):
             sizes.extend(_copy_fallback(entry, source, dest))

@@ -50,12 +50,35 @@ def sstate_seed(
         Path | None,
         typer.Option("--source", help="sstate directory to populate from. Defaults to the configured sstate_dir."),
     ] = None,
+    workspace_override: Annotated[
+        Path | None,
+        typer.Option(
+            "--workspace",
+            help="Tree to read the oe-core release from. Use when the seed's owning checkout is not a bakar workspace.",
+        ),
+    ] = None,
 ) -> None:
     """Populate or inspect the native/cross sstate seed for this workspace's release."""
-    workspace = _find_workspace_from_cwd()
-    if workspace is None:
-        console.print("[red]not inside a bakar workspace[/]; run this from a workspace directory.")
-        raise typer.Exit(code=1)
+    # A seed belongs to an oe-core RELEASE, and the tree that owns one is not
+    # always a bakar workspace - the benchmark checkout carries oe-core and none
+    # of the workspace markers, and it owns the seed that actually pays off.
+    # Requiring workspace detection there would leave the one seed worth having
+    # unnameable, so --workspace names any oe-core-bearing tree directly.
+    if workspace_override is not None:
+        workspace = workspace_override
+        if not (workspace / "openembedded-core" / "meta" / "conf" / "layer.conf").is_file():
+            console.print(
+                f"[red]no oe-core under {workspace}[/]; --workspace must name a tree containing openembedded-core/."
+            )
+            raise typer.Exit(code=1)
+    else:
+        found = _find_workspace_from_cwd()
+        if found is None:
+            console.print(
+                "[red]not inside a bakar workspace[/]; run this from a workspace directory, or pass --workspace."
+            )
+            raise typer.Exit(code=1)
+        workspace = found
 
     cfg_sstate = _state._USER_CONFIG.sstate_dir if _state._USER_CONFIG is not None else None
     if not cfg_sstate:
