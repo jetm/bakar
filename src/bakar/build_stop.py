@@ -1005,12 +1005,13 @@ def lock_mutation_guard(cfg: BuildConfig) -> LockRefusal | None:
        local) -> ``None``.
 
     Reaches :func:`bakar.diagnostics.is_path_on_nfs` via a DEFERRED import
-    inside this function body, never at module level: ``diagnostics.py``
-    already imports this module (``build_stop``) at module level for
-    ``check_container_runtime``, so a module-level reverse import here would
-    be a deterministic circular import that breaks the first
-    ``import bakar.diagnostics``. That existing import is load-bearing and
-    must not be deferred to "fix" this - only this direction defers.
+    inside this function body, never at module level. The cycle it breaks is
+    ``probes -> build_stop -> diagnostics -> probes``: :mod:`bakar.probes`
+    imports this module at module level (``probe_build_daemon`` calls
+    :func:`detect_runtime`), and ``diagnostics`` imports ``probes`` at module
+    level in turn. Hoisting this import makes ``import bakar.probes`` fail with
+    a partially initialized module; the other two edges are load-bearing and
+    must not be deferred to "fix" it - only this direction defers.
     """
     from bakar.diagnostics import is_path_on_nfs
 

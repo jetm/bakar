@@ -6,11 +6,20 @@ so the alias set is a relocation of text and never a change of arity.
 
 Every alias is defined at MODULE level, deliberately. Typer resolves a
 command's annotations at runtime through ``inspect.signature(eval_str=True)``,
-so a name hidden behind ``if TYPE_CHECKING:`` is unresolvable there and Typer
-raises ``RuntimeError: Type not yet supported``. ``TC001`` is suppressed for
-this package in ``pyproject.toml`` for exactly that reason - the lint is
-correct about the import being type-only in appearance, and wrong about it
-being type-only in fact.
+so a name hidden behind ``if TYPE_CHECKING:`` is unresolvable there and the
+command dies with ``NameError: name '<alias>' is not defined`` while the
+signature is being resolved. ``TC001`` is suppressed for this package in
+``pyproject.toml`` for exactly that reason - the lint is correct about the
+import being type-only in appearance, and wrong about it being type-only in
+fact.
+
+The failure is a ``NameError``, not the ``RuntimeError: Type not yet
+supported`` an earlier version of this docstring named. That RuntimeError is
+real but unrelated: Typer raises it for a RESOLVED annotation it has no branch
+for, which is what a dataclass-typed parameter produces, and the guarded-alias
+case never reaches that code. Someone who hits the NameError and greps for the
+RuntimeError finds nothing and concludes this suppression is unrelated to their
+symptom - which is the one thing this note exists to prevent.
 
 ``--preset`` has no alias here on purpose. Its annotation carries
 ``autocompletion=_preset_completer``, which lives in ``_build_flavors``, and

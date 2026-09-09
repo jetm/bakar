@@ -18,10 +18,20 @@ scan - so do not relax one without re-reading that change:
    Do not reorder, and do not collapse its tri-state ``(path, refused)``
    return.
 3. :func:`_neutralized` runs at the message boundary only - in
-   :func:`_scan_native_tree` and :func:`_leak_report`, never inside
+   :meth:`_NativeLeak.describe` and :func:`_scan_native_tree`, never inside
    :func:`_read_elf`. Neutralizing earlier corrupts the dependency-cache key,
    the containment tests and the node comparisons; it is the explicitly
-   rejected alternative.
+   rejected alternative. :func:`_leak_report` does NOT call it: by the time a
+   string reaches that joiner its caller has already neutralized it.
+
+   One boundary site sits OUTSIDE this module, in ``check_uninative_leak``'s
+   ``fix_hint`` (``diagnostics.py``, the ``" ".join(_neutralized(recipe) ...)``).
+   It is guarded - dropping it fails
+   ``test_recipe_name_reaches_message_and_fix_hint_neutralized`` - but this
+   docstring cannot reach it, so an audit of invariant 3 has to look there too.
+   The hint renders through a markup-enabled ``console.print``, so a recipe
+   directory named ``foo[/]bar`` raises ``MarkupError`` and takes the whole
+   doctor report with it.
 
 :func:`_read_elf` and ``_HOST_LIB_DIRS`` are deliberately NOT re-exported from
 :mod:`bakar.diagnostics`. A leak-scan test whose stub is left pointing at the

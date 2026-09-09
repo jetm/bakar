@@ -146,7 +146,11 @@ known-first-party = ["bakar"]
 # Typer evaluates annotations at runtime via inspect.signature(eval_str=True), so a name a
 # command signature reads must resolve at import time. Neither the stdlib types (TC003) nor the
 # first-party Annotated aliases in _build_options (TC001) may be TYPE_CHECKING-guarded: obeying
-# either lint raises RuntimeError: Type not yet supported when Typer builds the command.
+# either lint raises NameError: name '<alias>' is not defined while Typer resolves the
+# signature (typer/main.py:1370). Measured on typer 0.25.1 - do not look for the
+# "RuntimeError: Type not yet supported" this comment used to name. That is a real Typer error
+# but a different one, raised for a RESOLVED type it has no branch for (a dataclass-typed
+# parameter); the line is pragma: no-cover and this lint cannot reach it.
 # Typer CLI commands use boolean Options/Flags (FBT*) and many args (PLR0913) by design.
 "src/bakar/commands/*.py" = ["TC001", "TC003", "FBT001", "FBT002", "FBT003", "PLR0913"]
 # Internal helpers with many params that are not Typer commands but exceed max-args by design.

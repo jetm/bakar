@@ -83,6 +83,13 @@ def is_path_on_nfs(path: Path) -> bool | None:
     ``bitbake.lock``, not an advisory: a caller that read an undetermined path
     as local would run a node-local PID probe against a PID number owned by a
     peer fleet node and unlink that peer's live lock mid-build.
+
+    To stub the mount table under this function, patch
+    ``bakar.mounts._mount_entry_in`` - NOT ``bakar.diagnostics._mount_entry_in``.
+    The name is re-exported there for the checks that still read it, so a patch
+    aimed at that path resolves, takes no effect here, and leaves this function
+    reading the developer's real ``/proc/mounts``. Both lived in ``diagnostics``
+    before the split, when either spelling worked.
     """
     path = path.resolve(strict=False)
     try:
