@@ -57,6 +57,7 @@ from unittest import mock
 import pytest
 
 from bakar import diagnostics
+from bakar.bsp_model import get_model
 from bakar.elfscan import _resolve_needed, _resolve_roots
 
 pytestmark = pytest.mark.unit
@@ -364,19 +365,30 @@ def test_patching_an_absent_attribute_raises(monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.mark.parametrize("module_path", EXTRACTED_MODULES)
-def test_extracted_module_is_matched_by_an_arch_group(module_path: str) -> None:
-    """An extracted module must land in some ``.arch-rules.toml`` group.
+def test_extracted_module_is_matched_by_exactly_one_arch_group(module_path: str) -> None:
+    """An extracted module must land in exactly one ``.arch-rules.toml`` group.
 
-    A module matching no group is not a violation - it is worse. The fitness
+    Zero and two are both failures, for opposite reasons.
+
+    A module matching NO group is not a violation - it is worse. The fitness
     check simply never evaluates its imports and still reports "no violations",
     so the boundary erodes with nothing failing. Four modules sat in exactly
     that state between their extraction and this assertion.
+
+    A module matching TWO groups has no answer to "which layer owns this",
+    so which rule applies depends on iteration order rather than on the rules
+    file. Asserting non-emptiness alone leaves that case green: a later glob
+    widened to overlap an explicit entry passes this test while making
+    ownership ambiguous, which is why the count is compared rather than the
+    truthiness.
     """
     target = PurePosixPath(module_path)
 
     matched = [group["name"] for group in _arch_groups() for pattern in group["paths"] if target.full_match(pattern)]
 
-    assert matched, f"{module_path} matches no group in .arch-rules.toml: its imports are ungoverned"
+    assert len(matched) == 1, (
+        f"{module_path} must match exactly one group in .arch-rules.toml, matched {len(matched)}: {matched or 'none'}"
+    )
 
 
 def test_every_arch_group_matches_at_least_one_file() -> None:
@@ -471,15 +483,50 @@ def test_extracted_module_imports_first_in_a_fresh_interpreter(module_path: str)
     assert result.returncode == 0, result.stderr
 
 
-def test_diagnostics_still_defines_every_check() -> None:
-    """No ``check_*`` function left ``bakar.diagnostics`` during the split.
+def _registered_checks() -> set[str]:
+    """Assemble the check surface ``run_all`` walks, mirroring how it builds it.
+
+    ``run_all`` unions ``SHARED_CHECKS`` with the dispatched model's
+    ``doctor_extras``, appends the two bbsetup checks inline for that family,
+    and keeps ``_POST_BUILD_CHECKS`` when asked. Its later steps only ever
+    FILTER that list (host mode, cluster, post-build), so the union across
+    every family is the full set any run can reach.
+    """
+    registered = set(diagnostics.SHARED_CHECKS)
+    for family in ("nxp", "ti", "qcom"):
+        registered |= set(get_model(family).doctor_extras)
+    # bbsetup carries no BspModel, so run_all appends these two directly.
+    registered |= {diagnostics.check_bbsetup_initialized, diagnostics.check_bbsetup_config_sources}
+    registered |= set(diagnostics._POST_BUILD_CHECKS)
+    return {check.__name__ for check in registered}
+
+
+def test_diagnostics_still_registers_every_check() -> None:
+    """No ``check_*`` function left ``bakar doctor``'s reach during the split.
 
     This is the executable form of the doctor-output question. Re-running
     ``bakar doctor -f <manifest>`` to compare PASS/WARN/BLOCK verdicts needs a
-    real workspace and reports on machine state as much as on this code; asserting
-    that the registered check surface is byte-for-byte the same set of functions,
-    still defined in this module rather than re-exported into it, answers the same
-    question with no manifest and no host dependency.
+    real workspace and reports on machine state as much as on this code;
+    comparing the assembled surface against the set pinned at ``e62f601``
+    answers the same question with no manifest and no host dependency.
+
+    Comparing DEFINITIONS alone does not answer it, which an earlier version of
+    this test got wrong. Dropping a function from ``SHARED_CHECKS``, from a
+    model's ``doctor_extras``, or from run_all's bbsetup pair leaves it defined
+    and importable while ``bakar doctor`` silently stops running it - the exact
+    regression this file exists to catch, and the one the definition-set
+    comparison stayed green through.
+    """
+    assert _registered_checks() == DIAGNOSTICS_CHECK_NAMES
+
+
+def test_diagnostics_still_defines_every_check() -> None:
+    """Every registered check is still DEFINED here, not re-exported into here.
+
+    Kept beside the registration assertion above rather than folded into it,
+    because the two fail on different edits: this one catches a check whose body
+    moved to an extracted module and got imported back, which leaves the
+    assembled surface identical and so is invisible to the test above.
     """
     defined = {
         name
