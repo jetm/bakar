@@ -79,6 +79,7 @@ paths = [
   "src/bakar/buildtools.py",
   "src/bakar/probes.py",
   "src/bakar/elfscan.py",
+  "src/bakar/sstate_seed.py",
 ]
 
 [[modules]]
