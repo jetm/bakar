@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bakar.insights_timing.timing_report` gained a keyword-only `buildstats_source` parameter. It is optional and degrades to explicit unavailable notes when omitted, so existing callers are unaffected and the `top_slowest` and `critical_path` sections are byte-identical for any input that produced them before.
 - The event-log artifact gained a `host` block recording the build host's core count and parallelism settings, and `SCHEMA_VERSION` moved from 4 to 5. The addition is additive and no consumer of the persisted artifact gates on the version.
 
+### Fixed
+
+- Non-finite task durations (`NaN` and `Infinity`) in event logs are now rejected when computing task rollups and updating baseline timing stores, preventing malformed durations from corrupting persisted baselines.
+
 ## [0.30.0] - 2026-09-09
 
 ### Added
