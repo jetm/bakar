@@ -11,11 +11,13 @@ suite stays hermetic.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import TYPE_CHECKING
 
 import pytest
 
+from bakar import eventlog
 from bakar.buildstats import BuildstatsRun, TaskStats
 from bakar.insights_timing import timing_report
 
@@ -428,3 +430,197 @@ def test_join_section_defaults_to_unavailable_without_a_source(tmp_path: Path) -
 
     assert report.buildstats_join.available is False
     assert report.buildstats_join.cpu_seconds is None
+
+
+# --- CPU floor divisor ----------------------------------------------------
+#
+# The failure under test is that the same capture yields a different floor on
+# every machine that analyses it, because the divisor was read from
+# ``os.cpu_count()`` at analysis time rather than from what the build host
+# recorded. It is silent by construction: both floors are arithmetically
+# correct and neither says which core count produced it. So the fixtures below
+# record a core count NO real host has (999), and the assertions are that the
+# floor tracks the fixture and ignores the analysing host - a fixture value
+# that could coincide with this machine's core count would prove nothing.
+
+IMPOSSIBLE_CORES = 999
+
+
+def _with_host(tasks: list[dict], **host: int | None) -> dict:
+    return {"tasks": tasks, "host": {"cpu_count": IMPOSSIBLE_CORES, **host}}
+
+
+def test_floor_divides_by_the_recorded_core_count_not_the_analysing_host(tmp_path: Path) -> None:
+    artifact = _with_host([_row("busybox", "do_compile", 0.0, 5.0)])
+    run = _parsed(_stat("busybox", "do_compile", 1998.0))
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+
+    floor = report.cpu_floor
+    assert floor.available is True
+    assert floor.divisor == IMPOSSIBLE_CORES
+    assert floor.seconds == pytest.approx(1998.0 / IMPOSSIBLE_CORES)
+
+
+def test_floor_is_unchanged_when_the_analysing_host_reports_a_different_core_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One capture, two analysing machines, one answer.
+
+    Monkeypatching ``os.cpu_count`` is the direct expression of the falsifier:
+    if any divisor were read at analysis time, these two floors would differ.
+    """
+    artifact = _with_host([_row("busybox", "do_compile", 0.0, 5.0)])
+    run = _parsed(_stat("busybox", "do_compile", 1998.0))
+
+    floors = []
+    for pretend_cores in (4, 256):
+        monkeypatch.setattr("os.cpu_count", lambda cores=pretend_cores: cores)
+        report = timing_report(artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+        floors.append(report.cpu_floor.seconds)
+
+    assert floors[0] == floors[1] == pytest.approx(1998.0 / IMPOSSIBLE_CORES)
+
+
+def test_rendered_floor_names_the_core_count_and_where_it_came_from(tmp_path: Path) -> None:
+    """A floor nobody can attribute to a divisor cannot be checked after the fact."""
+    artifact = _with_host([_row("busybox", "do_compile", 0.0, 5.0)])
+    run = _parsed(_stat("busybox", "do_compile", 1998.0))
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+
+    rendered = "\n".join(report.cpu_floor.report_lines())
+    assert str(IMPOSSIBLE_CORES) in rendered
+    assert "recorded at capture" in rendered
+    assert "build host" in rendered
+
+
+def test_rendered_floor_reports_the_other_recorded_divisor_candidates(tmp_path: Path) -> None:
+    """A4: if ``cpu_count`` turns out to be the wrong divisor, the alternative is captured."""
+    artifact = _with_host(
+        [_row("busybox", "do_compile", 0.0, 5.0)],
+        bb_number_threads=12,
+        parallel_make=24,
+    )
+    run = _parsed(_stat("busybox", "do_compile", 1998.0))
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+
+    rendered = "\n".join(report.cpu_floor.report_lines())
+    assert "bb_number_threads=12" in rendered
+    assert "parallel_make=24" in rendered
+
+
+def test_artifact_predating_the_host_block_degrades_rather_than_falling_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No recorded count means no floor - never the analysing host's count."""
+    monkeypatch.setattr("os.cpu_count", lambda: 64)
+    artifact = {"tasks": [_row("busybox", "do_compile", 0.0, 5.0)]}
+    run = _parsed(_stat("busybox", "do_compile", 1998.0))
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+
+    floor = report.cpu_floor
+    assert floor.available is False
+    assert floor.seconds is None
+    assert floor.divisor is None
+    assert "records no build-host core count" in floor.note
+    assert "64" not in floor.note
+    assert str(1998.0 / 64) not in floor.note
+
+
+@pytest.mark.parametrize("cpu_count", [None, 0, -4, "16", True])
+def test_unusable_recorded_core_counts_degrade(tmp_path: Path, cpu_count: object) -> None:
+    """A zero, a negative, a string or a bool is "not recorded", not a divisor."""
+    artifact = {"tasks": [_row("busybox", "do_compile", 0.0, 5.0)], "host": {"cpu_count": cpu_count}}
+    run = _parsed(_stat("busybox", "do_compile", 1998.0))
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+
+    assert report.cpu_floor.available is False
+    assert report.cpu_floor.seconds is None
+
+
+def test_refused_join_leaves_the_floor_unavailable_and_renders_no_duration(tmp_path: Path) -> None:
+    """The gate from task 1.3 is the only input; there is nothing else to reach for."""
+    artifact = _with_host(
+        [
+            _row("busybox", "do_compile", 0.0, 5.0),
+            _row("zlib", "do_compile", 0.0, 5.0),
+        ]
+    )
+    run = _parsed(_stat("busybox", "do_compile", 1234.5))
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+
+    floor = report.cpu_floor
+    assert report.buildstats_join.gate_passed is False
+    assert floor.available is False
+    assert floor.seconds is None
+    rendered = "\n".join(floor.report_lines())
+    offenders = DURATION_TOKEN.findall(rendered)
+    assert offenders == [], f"refused floor rendered duration tokens {offenders} in: {rendered}"
+    assert "1234" not in rendered
+
+
+def test_floor_section_defaults_to_unavailable_without_a_buildstats_source(tmp_path: Path) -> None:
+    report = timing_report(
+        _with_host([_row("busybox", "do_compile", 0.0, 5.0)]), baselines_path=tmp_path / "absent.json"
+    )
+
+    assert report.cpu_floor.available is False
+    assert report.cpu_floor.seconds is None
+
+
+def test_normalize_records_the_build_hosts_divisor_candidates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The capture side of the same contract: the count is written where the build ran.
+
+    Kept beside the analysis tests deliberately - the property under test spans
+    both halves, and splitting it leaves each file asserting something true of
+    itself and nothing about the pair.
+    """
+    monkeypatch.setattr("os.cpu_count", lambda: 48)
+    monkeypatch.setenv("BAKAR_BB_NUMBER_THREADS", "12")
+    monkeypatch.setenv("BAKAR_PARALLEL_MAKE", "-j 24")
+
+    artifact = eventlog.normalize(tmp_path / "no-such-event.log")
+
+    assert artifact["host"] == {"cpu_count": 48, "bb_number_threads": 12, "parallel_make": 24}
+
+
+def test_normalize_prefers_the_builds_own_variable_dump_over_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dump is what bitbake ran with; the host env is only a fallback.
+
+    ``steps.kas_build._build_env`` hands the BAKAR_* pair to the kas subprocess
+    rather than exporting it here, so reading the environment alone would record
+    ``None`` on every real build and leave A4's alternative divisor uncaptured.
+    """
+    monkeypatch.setenv("BAKAR_BB_NUMBER_THREADS", "99")
+    monkeypatch.setenv("BAKAR_PARALLEL_MAKE", "-j 99")
+    log = tmp_path / "bitbake_eventlog.json"
+    log.write_text(
+        json.dumps({"allvariables": {"BB_NUMBER_THREADS": "8", "PARALLEL_MAKE": "-j 16"}}) + "\n",
+        encoding="utf-8",
+    )
+
+    artifact = eventlog.normalize(log)
+
+    assert artifact["host"]["bb_number_threads"] == 8
+    assert artifact["host"]["parallel_make"] == 16
+
+
+def test_normalize_records_no_parallelism_when_the_environment_carries_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unset or unparseable knob is ``None``, never a default that reads as measured."""
+    for name in ("BAKAR_BB_NUMBER_THREADS", "BB_NUMBER_THREADS", "BAKAR_PARALLEL_MAKE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PARALLEL_MAKE", "-j auto")
+
+    artifact = eventlog.normalize(tmp_path / "no-such-event.log")
+
+    assert artifact["host"]["bb_number_threads"] is None
+    assert artifact["host"]["parallel_make"] is None

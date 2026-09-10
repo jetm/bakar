@@ -22,7 +22,17 @@ is added.
 :func:`normalize` reads a raw log path and returns the normalized artifact dict
 matching the ``bitbake-events.json`` schema (the downstream contract):
 
-    {schema_version, build, tasks, setscene, failures, psi, disk}
+    {schema_version, build, host, tasks, setscene, failures, psi, disk}
+
+``host`` (added in schema version 5) records the divisor candidates for a
+CPU floor AT CAPTURE TIME, on the build host: ``cpu_count`` plus the build's
+own ``bb_number_threads``/``parallel_make``, read from the raw log's
+``allvariables`` dump where it carries them and from the environment otherwise.
+The floor is computed later, possibly on a different machine, and
+a divisor read at analysis time would silently change the answer - analysing a
+capture on a bigger box lowers the floor and overstates the saving with nothing
+printed. Recording it here is what makes the same capture yield the same floor
+anywhere.
 
 ``psi`` and ``disk`` (added in schema version 3) carry discrete pressure and
 disk-usage events captured from the raw log - ``psi.samples`` from
@@ -40,17 +50,30 @@ import base64
 import binascii
 import io
 import json
+import os
 import pickle
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import threading
+    from collections.abc import Callable
     from pathlib import Path
 
 # Bumped when the artifact shape changes so downstream consumers
 # (build-insights, triage) can detect format drift.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+
+# Environment names carrying the build's own parallelism, most specific first.
+# bakar exports the BAKAR_* pair from ``[build]`` config (see
+# ``overlays/bakar-tuning-*.yml``, which reads them to set the bitbake vars);
+# the bare names cover a build configured outside bakar.
+_BB_THREADS_ENV = ("BAKAR_BB_NUMBER_THREADS", "BB_NUMBER_THREADS")
+_PARALLEL_MAKE_ENV = ("BAKAR_PARALLEL_MAKE", "PARALLEL_MAKE")
+
+# PARALLEL_MAKE is a make flag string ("-j 16"), not a bare count.
+_FIRST_INT = re.compile(r"\d+")
 
 # bitbake event class names (the JSON line's ``class`` field) we recognize.
 # Each decoded event is classified by this string, NOT by isinstance - the
@@ -164,12 +187,18 @@ def _first(event: _EventStub, *names: str) -> Any:
     return None
 
 
-def _iter_events(raw_path: Path):
+def _iter_events(raw_path: Path, on_variables: Callable[[dict[str, Any]], None] | None = None):
     """Yield ``(class_name, event_stub)`` for each recognized event line.
 
     Skips the ``{"allvariables": ...}`` line, lines whose class is
     unrecognized, lines that fail to decode, and a truncated/malformed
     trailing line - none of these raise.
+
+    ``on_variables``, when supplied, is handed the ``allvariables`` dump as it
+    goes past. The dump is still skipped as an event; this hook exists so a
+    caller that needs a build variable (:func:`_host_block` needs the build's
+    own parallelism) gets it from the pass already reading the file rather than
+    opening a multi-hundred-megabyte log a second time.
     """
     # errors="replace": a non-UTF-8 or truncated-mid-multibyte log (aborted or
     # concurrent build) must not raise UnicodeDecodeError during line iteration,
@@ -185,7 +214,14 @@ def _iter_events(raw_path: Path):
                 record = json.loads(line)
             except json.JSONDecodeError, ValueError:
                 continue
-            if not isinstance(record, dict) or record.get("class") not in _RECOGNIZED_CLASSES:
+            if not isinstance(record, dict):
+                continue
+            if "allvariables" in record:
+                dump = record["allvariables"]
+                if on_variables is not None and isinstance(dump, dict):
+                    on_variables(dump)
+                continue
+            if record.get("class") not in _RECOGNIZED_CLASSES:
                 continue
             decoded = _decode_record(record)
             if decoded is not None:
@@ -278,12 +314,73 @@ def _task_key(event: _EventStub) -> tuple[Any, Any]:
     return recipe, task
 
 
+def _positive_int(raw: Any) -> int | None:
+    """First integer in ``raw``, when it is positive, else ``None``.
+
+    ``PARALLEL_MAKE`` is a make flag string (``"-j 16"``), not a bare count, so
+    the digits have to be dug out. An unset, empty, or unparseable value returns
+    ``None`` rather than a guess: a wrong divisor is worse than an absent one,
+    because absent degrades with a note and wrong prints a floor nobody can
+    check.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    match = _FIRST_INT.search(raw)
+    if match is None:
+        return None
+    value = int(match.group())
+    return value if value > 0 else None
+
+
+def _knob(names: tuple[str, ...], variables: dict[str, Any]) -> int | None:
+    """Read a parallelism knob from the build's variable dump, then the environment.
+
+    The dump wins because it is the build's OWN value - what bitbake actually
+    ran with, whatever set it. The environment is a fallback rather than the
+    primary source precisely because ``steps.kas_build._build_env`` builds a
+    curated env for the kas subprocess instead of exporting into this process,
+    so bakar's own ``os.environ`` carries the ``BAKAR_*`` pair only when the
+    user exported it by hand.
+    """
+    for source in (variables, os.environ):
+        for name in names:
+            value = _positive_int(source.get(name))
+            if value is not None:
+                return value
+    return None
+
+
+def _host_block(variables: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Record this host's CPU-floor divisor candidates at capture time.
+
+    ``cpu_count`` is the divisor the floor uses; the two parallelism knobs are
+    recorded beside it so an analysis that disagrees with A4 (that
+    ``os.cpu_count()`` is the right divisor) has the alternative already
+    captured rather than needing the build re-run. All three are ``None`` when
+    unavailable - never substituted from a default.
+
+    ``variables`` is the raw log's ``allvariables`` dump when one was seen.
+    """
+    return {
+        "cpu_count": os.cpu_count(),
+        "bb_number_threads": _knob(_BB_THREADS_ENV, variables or {}),
+        "parallel_make": _knob(_PARALLEL_MAKE_ENV, variables or {}),
+    }
+
+
 def normalize(raw_path: Path) -> dict[str, Any]:
     """Read a raw bitbake event log and return the normalized artifact.
 
     The returned dict always has exactly these top-level keys::
 
-        {schema_version, build, tasks, setscene, failures, psi, disk}
+        {schema_version, build, host, tasks, setscene, failures, psi, disk}
+
+    ``host`` carries the build host's ``cpu_count`` and its
+    ``bb_number_threads``/``parallel_make`` where reachable, read HERE rather
+    than at analysis time (see the module docstring). It is present on the
+    missing-log early return too - the host is knowable even when the build
+    recorded nothing, and omitting it there would make an unreadable log
+    indistinguishable from a pre-schema-5 artifact.
 
     ``failures[]`` entries carry ``recipe`` (from ``_package``), ``task``
     (from ``_task``/``taskname``), ``logfile``, and ``errprinted``.
@@ -326,6 +423,7 @@ def normalize(raw_path: Path) -> dict[str, Any]:
         return {
             "schema_version": SCHEMA_VERSION,
             "build": build,
+            "host": _host_block(),
             "tasks": [],
             "setscene": setscene,
             "failures": failures,
@@ -350,7 +448,8 @@ def normalize(raw_path: Path) -> dict[str, Any]:
             tasks[key] = row
         return row
 
-    for class_name, event in _iter_events(raw_path):
+    variables: dict[str, Any] = {}
+    for class_name, event in _iter_events(raw_path, on_variables=variables.update):
         if class_name == _BUILD_STARTED:
             build["started"] = _first(event, "time", "timestamp")
         elif class_name == _BUILD_COMPLETED:
@@ -475,6 +574,7 @@ def normalize(raw_path: Path) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "build": build,
+        "host": _host_block(variables),
         "tasks": list(tasks.values()),
         "setscene": setscene,
         "failures": failures,

@@ -181,6 +181,45 @@ class BuildstatsJoin:
 
 
 @dataclass(frozen=True)
+class CpuFloor:
+    """The CPU-only lower bound: joined CPU seconds divided by the build host's cores.
+
+    The divisor comes from the ``host`` block the event-log artifact recorded ON
+    THE BUILD HOST (see :func:`bakar.eventlog._host_block`), never from
+    ``os.cpu_count()`` here. That divergence from the reference analyser is
+    deliberate (design D4): the reference reads ``nproc`` at analysis time and
+    its comparability check only fires in one direction, so analysing a capture
+    on a machine with MORE cores lowers the floor and overstates the achievable
+    saving with nothing printed. Reading a recorded count makes the same capture
+    yield the same floor on any machine.
+
+    An artifact predating that block has no recorded count. That degrades with
+    an explicit note, following :func:`_compute_critical_path`'s precedent -
+    substituting the analysing host's count would be exactly the defect above,
+    arrived at by fallback instead of by design.
+
+    ``seconds`` is ``None`` unless ``available``; in particular a refused join
+    hands this section ``cpu_seconds=None`` and there is no other input it could
+    reach for, so a floor over a partial join has no expressible form here.
+    """
+
+    available: bool = False
+    seconds: float | None = None
+    divisor: int | None = None
+    note: str = "CPU floor unavailable: no buildstats source supplied"
+
+    def report_lines(self) -> list[str]:
+        """Render this section as plain text lines.
+
+        The available case NAMES its divisor and where the divisor came from, so
+        a capture analysed on a different machine than it was taken on stays
+        auditable from the output alone. A bare "floor: 900s" cannot be checked
+        by anyone who was not present at the build.
+        """
+        return [f"  {self.note}"]
+
+
+@dataclass(frozen=True)
 class TimingReport:
     """The timing report: top-N slowest tasks plus the critical-path section."""
 
@@ -188,6 +227,7 @@ class TimingReport:
     critical_path: CriticalPath = field(default_factory=CriticalPath)
     regime: Regime = field(default_factory=Regime)
     buildstats_join: BuildstatsJoin = field(default_factory=BuildstatsJoin)
+    cpu_floor: CpuFloor = field(default_factory=CpuFloor)
 
 
 def _duration_totals(durations: list[TaskDuration]) -> dict[str, float]:
@@ -405,6 +445,68 @@ def _compute_join(
     )
 
 
+def _recorded_cores(artifact: dict | list) -> tuple[int | None, dict[str, int]]:
+    """Return the recorded core count and any other recorded divisor candidates.
+
+    The count is ``None`` for an artifact written before schema 5 recorded a
+    ``host`` block, for a bare tasks list with no artifact to read, and for a
+    block whose ``cpu_count`` is absent or not a positive int. Every one of
+    those means "not recorded", and none of them may fall back to
+    ``os.cpu_count()`` here - see :class:`CpuFloor`.
+    """
+    if not isinstance(artifact, dict):
+        return None, {}
+    block = artifact.get("host")
+    if not isinstance(block, dict):
+        return None, {}
+
+    def _positive(key: str) -> int | None:
+        value = block.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+    alternates = {key: value for key in ("bb_number_threads", "parallel_make") if (value := _positive(key)) is not None}
+    return _positive("cpu_count"), alternates
+
+
+def _compute_cpu_floor(join: BuildstatsJoin, artifact: dict | list) -> CpuFloor:
+    """Divide the joined CPU seconds by the RECORDED build-host core count.
+
+    Degrades with a note rather than raising, and never substitutes a divisor:
+    a missing join, a refused join, and a missing recorded count each produce an
+    unavailable floor. Following :func:`_compute_critical_path`'s precedent
+    exactly rather than inventing a second convention for the same situation.
+    """
+    if join.cpu_seconds is None:
+        reason = (
+            "buildstats join refused, so no CPU seconds were produced"
+            if join.available
+            else "no joined CPU seconds available"
+        )
+        return CpuFloor(note=f"CPU floor unavailable: {reason}")
+
+    cores, alternates = _recorded_cores(artifact)
+    if cores is None:
+        return CpuFloor(
+            note=(
+                "CPU floor unavailable: this run's artifact records no build-host core count "
+                "(written before the host block existed) - the analysing host's core count is "
+                "deliberately not substituted, because that would make the same capture yield a "
+                "different floor on every machine"
+            ),
+        )
+
+    also = "".join(f", {key}={value} recorded" for key, value in sorted(alternates.items()))
+    return CpuFloor(
+        available=True,
+        seconds=join.cpu_seconds / cores,
+        divisor=cores,
+        note=(
+            f"CPU floor {join.cpu_seconds / cores:.1f}s = {join.cpu_seconds:.1f} joined CPU seconds "
+            f"/ {cores} cores (build host cpu_count, recorded at capture{also})"
+        ),
+    )
+
+
 def timing_report(
     artifact: dict | list,
     top_n: int = DEFAULT_TOP_N,
@@ -440,7 +542,10 @@ def timing_report(
     (see :class:`BuildstatsJoin`): the share of executed tasks carrying a
     buildstats record, and the refusal that keeps every CPU-derived figure out
     of the report when that share falls below :data:`JOIN_RATE_THRESHOLD`. It
-    degrades the same way ``dependency_source`` does.
+    degrades the same way ``dependency_source`` does. When the gate passes, the
+    :class:`CpuFloor` section divides those CPU seconds by the core count
+    ``artifact`` recorded on the BUILD host - no divisor is read from the
+    analysing host, so the same artifact yields the same floor anywhere.
     """
     baselines = task_timings.load_baselines(baselines_path)
 
@@ -489,12 +594,15 @@ def timing_report(
         critical_path = _compute_critical_path(dependency_source, _duration_totals(durations))
 
     buildstats_join = BuildstatsJoin()
+    cpu_floor = CpuFloor()
     if buildstats_source is not None:
         buildstats_join = _compute_join(buildstats_source, durations)
+        cpu_floor = _compute_cpu_floor(buildstats_join, artifact)
 
     return TimingReport(
         top_slowest=top_slowest,
         critical_path=critical_path,
         regime=_regime_from(artifact, len(durations)),
         buildstats_join=buildstats_join,
+        cpu_floor=cpu_floor,
     )
