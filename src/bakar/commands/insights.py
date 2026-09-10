@@ -68,6 +68,7 @@ from bakar.insights_pressure import pressure_report
 from bakar.insights_sstate import sstate_report
 from bakar.insights_timing import correlation_window, timing_report
 from bakar.observability import RunLogger
+from bakar.steps import kas_build
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -174,6 +175,72 @@ def _buildstats_source(tmpdir: Path, window: tuple[float, float] | None) -> Call
                 ),
             )
         return buildstats.read_run(tmpdir, window=window)
+
+    return read
+
+
+#: How long after a build's end a capture may still be counted as its own.
+#: Generous on purpose: the job is to reject a graph from a DIFFERENT build -
+#: which is hours or days away - not to police the seconds between a build's
+#: last task and the capture that follows it. A tight bound here would reject
+#: honest captures on a loaded machine and buy nothing against the case that
+#: matters.
+GRAPH_CORRELATION_TOLERANCE_S = 3600.0
+
+
+def _dependency_source(run_dir: Path, window: tuple[float, float] | None) -> Callable[[], tuple[str, str]]:
+    """Return the zero-argument reader for this run's captured dependency graph.
+
+    Raises rather than returning a sentinel when the graph cannot be used.
+    :func:`~bakar.insights_timing._compute_critical_path` catches any exception
+    from this callable and renders the message as the unavailability note, so
+    raising is what carries a specific reason to the reader - where returning
+    ``None`` would collapse "no graph was captured", "the graph belongs to a
+    different build" and "no source was supplied" into one blank line.
+
+    Provenance is checked rather than inferred from co-location. A run directory
+    is per-run, so a stale graph is unlikely - but "unlikely" is what the
+    buildstats join gate was also told, and the marker costs one read.
+    """
+
+    def read() -> tuple[str, str]:
+        marker_path = run_dir / kas_build.GRAPH_MARKER_NAME
+        try:
+            marker = json.loads(marker_path.read_text())
+        except OSError as exc:
+            raise RuntimeError(f"no dependency graph captured for this run ({exc})") from exc
+        except ValueError as exc:
+            raise RuntimeError(f"dependency-graph marker at {marker_path} is unreadable ({exc})") from exc
+        if not isinstance(marker, dict):
+            raise RuntimeError(  # noqa: TRY004 - corrupt data in a file, not a caller type error
+                f"dependency-graph marker at {marker_path} is not an object"
+            )
+
+        captured_at = marker.get("captured_at")
+        if not isinstance(captured_at, int | float):
+            raise RuntimeError(  # noqa: TRY004 - corrupt data in a file, not a caller type error
+                "dependency-graph marker records no capture time, so it cannot be correlated"
+            )
+        if window is None:
+            raise RuntimeError(
+                "this run's artifact records no build start/finish pair, so the captured graph "
+                "cannot be shown to belong to it"
+            )
+        start, end = window
+        if not (start <= captured_at <= end + GRAPH_CORRELATION_TOLERANCE_S):
+            raise RuntimeError(
+                f"the captured graph does not belong to this run: captured at {captured_at:.0f}, "
+                f"outside the run's window {start:.0f}-{end:.0f}"
+            )
+
+        texts: list[str] = []
+        for name in kas_build.GRAPH_ARTIFACTS:
+            path = run_dir / name
+            try:
+                texts.append(path.read_text(errors="replace"))
+            except OSError as exc:
+                raise RuntimeError(f"dependency graph incomplete: {name} unreadable ({exc})") from exc
+        return texts[0], texts[1]
 
     return read
 
@@ -414,6 +481,13 @@ def insights(
                 top_n=top,
                 baselines_path=baselines_path,
                 buildstats_source=_buildstats_source(cfg.resolved_tmpdir, window),
+                # Reads the graph this run captured at build time. The live
+                # `bitbake -g` this command used to need is what made the
+                # critical path - and with it the concurrency floor - impossible
+                # from a persisted run directory: it is not a pure function over
+                # one, and the recipe to graph is not knowable from one either.
+                # Both are knowable at build time, so the capture moved there.
+                dependency_source=_dependency_source(run_dir, window),
             )
         )
 
