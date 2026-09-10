@@ -11,10 +11,12 @@ suite stays hermetic.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 import pytest
 
+from bakar.buildstats import BuildstatsRun, TaskStats
 from bakar.insights_timing import timing_report
 
 if TYPE_CHECKING:
@@ -255,3 +257,174 @@ def test_malformed_setscene_counts_do_not_raise(tmp_path: Path) -> None:
 
     assert report.regime.covered == 0
     assert report.regime.total == 10
+
+
+# --- buildstats join gate -------------------------------------------------
+#
+# Two failures are specifically under test here, because both are silent.
+# A refused floor whose number still reaches the page is taken and its caveat
+# discarded; a rate computed by dropping unjoined tasks from BOTH sides reads
+# 100% forever and passes the gate over exactly the partial join it exists to
+# catch. The first is checked by scanning rendered text for any duration-shaped
+# token, the second by asserting a deliberately partial join reports its real
+# partial value.
+
+#: Any number immediately followed by a time unit. Deliberately broad: the
+#: assertion is that NO duration reaches a refused section, so a pattern that
+#: only matched this module's own formatting would pass a section that spelled
+#: its seconds differently.
+DURATION_TOKEN = re.compile(r"\d+(?:\.\d+)?\s*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs)\b")
+
+
+def _stat(recipe: str, task: str, cpu_seconds: float) -> TaskStats:
+    return TaskStats(
+        recipe=recipe,
+        task=task,
+        elapsed=cpu_seconds,
+        cpu_seconds=cpu_seconds,
+        minflt=0,
+        majflt=0,
+        syscalls=0,
+        write_bytes=0,
+    )
+
+
+def _parsed(*stats: TaskStats) -> BuildstatsRun:
+    return BuildstatsRun(outcome="parsed", note="fixture", tasks=list(stats))
+
+
+def test_join_rate_counts_unjoined_tasks_in_the_denominator(tmp_path: Path) -> None:
+    """Four executed tasks, two with records: the rate is 50%, not 100%.
+
+    The trap this guards is a join built by iterating the buildstats records and
+    counting matches on both sides. That formulation cannot express a shortfall
+    at all - every record it counts is by construction one it matched - so the
+    gate would clear on any tree, however little of the build it covered.
+    """
+    artifact = {
+        "tasks": [
+            _row("busybox", "do_compile", 0.0, 5.0),
+            _row("busybox", "do_install", 0.0, 5.0),
+            _row("zlib", "do_compile", 0.0, 5.0),
+            _row("zlib", "do_install", 0.0, 5.0),
+        ]
+    }
+    run = _parsed(_stat("busybox", "do_compile", 10.0), _stat("busybox", "do_install", 10.0))
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+
+    join = report.buildstats_join
+    assert join.executed == 4
+    assert join.joined == 2
+    assert join.rate == pytest.approx(0.5)
+    assert join.gate_passed is False
+
+
+def test_refused_join_leaks_no_duration_into_the_rendered_section(tmp_path: Path) -> None:
+    """A refusal renders no seconds anywhere - not even as a "would have been"."""
+    artifact = {
+        "tasks": [
+            _row("busybox", "do_compile", 0.0, 5.0),
+            _row("zlib", "do_compile", 0.0, 5.0),
+        ]
+    }
+    run = _parsed(_stat("busybox", "do_compile", 1234.5))
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+
+    join = report.buildstats_join
+    assert join.gate_passed is False
+    assert join.cpu_seconds is None
+    rendered = "\n".join(join.report_lines())
+    offenders = DURATION_TOKEN.findall(rendered)
+    assert offenders == [], f"refused join rendered duration tokens {offenders} in: {rendered}"
+    assert "1234" not in rendered
+
+
+def test_join_above_the_threshold_passes_and_carries_cpu_seconds(tmp_path: Path) -> None:
+    artifact = {"tasks": [_row("busybox", "do_compile", 0.0, 5.0), _row("zlib", "do_compile", 0.0, 5.0)]}
+    run = _parsed(_stat("busybox", "do_compile", 30.0), _stat("zlib", "do_compile", 12.0))
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+
+    join = report.buildstats_join
+    assert join.gate_passed is True
+    assert join.rate == pytest.approx(1.0)
+    assert join.cpu_seconds == pytest.approx(42.0)
+
+
+def test_join_ignores_buildstats_rows_this_run_never_executed(tmp_path: Path) -> None:
+    """A stale capture's extra rows must not be credited to this build's CPU."""
+    artifact = {"tasks": [_row("busybox", "do_compile", 0.0, 5.0)]}
+    run = _parsed(_stat("busybox", "do_compile", 30.0), _stat("ghost-recipe", "do_compile", 900.0))
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+
+    assert report.buildstats_join.gate_passed is True
+    assert report.buildstats_join.cpu_seconds == pytest.approx(30.0)
+
+
+def test_join_matches_across_a_version_suffix_difference(tmp_path: Path) -> None:
+    artifact = {"tasks": [_row("busybox-1.36.1-r0", "do_compile", 0.0, 5.0)]}
+    run = _parsed(_stat("busybox-1.36.1-r1", "do_compile", 30.0))
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+
+    assert report.buildstats_join.joined == 1
+    assert report.buildstats_join.gate_passed is True
+
+
+def test_join_with_no_executed_tasks_refuses_rather_than_passing_vacuously(tmp_path: Path) -> None:
+    """Zero over zero is a refusal: a run that measured nothing proves nothing."""
+    empty_run = _parsed()
+
+    report = timing_report({"tasks": []}, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: empty_run)
+
+    join = report.buildstats_join
+    assert join.gate_passed is False
+    assert join.rate == 0.0
+    assert "no executed tasks" in join.note
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [("absent", "tree absent"), ("empty", "recorded nothing")],
+)
+def test_absent_and_empty_buildstats_trees_keep_separate_notes(tmp_path: Path, outcome: str, expected: str) -> None:
+    """The three-outcome distinction from ``buildstats.read_run`` survives the join."""
+    run = BuildstatsRun(outcome=outcome, note="fixture note")
+
+    report = timing_report(
+        {"tasks": [_row("busybox", "do_compile", 0.0, 5.0)]},
+        baselines_path=tmp_path / "absent.json",
+        buildstats_source=lambda: run,
+    )
+
+    join = report.buildstats_join
+    assert join.available is False
+    assert join.gate_passed is False
+    assert join.cpu_seconds is None
+    assert expected in join.note
+
+
+def test_join_source_failure_degrades_rather_than_raising(tmp_path: Path) -> None:
+    def _boom() -> BuildstatsRun:
+        raise RuntimeError("tmpdir unreadable")
+
+    report = timing_report(
+        {"tasks": [_row("busybox", "do_compile", 0.0, 5.0)]},
+        baselines_path=tmp_path / "absent.json",
+        buildstats_source=_boom,
+    )
+
+    assert report.buildstats_join.available is False
+    assert "tmpdir unreadable" in report.buildstats_join.note
+
+
+def test_join_section_defaults_to_unavailable_without_a_source(tmp_path: Path) -> None:
+    report = timing_report(
+        {"tasks": [_row("busybox", "do_compile", 0.0, 5.0)]}, baselines_path=tmp_path / "absent.json"
+    )
+
+    assert report.buildstats_join.available is False
+    assert report.buildstats_join.cpu_seconds is None

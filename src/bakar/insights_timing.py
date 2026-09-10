@@ -40,7 +40,20 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from bakar.buildstats import BuildstatsRun
+
 DEFAULT_TOP_N = 10
+
+#: Share of executed tasks that must carry a buildstats record before any
+#: CPU figure derived from that join may be published. The reference analyser
+#: (chezmoi's ``yocto-bench-buildstats.py``) arrived at the same 95% after
+#: publishing a path over a partially-joined graph: the result was confidently
+#: wrong and read exactly like a correct one.
+JOIN_RATE_THRESHOLD = 0.95
+
+#: How many unjoined task keys a refusal names. Enough to recognise a pattern
+#: (all setscene, all one recipe) without pasting the whole shortfall.
+UNJOINED_SAMPLE = 5
 
 
 @dataclass(frozen=True)
@@ -110,12 +123,71 @@ class Regime:
 
 
 @dataclass(frozen=True)
+class BuildstatsJoin:
+    """How much of this run's executed task set carries a buildstats record.
+
+    Every CPU-derived figure in this report - the CPU floor, and therefore the
+    concurrency floor built on it - is computed over the tasks that joined. A
+    join covering 60% of the build yields a floor that is arithmetically fine
+    and factually a floor for a different, smaller build, with nothing in its
+    formatting to say so. So the rate is the gate, not a footnote.
+
+    ``cpu_seconds`` is ``None`` whenever ``gate_passed`` is false. That is
+    structural rather than stylistic: a downstream section cannot print a floor
+    it was never handed the input for, so the "refused but printed anyway"
+    failure has no expressible form here.
+
+    ``joined`` and ``executed`` are counted over the SAME set - every executed
+    task raises ``executed``, and only a task with a matching buildstats record
+    also raises ``joined``. Dropping unjoined tasks from both sides instead
+    would pin the rate at 100% and pass the gate vacuously over precisely the
+    partial-join case it exists to catch.
+
+    ``available`` says the join was computed at all; it is false when the
+    buildstats tree was absent, empty, or its source raised. Those are distinct
+    from a computed-but-failing rate, which is ``available=True,
+    gate_passed=False``.
+    """
+
+    available: bool = False
+    gate_passed: bool = False
+    executed: int = 0
+    joined: int = 0
+    cpu_seconds: float | None = None
+    unjoined_sample: list[str] = field(default_factory=list)
+    note: str = "buildstats join unavailable: no buildstats source supplied"
+
+    @property
+    def rate(self) -> float:
+        """Joined share of executed tasks, 0.0 when nothing executed.
+
+        Zero executed tasks is a refusal, not a pass: a rate defined as 1.0 over
+        an empty denominator would clear the gate on a run that measured nothing.
+        """
+        return (self.joined / self.executed) if self.executed else 0.0
+
+    def report_lines(self) -> list[str]:
+        """Render this section as plain text lines.
+
+        Nothing here formats a duration, and that is the invariant under test:
+        when the gate refuses there is no "would have been" figure, no debug
+        field and no parenthetical carrying seconds. A refused floor that still
+        shows its number is the failure this whole section exists to prevent -
+        a reader takes the number and discards the caveat.
+        """
+        lines = [f"  {self.note}"]
+        lines.extend(f"  unjoined: {name}" for name in self.unjoined_sample)
+        return lines
+
+
+@dataclass(frozen=True)
 class TimingReport:
     """The timing report: top-N slowest tasks plus the critical-path section."""
 
     top_slowest: list[TaskDuration] = field(default_factory=list)
     critical_path: CriticalPath = field(default_factory=CriticalPath)
     regime: Regime = field(default_factory=Regime)
+    buildstats_join: BuildstatsJoin = field(default_factory=BuildstatsJoin)
 
 
 def _duration_totals(durations: list[TaskDuration]) -> dict[str, float]:
@@ -241,12 +313,105 @@ def _compute_critical_path(
     return CriticalPath(available=True, chain=chain, total_seconds=total, note="critical-path computed")
 
 
+def _join_key(recipe: str, task: str) -> tuple[str, str]:
+    """Key both sides of the join on ``(PN, task)``.
+
+    The event log records a versioned PF (``busybox-1.36.1-r0``) and so does the
+    buildstats recipe directory, but they are not guaranteed to agree on the
+    revision suffix - a task restored from sstate and one rebuilt after a bump
+    can disagree by ``-r0`` alone. Stripping the version the way
+    :func:`bakar.task_timings.strip_recipe_version` already does for baseline
+    keys puts both sides in one namespace, so a shortfall in the rate means a
+    genuinely missing record rather than a spelling difference.
+    """
+    return (task_timings.strip_recipe_version(recipe), task)
+
+
+def _compute_join(
+    buildstats_source: Callable[[], BuildstatsRun],
+    durations: list[TaskDuration],
+) -> BuildstatsJoin:
+    """Join executed tasks against buildstats records and gate on the rate.
+
+    Follows :func:`_compute_critical_path`'s precedent exactly: any failure -
+    the callable raises, the tree is absent, the tree is empty - returns an
+    explicit unavailable result with a note and never raises back to
+    :func:`timing_report`.
+
+    ``absent`` and ``empty`` keep separate notes. They are the two outcomes
+    :mod:`bakar.buildstats` went out of its way to distinguish, and collapsing
+    them here would put the distinction back in the bin it was lifted out of:
+    a tree that was never found is a path problem, a tree that recorded nothing
+    is a measurement.
+    """
+    try:
+        run = buildstats_source()
+    except Exception as exc:  # noqa: BLE001 - any buildstats-source failure degrades gracefully
+        return BuildstatsJoin(note=f"buildstats join unavailable: source failed ({exc})")
+
+    if run.outcome == "absent":
+        return BuildstatsJoin(note=f"buildstats join unavailable: tree absent ({run.note})")
+    if run.outcome != "parsed":
+        return BuildstatsJoin(
+            note=f"buildstats join unavailable: tree present but recorded nothing ({run.note})",
+        )
+
+    records: dict[tuple[str, str], float] = {}
+    for stat in run.tasks:
+        key = _join_key(stat.recipe, stat.task)
+        records[key] = records.get(key, 0.0) + stat.cpu_seconds
+
+    matched: set[tuple[str, str]] = set()
+    unjoined: list[str] = []
+    joined = 0
+    for d in durations:
+        key = _join_key(d.recipe, d.task)
+        if key in records:
+            joined += 1
+            matched.add(key)
+        else:
+            unjoined.append(f"{key[0]}:{key[1]}")
+
+    executed = len(durations)
+    if not executed:
+        return BuildstatsJoin(available=True, note="buildstats join refused: no executed tasks to join against")
+
+    rate_pct = 100.0 * joined / executed
+    gate_pct = 100.0 * JOIN_RATE_THRESHOLD
+    if joined < JOIN_RATE_THRESHOLD * executed:
+        return BuildstatsJoin(
+            available=True,
+            executed=executed,
+            joined=joined,
+            unjoined_sample=unjoined[:UNJOINED_SAMPLE],
+            note=(
+                f"buildstats join refused: {rate_pct:.1f}% of executed tasks joined, below the "
+                f"{gate_pct:.1f}% gate ({executed - joined} of {executed} executed tasks have no "
+                f"buildstats record) - no CPU-derived figure is reported for this run"
+            ),
+        )
+
+    # Only records an executed task actually matched contribute. A buildstats
+    # tree can carry rows this run never executed (a stale capture, or a task
+    # from a sibling machine's directory), and summing the tree wholesale would
+    # credit them to this build.
+    return BuildstatsJoin(
+        available=True,
+        gate_passed=True,
+        executed=executed,
+        joined=joined,
+        cpu_seconds=sum(records[k] for k in matched),
+        note=(f"buildstats join {rate_pct:.1f}% ({joined} of {executed} executed tasks matched a buildstats record)"),
+    )
+
+
 def timing_report(
     artifact: dict | list,
     top_n: int = DEFAULT_TOP_N,
     *,
     baselines_path: Path | None = None,
     dependency_source: Callable[[], tuple[str, str]] | None = None,
+    buildstats_source: Callable[[], BuildstatsRun] | None = None,
 ) -> TimingReport:
     """Return the per-task timing report for one run.
 
@@ -269,6 +434,13 @@ def timing_report(
     inside the callable or the resulting graph degrades to an explicit
     "unavailable" result rather than raising or dropping the duration/top-N
     sections computed above.
+
+    ``buildstats_source``, when supplied, is called with no arguments and must
+    return a :class:`bakar.buildstats.BuildstatsRun`. It feeds the join gate
+    (see :class:`BuildstatsJoin`): the share of executed tasks carrying a
+    buildstats record, and the refusal that keeps every CPU-derived figure out
+    of the report when that share falls below :data:`JOIN_RATE_THRESHOLD`. It
+    degrades the same way ``dependency_source`` does.
     """
     baselines = task_timings.load_baselines(baselines_path)
 
@@ -316,8 +488,13 @@ def timing_report(
     if dependency_source is not None:
         critical_path = _compute_critical_path(dependency_source, _duration_totals(durations))
 
+    buildstats_join = BuildstatsJoin()
+    if buildstats_source is not None:
+        buildstats_join = _compute_join(buildstats_source, durations)
+
     return TimingReport(
         top_slowest=top_slowest,
         critical_path=critical_path,
         regime=_regime_from(artifact, len(durations)),
+        buildstats_join=buildstats_join,
     )
