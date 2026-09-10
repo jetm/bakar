@@ -29,6 +29,7 @@ depend on this section's success.
 from __future__ import annotations
 
 import functools
+import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -588,6 +589,39 @@ def _join_key(recipe: str, task: str) -> tuple[str, str]:
 
 _RecordKey = tuple[str, str]
 
+#: One executed task's ``(recipe, task)`` identity, read from an artifact row
+#: WITHOUT consulting its timestamps. This is the join's denominator, and it is
+#: deliberately a different set from ``durations``: a row whose ``started`` or
+#: ``completed`` is missing, unparseable or non-finite still records a task that
+#: ran, and it must lower the join rate rather than vanish from both sides of it.
+#:
+#: What counts as executed is read from the row's ``outcome``, never from its
+#: timestamps. A ``failed_silent`` row is the one exclusion: that outcome is a
+#: setscene MISS, and :mod:`bakar.eventlog` records it from a ``TaskFailedSilent``
+#: event that arrives with no preceding ``TaskStarted`` - the task never began,
+#: so bitbake wrote no buildstats file for it and never will. Counting those
+#: would put the gate below its threshold on any sstate-seeded build, which is
+#: bakar's default regime, and a gate that always refuses reports nothing.
+#: Every other outcome - including ``None``, a task that started and never
+#: finished - counts: it ran, so a buildstats record is owed for it, and its
+#: absence is real missing coverage rather than a taxonomy artifact.
+#:
+#: Two further degradations are chosen here rather than inherited:
+#:
+#: - A row carrying no ``task`` string yields no identity at all and is counted
+#:   on NEITHER side. A row that cannot say what it is cannot say that it ran,
+#:   so counting it would be inventing a denominator entry; when every row is
+#:   like that the denominator is empty, which :func:`_compute_join` already
+#:   refuses rather than treats as a pass.
+#: - A row with a task but no usable ``recipe`` keeps identity ``("", task)``.
+#:   That matches no buildstats record, so it counts in the denominator and not
+#:   the numerator - the honest signal, since the tree may well hold the record
+#:   and nothing here can say which recipe owns it.
+_ExecutedTask = tuple[str, str]
+
+#: The one ``outcome`` that means the task never began - see :data:`_ExecutedTask`.
+_NOT_EXECUTED_OUTCOME = "failed_silent"
+
 
 def _index_records(
     tasks: list[TaskStats],
@@ -645,9 +679,15 @@ def _capture_phrase(run: BuildstatsRun) -> str:
 
 def _compute_join(
     buildstats_source: Callable[[], BuildstatsRun],
-    durations: list[TaskDuration],
+    executed: list[_ExecutedTask],
 ) -> BuildstatsJoin:
     """Join executed tasks against buildstats records and gate on the rate.
+
+    ``executed`` is the identity set read from the artifact's task rows, NOT the
+    duration list - see :data:`_ExecutedTask`. Taking the duration list instead
+    made the denominator "tasks with a usable timestamp", so a task with a
+    missing one left the numerator and the denominator together and the rate
+    stayed at 100% over a build the records covered a fraction of.
 
     Follows :func:`_compute_critical_path`'s precedent exactly: any failure -
     the callable raises, the tree is absent, the tree is empty, no capture
@@ -680,30 +720,30 @@ def _compute_join(
     matched: set[tuple[str, str]] = set()
     unjoined: list[str] = []
     joined = 0
-    for d in durations:
-        key = _match_record(exact, stripped, d.recipe, d.task)
+    for recipe, task in executed:
+        key = _match_record(exact, stripped, recipe, task)
         if key is None:
-            unjoined.append(f"{d.recipe}:{d.task}")
+            unjoined.append(f"{recipe}:{task}")
         else:
             joined += 1
             matched.add(key)
 
-    executed = len(durations)
-    if not executed:
+    executed_count = len(executed)
+    if not executed_count:
         return BuildstatsJoin(available=True, note="buildstats join refused: no executed tasks to join against")
 
-    rate_pct = 100.0 * joined / executed
+    rate_pct = 100.0 * joined / executed_count
     gate_pct = 100.0 * JOIN_RATE_THRESHOLD
-    if joined < JOIN_RATE_THRESHOLD * executed:
+    if joined < JOIN_RATE_THRESHOLD * executed_count:
         return BuildstatsJoin(
             available=True,
-            executed=executed,
+            executed=executed_count,
             joined=joined,
             unjoined_sample=unjoined[:UNJOINED_SAMPLE],
             note=(
                 f"buildstats join refused: {rate_pct:.1f}% of executed tasks joined, below the "
-                f"{gate_pct:.1f}% gate ({executed - joined} of {executed} executed tasks have no "
-                f"buildstats record) - no CPU-derived figure is reported for this run. "
+                f"{gate_pct:.1f}% gate ({executed_count - joined} of {executed_count} executed tasks "
+                f"have no buildstats record) - no CPU-derived figure is reported for this run. "
                 f"{_capture_phrase(run)}"
             ),
         )
@@ -717,11 +757,11 @@ def _compute_join(
     return BuildstatsJoin(
         available=True,
         gate_passed=True,
-        executed=executed,
+        executed=executed_count,
         joined=joined,
         cpu_seconds=sum(stat.cpu_seconds for k in matched for stat in exact[k]),
         note=(
-            f"buildstats join {rate_pct:.1f}% ({joined} of {executed} executed tasks matched a "
+            f"buildstats join {rate_pct:.1f}% ({joined} of {executed_count} executed tasks matched a "
             f"buildstats record). {_capture_phrase(run)}"
         ),
     )
@@ -795,8 +835,15 @@ def _compute_cpu_floor(join: BuildstatsJoin, artifact: dict | list) -> CpuFloor:
 def build_window(artifact: dict | list) -> tuple[float, float] | None:
     """Return the run's ``(started, completed)`` epoch pair from its build block.
 
-    ``None`` when there is no block to read, when either endpoint is missing or
-    unparseable, or when the span is not positive.
+    ``None`` when there is no block to read, when either endpoint is missing,
+    unparseable or non-finite, or when the span is not positive.
+
+    The finiteness check is not redundant beside ``completed > started``.
+    ``json.loads`` accepts bare ``NaN`` and ``Infinity`` tokens, and ``inf >
+    0.0`` is true - so an infinite endpoint passes the ordering test and yields
+    an unbounded window, which makes :func:`bakar.buildstats.select_capture`
+    accept an arbitrarily late capture and makes headroom render as ``nan``
+    rather than as the refusal design D2 asks for.
 
     Public because the buildstats capture is selected by correlating with this
     window (see :func:`bakar.buildstats.select_capture`), and the caller that
@@ -811,6 +858,8 @@ def build_window(artifact: dict | list) -> tuple[float, float] | None:
         started = float(block["started"])
         completed = float(block["completed"])
     except KeyError, TypeError, ValueError:
+        return None
+    if not (math.isfinite(started) and math.isfinite(completed)):
         return None
     return (started, completed) if completed > started else None
 
@@ -852,6 +901,12 @@ def _window_from_tasks(artifact: dict) -> tuple[float, float] | None:
     both ends, which is the safe direction for a correlation window - it can
     reject a capture that genuinely belongs, and cannot accept one that does
     not.
+
+    A non-finite timestamp is skipped rather than collected. ``min``/``max``
+    propagate ``nan`` by IEEE-754 semantics, so one garbled row would make the
+    whole span ``nan``, fail ``completed > started``, and silently discard the
+    correlation window for the entire build - one bad row disabling every
+    buildstats-derived section, with the note blaming the tree.
     """
     rows = artifact.get("tasks")
     if not isinstance(rows, list):
@@ -863,9 +918,11 @@ def _window_from_tasks(artifact: dict) -> tuple[float, float] | None:
             continue
         for key, sink in (("started", starts), ("completed", ends)):
             try:
-                sink.append(float(row[key]))
+                value = float(row[key])
             except KeyError, TypeError, ValueError:
                 continue
+            if math.isfinite(value):
+                sink.append(value)
     if not starts or not ends:
         return None
     started, completed = min(starts), max(ends)
@@ -915,6 +972,27 @@ def _compute_concurrency_floor(
 
     cpu_seconds = cpu_floor.seconds
     path_seconds = critical_path.total_seconds
+    if not (math.isfinite(cpu_seconds) and math.isfinite(path_seconds)):
+        # Last line of defence rather than the first. Both inputs are guarded at
+        # their sources, but ``nan`` compares false against everything, so a
+        # non-finite reaching here would pick a binding bound by accident and
+        # render every figure below as ``nan`` - a number-shaped output that D2
+        # requires to be a stated refusal instead.
+        # Which bound is at fault is named; neither VALUE is printed. The class
+        # docstring's rule is that an unavailable floor renders no bound value,
+        # and a non-finite one is the last value that should be made to look
+        # like a figure a reader could act on.
+        culprits = " and ".join(
+            label
+            for label, value in (("the CPU floor", cpu_seconds), ("the critical path", path_seconds))
+            if not math.isfinite(value)
+        )
+        return ConcurrencyFloor(
+            note=(
+                f"concurrency floor unavailable: {culprits} is not a finite duration, so max() would "
+                "name a binding bound by accident and every figure below it would render as nan"
+            ),
+        )
     binding = "path" if path_seconds >= cpu_seconds else "cpu"
     seconds = max(path_seconds, cpu_seconds)
 
@@ -961,9 +1039,14 @@ def _compute_concurrency_floor(
 
 def _compute_churn(
     buildstats_source: Callable[[], BuildstatsRun],
-    durations: list[TaskDuration],
+    executed: list[_ExecutedTask],
 ) -> TaskChurn:
     """Aggregate churn counters per task type over the executed task set.
+
+    ``executed`` is the timestamp-independent identity set (:data:`_ExecutedTask`),
+    the same one the join gate counts. The coverage stated in the note is only
+    honest against that denominator: counting against the tasks that happened to
+    carry a usable timestamp would report full coverage of a subset.
 
     Degrades with a note rather than raising, following
     :func:`_compute_critical_path`'s precedent, and keeps ``absent``, ``empty``
@@ -997,8 +1080,8 @@ def _compute_churn(
     # rows can resolve to one record key, so a record count would let ``covered``
     # exceed ``executed`` and turn the coverage note into a claim nobody can read.
     matched: set[tuple[str, str]] = set()
-    for d in durations:
-        key = _match_record(exact, stripped, d.recipe, d.task)
+    for recipe, task in executed:
+        key = _match_record(exact, stripped, recipe, task)
         if key is not None:
             matched.add(key)
 
@@ -1031,9 +1114,9 @@ def _compute_churn(
         available=True,
         rows=rows,
         covered=len(matched),
-        executed=len(durations),
+        executed=len(executed),
         note=(
-            f"task churn over {len(matched)} of {len(durations)} executed tasks, aggregated into "
+            f"task churn over {len(matched)} of {len(executed)} executed tasks, aggregated into "
             f"{len(rows)} task types, {_capture_phrase(run)}"
         ),
         basis_note=CHURN_BASIS_NOTE,
@@ -1053,9 +1136,16 @@ def timing_report(
     ``artifact`` is either a normalized ``bitbake-events.json`` dict or its
     already-parsed ``tasks`` list (per :func:`bakar.task_rollup._tasks_from`).
     A row missing ``completed`` (started-but-not-finished) or whose duration
-    is negative is skipped without raising. The returned ``top_slowest`` list
-    holds exactly ``top_n`` entries when at least that many valid-duration
-    tasks exist, or every valid-duration task (unpadded) otherwise.
+    is negative or non-finite is skipped without raising. The returned
+    ``top_slowest`` list holds exactly ``top_n`` entries when at least that many
+    valid-duration tasks exist, or every valid-duration task (unpadded)
+    otherwise.
+
+    Such a row is skipped from the DURATIONS only. Its ``(recipe, task)``
+    identity still joins the executed set (:data:`_ExecutedTask`) that feeds the
+    join gate and the churn coverage, because it names a task that ran and the
+    gate's denominator is "tasks that ran", not "tasks bitbake timestamped
+    usably".
 
     Baseline context comes from :func:`bakar.task_timings.load_baselines`
     (``baselines_path`` threads through to it for tests; ``None`` uses the
@@ -1101,6 +1191,7 @@ def timing_report(
     tasks_source = artifact.get("tasks", []) if isinstance(artifact, dict) else artifact
 
     durations: list[TaskDuration] = []
+    executed: list[_ExecutedTask] = []
     for row in _tasks_from(tasks_source):
         if not isinstance(row, dict):
             continue
@@ -1108,16 +1199,30 @@ def timing_report(
         recipe = row.get("recipe")
         started = row.get("started")
         completed = row.get("completed")
-        if not isinstance(task, str) or started is None or completed is None:
+        if not isinstance(task, str):
+            continue
+        recipe_name = recipe if isinstance(recipe, str) else ""
+
+        # Identity first, and deliberately BEFORE every timestamp guard below.
+        # ``executed`` is the join's denominator and ``durations`` is the input
+        # to the wall-clock and critical-path work, and those are different
+        # questions: a task with no usable timestamp still ran, and dropping it
+        # from both the numerator and the denominator pinned the rate at 100%
+        # and passed the gate vacuously over exactly the partial-coverage case
+        # the gate exists to catch. Membership is decided by ``outcome`` alone
+        # (see :data:`_ExecutedTask`).
+        if row.get("outcome") != _NOT_EXECUTED_OUTCOME:
+            executed.append((recipe_name, task))
+
+        if started is None or completed is None:
             continue
         try:
             duration = float(completed) - float(started)
         except TypeError, ValueError:
             continue
-        if duration < 0:
+        if not math.isfinite(duration) or duration < 0:
             continue
 
-        recipe_name = recipe if isinstance(recipe, str) else ""
         baseline = baselines.get(task_timings.baseline_key(recipe_name, task))
         mean, stddev = baseline if baseline is not None else (None, None)
 
@@ -1147,9 +1252,9 @@ def timing_report(
         # the other exists; a raising source is not cached, so both still see
         # the failure and both still degrade on it.
         cached_source = functools.cache(buildstats_source)
-        buildstats_join = _compute_join(cached_source, durations)
+        buildstats_join = _compute_join(cached_source, executed)
         cpu_floor = _compute_cpu_floor(buildstats_join, artifact)
-        task_churn = _compute_churn(cached_source, durations)
+        task_churn = _compute_churn(cached_source, executed)
 
     return TimingReport(
         top_slowest=top_slowest,

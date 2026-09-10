@@ -284,6 +284,67 @@ def test_a_record_truncated_before_the_child_rusage_block_is_incomplete(tmp_path
     assert read_run(tmp_path).outcome == "empty"
 
 
+def test_an_all_zero_cpu_record_is_not_a_finished_task(tmp_path: Path) -> None:
+    """The presence check alone left half of its own invariant unenforced.
+
+    A file caught mid-write can carry ``Elapsed time`` and four ``0.0`` rusage
+    lines - every required key present, and nothing measured. Such a record
+    joined, contributed nothing to the CPU floor, and raised the very rate that
+    gates it, which is the documented "a task that consumed no CPU does not
+    exist" invariant failing in the direction that publishes a number.
+    """
+    cap = _capture(tmp_path)
+    _task(cap, "good-1.0-r0", "do_compile")
+    _task(
+        cap,
+        "all-zero-1.0-r0",
+        "do_compile",
+        body=(
+            "Elapsed time: 12.00 seconds\n"
+            "rusage ru_utime: 0.0\n"
+            "rusage ru_stime: 0.0\n"
+            "Child rusage ru_utime: 0.0\n"
+            "Child rusage ru_stime: 0.0\n"
+            "rusage ru_minflt: 4242\n"
+        ),
+    )
+
+    run = read_run(tmp_path)
+
+    assert [t.recipe for t in run.tasks] == ["good-1.0-r0"]
+    assert "1 incomplete or invalid records skipped" in run.note
+
+
+def test_a_zero_churn_counter_is_still_a_valid_record(tmp_path: Path) -> None:
+    """Zero CHURN is a real measurement, unlike zero CPU.
+
+    Plenty of tasks genuinely record no major faults, so the all-zero rejection
+    above must key on the CPU fields alone - widening it to every counter would
+    drop real records and depress the join rate over columns that only describe.
+    """
+    cap = _capture(tmp_path)
+    _task(
+        cap,
+        "acl-2.3.2-r0",
+        "do_compile",
+        body=(
+            "Elapsed time: 1.48 seconds\n"
+            "rusage ru_utime: 1.0\n"
+            "rusage ru_stime: 0.0\n"
+            "Child rusage ru_utime: 0.0\n"
+            "Child rusage ru_stime: 0.0\n"
+            "rusage ru_minflt: 0\n"
+            "rusage ru_majflt: 0\n"
+            "IO write_bytes: 0\n"
+        ),
+    )
+
+    t = read_run(tmp_path).tasks[0]
+
+    assert t.cpu_seconds == 1.0
+    assert (t.minflt, t.majflt, t.write_bytes) == (0, 0, 0)
+
+
 def test_a_negative_cpu_component_never_reaches_a_record(tmp_path: Path) -> None:
     """A negative CPU component yields a negative CPU floor - enormous headroom."""
     cap = _capture(tmp_path)

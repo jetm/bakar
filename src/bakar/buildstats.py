@@ -161,11 +161,15 @@ def _to_task_stats(recipe: str, task: str, d: dict[str, float]) -> TaskStats | N
     - **No ``elapsed``.** A task with no duration is a record bitbake had not
       finished writing, and defaulting it to zero would quietly pull the mean
       down rather than omit the row.
-    - **Any missing CPU field.** Absence and a legitimate zero are
-      indistinguishable once defaulted, and here they are not the same thing: a
-      task that consumed no CPU does not exist, so a zero in this position is
-      always a record that was not finished. Such a record must not reach the
-      join numerator, because joining it certifies CPU seconds nobody measured.
+    - **Any missing CPU field, or every CPU field exactly zero.** Absence and a
+      legitimate zero are indistinguishable once defaulted, and here they are
+      not the same thing: a task that consumed no CPU does not exist, so a zero
+      in this position is always a record that was not finished. Requiring
+      presence alone left the other half of that invariant unenforced - a file
+      caught mid-write with ``Elapsed time`` and four ``0.0`` rusage lines
+      carries every required key and still measured nothing. Such a record must
+      not reach the join numerator, because joining it certifies CPU seconds
+      nobody measured while raising the rate that gates them.
     - **Any negative value.** Every field here counts time, faults, syscalls or
       bytes, none of which can run backwards. A negative CPU component yields a
       negative CPU floor, which reads as enormous headroom.
@@ -181,6 +185,8 @@ def _to_task_stats(recipe: str, task: str, d: dict[str, float]) -> TaskStats | N
     if "elapsed" not in d:
         return None
     if any(key not in d for key in _REQUIRED_CPU):
+        return None
+    if all(d[key] == 0.0 for key in _REQUIRED_CPU):
         return None
     if any(value < 0 for value in d.values()):
         return None

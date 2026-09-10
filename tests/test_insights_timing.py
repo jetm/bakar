@@ -20,7 +20,15 @@ import pytest
 
 from bakar import eventlog
 from bakar.buildstats import BuildstatsRun, TaskStats
-from bakar.insights_timing import TimingReport, timing_report
+from bakar.insights_timing import (
+    CpuFloor,
+    CriticalPath,
+    TimingReport,
+    _compute_concurrency_floor,
+    build_window,
+    correlation_window,
+    timing_report,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -1512,3 +1520,170 @@ def test_a5_sections_survive_a_buildstats_tree_that_refuses_the_join(tmp_path: P
     assert report.buildstats_join.gate_passed is False
     assert report.concurrency_floor.available is False
     _assert_a5_sections_unchanged(report, path_available=True)
+
+
+# --------------------------------------------------------------------------
+# Non-finite and timestamp-independent inputs (ds-verify Stage 1.8 findings)
+# --------------------------------------------------------------------------
+
+
+def test_a_task_with_no_usable_timestamp_still_counts_in_the_join_denominator(
+    tmp_path: Path,
+) -> None:
+    """Five tasks ran, two carry a record: the rate is 40%, not 100%.
+
+    The denominator used to be the DURATION list, which is built by skipping any
+    row whose ``started``/``completed`` is missing or unparseable. An executed
+    task with a garbled timestamp therefore left the numerator and the
+    denominator together, the rate stayed pinned at 100%, and the gate passed
+    vacuously over exactly the partial-coverage case it exists to catch - the
+    failure task 1.3's own falsifier names.
+    """
+    artifact = {
+        "tasks": [
+            _row("busybox", "do_compile", 0.0, 5.0),
+            _row("busybox", "do_install", 0.0, 5.0),
+            _row("zlib", "do_compile", 0.0, None),
+            {"task": "do_install", "recipe": "zlib", "started": 0.0, "completed": "not-a-number"},
+            {"task": "do_configure", "recipe": "acl", "started": 0.0, "completed": math.nan},
+        ]
+    }
+    run = _parsed(_stat("busybox", "do_compile", 10.0), _stat("busybox", "do_install", 10.0))
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+
+    join = report.buildstats_join
+    assert join.executed == 5
+    assert join.joined == 2
+    assert join.rate == pytest.approx(0.4)
+    assert join.gate_passed is False
+    assert join.cpu_seconds is None
+    assert report.cpu_floor.available is False
+    rendered = "\n".join(join.report_lines())
+    assert DURATION_TOKEN.findall(rendered) == []
+
+
+def test_churn_coverage_is_stated_against_every_task_that_ran(tmp_path: Path) -> None:
+    """Churn survives a partial join, so its coverage note carries the shortfall.
+
+    Counting coverage against the tasks that happened to carry a usable
+    timestamp reports full coverage of a subset - the same denominator defect
+    one section over, where it is a wrong claim rather than a passed gate.
+    """
+    artifact = {
+        "tasks": [
+            _row("busybox", "do_compile", 0.0, 5.0),
+            _row("zlib", "do_compile", 0.0, None),
+        ]
+    }
+    run = _parsed(_stat("busybox", "do_compile", 10.0))
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+
+    assert report.task_churn.available is True
+    assert (report.task_churn.covered, report.task_churn.executed) == (1, 2)
+    assert "1 of 2 executed tasks" in report.task_churn.note
+
+
+def test_a_setscene_miss_is_not_counted_as_a_task_that_ran(tmp_path: Path) -> None:
+    """``failed_silent`` is an sstate MISS: no ``TaskStarted``, so no buildstats file.
+
+    Counting it would sink the gate below its threshold on every sstate-seeded
+    build - bakar's default regime after ``sstate-seed`` - and a gate that always
+    refuses reports nothing. The discriminator is the outcome, never the missing
+    timestamp: the row above it in this fixture also lacks a ``started`` and does
+    count.
+    """
+    artifact = {
+        "tasks": [
+            _row("busybox", "do_compile", 0.0, 5.0),
+            {
+                "task": "do_fetch_setscene",
+                "recipe": "zlib",
+                "outcome": "failed_silent",
+                "started": None,
+                "completed": 999.2,
+            },
+        ]
+    }
+    run = _parsed(_stat("busybox", "do_compile", 10.0))
+
+    join = timing_report(
+        artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run
+    ).buildstats_join
+
+    assert (join.executed, join.joined) == (1, 1)
+    assert join.gate_passed is True
+
+
+def test_a_non_finite_duration_never_reaches_the_ranked_tasks(tmp_path: Path) -> None:
+    """``nan < 0`` is False, so the negative-duration guard retained ``nan``.
+
+    ``json.loads`` accepts a bare ``NaN`` token, so this arrives from a real
+    artifact. A ``nan`` duration sorts unpredictably into ``top_slowest``,
+    contaminates the per-recipe totals the critical path is weighted by, and
+    renders as ``nan`` instead of degrading.
+    """
+    artifact = {
+        "tasks": [
+            _row("busybox", "do_compile", 0.0, 5.0),
+            {"task": "do_compile", "recipe": "zlib", "started": 0.0, "completed": math.nan},
+            {"task": "do_compile", "recipe": "acl", "started": 0.0, "completed": math.inf},
+        ]
+    }
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json")
+
+    assert [(d.recipe, d.duration) for d in report.top_slowest] == [("busybox", 5.0)]
+
+
+@pytest.mark.parametrize("completed", [math.inf, math.nan])
+def test_build_window_rejects_a_non_finite_endpoint(completed: float) -> None:
+    """``inf > 0.0`` is True, so the ordering check alone passed an endless build.
+
+    An infinite window makes ``select_capture`` treat an arbitrarily late
+    capture as in-window, and makes the headroom percentage ``inf/inf`` - a
+    ``nan`` printed where design D2 requires a stated refusal.
+    """
+    assert build_window({"build": {"started": 0.0, "completed": completed}}) is None
+
+
+def test_one_garbled_task_timestamp_does_not_discard_the_whole_window() -> None:
+    """``min``/``max`` propagate ``nan``, so one bad row disabled every section.
+
+    A ``nan`` in ``starts`` makes ``min(starts)`` ``nan``, which then fails
+    ``completed > started`` and silently drops the correlation window for the
+    entire build - the buildstats sections then refuse with a note blaming the
+    tree rather than the row.
+    """
+    artifact = {
+        "tasks": [
+            {"task": "do_compile", "recipe": "busybox", "started": 100.0, "completed": 140.0},
+            {"task": "do_compile", "recipe": "zlib", "started": math.nan, "completed": math.inf},
+        ]
+    }
+
+    assert correlation_window(artifact) == (100.0, 140.0)
+
+
+def test_concurrency_floor_degrades_rather_than_naming_a_bound_by_accident() -> None:
+    """Last line of defence: ``nan`` compares false against everything.
+
+    Reaching ``max()`` with one, the binding bound is picked by accident and
+    every figure below renders as ``nan`` - a number-shaped output where D2 asks
+    for a stated refusal.
+    """
+    floor = _compute_concurrency_floor(
+        CpuFloor(available=True, seconds=math.nan, divisor=8, note="fixture"),
+        CriticalPath(available=True, chain=["busybox"], total_seconds=10.0, note="fixture"),
+        {"build": {"started": 0.0, "completed": 100.0}},
+    )
+
+    assert floor.available is False
+    assert floor.binding is None
+    assert floor.headroom_pct is None
+    assert "the CPU floor is not a finite duration" in floor.note
+    # The class contract is that an unavailable floor renders no bound value,
+    # and a non-finite one least of all - it must not read as a figure.
+    assert "nan" not in floor.note.replace("as nan", "")
+    assert DURATION_TOKEN.findall("\n".join(floor.report_lines())) == []
