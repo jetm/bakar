@@ -12,6 +12,7 @@ suite stays hermetic.
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import TYPE_CHECKING
 
@@ -1092,6 +1093,112 @@ def test_churn_coverage_counts_distinct_tasks_not_records(tmp_path: Path) -> Non
     assert churn.executed == 1
     (row,) = churn.rows
     assert row.tasks == 2
+
+
+# --- 3.2: the columns rank task types across a wide dynamic range ------------
+#
+# The numbers below are MEASURED. They were read off a real capture - imx93-frdm
+# run 20260909142035, 5808 per-task buildstats files - by summing each task
+# type's self and child rusage counters, and they exist independently of this
+# module. A fixture invented to satisfy the assertion would agree with whatever
+# the aggregation happens to do and prove only that division works; these agree
+# with a build that actually ran.
+#
+# The criterion is the RANKING property, not a named pair. An earlier form of
+# this task asserted that ``do_configure`` and ``do_unpack`` differ by two
+# orders of magnitude of minflt/majflt. Measurement falsified it on every
+# capture available: the best separation was 0.99 orders, the sign inverted on
+# two of three captures, and the spread moved from -0.99 to +0.74 orders across
+# them. Any named pair is a property of the recipe mix, so it rots. What held
+# on every capture is that the columns spread the task types WIDELY - 3.68
+# orders across the 21 types on the richest one.
+
+#: ``(task type, minflt, majflt)`` per task type, self+child summed, as the
+#: capture recorded them. Ordered by minflt/majflt descending, which is the
+#: ranking the test asserts the aggregation reproduces.
+_MEASURED_CHURN = (
+    ("do_deploy_source_date_epoch", 5_642_875, 12),
+    ("do_recipe_qa", 3_346_334, 15),
+    ("do_create_recipe_spdx", 4_550_252, 36),
+    ("do_unpack", 10_359_932, 509),
+    ("do_configure", 221_267_036, 106_004),
+    ("do_compile", 667_163_720, 1_717_566),
+    ("do_install", 77_726_837, 311_751),
+    ("do_create_spdx", 5_638_072, 48_407),
+    ("do_configure_ptest_base", 665_308, 6_764),
+)
+
+#: The spread the capture exhibits, in orders of magnitude of minflt/majflt.
+_MEASURED_SPREAD_ORDERS = 3.68
+
+
+def _split_self_child(total: int) -> tuple[int, int]:
+    """Split a measured total across the self and child rusage lines.
+
+    A real task file carries the bulk of its churn on the child lines - the work
+    happens in spawned processes - so the fixture has to as well, or it would
+    exercise a summation the capture never had. The split preserves the total
+    exactly, which is the part the assertions depend on.
+    """
+    own = total // 32
+    return own, total - own
+
+
+def _measured_capture_report(tmp_path: Path) -> TimingReport:
+    """Write the measured per-type totals out as a real buildstats tree."""
+    records, rows = [], []
+    for task, minflt, majflt in _MEASURED_CHURN:
+        recipe = f"agg-{task}"
+        own_min, child_min = _split_self_child(minflt)
+        own_maj, child_maj = _split_self_child(majflt)
+        records.append(
+            _churn_record(
+                recipe,
+                task,
+                minflt=own_min,
+                cminflt=child_min,
+                majflt=own_maj,
+                cmajflt=child_maj,
+            )
+        )
+        rows.append(_row(recipe, task, 0.0, 12.0))
+    return _churn_report(tmp_path, records, rows)
+
+
+def _measured_ratios(report: TimingReport) -> dict[str, float]:
+    return {row.task: row.minflt / row.majflt for row in report.task_churn.rows}
+
+
+def test_churn_columns_spread_task_types_over_orders_of_magnitude(tmp_path: Path) -> None:
+    """The amended criterion: the columns discriminate, they do not bunch.
+
+    Two orders is the bar. A capability whose every task type lands within one
+    order cannot tell a process-churn profile from an I/O one, which is the only
+    thing these columns are for.
+    """
+    report = _measured_capture_report(tmp_path)
+
+    ratios = _measured_ratios(report)
+    assert len(ratios) == len(_MEASURED_CHURN)
+
+    spread = math.log10(max(ratios.values()) / min(ratios.values()))
+    assert spread >= 2.0
+    assert spread == pytest.approx(_MEASURED_SPREAD_ORDERS, abs=0.01)
+
+
+def test_churn_columns_rank_task_types_in_the_measured_order(tmp_path: Path) -> None:
+    """The aggregation reproduces the ranking the capture exhibits.
+
+    The spread assertion alone would pass on a table whose values landed under
+    the wrong task types, so the order is asserted separately against the
+    measured one.
+    """
+    report = _measured_capture_report(tmp_path)
+
+    ratios = _measured_ratios(report)
+    ranked = sorted(ratios, key=lambda task: ratios[task], reverse=True)
+
+    assert ranked == [task for task, _, _ in _MEASURED_CHURN]
 
 
 # --- A5: the pre-existing sections are unperturbed by the buildstats source ---
