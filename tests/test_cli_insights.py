@@ -199,3 +199,29 @@ def test_insights_names_the_run(runner: _CliRunner, nxp_workspace: Path, insight
     result = runner.invoke(app, ["insights", "--workspace", str(nxp_workspace)])
     assert result.exit_code == 0, result.output
     assert RUN_ID in result.output
+
+
+@pytest.mark.unit
+def test_insights_renders_the_buildstats_derived_sections(
+    runner: _CliRunner, nxp_workspace: Path, insights_run_dir: Path
+) -> None:
+    """The join, CPU-floor and concurrency-floor sections reach the page.
+
+    The fixture workspace has no buildstats tree and this command supplies no
+    dependency source, so all three degrade - which is the state under test.
+    A section wired into the report but never rendered is indistinguishable
+    from one that was never wired at all, and the degraded note is the only
+    thing that tells a reader why no floor appeared.
+    """
+    result = runner.invoke(app, ["insights", "--timing", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 0, result.output
+
+    assert "buildstats join:" in result.output
+    assert "cpu floor:" in result.output
+    assert "concurrency floor:" in result.output
+
+    # Rich hard-wraps to the terminal width, so match against a whitespace-
+    # normalized copy rather than the raw output - otherwise this assertion
+    # passes or fails on the console width the suite happens to run at.
+    flat = " ".join(result.output.split())
+    assert "concurrency floor unavailable: the CPU floor is unavailable" in flat

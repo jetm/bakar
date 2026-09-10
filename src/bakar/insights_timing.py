@@ -219,6 +219,79 @@ class CpuFloor:
         return [f"  {self.note}"]
 
 
+#: How each bound is named in the output. A reader has to be able to tell a
+#: dependency-bound build from a throughput-bound one at a glance; printing the
+#: max alone leaves the two indistinguishable, which is the confusion that let a
+#: CPU-only 11.9% headroom read as actionable when the real figure was 1.1%.
+BINDING_LABELS = {"cpu": "CPU capacity", "path": "the critical path"}
+
+#: Stated beside every available concurrency floor. Design D3 keeps the path
+#: recipe-level and the CPU floor task-level, and deliberately does NOT convert
+#: one to the other - so the two bounds are measured differently and the
+#: difference between them is not a meaningful quantity. Saying so is the
+#: mitigation D3's own risk table names.
+BASIS_NOTE = (
+    "basis: the critical path is recipe-level - each node carries that recipe's summed task "
+    "seconds, including tasks not themselves on the path - while the CPU floor is task-level "
+    "(per-task CPU seconds / recorded cores). Per design D3 the two are not converted to a "
+    "common basis: the headroom below is computed here against the binding bound, and the "
+    "difference between the two bounds is not a quantity to subtract"
+)
+
+
+@dataclass(frozen=True)
+class ConcurrencyFloor:
+    """``max(CPU floor, critical path)`` with the binding bound named.
+
+    The max alone is not the deliverable. A build whose floor is set by CPU
+    capacity and one whose floor is set by its dependency chain want opposite
+    responses - more parallelism against the first, a shorter chain against the
+    second - and a bare number cannot tell them apart. So ``binding`` is a field,
+    not a rendering detail, and both input bounds stay visible beside it.
+
+    Both inputs are required. An unavailable critical path leaves this section
+    unavailable rather than degrading to the CPU floor alone: a CPU-only figure
+    printed under the concurrency-floor label is precisely the reading that
+    overstates the achievable saving on a dependency-bound build. The same holds
+    in the other direction for an unavailable CPU floor - a path-only number
+    under this label is a dependency bound wearing a concurrency bound's name.
+
+    ``headroom_seconds`` is stated against the ACTUAL build duration, and it is
+    computed here rather than left for a reader to derive from the two bounds -
+    see :data:`BASIS_NOTE`. It can legitimately be negative: the recipe-level
+    path over-weights by construction (design D3), so a path exceeding the real
+    build is evidence the path is an over-estimate, not that the build beat its
+    own floor.
+    """
+
+    available: bool = False
+    seconds: float | None = None
+    binding: str | None = None
+    cpu_seconds: float | None = None
+    path_seconds: float | None = None
+    actual_seconds: float | None = None
+    headroom_seconds: float | None = None
+    headroom_pct: float | None = None
+    note: str = "concurrency floor unavailable: no buildstats source supplied"
+    basis_note: str | None = None
+    headroom_note: str | None = None
+
+    def report_lines(self) -> list[str]:
+        """Render this section as plain text lines.
+
+        An unavailable floor renders its note and nothing else - in particular
+        no bound value and no headroom, since a headroom against a floor that
+        was refused is the same "took the number, dropped the caveat" failure
+        :meth:`BuildstatsJoin.report_lines` guards.
+        """
+        lines = [f"  {self.note}"]
+        if self.basis_note is not None:
+            lines.append(f"  {self.basis_note}")
+        if self.headroom_note is not None:
+            lines.append(f"  {self.headroom_note}")
+        return lines
+
+
 @dataclass(frozen=True)
 class TimingReport:
     """The timing report: top-N slowest tasks plus the critical-path section."""
@@ -228,6 +301,7 @@ class TimingReport:
     regime: Regime = field(default_factory=Regime)
     buildstats_join: BuildstatsJoin = field(default_factory=BuildstatsJoin)
     cpu_floor: CpuFloor = field(default_factory=CpuFloor)
+    concurrency_floor: ConcurrencyFloor = field(default_factory=ConcurrencyFloor)
 
 
 def _duration_totals(durations: list[TaskDuration]) -> dict[str, float]:
@@ -507,6 +581,103 @@ def _compute_cpu_floor(join: BuildstatsJoin, artifact: dict | list) -> CpuFloor:
     )
 
 
+def _actual_build_seconds(artifact: dict | list) -> float | None:
+    """Return the run's real wall-clock duration from the artifact's build block.
+
+    ``None`` when there is no block to read, when either endpoint is missing or
+    unparseable, or when the span is not positive. Headroom has to be stated
+    against what the build actually took; deriving a substitute from the task
+    rows (max completed minus min started) would silently answer a different
+    question - the span of task execution, which excludes parsing and teardown -
+    under the same label.
+    """
+    if not isinstance(artifact, dict):
+        return None
+    block = artifact.get("build")
+    if not isinstance(block, dict):
+        return None
+    try:
+        span = float(block["completed"]) - float(block["started"])
+    except KeyError, TypeError, ValueError:
+        return None
+    return span if span > 0 else None
+
+
+def _compute_concurrency_floor(
+    cpu_floor: CpuFloor,
+    critical_path: CriticalPath,
+    artifact: dict | list,
+) -> ConcurrencyFloor:
+    """Take ``max(CPU floor, critical path)`` and name which bound binds.
+
+    Degrades with a note rather than raising, following
+    :func:`_compute_critical_path`'s precedent. Either bound being unavailable
+    leaves the whole section unavailable - see :class:`ConcurrencyFloor` for why
+    neither one alone may be published under this label.
+    """
+    if not cpu_floor.available or cpu_floor.seconds is None:
+        return ConcurrencyFloor(
+            note=(
+                "concurrency floor unavailable: the CPU floor is unavailable, so "
+                "max(CPU floor, critical path) has only one term - reporting the critical path "
+                "alone here would present a dependency bound under a concurrency bound's name"
+            ),
+        )
+    if not critical_path.available:
+        return ConcurrencyFloor(
+            note=(
+                "concurrency floor unavailable: the critical path is unavailable, so which bound "
+                "binds cannot be determined - a CPU-only figure read as the concurrency floor "
+                "overstates the achievable saving on a dependency-bound build"
+            ),
+        )
+
+    cpu_seconds = cpu_floor.seconds
+    path_seconds = critical_path.total_seconds
+    binding = "path" if path_seconds >= cpu_seconds else "cpu"
+    seconds = max(path_seconds, cpu_seconds)
+
+    actual = _actual_build_seconds(artifact)
+    headroom = headroom_pct = None
+    if actual is None:
+        headroom_note = (
+            "headroom unavailable: this run's artifact records no build start/finish pair, so "
+            "there is no actual duration to state headroom against"
+        )
+    else:
+        headroom = actual - seconds
+        headroom_pct = 100.0 * headroom / actual
+        if headroom >= 0:
+            headroom_note = (
+                f"headroom {headroom:.1f}s of {actual:.1f}s actual ({headroom_pct:.1f}%), against "
+                f"the binding bound ({BINDING_LABELS[binding]}) rather than against the CPU floor alone"
+            )
+        else:
+            headroom_note = (
+                f"headroom negative: the floor {seconds:.1f}s exceeds the {actual:.1f}s this build "
+                f"actually took ({headroom_pct:.1f}%). The recipe-level path over-weights by "
+                "construction (design D3), so read this as the path being an over-estimate rather "
+                "than as the build beating its own floor"
+            )
+
+    return ConcurrencyFloor(
+        available=True,
+        seconds=seconds,
+        binding=binding,
+        cpu_seconds=cpu_seconds,
+        path_seconds=path_seconds,
+        actual_seconds=actual,
+        headroom_seconds=headroom,
+        headroom_pct=headroom_pct,
+        note=(
+            f"concurrency floor {seconds:.1f}s = max(CPU floor {cpu_seconds:.1f}s, "
+            f"critical path {path_seconds:.1f}s) - {BINDING_LABELS[binding]} binds"
+        ),
+        basis_note=BASIS_NOTE,
+        headroom_note=headroom_note,
+    )
+
+
 def timing_report(
     artifact: dict | list,
     top_n: int = DEFAULT_TOP_N,
@@ -546,6 +717,12 @@ def timing_report(
     :class:`CpuFloor` section divides those CPU seconds by the core count
     ``artifact`` recorded on the BUILD host - no divisor is read from the
     analysing host, so the same artifact yields the same floor anywhere.
+
+    The :class:`ConcurrencyFloor` section combines that floor with the
+    critical path as ``max(CPU floor, critical path)`` and names which of the
+    two binds. It therefore needs BOTH ``dependency_source`` and
+    ``buildstats_source``; with either omitted or degraded it reports
+    unavailable rather than publishing the surviving bound under its label.
     """
     baselines = task_timings.load_baselines(baselines_path)
 
@@ -605,4 +782,5 @@ def timing_report(
         regime=_regime_from(artifact, len(durations)),
         buildstats_join=buildstats_join,
         cpu_floor=cpu_floor,
+        concurrency_floor=_compute_concurrency_floor(cpu_floor, critical_path, artifact),
     )

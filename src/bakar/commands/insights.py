@@ -26,6 +26,15 @@ therefore never supplies a ``dependency_source`` to
 :func:`bakar.insights_timing.timing_report`; the critical-path section always
 renders as an explicit "unavailable" note rather than attempting a live
 invocation, while the duration and top-N-slowest sections still render fully.
+
+That has a consequence worth stating rather than leaving to be discovered: the
+concurrency floor is ``max(CPU floor, critical path)`` and needs BOTH bounds, so
+with no dependency source it always renders unavailable here too. It degrades
+rather than falling back to the CPU floor alone, which would put a throughput
+bound under a concurrency bound's name - see
+:class:`bakar.insights_timing.ConcurrencyFloor`. A ``buildstats_source`` IS
+supplied, so the join and CPU-floor sections render for real from
+``cfg.resolved_tmpdir``.
 """
 
 from __future__ import annotations
@@ -38,7 +47,7 @@ import typer
 from rich.markup import escape
 
 import bakar.commands._app as _state
-from bakar import eventlog, task_timings
+from bakar import buildstats, eventlog, task_timings
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     WorkspaceOption,
@@ -137,6 +146,19 @@ def _render_timing(report) -> None:
         console.print(f"  {escape(' -> '.join(cp.chain))} ({cp.total_seconds:.1f}s)")
     else:
         console.print(f"  {cp.note}")
+    # Each section renders its own lines rather than being reformatted here:
+    # the refusal wording and the "no duration reaches a refused section"
+    # invariant belong to the section that decided to refuse, and a second
+    # formatter at the call site is a second place for a refused number to leak
+    # back in. Notes carry on-disk paths and recipe names, so escape as above.
+    for header, section in (
+        ("buildstats join", report.buildstats_join),
+        ("cpu floor", report.cpu_floor),
+        ("concurrency floor", report.concurrency_floor),
+    ):
+        console.print(f"[bold]{header}:[/]")
+        for line in section.report_lines():
+            console.print(escape(line))
 
 
 def _render_pressure(report) -> None:
@@ -287,7 +309,18 @@ def insights(
         _render_sstate(sstate_report(artifact))
 
     if show_timing or show_all:
-        _render_timing(timing_report(artifact, top_n=top, baselines_path=baselines_path))
+        # ``cfg.resolved_tmpdir``, never a guessed ``<workspace>/build/tmp``: a
+        # workspace can hold one build directory per machine, and the naive path
+        # is empty on exactly the workspace whose per-machine directories hold
+        # every capture (see :func:`bakar.buildstats.read_run`).
+        _render_timing(
+            timing_report(
+                artifact,
+                top_n=top,
+                baselines_path=baselines_path,
+                buildstats_source=lambda: buildstats.read_run(cfg.resolved_tmpdir),
+            )
+        )
 
     if show_pressure or show_all:
         psi_samples = _load_json_list(log.psi_samples_path)

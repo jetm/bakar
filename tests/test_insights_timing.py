@@ -624,3 +624,204 @@ def test_normalize_records_no_parallelism_when_the_environment_carries_none(
 
     assert artifact["host"]["bb_number_threads"] is None
     assert artifact["host"]["parallel_make"] is None
+
+
+# --- concurrency floor: max(CPU floor, critical path) ---------------------
+#
+# The number alone is not the deliverable. A dependency-bound build and a
+# throughput-bound one want opposite responses, and the max on its own cannot
+# tell them apart - which is how a CPU-only 11.9% headroom read as actionable
+# on a build whose real headroom was 1.1%. Both scenarios are covered below
+# with the reference figures, so a regression that drops the binding bound
+# fails on the very case that motivated the section.
+
+
+def _floor_artifact(a_seconds: float, b_seconds: float, actual: float, cpu_count: int = 4) -> dict:
+    """Two chained recipes (``a -> b``) with a recorded core count and build span."""
+    return {
+        "tasks": [
+            _row("a", "do_compile", 0.0, a_seconds),
+            _row("b", "do_compile", a_seconds, a_seconds + b_seconds),
+        ],
+        "host": {"cpu_count": cpu_count},
+        "build": {"started": 0.0, "completed": actual},
+    }
+
+
+def _chain_source() -> tuple[str, str]:
+    return 'digraph { "a.do_compile" -> "b.do_compile"; }', ""
+
+
+def test_dependency_bound_build_names_the_critical_path_as_the_binding_bound(tmp_path: Path) -> None:
+    """The reference case: CPU floor 23.0 min, path 25.8 min, build 26.1 min.
+
+    Read off the CPU floor alone the headroom is 11.9% and looks worth a
+    scheduling campaign. Against the bound that actually binds it is 1.1%. The
+    assertion that the rendered text NAMES the path as binding is the whole
+    point - a report that printed only ``max`` would be identical here and in
+    the throughput-bound case below.
+    """
+    artifact = _floor_artifact(a_seconds=548.0, b_seconds=1000.0, actual=1566.0, cpu_count=4)
+    run = _parsed(_stat("a", "do_compile", 2520.0), _stat("b", "do_compile", 3000.0))
+
+    report = timing_report(
+        artifact,
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=_chain_source,
+        buildstats_source=lambda: run,
+    )
+
+    floor = report.concurrency_floor
+    assert floor.available is True
+    assert floor.binding == "path"
+    assert floor.cpu_seconds == pytest.approx(1380.0)
+    assert floor.path_seconds == pytest.approx(1548.0)
+    assert floor.seconds == pytest.approx(1548.0)
+    assert floor.headroom_seconds == pytest.approx(18.0)
+    assert floor.headroom_pct == pytest.approx(1.149, abs=0.01)
+
+    rendered = "\n".join(floor.report_lines())
+    assert "the critical path binds" in rendered
+    assert "1.1%" in rendered
+    # The misleading CPU-only figure must not appear anywhere in this section.
+    assert "11.9" not in rendered
+
+
+def test_throughput_bound_build_names_cpu_capacity_as_the_binding_bound(tmp_path: Path) -> None:
+    artifact = _floor_artifact(a_seconds=100.0, b_seconds=200.0, actual=1200.0, cpu_count=4)
+    run = _parsed(_stat("a", "do_compile", 1500.0), _stat("b", "do_compile", 2500.0))
+
+    report = timing_report(
+        artifact,
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=_chain_source,
+        buildstats_source=lambda: run,
+    )
+
+    floor = report.concurrency_floor
+    assert floor.available is True
+    assert floor.binding == "cpu"
+    assert floor.seconds == pytest.approx(1000.0)
+    assert floor.path_seconds == pytest.approx(300.0)
+    assert floor.headroom_seconds == pytest.approx(200.0)
+
+    rendered = "\n".join(floor.report_lines())
+    assert "CPU capacity binds" in rendered
+    assert "16.7%" in rendered
+
+
+def test_floor_states_the_basis_of_each_input_and_computes_the_headroom_itself(tmp_path: Path) -> None:
+    """Design D3's mitigation: the two bounds are measured differently, and the
+    output says so rather than leaving a reader to subtract them."""
+    artifact = _floor_artifact(a_seconds=548.0, b_seconds=1000.0, actual=1566.0)
+    run = _parsed(_stat("a", "do_compile", 2520.0), _stat("b", "do_compile", 3000.0))
+
+    report = timing_report(
+        artifact,
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=_chain_source,
+        buildstats_source=lambda: run,
+    )
+
+    rendered = "\n".join(report.concurrency_floor.report_lines())
+    assert "recipe-level" in rendered
+    assert "task-level" in rendered
+    assert "not converted" in rendered
+    # The headroom figure is produced by the tool, not implied.
+    assert "headroom" in rendered
+    assert report.concurrency_floor.headroom_seconds is not None
+
+
+def test_floor_unavailable_when_the_critical_path_is_unavailable(tmp_path: Path) -> None:
+    """A CPU floor alone is not a concurrency floor, and must not render as one."""
+    artifact = _floor_artifact(a_seconds=548.0, b_seconds=1000.0, actual=1566.0)
+    run = _parsed(_stat("a", "do_compile", 2520.0), _stat("b", "do_compile", 3000.0))
+
+    report = timing_report(
+        artifact,
+        baselines_path=tmp_path / "absent.json",
+        buildstats_source=lambda: run,
+    )
+
+    floor = report.concurrency_floor
+    assert report.cpu_floor.available is True
+    assert floor.available is False
+    assert floor.binding is None
+    rendered = "\n".join(floor.report_lines())
+    offenders = DURATION_TOKEN.findall(rendered)
+    assert offenders == [], f"unavailable floor rendered duration tokens {offenders} in: {rendered}"
+    assert "critical path is unavailable" in rendered
+
+
+def test_floor_unavailable_when_the_cpu_floor_is_refused(tmp_path: Path) -> None:
+    """A path alone is not a concurrency floor either - the refusal is symmetric."""
+    artifact = _floor_artifact(a_seconds=548.0, b_seconds=1000.0, actual=1566.0)
+    # Only one of the two executed tasks carries a record: 50%, below the gate.
+    run = _parsed(_stat("a", "do_compile", 2520.0))
+
+    report = timing_report(
+        artifact,
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=_chain_source,
+        buildstats_source=lambda: run,
+    )
+
+    assert report.critical_path.available is True
+    floor = report.concurrency_floor
+    assert floor.available is False
+    rendered = "\n".join(floor.report_lines())
+    offenders = DURATION_TOKEN.findall(rendered)
+    assert offenders == [], f"unavailable floor rendered duration tokens {offenders} in: {rendered}"
+    assert "CPU floor is unavailable" in rendered
+
+
+def test_headroom_unavailable_when_the_artifact_records_no_build_span(tmp_path: Path) -> None:
+    """The floor and its binding bound still render; the headroom says it cannot."""
+    artifact = _floor_artifact(a_seconds=548.0, b_seconds=1000.0, actual=1566.0)
+    del artifact["build"]
+    run = _parsed(_stat("a", "do_compile", 2520.0), _stat("b", "do_compile", 3000.0))
+
+    report = timing_report(
+        artifact,
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=_chain_source,
+        buildstats_source=lambda: run,
+    )
+
+    floor = report.concurrency_floor
+    assert floor.available is True
+    assert floor.binding == "path"
+    assert floor.actual_seconds is None
+    assert floor.headroom_seconds is None
+    assert floor.headroom_pct is None
+    rendered = "\n".join(floor.report_lines())
+    assert "headroom unavailable" in rendered
+    assert "%" not in rendered.split("headroom unavailable")[1]
+
+
+def test_negative_headroom_reads_as_an_over_weighted_path_not_a_beaten_floor(tmp_path: Path) -> None:
+    """The recipe-level path over-weights by construction (D3), so it can exceed
+    the real build. That must not render as though the build outran its floor."""
+    artifact = _floor_artifact(a_seconds=548.0, b_seconds=1000.0, actual=1200.0)
+    run = _parsed(_stat("a", "do_compile", 2520.0), _stat("b", "do_compile", 3000.0))
+
+    report = timing_report(
+        artifact,
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=_chain_source,
+        buildstats_source=lambda: run,
+    )
+
+    floor = report.concurrency_floor
+    assert floor.available is True
+    assert floor.headroom_seconds == pytest.approx(-348.0)
+    rendered = "\n".join(floor.report_lines())
+    assert "over-estimate" in rendered
+    assert "headroom negative" in rendered
+
+
+def test_floor_section_defaults_to_unavailable_without_either_source(tmp_path: Path) -> None:
+    report = timing_report({"tasks": []}, baselines_path=tmp_path / "absent.json")
+
+    assert report.concurrency_floor.available is False
+    assert report.concurrency_floor.seconds is None
