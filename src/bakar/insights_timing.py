@@ -554,17 +554,78 @@ def _compute_critical_path(
 
 
 def _join_key(recipe: str, task: str) -> tuple[str, str]:
-    """Key both sides of the join on ``(PN, task)``.
+    """Key both sides of the join on ``(PN, task)``, version stripped.
 
     The event log records a versioned PF (``busybox-1.36.1-r0``) and so does the
     buildstats recipe directory, but they are not guaranteed to agree on the
     revision suffix - a task restored from sstate and one rebuilt after a bump
     can disagree by ``-r0`` alone. Stripping the version the way
     :func:`bakar.task_timings.strip_recipe_version` already does for baseline
-    keys puts both sides in one namespace, so a shortfall in the rate means a
-    genuinely missing record rather than a spelling difference.
+    keys lets those two spellings still meet.
+
+    This key is a FALLBACK, never the primary one - see :func:`_match_record`.
+    Aggregating records under it would merge ``busybox-1.36.1-r0`` and
+    ``busybox-1.37-r0`` into one bucket, so a stale record for a PF this run
+    never executed would be credited to the PF it did.
     """
     return (task_timings.strip_recipe_version(recipe), task)
+
+
+_RecordKey = tuple[str, str]
+
+
+def _index_records(
+    tasks: list[TaskStats],
+) -> tuple[dict[_RecordKey, list[TaskStats]], dict[_RecordKey, list[_RecordKey]]]:
+    """Index buildstats records by exact ``(PF, task)`` and by stripped key.
+
+    The second index maps a stripped key to every exact key carrying it, which
+    is what makes an ambiguous strip detectable rather than silently merged.
+    """
+    exact: dict[tuple[str, str], list[TaskStats]] = {}
+    stripped: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for stat in tasks:
+        key = (stat.recipe, stat.task)
+        exact.setdefault(key, []).append(stat)
+        bucket = stripped.setdefault(_join_key(stat.recipe, stat.task), [])
+        if key not in bucket:
+            bucket.append(key)
+    return exact, stripped
+
+
+def _match_record(
+    exact: dict[tuple[str, str], list[TaskStats]],
+    stripped: dict[tuple[str, str], list[tuple[str, str]]],
+    recipe: str,
+    task: str,
+) -> tuple[str, str] | None:
+    """Resolve one executed task to the buildstats record it owns, or ``None``.
+
+    Exact ``(PF, task)`` first, because that is the only match that proves the
+    record belongs to the version this run executed. The version-stripped key is
+    tried next and ONLY when it is unambiguous, which is what keeps the strip
+    doing the job it was added for - the two sides disagreeing by a revision
+    suffix - without letting it credit a version the run never built.
+
+    An ambiguous stripped key resolves to ``None`` and therefore counts as
+    unjoined. That lowers the join rate, which is the honest signal: the tree
+    holds two versions of this recipe and nothing here can say which one ran.
+    """
+    key = (recipe, task)
+    if key in exact:
+        return key
+    candidates = stripped.get(_join_key(recipe, task), ())
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _capture_phrase(run: BuildstatsRun) -> str:
+    """Name the capture directory the figures came from.
+
+    Printed on the PASSING path as well as the refusing ones. Naming the source
+    only when the section declines to publish is exactly backwards for auditing:
+    the number a reader might act on is the one whose provenance they need.
+    """
+    return "capture directory unrecorded" if run.directory is None else f"from capture {run.directory}"
 
 
 def _compute_join(
@@ -574,15 +635,16 @@ def _compute_join(
     """Join executed tasks against buildstats records and gate on the rate.
 
     Follows :func:`_compute_critical_path`'s precedent exactly: any failure -
-    the callable raises, the tree is absent, the tree is empty - returns an
-    explicit unavailable result with a note and never raises back to
-    :func:`timing_report`.
+    the callable raises, the tree is absent, the tree is empty, no capture
+    correlates with this run - returns an explicit unavailable result with a
+    note and never raises back to :func:`timing_report`.
 
-    ``absent`` and ``empty`` keep separate notes. They are the two outcomes
+    The four outcomes keep separate notes. They are what
     :mod:`bakar.buildstats` went out of its way to distinguish, and collapsing
     them here would put the distinction back in the bin it was lifted out of:
     a tree that was never found is a path problem, a tree that recorded nothing
-    is a measurement.
+    is a measurement, and a tree holding only some other build's captures is a
+    provenance failure that a rate near 100% would otherwise hide.
     """
     try:
         run = buildstats_source()
@@ -591,26 +653,25 @@ def _compute_join(
 
     if run.outcome == "absent":
         return BuildstatsJoin(note=f"buildstats join unavailable: tree absent ({run.note})")
+    if run.outcome == "uncorrelated":
+        return BuildstatsJoin(note=f"buildstats join unavailable: no capture belongs to this run ({run.note})")
     if run.outcome != "parsed":
         return BuildstatsJoin(
             note=f"buildstats join unavailable: tree present but recorded nothing ({run.note})",
         )
 
-    records: dict[tuple[str, str], float] = {}
-    for stat in run.tasks:
-        key = _join_key(stat.recipe, stat.task)
-        records[key] = records.get(key, 0.0) + stat.cpu_seconds
+    exact, stripped = _index_records(run.tasks)
 
     matched: set[tuple[str, str]] = set()
     unjoined: list[str] = []
     joined = 0
     for d in durations:
-        key = _join_key(d.recipe, d.task)
-        if key in records:
+        key = _match_record(exact, stripped, d.recipe, d.task)
+        if key is None:
+            unjoined.append(f"{d.recipe}:{d.task}")
+        else:
             joined += 1
             matched.add(key)
-        else:
-            unjoined.append(f"{key[0]}:{key[1]}")
 
     executed = len(durations)
     if not executed:
@@ -627,21 +688,27 @@ def _compute_join(
             note=(
                 f"buildstats join refused: {rate_pct:.1f}% of executed tasks joined, below the "
                 f"{gate_pct:.1f}% gate ({executed - joined} of {executed} executed tasks have no "
-                f"buildstats record) - no CPU-derived figure is reported for this run"
+                f"buildstats record) - no CPU-derived figure is reported for this run. "
+                f"{_capture_phrase(run)}"
             ),
         )
 
-    # Only records an executed task actually matched contribute. A buildstats
-    # tree can carry rows this run never executed (a stale capture, or a task
-    # from a sibling machine's directory), and summing the tree wholesale would
-    # credit them to this build.
+    # Only records an executed task actually matched contribute, and matching is
+    # by exact ``(PF, task)`` with an unambiguous version-stripped fallback (see
+    # :func:`_match_record`). A buildstats tree carries rows this run never
+    # executed - a stale capture, a second version of the same recipe, a sibling
+    # machine's directory - and neither summing the tree wholesale nor
+    # aggregating under the stripped key would keep those out of the total.
     return BuildstatsJoin(
         available=True,
         gate_passed=True,
         executed=executed,
         joined=joined,
-        cpu_seconds=sum(records[k] for k in matched),
-        note=(f"buildstats join {rate_pct:.1f}% ({joined} of {executed} executed tasks matched a buildstats record)"),
+        cpu_seconds=sum(stat.cpu_seconds for k in matched for stat in exact[k]),
+        note=(
+            f"buildstats join {rate_pct:.1f}% ({joined} of {executed} executed tasks matched a "
+            f"buildstats record). {_capture_phrase(run)}"
+        ),
     )
 
 
@@ -707,15 +774,15 @@ def _compute_cpu_floor(join: BuildstatsJoin, artifact: dict | list) -> CpuFloor:
     )
 
 
-def _actual_build_seconds(artifact: dict | list) -> float | None:
-    """Return the run's real wall-clock duration from the artifact's build block.
+def build_window(artifact: dict | list) -> tuple[float, float] | None:
+    """Return the run's ``(started, completed)`` epoch pair from its build block.
 
     ``None`` when there is no block to read, when either endpoint is missing or
-    unparseable, or when the span is not positive. Headroom has to be stated
-    against what the build actually took; deriving a substitute from the task
-    rows (max completed minus min started) would silently answer a different
-    question - the span of task execution, which excludes parsing and teardown -
-    under the same label.
+    unparseable, or when the span is not positive.
+
+    Public because the buildstats capture is selected by correlating with this
+    window (see :func:`bakar.buildstats.select_capture`), and the caller that
+    supplies ``buildstats_source`` is the one holding the artifact.
     """
     if not isinstance(artifact, dict):
         return None
@@ -723,10 +790,80 @@ def _actual_build_seconds(artifact: dict | list) -> float | None:
     if not isinstance(block, dict):
         return None
     try:
-        span = float(block["completed"]) - float(block["started"])
+        started = float(block["started"])
+        completed = float(block["completed"])
     except KeyError, TypeError, ValueError:
         return None
-    return span if span > 0 else None
+    return (started, completed) if completed > started else None
+
+
+def correlation_window(artifact: dict | list) -> tuple[float, float] | None:
+    """Return a window for CORRELATING a buildstats capture with this run.
+
+    Deliberately not :func:`build_window`, and the difference is not cosmetic.
+    ``build_window`` answers "how long did this build take", which headroom is
+    stated against; this answers "when was this build running", which is the
+    only question capture selection asks. A task-derived span is a wrong answer
+    to the first and a safe answer to the second, so the two must not share a
+    function - see :func:`_actual_build_seconds`, whose docstring rules the
+    fallback out for exactly that reason.
+
+    Prefers the build block, then falls back to the span of the run's own task
+    timestamps.
+    """
+    if not isinstance(artifact, dict):
+        return None
+    return build_window(artifact) or _window_from_tasks(artifact)
+
+
+def _window_from_tasks(artifact: dict) -> tuple[float, float] | None:
+    """Return the span of the run's own task timestamps.
+
+    The build block's endpoints come from ``bb.event.BuildStarted`` and
+    ``BuildCompleted``, and those events carry no time attribute - verified
+    against a real captured log, where both are absent before AND after
+    unpickling, so ``build.started``/``build.completed`` are structurally always
+    ``None``. That predates this change, but capture correlation reads the
+    window, so inheriting it would make every buildstats-derived section refuse
+    on every run forever - a capability that is inert is not more honest than
+    one that is wrong, it is only quieter about it.
+
+    Task rows carry real timestamps (the timing section is computed from them),
+    so their span is a true subset of the build: it starts no earlier than the
+    first task and ends no later than the last. Narrower than the real build on
+    both ends, which is the safe direction for a correlation window - it can
+    reject a capture that genuinely belongs, and cannot accept one that does
+    not.
+    """
+    rows = artifact.get("tasks")
+    if not isinstance(rows, list):
+        return None
+    starts: list[float] = []
+    ends: list[float] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key, sink in (("started", starts), ("completed", ends)):
+            try:
+                sink.append(float(row[key]))
+            except KeyError, TypeError, ValueError:
+                continue
+    if not starts or not ends:
+        return None
+    started, completed = min(starts), max(ends)
+    return (started, completed) if completed > started else None
+
+
+def _actual_build_seconds(artifact: dict | list) -> float | None:
+    """Return the run's real wall-clock duration from the artifact's build block.
+
+    Headroom has to be stated against what the build actually took; deriving a
+    substitute from the task rows (max completed minus min started) would
+    silently answer a different question - the span of task execution, which
+    excludes parsing and teardown - under the same label.
+    """
+    window = build_window(artifact)
+    return None if window is None else window[1] - window[0]
 
 
 def _compute_concurrency_floor(
@@ -811,8 +948,15 @@ def _compute_churn(
     """Aggregate churn counters per task type over the executed task set.
 
     Degrades with a note rather than raising, following
-    :func:`_compute_critical_path`'s precedent, and keeps ``absent`` and
-    ``empty`` apart for the reason :func:`_compute_join` does.
+    :func:`_compute_critical_path`'s precedent, and keeps ``absent``, ``empty``
+    and ``uncorrelated`` apart for the reason :func:`_compute_join` does.
+
+    Records are resolved through :func:`_match_record`, the same matcher the
+    join gate uses, so a record for a PF this run never executed reaches no
+    counter here either. Walking the tree and testing the version-stripped key
+    instead credits a stale ``busybox-1.37-r0`` row to the ``busybox-1.36.1-r0``
+    the run actually built, which inflates every counter in the row and reports
+    a task count higher than the number of tasks that ran.
 
     Rows are ordered by minor faults descending, which puts the process-churn
     heavy task types at the top - the ordering that made the ``do_configure``
@@ -825,22 +969,25 @@ def _compute_churn(
 
     if run.outcome == "absent":
         return TaskChurn(note=f"task churn unavailable: tree absent ({run.note})")
+    if run.outcome == "uncorrelated":
+        return TaskChurn(note=f"task churn unavailable: no capture belongs to this run ({run.note})")
     if run.outcome != "parsed":
         return TaskChurn(note=f"task churn unavailable: tree present but recorded nothing ({run.note})")
 
-    executed = {_join_key(d.recipe, d.task) for d in durations}
-    grouped: dict[str, list[TaskStats]] = {}
-    # Distinct executed tasks covered, not records aggregated. Two versioned
-    # recipe directories collapse to one key once the version is stripped, so a
-    # record count would let ``covered`` exceed ``executed`` and turn the
-    # coverage note into a claim nobody can read.
+    exact, stripped = _index_records(run.tasks)
+    # Distinct executed tasks covered, not records aggregated. Several executed
+    # rows can resolve to one record key, so a record count would let ``covered``
+    # exceed ``executed`` and turn the coverage note into a claim nobody can read.
     matched: set[tuple[str, str]] = set()
-    for stat in run.tasks:
-        key = _join_key(stat.recipe, stat.task)
-        if key not in executed:
-            continue
-        matched.add(key)
-        grouped.setdefault(stat.task, []).append(stat)
+    for d in durations:
+        key = _match_record(exact, stripped, d.recipe, d.task)
+        if key is not None:
+            matched.add(key)
+
+    grouped: dict[str, list[TaskStats]] = {}
+    for key in matched:
+        for stat in exact[key]:
+            grouped.setdefault(stat.task, []).append(stat)
 
     if not grouped:
         return TaskChurn(
@@ -868,7 +1015,8 @@ def _compute_churn(
         covered=len(matched),
         executed=len(durations),
         note=(
-            f"task churn over {len(matched)} of {len(durations)} executed tasks, aggregated into {len(rows)} task types"
+            f"task churn over {len(matched)} of {len(durations)} executed tasks, aggregated into "
+            f"{len(rows)} task types, {_capture_phrase(run)}"
         ),
         basis_note=CHURN_BASIS_NOTE,
     )

@@ -96,6 +96,17 @@ timing:
   core-image-minimal-1.0-r0:do_rootfs: 214.1s
 critical path:
   critical-path unavailable
+buildstats join:
+  buildstats join 100.0% (433 of 433 executed tasks matched a buildstats record)
+cpu floor:
+  CPU floor 45.7s = 1461.9 joined CPU seconds / 32 cores
+concurrency floor:
+  concurrency floor unavailable: the critical path is unavailable, so which
+  bound binds cannot be determined
+task churn:
+  task                          tasks     minflt    majflt   syscalls  GB_wr
+  do_compile                       38   26652217       997    4631211   3.00
+  do_configure                     36   10192800        62     943052   0.13
 ```
 
 The critical-path section always renders as unavailable from this command:
@@ -106,6 +117,47 @@ directory. `insights.py` never supplies a `dependency_source` callable, so
 `critical-path unavailable` - is always what prints. The duration and
 top-N-slowest sections still render fully from the run's persisted event
 artifact.
+
+The **concurrency floor** is `max(CPU floor, critical path)` and needs both
+bounds, so it degrades to a note here for the same reason. That degradation is
+deliberate rather than a gap: reporting the CPU floor alone under the
+concurrency-floor label would present a throughput bound as a dependency bound,
+which is how an 11.9% CPU-only headroom reads as actionable on a build whose
+real headroom is 1.1%.
+
+The **buildstats join** gates every CPU-derived figure. When fewer than 95% of
+executed tasks carry a buildstats record, no CPU duration appears anywhere in
+the output and the note names the achieved rate - a floor computed over a
+partial task set is confidently wrong and reads exactly like a correct one.
+
+The capture it joins against is the one correlated with the reported run's own
+build window, and the section names that directory whether it publishes or
+refuses. A build directory accumulates one capture per run, so taking the newest
+would join an older run against a later build's records; consecutive builds of
+one target execute a near-identical `(PN, task)` set, so that join clears the
+95% gate at close to 100% over the wrong build. A run with no correlatable
+capture reports that as its own outcome, distinct from a missing tree and from a
+build that recorded nothing.
+
+A record only counts for the exact `PF:task` the run executed. Where the event
+log and the buildstats tree disagree by a revision suffix alone, and exactly one
+candidate record carries the version-stripped name, that record still joins;
+where two versions of a recipe are present and neither matches exactly, the task
+counts as unjoined and lowers the rate rather than crediting a version the build
+never ran.
+
+The **CPU floor** divides joined CPU seconds by the core count recorded on the
+build host at capture time, not by the analysing host's. A run captured before
+that field existed reports the floor as unavailable rather than substituting the
+local core count.
+
+The **task churn** columns aggregate `minflt`, `majflt`, `syscalls` and bytes
+written per task type. The minor-to-major fault ratio is what separates
+process-churn-bound work from I/O-bound work: on a real capture the columns rank
+21 task types across 3.68 orders of magnitude. Note the fault counters sum the
+task's own rusage and its children's - the child typically carries the large
+majority - while the IO counters are self-only, because bitbake reads them from
+`/proc/<pid>/io` for the task process alone.
 
 ### pressure
 

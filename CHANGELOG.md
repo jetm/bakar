@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `bakar insights --timing` now reports four buildstats-derived sections beside the existing timings: the buildstats join, the CPU floor, the concurrency floor, and per-task-type churn columns. The report previously computed a duration-weighted critical path but could not say whether that path was the build's actual constraint, because the bound that answers it - `max(CPU floor, critical path)` - needs per-task CPU seconds that bakar collected nowhere. On the reference build the CPU-only figure read 11.9% headroom while the real figure was 1.1%, so a campaign acting on the first would have spent effort on scheduling against a build that was already dependency-bound.
+- Every CPU-derived figure is gated on a join rate between executed tasks and buildstats records, and no duration appears anywhere in the output when that rate falls below 95%. A floor computed over a partial task set is arithmetically fine, factually a floor for a smaller build, and indistinguishable from a correct one in its formatting - so the rate is the gate rather than a footnote.
+- The concurrency floor names which of the two bounds binds, CPU capacity or the critical path. A bare maximum cannot distinguish a dependency-bound build from a throughput-bound one, which is the confusion that made the 11.9% figure above read as actionable.
+- The CPU floor divides by the core count recorded on the build host at capture time rather than by the analysing host's. bakar writes the run artifact on the build host, so it can record the real divisor; deriving it at analysis time means the same capture yields a different floor on every machine that reads it, with nothing printed to say which was used.
+- Churn columns aggregate `minflt`, `majflt`, `syscalls` and bytes written per task type, read by field name rather than column position. The minor-to-major fault ratio ranks 21 task types across 3.68 orders of magnitude on a real capture, which is what separates process-churn-bound work from I/O-bound work - the two were indistinguishable on wall-clock alone.
+
+### Changed
+
+- `bakar.insights_timing.timing_report` gained a keyword-only `buildstats_source` parameter. It is optional and degrades to explicit unavailable notes when omitted, so existing callers are unaffected and the `top_slowest` and `critical_path` sections are byte-identical for any input that produced them before.
+- The event-log artifact gained a `host` block recording the build host's core count and parallelism settings, and `SCHEMA_VERSION` moved from 4 to 5. The addition is additive and no consumer of the persisted artifact gates on the version.
+
 ## [0.30.0] - 2026-09-09
 
 ### Added

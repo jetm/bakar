@@ -332,6 +332,33 @@ def _positive_int(raw: Any) -> int | None:
     return value if value > 0 else None
 
 
+#: The only variables the ``allvariables`` dump is read for. Retaining the whole
+#: dump would hold every bitbake variable - each with its per-variable assignment
+#: ``history`` list - live for the duration of :func:`normalize`, over a log the
+#: docstring above calls multi-hundred-megabyte. Two scalars is what the host
+#: block needs.
+_WANTED_VARIABLES = frozenset(_BB_THREADS_ENV + _PARALLEL_MAKE_ENV)
+
+
+def _dump_scalar(raw: Any) -> Any:
+    """Unwrap one entry of bitbake's ``allvariables`` dump to its value.
+
+    ``cooker.getAllKeysWithFlags`` maps each variable to a DICT - ``{"v": "16",
+    "history": [...], ...}`` - not to the bare string (``bb/ui/eventreplay.py``
+    reads ``variable['v']``). Reading the mapping as if it were the value makes
+    both parallelism knobs ``None`` on every real build while a hand-written
+    string fixture keeps passing.
+    """
+    return raw.get("v") if isinstance(raw, dict) else raw
+
+
+def _keep_wanted_variables(dump: dict[str, Any], into: dict[str, Any]) -> None:
+    """Copy only the parallelism knobs out of an ``allvariables`` dump."""
+    for name in _WANTED_VARIABLES:
+        if name in dump:
+            into[name] = _dump_scalar(dump[name])
+
+
 def _knob(names: tuple[str, ...], variables: dict[str, Any]) -> int | None:
     """Read a parallelism knob from the build's variable dump, then the environment.
 
@@ -359,7 +386,9 @@ def _host_block(variables: dict[str, Any] | None = None) -> dict[str, Any]:
     captured rather than needing the build re-run. All three are ``None`` when
     unavailable - never substituted from a default.
 
-    ``variables`` is the raw log's ``allvariables`` dump when one was seen.
+    ``variables`` holds the parallelism knobs :func:`_keep_wanted_variables`
+    lifted out of the raw log's ``allvariables`` dump, already unwrapped to
+    their scalar values - not the dump itself.
     """
     return {
         "cpu_count": os.cpu_count(),
@@ -449,7 +478,7 @@ def normalize(raw_path: Path) -> dict[str, Any]:
         return row
 
     variables: dict[str, Any] = {}
-    for class_name, event in _iter_events(raw_path, on_variables=variables.update):
+    for class_name, event in _iter_events(raw_path, on_variables=lambda dump: _keep_wanted_variables(dump, variables)):
         if class_name == _BUILD_STARTED:
             build["started"] = _first(event, "time", "timestamp")
         elif class_name == _BUILD_COMPLETED:

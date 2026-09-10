@@ -34,14 +34,21 @@ rather than falling back to the CPU floor alone, which would put a throughput
 bound under a concurrency bound's name - see
 :class:`bakar.insights_timing.ConcurrencyFloor`. A ``buildstats_source`` IS
 supplied, so the join and CPU-floor sections render for real from
-``cfg.resolved_tmpdir``.
+``cfg.resolved_tmpdir`` - for the capture correlated with the reported run's own
+build window, never simply the newest one (see :func:`_buildstats_source`).
+
+The artifact itself comes from the run's persisted ``bitbake-events.json`` when
+one exists, and only from re-normalizing the raw log when it does not. The
+persisted copy is the one written on the BUILD host, and it is what makes the
+recorded core count beside the CPU floor a true statement - see
+:func:`_load_artifact`.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 import typer
 from rich.markup import escape
@@ -59,8 +66,11 @@ from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.insights_disk import disk_report
 from bakar.insights_pressure import pressure_report
 from bakar.insights_sstate import sstate_report
-from bakar.insights_timing import timing_report
+from bakar.insights_timing import correlation_window, timing_report
 from bakar.observability import RunLogger
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _SIZE_SUFFIXES: dict[str, int] = {
     "b": 1,
@@ -95,6 +105,54 @@ def _parse_size_bytes(raw: str) -> int:
         return int(text)
     except ValueError:
         raise typer.BadParameter(f"could not parse size: {raw!r} (expected e.g. '5GB' or a byte count)") from None
+
+
+def _load_artifact(log: RunLogger) -> dict:
+    """Read the run's artifact, preferring the one persisted ON THE BUILD HOST.
+
+    ``bitbake-events.json`` is written by ``RunLogger.persist_bitbake_events``
+    at the end of the build, so its ``host`` block records the machine that ran
+    the build. Re-normalizing the raw ``bitbake_eventlog.json`` here instead
+    re-runs ``eventlog._host_block`` on whatever machine is doing the ANALYSIS,
+    and the CPU floor then divides by the analysing host's core count while
+    printing "recorded at capture" beside it - a false provenance claim, and the
+    exact defect design D4 exists to avoid.
+
+    A run predating schema 5 has ``host: None`` in its persisted artifact. That
+    is left alone: it degrades to the CPU floor's "no recorded core count" note,
+    which is the correct outcome. Synthesizing a host block here would trade a
+    withheld floor for a falsely-attributed one.
+
+    Falls back to normalizing the raw log only when the persisted artifact is
+    absent or unreadable - the pre-persist runs, where an analysing-host block
+    is all there is and the note says as much.
+    """
+    persisted = log.bitbake_events_path
+    if persisted.is_file():
+        try:
+            data = json.loads(persisted.read_text())
+        except OSError, ValueError:
+            data = None
+        if isinstance(data, dict):
+            return data
+    return eventlog.normalize(log.eventlog_path)
+
+
+def _buildstats_source(tmpdir: Path, window: tuple[float, float] | None) -> Callable[[], buildstats.BuildstatsRun]:
+    """Return the zero-argument buildstats reader for one named run."""
+
+    def read() -> buildstats.BuildstatsRun:
+        if window is None:
+            return buildstats.BuildstatsRun(
+                outcome="uncorrelated",
+                note=(
+                    "this run's artifact records no build start/finish pair, so no buildstats "
+                    "capture can be shown to belong to it"
+                ),
+            )
+        return buildstats.read_run(tmpdir, window=window)
+
+    return read
 
 
 def _load_json_list(path: Path) -> list[dict]:
@@ -304,7 +362,7 @@ def insights(
     # once and share it across sections instead of once per section.
     artifact = None
     if show_sstate or show_timing or show_disk or show_all:
-        artifact = eventlog.normalize(log.eventlog_path)
+        artifact = _load_artifact(log)
 
     if show_sstate or show_all:
         _render_sstate(sstate_report(artifact))
@@ -314,12 +372,25 @@ def insights(
         # workspace can hold one build directory per machine, and the naive path
         # is empty on exactly the workspace whose per-machine directories hold
         # every capture (see :func:`bakar.buildstats.read_run`).
+        #
+        # ``window`` is what ties the capture to THIS run. This command takes an
+        # explicit run id, so without it reporting on an older run joins that run
+        # against the newest capture - a different build's records, which join at
+        # near 100% because consecutive builds of one target execute a
+        # near-identical (PN, task) set, so the gate passes over exactly the case
+        # it exists to catch.
+        #
+        # An artifact with no build window cannot correlate at all, and falls
+        # through to the same refusal rather than to ``read_run``'s newest-capture
+        # default - which is right for a caller that wants whatever ran last, and
+        # wrong for every caller that named a run.
+        window = correlation_window(artifact)
         _render_timing(
             timing_report(
                 artifact,
                 top_n=top,
                 baselines_path=baselines_path,
-                buildstats_source=lambda: buildstats.read_run(cfg.resolved_tmpdir),
+                buildstats_source=_buildstats_source(cfg.resolved_tmpdir, window),
             )
         )
 

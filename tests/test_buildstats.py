@@ -18,12 +18,16 @@ would pass every other test here.
 
 from __future__ import annotations
 
+import os
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from bakar.buildstats import (
+    capture_epochs,
     latest_capture,
     parse_task_file,
     read_run,
+    select_capture,
 )
 
 if TYPE_CHECKING:
@@ -57,9 +61,29 @@ Ended: 1788658834.34
 """
 
 
+def _stamp_epoch(ts: str) -> float:
+    """Interpret a ``YYYYMMDDHHMMSS`` test stamp as UTC.
+
+    Deliberately its own parser rather than a call to ``capture_epoch``: that
+    function reads a directory's mtime now, so using it here would define the
+    expected window in terms of the thing under test.
+    """
+    return datetime.strptime(ts, "%Y%m%d%H%M%S").replace(tzinfo=UTC).timestamp()
+
+
 def _capture(tmp_path: Path, ts: str = "20260909123055") -> Path:
+    """Create a capture directory whose MTIME matches its name.
+
+    Correlation reads mtime, not the name, because the name carries no timezone
+    and the build container's is not knowable from here. Setting it explicitly
+    is what makes these fixtures mean what their names say - and a test that
+    only created the directory would correlate against whenever the suite
+    happened to run.
+    """
     d = tmp_path / "buildstats" / ts
     d.mkdir(parents=True)
+    epoch = _stamp_epoch(ts)
+    os.utime(d, (epoch, epoch))
     return d
 
 
@@ -189,3 +213,83 @@ def test_totals_aggregate_across_tasks(tmp_path: Path) -> None:
     assert len(run.tasks) == 2
     assert abs(run.total_cpu_seconds - 2 * 5.5204) < 0.002
     assert abs(run.total_elapsed_seconds - 2 * 1.48) < 0.001
+
+
+# --- capture correlation ----------------------------------------------------
+#
+# ``latest_capture`` answers "what ran last", which is the wrong question for a
+# caller that named a run. A build directory accumulates one capture per run, so
+# reporting on an older run joins it against a later build's records - and
+# because consecutive builds of one target execute a near-identical (PN, task)
+# set, that join clears the 95% gate at close to 100%. The gate then passes over
+# exactly the provenance failure it exists to catch.
+
+
+def _window(started: str, completed: str) -> tuple[float, float]:
+    """Build an epoch window from two local ``YYYYMMDDHHMMSS`` stamps."""
+    return (_stamp_epoch(started), _stamp_epoch(completed))
+
+
+def test_capture_is_chosen_by_the_runs_own_window_not_by_recency(tmp_path: Path) -> None:
+    mine = _capture(tmp_path, "20260909123055")
+    _task(mine, "acl-2.3.2-r0", "do_compile")
+    later = _capture(tmp_path, "20260910080000")
+    _task(later, "acl-2.3.2-r0", "do_compile")
+
+    assert latest_capture(tmp_path) == later
+    assert select_capture(tmp_path, _window("20260909123000", "20260909130000")) == mine
+
+    run = read_run(tmp_path, window=_window("20260909123000", "20260909130000"))
+    assert run.outcome == "parsed"
+    assert run.directory == mine
+
+
+def test_no_capture_in_the_window_is_uncorrelated_not_absent_or_empty(tmp_path: Path) -> None:
+    """A fourth outcome, because it calls for a fourth response.
+
+    "absent" sends a reader after the path, "empty" says this build recorded
+    nothing, and neither is true of a tree full of some other build's captures.
+    """
+    other = _capture(tmp_path, "20260910080000")
+    _task(other, "acl-2.3.2-r0", "do_compile")
+
+    run = read_run(tmp_path, window=_window("20260909123000", "20260909130000"))
+
+    assert run.outcome == "uncorrelated"
+    assert run.tasks == []
+    assert run.directory is None
+
+
+def test_a_capture_directory_with_a_foreign_name_never_correlates(tmp_path: Path) -> None:
+    """Only a ``YYYYMMDDHHMMSS`` name can be placed in time at all."""
+    stray = tmp_path / "buildstats" / "scratch"
+    stray.mkdir(parents=True)
+    _task(stray, "acl-2.3.2-r0", "do_compile")
+
+    assert capture_epochs(stray) == ()
+    assert read_run(tmp_path, window=_window("20260909123000", "20260909130000")).outcome == "uncorrelated"
+
+
+def test_omitting_the_window_keeps_the_newest_capture_behaviour(tmp_path: Path) -> None:
+    """Still the right answer for a caller that genuinely wants whatever ran last."""
+    _task(_capture(tmp_path, "20260909123055"), "acl-2.3.2-r0", "do_compile")
+    later = _capture(tmp_path, "20260910080000")
+    _task(later, "acl-2.3.2-r0", "do_compile")
+
+    assert read_run(tmp_path).directory == later
+
+
+def test_two_captures_inside_the_slack_resolve_to_the_nearer_start(tmp_path: Path) -> None:
+    """The tolerance must not reintroduce the wrong-build join it sits beside.
+
+    A rebuild two minutes later falls inside the earlier run's window once the
+    300s slack is applied. Taking the last match then hands the earlier run the
+    later build's capture, which is precisely what correlating was for.
+    """
+    mine = _capture(tmp_path, "20260909123055")
+    _task(mine, "acl-2.3.2-r0", "do_compile")
+    rebuild = _capture(tmp_path, "20260909123300")
+    _task(rebuild, "acl-2.3.2-r0", "do_compile")
+
+    assert select_capture(tmp_path, _window("20260909123055", "20260909123145")) == mine
+    assert select_capture(tmp_path, _window("20260909123300", "20260909123400")) == rebuild

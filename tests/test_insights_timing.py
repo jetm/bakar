@@ -356,6 +356,107 @@ def test_join_above_the_threshold_passes_and_carries_cpu_seconds(tmp_path: Path)
     assert join.cpu_seconds == pytest.approx(42.0)
 
 
+def test_a_stale_record_for_another_version_contributes_no_cpu_seconds(tmp_path: Path) -> None:
+    """A record for a PF the run never executed must not reach the CPU total.
+
+    The buildstats tree accumulates captures, so it routinely holds records for
+    a previous version of a recipe. Aggregating records under the
+    version-stripped key merges them: one executed ``busybox-1.36.1-r0``
+    ``do_compile`` at 30 CPU seconds plus a stale ``busybox-1.37-r0`` record at
+    900 publishes 930 - a 31x inflated floor at a reported 100% join, which
+    reads exactly like a correct one.
+    """
+    artifact = {"tasks": [_row("busybox-1.36.1-r0", "do_compile", 0.0, 5.0)]}
+    run = _parsed(
+        _stat("busybox-1.36.1-r0", "do_compile", 30.0),
+        _stat("busybox-1.37-r0", "do_compile", 900.0),
+    )
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+
+    join = report.buildstats_join
+    assert join.gate_passed is True
+    assert join.cpu_seconds == pytest.approx(30.0)
+
+
+def test_the_version_stripped_fallback_still_joins_a_revision_mismatch(tmp_path: Path) -> None:
+    """The strip earns its place: one candidate record, spelled differently, still joins.
+
+    Removing the fallback outright would make the two sides disagreeing by a
+    revision suffix read as a genuine shortfall, which is the false-negative the
+    strip was added for. It applies only where it is unambiguous.
+    """
+    artifact = {"tasks": [_row("busybox-1.36.1-r0", "do_compile", 0.0, 5.0)]}
+    run = _parsed(_stat("busybox-1.36.1-r1", "do_compile", 30.0))
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+
+    assert report.buildstats_join.gate_passed is True
+    assert report.buildstats_join.cpu_seconds == pytest.approx(30.0)
+
+
+def test_an_ambiguous_stripped_key_counts_as_unjoined(tmp_path: Path) -> None:
+    """Two candidate versions and no exact match: nothing here can say which ran.
+
+    Picking one would be a coin flip credited as a measurement. Counting it
+    unjoined lowers the rate instead, which is the honest signal and the one the
+    gate is built to act on.
+    """
+    artifact = {"tasks": [_row("busybox-1.36.1-r0", "do_compile", 0.0, 5.0)]}
+    run = _parsed(
+        _stat("busybox-1.35-r0", "do_compile", 30.0),
+        _stat("busybox-1.37-r0", "do_compile", 900.0),
+    )
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+
+    join = report.buildstats_join
+    assert join.joined == 0
+    assert join.gate_passed is False
+    assert join.cpu_seconds is None
+
+
+def test_the_passing_join_note_names_the_capture_it_read(tmp_path: Path) -> None:
+    """Provenance is printed on the published path, not only on the refusals.
+
+    Naming the capture only when the section declines to publish is backwards:
+    the figure a reader may act on is the one whose source they need to check.
+    """
+    artifact = {"tasks": [_row("busybox", "do_compile", 0.0, 5.0)]}
+    run = BuildstatsRun(
+        outcome="parsed",
+        note="fixture",
+        directory=tmp_path / "buildstats" / "20260909142035",
+        tasks=[_stat("busybox", "do_compile", 30.0)],
+    )
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+
+    assert report.buildstats_join.gate_passed is True
+    assert "20260909142035" in report.buildstats_join.note
+
+
+def test_an_uncorrelated_capture_refuses_the_join_and_the_churn(tmp_path: Path) -> None:
+    """A tree holding only another build's captures is its own outcome.
+
+    Reported as "recorded nothing" it reads as a measurement about this build;
+    reported as "tree absent" it reads as a path problem. It is neither.
+    """
+    run = BuildstatsRun(outcome="uncorrelated", note="no capture in window")
+
+    report = timing_report(
+        {"tasks": [_row("busybox", "do_compile", 0.0, 5.0)]},
+        baselines_path=tmp_path / "absent.json",
+        buildstats_source=lambda: run,
+    )
+
+    assert report.buildstats_join.available is False
+    assert "no capture belongs to this run" in report.buildstats_join.note
+    assert report.task_churn.available is False
+    assert "no capture belongs to this run" in report.task_churn.note
+    assert report.cpu_floor.available is False
+
+
 def test_join_ignores_buildstats_rows_this_run_never_executed(tmp_path: Path) -> None:
     """A stale capture's extra rows must not be credited to this build's CPU."""
     artifact = {"tasks": [_row("busybox", "do_compile", 0.0, 5.0)]}
@@ -598,12 +699,26 @@ def test_normalize_prefers_the_builds_own_variable_dump_over_the_environment(
     ``steps.kas_build._build_env`` hands the BAKAR_* pair to the kas subprocess
     rather than exporting it here, so reading the environment alone would record
     ``None`` on every real build and leave A4's alternative divisor uncaptured.
+
+    The dump uses bitbake's real per-variable shape - ``getAllKeysWithFlags``
+    maps each name to ``{"v": ..., "history": [...]}``, which
+    ``bb/ui/eventreplay.py`` reads as ``variable['v']``. An earlier version of
+    this fixture wrote bare strings, a shape bitbake never emits, so it passed
+    while both knobs read ``None`` on every real build.
     """
     monkeypatch.setenv("BAKAR_BB_NUMBER_THREADS", "99")
     monkeypatch.setenv("BAKAR_PARALLEL_MAKE", "-j 99")
     log = tmp_path / "bitbake_eventlog.json"
     log.write_text(
-        json.dumps({"allvariables": {"BB_NUMBER_THREADS": "8", "PARALLEL_MAKE": "-j 16"}}) + "\n",
+        json.dumps(
+            {
+                "allvariables": {
+                    "BB_NUMBER_THREADS": {"v": "8", "history": [{"op": "set", "file": "local.conf"}]},
+                    "PARALLEL_MAKE": {"v": "-j 16", "history": []},
+                }
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -611,6 +726,31 @@ def test_normalize_prefers_the_builds_own_variable_dump_over_the_environment(
 
     assert artifact["host"]["bb_number_threads"] == 8
     assert artifact["host"]["parallel_make"] == 16
+
+
+def test_normalize_retains_only_the_parallelism_knobs_from_the_variable_dump(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plain-string dump entry still reads, and unrelated variables are dropped.
+
+    The second half is the memory half of the same edit: the dump carries every
+    bitbake variable with its assignment history, and holding it live for the
+    duration of ``normalize`` over a multi-hundred-megabyte log buys nothing -
+    two scalars are all the host block needs.
+    """
+    for name in ("BAKAR_BB_NUMBER_THREADS", "BB_NUMBER_THREADS", "BAKAR_PARALLEL_MAKE", "PARALLEL_MAKE"):
+        monkeypatch.delenv(name, raising=False)
+    kept: dict[str, object] = {}
+    dump = {
+        "BB_NUMBER_THREADS": {"v": "8", "history": ["x" * 64]},
+        "IRRELEVANT_VARIABLE": {"v": "y", "history": ["y" * 64]},
+        "PARALLEL_MAKE": "-j 16",
+    }
+
+    eventlog._keep_wanted_variables(dump, kept)
+
+    assert kept == {"BB_NUMBER_THREADS": "8", "PARALLEL_MAKE": "-j 16"}
+    assert eventlog._host_block(kept)["bb_number_threads"] == 8
 
 
 def test_normalize_records_no_parallelism_when_the_environment_carries_none(
@@ -1076,11 +1216,16 @@ def test_churn_defaults_to_unavailable_without_a_buildstats_source(tmp_path: Pat
 
 
 def test_churn_coverage_counts_distinct_tasks_not_records(tmp_path: Path) -> None:
-    """Two versioned recipe directories collapse to one key once the version is stripped.
+    """Coverage counts executed tasks, and only the executed PF's record feeds a row.
 
-    Counting records instead would report coverage of 2 over 1 executed task -
-    a coverage figure above 100%, which reads as a parsing bug rather than as
-    the aggregation it actually is.
+    Two versioned recipe directories for one PN are two DIFFERENT builds of that
+    recipe. The run executed one of them, so ``covered`` is 1 and the row counts
+    1 task - the other record belongs to a version this run never built.
+
+    This assertion was previously ``row.tasks == 2``, which pinned the
+    version-stripped aggregation that let a stale record contribute its counters
+    to the PF that did run. That is the twin of the CPU-seconds inflation in
+    ``_compute_join``; both are fixed and this expectation is corrected with them.
     """
     report = _churn_report(
         tmp_path,
@@ -1092,7 +1237,10 @@ def test_churn_coverage_counts_distinct_tasks_not_records(tmp_path: Path) -> Non
     assert churn.covered == 1
     assert churn.executed == 1
     (row,) = churn.rows
-    assert row.tasks == 2
+    assert row.tasks == 1
+    # The twin of the CPU-seconds inflation: the stale record's counters must not
+    # reach the column either. Two identical records would render 2x here.
+    assert row.minflt == 7_023_117 + 214_243_919
 
 
 # --- 3.2: the columns rank task types across a wide dynamic range ------------
