@@ -1092,3 +1092,163 @@ def test_churn_coverage_counts_distinct_tasks_not_records(tmp_path: Path) -> Non
     assert churn.executed == 1
     (row,) = churn.rows
     assert row.tasks == 2
+
+
+# --- A5: the pre-existing sections are unperturbed by the buildstats source ---
+#
+# A5 claims a DIFFERENCE between two versions of the code, so an expectation
+# derived from the current implementation would prove nothing. The values below
+# were produced by running the PRE-change ``insights_timing.timing_report``
+# (``git show a7ed1dd:src/bakar/insights_timing.py``, the commit immediately
+# before the buildstats reader landed) over ``_A5_ARTIFACT`` and ``_A5_DOT``,
+# and are recorded as literals so they stay meaningful once that commit is no
+# longer close to HEAD. If one of these assertions fails, the falsifier for
+# task 2.3 has fired - the new source perturbed a section it was not supposed
+# to touch. Do not edit the literals to agree with current output.
+#
+# The artifact's ``host`` block and ``eventlog.SCHEMA_VERSION`` bump are NOT
+# covered here: A5 is about these two report sections for a given input, not
+# about the artifact's shape.
+
+_A5_ARTIFACT = {
+    "tasks": [
+        _row("busybox", "do_compile", 100.0, 242.5),
+        _row("busybox", "do_configure", 40.0, 100.0),
+        _row("busybox", "do_unpack", 10.0, 40.0),
+        _row("zlib", "do_compile", 20.0, 55.0),
+        _row("zlib", "do_configure", 5.0, 20.0),
+        _row("openssl", "do_compile", 250.0, 520.0),
+        _row("openssl", "do_configure", 200.0, 250.0),
+        _row("gcc", "do_compile", 0.0, 900.0),
+        _row("gcc", "do_install", 900.0, 960.0),
+        _row("make", "do_compile", 60.0, 78.0),
+        _row("make", "do_configure", 50.0, 60.0),
+        _row("bash", "do_compile", 70.0, 95.0),
+        _row("bash", "do_configure", 65.0, 70.0),
+    ],
+    "started": 0.0,
+    "completed": 1000.0,
+}
+
+_A5_DOT = (
+    "digraph { "
+    '"zlib.do_configure" -> "zlib.do_compile"; '
+    '"zlib.do_compile" -> "busybox.do_configure"; '
+    '"busybox.do_unpack" -> "busybox.do_configure"; '
+    '"busybox.do_configure" -> "busybox.do_compile"; '
+    '"busybox.do_compile" -> "openssl.do_configure"; '
+    '"openssl.do_configure" -> "openssl.do_compile"; '
+    '"make.do_configure" -> "make.do_compile"; '
+    '"make.do_compile" -> "bash.do_compile"; '
+    "}"
+)
+
+# Reference output of the pre-change code. Thirteen tasks, so top-N truncates
+# at ten; the two 60.0s rows keep their artifact order under the stable sort.
+_A5_TOP_SLOWEST = [
+    ("gcc", "do_compile", 900.0),
+    ("openssl", "do_compile", 270.0),
+    ("busybox", "do_compile", 142.5),
+    ("busybox", "do_configure", 60.0),
+    ("gcc", "do_install", 60.0),
+    ("openssl", "do_configure", 50.0),
+    ("zlib", "do_compile", 35.0),
+    ("busybox", "do_unpack", 30.0),
+    ("bash", "do_compile", 25.0),
+    ("make", "do_compile", 18.0),
+]
+_A5_PATH_CHAIN = ["zlib", "busybox", "openssl"]
+_A5_PATH_SECONDS = 602.5
+
+
+def _a5_dependency_source() -> tuple[str, str]:
+    return _A5_DOT, ""
+
+
+def _assert_a5_sections_unchanged(report: TimingReport, *, path_available: bool) -> None:
+    """Assert both pre-existing sections match the pre-change reference."""
+    assert [(d.recipe, d.task, d.duration) for d in report.top_slowest] == _A5_TOP_SLOWEST
+    assert all(d.baseline_mean is None and d.baseline_stddev is None for d in report.top_slowest)
+
+    path = report.critical_path
+    assert path.available is path_available
+    if path_available:
+        assert path.chain == _A5_PATH_CHAIN
+        assert path.total_seconds == pytest.approx(_A5_PATH_SECONDS)
+    else:
+        assert path.chain == []
+        assert path.total_seconds == pytest.approx(0.0)
+
+
+@pytest.mark.unit
+def test_a5_sections_match_the_pre_change_reference_without_any_buildstats_source(tmp_path: Path) -> None:
+    """No buildstats source supplied at all - the baseline case for A5."""
+    report = timing_report(_A5_ARTIFACT, baselines_path=tmp_path / "absent.json")
+    _assert_a5_sections_unchanged(report, path_available=False)
+
+    report = timing_report(
+        _A5_ARTIFACT,
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=_a5_dependency_source,
+    )
+    _assert_a5_sections_unchanged(report, path_available=True)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("outcome", ["absent", "empty"])
+def test_a5_sections_survive_a_buildstats_tree_that_cannot_be_read(tmp_path: Path, outcome: str) -> None:
+    """A source that is present but yields nothing is where a perturbation hides.
+
+    The new sections must degrade; the two old ones must be identical to the
+    pre-change reference regardless.
+    """
+    run = BuildstatsRun(outcome=outcome, note="fixture note")
+
+    report = timing_report(
+        _A5_ARTIFACT,
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=_a5_dependency_source,
+        buildstats_source=lambda: run,
+    )
+
+    assert report.buildstats_join.available is False
+    assert report.concurrency_floor.available is False
+    _assert_a5_sections_unchanged(report, path_available=True)
+
+
+@pytest.mark.unit
+def test_a5_sections_survive_a_buildstats_source_that_raises(tmp_path: Path) -> None:
+    def _boom() -> BuildstatsRun:
+        raise RuntimeError("buildstats tree unreadable")
+
+    report = timing_report(
+        _A5_ARTIFACT,
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=_a5_dependency_source,
+        buildstats_source=_boom,
+    )
+
+    assert report.buildstats_join.available is False
+    _assert_a5_sections_unchanged(report, path_available=True)
+
+
+@pytest.mark.unit
+def test_a5_sections_survive_a_buildstats_tree_that_refuses_the_join(tmp_path: Path) -> None:
+    """A tree that parses but covers one task of thirteen: the gate refuses.
+
+    This is the case a perturbation would hide in - the new code runs its full
+    join and floor path over real records and still must leave the two old
+    sections byte-identical.
+    """
+    run = _parsed(_stat("busybox", "do_compile", 120.0))
+
+    report = timing_report(
+        _A5_ARTIFACT,
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=_a5_dependency_source,
+        buildstats_source=lambda: run,
+    )
+
+    assert report.buildstats_join.gate_passed is False
+    assert report.concurrency_floor.available is False
+    _assert_a5_sections_unchanged(report, path_available=True)
