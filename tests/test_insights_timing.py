@@ -1331,7 +1331,12 @@ def test_churn_columns_spread_task_types_over_orders_of_magnitude(tmp_path: Path
 
     spread = math.log10(max(ratios.values()) / min(ratios.values()))
     assert spread >= 2.0
-    assert spread == pytest.approx(_MEASURED_SPREAD_ORDERS, abs=0.01)
+    # Deliberately NOT also asserting the spread equals a stored constant.
+    # _MEASURED_SPREAD_ORDERS is arithmetic over the table twelve lines above,
+    # so such an assertion compares the fixture to itself: its only failure mode
+    # is a fixture edit, and the next edit to _MEASURED_CHURN would be paired
+    # with an edit to the constant and both would pass. The >= 2.0 bar above is
+    # the real claim - it is the one a wrong aggregation breaks.
 
 
 def test_churn_columns_rank_task_types_in_the_measured_order(tmp_path: Path) -> None:

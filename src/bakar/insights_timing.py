@@ -341,7 +341,22 @@ def _churn_line(cells: tuple[str, ...]) -> str:
     """
     parts = []
     for index, (cell, width) in enumerate(zip(cells, CHURN_WIDTHS, strict=True)):
-        parts.append(cell.ljust(width) if index == 0 else cell.rjust(width))
+        if index == 0:
+            # Truncate rather than let the row grow past its width budget.
+            # ``ljust`` does not cap, and the first column's stated maximum
+            # (``do_package_write_rpm_setscene``, 29) is not the real one -
+            # oe-core has at least five longer, up to
+            # ``do_deploy_source_date_epoch_setscene`` at 36. An sstate-restored
+            # build emits those routinely, which is bakar's default regime after
+            # ``sstate-seed``. An over-long name pushed the row past the 80
+            # columns the widths budget for, Rich hard-wrapped it, and the
+            # numbers landed under the wrong headings - the exact misread this
+            # table exists to prevent, and the one that once had ``majflt``
+            # quoted as a task count. A clipped name is legible; a wrapped row
+            # is actively misleading.
+            parts.append(cell[: width - 1] + "~" if len(cell) > width else cell.ljust(width))
+        else:
+            parts.append(cell.rjust(width))
     return "".join(parts)
 
 
