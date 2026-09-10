@@ -2159,21 +2159,17 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         # copy_oe_eventlog_to_run_dir/persist_* cannot make the finally block
         # emit a duplicate terminal step event.
         terminated = True
-        # DISABLED, temporarily. The first real build showed the capture cannot
-        # succeed from here: at this point the build's own bitbake cooker is
-        # still active, so clear_stale_bitbake_locks refuses with "bitbake lock
-        # held locally by live process". It also targeted `generic`, because
-        # cfg.image is not the bitbake target. Neither failure hurt the build -
-        # it warned, cost nothing, and left rc untouched - but it emitted a
-        # per-build warning naming a depgraph.log that run_shell_capture returns
-        # before creating, which is how people learn to ignore warnings.
+        # Capture the dependency graph for a build that succeeded, before the
+        # persistence tail. Only on rc == 0: a failed build's graph describes
+        # what was attempted rather than what ran, and the tree it would be read
+        # against may be inconsistent.
         #
-        # Left in place rather than deleted because the re-enable is the next
-        # commit: a bounded wait for the cooker to go idle, and a target read
-        # from bb.event.BuildStarted. If that stalls, delete this and the
-        # capture with it rather than leaving an uncalled function parked here.
-        #     if rc == 0:
-        #         _capture_dependency_graph(ctx, log)
+        # The capture waits for the build's own cooker to go idle first. It has
+        # to: at this point that cooker still holds the lock WITH activity, and
+        # clear_stale_bitbake_locks refuses on exactly that - which is what the
+        # first real build hit, every time. Never raises, never changes rc.
+        if rc == 0:
+            _capture_dependency_graph(ctx, log)
         # Normalize the raw bitbake event log into bitbake-events.json for both
         # outcomes. Best-effort: a no-op when bitbake wrote no event log.
         # Belt-and-braces alongside the RunLogger-side never-raises fix (task
@@ -2987,6 +2983,96 @@ def graph_capture_command(target: str) -> str:
     return f"bitbake -g {shlex.quote(target)}; rc=$?; bitbake -m; exit $rc"
 
 
+#: How long to wait for the build's own cooker to go idle before capturing.
+#: Measured on a real bench run: the capture was refused at 17:07:07 and the
+#: identical command succeeded at 17:07:17, so ten seconds is the observed
+#: figure and this is a generous multiple of it.
+GRAPH_CAPTURE_IDLE_TIMEOUT_S = 60.0
+
+#: Interval between idle probes. Each probe scans the lock holder's process
+#: tree, so this is not free enough to spin on.
+GRAPH_CAPTURE_POLL_S = 2.0
+
+
+def _wait_for_cooker_idle(
+    build_dir: Path,
+    log: RunLogger,
+    *,
+    timeout: float = GRAPH_CAPTURE_IDLE_TIMEOUT_S,
+    poll: float = GRAPH_CAPTURE_POLL_S,
+) -> bool:
+    """Wait until the build's bitbake cooker has no activity left, or time out.
+
+    The lock is never released for us to take - that is the thing to understand
+    here. bitbake's cookerdaemon persists after a build so the next invocation
+    reconnects instead of respawning, which is a documented happy path. What
+    changes is that the holder goes from having worker/client ACTIVITY to being
+    a bare idle server, and :func:`clear_stale_bitbake_locks` already treats
+    those two states differently: the first refuses, the second is left alone
+    precisely so a following invocation can reconnect.
+
+    So this waits on the same predicate that would refuse us, rather than
+    sleeping a guessed interval and hoping.
+
+    Returns False on timeout rather than raising. A capture that could not get
+    a quiet cooker is an absent optional artifact, and blocking a completed
+    build's teardown on one would be a worse trade than going without it.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if not _lock_holder_has_activity(build_dir):
+            return True
+        if time.monotonic() >= deadline:
+            log.warn(
+                f"dependency graph: the build's bitbake cooker was still active after {timeout:.0f}s; "
+                "skipping capture rather than delaying teardown further"
+            )
+            return False
+        time.sleep(poll)
+
+
+def _resolve_capture_target(ctx: KasBuildContext, log: RunLogger) -> str | None:
+    """Resolve the bitbake target this build produced.
+
+    Neither obvious candidate works, and both were tried against a real build.
+    ``cfg.image`` resolves to ``generic`` on a meta-avocado workspace, and
+    ``ctx.target`` is None whenever the kas configuration supplies the target
+    rather than the command line - which is the ordinary case.
+
+    ``kas dump`` is the authoritative answer because it resolves includes and
+    overlays, and a layered configuration's effective ``target:`` can come from
+    any file in the stack. Reading the top-level YAML directly would get the
+    common case right and the layered one silently wrong.
+    """
+    if ctx.target:
+        return ctx.target
+    with tempfile.NamedTemporaryFile(suffix=".yml", delete=False) as fh:
+        dump_path = Path(fh.name)
+    try:
+        rc = run_kas_subcommand(ctx, "dump", [], capture_to=dump_path)
+        if rc != 0:
+            log.warn(f"dependency graph: kas dump exited {rc}; cannot resolve the build target")
+            return None
+        resolved = yaml.safe_load(dump_path.read_text())
+    except Exception as exc:  # noqa: BLE001 - target resolution must not crash a completed build
+        log.warn(f"dependency graph: could not resolve the build target ({exc})")
+        return None
+    finally:
+        dump_path.unlink(missing_ok=True)
+    if not isinstance(resolved, dict):
+        return None
+    target = resolved.get("target")
+    # kas allows a list of targets; graph the first, and say so rather than
+    # silently graphing one of several as though it were the whole build.
+    if isinstance(target, list):
+        if not target:
+            return None
+        if len(target) > 1:
+            log.info(f"dependency graph: configuration builds {len(target)} targets; graphing {target[0]}")
+        target = target[0]
+    return target if isinstance(target, str) and target else None
+
+
 def _capture_dependency_graph(ctx: KasBuildContext, log: RunLogger) -> dict[str, str] | None:
     """Emit the dependency graph for the build just completed into the run dir.
 
@@ -3001,9 +3087,14 @@ def _capture_dependency_graph(ctx: KasBuildContext, log: RunLogger) -> dict[str,
     would turn that into a crash after the work was already done.
     """
     cfg = ctx.cfg
-    target = cfg.image
+    target = _resolve_capture_target(ctx, log)
     if not target:
-        log.warn("dependency graph: no image target resolved for this build; skipping capture")
+        log.warn("dependency graph: no build target resolved; skipping capture")
+        return None
+    # The build's own cooker still holds the lock at this point, with activity.
+    # Without this wait every capture is refused before it starts - which is
+    # what the first real build did, on every attempt.
+    if not _wait_for_cooker_idle(cfg.bsp_root / cfg.build_dir_name, log):
         return None
     try:
         # SHELL is pinned because kas hands the -c payload to $SHELL rather than

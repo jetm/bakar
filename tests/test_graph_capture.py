@@ -87,3 +87,72 @@ def test_marker_name_is_distinct_from_the_artifacts() -> None:
     """The sidecar carries provenance; co-location alone is not evidence."""
     assert GRAPH_MARKER_NAME not in GRAPH_ARTIFACTS
     assert GRAPH_MARKER_NAME.endswith(".json")
+
+
+def test_idle_wait_returns_immediately_when_the_cooker_is_already_quiet(monkeypatch, tmp_path) -> None:
+    from bakar.steps import kas_build
+
+    monkeypatch.setattr(kas_build, "_lock_holder_has_activity", lambda _d: False)
+    slept: list[float] = []
+    monkeypatch.setattr(kas_build.time, "sleep", slept.append)
+
+    assert kas_build._wait_for_cooker_idle(tmp_path, _FakeLog()) is True
+    assert slept == [], "a quiet cooker must not cost a single poll interval"
+
+
+def test_idle_wait_returns_true_once_activity_stops(monkeypatch, tmp_path) -> None:
+    """The real case: active at first, idle a few seconds later.
+
+    Measured on a real build - refused at 17:07:07, the identical command
+    succeeded at 17:07:17.
+    """
+    from bakar.steps import kas_build
+
+    calls = iter([True, True, False])
+    monkeypatch.setattr(kas_build, "_lock_holder_has_activity", lambda _d: next(calls))
+    monkeypatch.setattr(kas_build.time, "sleep", lambda _s: None)
+
+    assert kas_build._wait_for_cooker_idle(tmp_path, _FakeLog()) is True
+
+
+def test_idle_wait_times_out_rather_than_blocking_teardown(monkeypatch, tmp_path) -> None:
+    """A capture that cannot get a quiet cooker is an absent optional artifact.
+
+    Blocking a completed build's teardown on one would be the worse trade, so
+    this must return False rather than wait indefinitely.
+    """
+    from bakar.steps import kas_build
+
+    monkeypatch.setattr(kas_build, "_lock_holder_has_activity", lambda _d: True)
+    monkeypatch.setattr(kas_build.time, "sleep", lambda _s: None)
+    log = _FakeLog()
+
+    assert kas_build._wait_for_cooker_idle(tmp_path, log, timeout=0.0) is False
+    assert any("still active" in w for w in log.warnings)
+
+
+class _FakeLog:
+    """Minimal RunLogger stand-in: the helpers under test only warn and info."""
+
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+        self.infos: list[str] = []
+
+    def warn(self, msg: str) -> None:
+        self.warnings.append(msg)
+
+    def info(self, msg: str) -> None:
+        self.infos.append(msg)
+
+
+def test_explicit_ctx_target_wins_without_shelling_out(monkeypatch) -> None:
+    """A command-line target needs no kas dump."""
+    from bakar.steps import kas_build
+
+    def _fail(*_a, **_k):
+        raise AssertionError("kas dump must not run when ctx.target is set")
+
+    monkeypatch.setattr(kas_build, "run_kas_subcommand", _fail)
+    ctx = type("Ctx", (), {"target": "my-image"})()
+
+    assert kas_build._resolve_capture_target(ctx, _FakeLog()) == "my-image"
