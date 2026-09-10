@@ -2159,12 +2159,21 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         # copy_oe_eventlog_to_run_dir/persist_* cannot make the finally block
         # emit a duplicate terminal step event.
         terminated = True
-        # Capture the dependency graph for a build that succeeded, before the
-        # persistence tail. Only on rc == 0: a failed build's graph describes
-        # what was attempted rather than what ran, and the tree it would be
-        # read against may be inconsistent. Never raises, and never changes rc.
-        if rc == 0:
-            _capture_dependency_graph(ctx, log)
+        # DISABLED, temporarily. The first real build showed the capture cannot
+        # succeed from here: at this point the build's own bitbake cooker is
+        # still active, so clear_stale_bitbake_locks refuses with "bitbake lock
+        # held locally by live process". It also targeted `generic`, because
+        # cfg.image is not the bitbake target. Neither failure hurt the build -
+        # it warned, cost nothing, and left rc untouched - but it emitted a
+        # per-build warning naming a depgraph.log that run_shell_capture returns
+        # before creating, which is how people learn to ignore warnings.
+        #
+        # Left in place rather than deleted because the re-enable is the next
+        # commit: a bounded wait for the cooker to go idle, and a target read
+        # from bb.event.BuildStarted. If that stalls, delete this and the
+        # capture with it rather than leaving an uncalled function parked here.
+        #     if rc == 0:
+        #         _capture_dependency_graph(ctx, log)
         # Normalize the raw bitbake event log into bitbake-events.json for both
         # outcomes. Best-effort: a no-op when bitbake wrote no event log.
         # Belt-and-braces alongside the RunLogger-side never-raises fix (task
