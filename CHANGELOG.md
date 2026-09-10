@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A successful build now captures its dependency graph (`task-depends.dot`, `pn-buildlist`) into the run directory, with a `dependency-graph.json` sidecar recording the target and capture time. This is what `bakar insights` needs to compute a critical path offline, and with it the concurrency floor `max(CPU floor, critical path)` - which until now could not render from the CLI because the path required a live `bitbake -g <recipe>` and the recipe is not knowable from a persisted run directory. Both objections are properties of report time; at build time the target is known and a container is already running. Measured cost: ~11s against ~540s builds, 2%.
+- The capture payload is sequenced `bitbake -g <target>; rc=$?; bitbake -m; exit $rc` - with `;` rather than `&&` deliberately. `bitbake -g` leaves a cooker server holding `build/bitbake.lock`, and the failure case is precisely the one that most needs the unlock: an `&&` would short-circuit and strand the lock, which does not fail the build that stranded it but the next one. It runs with `SHELL` pinned to bash, because kas hands a `-c` payload to `$SHELL` and the login shell on this fleet is fish, which rejects `rc=$?` at exit 127 before bitbake starts.
+
 ## [0.31.0] - 2026-09-10
 
 ### Added

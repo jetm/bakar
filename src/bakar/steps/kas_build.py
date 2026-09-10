@@ -36,6 +36,7 @@ rewrite is needed here.
 
 from __future__ import annotations
 
+import json
 import os
 import pty
 import re
@@ -2158,6 +2159,12 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         # copy_oe_eventlog_to_run_dir/persist_* cannot make the finally block
         # emit a duplicate terminal step event.
         terminated = True
+        # Capture the dependency graph for a build that succeeded, before the
+        # persistence tail. Only on rc == 0: a failed build's graph describes
+        # what was attempted rather than what ran, and the tree it would be
+        # read against may be inconsistent. Never raises, and never changes rc.
+        if rc == 0:
+            _capture_dependency_graph(ctx, log)
         # Normalize the raw bitbake event log into bitbake-events.json for both
         # outcomes. Best-effort: a no-op when bitbake wrote no event log.
         # Belt-and-braces alongside the RunLogger-side never-raises fix (task
@@ -2868,6 +2875,7 @@ def run_shell_capture(
     step: str = "kas_shell_capture",
     python_executable: Path | None = None,
     stderr_path: Path | None = None,
+    env_overrides: dict[str, str] | None = None,
 ) -> int:
     """Run ``kas-container shell -c <command>`` with output captured to file.
 
@@ -2915,14 +2923,22 @@ def run_shell_capture(
             stderr_target: int | IO[bytes] = subprocess.STDOUT
             if stderr_path is not None:
                 stderr_target = stack.enter_context(stderr_path.open("wb"))
+            env = _build_env(
+                cfg,
+                python_executable=python_executable,
+                eventlog_path=_container_eventlog_path(cfg, log),
+            )
+            # Applied here rather than inside _build_env so an override reaches
+            # only the caller that asked for it. SHELL is the motivating case:
+            # kas hands a -c payload to $SHELL, so a bash-only payload needs it
+            # pinned - but `bakar shell` spawns $SHELL as the user's interactive
+            # shell, and pinning it there would silently replace their shell.
+            if env_overrides:
+                env.update(env_overrides)
             proc = subprocess.Popen(
                 cmd,
                 cwd=cfg.bsp_root,
-                env=_build_env(
-                    cfg,
-                    python_executable=python_executable,
-                    eventlog_path=_container_eventlog_path(cfg, log),
-                ),
+                env=env,
                 stdout=fh,
                 stderr=stderr_target,
             )
@@ -2934,6 +2950,95 @@ def run_shell_capture(
         return 1
     _finish_step(log, step, rc)
     return rc
+
+
+#: Filename of the sidecar recording what a captured graph describes.
+GRAPH_MARKER_NAME = "dependency-graph.json"
+
+#: The two artifacts ``bitbake -g`` emits into TOPDIR.
+GRAPH_ARTIFACTS = ("task-depends.dot", "pn-buildlist")
+
+
+def graph_capture_command(target: str) -> str:
+    """Return the payload that emits a dependency graph and releases the lock.
+
+    ``bitbake -g`` starts a cooker server and leaves it running, holding
+    ``build/bitbake.lock``. Without the ``bitbake -m`` that follows, the next
+    bitbake invocation against this build directory is refused outright with
+    "Only one copy of bitbake should be run against a build directory".
+
+    Sequenced with ``;`` and an explicit ``rc``, never ``&&``. The failure case
+    is precisely the one that most needs the unlock: a ``bitbake -g`` that
+    starts its cooker and then exits non-zero - a parse error, ENOSPC, a recipe
+    broken by whatever is being built - would short-circuit an ``&&`` and leave
+    that server holding the lock. Nothing about the build that stranded it
+    fails; the NEXT build fails, on someone else's machine, naming neither this
+    capture nor the run that caused it.
+    """
+    return f"bitbake -g {shlex.quote(target)}; rc=$?; bitbake -m; exit $rc"
+
+
+def _capture_dependency_graph(ctx: KasBuildContext, log: RunLogger) -> dict[str, str] | None:
+    """Emit the dependency graph for the build just completed into the run dir.
+
+    Runs AFTER the build's terminal step event. That placement cannot distort
+    the reported durations even in principle, because bakar derives them from
+    bitbake's own task event timestamps rather than from a wall clock the
+    harness holds around the build - unlike the reference implementation this
+    ports, where the capture had to be sequenced outside a timed region.
+
+    Never raises: a build that produced an image and no graph is a successful
+    build missing an optional analysis artifact, and an exception escaping here
+    would turn that into a crash after the work was already done.
+    """
+    cfg = ctx.cfg
+    target = cfg.image
+    if not target:
+        log.warn("dependency graph: no image target resolved for this build; skipping capture")
+        return None
+    try:
+        # SHELL is pinned because kas hands the -c payload to $SHELL rather than
+        # choosing a shell. The login shell here is fish, which rejects the
+        # `rc=$?` idiom above with "Unsupported use of '='" at exit 127 - before
+        # bitbake starts, so the traceback names bitbake and not the shell.
+        rc = run_shell_capture(
+            ctx,
+            graph_capture_command(target),
+            log.run_dir / "depgraph.log",
+            step="graph_capture",
+            env_overrides={"SHELL": "/bin/bash"},
+        )
+        if rc != 0:
+            log.warn(f"dependency graph: capture exited {rc}; see {log.run_dir / 'depgraph.log'}")
+            return None
+
+        topdir = cfg.resolved_tmpdir.parent
+        captured: dict[str, str] = {}
+        for name in GRAPH_ARTIFACTS:
+            src = topdir / name
+            if not src.is_file():
+                log.warn(f"dependency graph: {name} not produced at {src}")
+                return None
+            dest = log.run_dir / name
+            shutil.copy2(src, dest)
+            captured[name] = str(dest)
+
+        # The sidecar is what makes provenance checkable. Co-location alone is
+        # what lets a graph left behind by a previous build read as this run's.
+        marker = {"target": target, "captured_at": time.time(), "artifacts": captured}
+        (log.run_dir / GRAPH_MARKER_NAME).write_text(json.dumps(marker, indent=2))
+        log.info(f"dependency graph: captured for {target}")
+    except KeyboardInterrupt:
+        # Listed FIRST and separately because KeyboardInterrupt derives from
+        # BaseException, not Exception, so the clause below would never catch
+        # it. Without this a Ctrl-C during the capture escapes and discards a
+        # completed build's reporting for a traceback.
+        log.warn("dependency graph: interrupted during capture")
+        return None
+    except Exception as exc:  # noqa: BLE001 - a completed build must not crash on capture failure
+        log.warn(f"dependency graph: capture failed ({exc})")
+        return None
+    return captured
 
 
 def run_kas_subcommand(
