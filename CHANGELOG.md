@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-09-10
+
 ### Added
 
 - `bakar insights --timing` now reports four buildstats-derived sections beside the existing timings: the buildstats join, the CPU floor, the concurrency floor, and per-task-type churn columns. The report previously computed a duration-weighted critical path but could not say whether that path was the build's actual constraint, because the bound that answers it - `max(CPU floor, critical path)` - needs per-task CPU seconds that bakar collected nowhere. On the reference build the CPU-only figure read 11.9% headroom while the real figure was 1.1%, so a campaign acting on the first would have spent effort on scheduling against a build that was already dependency-bound.
@@ -762,7 +764,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/jetm/bakar/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/jetm/bakar/compare/v0.29.3...v0.30.0
 [0.29.3]: https://github.com/jetm/bakar/compare/v0.29.2...v0.29.3
 [0.29.2]: https://github.com/jetm/bakar/compare/v0.29.0...v0.29.2
