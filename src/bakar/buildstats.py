@@ -23,6 +23,7 @@ them together. That distinction is the whole reason a caller can trust a zero.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -80,15 +81,25 @@ class BuildstatsRun:
 
 
 def _float_after_colon(line: str) -> float | None:
-    """Parse the numeric tail of a ``key: value`` buildstats line."""
+    """Parse the numeric tail of a ``key: value`` buildstats line.
+
+    ``None`` for anything that is not a finite number. ``float()`` accepts
+    ``nan`` and ``inf`` as ordinary literals, and a buildstats file is written
+    concurrently with the build by a process that can be killed mid-line, so a
+    garbled token is an ordinary state rather than a theoretical one. Letting
+    either through propagates into the CPU floor and the headroom percentage,
+    where it renders as ``nan`` rather than as a refusal, and ``int(inf)``
+    raises out of the whole read.
+    """
     _, _, rest = line.partition(":")
     token = rest.strip().split()
     if not token:
         return None
     try:
-        return float(token[0])
+        value = float(token[0])
     except ValueError:
         return None
+    return value if math.isfinite(value) else None
 
 
 #: Maps a buildstats line prefix to the internal key it contributes to.
@@ -133,20 +144,51 @@ def parse_task_file(path: Path) -> dict[str, float]:
     return found
 
 
-def _to_task_stats(recipe: str, task: str, d: dict[str, float]) -> TaskStats | None:
-    """Build a record, or None when the file carried no elapsed time.
+#: The CPU fields a record MUST carry to be usable. bitbake writes a task file
+#: incrementally - ``Elapsed time`` lands before the ``rusage`` block and the
+#: ``Child rusage`` block lands last - so a file read while the build is still
+#: running can carry a duration and no CPU at all. Defaulting those to zero made
+#: such a record a valid ``TaskStats`` that JOINED, which let the 95% join gate
+#: pass while the CPU floor it gates silently understated the build.
+_REQUIRED_CPU: tuple[str, ...] = ("ut", "st", "cut", "cst")
 
-    ``elapsed`` is the one field with no sensible default. A task with no
-    duration is a record bitbake had not finished writing, and defaulting it to
-    zero would quietly pull the mean down rather than omit the row.
+
+def _to_task_stats(recipe: str, task: str, d: dict[str, float]) -> TaskStats | None:
+    """Build a record, or ``None`` when the file is incomplete or impossible.
+
+    Three rejections, and the asymmetry between the first two is deliberate:
+
+    - **No ``elapsed``.** A task with no duration is a record bitbake had not
+      finished writing, and defaulting it to zero would quietly pull the mean
+      down rather than omit the row.
+    - **Any missing CPU field.** Absence and a legitimate zero are
+      indistinguishable once defaulted, and here they are not the same thing: a
+      task that consumed no CPU does not exist, so a zero in this position is
+      always a record that was not finished. Such a record must not reach the
+      join numerator, because joining it certifies CPU seconds nobody measured.
+    - **Any negative value.** Every field here counts time, faults, syscalls or
+      bytes, none of which can run backwards. A negative CPU component yields a
+      negative CPU floor, which reads as enormous headroom.
+
+    The churn counters are deliberately NOT required, and that is the one place
+    this diverges from the CPU rule above. A zero churn counter is legitimate -
+    a task can genuinely record 0 major faults, and many do - so absence and
+    zero are not distinguishable there by inspection the way they are for CPU.
+    Requiring them would drop real records and depress the join rate over a
+    column that only describes, while the gated number (the CPU floor) is
+    computed from fields this function does require.
     """
     if "elapsed" not in d:
+        return None
+    if any(key not in d for key in _REQUIRED_CPU):
+        return None
+    if any(value < 0 for value in d.values()):
         return None
     return TaskStats(
         recipe=recipe,
         task=task,
         elapsed=d["elapsed"],
-        cpu_seconds=d.get("ut", 0.0) + d.get("st", 0.0) + d.get("cut", 0.0) + d.get("cst", 0.0),
+        cpu_seconds=sum(d[key] for key in _REQUIRED_CPU),
         minflt=int(d.get("minflt", 0.0) + d.get("cminflt", 0.0)),
         majflt=int(d.get("majflt", 0.0) + d.get("cmajflt", 0.0)),
         syscalls=int(d.get("syscr", 0.0) + d.get("syscw", 0.0)),
@@ -162,52 +204,46 @@ def _to_task_stats(recipe: str, task: str, d: dict[str, float]) -> TaskStats | N
 CAPTURE_SLACK_SECONDS = 300.0
 
 
-def capture_epochs(path: Path) -> tuple[float, ...]:
-    """Return every defensible epoch for a capture directory, newest last.
-
-    Two independent readings, because neither alone is safe and they fail in
-    opposite directions:
-
-    - The NAME, read as UTC. This is the build's START, which is what the
-      correlation actually wants, but the name carries no timezone. bitbake
-      writes it from the build container's clock, and kas-container runs UTC
-      while this analysing host runs UTC-6 - so reading it as LOCAL time put
-      every capture exactly 6.00 h from its own run's window and nothing ever
-      correlated. Reading it as UTC fixes this fleet and would break one whose
-      builds run in local time.
-    - The MTIME, which needs no timezone guess but is not the start: bitbake
-      writes recipe subdirectories throughout the build, and each one bumps the
-      parent's mtime, so this lands near the build's END. Measured on a real
-      6-minute capture, name 14:20:35 against mtime 14:26:30.
-
-    A capture correlates when EITHER reading falls inside the window. That
-    covers a UTC-writing container (the name is right) and a local-writing host
-    (the name is 6 h out, but mtime is a true epoch and the build's own end is
-    inside its own window by construction).
-
-    Empty tuple when the name is not ``YYYYMMDDHHMMSS``, which keeps a stray
-    directory from correlating by accident - the shape check is the only thing
-    standing between a scratch directory and a run's provenance.
-    """
-    epochs: list[float] = []
-    named = _named_epoch(path)
-    if named is None:
-        return ()
-    epochs.append(named)
-    try:
-        epochs.append(path.stat().st_mtime)
-    except OSError:
-        pass
-    return tuple(sorted(epochs))
-
-
 def _named_epoch(path: Path) -> float | None:
-    """Parse a ``YYYYMMDDHHMMSS`` directory name as UTC, or ``None``."""
+    """Parse a ``YYYYMMDDHHMMSS`` capture-directory name as UTC, or ``None``.
+
+    This reading is the build's START, which is what correlation actually wants,
+    but the name carries no timezone. bitbake writes it from the build
+    container's clock, and kas-container runs UTC while this analysing host runs
+    UTC-6 - so reading it as LOCAL time put every capture exactly 6.00 h from its
+    own run's window and nothing ever correlated. Reading it as UTC fixes this
+    fleet and would break one whose builds run in local time, which is what
+    :func:`_mtime_epoch` backs up.
+
+    ``None`` when the name is not ``YYYYMMDDHHMMSS``. That shape check is the
+    only thing standing between a scratch directory and a run's provenance, so a
+    capture that fails it never correlates by any reading.
+    """
     try:
         named = datetime.strptime(path.name, "%Y%m%d%H%M%S").replace(tzinfo=UTC).timestamp()
     except ValueError:
         return None
     return named
+
+
+def _mtime_epoch(path: Path) -> float:
+    """The capture directory's mtime, or ``-inf`` when it cannot be read.
+
+    A true epoch needing no timezone guess, which is why it can place a capture
+    a local-time-writing host named hours out of its own window. It is NOT the
+    build's start: bitbake writes recipe subdirectories throughout the build and
+    each one bumps the parent's mtime, so this lands near the build's END.
+    Measured on a real 6-minute capture, name 14:20:35 against mtime 14:26:30 -
+    which is why :func:`select_capture` ranks it in a separate tier rather than
+    pooling it with the name.
+
+    ``-inf`` never falls inside a window, so an unreadable directory declines to
+    correlate instead of raising out of capture selection.
+    """
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return float("-inf")
 
 
 def select_capture(tmpdir: Path | str, window: tuple[float, float]) -> Path | None:
@@ -230,22 +266,39 @@ def select_capture(tmpdir: Path | str, window: tuple[float, float]) -> Path | No
         return None
     lo = started - CAPTURE_SLACK_SECONDS
     hi = completed + CAPTURE_SLACK_SECONDS
-    matches = []
+
+    named_matches: list[tuple[float, str, Path]] = []
+    mtime_matches: list[Path] = []
     for p in candidates:
-        inside = [e for e in capture_epochs(p) if lo <= e <= hi]
-        if inside:
-            # Rank on the reading nearest the build's start; a capture that
-            # correlates only by mtime still ranks by how close that lands.
-            matches.append((min(inside, key=lambda e: abs(e - started)), p))
-    if not matches:
-        return None
-    # Closest to the build's START, not the last one inside the window. Two
-    # builds a couple of minutes apart both fall inside the other's window once
-    # the slack is applied, and taking the latest match then hands an earlier run
-    # the later build's capture - the same wrong-build join this function exists
-    # to prevent, reintroduced by the tolerance. bitbake creates the directory as
-    # the build starts, so proximity to ``started`` is what identifies it.
-    return min(matches, key=lambda pair: (abs(pair[0] - started), pair[1].name))[1]
+        named = _named_epoch(p)
+        if named is None:
+            # Not a ``YYYYMMDDHHMMSS`` directory, so it cannot be placed in time
+            # at all - not even by mtime, which would let a scratch directory
+            # touched during the build read as this run's provenance.
+            continue
+        if lo <= named <= hi:
+            named_matches.append((abs(named - started), p.name, p))
+        elif lo <= _mtime_epoch(p) <= hi:
+            mtime_matches.append(p)
+
+    if named_matches:
+        # Closest to the build's START, not the last one inside the window. Two
+        # builds a couple of minutes apart both fall inside the other's window
+        # once the slack is applied, and taking the latest match then hands an
+        # earlier run the later build's capture - the same wrong-build join this
+        # function exists to prevent, reintroduced by the tolerance. bitbake
+        # creates the directory as the build starts, so proximity to ``started``
+        # is what identifies it.
+        return min(named_matches)[2]
+
+    # Nothing named this run's window, so the only remaining evidence is mtime -
+    # and mtime is weaker in a way that ranking hides. It is near the build's
+    # END, not its start, so an ambiguous set cannot be resolved by "closest to
+    # started": the previous build's END sits nearer this run's start than this
+    # run's own end does, and ranking therefore prefers the wrong build. One
+    # match is the local-time-writing host this fallback exists for; more than
+    # one is provenance nobody can settle, and D5 refuses rather than guesses.
+    return mtime_matches[0] if len(mtime_matches) == 1 else None
 
 
 def latest_capture(tmpdir: Path | str) -> Path | None:
@@ -285,8 +338,32 @@ def read_run(tmpdir: Path | str, *, window: tuple[float, float] | None = None) -
     if not root.is_dir():
         return BuildstatsRun(outcome="absent", note=f"no buildstats tree at {root}")
 
+    # Emptiness is settled BEFORE correlation, because ``select_capture``
+    # returns None for both "the root holds nothing" and "nothing here belongs
+    # to this run" - and those call for opposite responses. Deciding
+    # "uncorrelated" off a bare None told a reader that some other build's
+    # captures were sitting there when the directory was in fact empty.
+    try:
+        has_captures = any(p.is_dir() for p in root.iterdir())
+    except OSError as exc:
+        return BuildstatsRun(outcome="absent", note=f"buildstats tree at {root} could not be read ({exc})")
+    if not has_captures:
+        return BuildstatsRun(
+            outcome="empty",
+            note=f"buildstats tree at {root} holds no capture directories",
+            directory=None,
+        )
+
     capture = latest_capture(tmpdir) if window is None else select_capture(tmpdir, window)
-    if capture is None and window is not None:
+    if capture is None:
+        if window is None:
+            # The root held captures a moment ago and holds none now, which is
+            # the concurrent-build race rather than an empty tree.
+            return BuildstatsRun(
+                outcome="empty",
+                note=f"buildstats tree at {root} lost its capture directories mid-read",
+                directory=None,
+            )
         return BuildstatsRun(
             outcome="uncorrelated",
             note=(
@@ -296,33 +373,55 @@ def read_run(tmpdir: Path | str, *, window: tuple[float, float] | None = None) -
                 "records join at near 100% and read exactly like this run's own"
             ),
         )
-    if capture is None:
-        return BuildstatsRun(
-            outcome="empty",
-            note=f"buildstats tree at {root} holds no capture directories",
-            directory=None,
-        )
 
     tasks: list[TaskStats] = []
-    for recipe_dir in sorted(capture.iterdir()):
-        if not recipe_dir.is_dir():
+    incomplete = 0
+    vanished = 0
+    # Both levels of the walk are guarded for the reason ``parse_task_file`` and
+    # ``latest_capture`` already are: the tree is written concurrently with the
+    # build, so a recipe directory can be created, rotated or removed between
+    # the listing and the read. An unguarded walk raises out of here instead of
+    # degrading, which D2 forbids.
+    try:
+        recipe_dirs = sorted(capture.iterdir())
+    except OSError as exc:
+        return BuildstatsRun(
+            outcome="empty",
+            note=f"capture {capture} could not be read ({exc})",
+            directory=capture,
+        )
+    for recipe_dir in recipe_dirs:
+        try:
+            if not recipe_dir.is_dir():
+                continue
+            task_files = sorted(recipe_dir.iterdir())
+        except OSError:
+            vanished += 1
             continue
-        for task_file in sorted(recipe_dir.iterdir()):
+        for task_file in task_files:
             if task_file.name == BUILD_SUMMARY_NAME or not task_file.is_file():
                 continue
             record = _to_task_stats(recipe_dir.name, task_file.name, parse_task_file(task_file))
-            if record is not None:
+            if record is None:
+                incomplete += 1
+            else:
                 tasks.append(record)
+
+    detail = ""
+    if incomplete:
+        detail += f", {incomplete} incomplete or invalid records skipped"
+    if vanished:
+        detail += f", {vanished} recipe directories unreadable mid-walk"
 
     if not tasks:
         return BuildstatsRun(
             outcome="empty",
-            note=f"capture {capture} holds no parseable task records",
+            note=f"capture {capture} holds no parseable task records{detail}",
             directory=capture,
         )
     return BuildstatsRun(
         outcome="parsed",
-        note=f"{len(tasks)} task records from {capture}",
+        note=f"{len(tasks)} task records from {capture}{detail}",
         directory=capture,
         tasks=tasks,
     )

@@ -18,12 +18,14 @@ would pass every other test here.
 
 from __future__ import annotations
 
+import math
 import os
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+import pytest
+
 from bakar.buildstats import (
-    capture_epochs,
     latest_capture,
     parse_task_file,
     read_run,
@@ -189,8 +191,16 @@ def test_unreadable_task_file_does_not_raise(tmp_path: Path) -> None:
     assert parse_task_file(tmp_path / "nope") == {}
 
 
-def test_malformed_numeric_lines_are_skipped(tmp_path: Path) -> None:
+def test_a_malformed_cpu_line_makes_the_whole_record_incomplete(tmp_path: Path) -> None:
+    """Updated from an assertion that this parsed to ``cpu_seconds == 2.0``.
+
+    That encoded the f-0001 defect: an unparseable ``ru_utime`` fell through
+    ``.get(key, 0.0)`` and counted as zero CPU, so the record stayed valid,
+    joined, and understated the build's CPU seconds under a gate that reads
+    100%. A record missing any CPU component is now dropped instead.
+    """
     cap = _capture(tmp_path)
+    _task(cap, "good-1.0-r0", "do_compile")
     _task(
         cap,
         "acl-2.3.2-r0",
@@ -198,9 +208,174 @@ def test_malformed_numeric_lines_are_skipped(tmp_path: Path) -> None:
         body="Elapsed time: 1.48 seconds\nrusage ru_utime: not-a-number\nrusage ru_stime: 2.0\n",
     )
 
+    run = read_run(tmp_path)
+
+    assert [t.recipe for t in run.tasks] == ["good-1.0-r0"]
+    assert "1 incomplete or invalid records skipped" in run.note
+
+
+def test_a_malformed_churn_line_leaves_the_record_intact(tmp_path: Path) -> None:
+    """Churn is deliberately not held to the CPU rule.
+
+    A zero major-fault count is a real measurement - plenty of tasks record one -
+    so absence and zero are not distinguishable there the way they are for CPU,
+    and requiring the counters would drop real records over a column that only
+    describes.
+    """
+    cap = _capture(tmp_path)
+    _task(
+        cap,
+        "acl-2.3.2-r0",
+        "do_compile",
+        body=(
+            "Elapsed time: 1.48 seconds\n"
+            "rusage ru_utime: 1.0\n"
+            "rusage ru_stime: 1.0\n"
+            "Child rusage ru_utime: 0.0\n"
+            "Child rusage ru_stime: 0.0\n"
+            "rusage ru_minflt: not-a-number\n"
+        ),
+    )
+
     t = read_run(tmp_path).tasks[0]
 
     assert t.cpu_seconds == 2.0
+    assert t.minflt == 0
+
+
+def test_a_record_with_elapsed_but_no_cpu_is_not_a_zero_cpu_task(tmp_path: Path) -> None:
+    """bitbake writes ``Elapsed time`` before the ``rusage`` block.
+
+    A file read mid-build therefore carries a duration and no CPU at all.
+    Defaulting the CPU components to zero made that a valid record which JOINED,
+    letting the 95% gate pass while the CPU floor it gates silently understated
+    the build. A task that consumed no CPU does not exist, so the zero is always
+    a record bitbake had not finished writing.
+    """
+    cap = _capture(tmp_path)
+    _task(cap, "good-1.0-r0", "do_compile")
+    _task(
+        cap,
+        "half-written-1.0-r0",
+        "do_compile",
+        body="Event: TaskStarted\nElapsed time: 12.00 seconds\nutime: 16\nstime: 2\n",
+    )
+
+    run = read_run(tmp_path)
+
+    assert [t.recipe for t in run.tasks] == ["good-1.0-r0"]
+
+
+def test_a_record_truncated_before_the_child_rusage_block_is_incomplete(tmp_path: Path) -> None:
+    """``Child rusage`` lands last, and it carries the bulk of the CPU.
+
+    bitbake forks the real work out to compilers and shells, so a record whose
+    own rusage arrived but whose children's did not understates CPU by roughly
+    the whole task.
+    """
+    cap = _capture(tmp_path)
+    _task(
+        cap,
+        "acl-2.3.2-r0",
+        "do_compile",
+        body="Elapsed time: 1.48 seconds\nrusage ru_utime: 0.118937\nrusage ru_stime: 0.020840\n",
+    )
+
+    assert read_run(tmp_path).outcome == "empty"
+
+
+def test_a_negative_cpu_component_never_reaches_a_record(tmp_path: Path) -> None:
+    """A negative CPU component yields a negative CPU floor - enormous headroom."""
+    cap = _capture(tmp_path)
+    _task(cap, "good-1.0-r0", "do_compile")
+    _task(
+        cap,
+        "impossible-1.0-r0",
+        "do_compile",
+        body=(
+            "Elapsed time: 1.48 seconds\n"
+            "rusage ru_utime: -5000.0\n"
+            "rusage ru_stime: 1.0\n"
+            "Child rusage ru_utime: 1.0\n"
+            "Child rusage ru_stime: 1.0\n"
+        ),
+    )
+
+    run = read_run(tmp_path)
+
+    assert [t.recipe for t in run.tasks] == ["good-1.0-r0"]
+    assert run.total_cpu_seconds > 0
+
+
+def test_non_finite_numbers_never_reach_a_record(tmp_path: Path) -> None:
+    """``float()`` takes ``nan`` and ``inf`` as ordinary literals.
+
+    ``nan`` propagates into the floor and the headroom percentage and renders as
+    ``nan`` rather than as a refusal; ``int(inf)`` raises out of the whole read
+    and discards every other record with it.
+    """
+    cap = _capture(tmp_path)
+    _task(cap, "good-1.0-r0", "do_compile")
+    _task(
+        cap,
+        "nan-1.0-r0",
+        "do_compile",
+        body=(
+            "Elapsed time: 1.48 seconds\n"
+            "rusage ru_utime: nan\n"
+            "rusage ru_stime: 1.0\n"
+            "Child rusage ru_utime: 1.0\n"
+            "Child rusage ru_stime: 1.0\n"
+        ),
+    )
+    _task(
+        cap,
+        "inf-1.0-r0",
+        "do_compile",
+        body=(
+            "Elapsed time: 1.48 seconds\n"
+            "rusage ru_utime: 1.0\n"
+            "rusage ru_stime: 1.0\n"
+            "Child rusage ru_utime: 1.0\n"
+            "Child rusage ru_stime: 1.0\n"
+            "rusage ru_minflt: inf\n"
+        ),
+    )
+
+    run = read_run(tmp_path)
+
+    assert run.outcome == "parsed"
+    # nan is CPU-incomplete and dropped; the inf lands on a churn counter, so
+    # that record survives with the counter absent rather than aborting the read.
+    assert sorted(t.recipe for t in run.tasks) == ["good-1.0-r0", "inf-1.0-r0"]
+    assert all(t.minflt >= 0 for t in run.tasks)
+    assert math.isfinite(run.total_cpu_seconds)
+
+
+def test_an_unreadable_recipe_directory_is_skipped_not_raised(tmp_path: Path) -> None:
+    """The tree is written concurrently with the build, so a directory can go.
+
+    ``parse_task_file`` and ``latest_capture`` both guard their own reads for
+    this reason; ``read_run``'s two-level walk did not, so a rotation mid-walk
+    raised out of it instead of degrading (design D2).
+    """
+    cap = _capture(tmp_path)
+    _task(cap, "good-1.0-r0", "do_compile")
+    locked = cap / "locked-1.0-r0"
+    locked.mkdir()
+    (locked / "do_compile").write_text(SAMPLE)
+    locked.chmod(0o000)
+    if os.access(locked, os.R_OK):  # running as root - the mode says nothing
+        locked.chmod(0o755)
+        pytest.skip("cannot make a directory unreadable as root")
+    try:
+        run = read_run(tmp_path)
+    finally:
+        locked.chmod(0o755)
+
+    assert run.outcome == "parsed"
+    assert [t.recipe for t in run.tasks] == ["good-1.0-r0"]
+    assert "1 recipe directories unreadable mid-walk" in run.note
 
 
 def test_totals_aggregate_across_tasks(tmp_path: Path) -> None:
@@ -261,13 +436,20 @@ def test_no_capture_in_the_window_is_uncorrelated_not_absent_or_empty(tmp_path: 
 
 
 def test_a_capture_directory_with_a_foreign_name_never_correlates(tmp_path: Path) -> None:
-    """Only a ``YYYYMMDDHHMMSS`` name can be placed in time at all."""
+    """Only a ``YYYYMMDDHHMMSS`` name can be placed in time at all.
+
+    Not even by mtime: a scratch directory touched during the build would
+    otherwise read as this run's provenance, and the name check is the only
+    thing standing between the two.
+    """
     stray = tmp_path / "buildstats" / "scratch"
     stray.mkdir(parents=True)
     _task(stray, "acl-2.3.2-r0", "do_compile")
+    _retime(stray, "20260909123100")
 
-    assert capture_epochs(stray) == ()
-    assert read_run(tmp_path, window=_window("20260909123000", "20260909130000")).outcome == "uncorrelated"
+    window = _window("20260909123000", "20260909130000")
+    assert select_capture(tmp_path, window) is None
+    assert read_run(tmp_path, window=window).outcome == "uncorrelated"
 
 
 def test_omitting_the_window_keeps_the_newest_capture_behaviour(tmp_path: Path) -> None:
@@ -293,3 +475,96 @@ def test_two_captures_inside_the_slack_resolve_to_the_nearer_start(tmp_path: Pat
 
     assert select_capture(tmp_path, _window("20260909123055", "20260909123145")) == mine
     assert select_capture(tmp_path, _window("20260909123300", "20260909123400")) == rebuild
+
+
+def _retime(capture: Path, ts: str) -> Path:
+    """Move a capture's MTIME away from its name.
+
+    Every other fixture here keeps the two agreeing, which is exactly the case
+    that cannot detect a reader treating them as interchangeable. Call this
+    AFTER writing the capture's task files - creating a recipe subdirectory
+    bumps the parent's mtime, which is why the real reading lands near a build's
+    end in the first place.
+    """
+    epoch = _stamp_epoch(ts)
+    os.utime(capture, (epoch, epoch))
+    return capture
+
+
+def test_the_name_outranks_a_previous_builds_mtime(tmp_path: Path) -> None:
+    """The two readings are not interchangeable and rank in tiers, not together.
+
+    The NAME is the build's start; the MTIME is near its end, because bitbake
+    bumps the parent every time it writes a recipe subdirectory (measured on a
+    real capture: name 14:20:35 against mtime 14:26:30). Pooling them and taking
+    whichever reading sits closest to this run's start therefore prefers the
+    PREVIOUS build - its end lands nearer this run's start than this run's own
+    name does, once the 300s slack pulls it inside the window. With a
+    near-identical task set the join gate then clears at ~100% over another
+    build's records, which is the whole failure correlating was added to stop.
+    """
+    previous = _capture(tmp_path, "20260909120000")
+    _task(previous, "acl-2.3.2-r0", "do_compile")
+    _retime(previous, "20260909122955")
+    mine = _capture(tmp_path, "20260909123055")
+    _task(mine, "zlib-1.3-r0", "do_compile")
+    _retime(mine, "20260909123600")
+
+    window = _window("20260909123000", "20260909123600")
+
+    # Ranking the pooled readings puts the previous build's mtime (45s from the
+    # start) ahead of this run's own name (55s from it).
+    assert select_capture(tmp_path, window) == mine
+    assert [t.recipe for t in read_run(tmp_path, window=window).tasks] == ["zlib-1.3-r0"]
+
+
+def test_a_lone_mtime_match_still_correlates(tmp_path: Path) -> None:
+    """The mtime tier is what covers a host whose bitbake writes local time.
+
+    Its name is then hours out of the window and only the mtime can place it.
+    Dropping the fallback would make every such fleet's floor refuse forever.
+    """
+    local = _capture(tmp_path, "20260909063055")
+    _task(local, "acl-2.3.2-r0", "do_compile")
+    _retime(local, "20260909123100")
+
+    run = read_run(tmp_path, window=_window("20260909123000", "20260909123600"))
+
+    assert run.outcome == "parsed"
+    assert run.directory == local
+
+
+def test_two_captures_matching_only_by_mtime_refuse_rather_than_guess(tmp_path: Path) -> None:
+    """Ambiguous provenance is refused, not ranked (design D5).
+
+    mtime is near a build's END, so "closest to this run's start" is not even
+    the right ordering for it - the nearest mtime is the build that finished
+    just before this one began.
+    """
+    first = _capture(tmp_path, "20260101000000")
+    _task(first, "acl-2.3.2-r0", "do_compile")
+    _retime(first, "20260909123100")
+    second = _capture(tmp_path, "20260102000000")
+    _task(second, "zlib-1.3-r0", "do_compile")
+    _retime(second, "20260909123500")
+
+    window = _window("20260909123000", "20260909123600")
+
+    assert select_capture(tmp_path, window) is None
+    assert read_run(tmp_path, window=window).outcome == "uncorrelated"
+
+
+def test_an_empty_tree_is_empty_even_when_a_window_is_supplied(tmp_path: Path) -> None:
+    """An empty tree and a foreign-capture tree are different answers.
+
+    ``select_capture`` returns None for both, and reading ``uncorrelated`` off
+    that bare None told a reader some other build's captures were sitting there
+    when the directory held nothing at all - collapsing the absence-vs-emptiness
+    distinction the spec requires as separate outcomes.
+    """
+    (tmp_path / "buildstats").mkdir()
+
+    run = read_run(tmp_path, window=_window("20260909123000", "20260909130000"))
+
+    assert run.outcome == "empty"
+    assert "no capture directories" in run.note

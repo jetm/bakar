@@ -731,7 +731,9 @@ def _recorded_cores(artifact: dict | list) -> tuple[int | None, dict[str, int]]:
     """Return the recorded core count and any other recorded divisor candidates.
 
     The count is ``None`` for an artifact written before schema 5 recorded a
-    ``host`` block, for a bare tasks list with no artifact to read, and for a
+    ``host`` block, for a bare tasks list with no artifact to read, for an
+    artifact whose caller nulled the block because it could only be synthesized
+    on the analysing host (see ``commands.insights._load_artifact``), and for a
     block whose ``cpu_count`` is absent or not a positive int. Every one of
     those means "not recorded", and none of them may fall back to
     ``os.cpu_count()`` here - see :class:`CpuFloor`.
@@ -771,9 +773,10 @@ def _compute_cpu_floor(join: BuildstatsJoin, artifact: dict | list) -> CpuFloor:
         return CpuFloor(
             note=(
                 "CPU floor unavailable: this run's artifact records no build-host core count "
-                "(written before the host block existed) - the analysing host's core count is "
-                "deliberately not substituted, because that would make the same capture yield a "
-                "different floor on every machine"
+                "(the run predates the host block, or only the raw event log survives and a block "
+                "synthesized now would describe the analysing host) - the analysing host's core "
+                "count is deliberately not substituted, because that would make the same capture "
+                "yield a different floor on every machine"
             ),
         )
 

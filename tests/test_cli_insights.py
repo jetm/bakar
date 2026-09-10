@@ -381,6 +381,37 @@ def test_insights_reads_the_host_block_the_build_host_recorded(
 
 
 @pytest.mark.unit
+def test_insights_withholds_the_floor_when_only_the_raw_log_survives(
+    runner: _CliRunner, nxp_workspace: Path, insights_run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fallback path must not synthesize a host block either.
+
+    Preferring the persisted ``bitbake-events.json`` removed the false
+    provenance from the PRIMARY path only. With no persisted artifact,
+    ``eventlog.normalize`` runs here and builds ``host.cpu_count`` from
+    ``os.cpu_count()`` on the ANALYSING machine, which the floor then labels
+    "recorded at capture" - the same defect, one branch over. Patching
+    ``os.cpu_count`` to a value no machine has is what tells the two apart: a
+    floor divided by it could only have come from this host.
+    """
+    buildstats = nxp_workspace / "nxp" / "build" / "tmp" / "buildstats"
+    _write_capture(buildstats / _capture_name(BUILD_STARTED), EXECUTED)
+    assert not (insights_run_dir / "bitbake-events.json").exists()
+    monkeypatch.setattr("os.cpu_count", lambda: 4242)
+
+    result = runner.invoke(app, ["insights", "--timing", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 0, result.output
+
+    squashed = "".join(result.output.split())
+    assert "recordsnobuild-hostcorecount" in squashed
+    assert "4242" not in squashed
+    assert "cores(buildhostcpu_count" not in squashed
+    # The join itself still runs - only the divisor is withheld, so a reader can
+    # still see the capture correlated and the churn columns are still real.
+    assert "buildstatsjoin100.0%" in squashed
+
+
+@pytest.mark.unit
 def test_insights_withholds_the_floor_for_a_pre_schema_5_artifact(
     runner: _CliRunner, nxp_workspace: Path, insights_run_dir: Path
 ) -> None:

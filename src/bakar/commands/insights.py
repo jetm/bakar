@@ -124,8 +124,19 @@ def _load_artifact(log: RunLogger) -> dict:
     withheld floor for a falsely-attributed one.
 
     Falls back to normalizing the raw log only when the persisted artifact is
-    absent or unreadable - the pre-persist runs, where an analysing-host block
-    is all there is and the note says as much.
+    absent or unreadable - the pre-persist runs. That fallback runs
+    ``eventlog._host_block`` HERE, on the analysing host, so the ``host`` block
+    it synthesizes describes this machine and not the one that built. Keeping it
+    would reintroduce the same false-provenance claim on the fallback path that
+    preferring the persisted artifact removed from the primary one: patching
+    ``os.cpu_count`` on the analysing host moved the reported divisor with it,
+    under a note reading "recorded at capture".
+
+    So the block is dropped. The floor then degrades to its existing "no
+    recorded core count" note, which is the same trade the pre-schema-5 case
+    above makes - a withheld floor beats a falsely attributed one. Every other
+    section of the artifact is untouched, because none of them claims to
+    describe the build host.
     """
     persisted = log.bitbake_events_path
     if persisted.is_file():
@@ -135,7 +146,9 @@ def _load_artifact(log: RunLogger) -> dict:
             data = None
         if isinstance(data, dict):
             return data
-    return eventlog.normalize(log.eventlog_path)
+    artifact = eventlog.normalize(log.eventlog_path)
+    artifact["host"] = None
+    return artifact
 
 
 def _buildstats_source(tmpdir: Path, window: tuple[float, float] | None) -> Callable[[], buildstats.BuildstatsRun]:
