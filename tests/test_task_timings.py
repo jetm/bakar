@@ -220,3 +220,48 @@ def test_timings_path_scoped_per_workspace_machine_mode(tmp_path: Path) -> None:
     assert a == task_timings.timings_path_for(tmp_path / "peridio-ws", "imx8mp-var-dart")
     assert a.name.endswith("-imx8mp-var-dart-container.json")
     assert d.name.endswith("-host.json")
+
+
+@pytest.mark.unit
+def test_a_non_finite_duration_never_reaches_the_baseline_store(tmp_path: Path) -> None:
+    """`nan < 0` is False, so a bare sign check retains a non-finite duration.
+
+    This one persists. A NaN folded into the baseline store is not a wrong
+    number rendered once - it is written to disk and poisons every later
+    comparison against that baseline. `json.loads` accepts `NaN` and
+    `Infinity` natively, so a malformed or truncated events artifact reaches
+    this path without anything exotic.
+    """
+    events = tmp_path / "bitbake-events.json"
+    events.write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {"recipe": "a-1.0-r0", "task": "do_compile", "started": 0.0, "completed": float("nan")},
+                    {"recipe": "b-1.0-r0", "task": "do_compile", "started": 0.0, "completed": 10.0},
+                ]
+            }
+        )
+    )
+    timings = tmp_path / "timings.json"
+
+    task_timings.update_from_events(events, timings)
+
+    raw = timings.read_text() if timings.exists() else "{}"
+    assert "NaN" not in raw
+    assert "Infinity" not in raw
+    for value in _all_numbers(json.loads(raw)):
+        assert math.isfinite(value)
+
+
+def _all_numbers(node: object) -> list[float]:
+    """Every numeric leaf under ``node``, so the assertion cannot miss a nesting."""
+    if isinstance(node, bool):
+        return []
+    if isinstance(node, int | float):
+        return [float(node)]
+    if isinstance(node, dict):
+        return [n for v in node.values() for n in _all_numbers(v)]
+    if isinstance(node, list):
+        return [n for v in node for n in _all_numbers(v)]
+    return []

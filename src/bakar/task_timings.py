@@ -180,7 +180,10 @@ def update_from_events(events_json: Path, timings_path: Path) -> None:
             duration = float(completed) - float(started)
         except TypeError, ValueError:
             continue
-        if duration < 0:
+        # `nan < 0` is False, so a bare sign check RETAINS a non-finite
+        # duration. json.loads accepts NaN and Infinity natively, so this
+        # reaches a real artifact rather than a synthetic one.
+        if not math.isfinite(duration) or duration < 0:
             continue
         durations.append((baseline_key(recipe if isinstance(recipe, str) else "", name), duration))
 

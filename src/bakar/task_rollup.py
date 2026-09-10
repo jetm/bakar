@@ -22,6 +22,7 @@ mirroring :mod:`bakar.task_timings`.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -121,7 +122,10 @@ def compute_task_rollup(source: Path | str | list) -> TaskRollup:
             duration = float(completed) - float(started)
         except TypeError, ValueError:
             continue
-        if duration < 0:
+        # `nan < 0` is False, so a bare sign check RETAINS a non-finite
+        # duration. json.loads accepts NaN and Infinity natively, so this
+        # reaches a real artifact rather than a synthetic one.
+        if not math.isfinite(duration) or duration < 0:
             continue
 
         family = task if task in KNOWN_FAMILIES else OTHER_FAMILY

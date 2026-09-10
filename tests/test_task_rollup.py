@@ -147,3 +147,29 @@ def test_malformed_artifact_returns_zeroed_rollup(tmp_path: Path) -> None:
 
     assert result.families["do_compile"].count == 0
     assert result.go_compile_seconds == 0.0
+
+
+@pytest.mark.unit
+def test_a_non_finite_duration_is_excluded_from_the_rollup(tmp_path: Path) -> None:
+    """Sibling of the same defect guarded in `insights_timing.timing_report`.
+
+    A bare `duration < 0` check retains `nan`, because `nan < 0` is False. The
+    family total then reads `nan` and every percentage derived from it follows.
+    """
+    events = tmp_path / "bitbake-events.json"
+    events.write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {"recipe": "a-1.0-r0", "task": "do_compile", "started": 0.0, "completed": float("nan")},
+                    {"recipe": "b-1.0-r0", "task": "do_compile", "started": 0.0, "completed": 10.0},
+                ]
+            }
+        )
+    )
+
+    rollup = task_rollup.compute_task_rollup(events)
+
+    compile_family = rollup.families["do_compile"]
+    assert compile_family.seconds == 10.0
+    assert compile_family.count == 1
