@@ -121,14 +121,79 @@ _FIELDS: dict[str, str] = {
 }
 
 
+#: Refuse a per-task file larger than this. A real record is a few hundred
+#: bytes; bitbake writes one line per counter. The cap is not tuning - it is
+#: what stops a symlink or a corrupt entry from pulling an arbitrary amount of
+#: a machine into memory on a code path that runs from a plain `bakar insights`.
+MAX_TASK_FILE_BYTES = 1_000_000
+
+
+def discover(tmpdir: Path | str) -> BuildstatsRun | None:
+    """Settle absent and empty WITHOUT parsing anything.
+
+    Returns the finished result for those two outcomes, or ``None`` to mean
+    "captures are present" - which is the only case where reading task files
+    can tell the caller anything further.
+
+    Separate from :func:`read_run` because one caller needs exactly this and
+    nothing more. When a run's artifact yields no correlation window, no
+    capture can be shown to belong to it whatever the tree holds, but absent
+    and empty still have to stay distinct from that. Answering it through
+    ``read_run`` meant selecting a capture and parsing every task file in it -
+    up to ~5,800 on a real one - only to discard the result and report
+    "uncorrelated" anyway, which put the change's dominant I/O cost on exactly
+    the runs structurally unable to use it.
+    """
+    root = Path(tmpdir) / BUILDSTATS_DIR_NAME
+    if not root.is_dir():
+        return BuildstatsRun(outcome="absent", note=f"no buildstats tree at {root}")
+    try:
+        has_captures = any(_real_dir(p) for p in root.iterdir())
+    except OSError as exc:
+        return BuildstatsRun(outcome="absent", note=f"buildstats tree at {root} could not be read ({exc})")
+    if not has_captures:
+        return BuildstatsRun(
+            outcome="empty",
+            note=f"buildstats tree at {root} holds no capture directories",
+            directory=None,
+        )
+    return None
+
+
+def _real_dir(path: Path) -> bool:
+    """True for a directory that is not reached through a symlink.
+
+    ``is_dir()`` follows links, so a buildstats tree carrying a symlink to
+    somewhere else on the machine reads as an ordinary capture. That tree is
+    not always locally produced: bakar builds on a remote node and shares
+    sstate over NFS, and `bakar insights --workspace` takes the path from the
+    caller, so "the build directory" is an input rather than something this
+    process made.
+    """
+    return path.is_dir() and not path.is_symlink()
+
+
+def _real_file(path: Path) -> bool:
+    """True for a regular file that is not reached through a symlink."""
+    return path.is_file() and not path.is_symlink()
+
+
 def parse_task_file(path: Path) -> dict[str, float]:
     """Parse one per-task buildstats file into its numeric fields.
 
     Unreadable files and unparseable lines are skipped rather than raised on: a
     buildstats tree is written concurrently with the build, so a truncated final
     record is an ordinary state rather than corruption.
+
+    A file over :data:`MAX_TASK_FILE_BYTES` is skipped for the same reason a
+    symlink is: its size is the caller's input, not this parser's.
     """
     found: dict[str, float] = {}
+    try:
+        if path.stat().st_size > MAX_TASK_FILE_BYTES:
+            return found
+    except OSError:
+        return found
     try:
         text = path.read_text(errors="replace")
     except OSError:
@@ -267,7 +332,7 @@ def select_capture(tmpdir: Path | str, window: tuple[float, float]) -> Path | No
     started, completed = window
     root = Path(tmpdir) / BUILDSTATS_DIR_NAME
     try:
-        candidates = sorted(p for p in root.iterdir() if p.is_dir())
+        candidates = sorted(p for p in root.iterdir() if _real_dir(p))
     except OSError:
         return None
     lo = started - CAPTURE_SLACK_SECONDS
@@ -317,7 +382,7 @@ def latest_capture(tmpdir: Path | str) -> Path | None:
     """
     root = Path(tmpdir) / BUILDSTATS_DIR_NAME
     try:
-        captures = sorted(p for p in root.iterdir() if p.is_dir())
+        captures = sorted(p for p in root.iterdir() if _real_dir(p))
     except OSError:
         return None
     return captures[-1] if captures else None
@@ -340,26 +405,17 @@ def read_run(tmpdir: Path | str, *, window: tuple[float, float] | None = None) -
     it keeps the older newest-capture behaviour, which is right only for a
     caller that genuinely wants whatever ran last.
     """
+    # Absence and emptiness are settled BEFORE correlation, because
+    # ``select_capture`` returns None for both "the root holds nothing" and
+    # "nothing here belongs to this run" - and those call for opposite
+    # responses. Deciding "uncorrelated" off a bare None told a reader that
+    # some other build's captures were sitting there when the directory was in
+    # fact empty.
+    discovered = discover(tmpdir)
+    if discovered is not None:
+        return discovered
+
     root = Path(tmpdir) / BUILDSTATS_DIR_NAME
-    if not root.is_dir():
-        return BuildstatsRun(outcome="absent", note=f"no buildstats tree at {root}")
-
-    # Emptiness is settled BEFORE correlation, because ``select_capture``
-    # returns None for both "the root holds nothing" and "nothing here belongs
-    # to this run" - and those call for opposite responses. Deciding
-    # "uncorrelated" off a bare None told a reader that some other build's
-    # captures were sitting there when the directory was in fact empty.
-    try:
-        has_captures = any(p.is_dir() for p in root.iterdir())
-    except OSError as exc:
-        return BuildstatsRun(outcome="absent", note=f"buildstats tree at {root} could not be read ({exc})")
-    if not has_captures:
-        return BuildstatsRun(
-            outcome="empty",
-            note=f"buildstats tree at {root} holds no capture directories",
-            directory=None,
-        )
-
     capture = latest_capture(tmpdir) if window is None else select_capture(tmpdir, window)
     if capture is None:
         if window is None:
@@ -398,14 +454,14 @@ def read_run(tmpdir: Path | str, *, window: tuple[float, float] | None = None) -
         )
     for recipe_dir in recipe_dirs:
         try:
-            if not recipe_dir.is_dir():
+            if not _real_dir(recipe_dir):
                 continue
             task_files = sorted(recipe_dir.iterdir())
         except OSError:
             vanished += 1
             continue
         for task_file in task_files:
-            if task_file.name == BUILD_SUMMARY_NAME or not task_file.is_file():
+            if task_file.name == BUILD_SUMMARY_NAME or not _real_file(task_file):
                 continue
             record = _to_task_stats(recipe_dir.name, task_file.name, parse_task_file(task_file))
             if record is None:

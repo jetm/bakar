@@ -164,8 +164,8 @@ def _buildstats_source(tmpdir: Path, window: tuple[float, float] | None) -> Call
             # never there is exactly the confusion it forbids. ``read_run``
             # settles absent and empty before it selects anything, so asking it
             # first costs one stat on the tree that is not there.
-            discovered = buildstats.read_run(tmpdir)
-            if discovered.outcome != "parsed":
+            discovered = buildstats.discover(tmpdir)
+            if discovered is not None:
                 return discovered
             return buildstats.BuildstatsRun(
                 outcome="uncorrelated",

@@ -629,3 +629,68 @@ def test_an_empty_tree_is_empty_even_when_a_window_is_supplied(tmp_path: Path) -
 
     assert run.outcome == "empty"
     assert "no capture directories" in run.note
+
+
+@pytest.mark.unit
+def test_a_symlinked_task_file_is_not_read(tmp_path: Path) -> None:
+    """A capture tree is an INPUT, not something this process produced.
+
+    bakar builds on a remote node and shares sstate over NFS, and
+    ``bakar insights --workspace`` takes the path from the caller, so a
+    buildstats tree can arrive from another machine. ``is_file()`` follows
+    links, so without an explicit check a tree carrying a symlink to anywhere
+    else on the host reads as an ordinary task record.
+    """
+    outside = tmp_path / "outside.txt"
+    outside.write_text(SAMPLE)
+    capture = _capture(tmp_path)
+    recipe = capture / "acl-2.3.2-r0"
+    recipe.mkdir(parents=True)
+    os.symlink(outside, recipe / "do_compile")
+
+    run = read_run(tmp_path)
+
+    assert run.tasks == []
+
+
+@pytest.mark.unit
+def test_a_symlinked_capture_directory_is_not_a_capture(tmp_path: Path) -> None:
+    """Same reasoning one level up: ``is_dir()`` follows links too."""
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "acl-2.3.2-r0").mkdir(parents=True)
+    (elsewhere / "acl-2.3.2-r0" / "do_compile").write_text(SAMPLE)
+    (tmp_path / "buildstats").mkdir()
+    os.symlink(elsewhere, tmp_path / "buildstats" / "20260909123055")
+
+    assert read_run(tmp_path).outcome == "empty"
+
+
+@pytest.mark.unit
+def test_an_oversized_task_file_is_skipped(tmp_path: Path) -> None:
+    """Its size is the caller's input, so it gets a bound like any other."""
+    from bakar.buildstats import MAX_TASK_FILE_BYTES
+
+    capture = _capture(tmp_path)
+    recipe = capture / "acl-2.3.2-r0"
+    recipe.mkdir(parents=True)
+    (recipe / "do_compile").write_text(SAMPLE + "\n" + "#" * MAX_TASK_FILE_BYTES)
+
+    assert read_run(tmp_path).tasks == []
+
+
+@pytest.mark.unit
+def test_discovery_settles_absent_and_empty_without_parsing(tmp_path: Path) -> None:
+    """`discover` answers the two cheap outcomes and defers the expensive one.
+
+    Reading a capture to learn only that one exists put the change's dominant
+    I/O cost - up to ~5,800 task files - on runs that cannot use the result.
+    """
+    from bakar.buildstats import discover
+
+    assert discover(tmp_path).outcome == "absent"
+
+    (tmp_path / "buildstats").mkdir()
+    assert discover(tmp_path).outcome == "empty"
+
+    _task(_capture(tmp_path), "acl-2.3.2-r0", "do_compile")
+    assert discover(tmp_path) is None
