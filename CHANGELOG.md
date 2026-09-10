@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.1] - 2026-09-10
+
 ### Added
 
 - A successful build now captures its dependency graph (`task-depends.dot`, `pn-buildlist`) into the run directory, with a `dependency-graph.json` sidecar recording the target and capture time. This is what `bakar insights` needs to compute a critical path offline, and with it the concurrency floor `max(CPU floor, critical path)` - which until now could not render from the CLI because the path required a live `bitbake -g <recipe>` and the recipe is not knowable from a persisted run directory. Both objections are properties of report time; at build time the target is known and a container is already running. Measured cost: ~11s against ~540s builds, 2%.
@@ -770,7 +772,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.31.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.31.1...HEAD
+[0.31.1]: https://github.com/jetm/bakar/compare/v0.31.0...v0.31.1
 [0.31.0]: https://github.com/jetm/bakar/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/jetm/bakar/compare/v0.29.3...v0.30.0
 [0.29.3]: https://github.com/jetm/bakar/compare/v0.29.2...v0.29.3
