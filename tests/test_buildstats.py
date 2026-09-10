@@ -64,9 +64,9 @@ Ended: 1788658834.34
 def _stamp_epoch(ts: str) -> float:
     """Interpret a ``YYYYMMDDHHMMSS`` test stamp as UTC.
 
-    Deliberately its own parser rather than a call to ``capture_epoch``: that
-    function reads a directory's mtime now, so using it here would define the
-    expected window in terms of the thing under test.
+    Deliberately its own parser rather than a call to ``capture_epochs``: that
+    function is the thing under test, so using it here would define the expected
+    window in terms of what it returns.
     """
     return datetime.strptime(ts, "%Y%m%d%H%M%S").replace(tzinfo=UTC).timestamp()
 

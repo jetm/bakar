@@ -45,6 +45,7 @@ def _encode_event(**attrs: object) -> str:
     obj = _StubEvent()
     for key, value in attrs.items():
         setattr(obj, key, value)
+    # nosemgrep: python.lang.security.deserialization.pickle.avoid-pickle
     return base64.b64encode(pickle.dumps(obj)).decode("ascii")
 
 
