@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-09-09
+
 ### Added
 
 - Added a `bakar sstate-seed` subcommand that populates and inspects the native/cross sstate seed, and reports the `SSTATE_MIRRORS` line that consumes it. Seeding the native toolchain measured 26.4 min to 9.0 min on a `core-image-minimal` build (65% of wall-clock), the largest single build-time effect recorded on this fleet, but it previously required an out-of-tree script and a hand-written `sstate_mirrors` string. Seeds are keyed by oe-core release codename via the same resolver that keeps buildtools toolchains apart, because the objects are target-independent (`sstate.bbclass` prefixes every native/cross/crosssdk object with `${NATIVELSBSTRING}`) but release-dependent (native hashes move with oe-core), so one seed serves every MACHINE and image on a release and none serves two releases. `--status` reports a seed built for a different release as stale: it is inert rather than wrong, which otherwise looks identical to a working seed until someone compares build times.
@@ -743,7 +745,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.29.3...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/jetm/bakar/compare/v0.29.3...v0.30.0
 [0.29.3]: https://github.com/jetm/bakar/compare/v0.29.2...v0.29.3
 [0.29.2]: https://github.com/jetm/bakar/compare/v0.29.0...v0.29.2
 [0.29.0]: https://github.com/jetm/bakar/compare/v0.28.0...v0.29.0
