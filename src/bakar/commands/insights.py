@@ -156,11 +156,23 @@ def _buildstats_source(tmpdir: Path, window: tuple[float, float] | None) -> Call
 
     def read() -> buildstats.BuildstatsRun:
         if window is None:
+            # Still let discovery run. Short-circuiting straight to
+            # "uncorrelated" reported an ABSENT tree as though a capture had
+            # been found and merely could not be matched to this run - the
+            # spec's first requirement is that those stay distinct outcomes,
+            # and a reader sent looking for a mis-correlated capture that was
+            # never there is exactly the confusion it forbids. ``read_run``
+            # settles absent and empty before it selects anything, so asking it
+            # first costs one stat on the tree that is not there.
+            discovered = buildstats.read_run(tmpdir)
+            if discovered.outcome != "parsed":
+                return discovered
             return buildstats.BuildstatsRun(
                 outcome="uncorrelated",
                 note=(
-                    "this run's artifact records no build start/finish pair, so no buildstats "
-                    "capture can be shown to belong to it"
+                    "this run's artifact records no build start/finish pair, so none of the "
+                    f"captures under {Path(tmpdir) / buildstats.BUILDSTATS_DIR_NAME} can be "
+                    "shown to belong to it"
                 ),
             )
         return buildstats.read_run(tmpdir, window=window)

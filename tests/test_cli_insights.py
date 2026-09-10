@@ -433,3 +433,30 @@ def test_insights_withholds_the_floor_for_a_pre_schema_5_artifact(
     squashed = "".join(result.output.split())
     assert "recordsnobuild-hostcorecount" in squashed
     assert "cores(buildhostcpu_count" not in squashed
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("build_tree", "expected"),
+    [(False, "absent"), (True, "empty")],
+)
+def test_a_run_with_no_window_still_distinguishes_absent_from_empty(
+    tmp_path: Path, build_tree: bool, expected: str
+) -> None:
+    """Discovery runs even when the run carries no correlation window.
+
+    An artifact with no usable task timestamps yields no window, and the
+    buildstats source used to answer that case by returning ``uncorrelated``
+    without touching the filesystem at all. That reported an ABSENT tree as
+    though a capture had been found and merely could not be matched to this
+    run - two states the spec's first requirement keeps deliberately apart,
+    because one sends a reader after a path and the other after a
+    mis-correlated capture that was never there.
+    """
+    from bakar.buildstats import BUILDSTATS_DIR_NAME
+    from bakar.commands.insights import _buildstats_source
+
+    if build_tree:
+        (tmp_path / BUILDSTATS_DIR_NAME).mkdir()
+
+    assert _buildstats_source(tmp_path, None)().outcome == expected
