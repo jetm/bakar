@@ -155,6 +155,7 @@ def _render_timing(report) -> None:
         ("buildstats join", report.buildstats_join),
         ("cpu floor", report.cpu_floor),
         ("concurrency floor", report.concurrency_floor),
+        ("task churn", report.task_churn),
     ):
         console.print(f"[bold]{header}:[/]")
         for line in section.report_lines():

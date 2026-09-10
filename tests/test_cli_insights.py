@@ -225,3 +225,61 @@ def test_insights_renders_the_buildstats_derived_sections(
     # passes or fails on the console width the suite happens to run at.
     flat = " ".join(result.output.split())
     assert "concurrency floor unavailable: the CPU floor is unavailable" in flat
+
+
+@pytest.mark.unit
+def test_insights_renders_the_churn_section_when_it_degrades(
+    runner: _CliRunner, nxp_workspace: Path, insights_run_dir: Path
+) -> None:
+    """The churn section reaches the page even with no buildstats tree present.
+
+    A section wired into the report but never rendered is indistinguishable from
+    one that was never wired at all.
+    """
+    result = runner.invoke(app, ["insights", "--timing", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 0, result.output
+
+    assert "task churn:" in result.output
+    flat = " ".join(result.output.split())
+    assert "task churn unavailable: tree absent" in flat
+
+
+@pytest.mark.unit
+def test_insights_renders_populated_churn_columns(
+    runner: _CliRunner, nxp_workspace: Path, insights_run_dir: Path
+) -> None:
+    """A real capture under the resolved TMPDIR produces non-zero columns.
+
+    The shared eventlog fixture executes one ``do_compile`` (busybox); the zlib
+    record written here is never executed by that fixture, so it also pins the
+    rule that an unexecuted record contributes nothing to the columns.
+    """
+    capture = nxp_workspace / "nxp" / "build" / "tmp" / "buildstats" / "20260101000000"
+    for recipe in ("busybox-1.36.1-r0", "zlib-1.3-r0"):
+        task_dir = capture / recipe
+        task_dir.mkdir(parents=True)
+        (task_dir / "do_compile").write_text(
+            "Elapsed time: 40.00 seconds\n"
+            "rusage ru_utime: 1.5\n"
+            "rusage ru_stime: 0.5\n"
+            "rusage ru_minflt: 7023117\n"
+            "rusage ru_majflt: 40\n"
+            "Child rusage ru_utime: 9.0\n"
+            "Child rusage ru_stime: 1.0\n"
+            "Child rusage ru_minflt: 214243919\n"
+            "Child rusage ru_majflt: 60\n"
+            "IO syscr: 1000\n"
+            "IO syscw: 500\n"
+            "IO write_bytes: 2000000000\n",
+            encoding="utf-8",
+        )
+
+    result = runner.invoke(app, ["insights", "--timing", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 0, result.output
+
+    flat = " ".join(result.output.split())
+    assert "task churn over 1 of" in flat
+    # Self+child summed, per the section's stated basis: a self-only sum would
+    # render 7,023,117 here and still look like a populated column.
+    assert f"{7_023_117 + 214_243_919:,}" in flat
+    assert "7,023,117" not in flat

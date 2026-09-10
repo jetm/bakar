@@ -28,6 +28,7 @@ depend on this section's success.
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -40,7 +41,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from bakar.buildstats import BuildstatsRun
+    from bakar.buildstats import BuildstatsRun, TaskStats
 
 DEFAULT_TOP_N = 10
 
@@ -54,6 +55,24 @@ JOIN_RATE_THRESHOLD = 0.95
 #: How many unjoined task keys a refusal names. Enough to recognise a pattern
 #: (all setscene, all one recipe) without pasting the whole shortfall.
 UNJOINED_SAMPLE = 5
+
+#: Column widths for the churn table, in the order the header names them. Held
+#: as a constant rather than as formatter arguments because this project is
+#: mid-way through a high-arity cleanup and a per-column parameter list is
+#: exactly the signature that pass adds back.
+#:
+#: They sum to 79 plus a leading space, which keeps a row inside an 80-column
+#: terminal, and the first column holds the longest real task name
+#: (``do_package_write_rpm_setscene``, 29). A wider table is not a cosmetic
+#: problem: Rich hard-wraps the overflow onto a second line, and a row split
+#: across two lines is exactly the shape that gets read against the wrong
+#: column heading.
+CHURN_COLUMNS = ("task type", "tasks", "minflt", "majflt", "syscalls", "GB_wr")
+CHURN_WIDTHS = (30, 5, 14, 10, 12, 8)
+
+#: Bytes per gigabyte for the ``GB_wr`` column. Decimal, matching how the
+#: reference analyser labelled the same column.
+BYTES_PER_GB = 1_000_000_000
 
 
 @dataclass(frozen=True)
@@ -292,6 +311,112 @@ class ConcurrencyFloor:
         return lines
 
 
+#: Stated beside every available churn table. Two things a reader cannot
+#: recover from the numbers themselves: which rusage the counters come from,
+#: and that the columns are read by field name.
+#:
+#: The self/child split is not a detail. On one real capture ``do_configure``
+#: read 7,023,117 self minor faults against 214,243,919 CHILD minor faults -
+#: the child accounts for 97% of the churn, because the work happens in spawned
+#: configure and compiler subprocesses. A table summing only ``rusage ru_*``
+#: under-reports by roughly 30x on exactly the task types this section exists
+#: to characterize, so the choice is stated rather than left to be inferred.
+CHURN_BASIS_NOTE = (
+    "basis: each counter sums the task's OWN rusage and its CHILD rusage "
+    "(bitbake forks the real work out, and the child carries ~97% of the faults on a real "
+    "capture, so self-only counters under-report by roughly 30x). Fields are read by name from "
+    "each buildstats file - 'rusage ru_minflt', 'Child rusage ru_majflt', 'IO syscr'/'IO syscw', "
+    "'IO write_bytes' - never by column position"
+)
+
+
+def _churn_line(cells: tuple[str, ...]) -> str:
+    """Lay one churn row - or the header - out on :data:`CHURN_WIDTHS`.
+
+    The header and every data row go through this one function, so the two
+    cannot drift into disagreeing about which column is which. The first column
+    is left-justified and the numeric ones right-justified: right-justifying a
+    task name would run it up against the ``tasks`` heading with no gap, which
+    is how a reader ends up parsing a value against its neighbour's label.
+    """
+    parts = []
+    for index, (cell, width) in enumerate(zip(cells, CHURN_WIDTHS, strict=True)):
+        parts.append(cell.ljust(width) if index == 0 else cell.rjust(width))
+    return "".join(parts)
+
+
+@dataclass(frozen=True)
+class ChurnRow:
+    """One task type's summed process-churn and I/O counters.
+
+    ``minflt`` is process churn - pages faulted in without touching the disk,
+    which is what a storm of short-lived autoconf probe processes produces.
+    ``majflt`` and ``write_bytes`` are I/O. Keeping them in separate columns is
+    the whole capability: the two profiles were indistinguishable on wall-clock
+    alone, and it was the minor-to-major ratio that identified probe churn as a
+    serial floor rather than a disk problem.
+    """
+
+    task: str
+    tasks: int
+    minflt: int
+    majflt: int
+    syscalls: int
+    write_bytes: int
+
+
+@dataclass(frozen=True)
+class TaskChurn:
+    """Per-task-type churn columns aggregated over the joined buildstats records.
+
+    Only records matching an executed task contribute, for the same reason
+    :func:`_compute_join` restricts its CPU sum: a buildstats tree can carry rows
+    from a previous run or a sibling machine's directory, and summing the tree
+    wholesale credits them to this build.
+
+    Unlike the CPU floor, this section is NOT withheld when the join gate
+    refuses. The floor is a single build-wide bound, so a partial join makes it a
+    bound for a different, smaller build; these are per-task-type aggregates, and
+    a subset of ``do_compile`` records still describes ``do_compile``. What a
+    partial join does cost is coverage, so ``covered``/``executed`` are stated in
+    the note on every rendering rather than only on a refusal.
+    """
+
+    available: bool = False
+    rows: list[ChurnRow] = field(default_factory=list)
+    covered: int = 0
+    executed: int = 0
+    note: str = "task churn unavailable: no buildstats source supplied"
+    basis_note: str | None = None
+
+    def report_lines(self) -> list[str]:
+        """Render the note, the basis, and the column table.
+
+        Columns are emitted in :data:`CHURN_COLUMNS` order with the header
+        printed from the same constant, so a reader and the formatter cannot
+        disagree about which column is which - the failure this task's own
+        history names, where the ``majflt`` column was quoted as a task count
+        and ``GB_wr`` as cores-per-task.
+        """
+        lines = [f"  {self.note}"]
+        if self.basis_note is not None:
+            lines.append(f"  {self.basis_note}")
+        if not self.available:
+            return lines
+        lines.append(" " + _churn_line(CHURN_COLUMNS))
+        for row in self.rows:
+            cells = (
+                row.task,
+                f"{row.tasks}",
+                f"{row.minflt:,}",
+                f"{row.majflt:,}",
+                f"{row.syscalls:,}",
+                f"{row.write_bytes / BYTES_PER_GB:.2f}",
+            )
+            lines.append(" " + _churn_line(cells))
+        return lines
+
+
 @dataclass(frozen=True)
 class TimingReport:
     """The timing report: top-N slowest tasks plus the critical-path section."""
@@ -302,6 +427,7 @@ class TimingReport:
     buildstats_join: BuildstatsJoin = field(default_factory=BuildstatsJoin)
     cpu_floor: CpuFloor = field(default_factory=CpuFloor)
     concurrency_floor: ConcurrencyFloor = field(default_factory=ConcurrencyFloor)
+    task_churn: TaskChurn = field(default_factory=TaskChurn)
 
 
 def _duration_totals(durations: list[TaskDuration]) -> dict[str, float]:
@@ -678,6 +804,76 @@ def _compute_concurrency_floor(
     )
 
 
+def _compute_churn(
+    buildstats_source: Callable[[], BuildstatsRun],
+    durations: list[TaskDuration],
+) -> TaskChurn:
+    """Aggregate churn counters per task type over the executed task set.
+
+    Degrades with a note rather than raising, following
+    :func:`_compute_critical_path`'s precedent, and keeps ``absent`` and
+    ``empty`` apart for the reason :func:`_compute_join` does.
+
+    Rows are ordered by minor faults descending, which puts the process-churn
+    heavy task types at the top - the ordering that made the ``do_configure``
+    profile visible in the first place.
+    """
+    try:
+        run = buildstats_source()
+    except Exception as exc:  # noqa: BLE001 - any buildstats-source failure degrades gracefully
+        return TaskChurn(note=f"task churn unavailable: source failed ({exc})")
+
+    if run.outcome == "absent":
+        return TaskChurn(note=f"task churn unavailable: tree absent ({run.note})")
+    if run.outcome != "parsed":
+        return TaskChurn(note=f"task churn unavailable: tree present but recorded nothing ({run.note})")
+
+    executed = {_join_key(d.recipe, d.task) for d in durations}
+    grouped: dict[str, list[TaskStats]] = {}
+    # Distinct executed tasks covered, not records aggregated. Two versioned
+    # recipe directories collapse to one key once the version is stripped, so a
+    # record count would let ``covered`` exceed ``executed`` and turn the
+    # coverage note into a claim nobody can read.
+    matched: set[tuple[str, str]] = set()
+    for stat in run.tasks:
+        key = _join_key(stat.recipe, stat.task)
+        if key not in executed:
+            continue
+        matched.add(key)
+        grouped.setdefault(stat.task, []).append(stat)
+
+    if not grouped:
+        return TaskChurn(
+            note=(
+                f"task churn unavailable: none of the {len(run.tasks)} buildstats records match an "
+                "executed task, so every counter would describe a different build"
+            ),
+        )
+
+    rows = [
+        ChurnRow(
+            task=task,
+            tasks=len(stats),
+            minflt=sum(s.minflt for s in stats),
+            majflt=sum(s.majflt for s in stats),
+            syscalls=sum(s.syscalls for s in stats),
+            write_bytes=sum(s.write_bytes for s in stats),
+        )
+        for task, stats in grouped.items()
+    ]
+    rows.sort(key=lambda r: r.minflt, reverse=True)
+    return TaskChurn(
+        available=True,
+        rows=rows,
+        covered=len(matched),
+        executed=len(durations),
+        note=(
+            f"task churn over {len(matched)} of {len(durations)} executed tasks, aggregated into {len(rows)} task types"
+        ),
+        basis_note=CHURN_BASIS_NOTE,
+    )
+
+
 def timing_report(
     artifact: dict | list,
     top_n: int = DEFAULT_TOP_N,
@@ -723,6 +919,12 @@ def timing_report(
     two binds. It therefore needs BOTH ``dependency_source`` and
     ``buildstats_source``; with either omitted or degraded it reports
     unavailable rather than publishing the surviving bound under its label.
+
+    The :class:`TaskChurn` section aggregates the same records' fault, syscall
+    and write counters per task type. It needs only ``buildstats_source``, and
+    unlike the floor it is not withheld on a refused join - see
+    :class:`TaskChurn` for why a per-task-type aggregate survives a partial
+    coverage that a build-wide bound does not.
     """
     baselines = task_timings.load_baselines(baselines_path)
 
@@ -772,9 +974,16 @@ def timing_report(
 
     buildstats_join = BuildstatsJoin()
     cpu_floor = CpuFloor()
+    task_churn = TaskChurn()
     if buildstats_source is not None:
-        buildstats_join = _compute_join(buildstats_source, durations)
+        # Two sections read the same tree. Caching the zero-argument call keeps
+        # the directory walk to one pass without either section having to know
+        # the other exists; a raising source is not cached, so both still see
+        # the failure and both still degrade on it.
+        cached_source = functools.cache(buildstats_source)
+        buildstats_join = _compute_join(cached_source, durations)
         cpu_floor = _compute_cpu_floor(buildstats_join, artifact)
+        task_churn = _compute_churn(cached_source, durations)
 
     return TimingReport(
         top_slowest=top_slowest,
@@ -783,4 +992,5 @@ def timing_report(
         buildstats_join=buildstats_join,
         cpu_floor=cpu_floor,
         concurrency_floor=_compute_concurrency_floor(cpu_floor, critical_path, artifact),
+        task_churn=task_churn,
     )

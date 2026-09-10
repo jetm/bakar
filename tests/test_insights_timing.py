@@ -19,7 +19,7 @@ import pytest
 
 from bakar import eventlog
 from bakar.buildstats import BuildstatsRun, TaskStats
-from bakar.insights_timing import timing_report
+from bakar.insights_timing import TimingReport, timing_report
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -825,3 +825,270 @@ def test_floor_section_defaults_to_unavailable_without_either_source(tmp_path: P
 
     assert report.concurrency_floor.available is False
     assert report.concurrency_floor.seconds is None
+
+
+# --- churn columns --------------------------------------------------------
+#
+# These tests go through a REAL buildstats tree on disk rather than through
+# hand-built ``TaskStats`` objects. The failure they exist to catch is a
+# mistyped field name - the file spells the counters ``rusage ru_minflt`` and
+# ``Child rusage ru_majflt``, not ``minflt``/``ru_minflt`` - and a fixture that
+# constructs ``TaskStats`` directly bypasses the parser that could get it wrong,
+# so every column would read as populated over a spelling nothing checks.
+
+#: One realistic per-task record. The self/child split is deliberately lopsided
+#: the way a real one is: on a measured capture ``do_configure`` read 7,023,117
+#: self minor faults against 214,243,919 child ones, so a reader that sums only
+#: the self lines under-reports by roughly 30x and still renders a full table.
+_TASK_FILE = """Event: TaskStarted
+Recipe: {recipe}
+Task: {task}
+Started: 1000.0
+Elapsed time: {elapsed} seconds
+utime: 16
+stime: 4
+cutime: 900
+cstime: 200
+rusage ru_utime: 1.5
+rusage ru_stime: 0.5
+rusage ru_minflt: {minflt}
+rusage ru_majflt: {majflt}
+Child rusage ru_utime: 9.0
+Child rusage ru_stime: 1.0
+Child rusage ru_minflt: {cminflt}
+Child rusage ru_majflt: {cmajflt}
+IO syscr: {syscr}
+IO syscw: {syscw}
+IO write_bytes: {write_bytes}
+Status: PASSED
+"""
+
+
+def _write_capture(tmpdir: Path, records: list[dict]) -> None:
+    """Write a buildstats tree in bitbake's own on-disk shape."""
+    capture = tmpdir / "buildstats" / "20260101000000"
+    for rec in records:
+        recipe_dir = capture / rec["recipe"]
+        recipe_dir.mkdir(parents=True, exist_ok=True)
+        (recipe_dir / rec["task"]).write_text(_TASK_FILE.format(**rec))
+
+
+def _churn_record(recipe: str, task: str, **over: object) -> dict:
+    base = {
+        "recipe": recipe,
+        "task": task,
+        "elapsed": 12.0,
+        "minflt": 7_023_117,
+        "majflt": 40,
+        "cminflt": 214_243_919,
+        "cmajflt": 60,
+        "syscr": 1_000,
+        "syscw": 500,
+        "write_bytes": 2_000_000_000,
+    }
+    base.update(over)
+    return base
+
+
+def _churn_report(tmp_path: Path, records: list[dict], rows: list[dict]) -> TimingReport:
+    from bakar import buildstats
+
+    _write_capture(tmp_path, records)
+    return timing_report(
+        {"tasks": rows},
+        baselines_path=tmp_path / "absent.json",
+        buildstats_source=lambda: buildstats.read_run(tmp_path),
+    )
+
+
+def test_churn_counters_are_non_zero_and_read_by_field_name(tmp_path: Path) -> None:
+    """The falsifier for this capability, asserted directly.
+
+    A mistyped field name plus a ``.get(field, 0)`` fallback renders a table of
+    zeros that looks populated. So the assertion is on the VALUES, not on the
+    keys being present: each column must carry the self+child sum the file
+    actually spells out.
+    """
+    report = _churn_report(
+        tmp_path,
+        [_churn_record("busybox", "do_configure")],
+        [_row("busybox", "do_configure", 0.0, 12.0)],
+    )
+
+    churn = report.task_churn
+    assert churn.available is True
+    (row,) = churn.rows
+    assert row.task == "do_configure"
+    assert row.minflt == 7_023_117 + 214_243_919
+    assert row.majflt == 40 + 60
+    assert row.syscalls == 1_000 + 500
+    assert row.write_bytes == 2_000_000_000
+    assert row.minflt > 0 and row.majflt > 0 and row.syscalls > 0
+
+
+def test_churn_sums_across_recipes_within_one_task_type(tmp_path: Path) -> None:
+    report = _churn_report(
+        tmp_path,
+        [_churn_record("busybox", "do_compile"), _churn_record("zlib", "do_compile")],
+        [_row("busybox", "do_compile", 0.0, 12.0), _row("zlib", "do_compile", 0.0, 12.0)],
+    )
+
+    (row,) = report.task_churn.rows
+    assert row.tasks == 2
+    assert row.minflt == 2 * (7_023_117 + 214_243_919)
+    assert report.task_churn.covered == 2
+    assert report.task_churn.executed == 2
+
+
+def test_churn_ignores_records_this_run_never_executed(tmp_path: Path) -> None:
+    """A stale capture's rows describe a different build and must not be counted."""
+    report = _churn_report(
+        tmp_path,
+        [_churn_record("busybox", "do_compile"), _churn_record("ghost-recipe", "do_compile")],
+        [_row("busybox", "do_compile", 0.0, 12.0)],
+    )
+
+    (row,) = report.task_churn.rows
+    assert row.tasks == 1
+    assert row.minflt == 7_023_117 + 214_243_919
+    assert report.task_churn.covered == 1
+
+
+def test_churn_row_values_sit_under_the_columns_that_name_them(tmp_path: Path) -> None:
+    """Read the table back by column name, which is how the reading error happened.
+
+    An earlier reading of the reference analyser's own output took the ``majflt``
+    column for a task count and ``GB_wr`` for cores-per-task. Slicing the header
+    and the row on the same widths is the check that a value ends up under its
+    own name.
+    """
+    from bakar.insights_timing import CHURN_COLUMNS, CHURN_WIDTHS
+
+    report = _churn_report(
+        tmp_path,
+        [_churn_record("busybox", "do_configure")],
+        [_row("busybox", "do_configure", 0.0, 12.0)],
+    )
+    lines = report.task_churn.report_lines()
+    header, row_line = lines[-2], lines[-1]
+
+    def _cells(line: str) -> dict[str, str]:
+        cells, pos = {}, 1
+        for name, width in zip(CHURN_COLUMNS, CHURN_WIDTHS, strict=True):
+            cells[name] = line[pos : pos + width].strip()
+            pos += width
+        return cells
+
+    assert list(_cells(header).values()) == list(CHURN_COLUMNS)
+    cells = _cells(row_line)
+    assert cells["task type"] == "do_configure"
+    assert cells["tasks"] == "1"
+    assert cells["minflt"] == f"{7_023_117 + 214_243_919:,}"
+    assert cells["majflt"] == "100"
+    assert cells["syscalls"] == "1,500"
+    assert cells["GB_wr"] == "2.00"
+
+
+def test_churn_is_reported_even_when_the_join_gate_refuses(tmp_path: Path) -> None:
+    """A per-task-type aggregate survives partial coverage; a build-wide bound does not.
+
+    The floor stays refused in the same report, so this is not a hole in the
+    gate - it is the gate applying to the figure it was written for.
+    """
+    report = _churn_report(
+        tmp_path,
+        [_churn_record("busybox", "do_compile")],
+        [_row("busybox", "do_compile", 0.0, 12.0), _row("zlib", "do_compile", 0.0, 12.0)],
+    )
+
+    assert report.buildstats_join.gate_passed is False
+    assert report.cpu_floor.available is False
+    churn = report.task_churn
+    assert churn.available is True
+    assert churn.covered == 1
+    assert churn.executed == 2
+    assert "1 of 2 executed tasks" in churn.note
+
+
+def test_churn_rows_are_ordered_by_minor_faults(tmp_path: Path) -> None:
+    report = _churn_report(
+        tmp_path,
+        [
+            _churn_record("busybox", "do_unpack", minflt=100, cminflt=200),
+            _churn_record("busybox", "do_configure"),
+        ],
+        [_row("busybox", "do_unpack", 0.0, 12.0), _row("busybox", "do_configure", 0.0, 12.0)],
+    )
+
+    assert [r.task for r in report.task_churn.rows] == ["do_configure", "do_unpack"]
+
+
+def test_churn_with_no_matching_records_is_unavailable(tmp_path: Path) -> None:
+    report = _churn_report(
+        tmp_path,
+        [_churn_record("ghost-recipe", "do_compile")],
+        [_row("busybox", "do_compile", 0.0, 12.0)],
+    )
+
+    churn = report.task_churn
+    assert churn.available is False
+    assert churn.rows == []
+    assert "match an executed task" in churn.note
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [("absent", "tree absent"), ("empty", "recorded nothing")],
+)
+def test_churn_keeps_absent_and_empty_trees_apart(tmp_path: Path, outcome: str, expected: str) -> None:
+    run = BuildstatsRun(outcome=outcome, note="fixture note")
+
+    report = timing_report(
+        {"tasks": [_row("busybox", "do_compile", 0.0, 5.0)]},
+        baselines_path=tmp_path / "absent.json",
+        buildstats_source=lambda: run,
+    )
+
+    assert report.task_churn.available is False
+    assert expected in report.task_churn.note
+
+
+def test_churn_source_failure_degrades_rather_than_raising(tmp_path: Path) -> None:
+    def _boom() -> BuildstatsRun:
+        raise RuntimeError("tmpdir unreadable")
+
+    report = timing_report(
+        {"tasks": [_row("busybox", "do_compile", 0.0, 5.0)]},
+        baselines_path=tmp_path / "absent.json",
+        buildstats_source=_boom,
+    )
+
+    assert report.task_churn.available is False
+    assert "source failed" in report.task_churn.note
+
+
+def test_churn_defaults_to_unavailable_without_a_buildstats_source(tmp_path: Path) -> None:
+    report = timing_report({"tasks": []}, baselines_path=tmp_path / "absent.json")
+
+    assert report.task_churn.available is False
+    assert report.task_churn.rows == []
+
+
+def test_churn_coverage_counts_distinct_tasks_not_records(tmp_path: Path) -> None:
+    """Two versioned recipe directories collapse to one key once the version is stripped.
+
+    Counting records instead would report coverage of 2 over 1 executed task -
+    a coverage figure above 100%, which reads as a parsing bug rather than as
+    the aggregation it actually is.
+    """
+    report = _churn_report(
+        tmp_path,
+        [_churn_record("busybox-1.36.1-r0", "do_compile"), _churn_record("busybox-1.37-r0", "do_compile")],
+        [_row("busybox-1.36.1-r0", "do_compile", 0.0, 12.0)],
+    )
+
+    churn = report.task_churn
+    assert churn.covered == 1
+    assert churn.executed == 1
+    (row,) = churn.rows
+    assert row.tasks == 2
