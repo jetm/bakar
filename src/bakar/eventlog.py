@@ -397,7 +397,7 @@ def _host_block(variables: dict[str, Any] | None = None) -> dict[str, Any]:
     }
 
 
-def normalize(raw_path: Path) -> dict[str, Any]:
+def normalize(raw_path: Path, *, record_host: bool = True) -> dict[str, Any]:
     """Read a raw bitbake event log and return the normalized artifact.
 
     The returned dict always has exactly these top-level keys::
@@ -410,6 +410,19 @@ def normalize(raw_path: Path) -> dict[str, Any]:
     missing-log early return too - the host is knowable even when the build
     recorded nothing, and omitting it there would make an unreadable log
     indistinguishable from a pre-schema-5 artifact.
+
+    ``record_host=False`` emits ``host`` as ``None`` instead. Pass it whenever
+    this call is NOT running on the machine that built - reading an old run's
+    raw log during analysis, say - because ``_host_block`` describes the
+    process's own machine and every consumer reads that field as the build
+    host's. The key stays present either way, so the shape does not change and
+    a reader cannot tell this apart from a genuine pre-schema-5 artifact, which
+    is correct: in both cases nothing knows the build host's core count.
+
+    The flag lives here rather than at the call site because the caller
+    previously blanked the field itself, which coupled it to this module's key
+    name - rename ``host`` and that assignment silently stops neutralizing the
+    block, and the false-provenance defect returns with nothing failing.
 
     ``failures[]`` entries carry ``recipe`` (from ``_package``), ``task``
     (from ``_task``/``taskname``), ``logfile``, and ``errprinted``.
@@ -452,7 +465,7 @@ def normalize(raw_path: Path) -> dict[str, Any]:
         return {
             "schema_version": SCHEMA_VERSION,
             "build": build,
-            "host": _host_block(),
+            "host": _host_block() if record_host else None,
             "tasks": [],
             "setscene": setscene,
             "failures": failures,
@@ -603,7 +616,7 @@ def normalize(raw_path: Path) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "build": build,
-        "host": _host_block(variables),
+        "host": _host_block(variables) if record_host else None,
         "tasks": list(tasks.values()),
         "setscene": setscene,
         "failures": failures,

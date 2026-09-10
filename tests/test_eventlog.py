@@ -418,3 +418,52 @@ def test_normalize_captures_disk_usage_and_full_events(tmp_path: Path) -> None:
         {"dev": "/dev/sda1", "type": "ext4", "free_bytes": 1024, "mountpoint": "/work/build"}
     ]
     assert artifact["psi"] == {"samples": []}
+
+
+@pytest.mark.unit
+def test_record_host_false_emits_a_null_host_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_host_block` describes the CALLING machine, so analysis must be able to decline it.
+
+    Every consumer reads `host` as the build host's. When an old run's raw log
+    is normalized during analysis, the block synthesized here describes the
+    analysing machine instead, and the CPU floor then prints a divisor under a
+    note reading "recorded at capture" - the false-provenance defect this flag
+    exists to keep out of that path.
+
+    The flag lives in this module rather than at the call site because the
+    caller used to blank the field itself, which coupled it to this module's key
+    name: rename `host` and that assignment silently stops neutralizing the
+    block.
+    """
+    _write_eventlog(
+        tmp_path,
+        [_task_event("bb.build.TaskStarted", "busybox-1.36.1-r0", "do_compile", started=100.0)],
+    )
+    log = tmp_path / "bitbake_eventlog.json"
+
+    monkeypatch.setattr("os.cpu_count", lambda: 999)
+    assert eventlog.normalize(log)["host"]["cpu_count"] == 999
+    assert eventlog.normalize(log, record_host=False)["host"] is None
+
+    # The value must not follow the analysing host on the declining path.
+    monkeypatch.setattr("os.cpu_count", lambda: 4)
+    assert eventlog.normalize(log, record_host=False)["host"] is None
+
+
+@pytest.mark.unit
+def test_record_host_false_keeps_the_key_present(tmp_path: Path) -> None:
+    """A null `host` must stay indistinguishable from a pre-schema-5 artifact.
+
+    Both mean the same thing - nothing knows the build host's core count - so
+    dropping the key instead would make the shape differ for no reason and give
+    a consumer a second case to handle.
+    """
+    _write_eventlog(
+        tmp_path,
+        [_task_event("bb.build.TaskStarted", "busybox-1.36.1-r0", "do_compile", started=100.0)],
+    )
+
+    artifact = eventlog.normalize(tmp_path / "bitbake_eventlog.json", record_host=False)
+
+    assert "host" in artifact
+    assert set(artifact) == {"schema_version", "build", "host", "tasks", "setscene", "failures", "psi", "disk"}

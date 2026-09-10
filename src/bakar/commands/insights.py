@@ -146,9 +146,7 @@ def _load_artifact(log: RunLogger) -> dict:
             data = None
         if isinstance(data, dict):
             return data
-    artifact = eventlog.normalize(log.eventlog_path)
-    artifact["host"] = None
-    return artifact
+    return eventlog.normalize(log.eventlog_path, record_host=False)
 
 
 def _buildstats_source(tmpdir: Path, window: tuple[float, float] | None) -> Callable[[], buildstats.BuildstatsRun]:
