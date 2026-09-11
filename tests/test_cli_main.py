@@ -93,6 +93,77 @@ def test_main_buildtools_missing_returns_1_clean(
     assert "╭" not in captured.err
 
 
+class TestTerminalExceptionsReadFromPublicNames:
+    """Abort/Exit must resolve without touching ``typer._click.exceptions``.
+
+    That vendored module exists on typer >= 0.26 but stopped defining ``Abort``
+    and ``Exit``, so reading them through the shim raised ``AttributeError``
+    while evaluating the ``except`` clause - on every clean exit, ``--help``
+    included. Each test below blanks those two names off the shim and asserts
+    the interceptor still works, which fails against the old code on any typer
+    version rather than only on the one that ships the stripped module.
+    """
+
+    @pytest.fixture
+    def _shim_without_abort_and_exit(self, monkeypatch: pytest.MonkeyPatch):
+        from types import SimpleNamespace
+
+        from click import exceptions as real
+
+        import bakar.cli as cli_mod
+
+        monkeypatch.setattr(
+            cli_mod,
+            "_click_exc",
+            SimpleNamespace(UsageError=real.UsageError, ClickException=real.ClickException),
+        )
+
+    @staticmethod
+    def _app_raising(exc: BaseException):
+        def _raise(**_kw: object) -> int:
+            raise exc
+
+        return _raise
+
+    def test_help_exits_zero(
+        self,
+        _shim_without_abort_and_exit: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(sys, "argv", ["bakar", "--help"])
+        assert main() == 0
+
+    def test_abort_reports_1_without_traceback(
+        self,
+        _shim_without_abort_and_exit: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        import typer
+
+        import bakar.cli as cli_mod
+
+        monkeypatch.setattr(cli_mod, "app", self._app_raising(typer.Abort()))
+        monkeypatch.setattr(sys, "argv", ["bakar", "doctor"])
+        rc = main()
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "Aborted." in captured.out + captured.err
+
+    def test_typer_exit_surfaces_its_code(
+        self,
+        _shim_without_abort_and_exit: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import typer
+
+        import bakar.cli as cli_mod
+
+        monkeypatch.setattr(cli_mod, "app", self._app_raising(typer.Exit(3)))
+        monkeypatch.setattr(sys, "argv", ["bakar", "doctor"])
+        assert main() == 3
+
+
 class TestGlobalCallbackPublishesModuleState:
     """The ``@app.callback()`` shim must still publish its flags as module globals.
 

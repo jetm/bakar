@@ -80,11 +80,14 @@ def main() -> int:
         # Non-usage Click errors (e.g. FileError, BadOptionUsage, custom ClickException).
         console.print(f"Error: {exc.format_message()}")
         return exc.exit_code if exc.exit_code is not None else 1
-    except _click_exc.Abort:
+    except typer.Abort:
         # SIGINT during a prompt; Click convention is exit 1 with no traceback.
+        # Read from typer's top level: ``typer._click.exceptions`` stopped
+        # defining Abort/Exit in 0.26, so reaching for them through the shim
+        # raised AttributeError on every clean exit, ``--help`` included.
         console.print("Aborted.")
         return 1
-    except (_click_exc.Exit, typer.Exit) as exc:
+    except typer.Exit as exc:
         # typer.Exit (used everywhere in our commands) -> the carried exit code.
         return int(exc.exit_code) if getattr(exc, "exit_code", 0) is not None else 0
     except (BuildtoolsMissingError, BitbakeBinMissingError) as exc:
