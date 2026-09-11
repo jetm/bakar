@@ -222,6 +222,11 @@ class BuildstatsJoin:
     buildstats tree was absent, empty, or its source raised. Those are distinct
     from a computed-but-failing rate, which is ``available=True,
     gate_passed=False``.
+
+    ``unjoined_sample`` is carried on the PASSING branch too, matching
+    :class:`GraphJoin`: a residual that never grew past the gate is the one a
+    reader can still act on, and a sample printed only once the gate has already
+    refused surfaces the pattern a run too late.
     """
 
     available: bool = False
@@ -278,12 +283,12 @@ class GraphJoin:
     not render as 0%, which is why the default note says "unavailable" rather
     than naming a rate - :class:`CpuFloor` makes the same distinction.
 
-    ``unjoined_sample`` is carried on the PASSING branch too, which is where
-    this diverges from :class:`BuildstatsJoin`. The residual it names is what
-    the version-strip debt marker on :func:`_resolve_graph_node` asks a reader
-    to watch: its upgrade trigger is "the sample is dominated by version-strip
-    misses", and a sample printed only once the gate has already refused would
-    surface that pattern one run after it mattered.
+    ``unjoined_sample`` is carried on the PASSING branch too, as it is on
+    :class:`BuildstatsJoin`. The residual it names is what the version-strip
+    debt marker on :func:`_resolve_graph_node` asks a reader to watch: its
+    upgrade trigger is "the sample is dominated by version-strip misses", and a
+    sample printed only once the gate has already refused would surface that
+    pattern one run after it mattered.
     """
 
     available: bool = False
@@ -675,6 +680,96 @@ def _parse_dependency_graph(dependency_source: Callable[[], tuple[str, str]]) ->
     return _ParsedGraph(graph=graph, nodes=frozenset(graph.nodes))
 
 
+@dataclass(frozen=True)
+class _JoinGate:
+    """The join-rate verdict shared by :class:`GraphJoin` and :class:`BuildstatsJoin`.
+
+    Both joins answer the same question over different resolvers - what share of
+    the executed set reached a record - and both refuse below the same
+    :data:`JOIN_RATE_THRESHOLD`. Holding one gate means a change to the
+    threshold, to the empty-denominator refusal, or to the sample bound lands on
+    both joins at once; two copies could drift apart silently, which for a gate
+    means one of them quietly stops refusing.
+
+    The gate owns the counting and the verdict only. Note wording stays with
+    each caller: the refusals name different downstream sections ("no critical
+    path", "no CPU-derived figure") and a generic sentence would cost the reader
+    the one thing the note is for.
+
+    ``matched`` collects the record keys the executed set reached. Only
+    :func:`_compute_join` reads it, to sum CPU seconds over exactly those
+    records; :func:`_compute_graph_join` has no per-node weight to pull from a
+    node it merely resolved, so it ignores the field.
+    """
+
+    label: str
+    executed: int
+    joined: int
+    unjoined_sample: list[str]
+    matched: set[tuple[str, str]]
+    passed: bool
+
+    @property
+    def is_empty(self) -> bool:
+        """True when nothing executed, which is a refusal rather than a pass."""
+        return not self.executed
+
+    @property
+    def empty_note(self) -> str:
+        """The refusal note for an empty denominator."""
+        return f"{self.label} refused: no executed tasks to join against"
+
+    @property
+    def rate_pct(self) -> float:
+        """Joined share as a percentage, 0.0 over an empty denominator."""
+        return (100.0 * self.joined / self.executed) if self.executed else 0.0
+
+    @property
+    def gate_pct(self) -> float:
+        """The threshold this verdict was taken against, as a percentage."""
+        return 100.0 * JOIN_RATE_THRESHOLD
+
+
+def _gate_join(
+    label: str,
+    executed: list[_ExecutedTask],
+    resolve: Callable[[str, str], tuple[str, str] | None],
+) -> _JoinGate:
+    """Resolve every executed task and take the join-rate verdict.
+
+    ``resolve`` returns the record key a task reached, or ``None``. A task that
+    reaches nothing is named in the bounded sample rather than only counted: a
+    refusal has to be diagnosable, since it can fire for a bakar-side identity
+    defect as readily as for a real coverage gap.
+
+    Numerator and denominator are counted over the SAME set - every executed
+    task raises ``executed``, and only a resolved one also raises ``joined``.
+    Dropping unresolved tasks from both sides would pin the rate at 100% and
+    pass vacuously over precisely the partial-join case the gate exists to
+    catch.
+    """
+    matched: set[tuple[str, str]] = set()
+    unjoined: list[str] = []
+    joined = 0
+    for recipe, task in executed:
+        key = resolve(recipe, task)
+        if key is None:
+            unjoined.append(f"{recipe}:{task}")
+        else:
+            joined += 1
+            matched.add(key)
+
+    executed_count = len(executed)
+    return _JoinGate(
+        label=label,
+        executed=executed_count,
+        joined=joined,
+        unjoined_sample=unjoined[:UNJOINED_SAMPLE],
+        matched=matched,
+        passed=bool(executed_count) and joined >= JOIN_RATE_THRESHOLD * executed_count,
+    )
+
+
 def _compute_graph_join(parsed: _ParsedGraph, executed: list[_ExecutedTask]) -> GraphJoin:
     """Join executed tasks against task-graph nodes and gate on the rate.
 
@@ -683,10 +778,9 @@ def _compute_graph_join(parsed: _ParsedGraph, executed: list[_ExecutedTask]) -> 
     a task with no usable timestamp still ran, so it must lower this rate
     rather than vanish from both sides of it.
 
-    Resolution is :func:`_resolve_graph_node`'s exact-then-setscene-fallback,
-    and a task that resolves to nothing is named in the bounded sample rather
-    than only counted: the refusal has to be diagnosable, since it can fire for
-    a bakar-side identity defect as readily as for a real coverage gap.
+    Resolution is :func:`_resolve_graph_node`'s exact-then-setscene-fallback;
+    the counting, the bounded sample and the verdict are :func:`_gate_join`'s,
+    shared with :func:`_compute_join`.
     """
     if parsed.error is not None:
         return GraphJoin(note=f"graph join unavailable: {parsed.error}")
@@ -696,21 +790,15 @@ def _compute_graph_join(parsed: _ParsedGraph, executed: list[_ExecutedTask]) -> 
         # be told apart here, so the note must not claim "empty" alone.
         return GraphJoin(note="graph join unavailable: empty or unparseable dependency graph")
 
-    unjoined: list[str] = []
-    joined = 0
-    for recipe, task in executed:
-        if _resolve_graph_node(parsed.nodes, recipe, task) is None:
-            unjoined.append(f"{recipe}:{task}")
-        else:
-            joined += 1
+    gate = _gate_join(
+        "graph join",
+        executed,
+        lambda recipe, task: _resolve_graph_node(parsed.nodes, recipe, task),
+    )
+    if gate.is_empty:
+        return GraphJoin(available=True, note=gate.empty_note)
 
-    executed_count = len(executed)
-    if not executed_count:
-        return GraphJoin(available=True, note="graph join refused: no executed tasks to join against")
-
-    rate_pct = 100.0 * joined / executed_count
-    gate_pct = 100.0 * JOIN_RATE_THRESHOLD
-    if joined < JOIN_RATE_THRESHOLD * executed_count:
+    if not gate.passed:
         # Two decimals, not one: at real build scale (thousands of executed
         # tasks) a refused rate can round to the same one-decimal figure as
         # the gate itself (94.97% -> "95.0%"), reading as "95.0% ... below
@@ -718,12 +806,12 @@ def _compute_graph_join(parsed: _ParsedGraph, executed: list[_ExecutedTask]) -> 
         # a reader has no way to tell apart from a real contradiction.
         return GraphJoin(
             available=True,
-            executed=executed_count,
-            joined=joined,
-            unjoined_sample=unjoined[:UNJOINED_SAMPLE],
+            executed=gate.executed,
+            joined=gate.joined,
+            unjoined_sample=gate.unjoined_sample,
             note=(
-                f"graph join refused: {rate_pct:.2f}% of executed tasks resolved to a graph node, "
-                f"below the {gate_pct:.2f}% gate ({executed_count - joined} of {executed_count} "
+                f"graph join refused: {gate.rate_pct:.2f}% of executed tasks resolved to a graph node, "
+                f"below the {gate.gate_pct:.2f}% gate ({gate.executed - gate.joined} of {gate.executed} "
                 f"executed tasks reach no node) - no critical path is reported for this run"
             ),
         )
@@ -731,10 +819,13 @@ def _compute_graph_join(parsed: _ParsedGraph, executed: list[_ExecutedTask]) -> 
     return GraphJoin(
         available=True,
         gate_passed=True,
-        executed=executed_count,
-        joined=joined,
-        unjoined_sample=unjoined[:UNJOINED_SAMPLE],
-        note=(f"graph join {rate_pct:.1f}% ({joined} of {executed_count} executed tasks resolved to a graph node)"),
+        executed=gate.executed,
+        joined=gate.joined,
+        unjoined_sample=gate.unjoined_sample,
+        note=(
+            f"graph join {gate.rate_pct:.1f}% "
+            f"({gate.joined} of {gate.executed} executed tasks resolved to a graph node)"
+        ),
     )
 
 
@@ -1025,32 +1116,23 @@ def _compute_join(
 
     exact, stripped = _index_records(run.tasks)
 
-    matched: set[tuple[str, str]] = set()
-    unjoined: list[str] = []
-    joined = 0
-    for recipe, task in executed:
-        key = _match_record(exact, stripped, recipe, task)
-        if key is None:
-            unjoined.append(f"{recipe}:{task}")
-        else:
-            joined += 1
-            matched.add(key)
+    gate = _gate_join(
+        "buildstats join",
+        executed,
+        lambda recipe, task: _match_record(exact, stripped, recipe, task),
+    )
+    if gate.is_empty:
+        return BuildstatsJoin(available=True, note=gate.empty_note)
 
-    executed_count = len(executed)
-    if not executed_count:
-        return BuildstatsJoin(available=True, note="buildstats join refused: no executed tasks to join against")
-
-    rate_pct = 100.0 * joined / executed_count
-    gate_pct = 100.0 * JOIN_RATE_THRESHOLD
-    if joined < JOIN_RATE_THRESHOLD * executed_count:
+    if not gate.passed:
         return BuildstatsJoin(
             available=True,
-            executed=executed_count,
-            joined=joined,
-            unjoined_sample=unjoined[:UNJOINED_SAMPLE],
+            executed=gate.executed,
+            joined=gate.joined,
+            unjoined_sample=gate.unjoined_sample,
             note=(
-                f"buildstats join refused: {rate_pct:.1f}% of executed tasks joined, below the "
-                f"{gate_pct:.1f}% gate ({executed_count - joined} of {executed_count} executed tasks "
+                f"buildstats join refused: {gate.rate_pct:.1f}% of executed tasks joined, below the "
+                f"{gate.gate_pct:.1f}% gate ({gate.executed - gate.joined} of {gate.executed} executed tasks "
                 f"have no buildstats record) - no CPU-derived figure is reported for this run. "
                 f"{_capture_phrase(run)}"
             ),
@@ -1065,11 +1147,12 @@ def _compute_join(
     return BuildstatsJoin(
         available=True,
         gate_passed=True,
-        executed=executed_count,
-        joined=joined,
-        cpu_seconds=sum(stat.cpu_seconds for k in matched for stat in exact[k]),
+        executed=gate.executed,
+        joined=gate.joined,
+        cpu_seconds=sum(stat.cpu_seconds for k in gate.matched for stat in exact[k]),
+        unjoined_sample=gate.unjoined_sample,
         note=(
-            f"buildstats join {rate_pct:.1f}% ({joined} of {executed_count} executed tasks matched a "
+            f"buildstats join {gate.rate_pct:.1f}% ({gate.joined} of {gate.executed} executed tasks matched a "
             f"buildstats record). {_capture_phrase(run)}"
         ),
     )

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from dataclasses import fields
 from typing import TYPE_CHECKING
 
 import pytest
@@ -24,8 +25,10 @@ from bakar.insights_timing import (
     CRITICAL_PATH_TOP_N,
     JOIN_RATE_THRESHOLD,
     UNJOINED_SAMPLE,
+    BuildstatsJoin,
     CpuFloor,
     CriticalPath,
+    GraphJoin,
     TimingReport,
     _compute_concurrency_floor,
     _resolve_graph_node,
@@ -366,6 +369,32 @@ def test_join_above_the_threshold_passes_and_carries_cpu_seconds(tmp_path: Path)
     assert join.gate_passed is True
     assert join.rate == pytest.approx(1.0)
     assert join.cpu_seconds == pytest.approx(42.0)
+
+
+def test_a_passing_buildstats_join_still_names_its_residual(tmp_path: Path) -> None:
+    """Nineteen of twenty joined: exactly on the gate, and the miss is still named.
+
+    A sample printed only once the gate has already refused surfaces the pattern
+    a run after it mattered - the same reason :class:`GraphJoin` carries one on
+    its passing branch.
+    """
+    rows = [_row(f"pkg{i}", "do_compile", 0.0, 5.0) for i in range(20)]
+    run = _parsed(*(_stat(f"pkg{i}", "do_compile", 10.0) for i in range(19)))
+
+    report = timing_report({"tasks": rows}, baselines_path=tmp_path / "absent.json", buildstats_source=lambda: run)
+
+    join = report.buildstats_join
+    assert join.gate_passed is True
+    assert join.unjoined_sample == ["pkg19:do_compile"]
+
+
+def test_both_passing_joins_report_the_same_field_set() -> None:
+    """``cpu_seconds`` is the only field one passing join carries and the other does not."""
+    graph_fields = {f.name for f in fields(GraphJoin)}
+    buildstats_fields = {f.name for f in fields(BuildstatsJoin)}
+
+    assert buildstats_fields - graph_fields == {"cpu_seconds"}
+    assert graph_fields - buildstats_fields == set()
 
 
 def test_a_stale_record_for_another_version_contributes_no_cpu_seconds(tmp_path: Path) -> None:
