@@ -89,12 +89,6 @@ def tasks_from(source: Path | str | list) -> list:
     return rows if isinstance(rows, list) else []
 
 
-# devtool-debt: back-compat alias for the pre-promotion private name, which
-# insights_timing and insights_sstate still import. Ceiling: those two callers.
-# Upgrade trigger: they switch to ``tasks_from``, at which point delete this.
-_tasks_from = tasks_from
-
-
 def compute_task_rollup(source: Path | str | list) -> TaskRollup:
     """Compute the per-family wall-time rollup for one run.
 

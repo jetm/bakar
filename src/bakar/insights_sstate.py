@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from bakar.task_rollup import _tasks_from
+from bakar.task_rollup import tasks_from
 
 # Row outcome for a *_setscene task that found its sstate object (cache hit).
 _HIT_OUTCOME = "succeeded"
@@ -71,7 +71,7 @@ def sstate_report(artifact: dict | list) -> SstateReport:
     ``artifact`` is either the normalized artifact dict (as returned by
     :func:`bakar.eventlog.normalize`) or its already-extracted ``tasks``
     list. Tasks-list extraction is delegated to
-    :func:`bakar.task_rollup._tasks_from` rather than re-parsed here.
+    :func:`bakar.task_rollup.tasks_from` rather than re-parsed here.
 
     A row counts toward a recipe's hits when its ``task`` ends with
     ``_setscene`` and its ``outcome`` is ``"succeeded"``, and toward misses
@@ -85,7 +85,7 @@ def sstate_report(artifact: dict | list) -> SstateReport:
     hits: dict[str, int] = {}
     misses: dict[str, int] = {}
 
-    for row in _tasks_from(tasks):
+    for row in tasks_from(tasks):
         if not isinstance(row, dict):
             continue
         task = row.get("task")

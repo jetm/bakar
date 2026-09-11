@@ -8,8 +8,8 @@ cross-build mean/stddev already tracked by :mod:`bakar.task_timings` (no
 second baseline store is built here).
 
 The tasks-list extraction and missing/negative-duration guard reuse
-:func:`bakar.task_rollup._tasks_from` rather than re-parsing the ``tasks``
-list a third time (see design.md's "reuse ``_tasks_from``" decision).
+:func:`bakar.task_rollup.tasks_from` rather than re-parsing the ``tasks``
+list a third time (see design.md's "reuse ``tasks_from``" decision).
 
 This module also exposes an optional critical-path sub-section: the longest
 dependency-respecting serial chain through the build, each node weighted by
@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 import networkx as nx
 
 from bakar import graph_analyze, task_timings
-from bakar.task_rollup import _tasks_from
+from bakar.task_rollup import tasks_from
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Container
@@ -1442,7 +1442,7 @@ def timing_report(
     """Return the per-task timing report for one run.
 
     ``artifact`` is either a normalized ``bitbake-events.json`` dict or its
-    already-parsed ``tasks`` list (per :func:`bakar.task_rollup._tasks_from`).
+    already-parsed ``tasks`` list (per :func:`bakar.task_rollup.tasks_from`).
     A row missing ``completed`` (started-but-not-finished) or whose duration
     is negative or non-finite is skipped without raising. The returned
     ``top_slowest`` list holds exactly ``top_n`` entries when at least that many
@@ -1495,15 +1495,15 @@ def timing_report(
     """
     baselines = task_timings.load_baselines(baselines_path)
 
-    # ``_tasks_from`` only handles a path or an already-parsed ``tasks`` list
+    # ``tasks_from`` only handles a path or an already-parsed ``tasks`` list
     # (a dict artifact isn't Path/str/list, so passing it straight through
     # raises); unwrap the artifact's ``tasks`` key first, then let
-    # ``_tasks_from`` do the list-verbatim/path-read extraction.
+    # ``tasks_from`` do the list-verbatim/path-read extraction.
     tasks_source = artifact.get("tasks", []) if isinstance(artifact, dict) else artifact
 
     durations: list[TaskDuration] = []
     executed: list[_ExecutedTask] = []
-    for row in _tasks_from(tasks_source):
+    for row in tasks_from(tasks_source):
         if not isinstance(row, dict):
             continue
         task = row.get("task")
