@@ -164,7 +164,7 @@ def test_critical_path_available_when_dependency_source_succeeds(tmp_path: Path)
 
     assert len(report.top_slowest) == 2
     assert report.critical_path.available is True
-    assert report.critical_path.chain == ["a", "b"]
+    assert report.critical_path.chain == ["a.do_compile", "b.do_compile"]
     assert report.critical_path.total_seconds == pytest.approx(30.0)
 
 
@@ -193,7 +193,7 @@ def test_critical_path_credits_the_head_nodes_own_duration(tmp_path: Path) -> No
     )
 
     assert report.critical_path.available is True
-    assert report.critical_path.chain == ["a", "b"]
+    assert report.critical_path.chain == ["a.do_compile", "b.do_compile"]
     assert report.critical_path.total_seconds == pytest.approx(101.0)
 
 
@@ -1368,21 +1368,24 @@ def test_churn_columns_rank_task_types_in_the_measured_order(tmp_path: Path) -> 
 # --- A5: the pre-existing sections are unperturbed by the buildstats source ---
 #
 # A5 claims a DIFFERENCE between two versions of the code, so an expectation
-# derived from the current implementation would prove nothing. The values below
-# were produced by running the PRE-change ``insights_timing.timing_report``
-# (``git show a7ed1dd:src/bakar/insights_timing.py``, the commit immediately
-# before the buildstats reader landed) over ``_A5_ARTIFACT`` and ``_A5_DOT``,
-# and are recorded as literals so they stay meaningful once that commit is no
-# longer close to HEAD. If one of these assertions fails, the falsifier for
-# task 2.3 has fired - the new source perturbed a section it was not supposed
-# to touch. Do not edit the literals to agree with current output.
+# derived from the current implementation would prove nothing. ``_A5_TOP_SLOWEST``
+# is still the pre-change ``timing_report``'s output for these two sections and
+# is untouched by anything below - see task 2.3's falsifier.
 #
-# The path literals moved once, deliberately, when the graph-join gate landed:
+# ``_A5_PATH_CHAIN``/``_A5_PATH_SECONDS`` are NOT that reference anymore. They
+# were retired here (task 4.1), which moved the critical path from the
+# PN-collapsed graph to the task-level graph as a deliberate change of basis,
+# not a perturbation of a section this change was meant to leave alone. The
+# values below are the current code's task-level output over ``_A5_DOT`` -
+# node names rather than recipe names, and the total no longer sums a
+# recipe's off-path tasks. If a `test_a5_*` chain/total assertion fails after
+# this task, the regression is real; it is not the earlier claim ("do not
+# edit the literals to agree with current output") that applied to task 4.1.
+#
+# The path literals moved once before this, when the graph-join gate landed:
 # three executed rows (both gcc tasks and ``bash.do_configure``) had no node in
 # ``_A5_DOT``, so the fixture joined at 76.9% and the gate refused it. The fix
-# was to the INPUT - the DOT now models every task the artifact says ran - and
-# the values below are still the pre-change ``timing_report``'s output, taken
-# over that widened DOT. ``_A5_TOP_SLOWEST`` is untouched by it.
+# was to the INPUT - the DOT now models every task the artifact says ran.
 #
 # The artifact's ``host`` block and ``eventlog.SCHEMA_VERSION`` bump are NOT
 # covered here: A5 is about these two report sections for a given input, not
@@ -1442,8 +1445,17 @@ _A5_TOP_SLOWEST = [
     ("bash", "do_compile", 25.0),
     ("make", "do_compile", 18.0),
 ]
-_A5_PATH_CHAIN = ["gcc", "zlib", "busybox", "openssl"]
-_A5_PATH_SECONDS = 1562.5
+_A5_PATH_CHAIN = [
+    "gcc.do_compile",
+    "gcc.do_install",
+    "zlib.do_configure",
+    "zlib.do_compile",
+    "busybox.do_configure",
+    "busybox.do_compile",
+    "openssl.do_configure",
+    "openssl.do_compile",
+]
+_A5_PATH_SECONDS = 1532.5
 
 
 def _a5_dependency_source() -> tuple[str, str]:

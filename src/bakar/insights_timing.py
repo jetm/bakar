@@ -101,12 +101,20 @@ class CriticalPath:
     those cases ``note`` explains why, and ``chain``/``total_seconds`` stay
     at their empty defaults. The duration and top-N sections of
     :class:`TimingReport` never depend on this section's state.
+
+    ``contributor`` maps a chain node to the name of the executed task that
+    supplied its weight, and only carries an entry where that differs from
+    the node's own bare name - the setscene-restore case, where a node's
+    seconds came from the restore that stood in for it rather than from the
+    node's own task. An ordinary node needs no entry: its contributor is
+    itself.
     """
 
     available: bool = False
     chain: list[str] = field(default_factory=list)
     total_seconds: float = 0.0
     note: str = "critical-path unavailable"
+    contributor: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -507,24 +515,6 @@ class TimingReport:
     task_churn: TaskChurn = field(default_factory=TaskChurn)
 
 
-def _duration_totals(durations: list[TaskDuration]) -> dict[str, float]:
-    """Sum durations per recipe (PN) across all of that recipe's tasks.
-
-    The dependency graph is PN-level (:func:`bakar.graph_analyze.collapse_to_pn`
-    strips each node to its bare package name), while ``TaskDuration.recipe``
-    carries the full versioned PF (e.g. ``busybox-1.36.1-r0``) straight from
-    the event log. Keying this dict on the raw PF would never match a PN graph
-    node, silently zeroing every critical-path edge weight - strip the version
-    the same way :func:`bakar.task_timings.strip_recipe_version` does for
-    baseline keys, so both sides share one namespace.
-    """
-    totals: dict[str, float] = {}
-    for d in durations:
-        pn = task_timings.strip_recipe_version(d.recipe)
-        totals[pn] = totals.get(pn, 0.0) + d.duration
-    return totals
-
-
 def _weighted_longest_path(graph: nx.DiGraph, node_weights: dict[str, float]) -> tuple[list[str], float]:
     """Return the node chain and total weight of the heaviest path through ``graph``.
 
@@ -696,10 +686,10 @@ def _compute_graph_join(parsed: _ParsedGraph, executed: list[_ExecutedTask]) -> 
 
 def _compute_critical_path(
     parsed: _ParsedGraph,
-    duration_totals: dict[str, float],
+    durations: list[TaskDuration],
     graph_join: GraphJoin,
 ) -> CriticalPath:
-    """Compute the duration-weighted critical path over the parsed graph.
+    """Compute the duration-weighted critical path over the TASK-level graph.
 
     ``graph_join`` owns the gate decision (see :class:`GraphJoin`); this
     function reads it and refuses with the join's own wording rather than
@@ -707,6 +697,15 @@ def _compute_critical_path(
     source raised, the graph is empty, or it is cyclic - degrades to an explicit
     "unavailable" :class:`CriticalPath` with a note; this function never raises
     back to :func:`timing_report`.
+
+    Node weights come from ``durations``, NOT from the join's ``executed``
+    denominator - ``durations`` is built after the timestamp guards in
+    :func:`timing_report` and carries real elapsed seconds, while ``executed``
+    is identity-only and built before them (see the comment there). Weighting
+    from ``executed`` would reintroduce the vacuous-100% failure that split
+    the two sets in the first place. A node no duration resolves to is simply
+    absent from ``node_weights``; :func:`_weighted_longest_path` treats a
+    missing key as weight ``0.0`` and must not be made unavailable by it.
     """
     if parsed.error is not None:
         return CriticalPath(note=f"critical-path unavailable: {parsed.error}")
@@ -715,12 +714,33 @@ def _compute_critical_path(
     if not graph_join.gate_passed:
         return CriticalPath(note=f"critical-path unavailable: {graph_join.note}")
 
-    pn_graph = graph_analyze.collapse_to_pn(parsed.graph)
-    if not nx.is_directed_acyclic_graph(pn_graph):
-        return CriticalPath(note="critical-path unavailable: cyclic dependency graph")
+    task_graph = graph_analyze.to_task_digraph(parsed.graph)
+    if not nx.is_directed_acyclic_graph(task_graph):
+        return CriticalPath(note="critical-path unavailable: cyclic task dependency graph")
 
-    chain, total = _weighted_longest_path(pn_graph, duration_totals)
-    return CriticalPath(available=True, chain=chain, total_seconds=total, note="critical-path computed")
+    node_weights: dict[str, float] = {}
+    contributor: dict[str, str] = {}
+    for d in durations:
+        resolved = _resolve_graph_node(parsed.nodes, d.recipe, d.task)
+        if resolved is None:
+            continue
+        node, contributing_task = resolved
+        node_weights[node] = node_weights.get(node, 0.0) + d.duration
+        node_task = node.rsplit(".", 1)[-1]
+        if contributing_task != node_task:
+            contributor[node] = contributing_task
+        else:
+            contributor.pop(node, None)
+
+    chain, total = _weighted_longest_path(task_graph, node_weights)
+    chain_contributor = {node: contributor[node] for node in chain if node in contributor}
+    return CriticalPath(
+        available=True,
+        chain=chain,
+        total_seconds=total,
+        note="critical-path computed",
+        contributor=chain_contributor,
+    )
 
 
 def _join_key(recipe: str, task: str) -> tuple[str, str]:
@@ -1461,7 +1481,7 @@ def timing_report(
         # second invocation is not free.
         parsed = _parse_dependency_graph(dependency_source)
         graph_join = _compute_graph_join(parsed, executed)
-        critical_path = _compute_critical_path(parsed, _duration_totals(durations), graph_join)
+        critical_path = _compute_critical_path(parsed, durations, graph_join)
 
     buildstats_join = BuildstatsJoin()
     cpu_floor = CpuFloor()
