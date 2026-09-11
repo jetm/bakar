@@ -18,6 +18,9 @@ read_graph(dot_text)
 collapse_to_pn(graph)
     Collapse a task-level graph to a PN-level DiGraph (suffix stripped,
     self-loops and parallel edges dropped).
+to_task_digraph(graph)
+    Simplify a task-level MultiDiGraph into a DiGraph, keeping the
+    ``<pn>.<task>`` node names verbatim and merging parallel edges only.
 package_count(buildlist_text)
     Count non-empty lines in ``pn-buildlist``.
 blast_radius(pn_graph, target, depth=None)
@@ -141,6 +144,30 @@ def collapse_to_pn(graph: nx.MultiDiGraph) -> nx.DiGraph:
         if psrc != pdst:
             pn_graph.add_edge(psrc, pdst)
     return pn_graph
+
+
+def to_task_digraph(graph: nx.MultiDiGraph) -> nx.DiGraph:
+    """Simplify a task-level graph into a :class:`networkx.DiGraph`.
+
+    Node names are kept verbatim - ``"busybox.do_compile"`` stays
+    ``"busybox.do_compile"`` - and the only thing this discards is the
+    multiplicity of parallel edges, which ``DiGraph`` cannot represent.
+    Nothing is collapsed and no edge (including a self-loop) is dropped, so
+    the result is acyclic exactly when the captured task graph is.
+
+    That distinction is the whole reason this exists.  OE's task graph is a
+    DAG, but :func:`collapse_to_pn` merges recipe A's
+    ``do_configure -> B.do_populate_sysroot`` with B's
+    ``do_package -> A.do_populate_sysroot`` into a mutual PN edge, so the
+    PN-level view of a real build is cyclic.  Measured on run
+    ``20260910-173444``: 4346 nodes / 18377 edges acyclic at task level, 274
+    nodes / 3088 edges cyclic once collapsed.  Duration-weighted longest-path
+    analysis therefore has to read this graph, not the collapsed one.
+    """
+    task_graph: nx.DiGraph = nx.DiGraph()
+    task_graph.add_nodes_from(graph.nodes)
+    task_graph.add_edges_from(graph.edges())
+    return task_graph
 
 
 # ---------------------------------------------------------------------------

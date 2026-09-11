@@ -25,6 +25,7 @@ from bakar.graph_analyze import (
     longest_chain,
     package_count,
     read_graph,
+    to_task_digraph,
     top_runtime_packages,
 )
 
@@ -39,6 +40,14 @@ CYCLE_DOT = (
     '"b.do_compile" -> "c.do_compile"\n'
     '"c.do_compile" -> "a.do_compile"\n'
     "}\n"
+)
+
+# Two recipes whose TASK graph is a DAG but whose PN collapse is cyclic: a's
+# do_configure needs b's sysroot while b's do_package needs a's.  This is the
+# shape every real OE graph has, and CYCLE_DOT above cannot stand in for it -
+# that one is cyclic at both levels, so it proves nothing about the collapse.
+PN_CYCLE_TASK_DAG_DOT = (
+    'digraph depends {\n"a.do_configure" -> "b.do_populate_sysroot"\n"b.do_package" -> "a.do_populate_sysroot"\n}\n'
 )
 
 # A small buildhistory-style runtime graph: libc is depended on by two pkgs.
@@ -137,6 +146,48 @@ class TestCollapseToPn:
         text = '"a.do_compile" -> "b.do_compile"\n"a.do_install" -> "b.do_populate_sysroot"\n'
         pn = collapse_to_pn(read_graph("digraph d {\n" + text + "}\n"))
         assert pn.number_of_edges() == 1
+
+
+# ===========================================================================
+# to_task_digraph
+# ===========================================================================
+
+
+class TestToTaskDigraph:
+    def test_node_names_kept_verbatim(self, dot_text: str) -> None:
+        """Nodes stay ``<pn>.<task>``; nothing is collapsed to a recipe name."""
+        task_graph = to_task_digraph(read_graph(dot_text))
+        assert "busybox.do_compile" in task_graph.nodes
+        assert "busybox" not in task_graph.nodes
+
+    def test_every_node_survives(self, dot_text: str) -> None:
+        multi = read_graph(dot_text)
+        assert set(to_task_digraph(multi).nodes) == set(multi.nodes)
+
+    def test_parallel_edges_merged(self) -> None:
+        """A DiGraph cannot hold multiplicity; the edge itself is kept."""
+        text = '"a.do_compile" -> "b.do_compile"\n"a.do_compile" -> "b.do_compile"\n'
+        task_graph = to_task_digraph(read_graph("digraph d {\n" + text + "}\n"))
+        assert task_graph.number_of_edges() == 1
+        assert task_graph.has_edge("a.do_compile", "b.do_compile")
+
+    def test_task_level_dag_survives_a_cyclic_pn_collapse(self) -> None:
+        """The falsifier: the collapse is what makes a real OE graph cyclic.
+
+        Asserting both directions on the same input is the point - a fixture
+        whose PN collapse were also acyclic would let this pass for the wrong
+        reason.
+        """
+        multi = read_graph(PN_CYCLE_TASK_DAG_DOT)
+        assert nx.is_directed_acyclic_graph(to_task_digraph(multi))
+        assert not nx.is_directed_acyclic_graph(collapse_to_pn(multi))
+
+    def test_task_level_cycle_is_not_hidden(self) -> None:
+        """A genuine task-level cycle stays visible rather than being dropped."""
+        assert not nx.is_directed_acyclic_graph(to_task_digraph(read_graph(CYCLE_DOT)))
+
+    def test_empty_graph_returns_empty(self) -> None:
+        assert to_task_digraph(nx.MultiDiGraph()).number_of_nodes() == 0
 
 
 # ===========================================================================
