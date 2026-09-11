@@ -268,3 +268,59 @@ def test_declining_the_capture_skips_the_cooker_idle_wait(monkeypatch, tmp_path)
     assert kas_build._capture_dependency_graph(ctx, log) is None
     assert log.warnings == [], "declining is a choice, not a problem to warn about"
     assert any("declined" in m for m in log.infos), log.infos
+
+
+def test_stale_artifact_is_rejected_rather_than_published(monkeypatch, tmp_path) -> None:
+    """A ``bitbake -g`` that exits 0 without rewriting its outputs must not publish.
+
+    The marker's whole purpose is provenance: co-location plus the marker is
+    what lets a graph read as belonging to this run. An artifact whose mtime
+    predates the capture start is a previous build's leftover, and copying it
+    out under this run's marker would defeat that purpose silently.
+    """
+    import os
+
+    from bakar.steps import kas_build
+
+    ctx, log = _capture_ctx(tmp_path)
+    topdir = ctx.cfg.resolved_tmpdir.parent
+    topdir.mkdir(parents=True)
+    old_time = 1_000_000.0
+    for name in kas_build.GRAPH_ARTIFACTS:
+        artifact = topdir / name
+        artifact.write_text("stale")
+        os.utime(artifact, (old_time, old_time))
+
+    monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", lambda *_a, **_k: True)
+    monkeypatch.setattr(kas_build, "run_shell_capture", lambda *_a, **_k: 0)
+    monkeypatch.setattr(kas_build.time, "time", lambda: old_time + 3600)
+
+    assert kas_build._capture_dependency_graph(ctx, log) is None
+    assert any("predates" in w for w in log.warnings), log.warnings
+    assert not (log.run_dir / kas_build.GRAPH_MARKER_NAME).exists()
+    for name in kas_build.GRAPH_ARTIFACTS:
+        assert not (log.run_dir / name).exists()
+
+
+def test_fresh_artifact_is_published(monkeypatch, tmp_path) -> None:
+    """An artifact rewritten during the capture is accepted and published."""
+    from bakar.steps import kas_build
+
+    ctx, log = _capture_ctx(tmp_path)
+    topdir = ctx.cfg.resolved_tmpdir.parent
+    topdir.mkdir(parents=True)
+
+    def _fake_capture(_ctx, _cmd, _out, **_kwargs):
+        for name in kas_build.GRAPH_ARTIFACTS:
+            (topdir / name).write_text("fresh")
+        return 0
+
+    monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", lambda *_a, **_k: True)
+    monkeypatch.setattr(kas_build, "run_shell_capture", _fake_capture)
+
+    result = kas_build._capture_dependency_graph(ctx, log)
+
+    assert result is not None
+    assert (log.run_dir / kas_build.GRAPH_MARKER_NAME).exists()
+    for name in kas_build.GRAPH_ARTIFACTS:
+        assert (log.run_dir / name).exists()

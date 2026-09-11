@@ -3175,6 +3175,13 @@ def _capture_dependency_graph(ctx: KasBuildContext, log: RunLogger) -> dict[str,
     if not _wait_for_cooker_idle(cfg.bsp_root / cfg.build_dir_name, log):
         return None
     try:
+        # Recorded before the capture runs so a source artifact can be checked
+        # against it afterward: mtimes are wall-clock, so this must be too.
+        # A `bitbake -g` that exits 0 without rewriting its outputs (e.g. a
+        # metadata-parse short-circuit) would otherwise let a previous build's
+        # graph get copied out and stamped with this run's provenance marker -
+        # exactly what the marker exists to prevent.
+        capture_started_at = time.time()
         # SHELL is pinned because kas hands the -c payload to $SHELL rather than
         # choosing a shell. The login shell here is fish, which rejects the
         # `rc=$?` idiom above with "Unsupported use of '='" at exit 127 - before
@@ -3198,6 +3205,14 @@ def _capture_dependency_graph(ctx: KasBuildContext, log: RunLogger) -> dict[str,
             src = topdir / name
             if not src.is_file():
                 log.warn(f"dependency graph: {name} not produced at {src}")
+                return None
+            src_mtime = src.stat().st_mtime
+            if src_mtime < capture_started_at:
+                log.warn(
+                    f"dependency graph: {name} at {src} predates this capture "
+                    f"(mtime {src_mtime:.0f} < start {capture_started_at:.0f}); "
+                    "skipping rather than publishing a stale graph under this run's marker"
+                )
                 return None
             dest = log.run_dir / name
             shutil.copy2(src, dest)
