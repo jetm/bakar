@@ -300,6 +300,7 @@ def _render_timing(report) -> None:
     # formatter at the call site is a second place for a refused number to leak
     # back in. Notes carry on-disk paths and recipe names, so escape as above.
     for header, section in (
+        ("graph join", report.graph_join),
         ("buildstats join", report.buildstats_join),
         ("cpu floor", report.cpu_floor),
         ("concurrency floor", report.concurrency_floor),

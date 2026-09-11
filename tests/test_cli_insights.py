@@ -231,6 +231,27 @@ def test_insights_renders_the_buildstats_derived_sections(
 
 
 @pytest.mark.unit
+def test_insights_renders_the_graph_join_beside_the_buildstats_join(
+    runner: _CliRunner, nxp_workspace: Path, insights_run_dir: Path
+) -> None:
+    """The two join gates print adjacent, and an absent graph reads as unavailable.
+
+    This section renders on every ``--timing`` run, including one with no
+    captured graph. A run whose graph was never captured has no coverage
+    failure to report, so rendering it as 0% would invent one.
+    """
+    result = runner.invoke(app, ["insights", "--timing", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 0, result.output
+
+    assert "graph join:" in result.output
+    assert result.output.index("graph join:") < result.output.index("buildstats join:")
+
+    flat = " ".join(result.output.split())
+    assert "graph join unavailable" in flat
+    assert "graph join 0.0%" not in flat
+
+
+@pytest.mark.unit
 def test_insights_renders_the_churn_section_when_it_degrades(
     runner: _CliRunner, nxp_workspace: Path, insights_run_dir: Path
 ) -> None:

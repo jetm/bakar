@@ -21,6 +21,8 @@ import pytest
 from bakar import eventlog
 from bakar.buildstats import BuildstatsRun, TaskStats
 from bakar.insights_timing import (
+    JOIN_RATE_THRESHOLD,
+    UNJOINED_SAMPLE,
     CpuFloor,
     CriticalPath,
     TimingReport,
@@ -1375,6 +1377,13 @@ def test_churn_columns_rank_task_types_in_the_measured_order(tmp_path: Path) -> 
 # task 2.3 has fired - the new source perturbed a section it was not supposed
 # to touch. Do not edit the literals to agree with current output.
 #
+# The path literals moved once, deliberately, when the graph-join gate landed:
+# three executed rows (both gcc tasks and ``bash.do_configure``) had no node in
+# ``_A5_DOT``, so the fixture joined at 76.9% and the gate refused it. The fix
+# was to the INPUT - the DOT now models every task the artifact says ran - and
+# the values below are still the pre-change ``timing_report``'s output, taken
+# over that widened DOT. ``_A5_TOP_SLOWEST`` is untouched by it.
+#
 # The artifact's ``host`` block and ``eventlog.SCHEMA_VERSION`` bump are NOT
 # covered here: A5 is about these two report sections for a given input, not
 # about the artifact's shape.
@@ -1409,6 +1418,13 @@ _A5_DOT = (
     '"openssl.do_configure" -> "openssl.do_compile"; '
     '"make.do_configure" -> "make.do_compile"; '
     '"make.do_compile" -> "bash.do_compile"; '
+    # Every executed row above needs a node here or the graph-join gate refuses
+    # this fixture at 76.9% and the path section never publishes. gcc and
+    # bash.do_configure ran and were simply unmodelled; modelling them is a
+    # coverage fix to the INPUT, not an edit to an output literal.
+    '"gcc.do_compile" -> "gcc.do_install"; '
+    '"gcc.do_install" -> "zlib.do_configure"; '
+    '"bash.do_configure" -> "bash.do_compile"; '
     "}"
 )
 
@@ -1426,8 +1442,8 @@ _A5_TOP_SLOWEST = [
     ("bash", "do_compile", 25.0),
     ("make", "do_compile", 18.0),
 ]
-_A5_PATH_CHAIN = ["zlib", "busybox", "openssl"]
-_A5_PATH_SECONDS = 602.5
+_A5_PATH_CHAIN = ["gcc", "zlib", "busybox", "openssl"]
+_A5_PATH_SECONDS = 1562.5
 
 
 def _a5_dependency_source() -> tuple[str, str]:
@@ -1750,3 +1766,177 @@ def test_resolve_graph_node_setscene_with_no_node_at_all_returns_none() -> None:
     nodes = _WatchedNodes("attr.do_populate_sysroot")
 
     assert _resolve_graph_node(nodes, "acl-2.3.2-r0", "do_populate_sysroot_setscene") is None
+
+
+# --- the graph join: coverage of the executed set by the captured task graph ---
+
+
+_JOINABLE_DOT = 'digraph { "acl.do_configure" -> "acl.do_compile"; }'
+
+
+def test_graph_join_unavailable_without_a_dependency_source(tmp_path: Path) -> None:
+    """An absent input is not a coverage failure and must not render as 0%."""
+    report = timing_report(
+        {"tasks": [_row("acl-2.3.2-r0", "do_compile", 0.0, 42.0)]},
+        baselines_path=tmp_path / "absent.json",
+    )
+
+    join = report.graph_join
+    assert join.available is False
+    assert join.gate_passed is False
+    assert join.note == "graph join unavailable: no dependency source supplied"
+    assert join.report_lines() == ["  graph join unavailable: no dependency source supplied"]
+    assert "%" not in join.note
+
+
+def test_graph_join_unavailable_when_the_source_raises(tmp_path: Path) -> None:
+    def _broken() -> tuple[str, str]:
+        raise RuntimeError("bitbake -g unavailable in this environment")
+
+    report = timing_report(
+        {"tasks": [_row("acl-2.3.2-r0", "do_compile", 0.0, 42.0)]},
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=_broken,
+    )
+
+    assert report.graph_join.available is False
+    assert "dependency source failed" in report.graph_join.note
+    assert "0.0%" not in report.graph_join.note
+
+
+def test_graph_join_states_the_achieved_rate_on_the_passing_branch(tmp_path: Path) -> None:
+    artifact = {
+        "tasks": [
+            _row("acl-2.3.2-r0", "do_configure", 0.0, 10.0),
+            _row("acl-2.3.2-r0", "do_compile", 10.0, 52.0),
+        ]
+    }
+
+    report = timing_report(
+        artifact,
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=lambda: (_JOINABLE_DOT, ""),
+    )
+
+    join = report.graph_join
+    assert (join.available, join.gate_passed) == (True, True)
+    assert (join.joined, join.executed) == (2, 2)
+    assert join.rate == pytest.approx(1.0)
+    # The rate a reader might act on is the one whose provenance they need, so
+    # it is stated when the section publishes and not only when it refuses.
+    assert "100.0%" in join.note
+    assert report.critical_path.available is True
+
+
+def test_graph_join_refuses_below_the_gate_and_publishes_no_chain(tmp_path: Path) -> None:
+    # Two of three executed tasks reach a node: 66.7%, under the 95% gate and
+    # close to the 66.3% a naive join measured on run 20260910-173444.
+    artifact = {
+        "tasks": [
+            _row("acl-2.3.2-r0", "do_configure", 0.0, 10.0),
+            _row("acl-2.3.2-r0", "do_compile", 10.0, 52.0),
+            _row("libedit-20251016-3.1-r0", "do_unpack", 52.0, 60.0),
+        ]
+    }
+
+    report = timing_report(
+        artifact,
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=lambda: (_JOINABLE_DOT, ""),
+    )
+
+    join = report.graph_join
+    assert (join.available, join.gate_passed) == (True, False)
+    assert join.rate == pytest.approx(2 / 3)
+    assert "66.7%" in join.note
+    assert f"{100.0 * JOIN_RATE_THRESHOLD:.1f}%" in join.note
+    # The sample names the tasks that missed, not just a shortfall count.
+    assert join.unjoined_sample == ["libedit-20251016-3.1-r0:do_unpack"]
+
+    path = report.critical_path
+    assert path.available is False
+    assert path.chain == []
+    assert join.note in path.note
+
+
+def test_graph_join_sample_is_bounded(tmp_path: Path) -> None:
+    rows = [_row(f"miss{i}-1.0-r0", "do_compile", float(i), float(i) + 1.0) for i in range(UNJOINED_SAMPLE + 4)]
+
+    report = timing_report(
+        {"tasks": rows},
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=lambda: (_JOINABLE_DOT, ""),
+    )
+
+    assert len(report.graph_join.unjoined_sample) == UNJOINED_SAMPLE
+
+
+def test_graph_join_refuses_an_empty_executed_set(tmp_path: Path) -> None:
+    """A rate of 1.0 over an empty denominator would clear the gate vacuously."""
+    report = timing_report(
+        {"tasks": []},
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=lambda: (_JOINABLE_DOT, ""),
+    )
+
+    join = report.graph_join
+    assert (join.available, join.gate_passed) == (True, False)
+    assert join.rate == pytest.approx(0.0)
+    assert "no executed tasks" in join.note
+    assert report.critical_path.available is False
+
+
+def test_graph_join_counts_a_setscene_restore_as_joined(tmp_path: Path) -> None:
+    """The capture carries no ``_setscene`` node; the restore joins the node it stands in for."""
+    artifact = {
+        "tasks": [
+            _row("acl-2.3.2-r0", "do_configure", 0.0, 10.0),
+            _row("acl-2.3.2-r0", "do_compile_setscene", 10.0, 10.8),
+        ]
+    }
+
+    report = timing_report(
+        artifact,
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=lambda: (_JOINABLE_DOT, ""),
+    )
+
+    assert report.graph_join.gate_passed is True
+    assert report.graph_join.joined == 2
+
+
+def test_graph_join_counts_a_row_with_no_usable_timestamp(tmp_path: Path) -> None:
+    """The denominator is tasks that RAN, matching the buildstats gate's."""
+    artifact = {
+        "tasks": [
+            _row("acl-2.3.2-r0", "do_configure", 0.0, 10.0),
+            {"task": "do_fetch", "recipe": "acl-2.3.2-r0"},
+        ]
+    }
+
+    report = timing_report(
+        artifact,
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=lambda: (_JOINABLE_DOT, ""),
+    )
+
+    assert report.graph_join.executed == 2
+    assert report.graph_join.gate_passed is False
+
+
+def test_dependency_source_is_invoked_once_per_report(tmp_path: Path) -> None:
+    """``_dependency_source`` correlates the capture against the build window."""
+    calls = 0
+
+    def _counted() -> tuple[str, str]:
+        nonlocal calls
+        calls += 1
+        return (_JOINABLE_DOT, "")
+
+    timing_report(
+        {"tasks": [_row("acl-2.3.2-r0", "do_compile", 0.0, 42.0)]},
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=_counted,
+    )
+
+    assert calls == 1

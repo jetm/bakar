@@ -201,6 +201,66 @@ class BuildstatsJoin:
 
 
 @dataclass(frozen=True)
+class GraphJoin:
+    """How much of this run's executed task set resolves to a task-graph node.
+
+    The critical path is computed over the captured task graph and weighted by
+    the executed tasks that resolve to its nodes, so a partially-joined graph
+    yields a chain that is arithmetically fine and factually a chain through a
+    different, smaller build. Measured on run ``20260910-173444`` a naive join
+    landed at 66.3% while :class:`BuildstatsJoin` on the SAME run was 100.0% -
+    the two joins measure different pairs of sides, so the buildstats gate
+    cannot detect this failure at all and this one is separate rather than
+    reused.
+
+    ``joined`` and ``executed`` are counted over the same set, for the reason
+    :class:`BuildstatsJoin` spells out: dropping unjoined tasks from both sides
+    would pin the rate at 100% over precisely the case the gate exists to catch.
+
+    ``available`` says the join was computed at all; it is false when no
+    dependency source was supplied, when the source raised, or when the graph
+    it returned is empty. An absent input is not a coverage failure and must
+    not render as 0%, which is why the default note says "unavailable" rather
+    than naming a rate - :class:`CpuFloor` makes the same distinction.
+
+    ``unjoined_sample`` is carried on the PASSING branch too, which is where
+    this diverges from :class:`BuildstatsJoin`. The residual it names is what
+    the version-strip debt marker on :func:`_resolve_graph_node` asks a reader
+    to watch: its upgrade trigger is "the sample is dominated by version-strip
+    misses", and a sample printed only once the gate has already refused would
+    surface that pattern one run after it mattered.
+    """
+
+    available: bool = False
+    gate_passed: bool = False
+    executed: int = 0
+    joined: int = 0
+    unjoined_sample: list[str] = field(default_factory=list)
+    note: str = "graph join unavailable: no dependency source supplied"
+
+    @property
+    def rate(self) -> float:
+        """Joined share of executed tasks, 0.0 when nothing executed.
+
+        Zero executed tasks is a refusal, not a pass: a rate defined as 1.0 over
+        an empty denominator would clear the gate on a run that measured nothing.
+        """
+        return (self.joined / self.executed) if self.executed else 0.0
+
+    def report_lines(self) -> list[str]:
+        """Render this section as plain text lines.
+
+        The note carries the achieved rate on the PASSING branch as well as the
+        refusing one: the chain a reader might act on is the one whose coverage
+        they need, so naming the rate only when the section declines is exactly
+        backwards.
+        """
+        lines = [f"  {self.note}"]
+        lines.extend(f"  unjoined: {name}" for name in self.unjoined_sample)
+        return lines
+
+
+@dataclass(frozen=True)
 class CpuFloor:
     """The CPU-only lower bound: joined CPU seconds divided by the build host's cores.
 
@@ -440,6 +500,7 @@ class TimingReport:
     top_slowest: list[TaskDuration] = field(default_factory=list)
     critical_path: CriticalPath = field(default_factory=CriticalPath)
     regime: Regime = field(default_factory=Regime)
+    graph_join: GraphJoin = field(default_factory=GraphJoin)
     buildstats_join: BuildstatsJoin = field(default_factory=BuildstatsJoin)
     cpu_floor: CpuFloor = field(default_factory=CpuFloor)
     concurrency_floor: ConcurrencyFloor = field(default_factory=ConcurrencyFloor)
@@ -537,31 +598,124 @@ def _regime_from(artifact: dict | list, task_count: int) -> Regime:
     )
 
 
-def _compute_critical_path(
-    dependency_source: Callable[[], tuple[str, str]],
-    duration_totals: dict[str, float],
-) -> CriticalPath:
-    """Compute the duration-weighted critical path from a dependency source.
+@dataclass(frozen=True)
+class _ParsedGraph:
+    """One parse of the captured dependency graph, shared by both consumers.
 
-    ``dependency_source`` returns ``(dot_text, buildlist_text)`` - the same
-    two artifacts ``bakar graph`` retrieves from a live ``bitbake -g`` run
-    (see :mod:`bakar.commands.graph`). Parsing reuses
-    :func:`bakar.graph_analyze.read_graph`/``collapse_to_pn`` instead of
-    re-implementing DOT parsing.
+    The graph join and the critical path read the same capture, and
+    ``_dependency_source(run_dir, window)`` in :mod:`bakar.commands.insights`
+    correlates the capture against the run's build window before it returns -
+    so invoking it a second time is not free. Parsing once and handing this
+    around is what keeps the report to one invocation without either consumer
+    having to know the other exists.
 
-    Any failure - the callable raises, the graph is empty, or it is cyclic -
-    degrades to an explicit "unavailable" :class:`CriticalPath` with a note;
-    this function never raises back to :func:`timing_report`.
+    ``error`` carries the source's or the parser's failure text and is ``None``
+    on success; ``graph`` is ``None`` exactly when ``error`` is set.
+    """
+
+    graph: nx.MultiDiGraph | None = None
+    nodes: frozenset[str] = frozenset()
+    error: str | None = None
+
+
+def _parse_dependency_graph(dependency_source: Callable[[], tuple[str, str]]) -> _ParsedGraph:
+    """Call the dependency source once and parse the graph it returns.
+
+    ``dependency_source`` returns ``(dot_text, buildlist_text)`` - the same two
+    artifacts ``bakar graph`` retrieves from a live ``bitbake -g`` run (see
+    :mod:`bakar.commands.graph`). Parsing reuses
+    :func:`bakar.graph_analyze.read_graph` instead of re-implementing DOT
+    parsing, and node names reach both consumers verbatim as ``<pn>.<task>``.
+
+    A raising source or an unparseable capture degrades to an ``error`` string;
+    this never raises back to :func:`timing_report`.
     """
     try:
-        # buildlist_text (package_count etc.) isn't needed for the chain itself.
+        # buildlist_text (package_count etc.) isn't needed by either consumer.
         dot_text, _buildlist_text = dependency_source()
-        pn_graph = graph_analyze.collapse_to_pn(graph_analyze.read_graph(dot_text))
+        graph = graph_analyze.read_graph(dot_text)
     except Exception as exc:  # noqa: BLE001 - any dependency-source failure degrades gracefully
-        return CriticalPath(note=f"critical-path unavailable: dependency source failed ({exc})")
+        return _ParsedGraph(error=f"dependency source failed ({exc})")
+    return _ParsedGraph(graph=graph, nodes=frozenset(graph.nodes))
 
-    if pn_graph.number_of_nodes() == 0:
+
+def _compute_graph_join(parsed: _ParsedGraph, executed: list[_ExecutedTask]) -> GraphJoin:
+    """Join executed tasks against task-graph nodes and gate on the rate.
+
+    ``executed`` is the timestamp-independent identity set
+    (:data:`_ExecutedTask`), the same denominator :func:`_compute_join` uses -
+    a task with no usable timestamp still ran, so it must lower this rate
+    rather than vanish from both sides of it.
+
+    Resolution is :func:`_resolve_graph_node`'s exact-then-setscene-fallback,
+    and a task that resolves to nothing is named in the bounded sample rather
+    than only counted: the refusal has to be diagnosable, since it can fire for
+    a bakar-side identity defect as readily as for a real coverage gap.
+    """
+    if parsed.error is not None:
+        return GraphJoin(note=f"graph join unavailable: {parsed.error}")
+    if not parsed.nodes:
+        return GraphJoin(note="graph join unavailable: empty dependency graph")
+
+    unjoined: list[str] = []
+    joined = 0
+    for recipe, task in executed:
+        if _resolve_graph_node(parsed.nodes, recipe, task) is None:
+            unjoined.append(f"{recipe}:{task}")
+        else:
+            joined += 1
+
+    executed_count = len(executed)
+    if not executed_count:
+        return GraphJoin(available=True, note="graph join refused: no executed tasks to join against")
+
+    rate_pct = 100.0 * joined / executed_count
+    gate_pct = 100.0 * JOIN_RATE_THRESHOLD
+    if joined < JOIN_RATE_THRESHOLD * executed_count:
+        return GraphJoin(
+            available=True,
+            executed=executed_count,
+            joined=joined,
+            unjoined_sample=unjoined[:UNJOINED_SAMPLE],
+            note=(
+                f"graph join refused: {rate_pct:.1f}% of executed tasks resolved to a graph node, "
+                f"below the {gate_pct:.1f}% gate ({executed_count - joined} of {executed_count} "
+                f"executed tasks reach no node) - no critical path is reported for this run"
+            ),
+        )
+
+    return GraphJoin(
+        available=True,
+        gate_passed=True,
+        executed=executed_count,
+        joined=joined,
+        unjoined_sample=unjoined[:UNJOINED_SAMPLE],
+        note=(f"graph join {rate_pct:.1f}% ({joined} of {executed_count} executed tasks resolved to a graph node)"),
+    )
+
+
+def _compute_critical_path(
+    parsed: _ParsedGraph,
+    duration_totals: dict[str, float],
+    graph_join: GraphJoin,
+) -> CriticalPath:
+    """Compute the duration-weighted critical path over the parsed graph.
+
+    ``graph_join`` owns the gate decision (see :class:`GraphJoin`); this
+    function reads it and refuses with the join's own wording rather than
+    re-deriving a second verdict from the same numbers. Any other failure - the
+    source raised, the graph is empty, or it is cyclic - degrades to an explicit
+    "unavailable" :class:`CriticalPath` with a note; this function never raises
+    back to :func:`timing_report`.
+    """
+    if parsed.error is not None:
+        return CriticalPath(note=f"critical-path unavailable: {parsed.error}")
+    if parsed.graph is None or parsed.graph.number_of_nodes() == 0:
         return CriticalPath(note="critical-path unavailable: empty dependency graph")
+    if not graph_join.gate_passed:
+        return CriticalPath(note=f"critical-path unavailable: {graph_join.note}")
+
+    pn_graph = graph_analyze.collapse_to_pn(parsed.graph)
     if not nx.is_directed_acyclic_graph(pn_graph):
         return CriticalPath(note="critical-path unavailable: cyclic dependency graph")
 
@@ -702,6 +856,15 @@ def _resolve_graph_node(nodes: Container[str], recipe: str, task: str) -> tuple[
     20260910-173444 the ordering costs no join, while the fallback itself takes
     the rate from 66.3% to 99.2%.
     """
+    # devtool-debt: identity goes through ``strip_recipe_version``, which strips
+    # one trailing ``-<digits>[-r<n>]``, so a PV containing a hyphen
+    # (``libedit-20251016-3.1-r0``) reduces to ``libedit-20251016`` and misses
+    # the ``libedit`` node. Ceiling: the residual stays inside the graph gate's
+    # 5% budget - measured 21 of 2566 identities (0.8%) on run 20260910-173444,
+    # every one of them ``libedit`` or ``libedit-native``. Upgrade trigger: a
+    # run refuses with its unjoined sample dominated by version-strip misses,
+    # at which point resolve PN boundaries against the captured ``pn-buildlist``
+    # rather than by suffix arithmetic (design D7).
     pn = task_timings.strip_recipe_version(recipe)
     exact = f"{pn}.{task}"
     if exact in nodes:
@@ -1204,7 +1367,10 @@ def timing_report(
     ``critical_path`` at its "unavailable, not requested" default; a failure
     inside the callable or the resulting graph degrades to an explicit
     "unavailable" result rather than raising or dropping the duration/top-N
-    sections computed above.
+    sections computed above. The same capture feeds the :class:`GraphJoin`
+    gate - the share of executed tasks resolving to a graph node - and the path
+    publishes only when that gate passes, so a chain over a partially joined
+    graph has no expressible form here. The source is called once for both.
 
     ``buildstats_source``, when supplied, is called with no arguments and must
     return a :class:`bakar.buildstats.BuildstatsRun`. It feeds the join gate
@@ -1286,8 +1452,16 @@ def timing_report(
     top_slowest = durations[:top_n] if top_n >= 0 else list(durations)
 
     critical_path = CriticalPath()
+    graph_join = GraphJoin()
     if dependency_source is not None:
-        critical_path = _compute_critical_path(dependency_source, _duration_totals(durations))
+        # One parse, two consumers. The join measures coverage and owns the
+        # gate; the path reads that verdict rather than re-deriving one, and
+        # neither calls the source again - ``_dependency_source(run_dir,
+        # window)`` correlates the capture against the build window, so a
+        # second invocation is not free.
+        parsed = _parse_dependency_graph(dependency_source)
+        graph_join = _compute_graph_join(parsed, executed)
+        critical_path = _compute_critical_path(parsed, _duration_totals(durations), graph_join)
 
     buildstats_join = BuildstatsJoin()
     cpu_floor = CpuFloor()
@@ -1306,6 +1480,7 @@ def timing_report(
         top_slowest=top_slowest,
         critical_path=critical_path,
         regime=_regime_from(artifact, len(durations)),
+        graph_join=graph_join,
         buildstats_join=buildstats_join,
         cpu_floor=cpu_floor,
         concurrency_floor=_compute_concurrency_floor(cpu_floor, critical_path, artifact),
