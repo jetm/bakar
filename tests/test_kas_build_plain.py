@@ -116,7 +116,9 @@ class _FakeProc:
     def __init__(self, rc: int) -> None:
         self._rc = rc
 
-    def wait(self) -> int:
+    def wait(self, timeout: float | None = None) -> int:
+        # ``run_shell_capture`` always passes a timeout keyword, even when it is
+        # None, so the real Popen signature has to be mirrored here.
         return self._rc
 
 

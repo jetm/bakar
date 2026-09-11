@@ -49,7 +49,7 @@ import sysconfig
 import tempfile
 import threading
 import time
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -2878,6 +2878,13 @@ def run_shell(ctx: KasBuildContext, args: list[str], command: str | None = None)
     return rc
 
 
+#: Grace window for reaping a capture the escalation ladder has just killed.
+#: The ladder already spent its own SIGTERM->SIGKILL wait before returning, so
+#: anything still unreaped here is stuck in uninterruptible state and waiting
+#: longer would only re-block the teardown the timeout exists to unblock.
+_CAPTURE_REAP_TIMEOUT_S = 5.0
+
+
 def run_shell_capture(
     ctx: KasBuildContext,
     command: str,
@@ -2887,6 +2894,8 @@ def run_shell_capture(
     python_executable: Path | None = None,
     stderr_path: Path | None = None,
     env_overrides: dict[str, str] | None = None,
+    timeout: float | None = None,
+    isolate_process_group: bool = False,
 ) -> int:
     """Run ``kas-container shell -c <command>`` with output captured to file.
 
@@ -2910,6 +2919,21 @@ def run_shell_capture(
     ``python_executable`` is forwarded to :func:`_build_env` so the
     kas shell's PATH and BB_PYTHON3 point at a caller-chosen interpreter
     (obmalloc-patch validation).
+
+    ``timeout`` bounds the wait in seconds and raises
+    :exc:`subprocess.TimeoutExpired` when it fires, after escalating the child
+    through :func:`bakar.build_stop.escalate_process_tree`. It defaults to None
+    - unbounded - because a deadline chosen for one caller is wrong for the
+    other seven, several of which wrap a full build or a stress-parse loop.
+    Raising rather than returning a sentinel keeps a timeout distinguishable
+    from a command that merely exited non-zero.
+
+    ``isolate_process_group`` puts the child in its own session, which is a
+    precondition for the escalation above rather than a convenience: without
+    it the child shares bakar's process group and the ladder refuses to signal
+    it. It defaults to False so the callers that never time out keep the
+    signal-propagation behaviour they have today - a Ctrl-C at the terminal
+    reaches a shared-group child and would not reach an isolated one.
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
     log.step_start(step, command=command, stdout_path=str(stdout_path), host_mode=cfg.host_mode)
@@ -2952,8 +2976,19 @@ def run_shell_capture(
                 env=env,
                 stdout=fh,
                 stderr=stderr_target,
+                start_new_session=isolate_process_group,
             )
-            rc = proc.wait()
+            try:
+                rc = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                log.warn(f"{step}: no exit after {timeout:.0f}s; escalating the capture's process tree")
+                build_stop.escalate_process_tree(proc.pid, log.run_dir)
+                # Reap so the killed child does not linger as a zombie holding
+                # the redirected file descriptors open.
+                with suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=_CAPTURE_REAP_TIMEOUT_S)
+                log.step_fail(step, reason=f"timed out after {timeout:.0f}s")
+                raise
     except LockHeldByPeerError as exc:
         log.step_fail(
             step, reason=f"bitbake lock claimed by peer host {escape(exc.host)} during acquire; aborting before launch"
@@ -2998,6 +3033,12 @@ GRAPH_CAPTURE_IDLE_TIMEOUT_S = 60.0
 #: Interval between idle probes. Each probe scans the lock holder's process
 #: tree, so this is not free enough to spin on.
 GRAPH_CAPTURE_POLL_S = 2.0
+
+#: Deadline for the capture itself, once a quiet cooker has been obtained.
+#: A full metadata parse on a large tree runs for minutes, so this is sized to
+#: catch a hang rather than to cap normal work - an order of magnitude above
+#: the idle wait above, which bounds a different thing entirely.
+GRAPH_CAPTURE_TIMEOUT_S = 900.0
 
 
 def _wait_for_cooker_idle(
@@ -3113,6 +3154,8 @@ def _capture_dependency_graph(ctx: KasBuildContext, log: RunLogger) -> dict[str,
             log.run_dir / "depgraph.log",
             step="graph_capture",
             env_overrides={"SHELL": "/bin/bash"},
+            timeout=GRAPH_CAPTURE_TIMEOUT_S,
+            isolate_process_group=True,
         )
         if rc != 0:
             log.warn(f"dependency graph: capture exited {rc}; see {log.run_dir / 'depgraph.log'}")
@@ -3140,6 +3183,15 @@ def _capture_dependency_graph(ctx: KasBuildContext, log: RunLogger) -> dict[str,
         # it. Without this a Ctrl-C during the capture escapes and discards a
         # completed build's reporting for a traceback.
         log.warn("dependency graph: interrupted during capture")
+        return None
+    except subprocess.TimeoutExpired:
+        # Named ahead of the blanket clause below so the log says the capture
+        # hung rather than that it "failed", and so the distinction survives
+        # into the run log a later triage reads.
+        log.warn(
+            f"dependency graph: capture exceeded {GRAPH_CAPTURE_TIMEOUT_S:.0f}s and was killed; "
+            f"see {log.run_dir / 'depgraph.log'}"
+        )
         return None
     except Exception as exc:  # noqa: BLE001 - a completed build must not crash on capture failure
         log.warn(f"dependency graph: capture failed ({exc})")

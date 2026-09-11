@@ -14,6 +14,8 @@ exists for.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from bakar.steps.kas_build import GRAPH_ARTIFACTS, GRAPH_MARKER_NAME, graph_capture_command
 
 
@@ -134,9 +136,11 @@ def test_idle_wait_times_out_rather_than_blocking_teardown(monkeypatch, tmp_path
 class _FakeLog:
     """Minimal RunLogger stand-in: the helpers under test only warn and info."""
 
-    def __init__(self) -> None:
+    def __init__(self, run_dir: Path | None = None) -> None:
         self.warnings: list[str] = []
         self.infos: list[str] = []
+        # Only the capture path reads this; the idle/target helpers never do.
+        self.run_dir = run_dir if run_dir is not None else Path()
 
     def warn(self, msg: str) -> None:
         self.warnings.append(msg)
@@ -156,3 +160,85 @@ def test_explicit_ctx_target_wins_without_shelling_out(monkeypatch) -> None:
     ctx = type("Ctx", (), {"target": "my-image"})()
 
     assert kas_build._resolve_capture_target(ctx, _FakeLog()) == "my-image"
+
+
+def _capture_ctx(tmp_path):
+    """Minimal ctx/log pair for ``_capture_dependency_graph``.
+
+    Only the attributes the capture actually reads are supplied; the kas launch
+    itself is stubbed out by each test.
+    """
+    cfg = type(
+        "Cfg",
+        (),
+        {
+            "bsp_root": tmp_path,
+            "build_dir_name": "build",
+            "resolved_tmpdir": tmp_path / "build" / "tmp",
+        },
+    )()
+    run_dir = tmp_path / "runs" / "20260101-000000"
+    run_dir.mkdir(parents=True)
+    log = _FakeLog(run_dir)
+    ctx = type("Ctx", (), {"target": "core-image-minimal", "cfg": cfg})()
+    return ctx, log
+
+
+def test_capture_opts_into_a_bound_and_its_own_process_group(monkeypatch, tmp_path) -> None:
+    """The capture is the only caller that opts in, and it must opt into BOTH.
+
+    A deadline without ``isolate_process_group=True`` is worse than no deadline:
+    the child would share bakar's process group, so the escalation the timeout
+    triggers has nothing safe to signal and abandons the cooker instead.
+    """
+    from bakar.steps import kas_build
+
+    ctx, log = _capture_ctx(tmp_path)
+    monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", lambda *_a, **_k: True)
+    seen: dict[str, object] = {}
+
+    def _fake_capture(_ctx, _cmd, _out, **kwargs):
+        seen.update(kwargs)
+        return 1  # stop before the artifact copy; the kwargs are what is under test
+
+    monkeypatch.setattr(kas_build, "run_shell_capture", _fake_capture)
+
+    assert kas_build._capture_dependency_graph(ctx, log) is None
+
+    assert seen["timeout"] == kas_build.GRAPH_CAPTURE_TIMEOUT_S
+    assert seen["isolate_process_group"] is True
+
+
+def test_capture_timeout_is_an_order_of_magnitude_above_the_idle_wait() -> None:
+    """The two bounds answer different questions and must not be confused.
+
+    The idle wait bounds how long to wait FOR a quiet cooker; this bounds the
+    graph pass itself, which legitimately runs for minutes on a large tree. A
+    capture deadline anywhere near the idle wait would abort healthy work.
+    """
+    from bakar.steps import kas_build
+
+    assert kas_build.GRAPH_CAPTURE_TIMEOUT_S >= 10 * kas_build.GRAPH_CAPTURE_IDLE_TIMEOUT_S
+
+
+def test_capture_reports_a_hang_distinctly_from_a_failure(monkeypatch, tmp_path) -> None:
+    """A timeout must not crash the completed build, and must read as a hang.
+
+    The build already produced its image; the graph is an optional artifact. But
+    "capture failed" and "capture hung and was killed" send a later triage to
+    different places, so the message keeps them apart.
+    """
+    import subprocess
+
+    from bakar.steps import kas_build
+
+    ctx, log = _capture_ctx(tmp_path)
+    monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", lambda *_a, **_k: True)
+
+    def _hang(*_a, **_k):
+        raise subprocess.TimeoutExpired(cmd="kas", timeout=900.0)
+
+    monkeypatch.setattr(kas_build, "run_shell_capture", _hang)
+
+    assert kas_build._capture_dependency_graph(ctx, log) is None
+    assert any("exceeded" in w and "killed" in w for w in log.warnings), log.warnings

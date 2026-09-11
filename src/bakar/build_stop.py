@@ -67,6 +67,13 @@ _STOP_STALE_SECONDS = 10.0  # running-set unchanged this long -> spinner fallbac
 _STOP_HINT_SECONDS = 30.0  # cadence of the "press Ctrl-C to force" hint
 _RUNTIME_ERROR_CAP = 5  # consecutive container-query errors before giving up
 
+# Bound on every runtime CLI query (docker/podman ps|stop|kill|rm|inspect).
+# These back the escalation ladder a capture timeout falls into - a wedged
+# runtime daemon must not turn a bounded capture timeout into an unbounded
+# hang at teardown. Generous: a query is normally sub-second; this is sized
+# to catch a wedged daemon, not to cap ordinary runtime latency.
+_RUNTIME_QUERY_TIMEOUT_S = 30.0
+
 # Liveness tri-state. ``_ERROR`` is a query that could not be answered (a
 # transient runtime failure), distinct from a definitive ``_DEAD``; the wait
 # loop keeps polling on a single ``_ERROR`` and only concludes the runtime is
@@ -234,12 +241,19 @@ def detect_runtime() -> str:
 _detect_runtime = detect_runtime
 
 
-def _container_id(runtime: str, container_label: str) -> str | None:
-    """Resolve the running container id for ``container_label`` via ``runtime``.
+def _container_id_status(runtime: str, container_label: str) -> tuple[str, str | None]:
+    """Tri-state query backing :func:`_container_id` and :func:`escalate_container_tree`.
 
-    Runs ``<runtime> ps -q -f label=<container_label>`` and returns the first
-    line of stdout (a container id), or ``None`` when the output is empty or the
-    command errors (the container is gone or the runtime is unusable).
+    Runs ``<runtime> ps -q -f label=<container_label>`` and returns
+    ``(_ALIVE, cid)`` when a matching container is running, ``(_DEAD, None)``
+    when the query succeeded and found none - a label matching nothing is not
+    an error, ``docker ps`` returns a clean exit with empty output - and
+    ``(_ERROR, None)`` when the query itself could not be trusted (the runtime
+    binary is absent, the daemon is unreachable, it timed out, or it exited
+    non-zero). ``_DEAD`` and ``_ERROR`` both read as "no id" to a caller that
+    only wants the id, which is why :func:`_container_id` collapses them - but
+    a caller deciding whether an escalation actually succeeded needs the
+    difference: an unanswerable query is not proof the container is gone.
     """
     try:
         result = subprocess.run(
@@ -247,16 +261,28 @@ def _container_id(runtime: str, container_label: str) -> str | None:
             capture_output=True,
             text=True,
             check=False,
+            timeout=_RUNTIME_QUERY_TIMEOUT_S,
         )
-    except OSError:
-        return None
+    except OSError, subprocess.TimeoutExpired:
+        return _ERROR, None
     if result.returncode != 0:
-        return None
+        return _ERROR, None
     for line in result.stdout.splitlines():
         cid = line.strip()
         if cid:
-            return cid
-    return None
+            return _ALIVE, cid
+    return _DEAD, None
+
+
+def _container_id(runtime: str, container_label: str) -> str | None:
+    """Resolve the running container id for ``container_label`` via ``runtime``.
+
+    Returns ``None`` when no container matches or the query itself failed
+    (the container is gone or the runtime is unusable) - callers needing to
+    tell those two apart use :func:`_container_id_status` directly.
+    """
+    _status, cid = _container_id_status(runtime, container_label)
+    return cid
 
 
 def _run_runtime(args: list[str]) -> None:
@@ -264,10 +290,13 @@ def _run_runtime(args: list[str]) -> None:
 
     A missing or already-gone container is not an error here, so a non-zero
     exit (or the runtime binary being absent) is ignored rather than raised.
+    Bounded by ``_RUNTIME_QUERY_TIMEOUT_S``: a wedged runtime daemon must not
+    turn this into an unbounded hang for a caller in the middle of its own
+    timeout/escalation ladder.
     """
     try:
-        subprocess.run(args, capture_output=True, text=True, check=False)
-    except OSError:
+        subprocess.run(args, capture_output=True, text=True, check=False, timeout=_RUNTIME_QUERY_TIMEOUT_S)
+    except OSError, subprocess.TimeoutExpired:
         pass
 
 
@@ -275,7 +304,8 @@ def _container_running(runtime: str, cid: str) -> bool:
     """Return True while ``cid`` reports ``State.Running == true``.
 
     Anything else (the inspect command erroring, empty output, ``"false"``)
-    means the container is no longer running.
+    means the container is no longer running. Bounded by
+    ``_RUNTIME_QUERY_TIMEOUT_S`` for the same reason as its siblings above.
     """
     try:
         result = subprocess.run(
@@ -283,8 +313,9 @@ def _container_running(runtime: str, cid: str) -> bool:
             capture_output=True,
             text=True,
             check=False,
+            timeout=_RUNTIME_QUERY_TIMEOUT_S,
         )
-    except OSError:
+    except OSError, subprocess.TimeoutExpired:
         return False
     if result.returncode != 0:
         return False
@@ -310,8 +341,9 @@ def _container_liveness(runtime: str, cid: str) -> str:
             capture_output=True,
             text=True,
             check=False,
+            timeout=_RUNTIME_QUERY_TIMEOUT_S,
         )
-    except OSError:
+    except OSError, subprocess.TimeoutExpired:
         return _ERROR
     if result.returncode != 0:
         return _ERROR
@@ -343,8 +375,9 @@ def _sigint_bitbake_in_container(runtime: str, cid: str) -> bool:
             capture_output=True,
             text=True,
             check=False,
+            timeout=_RUNTIME_QUERY_TIMEOUT_S,
         )
-    except OSError:
+    except OSError, subprocess.TimeoutExpired:
         return False
     return result.returncode == 0
 
@@ -680,9 +713,19 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _bitbake_server_alive(run_dir: Path) -> bool:
-    """True while bitbake-server's own detached PID (from bitbake.lock) is alive."""
+    """True while bitbake-server's own detached PID (from bitbake.lock) is alive
+    AND still identifiably this build's, not a PID the kernel has since
+    recycled onto an unrelated process.
+
+    Every caller of this function needs to agree with :func:`_escalate_host`'s
+    kill decision, or the two diverge on a recycled PID: escalation correctly
+    declines to signal it, while this function - unverified - would keep
+    reporting the (unrelated) process as this build still running, forever.
+    That reads to an operator as ``bakar stop`` never completing on a
+    workspace whose real cooker has, in fact, already exited.
+    """
     pid = _read_bitbake_server_pid(run_dir)
-    return pid is not None and _pid_alive(pid)
+    return pid is not None and _pid_alive(pid) and _bitbake_server_pid_verified(pid, run_dir.parent.parent)
 
 
 def _pgid_alive(pgid: int) -> bool:
@@ -891,6 +934,40 @@ def _host_build_alive(pgid: int | None, run_dir: Path) -> bool:
     return bool(_collect_build_pids(run_dir.parent.parent, None).cooker)
 
 
+def _bitbake_server_pid_verified(bb_pid: int, topdir: Path) -> bool:
+    """True unless ``bb_pid`` is POSITIVELY known not to be this build's own
+    bitbake-server.
+
+    ``_read_bitbake_server_pid`` returns a raw PID parsed from ``bitbake.lock``,
+    with no check tying that number back to a live bitbake-server process. The
+    gap between reading the lock and signalling widens with every escalation
+    ladder this ladder now feeds (a 900s capture timeout routes here too), and
+    across a wide enough gap the kernel can recycle that PID onto an unrelated
+    process - SIGKILL-ing it would kill something this build never launched.
+    bitbake's own execServer (bb.server.process) execs with the lock file's and
+    socket's absolute paths as literal argv tokens, so a genuine bitbake-server
+    always carries one; anything else reading at that PID does not.
+
+    Returns False only on positive evidence: the PID has already exited, or its
+    live cmdline names a different lock/sock path. An UNREADABLE cmdline
+    (``/proc`` mounted ``hidepid=1``/``2``, the cooker running as another uid) is
+    not that evidence - conflating "could not verify" with "verified not ours"
+    would silently disable this layer on any host with a restricted ``/proc``,
+    and :func:`_bitbake_server_alive` would then report a live cooker as
+    running forever with no path left to ever kill it. An unreadable cmdline
+    therefore falls back to True: the escalation ladder accepts the same
+    residual recycled-PID risk this function otherwise closes, rather than
+    trade a rare bad kill for a permanently stuck lock.
+    """
+    if not _pid_alive(bb_pid):
+        return False
+    cmdline = _proc_cmdline(bb_pid)
+    if not cmdline:
+        return True
+    markers = [str(topdir / name) for name in ("bitbake.lock", "bitbake.sock")]
+    return any(marker in cmdline for marker in markers)
+
+
 def _escalate_host(pgid: int | None, run_dir: Path | None = None) -> list[_KilledProc]:
     """SIGTERM->SIGKILL the whole scoped process set for this build.
 
@@ -898,7 +975,10 @@ def _escalate_host(pgid: int | None, run_dir: Path | None = None) -> list[_Kille
 
     1. the wrapper's process group ``pgid`` (``killpg``);
     2. bitbake-server's own PID from ``bitbake.lock`` - a different session, so
-       ``killpg`` structurally cannot reach it (see ``_read_bitbake_server_pid``);
+       ``killpg`` structurally cannot reach it (see ``_read_bitbake_server_pid``).
+       Verified against its live cmdline first (see
+       ``_bitbake_server_pid_verified``) so a stale, recycled PID is never
+       signalled;
     3. the argv-scoped set - the cooker matched by this build's
        lock/sock/cookerdaemon.log paths in ``/proc`` plus its descendants
        (bitbake-worker, task subprocesses, orphans reparented to init). Layer 3
@@ -907,30 +987,56 @@ def _escalate_host(pgid: int | None, run_dir: Path | None = None) -> list[_Kille
 
     Each layer gets SIGTERM, one ``_STOP_TERM_SECONDS`` grace window, then
     SIGKILL only for whatever is still alive. Every signalled PID is printed
-    (SIGTERM/SIGKILL + cmdline) and returned as the layer-3 audit list.
+    (SIGTERM/SIGKILL + cmdline) and returned as the layer-3 audit list. The
+    grace window itself is skipped when the SIGTERM rung delivered nothing -
+    there is nothing to wait out, and the caller (a build already reporting
+    its own completion, or an interrupt handler) should not pay a real
+    ``_STOP_TERM_SECONDS`` for a no-op. Layer 2 is re-verified against
+    :func:`_bitbake_server_pid_verified` again before the SIGKILL, not only
+    before the SIGTERM: the two rungs are ``_STOP_TERM_SECONDS`` apart, which
+    is the same recycled-PID window this function exists to close, only wider
+    - the PID it SIGTERM'd can exit and be reused by the kernel during the
+    wait, and the SIGKILL must not trust a verification that old.
     """
+    topdir = run_dir.parent.parent if run_dir is not None else None
     bb_pid = _read_bitbake_server_pid(run_dir) if run_dir is not None else None
+    if bb_pid is not None and topdir is not None and not _bitbake_server_pid_verified(bb_pid, topdir):
+        _say(f"  bitbake.lock pid {bb_pid} no longer matches this build (stale/recycled) - not signalling")
+        bb_pid = None
     scoped = _collect_build_pids(run_dir.parent.parent, pgid) if run_dir is not None else None
     scoped_pids = sorted(scoped.all_pids) if scoped is not None else []
     killed: list[_KilledProc] = []
 
     # --- SIGTERM rung ---
+    signalled_anything = False
     if pgid is not None and pgid > 0 and _killpg(pgid, signal.SIGTERM):
         _say(f"  SIGTERM process group {pgid}")
+        signalled_anything = True
     if bb_pid is not None and _kill_pid(bb_pid, signal.SIGTERM):
         _say(f"  SIGTERM bitbake-server pid {bb_pid}")
+        signalled_anything = True
     for pid in scoped_pids:
         cmdline = _proc_cmdline(pid)
         if _kill_pid(pid, signal.SIGTERM):
             killed.append(_KilledProc(pid, "SIGTERM", cmdline))
             _say(f"  SIGTERM pid {pid} ({_short_cmd(cmdline)})")
+            signalled_anything = True
+
+    if not signalled_anything:
+        return killed
 
     time.sleep(_STOP_TERM_SECONDS)
 
     # --- SIGKILL rung (survivors only) ---
     if pgid is not None and pgid > 0 and _pgid_alive(pgid) and _killpg(pgid, signal.SIGKILL):
         _say(f"  SIGKILL process group {pgid}")
-    if bb_pid is not None and _pid_alive(bb_pid) and _kill_pid(bb_pid, signal.SIGKILL):
+    if (
+        bb_pid is not None
+        and _pid_alive(bb_pid)
+        and topdir is not None
+        and _bitbake_server_pid_verified(bb_pid, topdir)
+        and _kill_pid(bb_pid, signal.SIGKILL)
+    ):
         _say(f"  SIGKILL bitbake-server pid {bb_pid}")
     for pid in scoped_pids:
         if _pid_alive(pid):
@@ -939,6 +1045,94 @@ def _escalate_host(pgid: int | None, run_dir: Path | None = None) -> list[_Kille
                 killed.append(_KilledProc(pid, "SIGKILL", cmdline))
                 _say(f"  SIGKILL pid {pid} ({_short_cmd(cmdline)})")
     return killed
+
+
+def escalate_process_tree(leader_pid: int, run_dir: Path | None = None) -> list[_KilledProc]:
+    """Public entry onto the SIGTERM->SIGKILL ladder for a self-led subprocess.
+
+    ``leader_pid`` is a child's PID, not a process-group id, and the group is
+    derived here rather than trusted from the caller. A child spawned WITHOUT
+    ``start_new_session=True`` sits in bakar's own process group, so handing its
+    pid to :func:`_escalate_host` as a pgid would signal bakar itself along with
+    everything else sharing that group. The equality check below is what makes
+    that unrepresentable: it refuses unless the child leads a group containing
+    only itself and its descendants.
+
+    Exists so callers outside this module (the post-build graph capture in
+    :mod:`bakar.steps.kas_build`) can reach the ladder without reaching for a
+    private name. Escalating rather than merely abandoning the child matters
+    because the timed-out process is a ``bitbake -g`` whose cooker holds
+    ``bitbake.lock``: killing the parent alone would strand that cooker and
+    refuse the next build on this directory.
+
+    Falls back to ``pgid=None`` - never an early ``return []`` - when the
+    leader is already gone or fails the self-led check: ``_escalate_host``'s
+    ``bitbake.lock``-PID and argv-scoped cooker layers key off ``run_dir``,
+    not off this leader's pgid, so a leader that already exited (or that this
+    function correctly refuses to signal) says nothing about whether the
+    cooker it spawned is still alive and still holding the lock. Returning
+    early here would skip those two run_dir-scoped layers entirely on exactly
+    the timing where the wrapper died first and the detached cooker outlived
+    it - the case this function exists to catch.
+
+    Returns the layer-3 audit list from :func:`_escalate_host`.
+    """
+    try:
+        pgid: int | None = os.getpgid(leader_pid)
+    except OSError:
+        pgid = None
+    else:
+        if pgid != leader_pid:
+            _say(
+                f"  refusing to signal pid {leader_pid}: its process group is {pgid}, "
+                "which is not its own - signalling it would reach bakar too"
+            )
+            pgid = None
+    return _escalate_host(pgid, run_dir)
+
+
+def escalate_container_tree(run_id: str) -> bool:
+    """Public entry onto the container stop ladder for one run's own container.
+
+    Sibling to :func:`escalate_process_tree`, for container-mode builds.
+    Escalating the host-side kas-container client process (what
+    :func:`escalate_process_tree` targets) stops that client but not the
+    container it launched - the runtime does not stop a container merely
+    because the client that started it exits. The bitbake cooker inside
+    keeps running and keeps holding ``bitbake.lock``, which is exactly the
+    strand this module exists to prevent.
+
+    Resolves the container by its ``bakar.run_id`` label
+    (:func:`run_id_label`) and force-stops it through the same
+    stop -> kill -> rm -f ladder :func:`_stop_container` uses.
+
+    Returns True when a container was found AND verified gone afterward,
+    False when none resolved (already gone, or the runtime is unreachable)
+    OR the ladder ran without the container actually disappearing - the
+    caller should fall back to :func:`escalate_process_tree` in either case.
+    ``_escalate_container`` swallows every runtime command's result by
+    design (an already-gone container is not a failure there), so nothing
+    upstream of this function otherwise knows whether ``stop``/``kill``/``rm
+    -f`` actually reached the runtime; re-querying by the same label is the
+    only way to tell "escalated" from "issued the commands and hoped".
+
+    The post-escalation check uses :func:`_container_id_status`, not
+    :func:`_container_id`, on purpose: ``_container_id`` collapses "no
+    container matches" and "the query itself failed" into the same ``None``,
+    and the two must not collapse into one "escalated" verdict here - a
+    wedged runtime after the ladder ran must read as unverified, not as
+    success. (``_container_liveness`` on the specific ``cid`` would not work
+    either: after a successful ``rm -f`` that id no longer exists at all, so
+    ``inspect`` on it returns non-zero - indistinguishable from a query
+    failure - rather than the clean "not running" `_DEAD` this needs.)
+    """
+    runtime = detect_runtime()
+    cid = _container_id(runtime, run_id_label(run_id))
+    if cid is None:
+        return False
+    _escalate_container(runtime, cid, _STOP_TERM_SECONDS)
+    status, _cid = _container_id_status(runtime, run_id_label(run_id))
+    return status == _DEAD
 
 
 # ---------------------------------------------------------------------------
@@ -1133,7 +1327,9 @@ def _report_stale_cleanup(run_dir: Path, cfg: BuildConfig | None = None) -> list
     if cfg is not None:
         refusal = lock_mutation_guard(cfg)
         if refusal is not None:
-            detail = f" ({escape(refusal.host)})" if refusal.host else ""
+            # _say prints plain text to stderr, never through Rich markup
+            # rendering, so the host name needs no escaping here.
+            detail = f" ({refusal.host})" if refusal.host else ""
             _say(f"leaving bitbake.lock/bitbake.sock in place: ownership refused - {refusal.reason}{detail}")
             return []
     topdir = run_dir.parent.parent
@@ -1239,7 +1435,9 @@ def stop_build(
         refusal = lock_mutation_guard(cfg)
         if refusal is not None:
             if refusal.reason == "peer-held":
-                host = escape(refusal.host) if refusal.host else "another host"
+                # _say prints plain text to stderr, never through Rich markup
+                # rendering, so the host name needs no escaping here.
+                host = refusal.host if refusal.host else "another host"
                 _say(f"build owned by {host}; run `bakar stop` there")
             else:
                 _say(

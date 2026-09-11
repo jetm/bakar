@@ -24,6 +24,7 @@ import socket
 import subprocess
 import time
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -56,6 +57,8 @@ from bakar.steps.kas_build import (
     persist_run_artifacts,
     regenerate_yaml,
     run_build,
+    run_kas_subcommand,
+    run_shell_capture,
     run_shell_live,
 )
 from bakar.user_config import load_user_config
@@ -1105,6 +1108,457 @@ def test_run_shell_live_single_terminal_event_on_lock_refusal(tmp_path: Path, mo
 
 
 # ---------------------------------------------------------------------------
+# run_shell_capture: the timeout/isolation opt-in
+# ---------------------------------------------------------------------------
+
+
+class _FakeCaptureProc:
+    """Popen stand-in recording how it was launched and how it was waited on."""
+
+    def __init__(self, *, pid: int = 4242, rc: int = 0, timeouts: int = 0) -> None:
+        self.pid = pid
+        self._rc = rc
+        self._timeouts_left = timeouts
+        self.wait_timeouts: list[float | None] = []
+        # Mirrors real Popen: unset until a wait() call actually completes,
+        # which is what run_shell_capture reads for its step_fail exit_code.
+        self.returncode: int | None = None
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.wait_timeouts.append(timeout)
+        if self._timeouts_left > 0:
+            self._timeouts_left -= 1
+            raise subprocess.TimeoutExpired(cmd="kas", timeout=timeout or 0.0)
+        self.returncode = self._rc
+        return self._rc
+
+
+def _stub_capture_launch(monkeypatch: pytest.MonkeyPatch, proc: _FakeCaptureProc) -> list[dict[str, object]]:
+    """Neutralize everything ``run_shell_capture`` does around the launch.
+
+    Leaves exactly the Popen call and the wait under test. Returns the list the
+    Popen kwargs are recorded into.
+    """
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.clear_stale_bitbake_locks",
+        lambda _cfg: build_stop.LockClearOutcome(removed=[], refusal=None),
+    )
+
+    @contextlib.contextmanager
+    def _noop_marker(_cfg: object, _log: object):  # type: ignore[no-untyped-def]
+        yield
+
+    monkeypatch.setattr("bakar.steps.kas_build.lock_owner_marker", _noop_marker)
+
+    launches: list[dict[str, object]] = []
+
+    def _fake_popen(_cmd: object, **kwargs: object) -> _FakeCaptureProc:
+        launches.append(kwargs)
+        return proc
+
+    monkeypatch.setattr("bakar.steps.kas_build.subprocess.Popen", _fake_popen)
+    return launches
+
+
+def _capture_ctx(cfg: BuildConfig, log: RunLogger) -> KasBuildContext:
+    """Context whose YAML lives inside ``bsp_root``, which ``_build_kas_arg`` requires."""
+    kas_yaml = cfg.bsp_root / "build.yml"
+    kas_yaml.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
+    overlay = cfg.bsp_root / "overlay.yml"
+    overlay.write_text("header:\n  version: 14\n")
+    return KasBuildContext(cfg=cfg, log=log, kas_yaml=kas_yaml, overlay_source=overlay)
+
+
+def test_run_shell_capture_stays_unbounded_and_shares_the_group_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The seven callers that never opted in must see today's behaviour exactly.
+
+    Both new parameters are keyword-only with defaults chosen so this holds: an
+    unbounded wait, and a child left in bakar's own process group so a terminal
+    Ctrl-C still reaches it.
+    """
+    cfg = _make_nxp_cfg(tmp_path)
+    proc = _FakeCaptureProc(rc=0)
+    launches = _stub_capture_launch(monkeypatch, proc)
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        ctx = _capture_ctx(cfg, log)
+        rc = run_shell_capture(ctx, "bitbake -e", log.run_dir / "out.log")
+
+    assert rc == 0
+    assert proc.wait_timeouts == [None]
+    assert launches[0]["start_new_session"] is False
+
+
+def test_run_shell_capture_keyboard_interrupt_skips_escalation_when_not_isolated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Ctrl-C on one of the non-capture callers must propagate exactly as it
+    did before the timeout/escalation path existed - no warn, no escalation
+    attempt, no step_fail event.
+
+    A caller that never asked for isolation shares bakar's own process group,
+    so escalate_process_tree's pgid check would refuse it and a container-mode
+    escalation would stop the wrong container out from under a caller that
+    never opted into any of this. Gating on isolate_process_group is what
+    keeps the seven callers that never set timeout=/isolate_process_group=True
+    seeing an ordinary Ctrl-C.
+    """
+    cfg = _make_nxp_cfg(tmp_path)
+
+    class _InterruptingProc(_FakeCaptureProc):
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_timeouts.append(timeout)
+            raise KeyboardInterrupt
+
+    proc = _InterruptingProc()
+    _stub_capture_launch(monkeypatch, proc)
+    escalate_calls: list[object] = []
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.build_stop.escalate_process_tree",
+        lambda *a, **k: escalate_calls.append((a, k)) or [],
+    )
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.build_stop.escalate_container_tree",
+        lambda *a, **k: escalate_calls.append((a, k)) or True,
+    )
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        ctx = _capture_ctx(cfg, log)
+        with pytest.raises(KeyboardInterrupt):
+            run_shell_capture(ctx, "bitbake -e", log.run_dir / "out.log")
+        events_path = log.events_path
+
+    assert escalate_calls == []  # neither ladder was even consulted
+    # Only the reap wait must be absent too - a single wait() call, not the
+    # timeout-path's wait-then-reap pair.
+    assert proc.wait_timeouts == [None]
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line]
+    fails = [e for e in events if e.get("event") == "step_fail" and e.get("step") == "kas_shell_capture"]
+    assert fails == []  # no step_fail event for an ordinary interrupt
+
+
+def test_run_shell_capture_isolates_the_group_only_when_asked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``isolate_process_group=True`` is what makes the escalation targetable.
+
+    Without it the child's process group is bakar's own, and
+    ``escalate_process_tree`` refuses to signal it.
+    """
+    cfg = _make_nxp_cfg(tmp_path)
+    proc = _FakeCaptureProc(rc=0)
+    launches = _stub_capture_launch(monkeypatch, proc)
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        ctx = _capture_ctx(cfg, log)
+        rc = run_shell_capture(ctx, "bitbake -g x", log.run_dir / "out.log", timeout=900.0, isolate_process_group=True)
+
+    assert rc == 0
+    assert proc.wait_timeouts == [900.0]
+    assert launches[0]["start_new_session"] is True
+
+
+def test_run_shell_capture_labels_the_container_only_when_isolated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bakar.run_id container label is only attached when isolate_process_group
+    requests the escalation path that resolves a container by that label.
+
+    Labelling every caller's container would make it carry the same
+    bakar.run_id as the build's own container - and _container_id
+    (docker/podman ps -q -f label=...) returns whichever one answers first,
+    so an unrelated caller's container could get stopped instead of the one a
+    timeout actually meant to target.
+    """
+    cfg = _make_nxp_cfg(tmp_path)  # host_mode=False: container mode, where the label matters
+    commands: list[list[str]] = []
+
+    def _fake_popen(cmd: list[str], **_kwargs: object) -> _FakeCaptureProc:
+        commands.append(cmd)
+        return _FakeCaptureProc(rc=0)
+
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.clear_stale_bitbake_locks",
+        lambda _cfg: build_stop.LockClearOutcome(removed=[], refusal=None),
+    )
+
+    @contextlib.contextmanager
+    def _noop_marker(_cfg: object, _log: object):  # type: ignore[no-untyped-def]
+        yield
+
+    monkeypatch.setattr("bakar.steps.kas_build.lock_owner_marker", _noop_marker)
+    monkeypatch.setattr("bakar.steps.kas_build.subprocess.Popen", _fake_popen)
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        ctx = _capture_ctx(cfg, log)
+        run_shell_capture(ctx, "bitbake -e", log.run_dir / "out.log")  # not isolated
+        run_shell_capture(ctx, "bitbake -g x", log.run_dir / "out2.log", timeout=900.0, isolate_process_group=True)
+
+    unlabeled_cmd = " ".join(commands[0])
+    labeled_cmd = " ".join(commands[1])
+    assert f"bakar.run_id={log.run_id}" not in unlabeled_cmd
+    assert f"bakar.run_id={log.run_id}" in labeled_cmd
+
+
+def test_run_shell_capture_timeout_escalates_the_tree_and_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timeout must kill the whole tree and raise, not return a sentinel.
+
+    Returning quietly would orphan the cooker still holding ``bitbake.lock``,
+    which is worse than the hang: the next build on this directory is refused
+    with an error naming neither this capture nor the run that caused it. The
+    raise keeps a hang distinguishable from a command that merely exited
+    non-zero, which the return code cannot express.
+    """
+    # This test is specifically about the host-side ladder, reached here via
+    # the no-container-resolves fallback. The container-mode branch itself is
+    # covered by the two tests immediately below.
+    cfg = _make_nxp_cfg(tmp_path)
+    # One timeout on the bounded wait, then the post-kill reap succeeds.
+    proc = _FakeCaptureProc(pid=4242, rc=-9, timeouts=1)
+    _stub_capture_launch(monkeypatch, proc)
+
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.build_stop.escalate_container_tree",
+        lambda run_id: False,
+    )
+    escalated: list[tuple[int, Path]] = []
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.build_stop.escalate_process_tree",
+        lambda pid, run_dir: escalated.append((pid, run_dir)) or [],
+    )
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        ctx = _capture_ctx(cfg, log)
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_shell_capture(ctx, "bitbake -g x", log.run_dir / "out.log", timeout=900.0, isolate_process_group=True)
+        events_path = log.events_path
+
+    assert escalated == [(4242, log.run_dir)]
+    # The reap is bounded too: a second wait, with its own short deadline.
+    assert proc.wait_timeouts == [900.0, 5.0]
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line]
+    fails = [e for e in events if e.get("event") == "step_fail" and e.get("step") == "kas_shell_capture"]
+    assert len(fails) == 1
+    assert "no exit after" in fails[0]["reason"]
+    assert fails[0]["exit_code"] == -9
+
+
+def test_run_shell_capture_timeout_prefers_the_container_ladder_in_container_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In container mode, a resolved container is stopped instead of the host tree.
+
+    The child ``run_shell_capture`` launches in container mode is the host-side
+    ``kas-container`` client; killing only that client's process tree leaves the
+    container - and the bitbake cooker inside it - running. When the container
+    resolves, only the container ladder runs.
+    """
+    cfg = _make_nxp_cfg(tmp_path, host_mode=False)
+    proc = _FakeCaptureProc(pid=4242, rc=-9, timeouts=1)
+    _stub_capture_launch(monkeypatch, proc)
+
+    container_calls: list[str] = []
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.build_stop.escalate_container_tree",
+        lambda run_id: container_calls.append(run_id) or True,
+    )
+    host_calls: list[tuple[int, Path]] = []
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.build_stop.escalate_process_tree",
+        lambda pid, run_dir: host_calls.append((pid, run_dir)) or [],
+    )
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        ctx = _capture_ctx(cfg, log)
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_shell_capture(ctx, "bitbake -g x", log.run_dir / "out.log", timeout=900.0, isolate_process_group=True)
+
+    assert container_calls == [log.run_id]
+    assert host_calls == []
+
+
+def test_run_shell_capture_timeout_falls_back_to_host_ladder_when_no_container_resolves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In container mode, an unresolved container falls back to the host tree.
+
+    A stopped runtime, a race that already reaped the container, or a runtime
+    detection failure must not leave the timed-out child unsignalled.
+    """
+    cfg = _make_nxp_cfg(tmp_path, host_mode=False)
+    proc = _FakeCaptureProc(pid=4242, rc=-9, timeouts=1)
+    _stub_capture_launch(monkeypatch, proc)
+
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.build_stop.escalate_container_tree",
+        lambda run_id: False,
+    )
+    host_calls: list[tuple[int, Path]] = []
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.build_stop.escalate_process_tree",
+        lambda pid, run_dir: host_calls.append((pid, run_dir)) or [],
+    )
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        ctx = _capture_ctx(cfg, log)
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_shell_capture(ctx, "bitbake -g x", log.run_dir / "out.log", timeout=900.0, isolate_process_group=True)
+
+    assert host_calls == [(4242, log.run_dir)]
+
+
+# ---------------------------------------------------------------------------
+# run_kas_subcommand: the timeout opt-in
+# ---------------------------------------------------------------------------
+
+
+def test_run_kas_subcommand_stays_unbounded_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The two existing callers (bakar dump, BYO bakar lock) must see today's behaviour exactly."""
+    cfg = _make_nxp_cfg(tmp_path)
+    seen: dict[str, object] = {}
+
+    def _fake_run(_cmd, **kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("bakar.steps.kas_build.subprocess.run", _fake_run)
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        ctx = _capture_ctx(cfg, log)
+        rc = run_kas_subcommand(ctx, "dump", [])
+
+    assert rc == 0
+    assert seen["timeout"] is None
+
+
+def test_run_kas_subcommand_timeout_returns_124_without_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bound target-resolution call (kas_graph_capture's _resolve_capture_target) must
+    degrade to a plain non-zero exit on timeout, not raise - this command never holds the
+    bitbake lock, so there is nothing to escalate to, only a wasted wait to stop."""
+    cfg = _make_nxp_cfg(tmp_path)
+
+    def _fake_run(_cmd, *, timeout, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd="kas", timeout=timeout)
+
+    monkeypatch.setattr("bakar.steps.kas_build.subprocess.run", _fake_run)
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        ctx = _capture_ctx(cfg, log)
+        rc = run_kas_subcommand(ctx, "dump", [], timeout=60.0)
+
+    assert rc == 124
+
+
+def test_run_kas_subcommand_timeout_escalates_the_container_in_container_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """subprocess.run's own timeout kills only the host-side kas-container client;
+    in container mode the container it launched survives and must be stopped
+    through escalate_container_tree, or it (and whatever it is running) is
+    orphaned."""
+    cfg = _make_nxp_cfg(tmp_path)  # host_mode=False: container mode
+
+    def _fake_run(_cmd, *, timeout, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd="kas-container", timeout=timeout)
+
+    monkeypatch.setattr("bakar.steps.kas_build.subprocess.run", _fake_run)
+    escalate_calls: list[str] = []
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.build_stop.escalate_container_tree",
+        lambda run_id: escalate_calls.append(run_id) or True,
+    )
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        ctx = _capture_ctx(cfg, log)
+        rc = run_kas_subcommand(ctx, "dump", [], timeout=60.0)
+
+    assert rc == 124
+    assert escalate_calls == [log.run_id]
+
+
+def test_run_kas_subcommand_timeout_surfaces_an_unverified_container_escalation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When escalate_container_tree cannot verify the container stopped,
+    subprocess.run has already reaped the only host-side process there is -
+    so there is no process-tree fallback to reach for the way
+    run_shell_capture reaches for one. The failure must say so rather than
+    reading identically to a clean stop."""
+    cfg = _make_nxp_cfg(tmp_path)  # container mode
+
+    def _fake_run(_cmd, *, timeout, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd="kas-container", timeout=timeout)
+
+    monkeypatch.setattr("bakar.steps.kas_build.subprocess.run", _fake_run)
+    monkeypatch.setattr("bakar.steps.kas_build.build_stop.escalate_container_tree", lambda _run_id: False)
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        ctx = _capture_ctx(cfg, log)
+        rc = run_kas_subcommand(ctx, "dump", [], timeout=60.0)
+        events_path = log.events_path
+
+    assert rc == 124
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line]
+    fail_events = [e for e in events if e.get("event") == "step_fail" and e.get("step") == "kas_subcommand"]
+    assert len(fail_events) == 1
+    assert "did not verify" in fail_events[0]["reason"]
+
+
+def test_run_kas_subcommand_timeout_does_not_escalate_a_container_in_host_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Host mode has no container to escalate - subprocess.run's own timeout
+    kill of the direct kas child is already sufficient there."""
+    cfg = _make_nxp_cfg(tmp_path, host_mode=True)
+
+    def _fake_run(_cmd, *, timeout, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd="kas", timeout=timeout)
+
+    monkeypatch.setattr("bakar.steps.kas_build.subprocess.run", _fake_run)
+    escalate_calls: list[str] = []
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.build_stop.escalate_container_tree",
+        lambda run_id: escalate_calls.append(run_id) or True,
+    )
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        ctx = _capture_ctx(cfg, log)
+        rc = run_kas_subcommand(ctx, "dump", [], timeout=60.0)
+
+    assert rc == 124
+    assert escalate_calls == []
+
+
+def test_run_kas_subcommand_labels_the_container_only_when_timeout_is_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run_id label is only attached when a timeout was requested - an
+    unconditional label would make bakar dump/lock's containers carry the
+    same bakar.run_id as the build's own, which _container_id cannot
+    disambiguate."""
+    cfg = _make_nxp_cfg(tmp_path)  # container mode
+    commands: list[list[str]] = []
+
+    def _fake_run(cmd, **_kwargs):
+        commands.append(cmd)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("bakar.steps.kas_build.subprocess.run", _fake_run)
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        ctx = _capture_ctx(cfg, log)
+        run_kas_subcommand(ctx, "dump", [])  # no timeout
+        run_kas_subcommand(ctx, "dump", [], timeout=60.0)
+
+    assert f"bakar.run_id={log.run_id}" not in " ".join(commands[0])
+    assert f"bakar.run_id={log.run_id}" in " ".join(commands[1])
+
+
+# ---------------------------------------------------------------------------
 # _autocalibrate_psi
 # ---------------------------------------------------------------------------
 
@@ -1182,7 +1636,7 @@ def test_find_oe_eventlog_returns_none_when_no_new_files(tmp_path: Path) -> None
     old_file = elog_dir / "20260101120000.json"
     old_file.write_text("{}")
     # backdate: set mtime 10 seconds before the run_id-derived watermark
-    watermark = datetime.strptime(log.run_id, "%Y%m%d-%H%M%S").timestamp()
+    watermark = datetime.strptime(log.run_id[:15], "%Y%m%d-%H%M%S").timestamp()
     os.utime(old_file, (watermark - 10, watermark - 10))
     assert _find_oe_eventlog(cfg, log) is None
 
