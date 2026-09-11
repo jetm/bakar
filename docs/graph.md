@@ -22,8 +22,8 @@ The reported insights are:
 | **package count** | Number of recipes in `pn-buildlist` (the full build list for the target) |
 | **direct deps** | The target's immediate (first-level) dependencies (`direct deps:` in the text report; `direct_deps` in JSON) |
 | **transitive deps** | Count of transitive descendants of the target in the PN-collapsed graph - how many recipes a change to it can affect (`transitive deps:` in the text report; `blast_radius` in JSON) |
-| **longest build chain** | The longest dependency path through the graph (`networkx.dag_longest_path`) |
-| **cycles** | The recipes forming a dependency cycle, or "no cycles" for an acyclic graph |
+| **longest build chain** | The longest dependency path through the TASK-level graph (`networkx.dag_longest_path`), distinct from the PN-collapsed graph used for direct deps/transitive deps/critical recipes - entries are task nodes (`<recipe>.<task>`) |
+| **cycles** | The task nodes (`<recipe>.<task>`) forming a dependency cycle in the TASK-level graph, or "no cycles" for an acyclic graph |
 | **critical recipes** | The most depended-on recipes (highest in-degree) |
 
 When a buildhistory `depends.dot` exists under `cfg.bsp_root/build/buildhistory/`,
@@ -91,14 +91,19 @@ JSON).
 
 `--format json` emits a single JSON document. Top-level keys:
 
+Collapsing to recipe (PN) granularity routinely introduces a cycle the
+underlying task graph does not have, so `longest_chain` and `cycle` are
+computed on the task graph directly and carry task names rather than bare
+recipe names.
+
 ```text
 target                string   the analyzed recipe name
 depth                 int|null the --depth bound, or null when unbounded
 package_count         int      number of recipes in pn-buildlist
 direct_deps           array    the target's immediate (first-level) dependencies
 blast_radius          int      transitive descendant count of the target
-longest_chain         array    recipe names forming the longest build chain
-cycle                 array    recipe names forming a cycle, empty when acyclic
+longest_chain         array    task names (<recipe>.<task>) forming the longest build chain
+cycle                 array    task names (<recipe>.<task>) forming a cycle, empty when acyclic
 critical              array    [name, in-degree] pairs, most depended-on first
 top_runtime_packages  array    [name, fan-in] pairs; present only when a
                               buildhistory depends.dot was found
