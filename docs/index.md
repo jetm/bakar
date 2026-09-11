@@ -40,6 +40,7 @@
 | `changelog` | [changelog.md](changelog.md) | Generate release notes between two pinned workspace states |
 | `prefetch` | [prefetch.md](prefetch.md) | Pre-fetch recipe sources into DL_DIR |
 | `mirror` | [mirror.md](mirror.md) | Seed a premirror `git2_*.tar.gz` tarball from a git URL (host-side) |
+| `sstate-seed` | [sstate-seed.md](sstate-seed.md) | Populate and inspect the native/cross sstate seed |
 | `feed` | [feed.md](feed.md) | Manage the local package feed: stage, index, serve, and prune a build's RPMs |
 | `dump` | [dump.md](dump.md) | Inspect the resolved kas YAML |
 | `hashserv` | [hashserv.md](hashserv.md) | Manage the persistent bitbake-hashserv daemon |
@@ -96,6 +97,7 @@
 - Generate release notes between two pinned states: [changelog.md](changelog.md)
 - Pre-fetch sources for an offline build: [prefetch.md](prefetch.md)
 - Seed a premirror tarball from a git URL (host-side): [mirror.md](mirror.md)
+- Populate or check the native/cross sstate seed: [sstate-seed.md](sstate-seed.md)
 - Inspect the exact config kas will receive: [dump.md](dump.md)
 
 **Exploring the source tree:**
