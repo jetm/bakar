@@ -36,519 +36,88 @@ rewrite is needed here.
 
 from __future__ import annotations
 
-import json
 import os
-import pty
-import re
 import shlex
 import shutil
-import socket
 import subprocess
 import sys
 import sysconfig
-import tempfile
 import threading
 import time
-from contextlib import ExitStack, contextmanager, suppress
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
-from rich.live import Live
 from rich.markup import escape
 
-from bakar import build_scope, build_stop, hashserv, journal, prserv, sccache_server, task_timings, tuning
-from bakar.cache_render import (
-    build_end_summary_plain,
-    build_end_summary_rich,
-    cache_delta,
-    cache_hit_pct,
-    ccache_doc,
-    cluster_doc,
-    daemon_doc,
-    render_ccache_cache,
-    render_cluster,
-    render_sccache_cache,
-)
-
-# ``BuildConfig`` is imported at runtime, not under TYPE_CHECKING, because it
-# annotates a field of ``_PtyCtx`` and a guarded import leaves
-# ``get_type_hints`` on that dataclass raising ``NameError``. This module
-# already imports from ``bakar.config`` at runtime, so it adds no dependency.
-from bakar.config import GENERATED_BUILD_YAML, BuildConfig, _overlay_dir
+from bakar import build_scope, build_stop, hashserv, prserv, sccache_server, task_timings
+from bakar.config import GENERATED_BUILD_YAML, BuildConfig
 from bakar.diagnostics import (
     BUILDTOOLS_DIR_ENV,
     detect_buildtools,
-    is_path_on_nfs,
-    probe_build_daemon,
-    probe_ccache,
-    probe_cluster,
+    is_path_on_nfs,  # noqa: F401 - re-exported; kas_lock.clear_stale_bitbake_locks patches it via kas_build.is_path_on_nfs
+    probe_cluster,  # noqa: F401 - re-exported; kas_overlay._derive_parallelism_plan patches it via kas_build.probe_cluster
     resolve_oe_core_release_key,
 )
-from bakar.eventlog import tail_events
 from bakar.kas import KasGenOptions, write_yaml
-
-# Runtime for the same reason as ``BuildConfig`` above: ``RunLogger``
-# annotates a ``_PtyCtx`` field.
 from bakar.observability import RunLogger
 from bakar.output_mode import OutputMode
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
-from bakar.steps.build_ui import BuildUIState, _fmt_stall
+from bakar.steps.build_ui import BuildUIState
+from bakar.steps.kas_graph_capture import (
+    GRAPH_ARTIFACTS,  # noqa: F401 - re-exported for external/test imports
+    GRAPH_CAPTURE_IDLE_TIMEOUT_S,  # noqa: F401 - re-exported for external/test imports
+    GRAPH_CAPTURE_POLL_S,  # noqa: F401 - re-exported for external/test imports
+    GRAPH_CAPTURE_TIMEOUT_S,  # noqa: F401 - re-exported for external/test imports
+    GRAPH_MARKER_NAME,  # noqa: F401 - re-exported for external/test imports
+    _capture_dependency_graph,
+    _resolve_capture_target,  # noqa: F401 - re-exported; tests monkeypatch kas_build._resolve_capture_target
+    _wait_for_cooker_idle,  # noqa: F401 - re-exported; tests monkeypatch kas_build._wait_for_cooker_idle
+    graph_capture_command,  # noqa: F401 - re-exported for external/test imports
+)
+from bakar.steps.kas_lock import (
+    LockHeldByPeerError,
+    _lock_holder_has_activity,  # noqa: F401 - re-exported; kas_graph_capture patches it via kas_build._lock_holder_has_activity
+    _lock_refusal_message,
+    clear_stale_bitbake_locks,
+    lock_owner_marker,
+)
+from bakar.steps.kas_overlay import (
+    _MOLD_LAYER_NAME,
+    _OVERLAY_DIR_RELPATH,
+    _derive_parallelism_plan,
+    _inject_literal_ccache,  # noqa: F401 - re-exported for external/test imports
+    _inject_literal_mold,  # noqa: F401 - re-exported for external/test imports
+    _inject_literal_parallelism,  # noqa: F401 - re-exported for external/test imports
+    _inject_literal_sccache,  # noqa: F401 - re-exported for external/test imports
+    _inject_local_tmpdir,  # noqa: F401 - re-exported for external/test imports
+    _resolve_parallelism,  # noqa: F401 - re-exported for external/test imports
+    materialize_cache_classify_layer,
+    materialize_host_layer,
+    materialize_layer,
+    materialize_overlay,
+    materialize_sccache_layer,
+)
+from bakar.steps.kas_pty import (
+    _PLAIN_STATUS_INTERVAL,  # noqa: F401 - re-exported; _PlainFrameController._loop patches it via kas_build._PLAIN_STATUS_INTERVAL
+    _build_fail_reason,
+    _PlainFrameController,  # noqa: F401 - re-exported for external/test imports
+    _print_cache_summary,
+    _PtyCtx,
+    _PtyOutcome,
+    _run_pty_with_ui,
+)
 from bakar.triage import translate_container_path, write_error_report
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
     from typing import IO
-
-    from rich.console import Console
 
     from bakar.bsp_model import BspModel
     from bakar.config import BuildConfig
     from bakar.observability import RunLogger
-
-
-# knotty in TTY mode emits ANSI CSI escapes to manipulate the cursor and
-# redraw progress lines in place.  We strip both the standard CSI form
-# (ESC [ ... letter) and the less common OSC form (ESC ] ... BEL) before
-# writing to kas.log so downstream tools (triage, grep, bakar log) see
-# clean plain text.  The regex is deliberately conservative; anything
-# exotic gets left as-is.  See ``bakar log`` for the downstream reader.
-ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
-ANSI_OSC_RE = re.compile(r"\x1b\][^\x07]*\x07")
-LINE_SPLIT_RE = re.compile(rb"\r\n|\n|\r")
-
-# Overlay materialization: the kas-container bind-mount only includes
-# ``KAS_WORK_DIR`` (= bsp_root) as ``/work``. Copying the overlay
-# under ``<bsp_root>/.bakar/overlays/`` puts it inside that mount so
-# the ``<user-yml>:<overlay>`` colon-joined arg resolves cleanly from
-# the container's perspective.
-_OVERLAY_DIR_RELPATH = Path(".bakar") / "overlays"
-
-
-def _strip_ansi(s: str) -> str:
-    return ANSI_OSC_RE.sub("", ANSI_CSI_RE.sub("", s))
-
-
-# The bakar tuning overlays size build parallelism through a bitbake expression
-# `${@os.environ.get('BAKAR_PARALLEL_MAKE') or os.environ.get('NPROC', '16')}`.
-# bitbake only honors that env lookup when the var survives clean_environment
-# (i.e. is in BB_ENV_PASSTHROUGH_ADDITIONS), which is unreliable across kas
-# subcommands - kas build silently dropped it, so every build ran the `16`
-# default regardless of config. Resolving the value here and writing a literal
-# `-j N` into the materialized overlay makes the figure immune to env scrubbing.
-_PARALLELISM_LINE_RE = re.compile(
-    r"^(?P<indent>[ \t]*)"
-    r"(?P<key>BB_NUMBER_PARSE_THREADS|BB_NUMBER_THREADS|PARALLEL_MAKE)"
-    r'\s*=\s*"[^"]*os\.environ\.get[^"]*"',
-    re.MULTILINE,
-)
-
-
-def _resolve_nproc_base(cfg: BuildConfig) -> int:
-    """Concrete NPROC base, mirroring :func:`_build_env`'s precedence: a
-    non-empty live ``NPROC`` env var wins, then ``cfg.nproc``, then
-    ``os.cpu_count()``."""
-    live = os.environ.get("NPROC")
-    if live and live.strip().isdigit():
-        return int(live)
-    if cfg.nproc is not None:
-        return cfg.nproc
-    return os.cpu_count() or 16
-
-
-def _derive_parallelism_plan(cfg: BuildConfig, *, probe_cluster_ok: bool) -> tuning.ParallelismPlan:
-    """Derive a :class:`tuning.ParallelismPlan` from every perf input bakar can see.
-
-    Computes the NPROC base (:func:`_resolve_nproc_base`), the active launcher,
-    host RAM (:func:`tuning.host_ram_gb`), and - only under sccache-dist when
-    ``probe_cluster_ok`` - the live cluster cpu count. The cluster probe shells
-    out to the scheduler (network), so callers pass ``probe_cluster_ok=False`` on
-    side-effect-free paths (dry-run/script-gen). Any probe failure falls back to
-    a None cluster cpu count, which sizes PARALLEL_MAKE to the local cpu count.
-    """
-    nproc_local = _resolve_nproc_base(cfg)
-    launcher = "sccache-dist" if cfg.use_sccache_dist else "ccache" if cfg.use_ccache else "none"
-    cluster_cpus: int | None = None
-    if cfg.use_sccache_dist and probe_cluster_ok:
-        try:
-            report = probe_cluster(cfg.sccache_scheduler_url)
-            if report.reachable and report.capacity is not None:
-                cluster_cpus = report.capacity.num_cpus
-        except OSError, subprocess.SubprocessError, ValueError:
-            cluster_cpus = None
-    return tuning.derive_parallelism(
-        nproc_local=nproc_local,
-        ram_gb=tuning.host_ram_gb(),
-        launcher=launcher,
-        cluster_cpus=cluster_cpus,
-    )
-
-
-def _resolve_parallelism(cfg: BuildConfig) -> tuple[int, int]:
-    """Resolve ``(PARALLEL_MAKE -j, BB_NUMBER_THREADS)`` to concrete ints.
-
-    An explicit cfg override always wins; an unset field is derived from the
-    topology- and RAM-aware plan (:func:`_derive_parallelism_plan`). Cluster
-    probing is enabled here because the only caller, :func:`materialize_overlay`
-    via :func:`_inject_literal_parallelism`, runs solely on the real-build path -
-    the dry-run/script-gen paths return before the overlay materialize calls and
-    never reach this code.
-    """
-    if cfg.parallel_make is not None and cfg.bb_number_threads is not None:
-        return cfg.parallel_make, cfg.bb_number_threads
-    plan = _derive_parallelism_plan(cfg, probe_cluster_ok=True)
-    parallel_make = cfg.parallel_make if cfg.parallel_make is not None else plan.parallel_make
-    bb_number_threads = cfg.bb_number_threads if cfg.bb_number_threads is not None else plan.bb_number_threads
-    return parallel_make, bb_number_threads
-
-
-def _inject_literal_parallelism(cfg: BuildConfig, text: str) -> str:
-    """Replace the overlay's ``os.environ``-based PARALLEL_MAKE/BB_NUMBER_THREADS
-    expressions with the resolved literal values. Lines without the env lookup
-    (and overlays without these keys) are returned unchanged."""
-    parallel_make, bb_number_threads = _resolve_parallelism(cfg)
-    values = {
-        "BB_NUMBER_THREADS": str(bb_number_threads),
-        "BB_NUMBER_PARSE_THREADS": str(bb_number_threads),
-        "PARALLEL_MAKE": f"-j {parallel_make}",
-    }
-
-    def _sub(match: re.Match[str]) -> str:
-        key = match.group("key")
-        return f'{match.group("indent")}{key} = "{values[key]}"'
-
-    return _PARALLELISM_LINE_RE.sub(_sub, text)
-
-
-def _append_local_conf_lines(text: str, lines: list[str]) -> str:
-    """Append ``lines`` to ``text``'s ``local_conf_header`` block, indented to
-    match the block's own ``INHERIT`` line (or 4 spaces if none is found).
-
-    Pure (no filesystem side effects). Callers own idempotency - each line
-    already present in ``text`` must be filtered out before calling, since this
-    always appends whatever it is given. Returns ``text`` unchanged when
-    ``lines`` is empty."""
-    if not lines:
-        return text
-    m = re.search(r"^(?P<indent>[ \t]+)INHERIT\b", text, re.MULTILINE)
-    indent = m.group("indent") if m else "    "
-    addition = "".join(f"{indent}{line}\n" for line in lines)
-    return text.rstrip("\n") + "\n" + addition
-
-
-def _inject_literal_sccache(cfg: BuildConfig, text: str) -> str:
-    """Append literal, exported ``SCCACHE_CONF``/``SCCACHE_DIR`` assignments to
-    the sccache overlay's ``local_conf_header``.
-
-    Container mode passes these to the in-container daemon as ``BAKAR_*`` env
-    vars and relies on kas's ``null``-env block to whitelist them through
-    ``BB_ENV_PASSTHROUGH_ADDITIONS`` - the same mechanism ``kas build`` silently
-    drops (see ``_inject_literal_parallelism``). When dropped, the daemon starts
-    config-less: local-only compilation, ``$HOME/.cache`` instead of ``/work``,
-    no scheduler. Baking the values straight into ``local.conf`` (exported, so
-    the daemon subprocess inherits them) makes them immune to env scrubbing.
-
-    The config is bind-mounted at its own host path (see ``_ccache_args``), so
-    that absolute path is valid inside the container too. Host mode takes a
-    different branch (:func:`_inject_host_sccache`): it exports the pre-started
-    daemon's unix socket so private-netns do_compile can reach it."""
-    if not cfg.use_sccache_dist:
-        return text
-    if cfg.host_mode:
-        return _inject_host_sccache(text)
-    # Idempotency: match the actual exported assignment, not the string
-    # "SCCACHE_CONF" which also appears in this overlay's comments and in the
-    # BAKAR_SCCACHE_CONF env key (a substring check there would no-op the inject).
-    if re.search(r"^\s*export\s+SCCACHE_CONF\b", text, re.MULTILINE):
-        return text
-    sccache_conf = Path.home() / ".config" / "sccache" / "config"
-    if not sccache_conf.is_file():
-        return text
-    lines = []
-    # The scheduler URL also rides the dropped BAKAR_* env path, so bake it in
-    # too - both so the daemon knows the scheduler and so the dist guard (which
-    # keys on SCCACHE_DIST_SCHEDULER_URL) actually fires. localhost is the
-    # container itself, so rewrite to the host gateway as the passthrough does.
-    if cfg.sccache_scheduler_url:
-        url = cfg.sccache_scheduler_url.replace("localhost", "host.docker.internal")
-        lines.append(f'export SCCACHE_DIST_SCHEDULER_URL = "{url}"')
-    lines.append(f'export SCCACHE_CONF = "{sccache_conf}"')
-    lines.append('export SCCACHE_DIR = "/work/.sccache-cache"')
-    return _append_local_conf_lines(text, lines)
-
-
-def _inject_host_sccache(text: str) -> str:
-    """Bake the pre-started daemon's unix socket into the host-mode sccache overlay.
-
-    bitbake runs each task in a private network namespace (loopback down for
-    tasks without a [network] grant), so a TCP ``127.0.0.1:4226`` daemon is
-    unreachable: the task's ``sccache gcc`` auto-starts its own server, which
-    inherits the kas throwaway ``HOME``, finds no ``~/.config/sccache/config``,
-    and compiles locally - the whole build runs on one node while the cluster
-    sits idle.
-
-    A unix-domain socket is a filesystem path: it is reachable across the network
-    namespace boundary AND without loopback, so every task (do_compile with a
-    [network] grant and do_configure without one) can connect to the pre-started
-    daemon over it. The daemon - started by ``ensure_running`` in the host netns
-    with the real config - does the dist dispatch. Bake an exported
-    ``SCCACHE_SERVER_UDS`` into ``local.conf`` (like the container-mode literals
-    above) so it survives kas's ``clean_environment`` scrub. The path matches
-    :func:`sccache_server.default_uds_path`, which ``ensure_running`` binds.
-
-    A global export routes do_configure's conftests through the daemon too (they
-    distribute or fail fast to a local recompile); a task-scoped socket is NOT an
-    option, because a configure task stripped of the socket falls back to the TCP
-    port and its loopback-down netns then makes sccache fail outright.
-    """
-    if re.search(r"^\s*export\s+SCCACHE_SERVER_UDS\b", text, re.MULTILINE):
-        return text
-    uds = sccache_server.default_uds_path()
-    return _append_local_conf_lines(text, [f'export SCCACHE_SERVER_UDS = "{uds}"'])
-
-
-def _inject_literal_ccache(cfg: BuildConfig, text: str) -> str:
-    """Set ``CCACHE_DIR`` to the per-mode cache path.
-
-    The overlay carries a neutral, host-canonical default (``${TOPDIR}/ccache``)
-    that never names a container path; this rewrites it to the absolute host
-    cache dir in host mode (the default), or to the kas-container bind-mount
-    target (``/work/ccache``) when the container path is opted in. The rewrite
-    runs in both modes so the host default stays free of any ``/work`` reference
-    and the container value is constructed here rather than hardcoded in the
-    overlay - container mode bind-mounts ``cfg.effective_ccache_dir`` to
-    ``/work/ccache`` (see ``_ccache_args``), the in-container path written here.
-
-    Only the ``CCACHE_DIR`` line is touched - ``CCACHE_MAXSIZE``, the
-    ``export CCACHE_MAXSIZE``, ``INHERIT += "ccache"``, and the nodejs disable
-    are left alone. The original indentation is preserved. Kept pure (no
-    filesystem side effects) so dry-run rendering is safe; the host-mode dir is
-    created by the caller (``materialize_overlay``)."""
-    target = str(cfg.effective_ccache_dir) if cfg.host_mode else "/work/ccache"
-    return re.sub(
-        r'^(?P<indent>[ \t]*)CCACHE_DIR\s*=\s*"[^"]*"',
-        lambda m: f'{m.group("indent")}CCACHE_DIR = "{target}"',
-        text,
-        count=1,
-        flags=re.MULTILINE,
-    )
-
-
-# The per-build link-timing log the mold overlay's wrappers append to. It must
-# live under the kas bind mount (only KAS_WORK_DIR = <base> is mounted /work in
-# container mode), so the path is delivered as an exported literal baked into the
-# overlay - kas scrubs env passthrough, so a BAKAR_MOLD_LINKLOG env var would
-# reach the daemon empty (see _inject_literal_sccache for the same problem).
-_MOLD_LINKLOG_NAME = "mold-linklog.jsonl"
-
-
-def _inject_literal_mold(cfg: BuildConfig, text: str) -> str:
-    """Bake the mold link-log path and non-default ``MOLD_MODE`` into the overlay.
-
-    Two literals are appended to the mold overlay's ``local_conf_header`` block:
-
-    * ``export BAKAR_MOLD_LINKLOG`` - the per-build link-timing log. Mirrors
-      :func:`_inject_literal_ccache`'s host/container dual path: the log lands
-      under KAS_WORK_DIR (``cfg.workspace`` for meta-avocado, else
-      ``cfg.bsp_root``) so it is inside the ``/work`` bind mount, written as the
-      absolute host path in host mode and as ``/work/<name>`` in container mode.
-    * ``MOLD_MODE`` - emitted only when ``cfg.mold_mode`` is not ``list``. The
-      bbclass carries ``MOLD_MODE ??= "list"``, so list is already the default
-      and needs no line; ``baseline`` (the symmetric bfd measurement arm) and
-      ``global`` are unreachable unless the mode is written into local.conf here.
-
-    Each line is guarded so re-running the injector no-ops (idempotent) and it is
-    pure (no filesystem side effects), so dry-run rendering is safe."""
-    lines = []
-    if cfg.mold_mode != "list" and not re.search(r"^\s*MOLD_MODE\b", text, re.MULTILINE):
-        lines.append(f'MOLD_MODE = "{cfg.mold_mode}"')
-    if not re.search(r"^\s*export\s+BAKAR_MOLD_LINKLOG\b", text, re.MULTILINE):
-        base = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
-        log_path = str(base / _MOLD_LINKLOG_NAME) if cfg.host_mode else f"/work/{_MOLD_LINKLOG_NAME}"
-        lines.append(f'export BAKAR_MOLD_LINKLOG = "{log_path}"')
-    return _append_local_conf_lines(text, lines)
-
-
-def _inject_local_tmpdir(cfg: BuildConfig, text: str) -> str:
-    """Append a literal ``TMPDIR`` assignment to the main tuning overlay's
-    ``local_conf_header`` block, redirecting the build tmp to node-local disk.
-
-    Fires only when ``local_tmpdir_base`` is set AND the build is host mode -
-    otherwise returns ``text`` unchanged so an unset-knob build is byte-for-byte
-    identical to today. ``cfg.resolved_tmpdir`` is itself host-mode-gated, but
-    the no-op is enforced here independently so the injector cannot ever emit a
-    workspace-relative ``TMPDIR`` line for a build that never asked for one.
-
-    bitbake reads ``TMPDIR`` from ``local.conf`` (weak ``?=`` default in
-    bitbake.conf, overridden by the hard local.conf assignment), so the
-    ``local_conf_header`` channel is the reliable one - the same one
-    :func:`_inject_literal_sccache` uses; ``TMPDIR`` is not a kas-read variable
-    and the env passthrough allowlist never forwards it.
-
-    Wired into the MAIN tuning overlay only (not the sccache/ccache/mold
-    extras), since kas merges every overlay's header block and injecting into
-    the shared chain would emit N duplicate ``TMPDIR`` lines. A regex guard
-    keeps a re-materialize from doubling the line (mirroring
-    :func:`_inject_literal_sccache`)."""
-    if not cfg.local_tmpdir_base or not cfg.host_mode:
-        return text
-    if re.search(r"^\s*TMPDIR\s*=", text, re.MULTILINE):
-        return text
-    tmpdir = str(cfg.resolved_tmpdir)
-    # The value lands inside a quoted bitbake assignment. A quote, backslash, or
-    # control char in local_tmpdir_base/machine would terminate the string and
-    # inject arbitrary local.conf statements (or make the overlay unparsable).
-    # Fail fast on the misconfiguration rather than emitting a broken conf.
-    if any(c in tmpdir for c in '"\\\n\r\x00'):
-        raise ValueError(
-            f"local_tmpdir_base resolves to a path unsafe for local.conf injection "
-            f"(contains a quote, backslash, or control character): {tmpdir!r}"
-        )
-    return _append_local_conf_lines(text, [f'TMPDIR = "{tmpdir}"'])
-
-
-# The base overlays statically strip rm_work (default off while bakar is in
-# use); _inject_rm_work deletes that whole block when [build] rm_work is opted
-# back on. The block spans its comment through the USER_CLASSES line, so the
-# generated local.conf carries no stale "we disabled rm_work" comment when the
-# user kept it on. Only the base overlays carry the block, so this no-ops on the
-# opt-in overlays.
-_RM_WORK_BLOCK_RE = re.compile(
-    r"\n[ \t]*#[^\n]*Disable rm_work while bakar.*?\n[ \t]*USER_CLASSES:remove = \"rm_work\"",
-    re.DOTALL,
-)
-
-
-def _inject_rm_work(cfg: BuildConfig, text: str) -> str:
-    """Remove the rm_work-removal block when ``cfg.rm_work`` is True.
-
-    Default (rm_work False) keeps the base overlay's ``INHERIT:remove`` /
-    ``USER_CLASSES:remove = "rm_work"`` lines so rm_work stays off while bakar is
-    in use. When the user opts rm_work back on ([build] rm_work / BAKAR_RM_WORK /
-    .bakar.toml), strip the block so the container's default rm_work stands."""
-    if not cfg.rm_work:
-        return text
-    return _RM_WORK_BLOCK_RE.sub("", text)
-
-
-def materialize_overlay(cfg: BuildConfig, overlay_source: Path, *, is_main_overlay: bool = False) -> Path:
-    """Copy ``overlay_source`` into ``<bsp_root>/.bakar/overlays/``.
-
-    Returns the path *relative to* ``cfg.bsp_root`` so callers can
-    pass it straight into the ``kas-container build <user>:<overlay>``
-    colon-joined argument.
-
-    Always overwrites the destination so the overlay content tracks
-    ``overlay_source`` byte-for-byte on every invocation. Earlier
-    revisions symlinked, but kas resolves symlinks before running its
-    "all configs must share a git repo" check, so a YAML in repo A
-    layered with a symlink whose target lives in repo B (the bakar
-    install) tripped ``All concatenated config files must belong to
-    the same repository or all must be outside of versioning control``.
-    Copying drops a real file into the user's tree, putting both
-    configs in the same repo (or outside any repo) and sidesteps the
-    bind-mount issue where a symlink target outside ``KAS_WORK_DIR``
-    dangles inside the kas-container view.
-
-    ``is_main_overlay`` gates the ``TMPDIR`` injection to the single main
-    tuning overlay (the ``overlay_source`` from ``KasBuildContext``), never the
-    sccache/ccache/mold extras, so the merged local.conf carries exactly one
-    ``TMPDIR`` line.
-    """
-    overlay_dir = cfg.bsp_root / _OVERLAY_DIR_RELPATH
-    overlay_dir.mkdir(parents=True, exist_ok=True)
-    dest = overlay_dir / overlay_source.name
-    if dest.is_symlink() or dest.is_file():
-        dest.unlink()
-    shutil.copy2(overlay_source, dest)
-    # Bake the resolved parallelism into the bakar tuning overlays so the figure
-    # cannot be lost to bitbake's clean_environment (see _inject_literal_parallelism).
-    if overlay_source.name.startswith("bakar-tuning-"):
-        original = dest.read_text(encoding="utf-8")
-        injected = _inject_literal_parallelism(cfg, original)
-        injected = _inject_rm_work(cfg, injected)
-        if overlay_source.name == "bakar-tuning-sccache.yml":
-            injected = _inject_literal_sccache(cfg, injected)
-        if overlay_source.name == "bakar-tuning-ccache.yml":
-            injected = _inject_literal_ccache(cfg, injected)
-            # Host mode has no /work/ccache bind mount; ensure the rewritten host
-            # cache dir exists so ccache can write. Real-build-only path - the
-            # injector stays pure for dry-run rendering.
-            if cfg.host_mode:
-                cfg.effective_ccache_dir.mkdir(parents=True, exist_ok=True)
-        if overlay_source.name == "bakar-tuning-mold.yml":
-            injected = _inject_literal_mold(cfg, injected)
-        # TMPDIR goes on the main overlay only: kas merges every overlay's
-        # local_conf_header block, so injecting into the shared chain would emit
-        # one duplicate TMPDIR line per extra overlay.
-        if is_main_overlay:
-            injected = _inject_local_tmpdir(cfg, injected)
-        if injected != original:
-            dest.write_text(injected, encoding="utf-8")
-    return dest.relative_to(cfg.bsp_root)
-
-
-# The bakar-provided layers (e.g. classes/sccache.bbclass) are materialized
-# next to the overlays under ``.bakar/`` so kas can add them via each tuning
-# overlay's ``repos:`` entry. The relative repos path ``.bakar/<name>`` resolves
-# against ``KAS_WORK_DIR`` in both host mode (build CWD) and container mode
-# (``/work``), mirroring :func:`materialize_overlay`.
-_SCCACHE_LAYER_NAME = "meta-bakar-sccache"
-_HOST_LAYER_NAME = "meta-bakar-host"
-_CACHE_CLASSIFY_LAYER_NAME = "meta-bakar-cache-classify"
-_MOLD_LAYER_NAME = "meta-bakar-mold"
-
-
-def materialize_layer(cfg: BuildConfig, name: str) -> Path:
-    """Copy the bundled ``<name>`` layer into ``<base>/.bakar/`` and return the dest.
-
-    ``base`` is the workspace for meta-avocado and ``bsp_root`` for every other
-    family: kas resolves the overlay's relative ``.bakar/<name>`` repos path
-    against KAS_WORK_DIR (see ``_build_env``), and meta-avocado points
-    KAS_WORK_DIR at the workspace while ``bsp_root`` is the nested
-    ``workspace/build-<stem>`` dir, so the layer must land under the workspace
-    ``.bakar``; for every other family KAS_WORK_DIR == ``bsp_root`` and the two
-    coincide.
-
-    Overwrites on every call so the layer tracks the packaged source
-    byte-for-byte. Returns the destination directory (not a ``bsp_root``-relative
-    path, unlike :func:`materialize_overlay`), which each tuning overlay
-    references by the relative path ``.bakar/<name>``.
-    """
-    source = _overlay_dir() / name
-    base = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
-    dest = base / ".bakar" / name
-    if dest.exists():
-        shutil.rmtree(dest)
-    shutil.copytree(source, dest)
-    return dest
-
-
-def materialize_sccache_layer(cfg: BuildConfig) -> Path:
-    """Materialize the ``meta-bakar-sccache`` layer (see :func:`materialize_layer`)."""
-    return materialize_layer(cfg, _SCCACHE_LAYER_NAME)
-
-
-def materialize_host_layer(cfg: BuildConfig) -> Path:
-    """Materialize the ``meta-bakar-host`` layer (see :func:`materialize_layer`).
-
-    Only invoked in host mode, where the layer's rpm bbappend keeps rpm-native
-    from dlopening the build host's rpm transaction plugins.
-    """
-    return materialize_layer(cfg, _HOST_LAYER_NAME)
-
-
-def materialize_cache_classify_layer(cfg: BuildConfig) -> Path:
-    """Materialize the ``meta-bakar-cache-classify`` layer (see :func:`materialize_layer`).
-
-    Unlike the gated layers, this one is called unconditionally at every call
-    site - the overlay itself is the single unconditional entry in
-    ``_tuning_extra_overlays`` (every build gets the cache-backend classification
-    emitter, not just sccache-dist/host-mode builds).
-    """
-    return materialize_layer(cfg, _CACHE_CLASSIFY_LAYER_NAME)
 
 
 def _setup_meta_avocado_build_dir(cfg: BuildConfig) -> None:
@@ -853,268 +422,6 @@ def regenerate_yaml(cfg: BuildConfig, log: RunLogger, *, bsp: BspModel) -> None:
     sys.stderr.flush()
 
 
-def _parse_lock_pid(lock: Path) -> int | None:
-    """Tolerant PID parse mirroring ``build_stop._read_bitbake_server_pid``.
-
-    bitbake creates ``bitbake.lock`` and only writes its PID as a later,
-    separate step (bb.server.process), so an empty or unparseable lock is a
-    server MID-STARTUP, not a stale leftover. Returns ``None`` for that case
-    (missing, unreadable, empty, or non-numeric first token) - callers must
-    never treat ``None`` here as license to remove the lock.
-    """
-    try:
-        raw = lock.read_text()
-    except OSError:
-        return None
-    tokens = raw.split()
-    if not tokens:
-        return None
-    try:
-        return int(tokens[0])
-    except ValueError:
-        return None
-
-
-def _lock_pid_is_live_bitbake(pid: int) -> bool:
-    """True when ``pid`` is a live process that looks like bitbake.
-
-    Mirrors today's node-local liveness probe: a dead PID (``ProcessLookupError``)
-    or a live PID whose ``/proc/<pid>/cmdline`` does not mention ``bitbake``
-    (PID reuse) is NOT a live bitbake process. A live PID this node cannot
-    read ``cmdline`` for (``PermissionError``, or the ``/proc`` entry raced
-    away) is conservatively treated as a live bitbake process - the lock is
-    left alone rather than risk deleting a real build's lock.
-    """
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    cmdline_path = Path(f"/proc/{pid}/cmdline")
-    if cmdline_path.exists():
-        cmdline = cmdline_path.read_bytes().replace(b"\x00", b" ").decode(errors="replace")
-        return "bitbake" in cmdline.lower()
-    return True
-
-
-def _lock_holder_has_activity(build_dir: Path) -> bool:
-    """True when the lock holder's process tree has activity beyond a bare idle server.
-
-    bitbake's cookerdaemon can persist after a build finishes (a nonzero
-    ``BB_SERVER_TIMEOUT``, or stress-parse's persistent-server mode) so later
-    invocations reconnect instead of re-spawning - a documented happy path.
-    A bare idle server must NOT trip ``held-locally``, or the very next
-    ``bakar build`` on this node would refuse instead of reconnecting.
-
-    Reuses :func:`build_stop._collect_build_pids`' argv-scan machinery: its
-    ``all_pids`` is the argv-matched cooker plus PGID members plus their
-    transitive ``/proc``-ppid descendants (workers, clients). More than the
-    bare cooker PID itself in that set means genuine worker/client activity.
-    """
-    procs = build_stop._collect_build_pids(build_dir, None)
-    return len(procs.all_pids) > 1
-
-
-def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
-    """Ownership-aware removal of stale bitbake lock and socket files.
-
-    BitBake writes its PID into ``<build>/bitbake.lock`` at startup and
-    removes it on clean exit. A crash leaves the lock and both Unix sockets
-    (``bitbake.sock``, ``hashserve.sock``) behind, causing the next
-    invocation to refuse to start ("bitbake is already running") - but on a
-    shared NFS TOPDIR that "stale" lock may belong to a live build on a peer
-    fleet node, so ownership is checked BEFORE absence/staleness in every
-    branch below (never the reverse):
-
-    1. The ownership marker (:func:`build_stop.lock_marker_path`) names a
-       PEER host -> refuse (``peer-held``); nothing is touched.
-    2. The marker names THIS host and ``bitbake.lock`` is absent -> remove
-       leftover sockets and this node's own marker.
-    3. The marker names THIS host and ``bitbake.lock`` is present -> probe
-       the recorded PID: a live bitbake process WITH worker/client activity
-       refuses (``held-locally``); a live but IDLE bitbake process (bare
-       cookerdaemon) is left alone so bitbake's warm-daemon reconnect keeps
-       working; anything else (dead, reused, or the lock is still
-       mid-startup) is handled as below.
-    4. The marker is absent/garbled, the lock is PRESENT, and the TOPDIR is
-       on a shared or unverifiable filesystem -> refuse (``unattributable``).
-    5. The marker is absent/garbled, the lock is PRESENT, and the TOPDIR is
-       CONFIRMED local -> today's PID probe, file-effect identical to
-       before this change, except a live bitbake PID WITH worker/client
-       activity now also refuses (``held-locally``) instead of silently
-       doing nothing; a live but IDLE bitbake PID (bare cookerdaemon, no
-       activity) is left alone so bitbake's warm-daemon reconnect keeps
-       working (see :func:`_lock_holder_has_activity`).
-    6. The marker is absent/garbled, the lock is ABSENT, and the TOPDIR is
-       CONFIRMED local -> today's unconditional orphan-socket removal.
-    7. The marker is absent/garbled, the lock is ABSENT, and the TOPDIR is
-       shared/unverifiable -> nothing is removed (absence never justifies
-       deletion on a shared filesystem); any leftover sockets are reported
-       informationally via ``note``.
-    """
-    build_dir = cfg.bsp_root / cfg.build_dir_name
-    lock = build_dir / "bitbake.lock"
-    sockets = [build_dir / "bitbake.sock", build_dir / "hashserve.sock"]
-
-    def _remove_all() -> list[Path]:
-        removed = []
-        for p in [lock, *sockets]:
-            if p.exists() or p.is_socket():
-                p.unlink(missing_ok=True)
-                removed.append(p)
-        return removed
-
-    def _remove_own_marker() -> None:
-        build_stop.lock_marker_path(cfg).unlink(missing_ok=True)
-
-    owner = build_stop.read_marker_owner(cfg)
-    local_host = socket.gethostname()
-
-    if owner is not None and owner != local_host:
-        # Row 1: foreign marker - touch NOTHING.
-        return build_stop.LockClearOutcome(
-            removed=[],
-            refusal=build_stop.LockRefusal(reason="peer-held", host=owner, detail=f"lock marker names {escape(owner)}"),
-        )
-
-    if owner is not None:
-        # owner == local_host.
-        if not lock.exists():
-            # Row 2.
-            removed = _remove_all()
-            _remove_own_marker()
-            return build_stop.LockClearOutcome(removed=removed)
-        # Row 3.
-        pid = _parse_lock_pid(lock)
-        if pid is None:
-            # Lock is mid-startup - this node's own build. Leave it intact.
-            return build_stop.LockClearOutcome(removed=[])
-        if _lock_pid_is_live_bitbake(pid):
-            if _lock_holder_has_activity(build_dir):
-                return build_stop.LockClearOutcome(
-                    removed=[], refusal=build_stop.LockRefusal(reason="held-locally", pid=pid)
-                )
-            # Live but idle (bare cookerdaemon, no worker/client activity) - the
-            # server still owns this lock; leave it for bitbake's reconnect.
-            return build_stop.LockClearOutcome(removed=[])
-        removed = _remove_all()
-        _remove_own_marker()
-        return build_stop.LockClearOutcome(removed=removed)
-
-    # owner is None: marker absent or garbled.
-    nfs = is_path_on_nfs(build_dir)
-    shared_or_unknown = nfs is not False  # True (nfs) or None (unverifiable) both fail closed.
-
-    if lock.exists():
-        if shared_or_unknown:
-            # Row 4.
-            return build_stop.LockClearOutcome(
-                removed=[],
-                refusal=build_stop.LockRefusal(
-                    reason="unattributable",
-                    detail="lock present, no reliable owner, shared/unverifiable filesystem",
-                ),
-            )
-        # Row 5: confirmed-local, today's probe.
-        pid = _parse_lock_pid(lock)
-        if pid is None:
-            # Mid-startup lock on a confirmed-local fs - leave it intact.
-            return build_stop.LockClearOutcome(removed=[])
-        if _lock_pid_is_live_bitbake(pid):
-            if _lock_holder_has_activity(build_dir):
-                return build_stop.LockClearOutcome(
-                    removed=[], refusal=build_stop.LockRefusal(reason="held-locally", pid=pid)
-                )
-            # Live but idle (bare cookerdaemon, no worker/client activity) - the
-            # server still owns this lock; leave it for bitbake's reconnect.
-            return build_stop.LockClearOutcome(removed=[])
-        removed = _remove_all()
-        return build_stop.LockClearOutcome(removed=removed)
-
-    if not shared_or_unknown:
-        # Row 6: confirmed-local, lock absent - today's unconditional orphan-socket removal.
-        removed = _remove_all()
-        return build_stop.LockClearOutcome(removed=removed)
-
-    # Row 7: shared/unverifiable, lock absent - absence never justifies deletion here.
-    leftover = [p for p in sockets if p.exists() or p.is_socket()]
-    note = (
-        f"leftover sockets present but not removed (shared/unverifiable filesystem): "
-        f"{', '.join(str(p) for p in leftover)}"
-        if leftover
-        else ""
-    )
-    return build_stop.LockClearOutcome(removed=[], note=note)
-
-
-class LockHeldByPeerError(Exception):
-    """Raised by :func:`lock_owner_marker` when a peer host holds the ownership marker."""
-
-    def __init__(self, host: str) -> None:
-        self.host = host
-        super().__init__(f"bitbake lock owned by peer host {host!r}")
-
-
-@contextmanager
-def lock_owner_marker(cfg: BuildConfig, log: RunLogger) -> Iterator[None]:
-    """Claim the TOPDIR's ownership marker for the duration of one bitbake launch.
-
-    On enter: atomically create the marker (``open(..., "x")`` - O_EXCL,
-    atomic even on NFS) recording this node's hostname. If the marker
-    already exists: a FOREIGN owner raises :class:`LockHeldByPeerError`
-    without entering the ``with`` body (the caller must not launch bitbake);
-    an OWN or GARBLED marker is overwritten atomically (temp file +
-    ``os.replace`` in the same directory) and the launch proceeds.
-
-    On exit: the marker is removed IFF ``bitbake.lock`` is absent at that
-    point (read fresh, never cached) - this is NEVER gated on the launch's
-    return code or on any exception. If the lock is still present (e.g. the
-    launch was SIGKILLed and bitbake never got to clean up), the marker is
-    left in place so the next run's row-3 recovery in
-    :func:`clear_stale_bitbake_locks` can reclaim it.
-    """
-    marker = build_stop.lock_marker_path(cfg)
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    local_host = socket.gethostname()
-    try:
-        with open(marker, "x", encoding="utf-8") as fh:
-            fh.write(local_host)
-    except FileExistsError:
-        owner = build_stop.read_marker_owner(cfg)
-        if owner is not None and owner != local_host:
-            raise LockHeldByPeerError(owner) from None
-        fd, tmp_name = tempfile.mkstemp(dir=str(marker.parent), prefix=f".{marker.name}.")
-        tmp = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(local_host)
-            os.replace(tmp, marker)
-        except BaseException:
-            tmp.unlink(missing_ok=True)
-            raise
-    try:
-        yield
-    finally:
-        lock = cfg.bsp_root / cfg.build_dir_name / "bitbake.lock"
-        if not lock.exists():
-            marker.unlink(missing_ok=True)
-
-
-def _lock_refusal_message(refusal: build_stop.LockRefusal) -> str:
-    """Markup-escaped, human-readable description of a lock refusal for logging."""
-    if refusal.reason == "peer-held":
-        host = escape(refusal.host) if refusal.host else "another host"
-        return f"bitbake lock held by peer host {host}; refusing to start"
-    if refusal.reason == "held-locally":
-        pid = refusal.pid if refusal.pid is not None else "unknown"
-        return f"bitbake lock held locally by live process pid {pid}; refusing to start"
-    if refusal.reason == "unattributable":
-        return "bitbake lock present with no reliable owner on a shared/unverifiable filesystem; refusing to start"
-    detail = escape(refusal.detail) if refusal.detail else refusal.reason
-    return f"bitbake lock refusal ({escape(refusal.reason)}): {detail}"
-
-
 @dataclass(slots=True)
 class KasBuildContext:
     """Bundles the four per-call parameters shared by every kas step function."""
@@ -1368,621 +675,6 @@ def generate_dry_run_script(
         "",
     ]
     return "\n".join(lines)
-
-
-# How often the stall watchdog samples running-task log freshness.
-_STALL_POLL_SECS = 30
-
-# How often the error watchdog checks for a task failure. Short on purpose -
-# unlike the stall watchdog (which waits out a long silence threshold before
-# it even starts caring), this one exists to react as fast as possible once
-# ui.had_task_failures flips true, matching _heartbeat's cadence.
-_ERROR_POLL_SECS = 1
-
-# Plain-mode status heartbeat tick. The TICK is the throttle: the status thread
-# samples the current build state once per interval (level-sampled), so a task
-# storm cannot flood the log. plain_status_line() only dedups identical lines.
-_PLAIN_STATUS_INTERVAL = 2.0
-
-
-class _PlainFrameController:
-    """Frame controller for plain (CI) output: no Rich ``Live``, a throttled status thread.
-
-    Exposes the exact surface the PTY closures call on a Rich ``Live`` - ``console``,
-    ``stop()``, ``start(*, refresh=False)``, and writable ``transient`` /
-    ``vertical_overflow`` attributes - as
-    no-ops / plain writes, so ``_run_pty_with_ui``'s body runs unchanged. As a context
-    manager it starts a daemon thread that prints ``ui.plain_status_line()`` on a fixed
-    ``_PLAIN_STATUS_INTERVAL`` tick and joins it on exit (before the caller prints its
-    post-build summary), so a stale heartbeat cannot interleave with the final lines.
-    """
-
-    def __init__(self, ui: BuildUIState, console: Console, stop_event: threading.Event) -> None:
-        self.console = console
-        self.transient = False
-        # Read and written by the failure-freeze path, which is shared with the
-        # Rich branch; plain mode has no live region for it to affect.
-        self.vertical_overflow = "ellipsis"
-        self._ui = ui
-        self._stop_event = stop_event
-        self._thread: threading.Thread | None = None
-
-    def stop(self) -> None:
-        """No-op: there is no Live region to tear down in plain mode."""
-
-    def start(self, *, refresh: bool = False) -> None:
-        """No-op: mirrors ``Live.start(refresh=...)`` so the freeze/restart path is safe."""
-
-    def _loop(self) -> None:  # pragma: no cover - timing-driven daemon thread
-        while not self._stop_event.wait(timeout=_PLAIN_STATUS_INTERVAL):
-            line = self._ui.plain_status_line()
-            if line is not None:
-                # markup=False: the status line contains literal brackets (e.g.
-                # "bakar[build]") that Rich would otherwise parse as style tags.
-                self.console.print(line, markup=False)
-
-    def __enter__(self) -> _PlainFrameController:
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        # Set the stop event ourselves so the status thread always terminates,
-        # even if the body raised before its own stop_event.set() (e.g. a Ctrl-C
-        # during thread startup) - otherwise the join would time out with the
-        # daemon still emitting heartbeats during teardown.
-        self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2 * _PLAIN_STATUS_INTERVAL)
-
-
-@dataclass(slots=True)
-class _PtyOutcome:
-    """Result of a PTY-driven run: the child exit code plus stall-abort context.
-
-    ``stall_tasks`` is the list of running task labels at the moment the stall
-    watchdog aborted the build (``None`` for a normal exit), so the caller can
-    record a ``stall-timeout`` step_fail instead of a bare exit code.
-
-    ``cache_backend``/``cache_doc`` carry the active backend name and its
-    per-build cache delta (computed at teardown), so the caller can print the
-    build-end summary at the post-block site. Both are ``None`` when no cache
-    backend was active.
-    """
-
-    rc: int | None
-    stall_tasks: list[str] | None = None
-    cache_backend: str | None = None
-    cache_doc: dict | None = None
-
-
-def _build_fail_reason(rc: int | None, stall_tasks: list[str] | None) -> str:
-    """Compose the step_fail reason for a build, naming stuck tasks on a stall abort."""
-    if stall_tasks:
-        return f"stall-timeout: {', '.join(stall_tasks)}"
-    if rc is not None:
-        return f"exit_code={rc}"
-    return "wrapper-crash"
-
-
-def _print_cache_summary(log: RunLogger, backend: str | None, doc: dict | None, output_mode: OutputMode) -> None:
-    """Print the build-end cache-usage summary at the post-block summary site.
-
-    Called from the runner's finally, after the live frame has closed, so the
-    summary cannot interleave with a heartbeat frame. Best-effort: emits nothing
-    when no cache backend was active and never crashes a completed build.
-    """
-    if not doc or backend is None:
-        return
-    try:
-        if output_mode is OutputMode.PLAIN:
-            # markup=False: the ``bakar[cache]`` prefix has literal brackets that
-            # Rich would otherwise parse as a style tag (as the heartbeat does).
-            summary = build_end_summary_plain(doc, backend)
-            if summary:
-                log.console.print(summary, markup=False)
-        else:
-            log.console.print(build_end_summary_rich(doc, backend))
-    except Exception:  # noqa: BLE001 - best-effort; never crash a completed build
-        return
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class _PtyCtx:
-    """The eight :func:`_run_pty_with_ui` parameters, packed into one argument.
-
-    Field names match the former parameter names one-for-one, so the body can
-    unpack the context back into identically-named locals and leave the nine
-    inner closures - the pump, the heartbeat, the event tail, the stall and
-    error watchdogs - reading the same free variables they always did. A
-    transposed or dropped field is caught by
-    ``test_pty_ctx_carries_every_field_unchanged``, which checks both call
-    sites field by field, guarded by
-    ``test_pty_ctx_has_no_two_fields_sharing_type_and_default`` - no two
-    fields here share a type and a default, which is what lets one all-fields
-    test stand in for a one-at-a-time sweep.
-    """
-
-    cmd: list[str]
-    cfg: BuildConfig
-    log: RunLogger
-    ui: BuildUIState
-    stop_event: threading.Event
-    show_layers: bool = False
-    output_mode: OutputMode = OutputMode.RICH
-    scope_unit: str | None = None
-
-
-def _run_pty_with_ui(ctx: _PtyCtx) -> _PtyOutcome:
-    """Run ``ctx.cmd`` under a PTY, pumping its output into ``ctx.ui`` live.
-
-    The pump thread writes every line to kas.log for `bakar log` to tail,
-    parses bitbake counters into a rich Progress bar, and surfaces
-    ERROR/WARNING/FATAL/QA Issue lines above the bar.  Nothing goes to
-    sys.stdout directly - the Progress instance owns the terminal.
-
-    PTY plumbing: openpty() gives us a (master, slave) fd pair. We pass
-    slave as the child's stdout/stderr so kas-container's `[ -t 1 ]`
-    check sees a TTY and adds `-t -i` to `docker run`, which in turn
-    makes bitbake's knotty UI interactive. knotty uses CR (no newline)
-    to redraw its status line in place, so we read chunks and split on
-    \\r, \\n, or \\r\\n manually instead of line-iterating.
-
-    Returns a :class:`_PtyOutcome` carrying the child exit code (``rc`` is
-    ``None`` only if the wrapper crashed before ``proc.wait()`` could run) and,
-    when the stall watchdog aborted the build, the wedged task labels. Does not
-    do step logging, warn/err printing, PSI calibration, or sampler management -
-    the caller owns those.
-    """
-    # Unpacked back into identically-named locals on purpose: nine inner
-    # closures below (the pump, the heartbeat, the event tail, the stall and
-    # error watchdogs, ...) read these as free variables. Rebinding them here
-    # keeps every closure body untouched by the repack.
-    cmd = ctx.cmd
-    cfg = ctx.cfg
-    log = ctx.log
-    ui = ctx.ui
-    stop_event = ctx.stop_event
-    show_layers = ctx.show_layers
-    output_mode = ctx.output_mode
-    scope_unit = ctx.scope_unit
-    rc: int | None = None
-    stall_tasks: list[str] | None = None
-    # Per-build cache delta for the build-end summary, filled at teardown.
-    cache_backend: str | None = None
-    cache_doc: dict | None = None
-    # Declared up here so the finally can close the run's journal record even if
-    # setup raised before the emitter was built.
-    emitter: journal.JournalEmitter | None = None
-    master_fd, slave_fd = pty.openpty()  # pragma: no cover
-    try:
-        with log.kas_log_path.open("w", encoding="utf-8", buffering=1) as kas_log:
-            proc = subprocess.Popen(  # pragma: no cover
-                cmd,
-                cwd=cfg.bsp_root,
-                # stdin must be a TTY too: kas-container sees stdout as a
-                # TTY (via slave_fd) and passes -t -i to docker, which
-                # then requires stdin to also be a TTY or it refuses with
-                # "cannot attach stdin to a TTY-enabled container
-                # because stdin is not a terminal". Sharing the same pty
-                # slave across stdin/stdout/stderr satisfies that check.
-                # We never write to master_fd, so the child's stdin reads
-                # block indefinitely - which is fine for a batch build.
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                # scope_env re-adds the user-bus vars systemd-run needs (a no-op
-                # for an unscoped launch); the curated _build_env otherwise omits
-                # them. See bakar.build_scope.scope_env.
-                env=build_scope.scope_env(_build_env(cfg, eventlog_path=_container_eventlog_path(cfg, log)), cfg),
-                start_new_session=True,
-                close_fds=True,
-            )
-            os.close(slave_fd)
-            slave_fd = -1
-            # Persist the build PGID so `bakar stop` can target this run.
-            # proc.pid is the PGID because start_new_session=True above makes
-            # the child a process-group leader.
-            build_stop.write_launch_record(
-                log.run_dir,
-                pgid=proc.pid,
-                mode=("host" if cfg.host_mode else "container"),
-                runtime=(None if cfg.host_mode else build_stop._detect_runtime()),
-                container_label=(None if cfg.host_mode else build_stop.run_id_label(log.run_id)),
-            )
-
-            live_frozen = False
-            # Rich's Live.stop() sets vertical_overflow="visible" so its final
-            # frame renders uncropped, and never puts it back. The freeze below
-            # restarts the Live afterwards, so the value has to be carried
-            # across the stop by hand - see the restore at the restart site.
-            frozen_overflow = "ellipsis"
-
-            def _process_line(line: str) -> None:  # pragma: no cover
-                nonlocal live_frozen, frozen_overflow
-                kas_log.write(line + "\n")
-                kas_log.flush()
-                msg = ui.process_line(line)
-                # Failure freeze: stop the Live BEFORE printing the first
-                # error line of a task failure, committing the collapsed
-                # frame (pipeline, sstate, failure count) into the
-                # scrollback above the failure text about to stream.
-                if not live_frozen and ui.take_fail_freeze():
-                    frozen_overflow = live.vertical_overflow
-                    live.stop()
-                    live_frozen = True
-                    # Emitted at the freeze rather than at build end so the
-                    # failure is timestamped when it happened - a stop_on_error
-                    # build keeps running for minutes afterwards while already
-                    # -started tasks drain.
-                    if emitter is not None:
-                        report = ui.journal_report()
-                        emitter.send(
-                            "task_failed",
-                            f"task failed: {report.get('first_failure', 'unknown')}",
-                            priority=journal.PRIORITY_ERROR,
-                            **report,
-                        )
-                if msg:
-                    live.console.print(msg)
-                info = ui.take_pending_log()
-                if info:
-                    log.info(info)
-                alerts = ui.take_pending_alerts()
-                for alert in alerts:
-                    live.console.print(alert)
-                # Resume the Live once the failure context has fully landed:
-                # after the TaskFailed alert block (event feed), or on the
-                # next task-counter line (regex fallback, where no event
-                # will arrive).
-                if live_frozen and (alerts or ui.take_pending_restart()):
-                    live.start(refresh=True)
-                    # Undo Live.stop()'s one-way flip to "visible". Left alone,
-                    # every later frame renders uncropped, so Rich's cursor-up
-                    # erase is sized for a panel taller than the terminal,
-                    # overshoots, and each refresh stacks a fresh copy of the
-                    # panel instead of redrawing in place.
-                    live.vertical_overflow = frozen_overflow
-                    live_frozen = False
-                    ui.notify_restarted()
-
-            def _pump() -> None:  # pragma: no cover
-                buf = b""
-                while True:
-                    try:
-                        chunk = os.read(master_fd, 8192)
-                    except OSError:
-                        # EIO fires on Linux when the slave side closes
-                        # (child exited). Treat as EOF.
-                        break
-                    if not chunk:
-                        break
-                    buf += chunk
-                    while True:
-                        m = LINE_SPLIT_RE.search(buf)
-                        if m is None:
-                            break
-                        raw = buf[: m.start()]
-                        buf = buf[m.end() :]
-                        if not raw:
-                            continue
-                        line = _strip_ansi(raw.decode("utf-8", errors="replace"))
-                        _process_line(line)
-                if buf:
-                    tail = _strip_ansi(buf.decode("utf-8", errors="replace"))
-                    if tail:
-                        _process_line(tail)
-
-            # One-shot layer display: kas materializes bblayers.conf early in
-            # the build (manifest paths have it even earlier, from setup-env),
-            # so the heartbeat polls for it and prints the panel above the
-            # live region as soon as the data exists - at the START of the
-            # build, where it is useful, instead of after it finishes.
-            layers_pending = show_layers
-
-            def _heartbeat() -> None:
-                nonlocal layers_pending
-                while not stop_event.wait(timeout=1):
-                    if proc.poll() is not None:
-                        break
-                    if layers_pending:  # pragma: no cover - PTY-thread path
-                        from bakar.layers import collect_layer_hashes, layer_hash_table
-
-                        hashes = collect_layer_hashes(cfg)
-                        if hashes:
-                            live.console.print(layer_hash_table(hashes))
-                            layers_pending = False
-
-            event_feed_count = 0
-            event_feed_error = ""
-
-            def _event_tail() -> None:  # pragma: no cover
-                # Authoritative feed: drive the live model from bitbake's
-                # structured event log. ui.process_line (regex) stays as the
-                # degraded fallback. A tailer error must never crash the
-                # build, but it must not die silently either - the count and
-                # error are reported after the build so a dead feed (live UI
-                # quietly running on the regex fallback) is diagnosable.
-                nonlocal event_feed_count, event_feed_error
-                try:
-                    for class_name, event in tail_events(log.eventlog_path, stop_event):
-                        ui.process_event(class_name, event)
-                        event_feed_count += 1
-                except Exception as exc:  # noqa: BLE001 - event feed errors are captured and reported; must not crash the build thread
-                    event_feed_error = f"{type(exc).__name__}: {exc}"
-
-            def _stall_watchdog() -> None:  # pragma: no cover
-                # Self-guard against a wedged task (e.g. a deadlocked final
-                # link): when every running task's log has been silent past
-                # cfg.stall_abort_secs, SIGINT the build so it fails cleanly
-                # naming the stuck task instead of spinning until the user
-                # Ctrl-C's. bitbake's own keepalive output flows through the
-                # PTY pump, so raw output cannot be the signal - log freshness
-                # is what distinguishes a wedge from a slow-but-alive compile.
-                nonlocal stall_tasks
-                if cfg.stall_abort_secs <= 0:
-                    return
-                while not stop_event.wait(timeout=_STALL_POLL_SECS):
-                    if proc.poll() is not None:
-                        break
-                    report = ui.stall_report()
-                    if report is None:
-                        continue
-                    stalled, labels = report
-                    if stalled >= cfg.stall_abort_secs:
-                        stall_tasks = labels
-                        log.warn(
-                            f"build stalled: no log output for {_fmt_stall(stalled)} from running "
-                            f"task(s) {', '.join(labels)}; aborting. Disable with "
-                            "`bakar settings set build.stall_abort_secs 0`."
-                        )
-                        build_stop.stop_running_proc(proc, cfg, log)
-                        break
-
-            def _error_watchdog() -> None:  # pragma: no cover
-                # SIGINT the build the moment any task fails, instead of
-                # waiting for bitbake's own halt-on-failure to drain every
-                # already-running task on its own schedule. bitbake already
-                # stops scheduling *new* tasks the instant a task fails
-                # regardless of this setting - this only stops bakar's live
-                # view from rendering a misleadingly-normal progress display
-                # while it waits for tasks that started before the failure
-                # (which can run for a long time) to finish on their own.
-                if not cfg.stop_on_error:
-                    return
-                while not stop_event.wait(timeout=_ERROR_POLL_SECS):
-                    if proc.poll() is not None:
-                        break
-                    if ui.had_task_failures:
-                        log.warn(
-                            "build failed: a task reported failure; aborting immediately. "
-                            "Disable with `bakar settings set build.stop_on_error false`."
-                        )
-                        build_stop.stop_running_proc(proc, cfg, log)
-                        break
-
-            # Holds the freshest daemon_doc/ccache_doc the cache-probe thread
-            # computed, so the build-end persist reuses that probe rather than
-            # issuing a second one after the build completes. The ``first_*``
-            # holders snapshot the FIRST SUCCESSFUL PROBE from the cache-probe
-            # thread (see ``_cache_probe`` -> ``_refresh`` below), NOT build
-            # start: the thread's initial ``_refresh()`` call races the build
-            # process and can fail (daemon/cache not up yet), in which case the
-            # holder stays None until a later iteration succeeds. Any cache
-            # activity between build start and that first successful probe is
-            # therefore excluded from the build-end delta (``cache_delta``
-            # below). This is a deliberate tradeoff, not a bug: closing the gap
-            # would require a synchronous pre-loop baseline snapshot, which is
-            # riskier than the narrow accuracy gap it leaves. In the degenerate
-            # case where the probe only ever succeeds once (first == last), the
-            # delta is honestly all-zero - not wrong, just narrow.
-            last_daemon_doc: list = [None]
-            first_daemon_doc: list = [None]
-            last_ccache_doc: list = [None]
-            first_ccache_doc: list = [None]
-
-            # Structured milestones only - the build's output stays in kas.log.
-            # scope_unit is the join key: it lets a reader line these records up
-            # against systemd's own "Consumed ... CPU time" / OOM / memory-peak
-            # lines for the same unit, which is the correlation a log file cannot
-            # provide. Created after the cache-doc holders above so the build_end
-            # record in the finally can always read them.
-            emitter = journal.JournalEmitter(
-                {
-                    "run_id": log.run_id,
-                    "machine": cfg.machine or "",
-                    "workspace": str(cfg.bsp_root),
-                    **({"scope_unit": scope_unit} if scope_unit else {}),
-                },
-                enabled=cfg.journal,
-            )
-            emitter.send(
-                "build_start",
-                f"build started: machine={cfg.machine} workspace={cfg.bsp_root}",
-                **journal.health_fields(cfg.resolved_tmpdir),
-            )
-
-            def _journal_progress() -> None:  # pragma: no cover - timing-driven daemon thread
-                """Emit one full progress snapshot per ``journal_interval`` tick.
-
-                Level-sampled rather than event-driven on purpose: the value is a
-                record that keeps arriving on a predictable cadence, so a run that
-                stopped moving shows up as an unchanged snapshot instead of as
-                silence, which is indistinguishable from a finished build.
-                """
-                if not emitter.enabled:
-                    return
-                while not stop_event.wait(timeout=max(1, cfg.journal_interval)):
-                    report = ui.journal_report()
-                    emitter.send(
-                        "progress",
-                        "build progress: " + " ".join(f"{k}={v}" for k, v in report.items()),
-                        **report,
-                        **journal.health_fields(cfg.resolved_tmpdir),
-                        **journal.cache_fields(last_daemon_doc[0], last_ccache_doc[0]),
-                    )
-
-            def _cache_probe() -> None:  # pragma: no cover
-                # Refresh the cluster/cache header lines shown in the build UI.
-                # sccache-dist builds show the cluster + sccache daemon lines;
-                # ccache builds show a single ccache hit/miss line. No-op when
-                # neither cache launcher is active.
-                if not (cfg.use_sccache_dist or cfg.ccache):
-                    return
-
-                def _refresh() -> None:
-                    # Best-effort cosmetic probe: a failure here must never crash
-                    # or spew from this daemon thread, so swallow everything (the
-                    # probes are never-raise in production; this guards the test
-                    # harness and any unforeseen edge).
-                    try:
-                        if cfg.use_sccache_dist:
-                            cluster = probe_cluster(cfg.sccache_scheduler_url)
-                            daemon = probe_build_daemon()
-                            lines = render_cluster(cluster_doc(cluster, cfg.sccache_scheduler_url))
-                            doc = daemon_doc(daemon) if daemon.running else None
-                            if doc is not None:
-                                last_daemon_doc[0] = doc
-                                if first_daemon_doc[0] is None:
-                                    first_daemon_doc[0] = doc
-                                # Live badge is status, not accounting: cumulative
-                                # so-far hit rate plus the current daemon verdict.
-                                ui.set_cache_badge(
-                                    active=True,
-                                    hit_pct=cache_hit_pct(doc["cache_hits"], doc["cache_misses"]),
-                                    verdict=doc["verdict"],
-                                )
-                            lines.append(render_sccache_cache(doc))
-                        else:
-                            cc = probe_ccache(cfg.effective_ccache_dir)
-                            cc_doc = ccache_doc(cc)
-                            if cc_doc is not None:
-                                last_ccache_doc[0] = cc_doc
-                                if first_ccache_doc[0] is None:
-                                    first_ccache_doc[0] = cc_doc
-                                # ccache has no distribution: cache badge only,
-                                # no verdict (suppresses the dist badge/token).
-                                ui.set_cache_badge(active=True, hit_pct=cc_doc["hit_rate"], verdict=None)
-                            lines = [render_ccache_cache(cc_doc)]
-                        ui.set_dist_lines(lines)
-                    except Exception:  # noqa: BLE001 - cosmetic probe, never crash the build thread
-                        return
-
-                _refresh()  # show immediately
-                while not stop_event.wait(timeout=3):
-                    _refresh()
-
-            # Share the run logger's console so log.info() (the parse-complete
-            # line) coordinates with the live region instead of printing onto
-            # the same line as the setup bar.
-            frame_cm: Live | _PlainFrameController = (
-                _PlainFrameController(ui, log.console, stop_event)
-                if output_mode is OutputMode.PLAIN
-                else Live(get_renderable=ui.make_renderable, console=log.console, refresh_per_second=8)
-            )
-            with frame_cm as live:
-                pump = threading.Thread(target=_pump, daemon=True)  # pragma: no cover
-                pump.start()
-                heartbeat = threading.Thread(target=_heartbeat, daemon=True)  # pragma: no cover
-                heartbeat.start()
-                event_tail = threading.Thread(target=_event_tail, daemon=True)  # pragma: no cover
-                event_tail.start()
-                watchdog = threading.Thread(target=_stall_watchdog, daemon=True)  # pragma: no cover
-                watchdog.start()
-                error_watchdog = threading.Thread(target=_error_watchdog, daemon=True)  # pragma: no cover
-                error_watchdog.start()
-                cache_probe = threading.Thread(target=_cache_probe, daemon=True)  # pragma: no cover
-                cache_probe.start()
-                journal_progress = threading.Thread(target=_journal_progress, daemon=True)  # pragma: no cover
-                journal_progress.start()
-                try:
-                    rc = proc.wait()
-                except KeyboardInterrupt:
-                    build_stop.stop_running_proc(proc, cfg, log)
-                    rc = proc.wait()
-                stop_event.set()
-                pump.join(timeout=5)
-                heartbeat.join(timeout=2)
-                watchdog.join(timeout=2)
-                error_watchdog.join(timeout=2)
-                if layers_pending:  # pragma: no cover - fast build finished before first heartbeat tick
-                    from bakar.layers import collect_layer_hashes, layer_hash_table
-
-                    hashes = collect_layer_hashes(cfg)
-                    if hashes:
-                        live.console.print(layer_hash_table(hashes))
-                        layers_pending = False
-                event_tail.join(timeout=5)
-                # Join the cache probe (the one teardown thread not joined
-                # above) so the last_* holders are current before we read them.
-                cache_probe.join(timeout=1)
-                # Persist this-build cache deltas (the raw counters are
-                # cumulative odometers). Persist the DELTA, not the lifetime
-                # total, for whichever backend was active; the probe branches are
-                # mutually exclusive so exactly one artifact is written. Compute
-                # the summary doc here (inside the block, where the holders are
-                # read) but PRINT it at the post-block site. Best-effort: a
-                # persistence failure must never crash a completed build.
-                try:
-                    sccache_delta = cache_delta(first_daemon_doc[0], last_daemon_doc[0])
-                    ccache_delta = cache_delta(first_ccache_doc[0], last_ccache_doc[0])
-                    log.persist_sccache_stats(sccache_delta)
-                    log.persist_ccache_stats(ccache_delta)
-                    if sccache_delta is not None:
-                        cache_backend, cache_doc = "sccache", sccache_delta
-                    elif ccache_delta is not None:
-                        cache_backend, cache_doc = "ccache", ccache_delta
-                except Exception as exc:  # noqa: BLE001 - best-effort; never crash the build
-                    log.warn(f"failed to persist cache stats: {exc}")
-                if event_feed_error:
-                    log.warn(f"bitbake event feed died ({event_feed_error}); live UI ran on regex fallback")
-                elif event_feed_count == 0:
-                    log.warn(
-                        f"bitbake event feed inactive (0 events from {log.eventlog_path}); "
-                        "live UI ran on regex fallback"
-                    )
-                if rc == 0:
-                    # Freeze the final frame with every reached pipeline
-                    # segment checked (Live renders once more on exit);
-                    # without this the header ends on a spinner forever.
-                    ui.finish()
-                elif ui.had_task_failures:
-                    # Each failure's pipeline status and context already
-                    # committed inline (frozen frame + alert block);
-                    # repeating the frame here would wedge it between the
-                    # failure text and the runner's exit lines. No-op when
-                    # the Live is still frozen (already out of the way).
-                    live.transient = True
-                else:
-                    # Failed without a recorded task failure (parse abort,
-                    # container error): keep a collapsed closing status.
-                    ui.finish_failed()
-    finally:
-        # In the finally so an aborted or crashed run still closes its record;
-        # a start with no end is exactly the shape that makes a journal timeline
-        # unreadable. emitter is absent only if setup raised before it existed.
-        if emitter is not None:
-            report = ui.journal_report()
-            emitter.send(
-                "build_end",
-                f"build finished: rc={rc} " + " ".join(f"{k}={v}" for k, v in report.items()),
-                priority=journal.PRIORITY_INFO if rc == 0 else journal.PRIORITY_WARNING,
-                rc=rc,
-                **report,
-                **journal.cache_fields(last_daemon_doc[0], last_ccache_doc[0]),
-            )
-            emitter.close()
-        build_stop.remove_pid(log.run_dir)
-        if slave_fd != -1:
-            try:
-                os.close(slave_fd)
-            except OSError:
-                pass
-        try:
-            os.close(master_fd)
-        except OSError:
-            pass
-    return _PtyOutcome(rc=rc, stall_tasks=stall_tasks, cache_backend=cache_backend, cache_doc=cache_doc)
 
 
 def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None, show_layers: bool = False) -> int:
@@ -2747,12 +1439,16 @@ def _find_oe_eventlog(cfg: BuildConfig, log: RunLogger) -> Path | None:
     run dir's mtime is updated by the final events.jsonl write *after* bitbake
     finishes writing its event log, making the log appear older than the
     watermark.
+
+    run_id is ``YYYYMMDD-HHMMSS-<pid>`` (the pid suffix disambiguates two
+    builds started in the same second - see RunLogger.run_id), so only the
+    leading 15-char timestamp is parsed; the pid carries no timing information.
     """
     eventlog_dir = cfg.resolved_tmpdir / "log" / "eventlog"
     if not eventlog_dir.is_dir():
         return None
     try:
-        watermark = datetime.strptime(log.run_id, "%Y%m%d-%H%M%S").timestamp()
+        watermark = datetime.strptime(log.run_id[:15], "%Y%m%d-%H%M%S").timestamp()
     except ValueError, OSError:
         watermark = log.run_dir.stat().st_mtime - 60
     entries: list[tuple[float, Path]] = []
@@ -2921,19 +1617,26 @@ def run_shell_capture(
     (obmalloc-patch validation).
 
     ``timeout`` bounds the wait in seconds and raises
-    :exc:`subprocess.TimeoutExpired` when it fires, after escalating the child
-    through :func:`bakar.build_stop.escalate_process_tree`. It defaults to None
-    - unbounded - because a deadline chosen for one caller is wrong for the
-    other seven, several of which wrap a full build or a stress-parse loop.
-    Raising rather than returning a sentinel keeps a timeout distinguishable
-    from a command that merely exited non-zero.
+    :exc:`subprocess.TimeoutExpired` when it fires; a Ctrl-C during the wait
+    raises :exc:`KeyboardInterrupt` instead. Both escalate the child the same
+    way before re-raising: in container mode via
+    :func:`bakar.build_stop.escalate_container_tree` (the child is the
+    host-side ``kas-container`` client, and killing only that client leaves
+    the container - and the cooker inside it - running), falling back to
+    :func:`bakar.build_stop.escalate_process_tree` in host mode or when no
+    container resolves. It defaults to None - unbounded - because a deadline
+    chosen for one caller is wrong for the other seven, several of which wrap
+    a full build or a stress-parse loop. Raising rather than returning a
+    sentinel keeps a timeout distinguishable from a command that merely
+    exited non-zero.
 
     ``isolate_process_group`` puts the child in its own session, which is a
-    precondition for the escalation above rather than a convenience: without
-    it the child shares bakar's process group and the ladder refuses to signal
-    it. It defaults to False so the callers that never time out keep the
-    signal-propagation behaviour they have today - a Ctrl-C at the terminal
-    reaches a shared-group child and would not reach an isolated one.
+    precondition for the host-mode escalation above rather than a
+    convenience: without it the child shares bakar's process group and the
+    ladder refuses to signal it. It defaults to False so the callers that
+    never time out keep the signal-propagation behaviour they have today - a
+    Ctrl-C at the terminal reaches a shared-group child and would not reach
+    an isolated one.
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
     log.step_start(step, command=command, stdout_path=str(stdout_path), host_mode=cfg.host_mode)
@@ -2942,12 +1645,19 @@ def run_shell_capture(
     for removed_path in lock_outcome.removed:
         log.warn(f"removed stale bitbake lock: {removed_path} (owning process was gone)")
     if lock_outcome.refusal is not None:
-        log.step_fail(step, reason=_lock_refusal_message(lock_outcome.refusal))
+        log.step_fail(step, reason=_lock_refusal_message(lock_outcome.refusal), exit_code=1)
         return 1
 
     kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source, ctx.extra_overlays)
     exe = "kas" if cfg.host_mode else "kas-container"
-    cmd = [exe, *_ccache_args(cfg), "shell", kas_arg, "-c", command]
+    # The run_id label is what lets a timeout's container-mode escalation find
+    # THIS invocation's container - only pass it when isolate_process_group
+    # requests that escalation path. Labelling every caller's container would
+    # make it carry the same bakar.run_id as the build's own container, which
+    # _container_id (docker/podman ps -q -f label=...) cannot tell apart: it
+    # returns whichever container answers the label first.
+    label_run_id = log.run_id if isolate_process_group else None
+    cmd = [exe, *_ccache_args(cfg, run_id=label_run_id), "shell", kas_arg, "-c", command]
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     if stderr_path is not None:
         stderr_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2980,273 +1690,53 @@ def run_shell_capture(
             )
             try:
                 rc = proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                log.warn(f"{step}: no exit after {timeout:.0f}s; escalating the capture's process tree")
-                build_stop.escalate_process_tree(proc.pid, log.run_dir)
+            except (subprocess.TimeoutExpired, KeyboardInterrupt) as exc:
+                interrupted = isinstance(exc, KeyboardInterrupt)
+                if not isolate_process_group:
+                    # Not isolated: this child shares bakar's own process group,
+                    # so escalate_process_tree's pgid check would refuse it
+                    # outright and a container-mode escalation would stop the
+                    # wrong thing out from under a caller that never asked for
+                    # any of this - the seven callers that never pass timeout=
+                    # still raise KeyboardInterrupt here on an ordinary Ctrl-C.
+                    # Propagate exactly as it did before this timeout/escalation
+                    # path existed: no warn, no step_fail, no escalation attempt.
+                    raise
+                reason = "interrupted" if interrupted else f"no exit after {timeout:.0f}s"
+                log.warn(f"{step}: {reason}; escalating the capture's process tree")
+                # In container mode the child is the host-side kas-container
+                # client; escalating its process tree (as the host path does)
+                # stops that client but not the container still running
+                # underneath it, so the bitbake cooker inside would keep the
+                # lock. Resolve and stop the container itself first, and only
+                # fall back to the host-side ladder when none resolves.
+                if cfg.host_mode or not build_stop.escalate_container_tree(log.run_id):
+                    build_stop.escalate_process_tree(proc.pid, log.run_dir)
                 # Reap so the killed child does not linger as a zombie holding
                 # the redirected file descriptors open.
                 with suppress(subprocess.TimeoutExpired):
                     proc.wait(timeout=_CAPTURE_REAP_TIMEOUT_S)
-                log.step_fail(step, reason=f"timed out after {timeout:.0f}s")
+                log.step_fail(step, reason=reason, exit_code=proc.returncode)
                 raise
     except LockHeldByPeerError as exc:
         log.step_fail(
-            step, reason=f"bitbake lock claimed by peer host {escape(exc.host)} during acquire; aborting before launch"
+            step,
+            reason=f"bitbake lock claimed by peer host {escape(exc.host)} during acquire; aborting before launch",
+            exit_code=1,
         )
         return 1
     _finish_step(log, step, rc)
     return rc
 
 
-#: Filename of the sidecar recording what a captured graph describes.
-GRAPH_MARKER_NAME = "dependency-graph.json"
-
-#: The two artifacts ``bitbake -g`` emits into TOPDIR.
-GRAPH_ARTIFACTS = ("task-depends.dot", "pn-buildlist")
-
-
-def graph_capture_command(target: str) -> str:
-    """Return the payload that emits a dependency graph and releases the lock.
-
-    ``bitbake -g`` starts a cooker server and leaves it running, holding
-    ``build/bitbake.lock``. Without the ``bitbake -m`` that follows, the next
-    bitbake invocation against this build directory is refused outright with
-    "Only one copy of bitbake should be run against a build directory".
-
-    Sequenced with ``;`` and an explicit ``rc``, never ``&&``. The failure case
-    is precisely the one that most needs the unlock: a ``bitbake -g`` that
-    starts its cooker and then exits non-zero - a parse error, ENOSPC, a recipe
-    broken by whatever is being built - would short-circuit an ``&&`` and leave
-    that server holding the lock. Nothing about the build that stranded it
-    fails; the NEXT build fails, on someone else's machine, naming neither this
-    capture nor the run that caused it.
-
-    This same ``bitbake -m`` also costs the next build its warm cooker on a
-    capture SUCCESS, not only on failure: it kills the idle cooker that
-    :func:`_wait_for_cooker_idle` waited for, so the next invocation against
-    this build directory re-parses cold instead of reconnecting. That cost is
-    accepted deliberately rather than engineered around. Whether ``bitbake -g``
-    would actually reconnect to the build's own cooker or spawn a fresh one was
-    never empirically measured, and the two failure modes this choice trades
-    between are asymmetric: keeping the kill costs a slower next build, which
-    is bounded and self-correcting. Dropping it risks stranding a live-owner
-    lock that :func:`clear_stale_bitbake_locks` will not clear - it only clears
-    locks whose owner has crashed, and refuses a peer-held lock on a shared NFS
-    TOPDIR outright even when idle - a failure that could land on a different
-    build entirely. Anyone who values the warm-reconnect path over the graph
-    artifact has ``--no-capture-graph`` as the escape hatch.
-    """
-    return f"bitbake -g {shlex.quote(target)}; rc=$?; bitbake -m; exit $rc"
-
-
-#: How long to wait for the build's own cooker to go idle before capturing.
-#: Measured on a real bench run: the capture was refused at 17:07:07 and the
-#: identical command succeeded at 17:07:17, so ten seconds is the observed
-#: figure and this is a generous multiple of it.
-GRAPH_CAPTURE_IDLE_TIMEOUT_S = 60.0
-
-#: Interval between idle probes. Each probe scans the lock holder's process
-#: tree, so this is not free enough to spin on.
-GRAPH_CAPTURE_POLL_S = 2.0
-
-#: Deadline for the capture itself, once a quiet cooker has been obtained.
-#: A full metadata parse on a large tree runs for minutes, so this is sized to
-#: catch a hang rather than to cap normal work - an order of magnitude above
-#: the idle wait above, which bounds a different thing entirely.
-GRAPH_CAPTURE_TIMEOUT_S = 900.0
-
-
-def _wait_for_cooker_idle(
-    build_dir: Path,
-    log: RunLogger,
-    *,
-    timeout: float = GRAPH_CAPTURE_IDLE_TIMEOUT_S,
-    poll: float = GRAPH_CAPTURE_POLL_S,
-) -> bool:
-    """Wait until the build's bitbake cooker has no activity left, or time out.
-
-    The lock is never released for us to take - that is the thing to understand
-    here. bitbake's cookerdaemon persists after a build so the next invocation
-    reconnects instead of respawning, which is a documented happy path - but
-    only for a build that does NOT run this capture, or one where the capture
-    was declined via ``--no-capture-graph``. What changes is that the holder
-    goes from having worker/client ACTIVITY to being a bare idle server, and
-    :func:`clear_stale_bitbake_locks` already treats those two states
-    differently: the first refuses, the second is left alone precisely so a
-    following invocation can reconnect - for a build that stops here.
-
-    A build that goes on to capture does not get that reconnect. The
-    ``bitbake -m`` in :func:`graph_capture_command` kills the cooker this
-    function just waited to go idle, so the NEXT invocation against this build
-    directory re-parses cold instead of reconnecting. That cost is accepted
-    deliberately; see the comment on :func:`graph_capture_command` for why.
-
-    So this waits on the same predicate that would refuse us, rather than
-    sleeping a guessed interval and hoping.
-
-    Returns False on timeout rather than raising. A capture that could not get
-    a quiet cooker is an absent optional artifact, and blocking a completed
-    build's teardown on one would be a worse trade than going without it.
-    """
-    deadline = time.monotonic() + timeout
-    while True:
-        if not _lock_holder_has_activity(build_dir):
-            return True
-        if time.monotonic() >= deadline:
-            log.warn(
-                f"dependency graph: the build's bitbake cooker was still active after {timeout:.0f}s; "
-                "skipping capture rather than delaying teardown further"
-            )
-            return False
-        time.sleep(poll)
-
-
-def _resolve_capture_target(ctx: KasBuildContext, log: RunLogger) -> str | None:
-    """Resolve the bitbake target this build produced.
-
-    Neither obvious candidate works, and both were tried against a real build.
-    ``cfg.image`` resolves to ``generic`` on a meta-avocado workspace, and
-    ``ctx.target`` is None whenever the kas configuration supplies the target
-    rather than the command line - which is the ordinary case.
-
-    ``kas dump`` is the authoritative answer because it resolves includes and
-    overlays, and a layered configuration's effective ``target:`` can come from
-    any file in the stack. Reading the top-level YAML directly would get the
-    common case right and the layered one silently wrong.
-    """
-    if ctx.target:
-        return ctx.target
-    with tempfile.NamedTemporaryFile(suffix=".yml", delete=False) as fh:
-        dump_path = Path(fh.name)
-    try:
-        rc = run_kas_subcommand(ctx, "dump", [], capture_to=dump_path)
-        if rc != 0:
-            log.warn(f"dependency graph: kas dump exited {rc}; cannot resolve the build target")
-            return None
-        resolved = yaml.safe_load(dump_path.read_text())
-    except Exception as exc:  # noqa: BLE001 - target resolution must not crash a completed build
-        log.warn(f"dependency graph: could not resolve the build target ({exc})")
-        return None
-    finally:
-        dump_path.unlink(missing_ok=True)
-    if not isinstance(resolved, dict):
-        return None
-    target = resolved.get("target")
-    # kas allows a list of targets; graph the first, and say so rather than
-    # silently graphing one of several as though it were the whole build.
-    if isinstance(target, list):
-        if not target:
-            return None
-        if len(target) > 1:
-            log.info(f"dependency graph: configuration builds {len(target)} targets; graphing {target[0]}")
-        target = target[0]
-    return target if isinstance(target, str) and target else None
-
-
-def _capture_dependency_graph(ctx: KasBuildContext, log: RunLogger) -> dict[str, str] | None:
-    """Emit the dependency graph for the build just completed into the run dir.
-
-    Runs AFTER the build's terminal step event. That placement cannot distort
-    the reported durations even in principle, because bakar derives them from
-    bitbake's own task event timestamps rather than from a wall clock the
-    harness holds around the build - unlike the reference implementation this
-    ports, where the capture had to be sequenced outside a timed region.
-
-    Never raises: a build that produced an image and no graph is a successful
-    build missing an optional analysis artifact, and an exception escaping here
-    would turn that into a crash after the work was already done.
-
-    Returns immediately when ``cfg.capture_graph`` is off (`[build] capture_graph
-    = false` / `bakar build --no-capture-graph`). The early return sits ahead of
-    the cooker-idle wait deliberately: that wait is up to 60s of pure waiting,
-    and declining the capture has to cost nothing.
-    """
-    cfg = ctx.cfg
-    if not cfg.capture_graph:
-        log.info("dependency graph: capture declined (capture_graph off); skipping")
-        return None
-    target = _resolve_capture_target(ctx, log)
-    if not target:
-        log.warn("dependency graph: no build target resolved; skipping capture")
-        return None
-    # The build's own cooker still holds the lock at this point, with activity.
-    # Without this wait every capture is refused before it starts - which is
-    # what the first real build did, on every attempt.
-    if not _wait_for_cooker_idle(cfg.bsp_root / cfg.build_dir_name, log):
-        return None
-    try:
-        # Recorded before the capture runs so a source artifact can be checked
-        # against it afterward: mtimes are wall-clock, so this must be too.
-        # A `bitbake -g` that exits 0 without rewriting its outputs (e.g. a
-        # metadata-parse short-circuit) would otherwise let a previous build's
-        # graph get copied out and stamped with this run's provenance marker -
-        # exactly what the marker exists to prevent.
-        capture_started_at = time.time()
-        # SHELL is pinned because kas hands the -c payload to $SHELL rather than
-        # choosing a shell. The login shell here is fish, which rejects the
-        # `rc=$?` idiom above with "Unsupported use of '='" at exit 127 - before
-        # bitbake starts, so the traceback names bitbake and not the shell.
-        rc = run_shell_capture(
-            ctx,
-            graph_capture_command(target),
-            log.run_dir / "depgraph.log",
-            step="graph_capture",
-            env_overrides={"SHELL": "/bin/bash"},
-            timeout=GRAPH_CAPTURE_TIMEOUT_S,
-            isolate_process_group=True,
-        )
-        if rc != 0:
-            log.warn(f"dependency graph: capture exited {rc}; see {log.run_dir / 'depgraph.log'}")
-            return None
-
-        topdir = cfg.resolved_tmpdir.parent
-        captured: dict[str, str] = {}
-        for name in GRAPH_ARTIFACTS:
-            src = topdir / name
-            if not src.is_file():
-                log.warn(f"dependency graph: {name} not produced at {src}")
-                return None
-            src_mtime = src.stat().st_mtime
-            if src_mtime < capture_started_at:
-                log.warn(
-                    f"dependency graph: {name} at {src} predates this capture "
-                    f"(mtime {src_mtime:.0f} < start {capture_started_at:.0f}); "
-                    "skipping rather than publishing a stale graph under this run's marker"
-                )
-                return None
-            dest = log.run_dir / name
-            shutil.copy2(src, dest)
-            captured[name] = str(dest)
-
-        # The sidecar is what makes provenance checkable. Co-location alone is
-        # what lets a graph left behind by a previous build read as this run's.
-        marker = {"target": target, "captured_at": time.time(), "artifacts": captured}
-        (log.run_dir / GRAPH_MARKER_NAME).write_text(json.dumps(marker, indent=2))
-        log.info(f"dependency graph: captured for {target}")
-    except KeyboardInterrupt:
-        # Listed FIRST and separately because KeyboardInterrupt derives from
-        # BaseException, not Exception, so the clause below would never catch
-        # it. Without this a Ctrl-C during the capture escapes and discards a
-        # completed build's reporting for a traceback.
-        log.warn("dependency graph: interrupted during capture")
-        return None
-    except subprocess.TimeoutExpired:
-        # Named ahead of the blanket clause below so the log says the capture
-        # hung rather than that it "failed", and so the distinction survives
-        # into the run log a later triage reads.
-        log.warn(
-            f"dependency graph: capture exceeded {GRAPH_CAPTURE_TIMEOUT_S:.0f}s and was killed; "
-            f"see {log.run_dir / 'depgraph.log'}"
-        )
-        return None
-    except Exception as exc:  # noqa: BLE001 - a completed build must not crash on capture failure
-        log.warn(f"dependency graph: capture failed ({exc})")
-        return None
-    return captured
-
-
 def run_kas_subcommand(
-    ctx: KasBuildContext, subcommand: str, extra_args: list[str], *, capture_to: Path | None = None
+    ctx: KasBuildContext,
+    subcommand: str,
+    extra_args: list[str],
+    *,
+    step: str = "kas_subcommand",
+    capture_to: Path | None = None,
+    timeout: float | None = None,
 ) -> int:
     """Run a kas subcommand (e.g. ``dump``, ``lock``) with overlay assembly.
 
@@ -3256,16 +1746,48 @@ def run_kas_subcommand(
     (subcommand ``dump``) and the BYO path of ``bakar lock`` (subcommand
     ``lock``).
 
+    ``step`` names the event-log step this call reports under - defaulting to
+    the generic ``kas_subcommand`` these two commands log unchanged. The
+    post-build graph capture's kas-dump target resolution passes its own
+    distinct name (``graph_capture_kas_dump``) so its failures never share an
+    event-log step name with a genuine ``bakar dump``/``bakar lock`` failure -
+    see :mod:`bakar.triage`'s ``_POST_BUILD_STEPS``, which used to exclude the
+    shared name unconditionally and could have suppressed a real failure from
+    either command had one ever run against the build's own persistent
+    ``RunLogger`` instead of the ephemeral one both currently use.
+
     When ``capture_to`` is a path, the subprocess stdout is redirected to that
     file so large ``kas dump`` output streams to disk instead of buffering in
     memory; when None, stdout inherits the parent terminal. Returns the kas
     exit code.
+
+    ``timeout`` bounds the wait in seconds; it defaults to None (unbounded) so
+    the two existing callers - ``bakar dump`` and the BYO path of ``bakar
+    lock`` - keep today's behaviour. A timeout returns 124 (the shell
+    convention for a timed-out command) rather than raising: this command
+    never holds the bitbake lock, so unlike :func:`run_shell_capture` a hang
+    here costs only a wasted wait, not a stranded lock, and the existing
+    non-zero-rc handling below already gives every caller a path to treat
+    "could not run this" as a plain failure. ``subprocess.run``'s own
+    ``timeout`` kills the direct child, which is sufficient in host mode -
+    but in container mode that direct child is the host-side kas-container
+    client, and killing it does not stop the container it launched (the
+    runtime does not stop a container merely because the client that started
+    it exits). A caller that passes ``timeout`` gets the container labelled
+    with this run's id so a timeout can resolve and stop it via
+    :func:`bakar.build_stop.escalate_container_tree`, falling back to letting
+    the host-side kill stand when no container resolves.
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
-    log.step_start("kas_subcommand", subcommand=subcommand, host_mode=cfg.host_mode)
+    log.step_start(step, subcommand=subcommand, host_mode=cfg.host_mode)
     kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source, ctx.extra_overlays)
     exe = "kas" if cfg.host_mode else "kas-container"
-    cmd = [exe, *_ccache_args(cfg), subcommand, kas_arg, *extra_args]
+    # Only label the container when a timeout was actually requested - see
+    # run_shell_capture's identical reasoning: an unconditional label would
+    # make every caller's container carry the same bakar.run_id, which
+    # _container_id (docker/podman ps -q -f label=...) cannot tell apart.
+    label_run_id = log.run_id if timeout is not None else None
+    cmd = [exe, *_ccache_args(cfg, run_id=label_run_id), subcommand, kas_arg, *extra_args]
     try:
         if capture_to is not None:
             capture_to.parent.mkdir(parents=True, exist_ok=True)
@@ -3276,6 +1798,7 @@ def run_kas_subcommand(
                     env=_build_env(cfg, ensure_hashserv=False, eventlog_path=_container_eventlog_path(cfg, log)),
                     stdout=fh,
                     check=False,
+                    timeout=timeout,
                 )
         else:
             proc = subprocess.run(  # pragma: no cover
@@ -3283,13 +1806,27 @@ def run_kas_subcommand(
                 cwd=cfg.bsp_root,
                 env=_build_env(cfg, ensure_hashserv=False, eventlog_path=_container_eventlog_path(cfg, log)),
                 check=False,
+                timeout=timeout,
             )
     except FileNotFoundError:
-        log.step_fail("kas_subcommand", reason=f"{exe} not found")
+        log.step_fail(step, reason=f"{exe} not found")
         raise
+    except subprocess.TimeoutExpired:
+        # subprocess.run's own timeout already killed the direct child; in
+        # container mode that leaves the container itself (and whatever it is
+        # running) alive, so resolve and stop it by the label above. There is
+        # no host-side process left to fall back to the way run_shell_capture
+        # falls back to escalate_process_tree - subprocess.run already reaped
+        # the direct child - so an unverified stop is surfaced in the failure
+        # reason rather than silently read as a clean one.
+        reason = f"{subcommand} timed out after {timeout:.0f}s"
+        if not cfg.host_mode and not build_stop.escalate_container_tree(log.run_id):
+            reason += " (container escalation did not verify the container stopped)"
+        log.step_fail(step, reason=reason)
+        return 124
     rc = proc.returncode
     if rc != 0:
-        log.step_fail("kas_subcommand", reason=f"{subcommand} exited {rc}")
+        log.step_fail(step, reason=f"{subcommand} exited {rc}")
     else:
-        log.step_ok("kas_subcommand", exit_code=rc)
+        log.step_ok(step, exit_code=rc)
     return rc
