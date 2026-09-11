@@ -212,6 +212,16 @@ EXTRACTED_MODULES: tuple[str, ...] = (
     "src/bakar/commands/_post_build.py",
     "src/bakar/commands/_build_flavors.py",
     "src/bakar/commands/_build_options.py",
+    "src/bakar/sccache_cluster.py",
+    "src/bakar/commands/_overlays.py",
+    "src/bakar/commands/_workspace.py",
+    "src/bakar/insights_churn.py",
+    "src/bakar/insights_critical_path.py",
+    "src/bakar/insights_joins.py",
+    "src/bakar/steps/kas_graph_capture.py",
+    "src/bakar/steps/kas_lock.py",
+    "src/bakar/steps/kas_overlay.py",
+    "src/bakar/steps/kas_pty.py",
 )
 
 # The ``check_*`` surface ``bakar doctor`` walks, pinned as it stood at

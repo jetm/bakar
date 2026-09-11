@@ -81,6 +81,10 @@ paths = [
   "src/bakar/elfscan.py",
   "src/bakar/sstate_seed.py",
   "src/bakar/buildstats.py",
+  # Extracted out of commands/clean_cache.py: sccache cluster-status query
+  # helpers. Reaches nothing in bakar at module level, so it sits with the
+  # other leaf helpers rather than in commands.
+  "src/bakar/sccache_cluster.py",
 ]
 
 [[modules]]
