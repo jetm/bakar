@@ -149,6 +149,34 @@ def test_critical_path_unavailable_when_dependency_source_returns_empty_graph(
 
 
 @pytest.mark.unit
+def test_empty_and_unparseable_captures_refuse_with_different_notes(tmp_path: Path) -> None:
+    """The falsifier for read_graph's parse flag, read at the note the user sees.
+
+    Both captures yield an empty graph, so a report that names the same
+    condition for both has lost the distinction the flag exists to carry - and
+    the reader is left unable to tell a build that produced no graph from one
+    whose graph bakar could not read.
+    """
+    artifact = {"tasks": [_row("busybox", "do_compile", 0.0, 42.0)]}
+
+    def _report(dot_text: str):
+        return timing_report(
+            artifact,
+            baselines_path=tmp_path / "absent.json",
+            dependency_source=lambda: (dot_text, ""),
+        )
+
+    empty = _report("digraph { }")
+    assert "empty dependency graph" in empty.graph_join.note
+    assert "empty dependency graph" in empty.critical_path.note
+
+    malformed = _report("this is not dot {{{ -> -> ->")
+    assert "could not be parsed" in malformed.graph_join.note
+    assert "could not be parsed" in malformed.critical_path.note
+    assert "empty" not in malformed.critical_path.note
+
+
+@pytest.mark.unit
 def test_critical_path_available_when_dependency_source_succeeds(tmp_path: Path) -> None:
     artifact = {
         "tasks": [

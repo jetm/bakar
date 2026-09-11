@@ -668,15 +668,20 @@ def _parse_dependency_graph(dependency_source: Callable[[], tuple[str, str]]) ->
     :func:`bakar.graph_analyze.read_graph` instead of re-implementing DOT
     parsing, and node names reach both consumers verbatim as ``<pn>.<task>``.
 
-    A raising source or an unparseable capture degrades to an ``error`` string;
-    this never raises back to :func:`timing_report`.
+    A raising source degrades to an ``error`` string, and so does a capture
+    pydot could not parse - ``read_graph`` reports that as its second return
+    value, which is what lets the consumers below say "unparseable" only when
+    it is true and "empty" only when it is. This never raises back to
+    :func:`timing_report`.
     """
     try:
         # buildlist_text (package_count etc.) isn't needed by either consumer.
         dot_text, _buildlist_text = dependency_source()
-        graph = graph_analyze.read_graph(dot_text)
+        graph, parsed_ok = graph_analyze.read_graph(dot_text)
     except Exception as exc:  # noqa: BLE001 - any dependency-source failure degrades gracefully
         return _ParsedGraph(error=f"dependency source failed ({exc})")
+    if not parsed_ok:
+        return _ParsedGraph(error="dependency graph could not be parsed")
     return _ParsedGraph(graph=graph, nodes=frozenset(graph.nodes))
 
 
@@ -785,10 +790,10 @@ def _compute_graph_join(parsed: _ParsedGraph, executed: list[_ExecutedTask]) -> 
     if parsed.error is not None:
         return GraphJoin(note=f"graph join unavailable: {parsed.error}")
     if not parsed.nodes:
-        # read_graph (graph_analyze.py) returns an empty graph both for a
-        # genuinely empty capture and for one it could not parse - it cannot
-        # be told apart here, so the note must not claim "empty" alone.
-        return GraphJoin(note="graph join unavailable: empty or unparseable dependency graph")
+        # An unparseable capture never reaches here - _parse_dependency_graph
+        # turns read_graph's parsed_ok=False into an error above - so this
+        # branch is the genuinely empty graph and says so.
+        return GraphJoin(note="graph join unavailable: empty dependency graph")
 
     gate = _gate_join(
         "graph join",
@@ -855,7 +860,7 @@ def _compute_critical_path(
     if parsed.error is not None:
         return CriticalPath(note=f"critical-path unavailable: {parsed.error}")
     if parsed.graph is None or parsed.graph.number_of_nodes() == 0:
-        return CriticalPath(note="critical-path unavailable: empty or unparseable dependency graph")
+        return CriticalPath(note="critical-path unavailable: empty dependency graph")
     if not graph_join.gate_passed:
         return CriticalPath(note=f"critical-path unavailable: {graph_join.note}")
 

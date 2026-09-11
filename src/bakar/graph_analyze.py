@@ -18,7 +18,8 @@ chain and cycle-detection questions run on the task-level graph instead
 Functions
 ---------
 read_graph(dot_text)
-    Parse ``task-depends.dot`` text into a task-level MultiDiGraph.
+    Parse ``task-depends.dot`` text into a ``(task-level MultiDiGraph,
+    parsed_ok)`` pair.
 collapse_to_pn(graph)
     Collapse a task-level graph to a PN-level DiGraph (suffix stripped,
     self-loops and parallel edges dropped).
@@ -47,12 +48,13 @@ analyze(dot_text, buildlist_text, target, depth=None)
 
 from __future__ import annotations
 
-import os
+import contextlib
+import io
 import re
-import tempfile
 
 import networkx as nx
-from networkx.drawing.nx_pydot import read_dot
+import pydot
+from networkx.drawing.nx_pydot import from_pydot
 
 
 def _strip_kas_preamble(text: str) -> str:
@@ -89,37 +91,51 @@ def _is_log_line(line: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def read_graph(dot_text: str) -> nx.MultiDiGraph:
+def read_graph(dot_text: str) -> tuple[nx.MultiDiGraph, bool]:
     """Parse ``task-depends.dot`` text into a task-level MultiDiGraph.
 
-    ``networkx.drawing.nx_pydot.read_dot`` only reads from a path, so the
-    text is written to a temp file first and removed afterward.  Returns an
-    empty graph - not raising - on empty or unparseable input, so a malformed
-    artifact does not crash the whole command.
+    Returns ``(graph, parsed_ok)``.  An empty graph alone cannot say whether
+    the capture was genuinely empty or malformed, and a caller that has to
+    hedge its wording ("empty or unparseable") tells the reader neither;
+    ``parsed_ok`` is False only for text pydot rejected, so the two outcomes
+    stay apart the way :class:`bakar.buildstats.BuildstatsRun.outcome` keeps
+    its look-alike outcomes apart.  Empty or whitespace-only input parses
+    fine - there is simply no graph in it.
+
+    Never raises: a malformed artifact yields ``(empty graph, False)`` rather
+    than crashing the whole command.  ``pydot.graph_from_dot_data`` is called
+    on the text directly; ``networkx.drawing.nx_pydot.read_dot`` is only a
+    path-taking wrapper around the same call plus :func:`from_pydot`, so the
+    tempfile it used to require bought nothing.
     """
     if not dot_text or not dot_text.strip():
-        return nx.MultiDiGraph()
+        return nx.MultiDiGraph(), True
 
     # Strip kas-container startup log noise that precedes the DOT content.
     dot_text = _strip_kas_preamble(dot_text)
 
-    path = None
     try:
-        fd, path = tempfile.mkstemp(suffix=".dot")
-        with os.fdopen(fd, "w") as f:
-            f.write(dot_text)
-        graph = read_dot(path)
-    except Exception:  # noqa: BLE001 - graphviz/networkx errors are opaque; fallback to empty graph
-        return nx.MultiDiGraph()
-    finally:
-        if path is not None and os.path.exists(path):
-            os.unlink(path)
+        # pydot's own parser prints its caret diagnostic ("Expected {...},
+        # found ...") straight to stdout on rejected input, rather than
+        # raising or writing to stderr - the one place in this call this
+        # module does not control. Discard it rather than let a malformed
+        # capture leak parser prose into a payload stream downstream commands
+        # (bakar graph --json, bakar insights) treat as machine-readable.
+        with contextlib.redirect_stdout(io.StringIO()):
+            parsed = pydot.graph_from_dot_data(dot_text)
+        # graph_from_dot_data RETURNS None on input its grammar rejects rather
+        # than raising, so the exception guard alone would let that through.
+        if not parsed:
+            return nx.MultiDiGraph(), False
+        graph = from_pydot(parsed[0])
+    except Exception:  # noqa: BLE001 - pydot/networkx errors are opaque; fall back to an empty graph
+        return nx.MultiDiGraph(), False
 
-    # read_dot returns a MultiGraph for an undirected source; bitbake always
+    # from_pydot returns a MultiGraph for an undirected source; bitbake always
     # emits a digraph, but normalize defensively.
     if not graph.is_directed():
         graph = nx.MultiDiGraph(graph)
-    return graph
+    return graph, True
 
 
 def _strip_task(node: str) -> str:
@@ -296,7 +312,7 @@ def top_runtime_packages(depends_dot_text: str, top_n: int = 5) -> list[tuple[st
     graph; the most-depended-on packages have the highest in-degree.  Returns
     an empty list - not raising - on empty or unparseable input.
     """
-    graph = read_graph(depends_dot_text)
+    graph, _parsed_ok = read_graph(depends_dot_text)
     if graph.number_of_nodes() == 0:
         return []
     simple: nx.DiGraph = nx.DiGraph()
@@ -332,7 +348,7 @@ def analyze(
     cyclic by construction on any real recipe set and therefore unsuitable
     for path/cycle questions).
     """
-    task_graph = read_graph(dot_text)
+    task_graph, _parsed_ok = read_graph(dot_text)
     pn_graph = collapse_to_pn(task_graph)
     task_digraph = to_task_digraph(task_graph)
     direct = sorted(pn_graph.successors(target)) if target in pn_graph else []

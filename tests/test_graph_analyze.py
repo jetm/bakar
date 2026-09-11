@@ -94,10 +94,17 @@ class TestIsLogLine:
         assert not _is_log_line("")
 
 
+def _graph(dot_text: str) -> nx.MultiDiGraph:
+    """``read_graph``'s graph half, for tests whose subject is not the flag."""
+    graph, _parsed_ok = read_graph(dot_text)
+    return graph
+
+
 class TestReadGraph:
     def test_fixture_parses_non_empty(self, dot_text: str) -> None:
-        """The falsifier: read_dot must parse the fixture into a non-empty graph."""
-        graph = read_graph(dot_text)
+        """The falsifier: the parse must turn the fixture into a non-empty graph."""
+        graph, parsed_ok = read_graph(dot_text)
+        assert parsed_ok
         assert graph.number_of_nodes() > 0
         assert graph.is_directed()
 
@@ -107,20 +114,46 @@ class TestReadGraph:
             "2026-06-03 15:03:32 - INFO     - kas 5.2 started on Fedora Linux 40\n"
             'digraph depends {\n"a.do_compile" -> "b.do_compile"\n}\n'
         )
-        graph = read_graph(noisy_dot)
+        graph, parsed_ok = read_graph(noisy_dot)
+        assert parsed_ok
         assert graph.number_of_nodes() > 0
 
-    def test_empty_text_returns_empty_graph(self) -> None:
-        graph = read_graph("")
+    def test_empty_text_reads_as_empty_not_unparseable(self) -> None:
+        """An absent capture is empty, and says so: nothing failed to parse."""
+        graph, parsed_ok = read_graph("")
+        assert parsed_ok
         assert graph.number_of_nodes() == 0
 
-    def test_whitespace_only_returns_empty_graph(self) -> None:
-        assert read_graph("   \n\t\n").number_of_nodes() == 0
+    def test_whitespace_only_reads_as_empty_not_unparseable(self) -> None:
+        graph, parsed_ok = read_graph("   \n\t\n")
+        assert parsed_ok
+        assert graph.number_of_nodes() == 0
 
-    def test_malformed_does_not_raise(self) -> None:
-        """A malformed dot returns an empty graph rather than crashing."""
-        graph = read_graph("this is not dot {{{ -> -> ->")
+    def test_malformed_is_flagged_unparseable_not_empty(self) -> None:
+        """The falsifier for the flag: both cases return an empty graph, so only
+        ``parsed_ok`` tells a malformed artifact apart from an absent one."""
+        graph, parsed_ok = read_graph("this is not dot {{{ -> -> ->")
+        assert not parsed_ok
         assert isinstance(graph, nx.MultiDiGraph)
+        assert graph.number_of_nodes() == 0
+
+    def test_unparseable_input_pydot_rejects_without_raising(self) -> None:
+        """``graph_from_dot_data`` returns None rather than raising on this, so
+        the exception guard alone would let it through as a clean parse."""
+        graph, parsed_ok = read_graph("digraph { this is ]] not valid")
+        assert not parsed_ok
+        assert graph.number_of_nodes() == 0
+
+    def test_malformed_input_never_leaks_pydot_diagnostics_to_stdout(self, capsys) -> None:
+        """pydot prints its own caret diagnostic straight to stdout on rejected
+        input rather than raising or writing to stderr - the one part of this
+        call this module does not otherwise control. A command downstream of a
+        malformed captured graph (bakar graph --json, bakar insights) treats
+        stdout as a machine-readable payload, so parser prose landing there
+        would corrupt it."""
+        read_graph("this is not dot {{{ -> -> ->")
+        captured = capsys.readouterr()
+        assert captured.out == ""
 
 
 # ===========================================================================
@@ -130,19 +163,19 @@ class TestReadGraph:
 
 class TestCollapseToPn:
     def test_task_suffix_stripped(self, dot_text: str) -> None:
-        pn = collapse_to_pn(read_graph(dot_text))
+        pn = collapse_to_pn(_graph(dot_text))
         assert set(pn.nodes) == {"busybox", "glibc", "gcc-cross", "binutils-cross"}
 
     def test_self_loops_dropped(self) -> None:
         """An edge between two tasks of the same recipe is not a PN self-loop."""
         text = '"busybox.do_install" -> "busybox.do_compile"\n'
-        pn = collapse_to_pn(read_graph("digraph d {\n" + text + "}\n"))
+        pn = collapse_to_pn(_graph("digraph d {\n" + text + "}\n"))
         assert not any(s == d for s, d in pn.edges())
 
     def test_parallel_edges_merged(self) -> None:
         """Two task edges collapsing to the same PN pair yield one edge."""
         text = '"a.do_compile" -> "b.do_compile"\n"a.do_install" -> "b.do_populate_sysroot"\n'
-        pn = collapse_to_pn(read_graph("digraph d {\n" + text + "}\n"))
+        pn = collapse_to_pn(_graph("digraph d {\n" + text + "}\n"))
         assert pn.number_of_edges() == 1
 
 
@@ -154,18 +187,18 @@ class TestCollapseToPn:
 class TestToTaskDigraph:
     def test_node_names_kept_verbatim(self, dot_text: str) -> None:
         """Nodes stay ``<pn>.<task>``; nothing is collapsed to a recipe name."""
-        task_graph = to_task_digraph(read_graph(dot_text))
+        task_graph = to_task_digraph(_graph(dot_text))
         assert "busybox.do_compile" in task_graph.nodes
         assert "busybox" not in task_graph.nodes
 
     def test_every_node_survives(self, dot_text: str) -> None:
-        multi = read_graph(dot_text)
+        multi = _graph(dot_text)
         assert set(to_task_digraph(multi).nodes) == set(multi.nodes)
 
     def test_parallel_edges_merged(self) -> None:
         """A DiGraph cannot hold multiplicity; the edge itself is kept."""
         text = '"a.do_compile" -> "b.do_compile"\n"a.do_compile" -> "b.do_compile"\n'
-        task_graph = to_task_digraph(read_graph("digraph d {\n" + text + "}\n"))
+        task_graph = to_task_digraph(_graph("digraph d {\n" + text + "}\n"))
         assert task_graph.number_of_edges() == 1
         assert task_graph.has_edge("a.do_compile", "b.do_compile")
 
@@ -176,13 +209,13 @@ class TestToTaskDigraph:
         whose PN collapse were also acyclic would let this pass for the wrong
         reason.
         """
-        multi = read_graph(PN_CYCLE_TASK_DAG_DOT)
+        multi = _graph(PN_CYCLE_TASK_DAG_DOT)
         assert nx.is_directed_acyclic_graph(to_task_digraph(multi))
         assert not nx.is_directed_acyclic_graph(collapse_to_pn(multi))
 
     def test_task_level_cycle_is_not_hidden(self) -> None:
         """A genuine task-level cycle stays visible rather than being dropped."""
-        assert not nx.is_directed_acyclic_graph(to_task_digraph(read_graph(CYCLE_DOT)))
+        assert not nx.is_directed_acyclic_graph(to_task_digraph(_graph(CYCLE_DOT)))
 
     def test_empty_graph_returns_empty(self) -> None:
         assert to_task_digraph(nx.MultiDiGraph()).number_of_nodes() == 0
@@ -217,26 +250,26 @@ class TestPackageCount:
 
 class TestBlastRadius:
     def test_full_transitive_closure(self, dot_text: str) -> None:
-        pn = collapse_to_pn(read_graph(dot_text))
+        pn = collapse_to_pn(_graph(dot_text))
         assert blast_radius(pn, "busybox") == 3
 
     def test_depth_one_caps_expansion(self, dot_text: str) -> None:
-        pn = collapse_to_pn(read_graph(dot_text))
+        pn = collapse_to_pn(_graph(dot_text))
         assert blast_radius(pn, "busybox", depth=1) == 2
 
     def test_depth_two_caps_expansion(self, dot_text: str) -> None:
         """The falsifier: --depth must not return nodes deeper than N levels."""
-        pn = collapse_to_pn(read_graph(dot_text))
+        pn = collapse_to_pn(_graph(dot_text))
         assert blast_radius(pn, "busybox", depth=2) == 3
 
     def test_depth_bound_below_full(self, dot_text: str) -> None:
-        pn = collapse_to_pn(read_graph(dot_text))
+        pn = collapse_to_pn(_graph(dot_text))
         full = blast_radius(pn, "busybox")
         bounded = blast_radius(pn, "busybox", depth=1)
         assert bounded < full
 
     def test_missing_target_returns_zero(self, dot_text: str) -> None:
-        pn = collapse_to_pn(read_graph(dot_text))
+        pn = collapse_to_pn(_graph(dot_text))
         assert blast_radius(pn, "nonexistent") == 0
 
 
@@ -247,13 +280,13 @@ class TestBlastRadius:
 
 class TestLongestChain:
     def test_returns_path(self, dot_text: str) -> None:
-        pn = collapse_to_pn(read_graph(dot_text))
+        pn = collapse_to_pn(_graph(dot_text))
         chain = longest_chain(pn)
         assert chain[0] == "busybox"
         assert chain[-1] == "binutils-cross"
 
     def test_cyclic_returns_empty(self) -> None:
-        pn = collapse_to_pn(read_graph(CYCLE_DOT))
+        pn = collapse_to_pn(_graph(CYCLE_DOT))
         assert longest_chain(pn) == []
 
     def test_task_level_dag_with_cyclic_pn_collapse_is_non_empty(self) -> None:
@@ -273,12 +306,12 @@ class TestLongestChain:
 class TestFindCycle:
     def test_acyclic_reports_none(self, dot_text: str) -> None:
         """The falsifier: cycle detection reports none for an acyclic graph."""
-        pn = collapse_to_pn(read_graph(dot_text))
+        pn = collapse_to_pn(_graph(dot_text))
         assert find_cycle(pn) == []
 
     def test_seeded_cycle_found(self) -> None:
         """The falsifier: cycle detection finds the seeded cycle."""
-        pn = collapse_to_pn(read_graph(CYCLE_DOT))
+        pn = collapse_to_pn(_graph(CYCLE_DOT))
         names = find_cycle(pn)
         assert set(names) == {"a", "b", "c"}
 
@@ -298,17 +331,17 @@ class TestFindCycle:
 
 class TestCriticalNodes:
     def test_highest_in_degree_first(self, dot_text: str) -> None:
-        pn = collapse_to_pn(read_graph(dot_text))
+        pn = collapse_to_pn(_graph(dot_text))
         ranked = critical_nodes(pn)
         assert ranked[0] == ("gcc-cross", 2)
 
     def test_zero_in_degree_omitted(self, dot_text: str) -> None:
-        pn = collapse_to_pn(read_graph(dot_text))
+        pn = collapse_to_pn(_graph(dot_text))
         names = [n for n, _ in critical_nodes(pn)]
         assert "busybox" not in names
 
     def test_top_n_limit(self, dot_text: str) -> None:
-        pn = collapse_to_pn(read_graph(dot_text))
+        pn = collapse_to_pn(_graph(dot_text))
         assert len(critical_nodes(pn, top_n=1)) == 1
 
 
