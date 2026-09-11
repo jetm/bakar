@@ -92,38 +92,59 @@ critical-path note:
 
 ```text
 timing:
-  linux-imx-6.12-r0:do_compile: 812.3s (baseline mean 790.4s)
-  core-image-minimal-1.0-r0:do_rootfs: 214.1s
+  linux-imx-6.12-r0:do_compile: 92.3s (baseline mean 90.4s)
+  core-image-minimal-1.0-r0:do_rootfs: 12.6s
 critical path:
-  critical-path unavailable
+  critical path: 130.0s over 3 nodes
+  linux-imx.do_compile: 92.3s
+  busybox.do_compile: 25.1s (via do_compile_setscene)
+  core-image-minimal.do_rootfs: 12.6s
+graph join:
+  graph join 97.0% (420 of 433 executed tasks resolved to a graph node)
+  unjoined: libedit-native-20251016-3.1-r0:do_create_package_spdx_setscene
+  unjoined: libedit-20251016-3.1-r0:do_unpack
 buildstats join:
   buildstats join 100.0% (433 of 433 executed tasks matched a buildstats record)
 cpu floor:
   CPU floor 45.7s = 1461.9 joined CPU seconds / 32 cores
 concurrency floor:
-  concurrency floor unavailable: the critical path is unavailable, so which
-  bound binds cannot be determined
+  concurrency floor 130.0s = max(CPU floor 45.7s, critical path 130.0s) - the
+  critical path binds
+  basis: both the critical path and the CPU floor are task-level - the path
+  weights each node by the elapsed time of the executed task that resolved to
+  it, the CPU floor by per-task CPU seconds / recorded cores. The two bounds
+  share a basis, so the difference between them is a quantity a reader may
+  reason about
+  headroom 180.4s of 310.4s actual (58.1%), against the binding bound (the
+  critical path) rather than against the CPU floor alone
 task churn:
   task                          tasks     minflt    majflt   syscalls  GB_wr
   do_compile                       38   26652217       997    4631211   3.00
   do_configure                     36   10192800        62     943052   0.13
 ```
 
-The critical-path section always renders as unavailable from this command:
-computing it needs a live `bitbake -g <recipe>` invocation (see
-`bakar graph`), and which recipe to graph isn't knowable from a bare run
-directory. `insights.py` never supplies a `dependency_source` callable, so
-`CriticalPath`'s default `note` field - the literal string
-`critical-path unavailable` - is always what prints. The duration and
-top-N-slowest sections still render fully from the run's persisted event
-artifact.
+The critical path is computed from this run's own captured dependency graph -
+the `task-depends.dot` written into the run directory during the build, never
+a live `bitbake -g <recipe>` invocation (see `bakar graph` for that separate,
+on-demand path). It weights each node by the elapsed time of the executed task
+that resolved to it, and where a setscene restore supplied a node's weight the
+chain names the restore that ran rather than crediting the bare node with
+seconds it never spent - `busybox.do_compile: 25.1s (via do_compile_setscene)`
+above.
+
+The **graph join** gates the critical path the same way the buildstats join
+gates the CPU floor: below 95% of executed tasks resolving to a graph node,
+the section refuses and names the achieved rate rather than publishing a chain
+over a partially-joined graph. The rate is stated whether the section
+publishes or refuses, and a run with no captured dependency graph at all
+renders the section as unavailable rather than as a 0% rate.
 
 The **concurrency floor** is `max(CPU floor, critical path)` and needs both
-bounds, so it degrades to a note here for the same reason. That degradation is
-deliberate rather than a gap: reporting the CPU floor alone under the
-concurrency-floor label would present a throughput bound as a dependency bound,
-which is how an 11.9% CPU-only headroom reads as actionable on a build whose
-real headroom is 1.1%.
+bounds; either one being unavailable leaves this section unavailable too.
+That degradation is deliberate rather than a gap: reporting the CPU floor
+alone under the concurrency-floor label would present a throughput bound as a
+dependency bound, which is how an 11.9% CPU-only headroom reads as actionable
+on a build whose real headroom is 1.1%.
 
 The **buildstats join** gates every CPU-derived figure. When fewer than 95% of
 executed tasks carry a buildstats record, no CPU duration appears anywhere in
@@ -212,6 +233,6 @@ carries no timestamp or message text of its own).
 ## See also
 
 - [report.md](report.md) - success-path run summary (status, duration, image size, layers)
-- [graph.md](graph.md) - live `bitbake -g` dependency graph analysis, including the critical-path computation `insights --timing` cannot do
+- [graph.md](graph.md) - live `bitbake -g` dependency graph analysis for a single recipe; `insights --timing` computes its own critical path from the run's already-captured graph instead
 - [log.md](log.md) - tail the raw kas.log or events.jsonl for a run
 - [monitor.md](monitor.md) - live one-view watch of a running build

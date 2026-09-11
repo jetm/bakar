@@ -7,7 +7,8 @@ resolved run directory's persisted artifacts:
 
 - ``--sstate``: per-recipe sstate cache hit/miss breakdown.
 - ``--timing``: per-task wall-clock duration, top-N slowest tasks, and a
-  best-effort critical-path section (unavailable here - see below).
+  best-effort critical-path section computed from this run's own captured
+  dependency graph.
 - ``--pressure``: PSI CPU/IO/memory time-share summary with a verdict.
 - ``--disk``: per-run disk-usage growth with an optional threshold warning.
 
@@ -17,21 +18,23 @@ resolved workspace's search roots when omitted - never an aggregate across
 multiple runs, so a ``--preset`` multi-release build's ``bakar insights`` (no
 selector) targets and names exactly one run.
 
-The critical-path sub-section of the timing report requires a live
-``bitbake -g <recipe>`` invocation inside kas-container (see
-``commands/graph.py`` and design.md's "Critical-path computation" decision) -
-it is not a pure function over a persisted run directory alone, and which
-recipe to graph is not knowable from a bare run directory. This command
-therefore never supplies a ``dependency_source`` to
-:func:`bakar.insights_timing.timing_report`; the critical-path section always
-renders as an explicit "unavailable" note rather than attempting a live
-invocation, while the duration and top-N-slowest sections still render fully.
+The critical-path sub-section is computed from this run's own captured
+dependency graph - the ``task-depends.dot`` written into the run directory
+during the build (see :func:`_dependency_source`), never a fresh
+``bitbake -g <recipe>`` invocation. The reader correlates that capture
+against the run's own build window and raises with a specific reason when
+it cannot be used, rather than returning a sentinel - see that function for
+the exact failure modes. The path is then gated on its own graph-join rate
+(:class:`bakar.insights_timing.GraphJoin`, 95% threshold): below that rate
+the section refuses rather than publishing a chain over a partially-joined
+graph.
 
 That has a consequence worth stating rather than leaving to be discovered: the
 concurrency floor is ``max(CPU floor, critical path)`` and needs BOTH bounds, so
-with no dependency source it always renders unavailable here too. It degrades
-rather than falling back to the CPU floor alone, which would put a throughput
-bound under a concurrency bound's name - see
+it renders unavailable whenever either one is - most commonly when the graph
+join falls short of its gate, or when no dependency graph was captured for
+this run at all. It degrades rather than falling back to the CPU floor alone,
+which would put a throughput bound under a concurrency bound's name - see
 :class:`bakar.insights_timing.ConcurrencyFloor`. A ``buildstats_source`` IS
 supplied, so the join and CPU-floor sections render for real from
 ``cfg.resolved_tmpdir`` - for the capture correlated with the reported run's own
