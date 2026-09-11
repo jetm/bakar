@@ -863,8 +863,8 @@ def test_throughput_bound_build_names_cpu_capacity_as_the_binding_bound(tmp_path
 
 
 def test_floor_states_the_basis_of_each_input_and_computes_the_headroom_itself(tmp_path: Path) -> None:
-    """Design D3's mitigation: the two bounds are measured differently, and the
-    output says so rather than leaving a reader to subtract them."""
+    """Design D5: both bounds are task-level, so the output states a shared
+    basis rather than the old two-different-bases caveat."""
     artifact = _floor_artifact(a_seconds=548.0, b_seconds=1000.0, actual=1566.0)
     run = _parsed(_stat("a", "do_compile", 2520.0), _stat("b", "do_compile", 3000.0))
 
@@ -876,12 +876,30 @@ def test_floor_states_the_basis_of_each_input_and_computes_the_headroom_itself(t
     )
 
     rendered = "\n".join(report.concurrency_floor.report_lines())
-    assert "recipe-level" in rendered
     assert "task-level" in rendered
-    assert "not converted" in rendered
+    assert "share a basis" in rendered
     # The headroom figure is produced by the tool, not implied.
     assert "headroom" in rendered
     assert report.concurrency_floor.headroom_seconds is not None
+
+
+def test_published_basis_text_never_says_recipe_level(tmp_path: Path) -> None:
+    """Guards design D5's rewrite: a future edit reintroducing the phrase
+    "recipe-level" in the rendered floor section must fail this test, since the
+    critical path and CPU floor are both task-level as of task 4.1."""
+    artifact = _floor_artifact(a_seconds=548.0, b_seconds=1000.0, actual=1566.0)
+    run = _parsed(_stat("a", "do_compile", 2520.0), _stat("b", "do_compile", 3000.0))
+
+    report = timing_report(
+        artifact,
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=_chain_source,
+        buildstats_source=lambda: run,
+    )
+
+    floor = report.concurrency_floor
+    assert floor.available is True
+    assert "recipe-level" not in "\n".join(floor.report_lines())
 
 
 def test_floor_unavailable_when_the_critical_path_is_unavailable(tmp_path: Path) -> None:
@@ -951,9 +969,10 @@ def test_headroom_unavailable_when_the_artifact_records_no_build_span(tmp_path: 
     assert "%" not in rendered.split("headroom unavailable")[1]
 
 
-def test_negative_headroom_reads_as_an_over_weighted_path_not_a_beaten_floor(tmp_path: Path) -> None:
-    """The recipe-level path over-weights by construction (D3), so it can exceed
-    the real build. That must not render as though the build outran its floor."""
+def test_negative_headroom_is_not_attributed_to_recipe_level_over_weighting(tmp_path: Path) -> None:
+    """Both bounds are task-level as of design D5, so a negative headroom is a
+    real signal now - it must not be dismissed as the old recipe-level
+    over-weighting artifact."""
     artifact = _floor_artifact(a_seconds=548.0, b_seconds=1000.0, actual=1200.0)
     run = _parsed(_stat("a", "do_compile", 2520.0), _stat("b", "do_compile", 3000.0))
 
@@ -968,7 +987,8 @@ def test_negative_headroom_reads_as_an_over_weighted_path_not_a_beaten_floor(tmp
     assert floor.available is True
     assert floor.headroom_seconds == pytest.approx(-348.0)
     rendered = "\n".join(floor.report_lines())
-    assert "over-estimate" in rendered
+    assert "over-estimate" not in rendered
+    assert "recipe-level" not in rendered
     assert "headroom negative" in rendered
 
 

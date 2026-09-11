@@ -12,8 +12,10 @@ The tasks-list extraction and missing/negative-duration guard reuse
 list a third time (see design.md's "reuse ``_tasks_from``" decision).
 
 This module also exposes an optional critical-path sub-section: the longest
-dependency-respecting serial chain through the build, weighted by this run's
-per-recipe task durations. Per design.md's confirmed finding that
+dependency-respecting serial chain through the build, each node weighted by
+the elapsed time of the executed task that resolves to it (see
+:func:`_resolve_graph_node`) rather than by a recipe's summed task seconds.
+Per design.md's confirmed finding that
 ``commands/graph.py``'s dependency model always invokes ``bitbake -g
 <recipe>`` live inside kas-container (no cached/offline model exists), the
 critical-path step cannot be a pure function over the persisted artifact
@@ -313,17 +315,17 @@ class CpuFloor:
 #: CPU-only 11.9% headroom read as actionable when the real figure was 1.1%.
 BINDING_LABELS = {"cpu": "CPU capacity", "path": "the critical path"}
 
-#: Stated beside every available concurrency floor. Design D3 keeps the path
-#: recipe-level and the CPU floor task-level, and deliberately does NOT convert
-#: one to the other - so the two bounds are measured differently and the
-#: difference between them is not a meaningful quantity. Saying so is the
-#: mitigation D3's own risk table names.
+#: Stated beside every available concurrency floor. As of design D5, both the
+#: critical path and the CPU floor are task-level - each critical-path node
+#: carries only the elapsed time of the executed task that resolved to it, on
+#: the same per-task-seconds basis the CPU floor uses. The difference between
+#: the two bounds is therefore a quantity a reader may reason about, not two
+#: measurements on different bases.
 BASIS_NOTE = (
-    "basis: the critical path is recipe-level - each node carries that recipe's summed task "
-    "seconds, including tasks not themselves on the path - while the CPU floor is task-level "
-    "(per-task CPU seconds / recorded cores). Per design D3 the two are not converted to a "
-    "common basis: the headroom below is computed here against the binding bound, and the "
-    "difference between the two bounds is not a quantity to subtract"
+    "basis: both the critical path and the CPU floor are task-level - the path weights each "
+    "node by the elapsed time of the executed task that resolved to it, the CPU floor by "
+    "per-task CPU seconds / recorded cores. The two bounds share a basis, so the difference "
+    "between them is a quantity a reader may reason about"
 )
 
 
@@ -346,10 +348,9 @@ class ConcurrencyFloor:
 
     ``headroom_seconds`` is stated against the ACTUAL build duration, and it is
     computed here rather than left for a reader to derive from the two bounds -
-    see :data:`BASIS_NOTE`. It can legitimately be negative: the recipe-level
-    path over-weights by construction (design D3), so a path exceeding the real
-    build is evidence the path is an over-estimate, not that the build beat its
-    own floor.
+    see :data:`BASIS_NOTE`. It can legitimately be negative: the floor is a
+    bound over the tasks a build cannot avoid running in sequence, and nothing
+    guarantees the actual build stayed at or below it.
     """
 
     available: bool = False
@@ -1243,9 +1244,9 @@ def _compute_concurrency_floor(
         else:
             headroom_note = (
                 f"headroom negative: the floor {seconds:.1f}s exceeds the {actual:.1f}s this build "
-                f"actually took ({headroom_pct:.1f}%). The recipe-level path over-weights by "
-                "construction (design D3), so read this as the path being an over-estimate rather "
-                "than as the build beating its own floor"
+                f"actually took ({headroom_pct:.1f}%). Both bounds are task-level (design D5), so "
+                "this is a real signal rather than an artifact of over-weighting - it may reflect a "
+                "dependency-chain bottleneck, measurement noise, or something else worth investigating"
             )
 
     return ConcurrencyFloor(
