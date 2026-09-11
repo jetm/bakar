@@ -11,20 +11,42 @@ The tasks-list extraction and missing/negative-duration guard reuse
 :func:`bakar.task_rollup.tasks_from` rather than re-parsing the ``tasks``
 list a third time (see design.md's "reuse ``tasks_from``" decision).
 
-This module also exposes an optional critical-path sub-section: the longest
-dependency-respecting serial chain through the build, each node weighted by
-the elapsed time of the executed task that resolves to it (see
-:func:`_resolve_graph_node`) rather than by a recipe's summed task seconds.
-It is opt-in: callers pass a ``dependency_source`` callable that returns
-the ``(dot_text, buildlist_text)`` pair. In production that callable reads
-the run's own already-captured ``task-depends.dot`` (see
-``commands.insights._dependency_source``) rather than invoking a fresh
-``bitbake -g <recipe>`` - the graph capture happens once, at build time,
-and this module only ever reads it back. Tests supply a canned fixture.
-When ``dependency_source`` is omitted, or it raises, or the resulting graph
-is empty/cyclic, :class:`CriticalPath` reports ``available=False`` with an
-explanatory ``note`` - the duration and top-N-slowest sections above never
-depend on this section's success.
+This module is the orchestrator: :func:`timing_report` builds the executed-task
+identity set and the duration list, then delegates to three sibling modules for
+the named clusters that used to live here directly:
+
+- :mod:`bakar.insights_joins` - :class:`~bakar.insights_joins.GraphJoin` and
+  :class:`~bakar.insights_joins.BuildstatsJoin`, and the shared join-rate gate
+  both are built on.
+- :mod:`bakar.insights_critical_path` - :class:`~bakar.insights_critical_path.CriticalPath`,
+  the longest dependency-respecting chain through the build, each node
+  weighted by the elapsed time of the executed task that resolves to it
+  rather than by a recipe's summed task seconds. It is opt-in: callers pass a
+  ``dependency_source`` callable that returns the ``(dot_text,
+  buildlist_text)`` pair. In production that callable reads the run's own
+  already-captured ``task-depends.dot`` (see
+  ``commands.insights._dependency_source``) rather than invoking a fresh
+  ``bitbake -g <recipe>`` - the graph capture happens once, at build time, and
+  this module only ever reads it back. Tests supply a canned fixture. When
+  ``dependency_source`` is omitted, or it raises, or the resulting graph is
+  empty/cyclic, :class:`~bakar.insights_critical_path.CriticalPath` reports
+  ``available=False`` with an explanatory ``note`` - the duration and top-N
+  sections below never depend on this section's success.
+- :mod:`bakar.insights_churn` - :class:`~bakar.insights_churn.TaskChurn`,
+  per-task-type process-churn and I/O aggregation over the joined buildstats
+  records.
+
+The names those modules define are re-exported here (``CriticalPath``,
+``GraphJoin``, ``BuildstatsJoin``, ``TaskChurn``, join constants, etc.) so
+this module's import surface - and every existing caller and test importing
+from :mod:`bakar.insights_timing` - keeps working unchanged; this was an
+internal reorganisation, not an API change.
+
+What stays here, beyond the orchestrator itself: the CPU floor and the
+concurrency floor built on it (both need the artifact's recorded build-host
+core count, which is a property of THIS run rather than of either join or the
+critical path), the sstate regime detection, and the build/correlation window
+helpers the buildstats capture is selected against.
 """
 
 from __future__ import annotations
@@ -34,54 +56,60 @@ import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-import networkx as nx
-
-from bakar import graph_analyze, task_timings
+from bakar import task_timings
+from bakar.insights_churn import CHURN_COLUMNS, CHURN_WIDTHS, TaskChurn, _compute_churn
+from bakar.insights_critical_path import CRITICAL_PATH_TOP_N, CriticalPath, _compute_critical_path
+from bakar.insights_joins import (
+    _NOT_EXECUTED_OUTCOME,
+    JOIN_RATE_THRESHOLD,
+    UNJOINED_SAMPLE,
+    BuildstatsJoin,
+    GraphJoin,
+    _compute_graph_join,
+    _compute_join,
+    _parse_dependency_graph,
+    _resolve_graph_node,
+)
 from bakar.task_rollup import tasks_from
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Container
+    from collections.abc import Callable
     from pathlib import Path
 
-    from bakar.buildstats import BuildstatsRun, TaskStats
+    from bakar.buildstats import BuildstatsRun
+    from bakar.insights_joins import _ExecutedTask
+
+#: Re-exported for backward compatibility: this module used to define these
+#: names directly before the join/critical-path/churn clusters moved to
+#: :mod:`bakar.insights_joins`, :mod:`bakar.insights_critical_path` and
+#: :mod:`bakar.insights_churn` respectively. Existing callers and tests that
+#: import them from here keep working unchanged.
+__all__ = [
+    "BASIS_NOTE",
+    "BINDING_LABELS",
+    "CHURN_COLUMNS",
+    "CHURN_WIDTHS",
+    "CRITICAL_PATH_TOP_N",
+    "DEFAULT_TOP_N",
+    "JOIN_RATE_THRESHOLD",
+    "UNJOINED_SAMPLE",
+    "BuildstatsJoin",
+    "ConcurrencyFloor",
+    "CpuFloor",
+    "CriticalPath",
+    "GraphJoin",
+    "Regime",
+    "TaskChurn",
+    "TaskDuration",
+    "TimingReport",
+    "_compute_concurrency_floor",
+    "_resolve_graph_node",
+    "build_window",
+    "correlation_window",
+    "timing_report",
+]
 
 DEFAULT_TOP_N = 10
-
-#: How many of the critical path's heaviest nodes render in the report. A
-#: task-level chain has no natural ceiling the way the retired recipe-level
-#: chain did (274 possible nodes) - a real capture runs into the thousands
-#: (design D6) - so the bound is a named constant rather than a number left
-#: to the reader.
-CRITICAL_PATH_TOP_N = 10
-
-#: Share of executed tasks that must carry a buildstats record before any
-#: CPU figure derived from that join may be published. The reference analyser
-#: (chezmoi's ``yocto-bench-buildstats.py``) arrived at the same 95% after
-#: publishing a path over a partially-joined graph: the result was confidently
-#: wrong and read exactly like a correct one.
-JOIN_RATE_THRESHOLD = 0.95
-
-#: How many unjoined task keys a refusal names. Enough to recognise a pattern
-#: (all setscene, all one recipe) without pasting the whole shortfall.
-UNJOINED_SAMPLE = 5
-
-#: Column widths for the churn table, in the order the header names them. Held
-#: as a constant rather than as formatter arguments because this project is
-#: mid-way through a high-arity cleanup and a per-column parameter list is
-#: exactly the signature that pass adds back.
-#:
-#: They sum to 79 plus a leading space, which keeps a row inside an 80-column
-#: terminal, and the first column holds the longest real task name
-#: (``do_package_write_rpm_setscene``, 29). A wider table is not a cosmetic
-#: problem: Rich hard-wraps the overflow onto a second line, and a row split
-#: across two lines is exactly the shape that gets read against the wrong
-#: column heading.
-CHURN_COLUMNS = ("task type", "tasks", "minflt", "majflt", "syscalls", "GB_wr")
-CHURN_WIDTHS = (30, 5, 14, 10, 12, 8)
-
-#: Bytes per gigabyte for the ``GB_wr`` column. Decimal, matching how the
-#: reference analyser labelled the same column.
-BYTES_PER_GB = 1_000_000_000
 
 
 @dataclass(frozen=True)
@@ -97,71 +125,6 @@ class TaskDuration:
     duration: float
     baseline_mean: float | None = None
     baseline_stddev: float | None = None
-
-
-@dataclass(frozen=True)
-class CriticalPath:
-    """The critical-path sub-section: the longest dependency-respecting chain.
-
-    ``available`` is ``False`` (the default) when no dependency source was
-    supplied to :func:`timing_report`, when the supplied source failed,
-    returned an empty graph, or returned a cyclic graph, or when the
-    graph-join rate (see :class:`GraphJoin`) fell below its gate - in every
-    one of those cases ``note`` explains why, and ``chain``/``total_seconds``
-    stay at their empty defaults. The join refusal is the one most likely to
-    fire on a real, mostly-healthy run; the other four are rarer. The
-    duration and top-N sections of :class:`TimingReport` never depend on
-    this section's state.
-
-    ``contributor`` maps a chain node to the name of the executed task that
-    supplied its weight, and only carries an entry where that differs from
-    the node's own bare name - the setscene-restore case, where a node's
-    seconds came from the restore that stood in for it rather than from the
-    node's own task. An ordinary node needs no entry: its contributor is
-    itself.
-    """
-
-    available: bool = False
-    chain: list[str] = field(default_factory=list)
-    total_seconds: float = 0.0
-    note: str = "critical-path unavailable"
-    contributor: dict[str, str] = field(default_factory=dict)
-    node_weights: dict[str, float] = field(default_factory=dict)
-
-    def report_lines(self) -> list[str]:
-        """Render this section as plain text lines.
-
-        An unavailable path renders its note alone - no total, no node count,
-        matching :meth:`BuildstatsJoin.report_lines`'s "no number without its
-        caveat" rule. The available case ranks the chain by each node's OWN
-        weight rather than chain order, since the point of the section is
-        which link to shorten and that is the heaviest link regardless of
-        where it sits on the chain, then bounds the rendered set at
-        :data:`CRITICAL_PATH_TOP_N` - a task-level chain has no natural
-        ceiling. A node whose weight came from a setscene restore names that
-        restore, so the line never credits a bare node with seconds it never
-        spent.
-
-        A zero-weight node - the graph models work the build could do, and
-        some chain nodes may not have executed at all - is never rendered:
-        printing "0.0s" for a task that did not run is indistinguishable from
-        one that ran in under 50ms, and such a node is by definition never
-        "the link to shorten". The header names the chain's full node count
-        (which can exceed the number of lines below it) as "nodes", not
-        "tasks", since not every node on it necessarily ran.
-        """
-        if not self.available:
-            return [f"  {self.note}"]
-
-        lines = [f"  critical path: {self.total_seconds:.1f}s over {len(self.chain)} nodes"]
-        weighted = [node for node in self.chain if self.node_weights.get(node, 0.0) > 0.0]
-        ranked = sorted(weighted, key=lambda node: self.node_weights[node], reverse=True)
-        for node in ranked[:CRITICAL_PATH_TOP_N]:
-            weight = self.node_weights[node]
-            contributor = self.contributor.get(node)
-            via = f" (via {contributor})" if contributor and contributor != node else ""
-            lines.append(f"  {node}: {weight:.1f}s{via}")
-        return lines
 
 
 @dataclass(frozen=True)
@@ -198,129 +161,6 @@ class Regime:
 
 
 @dataclass(frozen=True)
-class BuildstatsJoin:
-    """How much of this run's executed task set carries a buildstats record.
-
-    Every CPU-derived figure in this report - the CPU floor, and therefore the
-    concurrency floor built on it - is computed over the tasks that joined. A
-    join covering 60% of the build yields a floor that is arithmetically fine
-    and factually a floor for a different, smaller build, with nothing in its
-    formatting to say so. So the rate is the gate, not a footnote.
-
-    ``cpu_seconds`` is ``None`` whenever ``gate_passed`` is false. That is
-    structural rather than stylistic: a downstream section cannot print a floor
-    it was never handed the input for, so the "refused but printed anyway"
-    failure has no expressible form here.
-
-    ``joined`` and ``executed`` are counted over the SAME set - every executed
-    task raises ``executed``, and only a task with a matching buildstats record
-    also raises ``joined``. Dropping unjoined tasks from both sides instead
-    would pin the rate at 100% and pass the gate vacuously over precisely the
-    partial-join case it exists to catch.
-
-    ``available`` says the join was computed at all; it is false when the
-    buildstats tree was absent, empty, or its source raised. Those are distinct
-    from a computed-but-failing rate, which is ``available=True,
-    gate_passed=False``.
-
-    ``unjoined_sample`` is carried on the PASSING branch too, matching
-    :class:`GraphJoin`: a residual that never grew past the gate is the one a
-    reader can still act on, and a sample printed only once the gate has already
-    refused surfaces the pattern a run too late.
-    """
-
-    available: bool = False
-    gate_passed: bool = False
-    executed: int = 0
-    joined: int = 0
-    cpu_seconds: float | None = None
-    unjoined_sample: list[str] = field(default_factory=list)
-    note: str = "buildstats join unavailable: no buildstats source supplied"
-
-    @property
-    def rate(self) -> float:
-        """Joined share of executed tasks, 0.0 when nothing executed.
-
-        Zero executed tasks is a refusal, not a pass: a rate defined as 1.0 over
-        an empty denominator would clear the gate on a run that measured nothing.
-        """
-        return (self.joined / self.executed) if self.executed else 0.0
-
-    def report_lines(self) -> list[str]:
-        """Render this section as plain text lines.
-
-        Nothing here formats a duration, and that is the invariant under test:
-        when the gate refuses there is no "would have been" figure, no debug
-        field and no parenthetical carrying seconds. A refused floor that still
-        shows its number is the failure this whole section exists to prevent -
-        a reader takes the number and discards the caveat.
-        """
-        lines = [f"  {self.note}"]
-        lines.extend(f"  unjoined: {name}" for name in self.unjoined_sample)
-        return lines
-
-
-@dataclass(frozen=True)
-class GraphJoin:
-    """How much of this run's executed task set resolves to a task-graph node.
-
-    The critical path is computed over the captured task graph and weighted by
-    the executed tasks that resolve to its nodes, so a partially-joined graph
-    yields a chain that is arithmetically fine and factually a chain through a
-    different, smaller build. Measured on run ``20260910-173444`` a naive join
-    landed at 66.3% while :class:`BuildstatsJoin` on the SAME run was 100.0% -
-    the two joins measure different pairs of sides, so the buildstats gate
-    cannot detect this failure at all and this one is separate rather than
-    reused.
-
-    ``joined`` and ``executed`` are counted over the same set, for the reason
-    :class:`BuildstatsJoin` spells out: dropping unjoined tasks from both sides
-    would pin the rate at 100% over precisely the case the gate exists to catch.
-
-    ``available`` says the join was computed at all; it is false when no
-    dependency source was supplied, when the source raised, or when the graph
-    it returned is empty. An absent input is not a coverage failure and must
-    not render as 0%, which is why the default note says "unavailable" rather
-    than naming a rate - :class:`CpuFloor` makes the same distinction.
-
-    ``unjoined_sample`` is carried on the PASSING branch too, as it is on
-    :class:`BuildstatsJoin`. The residual it names is what the version-strip
-    debt marker on :func:`_resolve_graph_node` asks a reader to watch: its
-    upgrade trigger is "the sample is dominated by version-strip misses", and a
-    sample printed only once the gate has already refused would surface that
-    pattern one run after it mattered.
-    """
-
-    available: bool = False
-    gate_passed: bool = False
-    executed: int = 0
-    joined: int = 0
-    unjoined_sample: list[str] = field(default_factory=list)
-    note: str = "graph join unavailable: no dependency source supplied"
-
-    @property
-    def rate(self) -> float:
-        """Joined share of executed tasks, 0.0 when nothing executed.
-
-        Zero executed tasks is a refusal, not a pass: a rate defined as 1.0 over
-        an empty denominator would clear the gate on a run that measured nothing.
-        """
-        return (self.joined / self.executed) if self.executed else 0.0
-
-    def report_lines(self) -> list[str]:
-        """Render this section as plain text lines.
-
-        The note carries the achieved rate on the PASSING branch as well as the
-        refusing one: the chain a reader might act on is the one whose coverage
-        they need, so naming the rate only when the section declines is exactly
-        backwards.
-        """
-        lines = [f"  {self.note}"]
-        lines.extend(f"  unjoined: {name}" for name in self.unjoined_sample)
-        return lines
-
-
-@dataclass(frozen=True)
 class CpuFloor:
     """The CPU-only lower bound: joined CPU seconds divided by the build host's cores.
 
@@ -334,7 +174,8 @@ class CpuFloor:
     yield the same floor on any machine.
 
     An artifact predating that block has no recorded count. That degrades with
-    an explicit note, following :func:`_compute_critical_path`'s precedent -
+    an explicit note, following
+    :func:`bakar.insights_critical_path._compute_critical_path`'s precedent -
     substituting the analysing host's count would be exactly the defect above,
     arrived at by fallback instead of by design.
 
@@ -421,134 +262,13 @@ class ConcurrencyFloor:
         An unavailable floor renders its note and nothing else - in particular
         no bound value and no headroom, since a headroom against a floor that
         was refused is the same "took the number, dropped the caveat" failure
-        :meth:`BuildstatsJoin.report_lines` guards.
+        :meth:`bakar.insights_joins.BuildstatsJoin.report_lines` guards.
         """
         lines = [f"  {self.note}"]
         if self.basis_note is not None:
             lines.append(f"  {self.basis_note}")
         if self.headroom_note is not None:
             lines.append(f"  {self.headroom_note}")
-        return lines
-
-
-#: Stated beside every available churn table. Two things a reader cannot
-#: recover from the numbers themselves: which rusage the counters come from,
-#: and that the columns are read by field name.
-#:
-#: The self/child split is not a detail. On one real capture ``do_configure``
-#: read 7,023,117 self minor faults against 214,243,919 CHILD minor faults -
-#: the child accounts for 97% of the churn, because the work happens in spawned
-#: configure and compiler subprocesses. A table summing only ``rusage ru_*``
-#: under-reports by roughly 30x on exactly the task types this section exists
-#: to characterize, so the choice is stated rather than left to be inferred.
-CHURN_BASIS_NOTE = (
-    "basis: each counter sums the task's OWN rusage and its CHILD rusage "
-    "(bitbake forks the real work out, and the child carries ~97% of the faults on a real "
-    "capture, so self-only counters under-report by roughly 30x). Fields are read by name from "
-    "each buildstats file - 'rusage ru_minflt', 'Child rusage ru_majflt', 'IO syscr'/'IO syscw', "
-    "'IO write_bytes' - never by column position"
-)
-
-
-def _churn_line(cells: tuple[str, ...]) -> str:
-    """Lay one churn row - or the header - out on :data:`CHURN_WIDTHS`.
-
-    The header and every data row go through this one function, so the two
-    cannot drift into disagreeing about which column is which. The first column
-    is left-justified and the numeric ones right-justified: right-justifying a
-    task name would run it up against the ``tasks`` heading with no gap, which
-    is how a reader ends up parsing a value against its neighbour's label.
-    """
-    parts = []
-    for index, (cell, width) in enumerate(zip(cells, CHURN_WIDTHS, strict=True)):
-        if index == 0:
-            # Truncate rather than let the row grow past its width budget.
-            # ``ljust`` does not cap, and the first column's stated maximum
-            # (``do_package_write_rpm_setscene``, 29) is not the real one -
-            # oe-core has at least five longer, up to
-            # ``do_deploy_source_date_epoch_setscene`` at 36. An sstate-restored
-            # build emits those routinely, which is bakar's default regime after
-            # ``sstate-seed``. An over-long name pushed the row past the 80
-            # columns the widths budget for, Rich hard-wrapped it, and the
-            # numbers landed under the wrong headings - the exact misread this
-            # table exists to prevent, and the one that once had ``majflt``
-            # quoted as a task count. A clipped name is legible; a wrapped row
-            # is actively misleading.
-            parts.append(cell[: width - 1] + "~" if len(cell) > width else cell.ljust(width))
-        else:
-            parts.append(cell.rjust(width))
-    return "".join(parts)
-
-
-@dataclass(frozen=True)
-class ChurnRow:
-    """One task type's summed process-churn and I/O counters.
-
-    ``minflt`` is process churn - pages faulted in without touching the disk,
-    which is what a storm of short-lived autoconf probe processes produces.
-    ``majflt`` and ``write_bytes`` are I/O. Keeping them in separate columns is
-    the whole capability: the two profiles were indistinguishable on wall-clock
-    alone, and it was the minor-to-major ratio that identified probe churn as a
-    serial floor rather than a disk problem.
-    """
-
-    task: str
-    tasks: int
-    minflt: int
-    majflt: int
-    syscalls: int
-    write_bytes: int
-
-
-@dataclass(frozen=True)
-class TaskChurn:
-    """Per-task-type churn columns aggregated over the joined buildstats records.
-
-    Only records matching an executed task contribute, for the same reason
-    :func:`_compute_join` restricts its CPU sum: a buildstats tree can carry rows
-    from a previous run or a sibling machine's directory, and summing the tree
-    wholesale credits them to this build.
-
-    Unlike the CPU floor, this section is NOT withheld when the join gate
-    refuses. The floor is a single build-wide bound, so a partial join makes it a
-    bound for a different, smaller build; these are per-task-type aggregates, and
-    a subset of ``do_compile`` records still describes ``do_compile``. What a
-    partial join does cost is coverage, so ``covered``/``executed`` are stated in
-    the note on every rendering rather than only on a refusal.
-    """
-
-    available: bool = False
-    rows: list[ChurnRow] = field(default_factory=list)
-    covered: int = 0
-    executed: int = 0
-    note: str = "task churn unavailable: no buildstats source supplied"
-    basis_note: str | None = None
-
-    def report_lines(self) -> list[str]:
-        """Render the note, the basis, and the column table.
-
-        Columns are emitted in :data:`CHURN_COLUMNS` order with the header
-        printed from the same constant, so a reader and the formatter cannot
-        disagree about which column is which - the failure this task's own
-        history names, where the ``majflt`` column was quoted as a task count
-        and ``GB_wr`` as cores-per-task.
-        """
-        lines = [f"  {self.note}"]
-        if self.basis_note is not None:
-            lines.append(f"  {self.basis_note}")
-        if not self.available:
-            return lines
-        lines.append(" " + _churn_line(CHURN_COLUMNS))
-        for row in self.rows:
-            cells = (
-                row.task,
-                f"{row.tasks}",
-                f"{row.minflt:,}",
-                f"{row.majflt:,}",
-                f"{row.syscalls:,}",
-                f"{row.write_bytes / BYTES_PER_GB:.2f}",
-            )
-            lines.append(" " + _churn_line(cells))
         return lines
 
 
@@ -564,43 +284,6 @@ class TimingReport:
     cpu_floor: CpuFloor = field(default_factory=CpuFloor)
     concurrency_floor: ConcurrencyFloor = field(default_factory=ConcurrencyFloor)
     task_churn: TaskChurn = field(default_factory=TaskChurn)
-
-
-def _weighted_longest_path(graph: nx.DiGraph, node_weights: dict[str, float]) -> tuple[list[str], float]:
-    """Return the node chain and total weight of the heaviest path through ``graph``.
-
-    ``nx.dag_longest_path(weight=...)`` sums EDGE weights, so a path's first
-    node - which has no incoming edge - never contributes its own weight to
-    the comparison. That silently favors a path whose head node has a large
-    duration less than it should, and can pick the wrong chain entirely (a
-    two-node chain A->B with duration(A)=100, duration(B)=1 loses to an
-    unrelated C->D with duration(C)=10, duration(D)=50, because only B's and
-    D's durations ever reach an edge weight). This does the standard DAG
-    longest-path DP with weight on NODES instead: ``best[v] = node_weights[v]
-    + max(best[u] for u in predecessors(v), default=0)``, so every node's own
-    duration counts once, including the chain's head.
-    """
-    order = list(nx.topological_sort(graph))
-    best: dict[str, float] = {}
-    predecessor: dict[str, str | None] = {}
-    for node in order:
-        preds = list(graph.predecessors(node))
-        if preds:
-            best_pred = max(preds, key=lambda p: best[p])
-            best[node] = best[best_pred] + node_weights.get(node, 0.0)
-            predecessor[node] = best_pred
-        else:
-            best[node] = node_weights.get(node, 0.0)
-            predecessor[node] = None
-
-    end_node = max(best, key=lambda n: best[n])
-    chain: list[str] = []
-    cur: str | None = end_node
-    while cur is not None:
-        chain.append(cur)
-        cur = predecessor[cur]
-    chain.reverse()
-    return chain, best[end_node]
 
 
 def _regime_from(artifact: dict | list, task_count: int) -> Regime:
@@ -639,530 +322,6 @@ def _regime_from(artifact: dict | list, task_count: int) -> Regime:
     )
 
 
-@dataclass(frozen=True)
-class _ParsedGraph:
-    """One parse of the captured dependency graph, shared by both consumers.
-
-    The graph join and the critical path read the same capture, and
-    ``_dependency_source(run_dir, window)`` in :mod:`bakar.commands.insights`
-    correlates the capture against the run's build window before it returns -
-    so invoking it a second time is not free. Parsing once and handing this
-    around is what keeps the report to one invocation without either consumer
-    having to know the other exists.
-
-    ``error`` carries the source's or the parser's failure text and is ``None``
-    on success; ``graph`` is ``None`` exactly when ``error`` is set.
-    """
-
-    graph: nx.MultiDiGraph | None = None
-    nodes: frozenset[str] = frozenset()
-    error: str | None = None
-
-
-def _parse_dependency_graph(dependency_source: Callable[[], tuple[str, str]]) -> _ParsedGraph:
-    """Call the dependency source once and parse the graph it returns.
-
-    ``dependency_source`` returns ``(dot_text, buildlist_text)`` - the same two
-    artifacts ``bakar graph`` retrieves from a live ``bitbake -g`` run (see
-    :mod:`bakar.commands.graph`). Parsing reuses
-    :func:`bakar.graph_analyze.read_graph` instead of re-implementing DOT
-    parsing, and node names reach both consumers verbatim as ``<pn>.<task>``.
-
-    A raising source degrades to an ``error`` string, and so does a capture
-    pydot could not parse - ``read_graph`` reports that as its second return
-    value, which is what lets the consumers below say "unparseable" only when
-    it is true and "empty" only when it is. This never raises back to
-    :func:`timing_report`.
-    """
-    try:
-        # buildlist_text (package_count etc.) isn't needed by either consumer.
-        dot_text, _buildlist_text = dependency_source()
-        graph, parsed_ok = graph_analyze.read_graph(dot_text)
-    except Exception as exc:  # noqa: BLE001 - any dependency-source failure degrades gracefully
-        return _ParsedGraph(error=f"dependency source failed ({exc})")
-    if not parsed_ok:
-        return _ParsedGraph(error="dependency graph could not be parsed")
-    return _ParsedGraph(graph=graph, nodes=frozenset(graph.nodes))
-
-
-@dataclass(frozen=True)
-class _JoinGate:
-    """The join-rate verdict shared by :class:`GraphJoin` and :class:`BuildstatsJoin`.
-
-    Both joins answer the same question over different resolvers - what share of
-    the executed set reached a record - and both refuse below the same
-    :data:`JOIN_RATE_THRESHOLD`. Holding one gate means a change to the
-    threshold, to the empty-denominator refusal, or to the sample bound lands on
-    both joins at once; two copies could drift apart silently, which for a gate
-    means one of them quietly stops refusing.
-
-    The gate owns the counting and the verdict only. Note wording stays with
-    each caller: the refusals name different downstream sections ("no critical
-    path", "no CPU-derived figure") and a generic sentence would cost the reader
-    the one thing the note is for.
-
-    ``matched`` collects the record keys the executed set reached. Only
-    :func:`_compute_join` reads it, to sum CPU seconds over exactly those
-    records; :func:`_compute_graph_join` has no per-node weight to pull from a
-    node it merely resolved, so it ignores the field.
-    """
-
-    label: str
-    executed: int
-    joined: int
-    unjoined_sample: list[str]
-    matched: set[tuple[str, str]]
-    passed: bool
-
-    @property
-    def is_empty(self) -> bool:
-        """True when nothing executed, which is a refusal rather than a pass."""
-        return not self.executed
-
-    @property
-    def empty_note(self) -> str:
-        """The refusal note for an empty denominator."""
-        return f"{self.label} refused: no executed tasks to join against"
-
-    @property
-    def rate_pct(self) -> float:
-        """Joined share as a percentage, 0.0 over an empty denominator."""
-        return (100.0 * self.joined / self.executed) if self.executed else 0.0
-
-    @property
-    def gate_pct(self) -> float:
-        """The threshold this verdict was taken against, as a percentage."""
-        return 100.0 * JOIN_RATE_THRESHOLD
-
-
-def _gate_join(
-    label: str,
-    executed: list[_ExecutedTask],
-    resolve: Callable[[str, str], tuple[str, str] | None],
-) -> _JoinGate:
-    """Resolve every executed task and take the join-rate verdict.
-
-    ``resolve`` returns the record key a task reached, or ``None``. A task that
-    reaches nothing is named in the bounded sample rather than only counted: a
-    refusal has to be diagnosable, since it can fire for a bakar-side identity
-    defect as readily as for a real coverage gap.
-
-    Numerator and denominator are counted over the SAME set - every executed
-    task raises ``executed``, and only a resolved one also raises ``joined``.
-    Dropping unresolved tasks from both sides would pin the rate at 100% and
-    pass vacuously over precisely the partial-join case the gate exists to
-    catch.
-    """
-    matched: set[tuple[str, str]] = set()
-    unjoined: list[str] = []
-    joined = 0
-    for recipe, task in executed:
-        key = resolve(recipe, task)
-        if key is None:
-            unjoined.append(f"{recipe}:{task}")
-        else:
-            joined += 1
-            matched.add(key)
-
-    executed_count = len(executed)
-    return _JoinGate(
-        label=label,
-        executed=executed_count,
-        joined=joined,
-        unjoined_sample=unjoined[:UNJOINED_SAMPLE],
-        matched=matched,
-        passed=bool(executed_count) and joined >= JOIN_RATE_THRESHOLD * executed_count,
-    )
-
-
-def _compute_graph_join(parsed: _ParsedGraph, executed: list[_ExecutedTask]) -> GraphJoin:
-    """Join executed tasks against task-graph nodes and gate on the rate.
-
-    ``executed`` is the timestamp-independent identity set
-    (:data:`_ExecutedTask`), the same denominator :func:`_compute_join` uses -
-    a task with no usable timestamp still ran, so it must lower this rate
-    rather than vanish from both sides of it.
-
-    Resolution is :func:`_resolve_graph_node`'s exact-then-setscene-fallback;
-    the counting, the bounded sample and the verdict are :func:`_gate_join`'s,
-    shared with :func:`_compute_join`.
-    """
-    if parsed.error is not None:
-        return GraphJoin(note=f"graph join unavailable: {parsed.error}")
-    if not parsed.nodes:
-        # An unparseable capture never reaches here - _parse_dependency_graph
-        # turns read_graph's parsed_ok=False into an error above - so this
-        # branch is the genuinely empty graph and says so.
-        return GraphJoin(note="graph join unavailable: empty dependency graph")
-
-    gate = _gate_join(
-        "graph join",
-        executed,
-        lambda recipe, task: _resolve_graph_node(parsed.nodes, recipe, task),
-    )
-    if gate.is_empty:
-        return GraphJoin(available=True, note=gate.empty_note)
-
-    if not gate.passed:
-        # Two decimals, not one: at real build scale (thousands of executed
-        # tasks) a refused rate can round to the same one-decimal figure as
-        # the gate itself (94.97% -> "95.0%"), reading as "95.0% ... below
-        # the 95.0% gate" - a display collision, not a wrong verdict, but one
-        # a reader has no way to tell apart from a real contradiction.
-        return GraphJoin(
-            available=True,
-            executed=gate.executed,
-            joined=gate.joined,
-            unjoined_sample=gate.unjoined_sample,
-            note=(
-                f"graph join refused: {gate.rate_pct:.2f}% of executed tasks resolved to a graph node, "
-                f"below the {gate.gate_pct:.2f}% gate ({gate.executed - gate.joined} of {gate.executed} "
-                f"executed tasks reach no node) - no critical path is reported for this run"
-            ),
-        )
-
-    return GraphJoin(
-        available=True,
-        gate_passed=True,
-        executed=gate.executed,
-        joined=gate.joined,
-        unjoined_sample=gate.unjoined_sample,
-        note=(
-            f"graph join {gate.rate_pct:.1f}% "
-            f"({gate.joined} of {gate.executed} executed tasks resolved to a graph node)"
-        ),
-    )
-
-
-def _compute_critical_path(
-    parsed: _ParsedGraph,
-    durations: list[TaskDuration],
-    graph_join: GraphJoin,
-) -> CriticalPath:
-    """Compute the duration-weighted critical path over the TASK-level graph.
-
-    ``graph_join`` owns the gate decision (see :class:`GraphJoin`); this
-    function reads it and refuses with the join's own wording rather than
-    re-deriving a second verdict from the same numbers. Any other failure - the
-    source raised, the graph is empty, or it is cyclic - degrades to an explicit
-    "unavailable" :class:`CriticalPath` with a note; this function never raises
-    back to :func:`timing_report`.
-
-    Node weights come from ``durations``, NOT from the join's ``executed``
-    denominator - ``durations`` is built after the timestamp guards in
-    :func:`timing_report` and carries real elapsed seconds, while ``executed``
-    is identity-only and built before them (see the comment there). Weighting
-    from ``executed`` would reintroduce the vacuous-100% failure that split
-    the two sets in the first place. A node no duration resolves to is simply
-    absent from ``node_weights``; :func:`_weighted_longest_path` treats a
-    missing key as weight ``0.0`` and must not be made unavailable by it.
-    """
-    if parsed.error is not None:
-        return CriticalPath(note=f"critical-path unavailable: {parsed.error}")
-    if parsed.graph is None or parsed.graph.number_of_nodes() == 0:
-        return CriticalPath(note="critical-path unavailable: empty dependency graph")
-    if not graph_join.gate_passed:
-        return CriticalPath(note=f"critical-path unavailable: {graph_join.note}")
-
-    task_graph = graph_analyze.to_task_digraph(parsed.graph)
-    if not nx.is_directed_acyclic_graph(task_graph):
-        # find_cycle names the offending nodes so a refusal has a locus, the
-        # same way the graph-join refusal names its unjoined sample rather
-        # than only a count.
-        cycle = graph_analyze.find_cycle(task_graph)
-        locus = f": {' -> '.join(cycle)}" if cycle else ""
-        return CriticalPath(note=f"critical-path unavailable: cyclic task dependency graph{locus}")
-
-    node_resolutions: dict[str, list[tuple[str, float]]] = {}
-    for d in durations:
-        resolved = _resolve_graph_node(parsed.nodes, d.recipe, d.task)
-        if resolved is None:
-            continue
-        node, contributing_task = resolved
-        node_resolutions.setdefault(node, []).append((contributing_task, d.duration))
-
-    # A node is weighted by exactly ONE executed task's own duration, never a
-    # sum: a failed setscene restore followed by the real task (or the reverse
-    # order) resolves both rows to the same node, and the restore's seconds are
-    # not part of the serial cost the real execution represents at that graph
-    # position. The real (non-restore) execution always wins over a restore
-    # regardless of which duration is larger; a tie between two candidates of
-    # the same kind keeps the larger one.
-    node_weights: dict[str, float] = {}
-    contributor: dict[str, str] = {}
-    for node, resolutions in node_resolutions.items():
-        node_task = node.rsplit(".", 1)[-1]
-        contributing_task, weight = max(resolutions, key=lambda pair: (pair[0] == node_task, pair[1]))
-        node_weights[node] = weight
-        if contributing_task != node_task:
-            contributor[node] = contributing_task
-
-    chain, total = _weighted_longest_path(task_graph, node_weights)
-    chain_contributor = {node: contributor[node] for node in chain if node in contributor}
-    chain_weights = {node: node_weights[node] for node in chain if node in node_weights}
-    if not chain_weights:
-        # The graph join passed (every executed task resolved to SOME node),
-        # but none of them landed on this chain with a usable duration - an
-        # artifact whose rows carry no started/completed pair. Publishing
-        # total_seconds=0.0 as available=True would let a CPU-only floor
-        # render under the concurrency-floor label, which is the exact
-        # failure the capability docs promise cannot happen.
-        return CriticalPath(note="critical-path unavailable: no executed task's duration resolved to any graph node")
-    return CriticalPath(
-        available=True,
-        chain=chain,
-        total_seconds=total,
-        note="critical-path computed",
-        contributor=chain_contributor,
-        node_weights=chain_weights,
-    )
-
-
-def _join_key(recipe: str, task: str) -> tuple[str, str]:
-    """Key both sides of the join on ``(PN, task)``, version stripped.
-
-    The event log records a versioned PF (``busybox-1.36.1-r0``) and so does the
-    buildstats recipe directory, but they are not guaranteed to agree on the
-    revision suffix - a task restored from sstate and one rebuilt after a bump
-    can disagree by ``-r0`` alone. Stripping the version the way
-    :func:`bakar.task_timings.strip_recipe_version` already does for baseline
-    keys lets those two spellings still meet.
-
-    This key is a FALLBACK, never the primary one - see :func:`_match_record`.
-    Aggregating records under it would merge ``busybox-1.36.1-r0`` and
-    ``busybox-1.37-r0`` into one bucket, so a stale record for a PF this run
-    never executed would be credited to the PF it did.
-    """
-    return (task_timings.strip_recipe_version(recipe), task)
-
-
-_RecordKey = tuple[str, str]
-
-#: One executed task's ``(recipe, task)`` identity, read from an artifact row
-#: WITHOUT consulting its timestamps. This is the join's denominator, and it is
-#: deliberately a different set from ``durations``: a row whose ``started`` or
-#: ``completed`` is missing, unparseable or non-finite still records a task that
-#: ran, and it must lower the join rate rather than vanish from both sides of it.
-#:
-#: What counts as executed is read from the row's ``outcome``, never from its
-#: timestamps. A ``failed_silent`` row is the one exclusion: that outcome is a
-#: setscene MISS, and :mod:`bakar.eventlog` records it from a ``TaskFailedSilent``
-#: event that arrives with no preceding ``TaskStarted`` - the task never began,
-#: so bitbake wrote no buildstats file for it and never will. Counting those
-#: would put the gate below its threshold on any sstate-seeded build, which is
-#: bakar's default regime, and a gate that always refuses reports nothing.
-#: Every other outcome - including ``None``, a task that started and never
-#: finished - counts: it ran, so a buildstats record is owed for it, and its
-#: absence is real missing coverage rather than a taxonomy artifact.
-#:
-#: Two further degradations are chosen here rather than inherited:
-#:
-#: - A row carrying no ``task`` string yields no identity at all and is counted
-#:   on NEITHER side. A row that cannot say what it is cannot say that it ran,
-#:   so counting it would be inventing a denominator entry; when every row is
-#:   like that the denominator is empty, which :func:`_compute_join` already
-#:   refuses rather than treats as a pass.
-#: - A row with a task but no usable ``recipe`` keeps identity ``("", task)``.
-#:   That matches no buildstats record, so it counts in the denominator and not
-#:   the numerator - the honest signal, since the tree may well hold the record
-#:   and nothing here can say which recipe owns it.
-_ExecutedTask = tuple[str, str]
-
-#: The one ``outcome`` that means the task never began - see :data:`_ExecutedTask`.
-_NOT_EXECUTED_OUTCOME = "failed_silent"
-
-
-def _index_records(
-    tasks: list[TaskStats],
-) -> tuple[dict[_RecordKey, list[TaskStats]], dict[_RecordKey, dict[_RecordKey, None]]]:
-    """Index buildstats records by exact ``(PF, task)`` and by stripped key.
-
-    The second index maps a stripped key to every exact key carrying it, which
-    is what makes an ambiguous strip detectable rather than silently merged.
-
-    Its buckets are dicts used as ORDERED SETS, not lists, and the distinction
-    is measured rather than stylistic. A list bucket needs ``key not in bucket``
-    to dedupe, which is a linear scan per record and quadratic per stripped key.
-    On an ordinary capture that is invisible - each stripped key carries one or
-    two exact keys - but a tree holding many versions of one recipe collapses
-    them all into a single bucket: 3,000 versions of one recipe measured 37 ms
-    of pure comparison after the filesystem walk had already finished. A dict
-    keeps insertion order, so the ambiguity check below still sees candidates in
-    the order they were read.
-    """
-    exact: dict[_RecordKey, list[TaskStats]] = {}
-    stripped: dict[_RecordKey, dict[_RecordKey, None]] = {}
-    for stat in tasks:
-        key = (stat.recipe, stat.task)
-        exact.setdefault(key, []).append(stat)
-        stripped.setdefault(_join_key(stat.recipe, stat.task), {})[key] = None
-    return exact, stripped
-
-
-def _match_record(
-    exact: dict[tuple[str, str], list[TaskStats]],
-    stripped: dict[_RecordKey, dict[_RecordKey, None]],
-    recipe: str,
-    task: str,
-) -> tuple[str, str] | None:
-    """Resolve one executed task to the buildstats record it owns, or ``None``.
-
-    Exact ``(PF, task)`` first, because that is the only match that proves the
-    record belongs to the version this run executed. The version-stripped key is
-    tried next and ONLY when it is unambiguous, which is what keeps the strip
-    doing the job it was added for - the two sides disagreeing by a revision
-    suffix - without letting it credit a version the run never built.
-
-    An ambiguous stripped key resolves to ``None`` and therefore counts as
-    unjoined. That lowers the join rate, which is the honest signal: the tree
-    holds two versions of this recipe and nothing here can say which one ran.
-    """
-    key = (recipe, task)
-    if key in exact:
-        return key
-    candidates = stripped.get(_join_key(recipe, task)) or {}
-    return next(iter(candidates)) if len(candidates) == 1 else None
-
-
-#: Suffix bitbake gives a task that RESTORES another task's output from sstate.
-#: ``task-depends.dot`` carries none of these nodes - ``bitbake -g`` graphs the
-#: work a build can do, never the restore variants that stand in for it - so a
-#: restore only reaches the graph through the fallback in
-#: :func:`_resolve_graph_node`.
-_SETSCENE_SUFFIX = "_setscene"
-
-
-def _resolve_graph_node(nodes: Container[str], recipe: str, task: str) -> tuple[str, str] | None:
-    """Resolve one executed ``(PF, task)`` identity to a task-graph node.
-
-    Returns ``(node, contributing_task)`` or ``None``. The second element is the
-    name of the task that actually ran, which is what a caller needs to say
-    where a node's weight came from: a node resolved through the setscene
-    fallback is weighted by seconds ``do_populate_sysroot`` never spent, and
-    bucketing that under the node's own name would report time against a task
-    that did not run.
-
-    Exact ``<PN>.<task>`` first, mirroring :func:`_match_record`'s discipline for
-    the buildstats join. The exact match is the only one that proves the node
-    belongs to the task that ran. Only when it misses, and only when the task is
-    a setscene restore, is the suffix removed and the node it stands in for
-    tried. Stripping first would credit an ordinary task to a node it does not
-    own, and it would throw away that proof for nothing - measured on run
-    20260910-173444 the ordering costs no join, while the fallback itself takes
-    the rate from 66.3% to 99.2%.
-    """
-    # devtool-debt: identity goes through ``strip_recipe_version``, which strips
-    # one trailing ``-<digits>[-r<n>]``, so a PV containing a hyphen
-    # (``libedit-20251016-3.1-r0``) reduces to ``libedit-20251016`` and misses
-    # the ``libedit`` node. Ceiling: the residual stays inside the graph gate's
-    # 5% budget - measured 21 of 2566 identities (0.8%) on run 20260910-173444,
-    # every one of them ``libedit`` or ``libedit-native``. Upgrade trigger: a
-    # run refuses with its unjoined sample dominated by version-strip misses,
-    # at which point resolve PN boundaries against the captured ``pn-buildlist``
-    # rather than by suffix arithmetic (design D7).
-    pn = task_timings.strip_recipe_version(recipe)
-    exact = f"{pn}.{task}"
-    if exact in nodes:
-        return (exact, task)
-    if task.endswith(_SETSCENE_SUFFIX):
-        stood_in_for = f"{pn}.{task[: -len(_SETSCENE_SUFFIX)]}"
-        if stood_in_for in nodes:
-            return (stood_in_for, task)
-    return None
-
-
-def _capture_phrase(run: BuildstatsRun) -> str:
-    """Name the capture directory the figures came from.
-
-    Printed on the PASSING path as well as the refusing ones. Naming the source
-    only when the section declines to publish is exactly backwards for auditing:
-    the number a reader might act on is the one whose provenance they need.
-    """
-    return "capture directory unrecorded" if run.directory is None else f"from capture {run.directory}"
-
-
-def _compute_join(
-    buildstats_source: Callable[[], BuildstatsRun],
-    executed: list[_ExecutedTask],
-) -> BuildstatsJoin:
-    """Join executed tasks against buildstats records and gate on the rate.
-
-    ``executed`` is the identity set read from the artifact's task rows, NOT the
-    duration list - see :data:`_ExecutedTask`. Taking the duration list instead
-    made the denominator "tasks with a usable timestamp", so a task with a
-    missing one left the numerator and the denominator together and the rate
-    stayed at 100% over a build the records covered a fraction of.
-
-    Follows :func:`_compute_critical_path`'s precedent exactly: any failure -
-    the callable raises, the tree is absent, the tree is empty, no capture
-    correlates with this run - returns an explicit unavailable result with a
-    note and never raises back to :func:`timing_report`.
-
-    The four outcomes keep separate notes. They are what
-    :mod:`bakar.buildstats` went out of its way to distinguish, and collapsing
-    them here would put the distinction back in the bin it was lifted out of:
-    a tree that was never found is a path problem, a tree that recorded nothing
-    is a measurement, and a tree holding only some other build's captures is a
-    provenance failure that a rate near 100% would otherwise hide.
-    """
-    try:
-        run = buildstats_source()
-    except Exception as exc:  # noqa: BLE001 - any buildstats-source failure degrades gracefully
-        return BuildstatsJoin(note=f"buildstats join unavailable: source failed ({exc})")
-
-    if run.outcome == "absent":
-        return BuildstatsJoin(note=f"buildstats join unavailable: tree absent ({run.note})")
-    if run.outcome == "uncorrelated":
-        return BuildstatsJoin(note=f"buildstats join unavailable: no capture belongs to this run ({run.note})")
-    if run.outcome != "parsed":
-        return BuildstatsJoin(
-            note=f"buildstats join unavailable: tree present but recorded nothing ({run.note})",
-        )
-
-    exact, stripped = _index_records(run.tasks)
-
-    gate = _gate_join(
-        "buildstats join",
-        executed,
-        lambda recipe, task: _match_record(exact, stripped, recipe, task),
-    )
-    if gate.is_empty:
-        return BuildstatsJoin(available=True, note=gate.empty_note)
-
-    if not gate.passed:
-        return BuildstatsJoin(
-            available=True,
-            executed=gate.executed,
-            joined=gate.joined,
-            unjoined_sample=gate.unjoined_sample,
-            note=(
-                f"buildstats join refused: {gate.rate_pct:.1f}% of executed tasks joined, below the "
-                f"{gate.gate_pct:.1f}% gate ({gate.executed - gate.joined} of {gate.executed} executed tasks "
-                f"have no buildstats record) - no CPU-derived figure is reported for this run. "
-                f"{_capture_phrase(run)}"
-            ),
-        )
-
-    # Only records an executed task actually matched contribute, and matching is
-    # by exact ``(PF, task)`` with an unambiguous version-stripped fallback (see
-    # :func:`_match_record`). A buildstats tree carries rows this run never
-    # executed - a stale capture, a second version of the same recipe, a sibling
-    # machine's directory - and neither summing the tree wholesale nor
-    # aggregating under the stripped key would keep those out of the total.
-    return BuildstatsJoin(
-        available=True,
-        gate_passed=True,
-        executed=gate.executed,
-        joined=gate.joined,
-        cpu_seconds=sum(stat.cpu_seconds for k in gate.matched for stat in exact[k]),
-        unjoined_sample=gate.unjoined_sample,
-        note=(
-            f"buildstats join {gate.rate_pct:.1f}% ({gate.joined} of {gate.executed} executed tasks matched a "
-            f"buildstats record). {_capture_phrase(run)}"
-        ),
-    )
-
-
 def _recorded_cores(artifact: dict | list) -> tuple[int | None, dict[str, int]]:
     """Return the recorded core count and any other recorded divisor candidates.
 
@@ -1193,7 +352,8 @@ def _compute_cpu_floor(join: BuildstatsJoin, artifact: dict | list) -> CpuFloor:
 
     Degrades with a note rather than raising, and never substitutes a divisor:
     a missing join, a refused join, and a missing recorded count each produce an
-    unavailable floor. Following :func:`_compute_critical_path`'s precedent
+    unavailable floor. Following
+    :func:`bakar.insights_critical_path._compute_critical_path`'s precedent
     exactly rather than inventing a second convention for the same situation.
     """
     if join.cpu_seconds is None:
@@ -1345,9 +505,10 @@ def _compute_concurrency_floor(
     """Take ``max(CPU floor, critical path)`` and name which bound binds.
 
     Degrades with a note rather than raising, following
-    :func:`_compute_critical_path`'s precedent. Either bound being unavailable
-    leaves the whole section unavailable - see :class:`ConcurrencyFloor` for why
-    neither one alone may be published under this label.
+    :func:`bakar.insights_critical_path._compute_critical_path`'s precedent.
+    Either bound being unavailable leaves the whole section unavailable - see
+    :class:`ConcurrencyFloor` for why neither one alone may be published under
+    this label.
     """
     if not cpu_floor.available or cpu_floor.seconds is None:
         return ConcurrencyFloor(
@@ -1433,92 +594,6 @@ def _compute_concurrency_floor(
     )
 
 
-def _compute_churn(
-    buildstats_source: Callable[[], BuildstatsRun],
-    executed: list[_ExecutedTask],
-) -> TaskChurn:
-    """Aggregate churn counters per task type over the executed task set.
-
-    ``executed`` is the timestamp-independent identity set (:data:`_ExecutedTask`),
-    the same one the join gate counts. The coverage stated in the note is only
-    honest against that denominator: counting against the tasks that happened to
-    carry a usable timestamp would report full coverage of a subset.
-
-    Degrades with a note rather than raising, following
-    :func:`_compute_critical_path`'s precedent, and keeps ``absent``, ``empty``
-    and ``uncorrelated`` apart for the reason :func:`_compute_join` does.
-
-    Records are resolved through :func:`_match_record`, the same matcher the
-    join gate uses, so a record for a PF this run never executed reaches no
-    counter here either. Walking the tree and testing the version-stripped key
-    instead credits a stale ``busybox-1.37-r0`` row to the ``busybox-1.36.1-r0``
-    the run actually built, which inflates every counter in the row and reports
-    a task count higher than the number of tasks that ran.
-
-    Rows are ordered by minor faults descending, which puts the process-churn
-    heavy task types at the top - the ordering that made the ``do_configure``
-    profile visible in the first place.
-    """
-    try:
-        run = buildstats_source()
-    except Exception as exc:  # noqa: BLE001 - any buildstats-source failure degrades gracefully
-        return TaskChurn(note=f"task churn unavailable: source failed ({exc})")
-
-    if run.outcome == "absent":
-        return TaskChurn(note=f"task churn unavailable: tree absent ({run.note})")
-    if run.outcome == "uncorrelated":
-        return TaskChurn(note=f"task churn unavailable: no capture belongs to this run ({run.note})")
-    if run.outcome != "parsed":
-        return TaskChurn(note=f"task churn unavailable: tree present but recorded nothing ({run.note})")
-
-    exact, stripped = _index_records(run.tasks)
-    # Distinct executed tasks covered, not records aggregated. Several executed
-    # rows can resolve to one record key, so a record count would let ``covered``
-    # exceed ``executed`` and turn the coverage note into a claim nobody can read.
-    matched: set[tuple[str, str]] = set()
-    for recipe, task in executed:
-        key = _match_record(exact, stripped, recipe, task)
-        if key is not None:
-            matched.add(key)
-
-    grouped: dict[str, list[TaskStats]] = {}
-    for key in matched:
-        for stat in exact[key]:
-            grouped.setdefault(stat.task, []).append(stat)
-
-    if not grouped:
-        return TaskChurn(
-            note=(
-                f"task churn unavailable: none of the {len(run.tasks)} buildstats records match an "
-                "executed task, so every counter would describe a different build"
-            ),
-        )
-
-    rows = [
-        ChurnRow(
-            task=task,
-            tasks=len(stats),
-            minflt=sum(s.minflt for s in stats),
-            majflt=sum(s.majflt for s in stats),
-            syscalls=sum(s.syscalls for s in stats),
-            write_bytes=sum(s.write_bytes for s in stats),
-        )
-        for task, stats in grouped.items()
-    ]
-    rows.sort(key=lambda r: r.minflt, reverse=True)
-    return TaskChurn(
-        available=True,
-        rows=rows,
-        covered=len(matched),
-        executed=len(executed),
-        note=(
-            f"task churn over {len(matched)} of {len(executed)} executed tasks, aggregated into "
-            f"{len(rows)} task types, {_capture_phrase(run)}"
-        ),
-        basis_note=CHURN_BASIS_NOTE,
-    )
-
-
 def timing_report(
     artifact: dict | list,
     top_n: int = DEFAULT_TOP_N,
@@ -1538,10 +613,10 @@ def timing_report(
     otherwise.
 
     Such a row is skipped from the DURATIONS only. Its ``(recipe, task)``
-    identity still joins the executed set (:data:`_ExecutedTask`) that feeds the
-    join gate and the churn coverage, because it names a task that ran and the
-    gate's denominator is "tasks that ran", not "tasks bitbake timestamped
-    usably".
+    identity still joins the executed set
+    (:data:`bakar.insights_joins._ExecutedTask`) that feeds the join gate and
+    the churn coverage, because it names a task that ran and the gate's
+    denominator is "tasks that ran", not "tasks bitbake timestamped usably".
 
     Baseline context comes from :func:`bakar.task_timings.load_baselines`
     (``baselines_path`` threads through to it for tests; ``None`` uses the
@@ -1550,24 +625,26 @@ def timing_report(
 
     ``dependency_source``, when supplied, is called with no arguments and
     must return ``(dot_text, buildlist_text)`` for the critical-path section
-    (see :func:`_compute_critical_path`). Omitting it (the default) leaves
-    ``critical_path`` at its "unavailable, not requested" default; a failure
-    inside the callable or the resulting graph degrades to an explicit
-    "unavailable" result rather than raising or dropping the duration/top-N
-    sections computed above. The same capture feeds the :class:`GraphJoin`
-    gate - the share of executed tasks resolving to a graph node - and the path
-    publishes only when that gate passes, so a chain over a partially joined
-    graph has no expressible form here. The source is called once for both.
+    (see :func:`bakar.insights_critical_path._compute_critical_path`).
+    Omitting it (the default) leaves ``critical_path`` at its "unavailable,
+    not requested" default; a failure inside the callable or the resulting
+    graph degrades to an explicit "unavailable" result rather than raising or
+    dropping the duration/top-N sections computed above. The same capture
+    feeds the :class:`~bakar.insights_joins.GraphJoin` gate - the share of
+    executed tasks resolving to a graph node - and the path publishes only
+    when that gate passes, so a chain over a partially joined graph has no
+    expressible form here. The source is called once for both.
 
     ``buildstats_source``, when supplied, is called with no arguments and must
     return a :class:`bakar.buildstats.BuildstatsRun`. It feeds the join gate
-    (see :class:`BuildstatsJoin`): the share of executed tasks carrying a
-    buildstats record, and the refusal that keeps every CPU-derived figure out
-    of the report when that share falls below :data:`JOIN_RATE_THRESHOLD`. It
-    degrades the same way ``dependency_source`` does. When the gate passes, the
-    :class:`CpuFloor` section divides those CPU seconds by the core count
-    ``artifact`` recorded on the BUILD host - no divisor is read from the
-    analysing host, so the same artifact yields the same floor anywhere.
+    (see :class:`~bakar.insights_joins.BuildstatsJoin`): the share of executed
+    tasks carrying a buildstats record, and the refusal that keeps every
+    CPU-derived figure out of the report when that share falls below
+    :data:`~bakar.insights_joins.JOIN_RATE_THRESHOLD`. It degrades the same way
+    ``dependency_source`` does. When the gate passes, the :class:`CpuFloor`
+    section divides those CPU seconds by the core count ``artifact`` recorded
+    on the BUILD host - no divisor is read from the analysing host, so the
+    same artifact yields the same floor anywhere.
 
     The :class:`ConcurrencyFloor` section combines that floor with the
     critical path as ``max(CPU floor, critical path)`` and names which of the
@@ -1575,11 +652,12 @@ def timing_report(
     ``buildstats_source``; with either omitted or degraded it reports
     unavailable rather than publishing the surviving bound under its label.
 
-    The :class:`TaskChurn` section aggregates the same records' fault, syscall
-    and write counters per task type. It needs only ``buildstats_source``, and
-    unlike the floor it is not withheld on a refused join - see
-    :class:`TaskChurn` for why a per-task-type aggregate survives a partial
-    coverage that a build-wide bound does not.
+    The :class:`~bakar.insights_churn.TaskChurn` section aggregates the same
+    records' fault, syscall and write counters per task type. It needs only
+    ``buildstats_source``, and unlike the floor it is not withheld on a
+    refused join - see :class:`~bakar.insights_churn.TaskChurn` for why a
+    per-task-type aggregate survives a partial coverage that a build-wide
+    bound does not.
     """
     baselines = task_timings.load_baselines(baselines_path)
 
@@ -1609,16 +687,17 @@ def timing_report(
         # from both the numerator and the denominator pinned the rate at 100%
         # and passed the gate vacuously over exactly the partial-coverage case
         # the gate exists to catch. Membership is decided by ``outcome`` alone
-        # (see :data:`_ExecutedTask`).
+        # (see :data:`bakar.insights_joins._ExecutedTask`).
         if row.get("outcome") != _NOT_EXECUTED_OUTCOME:
             executed.append((recipe_name, task))
 
         # Defense in depth: a failed_silent row normally carries no `started`
-        # (see :data:`_ExecutedTask`) and is dropped by the guard below anyway.
-        # A malformed or legacy artifact could violate that invariant and still
-        # carry a timestamp pair; excluding the outcome explicitly here keeps
-        # `durations` - and therefore every node weight derived from it - free
-        # of a task the join gate's own denominator (`executed`) never counted.
+        # (see :data:`bakar.insights_joins._ExecutedTask`) and is dropped by
+        # the guard below anyway. A malformed or legacy artifact could violate
+        # that invariant and still carry a timestamp pair; excluding the
+        # outcome explicitly here keeps `durations` - and therefore every node
+        # weight derived from it - free of a task the join gate's own
+        # denominator (`executed`) never counted.
         if row.get("outcome") == _NOT_EXECUTED_OUTCOME:
             continue
 
