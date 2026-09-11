@@ -25,6 +25,7 @@ from bakar.insights_timing import (
     CriticalPath,
     TimingReport,
     _compute_concurrency_floor,
+    _resolve_graph_node,
     build_window,
     correlation_window,
     timing_report,
@@ -1687,3 +1688,65 @@ def test_concurrency_floor_degrades_rather_than_naming_a_bound_by_accident() -> 
     # and a non-finite one least of all - it must not read as a figure.
     assert "nan" not in floor.note.replace("as nan", "")
     assert DURATION_TOKEN.findall("\n".join(floor.report_lines())) == []
+
+
+class _WatchedNodes:
+    """A node set that records every name it was asked about.
+
+    The ordering requirement in ``_resolve_graph_node`` is not observable from
+    the return value alone: when the graph carries both the setscene node and
+    the node it stands in for, stripping first and stripping last both return
+    *a* node. Recording the lookups is what makes the wrong order fail.
+    """
+
+    def __init__(self, *names: str) -> None:
+        self._names = set(names)
+        self.asked: list[str] = []
+
+    def __contains__(self, name: object) -> bool:
+        self.asked.append(str(name))
+        return name in self._names
+
+
+def test_resolve_graph_node_exact_hit_never_consults_the_stripped_form() -> None:
+    # A graph carrying BOTH spellings: the restore's own node and the node it
+    # would stand in for. Stripping first would resolve the restore to
+    # ``acl.do_populate_sysroot`` and credit it a node it does not own.
+    nodes = _WatchedNodes("acl.do_populate_sysroot_setscene", "acl.do_populate_sysroot")
+
+    resolved = _resolve_graph_node(nodes, "acl-2.3.2-r0", "do_populate_sysroot_setscene")
+
+    assert resolved == ("acl.do_populate_sysroot_setscene", "do_populate_sysroot_setscene")
+    assert nodes.asked == ["acl.do_populate_sysroot_setscene"]
+
+
+def test_resolve_graph_node_ordinary_task_resolves_to_its_own_node() -> None:
+    nodes = _WatchedNodes("acl.do_compile", "acl.do_configure")
+
+    assert _resolve_graph_node(nodes, "acl-2.3.2-r0", "do_compile") == ("acl.do_compile", "do_compile")
+
+
+def test_resolve_graph_node_non_setscene_miss_does_not_strip() -> None:
+    # ``do_compile_extra`` is not a restore, so no suffix may be removed from it
+    # even though a shorter node name exists that a naive strip would reach.
+    nodes = _WatchedNodes("acl.do_compile")
+
+    assert _resolve_graph_node(nodes, "acl-2.3.2-r0", "do_compile_extra") is None
+    assert nodes.asked == ["acl.do_compile_extra"]
+
+
+def test_resolve_graph_node_setscene_falls_back_to_the_node_it_stands_in_for() -> None:
+    # What the real capture looks like: ``task-depends.dot`` carries zero
+    # ``_setscene`` nodes, so the restore only joins through the fallback.
+    nodes = _WatchedNodes("acl.do_populate_sysroot")
+
+    resolved = _resolve_graph_node(nodes, "acl-2.3.2-r0", "do_populate_sysroot_setscene")
+
+    assert resolved == ("acl.do_populate_sysroot", "do_populate_sysroot_setscene")
+    assert nodes.asked == ["acl.do_populate_sysroot_setscene", "acl.do_populate_sysroot"]
+
+
+def test_resolve_graph_node_setscene_with_no_node_at_all_returns_none() -> None:
+    nodes = _WatchedNodes("attr.do_populate_sysroot")
+
+    assert _resolve_graph_node(nodes, "acl-2.3.2-r0", "do_populate_sysroot_setscene") is None

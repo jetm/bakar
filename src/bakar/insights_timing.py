@@ -39,7 +39,7 @@ from bakar import graph_analyze, task_timings
 from bakar.task_rollup import _tasks_from
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Container
     from pathlib import Path
 
     from bakar.buildstats import BuildstatsRun, TaskStats
@@ -673,6 +673,44 @@ def _match_record(
         return key
     candidates = stripped.get(_join_key(recipe, task)) or {}
     return next(iter(candidates)) if len(candidates) == 1 else None
+
+
+#: Suffix bitbake gives a task that RESTORES another task's output from sstate.
+#: ``task-depends.dot`` carries none of these nodes - ``bitbake -g`` graphs the
+#: work a build can do, never the restore variants that stand in for it - so a
+#: restore only reaches the graph through the fallback in
+#: :func:`_resolve_graph_node`.
+_SETSCENE_SUFFIX = "_setscene"
+
+
+def _resolve_graph_node(nodes: Container[str], recipe: str, task: str) -> tuple[str, str] | None:
+    """Resolve one executed ``(PF, task)`` identity to a task-graph node.
+
+    Returns ``(node, contributing_task)`` or ``None``. The second element is the
+    name of the task that actually ran, which is what a caller needs to say
+    where a node's weight came from: a node resolved through the setscene
+    fallback is weighted by seconds ``do_populate_sysroot`` never spent, and
+    bucketing that under the node's own name would report time against a task
+    that did not run.
+
+    Exact ``<PN>.<task>`` first, mirroring :func:`_match_record`'s discipline for
+    the buildstats join. The exact match is the only one that proves the node
+    belongs to the task that ran. Only when it misses, and only when the task is
+    a setscene restore, is the suffix removed and the node it stands in for
+    tried. Stripping first would credit an ordinary task to a node it does not
+    own, and it would throw away that proof for nothing - measured on run
+    20260910-173444 the ordering costs no join, while the fallback itself takes
+    the rate from 66.3% to 99.2%.
+    """
+    pn = task_timings.strip_recipe_version(recipe)
+    exact = f"{pn}.{task}"
+    if exact in nodes:
+        return (exact, task)
+    if task.endswith(_SETSCENE_SUFFIX):
+        stood_in_for = f"{pn}.{task[: -len(_SETSCENE_SUFFIX)]}"
+        if stood_in_for in nodes:
+            return (stood_in_for, task)
+    return None
 
 
 def _capture_phrase(run: BuildstatsRun) -> str:
