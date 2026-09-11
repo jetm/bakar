@@ -28,6 +28,7 @@ from bakar.graph_analyze import (
     to_task_digraph,
     top_runtime_packages,
 )
+from tests.conftest import PN_CYCLE_TASK_DAG_DOT
 
 pytestmark = pytest.mark.unit
 
@@ -42,13 +43,10 @@ CYCLE_DOT = (
     "}\n"
 )
 
-# Two recipes whose TASK graph is a DAG but whose PN collapse is cyclic: a's
-# do_configure needs b's sysroot while b's do_package needs a's.  This is the
-# shape every real OE graph has, and CYCLE_DOT above cannot stand in for it -
-# that one is cyclic at both levels, so it proves nothing about the collapse.
-PN_CYCLE_TASK_DAG_DOT = (
-    'digraph depends {\n"a.do_configure" -> "b.do_populate_sysroot"\n"b.do_package" -> "a.do_populate_sysroot"\n}\n'
-)
+# PN_CYCLE_TASK_DAG_DOT (a task-level DAG whose PN collapse is cyclic, shared
+# with test_cli_graph.py via conftest.py so the shape cannot drift between
+# them) is imported above. CYCLE_DOT cannot stand in for it - that one is
+# cyclic at both levels, so it proves nothing about the collapse.
 
 # A small buildhistory-style runtime graph: libc is depended on by two pkgs.
 RUNTIME_DOT = 'digraph depends {\n"busybox" -> "glibc"\n"bash" -> "glibc"\n"bash" -> "ncurses"\n}\n'
@@ -258,6 +256,11 @@ class TestLongestChain:
         pn = collapse_to_pn(read_graph(CYCLE_DOT))
         assert longest_chain(pn) == []
 
+    def test_task_level_dag_with_cyclic_pn_collapse_is_non_empty(self) -> None:
+        """The falsifier: the PN collapse being cyclic must not empty this out."""
+        task_graph = to_task_digraph(read_graph(PN_CYCLE_TASK_DAG_DOT))
+        assert longest_chain(task_graph) != []
+
     def test_empty_returns_empty(self) -> None:
         assert longest_chain(nx.DiGraph()) == []
 
@@ -278,6 +281,11 @@ class TestFindCycle:
         pn = collapse_to_pn(read_graph(CYCLE_DOT))
         names = find_cycle(pn)
         assert set(names) == {"a", "b", "c"}
+
+    def test_task_level_dag_with_cyclic_pn_collapse_reports_none(self) -> None:
+        """The falsifier: the PN collapse being cyclic must not report a cycle."""
+        task_graph = to_task_digraph(read_graph(PN_CYCLE_TASK_DAG_DOT))
+        assert find_cycle(task_graph) == []
 
     def test_empty_graph_reports_none(self) -> None:
         assert find_cycle(nx.DiGraph()) == []
@@ -329,9 +337,27 @@ class TestAnalyze:
         assert result["package_count"] == 4
         assert result["blast_radius"] == 3
         assert result["cycle"] == []
-        assert result["longest_chain"][0] == "busybox"
+        assert result["longest_chain"][0].startswith("busybox.do_")
         assert "direct_deps" in result
         assert isinstance(result["direct_deps"], list)
+
+    def test_task_level_dag_with_cyclic_pn_collapse(self) -> None:
+        """The falsifier: a PN-cyclic/task-acyclic graph must not empty the
+        chain or fake a cycle, while PN-level insights stay unaffected."""
+        result = analyze(PN_CYCLE_TASK_DAG_DOT, "a\nb\n", "a")
+        assert result["cycle"] == []
+        assert result["longest_chain"] != []
+        assert all(".do_" in node for node in result["longest_chain"])
+        # PN-level insights still read the PN-collapsed graph, bare recipe names.
+        assert result["direct_deps"] == ["b"]
+        assert result["blast_radius"] == 1
+        assert result["critical"] == [("a", 1), ("b", 1)]
+
+    def test_genuine_task_level_cycle_reports_task_nodes(self) -> None:
+        """The falsifier: a real cycle must name task nodes, not bare recipes."""
+        result = analyze(CYCLE_DOT, "a\nb\nc\n", "a")
+        assert result["cycle"] != []
+        assert all(node.startswith(tuple("abc")) and ".do_" in node for node in result["cycle"])
 
     def test_depth_propagates(self, dot_text: str, buildlist_text: str) -> None:
         result = analyze(dot_text, buildlist_text, "busybox", depth=1)

@@ -770,10 +770,9 @@ def _compute_critical_path(
 
     task_graph = graph_analyze.to_task_digraph(parsed.graph)
     if not nx.is_directed_acyclic_graph(task_graph):
-        # find_cycle is generic over any nx.DiGraph despite its "pn_graph"
-        # parameter name - it names the offending nodes so a refusal has a
-        # locus, the same way the graph-join refusal names its unjoined
-        # sample rather than only a count.
+        # find_cycle names the offending nodes so a refusal has a locus, the
+        # same way the graph-join refusal names its unjoined sample rather
+        # than only a count.
         cycle = graph_analyze.find_cycle(task_graph)
         locus = f": {' -> '.join(cycle)}" if cycle else ""
         return CriticalPath(note=f"critical-path unavailable: cyclic task dependency graph{locus}")

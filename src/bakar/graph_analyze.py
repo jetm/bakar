@@ -7,9 +7,13 @@ module (``commands/graph.py``) handles container retrieval and printing.
 
 The ``task-depends.dot`` graph from ``bitbake -g`` has one node per *task*
 (``"busybox.do_compile"``).  An edge ``A -> B`` means task ``A`` depends on
-task ``B``.  For human-facing analysis we collapse tasks to their package
-name (PN) by stripping the ``.do_*`` suffix and merging parallel edges, then
-run the graph algorithms on that PN-level :class:`networkx.DiGraph`.
+task ``B``.  For the recipe-level questions (blast radius, direct deps,
+critical/most-depended-on recipes) we collapse tasks to their package name
+(PN) by stripping the ``.do_*`` suffix and merging parallel edges, then run
+those algorithms on that PN-level :class:`networkx.DiGraph`.  The PN
+collapse is cyclic by construction on any real recipe set, so the longest-
+chain and cycle-detection questions run on the task-level graph instead
+(:func:`to_task_digraph`) and return ``<recipe>.<task>`` node names.
 
 Functions
 ---------
@@ -25,10 +29,12 @@ package_count(buildlist_text)
     Count non-empty lines in ``pn-buildlist``.
 blast_radius(pn_graph, target, depth=None)
     Count of transitive dependencies of *target* (optionally depth-bounded).
-longest_chain(pn_graph)
-    The longest dependency path through the DAG (empty if cyclic).
-find_cycle(pn_graph)
-    The first cycle as a list of PN names, or ``[]`` when acyclic.
+longest_chain(graph)
+    The longest dependency path through the DAG (empty if cyclic).  ``analyze()``
+    passes a task-level graph, so the returned nodes are ``<recipe>.<task>``.
+find_cycle(graph)
+    The first cycle as a list of node names, or ``[]`` when acyclic.  ``analyze()``
+    passes a task-level graph, so the returned nodes are ``<recipe>.<task>``.
 critical_nodes(pn_graph, top_n=5)
     PNs with the highest in-degree (most depended-on).
 top_runtime_packages(depends_dot_text, top_n=5)
@@ -134,7 +140,10 @@ def collapse_to_pn(graph: nx.MultiDiGraph) -> nx.DiGraph:
     Each task node is mapped to its PN (``.do_*`` suffix stripped).  Parallel
     edges are merged and self-loops (a PN depending on its own other tasks)
     are dropped, so the result is a simple directed graph suitable for
-    ``descendants``/``dag_longest_path``/``find_cycle``.
+    ``descendants``.  It is cyclic by construction on any real recipe set
+    (see :func:`to_task_digraph`), so it is NOT suitable for
+    ``dag_longest_path``/``find_cycle`` - use :func:`to_task_digraph` for
+    those.
     """
     pn_graph: nx.DiGraph = nx.DiGraph()
     for node in graph.nodes:
@@ -224,29 +233,32 @@ def _bounded_descendants(pn_graph: nx.DiGraph, target: str, depth: int) -> set[s
     return seen
 
 
-def longest_chain(pn_graph: nx.DiGraph) -> list[str]:
+def longest_chain(graph: nx.DiGraph) -> list[str]:
     """Return the longest dependency path through the DAG.
 
     Uses :func:`networkx.dag_longest_path`, which requires a DAG; returns an
-    empty list when the graph is cyclic or empty rather than raising.
+    empty list when the graph is cyclic or empty rather than raising.  Generic
+    over any :class:`networkx.DiGraph` - ``analyze()`` calls this with a
+    task-level graph, so the returned entries are ``<recipe>.<task>`` names.
     """
-    if pn_graph.number_of_nodes() == 0:
+    if graph.number_of_nodes() == 0:
         return []
-    if not nx.is_directed_acyclic_graph(pn_graph):
+    if not nx.is_directed_acyclic_graph(graph):
         return []
-    return list(nx.dag_longest_path(pn_graph))
+    return list(nx.dag_longest_path(graph))
 
 
-def find_cycle(pn_graph: nx.DiGraph) -> list[str]:
-    """Return the recipes in the first detected cycle, or ``[]`` if acyclic.
+def find_cycle(graph: nx.DiGraph) -> list[str]:
+    """Return the nodes in the first detected cycle, or ``[]`` if acyclic.
 
     Wraps :func:`networkx.find_cycle`, which raises
     :class:`networkx.NetworkXNoCycle` on an acyclic graph; that case maps to
-    an empty list.  The returned list is the ordered PN names participating in
-    the cycle.
+    an empty list.  Generic over any :class:`networkx.DiGraph` - ``analyze()``
+    calls this with a task-level graph, so the returned list is the ordered
+    ``<recipe>.<task>`` node names participating in the cycle.
     """
     try:
-        edges = nx.find_cycle(pn_graph, orientation="original")
+        edges = nx.find_cycle(graph, orientation="original")
     except nx.NetworkXNoCycle:
         return []
     except nx.NetworkXError:
@@ -311,10 +323,18 @@ def analyze(
 
     Container-free: callers pass the already-retrieved artifact text.  The
     returned dict carries ``package_count``, ``blast_radius``, ``longest_chain``,
-    ``cycle``, and ``critical`` keys.  A malformed or empty dot yields an empty
-    PN graph, so the numeric insights degrade to 0/empty rather than crashing.
+    ``cycle``, and ``critical`` keys.  A malformed or empty dot yields both an
+    empty PN graph and an empty task graph, so the numeric insights degrade to
+    0/empty rather than crashing.  ``longest_chain``/``cycle`` carry
+    ``<recipe>.<task>`` node names (computed over the task-level graph, which
+    is a DAG on a real build); ``blast_radius``/``critical``/``direct_deps``
+    carry bare recipe names (computed over the PN-collapsed graph, which is
+    cyclic by construction on any real recipe set and therefore unsuitable
+    for path/cycle questions).
     """
-    pn_graph = collapse_to_pn(read_graph(dot_text))
+    task_graph = read_graph(dot_text)
+    pn_graph = collapse_to_pn(task_graph)
+    task_digraph = to_task_digraph(task_graph)
     direct = sorted(pn_graph.successors(target)) if target in pn_graph else []
     return {
         "target": target,
@@ -322,7 +342,7 @@ def analyze(
         "package_count": package_count(buildlist_text),
         "direct_deps": direct,
         "blast_radius": blast_radius(pn_graph, target, depth),
-        "longest_chain": longest_chain(pn_graph),
-        "cycle": find_cycle(pn_graph),
+        "longest_chain": longest_chain(task_digraph),
+        "cycle": find_cycle(task_digraph),
         "critical": critical_nodes(pn_graph),
     }

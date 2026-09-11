@@ -269,6 +269,15 @@ ERROR: Logfile of failure stored in: /work/tmp/work/linux-imx/temp/log.do_compil
 NOTE: Tasks Summary: Attempted 4321 tasks of which 4320 didn't need to be rerun and 1 failed.
 """
 
+# Two recipes whose TASK graph is a DAG but whose PN collapse is cyclic: a's
+# do_configure needs b's sysroot while b's do_package needs a's.  This is the
+# shape every real OE graph has - shared between test_graph_analyze.py (which
+# guards both directions with test_task_level_dag_survives_a_cyclic_pn_collapse)
+# and test_cli_graph.py, so an edit to the shape cannot drift between them.
+PN_CYCLE_TASK_DAG_DOT = (
+    'digraph depends {\n"a.do_configure" -> "b.do_populate_sysroot"\n"b.do_package" -> "a.do_populate_sysroot"\n}\n'
+)
+
 
 @pytest.fixture
 def runner() -> CliRunner:
