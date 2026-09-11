@@ -18,6 +18,7 @@ verify:
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -26,6 +27,7 @@ import pytest
 import bakar.commands.graph  # noqa: F401 - registers the command on app
 from bakar.cli import app
 from tests._fakes import make_fake_run_shell_capture as _make_fake_capture
+from tests.conftest import PN_CYCLE_TASK_DAG_DOT
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -68,6 +70,15 @@ digraph depends {
 }
 """
 
+# PN_CYCLE_TASK_DAG_DOT (imported below from conftest.py) is a task-level
+# DAG whose PN collapse is cyclic, shared with test_graph_analyze.py so the
+# shape - and the property guard that protects it there - cannot drift.
+
+_PN_BUILDLIST_AB = """\
+a
+b
+"""
+
 _BITBAKE_G_ERROR = "ERROR: Nothing PROVIDES 'no-such-recipe'\n"
 
 
@@ -92,6 +103,15 @@ def _cycle_payloads() -> list[tuple[str, int]]:
         (_BITBAKE_G_OK, 0),
         (_TASK_DEPENDS_CYCLE, 0),
         (_PN_BUILDLIST_OK, 0),
+    ]
+
+
+def _pn_cycle_task_dag_payloads() -> list[tuple[str, int]]:
+    return [
+        (_TOPDIR_OK, 0),
+        (_BITBAKE_G_OK, 0),
+        (PN_CYCLE_TASK_DAG_DOT, 0),
+        (_PN_BUILDLIST_AB, 0),
     ]
 
 
@@ -246,8 +266,87 @@ def test_text_output_reports_seeded_cycle(runner: _CliRunner, nxp_workspace: Pat
 
     assert result.exit_code == 0, result.output
     assert "cycle" in result.output.lower()
-    # Both seeded cycle members appear.
-    assert "a" in result.output and "b" in result.output
+    # Both seeded cycle members appear, named as task nodes, not bare recipes.
+    assert "a.do_compile" in result.output and "b.do_compile" in result.output
+
+
+@pytest.mark.unit
+def test_json_output_genuine_cycle_uses_task_level_naming(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """A genuine task-level cycle serializes to JSON with exact
+    ``<recipe>.do_<task>`` node names - not bare recipes, and not
+    truncated or collapsed by the output layer."""
+    calls: list[dict] = []
+    fake = _make_fake_capture(_cycle_payloads(), calls)
+
+    with patch("bakar.commands.graph.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            [
+                "graph",
+                _RECIPE,
+                "--manifest",
+                _MANIFEST,
+                "--workspace",
+                str(nxp_workspace),
+                "--format",
+                "json",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    doc = json.loads(result.output)
+    assert doc["cycle"]
+    assert all(re.fullmatch(r"[ab]\.do_compile", entry) for entry in doc["cycle"])
+
+
+@pytest.mark.unit
+def test_text_output_pn_cycle_task_dag_reports_no_cycle_and_real_chain(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """A graph whose task level is acyclic but whose PN collapse is
+    cyclic must report "no cycles" and a non-empty task-level chain -
+    not a fake cycle and not an empty chain."""
+    calls: list[dict] = []
+    fake = _make_fake_capture(_pn_cycle_task_dag_payloads(), calls)
+
+    with patch("bakar.commands.graph.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            ["graph", "a", "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "no cycles" in result.output
+    # The longest-chain line names task nodes, not bare recipes.
+    assert ".do_" in result.output
+
+
+@pytest.mark.unit
+def test_json_output_pn_cycle_task_dag_uses_task_level_naming(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """``--format json`` reports an empty cycle and a task-named chain for
+    a graph that is acyclic at the task level despite a cyclic PN
+    collapse."""
+    calls: list[dict] = []
+    fake = _make_fake_capture(_pn_cycle_task_dag_payloads(), calls)
+
+    with patch("bakar.commands.graph.run_shell_capture", fake):
+        result = runner.invoke(
+            app,
+            [
+                "graph",
+                "a",
+                "--manifest",
+                _MANIFEST,
+                "--workspace",
+                str(nxp_workspace),
+                "--format",
+                "json",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    doc = json.loads(result.output)
+    assert doc["cycle"] == []
+    assert doc["longest_chain"]
+    assert all(".do_" in entry for entry in doc["longest_chain"])
 
 
 # ---------------------------------------------------------------------------
