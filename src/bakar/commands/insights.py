@@ -288,18 +288,13 @@ def _render_timing(report) -> None:
         # d.recipe/d.task come from the on-disk event log - escape for the
         # same reason as _render_sstate above.
         console.print(f"  {escape(d.recipe)}:{escape(d.task)}: {d.duration:.1f}s{baseline}")
-    cp = report.critical_path
-    console.print("[bold]critical path:[/]")
-    if cp.available:
-        console.print(f"  {escape(' -> '.join(cp.chain))} ({cp.total_seconds:.1f}s)")
-    else:
-        console.print(f"  {cp.note}")
     # Each section renders its own lines rather than being reformatted here:
     # the refusal wording and the "no duration reaches a refused section"
     # invariant belong to the section that decided to refuse, and a second
     # formatter at the call site is a second place for a refused number to leak
     # back in. Notes carry on-disk paths and recipe names, so escape as above.
     for header, section in (
+        ("critical path", report.critical_path),
         ("graph join", report.graph_join),
         ("buildstats join", report.buildstats_join),
         ("cpu floor", report.cpu_floor),

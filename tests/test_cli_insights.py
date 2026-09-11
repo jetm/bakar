@@ -245,10 +245,14 @@ def test_insights_renders_the_graph_join_beside_the_buildstats_join(
 
     assert "graph join:" in result.output
     assert result.output.index("graph join:") < result.output.index("buildstats join:")
+    assert result.output.index("critical path:") < result.output.index("graph join:")
 
     flat = " ".join(result.output.split())
     assert "graph join unavailable" in flat
     assert "graph join 0.0%" not in flat
+    # No dependency source in this fixture, so the path renders its refusal
+    # alone - no total, no node count beside it.
+    assert "critical-path unavailable" in flat
 
 
 @pytest.mark.unit

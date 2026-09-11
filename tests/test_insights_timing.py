@@ -21,6 +21,7 @@ import pytest
 from bakar import eventlog
 from bakar.buildstats import BuildstatsRun, TaskStats
 from bakar.insights_timing import (
+    CRITICAL_PATH_TOP_N,
     JOIN_RATE_THRESHOLD,
     UNJOINED_SAMPLE,
     CpuFloor,
@@ -1665,6 +1666,36 @@ def test_a_setscene_miss_is_not_counted_as_a_task_that_ran(tmp_path: Path) -> No
     assert join.gate_passed is True
 
 
+def test_a_failed_silent_row_with_anomalous_timestamps_still_weighs_nothing(tmp_path: Path) -> None:
+    """Defense in depth: a `failed_silent` row normally carries no ``started``
+    and is dropped by the timestamp guard alone. A malformed or legacy artifact
+    that violates that invariant - a restore attempt recorded with a real
+    started/completed pair - must still be excluded from `durations`, the same
+    way it is excluded from `executed`: the join gate's own denominator never
+    counted it, so it must not weigh a critical-path node either.
+    """
+    artifact = {
+        "tasks": [
+            _row("acl", "do_configure", 0.0, 5.0),
+            {
+                "task": "do_populate_sysroot_setscene",
+                "recipe": "acl",
+                "outcome": "failed_silent",
+                "started": 5.0,
+                "completed": 305.0,
+            },
+        ]
+    }
+
+    def source() -> tuple[str, str]:
+        return 'digraph { "acl.do_configure" -> "acl.do_populate_sysroot"; }', ""
+
+    report = timing_report(artifact, baselines_path=tmp_path / "absent.json", dependency_source=source)
+
+    assert [d.task for d in report.top_slowest] == ["do_configure"]
+    assert "acl.do_populate_sysroot" not in report.critical_path.node_weights
+
+
 def test_a_non_finite_duration_never_reaches_the_ranked_tasks(tmp_path: Path) -> None:
     """``nan < 0`` is False, so the negative-duration guard retained ``nan``.
 
@@ -1861,7 +1892,7 @@ def test_graph_join_states_the_achieved_rate_on_the_passing_branch(tmp_path: Pat
 
 
 def test_graph_join_refuses_below_the_gate_and_publishes_no_chain(tmp_path: Path) -> None:
-    # Two of three executed tasks reach a node: 66.7%, under the 95% gate and
+    # Two of three executed tasks reach a node: 66.67%, under the 95% gate and
     # close to the 66.3% a naive join measured on run 20260910-173444.
     artifact = {
         "tasks": [
@@ -1880,8 +1911,8 @@ def test_graph_join_refuses_below_the_gate_and_publishes_no_chain(tmp_path: Path
     join = report.graph_join
     assert (join.available, join.gate_passed) == (True, False)
     assert join.rate == pytest.approx(2 / 3)
-    assert "66.7%" in join.note
-    assert f"{100.0 * JOIN_RATE_THRESHOLD:.1f}%" in join.note
+    assert "66.67%" in join.note
+    assert f"{100.0 * JOIN_RATE_THRESHOLD:.2f}%" in join.note
     # The sample names the tasks that missed, not just a shortfall count.
     assert join.unjoined_sample == ["libedit-20251016-3.1-r0:do_unpack"]
 
@@ -1972,3 +2003,86 @@ def test_dependency_source_is_invoked_once_per_report(tmp_path: Path) -> None:
     )
 
     assert calls == 1
+
+
+def test_report_lines_unavailable_renders_only_the_note() -> None:
+    path = CriticalPath(note="critical-path unavailable: cyclic task dependency graph")
+
+    assert path.report_lines() == ["  critical-path unavailable: cyclic task dependency graph"]
+
+
+def test_critical_path_names_the_cycle_when_the_task_graph_is_genuinely_cyclic(tmp_path: Path) -> None:
+    """A real cyclic task-level DOT, run through timing_report end to end - not a
+    hand-constructed CriticalPath asserting its own literal string back."""
+    artifact = {
+        "tasks": [
+            _row("a", "do_compile", 0.0, 1.0),
+            _row("b", "do_compile", 1.0, 2.0),
+        ]
+    }
+
+    def cyclic_source() -> tuple[str, str]:
+        return (
+            'digraph { "a.do_compile" -> "b.do_compile"; "b.do_compile" -> "a.do_compile"; }',
+            "",
+        )
+
+    report = timing_report(
+        artifact,
+        baselines_path=tmp_path / "absent.json",
+        dependency_source=cyclic_source,
+    )
+
+    assert report.critical_path.available is False
+    assert "cyclic task dependency graph" in report.critical_path.note
+    assert "a.do_compile" in report.critical_path.note
+    assert "b.do_compile" in report.critical_path.note
+
+
+def test_report_lines_bounds_the_rendered_chain_at_top_n() -> None:
+    """A chain longer than ``CRITICAL_PATH_TOP_N`` renders at most that many node lines,
+    ranked by weight rather than chain order - the two must disagree here, or a test
+    that renders chain order unchanged would pass for the wrong reason."""
+    node_count = CRITICAL_PATH_TOP_N + 6
+    chain = [f"n{i}.do_compile" for i in range(node_count)]
+    # Weight increases with chain position, so the heaviest node is LAST in
+    # chain order. Ranking by weight must therefore render it FIRST; a broken
+    # sort (or none at all) would render n0 first instead, since that is the
+    # lightest node and the first in chain order.
+    node_weights = {node: float(i + 1) for i, node in enumerate(chain)}
+    path = CriticalPath(
+        available=True,
+        chain=chain,
+        total_seconds=sum(node_weights.values()),
+        note="critical-path computed",
+        node_weights=node_weights,
+    )
+
+    lines = path.report_lines()
+
+    header = lines[0]
+    node_lines = lines[1:]
+    assert f"{node_count}" in header
+    assert len(node_lines) == CRITICAL_PATH_TOP_N
+    heaviest = f"n{node_count - 1}.do_compile"
+    assert node_lines[0].strip().startswith(f"{heaviest}:")
+    assert not node_lines[0].strip().startswith("n0.do_compile:")
+
+
+def test_report_lines_names_the_restore_that_supplied_a_nodes_weight() -> None:
+    """A node weighted by a setscene restore renders the restore, never bare."""
+    path = CriticalPath(
+        available=True,
+        chain=["acl.do_configure", "acl.do_populate_sysroot"],
+        total_seconds=10.8,
+        note="critical-path computed",
+        node_weights={"acl.do_configure": 10.0, "acl.do_populate_sysroot": 0.8},
+        contributor={"acl.do_populate_sysroot": "do_populate_sysroot_setscene"},
+    )
+
+    lines = "\n".join(path.report_lines())
+
+    assert "acl.do_populate_sysroot: 0.8s (via do_populate_sysroot_setscene)" in lines
+    assert "acl.do_configure: 10.0s" in lines
+    # The ordinary node has no contributor entry and never renders a "via".
+    assert "acl.do_configure: 10.0s (via" not in lines

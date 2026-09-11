@@ -15,13 +15,12 @@ This module also exposes an optional critical-path sub-section: the longest
 dependency-respecting serial chain through the build, each node weighted by
 the elapsed time of the executed task that resolves to it (see
 :func:`_resolve_graph_node`) rather than by a recipe's summed task seconds.
-Per design.md's confirmed finding that
-``commands/graph.py``'s dependency model always invokes ``bitbake -g
-<recipe>`` live inside kas-container (no cached/offline model exists), the
-critical-path step cannot be a pure function over the persisted artifact
-alone. It is opt-in: callers pass a ``dependency_source`` callable that
-returns the ``(dot_text, buildlist_text)`` pair (however they were
-retrieved - live container exec in production, a canned fixture in tests).
+It is opt-in: callers pass a ``dependency_source`` callable that returns
+the ``(dot_text, buildlist_text)`` pair. In production that callable reads
+the run's own already-captured ``task-depends.dot`` (see
+``commands.insights._dependency_source``) rather than invoking a fresh
+``bitbake -g <recipe>`` - the graph capture happens once, at build time,
+and this module only ever reads it back. Tests supply a canned fixture.
 When ``dependency_source`` is omitted, or it raises, or the resulting graph
 is empty/cyclic, :class:`CriticalPath` reports ``available=False`` with an
 explanatory ``note`` - the duration and top-N-slowest sections above never
@@ -47,6 +46,13 @@ if TYPE_CHECKING:
     from bakar.buildstats import BuildstatsRun, TaskStats
 
 DEFAULT_TOP_N = 10
+
+#: How many of the critical path's heaviest nodes render in the report. A
+#: task-level chain has no natural ceiling the way the retired recipe-level
+#: chain did (274 possible nodes) - a real capture runs into the thousands
+#: (design D6) - so the bound is a named constant rather than a number left
+#: to the reader.
+CRITICAL_PATH_TOP_N = 10
 
 #: Share of executed tasks that must carry a buildstats record before any
 #: CPU figure derived from that join may be published. The reference analyser
@@ -98,11 +104,14 @@ class CriticalPath:
     """The critical-path sub-section: the longest dependency-respecting chain.
 
     ``available`` is ``False`` (the default) when no dependency source was
-    supplied to :func:`timing_report`, or when the supplied source failed,
-    returned an empty graph, or returned a cyclic graph - in every one of
-    those cases ``note`` explains why, and ``chain``/``total_seconds`` stay
-    at their empty defaults. The duration and top-N sections of
-    :class:`TimingReport` never depend on this section's state.
+    supplied to :func:`timing_report`, when the supplied source failed,
+    returned an empty graph, or returned a cyclic graph, or when the
+    graph-join rate (see :class:`GraphJoin`) fell below its gate - in every
+    one of those cases ``note`` explains why, and ``chain``/``total_seconds``
+    stay at their empty defaults. The join refusal is the one most likely to
+    fire on a real, mostly-healthy run; the other four are rarer. The
+    duration and top-N sections of :class:`TimingReport` never depend on
+    this section's state.
 
     ``contributor`` maps a chain node to the name of the executed task that
     supplied its weight, and only carries an entry where that differs from
@@ -117,6 +126,42 @@ class CriticalPath:
     total_seconds: float = 0.0
     note: str = "critical-path unavailable"
     contributor: dict[str, str] = field(default_factory=dict)
+    node_weights: dict[str, float] = field(default_factory=dict)
+
+    def report_lines(self) -> list[str]:
+        """Render this section as plain text lines.
+
+        An unavailable path renders its note alone - no total, no node count,
+        matching :meth:`BuildstatsJoin.report_lines`'s "no number without its
+        caveat" rule. The available case ranks the chain by each node's OWN
+        weight rather than chain order, since the point of the section is
+        which link to shorten and that is the heaviest link regardless of
+        where it sits on the chain, then bounds the rendered set at
+        :data:`CRITICAL_PATH_TOP_N` - a task-level chain has no natural
+        ceiling. A node whose weight came from a setscene restore names that
+        restore, so the line never credits a bare node with seconds it never
+        spent.
+
+        A zero-weight node - the graph models work the build could do, and
+        some chain nodes may not have executed at all - is never rendered:
+        printing "0.0s" for a task that did not run is indistinguishable from
+        one that ran in under 50ms, and such a node is by definition never
+        "the link to shorten". The header names the chain's full node count
+        (which can exceed the number of lines below it) as "nodes", not
+        "tasks", since not every node on it necessarily ran.
+        """
+        if not self.available:
+            return [f"  {self.note}"]
+
+        lines = [f"  critical path: {self.total_seconds:.1f}s over {len(self.chain)} nodes"]
+        weighted = [node for node in self.chain if self.node_weights.get(node, 0.0) > 0.0]
+        ranked = sorted(weighted, key=lambda node: self.node_weights[node], reverse=True)
+        for node in ranked[:CRITICAL_PATH_TOP_N]:
+            weight = self.node_weights[node]
+            contributor = self.contributor.get(node)
+            via = f" (via {contributor})" if contributor and contributor != node else ""
+            lines.append(f"  {node}: {weight:.1f}s{via}")
+        return lines
 
 
 @dataclass(frozen=True)
@@ -646,7 +691,10 @@ def _compute_graph_join(parsed: _ParsedGraph, executed: list[_ExecutedTask]) -> 
     if parsed.error is not None:
         return GraphJoin(note=f"graph join unavailable: {parsed.error}")
     if not parsed.nodes:
-        return GraphJoin(note="graph join unavailable: empty dependency graph")
+        # read_graph (graph_analyze.py) returns an empty graph both for a
+        # genuinely empty capture and for one it could not parse - it cannot
+        # be told apart here, so the note must not claim "empty" alone.
+        return GraphJoin(note="graph join unavailable: empty or unparseable dependency graph")
 
     unjoined: list[str] = []
     joined = 0
@@ -663,14 +711,19 @@ def _compute_graph_join(parsed: _ParsedGraph, executed: list[_ExecutedTask]) -> 
     rate_pct = 100.0 * joined / executed_count
     gate_pct = 100.0 * JOIN_RATE_THRESHOLD
     if joined < JOIN_RATE_THRESHOLD * executed_count:
+        # Two decimals, not one: at real build scale (thousands of executed
+        # tasks) a refused rate can round to the same one-decimal figure as
+        # the gate itself (94.97% -> "95.0%"), reading as "95.0% ... below
+        # the 95.0% gate" - a display collision, not a wrong verdict, but one
+        # a reader has no way to tell apart from a real contradiction.
         return GraphJoin(
             available=True,
             executed=executed_count,
             joined=joined,
             unjoined_sample=unjoined[:UNJOINED_SAMPLE],
             note=(
-                f"graph join refused: {rate_pct:.1f}% of executed tasks resolved to a graph node, "
-                f"below the {gate_pct:.1f}% gate ({executed_count - joined} of {executed_count} "
+                f"graph join refused: {rate_pct:.2f}% of executed tasks resolved to a graph node, "
+                f"below the {gate_pct:.2f}% gate ({executed_count - joined} of {executed_count} "
                 f"executed tasks reach no node) - no critical path is reported for this run"
             ),
         )
@@ -711,36 +764,62 @@ def _compute_critical_path(
     if parsed.error is not None:
         return CriticalPath(note=f"critical-path unavailable: {parsed.error}")
     if parsed.graph is None or parsed.graph.number_of_nodes() == 0:
-        return CriticalPath(note="critical-path unavailable: empty dependency graph")
+        return CriticalPath(note="critical-path unavailable: empty or unparseable dependency graph")
     if not graph_join.gate_passed:
         return CriticalPath(note=f"critical-path unavailable: {graph_join.note}")
 
     task_graph = graph_analyze.to_task_digraph(parsed.graph)
     if not nx.is_directed_acyclic_graph(task_graph):
-        return CriticalPath(note="critical-path unavailable: cyclic task dependency graph")
+        # find_cycle is generic over any nx.DiGraph despite its "pn_graph"
+        # parameter name - it names the offending nodes so a refusal has a
+        # locus, the same way the graph-join refusal names its unjoined
+        # sample rather than only a count.
+        cycle = graph_analyze.find_cycle(task_graph)
+        locus = f": {' -> '.join(cycle)}" if cycle else ""
+        return CriticalPath(note=f"critical-path unavailable: cyclic task dependency graph{locus}")
 
-    node_weights: dict[str, float] = {}
-    contributor: dict[str, str] = {}
+    node_resolutions: dict[str, list[tuple[str, float]]] = {}
     for d in durations:
         resolved = _resolve_graph_node(parsed.nodes, d.recipe, d.task)
         if resolved is None:
             continue
         node, contributing_task = resolved
-        node_weights[node] = node_weights.get(node, 0.0) + d.duration
+        node_resolutions.setdefault(node, []).append((contributing_task, d.duration))
+
+    # A node is weighted by exactly ONE executed task's own duration, never a
+    # sum: a failed setscene restore followed by the real task (or the reverse
+    # order) resolves both rows to the same node, and the restore's seconds are
+    # not part of the serial cost the real execution represents at that graph
+    # position. The real (non-restore) execution always wins over a restore
+    # regardless of which duration is larger; a tie between two candidates of
+    # the same kind keeps the larger one.
+    node_weights: dict[str, float] = {}
+    contributor: dict[str, str] = {}
+    for node, resolutions in node_resolutions.items():
         node_task = node.rsplit(".", 1)[-1]
+        contributing_task, weight = max(resolutions, key=lambda pair: (pair[0] == node_task, pair[1]))
+        node_weights[node] = weight
         if contributing_task != node_task:
             contributor[node] = contributing_task
-        else:
-            contributor.pop(node, None)
 
     chain, total = _weighted_longest_path(task_graph, node_weights)
     chain_contributor = {node: contributor[node] for node in chain if node in contributor}
+    chain_weights = {node: node_weights[node] for node in chain if node in node_weights}
+    if not chain_weights:
+        # The graph join passed (every executed task resolved to SOME node),
+        # but none of them landed on this chain with a usable duration - an
+        # artifact whose rows carry no started/completed pair. Publishing
+        # total_seconds=0.0 as available=True would let a CPU-only floor
+        # render under the concurrency-floor label, which is the exact
+        # failure the capability docs promise cannot happen.
+        return CriticalPath(note="critical-path unavailable: no executed task's duration resolved to any graph node")
     return CriticalPath(
         available=True,
         chain=chain,
         total_seconds=total,
         note="critical-path computed",
         contributor=chain_contributor,
+        node_weights=chain_weights,
     )
 
 
@@ -1446,6 +1525,15 @@ def timing_report(
         # (see :data:`_ExecutedTask`).
         if row.get("outcome") != _NOT_EXECUTED_OUTCOME:
             executed.append((recipe_name, task))
+
+        # Defense in depth: a failed_silent row normally carries no `started`
+        # (see :data:`_ExecutedTask`) and is dropped by the guard below anyway.
+        # A malformed or legacy artifact could violate that invariant and still
+        # carry a timestamp pair; excluding the outcome explicitly here keeps
+        # `durations` - and therefore every node weight derived from it - free
+        # of a task the join gate's own denominator (`executed`) never counted.
+        if row.get("outcome") == _NOT_EXECUTED_OUTCOME:
+            continue
 
         if started is None or completed is None:
             continue
