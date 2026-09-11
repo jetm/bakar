@@ -13,6 +13,7 @@ v1 streams ``bitbake`` output line-by-line to the operator and the run log.
 from __future__ import annotations
 
 import subprocess
+import sys
 from typing import TYPE_CHECKING
 
 from bakar import build_scope
@@ -46,7 +47,12 @@ def _stream_build(argv: list[str], *, cwd: Path, env: dict[str, str], log_path: 
     assert proc.stdout is not None  # PIPE is set above
     with log_path.open("w", encoding="utf-8") as fh:
         for line in proc.stdout:
-            print(line, end="")
+            # The echoed stream is diagnostics, so it goes to stderr like every
+            # other human-facing line (see ``commands/_app.py``). The kas
+            # families never write build output to stdout, and a family that
+            # did would make `bakar build > payload` mean two different things
+            # depending on which BSP the workspace holds.
+            print(line, end="", file=sys.stderr)
             fh.write(line)
     return proc.wait()
 

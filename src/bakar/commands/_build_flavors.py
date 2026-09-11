@@ -172,7 +172,13 @@ def _run_bbsetup_build(
         for line in step_kas.dry_run_preview_lines(
             cfg, cfg.kas_yaml, overlay_source, extra_overlays_bbsetup, keep_going=ctx.keep_going, target=ctx.target
         ):
-            print(line)
+            # stderr, like the kas path's identical preview loop in
+            # ``steps/kas_build.py``: preview prose is human-facing and stdout is
+            # reserved for machine-readable payloads (see ``commands/_app.py``).
+            # A family that printed it to stdout would make
+            # ``bakar build --dry-run > payload`` mean one thing on bbsetup and
+            # another on nxp.
+            print(line, file=sys.stderr)
         raise typer.Exit(code=0)
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)

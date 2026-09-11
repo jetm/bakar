@@ -137,6 +137,10 @@ def _plain_render_console() -> Console | None:
     forced ``--plain`` TTY (design D9).
     """
     if _output_mode() is OutputMode.PLAIN:
+        # stderr for the same reason ``commands/_app.py`` uses it, and that
+        # module carries the full rationale: stdout is reserved for
+        # machine-readable payloads, so everything a human reads goes here.
+        # A RunLogger render console is diagnostics by definition.
         return Console(no_color=True, force_terminal=False, stderr=True)
     return None
 

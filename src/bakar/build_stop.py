@@ -18,6 +18,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import time
 
 # Runtime, not TYPE_CHECKING-guarded: both names annotate fields of
@@ -77,7 +78,24 @@ _ERROR = "error"
 # Module-level Rich console for the out-of-process ``bakar stop`` wait view.
 # build_stop sits below the commands tier, so it cannot import the shared
 # console from ``commands._app``; it owns its own.
-console = Console()
+#
+# stderr for the same reason ``commands/_app.py`` uses it, and that module
+# carries the full rationale: stdout is reserved for machine-readable payloads,
+# so everything a human reads goes here. Stop narration is diagnostics by
+# definition, so it never belongs on stdout.
+console = Console(stderr=True)
+
+
+def _say(message: str) -> None:
+    """Print one line of stop narration to the diagnostic stream.
+
+    Every plain-text line this module emits goes through here rather than
+    through a bare ``print``, so the stream choice above is made once instead of
+    at thirty-odd call sites. Rich output keeps using ``console``; this is for
+    the lines that must NOT be re-interpreted as markup - a signalled process's
+    cmdline can contain ``[`` and would be eaten by ``console.print``.
+    """
+    print(message, file=sys.stderr)
 
 
 def run_id_label(run_id: str) -> str:
@@ -512,7 +530,7 @@ def _stop_container(
     call captures output and never raises on a non-zero exit.
     """
     if not force:
-        print(f"Sent SIGINT to bitbake in container {cid}...")
+        _say(f"Sent SIGINT to bitbake in container {cid}...")
         if not _sigint_bitbake_in_container(runtime, cid):
             _run_runtime([runtime, "kill", "--signal=SIGINT", cid])
         status = _graceful_wait(
@@ -526,14 +544,14 @@ def _stop_container(
             )
         )
         if status == "lost_runtime":
-            print("lost contact with the container runtime")
+            _say("lost contact with the container runtime")
         else:
-            print("stopped")
+            _say("stopped")
         return status
 
-    print(f"Sending SIGTERM to container {cid}...")
+    _say(f"Sending SIGTERM to container {cid}...")
     _escalate_container(runtime, cid, term_secs)
-    print("stopped")
+    _say("stopped")
     return "forced"
 
 
@@ -898,28 +916,28 @@ def _escalate_host(pgid: int | None, run_dir: Path | None = None) -> list[_Kille
 
     # --- SIGTERM rung ---
     if pgid is not None and pgid > 0 and _killpg(pgid, signal.SIGTERM):
-        print(f"  SIGTERM process group {pgid}")
+        _say(f"  SIGTERM process group {pgid}")
     if bb_pid is not None and _kill_pid(bb_pid, signal.SIGTERM):
-        print(f"  SIGTERM bitbake-server pid {bb_pid}")
+        _say(f"  SIGTERM bitbake-server pid {bb_pid}")
     for pid in scoped_pids:
         cmdline = _proc_cmdline(pid)
         if _kill_pid(pid, signal.SIGTERM):
             killed.append(_KilledProc(pid, "SIGTERM", cmdline))
-            print(f"  SIGTERM pid {pid} ({_short_cmd(cmdline)})")
+            _say(f"  SIGTERM pid {pid} ({_short_cmd(cmdline)})")
 
     time.sleep(_STOP_TERM_SECONDS)
 
     # --- SIGKILL rung (survivors only) ---
     if pgid is not None and pgid > 0 and _pgid_alive(pgid) and _killpg(pgid, signal.SIGKILL):
-        print(f"  SIGKILL process group {pgid}")
+        _say(f"  SIGKILL process group {pgid}")
     if bb_pid is not None and _pid_alive(bb_pid) and _kill_pid(bb_pid, signal.SIGKILL):
-        print(f"  SIGKILL bitbake-server pid {bb_pid}")
+        _say(f"  SIGKILL bitbake-server pid {bb_pid}")
     for pid in scoped_pids:
         if _pid_alive(pid):
             cmdline = _proc_cmdline(pid)
             if _kill_pid(pid, signal.SIGKILL):
                 killed.append(_KilledProc(pid, "SIGKILL", cmdline))
-                print(f"  SIGKILL pid {pid} ({_short_cmd(cmdline)})")
+                _say(f"  SIGKILL pid {pid} ({_short_cmd(cmdline)})")
     return killed
 
 
@@ -1116,16 +1134,16 @@ def _report_stale_cleanup(run_dir: Path, cfg: BuildConfig | None = None) -> list
         refusal = lock_mutation_guard(cfg)
         if refusal is not None:
             detail = f" ({escape(refusal.host)})" if refusal.host else ""
-            print(f"leaving bitbake.lock/bitbake.sock in place: ownership refused - {refusal.reason}{detail}")
+            _say(f"leaving bitbake.lock/bitbake.sock in place: ownership refused - {refusal.reason}{detail}")
             return []
     topdir = run_dir.parent.parent
     holders = _collect_build_pids(topdir, None).cooker
     if holders:
-        print(f"leaving bitbake.lock/bitbake.sock in place: still held by pid(s) {sorted(holders)}")
+        _say(f"leaving bitbake.lock/bitbake.sock in place: still held by pid(s) {sorted(holders)}")
         return []
     removed = _clean_stale_bitbake_files(run_dir)
     if removed:
-        print(f"removed stale bitbake files: {', '.join(p.name for p in removed)}")
+        _say(f"removed stale bitbake files: {', '.join(p.name for p in removed)}")
     return removed
 
 
@@ -1222,9 +1240,9 @@ def stop_build(
         if refusal is not None:
             if refusal.reason == "peer-held":
                 host = escape(refusal.host) if refusal.host else "another host"
-                print(f"build owned by {host}; run `bakar stop` there")
+                _say(f"build owned by {host}; run `bakar stop` there")
             else:
-                print(
+                _say(
                     f"cannot confirm this node owns the build lock ({refusal.reason}); "
                     "refusing to send any signal - resolve ownership manually"
                 )
@@ -1235,10 +1253,10 @@ def stop_build(
     try:
         run_dirs = sorted(runs_dir.iterdir())
     except OSError:
-        print("no running build found")
+        _say("no running build found")
         return False
     if not run_dirs:
-        print("no running build found")
+        _say("no running build found")
         return False
     # Target the newest run whose build is actually live/targetable, not just
     # the lexically-latest: a clean-recipe or a second build creates a newer run
@@ -1279,12 +1297,12 @@ def stop_build(
                 topdir = run_dir.parent.parent
                 if not _collect_build_pids(topdir, None).cooker and not _bitbake_server_alive(run_dir):
                     removed = _report_stale_cleanup(run_dir, cfg)
-                    print("no running build" + ("; cleaned stale lock/socket" if removed else ""))
+                    _say("no running build" + ("; cleaned stale lock/socket" if removed else ""))
                     return True
-                print("wrapper process gone; a detached cooker is still running - escalating")
+                _say("wrapper process gone; a detached cooker is still running - escalating")
             if not force:
                 if pgid is not None and pgid > 0:
-                    print(f"Sent SIGINT to build PGID {pgid}...")
+                    _say(f"Sent SIGINT to build PGID {pgid}...")
                     os.killpg(pgid, signal.SIGINT)
                 bb_pid = _read_bitbake_server_pid(run_dir)
                 if bb_pid is not None:
@@ -1300,16 +1318,16 @@ def stop_build(
                 )
             else:
                 label = f"PGID {pgid}" if pgid else "detached cooker"
-                print(f"Force-stopping build ({label}) - SIGTERM -> SIGKILL...")
+                _say(f"Force-stopping build ({label}) - SIGTERM -> SIGKILL...")
                 _escalate_host(pgid, run_dir)
             _report_stale_cleanup(run_dir, cfg)
             reasons = _verify_clean(run_dir, pgid, cfg=cfg)
             if reasons:
-                print("stop incomplete - the following remain:")
+                _say("stop incomplete - the following remain:")
                 for reason in reasons:
-                    print(f"  - {reason}")
+                    _say(f"  - {reason}")
                 return False
-            print("stopped")
+            _say("stopped")
             return True
         finally:
             remove_pid(run_dir)
@@ -1319,12 +1337,12 @@ def stop_build(
     # while the container lives.
     try:
         if record.container_label is None:
-            print("cannot target build: run predates container tracking; stop it manually")
+            _say("cannot target build: run predates container tracking; stop it manually")
             return False
 
         runtime = record.runtime or detect_runtime()
         if shutil.which(runtime) is None:
-            print(f"cannot target build: container runtime {runtime!r} is not installed")
+            _say(f"cannot target build: container runtime {runtime!r} is not installed")
             return False
 
         cid = _container_id(runtime, record.container_label)
@@ -1332,7 +1350,7 @@ def stop_build(
             # No live container: idempotent clean-tree stop - clear any stale
             # lock/sock and succeed (requirement 5).
             removed = _report_stale_cleanup(run_dir, cfg)
-            print("no running build container" + ("; cleaned stale lock/socket" if removed else ""))
+            _say("no running build container" + ("; cleaned stale lock/socket" if removed else ""))
             return True
 
         status = _stop_container(
@@ -1350,11 +1368,11 @@ def stop_build(
         _report_stale_cleanup(run_dir, cfg)
         reasons = _verify_clean(run_dir, None, runtime=runtime, container_label=record.container_label, cfg=cfg)
         if reasons:
-            print("stop incomplete - the following remain:")
+            _say("stop incomplete - the following remain:")
             for reason in reasons:
-                print(f"  - {reason}")
+                _say(f"  - {reason}")
             return False
-        print("stopped")
+        _say("stopped")
         return True
     finally:
         remove_pid(run_dir)

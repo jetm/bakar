@@ -846,8 +846,11 @@ def regenerate_yaml(cfg: BuildConfig, log: RunLogger, *, bsp: BspModel) -> None:
     write_yaml(opts)
     log.step_ok("gen_kas", yaml=str(output))
     artifact = f"{cfg.resolved_tmpdir}/deploy/images/{cfg.machine}/{cfg.image}-{cfg.machine}.wic"
-    sys.stdout.write(f"INFO     artifact: {artifact}\n")
-    sys.stdout.flush()
+    # stderr, not stdout: this is a human-facing announcement, and stdout is
+    # reserved for machine-readable payloads a caller can pipe. See
+    # ``commands/_app.py`` for the full rationale.
+    sys.stderr.write(f"INFO     artifact: {artifact}\n")
+    sys.stderr.flush()
 
 
 def _parse_lock_pid(lock: Path) -> int | None:
@@ -2006,7 +2009,10 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         for line in dry_run_preview_lines(
             cfg, kas_yaml, overlay_source, extra_overlays, keep_going=ctx.keep_going, target=ctx.target
         ):
-            print(line)
+            # Preview prose is for a human, so it goes to the diagnostic stream
+            # with every other human-facing line (see ``commands/_app.py``);
+            # ``bakar build --dry-run > payload`` leaves stdout empty.
+            print(line, file=sys.stderr)
         log.step_skip("kas_build", reason="dry-run")
         return 0
 

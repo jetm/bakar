@@ -180,6 +180,36 @@ def test_qcom_build_emits_monitor_artifacts(tmp_path: Path, monkeypatch: pytest.
     assert not (run_dir / "bitbake.log").exists(), "stream must not write bitbake.log"
 
 
+def test_qcom_build_streams_to_stderr_not_stdout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The echoed build stream goes to stderr, leaving stdout empty.
+
+    stdout is reserved for machine-readable payloads, and the kas families write
+    no build output there. A qcom build that echoed to stdout would make
+    ``bakar build > payload`` mean two different things depending on which BSP
+    the workspace holds.
+    """
+    _no_buildtools(monkeypatch)
+    cfg = _qcom_cfg(tmp_path)
+    run_dir = tmp_path / "qcom" / "build-qcom-wayland" / "runs" / "20260101-000000"
+    run_dir.mkdir(parents=True)
+    log = _FakeLogger(run_dir)
+    recorder = _PopenRecorder(returncode=0, output_lines=("NOTE: Executing Tasks\n",))
+    monkeypatch.setattr(qcom_build_step.subprocess, "Popen", recorder)
+
+    qcom_build_step.run(cfg, log, target="qcom-multimedia-image")
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "NOTE: Executing Tasks" in captured.err
+    # The run log still mirrors the stream regardless of which console stream
+    # the echo went to.
+    assert "NOTE: Executing Tasks" in (run_dir / "kas.log").read_text(encoding="utf-8")
+
+
 def test_qcom_build_sources_buildtools_first(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A BAKAR_BUILDTOOLS_DIR env script is sourced before setup-environment."""
     bt = tmp_path / "buildtools"

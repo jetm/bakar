@@ -125,7 +125,8 @@ def test_keep_going_appends_dash_k_after_kas_arg(
     rc = _run_dry(tmp_path, monkeypatch, keep_going=True)
     assert rc == 0
 
-    out = capsys.readouterr().out
+    # The dry-run preview is human-facing prose, so it lands on stderr.
+    out = capsys.readouterr().err
     command = _command_line(out)
     # "build <kas_arg> -- -k": the passthrough suffix sits after the YAML arg.
     assert command.rstrip().endswith("-- -k"), command
@@ -146,7 +147,7 @@ def test_dry_run_skips_popen_and_prints_command(
     rc = _run_dry(tmp_path, monkeypatch, keep_going=False)
     assert rc == 0
 
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     command = _command_line(out)
     assert " build " in command, command
     # keep_going was False, so no bitbake passthrough.
@@ -166,7 +167,7 @@ def test_keep_going_dry_run_output_contains_dash_k(
     rc = _run_dry(tmp_path, monkeypatch, keep_going=True)
     assert rc == 0
 
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "-- -k" in out, out
 
 

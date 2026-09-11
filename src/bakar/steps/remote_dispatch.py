@@ -29,6 +29,7 @@ import re
 import secrets
 import shlex
 import subprocess
+import sys
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -42,6 +43,20 @@ from bakar.config import WORKSPACE_FEED_DIRNAME, WORKSPACE_FEED_STAGE_DIRNAME
 # run-id) out of the piped build log, matching the project convention in
 # commands/_app.py.
 console = Console(stderr=True)
+
+
+def _echo(text: str) -> None:
+    """Echo one chunk of the remote build's own output to the diagnostic stream.
+
+    The streamed build output goes to the same stream as the chrome above: a kas
+    build never writes its output to stdout, and a remote dispatch that did would
+    make ``bakar build --on <host> > payload`` mean something different from the
+    same redirect run locally. ``end=""`` because the lines arrive with their
+    newline attached, and plain ``print`` rather than ``console`` because build
+    output containing ``[`` must not be read as Rich markup.
+    """
+    print(text, end="", file=sys.stderr)
+
 
 # Build artifacts and caches, never source. ``.git`` is deliberately absent:
 # kas/bitbake read git state for SRCREV/AUTOREV. The NFS caches (sstate,
@@ -709,7 +724,7 @@ def _follow_remote_log(host: str, unit: str, log: str) -> tuple[int, list[str], 
     pending: str | None = None
     for line in proc.stdout:
         if pending is not None:
-            print(pending, end="")
+            _echo(pending)
             captured.append(pending)
         pending = line
     if pending is not None:
@@ -718,7 +733,7 @@ def _follow_remote_log(host: str, unit: str, log: str) -> tuple[int, list[str], 
             # Transport, not build output: consume it rather than echoing it.
             rc = int(match.group(1))
         elif not _DISPATCH_LOST_RE.search(pending):
-            print(pending, end="")
+            _echo(pending)
             captured.append(pending)
     proc.wait()
     if rc is None:
@@ -777,10 +792,10 @@ def _stream_remote_build(host: str, script: str) -> tuple[int, list[str], bool]:
                 continue
             if _DISPATCH_START_RE.search(line):
                 launch.append(line)
-                print(line, end="")
+                _echo(line)
                 continue
             in_launch_phase = False
-        print(line, end="")
+        _echo(line)
         captured.append(line)
     rc = proc.wait()
 

@@ -31,6 +31,7 @@ import pytest
 import yaml
 
 from bakar import build_stop
+from bakar.bsp_model import get_model
 from bakar.config import BuildConfig
 from bakar.observability import RunLogger
 from bakar.steps.kas_build import (
@@ -53,6 +54,7 @@ from bakar.steps.kas_build import (
     lock_owner_marker,
     materialize_overlay,
     persist_run_artifacts,
+    regenerate_yaml,
     run_build,
     run_shell_live,
 )
@@ -1621,3 +1623,26 @@ def test_finish_step_run_shell_nonzero_rc_emits_step_fail_with_reason_and_exit_c
     assert log.calls == [
         ("step_fail", "kas_shell_capture", {"reason": f"exit_code={rc}", "exit_code": rc}),
     ]
+
+
+def test_regenerate_yaml_artifact_line_goes_to_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The ``INFO artifact:`` announcement is human-facing, so it leaves stdout empty.
+
+    stdout is reserved for machine-readable payloads a caller can pipe; a
+    ``bakar build ... > payload`` that picked up this line would carry prose the
+    caller cannot parse.
+    """
+    cfg = _make_nxp_cfg(tmp_path)
+    _seed_build_dir(cfg)
+    monkeypatch.setattr("bakar.steps.kas_build.write_yaml", lambda opts: None)
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        regenerate_yaml(cfg, log, bsp=get_model("nxp"))
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "INFO     artifact:" in captured.err

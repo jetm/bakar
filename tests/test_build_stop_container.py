@@ -154,7 +154,7 @@ def test_stop_container_lost_runtime_propagates_without_ladder(
 
     assert status == "lost_runtime"
     assert issued == []  # the SIGTERM->SIGKILL ladder never ran
-    assert "lost contact with the container runtime" in capsys.readouterr().out
+    assert "lost contact with the container runtime" in capsys.readouterr().err
 
 
 # --- _detect_runtime -------------------------------------------------------
@@ -387,3 +387,77 @@ def test_sigint_bitbake_in_container_oserror_returns_false(monkeypatch: pytest.M
     monkeypatch.setattr(build_stop.subprocess, "run", _boom)
 
     assert build_stop._sigint_bitbake_in_container("docker", "abc") is False
+
+
+# --- escalate_container_tree (public entry for kas_build's capture timeout) -
+
+
+def test_escalate_container_tree_returns_false_when_no_container_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No container for this run's label -> False, so the caller falls back to the host ladder."""
+    monkeypatch.setattr(build_stop, "detect_runtime", lambda: "docker")
+    monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: None)
+    escalate_calls: list[object] = []
+    monkeypatch.setattr(build_stop, "_escalate_container", lambda *a, **k: escalate_calls.append((a, k)))
+
+    assert build_stop.escalate_container_tree("20260101-000000") is False
+    assert escalate_calls == []  # nothing to escalate
+
+
+def test_escalate_container_tree_returns_true_only_when_verified_gone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A resolved container that the ladder actually removes -> True.
+
+    ``_escalate_container`` swallows every runtime command's result by design,
+    so this re-queries the same label afterward rather than trusting that the
+    ladder ran without error. The post-escalation query goes through
+    ``_container_id_status`` (tri-state), not ``_container_id`` - a status of
+    _DEAD is what "verified gone" actually means.
+    """
+    monkeypatch.setattr(build_stop, "detect_runtime", lambda: "docker")
+    monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: "abc123")
+    monkeypatch.setattr(build_stop, "_container_id_status", lambda runtime, label: (build_stop._DEAD, None))
+    escalate_calls: list[tuple[str, str, int]] = []
+    monkeypatch.setattr(
+        build_stop,
+        "_escalate_container",
+        lambda runtime, cid, term_secs: escalate_calls.append((runtime, cid, term_secs)),
+    )
+
+    assert build_stop.escalate_container_tree("20260101-000000") is True
+    assert escalate_calls == [("docker", "abc123", build_stop._STOP_TERM_SECONDS)]
+
+
+def test_escalate_container_tree_returns_false_when_container_survives_the_ladder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ladder ran but the container is still there -> False, not a silent success.
+
+    This is the exact gap a code-review pass found: returning True whenever a
+    container ID was found, with no check that stop/kill/rm -f actually
+    removed it, lets the caller skip the host-side fallback over a container
+    (and the cooker holding bitbake.lock inside it) that never actually died.
+    """
+    monkeypatch.setattr(build_stop, "detect_runtime", lambda: "docker")
+    monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: "abc123")
+    monkeypatch.setattr(build_stop, "_container_id_status", lambda runtime, label: (build_stop._ALIVE, "abc123"))
+    monkeypatch.setattr(build_stop, "_escalate_container", lambda *a, **k: None)
+
+    assert build_stop.escalate_container_tree("20260101-000000") is False
+
+
+def test_escalate_container_tree_returns_false_when_verification_query_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wedged runtime on the VERIFICATION query -> False, not a silent success.
+
+    _container_id collapses "no match" and "query failed" into the same None,
+    which is exactly wrong for deciding whether an escalation succeeded: a
+    runtime that wedges right after the stop/kill/rm -f ladder must not read
+    as "verified gone" merely because the follow-up query also came back
+    empty-handed. Only a definitive _DEAD status counts.
+    """
+    monkeypatch.setattr(build_stop, "detect_runtime", lambda: "docker")
+    monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: "abc123")
+    monkeypatch.setattr(build_stop, "_container_id_status", lambda runtime, label: (build_stop._ERROR, None))
+    monkeypatch.setattr(build_stop, "_escalate_container", lambda *a, **k: None)
+
+    assert build_stop.escalate_container_tree("20260101-000000") is False

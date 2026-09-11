@@ -1099,6 +1099,34 @@ def test_dispatch_detached_rc_line_is_not_echoed_to_the_user(
     assert "BAKAR_DISPATCH_RC" not in out
 
 
+def test_dispatch_detached_stream_goes_to_stderr_not_stdout(
+    fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # stdout is reserved for machine-readable payloads, and the kas families
+    # write no build output there. A remote dispatch that echoed to stdout would
+    # make `bakar build --on <host> > payload` mean something different from the
+    # same redirect run locally.
+    fake_sp.popen_lines = _DETACHED_LAUNCH
+    fake_sp.follow_lines = ["compiling glibc\n", "BAKAR_DISPATCH_RC=0\n"]
+    rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    _cap = capsys.readouterr()
+    assert _cap.out == ""
+    assert "compiling glibc" in _cap.err
+    assert "BAKAR_DISPATCH_START" in _cap.err
+
+
+def test_dispatch_coupled_stream_goes_to_stderr_not_stdout(
+    fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The fallback `exec` form (no BAKAR_DISPATCH_UNIT marker) makes the launch
+    # stream the build's own. It takes the same stream as the detached path.
+    fake_sp.popen_lines = ["NOTE: Executing Tasks\n", "NOTE: Tasks Summary\n"]
+    rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    _cap = capsys.readouterr()
+    assert _cap.out == ""
+    assert "NOTE: Executing Tasks" in _cap.err
+
+
 def test_dispatch_detached_lost_follower_says_the_build_survives(
     fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]
 ) -> None:

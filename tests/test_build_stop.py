@@ -1490,7 +1490,7 @@ def test_report_stale_cleanup_skips_removal_when_held(
 
     assert removed == []
     assert (topdir / "bitbake.lock").exists()  # left in place - a holder is alive
-    assert "still held by pid(s) [777]" in capsys.readouterr().out
+    assert "still held by pid(s) [777]" in capsys.readouterr().err
 
 
 def test_report_stale_cleanup_removes_when_unheld(
