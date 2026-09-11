@@ -23,6 +23,22 @@ app = typer.Typer(
     add_completion=True,
     pretty_exceptions_enable=False,
 )
+# stderr, deliberately, and it is a convention rather than this module's
+# preference: every command's human-readable output goes here, while stdout is
+# reserved for machine-readable payloads a caller can pipe.
+# ``commands/report.py`` is the exemplar - the same function emits
+# ``print(json.dumps(payload))`` for ``--format json`` and ``console.print(...)``
+# for the human report, and ``bakar graph`` splits ``--format dot``/``json`` the
+# same way.
+#
+# The consequence is worth stating because it looks like a bug the first time:
+# ``bakar insights ... > file`` produces an EMPTY file. The report went to
+# stderr, which is correct. Use ``2> file``, or ``2>&1 |`` for both streams.
+#
+# So a command that gains a machine-readable format prints it to stdout and
+# leaves everything else on this console. Moving one command's human output to
+# stdout would make it the only one that does, and would collide with that
+# format the day it is added.
 console = Console(stderr=True)
 
 _VENDORS: list | None = None

@@ -32,6 +32,10 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
 
+# stderr for the same reason ``commands/_app.py`` uses it, and that module
+# carries the full rationale: stdout is reserved for machine-readable payloads,
+# so everything a human reads goes here. A RunLogger's output is diagnostics by
+# definition, so it never belongs on stdout.
 console = Console(stderr=True)
 
 

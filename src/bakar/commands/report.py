@@ -179,6 +179,12 @@ def report(
                 "hit_rate": ccache_stats.get("hit_rate"),
                 "window": ccache_stats.get("window"),
             }
+        # stdout, not the shared console. This is the one place the project's
+        # stream convention is visible in a single function: the machine-readable
+        # payload is piped, so it goes to stdout, while the human report below
+        # goes to stderr with every other command's output. See
+        # ``commands/_app.py`` for why, and copy this shape when adding a
+        # machine-readable format elsewhere.
         print(json.dumps(payload))
         return
 
