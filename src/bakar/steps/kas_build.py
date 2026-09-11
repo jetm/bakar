@@ -3020,6 +3020,21 @@ def graph_capture_command(target: str) -> str:
     that server holding the lock. Nothing about the build that stranded it
     fails; the NEXT build fails, on someone else's machine, naming neither this
     capture nor the run that caused it.
+
+    This same ``bitbake -m`` also costs the next build its warm cooker on a
+    capture SUCCESS, not only on failure: it kills the idle cooker that
+    :func:`_wait_for_cooker_idle` waited for, so the next invocation against
+    this build directory re-parses cold instead of reconnecting. That cost is
+    accepted deliberately rather than engineered around. Whether ``bitbake -g``
+    would actually reconnect to the build's own cooker or spawn a fresh one was
+    never empirically measured, and the two failure modes this choice trades
+    between are asymmetric: keeping the kill costs a slower next build, which
+    is bounded and self-correcting. Dropping it risks stranding a live-owner
+    lock that :func:`clear_stale_bitbake_locks` will not clear - it only clears
+    locks whose owner has crashed, and refuses a peer-held lock on a shared NFS
+    TOPDIR outright even when idle - a failure that could land on a different
+    build entirely. Anyone who values the warm-reconnect path over the graph
+    artifact has ``--no-capture-graph`` as the escape hatch.
     """
     return f"bitbake -g {shlex.quote(target)}; rc=$?; bitbake -m; exit $rc"
 
@@ -3052,11 +3067,19 @@ def _wait_for_cooker_idle(
 
     The lock is never released for us to take - that is the thing to understand
     here. bitbake's cookerdaemon persists after a build so the next invocation
-    reconnects instead of respawning, which is a documented happy path. What
-    changes is that the holder goes from having worker/client ACTIVITY to being
-    a bare idle server, and :func:`clear_stale_bitbake_locks` already treats
-    those two states differently: the first refuses, the second is left alone
-    precisely so a following invocation can reconnect.
+    reconnects instead of respawning, which is a documented happy path - but
+    only for a build that does NOT run this capture, or one where the capture
+    was declined via ``--no-capture-graph``. What changes is that the holder
+    goes from having worker/client ACTIVITY to being a bare idle server, and
+    :func:`clear_stale_bitbake_locks` already treats those two states
+    differently: the first refuses, the second is left alone precisely so a
+    following invocation can reconnect - for a build that stops here.
+
+    A build that goes on to capture does not get that reconnect. The
+    ``bitbake -m`` in :func:`graph_capture_command` kills the cooker this
+    function just waited to go idle, so the NEXT invocation against this build
+    directory re-parses cold instead of reconnecting. That cost is accepted
+    deliberately; see the comment on :func:`graph_capture_command` for why.
 
     So this waits on the same predicate that would refuse us, rather than
     sleeping a guessed interval and hoping.
