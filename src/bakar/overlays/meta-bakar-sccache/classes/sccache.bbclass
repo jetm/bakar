@@ -39,11 +39,12 @@
 #     gcc-native.bbclass definitions minus ${CCACHE}; :forcevariable beats the
 #     class assignment regardless of inherit order.
 #  2. It cannot package a host gcc whose assembler is PATH-relative (Arch's host
-#     gcc reports a bare `as`), so native, cross, and crosssdk recipes - whose CC
-#     IS the host compiler - must compile locally. The class gate excludes them.
-#     nativesdk and cross-canadian recipes are NOT excluded: they build with the
-#     OE crosssdk compiler (absolute-path `as`, packageable), so they distribute
-#     like any target cross-compile.
+#     gcc reports a bare `as`). This class has no separate gate for that: the
+#     sccache fork resolves `-print-prog-name=as` against the compile task's
+#     PATH (icecc.bbclass's which(PATH) fallback) rather than the daemon's PATH,
+#     so a listed native/cross/crosssdk recipe packages the right assembler and
+#     distributes like any other allow-listed recipe (see SCCACHE_INCLUDED_PN
+#     below, and llvm-native/clang-native/rust-llvm-native's own entries).
 #  3. The kernel distributes like any other target recipe. A few of its objects
 #     .incbin a binary the inputs packager cannot ship (the vdso, embedded
 #     config, and dtb wrappers) and fail to assemble remotely; sccache falls
