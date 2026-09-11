@@ -915,6 +915,7 @@ def test_multi_release_ctx_carries_every_flag_unchanged(
             "http://mirror.example/sstate",
             "--target",
             "ctx-target",
+            "--no-capture-graph",
         ],
     )
 
@@ -937,6 +938,7 @@ def test_multi_release_ctx_carries_every_flag_unchanged(
         "sstate_mirror": "http://mirror.example/sstate",
         "sccache_scheduler": "http://sched.example:10600",
         "target": "ctx-target",
+        "no_capture_graph": True,
     }
     for ctx in captured:
         for field, want in expected.items():
@@ -1206,3 +1208,78 @@ def test_print_cache_summary_emits_nothing_when_no_backend(tmp_path: Path) -> No
     with RunLogger(runs_dir=tmp_path / "runs", render_console=capture) as log:
         _print_cache_summary(log, None, None, OutputMode.PLAIN)
     assert "bakar[cache]" not in buf.getvalue()
+
+
+def test_capture_graph_defaults_on_for_a_byo_build(
+    runner: _CliRunner,
+    workspace: Path,
+    generic_yaml: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No flag, no config: the resolved cfg still asks for the capture."""
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    seen: list[bool] = []
+
+    def fake_run_build(ctx, **_kw):  # type: ignore[no-untyped-def]
+        seen.append(ctx.cfg.capture_graph)
+        return 0
+
+    monkeypatch.setattr(build_cmd.step_kas, "run_build", fake_run_build)
+
+    result = runner.invoke(app, ["build", str(generic_yaml)])
+
+    assert result.exit_code == 0, result.output
+    assert seen == [True]
+
+
+def test_no_capture_graph_reaches_the_byo_build_config(
+    runner: _CliRunner,
+    workspace: Path,
+    generic_yaml: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--no-capture-graph`` lands on the cfg the build step actually reads.
+
+    The flag is only worth anything if it survives every ``replace()`` the
+    resolution tail applies, so the assertion is on the cfg handed to
+    ``run_build`` rather than on the parsed parameter.
+    """
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    seen: list[bool] = []
+
+    def fake_run_build(ctx, **_kw):  # type: ignore[no-untyped-def]
+        seen.append(ctx.cfg.capture_graph)
+        return 0
+
+    monkeypatch.setattr(build_cmd.step_kas, "run_build", fake_run_build)
+
+    result = runner.invoke(app, ["build", str(generic_yaml), "--no-capture-graph"])
+
+    assert result.exit_code == 0, result.output
+    assert seen == [False]
+
+
+def test_no_capture_graph_reaches_the_bbsetup_ctx(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The bbsetup family gets the flag too.
+
+    bbsetup resolves its own cfg inside ``_build_flavors``, so a flag folded in
+    only on the byo/manifest tail would silently do nothing here - which is the
+    failure mode this asserts against.
+    """
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+    setup_dir = tmp_path / "bbsetup-ws"
+    setup_dir.mkdir()
+    monkeypatch.setattr(build_cmd, "_bbsetup_workspace", lambda _ws: setup_dir)
+
+    captured: list[flavors_cmd._BbsetupCtx] = []
+    monkeypatch.setattr(build_cmd, "_run_bbsetup_build", lambda _d, ctx: captured.append(ctx))
+
+    result = runner.invoke(app, ["build", "--no-capture-graph"])
+
+    assert result.exit_code == 0, result.output
+    assert [c.no_capture_graph for c in captured] == [True]

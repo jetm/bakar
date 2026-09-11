@@ -175,6 +175,7 @@ def _capture_ctx(tmp_path):
             "bsp_root": tmp_path,
             "build_dir_name": "build",
             "resolved_tmpdir": tmp_path / "build" / "tmp",
+            "capture_graph": True,
         },
     )()
     run_dir = tmp_path / "runs" / "20260101-000000"
@@ -242,3 +243,28 @@ def test_capture_reports_a_hang_distinctly_from_a_failure(monkeypatch, tmp_path)
 
     assert kas_build._capture_dependency_graph(ctx, log) is None
     assert any("exceeded" in w and "killed" in w for w in log.warnings), log.warnings
+
+
+def test_declining_the_capture_skips_the_cooker_idle_wait(monkeypatch, tmp_path) -> None:
+    """``capture_graph = False`` returns before anything that costs time.
+
+    The idle wait is up to 60s of pure waiting and runs before the capture, so a
+    guard placed after it would make declining cost almost as much as accepting.
+    Both the wait and the target resolution are booby-trapped here: reaching
+    either one fails the test rather than merely slowing it.
+    """
+    from bakar.steps import kas_build
+
+    ctx, log = _capture_ctx(tmp_path)
+    ctx.cfg.capture_graph = False
+
+    def _must_not_run(*_a, **_k):
+        raise AssertionError("declining the capture must not wait, resolve, or launch")
+
+    monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", _must_not_run)
+    monkeypatch.setattr(kas_build, "_resolve_capture_target", _must_not_run)
+    monkeypatch.setattr(kas_build, "run_shell_capture", _must_not_run)
+
+    assert kas_build._capture_dependency_graph(ctx, log) is None
+    assert log.warnings == [], "declining is a choice, not a problem to warn about"
+    assert any("declined" in m for m in log.infos), log.infos

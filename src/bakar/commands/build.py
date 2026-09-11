@@ -49,6 +49,7 @@ from bakar.commands._build_options import (
     KeepGoingOption,
     MachineOption,
     ManifestOption,
+    NoCaptureGraphOption,
     OnOption,
     SbomOption,
     ShowLayersOption,
@@ -271,6 +272,7 @@ def build(
     feed_channel: FeedChannelOption = feed_mod.DEFAULT_CHANNEL,
     cve: CveOption = False,
     sbom: SbomOption = False,
+    no_capture_graph: NoCaptureGraphOption = False,
 ) -> None:
     """Run the build pipeline idempotently.
 
@@ -461,6 +463,7 @@ def build(
                     sstate_mirror=sstate_mirror,
                     sccache_scheduler=sccache_scheduler,
                     target=target,
+                    no_capture_graph=no_capture_graph,
                 ),
             )
             elapsed = time.monotonic() - t0
@@ -507,6 +510,7 @@ def build(
                 sccache_scheduler=sccache_scheduler,
                 target=target,
                 dry_run_script=dry_run_script,
+                no_capture_graph=no_capture_graph,
             ),
         )
         return
@@ -567,6 +571,8 @@ def build(
         cfg = replace(cfg, sccache_scheduler_url=sccache_scheduler)
     cfg = apply_mold_overrides(cfg)
     cfg = apply_scope_override(cfg)
+    if no_capture_graph:
+        cfg = replace(cfg, capture_graph=False)
 
     extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
 

@@ -62,6 +62,7 @@ bakar build -m imx8mp-var-dart    # machine override in bbsetup workspace
 | `--workspace` | `-w` | Workspace root override |
 | `--on` | | Dispatch the build to a remote host (ssh alias or `user@ip`) instead of building locally. See [Remote dispatch](#remote-dispatch---on-host). |
 | `--yes` | `-y` | Skip the `rsync --delete` confirmation prompt for `--on` dispatch (non-interactive) |
+| `--no-capture-graph` | | Skip the post-build `bitbake -g` dependency-graph capture, including the cooker-idle wait before it. Same effect as `[build] capture_graph = false` |
 
 `--container` (route the build through `kas-container` instead of the default
 host `kas build`), `--host` (retained no-op alias that forces the already-default

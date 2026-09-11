@@ -115,6 +115,15 @@ ShowLayersOption = Annotated[
     typer.Option("--show-layers", help="Print layer git hashes before build."),
 ]
 
+NoCaptureGraphOption = Annotated[
+    bool,
+    typer.Option(
+        "--no-capture-graph",
+        help="Skip the post-build `bitbake -g` dependency-graph capture, including the "
+        "cooker-idle wait that precedes it. Equivalent to `[build] capture_graph = false`.",
+    ),
+]
+
 SstateMirrorOption = Annotated[
     str | None,
     typer.Option("--sstate-mirror", help="HTTP sstate/downloads mirror URL; enables the shared-cache overlay"),

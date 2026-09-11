@@ -3132,8 +3132,16 @@ def _capture_dependency_graph(ctx: KasBuildContext, log: RunLogger) -> dict[str,
     Never raises: a build that produced an image and no graph is a successful
     build missing an optional analysis artifact, and an exception escaping here
     would turn that into a crash after the work was already done.
+
+    Returns immediately when ``cfg.capture_graph`` is off (`[build] capture_graph
+    = false` / `bakar build --no-capture-graph`). The early return sits ahead of
+    the cooker-idle wait deliberately: that wait is up to 60s of pure waiting,
+    and declining the capture has to cost nothing.
     """
     cfg = ctx.cfg
+    if not cfg.capture_graph:
+        log.info("dependency graph: capture declined (capture_graph off); skipping")
+        return None
     target = _resolve_capture_target(ctx, log)
     if not target:
         log.warn("dependency graph: no build target resolved; skipping capture")

@@ -474,3 +474,32 @@ def test_local_tmpdir_base_absent_yields_none(tmp_path: Path) -> None:
     cfg = load_user_config(config_file)
 
     assert cfg.local_tmpdir_base is None
+
+
+def test_capture_graph_defaults_on_and_loads_from_build_table(tmp_path: Path) -> None:
+    """``[build] capture_graph`` is registered at all three points in this module.
+
+    Registration is easy to half-finish: a dataclass field with no ``_BUILD_KEYS``
+    entry parses to the default forever, and a ``_BUILD_KEYS`` entry with no
+    ``_BOOL_FIELDS`` entry accepts a string. Both are asserted below.
+    """
+    assert UserConfig().capture_graph is True
+    assert "build.capture_graph" in SETTINGS_SCHEMA
+    assert SETTINGS_SCHEMA["build.capture_graph"].is_bool is True
+
+    path = tmp_path / "config.toml"
+    path.write_text("[build]\ncapture_graph = false\n")
+    assert load_user_config(path).capture_graph is False
+
+
+def test_capture_graph_non_boolean_raises_naming_field(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[build]\ncapture_graph = "no"\n')
+    with pytest.raises(ValueError, match="capture_graph"):
+        load_user_config(path)
+
+
+def test_set_setting_build_capture_graph_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    set_setting("build.capture_graph", "false", path)
+    assert load_user_config(path).capture_graph is False

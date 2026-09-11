@@ -438,6 +438,11 @@ class BuildConfig:
     # already at its SystemMaxUse cap and evicting.
     journal: bool = True
     journal_interval: int = 300
+    # Post-build `bitbake -g` dependency-graph capture (see
+    # ``steps/kas_build._capture_dependency_graph``). On by default; `[build]
+    # capture_graph = false` or `bakar build --no-capture-graph` declines it.
+    # Declining returns before the cooker-idle wait too, so it costs no waiting.
+    capture_graph: bool = True
     use_hashequiv: bool = field(default=False)
     # ccache location. Per-workspace by default; opt into a single shared cache
     # across all workspaces via [build] ccache_shared, or pin an explicit path
@@ -1262,6 +1267,7 @@ def resolve(request: ResolveRequest) -> BuildConfig:
         scope_io_weight=user_config.scope_io_weight if user_config else 0,
         journal=user_config.journal if user_config else True,
         journal_interval=user_config.journal_interval if user_config else 300,
+        capture_graph=user_config.capture_graph if user_config else True,
         use_hashequiv=user_config.hashserv if user_config else False,
         ccache_shared=user_config.ccache_shared if user_config else False,
         ccache_dir=user_config.ccache_dir if user_config else None,

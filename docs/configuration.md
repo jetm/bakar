@@ -114,6 +114,12 @@ stall_abort_secs = 2700
 # stops bakar from rendering a misleadingly-normal live view while it waits.
 stop_on_error = true
 
+# Capture the dependency graph (bitbake -g) into the run dir after a build that
+# succeeded, feeding `bakar graph` and the critical-path analyses. Set false to
+# decline it; declining also skips the cooker-idle wait the capture needs, so it
+# costs no waiting. Per-invocation opt-out: bakar build --no-capture-graph.
+capture_graph = true
+
 # Persistent hash equivalence daemon (off by default; see hashserv.md).
 # When true, bakar spawns and reuses a workspace-scoped bitbake-hashserv
 # so OEEquivHash sstate equivalence accumulates across builds.

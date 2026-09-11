@@ -84,6 +84,10 @@ class _BbsetupCtx:
     sccache_scheduler: str | None = None
     target: str | None = None
     dry_run_script: str | None = None
+    # --no-capture-graph. Carried per family rather than read off a module global
+    # like --no-scope: it is a per-build option on the `build` subcommand, not a
+    # top-level callback flag.
+    no_capture_graph: bool = False
 
 
 def _run_bbsetup_build(
@@ -115,6 +119,8 @@ def _run_bbsetup_build(
         cfg = replace(cfg, sccache_scheduler_url=ctx.sccache_scheduler)
     cfg = apply_mold_overrides(cfg)
     cfg = apply_scope_override(cfg)
+    if ctx.no_capture_graph:
+        cfg = replace(cfg, capture_graph=False)
     overlay_source = _overlay_for(None)
     bb_target = cfg.image if cfg.image not in ("", "generic") else "core-image-minimal"
 
@@ -369,6 +375,7 @@ class _ReleaseCtx:
     sstate_mirror: str | None
     sccache_scheduler: str | None = None
     target: str | None = None
+    no_capture_graph: bool = False
 
 
 def _run_single_preset_release(
@@ -431,6 +438,8 @@ def _run_single_preset_release(
         cfg = replace(cfg, sccache_scheduler_url=ctx.sccache_scheduler)
     cfg = apply_mold_overrides(cfg)
     cfg = apply_scope_override(cfg)
+    if ctx.no_capture_graph:
+        cfg = replace(cfg, capture_graph=False)
 
     overlay_source = _overlay_for(bsp)
     extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)

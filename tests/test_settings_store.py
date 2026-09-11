@@ -58,6 +58,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.scope_io_weight": "0",
         "build.journal": "false",
         "build.journal_interval": "600",
+        "build.capture_graph": "false",
         "build.hashserv": "true",
         "build.ccache_shared": "true",
         "build.ccache_dir": "/data/ccache",
@@ -122,6 +123,8 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert cfg.stop_on_error is False
     assert cfg.scope is False
     assert isinstance(cfg.scope, bool)
+    assert cfg.capture_graph is False
+    assert isinstance(cfg.capture_graph, bool)
     assert cfg.scope_memory_high == 0.75
     assert cfg.scope_memory_max == 0.88
     assert cfg.scope_oom_score_adjust == 750

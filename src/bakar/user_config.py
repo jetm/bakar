@@ -53,6 +53,7 @@ _BOOL_FIELDS = {
     "stop_on_error",
     "scope",
     "journal",
+    "capture_graph",
 }
 _INT_FIELDS: set[str] = {
     "stall_abort_secs",
@@ -211,6 +212,11 @@ class UserConfig:
     # period in seconds.
     journal: bool = True
     journal_interval: int = 300
+    # Post-build `bitbake -g` dependency-graph capture. On by default. Setting it
+    # false (or passing `bakar build --no-capture-graph`) declines the capture
+    # outright, including the cooker-idle wait that precedes it, so declining
+    # costs no waiting at the end of a build.
+    capture_graph: bool = True
     hashserv: bool = False
     ccache_shared: bool = False
     ccache_dir: str | None = None
@@ -309,6 +315,7 @@ _BUILD_KEYS = {
     "scope": "scope",
     "journal": "journal",
     "journal_interval": "journal_interval",
+    "capture_graph": "capture_graph",
     "scope_memory_high": "scope_memory_high",
     "scope_memory_max": "scope_memory_max",
     "scope_oom_score_adjust": "scope_oom_score_adjust",
