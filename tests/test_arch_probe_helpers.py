@@ -48,11 +48,11 @@ def _cfg(*, host_mode: bool = True, uninative: bool = True) -> BuildConfig:
 
 def _patch_os_release(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, contents: str) -> None:
     """Point the Arch-family check at a fixture file instead of the real host."""
-    from bakar.commands import _helpers
+    from bakar.commands import _overlays
 
     os_release_path = tmp_path / "os-release"
     os_release_path.write_text(contents, encoding="utf-8")
-    monkeypatch.setattr(_helpers, "_UNINATIVE_OS_RELEASE", os_release_path)
+    monkeypatch.setattr(_overlays, "_UNINATIVE_OS_RELEASE", os_release_path)
 
 
 @pytest.mark.unit

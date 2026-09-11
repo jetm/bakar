@@ -42,19 +42,19 @@ def _patch_env(
     fragment: bool,
 ) -> None:
     """Point the uninative gate at fixture files instead of the real host."""
-    from bakar.commands import _helpers
+    from bakar.commands import _overlays
 
     if os_release is None:
         os_release_path = tmp_path / "absent-os-release"
     else:
         os_release_path = tmp_path / "os-release"
         os_release_path.write_text(os_release, encoding="utf-8")
-    monkeypatch.setattr(_helpers, "_UNINATIVE_OS_RELEASE", os_release_path)
+    monkeypatch.setattr(_overlays, "_UNINATIVE_OS_RELEASE", os_release_path)
 
     fragment_path = tmp_path / "uninative.inc"
     if fragment:
         fragment_path.write_text('UNINATIVE_URL = "file:///x/"\n', encoding="utf-8")
-    monkeypatch.setattr(_helpers, "_UNINATIVE_FRAGMENT", fragment_path)
+    monkeypatch.setattr(_overlays, "_UNINATIVE_FRAGMENT", fragment_path)
 
 
 @pytest.mark.unit

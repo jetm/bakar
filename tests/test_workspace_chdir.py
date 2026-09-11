@@ -257,12 +257,13 @@ def _workspace_params() -> list[tuple[list[str], object]]:
 
 
 def test_no_command_module_declares_inline_workspace_option() -> None:
-    """Only ``_helpers.py`` (the shared option) and ``init.py`` (its own inline
-    option for a not-yet-existing dir) may declare ``typer.Option("--workspace"``."""
+    """Only ``_workspace.py`` (the shared option, re-exported via ``_helpers.py``)
+    and ``init.py`` (its own inline option for a not-yet-existing dir) may
+    declare ``typer.Option("--workspace"``."""
     commands_dir = Path(commands_pkg.__file__).parent
     offenders = []
     for py in sorted(commands_dir.glob("*.py")):
-        if py.name in {"_helpers.py", "init.py"}:
+        if py.name in {"_workspace.py", "init.py"}:
             continue
         if 'typer.Option("--workspace"' in py.read_text():
             offenders.append(py.name)
