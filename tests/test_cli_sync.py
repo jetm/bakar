@@ -317,6 +317,36 @@ def test_sync_dry_run_without_script_writes_no_file(
     assert after == before, f"unexpected script file(s) written: {after - before}"
 
 
+def test_sync_dry_run_preview_goes_to_stderr_not_stdout(
+    runner: CliRunner,
+    fake_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ``command: ...`` preview line is human-facing prose, so it must land
+    on stderr and leave stdout empty - ``bakar sync --dry-run > payload`` must
+    produce an empty file, matching the invariant ``commands/_app.py`` states
+    for every other command's human-readable output.
+
+    Also pins the preview as a single VERBATIM line: this command string is
+    long enough to hard-wrap under Rich's console width, and a console.print
+    regression would break it across lines mid-flag - a bare
+    ``"command:" in result.stderr`` substring check would not catch that."""
+    monkeypatch.chdir(fake_workspace)
+
+    result = runner.invoke(
+        app,
+        ["sync", "--manifest", "imx-6.6.52-2.2.2.xml", "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "", f"expected stdout empty, got: {result.stdout!r}"
+    lines = result.stderr.splitlines()
+    assert len(lines) == 1, f"expected exactly 1 unwrapped line, got: {result.stderr!r}"
+    assert lines[0].startswith("command: ") and lines[0].endswith("--no-clone-bundle"), (
+        f"expected an unwrapped 'command: ...' line, got: {lines[0]!r}"
+    )
+
+
 def test_sync_ctx_carries_every_flag_unchanged(
     runner: CliRunner,
     tmp_path: Path,

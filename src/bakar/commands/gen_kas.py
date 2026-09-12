@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -56,8 +57,14 @@ def gen_kas(
     setup_dir = _bbsetup_workspace(workspace) if manifest is None else None
     if setup_dir is not None:
         if dry_run:
-            print(f"output: {setup_dir / 'kas-bbsetup.yml'}")
-            print(f"source: {setup_dir / 'config' / 'config-upstream.json'}")
+            # Preview prose is for a human, so it goes to the diagnostic stream
+            # with every other human-facing line (see ``commands/_app.py``).
+            # Plain print rather than console.print: these lines interpolate
+            # filesystem paths verbatim, and Rich would parse a literal `[` in
+            # a path as markup and hard-wrap long paths at console width -
+            # matching kas_build.py's own dry-run preview and _build_flavors.py.
+            print(f"output: {setup_dir / 'kas-bbsetup.yml'}", file=sys.stderr)
+            print(f"source: {setup_dir / 'config' / 'config-upstream.json'}", file=sys.stderr)
             raise typer.Exit(0)
         out_path = write_bbsetup_yaml(
             setup_dir,
@@ -80,8 +87,10 @@ def gen_kas(
     )
     out_path = output.resolve() if output is not None else cfg.default_kas_yaml
     if dry_run:
-        print(f"output: {out_path}")
-        print(f"source: {cfg.manifest_path}")
+        # Same diagnostic-stream rule and same plain-print reasoning as the
+        # bbsetup branch above.
+        print(f"output: {out_path}", file=sys.stderr)
+        print(f"source: {cfg.manifest_path}", file=sys.stderr)
         raise typer.Exit(0)
     opts = KasGenOptions(
         manifest=cfg.manifest_path,

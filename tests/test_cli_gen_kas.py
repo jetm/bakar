@@ -141,3 +141,44 @@ def test_main_dispatch_calls_write_yaml(
     # Rich may wrap long paths with line breaks; flatten before checking.
     flat_output = "".join(result.output.split())
     assert "kas-nxp.yml" in flat_output
+
+
+def test_bbsetup_dry_run_preview_goes_to_stderr_not_stdout(runner: _CliRunner, bbsetup_workspace: Path) -> None:
+    """``--dry-run`` on the bbsetup branch prints human-facing prose, so it
+    must land on stderr and leave stdout empty - matching the invariant
+    ``commands/_app.py`` states for every other command's human-readable
+    output. Also pins the line as a VERBATIM, single-line path: a
+    console.print regression would either hard-wrap it across lines at
+    console width or eat a bracketed path segment as Rich markup, and a bare
+    ``"output:" in result.stderr`` substring check catches neither."""
+    result = runner.invoke(app, ["gen-kas", "--workspace", str(bbsetup_workspace), "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "", f"expected stdout empty, got: {result.stdout!r}"
+    expected = f"output: {bbsetup_workspace / 'kas-bbsetup.yml'}"
+    assert expected in result.stderr.splitlines(), f"expected verbatim line {expected!r}, got: {result.stderr!r}"
+
+
+def test_main_dispatch_dry_run_preview_goes_to_stderr_not_stdout(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """Same invariant on the main-dispatch branch's ``--dry-run``, and the same
+    verbatim single-line pin - see the bbsetup test above for why a bare
+    substring check is not enough."""
+    result = runner.invoke(
+        app,
+        [
+            "gen-kas",
+            "--workspace",
+            str(nxp_workspace),
+            "--manifest",
+            "imx-6.12.49-2.2.0.xml",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "", f"expected stdout empty, got: {result.stdout!r}"
+    lines = result.stderr.splitlines()
+    assert len(lines) == 2, f"expected exactly 2 unwrapped lines, got: {result.stderr!r}"
+    assert lines[0].startswith("output: ") and lines[0].endswith("kas-nxp.yml"), (
+        f"expected an unwrapped 'output: ...kas-nxp.yml' line, got: {lines[0]!r}"
+    )

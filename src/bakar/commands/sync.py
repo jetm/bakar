@@ -52,7 +52,13 @@ def _print_dry_run(cfg, family) -> None:
         from bakar.steps.ti_layertool import _build_layertool_cmd
 
         command = " ".join(_build_layertool_cmd(cfg))
-    print(f"command: {command}")
+    # Preview prose is for a human, so it goes to the diagnostic stream with
+    # every other human-facing line (see ``commands/_app.py``). Plain print
+    # rather than console.print: this line interpolates a shell command built
+    # from resolved paths, and Rich would parse a literal `[` as markup and
+    # hard-wrap it at console width - matching kas_build.py's own dry-run
+    # preview and _build_flavors.py.
+    print(f"command: {command}", file=sys.stderr)
 
 
 def _run_sync_body(cfg, log, *, bsp, family, effective_show_layers) -> None:
