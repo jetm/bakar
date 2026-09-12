@@ -291,6 +291,31 @@ def test_persist_bitbake_events_never_raises_when_report_path_also_fails(
 
 
 @pytest.mark.unit
+def test_run_id_default_factory_carries_a_pid_suffix(tmp_path: Path) -> None:
+    """run_id must not be the bare timestamp - two builds started in the same
+    wall-clock second on one host would otherwise generate identical run_ids,
+    and that value is also the container label every escalation path resolves
+    containers by (build_stop.escalate_container_tree)."""
+    import os
+
+    with RunLogger(tmp_path) as log:
+        assert log.run_id.startswith(f"{log.run_id[:15]}-")
+        assert log.run_id == f"{log.run_id[:15]}-{os.getpid()}"
+
+
+@pytest.mark.unit
+def test_run_id_leading_15_chars_still_parse_as_the_start_timestamp(tmp_path: Path) -> None:
+    """Consumers that need the start time (kas_build.py's eventlog watermark,
+    commands/monitor.py's elapsed-time display) slice the first 15 chars
+    rather than parse the whole run_id - this pins that the slice is always a
+    valid ``%Y%m%d-%H%M%S`` timestamp regardless of the pid's width."""
+    from datetime import datetime
+
+    with RunLogger(tmp_path) as log:
+        datetime.strptime(log.run_id[:15], "%Y%m%d-%H%M%S")  # raises on mismatch
+
+
+@pytest.mark.unit
 def test_persist_task_timings_never_raises_when_report_path_also_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -132,11 +132,13 @@ def _run_started_epoch(run_dir: Path) -> float | None:
     """Best-effort build start time (epoch seconds) from the run-dir name.
 
     bitbake's BuildStarted event carries no timestamp, so the event log cannot
-    supply one. The run directory is named ``YYYYMMDD-HHMMSS`` at the local
-    wall-clock start, so parse that. Returns None when the name does not parse.
+    supply one. The run directory is named ``YYYYMMDD-HHMMSS-<pid>`` at the
+    local wall-clock start (the pid suffix disambiguates two builds started in
+    the same second - see RunLogger.run_id), so parse the leading 15-char
+    timestamp and ignore the rest. Returns None when the name does not parse.
     """
     try:
-        return time.mktime(time.strptime(run_dir.name, "%Y%m%d-%H%M%S"))
+        return time.mktime(time.strptime(run_dir.name[:15], "%Y%m%d-%H%M%S"))
     except ValueError, OverflowError:
         return None
 
@@ -512,7 +514,7 @@ def monitor(
     ] = None,
     run: Annotated[
         str | None,
-        typer.Option("--run", help="Run ID (YYYYMMDD-HHMMSS). Latest if omitted."),
+        typer.Option("--run", help="Run ID (YYYYMMDD-HHMMSS-PID). Latest if omitted."),
     ] = None,
     scheduler: Annotated[
         str | None,

@@ -90,7 +90,7 @@ def log_cmd(
     ] = None,
     run: Annotated[
         str | None,
-        typer.Option("--run", help="Run ID (YYYYMMDD-HHMMSS). Latest if omitted."),
+        typer.Option("--run", help="Run ID (YYYYMMDD-HHMMSS-PID). Latest if omitted."),
     ] = None,
     which: Annotated[
         str,

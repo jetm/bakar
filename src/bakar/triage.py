@@ -21,6 +21,62 @@ from bakar.observability import last_run_event
 
 _ERROR_REPORT_FILENAME = "error-report.json"
 
+# Steps that run AFTER a build's own terminal step_ok/step_fail and must never
+# be read as the build's own failure. The post-build dependency-graph capture
+# (step "graph_capture", or "graph_capture_kas_dump" for its kas-dump target
+# resolution) only runs when the build itself already succeeded - see
+# bakar.steps.kas_build.run_build's `if rc == 0: _capture_dependency_graph(...)`
+# - so a step_fail from either name in a run's events.jsonl describes an
+# optional analysis artifact that failed, never the build. Without this
+# exclusion, the LAST step_fail in the file is whichever ran last: a
+# successful build whose capture then timed out reports here as a failed
+# build, red X and all.
+#
+# "graph_capture_kas_dump" is a name run_kas_subcommand's caller chooses (its
+# `step` parameter), distinct from the generic "kas_subcommand" that name
+# defaults to for `bakar dump`/`bakar lock`'s own genuine failures - so this
+# exclusion can no longer suppress a real dump/lock failure the way it could
+# when both shared one name.
+_POST_BUILD_STEPS = frozenset({"graph_capture", "graph_capture_kas_dump"})
+
+
+def is_build_failure_event(rec: dict) -> bool:
+    """True for a step_fail event that is the BUILD's own failure, not a
+    post-build capture's.
+
+    Public (not module-private) because :mod:`bakar.commands.triage`'s
+    ``_run_has_failure`` needs the identical exclusion for its own
+    ``last_run_event`` scan - a run dir whose only step_fail is the capture's
+    must not be selected as a failed run to triage.
+
+    ``iter_run_events`` guarantees each yielded record parses as a JSON
+    object, not that its values have any particular type - a build killed
+    mid-write can leave a partial record, and a malformed ``step`` (a list or
+    dict rather than a string) would raise ``TypeError`` on the frozenset
+    membership test below. ``isinstance`` guards that without raising, the
+    same trust-boundary posture ``iter_run_events`` itself documents for a
+    truncated line.
+    """
+    step = rec.get("step")
+    return rec.get("event") == "step_fail" and (not isinstance(step, str) or step not in _POST_BUILD_STEPS)
+
+
+def _excluded_post_build_failure_note(events_path: Path) -> str | None:
+    """Describe a post-build-capture ``step_fail`` this run excluded from
+    build-failure attribution, or ``None`` when there is none.
+
+    Excluding a capture's failure from ``failing_step`` is correct - it is not
+    the build's failure - but it must not also make the failure invisible.
+    Without this, a run whose build succeeded and whose capture then hung
+    renders identically to a run with no step_fail at all: "no step_fail
+    events found" is true of neither the string it names nor the file it
+    describes.
+    """
+    fail = last_run_event(events_path, lambda rec: rec.get("event") == "step_fail")
+    if fail is None or fail.get("step") not in _POST_BUILD_STEPS:
+        return None
+    return f"{fail.get('step')} failed: {fail.get('reason')}"
+
 
 @dataclass(frozen=True)
 class RecipeError:
@@ -39,6 +95,7 @@ class TriageReport:
     recipe_log_tail: list[str]
     suggestions: list[str]
     recipe_errors: list[RecipeError]
+    excluded_post_build_failure: str | None = None
 
 
 def _bitbake_override_summary(events_path: Path) -> str | None:
@@ -290,7 +347,7 @@ def analyse(run_dir: Path, workspace: Path) -> TriageReport:
             # error-report.json; derive them the same way the live-parse path
             # does so the two paths produce equivalent output.
             kas_log = run_dir / "kas.log"
-            fail = last_run_event(events_path, lambda rec: rec.get("event") == "step_fail")
+            fail = last_run_event(events_path, is_build_failure_event)
             fail_reason: str | None = fail.get("reason") if fail else None
             recipe_log = _find_recipe_log(kas_log, workspace)
             recipe_log_tail = tail_lines(recipe_log, 60) if recipe_log else []
@@ -310,6 +367,9 @@ def analyse(run_dir: Path, workspace: Path) -> TriageReport:
                 recipe_log_tail=recipe_log_tail,
                 suggestions=suggestions,
                 recipe_errors=recipe_errors,
+                excluded_post_build_failure=(
+                    _excluded_post_build_failure_note(events_path) if failing_step is None else None
+                ),
             )
 
     # Live-parse path: used when error-report.json is absent or unreadable
@@ -319,7 +379,7 @@ def analyse(run_dir: Path, workspace: Path) -> TriageReport:
     # instead of each re-reading the file.
     kas_text = kas_log.read_text(errors="replace") if kas_log.is_file() else ""
 
-    fail = last_run_event(events_path, lambda rec: rec.get("event") == "step_fail")
+    fail = last_run_event(events_path, is_build_failure_event)
     failing_step = fail.get("step") if fail else None
     fail_reason = fail.get("reason") if fail else None
 
@@ -350,6 +410,7 @@ def analyse(run_dir: Path, workspace: Path) -> TriageReport:
         recipe_log_tail=recipe_log_tail,
         suggestions=suggestions,
         recipe_errors=recipe_errors,
+        excluded_post_build_failure=(_excluded_post_build_failure_note(events_path) if failing_step is None else None),
     )
 
 
@@ -369,8 +430,10 @@ def find_runs(workspace: Path) -> list[Path]:
 
     Results are deduplicated by resolved path so a directory matched by both
     an explicit check and the glob does not appear twice.  The final list is
-    sorted by run directory name (``YYYYMMDD-HHMMSS``) in descending order so
-    the most recent run is first.
+    sorted by run directory name (``YYYYMMDD-HHMMSS-<pid>``) in descending
+    order so the most recent run is first; the leading timestamp dominates the
+    sort, so the trailing pid only affects the tie order between two runs
+    started in the same second, which is not otherwise meaningful.
     """
     seen: set[Path] = set()
     out: list[Path] = []

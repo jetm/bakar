@@ -338,7 +338,7 @@ def _render_disk(report) -> None:
 def insights(
     run_id: Annotated[
         str | None,
-        typer.Argument(help="Run ID (YYYYMMDD-HHMMSS). Latest if omitted."),
+        typer.Argument(help="Run ID (YYYYMMDD-HHMMSS-PID). Latest if omitted."),
     ] = None,
     manifest: Annotated[
         str | None,

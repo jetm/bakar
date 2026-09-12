@@ -20,6 +20,7 @@ from bakar.triage import (
     _scan_recipe_errors,
     analyse,
     find_runs,
+    is_build_failure_event,
     tail_lines,
 )
 from tests.conftest import SAMPLE_EVENTS_JSONL, SAMPLE_KAS_LOG
@@ -131,6 +132,124 @@ def test_analyse_returns_report_with_failed_step_and_recipe_errors(fake_run_dir:
     assert report.failing_step == "kas-build"
     assert report.recipe_errors, "expected at least one recipe-level failure"
     assert any("linux-imx" in e.recipe for e in report.recipe_errors)
+
+
+@pytest.mark.unit
+def test_analyse_does_not_report_a_successful_build_as_failed_when_capture_times_out(tmp_path: Path) -> None:
+    """A step_fail from the post-build graph capture must never read as the build's own failure.
+
+    The capture only runs after a build's own terminal step_ok (kas_build.py's
+    `if rc == 0: _capture_dependency_graph(...)`), so a step_fail from
+    "graph_capture" or "graph_capture_kas_dump" describes an optional analysis
+    artifact that failed - not the build. Before this fix, the LAST step_fail
+    in events.jsonl was read unconditionally, so a successful build whose
+    capture then timed out was reported here as a failed build.
+    """
+    run_dir = tmp_path / "build" / "runs" / "20260529-130000"
+    run_dir.mkdir(parents=True)
+    (run_dir / "events.jsonl").write_text(
+        '{"event": "step_start", "step": "kas_build", "ts": "2026-05-29T13:00:00Z"}\n'
+        '{"event": "step_ok", "step": "kas_build", "ts": "2026-05-29T13:05:00Z"}\n'
+        '{"event": "step_fail", "step": "graph_capture", '
+        '"reason": "no exit after 900s", "ts": "2026-05-29T13:20:00Z"}\n'
+    )
+    (run_dir / "kas.log").write_text("NOTE: Tasks Summary: Attempted 1 tasks, 0 failed.\n")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    report = analyse(run_dir, workspace)
+
+    assert report.failing_step is None
+    assert report.fail_reason is None
+    # Excluding the capture's step_fail from build-failure attribution is
+    # correct, but must not make the failure invisible: "no step_fail events
+    # found" would be false of the file this run actually wrote.
+    assert report.excluded_post_build_failure == "graph_capture failed: no exit after 900s"
+
+
+@pytest.mark.unit
+def test_analyse_still_reports_a_graph_capture_kas_dump_step_fail_from_target_resolution_correctly(
+    tmp_path: Path,
+) -> None:
+    """Same exclusion for the capture's own kas-dump target resolution, which
+    logs under its own distinct step name (not the generic "kas_subcommand"
+    bakar dump/lock use) so this exclusion can never suppress either command's
+    real failure - see the sibling test below."""
+    run_dir = tmp_path / "build" / "runs" / "20260529-140000"
+    run_dir.mkdir(parents=True)
+    (run_dir / "events.jsonl").write_text(
+        '{"event": "step_start", "step": "kas_build", "ts": "2026-05-29T14:00:00Z"}\n'
+        '{"event": "step_ok", "step": "kas_build", "ts": "2026-05-29T14:05:00Z"}\n'
+        '{"event": "step_fail", "step": "graph_capture_kas_dump", '
+        '"reason": "dump timed out after 60s", "ts": "2026-05-29T14:06:00Z"}\n'
+    )
+    (run_dir / "kas.log").write_text("NOTE: Tasks Summary: Attempted 1 tasks, 0 failed.\n")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    report = analyse(run_dir, workspace)
+
+    assert report.failing_step is None
+    assert report.fail_reason is None
+    assert report.excluded_post_build_failure == "graph_capture_kas_dump failed: dump timed out after 60s"
+
+
+@pytest.mark.unit
+def test_analyse_no_longer_suppresses_a_genuine_kas_subcommand_failure(tmp_path: Path) -> None:
+    """ "kas_subcommand" is the name bakar dump/lock's own run_kas_subcommand
+    calls log under (the default `step`); it must NOT be excluded here, or a
+    real dump/lock failure would read as no failure at all - the exact defect
+    the shared name used to create before the capture got its own distinct
+    step name."""
+    run_dir = tmp_path / "build" / "runs" / "20260529-150000"
+    run_dir.mkdir(parents=True)
+    (run_dir / "events.jsonl").write_text(
+        '{"event": "step_start", "step": "kas_subcommand", "ts": "2026-05-29T15:00:00Z"}\n'
+        '{"event": "step_fail", "step": "kas_subcommand", '
+        '"reason": "kas not found", "ts": "2026-05-29T15:00:01Z"}\n'
+    )
+    (run_dir / "kas.log").write_text("")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    report = analyse(run_dir, workspace)
+
+    assert report.failing_step == "kas_subcommand"
+    assert report.fail_reason == "kas not found"
+    assert report.excluded_post_build_failure is None
+
+
+@pytest.mark.unit
+def test_analyse_excluded_post_build_failure_is_none_when_the_build_genuinely_never_failed(
+    tmp_path: Path,
+) -> None:
+    """A clean run with no step_fail at all must not fabricate a note - the
+    field distinguishes "excluded" from "there was nothing to exclude"."""
+    run_dir = tmp_path / "build" / "runs" / "20260529-150000"
+    run_dir.mkdir(parents=True)
+    (run_dir / "events.jsonl").write_text(
+        '{"event": "step_start", "step": "kas_build", "ts": "2026-05-29T15:00:00Z"}\n'
+        '{"event": "step_ok", "step": "kas_build", "ts": "2026-05-29T15:05:00Z"}\n'
+    )
+    (run_dir / "kas.log").write_text("NOTE: Tasks Summary: Attempted 1 tasks, 0 failed.\n")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    report = analyse(run_dir, workspace)
+
+    assert report.failing_step is None
+    assert report.excluded_post_build_failure is None
+
+
+@pytest.mark.unit
+def test_is_build_failure_event_does_not_raise_on_a_non_hashable_step_value() -> None:
+    """``iter_run_events`` guarantees a parsed JSON object, not that ``step``
+    is a string - a partial write mid-build could leave anything there. A
+    list/dict ``step`` must not crash the frozenset membership test; the
+    ambiguous record is treated as a build failure rather than silently
+    excluded, matching this function's fail-toward-visibility posture."""
+    assert is_build_failure_event({"event": "step_fail", "step": ["kas_build", "graph_capture"]}) is True
+    assert is_build_failure_event({"event": "step_fail", "step": {"nested": "value"}}) is True
 
 
 @pytest.mark.unit

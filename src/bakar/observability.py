@@ -56,7 +56,18 @@ class RunLogger:
     """
 
     runs_dir: Path
-    run_id: str = field(default_factory=lambda: datetime.now().strftime("%Y%m%d-%H%M%S"))
+    # The timestamp alone has 1-second resolution and no per-process component,
+    # so two builds starting in the same wall-clock second on one host (two pool
+    # slots, a fan-out preset) would generate the identical run_id - and since
+    # this value also becomes the container label every escalation path
+    # resolves containers by, a collision lets one build's timeout stop a
+    # DIFFERENT build's live container. The pid suffix is unique per host for
+    # the lifetime of both processes, which is exactly the window a collision
+    # would need. Consumers that parse the leading timestamp back out (there is
+    # no reader of the suffix) must slice the first 15 chars rather than
+    # strptime the whole string - see commands/monitor.py's
+    # _run_started_epoch and steps/kas_build.py's _find_oe_eventlog.
+    run_id: str = field(default_factory=lambda: f"{datetime.now():%Y%m%d-%H%M%S}-{os.getpid()}")
     # Monotonic stamp at construction (start of the `bakar` run, before doctor),
     # so the build UI's global timer can count from the command invocation.
     start_monotonic: float = field(default_factory=time.monotonic)

@@ -28,7 +28,7 @@ from bakar.report import assemble_report
 def report(
     run_id: Annotated[
         str | None,
-        typer.Argument(help="Run ID (YYYYMMDD-HHMMSS). Latest if omitted."),
+        typer.Argument(help="Run ID (YYYYMMDD-HHMMSS-PID). Latest if omitted."),
     ] = None,
     manifest: Annotated[
         str | None,

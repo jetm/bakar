@@ -13,7 +13,7 @@ from bakar.bsp_detect import detect_kas_workspace, is_meta_avocado_yaml
 from bakar.commands._app import app, console
 from bakar.commands._helpers import WorkspaceOption, _bbsetup_workspace, _find_run, _workspace_from_cwd
 from bakar.observability import last_run_event
-from bakar.triage import analyse, tail_lines, translate_container_path
+from bakar.triage import analyse, is_build_failure_event, tail_lines, translate_container_path
 
 _BITBAKE_EVENTS_FILENAME = "bitbake-events.json"
 
@@ -35,7 +35,7 @@ def _run_has_failure(run_dir: Path) -> bool:
     """
     if _read_structured_failures(run_dir):
         return True
-    return last_run_event(run_dir / "events.jsonl", lambda rec: rec.get("event") == "step_fail") is not None
+    return last_run_event(run_dir / "events.jsonl", is_build_failure_event) is not None
 
 
 def _read_structured_failures(run_dir: Path) -> list[dict] | None:
@@ -235,7 +235,7 @@ def _emit_triage_json(
 
 @app.command()
 def triage(
-    run_id: Annotated[str | None, typer.Argument(help="Run ID (YYYYMMDD-HHMMSS). Latest if omitted.")] = None,
+    run_id: Annotated[str | None, typer.Argument(help="Run ID (YYYYMMDD-HHMMSS-PID). Latest if omitted.")] = None,
     run: Annotated[
         str | None,
         typer.Option("--run", help="Run ID to triage (alias for the positional argument; takes precedence)."),
@@ -326,6 +326,11 @@ def triage(
 
     if report.failing_step:
         console.print(f"[red]✗[/] step [bold]{report.failing_step}[/] failed: {report.fail_reason}")
+    elif report.excluded_post_build_failure:
+        # The build itself succeeded - this step_fail is correctly excluded
+        # from failure attribution - but "no step_fail events found" would be
+        # false of the file, and would hide that the post-build capture hung.
+        console.print(f"[green]build succeeded[/] - [yellow]{report.excluded_post_build_failure}[/]")
     else:
         console.print("[green]no step_fail events found[/]")
 

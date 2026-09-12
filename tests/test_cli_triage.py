@@ -95,6 +95,31 @@ def test_triage_clean_run_reports_no_step_fail(
     assert "no step_fail events found" in result.output
 
 
+def test_triage_reports_a_hung_post_build_capture_distinctly_from_a_clean_run(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run whose build succeeded and whose post-build graph capture then
+    hung must NOT render the same "no step_fail events found" message a
+    genuinely clean run gets - that line is false of a file that plainly
+    contains one, and it would hide the hang from the operator."""
+    workspace = _make_workspace(tmp_path)
+    events = (
+        '{"event": "step_start", "step": "kas_build", "ts": "2026-05-29T13:00:00Z"}\n'
+        '{"event": "step_ok", "step": "kas_build", "ts": "2026-05-29T13:05:00Z"}\n'
+        '{"event": "step_fail", "step": "graph_capture", '
+        '"reason": "no exit after 900s", "ts": "2026-05-29T13:20:00Z"}\n'
+    )
+    _make_run(workspace, "20260529-130000", events, "NOTE: Tasks Summary: Attempted 1 tasks, 0 failed.\n")
+    monkeypatch.chdir(workspace)
+
+    result = runner.invoke(app, ["triage"])
+
+    assert result.exit_code == 0, result.output
+    assert "no step_fail events found" not in result.output
+    assert "graph_capture" in result.output
+    assert "no exit after 900s" in result.output
+
+
 def test_triage_explicit_run_id_selects_named_run(
     runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
