@@ -291,7 +291,7 @@ class TestLongestChain:
 
     def test_task_level_dag_with_cyclic_pn_collapse_is_non_empty(self) -> None:
         """The falsifier: the PN collapse being cyclic must not empty this out."""
-        task_graph = to_task_digraph(read_graph(PN_CYCLE_TASK_DAG_DOT))
+        task_graph = to_task_digraph(_graph(PN_CYCLE_TASK_DAG_DOT))
         assert longest_chain(task_graph) != []
 
     def test_empty_returns_empty(self) -> None:
@@ -317,7 +317,7 @@ class TestFindCycle:
 
     def test_task_level_dag_with_cyclic_pn_collapse_reports_none(self) -> None:
         """The falsifier: the PN collapse being cyclic must not report a cycle."""
-        task_graph = to_task_digraph(read_graph(PN_CYCLE_TASK_DAG_DOT))
+        task_graph = to_task_digraph(_graph(PN_CYCLE_TASK_DAG_DOT))
         assert find_cycle(task_graph) == []
 
     def test_empty_graph_reports_none(self) -> None:
