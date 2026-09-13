@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-09-13
+
+### Added
+
+- Added `--no-capture-graph` command-line flag to `bakar build` and a `capture_graph` configuration option under `[build]` to skip post-build dependency graph generation and cooker wait times.
+- Added a graph-join validation gate to `bakar insights --timing` that requires executed tasks to resolve against the dependency graph above a minimum threshold before calculating and displaying the critical path.
+
+### Changed
+
+- Switched critical path calculation, dependency chain analysis, and cycle detection from recipe-level to task-level graphs (`<recipe>.<task>`), avoiding artificial cycles and isolating individual task runtimes.
+- Updated critical path reporting in `bakar insights` to rank and bound the heaviest tasks on the chain by execution duration and explicitly attribute sstate cache restore tasks.
+- Post-build dependency graph capture now waits for the BitBake cooker to become idle before capturing and resolves multi-target configurations via `kas dump`.
+
+### Fixed
+
+- Fixed CLI commands exiting with an `AttributeError` on clean exits or `--help` under Typer 0.26+.
+- Fixed successful builds being reported as failed in triage and status commands when post-build dependency graph capture fails or times out.
+- Fixed diagnostic messages and dry-run preview output in `build`, `gen-kas`, and `sync` writing to `stdout` instead of `stderr`, ensuring redirected standard output contains only clean payloads.
+- Fixed dependency graph capture hanging and indefinitely holding `bitbake.lock` on stuck cooker processes by introducing execution timeouts and process-group termination.
+- Fixed stale dependency graph files from prior runs being stamped and attributed to a new build when the capture command exits without updating them.
+- Fixed missing setscene cache restore task attributions in timing insights by resolving `_setscene` task variants to their base dependency graph nodes.
+- Fixed error diagnostics when loading dependency graphs to distinguish between empty graph files and malformed or unparseable graph syntax.
+
 ## [0.31.1] - 2026-09-10
 
 ### Added
@@ -772,7 +795,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.31.1...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.32.0...HEAD
+[0.32.0]: https://github.com/jetm/bakar/compare/v0.31.1...v0.32.0
 [0.31.1]: https://github.com/jetm/bakar/compare/v0.31.0...v0.31.1
 [0.31.0]: https://github.com/jetm/bakar/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/jetm/bakar/compare/v0.29.3...v0.30.0
