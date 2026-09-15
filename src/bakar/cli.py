@@ -44,6 +44,7 @@ import bakar.commands.override
 import bakar.commands.prefetch
 import bakar.commands.presets
 import bakar.commands.prserv
+import bakar.commands.ps
 import bakar.commands.report
 import bakar.commands.sched_triage
 import bakar.commands.settings
