@@ -16,9 +16,9 @@ from bakar.commands._helpers import (
     WorkspaceOption,
     _normalize_dispatch,
     _resolve_workspace,
+    _run_started_epoch,
     split_kas_yaml_arg,
 )
-from bakar.commands.monitor import _run_started_epoch
 from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.fmt import fmt_duration
 from bakar.steps import remote_dispatch

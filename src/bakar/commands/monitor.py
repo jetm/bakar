@@ -49,6 +49,7 @@ from bakar.commands._helpers import (
     _dispatch_from_yaml,
     _family_from_workspace_contents,
     _resolve_workspace,
+    _run_started_epoch,
     apply_mold_overrides,
     apply_sccache_overrides,
     global_output_mode_override,
@@ -126,21 +127,6 @@ def _recent_kas_errors(kas_log: Path, limit: int = _FAILURE_TAIL) -> list[str]:
         if m and m.group(1) in ("ERROR", "FATAL"):
             hits.append(line.strip())
     return hits[-limit:]
-
-
-def _run_started_epoch(run_dir: Path) -> float | None:
-    """Best-effort build start time (epoch seconds) from the run-dir name.
-
-    bitbake's BuildStarted event carries no timestamp, so the event log cannot
-    supply one. The run directory is named ``YYYYMMDD-HHMMSS-<pid>`` at the
-    local wall-clock start (the pid suffix disambiguates two builds started in
-    the same second - see RunLogger.run_id), so parse the leading 15-char
-    timestamp and ignore the rest. Returns None when the name does not parse.
-    """
-    try:
-        return time.mktime(time.strptime(run_dir.name[:15], "%Y%m%d-%H%M%S"))
-    except ValueError, OverflowError:
-        return None
 
 
 def _build_progress(run_dir: Path) -> dict[str, Any]:

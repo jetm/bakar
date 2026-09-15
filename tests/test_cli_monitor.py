@@ -164,6 +164,29 @@ def test_json_once_emits_cluster_and_build(
     assert build["elapsed_seconds"] is not None and build["elapsed_seconds"] > 0
 
 
+def test_json_once_unparseable_run_id_reports_null_elapsed(
+    runner: _CliRunner,
+    tmp_path: Path,
+    patched_probes: None,
+) -> None:
+    """An unparseable run-dir name (no leading 15-char timestamp) yields a
+    null ``elapsed_seconds`` rather than raising - covers ``_run_started_epoch``
+    returning ``None`` after its move to ``commands/_helpers.py``. None of the
+    other fixtures in this file use an unparseable run-id name, so this is the
+    only coverage of that branch through the promoted helper."""
+    run = tmp_path / "nxp" / "build" / "runs" / "not-a-timestamp"
+    run.mkdir(parents=True)
+
+    result = runner.invoke(
+        app,
+        ["monitor", "--json", "--once", "--workspace", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    build = json.loads(result.stdout)["build"]
+    assert build["elapsed_seconds"] is None
+
+
 def test_json_once_omits_decoration_on_stdout(
     runner: _CliRunner,
     nxp_workspace_with_run: Path,
