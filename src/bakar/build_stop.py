@@ -1563,8 +1563,15 @@ def _verify_clean(
         reasons.append(f"build process group {pgid} still alive")
     if refusal is None and _bitbake_server_alive(run_dir):
         reasons.append("bitbake-server (from bitbake.lock) still alive")
-    if runtime is not None and container_label is not None and _container_id(runtime, container_label) is not None:
-        reasons.append("build container still running")
+    if runtime is not None and container_label is not None:
+        # _container_id_status, not _container_id: a runtime query error here
+        # must not read the same as "confirmed gone" - this check runs right
+        # after the stop ladder signals the container, so a transient runtime
+        # hiccup at exactly this moment would otherwise clear the one reason
+        # that keeps the caller from declaring "stopped" it cannot back up.
+        container_status, _cid = _container_id_status(runtime, container_label)
+        if container_status != _DEAD:
+            reasons.append("build container still running")
     if refusal is None:
         reasons.extend(f"{name} still present in {topdir}" for name in _STALE_BITBAKE_FILES if (topdir / name).exists())
     return reasons
@@ -1686,7 +1693,11 @@ def stop_run(run_dir: Path, cfg: BuildConfig | None = None, *, force: bool = Fal
     root-level scan (workspace-wide discovery targeting a run under a
     peer-held root) signal a build it does not own. Both copies are
     deliberate; this one is not dead code even when every existing caller
-    still goes through ``stop_build`` first.
+    still goes through ``stop_build`` first. ``cfg=None`` skips the gate
+    entirely, matching ``stop_build``'s own no-``BuildConfig``-available
+    degraded mode - ``stop_build`` passes its own possibly-``None`` ``cfg``
+    straight through once it has picked a run dir, so this stays optional
+    rather than mandatory.
     """
     if cfg is not None:
         refusal = lock_mutation_guard(cfg)
@@ -1764,15 +1775,29 @@ def stop_run(run_dir: Path, cfg: BuildConfig | None = None, *, force: bool = Fal
             _say(f"cannot target build: container runtime {runtime!r} is not installed")
             return False
 
-        cid = _container_id(runtime, record.container_label)
+        # _container_id_status, not _container_id: the latter collapses a
+        # confirmed-dead container and a failed runtime query into the same
+        # `None` - live_workspace_runs now treats that same query failure as
+        # "still live" (fail conservative), so collapsing it here to "dead"
+        # would declare a false success and clean up stale state for a build
+        # that may still be running. Only a confirmed _DEAD reaches the
+        # idempotent clean-tree stop below; an _ERROR refuses without
+        # claiming a stop happened.
+        container_status, cid = _container_id_status(runtime, record.container_label)
+        if container_status == _ERROR:
+            _say(
+                f"cannot confirm container state ({runtime!r} query failed); "
+                "refusing to report a stop - resolve manually"
+            )
+            return False
         if cid is None:
-            # No live container: idempotent clean-tree stop - clear any stale
+            # Confirmed dead: idempotent clean-tree stop - clear any stale
             # lock/sock and succeed (requirement 5).
             removed = _report_stale_cleanup(run_dir, cfg)
             _say("no running build container" + ("; cleaned stale lock/socket" if removed else ""))
             return True
 
-        status = _stop_container(
+        stop_status = _stop_container(
             runtime,
             cid,
             force=force,
@@ -1781,7 +1806,7 @@ def stop_run(run_dir: Path, cfg: BuildConfig | None = None, *, force: bool = Fal
             grace_seconds=grace_seconds,
         )
         # A runtime we lost contact with mid-wait is a hard failure (exit 1).
-        if status == "lost_runtime":
+        if stop_status == "lost_runtime":
             return False
 
         _report_stale_cleanup(run_dir, cfg)

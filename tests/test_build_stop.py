@@ -756,11 +756,14 @@ def test_stop_build_container_mode_stops_container_not_pgid(
 
     stop_calls: list[tuple[str, str]] = []
 
-    # _container_id is called twice: once to discover the container to stop, and
-    # once by the post-stop verify. Resolve on discovery, then report the
-    # container gone so verify passes (mirroring the real docker rm -f).
-    container_ids = iter(["cafef00d", None])
-    monkeypatch.setattr(build_stop, "_container_id", lambda _rt, _label: next(container_ids, None))
+    # _container_id_status is called twice: once to discover the container to
+    # stop, and once by the post-stop verify. Resolve on discovery, then
+    # report the container gone so verify passes (mirroring the real
+    # docker rm -f).
+    container_ids = iter([(build_stop._ALIVE, "cafef00d"), (build_stop._DEAD, None)])
+    monkeypatch.setattr(
+        build_stop, "_container_id_status", lambda _rt, _label: next(container_ids, (build_stop._DEAD, None))
+    )
     monkeypatch.setattr(
         build_stop,
         "_stop_container",
@@ -860,7 +863,7 @@ def test_stop_build_container_id_unresolved_is_idempotent_success(
 
     stop_calls: list[tuple[str, str]] = []
 
-    monkeypatch.setattr(build_stop, "_container_id", lambda _rt, _label: None)
+    monkeypatch.setattr(build_stop, "_container_id_status", lambda _rt, _label: (build_stop._DEAD, None))
     monkeypatch.setattr(
         build_stop,
         "_stop_container",
@@ -876,6 +879,46 @@ def test_stop_build_container_id_unresolved_is_idempotent_success(
     assert calls == []
     assert not (run_dir / "build.pid").exists()
     assert not (run_dir / "build.meta.json").exists()
+
+
+def test_stop_build_container_query_error_refuses_not_idempotent_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A runtime query error is not the same as a confirmed-dead container.
+
+    ``live_workspace_runs`` treats an unanswerable runtime query as "still
+    live" (fail conservative) rather than dropping the candidate. ``stop_run``
+    must not turn around and treat that same ambiguity as "confirmed dead":
+    collapsing an _ERROR into the idempotent clean-tree success path would
+    report a stop that never happened and delete the only tracking record of
+    a build that may still be running.
+    """
+    run_dir = _make_run_dir(tmp_path)
+    build_stop.write_launch_record(
+        run_dir,
+        pgid=4242,
+        mode="container",
+        runtime="docker",
+        container_label="bakar.run_id=20260618-120000",
+    )
+
+    stop_calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(build_stop, "_container_id_status", lambda _rt, _label: (build_stop._ERROR, None))
+    monkeypatch.setattr(
+        build_stop,
+        "_stop_container",
+        lambda runtime, cid, **_kw: stop_calls.append((runtime, cid)),
+    )
+    monkeypatch.setattr(build_stop.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+    calls = _record_killpg(monkeypatch)
+
+    assert build_stop.stop_build(tmp_path) is False
+
+    assert stop_calls == []
+    assert calls == []
 
 
 # --- check_unclean_stop -----------------------------------------------------
@@ -2324,7 +2367,7 @@ def test_verify_clean_reports_all_remaining(
         lambda _td, _pgid, **_kw: build_stop._ScopedProcs(cooker=frozenset({321}), all_pids=frozenset({321})),
     )
     monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: True)
-    monkeypatch.setattr(build_stop, "_container_id", lambda _rt, _label: "cid123")
+    monkeypatch.setattr(build_stop, "_container_id_status", lambda _rt, _label: (build_stop._ALIVE, "cid123"))
     monkeypatch.setattr(build_stop, "_bitbake_server_pid_verified", lambda _pid, _topdir: True)
 
     reasons = build_stop._verify_clean(run_dir, 4242, runtime="docker", container_label="bakar.run_id=X")
