@@ -393,6 +393,38 @@ def test_run_option_errors_on_unmatched_id(
     assert "does-not-exist" in result.output
 
 
+def test_run_option_unmatched_id_surfaces_peer_held_root(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``stop --run <id>`` with no matching run ANYWHERE also surfaces any
+    root the NFS lock-ownership gate refused - the id may live on exactly
+    that root, which "no match" alone cannot tell apart from "no such id
+    anywhere in this workspace"."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    ti_root = stop_cmd.build_stop.RunRoot(
+        bsp_root=workspace / "ti", family="ti", resolve_workspace=workspace, resolve_family="ti"
+    )
+    refusal = stop_cmd.build_stop.LockRefusal(reason="peer-held", host="pc2")
+    skipped_root = stop_cmd.build_stop.SkippedRoot(root=ti_root, refusal=refusal)
+
+    monkeypatch.setattr(
+        stop_cmd.build_stop,
+        "enumerate_workspace_runs",
+        lambda _path, **_kw: stop_cmd.build_stop.RunScan(candidates=[], skipped=[skipped_root]),
+    )
+
+    result = runner.invoke(app, ["stop", "--run", "maybe-on-ti"])
+
+    assert result.exit_code != 0
+    flat_output = " ".join(result.output.split())
+    assert "owned by pc2" in flat_output
+    assert str(workspace / "ti") in flat_output
+    assert "no run matching" in flat_output
+
+
 def test_run_option_errors_on_matched_but_not_live_run(
     runner: _CliRunner,
     workspace: Path,
