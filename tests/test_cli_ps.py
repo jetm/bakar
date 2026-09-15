@@ -9,6 +9,7 @@ CLI-command test suite does.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 import pytest
@@ -147,3 +148,74 @@ def test_ps_container_row_falls_back_to_unknown_when_run_record_unreadable(
     assert result.exit_code == 0, result.output
     assert "family=unknown" in result.output
     assert "machine=unknown" in result.output
+
+
+def test_ps_json_empty_result_emits_empty_array(runner: _CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No live builds anywhere with ``--json`` emits exactly ``[]``, not a message."""
+    _no_discovery(monkeypatch)
+
+    result = runner.invoke(app, ["ps", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == []
+
+
+def test_ps_json_schema_has_no_omitted_fields(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every row emits exactly the five frozen fields, all present and non-null.
+
+    ``elapsed_seconds`` must be a JSON integer, not a float or string.
+    """
+    run_dir = tmp_path / "nxp" / "build" / "runs" / "20260618-120000-111"
+    run_dir.mkdir(parents=True)
+    root = RunRoot(bsp_root=tmp_path / "nxp", family="nxp", resolve_workspace=tmp_path, resolve_family="nxp")
+    cfg = make_build_config(workspace=tmp_path / "nxp", machine="imx8mp-var-dart")
+    candidate = RunCandidate(run_dir=run_dir, root=root, cfg=cfg)
+
+    monkeypatch.setattr(ps_cmd.build_stop, "_discover_host_cookers", lambda: {"fake": frozenset()})
+    monkeypatch.setattr(ps_cmd.build_stop, "correlate_host_discoveries", lambda _discovered: [candidate])
+    monkeypatch.setattr(ps_cmd.build_stop, "detect_runtime", lambda: "docker")
+    monkeypatch.setattr(ps_cmd.build_stop, "discover_running_containers_or_warn", lambda _runtime: ([], None))
+
+    result = runner.invoke(app, ["ps", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert isinstance(payload, list)
+    assert len(payload) == 1
+    row = payload[0]
+    assert set(row.keys()) == {"run_id", "mode", "family", "machine", "elapsed_seconds"}
+    assert row["run_id"] == "20260618-120000-111"
+    assert row["mode"] == "host"
+    assert row["family"] == "nxp"
+    assert row["machine"] == "imx8mp-var-dart"
+    assert isinstance(row["elapsed_seconds"], int)
+    assert not isinstance(row["elapsed_seconds"], bool)
+    for value in row.values():
+        assert value is not None
+
+
+def test_ps_json_container_row_unknown_placeholder_is_a_string(
+    runner: _CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A container row whose mount is unrecoverable emits string "unknown"
+    placeholders for family and machine under ``--json``, never null."""
+    candidate = ContainerCandidate(run_id="20260618-130000-222", container_id="abc123")
+
+    monkeypatch.setattr(ps_cmd.build_stop, "_discover_host_cookers", dict)
+    monkeypatch.setattr(ps_cmd.build_stop, "correlate_host_discoveries", lambda _discovered: [])
+    monkeypatch.setattr(ps_cmd.build_stop, "detect_runtime", lambda: "docker")
+    monkeypatch.setattr(ps_cmd.build_stop, "discover_running_containers_or_warn", lambda _runtime: ([candidate], None))
+    monkeypatch.setattr(ps_cmd, "_container_mount_source", lambda _runtime, _cid: None)
+
+    result = runner.invoke(app, ["ps", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert len(payload) == 1
+    row = payload[0]
+    assert row["family"] == "unknown"
+    assert row["machine"] == "unknown"
+    assert isinstance(row["family"], str)
+    assert isinstance(row["machine"], str)

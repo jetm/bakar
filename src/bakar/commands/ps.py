@@ -26,6 +26,9 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Annotated
+
+import typer
 
 from bakar import build_stop
 from bakar.commands._app import app, console
@@ -181,16 +184,40 @@ def _collect_rows() -> list[_Row]:
 
 
 @app.command("ps")
-def ps() -> None:
+def ps(
+    json_out: Annotated[
+        bool,
+        typer.Option("--json", help="Emit a JSON array to stdout instead of plain text."),
+    ] = False,
+) -> None:
     """List every live bakar build on this host.
 
     Directory-independent: performs no workspace resolution and runs
     correctly from anywhere, including outside any bakar workspace. Combines
     host-mode builds (discovered by scanning ``/proc`` for bitbake cookers)
     and container-mode builds (discovered by querying the container runtime),
-    one row per live build - run id, mode, family, and machine.
+    one row per live build - run id, mode, family, and machine. With
+    ``--json`` each row is emitted as an object with exactly five fields
+    (``run_id``, ``mode``, ``family``, ``machine``, ``elapsed_seconds`` as a
+    JSON integer); an empty result emits ``[]``.
     """
     rows = _collect_rows()
+    if json_out:
+        print(
+            json.dumps(
+                [
+                    {
+                        "run_id": row.run_id,
+                        "mode": row.mode,
+                        "family": row.family,
+                        "machine": row.machine,
+                        "elapsed_seconds": int(row.elapsed_seconds),
+                    }
+                    for row in rows
+                ]
+            )
+        )
+        return
     if not rows:
         console.print("no bakar builds running")
         return
