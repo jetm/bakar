@@ -1639,6 +1639,104 @@ def test_container_discovery_malformed_line_raises(monkeypatch: pytest.MonkeyPat
         build_stop.discover_running_containers("docker")
 
 
+# --- discover_running_containers_or_warn (group 11: graceful degradation) --
+
+
+def test_discover_or_warn_success_passes_through_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A clean query returns the candidates unchanged and no warning."""
+    monkeypatch.setattr(
+        build_stop.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=0,
+            stdout="cid-live\t20260101-000000\n",
+            stderr="",
+        ),
+    )
+
+    candidates, warning = build_stop.discover_running_containers_or_warn("docker")
+
+    assert candidates == [build_stop.ContainerCandidate(run_id="20260101-000000", container_id="cid-live")]
+    assert warning is None
+
+
+def test_discover_or_warn_nonzero_exit_degrades_to_empty_list_and_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-zero exit collapses to an empty list plus a warning naming container discovery."""
+    monkeypatch.setattr(
+        build_stop.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="daemon unreachable"),
+    )
+
+    candidates, warning = build_stop.discover_running_containers_or_warn("docker")
+
+    assert candidates == []
+    assert warning is not None
+    assert "container discovery" in warning
+
+
+def test_discover_or_warn_oserror_degrades_to_empty_list_and_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing runtime binary (OSError) degrades the same way as any other query failure."""
+
+    def _boom(*_a: object, **_k: object) -> SimpleNamespace:
+        raise OSError("no such file")
+
+    monkeypatch.setattr(build_stop.subprocess, "run", _boom)
+
+    candidates, warning = build_stop.discover_running_containers_or_warn("docker")
+
+    assert candidates == []
+    assert warning is not None
+    assert "container discovery" in warning
+
+
+def test_discover_or_warn_timeout_degrades_to_empty_list_and_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A timed-out query degrades the same way as any other query failure."""
+
+    def _timeout(*_a: object, **_k: object) -> SimpleNamespace:
+        raise subprocess.TimeoutExpired(cmd="docker", timeout=build_stop._RUNTIME_QUERY_TIMEOUT_S)
+
+    monkeypatch.setattr(build_stop.subprocess, "run", _timeout)
+
+    candidates, warning = build_stop.discover_running_containers_or_warn("docker")
+
+    assert candidates == []
+    assert warning is not None
+    assert "container discovery" in warning
+
+
+def test_discover_or_warn_malformed_output_degrades_to_empty_list_and_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Malformed output degrades the same way as any other query failure."""
+    monkeypatch.setattr(
+        build_stop.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout="cid-only-no-run-id\n", stderr=""),
+    )
+
+    candidates, warning = build_stop.discover_running_containers_or_warn("docker")
+
+    assert candidates == []
+    assert warning is not None
+    assert "container discovery" in warning
+
+
+def test_discover_or_warn_does_not_print(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """The wrapper never prints - the (results, warning) tuple is the whole contract."""
+    monkeypatch.setattr(
+        build_stop.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="daemon unreachable"),
+    )
+
+    build_stop.discover_running_containers_or_warn("docker")
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
 # --- _clean_stale_bitbake_files --------------------------------------------
 
 

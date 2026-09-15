@@ -355,6 +355,33 @@ def discover_running_containers(runtime: str) -> list[ContainerCandidate]:
     return candidates
 
 
+def discover_running_containers_or_warn(runtime: str) -> tuple[list[ContainerCandidate], str | None]:
+    """Wrap :func:`discover_running_containers`, degrading any failure to a warning.
+
+    :func:`discover_running_containers` raises ``RuntimeError`` on any query
+    failure by design (missing binary, unreachable/timed-out daemon,
+    non-zero exit, or malformed output) - it has no fallback of its own and
+    defers the degradation decision here. This wrapper catches that
+    ``RuntimeError`` and collapses every failure mode to the same outcome:
+    an empty candidate list plus a warning naming that container discovery
+    specifically could not be completed, rather than a generic failure
+    message or a raised exception the caller would need its own handler for.
+
+    On success, returns ``(candidates, None)``. On failure, returns
+    ``([], warning)`` where ``warning`` is a human-readable string - the
+    caller (``bakar ps``, group 15) is responsible for emitting it, and must
+    route it to stderr via ``_say`` or an equivalent diagnostic channel,
+    never to stdout: stdout is reserved for the eventual ``--json`` payload,
+    which must remain a well-formed result containing no warning text. This
+    function does not print anything itself, so a caller building
+    ``--json`` output never has a stray print to filter out.
+    """
+    try:
+        return discover_running_containers(runtime), None
+    except RuntimeError as exc:
+        return [], f"container discovery could not be completed: {exc}"
+
+
 def _run_runtime(args: list[str]) -> None:
     """Run a runtime subcommand, capturing output and swallowing all errors.
 
