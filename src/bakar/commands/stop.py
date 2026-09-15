@@ -9,7 +9,7 @@ import typer
 
 import bakar.commands._app as _state
 from bakar import build_stop
-from bakar.commands._app import app
+from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     WorkspaceOption,
     _normalize_dispatch,
@@ -78,6 +78,18 @@ def stop(
             ),
         ),
     ] = False,
+    run_id: Annotated[
+        str | None,
+        typer.Option(
+            "--run",
+            help=(
+                "Stop the run whose run directory name exactly matches this id, "
+                "resolved against every family root in the workspace rather than "
+                "only the one root/kas YAML would resolve. Useful when more than "
+                "one build is live in the same workspace at once."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Gracefully stop the running build for this workspace's BSP.
 
@@ -113,6 +125,27 @@ def stop(
     kas_yaml, _extra_overlays = split_kas_yaml_arg(kas_yaml)
     family, _bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
+
+    if run_id is not None:
+        # Exact-match against the UNFILTERED candidate set, not the live-only
+        # one - the unfiltered set is what lets "no match anywhere" and "match
+        # but not live" be told apart. A live-only lookup would report both
+        # cases identically as "no match".
+        scan = build_stop.enumerate_workspace_runs(ws)
+        match = next((c for c in scan.candidates if c.run_dir.name == run_id), None)
+        if match is None:
+            console.print(f"[red]no run matching {run_id!r} found in this workspace[/].")
+            raise typer.Exit(code=1)
+        live_run_dirs = {c.run_dir for c in build_stop.live_workspace_runs(ws)}
+        if match.run_dir not in live_run_dirs:
+            console.print(f"[red]run {run_id} is not currently live[/].")
+            raise typer.Exit(code=1)
+        grace_seconds = timeout if timeout is not None else match.cfg.stop_grace_seconds
+        stopped = build_stop.stop_run(match.run_dir, match.cfg, force=force, grace_seconds=grace_seconds)
+        if not stopped:
+            raise typer.Exit(code=1)
+        return
+
     cfg = resolve(
         ResolveRequest(
             workspace=ws,

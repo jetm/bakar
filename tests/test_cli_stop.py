@@ -373,3 +373,78 @@ def test_stop_on_host_defaults_to_a_single_build(runner: _CliRunner, monkeypatch
     assert runner.invoke(app, ["stop", "--on", "pc2"]).exit_code == 0
     assert runner.invoke(app, ["stop", "--on", "pc2", "--all"]).exit_code == 0
     assert seen == [False, True]
+
+
+def test_run_option_errors_on_unmatched_id(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``stop --run <id>`` with no matching run directory anywhere exits nonzero.
+
+    Nothing under any family root is named ``does-not-exist``, so this must be
+    told apart from a match that simply is not live.
+    """
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    result = runner.invoke(app, ["stop", "--run", "does-not-exist"])
+
+    assert result.exit_code != 0
+    assert "does-not-exist" in result.output
+
+
+def test_run_option_errors_on_matched_but_not_live_run(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``--run`` id matching a real, non-live run directory must be told
+
+    apart from "no match anywhere": it exits nonzero, states the run is not
+    currently live, and must not send any signal.
+    """
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        stop_cmd.build_stop,
+        "stop_run",
+        lambda run_dir, cfg=None, *, force=False, grace_seconds=0: (calls.append(run_dir), True)[1],
+    )
+
+    # `workspace` fixture already created nxp/build/runs/20260617-120000 with
+    # no launch record, so it is a candidate but never live.
+    result = runner.invoke(app, ["stop", "--run", "20260617-120000"])
+
+    assert result.exit_code != 0
+    assert "not currently live" in result.output
+    assert calls == []
+
+
+def test_run_option_stops_matched_live_run_directly(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``--run`` id matching a live run calls ``stop_run`` directly on it,
+
+    without ever constructing the multi-build listing.
+    """
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    run_dir = workspace / "nxp" / "build" / "runs" / "20260617-120000"
+    stop_cmd.build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+    monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+
+    calls: list[tuple[Path, bool, float]] = []
+
+    def _rec(run_dir: Path, cfg: object = None, *, force: bool = False, grace_seconds: float = 0) -> bool:
+        calls.append((run_dir, force, grace_seconds))
+        return True
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_run", _rec)
+
+    result = runner.invoke(app, ["stop", "--run", "20260617-120000"])
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0][0] == run_dir
