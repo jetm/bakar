@@ -1695,6 +1695,114 @@ def test_collect_build_pids_empty_when_no_match(tmp_path: Path) -> None:
     assert scoped.all_pids == frozenset()
 
 
+# --- host-wide discovery: _discover_host_cookers ---------------------------
+#
+# Unlike _collect_build_pids above, this scan has no known topdir up front -
+# it walks every host PID and recovers the topdir from whichever marker
+# filename shows up in that process's own argv.
+
+
+def test_discover_host_cookers_finds_topdir_from_bare_marker_filename(tmp_path: Path) -> None:
+    """A cooker's argv is matched on the bare marker filename, topdir is recovered from it."""
+    topdir = tmp_path / "nxp" / "build"
+    sock = topdir / "bitbake.sock"
+    procs = {
+        4242: (1, f"python bitbake-server decafbad 7 8 {sock} idle"),
+        9000: (1, "unrelated-process --flag"),
+    }
+    pids, cmdline, _ppid, _pgid = _fake_proc(procs)
+
+    discovered = build_stop._discover_host_cookers(pids_reader=pids, cmdline_reader=cmdline)
+
+    assert discovered == {topdir: frozenset({4242})}
+
+
+def test_discover_host_cookers_matches_all_three_marker_filenames(tmp_path: Path) -> None:
+    """lock, sock, and cookerdaemon.log paths each resolve to their own topdir."""
+    lock_dir = tmp_path / "a" / "build"
+    sock_dir = tmp_path / "b" / "build"
+    log_dir = tmp_path / "c" / "build"
+    procs = {
+        1: (0, f"bitbake-server {lock_dir / 'bitbake.lock'}"),
+        2: (0, f"bitbake-server {sock_dir / 'bitbake.sock'}"),
+        3: (0, f"bitbake-server {log_dir / 'bitbake-cookerdaemon.log'}"),
+    }
+    pids, cmdline, _ppid, _pgid = _fake_proc(procs)
+
+    discovered = build_stop._discover_host_cookers(pids_reader=pids, cmdline_reader=cmdline)
+
+    assert discovered == {
+        lock_dir: frozenset({1}),
+        sock_dir: frozenset({2}),
+        log_dir: frozenset({3}),
+    }
+
+
+def test_discover_host_cookers_worker_subprocess_has_no_argv_marker(tmp_path: Path) -> None:
+    """A bitbake-worker's own argv carries no marker path, so it is never mistaken for a cooker.
+
+    Verifies the cooker-identification rule stated in this function's docstring: the
+    worker is spawned with piped fds and does not itself reference the lock/sock/log
+    path, so the plain argv-marker match already excludes it with no separate step.
+    """
+    topdir = tmp_path / "build"
+    lock = topdir / "bitbake.lock"
+    procs = {
+        4242: (1, f"python bitbake-server decafbad 7 8 {lock} idle"),
+        4243: (4242, "bitbake-worker decafbad"),  # spawned with piped fds, no path in argv
+    }
+    pids, cmdline, _ppid, _pgid = _fake_proc(procs)
+
+    discovered = build_stop._discover_host_cookers(pids_reader=pids, cmdline_reader=cmdline)
+
+    assert discovered == {topdir: frozenset({4242})}  # only the cooker, never the worker
+
+
+def test_discover_host_cookers_multiple_builds_on_host(tmp_path: Path) -> None:
+    """Two unrelated builds on the same host resolve to two distinct topdirs."""
+    topdir_a = tmp_path / "nxp" / "build"
+    topdir_b = tmp_path / "ti" / "build"
+    procs = {
+        100: (1, f"bitbake-server {topdir_a / 'bitbake.lock'}"),
+        200: (1, f"bitbake-server {topdir_b / 'bitbake.lock'}"),
+    }
+    pids, cmdline, _ppid, _pgid = _fake_proc(procs)
+
+    discovered = build_stop._discover_host_cookers(pids_reader=pids, cmdline_reader=cmdline)
+
+    assert discovered == {topdir_a: frozenset({100}), topdir_b: frozenset({200})}
+
+
+def test_discover_host_cookers_skips_unreadable_cmdline(tmp_path: Path) -> None:
+    """A PID whose cmdline read raised (permission denied) is skipped, not raised on."""
+    topdir = tmp_path / "build"
+    lock = topdir / "bitbake.lock"
+    procs = {
+        4242: (1, f"bitbake-server {lock}"),
+        5000: (1, "should-never-be-read"),  # stands in for a denied /proc/<pid>/cmdline
+    }
+    pids, cmdline, _ppid, _pgid = _fake_proc(procs)
+
+    def _cmdline_permission_denied(pid: int) -> str:
+        if pid == 5000:
+            return ""  # matches _proc_cmdline's OSError -> "" contract
+        return cmdline(pid)
+
+    discovered = build_stop._discover_host_cookers(pids_reader=pids, cmdline_reader=_cmdline_permission_denied)
+
+    assert discovered == {topdir: frozenset({4242})}
+
+
+def test_discover_host_cookers_empty_when_no_match(tmp_path: Path) -> None:
+    """No process on the host references a marker filename -> empty dict."""
+    procs = {10: (1, "unrelated"), 11: (1, "also unrelated")}
+    pids, cmdline, _ppid, _pgid = _fake_proc(procs)
+
+    discovered = build_stop._discover_host_cookers(pids_reader=pids, cmdline_reader=cmdline)
+
+    assert discovered == {}
+
+
 # --- _killpg guard ---------------------------------------------------------
 
 

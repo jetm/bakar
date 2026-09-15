@@ -894,6 +894,54 @@ def _collect_build_pids(
     )
 
 
+def _discover_host_cookers(
+    *,
+    pids_reader: Callable[[], list[int]] = _all_pids,
+    cmdline_reader: Callable[[int], str] = _proc_cmdline,
+) -> dict[Path, frozenset[int]]:
+    """Scan every PID on the host for a bitbake cooker's argv markers.
+
+    Unlike :func:`_collect_build_pids`, this takes no ``topdir`` up front - it
+    walks every host PID looking for the three bare marker filenames
+    (``bitbake.lock``, ``bitbake.sock``, ``bitbake-cookerdaemon.log``)
+    anywhere in that process's cmdline, rather than a full path under one
+    known build dir. For each match the topdir is recovered by stripping the
+    trailing marker filename off the matched path (``.../nxp/build/
+    bitbake.lock`` -> ``.../nxp/build``).
+
+    A ``bitbake-worker`` subprocess is spawned with piped file descriptors
+    and carries no lock/socket/log path in its own argv, so the same argv
+    match that discovers a topdir also identifies its cooker - there is no
+    separate worker-exclusion step. This is treated as a verified assumption
+    here, checked by a dedicated multi-worker test rather than asserted only
+    in this docstring.
+
+    A PID whose cmdline cannot be read (permission denied on a multi-user
+    host) resolves to ``""`` from ``cmdline_reader`` and is skipped, not
+    raised on.
+
+    Returns a dict mapping each discovered topdir to the frozenset of cooker
+    PID(s) whose argv matched there. Deduplication across topdirs (e.g. the
+    same build discovered via both its lock and its log path) and
+    correlation with a recorded run_id are out of scope - later tasks own
+    those.
+    """
+    discovered: dict[Path, set[int]] = {}
+    for pid in pids_reader():
+        cmdline = cmdline_reader(pid)
+        if not cmdline:
+            continue
+        for token in cmdline.split():
+            for marker in _COOKER_ARGV_FILES:
+                suffix = f"/{marker}"
+                if token.endswith(suffix):
+                    topdir = Path(token[: -len(suffix)])
+                    discovered.setdefault(topdir, set()).add(pid)
+                    break
+
+    return {topdir: frozenset(pids) for topdir, pids in discovered.items()}
+
+
 def _kill_pid(pid: int, sig: int) -> bool:
     """``os.kill`` ``pid`` with ``sig``; True if delivered, False if gone/denied."""
     try:
