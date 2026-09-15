@@ -520,3 +520,77 @@ def test_stop_no_args_two_live_builds_refuses_and_lists(
     assert "20260617-130000" in result.output
     assert "nxp" in result.output
     assert "--run" in result.output
+
+
+def _snapshot_run_dir(run_dir: Path) -> dict[str, bytes]:
+    """Map every file under ``run_dir`` (relative path -> bytes) for later comparison."""
+    return {str(p.relative_to(run_dir)): p.read_bytes() for p in sorted(run_dir.rglob("*")) if p.is_file()}
+
+
+def test_no_bulk_stop_and_isolation_between_concurrent_builds(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two negative tests the design deliberately keeps out of scope.
+
+    1. ``--all`` is a flag Typer attaches to the whole ``stop`` command (it is
+       only meaningful alongside ``--on``), so it is not rejected as an unknown
+       option on the local path - but nothing on the local path reads it either,
+       so passing it with 2+ live builds present must still hit the same
+       refuse-and-list path as a bare ``stop``, never a bulk stop. ``stop_build``
+       and ``stop_run`` are both wired to raise, proving neither is reached.
+    2. With three live builds and one targeted via ``--run``, the other two
+       must be provably untouched: their launch records/pid files are
+       byte-identical before and after, and ``stop_run`` is never called with
+       their run directories.
+    """
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    def _boom(*a: object, **k: object) -> bool:
+        raise AssertionError("no invocation form may stop more than one live build")
+
+    # --- Part 1: `--all` without `--on` must not become a bulk-stop path. ---
+    run_a = workspace / "nxp" / "build" / "runs" / "20260617-120000"
+    run_b = workspace / "nxp" / "build" / "runs" / "20260617-130000"
+    run_b.mkdir(parents=True)
+    stop_cmd.build_stop.write_launch_record(run_a, pgid=111, mode="host")
+    stop_cmd.build_stop.write_launch_record(run_b, pgid=222, mode="host")
+    monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 111, True))
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", _boom)
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_run", _boom)
+
+    result = runner.invoke(app, ["stop", "--all"])
+
+    assert result.exit_code != 0, result.output
+    assert "20260617-120000" in result.output
+    assert "20260617-130000" in result.output
+    assert "--run" in result.output
+
+    # --- Part 2: stopping one of three live builds leaves the other two alone. ---
+    run_c = workspace / "nxp" / "build" / "runs" / "20260617-140000"
+    run_c.mkdir(parents=True)
+    stop_cmd.build_stop.write_launch_record(run_c, pgid=333, mode="host")
+    monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 111, True))
+
+    before_b = _snapshot_run_dir(run_b)
+    before_c = _snapshot_run_dir(run_c)
+
+    calls: list[Path] = []
+
+    def _rec(run_dir: Path, cfg: object = None, *, force: bool = False, grace_seconds: float = 0) -> bool:
+        calls.append(run_dir)
+        return True
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_run", _rec)
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", _boom)
+
+    result = runner.invoke(app, ["stop", "--run", "20260617-120000"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [run_a]
+
+    after_b = _snapshot_run_dir(run_b)
+    after_c = _snapshot_run_dir(run_c)
+    assert after_b == before_b
+    assert after_c == before_c
