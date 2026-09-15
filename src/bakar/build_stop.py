@@ -1996,11 +1996,21 @@ def live_workspace_runs(path: Path, *, user_config: UserConfig | None = None) ->
 
     Host mode: the launch record parses as ``mode="host"`` and
     :func:`is_build_running` confirms a live, cmdline-verified PGID.
-    Container mode: a recorded container label is treated as live WITHOUT
-    querying the container runtime - matching ``bakar stop``'s existing
-    single-root behavior exactly (an explicit non-goal to change), which
-    keeps this common no-``--run`` path free of a runtime round-trip. A
-    candidate whose launch record is malformed or unreadable is excluded
+    Container mode: a recorded container label is a NECESSARY but not
+    sufficient signal - :func:`remove_pid` deletes the launch record on
+    every stop path that reaches it, so a label surviving on disk usually
+    means either a genuinely live container or one that exited outside
+    ``bakar stop``'s own cleanup (a runtime restart, a manual ``docker
+    kill``, a host crash). Treating the label alone as "live" without
+    querying the runtime made every such stale record permanently
+    unreachable: it counted toward "two or more live builds" in the
+    no-``--run`` refuse-and-list branch, yet a targeted ``--run``/pick on it
+    reported "not currently live" - a workspace could accumulate stale
+    container records with no path that ever cleaned them up. Querying the
+    runtime here (the same call an explicit target already had to make)
+    closes that gap for every caller of this function, not only the
+    explicitly-targeted one.
+    A candidate whose launch record is malformed or unreadable is excluded
     rather than raising: :func:`read_launch_record` already degrades
     gracefully for that case (see its own docstring), so it never produces
     an entry this loop would need to special-case.
@@ -2017,7 +2027,9 @@ def live_workspace_runs(path: Path, *, user_config: UserConfig | None = None) ->
             if alive and cmdline_ok:
                 live.append(candidate)
         elif record.container_label is not None:
-            live.append(candidate)
+            runtime = record.runtime or detect_runtime()
+            if _container_id(runtime, record.container_label) is not None:
+                live.append(candidate)
     return live
 
 

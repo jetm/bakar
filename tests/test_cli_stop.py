@@ -523,6 +523,56 @@ def test_run_option_stops_matched_live_run_directly(
     assert calls[0][0] == run_dir
 
 
+def test_stop_no_args_stale_container_records_fall_through_to_zero_live(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two or more container-mode run records whose containers have already
+    exited (a launch record survives on disk after a runtime restart, a
+    manual ``docker kill``, or a host crash - anything that bypasses bakar
+    stop's own cleanup) must not be counted as "two or more live builds".
+
+    Before container-mode liveness was runtime-verified, ANY recorded
+    container label counted as live, so a workspace accumulating stale
+    records could get stuck permanently: the no-argument path saw "2+ live"
+    and refused with instructions to pass --run, while --run on either one
+    reported "not currently live" - no path ever reached stop_build's own
+    stale-lock cleanup. With real liveness verification, zero of these
+    records are live, so the command falls through to the existing
+    single-root stop_build call and its stale-cleanup path, exactly as it
+    would for a workspace with no container records at all.
+    """
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    nxp_dir = workspace / "nxp" / "build" / "runs" / "20260617-150000-nxp-dead"
+    nxp_dir.mkdir(parents=True)
+    stop_cmd.build_stop.write_launch_record(
+        nxp_dir, pgid=0, mode="container", runtime="docker", container_label="bakar.run_id=nxp-dead"
+    )
+    ti_dir = workspace / "ti" / "build" / "runs" / "20260617-160000-ti-dead"
+    ti_dir.mkdir(parents=True)
+    stop_cmd.build_stop.write_launch_record(
+        ti_dir, pgid=0, mode="container", runtime="docker", container_label="bakar.run_id=ti-dead"
+    )
+
+    monkeypatch.setattr(stop_cmd.build_stop, "detect_runtime", lambda: "docker")
+    monkeypatch.setattr(stop_cmd.build_stop, "_container_id", lambda _runtime, _label: None)
+
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        stop_cmd.build_stop,
+        "stop_build",
+        lambda bsp_root, cfg=None, *, force=False, grace_seconds=0: (calls.append(bsp_root), True)[1],
+    )
+
+    result = runner.invoke(app, ["stop"])
+
+    assert result.exit_code == 0, result.output
+    assert "live builds are running" not in result.output
+    assert len(calls) == 1
+
+
 def test_stop_no_args_single_live_build_stops_it_directly(
     runner: _CliRunner,
     workspace: Path,

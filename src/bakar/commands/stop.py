@@ -72,25 +72,14 @@ def _stop_matched_run(ws: Path, run_id: str, *, force: bool, timeout: float | No
                 )
         console.print(f"[red]no run matching {run_id!r} found in this workspace[/].")
         raise typer.Exit(code=1)
+    # live_workspace_runs now verifies container-mode liveness against the
+    # runtime itself (not just "a launch record with a label exists"), so a
+    # single membership check here answers both host- and container-mode
+    # targets correctly - no separate runtime query needed at this call site.
     live_run_dirs = {c.run_dir for c in build_stop.live_workspace_runs(ws, user_config=_state._USER_CONFIG)}
     if match.run_dir not in live_run_dirs:
         console.print(f"[red]run {run_id} is not currently live[/].")
         raise typer.Exit(code=1)
-    # live_workspace_runs' container-mode check only confirms a launch record
-    # was recorded, not that the container is still running (matching bakar
-    # stop's existing single-root behavior on purpose, to keep the common
-    # no-selector path free of a runtime round-trip). An explicitly selected
-    # --run/interactive-pick target needs a real answer, not that cheap
-    # compatibility check: query the runtime directly so a finished
-    # container build reports "not currently live" here instead of reaching
-    # stop_run, whose idempotent stale-cleanup path would otherwise return
-    # True and exit 0 for a build that already ended.
-    record = build_stop.read_launch_record(match.run_dir)
-    if record.mode != "host" and record.container_label is not None:
-        runtime = record.runtime or build_stop.detect_runtime()
-        if build_stop._container_id(runtime, record.container_label) is None:
-            console.print(f"[red]run {run_id} is not currently live[/].")
-            raise typer.Exit(code=1)
     grace_seconds = timeout if timeout is not None else match.cfg.stop_grace_seconds
     return build_stop.stop_run(match.run_dir, match.cfg, force=force, grace_seconds=grace_seconds)
 
