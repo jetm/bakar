@@ -1984,6 +1984,32 @@ def correlate_host_discoveries(discovered: dict[Path, frozenset[int]]) -> list[R
     return candidates
 
 
+def dedup_across_sources(
+    host_candidates: list[RunCandidate], container_candidates: list[ContainerCandidate]
+) -> tuple[list[RunCandidate], list[ContainerCandidate]]:
+    """Drop host-mode rows whose run id is already reported by container-mode discovery.
+
+    Group 9's host-mode correlation and group 10/11's container-mode
+    discovery are independent sources scanning the same set of running
+    builds, so the same run id can legitimately show up in both: a
+    container-mode build still has a launch record on the host, and
+    :func:`correlate_host_discoveries` has no way to know the build it found
+    is already reported by the container runtime. When a run id appears in
+    both, the container-mode row wins - it carries the container id needed
+    to stop the build - so the matching host candidate is dropped here
+    rather than rendered as a second, less-actionable row for the same run.
+
+    Container candidates are never dropped by this function; only host
+    candidates colliding with a container-mode run id are removed. Both
+    lists are returned - the shrunk host list and the unchanged container
+    list - because group 15's ``bakar ps`` needs to render rows from both
+    sources side by side.
+    """
+    container_run_ids = {candidate.run_id for candidate in container_candidates}
+    deduped_host = [c for c in host_candidates if c.run_dir.name not in container_run_ids]
+    return deduped_host, container_candidates
+
+
 def _interrupted_step(run_dir: Path) -> str | None:
     """Return the name of an interrupted step from ``run_dir/events.jsonl``.
 

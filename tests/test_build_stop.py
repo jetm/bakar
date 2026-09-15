@@ -2159,6 +2159,67 @@ def test_correlate_host_discoveries_multiple_worker_pids_collapse_to_one_row(
     assert candidates[0].run_dir == run_dir
 
 
+# --- dedup_across_sources (group 13: cross-source dedup, host vs container) --
+
+
+def test_dedup_across_sources_drops_host_row_matching_container_run_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run id reported by both host-mode correlation and container-mode discovery
+    keeps only the container-mode row; the duplicate host row is dropped."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    run_dir = _make_run_dir(tmp_path / "nxp", "20260618-120000-111")
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+    topdir = run_dir.parent.parent
+    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+    host_candidates = build_stop.correlate_host_discoveries({topdir: frozenset({4242})})
+    assert len(host_candidates) == 1  # sanity: the collision run id is present
+
+    container_candidates = [build_stop.ContainerCandidate(run_id="20260618-120000-111", container_id="cid-main")]
+
+    deduped_host, deduped_container = build_stop.dedup_across_sources(host_candidates, container_candidates)
+
+    assert deduped_host == []
+    assert deduped_container == container_candidates
+
+
+def test_dedup_across_sources_keeps_host_row_with_no_container_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host-mode run id with no matching container-mode row is kept unchanged."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    run_dir = _make_run_dir(tmp_path / "nxp", "20260618-120000-111")
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+    topdir = run_dir.parent.parent
+    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+    host_candidates = build_stop.correlate_host_discoveries({topdir: frozenset({4242})})
+
+    container_candidates = [build_stop.ContainerCandidate(run_id="20260618-130000-222", container_id="cid-other")]
+
+    deduped_host, deduped_container = build_stop.dedup_across_sources(host_candidates, container_candidates)
+
+    assert deduped_host == host_candidates
+    assert deduped_container == container_candidates
+
+
+def test_dedup_across_sources_container_candidates_never_dropped() -> None:
+    """Container candidates are returned unchanged regardless of host-side collisions -
+    only host candidates are ever removed by this function."""
+    container_candidates = [
+        build_stop.ContainerCandidate(run_id="20260618-120000-111", container_id="cid-main"),
+        build_stop.ContainerCandidate(run_id="20260618-130000-222", container_id="cid-other"),
+    ]
+
+    deduped_host, deduped_container = build_stop.dedup_across_sources([], container_candidates)
+
+    assert deduped_host == []
+    assert deduped_container == container_candidates
+
+
+def test_dedup_across_sources_empty_inputs_are_empty() -> None:
+    assert build_stop.dedup_across_sources([], []) == ([], [])
+
+
 # --- _killpg guard ---------------------------------------------------------
 
 
