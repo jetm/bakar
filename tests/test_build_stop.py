@@ -2224,3 +2224,185 @@ def test_verify_clean_no_cfg_unchanged(tmp_path: Path, monkeypatch: pytest.Monke
     reasons = build_stop._verify_clean(run_dir, None)
 
     assert any("bitbake-server" in r for r in reasons)
+
+
+# --- workspace-wide live-build discovery (task 2.1) -------------------------
+
+
+def test_workspace_wide_discovery_finds_live_builds_across_family_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live build under a different family root than the one the CLI args
+    pointed at (e.g. a live TI build while ``--manifest`` selected NXP) must
+    show up in the workspace-wide scan, not just the one root a single-root
+    caller happened to resolve. A finished run under the SAME root as a live
+    one must not leak into the live-only result either.
+    """
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    ws = tmp_path
+
+    nxp_run = _make_run_dir(ws / "nxp", "20260618-120000-111")
+    build_stop.write_launch_record(nxp_run, pgid=4242, mode="host")
+
+    nxp_dead_run = _make_run_dir(ws / "nxp", "20260618-100000-000")
+    build_stop.write_launch_record(nxp_dead_run, pgid=9999, mode="host")
+
+    ti_run = _make_run_dir(ws / "ti", "20260618-130000-222")
+    build_stop.write_launch_record(
+        ti_run, pgid=5252, mode="container", runtime="docker", container_label="bakar.run_id=ti-run"
+    )
+
+    def fake_is_build_running(run_dir: Path) -> tuple[bool, int | None, bool]:
+        if run_dir == nxp_run:
+            return (True, 4242, True)
+        return (False, None, False)
+
+    monkeypatch.setattr(build_stop, "is_build_running", fake_is_build_running)
+
+    live = build_stop.live_workspace_runs(ws)
+
+    live_by_dir = {c.run_dir: c for c in live}
+    assert set(live_by_dir) == {nxp_run, ti_run}
+    assert live_by_dir[nxp_run].root.family == "nxp"
+    assert live_by_dir[ti_run].root.family == "ti"
+
+
+def test_enumerate_workspace_runs_covers_plain_and_build_star_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The plain ``<ws>/build/runs`` root and every ``<ws>/build-*/build/runs``
+    root are scanned too, not just nxp/ti."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    ws = tmp_path
+
+    plain_run = _make_run_dir(ws, "20260618-140000-333")
+    build_stop.write_launch_record(plain_run, pgid=1, mode="host")
+
+    fanout_run = _make_run_dir(ws / "build-qemux86-64", "20260618-150000-444")
+    build_stop.write_launch_record(fanout_run, pgid=1, mode="host")
+
+    scan = build_stop.enumerate_workspace_runs(ws)
+
+    found = {c.run_dir: c.root.family for c in scan.candidates}
+    assert found == {plain_run: "generic", fanout_run: "generic"}
+
+
+def test_enumerate_workspace_runs_callable_against_bare_runs_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Passing a bare ``.../build/runs`` path scans that one root directly,
+    without probing for nxp/ti/build-* subdirectories - the shape group 9's
+    future host-mode correlation needs (a discovered topdir, not a workspace)."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    topdir = tmp_path / "some" / "topdir"
+    run_dir = _make_run_dir(topdir, "20260618-160000-555")
+    build_stop.write_launch_record(run_dir, pgid=1, mode="host")
+
+    scan = build_stop.enumerate_workspace_runs(run_dir.parent)
+
+    assert [c.run_dir for c in scan.candidates] == [run_dir]
+    assert scan.candidates[0].root.bsp_root == topdir
+
+
+def test_enumerate_workspace_runs_malformed_launch_record_excluded_from_live(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed/unreadable launch record excludes that candidate from the
+    live-only result rather than raising; it still appears in the unfiltered
+    enumeration."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    ws = tmp_path
+    run_dir = _make_run_dir(ws / "nxp", "20260618-170000-666")
+    (run_dir / "build.meta.json").write_text("{not json")
+    (run_dir / "build.pid").write_text("not-an-int\n")
+
+    scan = build_stop.enumerate_workspace_runs(ws)
+    assert [c.run_dir for c in scan.candidates] == [run_dir]
+
+    live = build_stop.live_workspace_runs(ws)
+    assert live == []
+
+
+def test_enumerate_workspace_runs_gate_refusal_reports_skipped_root_not_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A root the ownership gate refuses is reported as skipped with the
+    refusal reason - never silently treated as 'nothing running there'."""
+    ws = tmp_path
+    (ws / "nxp").mkdir(parents=True)
+    run_dir = _make_run_dir(ws / "nxp", "20260618-180000-777")
+    build_stop.write_launch_record(run_dir, pgid=1, mode="host")
+
+    def fake_guard(cfg: BuildConfig) -> build_stop.LockRefusal | None:
+        if cfg.bsp_root == ws / "nxp":
+            return build_stop.LockRefusal(reason="peer-held", host="peer-host")
+        return None
+
+    monkeypatch.setattr(build_stop, "lock_mutation_guard", fake_guard)
+
+    scan = build_stop.enumerate_workspace_runs(ws)
+
+    assert run_dir not in [c.run_dir for c in scan.candidates]
+    skipped_roots = {s.root.bsp_root: s.refusal.reason for s in scan.skipped}
+    assert skipped_roots[ws / "nxp"] == "peer-held"
+
+
+def test_enumerate_workspace_runs_resolve_failure_excludes_root_without_crashing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A root whose config resolution raises is excluded from the scan
+    entirely rather than crashing the whole workspace-wide discovery."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    ws = tmp_path
+    nxp_run = _make_run_dir(ws / "nxp", "20260618-190000-888")
+    build_stop.write_launch_record(nxp_run, pgid=1, mode="host")
+    ti_run = _make_run_dir(ws / "ti", "20260618-200000-999")
+    build_stop.write_launch_record(ti_run, pgid=1, mode="host")
+
+    real_resolve = build_stop.resolve
+
+    def flaky_resolve(request: build_stop.ResolveRequest) -> BuildConfig:
+        if request.bsp_family == "ti":
+            raise ValueError("boom")
+        return real_resolve(request)
+
+    monkeypatch.setattr(build_stop, "resolve", flaky_resolve)
+
+    scan = build_stop.enumerate_workspace_runs(ws)
+
+    assert [c.run_dir for c in scan.candidates] == [nxp_run]
+    assert scan.skipped == []
+
+
+def test_live_workspace_runs_timing_20_candidates_across_4_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live-only filter completes well under a second against a fixture
+    with >=20 candidate run directories spread across the 4 roots - per-root
+    config resolution (a handful of calls) must not become per-run."""
+    import time as time_module
+
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    ws = tmp_path
+    roots = [ws / "nxp", ws / "ti", ws, ws / "build-qemux86-64"]
+    all_run_dirs: list[Path] = []
+    for root_index, root in enumerate(roots):
+        for i in range(5):
+            run_dir = _make_run_dir(root, f"2026061{root_index}-{i:02d}0000-{root_index}{i:02d}")
+            build_stop.write_launch_record(run_dir, pgid=1, mode="host")
+            all_run_dirs.append(run_dir)
+    assert len(all_run_dirs) >= 20
+
+    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (False, None, False))
+
+    start = time_module.monotonic()
+    live = build_stop.live_workspace_runs(ws)
+    elapsed = time_module.monotonic() - start
+
+    assert live == []
+    assert elapsed < 1.0, f"live_workspace_runs took {elapsed:.3f}s for 20 candidates across 4 roots"

@@ -35,6 +35,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
+from bakar.config import ResolveRequest, resolve
 from bakar.eventlog import (
     RunningTask,
     running_tasks,
@@ -1611,6 +1612,191 @@ def stop_run(run_dir: Path, cfg: BuildConfig | None = None, *, force: bool = Fal
         return True
     finally:
         remove_pid(run_dir)
+
+
+# ---------------------------------------------------------------------------
+# Workspace-wide live-build discovery.
+#
+# ``bakar stop`` (and any future host-wide listing, e.g. ``bakar ps``) needs
+# to see every family root in a workspace, not just the one CLI args happened
+# to resolve. This section defines its own literal root list directly - it
+# does NOT import anything from ``bakar.commands.*`` (this module has no such
+# import today) - and resolves a per-root :class:`~bakar.config.BuildConfig`
+# directly via :func:`bakar.config.resolve`, which lives in the project's
+# core configuration module rather than the CLI command layer.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RunRoot:
+    """One family/build root scanned for workspace-wide live-build discovery.
+
+    ``bsp_root`` is where ``build/runs`` actually lives on disk.
+    ``resolve_workspace``/``resolve_family`` are the two :func:`resolve`
+    inputs that reproduce it: the nxp/ti roots pass the top-level workspace
+    with their own family (``resolve()`` computes ``bsp_root = workspace /
+    bsp_family`` for those), while the plain ``build/runs`` root and every
+    ``build-*`` root pass the root itself with ``bsp_family="bbsetup"``,
+    whose :attr:`BuildConfig.bsp_root` is unconditionally its own
+    ``workspace`` input - mirroring ``commands/insights.py``'s identical
+    ``bsp_root_from_run``/family split (not reused directly, per Assumption
+    A5: this module has no import of ``bakar.commands.*``).
+
+    A caller with just one already-known root - group 9's future host-mode
+    correlation, scanning a topdir discovered via a ``/proc`` walk with no
+    workspace in hand - builds a single ``RunRoot`` the same way instead of
+    going through :func:`_workspace_roots`.
+    """
+
+    bsp_root: Path
+    family: Literal["nxp", "ti", "generic"]
+    resolve_workspace: Path
+    resolve_family: Literal["nxp", "ti", "bbsetup"]
+
+    @property
+    def runs_dir(self) -> Path:
+        """``bsp_root/build/runs``.
+
+        Always literally ``"build"``, never ``build_dir_name`` off the
+        resolved config: ``resolve_family`` is never ``"qcom"`` here (the only
+        family whose ``build_dir_name`` differs), so the two agree by
+        construction.
+        """
+        return self.bsp_root / "build" / "runs"
+
+
+@dataclass(frozen=True)
+class SkippedRoot:
+    """A candidate root excluded from discovery by the NFS lock-ownership gate."""
+
+    root: RunRoot
+    refusal: LockRefusal
+
+
+@dataclass(frozen=True)
+class RunCandidate:
+    """One run directory discovered under a scanned root, with its root's config."""
+
+    run_dir: Path
+    root: RunRoot
+    cfg: BuildConfig
+
+
+@dataclass(frozen=True)
+class RunScan:
+    """Result of :func:`enumerate_workspace_runs`: what was found, and what was skipped."""
+
+    candidates: list[RunCandidate]
+    skipped: list[SkippedRoot]
+
+
+def _workspace_roots(workspace: Path) -> list[RunRoot]:
+    """The four literal family/build roots this change covers for ``workspace``.
+
+    ``<workspace>/nxp``, ``<workspace>/ti``, ``<workspace>`` itself (plain
+    ``build/runs``), and every ``<workspace>/build-*`` (meta-avocado/generic
+    fanout). Does not cover preset-fanout archival subdirectories or a
+    non-``"build"`` TOPDIR name - out of scope per design.md's Non-Goals.
+    This list is this module's own literal (Assumption A5): it is defined
+    directly here, never imported from ``bakar.commands.*``.
+    """
+    roots = [
+        RunRoot(bsp_root=workspace / "nxp", family="nxp", resolve_workspace=workspace, resolve_family="nxp"),
+        RunRoot(bsp_root=workspace / "ti", family="ti", resolve_workspace=workspace, resolve_family="ti"),
+        RunRoot(bsp_root=workspace, family="generic", resolve_workspace=workspace, resolve_family="bbsetup"),
+    ]
+    try:
+        build_dirs = sorted(p for p in workspace.glob("build-*") if p.is_dir())
+    except OSError:
+        build_dirs = []
+    roots.extend(
+        RunRoot(bsp_root=p, family="generic", resolve_workspace=p, resolve_family="bbsetup") for p in build_dirs
+    )
+    return roots
+
+
+def enumerate_workspace_runs(path: Path) -> RunScan:
+    """Enumerate every candidate run directory across accessible roots.
+
+    ``path`` is either a full workspace (scanned for the four
+    :func:`_workspace_roots` family/build roots) or a bare runs directory -
+    e.g. ``<topdir>/build/runs``, the shape a host-mode ``/proc`` scan
+    discovers without ever resolving a workspace. bakar always names this
+    directory literally ``"runs"`` (:attr:`BuildConfig.runs_dir`), so a
+    ``path`` whose final component is ``"runs"`` is treated as one
+    pre-resolved root instead of being probed for ``nxp``/``ti``/``build``/
+    ``build-*`` subdirectories.
+
+    For each candidate root, :func:`bakar.config.resolve` is called directly
+    - only the workspace path is a required input; every other input,
+    including the CLI-layer user-config object, is left at its default for
+    this discovery path. A root whose family directory does not exist on
+    disk contributes nothing and is never resolved. A root whose resolution
+    raises (e.g. a malformed ``.bakar.toml``) is excluded from the result
+    entirely - the same isolation a malformed launch record gets in
+    :func:`live_workspace_runs` below - so one broken root cannot crash the
+    whole scan.
+
+    The resolved config gates two things: the NFS lock-ownership check runs
+    BEFORE anything under the root is read - a root the gate refuses is
+    excluded from ``candidates`` and reported in :attr:`RunScan.skipped` with
+    the refusal reason, never silently treated as "nothing running there" -
+    and it supplies every run discovered under that root with its
+    family/machine metadata, since that is a property of the root, not of
+    the individual run.
+    """
+    if path.name == "runs":
+        bsp_root = path.parent.parent
+        roots = [RunRoot(bsp_root=bsp_root, family="generic", resolve_workspace=bsp_root, resolve_family="bbsetup")]
+    else:
+        roots = _workspace_roots(path)
+
+    candidates: list[RunCandidate] = []
+    skipped: list[SkippedRoot] = []
+    for root in roots:
+        if not root.bsp_root.is_dir():
+            continue
+        try:
+            cfg = resolve(ResolveRequest(workspace=root.resolve_workspace, bsp_family=root.resolve_family))
+        except Exception:  # noqa: BLE001 - one broken root's config must not crash the scan
+            continue
+        refusal = lock_mutation_guard(cfg)
+        if refusal is not None:
+            skipped.append(SkippedRoot(root=root, refusal=refusal))
+            continue
+        try:
+            run_dirs = sorted(root.runs_dir.iterdir())
+        except OSError:
+            continue
+        candidates.extend(RunCandidate(run_dir=d, root=root, cfg=cfg) for d in run_dirs if d.is_dir())
+
+    return RunScan(candidates=candidates, skipped=skipped)
+
+
+def live_workspace_runs(path: Path) -> list[RunCandidate]:
+    """Live-only filter over :func:`enumerate_workspace_runs`'s candidates.
+
+    Host mode: the launch record parses as ``mode="host"`` and
+    :func:`is_build_running` confirms a live, cmdline-verified PGID.
+    Container mode: a recorded container label is treated as live WITHOUT
+    querying the container runtime - matching ``bakar stop``'s existing
+    single-root behavior exactly (an explicit non-goal to change), which
+    keeps this common no-``--run`` path free of a runtime round-trip. A
+    candidate whose launch record is malformed or unreadable is excluded
+    rather than raising: :func:`read_launch_record` already degrades
+    gracefully for that case (see its own docstring), so it never produces
+    an entry this loop would need to special-case.
+    """
+    live: list[RunCandidate] = []
+    for candidate in enumerate_workspace_runs(path).candidates:
+        record = read_launch_record(candidate.run_dir)
+        if record.mode == "host":
+            alive, _pgid, cmdline_ok = is_build_running(candidate.run_dir)
+            if alive and cmdline_ok:
+                live.append(candidate)
+        elif record.container_label is not None:
+            live.append(candidate)
+    return live
 
 
 def _interrupted_step(run_dir: Path) -> str | None:
