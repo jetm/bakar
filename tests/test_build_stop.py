@@ -1639,6 +1639,43 @@ def test_container_discovery_malformed_line_raises(monkeypatch: pytest.MonkeyPat
         build_stop.discover_running_containers("docker")
 
 
+# --- dedup_container_candidates (group 12: container-mode within-source dedup) --
+
+
+def test_dedup_container_candidates_collapses_shared_run_id_first_seen_wins() -> None:
+    """Two running containers sharing a run-id label (the documented kas-shell /
+    timeout-escalation auxiliary-container case) collapse to one row, keeping
+    whichever candidate the runtime's query returned first for that label."""
+    main = build_stop.ContainerCandidate(run_id="20260618-120000-111", container_id="cid-main")
+    aux = build_stop.ContainerCandidate(run_id="20260618-120000-111", container_id="cid-aux")
+
+    result = build_stop.dedup_container_candidates([main, aux])
+
+    assert result == [main]
+
+
+def test_dedup_container_candidates_preserves_runtime_order_not_sorted() -> None:
+    """Dedup does not re-sort - distinct run ids keep the runtime's own reported order."""
+    second = build_stop.ContainerCandidate(run_id="20260102-000000", container_id="cid-b")
+    first = build_stop.ContainerCandidate(run_id="20260101-000000", container_id="cid-a")
+
+    result = build_stop.dedup_container_candidates([second, first])
+
+    assert result == [second, first]
+
+
+def test_dedup_container_candidates_no_collision_is_a_no_op() -> None:
+    """No shared run id across candidates - every entry is kept, unchanged."""
+    a = build_stop.ContainerCandidate(run_id="20260101-000000", container_id="cid-a")
+    b = build_stop.ContainerCandidate(run_id="20260102-000000", container_id="cid-b")
+
+    assert build_stop.dedup_container_candidates([a, b]) == [a, b]
+
+
+def test_dedup_container_candidates_empty_list_is_empty() -> None:
+    assert build_stop.dedup_container_candidates([]) == []
+
+
 # --- discover_running_containers_or_warn (group 11: graceful degradation) --
 
 
@@ -2093,6 +2130,33 @@ def test_correlate_host_discoveries_multiple_topdirs_each_correlate_independentl
     candidates = build_stop.correlate_host_discoveries(discovered)
 
     assert {c.run_dir for c in candidates} == {nxp_run, ti_run}
+
+
+def test_correlate_host_discoveries_multiple_worker_pids_collapse_to_one_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Confirming test for group 12's host-mode dedup: when the cooker has spawned
+    several bitbake-worker processes that also match group 7's argv scan under the
+    same topdir, correlate_host_discoveries still produces exactly one candidate
+    for that run id - not one per matched PID. The frozenset of matched PIDs is
+    never iterated for row content; the single candidate's metadata comes from
+    the run directory's own launch record (the cooker), reached once per topdir
+    via live_workspace_runs, regardless of how many PIDs matched there."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    run_dir = _make_run_dir(tmp_path / "nxp", "20260618-120000-111")
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+    topdir = run_dir.parent.parent  # tmp_path/nxp/build
+
+    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+
+    # Cooker PID 4242 plus several bitbake-worker PIDs all matched under this
+    # same topdir by _discover_host_cookers's argv scan.
+    discovered = {topdir: frozenset({4242, 4300, 4301, 4302})}
+
+    candidates = build_stop.correlate_host_discoveries(discovered)
+
+    assert len(candidates) == 1
+    assert candidates[0].run_dir == run_dir
 
 
 # --- _killpg guard ---------------------------------------------------------

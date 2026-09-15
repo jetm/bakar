@@ -355,6 +355,25 @@ def discover_running_containers(runtime: str) -> list[ContainerCandidate]:
     return candidates
 
 
+def dedup_container_candidates(candidates: list[ContainerCandidate]) -> list[ContainerCandidate]:
+    """Collapse ``candidates`` to one entry per ``run_id`` (group 12 within-source dedup).
+
+    A runtime reporting more than one running container for the same
+    ``bakar.run_id`` label is an expected, documented case - not an anomaly -
+    because this project's own build-launch code deliberately labels an
+    auxiliary ``kas shell`` or timeout-escalation container with the same
+    ``bakar.run_id`` as the main build container. When that happens, this
+    keeps whichever candidate the runtime's query returned FIRST for that
+    label: ``discover_running_containers`` preserves the runtime's own
+    reported order, so first-seen-wins here is deterministic without needing
+    to re-sort or otherwise second-guess that order.
+    """
+    seen: dict[str, ContainerCandidate] = {}
+    for candidate in candidates:
+        seen.setdefault(candidate.run_id, candidate)
+    return list(seen.values())
+
+
 def discover_running_containers_or_warn(runtime: str) -> tuple[list[ContainerCandidate], str | None]:
     """Wrap :func:`discover_running_containers`, degrading any failure to a warning.
 
