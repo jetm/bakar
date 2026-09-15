@@ -189,11 +189,14 @@ def stop(
         return
     if len(live) >= 2:
         now = time.time()
+        rows: list[tuple[build_stop.RunCandidate, str]] = []
+        for candidate in live:
+            start = _run_started_epoch(candidate.run_dir)
+            elapsed = fmt_duration(max(0.0, now - start)) if start is not None else "unknown"
+            rows.append((candidate, elapsed))
+        console.print(f"[yellow]{len(live)} live builds are running in this workspace[/]:")
         if _is_tty():
-            console.print(f"[yellow]{len(live)} live builds are running in this workspace[/]:")
-            for i, candidate in enumerate(live, start=1):
-                start = _run_started_epoch(candidate.run_dir)
-                elapsed = fmt_duration(max(0.0, now - start)) if start is not None else "unknown"
+            for i, (candidate, elapsed) in enumerate(rows, start=1):
                 console.print(
                     f"  [{i}] {candidate.run_dir.name}  family={candidate.root.family}  "
                     f"machine={candidate.cfg.machine}  elapsed={elapsed}"
@@ -210,10 +213,7 @@ def stop(
             if not stopped:
                 raise typer.Exit(code=1)
             return
-        console.print(f"[yellow]{len(live)} live builds are running in this workspace[/]:")
-        for candidate in live:
-            start = _run_started_epoch(candidate.run_dir)
-            elapsed = fmt_duration(max(0.0, now - start)) if start is not None else "unknown"
+        for candidate, elapsed in rows:
             console.print(
                 f"  {candidate.run_dir.name}  family={candidate.root.family}  "
                 f"machine={candidate.cfg.machine}  elapsed={elapsed}"

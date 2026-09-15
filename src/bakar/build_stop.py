@@ -1910,7 +1910,25 @@ def enumerate_workspace_runs(path: Path) -> RunScan:
     """
     if path.name == "runs":
         bsp_root = path.parent.parent
-        roots = [RunRoot(bsp_root=bsp_root, family="generic", resolve_workspace=bsp_root, resolve_family="bbsetup")]
+        # Mirror _workspace_roots' own per-root convention: an nxp/ti root is
+        # identified by its directory name and resolved against its PARENT
+        # workspace with the matching family, exactly as _workspace_roots
+        # builds `workspace / "nxp"` and `workspace / "ti"`. Anything else
+        # (a bare `build/runs` root, or a `build-*` fanout root) falls back
+        # to the generic/bbsetup resolution the previous unconditional
+        # assignment always used - a host-mode /proc scan has no workspace
+        # in hand, so the directory name is the only signal available here.
+        if bsp_root.name in ("nxp", "ti"):
+            roots = [
+                RunRoot(
+                    bsp_root=bsp_root,
+                    family=bsp_root.name,
+                    resolve_workspace=bsp_root.parent,
+                    resolve_family=bsp_root.name,
+                )
+            ]
+        else:
+            roots = [RunRoot(bsp_root=bsp_root, family="generic", resolve_workspace=bsp_root, resolve_family="bbsetup")]
     else:
         roots = _workspace_roots(path)
 

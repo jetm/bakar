@@ -2830,6 +2830,38 @@ def test_enumerate_workspace_runs_callable_against_bare_runs_dir(
     assert scan.candidates[0].root.bsp_root == topdir
 
 
+def test_enumerate_workspace_runs_bare_runs_dir_preserves_nxp_ti_family(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bare ``.../nxp/build/runs`` (or ``.../ti/build/runs``) path - the shape
+    a host-mode /proc scan discovers with no workspace in hand - resolves to
+    its real family and to the workspace ABOVE the family root, not to a
+    generic/bbsetup placeholder. Host-mode discovery is the only production
+    path that reaches this branch (``correlate_host_discoveries`` always
+    calls it via ``topdir / "runs"``), so a wrong family here means every
+    ``bakar ps`` row for an nxp/ti host-mode build reports the wrong family
+    and resolves machine as if the build were bbsetup."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    nxp_run = _make_run_dir(tmp_path / "nxp", "20260618-170000-666")
+    build_stop.write_launch_record(nxp_run, pgid=1, mode="host")
+    ti_run = _make_run_dir(tmp_path / "ti", "20260618-170000-777")
+    build_stop.write_launch_record(ti_run, pgid=1, mode="host")
+
+    nxp_scan = build_stop.enumerate_workspace_runs(nxp_run.parent)
+    ti_scan = build_stop.enumerate_workspace_runs(ti_run.parent)
+
+    assert [c.run_dir for c in nxp_scan.candidates] == [nxp_run]
+    assert nxp_scan.candidates[0].root.family == "nxp"
+    assert nxp_scan.candidates[0].root.resolve_family == "nxp"
+    assert nxp_scan.candidates[0].root.resolve_workspace == tmp_path
+
+    assert [c.run_dir for c in ti_scan.candidates] == [ti_run]
+    assert ti_scan.candidates[0].root.family == "ti"
+    assert ti_scan.candidates[0].root.resolve_family == "ti"
+    assert ti_scan.candidates[0].root.resolve_workspace == tmp_path
+
+
 def test_enumerate_workspace_runs_malformed_launch_record_excluded_from_live(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
