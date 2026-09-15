@@ -2010,6 +2010,20 @@ def live_workspace_runs(path: Path, *, user_config: UserConfig | None = None) ->
     runtime here (the same call an explicit target already had to make)
     closes that gap for every caller of this function, not only the
     explicitly-targeted one.
+
+    The query uses :func:`_container_id_status` directly, not
+    :func:`_container_id` - the two-state collapse the latter does (a
+    matching container found, or not - folding "confirmed dead" and "the
+    query itself failed" into the same "no id" result) is wrong here. An
+    unanswerable query (missing runtime binary, unreachable daemon,
+    timeout) is not proof the container is gone, and treating it as such
+    would drop a genuinely live build out of discovery the moment the
+    runtime has a hiccup - reporting "no live builds" or "not currently
+    live" for a build that is still running. Only a confirmed ``_DEAD``
+    excludes a candidate; ``_ERROR`` fails conservative and keeps it,
+    matching how the NFS lock-ownership gate elsewhere in this module
+    refuses rather than guesses when it cannot confirm an answer.
+
     A candidate whose launch record is malformed or unreadable is excluded
     rather than raising: :func:`read_launch_record` already degrades
     gracefully for that case (see its own docstring), so it never produces
@@ -2028,7 +2042,8 @@ def live_workspace_runs(path: Path, *, user_config: UserConfig | None = None) ->
                 live.append(candidate)
         elif record.container_label is not None:
             runtime = record.runtime or detect_runtime()
-            if _container_id(runtime, record.container_label) is not None:
+            status, _cid = _container_id_status(runtime, record.container_label)
+            if status != _DEAD:
                 live.append(candidate)
     return live
 

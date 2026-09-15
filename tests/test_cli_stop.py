@@ -460,10 +460,12 @@ def test_run_option_errors_on_matched_container_run_whose_container_already_exit
     """A ``--run`` id matching a container-mode run whose container has
     already exited must report "not currently live", not silently succeed.
 
-    ``live_workspace_runs``' container-mode check only confirms a launch
-    record with a container label exists - it does not query the runtime,
-    matching bakar stop's pre-existing single-root behavior on purpose. That
-    cheap check alone would classify this run as "live" and dispatch to
+    ``live_workspace_runs``' container-mode check queries the runtime via
+    ``_container_id_status`` and only excludes a candidate on a CONFIRMED
+    ``_DEAD`` verdict - a launch record with a label alone is not enough,
+    and neither is a query failure (see the sibling stale-records test for
+    that distinction). This fixture simulates a confirmed-dead container: a
+    real query that ran and found nothing. That must dispatch to
     stop_run, whose idempotent stale-cleanup path returns True for a
     container the runtime no longer has - so --run must perform its own
     real liveness query before ever reaching stop_run.
@@ -477,7 +479,9 @@ def test_run_option_errors_on_matched_container_run_whose_container_already_exit
     )
 
     monkeypatch.setattr(stop_cmd.build_stop, "detect_runtime", lambda: "docker")
-    monkeypatch.setattr(stop_cmd.build_stop, "_container_id", lambda _runtime, _label: None)
+    monkeypatch.setattr(
+        stop_cmd.build_stop, "_container_id_status", lambda _runtime, _label: (stop_cmd.build_stop._DEAD, None)
+    )
 
     calls: list[Path] = []
     monkeypatch.setattr(
@@ -538,8 +542,10 @@ def test_stop_no_args_stale_container_records_fall_through_to_zero_live(
     records could get stuck permanently: the no-argument path saw "2+ live"
     and refused with instructions to pass --run, while --run on either one
     reported "not currently live" - no path ever reached stop_build's own
-    stale-lock cleanup. With real liveness verification, zero of these
-    records are live, so the command falls through to the existing
+    stale-lock cleanup. With real liveness verification confirming both
+    records are genuinely _DEAD (not merely unqueryable - see the
+    query-failure-fails-conservative test for that distinction), zero of
+    these records are live, so the command falls through to the existing
     single-root stop_build call and its stale-cleanup path, exactly as it
     would for a workspace with no container records at all.
     """
@@ -557,7 +563,9 @@ def test_stop_no_args_stale_container_records_fall_through_to_zero_live(
     )
 
     monkeypatch.setattr(stop_cmd.build_stop, "detect_runtime", lambda: "docker")
-    monkeypatch.setattr(stop_cmd.build_stop, "_container_id", lambda _runtime, _label: None)
+    monkeypatch.setattr(
+        stop_cmd.build_stop, "_container_id_status", lambda _runtime, _label: (stop_cmd.build_stop._DEAD, None)
+    )
 
     calls: list[Path] = []
     monkeypatch.setattr(
@@ -571,6 +579,55 @@ def test_stop_no_args_stale_container_records_fall_through_to_zero_live(
     assert result.exit_code == 0, result.output
     assert "live builds are running" not in result.output
     assert len(calls) == 1
+
+
+def test_stop_no_args_container_query_failure_keeps_candidate_live(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A container-mode run whose runtime query FAILS (daemon unreachable,
+    binary missing, timeout) must stay counted as live, not be dropped.
+
+    _container_id_status's _ERROR verdict means the query could not be
+    trusted, not that the container is confirmed gone - collapsing it to
+    "not live" would silently drop a genuinely running build out of
+    discovery the moment the runtime has a hiccup. Only a confirmed _DEAD
+    excludes a candidate; _ERROR fails conservative and keeps it, so with
+    exactly one such record present the command stops it directly instead
+    of falling through to stop_build as though nothing were running.
+    """
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    run_dir = workspace / "nxp" / "build" / "runs" / "20260617-170000-unreachable"
+    run_dir.mkdir(parents=True)
+    stop_cmd.build_stop.write_launch_record(
+        run_dir, pgid=0, mode="container", runtime="docker", container_label="bakar.run_id=unreachable"
+    )
+
+    monkeypatch.setattr(stop_cmd.build_stop, "detect_runtime", lambda: "docker")
+    monkeypatch.setattr(
+        stop_cmd.build_stop, "_container_id_status", lambda _runtime, _label: (stop_cmd.build_stop._ERROR, None)
+    )
+
+    calls: list[Path] = []
+
+    def _rec(run_dir: Path, cfg: object = None, *, force: bool = False, grace_seconds: float = 0) -> bool:
+        calls.append(run_dir)
+        return True
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_run", _rec)
+
+    def _boom(*a: object, **k: object) -> bool:
+        raise AssertionError("a run kept live by a failed query must not fall back to stop_build")
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", _boom)
+
+    result = runner.invoke(app, ["stop"])
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0] == run_dir
 
 
 def test_stop_no_args_single_live_build_stops_it_directly(

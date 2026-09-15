@@ -2808,7 +2808,7 @@ def test_workspace_wide_discovery_finds_live_builds_across_family_roots(
     # Container-mode liveness is now runtime-verified, not just "a launch
     # record with a label exists" - simulate the ti_run's container as
     # genuinely still running.
-    monkeypatch.setattr(build_stop, "_container_id", lambda _runtime, _label: "cid-ti-run")
+    monkeypatch.setattr(build_stop, "_container_id_status", lambda _runtime, _label: (build_stop._ALIVE, "cid-ti-run"))
 
     live = build_stop.live_workspace_runs(ws)
 
