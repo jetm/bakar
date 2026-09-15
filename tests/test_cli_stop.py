@@ -448,3 +448,75 @@ def test_run_option_stops_matched_live_run_directly(
     assert result.exit_code == 0, result.output
     assert len(calls) == 1
     assert calls[0][0] == run_dir
+
+
+def test_stop_no_args_single_live_build_stops_it_directly(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With exactly one live build, a bare ``stop`` calls ``stop_run`` on it
+
+    directly - no listing, no prompt. This is the common case and must be a
+    no-op change from the caller's perspective.
+    """
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    run_dir = workspace / "nxp" / "build" / "runs" / "20260617-120000"
+    stop_cmd.build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+    monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+
+    calls: list[tuple[Path, bool, float]] = []
+
+    def _rec(run_dir: Path, cfg: object = None, *, force: bool = False, grace_seconds: float = 0) -> bool:
+        calls.append((run_dir, force, grace_seconds))
+        return True
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_run", _rec)
+
+    def _boom(*a: object, **k: object) -> bool:
+        raise AssertionError("a single live build must not fall back to stop_build")
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", _boom)
+
+    result = runner.invoke(app, ["stop"])
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0][0] == run_dir
+    assert "live builds are running" not in result.output
+
+
+def test_stop_no_args_two_live_builds_refuses_and_lists(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two or more live builds with no ``--run`` refuse to stop anything.
+
+    Every live build is listed by run id, family, machine, and elapsed time,
+    and the operator is told to pass ``--run <id>`` - mirroring
+    ``stop_remote_dispatch``'s multi-unit refusal shape.
+    """
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    run_a = workspace / "nxp" / "build" / "runs" / "20260617-120000"
+    run_b = workspace / "nxp" / "build" / "runs" / "20260617-130000"
+    run_b.mkdir(parents=True)
+    stop_cmd.build_stop.write_launch_record(run_a, pgid=111, mode="host")
+    stop_cmd.build_stop.write_launch_record(run_b, pgid=222, mode="host")
+    monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 111, True))
+
+    def _boom(*a: object, **k: object) -> bool:
+        raise AssertionError("two or more live builds must not be auto-stopped")
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", _boom)
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_run", _boom)
+
+    result = runner.invoke(app, ["stop"])
+
+    assert result.exit_code != 0
+    assert "20260617-120000" in result.output
+    assert "20260617-130000" in result.output
+    assert "nxp" in result.output
+    assert "--run" in result.output

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Annotated
 
@@ -16,7 +17,9 @@ from bakar.commands._helpers import (
     _resolve_workspace,
     split_kas_yaml_arg,
 )
+from bakar.commands.monitor import _run_started_epoch
 from bakar.config import BSPSpec, ResolveRequest, resolve
+from bakar.fmt import fmt_duration
 from bakar.steps import remote_dispatch
 
 # Matches config.py's stop_grace_seconds default. A remote stop resolves no
@@ -145,6 +148,35 @@ def stop(
         if not stopped:
             raise typer.Exit(code=1)
         return
+
+    # No --run: discover what is actually live across every family root before
+    # falling back to the single-root path below. Exactly one live build is
+    # stopped directly - no listing, no prompt, matching what an operator
+    # expects from a bare `bakar stop`. Two or more is ambiguous (which one?),
+    # so nothing is signalled and every live build is listed instead, mirroring
+    # `stop_remote_dispatch`'s multi-unit refusal shape. Zero live builds falls
+    # through unchanged to the existing single-root `stop_build` call below,
+    # including its own stale-lock-cleanup path and messaging.
+    live = build_stop.live_workspace_runs(ws)
+    if len(live) == 1:
+        only = live[0]
+        grace_seconds = timeout if timeout is not None else only.cfg.stop_grace_seconds
+        stopped = build_stop.stop_run(only.run_dir, only.cfg, force=force, grace_seconds=grace_seconds)
+        if not stopped:
+            raise typer.Exit(code=1)
+        return
+    if len(live) >= 2:
+        console.print(f"[yellow]{len(live)} live builds are running in this workspace[/]:")
+        now = time.time()
+        for candidate in live:
+            start = _run_started_epoch(candidate.run_dir)
+            elapsed = fmt_duration(max(0.0, now - start)) if start is not None else "unknown"
+            console.print(
+                f"  {candidate.run_dir.name}  family={candidate.root.family}  "
+                f"machine={candidate.cfg.machine}  elapsed={elapsed}"
+            )
+        console.print("refusing to stop more than one - pick one:  bakar stop --run <id>")
+        raise typer.Exit(code=1)
 
     cfg = resolve(
         ResolveRequest(
