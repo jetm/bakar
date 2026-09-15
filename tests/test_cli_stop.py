@@ -487,6 +487,74 @@ def test_stop_no_args_single_live_build_stops_it_directly(
     assert "live builds are running" not in result.output
 
 
+def test_stop_no_args_single_live_build_honors_user_config_stop_grace_seconds(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The workspace-wide discovery path resolves each root's BuildConfig
+    with the CLI layer's user_config, exactly like the legacy single-root
+    path already does - so a configured [build] stop_grace_seconds is
+    honored by the no-argument single-live-build fast path too, not
+    silently replaced by the hardcoded 30s default."""
+    import bakar.commands._app as _state
+    from bakar.user_config import UserConfig
+
+    monkeypatch.setattr(_state, "_load_user_config_safe", lambda: UserConfig(stop_grace_seconds=300))
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    run_dir = workspace / "nxp" / "build" / "runs" / "20260617-120000"
+    stop_cmd.build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+    monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+
+    calls: list[tuple[Path, float]] = []
+
+    def _rec(run_dir: Path, cfg: object = None, *, force: bool = False, grace_seconds: float = 0) -> bool:
+        calls.append((run_dir, grace_seconds))
+        return True
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_run", _rec)
+
+    result = runner.invoke(app, ["stop"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [(run_dir, 300)]
+
+
+def test_stop_no_args_peer_held_root_surfaced_before_falling_through(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A root the NFS lock-ownership gate refuses is surfaced by name and
+    reason, even when discovery finds zero live builds elsewhere - so a
+    peer-held root's build is never indistinguishable from a workspace with
+    genuinely nothing running."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    ti_root = stop_cmd.build_stop.RunRoot(
+        bsp_root=workspace / "ti", family="ti", resolve_workspace=workspace, resolve_family="ti"
+    )
+    refusal = stop_cmd.build_stop.LockRefusal(reason="peer-held", host="pc2")
+    skipped_root = stop_cmd.build_stop.SkippedRoot(root=ti_root, refusal=refusal)
+
+    monkeypatch.setattr(
+        stop_cmd.build_stop,
+        "enumerate_workspace_runs",
+        lambda _path, **_kw: stop_cmd.build_stop.RunScan(candidates=[], skipped=[skipped_root]),
+    )
+    monkeypatch.setattr(stop_cmd.build_stop, "live_workspace_runs", lambda _path, **_kw: [])
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", lambda *_a, **_k: True)
+
+    result = runner.invoke(app, ["stop"])
+
+    # Rich may wrap the message across lines under the test runner's narrow
+    # default width, so match against whitespace-normalized output.
+    flat_output = " ".join(result.output.split())
+    assert "owned by pc2" in flat_output
+    assert str(workspace / "ti") in flat_output
+
+
 def test_stop_no_args_two_live_builds_refuses_and_lists(
     runner: _CliRunner,
     workspace: Path,

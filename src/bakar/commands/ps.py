@@ -118,10 +118,16 @@ def _container_row_info(runtime: str, candidate: build_stop.ContainerCandidate) 
     """Resolve ``(family, machine, run_dir)`` for a container-mode candidate.
 
     Recovers the container's own build-directory bind-mount host-side source
-    path (:func:`_container_mount_source`), then reads that path's run record
-    the same way any other directory's is read - through
-    :func:`bakar.build_stop.enumerate_workspace_runs`, the same discovery
-    group 9's host-mode correlation already resolves family/machine through.
+    path (:func:`_container_mount_source`) - this is the container's
+    ``KAS_WORK_DIR``, i.e. its ``bsp_root``, not a workspace above it. Reads
+    that root's run record through :func:`bakar.build_stop.enumerate_workspace_runs`
+    by appending its own literal ``build/runs`` suffix first, so the call
+    lands on the bare-runs-path branch that resolves a root BY NAME (nxp/ti
+    vs generic/bbsetup) instead of the workspace-scan branch, which would
+    treat the bsp_root itself as a workspace to search nxp/ti/build-*
+    subdirectories under and misresolve every nxp/ti container build as
+    generic/bbsetup - the same family-resolution bug host-mode discovery had
+    before group 9's bare-runs-path branch learned to check the root's name.
     Falls back to ``(_UNKNOWN, _UNKNOWN, None)`` whenever the mount path
     cannot be recovered, or the recovered path does not yield a readable run
     record for this candidate's run id - never raises.
@@ -130,7 +136,7 @@ def _container_row_info(runtime: str, candidate: build_stop.ContainerCandidate) 
     if mount_source is None:
         return _UNKNOWN, _UNKNOWN, None
     try:
-        scan = build_stop.enumerate_workspace_runs(Path(mount_source))
+        scan = build_stop.enumerate_workspace_runs(Path(mount_source) / "build" / "runs")
     except Exception:  # noqa: BLE001 - a broken/unreadable mount path must not fail the row
         return _UNKNOWN, _UNKNOWN, None
     for run_candidate in scan.candidates:

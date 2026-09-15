@@ -13,6 +13,7 @@ Mirrors the procfs/PID-liveness pattern in :mod:`bakar.hashserv`: liveness via
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import signal
@@ -47,6 +48,9 @@ if TYPE_CHECKING:
 
     from bakar.config import BuildConfig
     from bakar.observability import RunLogger
+    from bakar.user_config import UserConfig
+
+_logger = logging.getLogger(__name__)
 
 _PID_FILENAME = "build.pid"
 _META_FILENAME = "build.meta.json"
@@ -350,8 +354,15 @@ def discover_running_containers(runtime: str) -> list[ContainerCandidate]:
             raise RuntimeError(f"malformed {runtime} ps output line: {line!r}") from exc
         container_id = container_id.strip()
         run_id = run_id.strip()
-        if container_id and run_id:
-            candidates.append(ContainerCandidate(run_id=run_id, container_id=container_id))
+        # A tab with a blank field on either side (e.g. an empty container id
+        # or run id label) is malformed the same way a missing tab is - both
+        # mean this line cannot be turned into a candidate - so it takes the
+        # same RuntimeError path rather than being silently dropped by a
+        # truthiness check, which previously made the two cases look
+        # different when they are the same failure.
+        if not container_id or not run_id:
+            raise RuntimeError(f"malformed {runtime} ps output line: {line!r}")
+        candidates.append(ContainerCandidate(run_id=run_id, container_id=container_id))
     return candidates
 
 
@@ -1043,7 +1054,15 @@ def _discover_host_cookers(
     """
     discovered: dict[Path, set[int]] = {}
     for pid in pids_reader():
-        cmdline = cmdline_reader(pid)
+        # Guards the call site itself rather than trusting the documented
+        # "never raises" contract alone: the default `_proc_cmdline` already
+        # honors it, but `cmdline_reader` is an injectable parameter with no
+        # type-level enforcement, and one PID's unreadable cmdline must not
+        # abort the whole host-wide scan.
+        try:
+            cmdline = cmdline_reader(pid)
+        except OSError:
+            continue
         if not cmdline:
             continue
         for token in cmdline.split():
@@ -1878,7 +1897,7 @@ def _workspace_roots(workspace: Path) -> list[RunRoot]:
     return roots
 
 
-def enumerate_workspace_runs(path: Path) -> RunScan:
+def enumerate_workspace_runs(path: Path, *, user_config: UserConfig | None = None) -> RunScan:
     """Enumerate every candidate run directory across accessible roots.
 
     ``path`` is either a full workspace (scanned for the four
@@ -1891,14 +1910,20 @@ def enumerate_workspace_runs(path: Path) -> RunScan:
     ``build-*`` subdirectories.
 
     For each candidate root, :func:`bakar.config.resolve` is called directly
-    - only the workspace path is a required input; every other input,
-    including the CLI-layer user-config object, is left at its default for
-    this discovery path. A root whose family directory does not exist on
-    disk contributes nothing and is never resolved. A root whose resolution
-    raises (e.g. a malformed ``.bakar.toml``) is excluded from the result
-    entirely - the same isolation a malformed launch record gets in
-    :func:`live_workspace_runs` below - so one broken root cannot crash the
-    whole scan.
+    - only the workspace path is a required input; ``workspace_config`` (the
+    per-workspace ``.bakar.toml`` tier) is auto-loaded by ``resolve()``
+    itself from each root's own ``resolve_workspace``, with no action needed
+    here. ``user_config`` (the ``~/.config/bakar/config.toml`` tier) is NOT
+    auto-loaded - pass it explicitly via this function's own ``user_config``
+    parameter when the caller has one (e.g. from the CLI layer's
+    ``_state._USER_CONFIG``), or every root resolves as if that tier were
+    empty, silently diverging from a caller that resolves the same
+    workspace with it supplied. A root whose family directory does not exist
+    on disk contributes nothing and is never resolved. A root whose
+    resolution raises (e.g. a malformed ``.bakar.toml``) is excluded from
+    the result entirely - the same isolation a malformed launch record gets
+    in :func:`live_workspace_runs` below - so one broken root cannot crash
+    the whole scan.
 
     The resolved config gates two things: the NFS lock-ownership check runs
     BEFORE anything under the root is read - a root the gate refuses is
@@ -1938,8 +1963,19 @@ def enumerate_workspace_runs(path: Path) -> RunScan:
         if not root.bsp_root.is_dir():
             continue
         try:
-            cfg = resolve(ResolveRequest(workspace=root.resolve_workspace, bsp_family=root.resolve_family))
-        except Exception:  # noqa: BLE001 - one broken root's config must not crash the scan
+            cfg = resolve(
+                ResolveRequest(
+                    workspace=root.resolve_workspace, bsp_family=root.resolve_family, user_config=user_config
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - one broken root's config must not crash the scan
+            # Not recorded in `skipped`: that list is reserved for the NFS
+            # lock-ownership gate's own refusal reasons (SkippedRoot.refusal
+            # is typed as LockRefusal), and a config-resolution failure - a
+            # malformed .bakar.toml, for instance - is a different failure
+            # class. Logged instead so the drop is traceable rather than
+            # fully silent.
+            _logger.warning("skipping root %s: config resolution failed: %s", root.bsp_root, exc)
             continue
         refusal = lock_mutation_guard(cfg)
         if refusal is not None:
@@ -1954,7 +1990,7 @@ def enumerate_workspace_runs(path: Path) -> RunScan:
     return RunScan(candidates=candidates, skipped=skipped)
 
 
-def live_workspace_runs(path: Path) -> list[RunCandidate]:
+def live_workspace_runs(path: Path, *, user_config: UserConfig | None = None) -> list[RunCandidate]:
     """Live-only filter over :func:`enumerate_workspace_runs`'s candidates.
 
     Host mode: the launch record parses as ``mode="host"`` and
@@ -1967,9 +2003,13 @@ def live_workspace_runs(path: Path) -> list[RunCandidate]:
     rather than raising: :func:`read_launch_record` already degrades
     gracefully for that case (see its own docstring), so it never produces
     an entry this loop would need to special-case.
+
+    ``user_config`` forwards verbatim to :func:`enumerate_workspace_runs` -
+    see its own docstring for why this must be passed explicitly rather than
+    relying on an auto-load.
     """
     live: list[RunCandidate] = []
-    for candidate in enumerate_workspace_runs(path).candidates:
+    for candidate in enumerate_workspace_runs(path, user_config=user_config).candidates:
         record = read_launch_record(candidate.run_dir)
         if record.mode == "host":
             alive, _pgid, cmdline_ok = is_build_running(candidate.run_dir)

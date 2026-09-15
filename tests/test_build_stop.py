@@ -1639,6 +1639,20 @@ def test_container_discovery_malformed_line_raises(monkeypatch: pytest.MonkeyPat
         build_stop.discover_running_containers("docker")
 
 
+def test_container_discovery_blank_field_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A line WITH a tab but a blank field on either side is malformed the
+    same way a missing tab is - it must not be silently dropped by a
+    truthiness check while a no-tab line raises."""
+    monkeypatch.setattr(
+        build_stop.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout="cid-only\t\n", stderr=""),
+    )
+
+    with pytest.raises(RuntimeError, match="malformed"):
+        build_stop.discover_running_containers("docker")
+
+
 # --- dedup_container_candidates (group 12: container-mode within-source dedup) --
 
 
@@ -2038,7 +2052,8 @@ def test_discover_host_cookers_multiple_builds_on_host(tmp_path: Path) -> None:
 
 
 def test_discover_host_cookers_skips_unreadable_cmdline(tmp_path: Path) -> None:
-    """A PID whose cmdline read raised (permission denied) is skipped, not raised on."""
+    """A PID whose cmdline read returns '' (the default `_proc_cmdline`'s
+    documented OSError -> '' contract) is skipped, not raised on."""
     topdir = tmp_path / "build"
     lock = topdir / "bitbake.lock"
     procs = {
@@ -2053,6 +2068,26 @@ def test_discover_host_cookers_skips_unreadable_cmdline(tmp_path: Path) -> None:
         return cmdline(pid)
 
     discovered = build_stop._discover_host_cookers(pids_reader=pids, cmdline_reader=_cmdline_permission_denied)
+
+    assert discovered == {topdir: frozenset({4242})}
+
+
+def test_discover_host_cookers_skips_pid_whose_cmdline_reader_raises(tmp_path: Path) -> None:
+    """A `cmdline_reader` that actually RAISES PermissionError for one PID -
+    not just one that returns '' - is guarded at the call site: that PID is
+    skipped and the scan still finds every other cooker, rather than the
+    whole host-wide walk aborting on one unreadable process."""
+    topdir = tmp_path / "build"
+    lock = topdir / "bitbake.lock"
+    procs = {4242: (1, f"bitbake-server {lock}")}
+    pids, cmdline, _ppid, _pgid = _fake_proc(procs)
+
+    def _cmdline_raises(pid: int) -> str:
+        if pid == 5000:
+            raise PermissionError("denied")
+        return cmdline(pid)
+
+    discovered = build_stop._discover_host_cookers(pids_reader=lambda: [*pids(), 5000], cmdline_reader=_cmdline_raises)
 
     assert discovered == {topdir: frozenset({4242})}
 
@@ -2910,9 +2945,13 @@ def test_enumerate_workspace_runs_gate_refusal_reports_skipped_root_not_empty(
 def test_enumerate_workspace_runs_resolve_failure_excludes_root_without_crashing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A root whose config resolution raises is excluded from the scan
-    entirely rather than crashing the whole workspace-wide discovery."""
+    entirely rather than crashing the whole workspace-wide discovery, and
+    the drop is logged rather than fully silent - it is not recorded in
+    ``scan.skipped``, which is reserved for the lock-ownership gate's own
+    refusal reasons, a different failure class."""
     monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
     ws = tmp_path
     nxp_run = _make_run_dir(ws / "nxp", "20260618-190000-888")
@@ -2929,10 +2968,12 @@ def test_enumerate_workspace_runs_resolve_failure_excludes_root_without_crashing
 
     monkeypatch.setattr(build_stop, "resolve", flaky_resolve)
 
-    scan = build_stop.enumerate_workspace_runs(ws)
+    with caplog.at_level("WARNING", logger="bakar.build_stop"):
+        scan = build_stop.enumerate_workspace_runs(ws)
 
     assert [c.run_dir for c in scan.candidates] == [nxp_run]
     assert scan.skipped == []
+    assert any(str(ws / "ti") in record.message and "boom" in record.message for record in caplog.records)
 
 
 def test_live_workspace_runs_timing_20_candidates_across_4_roots(

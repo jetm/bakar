@@ -151,6 +151,50 @@ def test_ps_container_row_falls_back_to_unknown_when_run_record_unreadable(
     assert "machine=unknown" in result.output
 
 
+def test_ps_container_row_resolves_nxp_family_through_real_mount_seam(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A container-mode row whose bind-mount source is an nxp/ti bsp_root
+    resolves its real family and machine, not the generic/bbsetup
+    placeholder a workspace-scan of that same root would produce.
+
+    Only `_container_mount_source` is mocked here - the rest of the row's
+    resolution goes through the real `enumerate_workspace_runs` seam
+    `_container_row_info` actually calls, so a regression that reintroduces
+    the workspace-vs-bsp_root confusion this test guards against is caught
+    through the same code path `bakar ps` exercises in production, not
+    around it.
+    """
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    workspace = tmp_path / "ws"
+    nxp_run_id = "20260618-170000-nxp"
+    run_dir = workspace / "nxp" / "build" / "runs" / nxp_run_id
+    run_dir.mkdir(parents=True)
+
+    candidate = ContainerCandidate(run_id=nxp_run_id, container_id="nxp-container")
+
+    monkeypatch.setattr(ps_cmd.build_stop, "_discover_host_cookers", dict)
+    monkeypatch.setattr(ps_cmd.build_stop, "correlate_host_discoveries", lambda _discovered: [])
+    monkeypatch.setattr(ps_cmd.build_stop, "detect_runtime", lambda: "docker")
+    monkeypatch.setattr(ps_cmd.build_stop, "discover_running_containers_or_warn", lambda _runtime: ([candidate], None))
+    # This is what KAS_WORK_DIR bind-mounts for an nxp build: the nxp
+    # bsp_root itself, not the workspace above it.
+    monkeypatch.setattr(ps_cmd, "_container_mount_source", lambda _runtime, _cid: str(workspace / "nxp"))
+
+    result = runner.invoke(app, ["ps"])
+
+    assert result.exit_code == 0, result.output
+    assert "family=nxp" in result.output
+    assert "family=unknown" not in result.output
+    assert "family=generic" not in result.output
+
+    result_json = runner.invoke(app, ["ps", "--json"])
+    payload = json.loads(result_json.output)
+    assert len(payload) == 1
+    assert payload[0]["family"] == "nxp"
+
+
 def test_ps_json_empty_result_emits_empty_array(runner: _CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
     """No live builds anywhere with ``--json`` emits exactly ``[]``, not a message."""
     _no_discovery(monkeypatch)
@@ -235,6 +279,13 @@ def test_ps_end_to_end_fixture_scenarios(runner: _CliRunner, tmp_path: Path, mon
     output modes.
     """
 
+    # Captured before `_no_discovery` stubs it, so the "1 build" section
+    # below can restore the real function - `monkeypatch.setattr` calls
+    # accumulate across one test rather than reverting mid-test, so without
+    # this restoration the "0 builds" stub stays active for every later
+    # section too.
+    real_correlate_host_discoveries = ps_cmd.build_stop.correlate_host_discoveries
+
     # --- 0 builds ----------------------------------------------------
     _no_discovery(monkeypatch)
 
@@ -247,19 +298,23 @@ def test_ps_end_to_end_fixture_scenarios(runner: _CliRunner, tmp_path: Path, mon
     assert json.loads(result_json.output) == []
 
     # --- 1 build (host mode) ------------------------------------------
+    monkeypatch.setattr(ps_cmd.build_stop, "correlate_host_discoveries", real_correlate_host_discoveries)
+    # Only `_discover_host_cookers` is mocked here (the real /proc walk) -
+    # `correlate_host_discoveries` itself runs for real, exercising the same
+    # enumerate_workspace_runs/live_workspace_runs/resolve() seam production
+    # traffic goes through, rather than being bypassed with a pre-built
+    # RunCandidate the way this fixture used to be. This is what let the
+    # host-mode family-resolution bug this change fixed earlier ship
+    # unnoticed - every existing "integration" fixture replaced the exact
+    # function that bug lived in.
     run_dir = tmp_path / "solo" / "nxp" / "build" / "runs" / "20260701-090000-solo"
     run_dir.mkdir(parents=True)
-    root = RunRoot(
-        bsp_root=tmp_path / "solo" / "nxp",
-        family="nxp",
-        resolve_workspace=tmp_path / "solo",
-        resolve_family="nxp",
-    )
-    cfg = make_build_config(workspace=tmp_path / "solo" / "nxp", machine="imx8mp-var-dart")
-    solo_candidate = RunCandidate(run_dir=run_dir, root=root, cfg=cfg)
+    ps_cmd.build_stop.write_launch_record(run_dir, pgid=1, mode="host")
+    solo_topdir = run_dir.parent.parent  # tmp_path/solo/nxp/build
 
-    monkeypatch.setattr(ps_cmd.build_stop, "_discover_host_cookers", lambda: {"fake": frozenset()})
-    monkeypatch.setattr(ps_cmd.build_stop, "correlate_host_discoveries", lambda _discovered: [solo_candidate])
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    monkeypatch.setattr(ps_cmd.build_stop, "is_build_running", lambda _rd: (True, 1, True))
+    monkeypatch.setattr(ps_cmd.build_stop, "_discover_host_cookers", lambda: {solo_topdir: frozenset({1})})
     monkeypatch.setattr(ps_cmd.build_stop, "detect_runtime", lambda: "docker")
     monkeypatch.setattr(ps_cmd.build_stop, "discover_running_containers_or_warn", lambda _runtime: ([], None))
 
@@ -396,18 +451,25 @@ def test_ps_end_to_end_fixture_scenarios(runner: _CliRunner, tmp_path: Path, mon
 def test_ps_never_modifies_discovered_build_state(
     runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`bakar ps` is read-only: running it twice touches neither the
-    processes/containers it discovers nor their run directories.
+    """`bakar ps` itself is read-only: running it twice calls every
+    discovery/runtime seam with identical arguments and touches neither the
+    run directories those seams report nor any destructive `build_stop`
+    function.
 
     With one host-mode and one container-mode build present: every
     discovery/runtime call `bakar ps` makes is wrapped in a call-recording
-    mock, and both invocations produce identical call args/counts (proving
-    the underlying process/container state was read, never mutated, between
-    them); no destructive `build_stop` function (``stop_run``, ``stop_build``,
-    ``escalate_process_tree``, ``_kill_pid``, ``_killpg``, ``remove_pid``,
-    ``_stop_container``, ``_escalate_container``) is ever called; and both
-    run directories' file contents and mtimes are byte-identical before and
-    after both invocations.
+    mock, and both invocations produce identical call args/counts - proving
+    `bakar ps`'s own code path queries each seam the same way both times and
+    never passes different arguments a second call (which would indicate it
+    is reacting to, rather than merely observing, some state). This does NOT
+    independently prove the mocked functions (`is_build_running`, the
+    container-runtime `inspect` call, etc.) are themselves read-only in their
+    real implementations - that is covered by their own dedicated tests in
+    `tests/test_build_stop.py`. No destructive `build_stop` function
+    (``stop_run``, ``stop_build``, ``escalate_process_tree``, ``_kill_pid``,
+    ``_killpg``, ``remove_pid``, ``_stop_container``, ``_escalate_container``)
+    is ever called; and both run directories' file contents and mtimes are
+    byte-identical before and after both invocations.
     """
     host_run_id = "20260701-140000-host"
     host_run_dir = tmp_path / "host-ws" / "nxp" / "build" / "runs" / host_run_id

@@ -50,12 +50,12 @@ def _stop_matched_run(ws: Path, run_id: str, *, force: bool, timeout: float | No
     # the unfiltered set is what lets "no match anywhere" and "match but not
     # live" be told apart. A live-only lookup would report both cases
     # identically as "no match".
-    scan = build_stop.enumerate_workspace_runs(ws)
+    scan = build_stop.enumerate_workspace_runs(ws, user_config=_state._USER_CONFIG)
     match = next((c for c in scan.candidates if c.run_dir.name == run_id), None)
     if match is None:
         console.print(f"[red]no run matching {run_id!r} found in this workspace[/].")
         raise typer.Exit(code=1)
-    live_run_dirs = {c.run_dir for c in build_stop.live_workspace_runs(ws)}
+    live_run_dirs = {c.run_dir for c in build_stop.live_workspace_runs(ws, user_config=_state._USER_CONFIG)}
     if match.run_dir not in live_run_dirs:
         console.print(f"[red]run {run_id} is not currently live[/].")
         raise typer.Exit(code=1)
@@ -179,7 +179,26 @@ def stop(
     # refusal shape. Zero live builds falls through unchanged to the existing
     # single-root `stop_build` call below, including its own stale-lock-cleanup
     # path and messaging.
-    live = build_stop.live_workspace_runs(ws)
+    #
+    # A root the NFS lock-ownership gate refuses is excluded from `live`
+    # entirely, so surface it explicitly here - otherwise a peer-held root
+    # hiding a real build is indistinguishable from a root with genuinely
+    # nothing running, in every branch below (zero, one, or two-or-more live).
+    skipped = build_stop.enumerate_workspace_runs(ws, user_config=_state._USER_CONFIG).skipped
+    for skipped_root in skipped:
+        refusal = skipped_root.refusal
+        if refusal.reason == "peer-held":
+            host = refusal.host if refusal.host else "another host"
+            console.print(
+                f"[yellow]{skipped_root.root.bsp_root} is owned by {host}; "
+                "run `bakar stop` there to check for a live build[/]"
+            )
+        else:
+            console.print(
+                f"[yellow]cannot confirm ownership of {skipped_root.root.bsp_root} "
+                f"({refusal.reason}); it was not checked for a live build[/]"
+            )
+    live = build_stop.live_workspace_runs(ws, user_config=_state._USER_CONFIG)
     if len(live) == 1:
         only = live[0]
         grace_seconds = timeout if timeout is not None else only.cfg.stop_grace_seconds
