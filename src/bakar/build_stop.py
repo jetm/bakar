@@ -1847,6 +1847,28 @@ def live_workspace_runs(path: Path) -> list[RunCandidate]:
     return live
 
 
+def correlate_host_discoveries(discovered: dict[Path, frozenset[int]]) -> list[RunCandidate]:
+    """Correlate group 7's ``/proc``-walk discoveries to live run directories.
+
+    ``discovered`` is :func:`_discover_host_cookers`'s return value: a topdir
+    (the directory containing ``runs/``) mapped to the cooker PID(s) matched
+    there. For each topdir, this scans ``topdir / "runs"`` via
+    :func:`live_workspace_runs` - the same per-run enumeration/filter group 2
+    already exposes for a bare runs-directory path, not a second reader of
+    the launch-record format.
+
+    A topdir whose ``runs/`` has no live candidate underneath it - a
+    launch-record write race, or a cooker started outside the normal build
+    entry point - is silently dropped: :func:`live_workspace_runs` already
+    returns ``[]`` for that case, so no candidate is reported and none is
+    fabricated.
+    """
+    candidates: list[RunCandidate] = []
+    for topdir in discovered:
+        candidates.extend(live_workspace_runs(topdir / "runs"))
+    return candidates
+
+
 def _interrupted_step(run_dir: Path) -> str | None:
     """Return the name of an interrupted step from ``run_dir/events.jsonl``.
 

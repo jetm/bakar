@@ -1803,6 +1803,71 @@ def test_discover_host_cookers_empty_when_no_match(tmp_path: Path) -> None:
     assert discovered == {}
 
 
+# --- correlate_host_discoveries: group 7 discoveries x group 2 enumeration -
+
+
+def test_correlate_host_discoveries_matches_live_run_under_topdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A discovered topdir with a live cooker resolves to its live run candidate
+    via live_workspace_runs(topdir / "runs") - not a second launch-record reader."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    run_dir = _make_run_dir(tmp_path / "nxp", "20260618-120000-111")
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+    topdir = run_dir.parent.parent  # tmp_path/nxp/build
+
+    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+
+    candidates = build_stop.correlate_host_discoveries({topdir: frozenset({4242})})
+
+    assert [c.run_dir for c in candidates] == [run_dir]
+
+
+def test_correlate_host_discoveries_drops_topdir_with_no_matching_live_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A topdir with a live cooker but no run directory underneath it (launch-record
+    write race, or a cooker started outside bakar's own entry point) is dropped
+    silently - not reported with a missing or fabricated run id."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    topdir = tmp_path / "orphan" / "build"  # no runs/ subdirectory exists at all
+
+    candidates = build_stop.correlate_host_discoveries({topdir: frozenset({7777})})
+
+    assert candidates == []
+
+
+def test_correlate_host_discoveries_multiple_topdirs_each_correlate_independently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two discovered topdirs on the same host each resolve to their own live run,
+    and a dead run under one of them never leaks into the result."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    nxp_run = _make_run_dir(tmp_path / "nxp", "20260618-120000-111")
+    build_stop.write_launch_record(nxp_run, pgid=4242, mode="host")
+    nxp_dead_run = _make_run_dir(tmp_path / "nxp", "20260618-100000-000")
+    build_stop.write_launch_record(nxp_dead_run, pgid=9999, mode="host")
+
+    ti_run = _make_run_dir(tmp_path / "ti", "20260618-130000-222")
+    build_stop.write_launch_record(ti_run, pgid=5252, mode="host")
+
+    def fake_is_build_running(run_dir: Path) -> tuple[bool, int | None, bool]:
+        if run_dir in (nxp_run, ti_run):
+            return (True, 1, True)
+        return (False, None, False)
+
+    monkeypatch.setattr(build_stop, "is_build_running", fake_is_build_running)
+
+    discovered = {
+        nxp_run.parent.parent: frozenset({4242}),
+        ti_run.parent.parent: frozenset({5252}),
+    }
+    candidates = build_stop.correlate_host_discoveries(discovered)
+
+    assert {c.run_dir for c in candidates} == {nxp_run, ti_run}
+
+
 # --- _killpg guard ---------------------------------------------------------
 
 
