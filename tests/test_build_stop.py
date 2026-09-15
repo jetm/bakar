@@ -1510,6 +1510,135 @@ def test_container_liveness_oserror_is_error(monkeypatch: pytest.MonkeyPatch) ->
     assert build_stop._container_liveness("docker", "cid") == build_stop._ERROR
 
 
+# --- discover_running_containers (group 10: container-mode discovery) ------
+
+
+def test_container_discovery_excludes_stopped_containers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only currently-running containers are queried and reported - no ``-a``."""
+    captured_args: list[list[str]] = []
+
+    def _fake_run(args: list[str], **_kwargs: object) -> SimpleNamespace:
+        captured_args.append(args)
+        return SimpleNamespace(
+            returncode=0,
+            stdout="cid-live\t20260101-000000\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(build_stop.subprocess, "run", _fake_run)
+
+    result = build_stop.discover_running_containers("docker")
+
+    assert result == [build_stop.ContainerCandidate(run_id="20260101-000000", container_id="cid-live")]
+    assert len(captured_args) == 1, f"expected exactly one query, got {len(captured_args)}"
+    args = captured_args[0]
+    assert args[0] == "docker", "must query only the single selected runtime"
+    assert "-a" not in args, "a running-only query must never pass -a (all containers)"
+    assert "--all" not in args, "a running-only query must never pass --all"
+    assert any(a.startswith("label=bakar.run_id") for a in args), (
+        "must filter on the bare bakar.run_id label KEY, not one specific run id"
+    )
+
+
+def test_container_discovery_never_queries_a_second_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A build running under the non-selected runtime is absent - no second query is made."""
+    captured_args: list[list[str]] = []
+
+    def _fake_run(args: list[str], **_kwargs: object) -> SimpleNamespace:
+        captured_args.append(args)
+        # The selected runtime ("docker") has nothing running; a build is only
+        # visible under "podman", which discovery must never query to "find" it.
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(build_stop.subprocess, "run", _fake_run)
+
+    result = build_stop.discover_running_containers("docker")
+
+    assert result == []
+    assert len(captured_args) == 1, f"expected exactly one query, got {len(captured_args)}"
+    runtimes_queried = {args[0] for args in captured_args}
+    assert runtimes_queried == {"docker"}, f"queried more than the selected runtime: {runtimes_queried}"
+
+
+def test_container_discovery_reports_multiple_run_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Multiple distinct running containers each produce their own candidate."""
+    monkeypatch.setattr(
+        build_stop.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=0,
+            stdout="cid-a\t20260101-000000\ncid-b\t20260102-000000\n",
+            stderr="",
+        ),
+    )
+
+    result = build_stop.discover_running_containers("podman")
+
+    assert result == [
+        build_stop.ContainerCandidate(run_id="20260101-000000", container_id="cid-a"),
+        build_stop.ContainerCandidate(run_id="20260102-000000", container_id="cid-b"),
+    ]
+
+
+def test_container_discovery_empty_output_is_empty_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No running containers carrying the label is a clean empty result, not an error."""
+    monkeypatch.setattr(
+        build_stop.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    assert build_stop.discover_running_containers("docker") == []
+
+
+def test_container_discovery_nonzero_exit_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-zero exit from the runtime query raises rather than being swallowed here."""
+    monkeypatch.setattr(
+        build_stop.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="daemon unreachable"),
+    )
+
+    with pytest.raises(RuntimeError, match="daemon unreachable"):
+        build_stop.discover_running_containers("docker")
+
+
+def test_container_discovery_oserror_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing runtime binary (OSError) raises rather than being swallowed here."""
+
+    def _boom(*_a: object, **_k: object) -> SimpleNamespace:
+        raise OSError("no such file")
+
+    monkeypatch.setattr(build_stop.subprocess, "run", _boom)
+
+    with pytest.raises(RuntimeError):
+        build_stop.discover_running_containers("docker")
+
+
+def test_container_discovery_timeout_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A timed-out query raises rather than hanging or being swallowed here."""
+
+    def _timeout(*_a: object, **_k: object) -> SimpleNamespace:
+        raise subprocess.TimeoutExpired(cmd="docker", timeout=build_stop._RUNTIME_QUERY_TIMEOUT_S)
+
+    monkeypatch.setattr(build_stop.subprocess, "run", _timeout)
+
+    with pytest.raises(RuntimeError):
+        build_stop.discover_running_containers("docker")
+
+
+def test_container_discovery_malformed_line_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A line with no tab separator (malformed output) raises rather than being silently dropped."""
+    monkeypatch.setattr(
+        build_stop.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout="cid-only-no-run-id\n", stderr=""),
+    )
+
+    with pytest.raises(RuntimeError, match="malformed"):
+        build_stop.discover_running_containers("docker")
+
+
 # --- _clean_stale_bitbake_files --------------------------------------------
 
 

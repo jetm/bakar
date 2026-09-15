@@ -286,6 +286,75 @@ def _container_id(runtime: str, container_label: str) -> str | None:
     return cid
 
 
+@dataclass(frozen=True)
+class ContainerCandidate:
+    """One running container discovered by :func:`discover_running_containers`.
+
+    Group 10 only: the run id and container id as reported by the selected
+    runtime, with no attempt yet at collapsing more than one container per
+    run id (group 12's within-source dedup) or at resolving family/machine
+    via mount inspection (group 15). Kept deliberately thin so those later
+    groups can consume a list of these without this function knowing about
+    either concern.
+    """
+
+    run_id: str
+    container_id: str
+
+
+def discover_running_containers(runtime: str) -> list[ContainerCandidate]:
+    """Query ``runtime`` for every running container carrying a ``bakar.run_id`` label.
+
+    Host-wide discovery for the listing command: unlike
+    :func:`_container_id_status`, which asks "is THIS run id's container
+    alive", this asks "which run ids have a live container at all" - so the
+    filter is on the bare label KEY (``bakar.run_id``), not one specific
+    ``label=bakar.run_id=<value>``. This is discovery, not confirmation: the
+    caller does not know which run ids exist in advance.
+
+    Queries only the single runtime ``detect_runtime`` selected - never a
+    second runtime "just in case" a build happens to be running under the
+    other one - and only currently-running containers (no ``-a``), so a
+    stopped or exited container that still carries the label is correctly
+    excluded rather than reported as live.
+
+    Raises ``RuntimeError`` when the query itself could not be trusted (the
+    runtime binary is absent, the daemon is unreachable, it timed out, or it
+    exited non-zero) or its output could not be parsed. This function has no
+    fallback of its own; group 11 wraps this call and degrades gracefully to
+    host-mode-only results.
+    """
+    label_filter = f"label={_RUN_ID_LABEL_KEY}"
+    format_template = '{{.ID}}\t{{.Label "' + _RUN_ID_LABEL_KEY + '"}}'
+    try:
+        result = subprocess.run(
+            [runtime, "ps", "--filter", label_filter, "--format", format_template],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_RUNTIME_QUERY_TIMEOUT_S,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"{runtime} ps query failed or timed out: {exc}") from exc
+    if result.returncode != 0:
+        raise RuntimeError(f"{runtime} ps exited {result.returncode}: {result.stderr.strip()}")
+
+    candidates: list[ContainerCandidate] = []
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            container_id, run_id = line.split("\t", 1)
+        except ValueError as exc:
+            raise RuntimeError(f"malformed {runtime} ps output line: {line!r}") from exc
+        container_id = container_id.strip()
+        run_id = run_id.strip()
+        if container_id and run_id:
+            candidates.append(ContainerCandidate(run_id=run_id, container_id=container_id))
+    return candidates
+
+
 def _run_runtime(args: list[str]) -> None:
     """Run a runtime subcommand, capturing output and swallowing all errors.
 
