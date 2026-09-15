@@ -18,6 +18,7 @@ bakar stop [OPTIONS] [KAS_YAML]
 
 | Flag | Description |
 |------|-------------|
+| `--run` | Stop the run whose run directory name exactly matches this id, resolved against every family root in the workspace rather than only the one root/kas YAML would resolve. Find run ids with [`bakar ps`](ps.md) |
 | `--on` | Stop the detached build dispatched to this host with `bakar build --on <host>`; resolves nothing locally, so it works from any directory |
 | `--all` | With `--on`, stop every detached build on the host instead of refusing when more than one is running |
 | `--force` | Skip the SIGINT grace period and escalate straight to the scoped SIGTERM -> SIGKILL reaper |
@@ -45,7 +46,69 @@ bakar stop --timeout 10
 
 # Stop a build dispatched with `bakar build --on pc2`
 bakar stop --on pc2
+
+# Two or more builds live in this workspace: stop one by run id
+bakar ps
+bakar stop --run 20260701-090000-aaa
 ```
+
+## Multiple live builds in one workspace
+
+A workspace can have more than one build running at once - a host-mode build
+and a container-mode build started separately, or two family roots (NXP and
+a BYO kas YAML) both dispatched. `bakar stop` with no `--run` has to decide
+which one you mean:
+
+- **Exactly one** live build: stopped directly, no listing, no prompt - the
+  same behavior as before this feature existed.
+- **Zero** live builds: falls through to the existing single-root
+  `stop_build` path unchanged, including its stale-lock cleanup and
+  messaging.
+- **Two or more** live builds: resolved by `--run <id>`, or by the
+  refuse-and-list / interactive pick below.
+
+### `--run <id>`
+
+Pass `--run` with a run directory name (as reported by `bakar ps` or by the
+listing below) to stop that specific run, regardless of how many others are
+live. It is resolved against every family root in the workspace, not just
+the one root the positional `KAS_YAML` / `--manifest` would resolve to - so
+it works even when the live build you want to stop was launched from a
+different kas YAML than the one you'd otherwise pass. Exits 1 with `no run
+matching '<id>' found in this workspace` when nothing matches, or with `run
+<id> is not currently live` when the id matches a finished/stale run rather
+than a live one.
+
+### Refuse-and-list (non-interactive)
+
+When two or more builds are live and stdin is not a TTY (a script, CI, a
+redirected pipe) and `--run` was not given, `bakar stop` refuses to guess.
+It lists every live run - run id, family, machine, elapsed time - and exits
+1 with a pointer at `bakar stop --run <id>`:
+
+```text
+2 live builds are running in this workspace:
+  20260701-090000-aaa  family=nxp  machine=imx8mp-var-dart  elapsed=12m30s
+  20260701-110000-bbb  family=ti   machine=am62x-sk          elapsed=3m10s
+refusing to stop more than one - pick one:  bakar stop --run <id>
+```
+
+### Interactive pick
+
+When two or more builds are live and stdin **is** a TTY and `--run` was not
+given, `bakar stop` prints the same listing with a number per row and
+prompts for a choice instead of refusing:
+
+```text
+2 live builds are running in this workspace:
+  [1] 20260701-090000-aaa  family=nxp  machine=imx8mp-var-dart  elapsed=12m30s
+  [2] 20260701-110000-bbb  family=ti   machine=am62x-sk          elapsed=3m10s
+Stop which build [1-2]:
+```
+
+An out-of-range choice exits 1 without stopping anything. The choice is
+translated to a run id and dispatched through the exact same stop path
+`--run` uses - there is no separate interactive stopping logic.
 
 ## Stopping a remote build (`--on <host>`)
 
@@ -214,6 +277,7 @@ recipe fails to rebuild with non-self-healing errors, run
 
 ## See also
 
+- [ps.md](ps.md) - list every live build on this host (run id, mode, family, machine) to find the id for `--run`
 - [build.md](build.md) - the build pipeline whose run writes `build.pid`
 - [hashserv.md](hashserv.md) - the persistent daemon `bakar stop` deliberately leaves running
 - [triage.md](triage.md) - post-mortem a build that failed or was interrupted

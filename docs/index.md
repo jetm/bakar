@@ -14,6 +14,7 @@
 | `rebuild` | [bitbake.md](bitbake.md) | Rebuild one recipe from scratch (`cleansstate` then build) |
 | `shell` | [shell.md](shell.md) | Interactive kas shell or one-shot command |
 | `run` | [run.md](run.md) | Boot avocado-os image in QEMU (meta-avocado only) |
+| `ps` | [ps.md](ps.md) | List every live `bakar` build on this host (host + container mode), plain text or `--json` |
 | `stop` | [stop.md](stop.md) | Gracefully halt a running build (SIGINT, then escalate) |
 | `clean` | [clean.md](clean.md) | Remove the build directory |
 | `clean-cache` | [clean-cache.md](clean-cache.md) | Prune stale sstate and ccache entries by age |
@@ -64,6 +65,7 @@
 - Only want to regenerate the kas YAML: [gen-kas.md](gen-kas.md)
 
 **Build failed:**
+- List every live build on this host to find the one to stop: [ps.md](ps.md)
 - Stop a running build cleanly so it stays resumable: [stop.md](stop.md)
 - Find what went wrong: [triage.md](triage.md)
 - Watch a running build (tail one log): [log.md](log.md)
@@ -165,6 +167,7 @@ Related: [bitbake.md](bitbake.md), [graph.md](graph.md)
 ### Observability
 
 ```text
+bakar ps        - list every live build on this host, host + container mode (--json for scripting)
 bakar log       - tail a live build log
 bakar monitor   - one-view live watch: cluster load, dist stats, task progress
 bakar triage    - surface the failing recipe/task from bitbake-events.json (--run/--preset/--release select the run dir)
@@ -175,7 +178,7 @@ bakar cluster-info  - live sccache-dist scheduler capacity: servers, CPUs, jobs 
 bakar sched-triage  - post-hoc cluster-utilisation report from the scheduler journal and client error log
 ```
 
-Related: [log.md](log.md), [monitor.md](monitor.md), [triage.md](triage.md), [report.md](report.md), [insights.md](insights.md), [layers.md](layers.md), [cluster-info.md](cluster-info.md), [sched-triage.md](sched-triage.md)
+Related: [ps.md](ps.md), [log.md](log.md), [monitor.md](monitor.md), [triage.md](triage.md), [report.md](report.md), [insights.md](insights.md), [layers.md](layers.md), [cluster-info.md](cluster-info.md), [sched-triage.md](sched-triage.md)
 
 ### Reproducibility
 
