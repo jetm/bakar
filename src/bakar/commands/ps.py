@@ -30,6 +30,7 @@ from typing import Annotated
 
 import typer
 
+import bakar.commands._app as _state
 from bakar import build_stop
 from bakar.commands._app import app, console
 from bakar.commands._helpers import _run_started_epoch
@@ -119,15 +120,22 @@ def _container_row_info(runtime: str, candidate: build_stop.ContainerCandidate) 
 
     Recovers the container's own build-directory bind-mount host-side source
     path (:func:`_container_mount_source`) - this is the container's
-    ``KAS_WORK_DIR``, i.e. its ``bsp_root``, not a workspace above it. Reads
-    that root's run record through :func:`bakar.build_stop.enumerate_workspace_runs`
-    by appending its own literal ``build/runs`` suffix first, so the call
-    lands on the bare-runs-path branch that resolves a root BY NAME (nxp/ti
-    vs generic/bbsetup) instead of the workspace-scan branch, which would
-    treat the bsp_root itself as a workspace to search nxp/ti/build-*
-    subdirectories under and misresolve every nxp/ti container build as
-    generic/bbsetup - the same family-resolution bug host-mode discovery had
-    before group 9's bare-runs-path branch learned to check the root's name.
+    ``KAS_WORK_DIR``, which is the bsp_root for an nxp/ti build but the
+    WORKSPACE itself for a meta-avocado build (``steps/kas_build.py``'s
+    ``_build_env``: ``KAS_WORK_DIR = cfg.workspace`` when
+    ``cfg.is_meta_avocado``, else ``cfg.bsp_root``). Only an nxp/ti bsp_root
+    is routed through the bare-runs-path branch (by appending its own
+    literal ``build/runs`` suffix, identified by the mount source's own
+    directory name) so family resolves BY NAME instead of being misresolved
+    as generic/bbsetup - the same fix host-mode discovery's bare-runs-path
+    branch already applies. Every other shape (a meta-avocado workspace, a
+    plain bbsetup workspace, or any other bsp_root) is passed to
+    :func:`bakar.build_stop.enumerate_workspace_runs` UNCHANGED, so it takes
+    the workspace-scan branch, which already includes the passed root itself
+    as a generic candidate and globs its ``build-*`` fanout roots - the same
+    resolution this call used before the nxp/ti-only special case was added,
+    and the only one that finds a meta-avocado build's real
+    ``<workspace>/build-<stem>/build/runs``.
     Falls back to ``(_UNKNOWN, _UNKNOWN, None)`` whenever the mount path
     cannot be recovered, or the recovered path does not yield a readable run
     record for this candidate's run id - never raises.
@@ -135,8 +143,10 @@ def _container_row_info(runtime: str, candidate: build_stop.ContainerCandidate) 
     mount_source = _container_mount_source(runtime, candidate.container_id)
     if mount_source is None:
         return _UNKNOWN, _UNKNOWN, None
+    mount_path = Path(mount_source)
+    scan_path = mount_path / "build" / "runs" if mount_path.name in ("nxp", "ti") else mount_path
     try:
-        scan = build_stop.enumerate_workspace_runs(Path(mount_source) / "build" / "runs")
+        scan = build_stop.enumerate_workspace_runs(scan_path, user_config=_state._USER_CONFIG)
     except Exception:  # noqa: BLE001 - a broken/unreadable mount path must not fail the row
         return _UNKNOWN, _UNKNOWN, None
     for run_candidate in scan.candidates:
@@ -155,7 +165,7 @@ def _collect_rows() -> list[_Row]:
     now = time.time()
 
     discovered = build_stop._discover_host_cookers()
-    host_candidates = build_stop.correlate_host_discoveries(discovered)
+    host_candidates = build_stop.correlate_host_discoveries(discovered, user_config=_state._USER_CONFIG)
 
     runtime = build_stop.detect_runtime()
     container_candidates, warning = build_stop.discover_running_containers_or_warn(runtime)

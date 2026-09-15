@@ -420,6 +420,47 @@ def test_run_option_errors_on_matched_but_not_live_run(
     assert calls == []
 
 
+def test_run_option_errors_on_matched_container_run_whose_container_already_exited(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``--run`` id matching a container-mode run whose container has
+    already exited must report "not currently live", not silently succeed.
+
+    ``live_workspace_runs``' container-mode check only confirms a launch
+    record with a container label exists - it does not query the runtime,
+    matching bakar stop's pre-existing single-root behavior on purpose. That
+    cheap check alone would classify this run as "live" and dispatch to
+    stop_run, whose idempotent stale-cleanup path returns True for a
+    container the runtime no longer has - so --run must perform its own
+    real liveness query before ever reaching stop_run.
+    """
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    run_dir = workspace / "nxp" / "build" / "runs" / "20260617-140000-container"
+    run_dir.mkdir(parents=True)
+    stop_cmd.build_stop.write_launch_record(
+        run_dir, pgid=0, mode="container", runtime="docker", container_label="bakar.run_id=20260617-140000-container"
+    )
+
+    monkeypatch.setattr(stop_cmd.build_stop, "detect_runtime", lambda: "docker")
+    monkeypatch.setattr(stop_cmd.build_stop, "_container_id", lambda _runtime, _label: None)
+
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        stop_cmd.build_stop,
+        "stop_run",
+        lambda run_dir, cfg=None, *, force=False, grace_seconds=0: (calls.append(run_dir), True)[1],
+    )
+
+    result = runner.invoke(app, ["stop", "--run", "20260617-140000-container"])
+
+    assert result.exit_code != 0
+    assert "not currently live" in result.output
+    assert calls == []
+
+
 def test_run_option_stops_matched_live_run_directly(
     runner: _CliRunner,
     workspace: Path,

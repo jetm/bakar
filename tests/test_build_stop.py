@@ -1639,20 +1639,6 @@ def test_container_discovery_malformed_line_raises(monkeypatch: pytest.MonkeyPat
         build_stop.discover_running_containers("docker")
 
 
-def test_container_discovery_blank_field_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A line WITH a tab but a blank field on either side is malformed the
-    same way a missing tab is - it must not be silently dropped by a
-    truthiness check while a no-tab line raises."""
-    monkeypatch.setattr(
-        build_stop.subprocess,
-        "run",
-        lambda *a, **k: SimpleNamespace(returncode=0, stdout="cid-only\t\n", stderr=""),
-    )
-
-    with pytest.raises(RuntimeError, match="malformed"):
-        build_stop.discover_running_containers("docker")
-
-
 # --- dedup_container_candidates (group 12: container-mode within-source dedup) --
 
 

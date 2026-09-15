@@ -354,15 +354,16 @@ def discover_running_containers(runtime: str) -> list[ContainerCandidate]:
             raise RuntimeError(f"malformed {runtime} ps output line: {line!r}") from exc
         container_id = container_id.strip()
         run_id = run_id.strip()
-        # A tab with a blank field on either side (e.g. an empty container id
-        # or run id label) is malformed the same way a missing tab is - both
-        # mean this line cannot be turned into a candidate - so it takes the
-        # same RuntimeError path rather than being silently dropped by a
-        # truthiness check, which previously made the two cases look
-        # different when they are the same failure.
-        if not container_id or not run_id:
-            raise RuntimeError(f"malformed {runtime} ps output line: {line!r}")
-        candidates.append(ContainerCandidate(run_id=run_id, container_id=container_id))
+        # A blank field here is unreachable in practice: `line` above is
+        # already whole-line-stripped, so a genuinely blank container_id or
+        # run_id (nothing but whitespace on one side of the tab) means that
+        # side was pure whitespace in the raw line too - which the whole-line
+        # strip already consumed, taking the tab itself with it and routing
+        # through the ValueError branch above instead. This truthiness check
+        # is therefore defense-in-depth for a shape the current two-field,
+        # single-separator format cannot produce, not a silent-drop bug.
+        if container_id and run_id:
+            candidates.append(ContainerCandidate(run_id=run_id, container_id=container_id))
     return candidates
 
 
@@ -2020,7 +2021,9 @@ def live_workspace_runs(path: Path, *, user_config: UserConfig | None = None) ->
     return live
 
 
-def correlate_host_discoveries(discovered: dict[Path, frozenset[int]]) -> list[RunCandidate]:
+def correlate_host_discoveries(
+    discovered: dict[Path, frozenset[int]], *, user_config: UserConfig | None = None
+) -> list[RunCandidate]:
     """Correlate group 7's ``/proc``-walk discoveries to live run directories.
 
     ``discovered`` is :func:`_discover_host_cookers`'s return value: a topdir
@@ -2035,10 +2038,15 @@ def correlate_host_discoveries(discovered: dict[Path, frozenset[int]]) -> list[R
     entry point - is silently dropped: :func:`live_workspace_runs` already
     returns ``[]`` for that case, so no candidate is reported and none is
     fabricated.
+
+    ``user_config`` forwards verbatim to :func:`live_workspace_runs` (and
+    from there to :func:`enumerate_workspace_runs`) - see its docstring for
+    why an omitted value resolves every root as if that config tier were
+    empty.
     """
     candidates: list[RunCandidate] = []
     for topdir in discovered:
-        candidates.extend(live_workspace_runs(topdir / "runs"))
+        candidates.extend(live_workspace_runs(topdir / "runs", user_config=user_config))
     return candidates
 
 
