@@ -1482,6 +1482,43 @@ def stop_build(
             target = candidate
             break
     run_dir = target if target is not None else run_dirs[-1]
+    return stop_run(run_dir, cfg, force=force, grace_seconds=grace_seconds)
+
+
+def stop_run(run_dir: Path, cfg: BuildConfig | None = None, *, force: bool = False, grace_seconds: float = 0) -> bool:
+    """Stop one already-selected run directory's build.
+
+    Holds the SIGINT/escalate/verify sequence ``stop_build`` used to run
+    inline once it had picked a run dir - extracted so a caller with its own
+    run-dir selection (workspace-wide discovery, ``--run <id>``) can target a
+    specific run without duplicating this ladder per candidate.
+
+    ``cfg`` gates PID trust exactly as it does in ``stop_build``, and the
+    NFS lock-ownership gate is checked here independently: ``stop_build``
+    already checks it before it scans for a run to select, and that check
+    stays in place unchanged. This is a second, independent layer for any
+    caller that reaches ``stop_run`` directly with a pre-selected
+    ``run_dir`` - skipping it would let a caller that bypasses the
+    root-level scan (workspace-wide discovery targeting a run under a
+    peer-held root) signal a build it does not own. Both copies are
+    deliberate; this one is not dead code even when every existing caller
+    still goes through ``stop_build`` first.
+    """
+    if cfg is not None:
+        refusal = lock_mutation_guard(cfg)
+        if refusal is not None:
+            if refusal.reason == "peer-held":
+                # _say prints plain text to stderr, never through Rich markup
+                # rendering, so the host name needs no escaping here.
+                host = refusal.host if refusal.host else "another host"
+                _say(f"build owned by {host}; run `bakar stop` there")
+            else:
+                _say(
+                    f"cannot confirm this node owns the build lock ({refusal.reason}); "
+                    "refusing to send any signal - resolve ownership manually"
+                )
+            return False
+
     record = read_launch_record(run_dir)
     if record.mode == "host":
         try:
