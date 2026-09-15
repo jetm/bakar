@@ -892,7 +892,10 @@ def test_stop_build_container_query_error_refuses_not_idempotent_success(
     must not turn around and treat that same ambiguity as "confirmed dead":
     collapsing an _ERROR into the idempotent clean-tree success path would
     report a stop that never happened and delete the only tracking record of
-    a build that may still be running.
+    a build that may still be running. The refusal itself must not delete the
+    launch record either - unlike the "run predates container tracking" and
+    "runtime not installed" refusals, this record still names a real runtime
+    and container_label worth preserving for a retry.
     """
     run_dir = _make_run_dir(tmp_path)
     build_stop.write_launch_record(
@@ -919,6 +922,8 @@ def test_stop_build_container_query_error_refuses_not_idempotent_success(
 
     assert stop_calls == []
     assert calls == []
+    assert (run_dir / "build.pid").exists()
+    assert (run_dir / "build.meta.json").exists()
 
 
 # --- check_unclean_stop -----------------------------------------------------

@@ -1765,31 +1765,40 @@ def stop_run(run_dir: Path, cfg: BuildConfig | None = None, *, force: bool = Fal
     # Container mode: resolve and stop the container via the runtime daemon.
     # Do NOT gate on is_build_running/PGID liveness; the wrapper may be dead
     # while the container lives.
+    if record.container_label is None:
+        _say("cannot target build: run predates container tracking; stop it manually")
+        # No container identity was ever recorded for this run, so there is
+        # nothing left to preserve - unlike the _ERROR refusal below, wiping
+        # the launch record here loses no lead worth keeping.
+        remove_pid(run_dir)
+        return False
+
+    runtime = record.runtime or detect_runtime()
+    if shutil.which(runtime) is None:
+        _say(f"cannot target build: container runtime {runtime!r} is not installed")
+        remove_pid(run_dir)
+        return False
+
+    # _container_id_status, not _container_id: the latter collapses a
+    # confirmed-dead container and a failed runtime query into the same
+    # `None` - live_workspace_runs now treats that same query failure as
+    # "still live" (fail conservative), so collapsing it here to "dead"
+    # would declare a false success and clean up stale state for a build
+    # that may still be running. Only a confirmed _DEAD reaches the
+    # idempotent clean-tree stop below; an _ERROR refuses without
+    # claiming a stop happened.
+    container_status, cid = _container_id_status(runtime, record.container_label)
+    if container_status == _ERROR:
+        _say(f"cannot confirm container state ({runtime!r} query failed); refusing to report a stop - resolve manually")
+        # Deliberately does NOT remove_pid: this record still names a real
+        # runtime and container_label, and an unanswerable query today may
+        # answer tomorrow. Wiping it here - inside the try/finally below via
+        # an early return - would destroy the only lead to retry against for
+        # a build that may still be alive, which is exactly the data loss
+        # this whole function exists to avoid on an ambiguous answer.
+        return False
+
     try:
-        if record.container_label is None:
-            _say("cannot target build: run predates container tracking; stop it manually")
-            return False
-
-        runtime = record.runtime or detect_runtime()
-        if shutil.which(runtime) is None:
-            _say(f"cannot target build: container runtime {runtime!r} is not installed")
-            return False
-
-        # _container_id_status, not _container_id: the latter collapses a
-        # confirmed-dead container and a failed runtime query into the same
-        # `None` - live_workspace_runs now treats that same query failure as
-        # "still live" (fail conservative), so collapsing it here to "dead"
-        # would declare a false success and clean up stale state for a build
-        # that may still be running. Only a confirmed _DEAD reaches the
-        # idempotent clean-tree stop below; an _ERROR refuses without
-        # claiming a stop happened.
-        container_status, cid = _container_id_status(runtime, record.container_label)
-        if container_status == _ERROR:
-            _say(
-                f"cannot confirm container state ({runtime!r} query failed); "
-                "refusing to report a stop - resolve manually"
-            )
-            return False
         if cid is None:
             # Confirmed dead: idempotent clean-tree stop - clear any stale
             # lock/sock and succeed (requirement 5).
