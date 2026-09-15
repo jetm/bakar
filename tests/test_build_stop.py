@@ -926,6 +926,84 @@ def test_stop_build_container_query_error_refuses_not_idempotent_success(
     assert (run_dir / "build.meta.json").exists()
 
 
+def test_stop_build_container_lost_runtime_preserves_launch_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Losing contact with the runtime mid-stop must not delete the launch record.
+
+    ``_stop_container`` returning "lost_runtime" means the container's actual
+    state is unknown - it may still be running. Wiping the launch record here
+    would be the same data loss the pre-check _ERROR refusal exists to avoid.
+    """
+    run_dir = _make_run_dir(tmp_path)
+    build_stop.write_launch_record(
+        run_dir,
+        pgid=4242,
+        mode="container",
+        runtime="docker",
+        container_label="bakar.run_id=20260618-120000",
+    )
+
+    monkeypatch.setattr(build_stop, "_container_id_status", lambda _rt, _label: (build_stop._ALIVE, "cafef00d"))
+    monkeypatch.setattr(build_stop, "_stop_container", lambda *_a, **_kw: "lost_runtime")
+    monkeypatch.setattr(build_stop.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+    calls = _record_killpg(monkeypatch)
+
+    assert build_stop.stop_build(tmp_path) is False
+
+    assert calls == []
+    assert (run_dir / "build.pid").exists()
+    assert (run_dir / "build.meta.json").exists()
+
+
+def test_stop_build_container_verify_survivor_preserves_launch_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A container that survives the stop ladder must not lose its launch record.
+
+    ``_verify_clean`` reporting "build container still running" after a stop
+    attempt means the container is still there (or its state could not be
+    confirmed); ``stop_run`` must report the incomplete stop without
+    destroying the record a later attempt needs to retarget it.
+    """
+    run_dir = _make_run_dir(tmp_path)
+    build_stop.write_launch_record(
+        run_dir,
+        pgid=4242,
+        mode="container",
+        runtime="docker",
+        container_label="bakar.run_id=20260618-120000",
+    )
+
+    stop_calls: list[tuple[str, str]] = []
+    # First call resolves the container to stop; second call (post-stop
+    # verify, inside _verify_clean) reports it survived the ladder.
+    container_ids = iter([(build_stop._ALIVE, "cafef00d"), (build_stop._ALIVE, "cafef00d")])
+    monkeypatch.setattr(
+        build_stop,
+        "_container_id_status",
+        lambda _rt, _label: next(container_ids, (build_stop._ALIVE, "cafef00d")),
+    )
+    monkeypatch.setattr(
+        build_stop,
+        "_stop_container",
+        lambda runtime, cid, **_kw: stop_calls.append((runtime, cid)),
+    )
+    monkeypatch.setattr(build_stop.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+    calls = _record_killpg(monkeypatch)
+
+    assert build_stop.stop_build(tmp_path) is False
+
+    assert stop_calls == [("docker", "cafef00d")]
+    assert calls == []
+    assert (run_dir / "build.pid").exists()
+    assert (run_dir / "build.meta.json").exists()
+
+
 # --- check_unclean_stop -----------------------------------------------------
 
 

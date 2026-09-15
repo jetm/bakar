@@ -1798,37 +1798,43 @@ def stop_run(run_dir: Path, cfg: BuildConfig | None = None, *, force: bool = Fal
         # this whole function exists to avoid on an ambiguous answer.
         return False
 
-    try:
-        if cid is None:
-            # Confirmed dead: idempotent clean-tree stop - clear any stale
-            # lock/sock and succeed (requirement 5).
-            removed = _report_stale_cleanup(run_dir, cfg)
-            _say("no running build container" + ("; cleaned stale lock/socket" if removed else ""))
-            return True
-
-        stop_status = _stop_container(
-            runtime,
-            cid,
-            force=force,
-            term_secs=_STOP_TERM_SECONDS,
-            run_dir=run_dir,
-            grace_seconds=grace_seconds,
-        )
-        # A runtime we lost contact with mid-wait is a hard failure (exit 1).
-        if stop_status == "lost_runtime":
-            return False
-
-        _report_stale_cleanup(run_dir, cfg)
-        reasons = _verify_clean(run_dir, None, runtime=runtime, container_label=record.container_label, cfg=cfg)
-        if reasons:
-            _say("stop incomplete - the following remain:")
-            for reason in reasons:
-                _say(f"  - {reason}")
-            return False
-        _say("stopped")
-        return True
-    finally:
+    if cid is None:
+        # Confirmed dead: idempotent clean-tree stop - clear any stale
+        # lock/sock and succeed (requirement 5).
+        removed = _report_stale_cleanup(run_dir, cfg)
+        _say("no running build container" + ("; cleaned stale lock/socket" if removed else ""))
         remove_pid(run_dir)
+        return True
+
+    stop_status = _stop_container(
+        runtime,
+        cid,
+        force=force,
+        term_secs=_STOP_TERM_SECONDS,
+        run_dir=run_dir,
+        grace_seconds=grace_seconds,
+    )
+    # A runtime we lost contact with mid-wait is a hard failure (exit 1) -
+    # and, like the pre-check _ERROR above, an unconfirmed outcome: the
+    # container may still be running, so the launch record is left in place
+    # rather than removed, matching the pre-check's own reasoning.
+    if stop_status == "lost_runtime":
+        return False
+
+    _report_stale_cleanup(run_dir, cfg)
+    reasons = _verify_clean(run_dir, None, runtime=runtime, container_label=record.container_label, cfg=cfg)
+    if reasons:
+        _say("stop incomplete - the following remain:")
+        for reason in reasons:
+            _say(f"  - {reason}")
+        # Same reasoning as lost_runtime above: a non-empty reasons list
+        # means the container is confirmed still running, or its state
+        # could not be confirmed - either way the launch record must
+        # survive so a later attempt can still find and target this build.
+        return False
+    _say("stopped")
+    remove_pid(run_dir)
+    return True
 
 
 # ---------------------------------------------------------------------------
