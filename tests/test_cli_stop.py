@@ -522,6 +522,79 @@ def test_stop_no_args_two_live_builds_refuses_and_lists(
     assert "--run" in result.output
 
 
+def test_stop_no_args_two_live_builds_tty_prompts_and_stops_chosen(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On an interactive terminal, two or more live builds get a numbered
+
+    prompt instead of a refusal. Picking an index dispatches through
+    ``stop_run`` on the chosen candidate - the same call the non-interactive
+    ``--run`` path makes, not a second stop-dispatch code path.
+    """
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    monkeypatch.setattr(stop_cmd, "_is_tty", lambda: True)
+
+    run_a = workspace / "nxp" / "build" / "runs" / "20260617-120000"
+    run_b = workspace / "nxp" / "build" / "runs" / "20260617-130000"
+    run_b.mkdir(parents=True)
+    stop_cmd.build_stop.write_launch_record(run_a, pgid=111, mode="host")
+    stop_cmd.build_stop.write_launch_record(run_b, pgid=222, mode="host")
+    monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 111, True))
+
+    calls: list[tuple[Path, bool, float]] = []
+
+    def _rec(run_dir: Path, cfg: object = None, *, force: bool = False, grace_seconds: float = 0) -> bool:
+        calls.append((run_dir, force, grace_seconds))
+        return True
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_run", _rec)
+
+    def _boom(*a: object, **k: object) -> bool:
+        raise AssertionError("interactive pick must not fall back to stop_build")
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", _boom)
+    monkeypatch.setattr(stop_cmd.typer, "prompt", lambda *a, **k: 2)
+
+    result = runner.invoke(app, ["stop"])
+
+    assert result.exit_code == 0, result.output
+    assert "[1]" in result.output
+    assert "[2]" in result.output
+    assert len(calls) == 1
+    assert calls[0][0] == run_b
+
+
+def test_stop_no_args_two_live_builds_tty_invalid_choice_exits_nonzero(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An out-of-range interactive pick exits nonzero without stopping anything."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    monkeypatch.setattr(stop_cmd, "_is_tty", lambda: True)
+
+    run_a = workspace / "nxp" / "build" / "runs" / "20260617-120000"
+    run_b = workspace / "nxp" / "build" / "runs" / "20260617-130000"
+    run_b.mkdir(parents=True)
+    stop_cmd.build_stop.write_launch_record(run_a, pgid=111, mode="host")
+    stop_cmd.build_stop.write_launch_record(run_b, pgid=222, mode="host")
+    monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 111, True))
+
+    def _boom(*a: object, **k: object) -> bool:
+        raise AssertionError("an invalid choice must not stop any build")
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", _boom)
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_run", _boom)
+    monkeypatch.setattr(stop_cmd.typer, "prompt", lambda *a, **k: 5)
+
+    result = runner.invoke(app, ["stop"])
+
+    assert result.exit_code != 0
+    assert "not a valid choice" in result.output
+
+
 def _snapshot_run_dir(run_dir: Path) -> dict[str, bytes]:
     """Map every file under ``run_dir`` (relative path -> bytes) for later comparison."""
     return {str(p.relative_to(run_dir)): p.read_bytes() for p in sorted(run_dir.rglob("*")) if p.is_file()}

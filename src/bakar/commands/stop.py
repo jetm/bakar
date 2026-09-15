@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 from typing import Annotated
@@ -26,6 +27,40 @@ from bakar.steps import remote_dispatch
 # BuildConfig - the build is on the other host - so the configured value is not
 # reachable here and the default has to be restated.
 _REMOTE_STOP_GRACE_SECONDS = 30
+
+
+def _is_tty() -> bool:
+    """Return True when stdin is a TTY. Extracted for testability, matching
+    ``commands/presets.py``'s ``_is_tty()`` - a bare ``sys.stdin.isatty()``
+    call can't be monkeypatched once ``CliRunner`` has swapped ``sys.stdin``
+    for its own captured-input stream.
+    """
+    return sys.stdin.isatty()
+
+
+def _stop_matched_run(ws: Path, run_id: str, *, force: bool, timeout: float | None) -> bool:
+    """Resolve ``run_id`` against every family root and stop it if live.
+
+    Shared by the ``--run`` flag path and the interactive numbered-pick path so
+    there is exactly one stop-dispatch code path regardless of how the run id
+    was chosen. Exits nonzero via ``typer.Exit`` when the id has no match, or
+    matches a run that is not currently live.
+    """
+    # Exact-match against the UNFILTERED candidate set, not the live-only one -
+    # the unfiltered set is what lets "no match anywhere" and "match but not
+    # live" be told apart. A live-only lookup would report both cases
+    # identically as "no match".
+    scan = build_stop.enumerate_workspace_runs(ws)
+    match = next((c for c in scan.candidates if c.run_dir.name == run_id), None)
+    if match is None:
+        console.print(f"[red]no run matching {run_id!r} found in this workspace[/].")
+        raise typer.Exit(code=1)
+    live_run_dirs = {c.run_dir for c in build_stop.live_workspace_runs(ws)}
+    if match.run_dir not in live_run_dirs:
+        console.print(f"[red]run {run_id} is not currently live[/].")
+        raise typer.Exit(code=1)
+    grace_seconds = timeout if timeout is not None else match.cfg.stop_grace_seconds
+    return build_stop.stop_run(match.run_dir, match.cfg, force=force, grace_seconds=grace_seconds)
 
 
 @app.command("stop")
@@ -130,21 +165,7 @@ def stop(
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
 
     if run_id is not None:
-        # Exact-match against the UNFILTERED candidate set, not the live-only
-        # one - the unfiltered set is what lets "no match anywhere" and "match
-        # but not live" be told apart. A live-only lookup would report both
-        # cases identically as "no match".
-        scan = build_stop.enumerate_workspace_runs(ws)
-        match = next((c for c in scan.candidates if c.run_dir.name == run_id), None)
-        if match is None:
-            console.print(f"[red]no run matching {run_id!r} found in this workspace[/].")
-            raise typer.Exit(code=1)
-        live_run_dirs = {c.run_dir for c in build_stop.live_workspace_runs(ws)}
-        if match.run_dir not in live_run_dirs:
-            console.print(f"[red]run {run_id} is not currently live[/].")
-            raise typer.Exit(code=1)
-        grace_seconds = timeout if timeout is not None else match.cfg.stop_grace_seconds
-        stopped = build_stop.stop_run(match.run_dir, match.cfg, force=force, grace_seconds=grace_seconds)
+        stopped = _stop_matched_run(ws, run_id, force=force, timeout=timeout)
         if not stopped:
             raise typer.Exit(code=1)
         return
@@ -152,11 +173,12 @@ def stop(
     # No --run: discover what is actually live across every family root before
     # falling back to the single-root path below. Exactly one live build is
     # stopped directly - no listing, no prompt, matching what an operator
-    # expects from a bare `bakar stop`. Two or more is ambiguous (which one?),
-    # so nothing is signalled and every live build is listed instead, mirroring
-    # `stop_remote_dispatch`'s multi-unit refusal shape. Zero live builds falls
-    # through unchanged to the existing single-root `stop_build` call below,
-    # including its own stale-lock-cleanup path and messaging.
+    # expects from a bare `bakar stop`. Two or more is ambiguous (which one?):
+    # an interactive terminal gets a numbered pick, everything else gets
+    # today's refuse-and-list, mirroring `stop_remote_dispatch`'s multi-unit
+    # refusal shape. Zero live builds falls through unchanged to the existing
+    # single-root `stop_build` call below, including its own stale-lock-cleanup
+    # path and messaging.
     live = build_stop.live_workspace_runs(ws)
     if len(live) == 1:
         only = live[0]
@@ -166,8 +188,29 @@ def stop(
             raise typer.Exit(code=1)
         return
     if len(live) >= 2:
-        console.print(f"[yellow]{len(live)} live builds are running in this workspace[/]:")
         now = time.time()
+        if _is_tty():
+            console.print(f"[yellow]{len(live)} live builds are running in this workspace[/]:")
+            for i, candidate in enumerate(live, start=1):
+                start = _run_started_epoch(candidate.run_dir)
+                elapsed = fmt_duration(max(0.0, now - start)) if start is not None else "unknown"
+                console.print(
+                    f"  [{i}] {candidate.run_dir.name}  family={candidate.root.family}  "
+                    f"machine={candidate.cfg.machine}  elapsed={elapsed}"
+                )
+            choice = typer.prompt("Stop which build", type=int)
+            if choice < 1 or choice > len(live):
+                console.print(f"[red]{choice} is not a valid choice[/].")
+                raise typer.Exit(code=1)
+            # Translate the chosen index to a run id and dispatch through the
+            # exact same code path the non-interactive `--run` flag uses -
+            # there is no separate stopping logic for the interactive case.
+            chosen_run_id = live[choice - 1].run_dir.name
+            stopped = _stop_matched_run(ws, chosen_run_id, force=force, timeout=timeout)
+            if not stopped:
+                raise typer.Exit(code=1)
+            return
+        console.print(f"[yellow]{len(live)} live builds are running in this workspace[/]:")
         for candidate in live:
             start = _run_started_epoch(candidate.run_dir)
             elapsed = fmt_duration(max(0.0, now - start)) if start is not None else "unknown"
