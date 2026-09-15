@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-09-15
+
+### Added
+- Added `bakar ps` command to discover and list all active host and container builds across the host from any working directory.
+- Added `--json` option to `bakar ps` to output machine-readable build metadata including run ID, execution mode, family, target machine, and elapsed time.
+- Added `--run <id>` option to `bakar stop` to target and stop a specific build by its run directory name across any workspace root.
+- Added interactive selection prompt to `bakar stop` on TTY terminals when multiple live builds are detected in the workspace.
+
+### Changed
+- `bakar stop` now inspects all family and build roots across the workspace rather than only the single root resolved by CLI arguments.
+- `bakar stop` now refuses to terminate builds and lists active candidates when invoked non-interactively in a workspace with multiple live builds and no `--run` flag specified.
+- `bakar stop` now identifies and reports peer-held or unconfirmed NFS-locked workspace roots along with the owning host instead of treating them as having no running builds.
+
+### Fixed
+- Fixed `bakar stop` falsely reporting success and removing build tracking records when container runtime queries fail or disconnect during stop or cleanup verification.
+
 ## [0.32.0] - 2026-09-13
 
 ### Added
@@ -795,7 +811,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.32.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.33.0...HEAD
+[0.33.0]: https://github.com/jetm/bakar/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/jetm/bakar/compare/v0.31.1...v0.32.0
 [0.31.1]: https://github.com/jetm/bakar/compare/v0.31.0...v0.31.1
 [0.31.0]: https://github.com/jetm/bakar/compare/v0.30.0...v0.31.0
