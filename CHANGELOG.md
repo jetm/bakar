@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `bakar stop` now falls back to a host-wide search when it is invoked with no `--workspace`, no workspace resolvable from the current directory, and no BYO kas YAML: it scans every live, host-mode build on the host instead of exiting with "Not inside a BSP workspace". This fallback is host-mode only - container-mode builds remain invisible to it, and the scan is filtered to the topdirs `_discover_host_cookers` finds a live cooker under, not every topdir the host has ever built in. Every host-wide stop, whether reached via an explicit `--run <id>` or the bare no-selector path, prints the candidate's identifying row and requires interactive confirmation before signalling it - a non-interactive caller with no TTY is refused outright since it cannot answer the prompt. `--force` bypasses that confirmation only when paired with an explicit `--run <id>`; the bare no-selector host-wide path always confirms regardless of `--force`, because there is no id the operator has already committed to.
+
 ## [0.33.0] - 2026-09-15
 
 ### Added
