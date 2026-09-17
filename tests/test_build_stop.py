@@ -24,6 +24,7 @@ import pytest
 from rich.console import Console
 
 from bakar import build_stop, observability, report, triage
+from bakar.commands import stop as stop_cmd
 from bakar.commands import triage as commands_triage
 from tests.conftest import make_build_config
 
@@ -3215,3 +3216,85 @@ def test_live_workspace_runs_timing_20_candidates_across_4_roots(
 
     assert live == []
     assert elapsed < 1.0, f"live_workspace_runs took {elapsed:.3f}s for 20 candidates across 4 roots"
+
+
+# --- _host_wide_candidates: shared-topdir host/container mode filter -------
+
+
+def test_host_wide_candidates_excludes_container_mode_run_sharing_topdir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A container-mode run sharing a topdir's ``runs/`` with a host-mode run
+    must survive plain enumeration (proving the shared-topdir case is really
+    exercised) but be excluded from ``stop_cmd._host_wide_candidates()``'s
+    host-only filter.
+
+    Discovery is driven end-to-end rather than stubbed at the
+    ``_discover_host_cookers`` boundary: a fake PID/cmdline pair is fed
+    through that function's own injectable ``pids_reader``/``cmdline_reader``
+    parameters, so the topdir is found the same way a real ``/proc`` scan
+    would find it, without a real bitbake process anywhere. The container
+    leg's liveness is decided by monkeypatching
+    ``build_stop._container_id_status`` directly, so the assertion holds
+    whether or not a container runtime is installed on this host.
+    """
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    # One shared topdir: <workspace>/nxp/build, holding both a host-mode and
+    # a container-mode run under the same runs/ directory.
+    workspace = tmp_path
+    bsp_root = workspace / "nxp"
+    topdir = bsp_root / "build"
+    runs_dir = topdir / "runs"
+    host_run_dir = runs_dir / "20260618-120000-host"
+    container_run_dir = runs_dir / "20260618-130000-container"
+    host_run_dir.mkdir(parents=True)
+    container_run_dir.mkdir(parents=True)
+
+    build_stop.write_launch_record(host_run_dir, pgid=4242, mode="host")
+    build_stop.write_launch_record(
+        container_run_dir,
+        pgid=5252,
+        mode="container",
+        runtime="docker",
+        container_label="bakar.run_id=container-run",
+    )
+
+    # Drive real discovery via a fake PID whose cmdline names this build's
+    # bitbake.lock path - no real bitbake process, no real /proc scan.
+    fake_pid = 987654
+    lock_path = topdir / "bitbake.lock"
+    real_discover_host_cookers = build_stop._discover_host_cookers
+
+    def _fake_discover_host_cookers() -> dict[Path, frozenset[int]]:
+        return real_discover_host_cookers(
+            pids_reader=lambda: [fake_pid],
+            cmdline_reader=lambda pid: f"bitbake-server decafbad 5 6 log {lock_path} 0" if pid == fake_pid else "",
+        )
+
+    monkeypatch.setattr(build_stop, "_discover_host_cookers", _fake_discover_host_cookers)
+
+    # Host-mode leg is live; container-mode leg is reported alive by the
+    # monkeypatched runtime query, independent of any real container runtime.
+    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+    monkeypatch.setattr(
+        build_stop,
+        "_container_id_status",
+        lambda _runtime, _label: (build_stop._ALIVE, "fake-cid"),
+    )
+
+    # First, prove enumeration itself is not mode-scoped: both runs show up
+    # in the unfiltered scan over this shared topdir's runs/ directory.
+    scan = build_stop.enumerate_workspace_runs(runs_dir, user_config=None)
+    unfiltered_dirs = {c.run_dir for c in scan.candidates}
+    assert host_run_dir in unfiltered_dirs
+    assert container_run_dir in unfiltered_dirs
+
+    # Then, the stop command's host-wide filter must keep the host-mode run
+    # and drop the container-mode run, even though both are live.
+    candidates, _skipped = stop_cmd._host_wide_candidates()
+    filtered_dirs = {c.run_dir for c in candidates}
+
+    assert host_run_dir in filtered_dirs
+    assert container_run_dir not in filtered_dirs
