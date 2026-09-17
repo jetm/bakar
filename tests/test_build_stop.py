@@ -2898,6 +2898,101 @@ def test_verify_clean_no_cfg_unchanged(tmp_path: Path, monkeypatch: pytest.Monke
     assert any("bitbake-server" in r for r in reasons)
 
 
+# --- is_candidate_live: standalone per-candidate liveness check -------------
+
+
+def test_is_candidate_live_host_mode_alive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A host-mode candidate is live when is_build_running reports alive+cmdline_ok."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    ws = tmp_path
+    run_dir = _make_run_dir(ws / "nxp", "20260618-120000-111")
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+
+    scan = build_stop.enumerate_workspace_runs(ws)
+    (candidate,) = scan.candidates
+
+    assert build_stop.is_candidate_live(candidate) is True
+
+
+def test_is_candidate_live_host_mode_dead(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A host-mode candidate is not live when is_build_running reports dead."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    ws = tmp_path
+    run_dir = _make_run_dir(ws / "nxp", "20260618-120000-111")
+    build_stop.write_launch_record(run_dir, pgid=9999, mode="host")
+    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (False, None, False))
+
+    scan = build_stop.enumerate_workspace_runs(ws)
+    (candidate,) = scan.candidates
+
+    assert build_stop.is_candidate_live(candidate) is False
+
+
+def test_is_candidate_live_container_mode_alive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A container-mode candidate is live when the runtime confirms a match."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    ws = tmp_path
+    run_dir = _make_run_dir(ws / "ti", "20260618-130000-222")
+    build_stop.write_launch_record(
+        run_dir, pgid=5252, mode="container", runtime="docker", container_label="bakar.run_id=ti-run"
+    )
+    monkeypatch.setattr(build_stop, "_container_id_status", lambda _runtime, _label: (build_stop._ALIVE, "cid"))
+
+    scan = build_stop.enumerate_workspace_runs(ws)
+    (candidate,) = scan.candidates
+
+    assert build_stop.is_candidate_live(candidate) is True
+
+
+def test_is_candidate_live_container_mode_dead(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A container-mode candidate is not live once the runtime confirms _DEAD."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    ws = tmp_path
+    run_dir = _make_run_dir(ws / "ti", "20260618-130000-222")
+    build_stop.write_launch_record(
+        run_dir, pgid=5252, mode="container", runtime="docker", container_label="bakar.run_id=ti-run"
+    )
+    monkeypatch.setattr(build_stop, "_container_id_status", lambda _runtime, _label: (build_stop._DEAD, None))
+
+    scan = build_stop.enumerate_workspace_runs(ws)
+    (candidate,) = scan.candidates
+
+    assert build_stop.is_candidate_live(candidate) is False
+
+
+def test_is_candidate_live_container_mode_error_fails_conservative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unanswerable runtime query (_ERROR) is not treated as dead."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    ws = tmp_path
+    run_dir = _make_run_dir(ws / "ti", "20260618-130000-222")
+    build_stop.write_launch_record(
+        run_dir, pgid=5252, mode="container", runtime="docker", container_label="bakar.run_id=ti-run"
+    )
+    monkeypatch.setattr(build_stop, "_container_id_status", lambda _runtime, _label: (build_stop._ERROR, None))
+
+    scan = build_stop.enumerate_workspace_runs(ws)
+    (candidate,) = scan.candidates
+
+    assert build_stop.is_candidate_live(candidate) is True
+
+
+def test_is_candidate_live_no_label_no_host_mode_is_false(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A malformed/missing launch record (no container_label, not host mode) is not live."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    ws = tmp_path
+    run_dir = _make_run_dir(ws / "nxp", "20260618-170000-666")
+    (run_dir / "build.meta.json").write_text("{not json")
+    (run_dir / "build.pid").write_text("not-an-int\n")
+
+    scan = build_stop.enumerate_workspace_runs(ws)
+    (candidate,) = scan.candidates
+
+    assert build_stop.is_candidate_live(candidate) is False
+
+
 # --- workspace-wide live-build discovery (task 2.1) -------------------------
 
 

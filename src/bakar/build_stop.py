@@ -2031,6 +2031,32 @@ def enumerate_workspace_runs(path: Path, *, user_config: UserConfig | None = Non
     return RunScan(candidates=candidates, skipped=skipped)
 
 
+def is_candidate_live(candidate: RunCandidate) -> bool:
+    """Report whether ``candidate`` is a currently live build.
+
+    Host mode: the launch record parses as ``mode="host"`` and
+    :func:`is_build_running` confirms a live, cmdline-verified PGID.
+    Container mode: a recorded container label is a NECESSARY but not
+    sufficient signal - queries the runtime via :func:`_container_id_status`
+    directly, not :func:`_container_id`, since an unanswerable query
+    (``_ERROR``) must not be read as "dead"; only a confirmed ``_DEAD``
+    excludes the candidate. Anything else (no ``container_label`` and not
+    host mode) is not live. Extracted from :func:`live_workspace_runs` so a
+    caller in another module can evaluate a single candidate's liveness
+    without going through the whole enumerate-and-filter pipeline; see that
+    function's docstring for the full rationale behind each branch.
+    """
+    record = read_launch_record(candidate.run_dir)
+    if record.mode == "host":
+        alive, _pgid, cmdline_ok = is_build_running(candidate.run_dir)
+        return alive and cmdline_ok
+    if record.container_label is not None:
+        runtime = record.runtime or detect_runtime()
+        status, _cid = _container_id_status(runtime, record.container_label)
+        return status != _DEAD
+    return False
+
+
 def live_workspace_runs(path: Path, *, user_config: UserConfig | None = None) -> list[RunCandidate]:
     """Live-only filter over :func:`enumerate_workspace_runs`'s candidates.
 
@@ -2073,19 +2099,11 @@ def live_workspace_runs(path: Path, *, user_config: UserConfig | None = None) ->
     see its own docstring for why this must be passed explicitly rather than
     relying on an auto-load.
     """
-    live: list[RunCandidate] = []
-    for candidate in enumerate_workspace_runs(path, user_config=user_config).candidates:
-        record = read_launch_record(candidate.run_dir)
-        if record.mode == "host":
-            alive, _pgid, cmdline_ok = is_build_running(candidate.run_dir)
-            if alive and cmdline_ok:
-                live.append(candidate)
-        elif record.container_label is not None:
-            runtime = record.runtime or detect_runtime()
-            status, _cid = _container_id_status(runtime, record.container_label)
-            if status != _DEAD:
-                live.append(candidate)
-    return live
+    return [
+        candidate
+        for candidate in enumerate_workspace_runs(path, user_config=user_config).candidates
+        if is_candidate_live(candidate)
+    ]
 
 
 def correlate_host_discoveries(
