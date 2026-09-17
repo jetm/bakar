@@ -18,10 +18,10 @@ bakar stop [OPTIONS] [KAS_YAML]
 
 | Flag | Description |
 |------|-------------|
-| `--run` | Stop the run whose run directory name exactly matches this id, resolved against every family root in the workspace rather than only the one root/kas YAML would resolve. Find run ids with [`bakar ps`](ps.md) |
+| `--run` | Stop the run whose run directory name exactly matches this id, resolved against every family root in the workspace rather than only the one root/kas YAML would resolve. When no workspace can be found from cwd (and no `--workspace` was given), this pairing composes with the [host-wide fallback](#host-wide-fallback) below instead of failing - `--run` is then resolved against every host-mode build on the host. Find run ids with [`bakar ps`](ps.md) |
 | `--on` | Stop the detached build dispatched to this host with `bakar build --on <host>`; resolves nothing locally, so it works from any directory |
 | `--all` | With `--on`, stop every detached build on the host instead of refusing when more than one is running |
-| `--force` | Skip the SIGINT grace period and escalate straight to the scoped SIGTERM -> SIGKILL reaper |
+| `--force` | Skip the SIGINT grace period and escalate straight to the scoped SIGTERM -> SIGKILL reaper. On the [host-wide fallback](#host-wide-fallback), this also skips the confirmation prompt, but only when paired with an explicit `--run <id>` - every other host-wide path still confirms regardless of `--force` |
 | `--timeout` | Auto-escalate after this many seconds of graceful waiting instead of waiting for a Ctrl-C. Defaults to `[build] stop_grace_seconds` (30s); `0` waits unbounded |
 | `--manifest`, `-f` | Manifest filename used to resolve the BSP family (NXP/TI); mutually exclusive with a positional `KAS_YAML` |
 | `--workspace`, `-w` | Workspace root; changes directory into the resolved workspace before resolving paths, so a relative `KAS_YAML` resolves from outside the workspace. An invalid path exits 2 |
@@ -109,6 +109,50 @@ Stop which build [1-2]:
 An out-of-range choice exits 1 without stopping anything. The choice is
 translated to a run id and dispatched through the exact same stop path
 `--run` uses - there is no separate interactive stopping logic.
+
+## Host-wide fallback
+
+`bakar stop` normally resolves a workspace from cwd (or from `--workspace`,
+or from a positional BYO `KAS_YAML`) before it looks for anything to stop.
+When none of those apply - no `--workspace` was passed, this isn't the BYO
+case, and the cwd walk finds no workspace - it falls back to scanning every
+**host-mode** build on the host instead of failing outright. This is the
+same fallback the `--run` row above points at.
+
+The fallback is host-mode only. A container-mode build is filtered out even
+when it shares a `bsp_root` with a host-mode build under the same run
+directory - the scan looks at each run's recorded launch mode individually,
+not just at which topdirs have a live cooker, so a container-mode build
+never gets swept in alongside a host-mode sibling.
+
+Confirmation is required on every signal this fallback sends, with exactly
+one exception: an explicit `--run <id>` combined with `--force` skips the
+prompt outright, because naming the run id and asking for the hard stop in
+the same invocation is already the operator's explicit commitment. Every
+other combination confirms first - print the candidate's run id, family,
+machine, and elapsed time, then ask - including the case where exactly one
+host-mode build is found with no selector at all. That single-candidate
+case reads the same as the workspace-scoped path above at a glance, but it
+is not: a build found host-wide is not guaranteed to belong to the invoking
+operator, so it still confirms even though the equivalent workspace-scoped
+case does not.
+
+A non-interactive invocation (no TTY on stdin) has no way to answer that
+confirmation, so it refuses rather than guessing:
+
+- With no `--run` and two or more live host-mode builds, it refuses and
+  lists them, the same shape as [Refuse-and-list](#refuse-and-list-non-interactive)
+  above but scoped to the whole host.
+- With no `--run` and exactly one live host-mode build, or with an explicit
+  `--run <id>` given without `--force`, the confirmation itself is what
+  refuses: it prints the candidate row, then `not stopping <id>` and exits 1.
+
+A root the NFS lock-ownership gate could not confirm ownership of is not
+silently dropped from the scan - it is diagnosed by name. When another host
+holds the root, `bakar stop` names it (`<bsp_root> is owned by <host>; run
+'bakar stop' there to check for a live build`); when ownership can't be
+confirmed at all, it says so and names the reason instead of pretending the
+root was never there.
 
 ## Stopping a remote build (`--on <host>`)
 
@@ -272,8 +316,13 @@ recipe fails to rebuild with non-self-healing errors, run
 - It leaves the persistent `bitbake-hashserv` daemon untouched - that daemon is
   shared and long-lived. Use [`bakar hashserv stop`](hashserv.md) to stop it
   deliberately.
-- A build in another workspace is never affected: each workspace has its own
-  `build/runs/` and its own `build.pid`.
+- When a workspace is resolved (from cwd, `--workspace`, or a BYO `KAS_YAML`),
+  a build in another workspace is never affected: each workspace has its own
+  `build/runs/` and its own `build.pid`. That guarantee is scoped to the
+  resolved-workspace path only - the [host-wide fallback](#host-wide-fallback)
+  exists precisely because no workspace could be resolved, and it deliberately
+  reaches across every host-mode build on the host rather than staying inside
+  one workspace's `build/runs/`.
 
 ## See also
 
