@@ -11,6 +11,7 @@ so the fixture chdirs into ``<workspace>/nxp/`` and ``cfg.bsp_root`` is
 
 from __future__ import annotations
 
+import subprocess
 from typing import TYPE_CHECKING
 
 import pytest
@@ -1344,6 +1345,86 @@ def test_no_run_host_wide_fallback_zero_candidates_reports_no_running_build(
     assert result.exit_code == 1
     assert "no running build found" in result.output
     assert "Not inside a BSP workspace" not in result.output
+
+
+def test_no_run_host_wide_fallback_peer_held_root_is_diagnosed_not_dropped(
+    runner: _CliRunner,
+    tmp_path: Path,
+    no_workspace_cwd: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A peer-held root discovered host-wide must be diagnosed via its
+    ownership warning on the bare no-selector path too - not silently
+    dropped so it reads identically to ``no running build found`` above.
+    Mirrors ``test_run_option_host_wide_fallback_surfaces_peer_held_root``
+    for the ``--run`` case, but exercises the bare-stop branch and proves no
+    signal reaches the peer-held root's own process."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    bsp_root = tmp_path / "peer-workspace" / "nxp"
+    build_dir = bsp_root / "build"
+    (build_dir / "runs").mkdir(parents=True)
+
+    # A real process stands in for the peer-held root's cooker so "no signal
+    # was sent to it" is provable by observing it is still alive afterward,
+    # not merely by the absence of a recorded call.
+    proc = subprocess.Popen(["sleep", "5"])
+    try:
+        sock = build_dir / "bitbake.sock"
+
+        def _pids() -> list[int]:
+            return [proc.pid]
+
+        def _cmdline(pid: int) -> str:
+            return f"python bitbake-server decafbad 7 8 {sock} idle" if pid == proc.pid else ""
+
+        # Real _discover_host_cookers, driven through its own injectable
+        # pids_reader/cmdline_reader - not a stand-in dict - so the topdir is
+        # genuinely recovered from argv, the same discovery path production
+        # code takes. Capture the original before patching the module
+        # attribute, since the patched name would otherwise resolve to
+        # itself once replaced.
+        real_discover_host_cookers = stop_cmd.build_stop._discover_host_cookers
+        monkeypatch.setattr(
+            stop_cmd.build_stop,
+            "_discover_host_cookers",
+            lambda: real_discover_host_cookers(pids_reader=_pids, cmdline_reader=_cmdline),
+        )
+
+        root = stop_cmd.build_stop.RunRoot(
+            bsp_root=bsp_root, family="nxp", resolve_workspace=bsp_root.parent, resolve_family="nxp"
+        )
+        refusal = stop_cmd.build_stop.LockRefusal(reason="peer-held", host="pc2")
+        skipped_root = stop_cmd.build_stop.SkippedRoot(root=root, refusal=refusal)
+        monkeypatch.setattr(
+            stop_cmd.build_stop,
+            "enumerate_workspace_runs",
+            lambda _path, **_kw: stop_cmd.build_stop.RunScan(candidates=[], skipped=[skipped_root]),
+        )
+
+        kill_calls: list[tuple[int, int]] = []
+        killpg_calls: list[tuple[int, int]] = []
+        monkeypatch.setattr(stop_cmd.build_stop.os, "kill", lambda pid, sig: kill_calls.append((pid, sig)))
+        monkeypatch.setattr(stop_cmd.build_stop.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+        # Wide enough that the tmp_path-derived bsp_root never wraps mid-word -
+        # a wrapped line would otherwise defeat the literal message match below.
+        monkeypatch.setenv("COLUMNS", "500")
+
+        result = runner.invoke(app, ["stop", "--force"])
+
+        assert result.exit_code == 1, result.output
+        flat_output = " ".join(result.output.split())
+        assert f"{bsp_root} is owned by pc2; run `bakar stop` there to check for a live build" in flat_output
+
+        candidates, skipped = stop_cmd._host_wide_candidates()
+        assert not any(c.root.bsp_root == bsp_root for c in candidates)
+        assert any(s.root.bsp_root == bsp_root for s in skipped)
+
+        assert kill_calls == []
+        assert killpg_calls == []
+        assert proc.poll() is None
+    finally:
+        proc.terminate()
+        proc.wait()
 
 
 def test_no_run_host_wide_fallback_single_candidate_confirms_before_stopping(
