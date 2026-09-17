@@ -1316,3 +1316,237 @@ def test_run_option_host_wide_fallback_never_calls_correlate_host_discoveries(
 
     assert result.exit_code == 0, result.output
     assert calls == [run_dir]
+
+
+# ---------------------------------------------------------------------------
+# stop, no --run, host-wide fallback (no workspace at all)
+# ---------------------------------------------------------------------------
+
+
+def test_no_run_host_wide_fallback_zero_candidates_reports_no_running_build(
+    runner: _CliRunner,
+    tmp_path: Path,
+    no_workspace_cwd: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bare ``stop`` from outside any workspace, with nothing live anywhere on
+    the host: ``no running build found``, not the missing-workspace error, and
+    the workspace-scoped stale-lock cleanup path must not run."""
+    monkeypatch.setattr(stop_cmd.build_stop, "_discover_host_cookers", dict)
+
+    def _boom(*a: object, **k: object) -> object:
+        raise AssertionError("stop_build must not run on the zero-candidate host-wide path")
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", _boom)
+
+    result = runner.invoke(app, ["stop"])
+
+    assert result.exit_code == 1
+    assert "no running build found" in result.output
+    assert "Not inside a BSP workspace" not in result.output
+
+
+def test_no_run_host_wide_fallback_single_candidate_confirms_before_stopping(
+    runner: _CliRunner,
+    tmp_path: Path,
+    no_workspace_cwd: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exactly one live build found host-wide: confirm before stopping,
+    unlike the workspace-scoped sole-live-build path which stops with no
+    prompt. A declined confirmation must not call ``stop_run``."""
+    run_id = "20260617-150000"
+    _stage_host_wide_run(tmp_path, monkeypatch, run_id=run_id)
+    monkeypatch.setattr(stop_cmd, "_is_tty", lambda: False)
+
+    def _boom(*a: object, **k: object) -> bool:
+        raise AssertionError("stop_run must not be called without confirmation")
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_run", _boom)
+
+    result = runner.invoke(app, ["stop"])
+
+    assert result.exit_code == 1
+    assert f"not stopping {run_id}" in result.output
+
+
+def test_no_run_host_wide_fallback_single_candidate_force_still_confirms(
+    runner: _CliRunner,
+    tmp_path: Path,
+    no_workspace_cwd: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--force`` never bypasses confirmation on the no-selector host-wide
+    path - there is no explicit ``--run`` id the operator already committed
+    to, so a sole live build still requires confirmation even with
+    ``--force``."""
+    run_id = "20260617-150000"
+    _stage_host_wide_run(tmp_path, monkeypatch, run_id=run_id)
+    monkeypatch.setattr(stop_cmd, "_is_tty", lambda: False)
+
+    def _boom(*a: object, **k: object) -> bool:
+        raise AssertionError("stop_run must not be called without confirmation, even with --force")
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_run", _boom)
+
+    result = runner.invoke(app, ["stop", "--force"])
+
+    assert result.exit_code == 1
+    assert f"not stopping {run_id}" in result.output
+
+
+def test_no_run_host_wide_fallback_single_candidate_confirmed_stops_with_real_config(
+    runner: _CliRunner,
+    tmp_path: Path,
+    no_workspace_cwd: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A confirmed sole candidate is stopped via ``stop_run`` with the
+    candidate's own resolved config - never ``None``."""
+    run_id = "20260617-150000"
+    run_dir = _stage_host_wide_run(tmp_path, monkeypatch, run_id=run_id)
+    monkeypatch.setattr(stop_cmd, "_confirm_host_wide", lambda _candidate: True)
+
+    calls: list[tuple[Path, object]] = []
+
+    def _rec(rd: Path, cfg: object = None, *, force: bool = False, grace_seconds: float = 0) -> bool:
+        calls.append((rd, cfg))
+        return True
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_run", _rec)
+
+    result = runner.invoke(app, ["stop"])
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0][0] == run_dir
+    assert calls[0][1] is not None
+
+
+def test_no_run_host_wide_fallback_multiple_candidates_non_interactive_lists_and_exits(
+    runner: _CliRunner,
+    tmp_path: Path,
+    no_workspace_cwd: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two or more live builds found host-wide, no TTY: list every candidate
+    under the host-wide header (distinct wording from the workspace-scoped
+    "in this workspace" header) and exit 1 without prompting or stopping
+    anything."""
+    topdir_a = tmp_path / "peer-a" / "nxp" / "build"
+    topdir_b = tmp_path / "peer-b" / "nxp" / "build"
+    run_a = topdir_a / "runs" / "20260617-150000"
+    run_b = topdir_b / "runs" / "20260617-160000"
+    run_a.mkdir(parents=True)
+    run_b.mkdir(parents=True)
+    stop_cmd.build_stop.write_launch_record(run_a, pgid=111, mode="host")
+    stop_cmd.build_stop.write_launch_record(run_b, pgid=222, mode="host")
+    monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+    monkeypatch.setattr(
+        stop_cmd.build_stop,
+        "_discover_host_cookers",
+        lambda: {topdir_a: frozenset({111}), topdir_b: frozenset({222})},
+    )
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    monkeypatch.setattr(stop_cmd, "_is_tty", lambda: False)
+
+    def _boom(*a: object, **k: object) -> bool:
+        raise AssertionError("stop_run must not be called on the non-interactive multi-candidate path")
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_run", _boom)
+
+    result = runner.invoke(app, ["stop"])
+
+    assert result.exit_code == 1
+    flat_output = " ".join(result.output.split())
+    assert "live builds are running on this host" in flat_output
+    assert "20260617-150000" in flat_output
+    assert "20260617-160000" in flat_output
+    assert "bakar stop --run <id>" in flat_output
+
+
+def test_no_run_host_wide_fallback_multiple_candidates_interactive_confirms_pick(
+    runner: _CliRunner,
+    tmp_path: Path,
+    no_workspace_cwd: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two or more live builds host-wide on an interactive terminal: present a
+    numbered pick, then confirm the chosen candidate before dispatching -
+    exactly like the sole-candidate case, never bypassed by ``--force``."""
+    topdir_a = tmp_path / "peer-a" / "nxp" / "build"
+    topdir_b = tmp_path / "peer-b" / "nxp" / "build"
+    run_a = topdir_a / "runs" / "20260617-150000"
+    run_b = topdir_b / "runs" / "20260617-160000"
+    run_a.mkdir(parents=True)
+    run_b.mkdir(parents=True)
+    stop_cmd.build_stop.write_launch_record(run_a, pgid=111, mode="host")
+    stop_cmd.build_stop.write_launch_record(run_b, pgid=222, mode="host")
+    monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+    monkeypatch.setattr(
+        stop_cmd.build_stop,
+        "_discover_host_cookers",
+        lambda: {topdir_a: frozenset({111}), topdir_b: frozenset({222})},
+    )
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    monkeypatch.setattr(stop_cmd, "_is_tty", lambda: True)
+    monkeypatch.setattr(stop_cmd.typer, "prompt", lambda *a, **k: 1)
+
+    confirm_calls: list[Path] = []
+
+    def _confirm(candidate: stop_cmd.build_stop.RunCandidate) -> bool:
+        confirm_calls.append(candidate.run_dir)
+        return True
+
+    monkeypatch.setattr(stop_cmd, "_confirm_host_wide", _confirm)
+
+    calls: list[Path] = []
+
+    def _rec(rd: Path, cfg: object = None, *, force: bool = False, grace_seconds: float = 0) -> bool:
+        calls.append(rd)
+        return True
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_run", _rec)
+
+    result = runner.invoke(app, ["stop", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert len(confirm_calls) == 1
+    assert calls == confirm_calls
+
+
+def test_no_run_host_wide_fallback_surfaces_peer_held_root_on_zero_candidates(
+    runner: _CliRunner,
+    tmp_path: Path,
+    no_workspace_cwd: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A peer-held root discovered host-wide contributes zero candidates, so
+    the zero-candidate ``no running build found`` path still surfaces its
+    ownership warning first."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    topdir = tmp_path / "peer-workspace" / "nxp"
+    (topdir / "build" / "runs").mkdir(parents=True)
+    monkeypatch.setattr(
+        stop_cmd.build_stop,
+        "_discover_host_cookers",
+        lambda: {topdir / "build": frozenset({4242})},
+    )
+
+    root = stop_cmd.build_stop.RunRoot(
+        bsp_root=topdir, family="nxp", resolve_workspace=topdir.parent, resolve_family="nxp"
+    )
+    refusal = stop_cmd.build_stop.LockRefusal(reason="peer-held", host="pc2")
+    skipped_root = stop_cmd.build_stop.SkippedRoot(root=root, refusal=refusal)
+    monkeypatch.setattr(
+        stop_cmd.build_stop,
+        "enumerate_workspace_runs",
+        lambda _path, **_kw: stop_cmd.build_stop.RunScan(candidates=[], skipped=[skipped_root]),
+    )
+
+    result = runner.invoke(app, ["stop"])
+
+    assert result.exit_code == 1
+    flat_output = " ".join(result.output.split())
+    assert "owned by pc2" in flat_output
+    assert "no running build found" in flat_output

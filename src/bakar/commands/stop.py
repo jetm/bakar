@@ -81,13 +81,27 @@ def _stop_matched_run(
     was chosen. The scan itself is done by the caller, not here - both callers
     already have the ``RunScan``/``live`` data in hand, and scanning twice per
     invocation is wasted work. Exits nonzero via ``typer.Exit`` when the id has
-    no match, or matches a run that is not currently live.
+    no match, matches more than one candidate, or matches a run that is not
+    currently live. The ambiguous-match refusal applies to every caller of this
+    function, not only the host-wide path that motivated adding it - a
+    workspace-scoped caller's candidate set was always susceptible to the same
+    same-second run-id collision, just across a smaller number of family roots.
     """
     # Exact-match against the UNFILTERED candidate set, not the live-only one -
     # the unfiltered set is what lets "no match anywhere" and "match but not
     # live" be told apart. A live-only lookup would report both cases
     # identically as "no match".
-    match = next((c for c in candidates if c.run_dir.name == run_id), None)
+    matches = [c for c in candidates if c.run_dir.name == run_id]
+    if len(matches) > 1:
+        # Host-wide discovery merges candidates from every topdir on the
+        # host, so a name collision here is a distinct case from the
+        # workspace-scoped caller's own candidate set, which is bounded to
+        # one workspace's own family roots. Refuse rather than picking the
+        # first match: the two candidates are different builds, and there is
+        # no basis in the run id alone for choosing between them.
+        console.print(f"[red]{run_id!r} matched more than one build {scope_desc}; refusing to guess which one[/].")
+        raise typer.Exit(code=1)
+    match = matches[0] if matches else None
     if match is None:
         # A root the NFS lock-ownership gate refused is excluded from
         # candidates entirely, so "no match" here can genuinely mean
@@ -131,11 +145,15 @@ def _host_wide_candidates() -> tuple[list[build_stop.RunCandidate], list[build_s
 
     Every topdir's :attr:`build_stop.RunScan.skipped` entries are combined
     into one ``skipped`` list, and every topdir's candidates that are both
-    live (:func:`build_stop.is_candidate_live`) and host-mode
-    (``read_launch_record(...).mode == "host"``) are combined into one
+    host-mode (``read_launch_record(...).mode == "host"``) and live
+    (:func:`build_stop.is_candidate_live`) are combined into one
     ``candidates`` list. The mode filter is required, not optional: a single
     topdir's ``runs/`` can hold both a host-mode and a live container-mode
     run, and ``enumerate_workspace_runs`` does not itself filter by mode.
+    Checked in that order - mode before liveness - because a container-mode
+    candidate's liveness check queries the container runtime as a subprocess
+    (bounded by its own timeout); checking mode first means that query is
+    never made for a candidate the mode filter would discard anyway.
     """
     discovered = build_stop._discover_host_cookers()
     candidates: list[build_stop.RunCandidate] = []
@@ -144,9 +162,9 @@ def _host_wide_candidates() -> tuple[list[build_stop.RunCandidate], list[build_s
         scan = build_stop.enumerate_workspace_runs(topdir / "runs", user_config=_state._USER_CONFIG)
         skipped.extend(scan.skipped)
         for candidate in scan.candidates:
-            if not build_stop.is_candidate_live(candidate):
-                continue
             if build_stop.read_launch_record(candidate.run_dir).mode != "host":
+                continue
+            if not build_stop.is_candidate_live(candidate):
                 continue
             candidates.append(candidate)
     return candidates, skipped
@@ -290,6 +308,81 @@ def stop(
         if not stopped:
             raise typer.Exit(code=1)
         return
+
+    # Same no-workspace-signal condition, no explicit --run this time: scan
+    # the whole host and dispatch on what is actually live there, mirroring
+    # the workspace-scoped no-selector path below but host-wide. Warnings for
+    # skipped (peer-held / unconfirmable) roots print unconditionally, before
+    # branching on candidate count, matching the existing workspace-scoped
+    # path's ordering exactly.
+    if _host_wide_fallback_applies(workspace, family, kas_yaml) and run_id is None:
+        candidates, skipped = _host_wide_candidates()
+        for skipped_root in skipped:
+            refusal = skipped_root.refusal
+            if refusal.reason == "peer-held":
+                host = refusal.host if refusal.host else "another host"
+                console.print(
+                    f"[yellow]{skipped_root.root.bsp_root} is owned by {host}; "
+                    "run `bakar stop` there to check for a live build[/]"
+                )
+            else:
+                console.print(
+                    f"[yellow]cannot confirm ownership of {skipped_root.root.bsp_root} "
+                    f"({refusal.reason}); it was not checked for a live build[/]"
+                )
+        if len(candidates) == 0:
+            console.print("no running build found")
+            raise typer.Exit(code=1)
+        if len(candidates) == 1:
+            # Unlike the workspace-scoped sole-live-build path (which stops
+            # with no prompt), a sole live build found host-wide is not
+            # guaranteed to belong to the invoking operator - always confirm,
+            # regardless of --force. --force has no bypass effect here: there
+            # is no explicit --run id on this path for the operator to have
+            # already committed to.
+            only = candidates[0]
+            if not _confirm_host_wide(only):
+                console.print(f"[red]not stopping {only.run_dir.name}[/].")
+                console.print(f"  bakar stop --run {only.run_dir.name}")
+                raise typer.Exit(code=1)
+            grace_seconds = timeout if timeout is not None else only.cfg.stop_grace_seconds
+            stopped = build_stop.stop_run(only.run_dir, only.cfg, force=force, grace_seconds=grace_seconds)
+            if not stopped:
+                raise typer.Exit(code=1)
+            return
+        now = time.time()
+        rows: list[tuple[build_stop.RunCandidate, str]] = []
+        for candidate in candidates:
+            start = _run_started_epoch(candidate.run_dir)
+            elapsed = fmt_duration(max(0.0, now - start)) if start is not None else "unknown"
+            rows.append((candidate, elapsed))
+        console.print(f"[yellow]{len(candidates)} live builds are running on this host[/]:")
+        if _is_tty():
+            for i, (candidate, elapsed) in enumerate(rows, start=1):
+                console.print(
+                    f"  [{i}] {candidate.run_dir.name}  family={candidate.root.family}  "
+                    f"machine={candidate.cfg.machine}  elapsed={elapsed}"
+                )
+            choice = typer.prompt("Stop which build", type=int)
+            if choice < 1 or choice > len(candidates):
+                console.print(f"[red]{choice} is not a valid choice[/].")
+                raise typer.Exit(code=1)
+            chosen = candidates[choice - 1]
+            if not _confirm_host_wide(chosen):
+                console.print(f"[red]not stopping {chosen.run_dir.name}[/].")
+                raise typer.Exit(code=1)
+            grace_seconds = timeout if timeout is not None else chosen.cfg.stop_grace_seconds
+            stopped = build_stop.stop_run(chosen.run_dir, chosen.cfg, force=force, grace_seconds=grace_seconds)
+            if not stopped:
+                raise typer.Exit(code=1)
+            return
+        for candidate, elapsed in rows:
+            console.print(
+                f"  {candidate.run_dir.name}  family={candidate.root.family}  "
+                f"machine={candidate.cfg.machine}  elapsed={elapsed}"
+            )
+        console.print("refusing to stop more than one - pick one:  bakar stop --run <id>")
+        raise typer.Exit(code=1)
 
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
 
