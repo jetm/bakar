@@ -17,6 +17,7 @@ import pytest
 
 import bakar.commands.stop as stop_cmd
 from bakar.cli import app
+from tests.conftest import make_build_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -915,3 +916,108 @@ def test_no_bulk_stop_and_isolation_between_concurrent_builds(
     after_c = _snapshot_run_dir(run_c)
     assert after_b == before_b
     assert after_c == before_c
+
+
+def _make_candidate(workspace: Path, run_dir: Path) -> stop_cmd.build_stop.RunCandidate:
+    """A minimal ``RunCandidate`` for exercising ``_confirm_host_wide`` directly."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    root = stop_cmd.build_stop.RunRoot(
+        bsp_root=workspace / "nxp", family="nxp", resolve_workspace=workspace, resolve_family="nxp"
+    )
+    cfg = make_build_config(workspace=workspace, machine="imx8mp-var-dart")
+    return stop_cmd.build_stop.RunCandidate(run_dir=run_dir, root=root, cfg=cfg)
+
+
+def test_confirm_host_wide_no_tty_refuses_without_prompting(
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a non-interactive terminal, the row is printed but ``typer.confirm``
+
+    is never called - the helper refuses outright rather than blocking on
+    input it has no way to receive.
+    """
+    run_dir = workspace / "nxp" / "build" / "runs" / "20260617-120000"
+    candidate = _make_candidate(workspace, run_dir)
+    monkeypatch.setattr(stop_cmd, "_is_tty", lambda: False)
+
+    def _boom(*a: object, **k: object) -> bool:
+        raise AssertionError("typer.confirm must not be called without a TTY")
+
+    monkeypatch.setattr(stop_cmd.typer, "confirm", _boom)
+
+    result = stop_cmd._confirm_host_wide(candidate)
+
+    assert result is False
+
+
+def test_confirm_host_wide_tty_prints_row_and_returns_confirm_result(
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """On an interactive terminal, the identifying row is printed and the
+
+    helper's return value is exactly what ``typer.confirm`` returns.
+    """
+    run_dir = workspace / "nxp" / "build" / "runs" / "20260617-120000"
+    candidate = _make_candidate(workspace, run_dir)
+    monkeypatch.setattr(stop_cmd, "_is_tty", lambda: True)
+
+    calls: list[tuple[str, bool]] = []
+
+    def _confirm(prompt: str, *, default: bool = True) -> bool:
+        calls.append((prompt, default))
+        return True
+
+    monkeypatch.setattr(stop_cmd.typer, "confirm", _confirm)
+
+    result = stop_cmd._confirm_host_wide(candidate)
+
+    assert result is True
+    assert calls == [("Stop 20260617-120000?", False)]
+    printed = capsys.readouterr().err
+    assert "20260617-120000" in printed
+    assert "family=nxp" in printed
+    assert "machine=imx8mp-var-dart" in printed
+
+
+def test_confirm_host_wide_tty_returns_false_when_confirm_declines(
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declined confirmation propagates as ``False``, not ``True``."""
+    run_dir = workspace / "nxp" / "build" / "runs" / "20260617-120000"
+    candidate = _make_candidate(workspace, run_dir)
+    monkeypatch.setattr(stop_cmd, "_is_tty", lambda: True)
+    monkeypatch.setattr(stop_cmd.typer, "confirm", lambda *a, **k: False)
+
+    result = stop_cmd._confirm_host_wide(candidate)
+
+    assert result is False
+
+
+def test_confirm_host_wide_uses_module_is_tty_not_sys_stdin(
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The helper consults the module's ``_is_tty``, not ``sys.stdin.isatty()``
+
+    directly - monkeypatching ``sys.stdin.isatty`` alone must not affect it.
+    """
+    run_dir = workspace / "nxp" / "build" / "runs" / "20260617-120000"
+    candidate = _make_candidate(workspace, run_dir)
+
+    # Force real stdin.isatty() to True (unlikely under a test runner, but
+    # this asserts the helper doesn't call it at all) while _is_tty says False.
+    monkeypatch.setattr(stop_cmd.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(stop_cmd, "_is_tty", lambda: False)
+
+    def _boom(*a: object, **k: object) -> bool:
+        raise AssertionError("typer.confirm must not be called when module _is_tty is False")
+
+    monkeypatch.setattr(stop_cmd.typer, "confirm", _boom)
+
+    result = stop_cmd._confirm_host_wide(candidate)
+
+    assert result is False

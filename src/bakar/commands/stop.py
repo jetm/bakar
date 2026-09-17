@@ -39,6 +39,29 @@ def _is_tty() -> bool:
     return sys.stdin.isatty()
 
 
+def _confirm_host_wide(candidate: build_stop.RunCandidate) -> bool:
+    """Ask before stopping a run outside the caller's own workspace.
+
+    Prints the same identifying row the multi-build listing uses (run id,
+    family, machine, elapsed time), then prompts with ``typer.confirm``. On a
+    non-interactive terminal (no TTY), the row is still printed but
+    ``typer.confirm`` is never called - a non-interactive caller has no way to
+    answer, so it must refuse rather than block on input. Reuses the module's
+    ``_is_tty`` rather than ``sys.stdin.isatty()`` directly, matching
+    ``_is_tty``'s own docstring: a direct stdlib call cannot be monkeypatched
+    once the CLI test runner has swapped stdin.
+    """
+    start = _run_started_epoch(candidate.run_dir)
+    elapsed = fmt_duration(max(0.0, time.time() - start)) if start is not None else "unknown"
+    console.print(
+        f"  {candidate.run_dir.name}  family={candidate.root.family}  "
+        f"machine={candidate.cfg.machine}  elapsed={elapsed}"
+    )
+    if not _is_tty():
+        return False
+    return typer.confirm(f"Stop {candidate.run_dir.name}?", default=False)
+
+
 def _stop_matched_run(
     run_id: str,
     *,
