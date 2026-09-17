@@ -1,4 +1,4 @@
-# `stop-workspace-selection`: Two requirements change. The requirement that a single live build is stopped with no listing and no prompt is narrowed to the workspace-scoped discovery path, because the guarantee that justified skipping the prompt (the sole live build is necessarily yours) does not hold host-wide. The exact-match run targeting requirement changes its resolution order, so the selector is honoured before a workspace is resolved rather than after
+# `stop-host-wide-fallback`: When workspace resolution from the current directory finds no workspace, the stop command discovers live host-mode builds across the whole host instead of failing, and gates any resulting signal behind explicit operator confirmation
 
 **Delivered by:** stop-host-wide-fallback
 **Modules touched:** other, tests
