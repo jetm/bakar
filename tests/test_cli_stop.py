@@ -1734,3 +1734,94 @@ def test_stop_explicit_workspace_scopes_discovery_even_with_a_live_build_elsewhe
 
     assert result.exit_code == 0, result.output
     assert calls == [(workspace / "nxp", False)]
+
+
+def test_stop_no_args_workspace_scoped_sole_live_build_unchanged_by_host_wide_change(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guard the proposal's "preserve every existing workspace-scoped
+
+    behavior unchanged" item for the bare no-selector, no-`-w` invocation:
+    from a workspace root with exactly one live build, ``bakar stop`` must
+    still stop that build directly, with no host-wide confirmation prompt,
+    no multi-build listing header, and no call into ``_host_wide_candidates``
+    at all - because ``_host_wide_fallback_applies`` is False here (a
+    workspace resolves from cwd), so the host-wide machinery this change
+    added must never engage on this path.
+    """
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    run_dir = workspace / "nxp" / "build" / "runs" / "20260617-120000"
+    stop_cmd.build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+    monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+
+    def _boom_candidates() -> object:
+        raise AssertionError("workspace-scoped sole-live-build path must not call _host_wide_candidates")
+
+    monkeypatch.setattr(stop_cmd, "_host_wide_candidates", _boom_candidates)
+
+    def _boom_confirm(candidate: object) -> bool:
+        raise AssertionError("workspace-scoped sole-live-build path must not prompt for confirmation")
+
+    monkeypatch.setattr(stop_cmd, "_confirm_host_wide", _boom_confirm)
+
+    calls: list[tuple[Path, bool, float]] = []
+
+    def _rec(run_dir: Path, cfg: object = None, *, force: bool = False, grace_seconds: float = 0) -> bool:
+        calls.append((run_dir, force, grace_seconds))
+        return True
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_run", _rec)
+
+    def _boom_stop_build(*a: object, **k: object) -> bool:
+        raise AssertionError("a single live build must not fall back to stop_build")
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", _boom_stop_build)
+
+    result = runner.invoke(app, ["stop"])
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0][0] == run_dir
+    assert "live builds are running" not in result.output
+    assert "Stop which build" not in result.output
+
+
+def test_run_option_host_wide_fallback_refuses_ambiguous_match(
+    runner: _CliRunner,
+    tmp_path: Path,
+    no_workspace_cwd: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two independently-discovered topdirs each holding a live host-mode run
+    with the identical run directory name must refuse rather than silently
+    stopping whichever one the candidate list happened to list first."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    run_id = "20260617-150000-4242"
+
+    topdir_a = tmp_path / "workspace-a" / "nxp" / "build"
+    topdir_b = tmp_path / "workspace-b" / "ti" / "build"
+    run_dir_a = topdir_a / "runs" / run_id
+    run_dir_b = topdir_b / "runs" / run_id
+    run_dir_a.mkdir(parents=True)
+    run_dir_b.mkdir(parents=True)
+    stop_cmd.build_stop.write_launch_record(run_dir_a, pgid=4242, mode="host")
+    stop_cmd.build_stop.write_launch_record(run_dir_b, pgid=5252, mode="host")
+    monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+    monkeypatch.setattr(
+        stop_cmd.build_stop,
+        "_discover_host_cookers",
+        lambda: {topdir_a: frozenset({4242}), topdir_b: frozenset({5252})},
+    )
+
+    def _boom(*a: object, **k: object) -> bool:
+        raise AssertionError("an ambiguous match must never be dispatched to stop_run")
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_run", _boom)
+
+    result = runner.invoke(app, ["stop", "--force", "--run", run_id])
+
+    assert result.exit_code != 0
+    assert "matched more than one build" in result.output
