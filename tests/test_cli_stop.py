@@ -11,6 +11,7 @@ so the fixture chdirs into ``<workspace>/nxp/`` and ``cfg.bsp_root`` is
 
 from __future__ import annotations
 
+import re
 import subprocess
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,13 @@ if TYPE_CHECKING:
     from typer.testing import CliRunner as _CliRunner
 
 pytestmark = pytest.mark.unit
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """Strip ANSI SGR escapes so CLI-output assertions survive colored rendering."""
+    return _ANSI_RE.sub("", text)
 
 
 @pytest.fixture
@@ -1662,7 +1670,7 @@ def test_stop_invalid_explicit_workspace_exits_2_before_host_wide_discovery(
     result = runner.invoke(app, ["stop", "-w", str(missing)])
 
     assert result.exit_code == 2, result.output
-    assert "--workspace" in result.output
+    assert "--workspace" in _plain(result.output)
 
 
 def test_stop_workspace_path_that_is_a_file_exits_2_before_host_wide_discovery(
@@ -1685,7 +1693,7 @@ def test_stop_workspace_path_that_is_a_file_exits_2_before_host_wide_discovery(
     result = runner.invoke(app, ["stop", "-w", str(not_a_dir)])
 
     assert result.exit_code == 2, result.output
-    assert "--workspace" in result.output
+    assert "--workspace" in _plain(result.output)
 
 
 def test_stop_explicit_workspace_scopes_discovery_even_with_a_live_build_elsewhere(
