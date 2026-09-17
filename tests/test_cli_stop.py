@@ -1550,3 +1550,106 @@ def test_no_run_host_wide_fallback_surfaces_peer_held_root_on_zero_candidates(
     flat_output = " ".join(result.output.split())
     assert "owned by pc2" in flat_output
     assert "no running build found" in flat_output
+
+
+# ---------------------------------------------------------------------------
+# stop -w/--workspace, explicit-workspace contract vs. host-wide discovery
+# ---------------------------------------------------------------------------
+
+
+def test_stop_invalid_explicit_workspace_exits_2_before_host_wide_discovery(
+    runner: _CliRunner,
+    tmp_path: Path,
+    no_workspace_cwd: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``-w`` naming a path that does not exist fails fast with exit 2 naming
+    ``--workspace``, before the command body - and therefore the host-wide
+    fallback - ever runs. The ``-w`` validation lives in the eager
+    ``_workspace_callback`` (``_enter_workspace`` in ``commands/_workspace.py``),
+    which raises ``typer.BadParameter`` ahead of ``_host_wide_fallback_applies``
+    and ``_host_wide_candidates`` entirely - so ``_discover_host_cookers`` must
+    never be called on this path.
+    """
+    missing = tmp_path / "does-not-exist"
+
+    def _boom() -> dict[Path, frozenset[int]]:
+        raise AssertionError("_discover_host_cookers must not run for an invalid --workspace")
+
+    monkeypatch.setattr(stop_cmd.build_stop, "_discover_host_cookers", _boom)
+
+    result = runner.invoke(app, ["stop", "-w", str(missing)])
+
+    assert result.exit_code == 2, result.output
+    assert "--workspace" in result.output
+
+
+def test_stop_workspace_path_that_is_a_file_exits_2_before_host_wide_discovery(
+    runner: _CliRunner,
+    tmp_path: Path,
+    no_workspace_cwd: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``-w`` naming a path that exists but is not a directory (a plain file)
+    is rejected the same way as a missing path - exit 2 naming ``--workspace``,
+    never reaching host-wide discovery."""
+    not_a_dir = tmp_path / "just-a-file"
+    not_a_dir.write_text("")
+
+    def _boom() -> dict[Path, frozenset[int]]:
+        raise AssertionError("_discover_host_cookers must not run for a non-directory --workspace")
+
+    monkeypatch.setattr(stop_cmd.build_stop, "_discover_host_cookers", _boom)
+
+    result = runner.invoke(app, ["stop", "-w", str(not_a_dir)])
+
+    assert result.exit_code == 2, result.output
+    assert "--workspace" in result.output
+
+
+def test_stop_explicit_workspace_scopes_discovery_even_with_a_live_build_elsewhere(
+    runner: _CliRunner,
+    workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``stop -w WS`` with no live build in WS falls through to the ordinary
+    single-root ``stop_build`` path scoped to WS - it must never widen to a
+    host-wide search, even though a live host-mode build exists elsewhere on
+    the host. Regression guard for the workspace-flag contract:
+    ``_host_wide_fallback_applies`` returns False whenever ``workspace is not
+    None``, so the peer build discovered by ``_discover_host_cookers`` must
+    stay invisible to this invocation and ``stop_build`` must be called with
+    WS's own ``bsp_root``, not the peer's.
+    """
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    peer_topdir = tmp_path / "peer-workspace" / "nxp"
+    peer_run_dir = peer_topdir / "build" / "runs" / "20260617-150000"
+    peer_run_dir.mkdir(parents=True)
+    stop_cmd.build_stop.write_launch_record(peer_run_dir, pgid=4242, mode="host")
+    monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+
+    def _boom() -> dict[Path, frozenset[int]]:
+        raise AssertionError("_discover_host_cookers must not run when --workspace is given")
+
+    monkeypatch.setattr(stop_cmd.build_stop, "_discover_host_cookers", _boom)
+
+    calls: list[tuple[Path, bool]] = []
+
+    def _rec(bsp_root: Path, cfg: object = None, *, force: bool = False, grace_seconds: float = 0) -> bool:
+        calls.append((bsp_root, force))
+        return True
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", _rec)
+
+    result = runner.invoke(
+        app,
+        ["stop", "--workspace", str(workspace), "--manifest", "imx-6.6.52-2.2.2.xml"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [(workspace / "nxp", False)]
