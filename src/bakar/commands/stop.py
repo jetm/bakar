@@ -15,6 +15,7 @@ from bakar import build_stop
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     WorkspaceOption,
+    _find_workspace_from_cwd,
     _normalize_dispatch,
     _resolve_workspace,
     _run_started_epoch,
@@ -117,6 +118,56 @@ def _stop_matched_run(
     return build_stop.stop_run(match.run_dir, match.cfg, force=force, grace_seconds=grace_seconds)
 
 
+def _host_wide_candidates() -> tuple[list[build_stop.RunCandidate], list[build_stop.SkippedRoot]]:
+    """Scan every live, host-mode build on this host, not just one workspace.
+
+    Calls :func:`build_stop._discover_host_cookers` to find every topdir
+    carrying a running bitbake cooker anywhere on the host, then re-scans
+    each topdir's own ``runs/`` directory directly via
+    :func:`build_stop.enumerate_workspace_runs` - never
+    :func:`build_stop.correlate_host_discoveries`, which internally discards
+    the skipped-root list this helper needs in order to surface a peer-held
+    root's ownership warning.
+
+    Every topdir's :attr:`build_stop.RunScan.skipped` entries are combined
+    into one ``skipped`` list, and every topdir's candidates that are both
+    live (:func:`build_stop.is_candidate_live`) and host-mode
+    (``read_launch_record(...).mode == "host"``) are combined into one
+    ``candidates`` list. The mode filter is required, not optional: a single
+    topdir's ``runs/`` can hold both a host-mode and a live container-mode
+    run, and ``enumerate_workspace_runs`` does not itself filter by mode.
+    """
+    discovered = build_stop._discover_host_cookers()
+    candidates: list[build_stop.RunCandidate] = []
+    skipped: list[build_stop.SkippedRoot] = []
+    for topdir in discovered:
+        scan = build_stop.enumerate_workspace_runs(topdir / "runs", user_config=_state._USER_CONFIG)
+        skipped.extend(scan.skipped)
+        for candidate in scan.candidates:
+            if not build_stop.is_candidate_live(candidate):
+                continue
+            if build_stop.read_launch_record(candidate.run_dir).mode != "host":
+                continue
+            candidates.append(candidate)
+    return candidates, skipped
+
+
+def _host_wide_fallback_applies(workspace: Path | None, family: str | None, kas_yaml: Path | None) -> bool:
+    """True when a bare, no-workspace invocation should search the whole host.
+
+    All three must hold: no explicit ``--workspace`` was passed, this is not
+    the generic BYO carve-out (``family == "generic" and kas_yaml is not
+    None``, which resolves its own workspace from the YAML's own location and
+    therefore never needs the host-wide fallback), and the cwd walk
+    (:func:`_find_workspace_from_cwd`) finds no workspace either.
+    """
+    if workspace is not None:
+        return False
+    if family == "generic" and kas_yaml is not None:
+        return False
+    return _find_workspace_from_cwd() is None
+
+
 @app.command("stop")
 def stop(
     kas_yaml: Annotated[
@@ -216,6 +267,30 @@ def stop(
     # YAML determines the family and therefore where the run dir lives.
     kas_yaml, _extra_overlays = split_kas_yaml_arg(kas_yaml)
     family, _bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
+
+    # No workspace signal at all (no --workspace, not the generic BYO
+    # carve-out, and the cwd walk finds nothing) plus an explicit --run: search
+    # every live host-mode build on this host rather than exiting with "Not
+    # inside a BSP workspace" for an operator who has simply lost track of
+    # which directory they are in. Checked ahead of `_resolve_workspace`
+    # because that call itself exits 2 on exactly this condition - it must
+    # never run on this branch.
+    if _host_wide_fallback_applies(workspace, family, kas_yaml) and run_id is not None:
+        candidates, skipped = _host_wide_candidates()
+        stopped = _stop_matched_run(
+            run_id,
+            candidates=candidates,
+            live_run_dirs={c.run_dir for c in candidates},
+            skipped=skipped,
+            scope_desc="among live builds on this host",
+            confirm=(None if force else _confirm_host_wide),
+            force=force,
+            timeout=timeout,
+        )
+        if not stopped:
+            raise typer.Exit(code=1)
+        return
+
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
 
     if run_id is not None:

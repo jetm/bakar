@@ -1021,3 +1021,298 @@ def test_confirm_host_wide_uses_module_is_tty_not_sys_stdin(
     result = stop_cmd._confirm_host_wide(candidate)
 
     assert result is False
+
+
+# ---------------------------------------------------------------------------
+# _host_wide_fallback_applies
+# ---------------------------------------------------------------------------
+
+
+def test_host_wide_fallback_applies_true_when_no_workspace_signal_anywhere(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No ``--workspace``, no generic BYO carve-out, and no cwd match: True."""
+    monkeypatch.setattr(stop_cmd, "_find_workspace_from_cwd", lambda: None)
+
+    assert stop_cmd._host_wide_fallback_applies(None, "nxp", None) is True
+
+
+def test_host_wide_fallback_applies_false_with_explicit_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit ``--workspace`` short-circuits before the cwd walk runs."""
+
+    def _boom() -> Path | None:
+        raise AssertionError("_find_workspace_from_cwd must not be called when workspace is given")
+
+    monkeypatch.setattr(stop_cmd, "_find_workspace_from_cwd", _boom)
+
+    assert stop_cmd._host_wide_fallback_applies(tmp_path, "nxp", None) is False
+
+
+def test_host_wide_fallback_applies_false_for_generic_byo_carveout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The generic BYO carve-out resolves its own workspace from the YAML, so
+    it must never fall through to the host-wide search."""
+
+    def _boom() -> Path | None:
+        raise AssertionError("_find_workspace_from_cwd must not be called for the generic BYO carve-out")
+
+    monkeypatch.setattr(stop_cmd, "_find_workspace_from_cwd", _boom)
+
+    assert stop_cmd._host_wide_fallback_applies(None, "generic", tmp_path / "my.yml") is False
+
+
+def test_host_wide_fallback_applies_false_when_cwd_walk_finds_a_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A workspace found by the cwd walk means the ordinary path applies."""
+    monkeypatch.setattr(stop_cmd, "_find_workspace_from_cwd", lambda: tmp_path)
+
+    assert stop_cmd._host_wide_fallback_applies(None, "nxp", None) is False
+
+
+# ---------------------------------------------------------------------------
+# _host_wide_candidates
+# ---------------------------------------------------------------------------
+
+
+def test_host_wide_candidates_combines_topdirs_and_filters_mode_and_liveness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Combines every discovered topdir's candidates, keeping only entries
+    that are both live and host-mode - a live container-mode run sharing a
+    topdir's ``runs/`` with a live host-mode run must be dropped."""
+    topdir_a = tmp_path / "peer-a"
+    topdir_b = tmp_path / "peer-b"
+    (topdir_a / "runs").mkdir(parents=True)
+    (topdir_b / "runs").mkdir(parents=True)
+
+    monkeypatch.setattr(
+        stop_cmd.build_stop,
+        "_discover_host_cookers",
+        lambda: {topdir_a: frozenset({111}), topdir_b: frozenset({222})},
+    )
+
+    root_a = stop_cmd.build_stop.RunRoot(
+        bsp_root=topdir_a, family="generic", resolve_workspace=topdir_a, resolve_family="bbsetup"
+    )
+    root_b = stop_cmd.build_stop.RunRoot(
+        bsp_root=topdir_b, family="generic", resolve_workspace=topdir_b, resolve_family="bbsetup"
+    )
+    cfg_a = make_build_config(workspace=topdir_a, machine="imx8mp-var-dart")
+    cfg_b = make_build_config(workspace=topdir_b, machine="imx8mp-var-dart")
+
+    live_host = stop_cmd.build_stop.RunCandidate(run_dir=topdir_a / "runs" / "host-run", root=root_a, cfg=cfg_a)
+    dead_host = stop_cmd.build_stop.RunCandidate(run_dir=topdir_a / "runs" / "dead-run", root=root_a, cfg=cfg_a)
+    live_container = stop_cmd.build_stop.RunCandidate(
+        run_dir=topdir_b / "runs" / "container-run", root=root_b, cfg=cfg_b
+    )
+    skipped_root = stop_cmd.build_stop.SkippedRoot(
+        root=root_b, refusal=stop_cmd.build_stop.LockRefusal(reason="peer-held", host="pc2")
+    )
+
+    def _fake_enumerate(path: Path, **_kw: object) -> stop_cmd.build_stop.RunScan:
+        if path == topdir_a / "runs":
+            return stop_cmd.build_stop.RunScan(candidates=[live_host, dead_host], skipped=[])
+        return stop_cmd.build_stop.RunScan(candidates=[live_container], skipped=[skipped_root])
+
+    monkeypatch.setattr(stop_cmd.build_stop, "enumerate_workspace_runs", _fake_enumerate)
+    live_set = {live_host.run_dir, live_container.run_dir}
+    monkeypatch.setattr(stop_cmd.build_stop, "is_candidate_live", lambda c: c.run_dir in live_set)
+
+    records = {
+        live_host.run_dir: stop_cmd.build_stop.LaunchRecord(pgid=0, mode="host"),
+        dead_host.run_dir: stop_cmd.build_stop.LaunchRecord(pgid=0, mode="host"),
+        live_container.run_dir: stop_cmd.build_stop.LaunchRecord(
+            pgid=0, mode="container", runtime="docker", container_label="x"
+        ),
+    }
+    monkeypatch.setattr(stop_cmd.build_stop, "read_launch_record", lambda rd: records[rd])
+
+    candidates, skipped = stop_cmd._host_wide_candidates()
+
+    assert candidates == [live_host]
+    assert skipped == [skipped_root]
+
+
+# ---------------------------------------------------------------------------
+# stop --run, host-wide fallback (no workspace at all)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def no_workspace_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Chdir into a directory with no ``.bakar.toml``, no ``nxp``/``ti``, and
+    no bbsetup markers, so ``_find_workspace_from_cwd`` returns ``None``."""
+    outside = tmp_path / "not-a-workspace"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+    return outside
+
+
+def _stage_host_wide_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, run_id: str = "20260617-150000") -> Path:
+    """Discover one live host-mode run on a peer topdir via the host-wide path."""
+    topdir = tmp_path / "peer-workspace" / "nxp"
+    run_dir = topdir / "build" / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    stop_cmd.build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+    monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+    monkeypatch.setattr(
+        stop_cmd.build_stop,
+        "_discover_host_cookers",
+        lambda: {topdir / "build": frozenset({4242})},
+    )
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    return run_dir
+
+
+def test_run_option_host_wide_fallback_force_stops_without_confirmation(
+    runner: _CliRunner,
+    tmp_path: Path,
+    no_workspace_cwd: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--force --run <id>`` from outside any workspace stops the discovered
+    host-wide run directly, without ever calling the confirmation prompt."""
+    run_id = "20260617-150000"
+    run_dir = _stage_host_wide_run(tmp_path, monkeypatch, run_id=run_id)
+
+    def _boom(_candidate: object) -> bool:
+        raise AssertionError("confirm must not be called when --force is passed")
+
+    monkeypatch.setattr(stop_cmd, "_confirm_host_wide", _boom)
+
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        stop_cmd.build_stop,
+        "stop_run",
+        lambda rd, cfg=None, *, force=False, grace_seconds=0: (calls.append(rd), True)[1],
+    )
+
+    result = runner.invoke(app, ["stop", "--force", "--run", run_id])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [run_dir]
+
+
+def test_run_option_host_wide_fallback_without_force_requires_confirmation(
+    runner: _CliRunner,
+    tmp_path: Path,
+    no_workspace_cwd: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without ``--force``, a non-interactive terminal refuses rather than
+    signalling - ``_confirm_host_wide`` returns False with no TTY, and the
+    build must not be stopped."""
+    run_id = "20260617-150000"
+    _stage_host_wide_run(tmp_path, monkeypatch, run_id=run_id)
+    monkeypatch.setattr(stop_cmd, "_is_tty", lambda: False)
+
+    def _boom(*a: object, **k: object) -> bool:
+        raise AssertionError("stop_run must not be called without confirmation")
+
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_run", _boom)
+
+    result = runner.invoke(app, ["stop", "--run", run_id])
+
+    assert result.exit_code != 0
+    assert f"not stopping {run_id}" in result.output
+
+
+def test_run_option_host_wide_fallback_exits_2_when_explicit_workspace_given(
+    runner: _CliRunner,
+    tmp_path: Path,
+    no_workspace_cwd: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit ``--workspace`` bypasses the host-wide fallback entirely,
+    so a run id that only exists host-wide (not under that workspace) surfaces
+    the ordinary "Not inside a BSP workspace" behaviour is not triggered, but
+    the id is not found under the given workspace either."""
+    run_id = "20260617-150000"
+    _stage_host_wide_run(tmp_path, monkeypatch, run_id=run_id)
+    ws = tmp_path / "explicit-ws"
+    (ws / "nxp" / "build" / "runs").mkdir(parents=True)
+
+    def _boom() -> dict[Path, frozenset[int]]:
+        raise AssertionError("_discover_host_cookers must not run when --workspace is given")
+
+    monkeypatch.setattr(stop_cmd.build_stop, "_discover_host_cookers", _boom)
+
+    result = runner.invoke(app, ["stop", "--workspace", str(ws), "--run", run_id])
+
+    assert result.exit_code != 0
+    assert f"no run matching {run_id!r}" in result.output
+
+
+def test_run_option_host_wide_fallback_surfaces_peer_held_root(
+    runner: _CliRunner,
+    tmp_path: Path,
+    no_workspace_cwd: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A peer-held root discovered host-wide contributes zero candidates, so
+    a named ``--run`` id can never match it - the ownership warning must
+    still surface via ``_stop_matched_run``'s existing no-match branch."""
+    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    topdir = tmp_path / "peer-workspace" / "nxp"
+    (topdir / "build" / "runs").mkdir(parents=True)
+    monkeypatch.setattr(
+        stop_cmd.build_stop,
+        "_discover_host_cookers",
+        lambda: {topdir / "build": frozenset({4242})},
+    )
+
+    root = stop_cmd.build_stop.RunRoot(
+        bsp_root=topdir, family="nxp", resolve_workspace=topdir.parent, resolve_family="nxp"
+    )
+    refusal = stop_cmd.build_stop.LockRefusal(reason="peer-held", host="pc2")
+    skipped_root = stop_cmd.build_stop.SkippedRoot(root=root, refusal=refusal)
+    monkeypatch.setattr(
+        stop_cmd.build_stop,
+        "enumerate_workspace_runs",
+        lambda _path, **_kw: stop_cmd.build_stop.RunScan(candidates=[], skipped=[skipped_root]),
+    )
+
+    result = runner.invoke(app, ["stop", "--force", "--run", "maybe-on-peer"])
+
+    assert result.exit_code != 0
+    flat_output = " ".join(result.output.split())
+    assert "owned by pc2" in flat_output
+    assert "among live builds on this host" in flat_output
+
+
+def test_run_option_host_wide_fallback_never_calls_correlate_host_discoveries(
+    runner: _CliRunner,
+    tmp_path: Path,
+    no_workspace_cwd: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The host-wide helper must scan each topdir directly, never through
+    ``correlate_host_discoveries`` - that function discards the skipped-root
+    list this fallback needs to diagnose a peer-held build."""
+    run_id = "20260617-150000"
+    run_dir = _stage_host_wide_run(tmp_path, monkeypatch, run_id=run_id)
+
+    def _boom(*a: object, **k: object) -> list[object]:
+        raise AssertionError("correlate_host_discoveries must not be called")
+
+    monkeypatch.setattr(stop_cmd.build_stop, "correlate_host_discoveries", _boom)
+
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        stop_cmd.build_stop,
+        "stop_run",
+        lambda rd, cfg=None, *, force=False, grace_seconds=0: (calls.append(rd), True)[1],
+    )
+
+    result = runner.invoke(app, ["stop", "--force", "--run", run_id])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [run_dir]
