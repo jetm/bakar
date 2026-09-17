@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
@@ -38,26 +39,37 @@ def _is_tty() -> bool:
     return sys.stdin.isatty()
 
 
-def _stop_matched_run(ws: Path, run_id: str, *, force: bool, timeout: float | None) -> bool:
-    """Resolve ``run_id`` against every family root and stop it if live.
+def _stop_matched_run(
+    run_id: str,
+    *,
+    candidates: list[build_stop.RunCandidate],
+    live_run_dirs: set[Path],
+    skipped: list[build_stop.SkippedRoot],
+    force: bool,
+    timeout: float | None,
+    scope_desc: str = "in this workspace",
+    confirm: Callable[[build_stop.RunCandidate], bool] | None = None,
+) -> bool:
+    """Resolve ``run_id`` against an already-scanned candidate set and stop it if live.
 
     Shared by the ``--run`` flag path and the interactive numbered-pick path so
     there is exactly one stop-dispatch code path regardless of how the run id
-    was chosen. Exits nonzero via ``typer.Exit`` when the id has no match, or
-    matches a run that is not currently live.
+    was chosen. The scan itself is done by the caller, not here - both callers
+    already have the ``RunScan``/``live`` data in hand, and scanning twice per
+    invocation is wasted work. Exits nonzero via ``typer.Exit`` when the id has
+    no match, or matches a run that is not currently live.
     """
     # Exact-match against the UNFILTERED candidate set, not the live-only one -
     # the unfiltered set is what lets "no match anywhere" and "match but not
     # live" be told apart. A live-only lookup would report both cases
     # identically as "no match".
-    scan = build_stop.enumerate_workspace_runs(ws, user_config=_state._USER_CONFIG)
-    match = next((c for c in scan.candidates if c.run_dir.name == run_id), None)
+    match = next((c for c in candidates if c.run_dir.name == run_id), None)
     if match is None:
         # A root the NFS lock-ownership gate refused is excluded from
-        # scan.candidates entirely, so "no match" here can genuinely mean
+        # candidates entirely, so "no match" here can genuinely mean
         # "the id lives on a root we were never allowed to look at" - surface
         # that instead of letting it read identically to "no such id anywhere".
-        for skipped_root in scan.skipped:
+        for skipped_root in skipped:
             refusal = skipped_root.refusal
             if refusal.reason == "peer-held":
                 host = refusal.host if refusal.host else "another host"
@@ -70,15 +82,13 @@ def _stop_matched_run(ws: Path, run_id: str, *, force: bool, timeout: float | No
                     f"[yellow]cannot confirm ownership of {skipped_root.root.bsp_root} "
                     f"({refusal.reason}); it was not checked for a live build[/]"
                 )
-        console.print(f"[red]no run matching {run_id!r} found in this workspace[/].")
+        console.print(f"[red]no run matching {run_id!r} found {scope_desc}[/].")
         raise typer.Exit(code=1)
-    # live_workspace_runs now verifies container-mode liveness against the
-    # runtime itself (not just "a launch record with a label exists"), so a
-    # single membership check here answers both host- and container-mode
-    # targets correctly - no separate runtime query needed at this call site.
-    live_run_dirs = {c.run_dir for c in build_stop.live_workspace_runs(ws, user_config=_state._USER_CONFIG)}
     if match.run_dir not in live_run_dirs:
         console.print(f"[red]run {run_id} is not currently live[/].")
+        raise typer.Exit(code=1)
+    if confirm is not None and not confirm(match):
+        console.print(f"[red]not stopping {run_id}[/].")
         raise typer.Exit(code=1)
     grace_seconds = timeout if timeout is not None else match.cfg.stop_grace_seconds
     return build_stop.stop_run(match.run_dir, match.cfg, force=force, grace_seconds=grace_seconds)
@@ -186,7 +196,22 @@ def stop(
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
 
     if run_id is not None:
-        stopped = _stop_matched_run(ws, run_id, force=force, timeout=timeout)
+        scan = build_stop.enumerate_workspace_runs(ws, user_config=_state._USER_CONFIG)
+        skipped = scan.skipped
+        # live_workspace_runs now verifies container-mode liveness against the
+        # runtime itself (not just "a launch record with a label exists"), so a
+        # single membership check in _stop_matched_run answers both host- and
+        # container-mode targets correctly - no separate runtime query needed
+        # at this call site.
+        live_run_dirs = {c.run_dir for c in build_stop.live_workspace_runs(ws, user_config=_state._USER_CONFIG)}
+        stopped = _stop_matched_run(
+            run_id,
+            candidates=scan.candidates,
+            live_run_dirs=live_run_dirs,
+            skipped=skipped,
+            force=force,
+            timeout=timeout,
+        )
         if not stopped:
             raise typer.Exit(code=1)
         return
@@ -205,7 +230,8 @@ def stop(
     # entirely, so surface it explicitly here - otherwise a peer-held root
     # hiding a real build is indistinguishable from a root with genuinely
     # nothing running, in every branch below (zero, one, or two-or-more live).
-    skipped = build_stop.enumerate_workspace_runs(ws, user_config=_state._USER_CONFIG).skipped
+    scan = build_stop.enumerate_workspace_runs(ws, user_config=_state._USER_CONFIG)
+    skipped = scan.skipped
     for skipped_root in skipped:
         refusal = skipped_root.refusal
         if refusal.reason == "peer-held":
@@ -249,7 +275,14 @@ def stop(
             # exact same code path the non-interactive `--run` flag uses -
             # there is no separate stopping logic for the interactive case.
             chosen_run_id = live[choice - 1].run_dir.name
-            stopped = _stop_matched_run(ws, chosen_run_id, force=force, timeout=timeout)
+            stopped = _stop_matched_run(
+                chosen_run_id,
+                candidates=scan.candidates,
+                live_run_dirs={c.run_dir for c in live},
+                skipped=skipped,
+                force=force,
+                timeout=timeout,
+            )
             if not stopped:
                 raise typer.Exit(code=1)
             return
