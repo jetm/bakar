@@ -31,10 +31,9 @@ bakar doctor my-project.yml
 bakar doctor --post-build
 ```
 
-## Check categories
-
 Checks cover:
 
+- **NFS cache-mount readiness** (`cache-mounts`, runs in every mode - see [NFS cache-mount readiness](#nfs-cache-mount-readiness) below)
 - Container runtime (Docker daemon version >= 20.10, storage driver, kas-container image present)
 - Host tools (`repo`, `kas-container`, `git`, global git identity)
 - Disk space (build root partition, ccache fill ratio)
@@ -46,8 +45,81 @@ Checks cover:
 - BSP-specific checks (repo manifest validity for NXP)
 - PSI pressure support (kernel feature check, threshold calibration)
 - Persistent hashserv daemon (when `[build] hashserv = true` - PID + TCP probe; see [hashserv.md](hashserv.md))
+- Per-workspace daemon state (`daemon-state` - see [Per-workspace daemon state](#per-workspace-daemon-state) below)
 - sstate hash leak (host-specific variables that corrupt sstate task signatures)
 - Uninative wiring (when `[build] uninative = true` - the host tarball's fragment, its glibc ceiling, its payload integrity, its `DL_DIR` cache state, and its consistency across a cluster)
+- Cluster shared-mount options (`shared-mounts`, cluster mode only - see [Cluster shared-mount options](#cluster-shared-mount-options) below)
+
+## NFS cache-mount readiness
+
+`cache-mounts` is the first check in every doctor run, in every mode - it is
+never filtered by cluster mode or host/container mode, because a wedged NFS
+cache breaks a single-node build exactly as it breaks a cluster one. It probes
+every effective cache directory (`sstate_dir`, `dl_dir`, and the ccache
+directory when ccache is enabled) with a bounded `stat`-style probe, capped at
+20 seconds per directory. The probe deliberately touches each directory rather
+than trusting `/proc/mounts` alone, because that is what triggers an idle
+autofs automount before any other check tries to read the same share.
+
+Each probed directory is classified against `/proc/mounts` and `/etc/fstab`:
+
+- **PASS** - the probe succeeded and the directory resolves to whatever
+  filesystem it is expected to be.
+- **BLOCK** - the directory did not answer within the 20-second deadline
+  (unresponsive share), the probe errored, or `/etc/fstab` declares the
+  directory as an NFS mount but it currently resolves to a local filesystem.
+
+A blocking result names each unusable directory, the NFS server it is
+declared against (read from `/etc/fstab` first, falling back to the live
+`/proc/mounts` source), and the reason, with a fix hint to check the NFS
+server and this node's link.
+
+When `cache-mounts` is blocking, every other check that reads a cache
+directory - `cache-dirs`, `disk-free`, `ccache-health`, `hashserv`,
+`daemon-state`, `shared-mounts`, `uninative-dldir-links`,
+`uninative-mirror-hit`, and `uninative-cluster-ceiling` - is skipped rather
+than run, and reports which unusable directory caused the skip. This keeps a
+dead NFS share from also hanging every check that would otherwise try to read
+it.
+
+## Per-workspace daemon state
+
+`daemon-state` blocks when the per-workspace hashserv or prserv daemon would
+have to write its SQLite state to a network filesystem - that is, hashserv or
+prserv is running locally to this workspace rather than pointed at a central
+endpoint. The fix is to set `[build] bb_hashserve` / `prserv_host` to a
+central tier, or to point the cache directory holding that state at local
+disk. The check is skipped when neither per-workspace daemon is actually in
+use (a central endpoint is configured for both, or both are off).
+
+## Per-check deadline
+
+Every pre-flight check in a `bakar doctor` run gets its own thread and a
+180-second deadline. A check that reads a wedged filesystem and does not
+finish in time is reported as a FAIL under its own registered name and
+severity, naming the deadline, instead of hanging the whole doctor run. This
+deadline does not apply to post-build checks (`--post-build`), which read a
+finished build's native tree and can legitimately take longer.
+
+`bakar build`'s doctor step (not the standalone `bakar doctor` command) also
+writes a `check_start`/`check_end` event pair per check to the run's
+`events.jsonl`, in run order, so a hung or slow check is visible in the event
+log even when the doctor report itself is hidden.
+
+## Cluster shared-mount options
+
+The cluster-mode `shared-mounts` check (`check_shared_cache_mounts`) verifies
+that the shared sstate, downloads, and (when enabled) ccache directories are
+NFS mounts, and checks the mount options each is using. `softerr` and `hard`
+are both treated as healthy, but for different reasons. `hard` retries
+indefinitely. `softerr` does not - it gives up after the same bounded
+`retrans` retransmission count as plain `soft` - but it returns `ETIMEDOUT`
+to the application instead of plain `soft`'s `EIO`, so a `softerr` timeout is
+distinguishable from a failing disk while a plain `soft` one is not. The
+check warns only on plain `soft`, because its `EIO` on timeout is
+indistinguishable from a failing disk, and recommends switching to
+`softerr` or `hard` - either is an acceptable end state, since both give the
+caller a diagnosable failure signal instead of `soft`'s ambiguous one.
 
 ## sstate hash-leak check
 
