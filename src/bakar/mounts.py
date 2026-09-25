@@ -24,8 +24,14 @@ def _mount_entry_in(mounts_raw: str, path: Path) -> tuple[str, str, str, str] | 
     Returns ``(source, mountpoint, fstype, opts)`` or None when no mountpoint
     covers the path. Sorting by mountpoint length descending makes the most
     specific (longest) prefix win, which resolves bind/overlay mounts to the
-    real backing filesystem. Shared by :func:`check_workspace_filesystem`
-    (fstype only) and :func:`check_shared_cache_mounts` (source + opts too).
+    real backing filesystem. When multiple entries share that longest
+    mountpoint (a filesystem mounted over an existing trap at the same path -
+    e.g. an nfs4 share mounted over its systemd ``autofs`` mountpoint), the
+    entry listed LAST in the table wins: ``/proc/mounts`` lists mounts in the
+    order the kernel applied them, so the last-listed entry at a given
+    mountpoint is the one the kernel currently resolves that path through.
+    Shared by :func:`check_workspace_filesystem` (fstype only) and
+    :func:`check_shared_cache_mounts` (source + opts too).
     """
     entries: list[tuple[str, str, str, str]] = []
     for line in mounts_raw.splitlines():
@@ -33,6 +39,10 @@ def _mount_entry_in(mounts_raw: str, path: Path) -> tuple[str, str, str, str] | 
         if len(fields) < 4:
             continue
         entries.append((fields[0], fields[1], fields[2], fields[3]))
+    # Reverse before the stable sort so entries tied on mountpoint length keep
+    # their reversed relative order - the last-listed of a tied group then
+    # sorts first, and the loop below returns the first match it finds.
+    entries.reverse()
     entries.sort(key=lambda e: len(e[1]), reverse=True)
 
     target = path.resolve()
@@ -70,13 +80,18 @@ def is_path_on_nfs(path: Path) -> bool | None:
 
     Returns:
         ``True`` - the longest-prefix ``/proc/mounts`` entry covering ``path``
-        names an nfs/nfs4 filesystem.
+        (last-listed among any sharing that mountpoint) names an nfs/nfs4
+        filesystem.
 
-        ``False`` - a covering entry exists and names some other filesystem, so
-        the path is CONFIRMED local to this node.
+        ``False`` - a covering entry exists and names some other filesystem
+        that is not ``autofs``, so the path is CONFIRMED local to this node.
 
         ``None`` - the filesystem could not be determined: ``/proc/mounts`` is
-        unreadable, or no entry covers the path.
+        unreadable, no entry covers the path, or the covering entry is a
+        systemd ``autofs`` trap. An autofs mountpoint is a placeholder the
+        kernel resolves through to whatever gets auto-mounted on first access
+        (frequently NFS on this fleet); it names no real filesystem, so it
+        cannot confirm the path is local.
 
     ``None`` is deliberately distinct from ``False``, and callers MUST treat it
     as shared (fail closed). This helper backs a deletion guard for
@@ -99,7 +114,10 @@ def is_path_on_nfs(path: Path) -> bool | None:
     entry = _mount_entry_in(mounts_raw, path)
     if entry is None:
         return None
-    return entry[2] in _FS_NFS
+    fstype = entry[2]
+    if fstype == "autofs":
+        return None
+    return fstype in _FS_NFS
 
 
 def _nfs_lookup_cache_bounded(opts: str) -> bool:
