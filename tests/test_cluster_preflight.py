@@ -277,7 +277,7 @@ def test_shared_mount_unwritable_blocks(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
 @pytest.mark.unit
 def test_shared_mount_soft_option_warns(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A soft-mounted shared dir -> WARN (data-integrity hazard), not a block."""
+    """A plain soft-mounted shared dir -> WARN (data-integrity hazard), not a block."""
     monkeypatch.setattr(
         "bakar.diagnostics._mount_entry_in", lambda *_a: ("10.42.0.1:/e", "/mnt", "nfs", "rw,soft,vers=4")
     )
@@ -285,6 +285,19 @@ def test_shared_mount_soft_option_warns(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert result.status == Status.FAIL
     assert result.severity == Severity.WARN
     assert "soft" in result.message
+    assert "softerr" in result.message
+
+
+@pytest.mark.unit
+def test_shared_mount_softerr_option_passes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A softerr-mounted shared dir -> PASS, no soft-mount warning."""
+    monkeypatch.setattr(
+        "bakar.diagnostics._mount_entry_in", lambda *_a: ("10.42.0.1:/e", "/mnt", "nfs", "rw,softerr,vers=4.2")
+    )
+    result = check_shared_cache_mounts(_cfg(cluster=True, sstate_dir=str(tmp_path), dl_dir=None, ccache=False))
+    assert result.status == Status.PASS
+    assert result.severity == Severity.BLOCK
+    assert "soft mount" not in result.message
 
 
 @pytest.mark.unit

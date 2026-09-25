@@ -3430,8 +3430,12 @@ def check_shared_cache_mounts(cfg: BuildConfig) -> CheckResult:
         if fstype not in {"nfs", "nfs4"}:
             sink.append(f"{label} {path} is not an NFS mount ({fstype} at {mountpoint})")
             continue
-        if "soft" in opts.split(","):
-            warnings.append(f"{label} {source} is a soft mount (a timeout can corrupt the cache; use hard)")
+        opt_set = opts.split(",")
+        if "soft" in opt_set and "softerr" not in opt_set:
+            warnings.append(
+                f"{label} {source} is a soft mount (a timed-out request reports EIO, "
+                "indistinguishable from a failing disk; use softerr or hard)"
+            )
         oks.append(f"{label} {source}")
 
     if block_problems:
@@ -3440,7 +3444,8 @@ def check_shared_cache_mounts(cfg: BuildConfig) -> CheckResult:
             Severity.BLOCK,
             "; ".join(block_problems),
             fix_hint=(
-                "mount the shared NFS exports (hard) at these paths so the node does not build into a private cache"
+                "mount the shared NFS exports (hard or softerr) at these paths "
+                "so the node does not build into a private cache"
             ),
         )
     detail = "; ".join(oks)
