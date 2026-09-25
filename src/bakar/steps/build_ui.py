@@ -95,6 +95,12 @@ FALLBACK_MODE = re.compile(r"Unable to use interactive mode")
 # Lines to surface above the Live display so users see real problems.
 SEVERITY_PASSTHROUGH = re.compile(r"\b(ERROR|FATAL|WARNING|QA Issue):")
 
+# Cap on indented continuation lines forwarded after an ERROR/FATAL head line
+# (e.g. bitbake's sanity-checker reasons) before collapsing the rest of the
+# block into one marker line.
+CONTINUATION_MAX_LINES = 20
+CONTINUATION_MARKER = "  ... (more lines in kas.log)"
+
 # First knotty line of a task-failure report ("ERROR: <PF> <task>: ...").
 # Detecting it on the PTY feed - BEFORE the line prints - is the only way
 # to commit the live frame above the failure text: the structured
@@ -256,6 +262,13 @@ class BuildUIState:
         self._pending_log: str | None = None
         self.warn_count: int = 0
         self.error_count: int = 0
+        # Continuation-block state: opened when an ERROR/FATAL severity line
+        # is forwarded, so the indented detail lines under it (e.g. bitbake's
+        # sanity-checker reasons) reach the console too. See process_line's
+        # top-of-function check.
+        self._cont_open: bool = False
+        self._cont_forwarded: int = 0
+        self._cont_marker_emitted: bool = False
         self._logfile_translator = logfile_translator
         # Persistent record of (recipe, taskname) for each failed task,
         # rendered in the build bar. ``_pending_alerts`` queues one-shot
@@ -328,6 +341,27 @@ class BuildUIState:
         forward it to ``live.console.print()``. Returns ``None`` for all
         other lines.
         """
+        # 0. Continuation block: an open block (from a prior ERROR/FATAL head
+        # line) claims every following indented, non-blank line up to
+        # CONTINUATION_MAX_LINES, then one marker line, then drops the rest
+        # silently. This runs first so mode detection and the progress
+        # parsers below never see a continuation line -- the block stays
+        # contiguous with its head line in the console output.
+        if self._cont_open:
+            if line.strip() and line[:1].isspace():
+                if self._cont_forwarded < CONTINUATION_MAX_LINES:
+                    self._cont_forwarded += 1
+                    return line
+                if not self._cont_marker_emitted:
+                    self._cont_marker_emitted = True
+                    return CONTINUATION_MARKER
+                return None
+            # Non-indented or blank line: close the block and process this
+            # line normally (fall through instead of returning).
+            self._cont_open = False
+            self._cont_forwarded = 0
+            self._cont_marker_emitted = False
+
         # 1. Mode detection: record that the fallback parser path is active.
         # This runs regardless of feed source so degraded-mode reporting holds.
         if FALLBACK_MODE.search(line):
@@ -427,6 +461,12 @@ class BuildUIState:
                 self.warn_count += 1
             elif token in ("ERROR", "FATAL"):
                 self.error_count += 1
+                # Open a continuation block so indented detail lines under
+                # this head (e.g. bitbake's sanity-checker reasons) reach the
+                # console too -- see the top-of-function check.
+                self._cont_open = True
+                self._cont_forwarded = 0
+                self._cont_marker_emitted = False
                 # First error line of a task failure: record the failure
                 # and request a freeze so the runner commits the live frame
                 # above this line. Dedupe on (PF, task) - bitbake emits
