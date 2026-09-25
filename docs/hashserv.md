@@ -136,6 +136,41 @@ This implies one workspace pins one bitbake version. If you point the same `<bsp
 
 When the daemon is keyed to a shared `SSTATE_DIR`, the first workspace to build starts it and later workspaces reuse it. This assumes the workspaces sharing one sstate cache run compatible bitbake versions - which they must already, since sstate hash equivalence is only valid across matching signatures. If you deliberately share `SSTATE_DIR` across incompatible bitbake versions (not recommended), `bakar hashserv stop` against any of those workspaces before the first build of the divergent one, so the next build respawns the daemon on the new bitbake.
 
+## Network state directories: refuse, no fallback
+
+`ensure_running` checks the daemon's state directory (`<state_key>/.bakar`,
+the effective `SSTATE_DIR`, or `<bsp_root>` when no sstate dir is configured)
+*before* creating anything - PID file, port file, SQLite DB, or process. When
+that state directory resolves to NFS, or to a filesystem bakar cannot
+determine (an unresolvable mount, or a path bakar cannot stat), `ensure_running`
+raises `NetworkStateDirError` instead of returning `None`.
+
+This is deliberate and is **not** the same as the silent-fallback cases in the
+next section. Every other failure in "When the daemon will not start" lets the
+build proceed with `BB_HASHSERVE=auto` - bitbake's own transient server. This
+one does not: there is **no fallback to bitbake's auto server** here, because
+that auto server would write its SQLite hash-equivalence database into the
+same network-backed `SSTATE_DIR` this check exists to keep off of. Before this
+refusal existed, that silent fallback is exactly what happened - a 2026-09-25
+incident where a build with hashserv enabled and no central endpoint
+configured fell through to `BB_HASHSERVE=auto`, and the auto server's database
+landed on NFS anyway, with nothing surfacing the misconfiguration.
+
+`bakar hashserv start` catches `NetworkStateDirError`, prints the refusal
+message in red, and exits 1. No PID file, port file, or daemon process is left
+behind. The message names the resolved state directory, the filesystem it
+landed on (`nfs`, or "an undetermined filesystem"), and the fix:
+
+- Point `[build] bb_hashserve` at a central hash-equivalence server
+  (`bakar settings set build.bb_hashserve <host:port>`) - the per-workspace
+  daemon is never started when a central endpoint is configured, so its state
+  directory is never touched.
+- Or set `[build] sstate_dir` to a path on local disk.
+
+`bakar build` hits the same check through `daemon_state_refusal(cfg)` before
+launching kas-container, and fails the build with the same message rather than
+silently falling through to `auto`.
+
 ## When the daemon will not start
 
 `ensure_running` returns `None` (silently - no error) and the build falls through to `BB_HASHSERVE=auto` in these cases:

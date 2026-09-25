@@ -108,6 +108,44 @@ synced), `start` fails with exit 1.
 `bakar clean-cache --full` also stops it before emptying the shared sstate
 directory, so no live daemon runs against unlinked files.
 
+## Network state directories: refuse, no fallback
+
+`ensure_running` checks the daemon's state directory (`<state_key>/.bakar`,
+the effective `SSTATE_DIR`, or `<bsp_root>` when no sstate dir is configured)
+*before* creating anything - state dir, SQLite DB, or process. When that state
+directory resolves to NFS, or to a filesystem bakar cannot determine (an
+unresolvable mount, or a path bakar cannot stat), `ensure_running` raises
+`bakar.hashserv.NetworkStateDirError` instead of returning `None`.
+
+This is deliberate and is **not** the same as the silent-fallback case in the
+next section. A missing binary or a startup-probe timeout lets the build fall
+through to bitbake's own per-build PR server autostart (`PRSERV_HOST =
+"localhost:0"`). This one does not: there is **no fallback to a per-build PR
+server** here, because that autostarted server keeps its SQLite DB under the
+volatile `${PERSISTENT_DIR}` (`TMPDIR/cache`) inside the same network-backed
+build tree this check exists to keep state off of, and a `TMPDIR` wipe then
+resets PRs to `r0` while buildhistory still records the old `r0.N` - the
+`version-going-backwards` QA failure this daemon exists to prevent in the
+first place. Before this refusal existed, that silent fallback is exactly what
+happened on 2026-09-25: a host-mode build with no central `prserv_host`
+configured fell through to bitbake's autostart against network-backed state,
+with nothing surfacing the misconfiguration.
+
+`bakar prserv start` catches `NetworkStateDirError`, prints the refusal
+message in red, and exits 1. No state dir, PID/port state, or daemon process
+is left behind. The message names the resolved state directory, the
+filesystem it landed on (`nfs`, or "an undetermined filesystem"), and the fix:
+
+- Point `[build] prserv_host` at the central PR service
+  (`bakar settings set build.prserv_host <host:port>`) - the per-workspace
+  daemon is never started when a central endpoint is configured, so its state
+  directory is never touched.
+- Or set `[build] sstate_dir` to a path on local disk.
+
+`bakar build` hits the same check through `bakar.hashserv.daemon_state_refusal(cfg)`
+before launching kas-container, and fails the build with the same message
+rather than silently falling through to bitbake's autostart.
+
 ## When the daemon will not start
 
 `start` exits 1 (and the build path falls through to bitbake's own autostart)
