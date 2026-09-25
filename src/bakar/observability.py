@@ -230,6 +230,23 @@ class RunLogger:
         self._logger.error(f"[red]✗[/] {step}: {reason}")
         self._emit("step_fail", step=step, reason=reason, **fields)
 
+    def check_start(self, check: str) -> None:
+        """Emit a ``check_start`` event only - no console output.
+
+        Doctor checks are already presented in a summary table once they
+        finish, so unlike :meth:`step_start` this writes only to the event
+        log and skips both the console-log header and the Rich log line.
+        """
+        self._emit("check_start", check=check)
+
+    def check_end(self, check: str, *, status: str, severity: str, seconds: float) -> None:
+        """Emit a ``check_end`` event only - no console output.
+
+        See :meth:`check_start`: the doctor table already prints the result,
+        so this writes only to the event log.
+        """
+        self._emit("check_end", check=check, status=status, severity=severity, seconds=seconds)
+
     def persist_bitbake_events(self) -> None:
         """Normalize the raw bitbake event log into ``bitbake-events.json``.
 

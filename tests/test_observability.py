@@ -504,3 +504,39 @@ def test_last_run_event_none_when_no_match(tmp_path: Path) -> None:
     events = tmp_path / "events.jsonl"
     events.write_text('{"event": "step_ok", "step": "sync"}\n')
     assert last_run_event(events, lambda rec: rec.get("event") == "step_fail") is None
+
+
+@pytest.mark.unit
+def test_check_start_and_check_end_write_events_only(tmp_path: Path) -> None:
+    """check_start/check_end must write to events.jsonl and skip the console.
+
+    Doctor already prints a summary table for check results, so unlike
+    step_start/step_ok these emitters must not touch console.log or the
+    Rich console.
+    """
+    runs_dir = tmp_path / "runs"
+    with RunLogger(runs_dir) as log, patch.object(log.console, "print") as mock_print:
+        log.check_start("nfs_cache_writable")
+        log.check_end("nfs_cache_writable", status="ok", severity="warn", seconds=0.42)
+        calls = [str(c) for c in mock_print.call_args_list]
+
+    import json
+
+    events = [json.loads(ln) for ln in log.events_path.read_text().splitlines() if ln]
+    check_events = [e for e in events if e.get("event") in {"check_start", "check_end"}]
+    assert len(check_events) == 2
+
+    start, end = check_events
+    assert start["event"] == "check_start"
+    assert start["check"] == "nfs_cache_writable"
+
+    assert end["event"] == "check_end"
+    assert end["check"] == "nfs_cache_writable"
+    assert end["status"] == "ok"
+    assert end["severity"] == "warn"
+    assert end["seconds"] == 0.42
+
+    # No console-log header and no Rich console output for either call.
+    assert not log.console_path.read_text()
+    header_calls = [c for c in calls if "──" in c]
+    assert len(header_calls) == 0, f"header marker was emitted to Rich console: {calls}"
