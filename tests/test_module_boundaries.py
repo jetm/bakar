@@ -242,6 +242,7 @@ DIAGNOSTICS_CHECK_NAMES: frozenset[str] = frozenset(
         "check_cgroup_v2",
         "check_container_bitbake",
         "check_container_image",
+        "check_daemon_state",
         "check_disk_free",
         "check_docker_daemon",
         "check_docker_storage_driver",

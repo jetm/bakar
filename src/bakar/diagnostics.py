@@ -3179,6 +3179,36 @@ def check_hashserv(cfg: BuildConfig) -> CheckResult:
     return _ok(name, Severity.WARN, f"running at ws://localhost:{port} (PID {pid})")
 
 
+def check_daemon_state(cfg: BuildConfig) -> CheckResult:
+    """Refuse a per-workspace hashserv/prserv daemon whose state sits on NFS.
+
+    SKIP when neither per-workspace daemon is actually in use: hashserv is off
+    or points at a central endpoint, AND prserv is off (container mode) or
+    points at a central endpoint - a node fully on the central tier never
+    touches its own state directory for either service. Delegates the
+    network-filesystem predicate to :func:`bakar.hashserv.daemon_state_refusal`
+    rather than re-deriving it, so this check and the launch-gate refusal
+    (steps layer) can never drift apart on what counts as unsafe.
+    """
+    from bakar import hashserv
+
+    name = "daemon-state"
+    hashserv_in_use = cfg.bb_hashserve is None and cfg.use_hashequiv
+    prserv_in_use = cfg.prserv_host is None and cfg.host_mode
+    if not hashserv_in_use and not prserv_in_use:
+        return _skip(name, Severity.BLOCK, "no per-workspace hashserv/prserv daemon in use")
+
+    reason = hashserv.daemon_state_refusal(cfg)
+    if reason is not None:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            reason,
+            fix_hint=("set [build] bb_hashserve / prserv_host to the central tier, or point sstate_dir at local disk"),
+        )
+    return _ok(name, Severity.BLOCK, "per-workspace daemon state is on local disk")
+
+
 # Host-specific variables that, if they feed bitbake task signatures, make
 # sstate hashes vary across builds/hosts. Each must be excluded from
 # signature computation with a ``[vardepsexclude]`` annotation.
@@ -3490,7 +3520,10 @@ def _cache_mount_server(status: mounts.CacheMountStatus) -> str:
 
 
 def _cache_mount_blocking_detail(status: mounts.CacheMountStatus) -> str:
-    """Per-state explanation for a blocking :class:`~bakar.mounts.CacheMountStatus`."""
+    """Per-state explanation for a blocking :class:`~bakar.mounts.CacheMountStatus`.
+
+    The wording only depends on ``state``/``detail``/``fstype``.
+    """
     if status.state == "unresponsive":
         return f"did not answer within {int(mounts.CACHE_PROBE_DEADLINE_S)}s"
     if status.state == "error":
@@ -3508,6 +3541,11 @@ def _cache_mounts_result(statuses: list[mounts.CacheMountStatus]) -> CheckResult
     pre-phase and the thin registered :func:`check_cache_mounts` can both
     build their result through this one function without either re-running
     :func:`bakar.mounts.assess_cache_mounts`.
+
+    Any target's problem (:attr:`~bakar.mounts.CacheMountStatus.blocking`)
+    fails the check at BLOCK severity, regardless of ``critical`` - the
+    cache-mount-readiness spec's "any effective cache directory" wording
+    carries no criticality carve-out.
     """
     name = "cache-mounts"
     if not statuses:
@@ -3591,6 +3629,7 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     # group's check_central_hashserv (the shared central-tier daemon) - same
     # word, different service.
     check_hashserv,
+    check_daemon_state,
     check_sccache_dist,
     check_sstate_hash_leak,
     check_override_syntax,
@@ -3668,6 +3707,7 @@ _CACHE_TOUCHING_CHECKS: tuple[CheckFunc, ...] = (
     check_disk_free,
     check_ccache_health,
     check_hashserv,
+    check_daemon_state,
     check_shared_cache_mounts,
     check_uninative_dldir_links,
     check_uninative_mirror_hit,
@@ -3701,7 +3741,7 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "Caches & storage",
-        ("cache-mounts", "cache-dirs", "ccache-health", "hashserv", "sstate-hash-leak", "disk-free"),
+        ("cache-mounts", "cache-dirs", "ccache-health", "hashserv", "daemon-state", "sstate-hash-leak", "disk-free"),
     ),
     (
         "Cluster",
@@ -3779,6 +3819,7 @@ _CHECK_METADATA: tuple[tuple[CheckFunc, str, Severity], ...] = (
     (check_docker_storage_driver, "docker-storage-driver", Severity.WARN),
     (check_ccache_health, "ccache-health", Severity.WARN),
     (check_hashserv, "hashserv", Severity.WARN),
+    (check_daemon_state, "daemon-state", Severity.BLOCK),
     (check_sccache_dist, "sccache-dist", Severity.BLOCK),
     (check_sstate_hash_leak, "sstate-hash-leak", Severity.WARN),
     (check_override_syntax, "override-syntax", Severity.BLOCK),
@@ -3903,30 +3944,112 @@ def run_all(
     # check_cache_mounts(cfg) itself, which would re-run the probe. Its
     # on_check start/end pair brackets this pre-phase call, not the later loop
     # iteration that appends its result.
+    #
+    # The pre-phase itself runs under the same daemon-thread + deadline-join
+    # pattern as every other check (doctor-check-crash-isolation spec: "Each
+    # pre-flight doctor check SHALL run under an individual deadline of 180
+    # seconds", with no stated exception for cache-mounts). Before this fix
+    # only probe_statfs's own internal 20s bound covered the probe itself; the
+    # surrounding mount-table/fstab classification and the pre-phase call as a
+    # whole had no deadline wrapper at all.
+    #
+    # The probe thread also carries its own try/except Exception, same as the
+    # main per-check loop's `_run` closure below - an uncaught exception here
+    # used to die silently, leave cache_statuses as None with no other signal,
+    # and fall through to a SKIP ("no effective cache directories configured")
+    # that read as a clean all-clear over directories whose health was never
+    # actually determined.
     cache_statuses: list[mounts.CacheMountStatus] | None = None
     cache_mounts_seconds = 0.0
+    cache_mounts_timed_out = False
+    cache_mounts_crashed = False
+    cache_crash_exc: BaseException | None = None
     if check_cache_mounts in checks:
         _emit("start", "cache-mounts", None, 0.0)
+        cache_slot: dict[str, object] = {}
+
+        def _run_cache_probe(slot: dict[str, object] = cache_slot) -> None:
+            try:
+                slot["result"] = mounts.assess_cache_mounts(cfg.effective_cache_targets)
+            except Exception as exc:  # noqa: BLE001 - a crash here must not silently pass every gated check
+                slot["exc"] = exc
+
+        cache_thread = threading.Thread(target=_run_cache_probe, daemon=True)
         _probe_start = time.monotonic()
-        cache_statuses = mounts.assess_cache_mounts(cfg.effective_cache_targets)
+        cache_thread.start()
+        cache_thread.join(timeout=_CHECK_DEADLINE_SECONDS)
         cache_mounts_seconds = time.monotonic() - _probe_start
-    blocking_cache = [s for s in cache_statuses if s.blocking] if cache_statuses is not None else []
+        if cache_thread.is_alive():
+            cache_mounts_timed_out = True
+        elif "exc" in cache_slot:
+            cache_mounts_crashed = True
+            cache_crash_exc = cache_slot["exc"]  # type: ignore[assignment]
+        else:
+            cache_statuses = cache_slot.get("result")  # type: ignore[assignment]
+
+    # Gate on any problem: CacheMountStatus.blocking now covers every unusable
+    # target regardless of criticality (cache-mount-readiness spec: "any
+    # effective cache directory"). When the pre-phase itself timed out OR
+    # crashed, no status set was produced at all, so every effective cache
+    # target is treated as unusable - a check reading any of them would hang
+    # (or read stale/unknown state) on exactly the share the pre-phase never
+    # got to classify. A crash must be treated identically to a timeout here:
+    # without this branch, an exception inside assess_cache_mounts left
+    # cache_statuses as None with no signal at all, and the code below fell
+    # through to the `else` branch (no unusable targets, no gating) - a false
+    # all-clear that let every cache-touching check run ungated against
+    # directories whose health was never determined.
+    if cache_statuses is not None:
+        unusable_cache = [s for s in cache_statuses if s.blocking]
+        unusable_desc = ", ".join(f"{s.label} {s.path}" for s in unusable_cache)
+    elif cache_mounts_timed_out or cache_mounts_crashed:
+        unusable_cache = []
+        unusable_desc = ", ".join(f"{label} {path}" for label, path, _critical in cfg.effective_cache_targets)
+    else:
+        unusable_cache = []
+        unusable_desc = ""
+    any_cache_unusable = bool(unusable_cache) or cache_mounts_timed_out or cache_mounts_crashed
 
     for check in checks:
         if check is check_cache_mounts:
-            result = _cache_mounts_result(cache_statuses or [])
+            if cache_mounts_timed_out:
+                result = CheckResult(
+                    name="cache-mounts",
+                    severity=_CHECK_SEVERITY.get("cache-mounts", Severity.BLOCK),
+                    status=Status.FAIL,
+                    message=(
+                        f"did not finish within {_CHECK_DEADLINE_SECONDS:g}s "
+                        "(a filesystem it reads may be unresponsive)"
+                    ),
+                )
+            elif cache_mounts_crashed:
+                result = CheckResult(
+                    name="cache-mounts",
+                    severity=_CHECK_SEVERITY.get("cache-mounts", Severity.BLOCK),
+                    status=Status.FAIL,
+                    message=f"check crashed: {cache_crash_exc!r}",
+                )
+            else:
+                result = _cache_mounts_result(cache_statuses)
             results.append(result)
             _emit("end", result.name, result, cache_mounts_seconds)
             continue
         resolved_name = _CHECK_NAME.get(check, getattr(check, "__name__", "unknown"))
-        if blocking_cache and check in _CACHE_TOUCHING_CHECKS:
+        if any_cache_unusable and check in _CACHE_TOUCHING_CHECKS:
             _emit("start", resolved_name, None, 0.0)
-            unusable = ", ".join(f"{s.label} {s.path}" for s in blocking_cache)
+            if cache_mounts_timed_out:
+                message = (
+                    f"not run: cache-mounts assessment did not complete (unusable: {unusable_desc}) (see cache-mounts)"
+                )
+            elif cache_mounts_crashed:
+                message = f"not run: cache-mounts assessment crashed (unusable: {unusable_desc}) (see cache-mounts)"
+            else:
+                message = f"not run: {unusable_desc} unusable (see cache-mounts)"
             result = CheckResult(
                 name=resolved_name,
                 severity=_CHECK_SEVERITY.get(resolved_name, Severity.WARN),
                 status=Status.SKIP,
-                message=f"not run: {unusable} unusable (see cache-mounts)",
+                message=message,
             )
             results.append(result)
             _emit("end", resolved_name, result, 0.0)
