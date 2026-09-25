@@ -60,7 +60,7 @@ from bakar.commands._workspace import (
     logical_path,
     split_kas_yaml_arg,
 )
-from bakar.diagnostics import CheckResult, Severity, Status, any_blocking_failure, group_results, run_all
+from bakar.diagnostics import CheckEvent, CheckResult, Severity, Status, any_blocking_failure, group_results, run_all
 from bakar.layers import collect_layer_hashes
 
 if TYPE_CHECKING:
@@ -337,8 +337,14 @@ def _run_doctor_gate(cfg: BuildConfig, log, bsp: BspModel | None) -> None:
     """
     import bakar.commands._app as _state
 
+    def _on_check(event: CheckEvent) -> None:
+        if event.phase == "start":
+            log.check_start(event.name)
+        else:
+            log.check_end(event.name, status=event.status, severity=event.severity, seconds=event.seconds)
+
     log.step_start("doctor")
-    results = run_all(cfg, bsp)
+    results = run_all(cfg, bsp, on_check=_on_check)
     diag_path = log.run_dir / "diagnosis.txt"
     diag_path.write_text(
         "\n".join(f"{r.severity.value:5} {r.status.value:4} {r.name:22} {r.message}" for r in results) + "\n"
