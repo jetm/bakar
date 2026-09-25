@@ -69,7 +69,7 @@ def _stub_build_steps(monkeypatch: pytest.MonkeyPatch) -> None:
     steps become no-ops. ``collect_layer_hashes`` is left to individual tests
     to override (default: no layers).
     """
-    monkeypatch.setattr(helpers_module, "run_all", lambda cfg, bsp: [])
+    monkeypatch.setattr(helpers_module, "run_all", lambda cfg, bsp, **kw: [])
     monkeypatch.setattr(flavors_module, "detect", lambda cfg: _synced_state())
     monkeypatch.setattr(build_module.step_override, "apply", lambda cfg, log=None, **kw: None)
     monkeypatch.setattr(build_module.step_kas, "regenerate_yaml", lambda cfg, log, *, bsp: None)
