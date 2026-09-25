@@ -12,13 +12,47 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from pathlib import Path
 
 import pytest
 
+import bakar.mounts as mounts_module
 from bakar.hashserv import _find_binary, _workspace_port, is_running
 
 pytestmark = pytest.mark.unit
+
+
+def _write_stub_realpath_wedged(tmp_path: Path) -> Path:
+    """Executable ``realpath`` stub that never exits - mirrors
+    ``tests/test_mounts_probe.py``'s helper of the same name."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    stub = bin_dir / "realpath"
+    stub.write_text("#!/bin/sh\nsleep 60\n")
+    stub.chmod(0o755)
+    return bin_dir
+
+
+def test_workspace_port_does_not_hang_on_wedged_resolution(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A wedged ``realpath`` on PATH must not make ``_workspace_port`` hang.
+
+    Regression test: this used to call ``state_key.resolve()``, which shells
+    out to ``realpath`` and could hang on a wedged NFS automount even after
+    ``mounts._resolve_bounded`` made the classifier itself hang-safe. It now
+    uses ``mounts._lexical_normalize``, which touches no filesystem, so a
+    wedged ``realpath`` stub cannot affect it.
+    """
+    bin_dir = _write_stub_realpath_wedged(tmp_path)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    state_key = tmp_path / "sstate"
+
+    start = time.monotonic()
+    port = _workspace_port(state_key)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 2.0
+    assert 49152 <= port < 65535
 
 
 def test_workspace_port_is_deterministic(tmp_path: Path) -> None:
@@ -241,6 +275,12 @@ def test_ensure_running_returns_existing_when_alive(
     (state_dir / "hashserv.port").write_text("54321\n")
 
     monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: True)
+    # network_state_reason's is_path_on_nfs classification now spawns a real
+    # `realpath` child (bug 1's bounded, symlink-following resolution) -
+    # stub it so the global subprocess.Popen patch below, meant only to
+    # guard the hashserv daemon spawn itself, is not also asked to stand in
+    # for that unrelated subprocess call.
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
 
     def _popen_explodes(*_args: object, **_kwargs: object) -> None:
         msg = "subprocess.Popen must not be called when daemon is already running"
@@ -260,6 +300,7 @@ def test_ensure_running_starts_process_and_probe_succeeds(
 
     _create_workspace_binary(tmp_path)
     monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
 
     fake_proc = _FakeProc(pid=12345, poll_returns=[None])
     captured_popen_args: dict[str, object] = {}
@@ -302,6 +343,7 @@ def test_ensure_running_binds_to_cluster_host(
 
     _create_workspace_binary(tmp_path)
     monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
 
     fake_proc = _FakeProc(pid=222, poll_returns=[None])
     captured: dict[str, object] = {}
@@ -341,6 +383,7 @@ def test_ensure_running_aborts_when_probe_times_out(
 
     _create_workspace_binary(tmp_path)
     monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
 
     fake_proc = _FakeProc(pid=12345, poll_returns=[None], stderr_bytes=b"timeout text")
     monkeypatch.setattr(
@@ -393,6 +436,7 @@ def test_ensure_running_handles_immediate_exit(
 
     _create_workspace_binary(tmp_path)
     monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
 
     fake_proc = _FakeProc(pid=12345, poll_returns=[1], stderr_bytes=b"db locked")
     monkeypatch.setattr(
@@ -681,6 +725,7 @@ def test_ensure_running_keys_state_to_state_key_not_binary_root(
     _create_workspace_binary(binary_root)
 
     monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
 
     fake_proc = _FakeProc(pid=4242, poll_returns=[None])
     captured: dict[str, object] = {}

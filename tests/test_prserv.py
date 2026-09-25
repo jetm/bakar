@@ -9,10 +9,13 @@ host and return once the TCP probe succeeds.
 
 from __future__ import annotations
 
+import os
+import time
 from typing import TYPE_CHECKING
 
 import pytest
 
+import bakar.mounts as mounts_module
 from bakar import central_service, prserv
 from bakar.prserv import _find_binary, _workspace_port
 
@@ -35,6 +38,17 @@ def _create_binary(root: Path) -> Path:
     return binary
 
 
+def _write_stub_realpath_wedged(tmp_path: Path) -> Path:
+    """Executable ``realpath`` stub that never exits - mirrors
+    ``tests/test_mounts_probe.py``'s helper of the same name."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    stub = bin_dir / "realpath"
+    stub.write_text("#!/bin/sh\nsleep 60\n")
+    stub.chmod(0o755)
+    return bin_dir
+
+
 def test_port_deterministic_and_in_range(tmp_path: Path) -> None:
     port = _workspace_port(tmp_path)
     assert port == _workspace_port(tmp_path)
@@ -46,6 +60,25 @@ def test_port_differs_from_hashserv_for_same_state_key(tmp_path: Path) -> None:
     from bakar.hashserv import _workspace_port as hashserv_port
 
     assert _workspace_port(tmp_path) != hashserv_port(tmp_path)
+
+
+def test_workspace_port_does_not_hang_on_wedged_resolution(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A wedged ``realpath`` on PATH must not make ``_workspace_port`` hang.
+
+    Regression test: this used to call ``state_key.resolve()``, which shells
+    out to ``realpath`` and could hang on a wedged NFS automount. It now uses
+    ``mounts._lexical_normalize``, which touches no filesystem.
+    """
+    bin_dir = _write_stub_realpath_wedged(tmp_path)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    state_key = tmp_path / "sstate"
+
+    start = time.monotonic()
+    port = _workspace_port(state_key)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 2.0
+    assert 49152 <= port < 65535
 
 
 def test_find_binary_workspace_hit(tmp_path: Path) -> None:
@@ -60,6 +93,12 @@ def test_find_binary_returns_none_when_absent(tmp_path: Path) -> None:
 def test_ensure_running_returns_addr_when_already_listening(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A reachable daemon short-circuits: return the address, never spawn."""
     monkeypatch.setattr(central_service.socket, "create_connection", lambda _addr, timeout: _FakeSocket())
+    # network_state_reason's is_path_on_nfs classification now spawns a real
+    # `realpath` child (bug 1's bounded, symlink-following resolution) -
+    # stub it so the global subprocess.Popen patch below, meant only to
+    # guard the prserv daemon spawn itself, is not also asked to stand in
+    # for that unrelated subprocess call.
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
 
     def _must_not_spawn(*_a: object, **_k: object) -> object:
         raise AssertionError("ensure_running must not spawn when already reachable")
@@ -73,6 +112,7 @@ def test_ensure_running_returns_addr_when_already_listening(tmp_path: Path, monk
 def test_ensure_running_spawns_and_binds_cluster_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Not yet up: spawn --start bound to the cluster host, return once probed."""
     _create_binary(tmp_path)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
     captured: dict[str, object] = {}
     calls = {"n": 0}
 

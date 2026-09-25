@@ -25,6 +25,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import tomllib
 import urllib.parse
@@ -125,6 +126,31 @@ class CheckResult:
     status: Status
     message: str
     fix_hint: str | None = None
+
+
+# Wall-clock ceiling for a single pre-flight check run inside run_all's own
+# thread. A check that reads a wedged NFS mount can otherwise hang the whole
+# doctor run indefinitely; _POST_BUILD_CHECKS are exempt (see run_all).
+_CHECK_DEADLINE_SECONDS = 180.0
+
+
+@dataclass(frozen=True)
+class CheckEvent:
+    """Start/end instrumentation for one check, emitted to ``run_all``'s ``on_check``.
+
+    ``status``/``severity`` are plain strings (``CheckResult.status.value`` /
+    ``.severity.value``), not the enums, so a caller need not import
+    ``Status``/``Severity`` to consume the callback. A timed-out check's end
+    event carries ``status == "fail"`` - the same value an ordinary FAIL
+    carries - because the event is always built from the one ``CheckResult``
+    that got appended to ``results``, never from a distinct timeout state.
+    """
+
+    phase: str
+    name: str
+    status: str
+    severity: str
+    seconds: float
 
 
 def _ok(name: str, severity: Severity, message: str) -> CheckResult:
@@ -3806,7 +3832,13 @@ def group_results(results: list[CheckResult]) -> list[tuple[str, list[CheckResul
     return grouped
 
 
-def run_all(cfg: BuildConfig, bsp: BspModel | None = None, *, post_build: bool = False) -> list[CheckResult]:
+def run_all(
+    cfg: BuildConfig,
+    bsp: BspModel | None = None,
+    *,
+    post_build: bool = False,
+    on_check: Callable[[CheckEvent], None] | None = None,
+) -> list[CheckResult]:
     """Run every applicable check, return results in order.
 
     When ``bsp`` is provided, the assembled list is
@@ -3831,6 +3863,16 @@ def run_all(cfg: BuildConfig, bsp: BspModel | None = None, *, post_build: bool =
     pre-flight check, so a post-build run is a superset of an ordinary one.
     Keyword-only with a default so the existing two-argument callers and test
     stubs keep working untouched.
+
+    Each check runs on its own daemon thread and the main thread joins with a
+    ``_CHECK_DEADLINE_SECONDS`` timeout, so a check reading a wedged NFS mount
+    fails the one check under its registered ceiling severity instead of
+    hanging the whole run; the timed-out thread is abandoned (daemon, never
+    joined again). ``_POST_BUILD_CHECKS`` run with no deadline. ``on_check``,
+    when given, is called with a ``start`` event immediately before a check
+    begins and an ``end`` event once its result has been appended to the
+    returned list - for every check, whether it ran, was skipped by the
+    cache-mount gate, crashed, or timed out.
     """
     if bsp is None:
         checks: tuple[CheckFunc, ...] = SHARED_CHECKS
@@ -3846,45 +3888,86 @@ def run_all(cfg: BuildConfig, bsp: BspModel | None = None, *, post_build: bool =
         checks = tuple(c for c in checks if c not in _POST_BUILD_CHECKS)
     results: list[CheckResult] = []
 
+    def _emit(phase: str, name: str, result: CheckResult | None, seconds: float) -> None:
+        if on_check is None:
+            return
+        status = result.status.value if result is not None else ""
+        severity = result.severity.value if result is not None else ""
+        on_check(CheckEvent(phase=phase, name=name, status=status, severity=severity, seconds=seconds))
+
     # Pre-phase: the cache-mount readiness probe runs at most once per call,
     # ahead of every other check, so an idle automount is mounted before any
     # cache-touching check reads it and no check ever starts against a dead
     # share. check_cache_mounts's own result is built from this same
     # assessment via _cache_mounts_result rather than by calling
-    # check_cache_mounts(cfg) itself, which would re-run the probe.
+    # check_cache_mounts(cfg) itself, which would re-run the probe. Its
+    # on_check start/end pair brackets this pre-phase call, not the later loop
+    # iteration that appends its result.
     cache_statuses: list[mounts.CacheMountStatus] | None = None
+    cache_mounts_seconds = 0.0
     if check_cache_mounts in checks:
+        _emit("start", "cache-mounts", None, 0.0)
+        _probe_start = time.monotonic()
         cache_statuses = mounts.assess_cache_mounts(cfg.effective_cache_targets)
+        cache_mounts_seconds = time.monotonic() - _probe_start
     blocking_cache = [s for s in cache_statuses if s.blocking] if cache_statuses is not None else []
 
     for check in checks:
         if check is check_cache_mounts:
-            results.append(_cache_mounts_result(cache_statuses or []))
+            result = _cache_mounts_result(cache_statuses or [])
+            results.append(result)
+            _emit("end", result.name, result, cache_mounts_seconds)
             continue
+        resolved_name = _CHECK_NAME.get(check, getattr(check, "__name__", "unknown"))
         if blocking_cache and check in _CACHE_TOUCHING_CHECKS:
-            resolved_name = _CHECK_NAME.get(check, getattr(check, "__name__", "unknown"))
+            _emit("start", resolved_name, None, 0.0)
             unusable = ", ".join(f"{s.label} {s.path}" for s in blocking_cache)
-            results.append(
-                CheckResult(
-                    name=resolved_name,
-                    severity=_CHECK_SEVERITY.get(resolved_name, Severity.WARN),
-                    status=Status.SKIP,
-                    message=f"not run: {unusable} unusable (see cache-mounts)",
-                )
+            result = CheckResult(
+                name=resolved_name,
+                severity=_CHECK_SEVERITY.get(resolved_name, Severity.WARN),
+                status=Status.SKIP,
+                message=f"not run: {unusable} unusable (see cache-mounts)",
             )
+            results.append(result)
+            _emit("end", resolved_name, result, 0.0)
             continue
-        try:
-            results.append(check(cfg))
-        except Exception as exc:  # noqa: BLE001 - one check's bug must not abort the doctor run
-            resolved_name = _CHECK_NAME.get(check, getattr(check, "__name__", "unknown"))
-            results.append(
-                CheckResult(
-                    name=resolved_name,
-                    severity=_CHECK_SEVERITY.get(resolved_name, Severity.WARN),
-                    status=Status.FAIL,
-                    message=f"check crashed: {exc!r}",
-                )
+
+        _emit("start", resolved_name, None, 0.0)
+        slot: dict[str, object] = {}
+
+        def _run(check: CheckFunc = check, slot: dict[str, object] = slot) -> None:
+            try:
+                slot["result"] = check(cfg)
+            except Exception as exc:  # noqa: BLE001 - one check's bug must not abort the doctor run
+                slot["exc"] = exc
+
+        thread = threading.Thread(target=_run, daemon=True)
+        deadline = None if check in _POST_BUILD_CHECKS else _CHECK_DEADLINE_SECONDS
+        thread_start = time.monotonic()
+        thread.start()
+        thread.join(timeout=deadline)
+        elapsed = time.monotonic() - thread_start
+
+        if thread.is_alive():
+            result = CheckResult(
+                name=resolved_name,
+                severity=_CHECK_SEVERITY.get(resolved_name, Severity.WARN),
+                status=Status.FAIL,
+                message=(
+                    f"did not finish within {_CHECK_DEADLINE_SECONDS:g}s (a filesystem it reads may be unresponsive)"
+                ),
             )
+        elif "exc" in slot:
+            result = CheckResult(
+                name=resolved_name,
+                severity=_CHECK_SEVERITY.get(resolved_name, Severity.WARN),
+                status=Status.FAIL,
+                message=f"check crashed: {slot['exc']!r}",
+            )
+        else:
+            result = slot["result"]  # type: ignore[assignment]
+        results.append(result)
+        _emit("end", resolved_name, result, elapsed)
     return results
 
 
