@@ -39,7 +39,8 @@ from contextlib import suppress
 from hashlib import sha256
 from pathlib import Path
 
-from bakar import central_service
+from bakar import central_service, mounts
+from bakar.hashserv import NetworkStateDirError, network_state_reason
 
 _DB_FILENAME = "prserv.sqlite3"
 _LOG_FILENAME = "prserv.log"
@@ -55,9 +56,12 @@ def _workspace_port(state_key: Path) -> int:
 
     Mirrors :func:`bakar.hashserv._workspace_port` but prepends a ``prserv:``
     salt so the prserv and hashserv daemons keyed to the *same* state dir
-    (the shared SSTATE_DIR) never collide on one port.
+    (the shared SSTATE_DIR) never collide on one port. Same hang-safety
+    rationale as the hashserv counterpart: lexically normalize rather than
+    ``Path.resolve()``, which stats every path component and can hang
+    indefinitely on a wedged NFS automount.
     """
-    digest = sha256(b"prserv:" + str(state_key.resolve()).encode()).hexdigest()
+    digest = sha256(b"prserv:" + str(mounts._lexical_normalize(state_key)).encode()).hexdigest()
     return _PORT_FLOOR + int(digest[:8], 16) % _PORT_SPAN
 
 
@@ -123,7 +127,16 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
     spawn never reached the probe within ``_STARTUP_PROBE_DEADLINE_SECONDS`` (in
     which case the daemon's launcher output is captured to
     ``<state_dir>/prserv.stderr`` and any stale pidfile is cleared).
+
+    Raises :class:`bakar.hashserv.NetworkStateDirError` before creating any
+    state dir, PID file, or process when ``state_key``'s state directory is on
+    NFS or an undetermined filesystem - see
+    :func:`bakar.hashserv.network_state_reason`.
     """
+    reason = network_state_reason(state_key, service="prserv", setting="prserv_host")
+    if reason is not None:
+        raise NetworkStateDirError(reason)
+
     port = _workspace_port(state_key)
     if central_service.is_listening(bind_host, port):
         return f"{bind_host}:{port}"

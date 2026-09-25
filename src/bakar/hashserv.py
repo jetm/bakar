@@ -28,8 +28,12 @@ import subprocess
 import time
 from hashlib import sha256
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from bakar import central_service
+from bakar import central_service, mounts
+
+if TYPE_CHECKING:
+    from bakar.config import BuildConfig
 
 _PID_FILENAME = "hashserv.pid"
 _PORT_FILENAME = "hashserv.port"
@@ -42,16 +46,91 @@ _TERM_GRACE_SECONDS = 5
 _STARTUP_PROBE_DEADLINE_SECONDS = 2.0
 
 
+class NetworkStateDirError(RuntimeError):
+    """A daemon's state directory sits on a network or undetermined filesystem.
+
+    Raised instead of returning ``None`` so a caller cannot mistake a refusal
+    for "binary not synced yet" - the two return-None-silently cases
+    :func:`ensure_running` documents elsewhere. Returning ``None`` here would
+    make the build omit ``BB_HASHSERVE``/``PRSERV_HOST`` and fall back to
+    bitbake's own auto-started server, whose SQLite DB lands in the same
+    network-backed SSTATE_DIR this guard exists to keep it off of.
+    """
+
+
+def network_state_reason(state_key: Path, *, service: str, setting: str) -> str | None:
+    """Return a refusal message when ``state_key``'s daemon state is unsafe.
+
+    Classifies ``state_key / <state-subdir>`` - the directory the daemon
+    actually creates its SQLite/PID/port state in - NOT ``state_key`` itself.
+    A caller can configure a state key whose top level is local while the
+    ``.bakar`` subdirectory underneath it is itself a symlink, bind mount, or
+    nested mount pointing at NFS; classifying the parent alone would report
+    safe and let the daemon write network-backed state anyway, defeating this
+    guard entirely.
+
+    Treats both ``True`` (confirmed NFS) and ``None`` (undetermined - see
+    :func:`bakar.mounts.is_path_on_nfs`) as unsafe: an undetermined mount may
+    be an autofs trap that resolves to NFS on first access, and a daemon's
+    SQLite state directory has no tolerance for a peer node writing to the
+    same file. Only a confirmed ``False`` (local filesystem) is safe.
+
+    Calls ``mounts.is_path_on_nfs`` through the module attribute (rather than
+    importing the name directly) so tests can patch
+    ``bakar.mounts.is_path_on_nfs`` and have this function observe the patch.
+    """
+    state_dir = state_key / _STATE_SUBDIR
+    verdict = mounts.is_path_on_nfs(state_dir)
+    if verdict is False:
+        return None
+    fs_desc = "nfs" if verdict else "an undetermined filesystem"
+    return (
+        f"{service} state directory {state_dir} is on {fs_desc}; "
+        f"set [build] {setting} to the central {service}, or point sstate_dir at local disk"
+    )
+
+
+def daemon_state_refusal(cfg: BuildConfig) -> str | None:
+    """Return a refusal message when a configured daemon's state is unsafe.
+
+    Checks hashserv first (when hash-equivalence is on and no central
+    ``bb_hashserve`` endpoint is configured), then prserv (when running in
+    host mode with no central ``prserv_host`` endpoint configured). A node
+    pointed at the central tier for a service is never checked for that
+    service - the per-workspace daemon never starts, so its state directory
+    is never touched.
+    """
+    if cfg.bb_hashserve is None and cfg.use_hashequiv:
+        reason = network_state_reason(cfg.hashserv_state_key, service="hashserv", setting="bb_hashserve")
+        if reason is not None:
+            return reason
+    if cfg.prserv_host is None and cfg.host_mode:
+        return network_state_reason(cfg.prserv_state_key, service="prserv", setting="prserv_host")
+    return None
+
+
 def _workspace_port(state_key: Path) -> int:
     """Derive a stable ephemeral port from the state-key path.
 
     Two daemons on the same machine must not collide; a random pick would need
-    a port-file lookup to be authoritative. Hashing ``realpath(state_key)`` into
-    the 49152-65534 range gives a stable URL for the lifetime of the daemon
-    without making any state file load-bearing for routing. Two callers sharing
-    one state key therefore land on the same port - the shared-daemon contract.
+    a port-file lookup to be authoritative. Hashing a lexically normalized
+    ``state_key`` into the 49152-65534 range gives a stable URL for the
+    lifetime of the daemon without making any state file load-bearing for
+    routing. Two callers sharing one (already-normalized) state key therefore
+    land on the same port - the shared-daemon contract.
+
+    Uses ``mounts._lexical_normalize`` rather than ``Path.resolve()``: the
+    latter stats every path component to follow symlinks, which can hang
+    indefinitely on a wedged NFS automount - defeating this daemon-state
+    guard before it ever runs, since a port has to be derivable before the
+    guard can refuse to start the daemon at all. The tradeoff is that two
+    state keys reaching the same real directory through different symlinks
+    now hash to different ports instead of colliding on purpose; that case is
+    not this codebase's shared-daemon path (state keys come from
+    ``BuildConfig.hashserv_state_key``, itself lexically normalized - see
+    there), so it costs nothing in practice.
     """
-    digest = sha256(str(state_key.resolve()).encode()).hexdigest()
+    digest = sha256(str(mounts._lexical_normalize(state_key)).encode()).hexdigest()
     return _PORT_FLOOR + int(digest[:8], 16) % _PORT_SPAN
 
 
@@ -164,7 +243,15 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
     The PID/port files are only written after the TCP probe succeeds, so a
     failed startup never leaves authoritative state behind for the next
     invocation to mis-interpret.
+
+    Raises :class:`NetworkStateDirError` before creating any state dir, PID
+    file, or process when ``state_key``'s state directory is on NFS or an
+    undetermined filesystem - see :func:`network_state_reason`.
     """
+    reason = network_state_reason(state_key, service="hashserv", setting="bb_hashserve")
+    if reason is not None:
+        raise NetworkStateDirError(reason)
+
     state_dir = _state_dir(state_key)
     port_file = state_dir / _PORT_FILENAME
     pid_file = state_dir / _PID_FILENAME
