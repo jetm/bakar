@@ -20,12 +20,13 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import posixpath
 import socket
 import subprocess
 import time
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
@@ -62,9 +63,6 @@ from bakar.steps.kas_build import (
     run_shell_live,
 )
 from bakar.user_config import load_user_config
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 pytestmark = pytest.mark.unit
 
@@ -961,6 +959,78 @@ def test_clear_stale_bitbake_locks_no_marker_lock_absent_shared_fs_no_deletion(
         outcome = clear_stale_bitbake_locks(cfg)
 
     assert outcome.removed == []
+    assert outcome.refusal is None
+    assert bb_sock.exists()
+
+
+# Verbatim PC3 `/proc/mounts` lines (task 1.1's fixture): an nfs4 share mounted
+# over its systemd autofs trap at the same mountpoint. See
+# tests/test_mounts_stack.py for the full provenance note.
+_PC3_AUTOFS_LINE = (
+    "systemd-1 /home/tiamarin/yocto-cache/ccache autofs "
+    "rw,relatime,fd=69,pgrp=1,timeout=600,minproto=5,maxproto=5,direct,pipe_ino=10747 0 0"
+)
+_PC3_NFS4_LINE = (
+    "192.168.8.174:/mnt/YOCTO_CACHE/ccache /home/tiamarin/yocto-cache/ccache nfs4 "
+    "rw,relatime,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,proto=tcp,nconnect=8,"
+    "timeo=600,retrans=2,sec=sys,clientaddr=192.168.8.187,local_lock=none,addr=192.168.8.174 0 0"
+)
+_PC3_STACKED_MOUNTS = f"{_PC3_AUTOFS_LINE}\n{_PC3_NFS4_LINE}\n"
+_PC3_CCACHE_MOUNTPOINT = "/home/tiamarin/yocto-cache/ccache"
+
+
+def _patch_proc_mounts(monkeypatch: pytest.MonkeyPatch, content: str) -> None:
+    """Patch ``Path.read_text`` so reads of ``/proc/mounts`` return ``content``."""
+    real_read_text = Path.read_text
+
+    def fake_read_text(self: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if str(self) == "/proc/mounts":
+            return content
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+
+def _patch_resolve_maps_build_dir_to_pc3_mountpoint(monkeypatch: pytest.MonkeyPatch, build_dir: Path) -> None:
+    """Make ``build_dir.resolve()`` read as living under the literal PC3
+    mountpoint text, without touching this developer's real
+    ``~/yocto-cache`` directory (a real symlink on this dev machine).
+
+    ``is_path_on_nfs`` only calls ``.resolve()`` to find which mount-table
+    entry covers a path; every other operation in this test (``.exists()``,
+    ``.write_text()``) still addresses the real ``tmp_path``-backed
+    ``build_dir``.
+    """
+    build_dir_str = str(build_dir)
+
+    def fake_resolve(self: Path, strict: bool = False) -> Path:  # type: ignore[no-untyped-def]
+        self_str = str(self)
+        if self_str == build_dir_str or self_str.startswith(build_dir_str + "/"):
+            return Path(_PC3_CCACHE_MOUNTPOINT + self_str[len(build_dir_str) :])
+        return Path(posixpath.normpath(self_str))
+
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
+
+
+def test_clear_stale_bitbake_locks_stacked_autofs_nfs4_leaves_leftover_socket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Row 7, exercised through the real mount-table classifier rather than a
+    stubbed ``is_path_on_nfs``: a live NFS mount licenses removing leftover
+    sockets no more than an idle automount does. No ``bitbake.lock`` is
+    present, but a leftover ``bitbake.sock`` must survive the clear.
+    """
+    cfg = _make_nxp_cfg(tmp_path)
+    build = _seed_build_dir(cfg)
+    bb_sock = build / "bitbake.sock"
+    bb_sock.write_text("", encoding="utf-8")
+    _patch_proc_mounts(monkeypatch, _PC3_STACKED_MOUNTS)
+    _patch_resolve_maps_build_dir_to_pc3_mountpoint(monkeypatch, build)
+
+    outcome = clear_stale_bitbake_locks(cfg)
+
+    assert "bitbake.sock" not in {p.name for p in outcome.removed}
     assert outcome.refusal is None
     assert bb_sock.exists()
 

@@ -2635,6 +2635,110 @@ def test_lock_mutation_guard_none_when_confirmed_local(tmp_path: Path, monkeypat
     assert build_stop.lock_mutation_guard(cfg) is None
 
 
+# Verbatim PC3 `/proc/mounts` autofs-only fixture line: an idle systemd automount
+# trap with no NFS share mounted over it yet (see tests/test_mounts_stack.py,
+# task 1.1, for the stacked autofs+nfs4 companion line and its provenance).
+_PC3_AUTOFS_LINE = (
+    "systemd-1 /home/tiamarin/yocto-cache/ccache autofs "
+    "rw,relatime,fd=69,pgrp=1,timeout=600,minproto=5,maxproto=5,direct,pipe_ino=10747 0 0"
+)
+_PC3_CCACHE_MOUNTPOINT = "/home/tiamarin/yocto-cache/ccache"
+
+
+def _patch_proc_mounts(monkeypatch: pytest.MonkeyPatch, content: str) -> None:
+    """Patch ``Path.read_text`` so reads of ``/proc/mounts`` return ``content``."""
+    real_read_text = Path.read_text
+
+    def fake_read_text(self: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if str(self) == "/proc/mounts":
+            return content
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+
+def _patch_resolve_maps_build_dir_to_pc3_mountpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, build_dir: Path
+) -> Path:
+    """Make the bounded symlink resolution read ``build_dir`` (and any path
+    under it) as living under the literal PC3 mountpoint text, without
+    touching this developer's real ``~/yocto-cache`` directory (a real
+    symlink on this dev machine - see the prior round's gotcha in this
+    change's devspec log).
+
+    ``is_path_on_nfs`` no longer ever calls ``.resolve()`` to find which
+    mount-table entry covers a path - it forks a real ``realpath`` child
+    instead (``bakar.mounts._resolve_bounded``), bounded so a wedged automount
+    ancestor cannot hang the caller (bug 1's fix: the prior lexical-only
+    normalization silently dropped symlink resolution outright). A patch
+    aimed at ``Path.resolve`` no longer reaches anything this classifier
+    calls, so this fixture replaces the ``realpath`` binary on ``PATH``
+    instead. Every invocation appends one line to the returned call-log file,
+    so a caller can assert the bounded-resolution path was genuinely
+    exercised rather than silently skipped.
+
+    Every other operation in this test (``.exists()``, ``.write_text()``)
+    still addresses the real ``tmp_path``-backed ``build_dir``, so the
+    fixture's literal mountpoint string never has to exist on disk.
+    """
+    build_dir_str = str(build_dir)
+    bin_dir = tmp_path / "realpath-stub-bin"
+    bin_dir.mkdir(exist_ok=True)
+    call_log = tmp_path / "realpath-calls.log"
+    stub = bin_dir / "realpath"
+    stub.write_text(
+        "#!/bin/sh\n"
+        f'echo call >> "{call_log}"\n'
+        "shift\n"
+        'p="$1"\n'
+        'case "$p" in\n'
+        f"  {build_dir_str})\n"
+        f"    printf '%s\\n' '{_PC3_CCACHE_MOUNTPOINT}'\n"
+        "    ;;\n"
+        f"  {build_dir_str}/*)\n"
+        f"    printf '%s\\n' \"{_PC3_CCACHE_MOUNTPOINT}${{p#{build_dir_str}/}}\"\n"
+        "    ;;\n"
+        "  *)\n"
+        '    exec /usr/bin/realpath -- "$p"\n'
+        "    ;;\n"
+        "esac\n"
+    )
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    return call_log
+
+
+def test_lock_mutation_guard_idle_autofs_only_is_unattributable_with_lock_present(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An idle automount trap (no NFS share mounted over it yet) must classify
+    exactly like a confirmed-shared filesystem, not like confirmed-local.
+
+    Regression guard for the spec requirement "an automounted build directory
+    is never classified as confirmed local": ``is_path_on_nfs`` returns
+    ``None`` for a bare autofs entry (task 1.1), and this guard's
+    ``shared_or_unknown = nfs is not False`` must still fail closed on that
+    ``None`` exactly as it does on ``True`` - no ownership marker, no live PID,
+    lock present -> unattributable, lock left untouched.
+    """
+    cfg, build_dir = _cfg_with_build_dir(tmp_path)
+    lock = build_dir / "bitbake.lock"
+    lock.write_text("4242\n")
+    _patch_proc_mounts(monkeypatch, f"{_PC3_AUTOFS_LINE}\n")
+    call_log = _patch_resolve_maps_build_dir_to_pc3_mountpoint(monkeypatch, tmp_path, build_dir)
+
+    refusal = build_stop.lock_mutation_guard(cfg)
+
+    assert refusal is not None
+    assert refusal.reason == "unattributable"
+    assert lock.exists()
+    assert call_log.exists() and call_log.read_text().strip(), (
+        "the bounded realpath resolution was never invoked - this test no longer exercises "
+        "the real symlink-aware classification path"
+    )
+
+
 def test_stale_bitbake_files_includes_hashserve_sock() -> None:
     """The gate-owned stale-file set includes hashserve.sock (parity with kas_build._remove_all)."""
     assert "hashserve.sock" in build_stop._STALE_BITBAKE_FILES
