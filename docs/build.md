@@ -141,6 +141,24 @@ bakar build my-board.yml --dry-run-script -
 
 Run telemetry is written to `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/`.
 
+## Cache mount gate
+
+Immediately before step 8 (`kas build`), and before any bitbake process starts,
+bakar probes every effective cache directory (sstate, downloads, ccache) with a
+20-second bounded readiness check. This runs on every build - it is not gated
+by `[build] hashserv`, `--sstate-mirror`, or any other opt-in flag - and it
+deliberately triggers an idle `systemd.automount` unit along the way, so a
+cache share that auto-unmounted since the last build is live again before
+bitbake ever parses.
+
+If a cache directory is unresponsive, errored, or declared NFS in `/etc/fstab`
+but resolved to local disk, the build refuses before `kas`/`bitbake` is ever
+invoked, naming the unusable directory and its server. This is a separate,
+unconditional check from the doctor `cache-mounts` check in step 1: doctor
+reports WARN/BLOCK ahead of the pipeline, while this gate is the last word
+right before the process launches. See [bitbake.md](bitbake.md#cache-mount-gate)
+for the full detail and an example refusal message.
+
 ## Transient systemd scope
 
 By default `bakar build` (and the live `bakar bitbake` path) launch the
@@ -414,3 +432,4 @@ bakar triage 20260601-143022        # inspect a specific run
 - [triage.md](triage.md) - post-mortem a failed build
 - [configuration.md](configuration.md) - env vars and config.toml defaults
 - [hashserv.md](hashserv.md) - persistent hashserv daemon auto-started during step 6
+- [bitbake.md](bitbake.md#cache-mount-gate) - cache mount gate detail and the live-console failure-detail forwarding

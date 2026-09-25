@@ -51,12 +51,59 @@ Run from inside a workspace and both can be omitted.
 bitbake runs inside kas-container, so a synced workspace with a working container image is
 required. Run `bakar sync` first if the workspace has not been initialized.
 
+## Cache mount gate
+
+Before any bitbake process is started - for `bakar bitbake`, `bakar clean-recipe`,
+`bakar rebuild`, and the `listtasks` task - bakar probes every effective cache
+directory (sstate, downloads, ccache) with a 20-second bounded readiness check.
+The probe deliberately triggers an idle `systemd.automount` unit (a plain
+`stat()`/`os.access()` does not), so a cache share that has been auto-unmounted
+since the last build is live again before bitbake ever parses a recipe.
+
+**The interactive `devshell` task bypasses this gate.** `bakar bitbake --task devshell`
+routes through `run_shell()` (`src/bakar/steps/kas_build.py`), which never calls
+the `cache_mount_refusal()` check that gates the other paths (`run_build`,
+`run_shell_live`, `run_shell_capture`). This is a real, deliberate gap, not an
+oversight fixed elsewhere: a devshell launched against a wedged NFS cache mount
+can hang instead of refusing with the readiness error above.
+
+If a directory is unresponsive, errored, or declared NFS in `/etc/fstab` but
+resolves to local disk, the launch refuses immediately: no bitbake process is
+started. The refusal names the unusable directory and its server, for example:
+
+```text
+sstate /srv/cache/sstate (cache.example.com): did not answer within 20s; check the
+NFS server and this node's link; a client that stays wedged after the server
+returns needs its mounts force-unmounted or a reboot
+```
+
+This closes a real, previously always-reproducible failure: a cache directory
+sitting behind an idle automount used to fail bitbake's own `DL_DIR` sanity check
+("exists but you do not appear to have write access to it") because bitbake's
+own check never triggers the mount. The gate's `stat -f` probe does trigger it,
+so a build that used to fail on a cold cache share now succeeds without any
+manual `ls`/`cd` warm-up.
+
+When every cache directory is healthy, the same gate also refuses the launch if
+the workspace's hashserv/prserv state directory would land on a network
+filesystem - see [hashserv.md](hashserv.md) and [prserv.md](prserv.md).
+
 ## Run logging
 
 Each non-interactive invocation writes its captured output to
 `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/` as `bitbake.log` (for `bakar bitbake`),
 `clean-recipe.log` (for `bakar clean-recipe`), or `rebuild.log` (for `bakar rebuild`). Use
 `bakar log` to inspect them. The `devshell` path is interactive and produces no captured log.
+
+### Failure detail on the live console
+
+When a run hits an `ERROR:`/`FATAL:` line, the live console now forwards the
+indented reason lines that follow it - up to 20 lines - instead of showing only
+the bare header. This is what surfaces a message like "exists but you do not
+appear to have write access to it" directly on screen rather than leaving you
+to open the log to find it. Once 20 continuation lines have been shown, a
+`... (more lines in kas.log)` marker appears and the rest is left in the run's
+`bitbake.log`/`kas.log` for `bakar log` or `bakar triage` to inspect.
 
 ## Options
 

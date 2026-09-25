@@ -207,6 +207,22 @@ such a workspace.
 `getvar` is read-only: it does not modify the build directory, sstate, or any
 workspace files.
 
+## Cache mount gate
+
+Before anything else - before the pre-run lock check, and before any run
+directory is created - `getvar` runs the same 20-second bounded cache-mount
+readiness probe as `bakar build` and `bakar bitbake` (see
+[bitbake.md](bitbake.md#cache-mount-gate)). If an effective cache directory is
+unresponsive, errored, or a fstab-declared-NFS directory that resolved to local
+disk, `getvar` refuses and exits 1, printing the unusable directory and its
+server in red on stderr.
+
+No run directory is ever created on this refusal. `getvar` is a read-only
+query with nothing to report when it cannot start, so unlike a build failure it
+leaves no trace under `<bsp_root>/build/runs/` - an empty, log-less run
+directory would otherwise be picked up as "the most recent run" by anything
+that looks at `runs/` sorted by mtime.
+
 ## Exit codes
 
 Exit 0 means the query ran. A non-zero exit is reserved for a query that could
@@ -215,6 +231,7 @@ not run - it never means "the variable is unset".
 | Code | Meaning |
 |------|---------|
 | 0 | The query ran. Covers a resolved value, an unset variable, and an unset flag; the latter two print an empty line and an empty `value` in `--json`. `--history` with no history comments also exits 0 with "no history recorded" |
+| 1 | The cache mount gate or the stale-lock check refused the launch before any run directory was created - see [Cache mount gate](#cache-mount-gate) |
 | 2 | The query could not be formed or dispatched: no workspace found and no `--workspace` given, `--flag` combined with the inline `VAR[FLAG]` form, a malformed bracket expression, or `--flag` combined with `--history` |
 | other | The underlying `bitbake-getvar` or `bitbake -e` call failed; its exit code is forwarded and the verbatim failure text plus a phase label go to stderr |
 
