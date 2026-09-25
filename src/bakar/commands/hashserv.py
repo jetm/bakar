@@ -14,12 +14,14 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.markup import escape
 
 import bakar.commands._app as _state
 from bakar import hashserv
 from bakar.commands._app import app, console
 from bakar.commands._helpers import WorkspaceOption, _dispatch_bsp, _dispatch_from_yaml, _resolve_workspace
 from bakar.config import BuildConfig, ResolveRequest, resolve
+from bakar.hashserv import NetworkStateDirError
 
 hashserv_app = typer.Typer(
     help="Manage the workspace bitbake-hashserv daemon (start/stop/status).",
@@ -71,11 +73,15 @@ def start(
 ) -> None:
     """Start the workspace hashserv daemon (or report the existing URL)."""
     cfg = _resolve_cfg(workspace, kas_yaml)
-    url = hashserv.ensure_running(
-        cfg.hashserv_state_key,
-        binary_root=cfg.bsp_root,
-        bind_host=cfg.cluster_bind_host or "localhost",
-    )
+    try:
+        url = hashserv.ensure_running(
+            cfg.hashserv_state_key,
+            binary_root=cfg.bsp_root,
+            bind_host=cfg.cluster_bind_host or "localhost",
+        )
+    except NetworkStateDirError as exc:
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
     if url is None:
         console.print(
             f"failed to start hashserv: bitbake-hashserv not found or startup probe failed; "

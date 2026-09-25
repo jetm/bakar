@@ -14,12 +14,14 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.markup import escape
 
 import bakar.commands._app as _state
 from bakar import prserv
 from bakar.commands._app import app, console
 from bakar.commands._helpers import WorkspaceOption, _dispatch_bsp, _dispatch_from_yaml, _resolve_workspace
 from bakar.config import BuildConfig, ResolveRequest, resolve
+from bakar.hashserv import NetworkStateDirError
 
 prserv_app = typer.Typer(
     help="Manage the workspace bitbake-prserv daemon (start/stop/status).",
@@ -58,7 +60,11 @@ def start(
 ) -> None:
     """Start the workspace prserv daemon (or report the existing PRSERV_HOST)."""
     cfg = _resolve_cfg(workspace, kas_yaml)
-    addr = prserv.ensure_running(cfg.prserv_state_key, binary_root=cfg.bsp_root, bind_host=_bind_host(cfg))
+    try:
+        addr = prserv.ensure_running(cfg.prserv_state_key, binary_root=cfg.bsp_root, bind_host=_bind_host(cfg))
+    except NetworkStateDirError as exc:
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
     if addr is None:
         console.print(
             "failed to start prserv: bitbake-prserv not found or startup probe failed; "
