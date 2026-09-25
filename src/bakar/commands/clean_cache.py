@@ -26,6 +26,7 @@ from bakar.commands._app import app, console
 from bakar.commands._helpers import _find_workspace_from_cwd
 from bakar.config import shared_ccache_dir
 from bakar.fsremove import parallel_apply, parallel_rmtree
+from bakar.mounts import _mount_entry_in
 from bakar.sccache_cluster import _parse_dist_status_servers as _parse_dist_status_servers  # re-exported for tests
 from bakar.sccache_cluster import (
     _remote_reset_cmd,
@@ -73,32 +74,28 @@ def _resolve_ccache_dir(override: Path | None) -> Path | None:
 def _atime_tracked(path: Path) -> bool:
     """Return True only if the filesystem containing *path* records reliable atimes.
 
-    Reads /proc/mounts and finds the longest (most specific) mount point
-    that is a directory ancestor of *path*. Returns False when the mount uses
-    ``noatime`` (atime never updated) or ``relatime`` (atime updated at most
-    once per 24h and trivially clobbered by any full-tree read - a backup, du,
-    or file indexer resets every file's atime at once). Returns True otherwise
-    (e.g. ``strictatime``). Only strict atime is a dependable last-read signal
-    for age-based eviction.
+    Resolves the covering mount via :func:`bakar.mounts._mount_entry_in`, the
+    shared longest-prefix walk every mount-table consumer uses (see
+    ``docstring`` there for the tie-break on an automount host, where an
+    ``autofs`` trap and the share it resolves to can share one mountpoint -
+    the shared walk keeps the last-listed, currently-live entry, never the
+    trap). Returns False when the covering mount uses ``noatime`` (atime
+    never updated) or ``relatime`` (atime updated at most once per 24h and
+    trivially clobbered by any full-tree read - a backup, du, or file indexer
+    resets every file's atime at once). Returns True otherwise (e.g.
+    ``strictatime``). Only strict atime is a dependable last-read signal for
+    age-based eviction. Also returns False when ``/proc/mounts`` is unreadable
+    or no entry covers *path*.
     """
     try:
         mounts_text = Path("/proc/mounts").read_text(encoding="utf-8")
     except OSError:
         return False
-    resolved = str(path.resolve())
-    best_len = -1
-    best_opts = ""
-    for line in mounts_text.splitlines():
-        parts = line.split()
-        if len(parts) < 4:
-            continue
-        mp = parts[1]
-        # Proper directory-prefix check: /home matches /home/user but not /homeother
-        if resolved == mp or resolved.startswith(mp.rstrip("/") + "/"):
-            if len(mp) > best_len:
-                best_len = len(mp)
-                best_opts = parts[3]
-    opts = best_opts.split(",")
+    entry = _mount_entry_in(mounts_text, path)
+    if entry is None:
+        return False
+    _source, _mountpoint, _fstype, opts_str = entry
+    opts = opts_str.split(",")
     return "noatime" not in opts and "relatime" not in opts
 
 

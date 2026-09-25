@@ -299,6 +299,29 @@ def test_atime_tracked_by_mount_option(tmp_path: Path, atime_opt: str, expected:
         assert _atime_tracked(target) is expected
 
 
+def test_atime_tracked_prefers_last_listed_mount_at_tied_mountpoint(tmp_path: Path) -> None:
+    """An autofs trap listed before the real nfs4 mount at the same mountpoint
+    must not shadow it: ``/proc/mounts`` lists mounts in kernel-apply order, so
+    the last-listed entry at a tied mountpoint is the one the kernel currently
+    resolves the path through, per ``bakar.mounts._mount_entry_in``."""
+    from bakar.commands.clean_cache import _atime_tracked
+
+    target = tmp_path / "build" / "sstate"
+    target.mkdir(parents=True)
+
+    fake_mounts = f"auto.direct {tmp_path} autofs rw,relatime 0 0\nserver:/export {tmp_path} nfs4 rw,strictatime 0 0\n"
+
+    real_read_text = type(target).read_text
+
+    def fake_read_text(self, *args, **kwargs):
+        if str(self) == "/proc/mounts":
+            return fake_mounts
+        return real_read_text(self, *args, **kwargs)
+
+    with patch("bakar.commands.clean_cache.Path.read_text", fake_read_text):
+        assert _atime_tracked(target) is True
+
+
 def test_atime_tracked_returns_false_on_oserror(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """``_atime_tracked`` defensively returns False when /proc/mounts is unreadable."""
     from bakar.commands.clean_cache import _atime_tracked
