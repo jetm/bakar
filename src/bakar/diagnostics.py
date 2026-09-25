@@ -36,7 +36,10 @@ from typing import TYPE_CHECKING
 
 from rich.markup import escape
 
-from bakar import build_scope
+# ``is_path_on_nfs`` has no reader in this module: build_stop resolves it
+# through ``bakar.diagnostics`` with a function-body deferred import to break a
+# cycle, so the name has to stay reachable at this path.
+from bakar import build_scope, mounts
 
 # ``resolve_buildtools_dir`` has no reader in this module: setup/actions/tools.py
 # imports it through ``bakar.diagnostics``, so the name has to stay reachable at
@@ -66,10 +69,6 @@ from bakar.elfscan import (
     _version_tuple,
 )
 from bakar.kas import parse_bblayers
-
-# ``is_path_on_nfs`` has no reader in this module: build_stop resolves it
-# through ``bakar.diagnostics`` with a function-body deferred import to break a
-# cycle, so the name has to stay reachable at this path.
 from bakar.mounts import (
     _FS_NFS,
     _NFS_DELEG_WARN_THRESHOLD,
@@ -3446,6 +3445,78 @@ def check_shared_cache_mounts(cfg: BuildConfig) -> CheckResult:
     return _ok(name, Severity.BLOCK, detail or "shared cache mounts OK")
 
 
+def _cache_mount_server(status: mounts.CacheMountStatus) -> str:
+    """Host part of a status's fstab or mount source, or ``"server unknown"``.
+
+    Prefers the ``/etc/fstab`` declaration over the live ``/proc/mounts``
+    source: for the "declared NFS but resolved to a local filesystem" case,
+    the mount table's source is the local device (e.g. ``/dev/sda1``), which
+    names no server at all - the actionable host is the one fstab declares.
+    For every other blocking state the two agree on the NFS host when both
+    are present, so this order costs nothing there. Splitting on ``":/"``
+    strips the export path, leaving just the host bakar tells the user to go
+    check.
+    """
+    src = status.fstab_source or status.source
+    if src is None:
+        return "server unknown"
+    return src.split(":/", 1)[0]
+
+
+def _cache_mount_blocking_detail(status: mounts.CacheMountStatus) -> str:
+    """Per-state explanation for a blocking :class:`~bakar.mounts.CacheMountStatus`."""
+    if status.state == "unresponsive":
+        return f"did not answer within {int(mounts.CACHE_PROBE_DEADLINE_S)}s"
+    if status.state == "error":
+        return status.detail
+    if status.state == "missing":
+        return status.detail or "declared NFS in /etc/fstab but does not exist yet"
+    # state == "ready": declared NFS but resolved to a non-NFS filesystem.
+    return f"declared NFS in /etc/fstab but resolves to {status.fstype}"
+
+
+def _cache_mounts_result(statuses: list[mounts.CacheMountStatus]) -> CheckResult:
+    """Turn already-computed :class:`~bakar.mounts.CacheMountStatus` values into a result.
+
+    Pure formatting: takes no config and runs no probe, so ``run_all``'s
+    pre-phase and the thin registered :func:`check_cache_mounts` can both
+    build their result through this one function without either re-running
+    :func:`bakar.mounts.assess_cache_mounts`.
+    """
+    name = "cache-mounts"
+    if not statuses:
+        return _skip(name, Severity.BLOCK, "no effective cache directories configured")
+
+    blocking = [s for s in statuses if s.blocking]
+    if blocking:
+        parts = [f"{s.label} {s.path} ({_cache_mount_server(s)}): {_cache_mount_blocking_detail(s)}" for s in blocking]
+        return _fail(
+            name,
+            Severity.BLOCK,
+            ", ".join(parts),
+            fix_hint=(
+                "check the NFS server and this node's link; a client that stays wedged after the "
+                "server returns needs its mounts force-unmounted or a reboot"
+            ),
+        )
+
+    oks = [f"{s.label} {s.source or s.fstab_source or 'local'} ({s.fstype})" for s in statuses]
+    return _ok(name, Severity.BLOCK, "; ".join(oks))
+
+
+def check_cache_mounts(cfg: BuildConfig) -> CheckResult:
+    """Registered ``cache-mounts`` check: probe every effective cache directory.
+
+    Runs in every mode (never filtered by ``_CLUSTER_CHECKS``) since a wedged
+    NFS cache breaks a single-node build exactly as it breaks a cluster one.
+    This function is for a caller that invokes checks individually outside
+    ``run_all`` - ``run_all`` itself never calls it, so the readiness probe
+    stays to exactly one invocation per run; see the pre-phase in ``run_all``
+    and :func:`_cache_mounts_result`.
+    """
+    return _cache_mounts_result(mounts.assess_cache_mounts(cfg.effective_cache_targets))
+
+
 # Preflight audit (doctor-cluster-preflight): the severity policy is BLOCK iff a
 # check's failure prevents a correct build, else WARN (a degradation) or INFO.
 # The full surface was reviewed against that policy - every current severity is
@@ -3454,6 +3525,11 @@ def check_shared_cache_mounts(cfg: BuildConfig) -> CheckResult:
 # checks are intentional and must NOT be "deduplicated"; see the inline notes on
 # check_cache_dirs and check_hashserv.
 SHARED_CHECKS: tuple[CheckFunc, ...] = (
+    # First: the NFS cache-mount readiness probe. run_all's pre-phase runs the
+    # single shared assessment before this check (or any cache-touching check)
+    # is reached, so it must lead the list rather than sit wherever its "Caches
+    # & storage" group placement would otherwise put it.
+    check_cache_mounts,
     check_host_tools,
     check_docker_daemon,
     check_container_image,
@@ -3557,6 +3633,22 @@ _CLUSTER_CHECKS: tuple[CheckFunc, ...] = (
 _POST_BUILD_CHECKS: tuple[CheckFunc, ...] = (check_uninative_leak,)
 
 
+# Checks that read a cache directory, so run_all's cache-mounts pre-phase must
+# skip them (never call them) when the shared assessment found any effective
+# cache directory unusable - starting one against a dead NFS share is exactly
+# the hang the pre-phase probe exists to prevent.
+_CACHE_TOUCHING_CHECKS: tuple[CheckFunc, ...] = (
+    check_cache_dirs,
+    check_disk_free,
+    check_ccache_health,
+    check_hashserv,
+    check_shared_cache_mounts,
+    check_uninative_dldir_links,
+    check_uninative_mirror_hit,
+    check_uninative_cluster_consistency,
+)
+
+
 # Single source of the pre-flight report's grouping and sort order. Each check
 # runs independently (run_all passes only cfg, so SHARED_CHECKS order never
 # affects results); this table alone decides how the printed report is sorted
@@ -3583,7 +3675,7 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "Caches & storage",
-        ("cache-dirs", "ccache-health", "hashserv", "sstate-hash-leak", "disk-free"),
+        ("cache-mounts", "cache-dirs", "ccache-health", "hashserv", "sstate-hash-leak", "disk-free"),
     ),
     (
         "Cluster",
@@ -3641,6 +3733,7 @@ _CHECK_METADATA: tuple[tuple[CheckFunc, str, Severity], ...] = (
     (check_docker_daemon, "docker-daemon", Severity.BLOCK),
     (check_container_image, "container-image", Severity.BLOCK),
     (check_container_bitbake, "container-bitbake", Severity.INFO),
+    (check_cache_mounts, "cache-mounts", Severity.BLOCK),
     (check_cache_dirs, "cache-dirs", Severity.BLOCK),
     (check_sysctl, "sysctl", Severity.WARN),
     (check_docker_ulimits, "docker-ulimits", Severity.WARN),
@@ -3752,7 +3845,34 @@ def run_all(cfg: BuildConfig, bsp: BspModel | None = None, *, post_build: bool =
     if not post_build:
         checks = tuple(c for c in checks if c not in _POST_BUILD_CHECKS)
     results: list[CheckResult] = []
+
+    # Pre-phase: the cache-mount readiness probe runs at most once per call,
+    # ahead of every other check, so an idle automount is mounted before any
+    # cache-touching check reads it and no check ever starts against a dead
+    # share. check_cache_mounts's own result is built from this same
+    # assessment via _cache_mounts_result rather than by calling
+    # check_cache_mounts(cfg) itself, which would re-run the probe.
+    cache_statuses: list[mounts.CacheMountStatus] | None = None
+    if check_cache_mounts in checks:
+        cache_statuses = mounts.assess_cache_mounts(cfg.effective_cache_targets)
+    blocking_cache = [s for s in cache_statuses if s.blocking] if cache_statuses is not None else []
+
     for check in checks:
+        if check is check_cache_mounts:
+            results.append(_cache_mounts_result(cache_statuses or []))
+            continue
+        if blocking_cache and check in _CACHE_TOUCHING_CHECKS:
+            resolved_name = _CHECK_NAME.get(check, getattr(check, "__name__", "unknown"))
+            unusable = ", ".join(f"{s.label} {s.path}" for s in blocking_cache)
+            results.append(
+                CheckResult(
+                    name=resolved_name,
+                    severity=_CHECK_SEVERITY.get(resolved_name, Severity.WARN),
+                    status=Status.SKIP,
+                    message=f"not run: {unusable} unusable (see cache-mounts)",
+                )
+            )
+            continue
         try:
             results.append(check(cfg))
         except Exception as exc:  # noqa: BLE001 - one check's bug must not abort the doctor run

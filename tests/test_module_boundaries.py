@@ -235,6 +235,7 @@ DIAGNOSTICS_CHECK_NAMES: frozenset[str] = frozenset(
         "check_bitbake_locks",
         "check_bitbake_override",
         "check_cache_dirs",
+        "check_cache_mounts",
         "check_ccache_health",
         "check_central_hashserv",
         "check_central_prserv",
