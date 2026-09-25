@@ -23,6 +23,7 @@ from typing import Literal
 # dataclass raising ``NameError``. None of the three imports ``bakar.config``,
 # so this closes no cycle - the deferred imports inside ``resolve()`` further
 # down are a separate matter and stay deferred.
+from bakar import mounts
 from bakar.preset_config import PresetEntry  # noqa: TC001
 from bakar.sstate_seed import MARKER_NAME, resolve_seed_for_workspace, seed_mirror_line
 from bakar.user_config import UserConfig  # noqa: TC001
@@ -549,6 +550,28 @@ class BuildConfig:
         return shared_ccache_dir(self.ccache_dir, ccache_shared=self.ccache_shared) or self.workspace / "ccache"
 
     @property
+    def effective_cache_targets(self) -> tuple[tuple[str, Path, bool], ...]:
+        """Configured cache dirs, in the form :func:`check_shared_cache_mounts` probes.
+
+        Mirrors that check's precedence exactly (env wins over config, sstate
+        and downloads are critical, ccache is not) so callers that need the
+        same target list - the shared-mount check and NFS-resilience code -
+        stay in lockstep with it rather than re-deriving their own copy.
+        Unset entries are omitted; paths are returned unresolved, matching the
+        shared-mount check's own unresolved use of them.
+        """
+        targets: list[tuple[str, Path, bool]] = []
+        sstate = os.environ.get("SSTATE_DIR") or self.sstate_dir
+        if sstate:
+            targets.append(("sstate_dir", Path(sstate), True))
+        dl = os.environ.get("DL_DIR") or self.dl_dir
+        if dl:
+            targets.append(("dl_dir", Path(dl), True))
+        if self.ccache and self.effective_ccache_dir:
+            targets.append(("ccache_dir", Path(self.effective_ccache_dir), False))
+        return tuple(targets)
+
+    @property
     def effective_feed_dir(self) -> Path:
         """Root of the local package feed this workspace renders into.
 
@@ -577,10 +600,18 @@ class BuildConfig:
         sstate dir is configured.
         """
         sstate = os.environ.get("SSTATE_DIR") or self.sstate_dir
-        # Resolve to an absolute path: a relative SSTATE_DIR would otherwise make
-        # the daemon's state dir (and the port derived from it) depend on the CWD
-        # the CLI runs from, spawning duplicate daemons for one logical cache.
-        return Path(sstate).resolve() if sstate else self.bsp_root
+        # Absolutize with mounts._lexical_normalize rather than Path.resolve():
+        # a relative SSTATE_DIR would otherwise make the daemon's state dir (and
+        # the port derived from it) depend on the CWD the CLI runs from, but
+        # resolving symlinks against the filesystem is not needed for that - it
+        # only needs to be absolute and stable. Path.resolve() also stats every
+        # path component to follow symlinks, which can hang indefinitely on a
+        # wedged NFS automount; every real caller of this property either
+        # passes the result straight to network_state_reason/is_path_on_nfs
+        # (which already does its OWN bounded, hang-safe resolution before
+        # judging the mount) or uses it as a literal directory to read/write
+        # daemon state under - neither needs symlink-accurate resolution here.
+        return mounts._lexical_normalize(Path(sstate)) if sstate else self.bsp_root
 
     @property
     def resolved_tmpdir(self) -> Path:

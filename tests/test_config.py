@@ -6,6 +6,8 @@ particular the ``use_hashequiv`` flag threaded from ``UserConfig.hashserv``.
 
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -17,6 +19,19 @@ from bakar.workspace_config import WorkspaceConfig
 from tests.conftest import make_build_config
 
 pytestmark = pytest.mark.unit
+
+
+def _write_stub_realpath_wedged(tmp_path: Path) -> Path:
+    """Executable ``realpath`` stub that never exits - mirrors
+    ``tests/test_mounts_probe.py``'s ``_write_stub_realpath_wedged``. Proves a
+    caller here never shells out to ``realpath`` at all: if it did, this stub
+    (prepended onto PATH) would make the call hang for the sleep duration."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    stub = bin_dir / "realpath"
+    stub.write_text("#!/bin/sh\nsleep 60\n")
+    stub.chmod(0o755)
+    return bin_dir
 
 
 def _workspace(tmp_path):
@@ -116,6 +131,33 @@ def test_hashserv_state_key_env_beats_config(tmp_path, monkeypatch) -> None:
     cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc))
 
     assert cfg.hashserv_state_key == Path("/mnt/env/sstate")
+
+
+def test_hashserv_state_key_does_not_hang_on_wedged_resolution(tmp_path, monkeypatch) -> None:
+    """A wedged ``realpath`` on PATH must not make ``hashserv_state_key`` hang.
+
+    Regression test: this property used to call the unbounded ``Path.resolve()``,
+    which shells out to ``realpath`` under the hood to follow symlinks and could
+    hang indefinitely on a wedged NFS automount - bypassing every hang-safety
+    guarantee ``mounts._resolve_bounded`` built for the classifier that consumes
+    this value. It now uses ``mounts._lexical_normalize``, which never touches
+    the filesystem, so a wedged ``realpath`` stub (even one prepended onto PATH)
+    cannot affect it at all - the assertion on ``elapsed`` proves that, not just
+    that the eventual value is correct.
+    """
+    bin_dir = _write_stub_realpath_wedged(tmp_path)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
+    uc = UserConfig(sstate_dir="rel/sstate")
+
+    start = time.monotonic()
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp", user_config=uc))
+    key = cfg.hashserv_state_key
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 2.0
+    assert key.is_absolute()
+    assert key == Path(os.path.normpath(Path.cwd() / "rel/sstate"))
 
 
 def test_hashserv_state_key_shared_across_workspaces_same_sstate(tmp_path, monkeypatch) -> None:
@@ -775,3 +817,59 @@ def test_is_meta_avocado_plain_generic_yaml_bsp_root_is_parent(tmp_path: Path) -
 
     assert cfg.is_meta_avocado is False
     assert cfg.bsp_root == plain.parent
+
+
+def _clear_cache_env(monkeypatch) -> None:
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
+    monkeypatch.delenv("DL_DIR", raising=False)
+
+
+def test_effective_cache_targets_empty_when_nothing_configured(tmp_path: Path, monkeypatch) -> None:
+    """No sstate, downloads, or ccache configured yields an empty tuple."""
+    _clear_cache_env(monkeypatch)
+    cfg = make_build_config(workspace=tmp_path)
+
+    assert cfg.effective_cache_targets == ()
+
+
+def test_effective_cache_targets_from_config_fields(tmp_path: Path, monkeypatch) -> None:
+    """With no env override, config-supplied sstate/dl dirs surface with the
+    documented labels and critical flags, unresolved."""
+    _clear_cache_env(monkeypatch)
+    cfg = make_build_config(workspace=tmp_path, sstate_dir="rel/sstate", dl_dir="rel/downloads")
+
+    assert cfg.effective_cache_targets == (
+        ("sstate_dir", Path("rel/sstate"), True),
+        ("dl_dir", Path("rel/downloads"), True),
+    )
+
+
+def test_effective_cache_targets_env_beats_config(tmp_path: Path, monkeypatch) -> None:
+    """A live SSTATE_DIR/DL_DIR env var wins over the config value."""
+    monkeypatch.setenv("SSTATE_DIR", "/mnt/env/sstate")
+    monkeypatch.setenv("DL_DIR", "/mnt/env/downloads")
+    cfg = make_build_config(workspace=tmp_path, sstate_dir="/mnt/config/sstate", dl_dir="/mnt/config/downloads")
+
+    assert cfg.effective_cache_targets == (
+        ("sstate_dir", Path("/mnt/env/sstate"), True),
+        ("dl_dir", Path("/mnt/env/downloads"), True),
+    )
+
+
+def test_effective_cache_targets_omits_ccache_when_disabled(tmp_path: Path, monkeypatch) -> None:
+    """ccache is omitted from the targets when ``ccache`` is False, even though
+    ``effective_ccache_dir`` always resolves to a path."""
+    _clear_cache_env(monkeypatch)
+    cfg = make_build_config(workspace=tmp_path, sstate_dir="/mnt/cache/sstate", ccache=False)
+
+    labels = [label for label, _path, _critical in cfg.effective_cache_targets]
+    assert "ccache_dir" not in labels
+
+
+def test_effective_cache_targets_includes_ccache_when_enabled(tmp_path: Path, monkeypatch) -> None:
+    """With ``ccache=True``, the effective (per-workspace default) ccache dir is
+    included, non-critical, unresolved."""
+    _clear_cache_env(monkeypatch)
+    cfg = make_build_config(workspace=tmp_path, ccache=True)
+
+    assert cfg.effective_cache_targets == (("ccache_dir", cfg.effective_ccache_dir, False),)
