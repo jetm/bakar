@@ -3362,15 +3362,7 @@ def check_shared_cache_mounts(cfg: BuildConfig) -> CheckResult:
     # for cross-node reuse, so a local one is a BLOCK. ccache is non-critical - a
     # local ccache is a legitimate config (it only loses cross-node hit-rate, it
     # does not make the build wrong), so a non-shared ccache is a WARN.
-    targets: list[tuple[str, Path, bool]] = []
-    sstate = os.environ.get("SSTATE_DIR") or cfg.sstate_dir
-    if sstate:
-        targets.append(("sstate_dir", Path(sstate), True))
-    dl = os.environ.get("DL_DIR") or cfg.dl_dir
-    if dl:
-        targets.append(("dl_dir", Path(dl), True))
-    if cfg.ccache and cfg.effective_ccache_dir:
-        targets.append(("ccache_dir", Path(cfg.effective_ccache_dir), False))
+    targets = list(cfg.effective_cache_targets)
     if not targets:
         return _skip(name, Severity.BLOCK, "cluster mode with no shared cache directories configured")
 
