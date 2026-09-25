@@ -58,6 +58,7 @@ import bakar.commands.sync
 import bakar.commands.triage  # noqa: F401
 from bakar.commands import app
 from bakar.commands._app import console
+from bakar.hashserv import NetworkStateDirError
 from bakar.steps.kas_build import BitbakeBinMissingError, BuildtoolsMissingError
 
 __all__ = ["app", "main"]
@@ -91,11 +92,18 @@ def main() -> int:
     except typer.Exit as exc:
         # typer.Exit (used everywhere in our commands) -> the carried exit code.
         return int(exc.exit_code) if getattr(exc, "exit_code", 0) is not None else 0
-    except (BuildtoolsMissingError, BitbakeBinMissingError) as exc:
+    except (BuildtoolsMissingError, BitbakeBinMissingError, NetworkStateDirError) as exc:
         # A host build/inspection prerequisite (the pinned buildtools-extended
-        # toolchain or its bitbake bin) is missing. The exception message names the
-        # missing toolchain and the fix, so surface it cleanly - a read-only
-        # `bakar getvar`/`dump` on a stock host must not dump a raw traceback.
+        # toolchain, its bitbake bin, or a hashserv/prserv state directory that
+        # resolved to NFS) is missing or unsafe. Each of these three is raised
+        # deep inside ``bakar.steps.kas_build._build_env`` - reachable from
+        # every launcher (run_build, run_shell_live, run_shell_capture,
+        # run_shell) and, for run_build/run_shell_live, from further inside
+        # ``kas_pty._run_pty_with_ui`` - so no per-launcher try/except call
+        # site is uniform enough to catch it; only this entry point is. The
+        # exception message already names the problem and the fix, so surface
+        # it cleanly - a read-only `bakar getvar`/`dump` on a workspace whose
+        # daemon state sits on NFS must not dump a raw traceback either.
         console.print(f"Error: {exc}")
         return 1
 

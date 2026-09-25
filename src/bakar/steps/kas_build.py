@@ -53,7 +53,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 from rich.markup import escape
 
-from bakar import build_scope, build_stop, hashserv, prserv, sccache_server, task_timings
+from bakar import build_scope, build_stop, hashserv, mounts, prserv, sccache_server, task_timings
 from bakar.config import GENERATED_BUILD_YAML, BuildConfig
 from bakar.diagnostics import (
     BUILDTOOLS_DIR_ENV,
@@ -118,6 +118,68 @@ if TYPE_CHECKING:
     from bakar.bsp_model import BspModel
     from bakar.config import BuildConfig
     from bakar.observability import RunLogger
+
+
+def cache_mount_refusal(cfg: BuildConfig) -> str | None:
+    """Return a refusal message when bitbake must not be launched, else ``None``.
+
+    Called at the head of every launch function (:func:`run_build`,
+    :func:`run_shell_live`, :func:`run_shell_capture`), before
+    ``clear_stale_bitbake_locks`` and before environment assembly. Checks
+    cache-mount readiness first (cache-mount-readiness spec, launch-gate
+    requirement): a blocking directory - unresponsive, errored, or a
+    fallback to local disk where fstab declares NFS - means bitbake would
+    otherwise parse against a cache that is wedged or silently not shared.
+    Every effective cache target blocks on the same problem, regardless of
+    criticality (see :attr:`~bakar.mounts.CacheMountStatus.blocking`) - the
+    spec's "any effective cache directory" wording carries no carve-out for a
+    non-critical (ccache) target. Only when no cache mount is blocking does
+    it fall through to :func:`bakar.hashserv.daemon_state_refusal`
+    (daemon-state-filesystem-guard spec, hard-stop requirement), which
+    refuses a hashserv/prserv state directory sitting on a network
+    filesystem.
+    """
+    statuses = mounts.assess_cache_mounts(cfg.effective_cache_targets)
+    blocking = [status for status in statuses if status.blocking]
+    if blocking:
+        parts = [f"{s.label} {s.path} ({_cache_mount_server(s)}): {_cache_mount_blocking_detail(s)}" for s in blocking]
+        return (
+            f"{', '.join(parts)}; check the NFS server and this node's link; a client that stays "
+            "wedged after the server returns needs its mounts force-unmounted or a reboot"
+        )
+    return hashserv.daemon_state_refusal(cfg)
+
+
+def _cache_mount_server(status: mounts.CacheMountStatus) -> str:
+    """Host part of a status's fstab or mount source, or ``"server unknown"``.
+
+    Prefers the ``/etc/fstab`` declaration over the live ``/proc/mounts``
+    source - mirrors :func:`bakar.diagnostics._cache_mount_server`, whose
+    docstring explains why fstab wins: for the "declared NFS but resolved to
+    a local filesystem" case, the mount table's source is a local device
+    (e.g. ``/dev/sda1``), which names no server at all.
+    """
+    src = status.fstab_source or status.source
+    if src is None:
+        return "server unknown"
+    return src.split(":/", 1)[0]
+
+
+def _cache_mount_blocking_detail(status: mounts.CacheMountStatus) -> str:
+    """Per-state explanation for a blocking :class:`mounts.CacheMountStatus`.
+
+    Mirrors :func:`bakar.diagnostics._cache_mount_blocking_detail` so the
+    launch-gate refusal and the ``cache-mounts`` doctor check read the same
+    way for the same failure.
+    """
+    if status.state == "unresponsive":
+        return f"did not answer within {int(mounts.CACHE_PROBE_DEADLINE_S)}s"
+    if status.state == "error":
+        return status.detail
+    if status.state == "missing":
+        return status.detail or "declared NFS in /etc/fstab but does not exist yet"
+    # state == "ready": declared NFS but resolved to a non-NFS filesystem.
+    return f"declared NFS in /etc/fstab but resolves to {status.fstype}"
 
 
 def _setup_meta_avocado_build_dir(cfg: BuildConfig) -> None:
@@ -708,6 +770,11 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         log.step_skip("kas_build", reason="dry-run")
         return 0
 
+    refusal = cache_mount_refusal(cfg)
+    if refusal is not None:
+        log.step_fail("kas_build", reason=refusal)
+        return 1
+
     lock_outcome = clear_stale_bitbake_locks(cfg)
     for removed_path in lock_outcome.removed:
         log.warn(f"removed stale bitbake lock: {removed_path} (owning process was gone)")
@@ -956,6 +1023,11 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
     log.step_start("kas_shell_live", command=command, host_mode=cfg.host_mode)
+
+    refusal = cache_mount_refusal(cfg)
+    if refusal is not None:
+        log.step_fail("kas_shell_live", reason=refusal)
+        return 1
 
     lock_outcome = clear_stale_bitbake_locks(cfg)
     for removed_path in lock_outcome.removed:
@@ -1352,11 +1424,14 @@ def _build_env(
     # daemon is running and rewrite the URL for container reachability.
     # The overlay's BB_HASHSERVE = ${@os.environ.get('BB_HASHSERVE', 'auto')}
     # falls through to "auto" when this block omits the key.
-    if cfg.bb_hashserve:
+    if cfg.bb_hashserve is not None:
         # Central cross-node tier: point at the shared Rust/PostgreSQL hashserv
         # (CentralTierAction persisted this host:port endpoint) instead of the
         # per-workspace bitbake daemon. In container mode the cluster IP is
         # reachable directly, so no host.docker.internal rewrite is needed.
+        # ``is not None`` (not truthiness) matches hashserv.daemon_state_refusal's
+        # own gate, so an empty-but-configured endpoint is never mistaken for
+        # "unconfigured" and routed into starting a redundant local daemon.
         passthrough["BB_HASHSERVE"] = cfg.bb_hashserve
     elif cfg.use_hashequiv and ensure_hashserv:
         url = hashserv.ensure_running(
@@ -1377,11 +1452,13 @@ def _build_env(
     # prserv keyed to the shared sstate and override PRSERV_HOST so PRs stay
     # monotonic across builds/TMPDIR-wipes and reach other cluster nodes via
     # cluster_bind_host. ``ensure_hashserv`` is the dry-run/script-gen guard.
-    if cfg.prserv_host:
+    if cfg.prserv_host is not None:
         # Central cross-node tier: the shared Rust/PostgreSQL prserv
         # (CentralTierAction persisted this endpoint). One monotonic PR DB for the
         # whole cluster, surviving TMPDIR wipes, instead of the per-workspace
         # bitbake daemon - so PRs never go backwards regardless of build tree.
+        # ``is not None`` matches hashserv.daemon_state_refusal's own gate - see
+        # the BB_HASHSERVE branch above.
         passthrough["PRSERV_HOST"] = cfg.prserv_host
     elif cfg.host_mode and ensure_hashserv:
         prserv_addr = prserv.ensure_running(
@@ -1640,6 +1717,11 @@ def run_shell_capture(
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
     log.step_start(step, command=command, stdout_path=str(stdout_path), host_mode=cfg.host_mode)
+
+    refusal = cache_mount_refusal(cfg)
+    if refusal is not None:
+        log.step_fail(step, reason=refusal, exit_code=1)
+        return 1
 
     lock_outcome = clear_stale_bitbake_locks(cfg)
     for removed_path in lock_outcome.removed:

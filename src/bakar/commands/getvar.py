@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Annotated, NoReturn
 
 import typer
+from rich.markup import escape
 
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
@@ -43,6 +44,7 @@ from bakar.observability import RunLogger
 from bakar.steps.kas_build import (
     KasBuildContext,
     _lock_refusal_message,
+    cache_mount_refusal,
     clear_stale_bitbake_locks,
     run_shell_capture,
 )
@@ -200,12 +202,17 @@ def _getvar_impl(ctx: _GetvarCtx) -> None:
     overlay_source = _overlay_for(bsp)
     extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
     # Refuse before RunLogger, not inside it. run_shell_capture performs the
-    # same check, but only after __enter__ has created runs/<timestamp>/ -
+    # same checks, but only after __enter__ has created runs/<timestamp>/ -
     # so a getvar issued against a live build left an empty run directory
     # with no kas.log, and `ls -t runs/ | head -1` then picked that instead
     # of the running build's own directory. getvar is a read-only query and
     # has nothing to report when it cannot start, so it should leave no
     # trace at all.
+    refusal = cache_mount_refusal(cfg)
+    if refusal is not None:
+        console.print(f"[red]{escape(refusal)}[/]")
+        raise typer.Exit(1)
+
     lock_outcome = clear_stale_bitbake_locks(cfg)
     if lock_outcome.refusal is not None:
         console.print(f"[red]{_lock_refusal_message(lock_outcome.refusal)}[/]")

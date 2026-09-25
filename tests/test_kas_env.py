@@ -304,6 +304,50 @@ def test_build_env_central_prserv_host_preferred_over_per_workspace_daemon(
     assert env["PRSERV_HOST"] == "10.42.0.1:8585"
 
 
+def test_build_env_empty_string_bb_hashserve_is_central_not_unconfigured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``bb_hashserve = ""`` reads as "central endpoint configured", matching
+    ``hashserv.daemon_state_refusal``'s own ``is None`` gate.
+
+    A truthiness check here (``if cfg.bb_hashserve:``) would treat an empty
+    string as unconfigured and fall into ``ensure_running`` - which is exactly
+    the doctor-gate/``_build_env`` mismatch that let an uncaught
+    ``NetworkStateDirError`` reach a build the doctor check believed it had
+    routed around the per-workspace daemon entirely.
+    """
+    monkeypatch.delenv("BB_HASHSERVE", raising=False)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("ensure_running must not run when bb_hashserve is set, even to '' ")
+
+    monkeypatch.setattr("bakar.steps.kas_build.hashserv.ensure_running", _boom)
+    cfg = replace(_hashequiv_cfg(tmp_path, use_hashequiv=True, host_mode=False), bb_hashserve="")
+
+    env = _build_env(cfg)
+
+    assert env["BB_HASHSERVE"] == ""
+
+
+def test_build_env_empty_string_prserv_host_is_central_not_unconfigured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``prserv_host = ""`` reads as "central endpoint configured", matching
+    ``hashserv.daemon_state_refusal``'s own ``is None`` gate. See the sibling
+    ``bb_hashserve`` test above for the failure mode this guards against."""
+    monkeypatch.delenv("PRSERV_HOST", raising=False)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("prserv.ensure_running must not run when prserv_host is set, even to ''")
+
+    monkeypatch.setattr("bakar.steps.kas_build.prserv.ensure_running", _boom)
+    cfg = replace(_hashequiv_cfg(tmp_path, use_hashequiv=True, host_mode=False), prserv_host="")
+
+    env = _build_env(cfg)
+
+    assert env["PRSERV_HOST"] == ""
+
+
 # ---------------------------------------------------------------------------
 # _ccache_args runtime-args concatenation (host-gateway injection) tests
 # ---------------------------------------------------------------------------

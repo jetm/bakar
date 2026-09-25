@@ -162,6 +162,16 @@ def test_run_shell_emits_step_ok_or_step_fail_matching_rc(
 def test_run_shell_capture_emits_step_ok_or_step_fail_matching_rc(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rc: int
 ) -> None:
+    # Not exercising the cache-mount/daemon-state launch gate here - it probes
+    # real subprocesses via bakar.mounts, which would otherwise pick up the
+    # global subprocess.Popen patch below meant only for the kas launch itself.
+    monkeypatch.setattr(kas_build, "cache_mount_refusal", lambda _cfg, **_kw: None)
+    # clear_stale_bitbake_locks's is_path_on_nfs classification also spawns a
+    # real ``realpath`` child now (bug 1's bounded, symlink-following
+    # resolution) - stub it directly so the same global Popen patch below,
+    # meant only for the kas launch itself, is not also asked to stand in for
+    # that unrelated subprocess call.
+    monkeypatch.setattr(kas_build, "is_path_on_nfs", lambda _p: False)
     monkeypatch.setattr(kas_build.subprocess, "Popen", lambda *args, **kwargs: _FakeProc(rc))
 
     with RunLogger(runs_dir=tmp_path / "runs") as log:

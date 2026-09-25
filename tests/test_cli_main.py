@@ -93,6 +93,37 @@ def test_main_buildtools_missing_returns_1_clean(
     assert "╭" not in captured.err
 
 
+def test_main_network_state_dir_error_returns_1_clean(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A NetworkStateDirError (hashserv/prserv state dir on NFS) surfaces as a
+    plain 'Error:' with rc 1, not a raw traceback.
+
+    ``_build_env`` (``bakar.steps.kas_build``) raises this from deep inside
+    ``hashserv.ensure_running``/``prserv.ensure_running`` - reachable via
+    ``run_build``/``run_shell_live`` through ``kas_pty._run_pty_with_ui``, and
+    directly via ``run_shell_capture``/``run_shell`` - so no single launcher-
+    level try/except is uniform enough to catch it; this interceptor is."""
+    import bakar.cli as cli_mod
+    from bakar.hashserv import NetworkStateDirError
+
+    def _raise(**_kw: object) -> int:
+        raise NetworkStateDirError(
+            "hashserv state directory /work/.bakar is on nfs; "
+            "set [build] bb_hashserve to the central hashserv, or point sstate_dir at local disk"
+        )
+
+    monkeypatch.setattr(cli_mod, "app", _raise)
+    monkeypatch.setattr(sys, "argv", ["bakar", "bitbake", "core-image-minimal"])
+    rc = main()
+    captured = capsys.readouterr()
+    assert rc == 1, captured.err
+    assert "Error:" in captured.err
+    assert "hashserv state directory" in captured.err
+    assert "╭" not in captured.err
+
+
 class TestTerminalExceptionsReadFromPublicNames:
     """Abort/Exit must resolve without touching ``typer._click.exceptions``.
 

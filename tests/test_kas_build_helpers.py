@@ -20,7 +20,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import posixpath
 import socket
 import subprocess
 import time
@@ -991,25 +990,54 @@ def _patch_proc_mounts(monkeypatch: pytest.MonkeyPatch, content: str) -> None:
     monkeypatch.setattr(Path, "read_text", fake_read_text)
 
 
-def _patch_resolve_maps_build_dir_to_pc3_mountpoint(monkeypatch: pytest.MonkeyPatch, build_dir: Path) -> None:
-    """Make ``build_dir.resolve()`` read as living under the literal PC3
-    mountpoint text, without touching this developer's real
+def _patch_resolve_maps_build_dir_to_pc3_mountpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, build_dir: Path
+) -> Path:
+    """Make the bounded symlink resolution read ``build_dir`` as living under
+    the literal PC3 mountpoint text, without touching this developer's real
     ``~/yocto-cache`` directory (a real symlink on this dev machine).
 
-    ``is_path_on_nfs`` only calls ``.resolve()`` to find which mount-table
-    entry covers a path; every other operation in this test (``.exists()``,
-    ``.write_text()``) still addresses the real ``tmp_path``-backed
-    ``build_dir``.
+    ``is_path_on_nfs`` no longer calls ``Path.resolve()`` in this process to
+    find which mount-table entry covers a path - it forks a real ``realpath``
+    child instead (``bakar.mounts._resolve_bounded``), bounded so a wedged
+    automount ancestor cannot hang the caller. A patch aimed at
+    ``Path.resolve`` therefore no longer reaches anything this classifier
+    calls; this fixture replaces the ``realpath`` binary on ``PATH`` instead,
+    which is the actual mechanism now in play. Every invocation appends one
+    line to the returned call-log file, so a caller can assert the
+    bounded-resolution path was genuinely exercised rather than silently
+    skipped - the same failure mode (a fixture patching a method nobody calls
+    any more) that made the old ``Path.resolve``-based version of this
+    fixture dead in the first place.
+
+    Every other operation in this test (``.exists()``, ``.write_text()``)
+    still addresses the real ``tmp_path``-backed ``build_dir`` untouched.
     """
     build_dir_str = str(build_dir)
-
-    def fake_resolve(self: Path, strict: bool = False) -> Path:  # type: ignore[no-untyped-def]
-        self_str = str(self)
-        if self_str == build_dir_str or self_str.startswith(build_dir_str + "/"):
-            return Path(_PC3_CCACHE_MOUNTPOINT + self_str[len(build_dir_str) :])
-        return Path(posixpath.normpath(self_str))
-
-    monkeypatch.setattr(Path, "resolve", fake_resolve)
+    bin_dir = tmp_path / "realpath-stub-bin"
+    bin_dir.mkdir(exist_ok=True)
+    call_log = tmp_path / "realpath-calls.log"
+    stub = bin_dir / "realpath"
+    stub.write_text(
+        "#!/bin/sh\n"
+        f'echo call >> "{call_log}"\n'
+        "shift\n"
+        'p="$1"\n'
+        'case "$p" in\n'
+        f"  {build_dir_str})\n"
+        f"    printf '%s\\n' '{_PC3_CCACHE_MOUNTPOINT}'\n"
+        "    ;;\n"
+        f"  {build_dir_str}/*)\n"
+        f"    printf '%s\\n' \"{_PC3_CCACHE_MOUNTPOINT}${{p#{build_dir_str}/}}\"\n"
+        "    ;;\n"
+        "  *)\n"
+        '    exec /usr/bin/realpath -- "$p"\n'
+        "    ;;\n"
+        "esac\n"
+    )
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    return call_log
 
 
 def test_clear_stale_bitbake_locks_stacked_autofs_nfs4_leaves_leftover_socket(
@@ -1026,13 +1054,17 @@ def test_clear_stale_bitbake_locks_stacked_autofs_nfs4_leaves_leftover_socket(
     bb_sock = build / "bitbake.sock"
     bb_sock.write_text("", encoding="utf-8")
     _patch_proc_mounts(monkeypatch, _PC3_STACKED_MOUNTS)
-    _patch_resolve_maps_build_dir_to_pc3_mountpoint(monkeypatch, build)
+    call_log = _patch_resolve_maps_build_dir_to_pc3_mountpoint(monkeypatch, tmp_path, build)
 
     outcome = clear_stale_bitbake_locks(cfg)
 
     assert "bitbake.sock" not in {p.name for p in outcome.removed}
     assert outcome.refusal is None
     assert bb_sock.exists()
+    assert call_log.exists() and call_log.read_text().strip(), (
+        "the bounded realpath resolution was never invoked - this test no longer exercises "
+        "the real symlink-aware classification path"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1213,6 +1245,10 @@ def _stub_capture_launch(monkeypatch: pytest.MonkeyPatch, proc: _FakeCaptureProc
         "bakar.steps.kas_build.clear_stale_bitbake_locks",
         lambda _cfg: build_stop.LockClearOutcome(removed=[], refusal=None),
     )
+    # Not exercising the cache-mount/daemon-state launch gate here - it probes
+    # real subprocesses via bakar.mounts, which would otherwise pick up the
+    # fake Popen patched below onto the shared subprocess module.
+    monkeypatch.setattr("bakar.steps.kas_build.cache_mount_refusal", lambda _cfg, **_kw: None)
 
     @contextlib.contextmanager
     def _noop_marker(_cfg: object, _log: object):  # type: ignore[no-untyped-def]
@@ -1351,6 +1387,10 @@ def test_run_shell_capture_labels_the_container_only_when_isolated(
         "bakar.steps.kas_build.clear_stale_bitbake_locks",
         lambda _cfg: build_stop.LockClearOutcome(removed=[], refusal=None),
     )
+    # Not exercising the cache-mount/daemon-state launch gate here - it probes
+    # real subprocesses via bakar.mounts, which would otherwise pick up the
+    # fake Popen patched below onto the shared subprocess module.
+    monkeypatch.setattr("bakar.steps.kas_build.cache_mount_refusal", lambda _cfg, **_kw: None)
 
     @contextlib.contextmanager
     def _noop_marker(_cfg: object, _log: object):  # type: ignore[no-untyped-def]

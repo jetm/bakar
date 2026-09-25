@@ -1125,6 +1125,10 @@ def test_run_build_writes_then_removes_build_pid(
     monkeypatch.setattr(
         step_kas, "clear_stale_bitbake_locks", lambda cfg: step_kas.build_stop.LockClearOutcome(removed=[])
     )
+    # Not exercising the cache-mount/daemon-state launch gate here - it probes
+    # real subprocesses via bakar.mounts, which would otherwise pick up the
+    # fake Popen patched below onto the shared subprocess module.
+    monkeypatch.setattr(step_kas, "cache_mount_refusal", lambda cfg, **_kw: None)
 
     class _FakeProc:
         pid = 424242
