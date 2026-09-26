@@ -7,15 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-09-26
+
 ### Added
 - Added a `cache-mounts` doctor check that runs in every mode (never filtered by cluster or container mode) and probes every effective cache directory (sstate, downloads, ccache) with a 20-second bounded probe before any other check touches them - triggering an idle automount in the process. It blocks and names each unresponsive share, its server, and the reason, including a cache directory that `/etc/fstab` declares as NFS but currently resolves to a local filesystem. When it is blocking, every other check that reads a cache directory (`cache-dirs`, `disk-free`, `ccache-health`, `hashserv`, `daemon-state`, `shared-mounts`, and the uninative downloads/mirror-hit/cluster-consistency checks) is reported as skipped naming the unusable directory instead of being run.
 - Added a `daemon-state` doctor check that blocks when the per-workspace hashserv or prserv daemon would have to write its SQLite state to a network filesystem, naming `bb_hashserve`/`prserv_host` as the fix; it is skipped when neither per-workspace daemon is in use.
 - Every pre-flight doctor check now runs on its own thread with a 180-second deadline; a check that exceeds it is reported as a failure under its own registered name and severity, naming the deadline, instead of hanging the whole doctor run. Post-build checks are exempt from this deadline.
 - `bakar build`'s doctor step now writes a `check_start`/`check_end` event pair per check to the run's `events.jsonl`, in run order.
+- `bakar build`, `bakar bitbake`, and `bakar getvar` now check cache mount and daemon state readiness before launching bitbake, refusing execution if any cache mount is unresponsive or inconsistent with `/etc/fstab`, or if per-workspace daemon state resides on a network filesystem.
+- The build UI now forwards indented continuation lines following `ERROR:` and `FATAL:` log lines (up to a 20-line cap) so multi-line error details are immediately visible on the console without opening the log file.
 
 ### Changed
 - The cluster `shared-mounts` doctor check now treats a `softerr` NFS mount option the same as `hard` (no warning), and warns only on plain `soft`, recommending `softerr` or `hard` instead of only `hard`.
 - `bakar stop` now falls back to a host-wide search when it is invoked with no `--workspace`, no workspace resolvable from the current directory, and no BYO kas YAML: it scans every live, host-mode build on the host instead of exiting with "Not inside a BSP workspace". This fallback is host-mode only - container-mode builds remain invisible to it, and the scan is filtered to the topdirs `_discover_host_cookers` finds a live cooker under, not every topdir the host has ever built in. Every host-wide stop, whether reached via an explicit `--run <id>` or the bare no-selector path, prints the candidate's identifying row and requires interactive confirmation before signalling it - a non-interactive caller with no TTY is refused outright since it cannot answer the prompt. `--force` bypasses that confirmation only when paired with an explicit `--run <id>`; the bare no-selector host-wide path always confirms regardless of `--force`, because there is no id the operator has already committed to.
+
+### Fixed
+- Fixed unhandled tracebacks in `bakar hashserv start` and `bakar prserv start` when the daemon state directory resides on an NFS or unclassifiable filesystem, printing a readable error instead.
+- Fixed filesystem classification for systemd autofs mounts so stacked NFS shares are recognized instead of being misidentified as local filesystems.
 
 ## [0.33.0] - 2026-09-15
 
@@ -821,7 +829,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.33.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.34.0...HEAD
+[0.34.0]: https://github.com/jetm/bakar/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/jetm/bakar/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/jetm/bakar/compare/v0.31.1...v0.32.0
 [0.31.1]: https://github.com/jetm/bakar/compare/v0.31.0...v0.31.1
