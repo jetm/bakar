@@ -390,20 +390,33 @@ def test_stale_artifact_is_rejected_rather_than_published(monkeypatch, tmp_path)
 
 
 def test_fresh_artifact_is_published(monkeypatch, tmp_path) -> None:
-    """An artifact rewritten during the capture is accepted and published."""
+    """An artifact rewritten during the capture is accepted and published.
+
+    The clock is mocked, not left to the real one: an uncontrolled `time.time()`
+    on both sides of the mtime comparison in `_capture_dependency_graph` races
+    the artifact write against the recorded capture start, and lost that race
+    at least once in CI (a `pytest` run on `test (3.15)`, 2026-09-26) despite
+    the write happening strictly after the start in program order.
+    """
+    import os
+
     from bakar.steps import kas_build
 
     ctx, log = _capture_ctx(tmp_path)
     topdir = ctx.cfg.resolved_tmpdir.parent
     topdir.mkdir(parents=True)
+    start_time = 2_000_000.0
 
     def _fake_capture(_ctx, _cmd, _out, **_kwargs):
         for name in kas_build.GRAPH_ARTIFACTS:
-            (topdir / name).write_text("fresh")
+            artifact = topdir / name
+            artifact.write_text("fresh")
+            os.utime(artifact, (start_time + 60, start_time + 60))
         return 0
 
     monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", lambda *_a, **_k: True)
     monkeypatch.setattr(kas_build, "run_shell_capture", _fake_capture)
+    monkeypatch.setattr(kas_build.time, "time", lambda: start_time)
 
     result = kas_build._capture_dependency_graph(ctx, log)
 
@@ -421,20 +434,25 @@ def test_capture_copies_artifacts_and_writes_a_marker_with_provenance(monkeypatc
     to actually match what was copied.
     """
     import json
+    import os
 
     from bakar.steps import kas_build
 
     ctx, log = _capture_ctx(tmp_path)
     topdir = ctx.cfg.resolved_tmpdir.parent
     topdir.mkdir(parents=True)
+    start_time = 2_000_000.0
 
     def _fake_capture(_ctx, _cmd, _out, **_kwargs):
         for name in kas_build.GRAPH_ARTIFACTS:
-            (topdir / name).write_text(f"content-of-{name}")
+            artifact = topdir / name
+            artifact.write_text(f"content-of-{name}")
+            os.utime(artifact, (start_time + 60, start_time + 60))
         return 0
 
     monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", lambda *_a, **_k: True)
     monkeypatch.setattr(kas_build, "run_shell_capture", _fake_capture)
+    monkeypatch.setattr(kas_build.time, "time", lambda: start_time)
 
     result = kas_build._capture_dependency_graph(ctx, log)
 
@@ -486,6 +504,8 @@ def test_capture_reads_topdir_from_build_dir_name_not_resolved_tmpdir(monkeypatc
     points under the override base, and its parent is that base itself, not
     the build directory ``bitbake -g`` actually writes the two artifacts into.
     """
+    import os
+
     from bakar.steps import kas_build
 
     ctx, log = _capture_ctx(tmp_path)
@@ -493,14 +513,18 @@ def test_capture_reads_topdir_from_build_dir_name_not_resolved_tmpdir(monkeypatc
     ctx.cfg.resolved_tmpdir = tmp_path / "elsewhere" / "tmp-digest"
     real_topdir = ctx.cfg.bsp_root / ctx.cfg.build_dir_name
     real_topdir.mkdir(parents=True)
+    start_time = 2_000_000.0
 
     def _fake_capture(_ctx, _cmd, _out, **_kwargs):
         for name in kas_build.GRAPH_ARTIFACTS:
-            (real_topdir / name).write_text(f"content-of-{name}")
+            artifact = real_topdir / name
+            artifact.write_text(f"content-of-{name}")
+            os.utime(artifact, (start_time + 60, start_time + 60))
         return 0
 
     monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", lambda *_a, **_k: True)
     monkeypatch.setattr(kas_build, "run_shell_capture", _fake_capture)
+    monkeypatch.setattr(kas_build.time, "time", lambda: start_time)
 
     result = kas_build._capture_dependency_graph(ctx, log)
 
