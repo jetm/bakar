@@ -77,9 +77,15 @@ python () {
     # Never scope the flag or the mold-provider dependency onto native/cross/
     # crosssdk/nativesdk/allarch recipes: their CC is the build/host compiler
     # (D5), and a mold-native DEPENDS here would reach mold's own cmake-native /
-    # ninja-native and form a parse-time cycle (D3). Skip the gate entirely.
+    # ninja-native and form a parse-time cycle (D3). Blank MOLD_LDFLAGS before
+    # returning: TARGET_LDFLAGS:append above is unconditional, so without this
+    # these classes keep MOLD_LDFLAGS's default -fuse-ld=mold -B<wrapper> even
+    # though mold_stage_wrappers (below) never runs for them - the wrapper dir
+    # never gets created, and collect2 fails with "cannot find 'ld'" on the
+    # first native/cross recipe that actually links.
     for cls in ('native', 'nativesdk', 'cross', 'crosssdk', 'cross-canadian', 'allarch'):
         if bb.data.inherits_class(cls, d):
+            d.setVar('MOLD_LDFLAGS', '')
             return
 
     if bb.utils.to_boolean(d.getVar('MOLD_DISABLE')):
