@@ -2,15 +2,17 @@
 
 Manage the local package feed: stage a finished build's RPMs, render the
 per-machine repositories, derive the index a client reads, serve the tree over
-HTTP, and prune what accumulates. Seven verbs over one feed root, in the same
-shape as `bakar prserv` - the workspace is resolved per verb via `--workspace`/`-w`
-or by walking up from the current directory.
+HTTP, mirror a published feed for offline use, and prune what accumulates.
+Eight verbs over one feed root, in the same shape as `bakar prserv` - the
+workspace is resolved per verb via `--workspace`/`-w` or by walking up from
+the current directory.
 
 ## Synopsis
 
 ```text
 bakar feed doctor [KAS_YAML] [OPTIONS]
 bakar feed sync    KAS_YAML  [OPTIONS]
+bakar feed mirror  SOURCE_URL [--target MACHINE]... [--repo PATH]... [OPTIONS]
 bakar feed index  [KAS_YAML] [OPTIONS]
 bakar feed serve  [KAS_YAML] [OPTIONS]
 bakar feed stop   [KAS_YAML] [OPTIONS]
@@ -32,6 +34,7 @@ destructive happens.
 |---------|--------------|
 | `bakar feed doctor` | Check everything a sync needs, without touching the feed |
 | `bakar feed sync` | Stage a finished build and render every repository it declares |
+| `bakar feed mirror` | Copy repositories of a published feed into the local feed |
 | `bakar feed index` | Write `targets.json` from what the channel has actually rendered |
 | `bakar feed serve` | Serve the feed root over HTTP in the background |
 | `bakar feed stop` | Stop the feed's static server |
@@ -42,9 +45,11 @@ destructive happens.
 
 | Flag | Applies to | Description |
 |------|------------|-------------|
-| `--workspace`, `-w` | all seven | Workspace root; auto-detected if omitted |
-| `--release` | `sync`, `index`, `status`, `gc` | Feed release directory (default: `2024`) |
-| `--channel` | `sync`, `index`, `status`, `gc` | Feed channel directory (default: `edge`) |
+| `--workspace`, `-w` | all eight | Workspace root; auto-detected if omitted |
+| `--release` | `sync`, `mirror`, `index`, `status`, `gc` | Feed release directory (default: `2024`) |
+| `--channel` | `sync`, `mirror`, `index`, `status`, `gc` | Feed channel directory (default: `edge`) |
+| `--target` | `mirror` only | Machine name to resolve through the source's `targets.json` (repeatable) |
+| `--repo` | `mirror` only | Repository path to mirror directly, e.g. `sdk/all` (repeatable) |
 | `--port` | `serve`, `status` | Port the static server binds (default: `8080`) |
 | `--bind` | `serve` | Interface to bind (default: `127.0.0.1`, which keeps the feed off the network) |
 | `--keep` | `gc` | Snapshots to retain by age, minimum `1` (default: `3`) |
@@ -84,6 +89,83 @@ that failed.
 `bakar build --feed` runs a sync and then an index once the build has succeeded,
 with `--feed-release`/`--feed-channel` mirroring the flags here. A failed build
 never syncs, and neither does `--dry-run`.
+
+## Mirroring a published feed
+
+`bakar feed mirror SOURCE_URL` copies repositories of a remote, already-published
+feed into the local feed, so a lab or bench host with no board-support checkout
+can still build offline against a real package set. It requires at least one
+`--target` or `--repo`; called with neither it refuses before making any request.
+
+**What is copied.** Only a repository's current head: `repomd.xml`, the metadata
+files it names, and every package those list. A source's `snapshots-latest.json`
+pointer and its `snapshots/` tree are never requested or written - the mirror has
+no notion of the source's snapshot history, only of what its head currently
+publishes.
+
+**Selection.** `--target MACHINE` resolves through the *source's own*
+`targets.json` to the repository paths that machine locks, the same way a
+client resolves a machine today. `--repo PATH` names a repository directly (for
+example `sdk/all`), bypassing target resolution. Both are repeatable and can be
+combined. A repository the index declares but the source does not currently
+publish is skipped and reported as `declared but not published: ...`, the same
+shape `sync` uses for a repo a repo map lists but a build did not stage.
+
+**Integrity.** Every metadata file and every package is verified against the
+checksum its own `repomd.xml`/primary listing declares before it is written;
+a mismatch retries and then fails the run naming the file. `repomd.xml` itself
+is written last and atomically, after every package it names has verified -
+so a client can never resolve a `repomd.xml` pointing at packages that are only
+partially there. A source-published detached signature (`repomd.xml.asc`) is
+copied immediately before `repomd.xml`, never after.
+
+**Confinement.** The mirror writes only inside the target repository directory
+or the channel's shared `_pkgs` pool - never outside the channel root, however a
+source's metadata names a file. A location outside those two places is refused
+before any request is made for that repository.
+
+**Ownership.** A repository this run did not create is never overwritten: if
+the local repository already carries a `repomd.xml` or a snapshot pointer with
+no matching `.bakar-mirror.json` marker (or a marker naming a different
+source), the run is refused for that repository before its first request, and
+the message says to choose another feed root (`-w` or `[build] feed_dir`) or
+remove the local repository directory. `.bakar-mirror.json` is the provenance
+marker mirror writes into each repository it publishes, recording the source
+channel that repository came from - this is what the ownership check reads
+back on a later run.
+
+**Resume.** Re-running the same command is safe and cheap: a package whose
+existing bytes already hash to the declared checksum is reused rather than
+re-fetched, so an interrupted mirror picks up where it left off.
+
+**Disk space** is checked with a preflight against every unique package this
+run needs, before any package is requested - a run that would not fit fails up
+front rather than partway through.
+
+`bakar feed gc` needs no mirror-specific handling: it prunes stale metadata and
+orphaned pool files exactly as it does after a `sync`, so re-running `mirror`
+against an updated source and then `gc` reclaims what the previous mirror left
+behind.
+
+Do not mix `sync` and `mirror` for the same repository - `sync` renders it from
+a local build's deploy tree, `mirror` copies it from a remote source's head,
+and the ownership check above refuses to let one overwrite what the other
+created.
+
+### Offline-lab walkthrough
+
+A bench host with no board-support layer checkout at all - only `bakar` and
+Python - can still stand up a local feed from a published one:
+
+```bash
+bakar feed mirror https://repo.avocadolinux.org --target rzv2n-sr-som -w ~/avocado-lab
+bakar feed index -w ~/avocado-lab
+bakar feed serve --bind 0.0.0.0 -w ~/avocado-lab
+```
+
+`mirror` and `serve` need only Python - neither touches a layer checkout or a
+build tool. `bakar feed doctor`'s `createrepo_c` check applies to `sync`, which
+this workflow never runs.
 
 ## bakar feed index
 
@@ -160,6 +242,10 @@ lands at `<release>/<channel>/_pkgs`, per-machine repositories under `target/`,
 immutable snapshots under `snapshots/`, and the client pointer at
 `snapshots-latest.json`. Staging happens in a *sibling* of the feed root named
 `<feed_root>-stage`, never inside it, because the feed root is what gets served.
+A repository `bakar feed mirror` publishes also carries a `.bakar-mirror.json`
+marker alongside its `repomd.xml`, recording the source channel it was copied
+from; the ownership guard in "Mirroring a published feed" above reads this file
+back on every later mirror run.
 
 ## Examples
 

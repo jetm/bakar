@@ -42,7 +42,7 @@
 | `prefetch` | [prefetch.md](prefetch.md) | Pre-fetch recipe sources into DL_DIR |
 | `mirror` | [mirror.md](mirror.md) | Seed a premirror `git2_*.tar.gz` tarball from a git URL (host-side) |
 | `sstate-seed` | [sstate-seed.md](sstate-seed.md) | Populate and inspect the native/cross sstate seed |
-| `feed` | [feed.md](feed.md) | Manage the local package feed: stage, index, serve, and prune a build's RPMs |
+| `feed` | [feed.md](feed.md) | Manage the local package feed: stage, mirror, index, serve, and prune a build's RPMs |
 | `dump` | [dump.md](dump.md) | Inspect the resolved kas YAML |
 | `hashserv` | [hashserv.md](hashserv.md) | Manage the persistent bitbake-hashserv daemon |
 | `prserv` | [prserv.md](prserv.md) | Manage the workspace-scoped bitbake-prserv daemon that keeps package revisions monotonic |
@@ -122,6 +122,7 @@
 - Persistent hash equivalence across builds: [hashserv.md](hashserv.md)
 - Keep package revisions monotonic across a wiped build tree: [prserv.md](prserv.md)
 - Publish a finished build's RPMs as a local package feed: [feed.md](feed.md)
+- Copy a published feed for offline use: [feed.md](feed.md) (`bakar feed mirror`)
 - Run a build on an idle remote node (mirror the tree, build over ssh): [build.md](build.md) (`--on <host>`)
 
 ---
@@ -222,7 +223,7 @@ bakar clean             - remove build/ to force a from-scratch build
 bakar clean-cache       - prune stale sstate and ccache entries by age
 bakar hashserv          - manage the persistent bitbake-hashserv daemon
 bakar prserv            - manage the workspace-scoped bitbake-prserv daemon
-bakar feed              - stage, index, serve and prune the local package feed
+bakar feed              - stage, mirror, index, serve and prune the local package feed
 bakar bitbake-override  - swap BSP-bundled bitbake for upstream
 bakar run               - boot avocado-os QEMU image (meta-avocado only)
 bakar stress-parse      - stress-test bitbake parser fork race
@@ -241,7 +242,7 @@ command page, the gloss links it.
 
 | Capability | Note | What it covers |
 |------------|------|----------------|
-| Local package feed | [capabilities/local-package-feed.md](capabilities/local-package-feed.md) | Staging, pooled rendering, index derivation, snapshot minting and static serving - see [feed.md](feed.md) for the commands |
+| Local package feed | [capabilities/local-package-feed.md](capabilities/local-package-feed.md) | Staging, pooled rendering, index derivation, snapshot minting and static serving, and mirroring a published feed - see [feed.md](feed.md) for the commands |
 | Feed consolidation | [capabilities/feed-consolidation.md](capabilities/feed-consolidation.md) | Merging scattered RPM deploy trees into one canonical feed under a verification gate (no CLI surface today) |
 | Feed retention | [capabilities/feed-retention.md](capabilities/feed-retention.md) | Bounding pool and snapshot growth for a feed written on every build |
 | ccache under sccache-dist | [capabilities/ccache-sccache-dist-default.md](capabilities/ccache-sccache-dist-default.md) | Why `[build] ccache` defaults to the resolved `sccache_dist` value instead of `false` when no tier sets it |
