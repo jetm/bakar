@@ -44,8 +44,6 @@ LIC_FILES_CHKSUM = "\
 SRCREV = "7c4c0addcb833120bf41cc3db7b2652694e0d814"
 SRC_URI = "gitsm://github.com/rui314/mold.git;protocol=https;nobranch=1"
 
-S = "${WORKDIR}/git"
-
 # mold requires a C++20 host compiler (GCC 12+ / Clang 15+). The bakar doctor gate
 # probes the mode-appropriate build compiler for C++20 before the build starts so
 # this fails in seconds rather than 40 minutes into do_compile (handoff S6).
