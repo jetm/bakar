@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added `[build] mold_mode` and `[build] mold_extra_excluded_pn` config.toml keys. `mold_mode` persists the policy (`list`/`global`/`baseline`/`baseline-global`) that previously required a `--mold`/`--mold-baseline`/`--mold-global` flag on every invocation; a CLI flag still overrides it when passed. `mold_extra_excluded_pn` is a space-separated PN list appended to `MOLD_EXCLUDED_PN` (deny-list/global scope only), letting a recipe discovered to break under global mold be recorded once rather than rediscovered on every later global-mold build. Both are readable/writable via `bakar settings get/set/list`.
+
+### Fixed
+- Fixed `mold.bbclass`'s native/nativesdk/cross/crosssdk/cross-canadian/allarch exclusion gate returning before clearing `MOLD_LDFLAGS`, which left those classes carrying the unconditional `TARGET_LDFLAGS:append`'s default `-fuse-ld=mold -B<wrapper>` with no wrapper ever staged for them - `collect2: cannot find 'ld'` on the first such recipe to actually link (observed on `zstd-native`). Never exercised before a real `--mold`/`--mold-baseline` build ran to completion.
+- Removed the deprecated `S = "${WORKDIR}/git"` assignment from the bundled `mold-native` recipe; this oe-core release now fails `do_unpack` fatally on it since bitbake.conf's own default already resolves `S` to this path for a `gitsm` fetcher with no subdir override. Only reachable via the mold arm's `DEPENDS` (the baseline arm never builds `mold-native`), so never exercised before now either.
+
 ## [0.34.0] - 2026-09-26
 
 ### Added

@@ -234,28 +234,43 @@ def pick_bool_tristate(
     return None
 
 
+_MOLD_MODES = ("list", "global", "baseline", "baseline-global")
+
+
 def _resolve_mold(
     *,
     user_config: UserConfig | None,
-) -> tuple[bool, Literal["list", "global", "baseline"]]:
-    """Resolve the mold enable toggle and mode at the accelerator tier.
+) -> tuple[bool, Literal["list", "global", "baseline", "baseline-global"], str | None]:
+    """Resolve the mold enable toggle, mode, and extra exclusions at the accelerator tier.
 
     Precedence for the enable bool is ``BAKAR_MOLD`` env > ``[build] mold``
-    config > default off. The mode is always ``list`` at this tier - the CLI
-    ``--mold`` / ``--mold-baseline`` overrides (and the baseline mode they
-    select) are applied above ``resolve()`` via
-    :func:`bakar.commands._helpers.apply_mold_overrides`. Unlike mold, the
-    global ``--sccache-dist`` flag is threaded INTO ``resolve()`` itself via
-    its ``sccache_dist_override`` parameter, not folded in afterward - ccache's
-    own resolution depends on the resolved ``sccache_dist`` value, so the flag
-    has to be visible before ``resolve()`` returns.
+    config > default off. The mode is ``[build] mold_mode`` config > default
+    ``list``; the CLI ``--mold`` / ``--mold-baseline`` / ``--mold-global``
+    overrides are applied above ``resolve()`` via
+    :func:`bakar.commands._helpers.apply_mold_overrides` and win over whatever
+    this function returns. Unlike mold, the global ``--sccache-dist`` flag is
+    threaded INTO ``resolve()`` itself via its ``sccache_dist_override``
+    parameter, not folded in afterward - ccache's own resolution depends on the
+    resolved ``sccache_dist`` value, so the flag has to be visible before
+    ``resolve()`` returns.
+
+    ``mold_extra_excluded_pn`` is a space-separated PN list appended to
+    ``MOLD_EXCLUDED_PN`` (deny-list scope only) so a recipe found to break
+    under global mold - e.g. a QA check that only fires once that recipe's
+    sstate signature actually changes - can be recorded once in config.toml
+    and skipped on every later global-mold build, without touching
+    mold.bbclass's own baked-in exclusions.
     """
     resolved = pick_bool(
         "BAKAR_MOLD",
         ws_val=None,
         user_val=user_config.mold if user_config is not None else False,
     )
-    return resolved, "list"
+    mode = (user_config.mold_mode if user_config is not None else None) or "list"
+    if mode not in _MOLD_MODES:
+        raise ValueError(f"[build] mold_mode must be one of {_MOLD_MODES}, got {mode!r}")
+    extra_excluded = user_config.mold_extra_excluded_pn if user_config is not None else None
+    return resolved, mode, extra_excluded
 
 
 @dataclass(frozen=True)
@@ -488,6 +503,11 @@ class BuildConfig:
     # Default off, so a build is byte-for-byte unchanged until the user opts in.
     mold: bool = field(default=False)
     mold_mode: Literal["list", "global", "baseline", "baseline-global"] = "list"
+    # Space-separated PN list appended to MOLD_EXCLUDED_PN (deny-list/global
+    # scope only) via _inject_literal_mold. Lets a recipe discovered to break
+    # under global mold be recorded once in config.toml rather than
+    # rediscovered on every future global-mold build.
+    mold_extra_excluded_pn: str | None = field(default=None)
     # Host-provided uninative tarball. When True *and* the host environment
     # qualifies (host mode, Arch-family distro, fragment installed - see
     # _uninative_extra_overlays), the tuning stack requires the fragment the
@@ -1195,7 +1215,7 @@ def resolve(request: ResolveRequest) -> BuildConfig:
             return user_val
         return default
 
-    resolved_mold, resolved_mold_mode = _resolve_mold(user_config=user_config)
+    resolved_mold, resolved_mold_mode, resolved_mold_extra_excluded_pn = _resolve_mold(user_config=user_config)
 
     # A BYO kas YAML declares its own machine, so read it rather than letting the
     # family default answer. For the generic family that default is the literal
@@ -1310,6 +1330,7 @@ def resolve(request: ResolveRequest) -> BuildConfig:
         sccache_scheduler_url=user_config.sccache_scheduler_url if user_config else None,
         mold=resolved_mold,
         mold_mode=resolved_mold_mode,
+        mold_extra_excluded_pn=resolved_mold_extra_excluded_pn,
         uninative=pick_bool(
             "BAKAR_UNINATIVE",
             ws_val=None,

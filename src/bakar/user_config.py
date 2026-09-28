@@ -32,6 +32,8 @@ _STR_FIELDS = {
     "buildtools_dir",
     "sccache_scheduler_url",
     "cluster_bind_host",
+    "mold_mode",
+    "mold_extra_excluded_pn",
 }
 _BOOL_FIELDS = {
     "show_doctor_report",
@@ -115,6 +117,14 @@ class UserConfig:
     # meta-bakar-mold layer and inherits mold.bbclass; resolve()'s accelerator
     # tier (CLI --mold > BAKAR_MOLD env > this config value > default) reads it.
     mold: bool = False
+    # Persisted mold policy (list/global/baseline/baseline-global). None means
+    # "not set" -> config.py's _resolve_mold falls back to "list". The CLI
+    # --mold/--mold-baseline/--mold-global flags override this when passed.
+    mold_mode: str | None = None
+    # Space-separated PN list appended to MOLD_EXCLUDED_PN (global/deny-list
+    # scope only), for recipes discovered to break under global mold that
+    # aren't already in mold.bbclass's own MOLD_EXCLUDED_PN default.
+    mold_extra_excluded_pn: str | None = None
     # Host-provided uninative tarball enable toggle (default off). Only has an
     # effect on an Arch-family host in host mode with the yocto-uninative-tarball
     # package installed; see _uninative_extra_overlays for the full gate.
@@ -295,6 +305,8 @@ _BUILD_KEYS = {
     "sccache_dist": "sccache_dist",
     "sccache_scheduler_url": "sccache_scheduler_url",
     "mold": "mold",
+    "mold_mode": "mold_mode",
+    "mold_extra_excluded_pn": "mold_extra_excluded_pn",
     "uninative": "uninative",
     "cluster_bind_host": "cluster_bind_host",
     "bb_hashserve": "bb_hashserve",

@@ -251,9 +251,10 @@ _MOLD_LINKLOG_NAME = "mold-linklog.jsonl"
 
 
 def _inject_literal_mold(cfg: BuildConfig, text: str) -> str:
-    """Bake the mold link-log path and non-default ``MOLD_MODE`` into the overlay.
+    """Bake the mold link-log path, non-default ``MOLD_MODE``, and extra
+    exclusions into the overlay.
 
-    Two literals are appended to the mold overlay's ``local_conf_header`` block:
+    Three literals are appended to the mold overlay's ``local_conf_header`` block:
 
     * ``export BAKAR_MOLD_LINKLOG`` - the per-build link-timing log. Mirrors
       :func:`_inject_literal_ccache`'s host/container dual path: the log lands
@@ -264,12 +265,20 @@ def _inject_literal_mold(cfg: BuildConfig, text: str) -> str:
       bbclass carries ``MOLD_MODE ??= "list"``, so list is already the default
       and needs no line; ``baseline`` (the symmetric bfd measurement arm) and
       ``global`` are unreachable unless the mode is written into local.conf here.
+    * ``MOLD_EXCLUDED_PN:append`` - emitted only when ``cfg.mold_extra_excluded_pn``
+      is set. Read only in deny-list scope (``global``/``baseline-global``); a
+      harmless no-op in ``list``/``baseline`` scope, where the bbclass never
+      consults ``MOLD_EXCLUDED_PN`` at all. Lets a recipe found to break under
+      global mold be recorded once in config.toml rather than rediscovered on
+      every later global-mold build.
 
     Each line is guarded so re-running the injector no-ops (idempotent) and it is
     pure (no filesystem side effects), so dry-run rendering is safe."""
     lines = []
     if cfg.mold_mode != "list" and not re.search(r"^\s*MOLD_MODE\b", text, re.MULTILINE):
         lines.append(f'MOLD_MODE = "{cfg.mold_mode}"')
+    if cfg.mold_extra_excluded_pn and not re.search(r"^\s*MOLD_EXCLUDED_PN:append\b", text, re.MULTILINE):
+        lines.append(f'MOLD_EXCLUDED_PN:append = " {cfg.mold_extra_excluded_pn}"')
     if not re.search(r"^\s*export\s+BAKAR_MOLD_LINKLOG\b", text, re.MULTILINE):
         base = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
         log_path = str(base / _MOLD_LINKLOG_NAME) if cfg.host_mode else f"/work/{_MOLD_LINKLOG_NAME}"
