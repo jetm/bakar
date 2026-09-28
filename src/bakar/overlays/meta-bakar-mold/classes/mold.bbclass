@@ -168,6 +168,17 @@ python () {
     d.setVarFlag('COMPILER_PATH', 'export', '1')
 
     d.appendVarFlag('do_prepare_recipe_sysroot', 'postfuncs', ' mold_stage_wrappers')
+    # mold_stage_wrappers installs a static copy of MOLD_WRAPPER_SRC's content
+    # (files/ld-timing-wrapper.sh) into the recipe's own sysroot. MOLD_WRAPPER_SRC
+    # holds a PATH STRING, and bitbake's signature generator only ever tracks the
+    # STRING VALUE of a variable, never the on-disk content the path resolves to -
+    # editing the script leaves the path unchanged, so the task's signature never
+    # moves and a recipe with cached sstate keeps its stale wrapper forever,
+    # silently exercising old script content against new source. file-checksums is
+    # bitbake's declared mechanism for exactly this: it hashes the file's content
+    # directly into the task signature, so an edit here now forces every recipe
+    # that stages this wrapper to re-run mold_stage_wrappers.
+    d.appendVarFlag('do_prepare_recipe_sysroot', 'file-checksums', ' ${MOLD_WRAPPER_SRC}')
 }
 
 # Stage the arm-appropriate timing wrapper into the -B wrapper dir under
