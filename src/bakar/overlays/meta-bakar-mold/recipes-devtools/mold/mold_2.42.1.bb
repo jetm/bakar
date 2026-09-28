@@ -17,31 +17,40 @@ output for a given input, making it usable inside reproducible OE builds."
 LICENSE = "MIT & Apache-2.0 & Zlib & BSD-2-Clause & CC0-1.0"
 
 # LIC_FILES_CHKSUM covers mold plus the bundled third-party components carried
-# in-tree at v2.41.0. mold 2.41.0 vendors these directly (no git submodules), so
+# in-tree at v2.42.1. mold 2.42.1 vendors these directly (no git submodules), so
 # the paths are ${S}-relative in-tree files. blake3 is dual CC0-1.0 OR Apache-2.0
 # and ships no bare LICENSE - the CC0 arm (LICENSE_CC0) is taken to match the
 # CC0-1.0 term in LICENSE above. zstd (BSD-3-Clause) and rust-demangle are also
 # vendored but not yet enumerated here; that is a known compliance gap, not a
 # checksum-QA failure.
+#
+# zlib's checksum moved from the 2.41.0 pin (b51a40671bc46e961c0498897742c0b8)
+# on this bump: a copyright-year-only edit (1995-2022 -> 1995-2026), same Zlib
+# terms, confirmed by diffing both revisions' third-party/zlib/LICENSE before
+# updating this line. Re-diff on every future bump rather than assuming a
+# checksum change is always this benign.
 LIC_FILES_CHKSUM = "\
     file://LICENSE;md5=3fb62e3fb2aa1c0f7d16e43be0107e99 \
     file://third-party/mimalloc/LICENSE;md5=fade5fb11a9703a4216c1b5133efdc7f \
     file://third-party/tbb/LICENSE.txt;md5=86d3f3a95c324c9479bd8986968f4327 \
-    file://third-party/zlib/LICENSE;md5=b51a40671bc46e961c0498897742c0b8 \
+    file://third-party/zlib/LICENSE;md5=66e4e749bb11d80fc7ba510a9ce99534 \
     file://third-party/xxhash/LICENSE;md5=13be6b481ff5616f77dda971191bb29b \
     file://third-party/blake3/LICENSE_CC0;md5=65d3616852dbf7b1a6d4b53b00626032 \
 "
 
-# Fetch mold's tagged release. v2.41.0 vendors its third-party deps directly
+# Fetch mold's tagged release. v2.42.1 vendors its third-party deps directly
 # in-tree (mimalloc/tbb/zlib/xxhash/blake3/zstd/rust-demangle) with no git
-# submodules, so gitsm degrades to a plain git checkout here. nobranch=1: the
-# v2.41.0 tag commit is not an ancestor of branch main, so pin the exact SRCREV
-# and skip the branch-containment check. Do NOT vendor these sources into the
-# bakar repo and do NOT add a network fetch outside SRC_URI.
+# submodules, so gitsm degrades to a plain git checkout here. nobranch=1 pins
+# the exact SRCREV and skips kas/bitbake's branch-containment check
+# unconditionally - whether a given tag commit is reachable from upstream's
+# main branch varies release to release (v2.41.0's wasn't; v2.42.1's is, per
+# `gh api repos/rui314/mold/compare/main...v2.42.1` reporting "behind"), so
+# pin on SRCREV rather than re-deriving this per bump. Do NOT vendor these
+# sources into the bakar repo and do NOT add a network fetch outside SRC_URI.
 #
-# v2.41.0 is a lightweight tag pointing directly at this commit
-# (git ls-remote --tags https://github.com/rui314/mold v2.41.0).
-SRCREV = "7c4c0addcb833120bf41cc3db7b2652694e0d814"
+# v2.42.1 is a lightweight tag pointing directly at this commit
+# (git ls-remote --tags https://github.com/rui314/mold v2.42.1).
+SRCREV = "9b376bc6a9899d4a16b41777de1f013989459fbc"
 SRC_URI = "gitsm://github.com/rui314/mold.git;protocol=https;nobranch=1"
 
 # mold requires a C++20 host compiler (GCC 12+ / Clang 15+). The bakar doctor gate
