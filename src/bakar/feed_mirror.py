@@ -17,13 +17,19 @@ Four phases, run across every selected repository before moving to the next:
 2. **packages** - download each planned package, verify it against the
    checksum its listing declared, and place it atomically.
 3. **publish** - once every package of every selected repository has
-   verified, write each repository's ``repomd.xml`` with the exact source
-   bytes, atomically.
+   verified, write that repository's provenance marker
+   (``.bakar-mirror.json``), then its detached signature when the source
+   publishes one, then its ``repomd.xml`` with the exact source bytes - each
+   atomically, in that order.
 
-This module downloads single-threaded with no retries, resume, disk
-preflight, ownership guard or signature handling - those are later tasks. It
-never requests or writes ``snapshots-latest.json`` or anything under
-``snapshots/``. A ``--target`` selection reads the source's own
+Before a repository's metadata is fetched, an ownership guard refuses to
+mirror over a repository this run did not create: a local ``repomd.xml`` or
+snapshot pointer with no marker, or a marker naming a different source,
+fails the run before that repository's first request. This module downloads
+single-threaded with no retries, resume or disk preflight - those are later
+tasks. It never requests or writes ``snapshots-latest.json`` or anything
+under ``snapshots/`` itself (though a leftover one from elsewhere is what the
+ownership guard checks for). A ``--target`` selection reads the source's own
 ``targets.json`` to resolve a machine name into the repository paths it
 locks, but this module never writes one - :func:`bakar.feed_index.write_targets_index`
 owns that.
@@ -38,6 +44,7 @@ import shutil
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import bakar
@@ -54,6 +61,9 @@ _PART_SUFFIX = ".part"
 _REPODATA = "repodata"
 _REPOMD = "repomd.xml"
 _TARGETS = "targets.json"
+_SIGNATURE = "repomd.xml.asc"
+_POINTER = "snapshots-latest.json"
+_MARKER = ".bakar-mirror.json"
 
 
 class MirrorError(Exception):
@@ -121,6 +131,7 @@ class _RepoPlan:
     repo: str
     local_repo: Path
     repomd_body: bytes
+    revision: str
     packages: list[_PlannedPackage] = field(default_factory=list)
 
 
@@ -203,6 +214,51 @@ def _fetch_verified(url: str, dest: Path, *, checksum_type: str, checksum: str, 
     return size
 
 
+def _check_ownership(repo: str, *, source_channel: str, channel_dir: Path) -> None:
+    """Refuse to mirror over a repository this run did not create.
+
+    Evaluated for every selected repository before its metadata is fetched. A
+    repository with neither a local ``repomd.xml`` nor a snapshot pointer is
+    fresh (or was interrupted before a previous publish) and passes
+    unconditionally. Otherwise the repository's own ``.bakar-mirror.json``
+    marker must name this run's source, or the run is refused before any
+    request for that repository.
+    """
+    local_repo = channel_dir / repo
+    repomd_path = local_repo / _REPODATA / _REPOMD
+    pointer_path = local_repo / _POINTER
+    has_repomd = repomd_path.is_file()
+    has_pointer = pointer_path.is_file()
+    if not has_repomd and not has_pointer:
+        return
+
+    marker_path = local_repo / _MARKER
+    marker: dict | None = None
+    if marker_path.is_file():
+        try:
+            marker = json.loads(marker_path.read_text())
+        except ValueError as exc:
+            raise MirrorError(f"repository {repo!r}: cannot parse {marker_path}: {exc}") from exc
+
+    expected_source = f"{source_channel}/{repo}"
+    if marker is None:
+        if has_pointer:
+            raise MirrorError(
+                f"repository {repo!r} has a local snapshot pointer {pointer_path} with no mirror marker; "
+                "clients would resolve it instead of the mirrored head"
+            )
+        raise MirrorError(
+            f"repository {repo!r} has local feed metadata this mirror did not create; "
+            f"choose another feed root (-w or build.feed_dir) or remove {local_repo}"
+        )
+
+    marker_source = marker.get("source") if isinstance(marker, dict) else None
+    if marker_source != expected_source:
+        raise MirrorError(
+            f"repository {repo!r} was mirrored from {marker_source!r}, not this run's source {expected_source!r}"
+        )
+
+
 def _plan_repo(repo: str, *, source_channel: str, channel_dir: Path, allow_missing: bool = False) -> _RepoPlan | None:
     """Phase 1 for one repository: fetch, verify and parse its metadata.
 
@@ -251,7 +307,7 @@ def _plan_repo(repo: str, *, source_channel: str, channel_dir: Path, allow_missi
     except meta.MetadataError as exc:
         raise MirrorError(f"repository {repo!r}: {exc}") from exc
 
-    plan = _RepoPlan(repo=repo, local_repo=local_repo, repomd_body=body)
+    plan = _RepoPlan(repo=repo, local_repo=local_repo, repomd_body=body, revision=index.revision)
     for package in entries:
         try:
             relative = paths.confine_package_href(package.href, repo=repo, base=package.base)
@@ -289,13 +345,49 @@ def _download_package(source_channel: str, package: _PlannedPackage) -> int:
     return _fetch_verified(url, package.dest, checksum_type=package.checksum_type, checksum=package.checksum, what=what)
 
 
-def _publish(plan: _RepoPlan) -> None:
-    """Phase 4 for one repository: write its ``repomd.xml`` atomically, last."""
-    dest = plan.local_repo / _REPODATA / _REPOMD
+def _write_atomic(dest: Path, data: bytes) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + _PART_SUFFIX)
-    part.write_bytes(plan.repomd_body)
+    part.write_bytes(data)
     os.replace(part, dest)
+
+
+def _write_marker(plan: _RepoPlan, *, source_channel: str) -> None:
+    """Write ``.bakar-mirror.json`` beside ``repodata/``, naming this run's source."""
+    payload = {
+        "source": f"{source_channel}/{plan.repo}",
+        "revision": plan.revision,
+        "mirrored": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    marker_path = plan.local_repo / _MARKER
+    _write_atomic(marker_path, (json.dumps(payload, sort_keys=True) + "\n").encode())
+
+
+def _publish(plan: _RepoPlan, *, source_channel: str) -> bool:
+    """Phase 4 for one repository: marker, signature, then ``repomd.xml`` - last.
+
+    Returns whether the source publishes a detached signature for this
+    repository. A stale local signature from a source that has since stopped
+    signing is removed before the new (unsigned) index is written - the one
+    exception to never deleting a local file the mirror did not just
+    download, and it is safe only because the ownership guard already
+    confirmed this repository's marker names this exact source.
+    """
+    _write_marker(plan, source_channel=source_channel)
+
+    repo_url = f"{source_channel}/{plan.repo}"
+    asc_url = f"{repo_url}/{_REPODATA}/{_SIGNATURE}"
+    local_asc = plan.local_repo / _REPODATA / _SIGNATURE
+    body = _fetch(asc_url, allow_missing=True)
+    signed = body is not None
+    if signed:
+        _write_atomic(local_asc, body)
+    else:
+        local_asc.unlink(missing_ok=True)
+
+    dest = plan.local_repo / _REPODATA / _REPOMD
+    _write_atomic(dest, plan.repomd_body)
+    return signed
 
 
 def mirror(request: MirrorRequest) -> MirrorResult:
@@ -332,6 +424,13 @@ def mirror(request: MirrorRequest) -> MirrorResult:
     channel_dir = feed_mod.channel_root(request.feed_root, release=request.release, channel=request.channel)
     channel_dir.mkdir(parents=True, exist_ok=True)
 
+    # Ownership guard: for every selected repository, before its metadata is
+    # requested, refuse to mirror over local feed content this run did not
+    # create. Cheap and purely local, so it runs ahead of every repository's
+    # first request rather than only ahead of the first repository's.
+    for repo in selected:
+        _check_ownership(repo, source_channel=source_channel, channel_dir=channel_dir)
+
     # Phase 1: every repository's metadata, fully validated, before any package
     # of any repository is requested. An index-derived repository whose own
     # repomd.xml 404s is not a failure here - the target map declares what a
@@ -349,25 +448,28 @@ def mirror(request: MirrorRequest) -> MirrorResult:
         plans.append(plan)
 
     # Phase 3: every planned package, across every repository.
-    outcomes: list[RepoOutcome] = []
+    downloaded_bytes_by_repo: dict[str, int] = {}
     for plan in plans:
         downloaded_bytes = 0
         for package in plan.packages:
             downloaded_bytes += _download_package(source_channel, package)
+        downloaded_bytes_by_repo[plan.repo] = downloaded_bytes
+
+    # Phase 4: publish only after every package of every repository verified -
+    # marker, then signature, then repomd.xml, per repository.
+    outcomes: list[RepoOutcome] = []
+    for plan in plans:
+        signed = _publish(plan, source_channel=source_channel)
         outcomes.append(
             RepoOutcome(
                 repo=plan.repo,
                 packages=len(plan.packages),
                 downloaded=len(plan.packages),
                 reused=0,
-                bytes_downloaded=downloaded_bytes,
-                signed=False,
+                bytes_downloaded=downloaded_bytes_by_repo[plan.repo],
+                signed=signed,
             )
         )
-
-    # Phase 4: publish only after every package of every repository verified.
-    for plan in plans:
-        _publish(plan)
 
     return MirrorResult(
         feed_root=request.feed_root,

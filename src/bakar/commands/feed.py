@@ -37,6 +37,7 @@ from bakar.commands._app import app, console
 from bakar.commands._helpers import WorkspaceOption, _dispatch_bsp, _dispatch_from_yaml, _resolve_workspace
 from bakar.config import BuildConfig, ResolveRequest, resolve
 from bakar.diagnostics import Status
+from bakar.fmt import fmt_bytes_iec
 
 feed_app = typer.Typer(
     help="Manage the local package feed (doctor/sync/mirror/index/serve/stop/status/gc).",
@@ -202,17 +203,6 @@ def sync(
         console.print(f"declared but not built: {', '.join(result['unstaged'])}")
 
 
-def _format_size(num_bytes: int) -> str:
-    """Human-readable byte count, adapting units so a small test payload
-    doesn't render as ``0.00 GiB``."""
-    value = float(num_bytes)
-    for unit in ("B", "KiB", "MiB", "GiB"):
-        if value < 1024 or unit == "GiB":
-            return f"{value:.1f} {unit}" if unit != "B" else f"{num_bytes} B"
-        value /= 1024
-    return f"{value:.1f} GiB"  # pragma: no cover - unreachable, loop always returns
-
-
 @feed_app.command("mirror")
 def mirror(
     source_url: SourceUrlArgument,
@@ -249,14 +239,15 @@ def mirror(
     console.print(f"feed: {result.feed_root}")
     console.print(f"source: {result.source_channel}")
     for outcome in result.repos:
-        console.print(f"  {outcome.repo}: {outcome.packages} package(s)")
+        signed_suffix = " (signed)" if outcome.signed else ""
+        console.print(f"  {outcome.repo}: {outcome.packages} package(s){signed_suffix}")
     if result.unpublished:
         console.print(f"declared but not published: {', '.join(result.unpublished)}")
 
-    total_downloaded = sum(o.downloaded for o in result.repos)
-    total_reused = sum(o.reused for o in result.repos)
-    total_bytes = sum(o.bytes_downloaded for o in result.repos)
-    console.print(f"downloaded: {total_downloaded} packages ({_format_size(total_bytes)}), reused: {total_reused}")
+    console.print(
+        f"downloaded: {result.packages_downloaded} packages ({fmt_bytes_iec(result.bytes_downloaded)}), "
+        f"reused: {result.packages_reused}"
+    )
 
     next_cmd = f"bakar feed index --release {release} --channel {channel}"
     if workspace is not None:
