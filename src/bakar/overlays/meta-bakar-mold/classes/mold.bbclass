@@ -177,8 +177,12 @@ python () {
     # silently exercising old script content against new source. file-checksums is
     # bitbake's declared mechanism for exactly this: it hashes the file's content
     # directly into the task signature, so an edit here now forces every recipe
-    # that stages this wrapper to re-run mold_stage_wrappers.
-    d.appendVarFlag('do_prepare_recipe_sysroot', 'file-checksums', ' ${MOLD_WRAPPER_SRC}')
+    # that stages this wrapper to re-run mold_stage_wrappers. The trailing
+    # ":True" is mandatory, not decorative - bb/checksum.py's get_checksums()
+    # does pth.split(":")[1] on every entry with no bare-path fallback, so a
+    # path with no suffix throws IndexError at runqueue-prepare time for every
+    # recipe this class touches, not just a missing checksum.
+    d.appendVarFlag('do_prepare_recipe_sysroot', 'file-checksums', ' ${MOLD_WRAPPER_SRC}:True')
 }
 
 # Stage the arm-appropriate timing wrapper into the -B wrapper dir under
