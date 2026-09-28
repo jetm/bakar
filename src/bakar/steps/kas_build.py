@@ -215,6 +215,7 @@ def _write_meta_avocado_wrapper(cfg: BuildConfig, kas_yaml: Path) -> Path:
         if parent.name == "meta-avocado":
             repo_dir = parent
             break
+    is_sibling_repo = False
     if repo_dir is None:
         # Look for the entry YAML in a repo checked out beside meta-avocado.
         # Anchored on meta-avocado's own parent rather than on cfg.workspace,
@@ -226,12 +227,22 @@ def _write_meta_avocado_wrapper(cfg: BuildConfig, kas_yaml: Path) -> Path:
             for parent in abs_yaml.parents:
                 if parent.parent == siblings:
                     repo_dir = parent
+                    is_sibling_repo = True
                     break
     if repo_dir is None:
         raise RuntimeError(f"kas YAML {kas_yaml} is not inside a meta-avocado repository")
     repo_name = repo_dir.name
     yaml_in_repo = abs_yaml.relative_to(repo_dir)
     wrapper = cfg.bsp_root / "avocado-wrapper.yml"
+    # kas defaults an omitted `layers:` key to {'': None} - the repo root as
+    # an enabled bitbake layer, which then requires repo_root/conf/layer.conf.
+    # meta-avocado always gets a real `layers:` mapping from whatever machine
+    # YAML this wrapper includes, so the default is harmless there. A sibling
+    # repo is only a build-invocation workspace hosting the entry YAML for
+    # kas's cross-repo include - nothing else in the config graph declares
+    # layers for it, so the default silently turns it into a bitbake layer
+    # with no conf/layer.conf and bitbake fails to parse it.
+    layers_line = "    layers: {}\n" if is_sibling_repo else ""
     wrapper.write_text(
         "header:\n"
         "  version: 16\n"
@@ -240,7 +251,8 @@ def _write_meta_avocado_wrapper(cfg: BuildConfig, kas_yaml: Path) -> Path:
         f"      file: {yaml_in_repo.as_posix()}\n"
         "repos:\n"
         f"  {repo_name}:\n"
-        f"    path: {repo_name}\n",
+        f"    path: {repo_name}\n"
+        f"{layers_line}",
         encoding="utf-8",
     )
     return wrapper

@@ -227,6 +227,13 @@ def test_write_meta_avocado_wrapper_names_the_repo_the_yaml_lives_in(tmp_path: P
     assert include["repo"] == "meta-avocado-cve"
     assert include["file"] == "qemuarm64-sbom-cve.yml"
     assert parsed["repos"]["meta-avocado-cve"]["path"] == "meta-avocado-cve"
+    # kas defaults an absent `layers:` key to {'': None} (repo root as an
+    # enabled bitbake layer), so it demands repo_root/conf/layer.conf. This
+    # sibling directory is a build-invocation workspace, not a bitbake layer
+    # source - nothing else in the kas config graph supplies layers for it
+    # the way meta-avocado's own machine YAML does for the "meta-avocado"
+    # repo key. The wrapper must zero its layers explicitly.
+    assert parsed["repos"]["meta-avocado-cve"]["layers"] == {}
 
 
 def test_write_meta_avocado_wrapper_raises_outside_meta_avocado(tmp_path: Path) -> None:
