@@ -17,6 +17,7 @@ classifiers = [
   "Topic :: System :: Operating System Kernels :: Linux",
 ]
 dependencies = [
+  "defusedxml>=0.7.1",
   "networkx>=3.0",
   "pydot>=2.0",
   "pyyaml>=6.0",
