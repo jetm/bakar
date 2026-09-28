@@ -69,6 +69,10 @@ RepoOption = Annotated[
     list[str] | None,
     typer.Option("--repo", help="Repository path to mirror (repeatable), e.g. sdk/all"),
 ]
+TargetOption = Annotated[
+    list[str] | None,
+    typer.Option("--target", help="Machine name looked up in the source's targets.json (repeatable)"),
+]
 
 
 def _resolve_cfg(workspace: Path | None = None, kas_yaml: Path | None = None) -> BuildConfig:
@@ -212,15 +216,17 @@ def _format_size(num_bytes: int) -> str:
 @feed_app.command("mirror")
 def mirror(
     source_url: SourceUrlArgument,
+    target: TargetOption = None,
     repo: RepoOption = None,
     workspace: WorkspaceOption = None,
     release: ReleaseOption = feed_mod.DEFAULT_RELEASE,
     channel: ChannelOption = feed_mod.DEFAULT_CHANNEL,
 ) -> None:
     """Copy repositories of a published feed into the local feed."""
+    targets = tuple(target or ())
     repos = tuple(repo or ())
-    if not repos:
-        console.print("nothing to mirror: pass at least one --repo")
+    if not targets and not repos:
+        console.print("nothing to mirror: pass at least one --target or --repo")
         raise typer.Exit(code=2)
 
     cfg = _resolve_cfg(workspace, None)
@@ -231,6 +237,7 @@ def mirror(
         release=release,
         channel=channel,
         feed_root=feed_root,
+        targets=targets,
         repos=repos,
     )
     try:

@@ -21,14 +21,18 @@ Four phases, run across every selected repository before moving to the next:
    bytes, atomically.
 
 This module downloads single-threaded with no retries, resume, disk
-preflight, target-index selection, ownership guard or signature handling -
-those are later tasks. It never requests or writes ``snapshots-latest.json``,
-anything under ``snapshots/``, or ``targets.json``.
+preflight, ownership guard or signature handling - those are later tasks. It
+never requests or writes ``snapshots-latest.json`` or anything under
+``snapshots/``. A ``--target`` selection reads the source's own
+``targets.json`` to resolve a machine name into the repository paths it
+locks, but this module never writes one - :func:`bakar.feed_index.write_targets_index`
+owns that.
 """
 
 from __future__ import annotations
 
 import io
+import json
 import os
 import shutil
 import urllib.error
@@ -49,6 +53,7 @@ _USER_AGENT = f"bakar/{bakar.__version__}"
 _PART_SUFFIX = ".part"
 _REPODATA = "repodata"
 _REPOMD = "repomd.xml"
+_TARGETS = "targets.json"
 
 
 class MirrorError(Exception):
@@ -119,14 +124,46 @@ class _RepoPlan:
     packages: list[_PlannedPackage] = field(default_factory=list)
 
 
-def _fetch(url: str) -> bytes:
-    """Return the body at ``url``, or raise :class:`MirrorError` naming it."""
+def _fetch(url: str, *, allow_missing: bool = False) -> bytes | None:
+    """Return the body at ``url``, or raise :class:`MirrorError` naming it.
+
+    When ``allow_missing`` is set, a 404 response returns ``None`` instead of
+    raising, so a caller can distinguish "not published" from every other fetch
+    failure.
+    """
     request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as response:
             return response.read()
+    except urllib.error.HTTPError as exc:
+        if allow_missing and exc.code == 404:
+            return None
+        raise MirrorError(f"cannot fetch {url}: {exc}") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise MirrorError(f"cannot fetch {url}: {exc}") from exc
+
+
+def _fetch_targets(source_channel: str) -> dict[str, list[str]]:
+    """Fetch and validate the source's ``targets.json``, or raise naming it.
+
+    Returns the raw target -> repository-path-list mapping, unvalidated beyond
+    its shape - each listed path still has to pass
+    :func:`bakar.feed_mirror_paths.validate_repo_path` before it is trusted.
+    """
+    url = f"{source_channel}/{_TARGETS}"
+    body = _fetch(url, allow_missing=True)
+    if body is None:
+        raise MirrorError(f"no {_TARGETS} at {url}; name repositories with --repo instead")
+    try:
+        data = json.loads(body)
+    except ValueError as exc:
+        raise MirrorError(f"{url}: not valid JSON: {exc}") from exc
+    if not isinstance(data, dict) or not all(
+        isinstance(name, str) and isinstance(repos, list) and all(isinstance(item, str) for item in repos)
+        for name, repos in data.items()
+    ):
+        raise MirrorError(f"{url}: expected a JSON object mapping target name to a list of repository paths")
+    return data
 
 
 def _download_to(url: str, dest: Path) -> Path:
@@ -166,20 +203,24 @@ def _fetch_verified(url: str, dest: Path, *, checksum_type: str, checksum: str, 
     return size
 
 
-def _plan_repo(repo: str, *, source_channel: str, channel_dir: Path) -> _RepoPlan:
+def _plan_repo(repo: str, *, source_channel: str, channel_dir: Path, allow_missing: bool = False) -> _RepoPlan | None:
     """Phase 1 for one repository: fetch, verify and parse its metadata.
 
     Every package location it lists is confined and resolved before this
     returns, so a violating listing fails here - before any package of any
-    repository has been requested.
+    repository has been requested. When ``allow_missing`` is set and the
+    repository's own ``repomd.xml`` 404s, returns ``None`` instead of raising -
+    the caller records it as unpublished rather than failing the run.
     """
     repo_url = f"{source_channel}/{repo}"
     local_repo = channel_dir / repo
     repomd_url = f"{repo_url}/{_REPODATA}/{_REPOMD}"
     try:
-        body = _fetch(repomd_url)
+        body = _fetch(repomd_url, allow_missing=allow_missing)
     except MirrorError as exc:
         raise MirrorError(f"repository {repo!r}: {exc}") from exc
+    if body is None:
+        return None
 
     try:
         index = meta.parse_repomd(body)
@@ -260,25 +301,52 @@ def _publish(plan: _RepoPlan) -> None:
 def mirror(request: MirrorRequest) -> MirrorResult:
     """Copy every selected repository of a published feed into the local feed."""
     source_url = paths.validate_source_url(request.source_url)
+    source_channel = f"{source_url}/{request.release}/{request.channel}"
 
+    # `origins` is the union of target-derived and explicit repositories, in
+    # first-seen order (dict insertion order), and remembers which source named
+    # each one - a repository the operator names explicitly must still fail hard
+    # on a 404, even when a target the run also selected happens to declare it
+    # too, so an explicit --repo always overwrites an index-derived origin.
+    origins: dict[str, str] = {}
     if request.targets:
-        raise MirrorError("target selection is not yet supported; select repositories with --repo")
+        target_index = _fetch_targets(source_channel)
+        for target in request.targets:
+            if target not in target_index:
+                raise MirrorError(f"target {target!r} not found in {source_channel}/{_TARGETS}")
+            for repo in target_index[target]:
+                try:
+                    validated = paths.validate_repo_path(repo, origin="source index")
+                except paths.UnsafePathError as exc:
+                    raise MirrorError(str(exc)) from exc
+                origins.setdefault(validated, "index")
 
-    selected: list[str] = []
     for repo in request.repos:
         validated = paths.validate_repo_path(repo, origin="operator")
-        if validated not in selected:
-            selected.append(validated)
+        origins[validated] = "operator"
+
+    selected = list(origins.keys())
     if not selected:
         raise MirrorError("no repository selected")
 
     channel_dir = feed_mod.channel_root(request.feed_root, release=request.release, channel=request.channel)
     channel_dir.mkdir(parents=True, exist_ok=True)
-    source_channel = f"{source_url}/{request.release}/{request.channel}"
 
     # Phase 1: every repository's metadata, fully validated, before any package
-    # of any repository is requested.
-    plans = [_plan_repo(repo, source_channel=source_channel, channel_dir=channel_dir) for repo in selected]
+    # of any repository is requested. An index-derived repository whose own
+    # repomd.xml 404s is not a failure here - the target map declares what a
+    # machine COULD publish, and one never built for this release is a normal
+    # outcome - so it is recorded in `unpublished` instead of failing the run.
+    plans: list[_RepoPlan] = []
+    unpublished: list[str] = []
+    for repo in selected:
+        plan = _plan_repo(
+            repo, source_channel=source_channel, channel_dir=channel_dir, allow_missing=(origins[repo] == "index")
+        )
+        if plan is None:
+            unpublished.append(repo)
+            continue
+        plans.append(plan)
 
     # Phase 3: every planned package, across every repository.
     outcomes: list[RepoOutcome] = []
@@ -306,4 +374,5 @@ def mirror(request: MirrorRequest) -> MirrorResult:
         channel_dir=channel_dir,
         source_channel=source_channel,
         repos=tuple(outcomes),
+        unpublished=tuple(unpublished),
     )
