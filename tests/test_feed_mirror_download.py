@@ -235,7 +235,7 @@ def test_conflicting_checksums_for_same_destination_fails_before_any_package_req
     result = _invoke(cli, cfg, server.url, "--repo", "target/a", "--repo", "target/b")
 
     assert result.exit_code == 1
-    assert shared.pool in result.output
+    assert shared.pool in result.output.replace("\n", "")
     assert server.package_requests == []
 
 
