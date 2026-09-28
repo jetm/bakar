@@ -29,19 +29,6 @@ REAL_LINKER=""
 self="$0"
 linker="${self##*/}"
 
-# mold >= 2.42.0 bundles mimalloc v3 (bumped from v2.3.2), which requests
-# transparent huge pages during allocator init - a syscall pattern
-# bitbake's pseudo (LD_PRELOAD-injected into every build process for
-# fakeroot simulation) does not handle cleanly, segfaulting inside
-# libpseudo.so during process startup before mold does any real work
-# (observed via coredumpctl: crash in _dl_init -> call_init -> mold's own
-# constructor -> strdup -> pseudo_init_util -> syscall). Disabling THP for
-# mimalloc's allocations avoids the interaction; bfd never loads mimalloc,
-# so this is scoped to mold alone rather than exported unconditionally.
-case "$linker" in
-    ld.mold) MIMALLOC_ALLOW_THP=0; export MIMALLOC_ALLOW_THP ;;
-esac
-
 # Absolute directory the wrapper lives in, so it can be excluded from the PATH
 # search that finds the real linker.
 case "$self" in

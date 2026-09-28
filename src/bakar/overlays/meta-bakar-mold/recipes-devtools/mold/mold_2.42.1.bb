@@ -60,10 +60,35 @@ inherit cmake
 
 # Build the bundled third-party libraries rather than the host's; a native mold
 # must not link the build host's zlib/tbb to stay reproducible across builders.
+#
+# MOLD_USE_MIMALLOC=OFF (upstream's own documented escape hatch, CMakeLists.txt:
+# "If you want to use the usual libc's malloc, pass -DMOLD_USE_MIMALLOC=OFF"):
+# mold 2.42.1 bumped its bundled mimalloc from v2.3.2 to v3.5.0, which overrides
+# the process's global malloc/strdup. That collides with bitbake's pseudo
+# (LD_PRELOAD-injected into every build process for fakeroot simulation) during
+# mold's own early startup - coredumpctl traced a real segfault to
+# _dl_init -> call_init -> mold's own constructor -> strdup (resolved inside
+# mold's own binary, i.e. mimalloc's override) -> pseudo_init_util -> syscall,
+# crashing inside mimalloc's not-yet-ready allocator state before pseudo's own
+# init has finished. Falling back to glibc malloc removes the whole suspect
+# subsystem - pseudo has always worked correctly with glibc malloc, which
+# every other native build tool in this tree already uses.
+#
+# Costs some mold performance (mimalloc is measurably faster than glibc's
+# malloc for mold's own allocation pattern), but a linker that occasionally
+# segfaults under real parallel builds is not usable regardless of speed.
+#
+# Tried first and disproven: MIMALLOC_ALLOW_THP=0 in the ld.mold wrapper
+# (targeting mimalloc v3's more aggressive transparent-huge-page allocation at
+# init) produced an identical crash with the env var confirmed present in the
+# freshly-staged wrapper - the THP allocation path was never the actual cause.
+#
+# MOLD_USE_SYSTEM_MIMALLOC is dropped entirely rather than left as OFF: mold's
+# own CMakeLists.txt gates that option inside `if(MOLD_USE_MIMALLOC): ...`, so
+# it has no effect at all once mimalloc itself is off.
 EXTRA_OECMAKE = "\
     -DMOLD_USE_SYSTEM_TBB=OFF \
-    -DMOLD_USE_SYSTEM_MIMALLOC=OFF \
-    -DMOLD_USE_MIMALLOC=ON \
+    -DMOLD_USE_MIMALLOC=OFF \
     -DCMAKE_BUILD_TYPE=Release \
 "
 
