@@ -32,14 +32,14 @@ import typer
 
 import bakar.commands._app as _state
 from bakar import feed as feed_mod
-from bakar import feed_index, feed_ops, feed_preflight, feed_retention, feed_serve
+from bakar import feed_index, feed_mirror, feed_ops, feed_preflight, feed_retention, feed_serve
 from bakar.commands._app import app, console
 from bakar.commands._helpers import WorkspaceOption, _dispatch_bsp, _dispatch_from_yaml, _resolve_workspace
 from bakar.config import BuildConfig, ResolveRequest, resolve
 from bakar.diagnostics import Status
 
 feed_app = typer.Typer(
-    help="Manage the local package feed (sync/index/serve/stop/status/gc).",
+    help="Manage the local package feed (doctor/sync/mirror/index/serve/stop/status/gc).",
     no_args_is_help=True,
 )
 
@@ -59,6 +59,15 @@ PortOption = Annotated[int, typer.Option("--port", help="Port the static server 
 BindOption = Annotated[
     str,
     typer.Option("--bind", help="Interface to bind; the loopback default keeps the feed off the network"),
+]
+
+SourceUrlArgument = Annotated[
+    str,
+    typer.Argument(help="Root URL of a published feed; release and channel are appended"),
+]
+RepoOption = Annotated[
+    list[str] | None,
+    typer.Option("--repo", help="Repository path to mirror (repeatable), e.g. sdk/all"),
 ]
 
 
@@ -187,6 +196,65 @@ def sync(
         # Declared-but-absent is normal - a map lists what a machine could
         # publish - so this is reported rather than treated as a failure.
         console.print(f"declared but not built: {', '.join(result['unstaged'])}")
+
+
+def _format_size(num_bytes: int) -> str:
+    """Human-readable byte count, adapting units so a small test payload
+    doesn't render as ``0.00 GiB``."""
+    value = float(num_bytes)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if value < 1024 or unit == "GiB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{num_bytes} B"
+        value /= 1024
+    return f"{value:.1f} GiB"  # pragma: no cover - unreachable, loop always returns
+
+
+@feed_app.command("mirror")
+def mirror(
+    source_url: SourceUrlArgument,
+    repo: RepoOption = None,
+    workspace: WorkspaceOption = None,
+    release: ReleaseOption = feed_mod.DEFAULT_RELEASE,
+    channel: ChannelOption = feed_mod.DEFAULT_CHANNEL,
+) -> None:
+    """Copy repositories of a published feed into the local feed."""
+    repos = tuple(repo or ())
+    if not repos:
+        console.print("nothing to mirror: pass at least one --repo")
+        raise typer.Exit(code=2)
+
+    cfg = _resolve_cfg(workspace, None)
+    feed_root = feed_mod.resolve_feed_root(cfg)
+
+    request = feed_mirror.MirrorRequest(
+        source_url=source_url,
+        release=release,
+        channel=channel,
+        feed_root=feed_root,
+        repos=repos,
+    )
+    try:
+        result = feed_mirror.mirror(request)
+    except (feed_mirror.MirrorError, OSError) as exc:
+        console.print(f"feed mirror failed: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"feed: {result.feed_root}")
+    console.print(f"source: {result.source_channel}")
+    for outcome in result.repos:
+        console.print(f"  {outcome.repo}: {outcome.packages} package(s)")
+    if result.unpublished:
+        console.print(f"declared but not published: {', '.join(result.unpublished)}")
+
+    total_downloaded = sum(o.downloaded for o in result.repos)
+    total_reused = sum(o.reused for o in result.repos)
+    total_bytes = sum(o.bytes_downloaded for o in result.repos)
+    console.print(f"downloaded: {total_downloaded} packages ({_format_size(total_bytes)}), reused: {total_reused}")
+
+    next_cmd = f"bakar feed index --release {release} --channel {channel}"
+    if workspace is not None:
+        next_cmd += f" -w {workspace}"
+    console.print(f"next: {next_cmd}")
 
 
 @feed_app.command("index")
