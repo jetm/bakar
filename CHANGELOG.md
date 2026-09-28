@@ -7,13 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-09-28
+
 ### Added
 - Added `[build] mold_mode` and `[build] mold_extra_excluded_pn` config.toml keys. `mold_mode` persists the policy (`list`/`global`/`baseline`/`baseline-global`) that previously required a `--mold`/`--mold-baseline`/`--mold-global` flag on every invocation; a CLI flag still overrides it when passed. `mold_extra_excluded_pn` is a space-separated PN list appended to `MOLD_EXCLUDED_PN` (deny-list/global scope only), letting a recipe discovered to break under global mold be recorded once rather than rediscovered on every later global-mold build. Both are readable/writable via `bakar settings get/set/list`.
 - `bakar feed mirror` copies repositories of a published package feed into the local feed - selected by target through the source's `targets.json` or by path - verifying every file's checksum, confining writes to the repository and the channel pool, refusing to overwrite repositories it did not create, and resuming by re-running. Intended for offline build labs.
 
+### Changed
+- Upgraded the bundled `mold` recipe from 2.41.0 to 2.42.1, configuring it to use the system allocator instead of mimalloc to prevent startup crashes when running alongside bitbake's pseudo emulation.
+
 ### Fixed
 - Fixed `mold.bbclass`'s native/nativesdk/cross/crosssdk/cross-canadian/allarch exclusion gate returning before clearing `MOLD_LDFLAGS`, which left those classes carrying the unconditional `TARGET_LDFLAGS:append`'s default `-fuse-ld=mold -B<wrapper>` with no wrapper ever staged for them - `collect2: cannot find 'ld'` on the first such recipe to actually link (observed on `zstd-native`). Never exercised before a real `--mold`/`--mold-baseline` build ran to completion.
 - Removed the deprecated `S = "${WORKDIR}/git"` assignment from the bundled `mold-native` recipe; this oe-core release now fails `do_unpack` fatally on it since bitbake.conf's own default already resolves `S` to this path for a `gitsm` fetcher with no subdir override. Only reachable via the mold arm's `DEPENDS` (the baseline arm never builds `mold-native`), so never exercised before now either.
+- Fixed builds failing during bitbake recipe parsing when invoked from a workspace repository beside `meta-avocado` by declaring empty layers for the entry repository in the generated wrapper configuration.
+- Fixed `mold.bbclass` failing to invalidate `do_prepare_recipe_sysroot` cached signatures when the wrapper script was edited by tracking the script in the task's `file-checksums`.
 
 ## [0.34.0] - 2026-09-26
 
@@ -837,7 +844,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.34.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.35.0...HEAD
+[0.35.0]: https://github.com/jetm/bakar/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/jetm/bakar/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/jetm/bakar/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/jetm/bakar/compare/v0.31.1...v0.32.0
