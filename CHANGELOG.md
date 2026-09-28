@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Added `[build] mold_mode` and `[build] mold_extra_excluded_pn` config.toml keys. `mold_mode` persists the policy (`list`/`global`/`baseline`/`baseline-global`) that previously required a `--mold`/`--mold-baseline`/`--mold-global` flag on every invocation; a CLI flag still overrides it when passed. `mold_extra_excluded_pn` is a space-separated PN list appended to `MOLD_EXCLUDED_PN` (deny-list/global scope only), letting a recipe discovered to break under global mold be recorded once rather than rediscovered on every later global-mold build. Both are readable/writable via `bakar settings get/set/list`.
+- `bakar feed mirror` copies repositories of a published package feed into the local feed - selected by target through the source's `targets.json` or by path - verifying every file's checksum, confining writes to the repository and the channel pool, refusing to overwrite repositories it did not create, and resuming by re-running. Intended for offline build labs.
 
 ### Fixed
 - Fixed `mold.bbclass`'s native/nativesdk/cross/crosssdk/cross-canadian/allarch exclusion gate returning before clearing `MOLD_LDFLAGS`, which left those classes carrying the unconditional `TARGET_LDFLAGS:append`'s default `-fuse-ld=mold -B<wrapper>` with no wrapper ever staged for them - `collect2: cannot find 'ld'` on the first such recipe to actually link (observed on `zstd-native`). Never exercised before a real `--mold`/`--mold-baseline` build ran to completion.
