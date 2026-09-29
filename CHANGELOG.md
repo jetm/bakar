@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Fixed a meta-avocado build started from a previously generated `avocado-bakar.yml` keeping accelerators on after they were switched off in config: the generated file was included as the entry verbatim, so its `zz-bakar-*` local-conf blocks, `meta-bakar-*` layers and `BAKAR_*` env entries from an earlier run (mold, sccache, ...) survived into every later dump. Those bakar-owned sections are now filtered out of the entry before `kas dump`, so `mold = false` really builds without mold. Sections from meta-avocado or from user overlays (for example `zz-local-*`) still carry over from the previous dump.
+
 ## [0.35.0] - 2026-09-28
 
 ### Added

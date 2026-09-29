@@ -258,6 +258,51 @@ def _write_meta_avocado_wrapper(cfg: BuildConfig, kas_yaml: Path) -> Path:
     return wrapper
 
 
+# Sections bakar itself writes into the generated YAML. Each run regenerates them from
+# the current config (an overlay supplies a section only while its feature is on), so a
+# copy inherited from an earlier dump can only ever be stale.
+_BAKAR_OWNED_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("local_conf_header", "zz-bakar-"),
+    ("repos", "meta-bakar-"),
+    ("env", "BAKAR_"),
+)
+_FILTERED_ENTRY_YAML = ".avocado-entry.yml"
+
+
+def _entry_without_bakar_sections(entry: Path) -> Path:
+    """Return the kas entry to include, minus bakar-owned sections of a previous dump.
+
+    ``kas dump`` writes ``<bsp_root>/avocado-bakar.yml``, and that file is itself a
+    supported entry for the next run. Included verbatim, each dump inherits the one
+    before it: switch mold on once and its ``zz-bakar-*`` block and ``meta-bakar-*``
+    layer stay in the file, so turning it off in config changes nothing. Names with
+    these prefixes are reserved for bakar; sections from meta-avocado or from a user
+    overlay (``zz-local-*``) are kept, so a user overlay dropped from the command line
+    still carries over from the previous dump.
+
+    The filtered copy sits beside the entry (kas needs every config in one repository)
+    and the caller removes it after the dump. A source entry, or a generated file that
+    does not parse to a mapping, is returned as-is; kas parses with the same
+    ``yaml.safe_load`` and reports it itself.
+    """
+    if entry.name != GENERATED_BUILD_YAML:
+        return entry
+    try:
+        data = yaml.safe_load(entry.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        return entry
+    if not isinstance(data, dict):
+        return entry
+    for section, prefix in _BAKAR_OWNED_PREFIXES:
+        entries = data.get(section)
+        if isinstance(entries, dict):
+            for key in [k for k in entries if str(k).startswith(prefix)]:
+                del entries[key]
+    filtered = entry.resolve().with_name(_FILTERED_ENTRY_YAML)
+    filtered.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False, indent=4), encoding="utf-8")
+    return filtered
+
+
 def _strip_branch_from_dump(dump_path: Path) -> None:
     """Remove ``branch:`` from repos that have a pinned ``commit:``.
 
@@ -542,8 +587,13 @@ def _build_kas_arg(
         _setup_meta_avocado_build_dir(cfg)
         overlay_rel = materialize_overlay(cfg, overlay_source, is_main_overlay=True)
         extra_overlay_rels = [materialize_overlay(cfg, p) for p in extra_overlays or []]
-        wrapper = _write_meta_avocado_wrapper(cfg, kas_yaml)
-        dump = _run_kas_dump(cfg, wrapper, overlay_rel, extra_overlay_rels)
+        entry = _entry_without_bakar_sections(kas_yaml)
+        try:
+            wrapper = _write_meta_avocado_wrapper(cfg, entry)
+            dump = _run_kas_dump(cfg, wrapper, overlay_rel, extra_overlay_rels)
+        finally:
+            if entry != kas_yaml:
+                entry.unlink(missing_ok=True)
         return str(dump)
     kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
     overlay_rel = materialize_overlay(cfg, overlay_source, is_main_overlay=True)
