@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.1] - 2026-09-29
+
 ### Fixed
 - Fixed a meta-avocado build started from a previously generated `avocado-bakar.yml` keeping accelerators on after they were switched off in config: the generated file was included as the entry verbatim, so its `zz-bakar-*` local-conf blocks, `meta-bakar-*` layers and `BAKAR_*` env entries from an earlier run (mold, sccache, ...) survived into every later dump. Those bakar-owned sections are now filtered out of the entry before `kas dump`, so `mold = false` really builds without mold. Sections from meta-avocado or from user overlays (for example `zz-local-*`) still carry over from the previous dump.
 
@@ -847,7 +849,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.35.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.35.1...HEAD
+[0.35.1]: https://github.com/jetm/bakar/compare/v0.35.0...v0.35.1
 [0.35.0]: https://github.com/jetm/bakar/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/jetm/bakar/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/jetm/bakar/compare/v0.32.0...v0.33.0
