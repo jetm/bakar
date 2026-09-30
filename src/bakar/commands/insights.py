@@ -50,6 +50,7 @@ recorded core count beside the CPU floor a true statement - see
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
 
@@ -57,7 +58,7 @@ import typer
 from rich.markup import escape
 
 import bakar.commands._app as _state
-from bakar import buildstats, eventlog, task_timings
+from bakar import buildstats, eventlog, native_ledger, task_timings
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     WorkspaceOption,
@@ -66,7 +67,9 @@ from bakar.commands._helpers import (
     _workspace_from_cwd,
 )
 from bakar.config import BSPSpec, ResolveRequest, resolve
+from bakar.elfscan import _neutralized
 from bakar.insights_disk import disk_report
+from bakar.insights_natives import NativesReport, natives_report
 from bakar.insights_pressure import pressure_report
 from bakar.insights_sstate import sstate_report
 from bakar.insights_timing import correlation_window, timing_report
@@ -319,6 +322,68 @@ def _render_pressure(report) -> None:
     console.print(f"  verdict: {report.verdict}")
 
 
+_HASH_PREFIX_RE = re.compile(r"[0-9a-fA-F]{2}")
+
+#: Examples shown per cause group.
+_NATIVES_EXAMPLES = 5
+
+
+def _sstate_namespaces(sstate_dir: Path) -> list[Path]:
+    """Top-level sstate directories that are namespaces (``universal``, ``cachyos``).
+
+    Dot-directories and the two-hex-character hash-prefix directories that hold
+    the objects themselves are not namespaces.
+    """
+    try:
+        entries = sorted(sstate_dir.iterdir())
+    except OSError:
+        return []
+    return [e for e in entries if e.is_dir() and not e.name.startswith(".") and not _HASH_PREFIX_RE.fullmatch(e.name)]
+
+
+def _native_seed_dirs(sstate_dir: Path) -> list[Path]:
+    """The per-release ``<sstate>/.native-seed/<release>`` directories that exist.
+
+    bitbake symlinks siginfo fetched through ``SSTATE_MIRRORS=file://.../.native-seed/...``
+    into SSTATE_DIR, so the helper must be allowed to open those symlink targets. The
+    seed directories are bakar-owned and sit under the sstate root the user already
+    trusts for object content. One ``iterdir``, no recursion.
+    """
+    try:
+        return sorted(e for e in (sstate_dir / ".native-seed").iterdir() if e.is_dir())
+    except OSError:
+        return []
+
+
+def _render_natives(report: NativesReport) -> None:
+    console.print("[bold]natives:[/]")
+    if report.error:
+        console.print(f"  [red]{_neutralized(report.error)}[/]")
+        return
+    if report.message:
+        console.print(f"  {_neutralized(report.message)}")
+    console.print(f"  executed tasks: {report.executed_tasks}, restored: {report.restored}")
+    console.print(
+        f"  rebuilt recipes: {report.rebuilt_recipes} "
+        f"(attributed {report.attributed}, not recoverable {report.not_recoverable}, "
+        f"no previous signature {report.no_previous}, unchanged {report.unchanged})"
+    )
+    for group in report.groups:
+        examples = ", ".join(
+            f"{_neutralized(recipe)}:{_neutralized(task)}" for recipe, task in group.examples[:_NATIVES_EXAMPLES]
+        )
+        console.print(
+            f"  {_neutralized(group.kind)} {_neutralized(group.subject)}: {group.recipes} recipes"
+            + (f" (e.g. {examples})" if examples else "")
+        )
+    for title, groups in (
+        ("not recoverable", report.not_recoverable_groups),
+        ("no previous signature", report.no_previous_groups),
+    ):
+        for rgroup in groups:
+            console.print(f"  {title}: {_neutralized(rgroup.reason)}: {rgroup.recipes} recipes")
+
+
 def _render_disk(report) -> None:
     console.print("[bold]disk:[/]")
     if report.message is not None:
@@ -361,6 +426,16 @@ def insights(
         bool,
         typer.Option("--disk", help="Show the disk-usage growth report."),
     ] = False,
+    show_natives: Annotated[
+        bool,
+        typer.Option(
+            "--natives",
+            help=(
+                "Show the native/cross rebuild attribution report. Not part of the default view: "
+                "it runs bitbake's signature comparison in a helper process."
+            ),
+        ),
+    ] = False,
     top: Annotated[
         int,
         typer.Option("--top", help="Number of slowest tasks to show in the timing report."),
@@ -375,7 +450,7 @@ def insights(
     Reads the resolved run's normalized event artifact (and, for
     ``--pressure``/``--disk``, its persisted PSI/disk-sample sibling files)
     and prints the requested sections. With no ``--sstate``/``--timing``/
-    ``--pressure``/``--disk`` flag, all four sections render. Selects the
+    ``--pressure``/``--disk``/``--natives`` flag, the four default sections render. Selects the
     latest run under the workspace's search roots unless an explicit run ID
     is given, and always names the run it reported on.
     """
@@ -443,14 +518,14 @@ def insights(
 
     threshold_bytes = _parse_size_bytes(growth_threshold) if growth_threshold is not None else None
 
-    show_all = not (show_sstate or show_timing or show_pressure or show_disk)
+    show_all = not (show_sstate or show_timing or show_pressure or show_disk or show_natives)
 
     console.print(f"[bold]:: insights {log.run_id}[/]")
 
     # Normalizing re-reads and re-unpickles the whole raw event log; load it
     # once and share it across sections instead of once per section.
     artifact = None
-    if show_sstate or show_timing or show_disk or show_all:
+    if show_sstate or show_timing or show_disk or show_natives or show_all:
         artifact = _load_artifact(log)
 
     if show_sstate or show_all:
@@ -497,3 +572,27 @@ def insights(
     if show_disk or show_all:
         disk_samples = _load_json_list(log.disk_samples_path)
         _render_disk(disk_report(disk_samples, artifact, threshold_bytes=threshold_bytes))
+
+    if show_natives:
+        # A generic workspace resolves cfg against its per-machine build directory, but its
+        # bitbake checkout sits at the workspace top, so the library is found from ws_for_cfg.
+        lib_workspace = ws_for_cfg if family == "generic" else None
+        natives = _natives_for(cfg, run_dir, artifact, lib_workspace)
+        _render_natives(natives)
+        if natives.error:
+            raise typer.Exit(code=1)
+
+
+def _natives_for(cfg, run_dir: Path, artifact: dict, lib_workspace: Path | None = None) -> NativesReport:
+    sstate_dir = native_ledger.effective_sstate_dir(cfg.sstate_dir)
+    if sstate_dir is None:
+        return NativesReport(error="no sstate directory is configured (set SSTATE_DIR or the sstate_dir config key)")
+    return natives_report(
+        artifact,
+        run_dir=run_dir,
+        sstate_dir=sstate_dir,
+        sstate_namespaces=_sstate_namespaces(sstate_dir),
+        stamp_roots=native_ledger.stamp_roots(cfg.resolved_tmpdir, cfg.bsp_root / cfg.build_dir_name),
+        bitbake_lib=(lib_workspace / "bitbake" if lib_workspace else cfg.bitbake_bin_path.parent) / "lib",
+        extra_allowed_roots=_native_seed_dirs(sstate_dir),
+    )

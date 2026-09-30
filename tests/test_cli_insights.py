@@ -18,13 +18,15 @@ import base64
 import json
 import pickle
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 
-import bakar.commands.insights as insights_module  # noqa: F401  (registers the command on import)
+import bakar.commands.insights as insights_module
 from bakar import eventlog
 from bakar.cli import app
+from bakar.insights_natives import CauseGroup, NativesReport, ReasonGroup
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -485,3 +487,185 @@ def test_a_run_with_no_window_still_distinguishes_absent_from_empty(
         (tmp_path / BUILDSTATS_DIR_NAME).mkdir()
 
     assert _buildstats_source(tmp_path, None)().outcome == expected
+
+
+def _fake_natives(monkeypatch: pytest.MonkeyPatch, report: NativesReport) -> None:
+    monkeypatch.setattr(insights_module, "natives_report", lambda *a, **k: report)
+    monkeypatch.setenv("SSTATE_DIR", "/nonexistent-sstate")
+
+
+_REPORT = NativesReport(
+    executed_tasks=10,
+    restored=4,
+    rebuilt_recipes=3,
+    attributed=2,
+    not_recoverable=1,
+    groups=(
+        CauseGroup("variable", "CFLAGS", 2, (("a-native", "do_compile"), ("b-native", "do_compile"))),
+        CauseGroup("task", "do_patch", 1, (("c-native", "do_patch"),)),
+    ),
+    not_recoverable_groups=(ReasonGroup("no siginfo", 1, ("d-native",)),),
+)
+
+
+@pytest.mark.unit
+def test_insights_default_does_not_render_natives(
+    runner: _CliRunner, nxp_workspace: Path, insights_run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*a: object, **k: object) -> NativesReport:
+        raise AssertionError("natives_report must not run in the default view")
+
+    monkeypatch.setattr(insights_module, "natives_report", boom)
+    result = runner.invoke(app, ["insights", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 0, result.output
+    assert "natives:" not in result.output
+    assert "sstate:" in result.output
+
+
+@pytest.mark.unit
+def test_insights_natives_alone_renders_only_natives(
+    runner: _CliRunner, nxp_workspace: Path, insights_run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_natives(monkeypatch, _REPORT)
+    result = runner.invoke(app, ["insights", "--natives", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 0, result.output
+    assert "natives:" in result.output
+    assert "executed tasks: 10, restored: 4" in result.output
+    assert "variable CFLAGS: 2 recipes" in result.output
+    assert "a-native:do_compile" in result.output
+    assert "not recoverable: no siginfo: 1 recipes" in result.output
+    for other in ("sstate:", "timing:", "pressure:", "disk:"):
+        assert other not in result.output
+
+
+@pytest.mark.unit
+def test_insights_natives_error_exits_one_after_other_sections(
+    runner: _CliRunner, nxp_workspace: Path, insights_run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_natives(monkeypatch, NativesReport(error="helper failed"))
+    result = runner.invoke(app, ["insights", "--sstate", "--natives", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 1
+    assert "sstate:" in result.output
+    assert "helper failed" in result.output
+
+
+@pytest.mark.unit
+def test_insights_natives_neutralizes_build_derived_text(
+    runner: _CliRunner, nxp_workspace: Path, insights_run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = NativesReport(
+        rebuilt_recipes=1,
+        attributed=1,
+        groups=(CauseGroup("variable", "[bold red]X\x1b[31m", 1, (("r[/]", "do_x"),)),),
+    )
+    _fake_natives(monkeypatch, report)
+    result = runner.invoke(app, ["insights", "--natives", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 0, result.output
+    assert "[bold red]" in result.output
+    assert "\x1b" not in result.output
+
+
+@pytest.mark.unit
+def test_sstate_namespaces_skips_dot_and_hash_dirs(tmp_path: Path) -> None:
+    for name in ("universal", "cachyos", "3f", ".tmp", "AB"):
+        (tmp_path / name).mkdir()
+    (tmp_path / "file").write_text("x")
+    names = [p.name for p in insights_module._sstate_namespaces(tmp_path)]
+    assert names == ["cachyos", "universal"]
+    assert insights_module._sstate_namespaces(tmp_path / "missing") == []
+
+
+_HOSTILE = "[bold red]boom\x1b[31m"
+
+
+def _assert_neutralized(output: str) -> None:
+    assert "[bold red]boom" in output
+    assert "\x1b" not in output
+
+
+@pytest.mark.parametrize("bucket", ["not_recoverable_groups", "no_previous_groups"])
+def test_insights_natives_neutralizes_reason_group_reason(
+    runner: _CliRunner, nxp_workspace: Path, insights_run_dir: Path, monkeypatch: pytest.MonkeyPatch, bucket: str
+) -> None:
+    _fake_natives(monkeypatch, NativesReport(rebuilt_recipes=1, **{bucket: (ReasonGroup(_HOSTILE, 1, ("r",)),)}))
+    result = runner.invoke(app, ["insights", "--natives", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 0, result.output
+    _assert_neutralized(result.output)
+
+
+def test_insights_natives_neutralizes_error_text(
+    runner: _CliRunner, nxp_workspace: Path, insights_run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_natives(monkeypatch, NativesReport(error=_HOSTILE))
+    result = runner.invoke(app, ["insights", "--natives", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 1
+    _assert_neutralized(result.output)
+
+
+def test_insights_natives_neutralizes_message_text(
+    runner: _CliRunner, nxp_workspace: Path, insights_run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_natives(monkeypatch, NativesReport(message=_HOSTILE))
+    result = runner.invoke(app, ["insights", "--natives", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 0, result.output
+    _assert_neutralized(result.output)
+
+
+def test_native_seed_dirs_lists_existing_release_dirs_only(tmp_path: Path) -> None:
+    seed = tmp_path / ".native-seed"
+    (seed / "scarthgap").mkdir(parents=True)
+    (seed / "walnascar").mkdir()
+    (seed / "stray-file").write_text("x")
+    assert insights_module._native_seed_dirs(tmp_path) == [seed / "scarthgap", seed / "walnascar"]
+
+
+def test_native_seed_dirs_absent_directory_gives_nothing(tmp_path: Path) -> None:
+    assert insights_module._native_seed_dirs(tmp_path) == []
+
+
+def _natives_cfg(tmp_path: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        sstate_dir=str(tmp_path),
+        resolved_tmpdir=tmp_path / "tmp",
+        bsp_root=tmp_path / "bsp",
+        build_dir_name="build",
+        bitbake_bin_path=tmp_path / "bitbake" / "bin" / "bitbake",
+    )
+
+
+def _capture_natives_kwargs(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    captured: dict[str, object] = {}
+
+    def fake(*a: object, **k: object) -> NativesReport:
+        captured.update(k)
+        return NativesReport()
+
+    monkeypatch.setattr(insights_module, "natives_report", fake)
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
+    return captured
+
+
+def test_natives_for_passes_native_seed_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / ".native-seed" / "scarthgap").mkdir(parents=True)
+    captured = _capture_natives_kwargs(monkeypatch)
+    insights_module._natives_for(_natives_cfg(tmp_path), tmp_path, {})
+    assert captured["extra_allowed_roots"] == [tmp_path / ".native-seed" / "scarthgap"]
+
+
+def test_natives_for_passes_nothing_without_seed_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _capture_natives_kwargs(monkeypatch)
+    insights_module._natives_for(_natives_cfg(tmp_path), tmp_path, {})
+    assert captured["extra_allowed_roots"] == []
+
+
+def test_natives_for_finds_bitbake_at_the_workspace_top_for_a_generic_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # meta-avocado resolves cfg against build-<machine>, whose own bitbake/bin does not exist.
+    captured = _capture_natives_kwargs(monkeypatch)
+    cfg = _natives_cfg(tmp_path)
+    cfg.bitbake_bin_path = tmp_path / "build-x" / "bitbake" / "bin"
+    insights_module._natives_for(cfg, tmp_path, {}, tmp_path / "ws")
+    assert captured["bitbake_lib"] == tmp_path / "ws" / "bitbake" / "lib"
+    insights_module._natives_for(cfg, tmp_path, {})
+    assert captured["bitbake_lib"] == tmp_path / "build-x" / "bitbake" / "lib"
