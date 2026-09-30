@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The bundled `mold` recipe now builds only the Rust rewrite, pinned to upstream commit `a9c709b8a437c1e1627b065b771e32ce331ba363`. The C++ 2.42.1 recipe is gone. That commit needs rustc 1.95.0 or newer (checked: stock 1.95.0 compiles it, stock 1.94.1 fails on two unstable std APIs). Below 1.95.0 the recipe still opts in to them with `RUSTC_BOOTSTRAP` for this one native tool; from 1.95.0 on it builds with the stock compiler, decided from the tree's `RUSTVERSION`.
+
+### Removed
+- Removed the `mold-compiler` doctor check. It probed the build compiler for C++20, which only the C++ mold build needed.
+
 ## [0.35.2] - 2026-09-30
 
 ### Changed

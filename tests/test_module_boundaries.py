@@ -259,7 +259,6 @@ DIAGNOSTICS_CHECK_NAMES: frozenset[str] = frozenset(
         "check_kas_yaml_syntax",
         "check_manifest_consistency",
         "check_memory",
-        "check_mold_compiler",
         "check_nfs_delegations",
         "check_nproc",
         "check_override_syntax",
