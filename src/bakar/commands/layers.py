@@ -13,6 +13,7 @@ import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     WorkspaceOption,
+    _combine_overlays_with_tuning,
     _normalize_dispatch,
     _overlay_for,
     _print_layer_hashes,
@@ -175,7 +176,9 @@ def layers_inspect(
 
     # Run bitbake-layers show-layers inside the container for authoritative data
     with RunLogger(runs_dir=cfg.runs_dir) as log:
-        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source)
+        kas_ctx = KasBuildContext(
+            cfg, log, cfg.kas_yaml, overlay_source, extra_overlays=_combine_overlays_with_tuning([], cfg)
+        )
         capture_path = cfg.runs_dir / "layers_inspect.txt"
         rc = step_kas.run_shell_capture(
             kas_ctx,
@@ -275,7 +278,9 @@ def layers_status(
     var_values: dict[str, str] = {}
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
-        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source)
+        kas_ctx = KasBuildContext(
+            cfg, log, cfg.kas_yaml, overlay_source, extra_overlays=_combine_overlays_with_tuning([], cfg)
+        )
         # bitbake -e dumps every variable at once, so one container invocation
         # replaces the eight per-var bitbake-getvar calls (getvar takes exactly
         # one positional). Same values: getvar is a subset of the -e dump.

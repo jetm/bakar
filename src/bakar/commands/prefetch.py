@@ -13,6 +13,7 @@ from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     WorkspaceOption,
     _bbsetup_workspace,
+    _combine_overlays_with_tuning,
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
@@ -91,7 +92,9 @@ def prefetch(
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
     with RunLogger(runs_dir=cfg.runs_dir) as log:
-        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source)
+        kas_ctx = KasBuildContext(
+            cfg, log, cfg.kas_yaml, overlay_source, extra_overlays=_combine_overlays_with_tuning([], cfg)
+        )
         rc = step_kas.run_shell(
             kas_ctx,
             [],

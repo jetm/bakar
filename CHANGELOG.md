@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Added a `mold` recipe that builds the Rust rewrite of mold from upstream `main` (pinned commit), which wins over the C++ 2.42.1 recipe by version. The Rust build uses mimalloc only as Rust's global allocator and leaves libc's `malloc` alone, so it no longer crashes under bitbake's pseudo; the C++ recipe stays in the layer for reference. The tree's rustc 1.94.1 still gates two std APIs the Rust mold uses, so the recipe opts in with `RUSTC_BOOTSTRAP` for this one native tool.
 
+### Fixed
+- Fixed a meta-avocado build leaving `avocado-bakar.yml` with only the base overlay after it finished: the post-build dependency-graph capture and the `shell`, `layers`, `lock`, `prefetch`, `graph`, `inspect` and `diffsigs` commands re-dumped the kas config without the build's tuning overlays (mold, hashequiv, uninative, arch probes), overwriting the generated file. Since 0.35.1 stopped the previous dump from carrying those sections forward, the file now really lost them, and so did any kas step run against it afterwards. The graph capture now flattens the overlays the build ran with, and each of those commands flattens the same tuning set as `bakar dump`. The build itself was never affected; it uses the dump made just before it starts.
+
 ## [0.35.1] - 2026-09-29
 
 ### Fixed

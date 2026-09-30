@@ -30,6 +30,7 @@ import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     WorkspaceOption,
+    _combine_overlays_with_tuning,
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
@@ -369,7 +370,9 @@ def inspect(
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
-        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source)
+        kas_ctx = KasBuildContext(
+            cfg, log, cfg.kas_yaml, overlay_source, extra_overlays=_combine_overlays_with_tuning([], cfg)
+        )
 
         # --- Step 1: layer, recipe file, bbappends ---
         show_recipes_out = log.run_dir / "inspect-show-recipes.log"

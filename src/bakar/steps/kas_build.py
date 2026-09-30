@@ -45,7 +45,7 @@ import sysconfig
 import threading
 import time
 from contextlib import ExitStack, suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -995,8 +995,14 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         # to: at this point that cooker still holds the lock WITH activity, and
         # clear_stale_bitbake_locks refuses on exactly that - which is what the
         # first real build hit, every time. Never raises, never changes rc.
+        #
+        # The capture re-dumps the kas config, and that dump overwrites the
+        # generated YAML the build just ran from. It flattens ``ctx.extra_overlays``,
+        # which does not carry the build's tuning overlays (they arrive as this
+        # function's argument), so without them the file is left with the base
+        # overlay only - no mold, hashequiv, uninative or arch probes.
         if rc == 0:
-            _capture_dependency_graph(ctx, log)
+            _capture_dependency_graph(replace(ctx, extra_overlays=list(extra_overlays or [])), log)
         # Normalize the raw bitbake event log into bitbake-events.json for both
         # outcomes. Best-effort: a no-op when bitbake wrote no event log.
         # Belt-and-braces alongside the RunLogger-side never-raises fix (task

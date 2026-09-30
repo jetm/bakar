@@ -223,3 +223,30 @@ def test_run_build_persist_tail_failure_does_not_duplicate_terminal_event(
     terminal = [e for e in events if e["step"] == "kas_build" and e["event"] != "step_start"]
     assert len(terminal) == 1, f"expected exactly one terminal kas_build event, got {terminal!r}"
     assert terminal[0]["event"] == "step_ok"
+
+
+# ---------------------------------------------------------------------------
+# The post-build graph capture re-dumps the kas config; it must flatten the
+# overlays the build ran with, not just the base tuning overlay.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_run_build_hands_the_builds_overlays_to_graph_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg, kas_yaml, overlay = _prepare_workspace(tmp_path)
+    tuning = [tmp_path / "bakar-tuning-mold.yml", tmp_path / "bakar-tuning-hashequiv.yml"]
+    for path in tuning:
+        path.write_text("header:\n  version: 16\n", encoding="utf-8")
+    seen: list[list[Path]] = []
+
+    monkeypatch.setattr(kas_build, "_run_pty_with_ui", lambda *a, **k: kas_build._PtyOutcome(rc=0))
+    monkeypatch.setattr(kas_build, "_capture_dependency_graph", lambda c, _log: seen.append(list(c.extra_overlays)))
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        ctx = KasBuildContext(cfg=cfg, log=log, kas_yaml=kas_yaml, overlay_source=overlay)
+        rc = kas_build.run_build(ctx, extra_overlays=tuning)
+
+    assert rc == 0
+    assert seen == [tuning]
+    # The caller's context is left as it was: only the capture sees the overlays.
+    assert ctx.extra_overlays == []
