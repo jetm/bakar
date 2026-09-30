@@ -19,7 +19,9 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
+from typer.testing import CliRunner
 
+from bakar.cli import app
 from bakar.commands.clean_cache import _delete_stale, _stage_and_delete
 
 if TYPE_CHECKING:
@@ -235,3 +237,68 @@ def test_delete_stale_freed_bytes_matches_file_sizes(tmp_path: Path) -> None:
     _, freed, _ = _delete_stale(files, sstate)
 
     assert freed == sum(sizes)
+
+
+# ---------------------------------------------------------------------------
+# Native signature ledger / revision records under <sstate>/.bakar
+# ---------------------------------------------------------------------------
+
+_HEX_OLD = "a" * 64
+_HEX_NEW = "b" * 64
+
+
+def _make_native_tree(sstate: Path) -> dict[str, Path]:
+    """Build a scratch sstate with aged and fresh ledger entries and records."""
+    obj = sstate / "ab" / "sstate-old.tar.zst"
+    old_entry = sstate / ".bakar" / "native-sigdata" / "quilt-native" / f"do_configure.{_HEX_OLD}.sigdata"
+    new_entry = sstate / ".bakar" / "native-sigdata" / "quilt-native" / f"do_compile.{_HEX_NEW}.sigdata"
+    old_rec = sstate / ".bakar" / "native-provenance" / "wrynose" / f"{'c' * 16}.json"
+    new_rec = sstate / ".bakar" / "native-provenance" / "wrynose" / f"{'d' * 16}.json"
+    paths = {"obj": obj, "old_entry": old_entry, "new_entry": new_entry, "old_rec": old_rec, "new_rec": new_rec}
+    for p in paths.values():
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"payload")
+    for key in ("obj", "old_entry", "old_rec"):
+        _age_file(paths[key], 40.0)
+    return paths
+
+
+@pytest.mark.parametrize("atime_tracked", [True, False], ids=["atime", "mtime"])
+def test_clean_cache_prunes_aged_ledger_entries_and_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, atime_tracked: bool
+) -> None:
+    """Ledger entries and revision records age out with the sstate objects."""
+    sstate = tmp_path / "sstate-cache"
+    paths = _make_native_tree(sstate)
+    monkeypatch.setattr("bakar.commands.clean_cache._atime_tracked", lambda _p: atime_tracked)
+
+    result = CliRunner().invoke(
+        app, ["clean-cache", "--sstate-dir", str(sstate), "--older-than", "30", "--no-ccache", "--yes"]
+    )
+
+    assert result.exit_code == 0, result.output
+    for key in ("obj", "old_entry", "old_rec"):
+        assert not paths[key].exists(), f"{key} should have been pruned"
+    for key in ("new_entry", "new_rec"):
+        assert paths[key].exists(), f"{key} should have survived"
+    assert (sstate / ".bakar").is_dir()
+    assert (sstate / ".bakar" / "native-sigdata" / "quilt-native").is_dir()
+    assert (sstate / ".bakar" / "native-provenance" / "wrynose").is_dir()
+
+
+@pytest.mark.parametrize("atime_tracked", [True, False], ids=["atime", "mtime"])
+def test_clean_cache_dry_run_keeps_ledger_entries_and_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, atime_tracked: bool
+) -> None:
+    """``--dry-run`` leaves every ledger entry and record in place."""
+    sstate = tmp_path / "sstate-cache"
+    paths = _make_native_tree(sstate)
+    monkeypatch.setattr("bakar.commands.clean_cache._atime_tracked", lambda _p: atime_tracked)
+
+    result = CliRunner().invoke(
+        app, ["clean-cache", "--sstate-dir", str(sstate), "--older-than", "30", "--no-ccache", "--dry-run"]
+    )
+
+    assert result.exit_code == 0, result.output
+    for key, p in paths.items():
+        assert p.exists(), f"{key} was deleted on a dry-run"
