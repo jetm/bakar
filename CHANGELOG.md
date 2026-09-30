@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added a `native-rebuild-forecast` doctor check that compares the workspace's bitbake, oe-core and poky revisions and its layer revisions with the revision sets recorded by earlier builds. It warns before a build when a core repository moved or a checkout is dirty, and only informs when ordinary layers moved. It never blocks a build and does not forecast configuration changes.
+- After every `bakar build` and `bakar bitbake` run, bakar now records the workspace's revision set and copies the signature files of the native and cross tasks that executed under `<sstate_dir>/.bakar/`, so a rebuild stays explainable after the build directory is gone. Both records expire with `bakar clean-cache`'s age sweep and never change a build's exit code.
+- Added `bakar insights --natives`, an opt-in report that groups the causes of native and cross rebuilds for a finished run using bitbake's own signature comparison and says plainly what it could not explain. `bakar build` ends with a one-line pointer to it when native or cross tasks executed.
+
+### Fixed
+- Fixed `bakar diffsigs` and the new `--natives` report dropping every cause from a `Task dependencies changed` list whose items contain `]` (for example `AR[export]`); the old parser silently returned nothing for such lists.
+
 ## [0.35.3] - 2026-09-30
 
 ### Changed
