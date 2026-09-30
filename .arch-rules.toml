@@ -88,6 +88,14 @@ paths = [
   # Extracted out of commands/diffsigs.py: the "Task dependencies changed"
   # list-diff parser. Pure text parsing, no bakar imports.
   "src/bakar/sigdiff_parse.py",
+  # Native-miss forecast: the revision-set record and the forecast comparison
+  # against it. Leaf module, no commands or steps imports.
+  "src/bakar/native_provenance.py",
+  # Native-miss forecast: the native/cross signature ledger. Leaf module.
+  "src/bakar/native_ledger.py",
+  # Standalone script that runs under a bitbake checkout's library path and
+  # imports nothing from bakar.
+  "src/bakar/sigdiff_helper.py",
 ]
 
 [[modules]]
