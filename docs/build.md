@@ -141,6 +141,53 @@ bakar build my-board.yml --dry-run-script -
 
 Run telemetry is written to `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/`.
 
+## Native signature capture
+
+After every `bakar build` and `bakar bitbake` run that reached bitbake, bakar
+records what the run built so a later `bakar insights --natives` can explain
+why native and cross recipes rebuilt, and so `bakar doctor` can forecast the
+next one. Two things are written under the effective sstate directory
+(`SSTATE_DIR` from the environment wins over `[build] sstate_dir`):
+
+| Path | Content |
+|------|---------|
+| `<sstate_dir>/.bakar/native-provenance/<release>/<digest>.json` | The revision set of the workspace repositories for this build, one file per distinct revision set, with the last run and node that built it |
+| `<sstate_dir>/.bakar/native-sigdata/<recipe>/<task>.<hash>.sigdata` | A copy of the signature file of each native or cross task the run executed |
+
+The run directory also gets a `native-signatures.json` manifest naming the
+recipe, task and hash of each executed native or cross task, which is what
+`insights --natives` reads for the current run. The revision records feed the
+`native-rebuild-forecast` check in [doctor.md](doctor.md#native-rebuild-forecast).
+
+The capture is best-effort and never changes the exit code. When the ledger
+cannot be written, one yellow warning line says so
+(`native signature ledger could not be written` or
+`native revision record could not be written`) and the build result stands.
+With no effective sstate directory the record and the ledger are skipped
+without any message, and no `native-signatures.json` is written either; the
+summary line below does not depend on the sstate directory.
+
+Both directories expire through the age sweep of `bakar clean-cache`, not on
+their own. The sweep's time basis is access time on mounts that track it and
+modification time otherwise, the same as for the rest of the sstate directory.
+
+The revision records and the signature ledger live under `<sstate_dir>/.bakar/`,
+the same directory that holds the hash-equivalence and PR-server daemon state.
+With a node-local `.bakar` (a bind mount or a node-local sstate directory) the
+records and the ledger stay on each node, so the pre-build forecast only knows
+about builds made on that node. The ledger and records are written only into
+real directories: a symlinked `.bakar`, `native-provenance` or release
+directory is refused, and the record is skipped with a warning.
+
+`bakar build` (not `bakar bitbake`) ends with one line when at least one
+native or cross task executed:
+
+```text
+native/cross: 412 tasks executed, 96 restored from sstate - bakar insights --natives 20260601-143022-4321 explains why
+```
+
+A build where every native and cross task was restored prints nothing.
+
 ## Cache mount gate
 
 Immediately before step 8 (`kas build`), and before any bitbake process starts,

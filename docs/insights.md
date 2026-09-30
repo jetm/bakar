@@ -2,7 +2,8 @@
 
 Render per-recipe/per-task analytics for a completed run: sstate cache
 hit/miss breakdown, per-task timing and top-N slowest tasks, PSI
-CPU/IO/memory pressure share, and disk-usage growth.
+CPU/IO/memory pressure share, disk-usage growth, and (opt-in) why native and
+cross recipes rebuilt.
 
 ## Synopsis
 
@@ -23,9 +24,11 @@ bakar insights [RUN_ID] [OPTIONS]
 | `--disk` | | Show the disk-usage growth report |
 | `--top` | | Number of slowest tasks to show in the timing report (default `10`) |
 | `--growth-threshold` | | Warn when disk growth exceeds this size (e.g. `5GB`) |
+| `--natives` | | Show the native/cross rebuild attribution report (opt-in, not in the default view) |
 
-With no `--sstate`/`--timing`/`--pressure`/`--disk` flag, all four sections
-render.
+With no `--sstate`/`--timing`/`--pressure`/`--disk`/`--natives` flag, the four
+default sections render. `--natives` is excluded from that default: pass it
+explicitly.
 
 ## Run selection
 
@@ -220,6 +223,63 @@ when the run recorded a `DiskFull` event, and reflect bitbake's real
 `bb.event.DiskFull` fields (`dev`/`type`/`free_bytes`/`mountpoint` - it
 carries no timestamp or message text of its own).
 
+### natives
+
+Why native and cross recipes rebuilt in this run. Opt-in: `--natives` is not
+part of the no-flag default, because it runs bitbake's signature comparison in a
+helper process (600-second limit) while the other sections only read files.
+Given alone it renders only this section; given with other flags it renders
+after them.
+
+For every native or cross recipe that executed a task, bakar takes the
+`do_populate_sysroot` signature the run built with (or, when that task did not
+execute, the recipe's last executed task) and finds the most recent earlier
+signature of the same recipe and task. It then asks bitbake's own
+`compare_sigfiles`, run from the workspace's bitbake checkout, what differs, and
+groups the causes across recipes. Each cause line starts with its kind (for
+example `value`, `vardeps`, `file`, `taint`, `taskdep-added`), then the subject,
+then how many recipes share it:
+
+```text
+natives:
+  executed tasks: 412, restored: 96
+  rebuilt recipes: 87 (attributed 61, not recoverable 9, no previous signature 14, unchanged 3)
+  value UNINATIVE_CHECKSUM[x86_64]: 24 recipes (e.g. cmake-native:do_populate_sysroot)
+  file base.bbclass: 19 recipes (e.g. m4-native:do_populate_sysroot)
+  not recoverable: current signature file not found: 9 recipes
+  no previous signature: no earlier signature found: 14 recipes
+```
+
+The four buckets always add up to the number of rebuilt recipes:
+
+| Bucket | Meaning |
+|--------|---------|
+| attributed | The comparison found at least one cause; recipes are grouped by cause, most-shared first |
+| not recoverable | A signature file was missing or the comparison could not run for that recipe; grouped by reason |
+| no previous signature | No earlier signature of that recipe exists to compare against (first build, or the sstate scan ran out of its 120-second budget and reports `scan incomplete`); grouped by reason |
+| unchanged | The earlier signature equals the current one, so the rebuild is not explained by a signature change |
+
+"Most recent earlier" means the signature last built before the run started. A
+signature that is built again after being replaced (a reverted change) is tracked
+by a small `.seen` marker next to its ledger entry, so it counts as the newest
+again. Only the latest sighting before the run is known: if the same signature
+was built both before and after the run being explained, the older sighting is
+not recorded.
+
+When every native and cross task was restored or already current, the section
+prints `every native and cross task was restored or already current`.
+
+The section needs the per-run `native-signatures.json` manifest written at the
+end of the build (see [build.md](build.md#native-signature-capture)). A run made
+before signature capture existed has none and reports `this run has no native
+signature manifest (it predates signature capture)`. The section also fails when
+no sstate directory is configured, the bitbake library is missing, or the helper
+times out or crashes. In each case it prints the error in red and
+`bakar insights` exits with status 1 after rendering any other sections you
+asked for. Every string derived from the build (recipe names, variable names,
+file paths) is neutralized before printing, so a hostile recipe name cannot
+inject terminal control sequences.
+
 ## Notes
 
 - All output goes to stderr (consistent with `bakar report`); there is no
@@ -229,6 +289,8 @@ carries no timestamp or message text of its own).
   (case-insensitive), e.g. `5GB` or `512000000`.
 - Each section degrades independently: a run missing PSI samples still
   renders sstate/timing/disk sections normally.
+- `--natives` is not one of the default sections; it renders only when asked
+  for.
 
 ## See also
 
@@ -236,3 +298,4 @@ carries no timestamp or message text of its own).
 - [graph.md](graph.md) - live `bitbake -g` dependency graph analysis for a single recipe; `insights --timing` computes its own critical path from the run's already-captured graph instead
 - [log.md](log.md) - tail the raw kas.log or events.jsonl for a run
 - [monitor.md](monitor.md) - live one-view watch of a running build
+- [doctor.md](doctor.md#native-rebuild-forecast) - `native-rebuild-forecast`, the pre-build forecast of the rebuilds `--natives` explains afterwards

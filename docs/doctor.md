@@ -47,6 +47,7 @@ Checks cover:
 - Persistent hashserv daemon (when `[build] hashserv = true` - PID + TCP probe; see [hashserv.md](hashserv.md))
 - Per-workspace daemon state (`daemon-state` - see [Per-workspace daemon state](#per-workspace-daemon-state) below)
 - sstate hash leak (host-specific variables that corrupt sstate task signatures)
+- Native rebuild forecast (`native-rebuild-forecast` - see [Native rebuild forecast](#native-rebuild-forecast) below)
 - Uninative wiring (when `[build] uninative = true` - the host tarball's fragment, its glibc ceiling, its payload integrity, its `DL_DIR` cache state, and its consistency across a cluster)
 - Cluster shared-mount options (`shared-mounts`, cluster mode only - see [Cluster shared-mount options](#cluster-shared-mount-options) below)
 
@@ -76,8 +77,9 @@ server and this node's link.
 
 When `cache-mounts` is blocking, every other check that reads a cache
 directory - `cache-dirs`, `disk-free`, `ccache-health`, `hashserv`,
-`daemon-state`, `shared-mounts`, `uninative-dldir-links`,
-`uninative-mirror-hit`, and `uninative-cluster-ceiling` - is skipped rather
+`daemon-state`, `shared-mounts`, `native-rebuild-forecast`,
+`uninative-dldir-links`, `uninative-mirror-hit`, and
+`uninative-cluster-ceiling` - is skipped rather
 than run, and reports which unusable directory caused the skip. This keeps a
 dead NFS share from also hanging every check that would otherwise try to read
 it.
@@ -153,6 +155,50 @@ DATETIME[vardepsexclude] += "DATETIME"
 
 Add that annotation in `local.conf` (or an overlay) so the variable does not
 corrupt sstate hashes.
+
+## Native rebuild forecast
+
+`native-rebuild-forecast` tells you before a build whether the native and cross
+recipes are likely to rebuild, by comparing the layer revisions in the
+workspace with the revision sets earlier builds recorded.
+
+| Check | Severity | Asserts | Fix hint |
+|-------|----------|---------|----------|
+| `native-rebuild-forecast` | WARN | A build recorded for this release used this exact revision set | Run `bakar insights --natives` after the build to see which natives rebuilt and why |
+
+The severity is **WARN**, never BLOCK, and it drops to INFO when only ordinary
+layer repositories differ and nothing is dirty. Outcomes:
+
+| Outcome | Status / severity |
+|---------|-------------------|
+| The current revision set matches a recorded one exactly | PASS / INFO |
+| A core repository (`bitbake`, `openembedded-core`, `poky`) differs, or any current repository has uncommitted changes | FAIL / WARN |
+| Only ordinary layer repositories differ | FAIL / INFO |
+| No sstate directory is configured, or no build has been recorded for this release yet | SKIP / INFO |
+
+A failing message names the nearest recorded build and how far each differing
+repository is from it:
+
+```text
+no recorded build matches this revision set; nearest is run 20260901-101500-3187 on node-a (2026-09-01); differing: bitbake (3 ahead / 0 behind); expect a wide native rebuild
+```
+
+A core-repository difference adds `expect a wide native rebuild`, because a
+change in bitbake or oe-core moves the signature of most native recipes. A
+dirty repository is listed as `dirty, not forecastable` since its working tree
+has no revision to compare. A repository that cannot be read, and a record file
+that cannot be parsed, are named in the message rather than ignored.
+
+The records are written by `bakar build` and `bakar bitbake` after each run
+that reached bitbake, one file per distinct revision set under
+`<sstate_dir>/.bakar/native-provenance/<release>/` (see
+[build.md](build.md#native-signature-capture)). The check runs no bitbake, kas
+or `git fetch`, only bounded local git probes, and never blocks a build.
+
+The forecast covers repository revisions and nothing else. Changes to overlays,
+`local.conf` or other configuration also move native signatures and are not
+forecast, which is why even the PASS message ends with `configuration changes
+are not forecast`.
 
 ## Uninative wiring checks
 
