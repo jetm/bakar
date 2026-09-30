@@ -40,7 +40,7 @@ from rich.markup import escape
 # ``is_path_on_nfs`` has no reader in this module: build_stop resolves it
 # through ``bakar.diagnostics`` with a function-body deferred import to break a
 # cycle, so the name has to stay reachable at this path.
-from bakar import build_scope, mounts
+from bakar import build_scope, mounts, native_ledger, native_provenance, pin_state
 
 # ``resolve_buildtools_dir`` has no reader in this module: setup/actions/tools.py
 # imports it through ``bakar.diagnostics``, so the name has to stay reachable at
@@ -1925,6 +1925,93 @@ def check_uninative_mirror_hit(cfg: BuildConfig) -> CheckResult:
     return _ok(name, Severity.WARN, f"cached payload {cached} links into the fragment's mirror at {target}")
 
 
+def _forecast_diff_text(diff: native_provenance.RepoDiff) -> str:
+    """One differing repository, with its commit distance or an honest unknown."""
+    if diff.recorded is None:
+        return f"{_neutralized(diff.name)} (not in the recorded set)"
+    if diff.current is None:
+        return f"{_neutralized(diff.name)} (in the recorded set but unreadable or absent now, distance unknown)"
+    if diff.ahead is None or diff.behind is None:
+        return f"{_neutralized(diff.name)} (distance unknown)"
+    return f"{_neutralized(diff.name)} ({diff.ahead} ahead / {diff.behind} behind)"
+
+
+def check_native_forecast(cfg: BuildConfig) -> CheckResult:
+    """Forecast native rebuilds by comparing the revision set with recorded builds.
+
+    Advisory only: no path returns BLOCK. The forecast covers repository
+    revisions and nothing else, so configuration changes are outside it. Runs no
+    bitbake, kas or git fetch; ``snapshot_repos`` bounds each local git probe.
+    """
+    name = "native-rebuild-forecast"
+    sstate_dir = native_ledger.effective_sstate_dir(cfg.sstate_dir)
+    if sstate_dir is None:
+        return _skip(name, Severity.INFO, "no sstate directory is configured")
+
+    release_key = resolve_oe_core_release_key(cfg.workspace)
+    # Mirrors native_provenance._UNKNOWN_RELEASE, the bucket load_records reads.
+    release = _neutralized(release_key or "_unknown")
+    records, bad_records = native_provenance.load_records(sstate_dir, release_key)
+    bad_names = [_neutralized(b) for b in bad_records]
+    if not records:
+        note = f"; unreadable record: {', '.join(bad_names)}" if bad_names else ""
+        return _skip(name, Severity.INFO, f"no build has been recorded for {release} yet{note}")
+
+    snapshot = native_provenance.snapshot_repos(cfg.workspace, cfg.bsp_root, probe_timeout=10.0)
+    result = native_provenance.forecast(snapshot, records, distance=pin_state.commit_distance)
+
+    extras: list[str] = []
+    if result.dirty:
+        extras.append("dirty, not forecastable: " + ", ".join(_neutralized(d) for d in result.dirty))
+    if result.unreadable:
+        extras.append("unreadable repository: " + ", ".join(_neutralized(u) for u in result.unreadable))
+    if bad_names:
+        extras.append("unreadable record: " + ", ".join(bad_names))
+    tail = "".join(f"; {e}" for e in extras)
+
+    record = result.record
+    if record is None:
+        return _skip(name, Severity.INFO, f"no build has been recorded for {release} yet")
+    seen = _neutralized(record.last_seen)
+    node = _neutralized(record.last_node)
+    run_id = _neutralized(record.last_run_id)
+    if result.kind == "exact":
+        if result.dirty:
+            return _fail(
+                name,
+                Severity.WARN,
+                "a recorded build matches this revision set but the match cannot be trusted: "
+                "uncommitted edits are not part of the revision set; "
+                f"last seen on {seen} by {node} (run {run_id}){tail}",
+                fix_hint="commit or stash the local edits, then re-run to get a usable forecast",
+            )
+        if record.last_outcome == "success":
+            return _ok(
+                name,
+                Severity.INFO,
+                f"this revision set was last built on {seen} by {node} "
+                f"(run {run_id}); configuration changes are not forecast{tail}",
+            )
+        return _ok(
+            name,
+            Severity.INFO,
+            f"this revision set was last seen on {seen} by {node} (run {run_id}, "
+            f"outcome {_neutralized(record.last_outcome)}; no completed build is recorded "
+            f"for this revision set); configuration changes are not forecast{tail}",
+        )
+
+    differing = "; ".join(_forecast_diff_text(d) for d in result.diffs) or "no readable repository differs"
+    wide = "; expect a wide native rebuild" if result.core_moved else ""
+    severity = Severity.WARN if (result.core_moved or result.dirty) else Severity.INFO
+    return _fail(
+        name,
+        severity,
+        f"no recorded build matches this revision set; nearest is run {run_id} on "
+        f"{node} ({seen}); differing: {differing}{wide}{tail}",
+        fix_hint="run `bakar insights --natives` after the build to see which natives rebuilt and why",
+    )
+
+
 # Subdirectory the per-node ceiling records live in, created under the shared
 # cache root. A dedicated, clearly-named directory keeps these records out of
 # bitbake's own namespace: sstate stores its artifacts under two-character
@@ -3551,6 +3638,8 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_central_prserv,
     check_shared_cache_mounts,
     check_uninative_cluster_consistency,
+    # INFO/WARN only: advisory forecast of native rebuilds from recorded revision sets.
+    check_native_forecast,
 )
 
 # Docker-dependent checks from ``SHARED_CHECKS``. Filtered out of
@@ -3609,6 +3698,7 @@ _CACHE_TOUCHING_CHECKS: tuple[CheckFunc, ...] = (
     check_uninative_dldir_links,
     check_uninative_mirror_hit,
     check_uninative_cluster_consistency,
+    check_native_forecast,
 )
 
 
@@ -3638,7 +3728,16 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "Caches & storage",
-        ("cache-mounts", "cache-dirs", "ccache-health", "hashserv", "daemon-state", "sstate-hash-leak", "disk-free"),
+        (
+            "cache-mounts",
+            "cache-dirs",
+            "ccache-health",
+            "hashserv",
+            "daemon-state",
+            "sstate-hash-leak",
+            "disk-free",
+            "native-rebuild-forecast",
+        ),
     ),
     (
         "Cluster",
@@ -3730,6 +3829,7 @@ _CHECK_METADATA: tuple[tuple[CheckFunc, str, Severity], ...] = (
     (check_central_prserv, "central-prserv", Severity.BLOCK),
     (check_shared_cache_mounts, "shared-mounts", Severity.BLOCK),
     (check_uninative_cluster_consistency, "uninative-cluster-ceiling", Severity.BLOCK),
+    (check_native_forecast, "native-rebuild-forecast", Severity.WARN),
     # NXP-only (BspModel.doctor_extras)
     (check_forks_linux_imx, "forks-linux-imx", Severity.INFO),
     (check_manifest_consistency, "manifest", Severity.INFO),
