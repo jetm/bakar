@@ -116,7 +116,7 @@ def detect_bsp_from_yaml(yaml_path: Path, _depth: int = 0) -> Literal["nxp", "ti
     try:
         with yaml_path.open("r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
-    except OSError, yaml.YAMLError:
+    except OSError, yaml.YAMLError, UnicodeDecodeError:
         return "unknown"
     if not isinstance(data, dict):
         return "unknown"

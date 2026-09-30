@@ -61,7 +61,9 @@ def test_detect_bsp_family_ti_shape(poky: str, flavour: str, sdk: str, var: str)
 @given(st.text())
 def test_detect_bsp_from_yaml_totality_missing_path(name: str) -> None:
     """A path that does not exist must not raise and falls back to unknown."""
-    assert detect_bsp_from_yaml(Path("/nonexistent-bakar-prop") / (name or "x")) in _YAML_OUTPUTS
+    # Built as a string so a generated name like "/bin/bash" stays under the
+    # missing prefix; joining an absolute name would replace it and read a real file.
+    assert detect_bsp_from_yaml(Path(f"/nonexistent-bakar-prop/{name or 'x'}")) in _YAML_OUTPUTS
 
 
 @pytest.mark.unit
@@ -92,3 +94,11 @@ def test_detect_bsp_from_yaml_ti_machine(tmp_path, machine: str) -> None:
     p = tmp_path / "kas.yml"
     p.write_text(f"machine: {machine}\n", encoding="utf-8")
     assert detect_bsp_from_yaml(p) == "ti"
+
+
+@pytest.mark.unit
+def test_detect_bsp_from_yaml_non_utf8_file_is_unknown(tmp_path: Path) -> None:
+    """A file that is not valid UTF-8 is unparseable, so it classifies as unknown rather than raising."""
+    p = tmp_path / "binary.yml"
+    p.write_bytes(b"machine: qemux86-64\n\xb0\xff\xfe")
+    assert detect_bsp_from_yaml(p) == "unknown"
