@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Added a `mold` recipe that builds the Rust rewrite of mold from upstream `main` (pinned commit), which wins over the C++ 2.42.1 recipe by version. The Rust build uses mimalloc only as Rust's global allocator and leaves libc's `malloc` alone, so it no longer crashes under bitbake's pseudo; the C++ recipe stays in the layer for reference. The tree's rustc 1.94.1 still gates two std APIs the Rust mold uses, so the recipe opts in with `RUSTC_BOOTSTRAP` for this one native tool.
+
 ## [0.35.1] - 2026-09-29
 
 ### Fixed
