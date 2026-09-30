@@ -21,7 +21,7 @@
 | `doctor` | [doctor.md](doctor.md) | Run pre-flight checks (add `--post-build` to also scan a finished build's native tree) |
 | `triage` | [triage.md](triage.md) | Post-mortem a failed build |
 | `report` | [report.md](report.md) | Summarize a completed build run |
-| `insights` | [insights.md](insights.md) | Per-recipe/per-task analytics: sstate, timing, pressure, disk |
+| `insights` | [insights.md](insights.md) | Per-recipe/per-task analytics: sstate, timing, pressure, disk; `--natives` explains native/cross rebuilds |
 | `log` | [log.md](log.md) | Tail a run log live |
 | `monitor` | [monitor.md](monitor.md) | One-view live watch: cluster load, dist stats, task progress |
 | `cluster-info` | [cluster-info.md](cluster-info.md) | Print live sccache-dist scheduler capacity: servers, CPUs, jobs in flight |
@@ -90,6 +90,7 @@
 - Per-layer priority, compat, and provided recipes: [layers.md](layers.md) (`layers inspect`)
 - Project-level MACHINE, DISTRO, thread/mirror config: [layers.md](layers.md) (`layers status`)
 - Why a task missed sstate and rebuilt: [diffsigs.md](diffsigs.md)
+- Why native and cross recipes rebuilt across a whole run: [insights.md](insights.md) (`bakar insights --natives`)
 - A recipe's dependency graph (blast radius, longest chain, cycles): [graph.md](graph.md)
 
 **Reproducibility and snapshots:**
@@ -173,7 +174,7 @@ bakar log       - tail a live build log
 bakar monitor   - one-view live watch: cluster load, dist stats, task progress
 bakar triage    - surface the failing recipe/task from bitbake-events.json (--run/--preset/--release select the run dir)
 bakar report    - summarize a completed run (timing, image size, layers)
-bakar insights  - per-recipe/per-task analytics: sstate, timing, pressure, disk
+bakar insights  - per-recipe/per-task analytics: sstate, timing, pressure, disk (--natives: why natives rebuilt)
 bakar layers    - print layer git hashes without running anything
 bakar cluster-info  - live sccache-dist scheduler capacity: servers, CPUs, jobs in flight
 bakar sched-triage  - post-hoc cluster-utilisation report from the scheduler journal and client error log

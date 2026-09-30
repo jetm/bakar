@@ -93,3 +93,4 @@ including the kas startup lines.
 - [triage.md](triage.md) - surface the failing step and recipe log after a build failure
 - [shell.md](shell.md) - drop into the container to run `bitbake-diffsigs` manually
 - [log.md](log.md) - tail the diffsigs run logs directly
+- [insights.md](insights.md) - `bakar insights --natives` explains all the native/cross recipes of a finished run, where `bakar diffsigs` explains one task
