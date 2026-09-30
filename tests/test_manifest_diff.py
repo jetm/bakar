@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from bakar.manifest_diff import diff_manifests
+from bakar.manifest_diff import _rev_list_count, diff_manifests
 from tests._fakes import Completed as _Completed
 
 if TYPE_CHECKING:
@@ -131,3 +131,22 @@ def test_changed_layer_with_checkout_uses_rev_list(tmp_path: Path) -> None:
 
     assert diffs["sources/poky"].commit_count == 5
     run.assert_called_once()
+
+
+def test_rev_list_count_rejects_non_hex_without_running_git(tmp_path: Path) -> None:
+    victim = tmp_path / "x..abc123"
+    with patch("bakar.gitutil.subprocess.run") as run:
+        assert _rev_list_count(tmp_path, "--output=x", "abc123") is None
+        assert _rev_list_count(tmp_path, "abc123", "--output=x") is None
+    run.assert_not_called()
+    assert not victim.exists()
+
+
+def test_rev_list_count_passes_end_of_options(tmp_path: Path) -> None:
+    def fake_run(cmd: list[str], **_kw: object) -> _Completed:
+        assert cmd[-2] == "--end-of-options"
+        assert cmd[-1] == "abc1234..def5678"
+        return _Completed(0, stdout="3\n")
+
+    with patch("bakar.gitutil.subprocess.run", side_effect=fake_run):
+        assert _rev_list_count(tmp_path, "abc1234", "def5678") == 3

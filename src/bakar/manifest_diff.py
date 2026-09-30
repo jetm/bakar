@@ -11,6 +11,7 @@ failed ``git`` command yields ``commit_count=None`` rather than an error.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -19,6 +20,9 @@ from bakar.workspace import parse_manifest_pins
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+_HEX_SHA = re.compile(r"[0-9a-f]{7,64}", re.IGNORECASE)
 
 
 @dataclass
@@ -35,9 +39,12 @@ def _rev_list_count(checkout: Path, old: str, new: str) -> int | None:
     Best-effort: a missing checkout, a non-git directory, a failed
     ``git`` command, or unparseable output all yield ``None``.
     """
+    if not (_HEX_SHA.fullmatch(old) and _HEX_SHA.fullmatch(new)):
+        return None
     if not checkout.is_dir():
         return None
-    out = run_git(["git", "-C", str(checkout), "rev-list", "--count", f"{old}..{new}"])
+    # --end-of-options: a revision string must never be parsed as a git option.
+    out = run_git(["git", "-C", str(checkout), "rev-list", "--count", "--end-of-options", f"{old}..{new}"])
     if out is None or out.returncode != 0:
         return None
     try:
