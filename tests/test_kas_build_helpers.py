@@ -34,10 +34,12 @@ import yaml
 from bakar import build_stop
 from bakar.bsp_model import get_model
 from bakar.config import BuildConfig
+from bakar.native_ledger import CaptureResult
 from bakar.observability import RunLogger
 from bakar.steps.kas_build import (
     KasBuildContext,
     LockHeldByPeerError,
+    NativeRunSummary,
     _autocalibrate_psi,
     _build_env,
     _build_fail_reason,
@@ -61,6 +63,7 @@ from bakar.steps.kas_build import (
     run_shell_capture,
     run_shell_live,
 )
+from bakar.steps.kas_pty import _PtyOutcome
 from bakar.user_config import load_user_config
 
 pytestmark = pytest.mark.unit
@@ -1892,6 +1895,352 @@ def test_persist_run_artifacts_swallows_any_exception_and_warns(
     with patch("bakar.steps.kas_build.copy_oe_eventlog_to_run_dir", side_effect=RuntimeError("boom")):
         persist_run_artifacts(cfg, log)
     assert "warning: failed to persist run artifacts: boom" in capsys.readouterr().err
+
+
+def _native_artifact(log: RunLogger, *, executed: int = 1, restored: int = 0) -> None:
+    """Write a minimal bitbake-events.json with native executed/restored rows."""
+    tasks = [{"recipe": f"tool{i}-native", "task": "do_compile", "outcome": "succeeded"} for i in range(executed)]
+    tasks += [
+        {"recipe": f"pre{i}-native", "task": "do_populate_sysroot_setscene", "outcome": "succeeded"}
+        for i in range(restored)
+    ]
+    tasks.append({"recipe": "target-pkg", "task": "do_compile", "outcome": "succeeded"})
+    log.bitbake_events_path.write_text(json.dumps({"build": {"outcome": "success"}, "tasks": tasks}))
+
+
+def _native_persist_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, sstate: bool
+) -> tuple[BuildConfig, RunLogger]:
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
+    cfg = _oe_eventlog_cfg(tmp_path)
+    if sstate:
+        cfg = replace(cfg, sstate_dir=str(tmp_path / "sstate"))
+    log = RunLogger(runs_dir=cfg.runs_dir)
+    log.run_dir.mkdir(parents=True, exist_ok=True)
+    return cfg, log
+
+
+def _persist_native(cfg: BuildConfig, log: RunLogger, **capture: object) -> object:
+    with (
+        patch("bakar.steps.kas_build.copy_oe_eventlog_to_run_dir"),
+        patch("bakar.observability.RunLogger.persist_bitbake_events"),
+    ):
+        return persist_run_artifacts(cfg, log)
+
+
+def test_persist_run_artifacts_returns_native_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The summary counts executed and restored native rows and ignores target rows."""
+    cfg, log = _native_persist_setup(tmp_path, monkeypatch, sstate=False)
+    _native_artifact(log, executed=3, restored=2)
+    assert _persist_native(cfg, log) == NativeRunSummary(executed=3, restored=2)
+
+
+def test_persist_run_artifacts_no_artifact_returns_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg, log = _native_persist_setup(tmp_path, monkeypatch, sstate=True)
+    assert _persist_native(cfg, log) is None
+
+
+def test_persist_run_artifacts_skips_capture_without_sstate_but_returns_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, log = _native_persist_setup(tmp_path, monkeypatch, sstate=False)
+    _native_artifact(log)
+    with (
+        patch("bakar.native_ledger.capture_run") as capture,
+        patch("bakar.native_provenance.write_record") as record,
+    ):
+        summary = _persist_native(cfg, log)
+    capture.assert_not_called()
+    record.assert_not_called()
+    assert summary == NativeRunSummary(executed=1, restored=0)
+
+
+def test_persist_run_artifacts_uses_environment_sstate_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """SSTATE_DIR in the environment wins over the config value, as bitbake sees it."""
+    cfg, log = _native_persist_setup(tmp_path, monkeypatch, sstate=True)
+    env_dir = tmp_path / "env-sstate"
+    monkeypatch.setenv("SSTATE_DIR", str(env_dir))
+    _native_artifact(log)
+    with (
+        patch("bakar.native_ledger.capture_run", return_value=CaptureResult(executed=1)) as capture,
+        patch("bakar.native_provenance.write_record") as record,
+    ):
+        _persist_native(cfg, log)
+    assert capture.call_args.kwargs["sstate_dir"] == env_dir
+    assert record.call_args.args[0] == env_dir
+    assert record.call_args.kwargs["run_id"] == log.run_id
+    assert record.call_args.kwargs["outcome"] == "success"
+
+
+def test_persist_run_artifacts_unwritable_ledger_warns_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A non-zero failed count prints exactly one ledger warning and still returns the summary."""
+    cfg, log = _native_persist_setup(tmp_path, monkeypatch, sstate=True)
+    _native_artifact(log)
+    with (
+        patch("bakar.native_ledger.capture_run", return_value=CaptureResult(executed=1, failed=1, missing=2)),
+        patch("bakar.native_provenance.write_record"),
+    ):
+        summary = _persist_native(cfg, log)
+    err = capsys.readouterr().err
+    assert err.count("native signature ledger could not be written") == 1
+    assert "1 failed, 0 invalid, 2 missing" in " ".join(err.split())
+    assert summary == NativeRunSummary(executed=1, restored=0)
+
+
+def test_persist_run_artifacts_missing_alone_does_not_warn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg, log = _native_persist_setup(tmp_path, monkeypatch, sstate=True)
+    _native_artifact(log)
+    with (
+        patch("bakar.native_ledger.capture_run", return_value=CaptureResult(executed=1, missing=1)),
+        patch("bakar.native_provenance.write_record"),
+    ):
+        _persist_native(cfg, log)
+    assert "could not be written" not in capsys.readouterr().err
+
+
+def test_persist_run_artifacts_raising_capture_steps_do_not_propagate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg, log = _native_persist_setup(tmp_path, monkeypatch, sstate=True)
+    _native_artifact(log, executed=2)
+    with (
+        patch("bakar.native_ledger.capture_run", side_effect=RuntimeError("ledger boom")),
+        patch("bakar.native_provenance.write_record", side_effect=RuntimeError("record boom")),
+    ):
+        summary = _persist_native(cfg, log)
+    err = capsys.readouterr().err
+    assert err.count("native signature ledger could not be written: ledger boom") == 1
+    assert err.count("native revision record could not be written: record boom") == 1
+    assert summary == NativeRunSummary(executed=2, restored=0)
+
+
+_RECORD_WARNING = "native revision record could not be written"
+
+
+def _init_workspace_repo(workspace: Path) -> None:
+    """Create one real git repository with a commit under the workspace's layer root."""
+    repo = workspace / "layers" / "meta-x"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=a",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "x",
+        ],
+        check=True,
+    )
+
+
+def _record_warning_count(capsys: pytest.CaptureFixture[str]) -> int:
+    """Count record-write warnings after collapsing Rich's line wrapping."""
+    return " ".join(capsys.readouterr().err.split()).count(_RECORD_WARNING)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_persist_run_artifacts_read_only_sstate_warns_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A repository is readable but the read-only sstate refuses the record: one warning, same summary."""
+    cfg, log = _native_persist_setup(tmp_path, monkeypatch, sstate=True)
+    _init_workspace_repo(tmp_path)
+    sstate = tmp_path / "sstate"
+    sstate.mkdir()
+    sstate.chmod(0o500)
+    _native_artifact(log)
+    try:
+        summary = _persist_native(cfg, log)
+    finally:
+        sstate.chmod(0o700)
+    assert _record_warning_count(capsys) == 1
+    assert summary == NativeRunSummary(executed=1, restored=0)
+
+
+def test_persist_run_artifacts_unwritable_bakar_dir_warns_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``.bakar`` being a regular file blocks the record even for root: one warning naming the directory."""
+    cfg, log = _native_persist_setup(tmp_path, monkeypatch, sstate=True)
+    _init_workspace_repo(tmp_path)
+    sstate = tmp_path / "sstate"
+    sstate.mkdir()
+    (sstate / ".bakar").write_text("not a directory")
+    _native_artifact(log)
+    summary = _persist_native(cfg, log)
+    text = " ".join(capsys.readouterr().err.split())
+    assert text.count(_RECORD_WARNING) == 1
+    assert "cannot write under" in text
+    assert summary == NativeRunSummary(executed=1, restored=0)
+
+
+def test_persist_run_artifacts_no_readable_repository_is_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With no repository there is no revision set to record, so nothing is warned."""
+    cfg, log = _native_persist_setup(tmp_path, monkeypatch, sstate=True)
+    (tmp_path / "sstate").mkdir()
+    _native_artifact(log)
+    summary = _persist_native(cfg, log)
+    assert _record_warning_count(capsys) == 0
+    assert summary == NativeRunSummary(executed=1, restored=0)
+
+
+_HOSTILE = "bad [/] path [on red]x"
+
+
+def _flat_err(capsys: pytest.CaptureFixture[str]) -> str:
+    return " ".join(capsys.readouterr().err.split())
+
+
+@pytest.mark.parametrize(
+    ("target", "warning"),
+    [
+        ("bakar.native_ledger.capture_run", "native signature ledger could not be written"),
+        ("bakar.native_provenance.write_record", "native revision record could not be written"),
+    ],
+)
+def test_persist_run_artifacts_capture_failure_text_is_not_markup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    target: str,
+    warning: str,
+) -> None:
+    """Exception text carrying Rich markup is printed literally and never raises."""
+    cfg, log = _native_persist_setup(tmp_path, monkeypatch, sstate=True)
+    (tmp_path / "sstate").mkdir()
+    _native_artifact(log)
+    with patch(target, side_effect=OSError(_HOSTILE)):
+        summary = _persist_native(cfg, log)
+    text = _flat_err(capsys)
+    assert text.count(warning) == 1
+    assert "bad [/] path [on red]x" in text
+    assert summary == NativeRunSummary(executed=1, restored=0)
+
+
+def test_persist_run_artifacts_persist_failure_text_is_not_markup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg, log = _native_persist_setup(tmp_path, monkeypatch, sstate=True)
+    with patch("bakar.steps.kas_build.copy_oe_eventlog_to_run_dir", side_effect=OSError(_HOSTILE)):
+        assert persist_run_artifacts(cfg, log) is None
+    text = _flat_err(capsys)
+    assert text.count("failed to persist run artifacts") == 1
+    assert "bad [/] path [on red]x" in text
+
+
+def test_persist_run_artifacts_unresolvable_sstate_dir_warns_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """effective_sstate_dir raising (e.g. deleted cwd) costs one warning, not the summary."""
+    cfg, log = _native_persist_setup(tmp_path, monkeypatch, sstate=True)
+    _native_artifact(log)
+    with patch("bakar.native_ledger.effective_sstate_dir", side_effect=OSError(_HOSTILE)):
+        summary = _persist_native(cfg, log)
+    text = _flat_err(capsys)
+    assert text.count("sstate directory unresolved") == 1
+    assert "bad [/] path [on red]x" in text
+    assert summary == NativeRunSummary(executed=1, restored=0)
+
+
+def test_persist_run_artifacts_failed_build_records_failed_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A build that reaches bitbake and fails still publishes a record with outcome failed."""
+    from bakar import native_provenance
+    from bakar.diagnostics import resolve_oe_core_release_key
+
+    cfg, log = _native_persist_setup(tmp_path, monkeypatch, sstate=True)
+    _init_workspace_repo(tmp_path)
+    sstate = tmp_path / "sstate"
+    sstate.mkdir()
+    log.bitbake_events_path.write_text(
+        json.dumps(
+            {
+                "build": {"outcome": "failed"},
+                "tasks": [{"recipe": "t-native", "task": "do_compile", "outcome": "failed"}],
+            }
+        )
+    )
+    _persist_native(cfg, log)
+    records, bad = native_provenance.load_records(sstate, resolve_oe_core_release_key(cfg.workspace))
+    assert not bad
+    assert [r.last_outcome for r in records] == ["failed"]
+
+
+def test_persist_run_artifacts_without_sstate_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg, log = _native_persist_setup(tmp_path, monkeypatch, sstate=False)
+    _init_workspace_repo(tmp_path)
+    _native_artifact(log)
+    summary = _persist_native(cfg, log)
+    assert summary == NativeRunSummary(executed=1, restored=0)
+    assert capsys.readouterr().err == ""
+    assert not (tmp_path / "sstate").exists()
+    assert not list(tmp_path.rglob(".bakar"))
+
+
+def _run_build_with_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, summary: NativeRunSummary | None) -> str:
+    cfg = _make_nxp_cfg(tmp_path)
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.clear_stale_bitbake_locks",
+        lambda _cfg: build_stop.LockClearOutcome(removed=[]),
+    )
+    monkeypatch.setattr("bakar.steps.kas_build.cache_mount_refusal", lambda _cfg, **_kw: None)
+    monkeypatch.setattr("bakar.steps.kas_build.build_stop.check_unclean_stop", lambda *a, **kw: None)
+    monkeypatch.setattr("bakar.steps.kas_build._run_pty_with_ui", lambda *a, **kw: _PtyOutcome(rc=0))
+    monkeypatch.setattr("bakar.steps.kas_build.persist_run_artifacts", lambda *a, **kw: summary)
+    monkeypatch.setattr("bakar.steps.kas_build._capture_dependency_graph", lambda *a, **kw: None)
+
+    @contextlib.contextmanager
+    def _noop_marker(_cfg: object, _log: object):  # type: ignore[no-untyped-def]
+        yield
+
+    monkeypatch.setattr("bakar.steps.kas_build.lock_owner_marker", _noop_marker)
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        ctx = _capture_ctx(cfg, log)
+        rc = run_build(ctx)
+        run_id = log.run_id
+    assert rc == 0
+    return run_id
+
+
+def test_run_build_prints_native_summary_line_last(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_id = _run_build_with_summary(tmp_path, monkeypatch, NativeRunSummary(executed=4, restored=9))
+    # The console wraps at terminal width; compare the unwrapped text.
+    text = " ".join(capsys.readouterr().err.split())
+    expected = (
+        f"native/cross: 4 tasks executed, 9 restored from sstate - bakar insights --natives {run_id} explains why"
+    )
+    assert text.endswith(expected)
+    assert text.count("native/cross:") == 1
+
+
+@pytest.mark.parametrize("summary", [None, NativeRunSummary(executed=0, restored=5)])
+def test_run_build_omits_native_summary_line(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    summary: NativeRunSummary | None,
+) -> None:
+    _run_build_with_summary(tmp_path, monkeypatch, summary)
+    assert "native/cross:" not in capsys.readouterr().err
 
 
 @pytest.mark.unit

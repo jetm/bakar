@@ -36,9 +36,11 @@ rewrite is needed here.
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import sysconfig
@@ -53,7 +55,17 @@ from typing import TYPE_CHECKING, Any
 import yaml
 from rich.markup import escape
 
-from bakar import build_scope, build_stop, hashserv, mounts, prserv, sccache_server, task_timings
+from bakar import (
+    build_scope,
+    build_stop,
+    hashserv,
+    mounts,
+    native_ledger,
+    native_provenance,
+    prserv,
+    sccache_server,
+    task_timings,
+)
 from bakar.config import GENERATED_BUILD_YAML, BuildConfig
 from bakar.diagnostics import (
     BUILDTOOLS_DIR_ENV,
@@ -62,6 +74,7 @@ from bakar.diagnostics import (
     probe_cluster,  # noqa: F401 - re-exported; kas_overlay._derive_parallelism_plan patches it via kas_build.probe_cluster
     resolve_oe_core_release_key,
 )
+from bakar.elfscan import _neutralized
 from bakar.kas import KasGenOptions, write_yaml
 from bakar.observability import RunLogger
 from bakar.output_mode import OutputMode
@@ -945,6 +958,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     rc: int | None = None
     stall_tasks: list[str] | None = None
     outcome: _PtyOutcome | None = None
+    native_summary: NativeRunSummary | None = None
     try:
         try:
             with lock_owner_marker(cfg, log):
@@ -1007,7 +1021,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         # outcomes. Best-effort: a no-op when bitbake wrote no event log.
         # Belt-and-braces alongside the RunLogger-side never-raises fix (task
         # 1.1): a failure here must not crash the CLI after a completed build.
-        persist_run_artifacts(cfg, log, timings_path=timings_path)
+        native_summary = persist_run_artifacts(cfg, log, timings_path=timings_path)
     finally:
         warn = ui.warn_count
         err = ui.error_count
@@ -1042,6 +1056,12 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         log.persist_psi_samples(psi_samples)
         disk_sampler.join(timeout=5)
         log.persist_disk_samples(disk_samples)
+        # Last statement of the finally so the build output ends with it.
+        if native_summary is not None and native_summary.executed >= 1:
+            log.console.print(
+                f"native/cross: {native_summary.executed} tasks executed, {native_summary.restored} restored "
+                f"from sstate - bakar insights --natives {log.run_id} explains why"
+            )
     return rc if rc is not None else -1
 
 
@@ -1625,7 +1645,73 @@ def copy_oe_eventlog_to_run_dir(cfg: BuildConfig, log: RunLogger) -> bool:
     return True
 
 
-def persist_run_artifacts(cfg: BuildConfig, log: RunLogger, *, timings_path: Path | None = None) -> None:
+@dataclass(frozen=True)
+class NativeRunSummary:
+    """Native/cross task counts of one finished run, read from its bitbake-events artifact."""
+
+    executed: int
+    restored: int
+
+
+def _load_events_artifact(log: RunLogger) -> dict[str, Any] | None:
+    """Return the run's normalized bitbake-events artifact, or None when absent or unreadable."""
+    try:
+        artifact = json.loads(log.bitbake_events_path.read_text())
+    except OSError, ValueError:
+        return None
+    return artifact if isinstance(artifact, dict) else None
+
+
+def _capture_native_ledger(cfg: BuildConfig, log: RunLogger, artifact: dict[str, Any], sstate_dir: Path) -> None:
+    """Copy the run's executed native signatures into the ledger; a failure is one console line."""
+    try:
+        result = native_ledger.capture_run(
+            artifact,
+            roots=native_ledger.stamp_roots(cfg.resolved_tmpdir, cfg.bsp_root / cfg.build_dir_name),
+            sstate_dir=sstate_dir,
+            run_dir=log.run_dir,
+        )
+        if result.failed or result.invalid or result.manifest_failed:
+            log.console.print(
+                "[yellow]warning: native signature ledger could not be written: "
+                f"{result.failed} failed, {result.invalid} invalid, {result.missing} missing"
+                f"{', run manifest not written' if result.manifest_failed else ''}[/]"
+            )
+    except Exception as exc:  # noqa: BLE001 - best-effort capture must never fail a completed build
+        log.console.print(f"[yellow]warning: native signature ledger could not be written: {_neutralized(exc)}[/]")
+
+
+def _write_native_record(cfg: BuildConfig, log: RunLogger, artifact: dict[str, Any], sstate_dir: Path) -> None:
+    """Publish the revision-set record for this run; a failure is one console line."""
+    try:
+        build = artifact.get("build")
+        outcome = build.get("outcome") if isinstance(build, dict) else None
+        snapshot = native_provenance.snapshot_repos(cfg.workspace, cfg.bsp_root, probe_timeout=10.0)
+        written = native_provenance.write_record(
+            sstate_dir,
+            resolve_oe_core_release_key(cfg.workspace),
+            snapshot,
+            node=socket.gethostname(),
+            run_id=log.run_id,
+            outcome=str(outcome),
+            now=datetime.now(UTC),
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort capture must never fail a completed build
+        log.console.print(f"[yellow]warning: native revision record could not be written: {_neutralized(exc)}[/]")
+        return
+    # write_record returns None both when no repository is readable (nothing to
+    # record, so nothing to warn about) and when the write failed; only the
+    # second is actionable.
+    if written is None and any(not repo.unreadable for repo in snapshot.repos):
+        log.console.print(
+            "[yellow]warning: native revision record could not be written: "
+            f"cannot write under {_neutralized(sstate_dir)}[/]"
+        )
+
+
+def persist_run_artifacts(
+    cfg: BuildConfig, log: RunLogger, *, timings_path: Path | None = None
+) -> NativeRunSummary | None:
     """Copy and normalize a completed run's artifacts, tolerating any failure.
 
     Wraps ``copy_oe_eventlog_to_run_dir``, ``log.persist_bitbake_events()``, and
@@ -1633,6 +1719,11 @@ def persist_run_artifacts(cfg: BuildConfig, log: RunLogger, *, timings_path: Pat
     in one best-effort block. A completed command must not crash on persist
     failure, so any exception is caught and reported as a warning rather than
     propagated.
+
+    Then, from the persisted artifact, captures the native signature ledger and
+    the revision record (only when an effective sstate directory is set) and
+    returns the native/cross task counts. Returns None only when no artifact
+    was available; the counts do not depend on sstate.
     """
     try:
         copy_oe_eventlog_to_run_dir(cfg, log)
@@ -1640,7 +1731,28 @@ def persist_run_artifacts(cfg: BuildConfig, log: RunLogger, *, timings_path: Pat
         if timings_path is not None:
             log.persist_task_timings(timings_path)
     except Exception as exc:  # noqa: BLE001 - defense-in-depth; a completed command must not crash on persist failure
-        log.console.print(f"[yellow]warning: failed to persist run artifacts: {exc}[/]")
+        log.console.print(f"[yellow]warning: failed to persist run artifacts: {_neutralized(exc)}[/]")
+        return None
+    artifact = _load_events_artifact(log)
+    if artifact is None:
+        return None
+    try:
+        sstate_dir = native_ledger.effective_sstate_dir(cfg.sstate_dir)
+    except Exception as exc:  # noqa: BLE001 - an unresolvable sstate path must not fail a completed build
+        log.console.print(
+            f"[yellow]warning: native capture skipped, sstate directory unresolved: {_neutralized(exc)}[/]"
+        )
+        sstate_dir = None
+    if sstate_dir is not None:
+        _capture_native_ledger(cfg, log, artifact, sstate_dir)
+        _write_native_record(cfg, log, artifact, sstate_dir)
+    try:
+        return NativeRunSummary(
+            executed=len(native_ledger.executed_native_tasks(artifact)),
+            restored=native_ledger.restored_native_count(artifact),
+        )
+    except Exception:  # noqa: BLE001 - a malformed artifact must not fail a completed build
+        return None
 
 
 def _container_eventlog_path(cfg: BuildConfig, log: RunLogger) -> str:
