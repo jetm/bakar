@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.3] - 2026-09-30
+
 ### Changed
 - The bundled `mold` recipe now builds only the Rust rewrite, pinned to upstream commit `a9c709b8a437c1e1627b065b771e32ce331ba363`. The C++ 2.42.1 recipe is gone. That commit needs rustc 1.95.0 or newer (checked: stock 1.95.0 compiles it, stock 1.94.1 fails on two unstable std APIs). Below 1.95.0 the recipe still opts in to them with `RUSTC_BOOTSTRAP` for this one native tool; from 1.95.0 on it builds with the stock compiler, decided from the tree's `RUSTVERSION`.
 
@@ -864,7 +866,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.35.2...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.35.3...HEAD
+[0.35.3]: https://github.com/jetm/bakar/compare/v0.35.2...v0.35.3
 [0.35.2]: https://github.com/jetm/bakar/compare/v0.35.1...v0.35.2
 [0.35.1]: https://github.com/jetm/bakar/compare/v0.35.0...v0.35.1
 [0.35.0]: https://github.com/jetm/bakar/compare/v0.34.0...v0.35.0
