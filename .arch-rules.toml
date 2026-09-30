@@ -85,6 +85,9 @@ paths = [
   # helpers. Reaches nothing in bakar at module level, so it sits with the
   # other leaf helpers rather than in commands.
   "src/bakar/sccache_cluster.py",
+  # Extracted out of commands/diffsigs.py: the "Task dependencies changed"
+  # list-diff parser. Pure text parsing, no bakar imports.
+  "src/bakar/sigdiff_parse.py",
 ]
 
 [[modules]]

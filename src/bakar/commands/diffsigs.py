@@ -8,7 +8,6 @@ reference sigdata files exist.
 
 from __future__ import annotations
 
-import ast
 import re
 import shlex
 from pathlib import Path
@@ -27,6 +26,7 @@ from bakar.commands._helpers import (
 )
 from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.observability import RunLogger
+from bakar.sigdiff_parse import _extract_dep_diff, _recipe_from_task
 from bakar.steps.kas_build import KasBuildContext, run_shell_capture
 
 # ---------------------------------------------------------------------------
@@ -42,28 +42,6 @@ _BASEHASH_RE = re.compile(r"basehash changed from")
 def _strip_kas_preamble(lines: list[str]) -> list[str]:
     """Drop kas-container startup log lines (timestamp + level prefix)."""
     return [line for line in lines if not _KAS_LOG_RE.match(line)]
-
-
-def _extract_dep_diff(lines: list[str]) -> tuple[list[str], list[str]]:
-    """Parse 'Task dependencies changed from: [...] to: [...]' and return (added, removed)."""
-    text = "\n".join(lines)
-    from_match = re.search(r"Task dependencies changed from:\s*(\[.*?\])\s*to:\s*(\[.*?\])", text, re.DOTALL)
-    if not from_match:
-        return [], []
-    try:
-        from_list: list[str] = ast.literal_eval(from_match.group(1))
-        to_list: list[str] = ast.literal_eval(from_match.group(2))
-    except ValueError, SyntaxError:
-        return [], []
-    from_set, to_set = set(from_list), set(to_list)
-    added = sorted(to_set - from_set)
-    removed = sorted(from_set - to_set)
-    return added, removed
-
-
-def _recipe_from_task(task: str) -> str:
-    """Return the recipe portion of a 'recipe:do_task' string."""
-    return task.split(":")[0] if ":" in task else task
 
 
 def _render_diffsigs(text: str) -> None:
