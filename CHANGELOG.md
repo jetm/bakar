@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.1] - 2026-10-01
+
 ### Fixed
 - Fixed the bundled `mold-native` recipe failing `do_populate_lic` on scarthgap with `LIC_FILES_CHKSUM points to an invalid file: .../mold-2.42.1+git/LICENSE`. Scarthgap's git fetcher unpacks to `git/` by default while the recipe's `S` is `${WORKDIR}/${BP}`, so `LICENSE` was never at the checksummed path; wrynose's `BB_GIT_DEFAULT_DESTSUFFIX = "${BP}"` hid it. The mold checkout now sets `subdir=${BP}` and lands in `S` on both releases. The failure only showed on a cold workspace, because a mold-native already in sstate never reruns the task. With that fixed, `do_compile` then failed on scarthgap's rustc 1.92.0 with `E0658 ... debug_closure_helpers` (`fmt::from_fn` is stable only from 1.94.0), so the recipe's `RUSTC_BOOTSTRAP` feature list now adds `debug_closure_helpers` below 1.94.0 and leaves the 1.94.1 and 1.95+ command lines unchanged.
 
@@ -879,7 +881,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.36.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.36.1...HEAD
+[0.36.1]: https://github.com/jetm/bakar/compare/v0.36.0...v0.36.1
 [0.36.0]: https://github.com/jetm/bakar/compare/v0.35.3...v0.36.0
 [0.35.3]: https://github.com/jetm/bakar/compare/v0.35.2...v0.35.3
 [0.35.2]: https://github.com/jetm/bakar/compare/v0.35.1...v0.35.2
