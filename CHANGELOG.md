@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-09-30
+
 ### Added
 - Added a `native-rebuild-forecast` doctor check that compares the workspace's bitbake, oe-core and poky revisions and its layer revisions with the revision sets recorded by earlier builds. It warns before a build when a core repository moved or a checkout is dirty, and only informs when ordinary layers moved. It never blocks a build and does not forecast configuration changes.
 - After every `bakar build` and `bakar bitbake` run, bakar now records the workspace's revision set and copies the signature files of the native and cross tasks that executed under `<sstate_dir>/.bakar/`, so a rebuild stays explainable after the build directory is gone. Both records expire with `bakar clean-cache`'s age sweep and never change a build's exit code.
@@ -874,7 +876,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.35.3...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.36.0...HEAD
+[0.36.0]: https://github.com/jetm/bakar/compare/v0.35.3...v0.36.0
 [0.35.3]: https://github.com/jetm/bakar/compare/v0.35.2...v0.35.3
 [0.35.2]: https://github.com/jetm/bakar/compare/v0.35.1...v0.35.2
 [0.35.1]: https://github.com/jetm/bakar/compare/v0.35.0...v0.35.1
