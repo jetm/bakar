@@ -22,8 +22,19 @@ LIC_FILES_CHKSUM = "file://LICENSE;md5=3fb62e3fb2aa1c0f7d16e43be0107e99"
 # [patch] path entry; libmimalloc-sys resolves through mimalloc's own
 # relative path once Cargo.lock's git sources are stripped. gitsm pulls the
 # microsoft/mimalloc submodules libmimalloc-sys compiles.
+#
+# The mold entry sets subdir=${BP} so the checkout lands exactly where S
+# points on every release. S is ${WORKDIR}/${BP} on scarthgap and
+# ${UNPACKDIR}/${BP} on wrynose, but only wrynose's bitbake.conf also sets
+# BB_GIT_DEFAULT_DESTSUFFIX = "${BP}"; scarthgap's git fetcher still defaults
+# to git/, which leaves S empty and fails do_populate_lic on LIC_FILES_CHKSUM.
+# A bare S = "${WORKDIR}/git" is not an alternative: it is a fatal QA error on
+# wrynose, where S lives under UNPACKDIR. destsuffix=${BP} is not either: with
+# name= set, cargo_common_do_patch_paths would also write a [patch] entry that
+# points the mold repo at its own checkout. subdir places the checkout the same
+# way and leaves that function's name+destsuffix condition untouched.
 SRC_URI = "\
-    gitsm://github.com/rui314/mold.git;protocol=https;nobranch=1;name=mold \
+    gitsm://github.com/rui314/mold.git;protocol=https;nobranch=1;name=mold;subdir=${BP} \
     gitsm://github.com/rui314/mimalloc_rust.git;protocol=https;nobranch=1;name=mimalloc;destsuffix=mimalloc_rust \
 "
 SRCREV_mold = "a9c709b8a437c1e1627b065b771e32ce331ba363"
@@ -42,13 +53,19 @@ require mold-crates.inc
 # selects its toolchain through RUSTVERSION (a "1.94.1%" style wildcard), so
 # below 1.95.0 this one native tool opts in to the two features from the
 # command line with RUSTC_BOOTSTRAP instead of patching mold's sources; from
-# 1.95.0 on neither is set and the stock compiler builds it.
+# 1.95.0 on neither is set and the stock compiler builds it. Below 1.94.0
+# (scarthgap's rust is 1.92.0) fmt::from_fn is still unstable too, so a third
+# feature, debug_closure_helpers, is added there.
 python () {
     rustversion = (d.getVar("RUSTVERSION") or "").rstrip("%")
     if rustversion and bb.utils.vercmp_string(rustversion, "1.95.0") < 0:
+        features = ["cold_path", "atomic_try_update"]
+        # fmt::from_fn is stable from 1.94.0; scarthgap's 1.92.0 still gates it.
+        if bb.utils.vercmp_string(rustversion, "1.94.0") < 0:
+            features.append("debug_closure_helpers")
         d.setVar("RUSTC_BOOTSTRAP", "1")
         d.setVarFlag("RUSTC_BOOTSTRAP", "export", "1")
-        d.appendVar("RUSTFLAGS", " -Zcrate-attr=feature(cold_path,atomic_try_update)")
+        d.appendVar("RUSTFLAGS", " -Zcrate-attr=feature(%s)" % ",".join(features))
 }
 
 # mold.bbclass discovers its -B wrapper directory from an ld.mold symlink next
