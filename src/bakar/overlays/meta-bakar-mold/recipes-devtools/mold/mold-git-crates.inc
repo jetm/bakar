@@ -28,7 +28,6 @@ SRC_URI += " \
     crate://crates.io/memchr/2.8.3 \
     crate://crates.io/memmap2/0.9.11 \
     crate://crates.io/pkg-config/0.3.34 \
-    crate://crates.io/portable-atomic/1.15.0 \
     crate://crates.io/proc-macro2/1.0.107 \
     crate://crates.io/quote/1.0.47 \
     crate://crates.io/r-efi/6.0.0 \
@@ -41,7 +40,6 @@ SRC_URI += " \
     crate://crates.io/shlex/2.0.1 \
     crate://crates.io/syn/3.0.4 \
     crate://crates.io/unicode-ident/1.0.24 \
-    crate://crates.io/uuid/1.27.0 \
     crate://crates.io/vcpkg/0.2.15 \
     crate://crates.io/xxhash-rust/0.8.18 \
     crate://crates.io/zstd/0.13.3 \
@@ -75,7 +73,6 @@ SRC_URI[libz-sys-1.1.29.sha256sum] = "85bc9657773828b90eeb625adff10eeac83cc21bbf
 SRC_URI[memchr-2.8.3.sha256sum] = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 SRC_URI[memmap2-0.9.11.sha256sum] = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
 SRC_URI[pkg-config-0.3.34.sha256sum] = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
-SRC_URI[portable-atomic-1.15.0.sha256sum] = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 SRC_URI[proc-macro2-1.0.107.sha256sum] = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 SRC_URI[quote-1.0.47.sha256sum] = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
 SRC_URI[r-efi-6.0.0.sha256sum] = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
@@ -88,7 +85,6 @@ SRC_URI[serde_derive-1.0.229.sha256sum] = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc
 SRC_URI[shlex-2.0.1.sha256sum] = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 SRC_URI[syn-3.0.4.sha256sum] = "e6275cddf4610d1775e6d1fe9469b2e77d0f39fd98fb7450901b821e0c53649f"
 SRC_URI[unicode-ident-1.0.24.sha256sum] = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
-SRC_URI[uuid-1.27.0.sha256sum] = "97277d36b9c3ace13e58fa6e753f8b0bbbf302a18dd193240d70f9e29681059a"
 SRC_URI[vcpkg-0.2.15.sha256sum] = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 SRC_URI[xxhash-rust-0.8.18.sha256sum] = "aee1b19627c7c60102ab80d3a9cbe18de90bfe03bfa6c3715447681f0e8c8af6"
 SRC_URI[zstd-0.13.3.sha256sum] = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"

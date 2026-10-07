@@ -4,6 +4,17 @@ DESCRIPTION = "mold is a faster drop-in replacement for existing Unix linkers. \
 This recipe builds the Rust rewrite from upstream main, which uses mimalloc \
 only as Rust's global allocator and does not override libc's malloc."
 
+# REFERENCE RECIPE, not selected by default. mold_3.0.0.bb is the recipe in use;
+# this one is kept for building an unreleased upstream commit when a fix is
+# needed before the next release. DEFAULT_PREFERENCE is negative so that
+# bumping this recipe's PV past the released version can never make it win
+# silently; opt in with PREFERRED_VERSION_mold-native = "2.42.1+git%" (use the
+# PV below). Its crate list is mold-git-crates.inc, frozen on purpose: do not
+# run `bitbake -c update_crates` on this recipe, because that task writes
+# ${BPN}-crates.inc, which is the file mold_3.0.0.bb uses. Regenerate
+# mold-git-crates.inc by hand from the Cargo.lock at the new SRCREV.
+DEFAULT_PREFERENCE = "-1"
+
 # The Rust rewrite carries no bundled C++ third-party trees, so the license
 # file at the top of the checkout is the only one to checksum. The crate
 # dependencies are permissively licensed (MIT / Apache-2.0 / BSD / CC0); this
@@ -45,7 +56,7 @@ PV = "2.42.1+git"
 
 inherit cargo cargo-update-recipe-crates
 
-require mold-crates.inc
+require mold-git-crates.inc
 
 # mold at this commit needs rustc >= 1.95.0: it uses hint::cold_path and the
 # atomic update method, both stable from 1.95.0. Built outside Yocto, the stock

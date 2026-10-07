@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The bundled `mold-native` recipe now builds the released mold 3.0.0, pinned to the commit the `v3.0.0` tag points at (`8de38c35a2df16a25f7ff87ac3ad07156a925beb`), in a new `mold_3.0.0.bb`. It is selected by default on both scarthgap and wrynose. The previous `mold_git.bb`, which tracked an unreleased upstream commit, stays beside it as a reference for building an unreleased commit and is never selected by default (`DEFAULT_PREFERENCE = "-1"`); its crate list moved to `mold-git-crates.inc`, so `bitbake -c update_crates` now maintains the 3.0.0 list in `mold-crates.inc` only. mold 3.0.0 requires rustc 1.95, which neither release's toolchain provides (scarthgap has 1.92.0, wrynose 1.94.1), so below 1.95.0 the recipe passes `--ignore-rust-version` and opts in to the not-yet-stable `cold_path` feature, plus `debug_closure_helpers` below 1.94.0, through `RUSTC_BOOTSTRAP` for this one native tool.
+
 ## [0.36.1] - 2026-10-01
 
 ### Fixed
