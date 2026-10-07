@@ -73,6 +73,15 @@ MOLD_WRAPPER_SRC ?= "${MOLD_CLASSDIR}/../files/ld-timing-wrapper.sh"
 MOLD_LDFLAGS ?= "-fuse-ld=mold -B${MOLD_WRAPPER_DIR} -Wl,--build-id=sha256"
 TARGET_LDFLAGS:append = " ${MOLD_LDFLAGS}"
 
+# Linker flags that recipes pass for GNU ld and mold does not implement. mold
+# warns on an unknown option ("unknown command line option"), and meson's
+# link probes add -Wl,--fatal-warnings, so the warning turns into an error that
+# fails every probe (systemd's "Linker does not support -static-pie"). oe-core's
+# systemd recipe appends the first entry on aarch64 when openssl is enabled.
+# Stripped from LDFLAGS in the mold arm only; dropping GCS reporting changes no
+# code generation, the flag only silences a GNU ld diagnostic.
+MOLD_UNSUPPORTED_LDFLAGS ?= "-Wl,-z,gcs-report-dynamic=none"
+
 python () {
     # Never scope the flag or the mold-provider dependency onto native/cross/
     # crosssdk/nativesdk/allarch recipes: their CC is the build/host compiler
@@ -149,6 +158,12 @@ python () {
     d.setVar('MOLD_WRAP_ARM', arm)
     if arm == 'mold':
         d.appendVar('DEPENDS', ' mold-native')
+        unsupported = (d.getVar('MOLD_UNSUPPORTED_LDFLAGS') or '').strip()
+        if unsupported:
+            # setVar, not appendVar: appendVar on a ":remove" name is a silent
+            # no-op in the datastore. Each setVar adds one entry, so a recipe's
+            # own LDFLAGS:remove is kept.
+            d.setVar('LDFLAGS:remove', unsupported)
 
     # Export COMPILER_PATH so gcc still finds the wrapper when libtool strips the
     # -B<wrapper> flag from its generated link line. libtool filters command-line
