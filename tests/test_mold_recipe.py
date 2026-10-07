@@ -26,7 +26,7 @@ _RELEASE = _MOLD_DIR / "mold_3.0.0.bb"
 
 
 def _src_uri_entries(recipe: Path = _RECIPE) -> dict[str, dict[str, str]]:
-    """Return ``{name: {param: value}}`` for each SRC_URI entry carrying ``name=``."""
+    """Return ``{name: {param: value}}`` per SRC_URI entry; an unnamed one is keyed by its repo basename."""
     text = recipe.read_text()
     block = re.search(r'^SRC_URI = "\\\n(.*?)^"', text, re.DOTALL | re.MULTILINE)
     assert block, f"SRC_URI block not found in {recipe.name}"
@@ -34,8 +34,9 @@ def _src_uri_entries(recipe: Path = _RECIPE) -> dict[str, dict[str, str]]:
     for line in block.group(1).splitlines():
         parts = line.strip().rstrip("\\").strip().split(";")
         params = dict(p.split("=", 1) for p in parts[1:] if "=" in p)
-        if "name" in params:
-            entries[params["name"]] = params
+        key = params.get("name") or parts[0].rsplit("/", 1)[-1].removesuffix(".git")
+        if parts[0]:
+            entries[key] = params
     return entries
 
 
@@ -96,7 +97,7 @@ def test_release_source_is_pinned_git_not_a_github_archive() -> None:
     assert src_uri, "SRC_URI block not found in mold_3.0.0.bb"
     assert "/archive/" not in src_uri.group(1)
     assert "codeload.github.com" not in src_uri.group(1)
-    assert re.search(r'^SRCREV_mold = "[0-9a-f]{40}"$', text, re.MULTILINE)
+    assert re.search(r'^SRCREV = "[0-9a-f]{40}"$', text, re.MULTILINE)
     assert re.search(r'^SRCREV_mimalloc = "[0-9a-f]{40}"$', text, re.MULTILINE)
 
 
@@ -114,12 +115,15 @@ def test_release_recipe_does_not_assign_s() -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("recipe", "crates"),
-    [(_RELEASE, "mold-crates.inc"), (_RECIPE, "mold-git-crates.inc")],
+    ("recipe", "required", "crates"),
+    [
+        (_RELEASE, "${BPN}-crates.inc", "mold-crates.inc"),
+        (_RECIPE, "mold-git-crates.inc", "mold-git-crates.inc"),
+    ],
 )
-def test_each_recipe_requires_its_own_crate_list(recipe: Path, crates: str) -> None:
+def test_each_recipe_requires_its_own_crate_list(recipe: Path, required: str, crates: str) -> None:
     """update_crates writes ${BPN}-crates.inc, so only the release recipe may use that name."""
-    assert re.search(rf"^require {re.escape(crates)}$", recipe.read_text(), re.MULTILINE)
+    assert re.search(rf"^require {re.escape(required)}$", recipe.read_text(), re.MULTILINE)
     assert (_MOLD_DIR / crates).is_file()
 
 

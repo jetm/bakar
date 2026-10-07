@@ -1,51 +1,44 @@
 SUMMARY = "mold: a modern, high-speed drop-in replacement for ld.bfd/gold/lld"
+DESCRIPTION = "mold is a faster drop-in replacement for the existing Unix \
+               linkers. Version 3 is a rewrite in Rust of the original C++ \
+               implementation and supports ELF targets."
 HOMEPAGE = "https://github.com/rui314/mold"
-DESCRIPTION = "mold 3.0 is the Rust rewrite of mold and a drop-in replacement \
-for 2.42.1. It uses mimalloc only as Rust's global allocator and does not \
-override libc's malloc."
+BUGTRACKER = "https://github.com/rui314/mold/issues"
+SECTION = "devel"
 
+# This recipe tracks the one proposed to meta-openembedded
+# (meta-oe/recipes-devtools/mold). It differs only where scarthgap and wrynose
+# need it: ;subdir=${BP} on the mold checkout, nobranch=1 in place of
+# branch=main;tag=v${PV} (scarthgap's bitbake rejects a tag next to SRCREV), and
+# the python block below that gates rust older than 1.95. SRCREV is the commit
+# the v${PV} tag points at.
+#
 # mold_git.bb is kept beside this recipe as a reference for building an
 # unreleased upstream commit. This released recipe is the default: it has the
 # higher version, and mold_git.bb sets a negative DEFAULT_PREFERENCE.
-#
-# The checkout carries no bundled third-party trees, so the license file at the
-# top of the source is the only one to checksum. The crate dependencies are
-# permissively licensed (MIT / Apache-2.0 / BSD / CC0); this is a build-host
-# tool that never reaches an image, so they are not enumerated.
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://LICENSE;md5=3fb62e3fb2aa1c0f7d16e43be0107e99"
 
-# mold is fetched from git, pinned by SRCREV_mold to the commit the v${PV} tag
-# points at. The GitHub archive tarball is not an option: oe-core's src-uri-bad
-# check rejects "unstable" github.com/.../archive/ URLs, and it is a warning on
-# scarthgap but an error on wrynose.
-#
+DEPENDS = "zstd"
+DEPENDS:append:class-target = " libstd-rs"
+
 # The git fetcher unpacks to git/ by default on scarthgap while S is
 # ${WORKDIR}/${BP}, so the mold entry sets subdir=${BP} to land where S points
 # on every release (wrynose's bitbake.conf defaults the destination to ${BP}
 # itself). destsuffix=${BP} would place it identically, but with name= set it
 # also makes cargo_common_do_patch_paths write a [patch] entry pointing the mold
-# repo at its own checkout; subdir avoids that. There is no .gitmodules in mold
-# itself, so plain git is enough for this entry.
-#
-# mold's cli crate takes mimalloc from a git dependency
-# (rui314/mimalloc_rust, pinned by rev in cli/Cargo.toml), so it is fetched here
-# rather than from crates.io. cargo_common_do_patch_paths turns the
-# name/destsuffix pair into a [patch] path entry; libmimalloc-sys resolves
-# through mimalloc's own relative path once Cargo.lock's git sources are
-# stripped. gitsm pulls the microsoft/mimalloc submodules libmimalloc-sys
-# compiles. SRCREV_mimalloc must equal the rev in cli/Cargo.toml and Cargo.lock.
+# repo at its own checkout; this entry stays unnamed and uses subdir instead.
 SRC_URI = "\
-    git://github.com/rui314/mold.git;protocol=https;nobranch=1;name=mold;subdir=${BP} \
-    gitsm://github.com/rui314/mimalloc_rust.git;protocol=https;nobranch=1;name=mimalloc;destsuffix=mimalloc_rust \
+    git://github.com/rui314/mold.git;protocol=https;nobranch=1;subdir=${BP} \
+    gitsm://github.com/rui314/mimalloc_rust.git;protocol=https;nobranch=1;name=mimalloc;destsuffix=mimalloc_rust;type=git-dependency \
 "
-SRCREV_mold = "8de38c35a2df16a25f7ff87ac3ad07156a925beb"
+SRCREV = "8de38c35a2df16a25f7ff87ac3ad07156a925beb"
 SRCREV_mimalloc = "3979460494f1cd1e7f936cb8e10f41e927c9f698"
-SRCREV_FORMAT = "mold_mimalloc"
+SRCREV_FORMAT = "default_mimalloc"
 
-inherit cargo cargo-update-recipe-crates
+inherit cargo cargo-update-recipe-crates pkgconfig
 
-require mold-crates.inc
+require ${BPN}-crates.inc
 
 # mold 3.0.0 declares rust-version 1.95 in Cargo.toml. Older toolchains are
 # handled here for this one native tool, without patching mold's sources: below
@@ -66,10 +59,24 @@ python () {
         d.appendVar("RUSTFLAGS", " -Zcrate-attr=feature(%s)" % ",".join(features))
 }
 
-# mold.bbclass discovers its -B wrapper directory from an ld.mold symlink next
-# to the mold binary.
+# mold finds mold-wrapper.so (used by "mold -run") in $MOLD_LIBDIR/mold,
+# a path baked in at build time.
+export MOLD_LIBDIR = "${libdir}"
+
+# cargo.bbclass does not install shared objects, so the wrapper, the man page
+# and the ld aliases that upstream's install-mold.sh would create are
+# installed here.
 do_install:append () {
+    install -d ${D}${libdir}/mold
+    install -m 0755 ${B}/target/${CARGO_TARGET_SUBDIR}/mold-wrapper.so ${D}${libdir}/mold/
+
+    install -d ${D}${mandir}/man1
+    install -m 0644 ${S}/docs/mold.1 ${D}${mandir}/man1/
+    ln -sf mold.1 ${D}${mandir}/man1/ld.mold.1
+
     ln -sf mold ${D}${bindir}/ld.mold
+    install -d ${D}${libexecdir}/mold
+    ln -sf ${@os.path.relpath(d.getVar('bindir'), d.getVar('libexecdir') + '/mold')}/mold ${D}${libexecdir}/mold/ld
 }
 
 BBCLASSEXTEND = "native"
