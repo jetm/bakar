@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.2] - 2026-10-07
+
 ### Changed
 - The bundled `mold-native` recipe now builds the released mold 3.0.0, pinned to the commit the `v3.0.0` tag points at (`8de38c35a2df16a25f7ff87ac3ad07156a925beb`), in a new `mold_3.0.0.bb`. It is selected by default on both scarthgap and wrynose. The previous `mold_git.bb`, which tracked an unreleased upstream commit, stays beside it as a reference for building an unreleased commit and is never selected by default (`DEFAULT_PREFERENCE = "-1"`); its crate list moved to `mold-git-crates.inc`, so `bitbake -c update_crates` now maintains the 3.0.0 list in `mold-crates.inc` only. mold 3.0.0 requires rustc 1.95, which neither release's toolchain provides (scarthgap has 1.92.0, wrynose 1.94.1), so below 1.95.0 the recipe passes `--ignore-rust-version` and opts in to the not-yet-stable `cold_path` feature, plus `debug_closure_helpers` below 1.94.0, through `RUSTC_BOOTSTRAP` for this one native tool.
 - The `mold-native` recipe now installs what mold's own `install-mold.sh` installs: `mold-wrapper.so` (so `mold -run` works), the man pages and the `libexec/mold/ld` link. It also depends on `zstd` and inherits `pkgconfig`, which newer OE-Core needs because its cargo class makes `zstd-sys` link the system library. The recipe now follows the one proposed to meta-openembedded, differing only for scarthgap and wrynose.
@@ -888,7 +890,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.36.1...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.36.2...HEAD
+[0.36.2]: https://github.com/jetm/bakar/compare/v0.36.1...v0.36.2
 [0.36.1]: https://github.com/jetm/bakar/compare/v0.36.0...v0.36.1
 [0.36.0]: https://github.com/jetm/bakar/compare/v0.35.3...v0.36.0
 [0.35.3]: https://github.com/jetm/bakar/compare/v0.35.2...v0.35.3
