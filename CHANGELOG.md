@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.3] - 2026-10-07
+
 ### Added
 - aarch64 image builds that link with mold now report the BTI/PAC hardening mold drops. mold does not carry over the `.note.gnu.property` that GNU ld writes (rui314/mold#1725), so a program built with `-mbranch-protection` and linked by mold runs unprotected, with no build error. `mold.bbclass` scans the finished rootfs and warns with the number of affected binaries, a few example paths and a full list in `${WORKDIR}/mold-aarch64-marking.txt`. A per-recipe QA check would stay silent for every recipe restored from sstate, so the scan runs once per image. mold also drops `.ARM.attributes`, so the check recognises a lost marking by a `bti c` or `paciasp` instruction in code that has no matching property bit. It cannot tell which linker made a file, because packaging strips `.comment`. Set `MOLD_MARKING_CHECK = "error"` to fail the image build, or `"off"` to skip the scan. x86-64 and other architectures are unaffected. The first aarch64 build after upgrading reruns `do_rootfs` for images.
 
@@ -893,7 +895,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.36.2...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.36.3...HEAD
+[0.36.3]: https://github.com/jetm/bakar/compare/v0.36.2...v0.36.3
 [0.36.2]: https://github.com/jetm/bakar/compare/v0.36.1...v0.36.2
 [0.36.1]: https://github.com/jetm/bakar/compare/v0.36.0...v0.36.1
 [0.36.0]: https://github.com/jetm/bakar/compare/v0.35.3...v0.36.0
