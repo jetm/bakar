@@ -80,6 +80,13 @@ TARGET_LDFLAGS:append = " ${MOLD_LDFLAGS}"
 # systemd recipe appends the first entry on aarch64 when openssl is enabled.
 # Stripped from LDFLAGS in the mold arm only; dropping GCS reporting changes no
 # code generation, the flag only silences a GNU ld diagnostic.
+# devtool-debt: strips -Wl,-z,gcs-report-dynamic=none because mold does not
+# implement the GCS options. Ceiling: one known flag, from oe-core's systemd
+# recipe; any other GNU-ld-only flag a recipe passes still fails under meson's
+# --fatal-warnings and has to be added here by hand. Upgrade trigger: a mold
+# release that accepts -z gcs-report-dynamic, which its author plans to restore
+# together with the BTI/PAC/GCS support he reverted before 3.0.0
+# (rui314/mold#1725); then drop the entry, and the variable once it is empty.
 MOLD_UNSUPPORTED_LDFLAGS ?= "-Wl,-z,gcs-report-dynamic=none"
 
 python () {
@@ -200,18 +207,29 @@ python () {
     d.appendVarFlag('do_prepare_recipe_sysroot', 'file-checksums', ' ${MOLD_WRAPPER_SRC}:True')
 }
 
-# AArch64 hardening marking. mold drops the .note.gnu.property that GNU ld writes
-# for BTI/PAC (rui314/mold#1725), so a program built with -mbranch-protection and
-# linked by mold runs unprotected, with no build error. mold also drops
-# .ARM.attributes, so the output keeps no record of the original marking; the
-# check reads the code instead (a hardened function starts with bti c or
-# paciasp) and reports files that use those instructions but carry no matching
-# bit. It does not look at which linker made a file: packaging strips .comment, so
-# a finished rootfs no longer says. It runs once per aarch64 image, over the
-# finished rootfs, and not
-# per recipe: do_package_qa is itself an sstate task, so a per-recipe warning is
-# silent for every recipe restored from cache, while do_rootfs sees the files that
-# actually ship.
+# AArch64 hardening marking. mold 3.0.0 drops the .note.gnu.property that GNU ld
+# writes for BTI/PAC, so a program built with -mbranch-protection and linked by
+# mold runs unprotected, with no build error. mold's author had implemented the
+# property merge, BTI PLTs and thunk landing pads and the -z bti/pac/gcs options,
+# then reverted them before the 3.0.0 release (rui314/mold commit 6c0d688966)
+# because GCC 16 records -mbranch-protection in build attributes that mold does
+# not read; he plans to restore them with build attribute support
+# (rui314/mold#1725). mold also drops .ARM.attributes, so the output keeps no
+# record of the original marking; the check reads the code instead (a hardened
+# function starts with bti c or paciasp) and reports files that use those
+# instructions but carry no matching bit. It does not look at which linker made a
+# file: packaging strips .comment, so a finished rootfs no longer says. It runs
+# once per aarch64 image, over the finished rootfs, and not per recipe:
+# do_package_qa is itself an sstate task, so a per-recipe warning is silent for
+# every recipe restored from cache, while do_rootfs sees the files that actually
+# ship.
+# devtool-debt: detects the loss, does not repair it. Ceiling: it recognises only
+# bti c and paciasp, the instructions GCC emits for -mbranch-protection=standard,
+# and a warning is all it does. Do not re-add the note by post-processing: mold's
+# PLTs and thunks lack BTI landing pads, so a marked binary could fault on
+# enforcing hardware. Upgrade trigger: a mold release that restores the property
+# merge and reads build attributes (rui314/mold#1725); the scan then reports
+# nothing and can be removed with lib/bakar_mold and MOLD_MARKING_CHECK.
 #   warn  - report the loss as a build warning (default)
 #   error - fail the image build
 #   off   - skip the scan

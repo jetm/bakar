@@ -61,3 +61,36 @@ def test_marking_check_finds_its_helper_next_to_the_classes_directory() -> None:
     assert "addpylib" not in text
     assert (_CLASS.parent.parent / "lib/bakar_mold/__init__.py").is_file()
     assert (_CLASS.parent.parent / "lib/bakar_mold/aarch64_marking.py").is_file()
+
+
+def _debt_markers(text: str) -> list[str]:
+    """Return each ``devtool-debt:`` comment block in the class, joined into one string."""
+    blocks: list[str] = []
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith("# devtool-debt:"):
+            continue
+        block = [line.removeprefix("# ")]
+        for follow in lines[index + 1 :]:
+            if not follow.startswith("# "):
+                break
+            block.append(follow.removeprefix("# "))
+        blocks.append(" ".join(block))
+    return blocks
+
+
+@pytest.mark.unit
+def test_debt_markers_name_a_ceiling_and_an_upgrade_trigger() -> None:
+    """A marker without a trigger never gets replaced, and one without a ceiling cannot be judged."""
+    markers = _debt_markers(_CLASS.read_text())
+    assert len(markers) == 2, "expected one marker for the flag strip and one for the marking check"
+    for marker in markers:
+        assert "Ceiling:" in marker, marker[:60]
+        assert "Upgrade trigger:" in marker, marker[:60]
+        assert "rui314/mold#1725" in marker, marker[:60]
+
+
+@pytest.mark.unit
+def test_marking_comment_points_at_the_commit_that_reverted_the_support() -> None:
+    """The next reader should find why mold lacks the marking without redoing the research."""
+    assert "6c0d688966" in _CLASS.read_text()
