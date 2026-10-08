@@ -200,6 +200,61 @@ python () {
     d.appendVarFlag('do_prepare_recipe_sysroot', 'file-checksums', ' ${MOLD_WRAPPER_SRC}:True')
 }
 
+# AArch64 hardening marking. mold drops the .note.gnu.property that GNU ld writes
+# for BTI/PAC (rui314/mold#1725), so a program built with -mbranch-protection and
+# linked by mold runs unprotected, with no build error. mold also drops
+# .ARM.attributes, so the output keeps no record of the original marking; the
+# check reads the code instead (a hardened function starts with bti c or
+# paciasp) and reports files that use those instructions but carry no matching
+# bit. It does not look at which linker made a file: packaging strips .comment, so
+# a finished rootfs no longer says. It runs once per aarch64 image, over the
+# finished rootfs, and not
+# per recipe: do_package_qa is itself an sstate task, so a per-recipe warning is
+# silent for every recipe restored from cache, while do_rootfs sees the files that
+# actually ship.
+#   warn  - report the loss as a build warning (default)
+#   error - fail the image build
+#   off   - skip the scan
+MOLD_MARKING_CHECK ??= "warn"
+MOLD_MARKING_REPORT ??= "${WORKDIR}/mold-aarch64-marking.txt"
+
+python () {
+    if not bb.data.inherits_class('image', d):
+        return
+    if d.getVar('TARGET_ARCH') != 'aarch64':
+        return
+    if (d.getVar('MOLD_MARKING_CHECK') or 'warn').strip() == 'off':
+        return
+    d.appendVar('ROOTFS_POSTPROCESS_COMMAND', ' mold_report_marking;')
+}
+
+python mold_report_marking () {
+    import os
+    import sys
+
+    libdir = os.path.join(d.getVar('MOLD_CLASSDIR') or '', '..', 'lib')
+    if not os.path.isdir(libdir):
+        bb.note("mold: marking check skipped, %s not found" % libdir)
+        return
+    if libdir not in sys.path:
+        sys.path.insert(0, libdir)
+    from bakar_mold import aarch64_marking
+
+    report = aarch64_marking.scan_tree(d.getVar('IMAGE_ROOTFS'))
+    summary = aarch64_marking.summarize(report)
+    if summary is None:
+        bb.note("mold: checked %d AArch64 binaries, none use BTI/PAC code without its marking"
+                % report.scanned)
+        return
+    path = d.getVar('MOLD_MARKING_REPORT')
+    with open(path, 'w') as fh:
+        fh.write('\n'.join('/' + p for p in report.lost) + '\n')
+    summary += " Full list: %s. Set MOLD_MARKING_CHECK to error or off, or add recipes to MOLD_EXCLUDED_PN." % path
+    if (d.getVar('MOLD_MARKING_CHECK') or 'warn').strip() == 'error':
+        bb.fatal(summary)
+    bb.warn(summary)
+}
+
 # Stage the arm-appropriate timing wrapper into the -B wrapper dir under
 # RECIPE_SYSROOT_NATIVE (D2), never the target sysroot. Runs as a
 # do_prepare_recipe_sysroot postfunc so it lands after the real linkers (the
