@@ -6,7 +6,7 @@ fail_fast: false
 repos:
   # Ruff - Python linting & formatting
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.6
+    rev: v0.17.0
     hooks:
       - id: ruff-format
       - id: ruff-check
@@ -14,13 +14,13 @@ repos:
 
   # uv - Lockfile validation
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.12.10
+    rev: 0.13.0
     hooks:
       - id: uv-lock
 
   # Shfmt - Shell script formatting
   - repo: https://github.com/scop/pre-commit-shfmt
-    rev: v3.13.1-1
+    rev: v3.14.1-1
     hooks:
       - id: shfmt
         args: [-i, "2", -ci, -bn]
