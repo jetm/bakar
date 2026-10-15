@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `bakar build --on <host>` now refuses a mirror root that contains linked worktrees whose main checkout is outside that root, such as a `.worktrees` directory. The refusal happens before the preflight or any transfer, names the root, its size on disk and each worktree, and `--yes` does not bypass it, because `rsync --delete` of such a tree would copy every worktree to the remote and leave each one pointing at git metadata that is not there. A worktree next to its own main checkout inside the root is unaffected.
+- `bakar build --on <host>` now refuses a mirror root that contains, within its first two directory levels, linked worktrees whose git repository is outside that root, such as a `.worktrees` directory. The refusal happens before the preflight or any transfer, names the root, its size on disk and each worktree, and `--yes` does not bypass it, because `rsync --delete` of such a tree would copy every worktree to the remote and leave each one pointing at git metadata that is not there. A worktree next to its own main checkout inside the root is unaffected.
 - The doctor's `disk-free` failure message now states its threshold, for example `workspace@/path free=45.0G < 50G threshold`, so a failing check shows how much space it wanted.
 
 ### Changed

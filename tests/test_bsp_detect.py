@@ -16,6 +16,7 @@ import pytest
 import yaml
 
 from bakar.bsp_detect import (
+    LinkedWorktree,
     detect_bsp_from_yaml,
     detect_kas_workspace,
     is_bbsetup_workspace,
@@ -512,6 +513,18 @@ def test_worktree_wrapper_text_quotes_a_kas_path_that_is_not_plain_yaml(meta_avo
     odd.write_text("machine: x\n")
     data = yaml.safe_load(worktree_wrapper_text(found, odd))
     assert data["header"]["includes"][0] == {"repo": "meta-avocado", "file": "kas/machine/a: b #c.yml"}
+
+
+def test_worktree_wrapper_text_keeps_characters_outside_the_bmp(tmp_path: Path) -> None:
+    """``json.dumps`` escapes U+1F600 as a surrogate pair that YAML does not recombine."""
+    checkout = tmp_path / "wt-\U0001f600"
+    kas_yaml = checkout / "kas" / "m-\U0001f600.yml"
+    kas_yaml.parent.mkdir(parents=True)
+    kas_yaml.write_text("machine: x\n")
+    found = LinkedWorktree(checkout=checkout.resolve(), main_checkout=tmp_path / "meta-avocado")
+    data = yaml.safe_load(worktree_wrapper_text(found, kas_yaml))
+    assert data["repos"]["meta-avocado"]["path"] == str(checkout.resolve())
+    assert data["header"]["includes"][0]["file"] == "kas/m-\U0001f600.yml"
 
 
 # --- worktree-aware workspace detection ------------------------------------

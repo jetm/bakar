@@ -1801,7 +1801,7 @@ def test_dispatch_refuses_a_worktree_whose_main_checkout_is_outside_the_root(
     assert _dispatch_with_roots(container) == 1
     err = "".join(capsys.readouterr().err.split())
     assert "unsafeworkspaceforremotesync:" in err
-    assert "whosemaincheckoutisoutsideit" in err
+    assert "whosegitrepositoryisoutsideit" in err
     assert fake_sp.calls == []
 
 
@@ -1852,4 +1852,67 @@ def test_dispatch_refuses_an_extra_root_that_contains_the_workspace_root(
     ws_inside.mkdir(parents=True)
     assert _dispatch_with_roots(ws_inside, checkout) == 1
     assert "mirrorrootsoverlap" in "".join(capsys.readouterr().err.split())
+    assert fake_sp.calls == []
+
+
+def _git(*args: str) -> None:
+    import os
+
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+    subprocess.run(
+        ["git", "-c", "user.email=t@example.invalid", "-c", "user.name=t", *args],
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+
+
+def test_refusal_lists_only_worktrees_whose_repository_is_outside_the_root(
+    meta_avocado_worktree_layout, tmp_path: Path
+) -> None:
+    """A root with one allowed and one refused worktree names only the refused one."""
+    lay = meta_avocado_worktree_layout
+    _add_worktree(lay.main, lay.ws / "feat", "feat")  # main checkout inside the root: allowed
+    other = tmp_path / "other"
+    _git("init", "-q", "-b", "main", str(other))
+    _git("-C", str(other), "commit", "-q", "--allow-empty", "-m", "x")
+    foreign = lay.ws / "x" / "foreign"
+    _add_worktree(other, foreign, "foreign")  # repository elsewhere: refused
+
+    assert [p.resolve() for p in rd.find_linked_worktrees(lay.ws)] == [foreign.resolve()]
+    with pytest.raises(ValueError, match="1 linked git worktree") as excinfo:
+        rd.assert_no_linked_worktrees(lay.ws)
+    assert str(foreign) in str(excinfo.value)
+    assert str(lay.ws / "feat") not in str(excinfo.value)
+
+
+def test_refusal_covers_a_worktree_directly_under_the_root(meta_avocado_worktree_layout, tmp_path: Path) -> None:
+    lay = meta_avocado_worktree_layout
+    container = tmp_path / "container"
+    _add_worktree(lay.main, container / "wt", "d1")  # first level, main checkout outside
+    assert [p.resolve() for p in rd.find_linked_worktrees(container)] == [(container / "wt").resolve()]
+
+
+def test_refusal_covers_a_worktree_of_a_bare_repository(
+    fake_sp: FakeSubprocess, meta_avocado_worktree_layout, tmp_path: Path
+) -> None:
+    """A bare repository's common directory is not named ``.git``, so there is no main checkout.
+
+    The meta-avocado resolution (which needs a main checkout named ``meta-avocado``) does not
+    recognize such a worktree, but the mirror guard must still see it: otherwise its container
+    is mirrored with ``--delete`` and the remote copy points at a repository that is not there.
+    """
+    from bakar.bsp_detect import linked_worktree_at
+
+    lay = meta_avocado_worktree_layout
+    bare = tmp_path / "bare.git"
+    _git("clone", "-q", "--bare", str(lay.main), str(bare))
+    container = tmp_path / "container"
+    container.mkdir()
+    wt = container / "x"
+    _git("-C", str(bare), "worktree", "add", "-q", str(wt), "-b", "bx", "main")
+
+    assert linked_worktree_at(wt) is None  # no main checkout to report
+    assert [p.resolve() for p in rd.find_linked_worktrees(container)] == [wt.resolve()]
+    assert _dispatch_with_roots(container) == 1
     assert fake_sp.calls == []

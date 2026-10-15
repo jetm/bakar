@@ -37,7 +37,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from bakar.bsp_detect import linked_worktree_at
+from bakar.bsp_detect import linked_worktree_common_dir
 from bakar.config import WORKSPACE_FEED_DIRNAME, WORKSPACE_FEED_STAGE_DIRNAME
 from bakar.fmt import fmt_bytes
 
@@ -432,18 +432,20 @@ def _child_dirs(directory: Path) -> list[Path]:
 # parent of a worktree container (for example the parent of `.worktrees`), or any
 # report of a worktree mirrored from depth 3 or more.
 def find_linked_worktrees(root: Path) -> list[Path]:
-    """Return the linked git worktrees under ``root`` whose main checkout is outside it.
+    """Return the linked git worktrees under ``root`` whose repository is outside it.
 
     Looks at the first two directory levels. A worktree's ``.git`` file points at an
-    admin directory inside its MAIN checkout, so a worktree whose main checkout is
-    also under ``root`` mirrors consistently and is not reported; one whose main
-    checkout is elsewhere would arrive on the remote with a dangling pointer.
+    admin directory inside its repository's common git directory, so a worktree whose
+    common directory is also under ``root`` mirrors consistently and is not reported;
+    one whose repository is elsewhere would arrive on the remote with a dangling
+    pointer. That includes a worktree of a bare repository, which has no main checkout
+    to compare, so the common directory itself is what is tested.
 
-    Detection reads each directory's ``.git`` (via ``linked_worktree_at``), never
-    its name. Symlinked directories are skipped at both levels, because ``_child_dirs``
-    does not return them; the ``is_symlink`` test below repeats that on purpose, so the
-    guard on a ``--delete`` destination does not depend on a helper in another function.
-    Nothing deeper is visited.
+    Detection reads each directory's ``.git`` (via ``linked_worktree_common_dir``),
+    never its name. Symlinked directories are skipped at both levels, because
+    ``_child_dirs`` does not return them; the ``is_symlink`` test below repeats that on
+    purpose, so the guard on a ``--delete`` destination does not depend on a helper in
+    another function. Nothing deeper is visited.
     """
     real_root = root.resolve()
     found: list[Path] = []
@@ -452,8 +454,8 @@ def find_linked_worktrees(root: Path) -> list[Path]:
         if not first.is_symlink():
             candidates.extend(_child_dirs(first))
         for d in candidates:
-            wt = linked_worktree_at(d)
-            if wt is not None and not wt.main_checkout.is_relative_to(real_root):
+            common = linked_worktree_common_dir(d)
+            if common is not None and not common.is_relative_to(real_root):
                 found.append(d)
     return sorted(found)
 
@@ -487,10 +489,10 @@ def _tree_size(root: Path) -> int:
 
 
 def assert_no_linked_worktrees(root: Path) -> None:
-    """Refuse to mirror a root holding linked worktrees whose main checkout is elsewhere.
+    """Refuse to mirror a root holding linked worktrees whose repository is elsewhere.
 
-    A linked worktree's ``.git`` file points at an admin directory in its main
-    checkout. When that checkout is outside the root, the mirror leaves the remote
+    A linked worktree's ``.git`` file points at an admin directory in its repository's
+    common git directory. When that is outside the root, the mirror leaves the remote
     copy with a dangling pointer and copies unrelated trees along with ``--delete``.
     Raises :class:`ValueError` naming every such worktree and the root's on-disk size.
     """
@@ -500,7 +502,7 @@ def assert_no_linked_worktrees(root: Path) -> None:
     listing = "\n".join(f"  {p}" for p in found)
     raise ValueError(
         f"{root} ({fmt_bytes(_tree_size(root))}) contains {len(found)} linked git worktree(s) "
-        f"whose main checkout is outside it; mirroring it would copy them with --delete:\n{listing}"
+        f"whose git repository is outside it; mirroring it would copy them with --delete:\n{listing}"
     )
 
 

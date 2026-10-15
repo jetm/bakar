@@ -313,15 +313,17 @@ class LinkedWorktree:
     main_checkout: Path
 
 
-def linked_worktree_at(directory: Path) -> LinkedWorktree | None:
-    """Return the linked worktree rooted at ``directory``, else None.
+def linked_worktree_common_dir(directory: Path) -> Path | None:
+    """Return the resolved common git directory when ``directory`` is a linked worktree.
 
     Inspects only ``directory/.git`` and never starts git. A linked worktree
     has a ``.git`` *file* reading ``gitdir: <admin dir>``; the admin dir holds
-    a ``commondir`` file naming the main repository's ``.git`` directory.
-    A main checkout (``.git`` directory), a submodule (admin dir without
-    ``commondir``) and a bare main repository (common dir not named ``.git``)
-    all yield None. Never raises.
+    a ``commondir`` file naming the repository's common git directory, whatever
+    that directory is called. A main checkout (``.git`` directory) and a
+    submodule (admin dir without ``commondir``) yield None. Never raises.
+
+    The mirror guard uses this directly so a worktree of a BARE repository (common
+    directory not named ``.git``) is still seen as a worktree and cannot slip past it.
     """
     try:
         dot_git = directory / ".git"
@@ -339,11 +341,24 @@ def linked_worktree_at(directory: Path) -> LinkedWorktree | None:
         common = Path(commondir_file.read_text(encoding="utf-8").strip())
         if not common.is_absolute():
             common = admin / common
-        common = common.resolve()
-        if common.name != ".git":
-            return None
-        return LinkedWorktree(checkout=directory.resolve(), main_checkout=common.parent)
+        return common.resolve()
     except OSError, UnicodeDecodeError:
+        return None
+
+
+def linked_worktree_at(directory: Path) -> LinkedWorktree | None:
+    """Return the linked worktree rooted at ``directory`` whose main checkout is known, else None.
+
+    Built on :func:`linked_worktree_common_dir`. The main checkout is the parent of
+    a common directory named ``.git``; a bare repository's worktree (common
+    directory not named ``.git``) has no main checkout and yields None here.
+    """
+    common = linked_worktree_common_dir(directory)
+    if common is None or common.name != ".git":
+        return None
+    try:
+        return LinkedWorktree(checkout=directory.resolve(), main_checkout=common.parent)
+    except OSError:
         return None
 
 
@@ -380,8 +395,8 @@ def worktree_wrapper_text(worktree: LinkedWorktree, kas_yaml: Path) -> str:
         "  version: 16\n"
         "  includes:\n"
         "    - repo: meta-avocado\n"
-        f"      file: {json.dumps(rel)}\n"
+        f"      file: {json.dumps(rel, ensure_ascii=False)}\n"
         "repos:\n"
         "  meta-avocado:\n"
-        f"    path: {json.dumps(str(worktree.checkout))}\n"
+        f"    path: {json.dumps(str(worktree.checkout), ensure_ascii=False)}\n"
     )

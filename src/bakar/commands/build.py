@@ -354,8 +354,20 @@ def build(
         extra_roots: tuple[Path, ...] = ()
         if kas_yaml is not None:
             wt = meta_avocado_worktree(_on_main_yaml)
-            if wt is not None and not wt.checkout.resolve().is_relative_to(ws_root.resolve()):
-                extra_roots = (logical_path(wt.checkout),)
+            if wt is not None:
+                real_ws = ws_root.resolve()
+                # The worktree's .git points at <main checkout>/.git/worktrees/<name>. If
+                # the main checkout is not under the mirror root (an explicit -w away
+                # from it), that directory never travels and the remote copy dangles.
+                if not wt.main_checkout.is_relative_to(real_ws):
+                    console.print(
+                        f"[red]the worktree's main checkout {wt.main_checkout} is outside the mirror "
+                        f"root {ws_root}[/]: its git metadata would not reach {on}. Drop -w, or point "
+                        f"it at {wt.main_checkout.parent}."
+                    )
+                    raise typer.Exit(code=2)
+                if not wt.checkout.resolve().is_relative_to(real_ws):
+                    extra_roots = (logical_path(wt.checkout),)
 
         rc = dispatch_remote_build(
             on,

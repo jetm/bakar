@@ -495,3 +495,24 @@ def test_worktree_inside_workspace_needs_no_extra_root(
     args, kwargs = calls[0]
     assert args[1] == lay.ws
     assert kwargs.get("extra_roots", ()) == ()
+
+
+def test_worktree_dispatch_refuses_a_mirror_root_without_the_main_checkout(
+    runner: _CliRunner,
+    meta_avocado_worktree_layout,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """``-w`` away from the main checkout: the worktree's git metadata would never reach the remote."""
+    lay = meta_avocado_worktree_layout
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    calls = _record_dispatch(monkeypatch)
+    argv = ["build", str(lay.kas_yaml), "-w", str(elsewhere), "--on", HOST, "--yes"]
+    monkeypatch.setattr(sys, "argv", ["bakar", *argv])
+
+    result = runner.invoke(app, argv)
+
+    assert result.exit_code == 2, result.output
+    assert "outside the mirror root" in " ".join(result.output.split())
+    assert calls == []
