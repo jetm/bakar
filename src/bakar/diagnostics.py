@@ -654,7 +654,7 @@ def check_disk_free(cfg: BuildConfig) -> CheckResult:
         st = shutil.disk_usage(path)
         free_gb = st.free / (1024**3)
         if free_gb < cfg.disk_free_threshold_gb:
-            low.append(f"{label}@{path} free={free_gb:.1f}G")
+            low.append(f"{label}@{path} free={free_gb:.1f}G < {cfg.disk_free_threshold_gb:.0f}G threshold")
     if low:
         return _fail(
             "disk-free",

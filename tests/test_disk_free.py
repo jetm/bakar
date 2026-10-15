@@ -168,6 +168,54 @@ def test_threshold_pass_above_custom_threshold(tmp_path: Path, monkeypatch: pyte
 
 
 @pytest.mark.unit
+def test_threshold_in_message_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """45.0G free under the default 50G threshold names both numbers."""
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
+    monkeypatch.delenv("DL_DIR", raising=False)
+    cfg = _build_cfg(tmp_path)
+    _patch_stat_distinct(monkeypatch)
+    _patch_disk(monkeypatch, free_gb=45.0)
+
+    result = check_disk_free(cfg)
+
+    assert result.status is Status.FAIL
+    assert "45.0G" in result.message
+    assert "50G" in result.message
+
+
+@pytest.mark.unit
+def test_threshold_in_message_custom(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A custom 100G threshold is named, not the 50G default."""
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
+    monkeypatch.delenv("DL_DIR", raising=False)
+    cfg = _build_cfg(tmp_path, disk_free_threshold_gb=100)
+    _patch_stat_distinct(monkeypatch)
+    _patch_disk(monkeypatch, free_gb=80.0)
+
+    result = check_disk_free(cfg)
+
+    assert result.status is Status.FAIL
+    assert "80.0G" in result.message
+    assert "100G" in result.message
+    assert "50G" not in result.message
+
+
+@pytest.mark.unit
+def test_threshold_in_message_pass_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A passing check states the threshold once, as ``>= NG free``, and lists no per-path entries."""
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
+    monkeypatch.delenv("DL_DIR", raising=False)
+    cfg = _build_cfg(tmp_path)
+    _patch_stat_distinct(monkeypatch)
+    _patch_disk(monkeypatch, free_gb=200.0)
+
+    result = check_disk_free(cfg)
+
+    assert result.status is Status.PASS
+    assert result.message == ">= 50G free on each checked mount"
+
+
+@pytest.mark.unit
 def test_user_config_rejects_zero_threshold(tmp_path: Path) -> None:
     """load_user_config raises ValueError when disk_free_threshold_gb = 0."""
     toml_content = textwrap.dedent("""\
