@@ -350,8 +350,7 @@ def build(
 
         # A meta-avocado linked worktree usually lives outside the workspace, so
         # it is mirrored as a second root. One already inside ws_root is left to
-        # the workspace transfer; dispatch refuses a root that holds a linked
-        # worktree within its first two levels, so only a deeper one gets here.
+        # the workspace transfer, which carries its main checkout's git metadata.
         extra_roots: tuple[Path, ...] = ()
         if kas_yaml is not None:
             wt = meta_avocado_worktree(_on_main_yaml)

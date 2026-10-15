@@ -412,16 +412,18 @@ bakar --sccache-dist build meta-avocado/kas/machine/qemux86-64.yml --on pc2 --ye
    started from a linked meta-avocado worktree mirrors the main workspace exactly
    as a main-checkout dispatch does, then the worktree checkout to the same path,
    in that order, because the worktree's git metadata lives in the main checkout.
-   A worktree that already sits inside the workspace root is not mirrored a second
-   time. A root that holds a linked worktree within its first two directory levels
-   is refused instead (see step 3), so this applies only to a deeper one.
+   A worktree that already sits inside the workspace root, next to its own main
+   checkout, is not mirrored a second time: the workspace transfer carries it and
+   the git metadata it points at.
 3. **Delete confirmation** - because `--delete` mutates the remote irreversibly,
    bakar first runs an `rsync --delete --dry-run -i` preview for every mirrored
    root and prompts once for confirmation before any real transfer. `--yes`
    (`-y`) bypasses the prompt for non-interactive or scripted runs. A mirror root
-   that contains a linked worktree is refused before any transfer with `unsafe
+   that contains a linked worktree whose main checkout is outside that root (the
+   shape a `.worktrees` container has) is refused before any transfer with `unsafe
    workspace for remote sync:`, listing the worktrees and the root's size, and
-   `--yes` does not bypass that refusal.
+   `--yes` does not bypass that refusal. Only the first two directory levels are
+   checked.
 4. **Remote build** - the build runs on the remote with sccache-dist forced
    **off** by default (`BAKAR_SCCACHE_DIST=0`), so a node that is normally an
    sccache-dist server runs as an independent worker (local ccache + shared

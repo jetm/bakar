@@ -464,18 +464,17 @@ def test_worktree_inside_workspace_needs_no_extra_root(
     meta_avocado_worktree_layout,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Three levels down: shallower, dispatch_remote_build refuses the root outright.
+    """A worktree whose main checkout is in the workspace is carried by the workspace transfer.
 
-    A worktree within two directory levels of the workspace root is refused by the
-    linked-worktree guard before any transfer (see
-    ``test_dispatch_refuses_inner_worktree_within_two_levels``), so only a deeper one
-    can reach the point this test is about.
+    The real dispatcher accepts this layout (see
+    ``test_dispatch_allows_a_worktree_whose_main_checkout_is_inside_the_root``), so the
+    CLI layer leaves it out of the extra roots instead of mirroring it twice.
     """
     import os
     import subprocess
 
     lay = meta_avocado_worktree_layout
-    inner = lay.ws / "a" / "b" / "wt3"
+    inner = lay.ws / ".wt" / "wt3"
     inner.parent.mkdir(parents=True)
     env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
     subprocess.run(

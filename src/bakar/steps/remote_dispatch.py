@@ -432,7 +432,12 @@ def _child_dirs(directory: Path) -> list[Path]:
 # parent of a worktree container (for example the parent of `.worktrees`), or any
 # report of a worktree mirrored from depth 3 or more.
 def find_linked_worktrees(root: Path) -> list[Path]:
-    """Return the linked git worktrees among the first two directory levels under ``root``.
+    """Return the linked git worktrees under ``root`` whose main checkout is outside it.
+
+    Looks at the first two directory levels. A worktree's ``.git`` file points at an
+    admin directory inside its MAIN checkout, so a worktree whose main checkout is
+    also under ``root`` mirrors consistently and is not reported; one whose main
+    checkout is elsewhere would arrive on the remote with a dangling pointer.
 
     Detection reads each directory's ``.git`` (via ``linked_worktree_at``), never
     its name. Symlinked directories are skipped at both levels, because ``_child_dirs``
@@ -440,12 +445,16 @@ def find_linked_worktrees(root: Path) -> list[Path]:
     guard on a ``--delete`` destination does not depend on a helper in another function.
     Nothing deeper is visited.
     """
+    real_root = root.resolve()
     found: list[Path] = []
     for first in _child_dirs(root):
         candidates = [first]
         if not first.is_symlink():
             candidates.extend(_child_dirs(first))
-        found.extend(d for d in candidates if linked_worktree_at(d) is not None)
+        for d in candidates:
+            wt = linked_worktree_at(d)
+            if wt is not None and not wt.main_checkout.is_relative_to(real_root):
+                found.append(d)
     return sorted(found)
 
 
@@ -478,20 +487,20 @@ def _tree_size(root: Path) -> int:
 
 
 def assert_no_linked_worktrees(root: Path) -> None:
-    """Refuse to mirror a root holding linked worktrees.
+    """Refuse to mirror a root holding linked worktrees whose main checkout is elsewhere.
 
-    A linked worktree's ``.git`` file points at an admin directory in the main
-    checkout, so a mirror either drags the whole tree along or leaves the remote
-    copy with a dangling pointer. Raises :class:`ValueError` naming every
-    worktree and the root's on-disk size.
+    A linked worktree's ``.git`` file points at an admin directory in its main
+    checkout. When that checkout is outside the root, the mirror leaves the remote
+    copy with a dangling pointer and copies unrelated trees along with ``--delete``.
+    Raises :class:`ValueError` naming every such worktree and the root's on-disk size.
     """
     found = find_linked_worktrees(root)
     if not found:
         return
     listing = "\n".join(f"  {p}" for p in found)
     raise ValueError(
-        f"{root} ({fmt_bytes(_tree_size(root))}) contains {len(found)} linked git worktree(s); "
-        f"mirroring it would copy them with --delete:\n{listing}"
+        f"{root} ({fmt_bytes(_tree_size(root))}) contains {len(found)} linked git worktree(s) "
+        f"whose main checkout is outside it; mirroring it would copy them with --delete:\n{listing}"
     )
 
 

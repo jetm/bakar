@@ -1755,33 +1755,53 @@ def _dispatch_with_roots(root: Path, *extra: Path) -> int:
     )
 
 
-def test_dispatch_refuses_inner_worktree_within_two_levels(
-    fake_sp: FakeSubprocess, meta_avocado_worktree_layout, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A worktree two levels inside the workspace root is refused by the REAL dispatcher.
-
-    The CLI test for a worktree inside the workspace uses depth three because of this:
-    the guard looks two levels down, and the CLI layer leaves such a worktree out of the
-    extra roots on the assumption that the workspace transfer carries it.
-    """
+def _add_worktree(main: Path, path: Path, branch: str) -> None:
     import os
     import subprocess
 
-    lay = meta_avocado_worktree_layout
-    inner = lay.ws / ".wt" / "wt3"
-    inner.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
     subprocess.run(
         [
-            *("git", "-c", "user.email=t@example.invalid", "-c", "user.name=t", "-C", str(lay.main)),
-            *("worktree", "add", "-q", str(inner), "-b", "wt3"),
+            *("git", "-c", "user.email=t@example.invalid", "-c", "user.name=t", "-C", str(main)),
+            *("worktree", "add", "-q", str(path), "-b", branch),
         ],
         check=True,
         capture_output=True,
         env=env,
     )
-    assert _dispatch_with_roots(lay.ws) == 1
-    assert "unsafeworkspaceforremotesync:" in "".join(capsys.readouterr().err.split())
+
+
+@pytest.mark.parametrize("relative", [".wt/wt3", "meta-avocado-feat", "a/b/wt3"], ids=["depth-2", "sibling", "depth-3"])
+def test_dispatch_allows_a_worktree_whose_main_checkout_is_inside_the_root(
+    fake_sp: FakeSubprocess, meta_avocado_worktree_layout, relative: str
+) -> None:
+    """A worktree next to its own main checkout mirrors consistently, so it is not refused.
+
+    Its ``.git`` points at an admin directory under ``<main>/.git/worktrees``, and that
+    directory travels in the same transfer. Refusing it would make every dispatch from
+    the main workspace fail as soon as someone runs ``git worktree add ../x``.
+    """
+    lay = meta_avocado_worktree_layout
+    _add_worktree(lay.main, lay.ws / relative, "inner")
+    assert rd.find_linked_worktrees(lay.ws) == []
+    fake_sp.popen_rc = 0
+    fake_sp.find_stdout = f"1.0 {lay.ws}/build/runs/20260716-000000\n"
+    assert _dispatch_with_roots(lay.ws) == 0
+    assert not _no_ssh_or_rsync(fake_sp)
+
+
+def test_dispatch_refuses_a_worktree_whose_main_checkout_is_outside_the_root(
+    fake_sp: FakeSubprocess, meta_avocado_worktree_layout, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The incident shape: the container holds worktrees, their main checkout lives elsewhere."""
+    lay = meta_avocado_worktree_layout
+    container = lay.worktree.parent.parent
+    assert lay.main.resolve().is_relative_to(container.resolve()) is False
+    assert _dispatch_with_roots(container) == 1
+    err = "".join(capsys.readouterr().err.split())
+    assert "unsafeworkspaceforremotesync:" in err
+    assert "whosemaincheckoutisoutsideit" in err
     assert fake_sp.calls == []
 
 
