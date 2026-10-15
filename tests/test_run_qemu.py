@@ -56,6 +56,12 @@ def test_find_meta_avocado_dir(tmp_path: Path) -> None:
     assert result == (sources / "meta-avocado").resolve()
 
 
+def test_find_meta_avocado_dir_resolves_a_linked_worktree(meta_avocado_worktree_layout) -> None:
+    """The worktree container is also named ``meta-avocado``; the checkout is the worktree itself."""
+    lay = meta_avocado_worktree_layout
+    assert _find_meta_avocado_dir(lay.kas_yaml) == lay.worktree.resolve()
+
+
 def test_find_meta_avocado_dir_raises_outside_repo(tmp_path: Path) -> None:
     yaml = tmp_path / "not-avocado" / "kas" / "machine" / "qemux86-64.yml"
     yaml.parent.mkdir(parents=True)

@@ -7,6 +7,8 @@ import sys
 import termios
 from typing import TYPE_CHECKING
 
+from bakar.bsp_detect import meta_avocado_worktree
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -15,7 +17,14 @@ if TYPE_CHECKING:
 
 
 def _find_meta_avocado_dir(kas_yaml: Path) -> Path:
-    """Walk up from kas_yaml to the meta-avocado repository root."""
+    """Walk up from kas_yaml to the meta-avocado repository root.
+
+    A linked worktree's directory is not named ``meta-avocado``, so it is found
+    through git's own layout first.
+    """
+    wt = meta_avocado_worktree(kas_yaml)
+    if wt is not None:
+        return wt.checkout
     for parent in kas_yaml.resolve().parents:
         if parent.name == "meta-avocado":
             return parent
