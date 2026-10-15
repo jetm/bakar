@@ -655,7 +655,7 @@ def check_disk_free(cfg: BuildConfig) -> CheckResult:
         st = shutil.disk_usage(path)
         free_gb = st.free / (1024**3)
         if free_gb < cfg.disk_free_threshold_gb:
-            low.append(f"{label}@{path} free={free_gb:.1f}G < {cfg.disk_free_threshold_gb:.0f}G threshold")
+            low.append(f"{label}@{path} free={free_gb:.1f}G < {cfg.disk_free_threshold_gb:g}G threshold")
     if low:
         return _fail(
             "disk-free",
@@ -2522,12 +2522,17 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
                 Severity.BLOCK,
                 f"git-state mismatch (run bakar sync): {msg}",
             )
-        return _fail(
-            name,
-            Severity.BLOCK,
-            f"{kas_yaml}: {first_line.strip()}",
-            fix_hint=f"Edit {kas_yaml} and re-run; see `kas dump {kas_yaml}` for the full parser error.",
-        )
+        if wt is not None:
+            # Plain `kas dump <file>` resolves `{repo: meta-avocado}` includes from the
+            # main checkout, which is the wrong tree for a worktree kas file.
+            hint = (
+                f"Edit {kas_yaml} and re-run. This check validated it through bakar's worktree "
+                "wrapper, so `kas dump` on the file alone resolves meta-avocado includes from the "
+                "main checkout and can report a different error."
+            )
+        else:
+            hint = f"Edit {kas_yaml} and re-run; see `kas dump {kas_yaml}` for the full parser error."
+        return _fail(name, Severity.BLOCK, f"{kas_yaml}: {first_line.strip()}", fix_hint=hint)
     return _ok(name, Severity.BLOCK, f"{kas_yaml} parses cleanly")
 
 

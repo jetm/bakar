@@ -472,7 +472,9 @@ Ctrl-C on the dispatching terminal no longer reaches it.
 A build from a linked worktree uses the main checkout's workspace and shares its
 `build-<machine>` directory. Same-machine builds serialize on the bitbake lock,
 kas moves the main workspace's pinned sibling layers to the worktree's pins, and
-`build-<machine>/avocado-bakar.yml` names whichever tree built last.
+`build-<machine>/avocado-bakar.yml` names whichever tree built last. Worktree
+builds are tested in host mode only: `kas-container` mounts just the workspace, so
+a worktree outside it is not visible inside a container build.
 
 A single `--on` dispatch opens up to five ssh connections (preflight, rsync's
 own ssh, the launch, the log follower, and the run-id discovery find). On a

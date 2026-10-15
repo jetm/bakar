@@ -575,6 +575,12 @@ def _clean_bakar_kas_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def fake_sp(monkeypatch: pytest.MonkeyPatch) -> FakeSubprocess:
     fake = FakeSubprocess()
     monkeypatch.setattr(rd, "subprocess", fake)
+    # WS and EXTRA name real directories on a developer machine, so the worktree
+    # scan would read the live filesystem and a `git worktree add` near them would
+    # fail unrelated dispatch tests. Stub it for those two paths only; a test that
+    # builds its own tmp_path layout still gets the real scan.
+    real_find = rd.find_linked_worktrees
+    monkeypatch.setattr(rd, "find_linked_worktrees", lambda root: [] if root in (WS, EXTRA) else real_find(root))
     return fake
 
 
@@ -1741,3 +1747,89 @@ def test_linked_worktree_plain_main_checkouts_proceed(fake_sp: FakeSubprocess, t
     )
     assert rc == 0
     assert not _no_ssh_or_rsync(fake_sp)
+
+
+def _dispatch_with_roots(root: Path, *extra: Path) -> int:
+    return rd.dispatch_remote_build(
+        HOST, root, root, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True, extra_roots=extra
+    )
+
+
+def test_dispatch_refuses_inner_worktree_within_two_levels(
+    fake_sp: FakeSubprocess, meta_avocado_worktree_layout, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A worktree two levels inside the workspace root is refused by the REAL dispatcher.
+
+    The CLI test for a worktree inside the workspace uses depth three because of this:
+    the guard looks two levels down, and the CLI layer leaves such a worktree out of the
+    extra roots on the assumption that the workspace transfer carries it.
+    """
+    import os
+    import subprocess
+
+    lay = meta_avocado_worktree_layout
+    inner = lay.ws / ".wt" / "wt3"
+    inner.parent.mkdir(parents=True)
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+    subprocess.run(
+        [
+            *("git", "-c", "user.email=t@example.invalid", "-c", "user.name=t", "-C", str(lay.main)),
+            *("worktree", "add", "-q", str(inner), "-b", "wt3"),
+        ],
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+    assert _dispatch_with_roots(lay.ws) == 1
+    assert "unsafeworkspaceforremotesync:" in "".join(capsys.readouterr().err.split())
+    assert fake_sp.calls == []
+
+
+@pytest.mark.parametrize("bad_root", [Path.home(), Path("/")], ids=["home", "filesystem-root"])
+def test_dispatch_refuses_an_unsafe_extra_root_even_with_assume_yes(fake_sp: FakeSubprocess, bad_root: Path) -> None:
+    assert _dispatch_with_roots(WS, bad_root) == 1
+    assert fake_sp.calls == []
+
+
+def test_dispatch_refuses_an_extra_root_holding_a_linked_worktree(
+    fake_sp: FakeSubprocess, meta_avocado_worktree_layout
+) -> None:
+    container = meta_avocado_worktree_layout.worktree.parent.parent
+    assert rd.find_linked_worktrees(container) != []
+    assert _dispatch_with_roots(WS, container) == 1
+    assert fake_sp.calls == []
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [("ws", "ws"), ("ws", "ws/sub"), ("ws/sub", "ws"), ("ws/sub", "ws/sub/deeper")],
+    ids=["equal", "second-inside-first", "first-inside-second", "nested-pair"],
+)
+def test_assert_roots_disjoint_rejects_overlap_in_either_direction(tmp_path: Path, first: str, second: str) -> None:
+    (tmp_path / "ws" / "sub" / "deeper").mkdir(parents=True)
+    with pytest.raises(ValueError, match="mirror roots overlap"):
+        rd.assert_roots_disjoint((tmp_path / first, tmp_path / second))
+
+
+def test_assert_roots_disjoint_accepts_siblings_and_a_single_root(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "ab").mkdir()
+    rd.assert_roots_disjoint((tmp_path / "a", tmp_path / "ab"))  # a name prefix is not containment
+    rd.assert_roots_disjoint((tmp_path / "a",))
+    rd.assert_roots_disjoint(())
+
+
+def test_dispatch_refuses_an_extra_root_that_contains_the_workspace_root(
+    fake_sp: FakeSubprocess, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The worktree is an ancestor of ws_root when ``-w`` points inside it.
+
+    Its ``--delete`` transfer carries no remote-only excludes, so it would delete what
+    the workspace transfer deliberately preserved. ``--yes`` must not get past it.
+    """
+    checkout = tmp_path / "wt"
+    ws_inside = checkout / "sub"
+    ws_inside.mkdir(parents=True)
+    assert _dispatch_with_roots(ws_inside, checkout) == 1
+    assert "mirrorrootsoverlap" in "".join(capsys.readouterr().err.split())
+    assert fake_sp.calls == []

@@ -140,3 +140,34 @@ def test_a_source_dir_merely_named_like_the_feed_is_still_mirrored(tmp_path: Pat
     subprocess.run(_local_rsync_argv(local, remote), capture_output=True, text=True, check=False)
 
     assert (remote / "meta-openembedded" / "recipes-core" / "_feed" / "source.bb").is_file()
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync not installed")
+def test_a_worktree_admin_dir_named_like_a_cache_dir_still_arrives(tmp_path: Path) -> None:
+    """``.git/worktrees/<name>`` is how the remote recognizes a mirrored worktree.
+
+    ``<name>`` is the worktree's own directory name, so one called ``tmp`` or
+    ``downloads`` matches a cache exclude at any depth. Without an include ahead of
+    the excludes its admin directory is never sent, bakar on the remote cannot
+    recognize the mirrored worktree, and an excluded path is also shielded from
+    ``--delete`` so a stale copy survives. A real rsync run is the only thing that
+    tells a working include from one that is merely present in the argv.
+    """
+    local = tmp_path / "local"
+    remote = tmp_path / "remote"
+    cache_names = ("tmp", "downloads", "sstate-cache", ".venv", "__pycache__")
+    for name in cache_names:
+        admin = local / "meta-avocado" / ".git" / "worktrees" / name
+        admin.mkdir(parents=True)
+        (admin / "commondir").write_text("../..\n")
+    # An ordinary cache directory that is NOT a worktree admin dir must stay excluded.
+    (local / "layer" / "tmp").mkdir(parents=True)
+    (local / "layer" / "tmp" / "junk").write_text("x\n")
+    remote.mkdir()
+
+    result = subprocess.run(_local_rsync_argv(local, remote), capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+    for name in cache_names:
+        assert (remote / "meta-avocado" / ".git" / "worktrees" / name / "commondir").is_file(), name
+    assert not (remote / "layer" / "tmp").exists()

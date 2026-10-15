@@ -131,6 +131,12 @@ def build_rsync_argv(
         argv += ["--mkpath"]
     if dry_run:
         argv += ["-n", "-i"]
+    # First match wins in rsync, so this must precede the excludes. A linked
+    # worktree is recognized on the remote through its admin directory,
+    # `<main>/.git/worktrees/<name>`, and `<name>` is the worktree's own directory
+    # name: one called `tmp` or `downloads` would otherwise match a cache exclude
+    # and never arrive (and an excluded path is also protected from `--delete`).
+    argv += ["--include=**/.git/worktrees/***"]
     argv += [f"--exclude={pat}" for pat in RSYNC_EXCLUDES]
     argv += [f"--exclude=/{name}/" for name in extra_excludes]
     argv += [f"{ws_root}/", f"{host}:{ws_root}/"]
@@ -429,8 +435,10 @@ def find_linked_worktrees(root: Path) -> list[Path]:
     """Return the linked git worktrees among the first two directory levels under ``root``.
 
     Detection reads each directory's ``.git`` (via ``linked_worktree_at``), never
-    its name. Children of a first-level directory are listed only when that
-    directory is not a symlink, and nothing deeper is visited.
+    its name. Symlinked directories are skipped at both levels, because ``_child_dirs``
+    does not return them; the ``is_symlink`` test below repeats that on purpose, so the
+    guard on a ``--delete`` destination does not depend on a helper in another function.
+    Nothing deeper is visited.
     """
     found: list[Path] = []
     for first in _child_dirs(root):
@@ -485,6 +493,26 @@ def assert_no_linked_worktrees(root: Path) -> None:
         f"{root} ({fmt_bytes(_tree_size(root))}) contains {len(found)} linked git worktree(s); "
         f"mirroring it would copy them with --delete:\n{listing}"
     )
+
+
+def assert_roots_disjoint(roots: tuple[Path, ...]) -> None:
+    """Refuse mirror roots that are equal to, contain or sit inside one another.
+
+    Each root is transferred with ``--delete`` and its own exclusions. A root that
+    contains another would delete, on the remote, what the inner root's transfer
+    deliberately preserved (the workspace root keeps its remote-only directories,
+    an extra root does not). Raises :class:`ValueError` naming the first
+    overlapping pair.
+    """
+    resolved = [(root, root.resolve()) for root in roots]
+    for i, (first, first_real) in enumerate(resolved):
+        for second, second_real in resolved[i + 1 :]:
+            if (
+                first_real == second_real
+                or first_real.is_relative_to(second_real)
+                or second_real.is_relative_to(first_real)
+            ):
+                raise ValueError(f"mirror roots overlap: {first} and {second}; each root is mirrored with --delete")
 
 
 _RUN_ID_RE = re.compile(r"bakar triage (\S+)")
@@ -1034,6 +1062,7 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
         for root in extra_roots:
             assert_safe_workspace(root)
             assert_no_linked_worktrees(root)
+        assert_roots_disjoint((ws_root, *extra_roots))
     except ValueError as exc:
         console.print(f"[red]unsafe workspace for remote sync:[/] {exc}")
         return 1

@@ -201,6 +201,22 @@ def test_threshold_in_message_custom(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.unit
+def test_threshold_in_message_keeps_a_fractional_threshold(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """50.3G free is below a 50.5G threshold; rounding the threshold to 50G would say otherwise."""
+    monkeypatch.delenv("SSTATE_DIR", raising=False)
+    monkeypatch.delenv("DL_DIR", raising=False)
+    cfg = _build_cfg(tmp_path, disk_free_threshold_gb=50.5)
+    _patch_stat_distinct(monkeypatch)
+    _patch_disk(monkeypatch, free_gb=50.3)
+
+    result = check_disk_free(cfg)
+
+    assert result.status is Status.FAIL
+    assert "50.3G" in result.message
+    assert "< 50.5G threshold" in result.message
+
+
+@pytest.mark.unit
 def test_threshold_in_message_pass_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A passing check states the threshold once, as ``>= NG free``, and lists no per-path entries."""
     monkeypatch.delenv("SSTATE_DIR", raising=False)

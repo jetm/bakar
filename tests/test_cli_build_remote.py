@@ -464,15 +464,28 @@ def test_worktree_inside_workspace_needs_no_extra_root(
     meta_avocado_worktree_layout,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Three levels down: shallower, dispatch_remote_build refuses the root outright.
+
+    A worktree within two directory levels of the workspace root is refused by the
+    linked-worktree guard before any transfer (see
+    ``test_dispatch_refuses_inner_worktree_within_two_levels``), so only a deeper one
+    can reach the point this test is about.
+    """
+    import os
     import subprocess
 
     lay = meta_avocado_worktree_layout
-    inner = lay.ws / ".wt" / "wt3"
+    inner = lay.ws / "a" / "b" / "wt3"
     inner.parent.mkdir(parents=True)
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
     subprocess.run(
-        ["git", "-C", str(lay.main), "worktree", "add", "-q", str(inner), "-b", "wt3"],
+        [
+            *("git", "-c", "user.email=t@example.invalid", "-c", "user.name=t", "-C", str(lay.main)),
+            *("worktree", "add", "-q", str(inner), "-b", "wt3"),
+        ],
         check=True,
         capture_output=True,
+        env=env,
     )
     calls = _record_dispatch(monkeypatch)
     monkeypatch.chdir(inner)

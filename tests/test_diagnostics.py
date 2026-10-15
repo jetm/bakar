@@ -1148,6 +1148,30 @@ def test_check_kas_yaml_syntax_worktree_fail(monkeypatch: pytest.MonkeyPatch, me
     assert result.severity is Severity.BLOCK
     assert str(layout.kas_yaml) in result.message
     assert "avocado-wrapper" not in result.message
+    # Plain `kas dump <file>` would resolve the meta-avocado includes from the main checkout.
+    assert result.fix_hint is not None
+    assert "worktree wrapper" in result.fix_hint
+    assert f"kas dump {layout.kas_yaml}" not in result.fix_hint
+
+
+def test_check_kas_yaml_syntax_main_checkout_fail_keeps_the_kas_dump_hint(
+    monkeypatch: pytest.MonkeyPatch, meta_avocado_worktree_layout
+) -> None:  # type: ignore[no-untyped-def]
+    layout = meta_avocado_worktree_layout
+    main_yaml = layout.main / "kas" / "machine" / "m.yml"
+    cfg = _worktree_cfg(layout, main_yaml)
+
+    def fake_run(argv, **_kwargs):  # type: ignore[no-untyped-def]
+        return subprocess.CompletedProcess(
+            args=argv, returncode=1, stdout="", stderr="2026-01-01 00:00:00 - ERROR    - bad yaml\n"
+        )
+
+    monkeypatch.setattr("bakar.diagnostics.subprocess.run", fake_run)
+    monkeypatch.setattr("bakar.diagnostics.shutil.which", lambda _name: "/usr/bin/kas")
+    result = check_kas_yaml_syntax(cfg)
+    assert result.status is Status.FAIL
+    assert result.fix_hint is not None
+    assert f"kas dump {main_yaml}" in result.fix_hint
 
 
 def test_check_kas_yaml_syntax_worktree_include_only_in_worktree(
