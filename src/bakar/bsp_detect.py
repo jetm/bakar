@@ -36,12 +36,11 @@ markers; if either set of markers changes, update the other.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Literal
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal
 
 import yaml
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 # Repo-name substrings that identify each BSP. Order matters within a
 # family: the first matching substring wins. The lists are kept short
@@ -296,3 +295,85 @@ def detect_kas_workspace(yaml_path: Path) -> Path:
         if (parent / ".bakar.toml").is_file() or (parent / "meta-avocado").is_dir():
             return parent
     return resolved.parent
+
+
+@dataclass(frozen=True)
+class LinkedWorktree:
+    """A linked git worktree and the main checkout it belongs to."""
+
+    checkout: Path
+    main_checkout: Path
+
+
+def linked_worktree_at(directory: Path) -> LinkedWorktree | None:
+    """Return the linked worktree rooted at ``directory``, else None.
+
+    Inspects only ``directory/.git`` and never starts git. A linked worktree
+    has a ``.git`` *file* reading ``gitdir: <admin dir>``; the admin dir holds
+    a ``commondir`` file naming the main repository's ``.git`` directory.
+    A main checkout (``.git`` directory), a submodule (admin dir without
+    ``commondir``) and a bare main repository (common dir not named ``.git``)
+    all yield None. Never raises.
+    """
+    try:
+        dot_git = directory / ".git"
+        if not dot_git.is_file():
+            return None
+        lines = dot_git.read_text(encoding="utf-8").splitlines()
+        if not lines or not lines[0].startswith("gitdir:"):
+            return None
+        admin = Path(lines[0][len("gitdir:") :].strip())
+        if not admin.is_absolute():
+            admin = directory / admin
+        commondir_file = admin / "commondir"
+        if not commondir_file.is_file():
+            return None
+        common = Path(commondir_file.read_text(encoding="utf-8").strip())
+        if not common.is_absolute():
+            common = admin / common
+        common = common.resolve()
+        if common.name != ".git":
+            return None
+        return LinkedWorktree(checkout=directory.resolve(), main_checkout=common.parent)
+    except OSError, UnicodeDecodeError:
+        return None
+
+
+def linked_worktree_of(path: Path) -> LinkedWorktree | None:
+    """Return the linked worktree containing ``path``, else None.
+
+    Walks up from ``path`` (or its parent when it is a file) to the first
+    ancestor holding a ``.git`` entry of any kind and classifies that one.
+    """
+    try:
+        resolved = path.resolve()
+        start = resolved if resolved.is_dir() else resolved.parent
+        for candidate in (start, *start.parents):
+            if (candidate / ".git").exists():
+                return linked_worktree_at(candidate)
+    except OSError:
+        return None
+    return None
+
+
+def meta_avocado_worktree(kas_yaml: Path) -> LinkedWorktree | None:
+    """Return the linked worktree of a meta-avocado checkout holding ``kas_yaml``."""
+    wt = linked_worktree_of(kas_yaml)
+    if wt is not None and wt.main_checkout.name == "meta-avocado":
+        return wt
+    return None
+
+
+def worktree_wrapper_text(worktree: LinkedWorktree, kas_yaml: Path) -> str:
+    """Render a kas wrapper YAML that pins ``meta-avocado`` to the worktree."""
+    rel = kas_yaml.resolve().relative_to(worktree.checkout).as_posix()
+    return (
+        "header:\n"
+        "  version: 16\n"
+        "  includes:\n"
+        "    - repo: meta-avocado\n"
+        f"      file: {rel}\n"
+        "repos:\n"
+        "  meta-avocado:\n"
+        f"    path: {json.dumps(str(worktree.checkout))}\n"
+    )

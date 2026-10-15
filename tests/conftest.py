@@ -22,6 +22,8 @@ in ``src/bakar``:
 from __future__ import annotations
 
 import os
+import subprocess
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from unittest import mock
 
@@ -328,3 +330,40 @@ def _fake_buildtools_toolchain(tmp_path_factory: pytest.TempPathFactory, monkeyp
     gcc.parent.mkdir(parents=True, exist_ok=True)
     gcc.write_text("#!/bin/sh\n")
     monkeypatch.setenv("OECORE_NATIVE_SYSROOT", str(sysroot))
+
+
+@dataclass(frozen=True)
+class MetaAvocadoWorktreeLayout:
+    ws: Path
+    main: Path
+    worktree: Path
+    kas_yaml: Path
+
+
+@pytest.fixture
+def meta_avocado_worktree_layout(tmp_path: Path) -> MetaAvocadoWorktreeLayout:
+    """A workspace whose ``meta-avocado`` is a real git repo with one linked worktree."""
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+    ident = ["-c", "user.email=t@example.invalid", "-c", "user.name=t"]
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", *ident, *args], check=True, capture_output=True, env=env)
+
+    ws = tmp_path / "ws"
+    (ws / "openembedded-core" / "meta" / "conf").mkdir(parents=True)
+    (ws / ".bakar.toml").write_text("")
+    (ws / "openembedded-core" / "meta" / "conf" / "layer.conf").write_text('LAYERSERIES_CORENAMES = "wrynose"\n')
+    main = ws / "meta-avocado"
+    (main / "kas" / "machine").mkdir(parents=True)
+    git("init", "-q", "-b", "main", str(main))
+    (main / "kas" / "machine" / "m.yml").write_text(
+        "header:\n  version: 16\nmachine: qemux86-64\nrepos:\n  meta-avocado:\n    path: meta-avocado\n"
+    )
+    git("-C", str(main), "add", "-A")
+    git("-C", str(main), "commit", "-q", "-m", "init")
+    worktree = tmp_path / "root" / ".worktrees" / "meta-avocado" / "wt1"
+    worktree.parent.mkdir(parents=True)
+    git("-C", str(main), "worktree", "add", "-q", str(worktree), "-b", "wt1")
+    return MetaAvocadoWorktreeLayout(
+        ws=ws, main=main, worktree=worktree, kas_yaml=worktree / "kas" / "machine" / "m.yml"
+    )

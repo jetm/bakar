@@ -9,16 +9,22 @@ parseable YAMLs that have at least one of those anchors.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
+import yaml
 
 from bakar.bsp_detect import (
     detect_bsp_from_yaml,
     detect_kas_workspace,
     is_bbsetup_workspace,
     is_meta_avocado_yaml,
+    linked_worktree_at,
+    linked_worktree_of,
     machine_from_yaml,
+    meta_avocado_worktree,
+    worktree_wrapper_text,
 )
 
 pytestmark = pytest.mark.unit
@@ -404,3 +410,94 @@ def test_machine_from_yaml_ignores_a_cross_repo_include_it_cannot_place(
 def test_machine_from_yaml_unparseable_returns_none(tmp_path: Path) -> None:
     p = _write(tmp_path, "machine: [unterminated\n")
     assert machine_from_yaml(p) is None
+
+
+# --- linked worktree recognition -------------------------------------------
+
+
+def _fake_worktree(tmp_path: Path, gitdir_line: str, commondir: str | None, name: str = "wt") -> Path:
+    wt = tmp_path / name
+    wt.mkdir()
+    admin = tmp_path / f"{name}-admin"
+    admin.mkdir()
+    if commondir is not None:
+        (admin / "commondir").write_text(commondir + "\n")
+    (wt / ".git").write_text(gitdir_line.replace("ADMIN", str(admin)) + "\n")
+    return wt
+
+
+def test_worktree_recognized_by_all_entry_points(meta_avocado_worktree_layout) -> None:
+    lay = meta_avocado_worktree_layout
+    for found in (
+        linked_worktree_at(lay.worktree),
+        linked_worktree_of(lay.kas_yaml),
+        meta_avocado_worktree(lay.kas_yaml),
+    ):
+        assert found is not None
+        assert found.main_checkout == lay.main.resolve()
+        assert found.checkout == lay.worktree.resolve()
+
+
+def test_worktree_none_for_main_checkout_and_plain_dir(meta_avocado_worktree_layout, tmp_path: Path) -> None:
+    lay = meta_avocado_worktree_layout
+    assert linked_worktree_at(lay.main) is None
+    assert linked_worktree_of(lay.main / "kas" / "machine" / "m.yml") is None
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert linked_worktree_at(plain) is None
+
+
+def test_worktree_relative_gitdir_still_recognized(meta_avocado_worktree_layout) -> None:
+    lay = meta_avocado_worktree_layout
+    text = (lay.worktree / ".git").read_text()
+    admin = Path(text.split("gitdir:", 1)[1].strip())
+    rel = os.path.relpath(admin, lay.worktree)
+    (lay.worktree / ".git").write_text(f"gitdir: {rel}\n")
+    found = linked_worktree_at(lay.worktree)
+    assert found is not None
+    assert found.main_checkout == lay.main.resolve()
+
+
+def test_worktree_submodule_shape_is_none(tmp_path: Path) -> None:
+    wt = _fake_worktree(tmp_path, "gitdir: ADMIN", None)
+    assert linked_worktree_at(wt) is None
+
+
+def test_worktree_malformed_git_file_is_none(tmp_path: Path) -> None:
+    wt = tmp_path / "bad"
+    wt.mkdir()
+    (wt / ".git").write_bytes(b"\xff\xfe not a gitdir\n")
+    assert linked_worktree_at(wt) is None
+    (wt / ".git").write_text("")
+    assert linked_worktree_at(wt) is None
+    (wt / ".git").write_text("nonsense\n")
+    assert linked_worktree_at(wt) is None
+
+
+def test_worktree_bare_main_repository_is_none(tmp_path: Path) -> None:
+    bare = tmp_path / "meta-avocado"
+    bare.mkdir()
+    wt = _fake_worktree(tmp_path, "gitdir: ADMIN", str(bare))
+    assert linked_worktree_at(wt) is None
+    assert meta_avocado_worktree(wt / "x.yml") is None
+
+
+def test_worktree_of_other_repo_not_meta_avocado(tmp_path: Path) -> None:
+    main = tmp_path / "avocado-os"
+    (main / ".git").mkdir(parents=True)
+    wt = _fake_worktree(tmp_path, "gitdir: ADMIN", str(main / ".git"))
+    yml = wt / "m.yml"
+    yml.write_text("machine: x\n")
+    found = linked_worktree_of(yml)
+    assert found is not None
+    assert found.main_checkout == main.resolve()
+    assert meta_avocado_worktree(yml) is None
+
+
+def test_worktree_wrapper_text_pins_meta_avocado_to_worktree(meta_avocado_worktree_layout) -> None:
+    lay = meta_avocado_worktree_layout
+    found = linked_worktree_at(lay.worktree)
+    assert found is not None
+    data = yaml.safe_load(worktree_wrapper_text(found, lay.kas_yaml))
+    assert data["repos"]["meta-avocado"]["path"] == str(lay.worktree)
+    assert data["header"]["includes"][0] == {"repo": "meta-avocado", "file": "kas/machine/m.yml"}
