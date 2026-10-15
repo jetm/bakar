@@ -15,7 +15,7 @@ from rich.table import Table
 
 import bakar.commands._app as _state
 from bakar import feed as feed_mod
-from bakar.bsp_detect import machine_from_yaml
+from bakar.bsp_detect import machine_from_yaml, meta_avocado_worktree
 from bakar.commands._app import app, console
 
 # Re-exported, not merely imported. ``build()`` below calls every one of these
@@ -348,6 +348,16 @@ def build(
         from bakar.commands._helpers import logical_path
         from bakar.steps.remote_dispatch import dispatch_remote_build
 
+        # A meta-avocado linked worktree usually lives outside the workspace, so
+        # it is mirrored as a second root. One already inside ws_root is left to
+        # the workspace transfer; dispatch refuses a root that holds a linked
+        # worktree within its first two levels, so only a deeper one gets here.
+        extra_roots: tuple[Path, ...] = ()
+        if kas_yaml is not None:
+            wt = meta_avocado_worktree(_on_main_yaml)
+            if wt is not None and not wt.checkout.resolve().is_relative_to(ws_root.resolve()):
+                extra_roots = (logical_path(wt.checkout),)
+
         rc = dispatch_remote_build(
             on,
             logical_path(ws_root),
@@ -355,6 +365,7 @@ def build(
             sys.argv[1:],
             sccache_dist=sccache_dist,
             assume_yes=yes,
+            extra_roots=extra_roots,
         )
         raise typer.Exit(code=rc)
     # Resolve the active preset (if any) before dispatch.

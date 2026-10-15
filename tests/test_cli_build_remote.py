@@ -400,3 +400,86 @@ def test_relative_workspace_script_uses_invoking_cwd(
     # cd into the pre-chdir invoking cwd (nxp/), not the resolved workspace root.
     assert f"cd {sub} ||" in script
     assert f"cd {ws} ||" not in script
+
+
+# ---------------------------------------------------------------------------
+# (j) A meta-avocado linked worktree is mirrored as a second root.
+# ---------------------------------------------------------------------------
+
+
+def _record_dispatch(monkeypatch: pytest.MonkeyPatch) -> list[tuple[tuple, dict]]:
+    calls: list[tuple[tuple, dict]] = []
+
+    def fake(*args, **kwargs) -> int:
+        calls.append((args, kwargs))
+        return 0
+
+    monkeypatch.setattr(rd, "dispatch_remote_build", fake)
+    return calls
+
+
+def _invoke_on(runner: _CliRunner, monkeypatch: pytest.MonkeyPatch, yml: str):
+    argv = ["build", yml, "--on", HOST, "--yes"]
+    monkeypatch.setattr(sys, "argv", ["bakar", *argv])
+    return runner.invoke(app, argv)
+
+
+def test_worktree_dispatch_passes_checkout_as_extra_root(
+    runner: _CliRunner,
+    meta_avocado_worktree_layout,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lay = meta_avocado_worktree_layout
+    calls = _record_dispatch(monkeypatch)
+    monkeypatch.chdir(lay.worktree)
+
+    result = _invoke_on(runner, monkeypatch, "kas/machine/m.yml")
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[1] == lay.ws
+    assert kwargs["extra_roots"] == (lay.worktree,)
+
+
+def test_worktree_main_checkout_dispatch_has_no_extra_roots(
+    runner: _CliRunner,
+    meta_avocado_worktree_layout,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lay = meta_avocado_worktree_layout
+    calls = _record_dispatch(monkeypatch)
+    monkeypatch.chdir(lay.ws)
+
+    result = _invoke_on(runner, monkeypatch, "meta-avocado/kas/machine/m.yml")
+
+    assert result.exit_code == 0, result.output
+    args, kwargs = calls[0]
+    assert args[1] == lay.ws
+    assert kwargs.get("extra_roots", ()) == ()
+
+
+def test_worktree_inside_workspace_needs_no_extra_root(
+    runner: _CliRunner,
+    meta_avocado_worktree_layout,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    lay = meta_avocado_worktree_layout
+    inner = lay.ws / ".wt" / "wt3"
+    inner.parent.mkdir(parents=True)
+    subprocess.run(
+        ["git", "-C", str(lay.main), "worktree", "add", "-q", str(inner), "-b", "wt3"],
+        check=True,
+        capture_output=True,
+    )
+    calls = _record_dispatch(monkeypatch)
+    monkeypatch.chdir(inner)
+
+    result = _invoke_on(runner, monkeypatch, "kas/machine/m.yml")
+
+    assert result.exit_code == 0, result.output
+    args, kwargs = calls[0]
+    assert args[1] == lay.ws
+    assert kwargs.get("extra_roots", ()) == ()
