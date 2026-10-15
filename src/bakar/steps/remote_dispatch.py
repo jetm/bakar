@@ -105,19 +105,30 @@ RSYNC_EXCLUDES: tuple[str, ...] = (
 
 
 def build_rsync_argv(
-    ws_root: Path, host: str, *, dry_run: bool = False, extra_excludes: tuple[str, ...] = ()
+    ws_root: Path,
+    host: str,
+    *,
+    dry_run: bool = False,
+    extra_excludes: tuple[str, ...] = (),
+    mkpath: bool = False,
 ) -> list[str]:
     """Construct the ``rsync`` argv mirroring ``ws_root`` to ``host``.
 
-    Returns ``rsync -a --delete`` (plus ``-n -i`` when ``dry_run``) followed by
+    Returns ``rsync -a --delete`` (plus ``--mkpath`` when ``mkpath``, and ``-n -i``
+    when ``dry_run``) followed by
     one ``--exclude=<pat>`` per :data:`RSYNC_EXCLUDES` entry, then one anchored
     ``--exclude=/<name>/`` per :paramref:`extra_excludes` entry (remote-only
     top-level dirs the local side does not carry, kept out of ``--delete`` so a
     remote checkout is preserved), and finally the source ``<ws_root>/`` and
     destination ``<host>:<ws_root>/`` (same absolute path, trailing slashes so
-    directory contents map 1:1).
+    directory contents map 1:1). ``mkpath`` is for a mirror root whose parent
+    directories may not exist on the remote yet: without it rsync creates only
+    the last path component and exits 11 on a missing parent, after the
+    workspace root was already mirrored.
     """
     argv = ["rsync", "-a", "--delete"]
+    if mkpath:
+        argv += ["--mkpath"]
     if dry_run:
         argv += ["-n", "-i"]
     argv += [f"--exclude={pat}" for pat in RSYNC_EXCLUDES]
@@ -409,6 +420,11 @@ def _child_dirs(directory: Path) -> list[Path]:
         return []
 
 
+# devtool-debt: scans two directory levels only, so a worktree three or more levels
+# below the root is not found and is mirrored with the rest. Ceiling: the layouts
+# seen so far, `<root>/<repo>/<name>`. Upgrade trigger: a mirror root that is the
+# parent of a worktree container (for example the parent of `.worktrees`), or any
+# report of a worktree mirrored from depth 3 or more.
 def find_linked_worktrees(root: Path) -> list[Path]:
     """Return the linked git worktrees among the first two directory levels under ``root``.
 
@@ -425,10 +441,26 @@ def find_linked_worktrees(root: Path) -> list[Path]:
     return sorted(found)
 
 
+# Directory names rsync never transfers (the `**/` entries of RSYNC_EXCLUDES) plus
+# the workspace-root build outputs, skipped by the size walk so it stays cheap on a
+# populated Yocto workspace and reports what a mirror would actually copy.
+_SIZE_SKIP_ANYWHERE = frozenset({"tmp", "sstate-cache", "downloads", ".venv", "__pycache__"})
+
+
 def _tree_size(root: Path) -> int:
-    """Sum ``lstat().st_size`` over the files under ``root`` without following symlinks."""
+    """Sum ``lstat().st_size`` over the files under ``root`` that a mirror would copy.
+
+    Symlinks are not followed, and the directories :data:`RSYNC_EXCLUDES` drops
+    (build outputs and caches) are not entered.
+    """
     total = 0
-    for dirpath, _dirs, files in os.walk(root, followlinks=False):
+    for dirpath, dirs, files in os.walk(root, followlinks=False):
+        at_root = Path(dirpath) == root
+        dirs[:] = [
+            d
+            for d in dirs
+            if d not in _SIZE_SKIP_ANYWHERE and not (at_root and (d in {"build", "ccache"} or d.startswith("build-")))
+        ]
         for name in files:
             try:
                 total += (Path(dirpath) / name).lstat().st_size
@@ -615,10 +647,8 @@ def _remote_only_dirs(ws_root: Path, host: str) -> list[str]:
     return sorted(set(remote) - local)
 
 
-def confirm_destructive_sync(
-    ws_root: Path, host: str, *, assume_yes: bool, extra_excludes: tuple[str, ...] = ()
-) -> bool:
-    """Preview the ``rsync --delete`` and gate the real transfer behind a prompt.
+def _preview_sync(ws_root: Path, host: str, extra_excludes: tuple[str, ...], *, mkpath: bool = False) -> bool:
+    """Print the ``rsync --delete`` preview for one root; False when the dry-run fails.
 
     Runs the dry-run rsync (``build_rsync_argv(..., dry_run=True)``) with the same
     ``extra_excludes`` as the real transfer so the preview reflects what
@@ -627,12 +657,10 @@ def confirm_destructive_sync(
     a one-line create/update count. This human gate layers on top of
     :func:`assert_safe_workspace`: the deletions catch a wrong exclude set that
     would still pass the path guard before ``--delete`` destroys remote data.
-    Returns True immediately under ``assume_yes``, else the caller's prompt answer.
-    A failed dry-run refuses the sync even under ``assume_yes`` (never run
-    ``--delete`` blind).
+    A failed dry-run returns False (never run ``--delete`` blind).
     """
     preview = subprocess.run(
-        build_rsync_argv(ws_root, host, dry_run=True, extra_excludes=extra_excludes),
+        build_rsync_argv(ws_root, host, dry_run=True, extra_excludes=extra_excludes, mkpath=mkpath),
         capture_output=True,
         text=True,
         check=False,
@@ -659,8 +687,34 @@ def confirm_destructive_sync(
     else:
         console.print("no deletions")
     console.print(f"{len(other)} files to create/update")
+    return True
+
+
+def confirm_destructive_sync(
+    ws_root: Path,
+    host: str,
+    *,
+    assume_yes: bool,
+    extra_excludes: tuple[str, ...] = (),
+    extra_roots: tuple[Path, ...] = (),
+) -> bool:
+    """Preview every ``rsync --delete`` and gate the real transfers behind one prompt.
+
+    Previews ``ws_root`` (with ``extra_excludes``) and then each of ``extra_roots``
+    (no excludes) via :func:`_preview_sync`; any failed preview refuses the whole
+    sync even under ``assume_yes`` (never run ``--delete`` blind). Only after all
+    previews succeed does it return True under ``assume_yes``, else ask a single
+    ``typer.confirm`` that names the root count when more than one is mirrored.
+    """
+    if not _preview_sync(ws_root, host, extra_excludes):
+        return False
+    for root in extra_roots:
+        if not _preview_sync(root, host, (), mkpath=True):
+            return False
     if assume_yes:
         return True
+    if extra_roots:
+        return typer.confirm(f"Mirror {1 + len(extra_roots)} roots to {host} (rsync --delete)?")
     return typer.confirm(f"Mirror the workspace to {host} (rsync --delete)?")
 
 
@@ -952,6 +1006,7 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
     *,
     sccache_dist: bool,
     assume_yes: bool,
+    extra_roots: tuple[Path, ...] = (),
 ) -> int:
     """Mirror the workspace to ``host`` and run the build there, in strict order.
 
@@ -961,7 +1016,9 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
     bakar id/version differs from local (a build with different code/overlays),
     unless ``assume_yes`` overrides; (3) confirm the destructive sync, aborting
     before any real transfer when declined; (4) run
-    the real ``rsync -a --delete``; (5) stream the remote build over
+    the real ``rsync -a --delete`` for ``ws_root`` and then for each of
+    ``extra_roots`` in order (a linked worktree outside the workspace), stopping
+    at the first failure; (5) stream the remote build over
     ``ssh <host> bash -s`` stdin; (6) surface the run-id + triage command;
     (7) return the remote build's exit code.
     """
@@ -974,6 +1031,9 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
     try:
         assert_safe_workspace(ws_root)
         assert_no_linked_worktrees(ws_root)
+        for root in extra_roots:
+            assert_safe_workspace(root)
+            assert_no_linked_worktrees(root)
     except ValueError as exc:
         console.print(f"[red]unsafe workspace for remote sync:[/] {exc}")
         return 1
@@ -1006,7 +1066,9 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
     if extra_excludes:
         console.print(f"preserving {len(extra_excludes)} remote-only dir(s) from --delete: {', '.join(extra_excludes)}")
 
-    if not confirm_destructive_sync(ws_root, host, assume_yes=assume_yes, extra_excludes=extra_excludes):
+    if not confirm_destructive_sync(
+        ws_root, host, assume_yes=assume_yes, extra_excludes=extra_excludes, extra_roots=extra_roots
+    ):
         console.print("[yellow]remote sync declined; nothing transferred.[/]")
         return 1
 
@@ -1014,6 +1076,12 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
     if rsync_rc != 0:
         console.print(f"[red]rsync failed (exit {rsync_rc})[/]; remote build not started.")
         return rsync_rc
+
+    for root in extra_roots:
+        root_rc = subprocess.run(build_rsync_argv(root, host, mkpath=True), check=False).returncode
+        if root_rc != 0:
+            console.print(f"[red]rsync failed for {root} (exit {root_rc})[/]; remote build not started.")
+            return root_rc
 
     env_vars = {k: v for k, v in os.environ.items() if k.startswith(("BAKAR_", "KAS_"))}
     script = build_remote_script(strip_dispatch_options(local_args), cwd, env_vars, sccache_off=not sccache_dist)

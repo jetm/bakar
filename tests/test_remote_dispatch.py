@@ -696,6 +696,128 @@ def test_dispatch_rsync_failure_skips_remote_build(fake_sp: FakeSubprocess) -> N
     assert not any(kind == "Popen" for kind, _ in fake_sp.calls)
 
 
+# --- dispatch_remote_build: extra roots -------------------------------------
+
+EXTRA = Path("/home/tiamarin/repos/work/meta-avocado")
+
+
+def _root_rsyncs(fake: FakeSubprocess, *, dry: bool) -> list[tuple[int, list[str]]]:
+    return [
+        (i, argv)
+        for i, (kind, argv) in enumerate(fake.calls)
+        if kind == "run" and argv[0] == "rsync" and (("-n" in argv) == dry)
+    ]
+
+
+def _dispatch_extra(assume_yes: bool = True) -> int:
+    return rd.dispatch_remote_build(
+        HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=assume_yes, extra_roots=(EXTRA,)
+    )
+
+
+def test_dispatch_extra_root_mirrors_after_ws_root_before_launch(fake_sp: FakeSubprocess) -> None:
+    _dispatch_extra()
+    real = _root_rsyncs(fake_sp, dry=False)
+    assert len(real) == 2
+    (ws_i, ws_argv), (extra_i, extra_argv) = real
+    popen_i = _index_of(fake_sp, lambda k, a: k == "Popen")
+    assert ws_i < extra_i < popen_i
+    assert ws_argv[-2:] == [f"{WS}/", f"{HOST}:{WS}/"]
+    # The extra root's argv ends with its own source and destination and carries
+    # no remote-only anchored exclude (--exclude=/<name>/): identical to the bare
+    # argv plus --mkpath, because its parent directories may not exist on the host
+    # yet and a plain rsync would exit 11 after the workspace root was mirrored.
+    assert extra_argv[-2:] == [f"{EXTRA}/", f"{HOST}:{EXTRA}/"]
+    assert extra_argv == rd.build_rsync_argv(EXTRA, HOST, mkpath=True)
+    assert "--mkpath" not in ws_argv
+
+
+def test_dispatch_extra_root_preview_and_transfer_both_create_missing_parents(fake_sp: FakeSubprocess) -> None:
+    _dispatch_extra()
+    dry_extra = [argv for _i, argv in _root_rsyncs(fake_sp, dry=True) if argv[-1].startswith(f"{HOST}:{EXTRA}")]
+    real_extra = [argv for _i, argv in _root_rsyncs(fake_sp, dry=False) if argv[-1].startswith(f"{HOST}:{EXTRA}")]
+    assert len(dry_extra) == 1
+    assert len(real_extra) == 1
+    assert "--mkpath" in dry_extra[0]
+    assert "--mkpath" in real_extra[0]
+
+
+def test_tree_size_skips_the_directories_a_mirror_does_not_copy(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.txt").write_bytes(b"x" * 100)
+    for skipped in ("build-qemux86-64/tmp", "build", "ccache", "src/tmp", "src/sstate-cache", "src/downloads"):
+        d = tmp_path / skipped
+        d.mkdir(parents=True)
+        (d / "big.bin").write_bytes(b"y" * 5000)
+    assert rd._tree_size(tmp_path) == 100
+
+
+def test_dispatch_extra_root_ws_rsync_failure_runs_no_extra_rsync(fake_sp: FakeSubprocess) -> None:
+    fake_sp.rsync_rc = 23
+    rc = _dispatch_extra()
+    assert rc == 23
+    assert len(_root_rsyncs(fake_sp, dry=False)) == 1
+    assert not any(kind == "Popen" for kind, _ in fake_sp.calls)
+
+
+def test_dispatch_extra_root_rsync_failure_skips_launch(fake_sp: FakeSubprocess) -> None:
+    orig = fake_sp.run
+
+    def run(argv, **kwargs):
+        if argv[0] == "rsync" and "-n" not in argv and str(argv[-1]).startswith(f"{HOST}:{EXTRA}"):
+            fake_sp.calls.append(("run", list(argv)))
+            fake_sp.run_inputs.append(None)
+            return _Result(12)
+        return orig(argv, **kwargs)
+
+    fake_sp.run = run  # type: ignore[method-assign]
+    assert _dispatch_extra() == 12
+    assert not any(kind == "Popen" for kind, _ in fake_sp.calls)
+
+
+def test_dispatch_extra_root_dry_run_failure_runs_no_real_rsync_under_yes(fake_sp: FakeSubprocess) -> None:
+    orig = fake_sp.run
+
+    def run(argv, **kwargs):
+        if argv[0] == "rsync" and "-n" in argv and str(argv[-1]).startswith(f"{HOST}:{EXTRA}"):
+            fake_sp.calls.append(("run", list(argv)))
+            fake_sp.run_inputs.append(None)
+            return _Result(23)
+        return orig(argv, **kwargs)
+
+    fake_sp.run = run  # type: ignore[method-assign]
+    assert _dispatch_extra(assume_yes=True) != 0
+    assert _root_rsyncs(fake_sp, dry=False) == []
+    assert not any(kind == "Popen" for kind, _ in fake_sp.calls)
+
+
+def test_dispatch_extra_root_single_confirm_after_both_previews(
+    fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prompts: list[tuple[int, str]] = []
+
+    def confirm(msg, *a, **k):
+        prompts.append((len(fake_sp.calls), msg))
+        return True
+
+    monkeypatch.setattr(rd.typer, "confirm", confirm)
+    _dispatch_extra(assume_yes=False)
+    assert len(prompts) == 1
+    previews = _root_rsyncs(fake_sp, dry=True)
+    assert len(previews) == 2
+    assert previews[-1][0] < prompts[0][0] <= _root_rsyncs(fake_sp, dry=False)[0][0]
+    assert "2 roots" in prompts[0][1]
+
+
+def test_dispatch_extra_root_declined_confirm_runs_no_real_rsync(
+    fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(rd.typer, "confirm", lambda *a, **k: False)
+    assert _dispatch_extra(assume_yes=False) != 0
+    assert _root_rsyncs(fake_sp, dry=False) == []
+    assert len(_root_rsyncs(fake_sp, dry=True)) == 2
+
+
 # --- dispatch_remote_build: exit propagation and script construction --------
 
 
@@ -1583,7 +1705,10 @@ def test_dispatch_refuses_linked_worktree_root_even_with_assume_yes(
     assert rc == 1
     assert "unsafeworkspaceforremotesync:" in out
     assert "".join(str(layout.worktree).split()) in out
-    assert any(c.isdigit() for c in out.split("(", 1)[1][:6])
+    # The refusal names the root's real on-disk size, not merely some number.
+    size = rd._tree_size(root)
+    assert size > 0
+    assert "".join(f"({rd.fmt_bytes(size)})".split()) in out
     assert _no_ssh_or_rsync(fake_sp)
     assert fake_sp.calls == []
 
