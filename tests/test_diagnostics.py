@@ -1079,6 +1079,101 @@ def test_check_kas_yaml_syntax_runs_in_the_workspace(monkeypatch: pytest.MonkeyP
     assert captured["env"]["KAS_WORK_DIR"] == str(cfg.workspace)
 
 
+def _worktree_cfg(layout, yaml_path: Path) -> BuildConfig:  # type: ignore[no-untyped-def]
+    return dataclasses.replace(_kas_yaml_cfg(yaml_path), workspace=layout.ws)
+
+
+def test_check_kas_yaml_syntax_worktree_dumps_wrapper(
+    monkeypatch: pytest.MonkeyPatch, meta_avocado_worktree_layout
+) -> None:  # type: ignore[no-untyped-def]
+    layout = meta_avocado_worktree_layout
+    cfg = _worktree_cfg(layout, layout.kas_yaml)
+    captured: dict[str, object] = {}
+
+    def fake_run(argv, **kwargs):  # type: ignore[no-untyped-def]
+        captured["argv"] = argv
+        captured["cwd"] = kwargs.get("cwd")
+        captured["env"] = kwargs.get("env")
+        captured["content"] = Path(argv[2]).read_text()
+        return _mock_run("", returncode=0)
+
+    monkeypatch.setattr("bakar.diagnostics.subprocess.run", fake_run)
+    monkeypatch.setattr("bakar.diagnostics.shutil.which", lambda _name: "/usr/bin/kas")
+    result = check_kas_yaml_syntax(cfg)
+    dumped = Path(captured["argv"][2])  # type: ignore[index]
+    assert dumped.name == "avocado-wrapper.yml"
+    assert dumped != layout.kas_yaml
+    assert str(layout.worktree.resolve()) in captured["content"]  # type: ignore[operator]
+    assert captured["cwd"] == cfg.workspace
+    assert captured["env"]["KAS_WORK_DIR"] == str(cfg.workspace)  # type: ignore[index]
+    assert result.status is Status.PASS
+    assert str(layout.kas_yaml) in result.message
+    assert "avocado-wrapper" not in result.message
+
+
+def test_check_kas_yaml_syntax_main_checkout_dumps_kas_file(
+    monkeypatch: pytest.MonkeyPatch, meta_avocado_worktree_layout
+) -> None:  # type: ignore[no-untyped-def]
+    layout = meta_avocado_worktree_layout
+    main_yaml = layout.main / "kas" / "machine" / "m.yml"
+    cfg = _worktree_cfg(layout, main_yaml)
+    captured: dict[str, object] = {}
+
+    def fake_run(argv, **_kwargs):  # type: ignore[no-untyped-def]
+        captured["argv"] = argv
+        return _mock_run("", returncode=0)
+
+    monkeypatch.setattr("bakar.diagnostics.subprocess.run", fake_run)
+    monkeypatch.setattr("bakar.diagnostics.shutil.which", lambda _name: "/usr/bin/kas")
+    assert check_kas_yaml_syntax(cfg).status is Status.PASS
+    assert captured["argv"] == ["kas", "dump", str(main_yaml)]
+
+
+def test_check_kas_yaml_syntax_worktree_fail(monkeypatch: pytest.MonkeyPatch, meta_avocado_worktree_layout) -> None:  # type: ignore[no-untyped-def]
+    layout = meta_avocado_worktree_layout
+    cfg = _worktree_cfg(layout, layout.kas_yaml)
+
+    def fake_run(argv, **_kwargs):  # type: ignore[no-untyped-def]
+        return subprocess.CompletedProcess(
+            args=argv,
+            returncode=1,
+            stdout="",
+            stderr=f"2026-01-01 00:00:00 - ERROR    - Include file missing from {argv[2]}\n",
+        )
+
+    monkeypatch.setattr("bakar.diagnostics.subprocess.run", fake_run)
+    monkeypatch.setattr("bakar.diagnostics.shutil.which", lambda _name: "/usr/bin/kas")
+    result = check_kas_yaml_syntax(cfg)
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert str(layout.kas_yaml) in result.message
+    assert "avocado-wrapper" not in result.message
+
+
+def test_check_kas_yaml_syntax_worktree_include_only_in_worktree(
+    monkeypatch: pytest.MonkeyPatch, meta_avocado_worktree_layout
+) -> None:  # type: ignore[no-untyped-def]
+    layout = meta_avocado_worktree_layout
+    entry = layout.worktree / "kas" / "entry.yml"
+    entry.write_text("header:\n  version: 16\n  includes:\n    - kas/only-in-wt.yml\n")
+    (layout.worktree / "kas" / "only-in-wt.yml").write_text("header:\n  version: 16\n")
+    cfg = _worktree_cfg(layout, entry)
+    captured: dict[str, str] = {}
+
+    def fake_run(argv, **_kwargs):  # type: ignore[no-untyped-def]
+        captured["content"] = Path(argv[2]).read_text()
+        return _mock_run("", returncode=0)
+
+    monkeypatch.setattr("bakar.diagnostics.subprocess.run", fake_run)
+    monkeypatch.setattr("bakar.diagnostics.shutil.which", lambda _name: "/usr/bin/kas")
+    assert check_kas_yaml_syntax(cfg).status is Status.PASS
+    import yaml
+
+    include = yaml.safe_load(captured["content"])["header"]["includes"][0]
+    assert include == {"repo": "meta-avocado", "file": "kas/entry.yml"}
+    assert not (layout.main / "kas" / "only-in-wt.yml").exists()
+
+
 def test_check_kas_yaml_syntax_invalid(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Mocked ``kas dump`` exits 1 -> FAIL at BLOCK; first stderr line surfaces in message."""
     yaml_path = tmp_path / "broken.yml"

@@ -41,6 +41,7 @@ from rich.markup import escape
 # through ``bakar.diagnostics`` with a function-body deferred import to break a
 # cycle, so the name has to stay reachable at this path.
 from bakar import build_scope, mounts, native_ledger, native_provenance, pin_state
+from bakar.bsp_detect import meta_avocado_worktree, worktree_wrapper_text
 
 # ``resolve_buildtools_dir`` has no reader in this module: setup/actions/tools.py
 # imports it through ``bakar.diagnostics``, so the name has to stay reachable at
@@ -2464,15 +2465,19 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
             Severity.BLOCK,
             "kas binary not on host PATH; container-mode workspace, deferring to in-container parse",
         )
-    try:
+    # A kas file inside a linked meta-avocado worktree is validated through the
+    # same wrapper the build uses, so its includes resolve against the worktree.
+    wt = meta_avocado_worktree(kas_yaml)
+
+    def _dump(target: Path) -> subprocess.CompletedProcess[str]:
         # Pin KAS_WORK_DIR (and cwd) to the workspace so kas validates the
         # workspace's repo checkouts, not whatever repos happen to sit under the
         # process cwd. Without this, a build invoked from a subdir (e.g. the
         # per-machine build-<x>/ dir) makes kas default KAS_WORK_DIR to that
         # subdir and trip on stale clones left there, failing an otherwise-valid
         # YAML on a spurious `git remote set-url` error.
-        out = subprocess.run(
-            ["kas", "dump", str(kas_yaml)],
+        return subprocess.run(
+            ["kas", "dump", str(target)],
             capture_output=True,
             text=True,
             timeout=15,
@@ -2480,10 +2485,23 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
             cwd=cfg.workspace,
             env={**os.environ, "KAS_WORK_DIR": str(cfg.workspace)},
         )
+
+    try:
+        if wt is None:
+            # The common case dumps the user's file directly and touches no
+            # temporary directory, so an unusable TMPDIR cannot affect it.
+            wrapper_path = str(kas_yaml)
+            out = _dump(kas_yaml)
+        else:
+            with tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp) / "avocado-wrapper.yml"
+                target.write_text(worktree_wrapper_text(wt, kas_yaml))
+                wrapper_path = str(target)
+                out = _dump(target)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return _skip(name, Severity.BLOCK, f"kas unavailable: {exc}")
     if out.returncode != 0:
-        stderr_lines = out.stderr.splitlines()
+        stderr_lines = [line.replace(wrapper_path, str(kas_yaml)) for line in out.stderr.splitlines()]
         # kas emits INFO/WARNING lines before ERROR lines; find the first ERROR.
         error_line = next((line for line in stderr_lines if " - ERROR" in line), None)
         first_line = error_line or next(
