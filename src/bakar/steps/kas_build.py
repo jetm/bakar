@@ -66,6 +66,7 @@ from bakar import (
     sccache_server,
     task_timings,
 )
+from bakar.bsp_detect import meta_avocado_worktree, worktree_wrapper_text
 from bakar.config import GENERATED_BUILD_YAML, BuildConfig
 from bakar.diagnostics import (
     BUILDTOOLS_DIR_ENV,
@@ -222,6 +223,13 @@ def _write_meta_avocado_wrapper(cfg: BuildConfig, kas_yaml: Path) -> Path:
 
     Returns the wrapper path (``bsp_root/avocado-wrapper.yml``).
     """
+    wt = meta_avocado_worktree(kas_yaml)
+    if wt is not None:
+        # A linked worktree's directory name is not the repo name, so the
+        # wrapper must pin meta-avocado to the worktree's absolute path.
+        wt_wrapper = cfg.bsp_root / "avocado-wrapper.yml"
+        wt_wrapper.write_text(worktree_wrapper_text(wt, kas_yaml), encoding="utf-8")
+        return wt_wrapper
     abs_yaml = kas_yaml.resolve()
     repo_dir: Path | None = None
     for parent in [abs_yaml, *abs_yaml.parents]:

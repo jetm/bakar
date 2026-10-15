@@ -250,6 +250,33 @@ def test_write_meta_avocado_wrapper_raises_outside_meta_avocado(tmp_path: Path) 
         _write_meta_avocado_wrapper(cfg, stray)
 
 
+def test_write_meta_avocado_wrapper_worktree_pins_absolute_path(meta_avocado_worktree_layout) -> None:
+    """A kas file in a linked worktree yields an absolute path under repo ``meta-avocado``."""
+    layout = meta_avocado_worktree_layout
+    cfg = BuildConfig(
+        workspace=layout.ws,
+        bsp_family="generic",  # type: ignore[arg-type]
+        machine="generic",
+        distro="generic",
+        image="generic",
+        manifest="",
+        repo_url="",
+        repo_branch="",
+        kas_container_image="jetm/kas-build-env:latest",
+        kas_yaml_override=layout.kas_yaml,
+    )
+    assert cfg.bsp_root == layout.ws / "build-m"
+    cfg.bsp_root.mkdir(parents=True, exist_ok=True)
+
+    wrapper = _write_meta_avocado_wrapper(cfg, layout.kas_yaml)
+
+    assert wrapper == cfg.bsp_root / "avocado-wrapper.yml"
+    data = yaml.safe_load(wrapper.read_text(encoding="utf-8"))
+    assert data["repos"] == {"meta-avocado": {"path": str(layout.worktree)}}
+    assert data["header"]["includes"] == [{"repo": "meta-avocado", "file": "kas/machine/m.yml"}]
+    assert "wt1" not in data["repos"]
+
+
 # ---------------------------------------------------------------------------
 # _resolve_user_yaml
 # ---------------------------------------------------------------------------
