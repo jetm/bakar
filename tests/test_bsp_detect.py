@@ -501,3 +501,82 @@ def test_worktree_wrapper_text_pins_meta_avocado_to_worktree(meta_avocado_worktr
     data = yaml.safe_load(worktree_wrapper_text(found, lay.kas_yaml))
     assert data["repos"]["meta-avocado"]["path"] == str(lay.worktree)
     assert data["header"]["includes"][0] == {"repo": "meta-avocado", "file": "kas/machine/m.yml"}
+
+
+def test_worktree_wrapper_text_quotes_a_kas_path_that_is_not_plain_yaml(meta_avocado_worktree_layout) -> None:
+    """A kas file name with ``: `` or `` #`` must reach kas as one string, not as YAML structure."""
+    lay = meta_avocado_worktree_layout
+    found = linked_worktree_at(lay.worktree)
+    assert found is not None
+    odd = lay.worktree / "kas" / "machine" / "a: b #c.yml"
+    odd.write_text("machine: x\n")
+    data = yaml.safe_load(worktree_wrapper_text(found, odd))
+    assert data["header"]["includes"][0] == {"repo": "meta-avocado", "file": "kas/machine/a: b #c.yml"}
+
+
+# --- worktree-aware workspace detection ------------------------------------
+
+
+def _git(*args: str) -> None:
+    import subprocess
+
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+    ident = ["-c", "user.email=t@example.invalid", "-c", "user.name=t"]
+    subprocess.run(["git", *ident, *args], check=True, capture_output=True, env=env)
+
+
+def test_worktree_detect_kas_workspace_returns_main_parent(meta_avocado_worktree_layout) -> None:
+    lay = meta_avocado_worktree_layout
+    assert detect_kas_workspace(lay.kas_yaml) == lay.ws.resolve()
+    assert detect_kas_workspace(lay.kas_yaml).name != ".worktrees"
+
+
+def test_worktree_main_checkout_still_resolves_to_ws(meta_avocado_worktree_layout) -> None:
+    lay = meta_avocado_worktree_layout
+    assert detect_kas_workspace(lay.main / "kas" / "machine" / "m.yml") == lay.ws.resolve()
+
+
+def test_worktree_without_meta_avocado_component_resolves_to_ws(meta_avocado_worktree_layout, tmp_path: Path) -> None:
+    lay = meta_avocado_worktree_layout
+    wt2 = tmp_path / "elsewhere" / "wt2"
+    wt2.parent.mkdir(parents=True)
+    _git("-C", str(lay.main), "worktree", "add", "-q", str(wt2), "-b", "wt2")
+    kas = wt2 / "kas" / "machine" / "m.yml"
+    assert "meta-avocado" not in kas.resolve().parts
+    assert detect_kas_workspace(kas) == lay.ws.resolve()
+    assert is_meta_avocado_yaml(kas) is True
+
+
+def test_worktree_of_other_repo_name_uses_existing_walk(tmp_path: Path) -> None:
+    main = tmp_path / "ws" / "avocado-os"
+    (main / "kas").mkdir(parents=True)
+    _git("init", "-q", "-b", "main", str(main))
+    (main / "kas" / "m.yml").write_text("machine: x\n")
+    _git("-C", str(main), "add", "-A")
+    _git("-C", str(main), "commit", "-q", "-m", "i")
+    wt = tmp_path / "other" / "wt"
+    wt.parent.mkdir()
+    _git("-C", str(main), "worktree", "add", "-q", str(wt), "-b", "wt")
+    kas = wt / "kas" / "m.yml"
+    assert meta_avocado_worktree(kas) is None
+    assert detect_kas_workspace(kas) == kas.resolve().parent
+    assert is_meta_avocado_yaml(kas) is False
+
+
+def test_worktree_workspace_resolves_oe_core_release_key(meta_avocado_worktree_layout) -> None:
+    from bakar.buildtools import resolve_oe_core_release_key
+
+    lay = meta_avocado_worktree_layout
+    assert resolve_oe_core_release_key(detect_kas_workspace(lay.kas_yaml)) == "wrynose"
+
+
+def test_worktree_include_follows_worktree_copy_not_main(meta_avocado_worktree_layout) -> None:
+    lay = meta_avocado_worktree_layout
+    (lay.main / "kas" / "inc.yml").write_text("machine: main-machine\n")
+    (lay.worktree / "kas" / "inc.yml").write_text("machine: wt-machine\n")
+    entry = lay.worktree / "kas" / "entry.yml"
+    entry.write_text(
+        "header:\n  version: 16\n  includes:\n    - repo: meta-avocado\n      file: kas/inc.yml\n"
+        "repos:\n  meta-avocado:\n    path: meta-avocado\n"
+    )
+    assert machine_from_yaml(entry) == "wt-machine"

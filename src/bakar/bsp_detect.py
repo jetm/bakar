@@ -222,6 +222,9 @@ def _include_target(inc: object, yaml_path: Path, data: dict) -> Path | None:
     repo_rel = entry.get("path") if isinstance(entry, dict) else None
     if not isinstance(repo_rel, str):
         return None
+    wt = meta_avocado_worktree(yaml_path)
+    if wt is not None and isinstance(entry, dict) and "url" not in entry and repo_name == wt.main_checkout.name:
+        return wt.checkout / file_rel
     return detect_kas_workspace(yaml_path) / repo_rel / file_rel
 
 
@@ -261,9 +264,11 @@ def is_meta_avocado_yaml(yaml_path: Path) -> bool:
     ``init-build``-style build-directory setup before kas can run.
     """
     try:
-        return "meta-avocado" in yaml_path.resolve().parts
+        if "meta-avocado" in yaml_path.resolve().parts:
+            return True
     except OSError:
         return False
+    return meta_avocado_worktree(yaml_path) is not None
 
 
 def detect_kas_workspace(yaml_path: Path) -> Path:
@@ -287,6 +292,9 @@ def detect_kas_workspace(yaml_path: Path) -> Path:
     For every other generic kas YAML the workspace is simply the YAML's
     parent directory (preserving the existing behavior).
     """
+    wt = meta_avocado_worktree(yaml_path)
+    if wt is not None:
+        return wt.main_checkout.parent
     resolved = yaml_path.resolve()
     for parent in resolved.parents:
         if parent.name == "meta-avocado":
@@ -372,7 +380,7 @@ def worktree_wrapper_text(worktree: LinkedWorktree, kas_yaml: Path) -> str:
         "  version: 16\n"
         "  includes:\n"
         "    - repo: meta-avocado\n"
-        f"      file: {rel}\n"
+        f"      file: {json.dumps(rel)}\n"
         "repos:\n"
         "  meta-avocado:\n"
         f"    path: {json.dumps(str(worktree.checkout))}\n"
