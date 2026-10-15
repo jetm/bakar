@@ -1562,3 +1562,57 @@ def test_every_ssh_invocation_delivers_its_payload_via_bash_s() -> None:
         "ssh invocation(s) pass a command string to the remote LOGIN shell (fish) "
         f"instead of delivering it to `bash -s` over stdin: {offenders}"
     )
+
+
+# --- linked worktree refusal ------------------------------------------------
+
+
+def _no_ssh_or_rsync(fake: FakeSubprocess) -> bool:
+    return not any(argv[0] in ("ssh", "rsync") for _, argv in fake.calls)
+
+
+def test_dispatch_refuses_linked_worktree_root_even_with_assume_yes(
+    fake_sp: FakeSubprocess, meta_avocado_worktree_layout, capsys: pytest.CaptureFixture[str]
+) -> None:
+    layout = meta_avocado_worktree_layout
+    root = layout.worktree.parent.parent
+    rc = rd.dispatch_remote_build(
+        HOST, root, root, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True
+    )
+    out = "".join(capsys.readouterr().err.split())
+    assert rc == 1
+    assert "unsafeworkspaceforremotesync:" in out
+    assert "".join(str(layout.worktree).split()) in out
+    assert any(c.isdigit() for c in out.split("(", 1)[1][:6])
+    assert _no_ssh_or_rsync(fake_sp)
+    assert fake_sp.calls == []
+
+
+def test_find_linked_worktrees_names_every_worktree(meta_avocado_worktree_layout) -> None:
+    layout = meta_avocado_worktree_layout
+    assert rd.find_linked_worktrees(layout.worktree.parent.parent) == [layout.worktree]
+
+
+def test_linked_worktree_submodule_shaped_git_file_not_refused(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    sub = root / "sub"
+    sub.mkdir(parents=True)
+    admin = tmp_path / "main" / ".git" / "modules" / "sub"
+    admin.mkdir(parents=True)
+    (sub / ".git").write_text(f"gitdir: {admin}\n")
+    assert rd.find_linked_worktrees(root) == []
+    rd.assert_no_linked_worktrees(root)
+
+
+def test_linked_worktree_plain_main_checkouts_proceed(fake_sp: FakeSubprocess, tmp_path: Path) -> None:
+    root = tmp_path / "ws"
+    for name in ("a", "b"):
+        (root / name / ".git").mkdir(parents=True)
+    assert rd.find_linked_worktrees(root) == []
+    fake_sp.popen_rc = 0
+    fake_sp.find_stdout = f"1.0 {root}/build/runs/20260716-000000\n"
+    rc = rd.dispatch_remote_build(
+        HOST, root, root, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True
+    )
+    assert rc == 0
+    assert not _no_ssh_or_rsync(fake_sp)

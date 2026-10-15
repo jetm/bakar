@@ -37,7 +37,9 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
+from bakar.bsp_detect import linked_worktree_at
 from bakar.config import WORKSPACE_FEED_DIRNAME, WORKSPACE_FEED_STAGE_DIRNAME
+from bakar.fmt import fmt_bytes
 
 # stderr so `bakar build --on <host> > log` keeps chrome (preview, prompts,
 # run-id) out of the piped build log, matching the project convention in
@@ -396,6 +398,61 @@ def assert_safe_workspace(ws_root: Path) -> None:
         raise ValueError(f"workspace root is the filesystem root: {ws_root}")
     if resolved == Path.home().resolve():
         raise ValueError(f"workspace root is the home directory: {ws_root}")
+
+
+def _child_dirs(directory: Path) -> list[Path]:
+    """Return the subdirectories of ``directory``, or ``[]`` when it cannot be read."""
+    try:
+        with os.scandir(directory) as it:
+            return [Path(e.path) for e in it if e.is_dir(follow_symlinks=False)]
+    except OSError:
+        return []
+
+
+def find_linked_worktrees(root: Path) -> list[Path]:
+    """Return the linked git worktrees among the first two directory levels under ``root``.
+
+    Detection reads each directory's ``.git`` (via ``linked_worktree_at``), never
+    its name. Children of a first-level directory are listed only when that
+    directory is not a symlink, and nothing deeper is visited.
+    """
+    found: list[Path] = []
+    for first in _child_dirs(root):
+        candidates = [first]
+        if not first.is_symlink():
+            candidates.extend(_child_dirs(first))
+        found.extend(d for d in candidates if linked_worktree_at(d) is not None)
+    return sorted(found)
+
+
+def _tree_size(root: Path) -> int:
+    """Sum ``lstat().st_size`` over the files under ``root`` without following symlinks."""
+    total = 0
+    for dirpath, _dirs, files in os.walk(root, followlinks=False):
+        for name in files:
+            try:
+                total += (Path(dirpath) / name).lstat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def assert_no_linked_worktrees(root: Path) -> None:
+    """Refuse to mirror a root holding linked worktrees.
+
+    A linked worktree's ``.git`` file points at an admin directory in the main
+    checkout, so a mirror either drags the whole tree along or leaves the remote
+    copy with a dangling pointer. Raises :class:`ValueError` naming every
+    worktree and the root's on-disk size.
+    """
+    found = find_linked_worktrees(root)
+    if not found:
+        return
+    listing = "\n".join(f"  {p}" for p in found)
+    raise ValueError(
+        f"{root} ({fmt_bytes(_tree_size(root))}) contains {len(found)} linked git worktree(s); "
+        f"mirroring it would copy them with --delete:\n{listing}"
+    )
 
 
 _RUN_ID_RE = re.compile(r"bakar triage (\S+)")
@@ -916,6 +973,7 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
 
     try:
         assert_safe_workspace(ws_root)
+        assert_no_linked_worktrees(ws_root)
     except ValueError as exc:
         console.print(f"[red]unsafe workspace for remote sync:[/] {exc}")
         return 1
