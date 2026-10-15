@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `bakar build --on <host>` now refuses a mirror root that contains linked worktrees. The refusal happens before the preflight or any transfer, names the root, its size on disk and each worktree, and `--yes` does not bypass it, because `rsync --delete` of a tree holding several worktrees would copy every one of them to the remote.
+- The doctor's `disk-free` failure message now states its threshold, for example `workspace@/path free=45.0G < 50G threshold`, so a failing check shows how much space it wanted.
+
+### Changed
+- `bakar build --on <host>` from a linked meta-avocado worktree now mirrors the main workspace first and then the worktree checkout, each to the same path on the remote and each with its own `rsync --delete` preview. One confirmation prompt covers both, and if the first transfer fails the second does not run and the remote build does not start.
+
+### Fixed
+- Fixed a build started from a linked meta-avocado worktree resolving its workspace to the directory that holds all the worktrees. The doctor then failed because the sibling layers and `.bakar.toml` were not there, and `--on` mirrored every worktree in that directory. The workspace now resolves to the main checkout's parent, and the generated kas wrapper declares `meta-avocado` at the worktree's path so kas reads the worktree's configuration.
+
 ## [0.36.3] - 2026-10-07
 
 ### Added

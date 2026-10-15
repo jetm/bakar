@@ -408,11 +408,20 @@ bakar --sccache-dist build meta-avocado/kas/machine/qemux86-64.yml --on pc2 --ye
    (e.g. oe-core's `meta/recipes-devtools/ccache/`): `/build/`, `/build-*/`,
    `/*/build/`, `/ccache/`, plus the depth-matched `**/tmp/`, `**/sstate-cache/`,
    `**/downloads/`, `**/.venv/`, `**/__pycache__/`, and `**/*.pyc`. NFS-mounted
-   shared caches live outside the workspace, so they are never in scope.
+   shared caches live outside the workspace, so they are never in scope. A build
+   started from a linked meta-avocado worktree mirrors the main workspace exactly
+   as a main-checkout dispatch does, then the worktree checkout to the same path,
+   in that order, because the worktree's git metadata lives in the main checkout.
+   A worktree that already sits inside the workspace root is not mirrored a second
+   time. A root that holds a linked worktree within its first two directory levels
+   is refused instead (see step 3), so this applies only to a deeper one.
 3. **Delete confirmation** - because `--delete` mutates the remote irreversibly,
-   bakar first runs an `rsync --delete --dry-run -i` preview and prompts for
-   confirmation before any real transfer. `--yes` (`-y`) bypasses the prompt for
-   non-interactive or scripted runs.
+   bakar first runs an `rsync --delete --dry-run -i` preview for every mirrored
+   root and prompts once for confirmation before any real transfer. `--yes`
+   (`-y`) bypasses the prompt for non-interactive or scripted runs. A mirror root
+   that contains a linked worktree is refused before any transfer with `unsafe
+   workspace for remote sync:`, listing the worktrees and the root's size, and
+   `--yes` does not bypass that refusal.
 4. **Remote build** - the build runs on the remote with sccache-dist forced
    **off** by default (`BAKAR_SCCACHE_DIST=0`), so a node that is normally an
    sccache-dist server runs as an independent worker (local ccache + shared
@@ -459,6 +468,11 @@ bakar --sccache-dist build meta-avocado/kas/machine/qemux86-64.yml --on pc2 --ye
 
 Stop a detached build with `bakar stop --on <host>` - see [stop.md](stop.md).
 Ctrl-C on the dispatching terminal no longer reaches it.
+
+A build from a linked worktree uses the main checkout's workspace and shares its
+`build-<machine>` directory. Same-machine builds serialize on the bitbake lock,
+kas moves the main workspace's pinned sibling layers to the worktree's pins, and
+`build-<machine>/avocado-bakar.yml` names whichever tree built last.
 
 A single `--on` dispatch opens up to five ssh connections (preflight, rsync's
 own ssh, the launch, the log follower, and the run-id discovery find). On a
