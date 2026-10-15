@@ -134,6 +134,29 @@ def test_meta_avocado_scripts_raises_naming_the_path_it_wanted(tmp_path) -> None
     assert str(tmp_path / "meta-avocado" / "scripts") in str(excinfo.value)
 
 
+def test_meta_avocado_scripts_uses_the_worktree_scripts(meta_avocado_worktree_layout) -> None:
+    """A kas file in a linked worktree yields the worktree's scripts, not main's."""
+    layout = meta_avocado_worktree_layout
+    (layout.main / "scripts").mkdir(exist_ok=True)
+    (layout.worktree / "scripts").mkdir(exist_ok=True)
+
+    assert meta_avocado_scripts(layout.kas_yaml) == layout.worktree / "scripts"
+
+
+def test_meta_avocado_scripts_worktree_without_scripts_raises(
+    meta_avocado_worktree_layout,
+) -> None:
+    """Main having scripts does not rescue a worktree that lacks them."""
+    layout = meta_avocado_worktree_layout
+    (layout.main / "scripts").mkdir(exist_ok=True)
+    assert not (layout.worktree / "scripts").exists()
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        meta_avocado_scripts(layout.kas_yaml)
+
+    assert str(layout.worktree / "scripts") in str(excinfo.value)
+
+
 def test_parse_repo_map_strips_the_releasever_prefix(tmp_path) -> None:
     """``repo=`` lines yield repo roots with the ``$releasever/`` prefix removed.
 

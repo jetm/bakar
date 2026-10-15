@@ -42,7 +42,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from bakar import feed_sbom
-from bakar.bsp_detect import detect_kas_workspace
+from bakar.bsp_detect import detect_kas_workspace, meta_avocado_worktree
 from bakar.config import FEED_STAGE_SUFFIX
 
 if TYPE_CHECKING:
@@ -151,7 +151,13 @@ def meta_avocado_scripts(yaml_path: Path) -> Path:
             and a sync that renders nothing while reporting success is worse
             than one that stops.
     """
-    scripts = detect_kas_workspace(yaml_path) / "meta-avocado" / "scripts"
+    wt = meta_avocado_worktree(yaml_path)
+    if wt is not None:
+        # A kas file inside a linked worktree is built from that checkout, so
+        # its scripts must come from it too, not from the main checkout.
+        scripts = wt.checkout / "scripts"
+    else:
+        scripts = detect_kas_workspace(yaml_path) / "meta-avocado" / "scripts"
     if not scripts.is_dir():
         raise FileNotFoundError(
             f"meta-avocado scripts not found at {scripts}. The local feed drives "
