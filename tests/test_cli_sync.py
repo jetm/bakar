@@ -456,3 +456,30 @@ def test_sync_ctx_sets_only_the_flag_passed(
         assert getattr(ctx, name) is want, (
             f"passing {flag} should set only {field}: _SyncCtx.{name} is {getattr(ctx, name)!r}"
         )
+
+
+@pytest.mark.parametrize(
+    ("family", "expected"),
+    [("nxp", "repo_sync"), ("qcom", "repo_sync"), ("ti", "ti_layertool")],
+)
+def test_sync_skip_label_follows_family(monkeypatch: pytest.MonkeyPatch, family: str, expected: str) -> None:
+    """A skipped sync step is labelled repo_sync for repo families (nxp, qcom), ti_layertool for ti."""
+    from dataclasses import replace
+
+    from bakar.commands.sync import _run_sync_body
+
+    synced = replace(
+        _state_needing_sync(family),
+        repo_initialized=True,
+        sources_populated=True,
+        repo_manifest_include="m.xml",
+        requested_manifest="m.xml",
+    )
+    monkeypatch.setattr("bakar.commands.sync.detect", lambda cfg: synced)
+    monkeypatch.setattr("bakar.commands.sync._run_doctor_gate", lambda *a, **k: None)
+    log = MagicMock()
+    _run_sync_body(MagicMock(), log, bsp=MagicMock(), family=family, effective_show_layers=False)
+    skipped = [c.args[0] for c in log.step_skip.call_args_list]
+    assert expected in skipped
+    if family == "qcom":
+        assert "ti_layertool" not in skipped

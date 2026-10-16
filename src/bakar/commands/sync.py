@@ -6,7 +6,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
@@ -26,6 +26,10 @@ from bakar.commands._helpers import (
 from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, ResolveRequest, resolve
 from bakar.observability import RunLogger
 from bakar.workspace import detect
+
+if TYPE_CHECKING:
+    from bakar.bsp_model import BspModel
+    from bakar.config import BuildConfig
 
 
 def _print_dry_run(cfg, family) -> None:
@@ -61,7 +65,14 @@ def _print_dry_run(cfg, family) -> None:
     print(f"command: {command}", file=sys.stderr)
 
 
-def _run_sync_body(cfg, log, *, bsp, family, effective_show_layers) -> None:
+def _run_sync_body(
+    cfg: BuildConfig,
+    log: RunLogger,
+    *,
+    bsp: BspModel,
+    family: str,
+    effective_show_layers: bool,
+) -> None:
     """Execute the sync steps inside an active RunLogger context."""
     _run_doctor_gate(cfg, log, bsp)
 
@@ -81,7 +92,7 @@ def _run_sync_body(cfg, log, *, bsp, family, effective_show_layers) -> None:
         bsp.sync_step(cfg, log, force_init=state.needs_full_reinit)
     else:
         log.step_skip(
-            "repo_sync" if family == "nxp" else "ti_layertool",
+            "repo_sync" if family in ("nxp", "qcom") else "ti_layertool",
             reason="already synced",
         )
 
