@@ -53,7 +53,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
-from rich.markup import escape
 
 from bakar import (
     build_scope,
@@ -1871,11 +1870,13 @@ def _peer_lock_reason(exc: LockHeldByPeerError) -> str:
     """Failure reason for a peer-held bitbake lock.
 
     An unattributable marker has only a placeholder host, so its own message is
-    logged: it names the marker path and the manual clear.
+    logged: it names the marker path and the manual clear. The message embeds a
+    build-directory path, so it goes through :func:`bakar.fmt.neutralize`, which
+    strips control characters as well as escaping markup.
     """
     if isinstance(exc, LockUnattributableError):
-        return escape(str(exc))
-    return f"bitbake lock claimed by peer host {escape(exc.host)} during acquire; aborting before launch"
+        return neutralize(exc)
+    return f"bitbake lock claimed by peer host {neutralize(exc.host)} during acquire; aborting before launch"
 
 
 def _finish_step(log: RunLogger, step: str, rc: int) -> None:

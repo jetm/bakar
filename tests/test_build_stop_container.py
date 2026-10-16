@@ -10,6 +10,7 @@ are patched on the ``build_stop`` module.
 
 from __future__ import annotations
 
+import subprocess
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -60,6 +61,7 @@ def _patch_runtime_seams(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     monkeypatch.setattr(build_stop, "_run_runtime", _recording_runtime(issued))
     monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", _record_sigint)
     monkeypatch.setattr(build_stop, "_container_liveness", lambda runtime, cid: build_stop._DEAD)
+    monkeypatch.setattr(build_stop, "_container_gone", lambda runtime, cid: True)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     return issued
 
@@ -135,6 +137,7 @@ def test_stop_container_ctrl_c_reaches_stop_kill_ladder(monkeypatch: pytest.Monk
         raise KeyboardInterrupt
 
     monkeypatch.setattr(build_stop, "_container_liveness", _ctrl_c)
+    monkeypatch.setattr(build_stop, "_container_gone", lambda runtime, cid: True)
 
     status = build_stop._stop_container("docker", "abc", build_stop._ContainerStopPlan(force=False, term_secs=5))
 
@@ -510,7 +513,7 @@ def test_stop_run_names_the_runtime_error_when_stop_and_kill_are_refused(
         return build_stop._RuntimeResult(args, 126, denied)
 
     monkeypatch.setattr(build_stop, "_run_runtime", _refuse)
-    monkeypatch.setattr(build_stop, "_container_liveness", lambda _rt, _cid: build_stop._ALIVE)
+    monkeypatch.setattr(build_stop, "_container_gone", lambda _rt, _cid: False)
     monkeypatch.setattr(build_stop, "_container_id_status", lambda _rt, _label: (build_stop._ALIVE, "cafef00d"))
 
     assert build_stop.stop_run(run_dir, force=True) is False
@@ -565,7 +568,7 @@ def test_stop_run_treats_an_already_gone_container_as_success(
         return build_stop._RuntimeResult(args, 1, "Error response from daemon: No such container: cafef00d")
 
     monkeypatch.setattr(build_stop, "_run_runtime", _gone)
-    monkeypatch.setattr(build_stop, "_container_liveness", lambda _rt, _cid: build_stop._ERROR)
+    monkeypatch.setattr(build_stop, "_container_gone", lambda _rt, _cid: True)
     statuses = iter([(build_stop._ALIVE, "cafef00d")])
     monkeypatch.setattr(
         build_stop, "_container_id_status", lambda _rt, _label: next(statuses, (build_stop._DEAD, None))
@@ -576,3 +579,125 @@ def test_stop_run_treats_an_already_gone_container_as_success(
     err = capsys.readouterr().err
     assert "stop incomplete" not in err
     assert err.splitlines().count("stopped") == 1
+
+
+# --- goneness is decided by listing the id, not by inspecting it ------------
+
+
+def _ps_result(stdout: str, rc: int = 0) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(["docker"], rc, stdout=stdout, stderr="")
+
+
+def test_container_gone_lists_by_id_including_stopped_containers(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[list[str]] = []
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        seen.append(args)
+        assert kwargs["timeout"] == build_stop._RUNTIME_QUERY_TIMEOUT_S
+        return _ps_result("")
+
+    monkeypatch.setattr(build_stop.subprocess, "run", fake_run)
+    assert build_stop._container_gone("docker", "cafef00d") is True
+    assert seen == [["docker", "ps", "-a", "-q", "--filter", "id=cafef00d"]]
+
+
+def test_container_gone_false_when_the_id_is_still_listed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(build_stop.subprocess, "run", lambda *_a, **_k: _ps_result("cafef00d\n"))
+    assert build_stop._container_gone("docker", "cafef00d") is False
+
+
+@pytest.mark.parametrize("failure", ["rc", "oserror", "timeout"])
+def test_container_gone_is_unknown_when_the_query_fails(monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    def fake_run(*_a: object, **_k: object) -> subprocess.CompletedProcess[str]:
+        if failure == "oserror":
+            raise FileNotFoundError("docker")
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired("docker", 1)
+        return _ps_result("", rc=1)
+
+    monkeypatch.setattr(build_stop.subprocess, "run", fake_run)
+    assert build_stop._container_gone("docker", "cafef00d") is None
+
+
+def test_stop_run_reports_stopped_when_rm_fails_but_ps_by_id_shows_it_gone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """kas-container runs with --rm: ``rm -f`` can lose the race with the runtime's own removal."""
+    run_dir = _container_run(tmp_path, monkeypatch)
+
+    def _rm_races_the_auto_remove(args: list[str]) -> build_stop._RuntimeResult:
+        if args[1] == "rm":
+            return build_stop._RuntimeResult(args, 1, "Error: removal of container cafef00d is already in progress")
+        return _runtime_ok(args)
+
+    monkeypatch.setattr(build_stop, "_run_runtime", _rm_races_the_auto_remove)
+    monkeypatch.setattr(build_stop.subprocess, "run", lambda *_a, **_k: _ps_result(""))
+    statuses = iter([(build_stop._ALIVE, "cafef00d")])
+    monkeypatch.setattr(
+        build_stop, "_container_id_status", lambda _rt, _label: next(statuses, (build_stop._DEAD, None))
+    )
+
+    assert build_stop.stop_run(run_dir, force=True) is True
+
+    err = capsys.readouterr().err
+    assert "stop incomplete" not in err
+    assert "already in progress" not in err
+    assert err.splitlines().count("stopped") == 1
+    assert not (run_dir / "build.pid").exists()
+
+
+def test_stop_container_reports_unknown_flag_failures_when_the_container_survives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runtime usage errors are ordinary failures: only goneness, not the text, decides."""
+
+    def _refuse(args: list[str]) -> build_stop._RuntimeResult:
+        return build_stop._RuntimeResult(args, 125, "unknown shorthand flag: 'x' in -x")
+
+    monkeypatch.setattr(build_stop, "_run_runtime", _refuse)
+    monkeypatch.setattr(build_stop, "_container_gone", lambda _rt, _cid: False)
+    plan = build_stop._ContainerStopPlan(force=True, term_secs=5)
+
+    assert build_stop._stop_container("docker", "abc", plan) == "incomplete"
+    assert len(plan.failures) == 3
+    assert all("unknown shorthand flag" in failure for failure in plan.failures)
+
+
+def test_stop_container_unknown_goneness_with_a_failed_command_is_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        build_stop, "_run_runtime", lambda args: build_stop._RuntimeResult(args, 1, "permission denied")
+    )
+    monkeypatch.setattr(build_stop, "_container_gone", lambda _rt, _cid: None)
+    plan = build_stop._ContainerStopPlan(force=True, term_secs=5)
+    assert build_stop._stop_container("docker", "abc", plan) == "incomplete"
+
+
+def test_incomplete_container_stop_leaves_bitbake_lock_and_socket_in_place(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The container mounts the build dir at /work: the host argv scan cannot see its cooker."""
+    run_dir = _container_run(tmp_path, monkeypatch)
+    topdir = run_dir.parent.parent
+    (topdir / "bitbake.lock").write_text("1\n")
+    (topdir / "bitbake.sock").write_text("")
+    monkeypatch.setattr(build_stop, "_run_runtime", lambda args: build_stop._RuntimeResult(args, 126, "denied"))
+    monkeypatch.setattr(build_stop, "_container_gone", lambda _rt, _cid: False)
+    monkeypatch.setattr(build_stop, "_container_id_status", lambda _rt, _label: (build_stop._ALIVE, "cafef00d"))
+    cleanups: list[object] = []
+    real_cleanup = build_stop._report_stale_cleanup
+    monkeypatch.setattr(
+        build_stop, "_report_stale_cleanup", lambda *a, **k: cleanups.append(a) or real_cleanup(*a, **k)
+    )
+
+    assert build_stop.stop_run(run_dir, force=True) is False
+
+    assert cleanups == []
+    assert (topdir / "bitbake.lock").exists()
+    assert (topdir / "bitbake.sock").exists()
+    assert "build container is still running" in capsys.readouterr().err

@@ -13,7 +13,12 @@ from bakar import build_stop
 from bakar.config import BuildConfig
 from bakar.observability import RunLogger
 from bakar.steps import kas_lock
-from bakar.steps.kas_lock import LockHeldByPeerError, LockUnattributableError, lock_owner_marker
+from bakar.steps.kas_lock import (
+    LockHeldByPeerError,
+    LockMarkerUnsupportedError,
+    LockUnattributableError,
+    lock_owner_marker,
+)
 
 
 def _cfg(workspace: Path) -> BuildConfig:
@@ -107,20 +112,41 @@ def test_link_lost_reply_with_nlink_two_is_success(
     assert marker.read_text() == "this-host"
 
 
+@pytest.mark.parametrize("err", [errno.EPERM, errno.EIO])
 def test_link_failure_with_nlink_one_raises(
-    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch, err: int
 ) -> None:
+    """A link failure that did not publish the marker is a clear refusal, never a raw OSError."""
     cfg, build, _log = env
     marker = build_stop.lock_marker_path(cfg)
 
     def fail(src: os.PathLike[str], dst: os.PathLike[str]) -> None:
-        raise OSError(errno.EIO, "no links")
+        raise OSError(err, "no links")
 
     monkeypatch.setattr(os, "link", fail)
-    with pytest.raises(OSError, match="no links"):
+    with pytest.raises(LockMarkerUnsupportedError) as ei:
         kas_lock._create_marker_exclusive(marker, "this-host")
+    assert isinstance(ei.value, LockHeldByPeerError)
+    assert os.strerror(err) in str(ei.value)
+    assert str(marker) in str(ei.value)
     assert not marker.exists()
     assert list(build.iterdir()) == []
+
+
+def test_link_lost_reply_with_other_host_marker_is_refused(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, _build, _log = env
+    marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("peer")
+
+    def fail(src: os.PathLike[str], dst: os.PathLike[str]) -> None:
+        raise OSError(errno.EIO, "reply lost")
+
+    monkeypatch.setattr(os, "link", fail)
+    with pytest.raises(LockMarkerUnsupportedError):
+        kas_lock._create_marker_exclusive(marker, "this-host")
+    assert marker.read_text() == "peer"
 
 
 def test_foreign_marker_still_refused(env: tuple[BuildConfig, Path, RunLogger]) -> None:
@@ -189,15 +215,126 @@ def test_unreadable_marker_on_local_fs_is_replaced(
     assert marker.read_text() == "this-host"
 
 
-def test_unreadable_marker_on_nfs_without_lock_is_replaced(
+def test_unreadable_marker_on_nfs_without_lock_is_refused(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Absence of bitbake.lock on NFS proves nothing (negative-lookup caching), so it must not license an overwrite."""
+    cfg, _build, log = env
+    _on_nfs(monkeypatch, True)
+    marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("")
+    entered = False
+    with pytest.raises(LockUnattributableError), lock_owner_marker(cfg, log):
+        entered = True
+    assert not entered
+    assert marker.read_bytes() == b""
+
+
+def test_broken_read_marker_on_nfs_without_lock_is_refused(
     env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg, _build, log = env
     _on_nfs(monkeypatch, True)
     marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("peer")
+    _break_read(monkeypatch, marker)
+    with pytest.raises(LockUnattributableError), lock_owner_marker(cfg, log):
+        pass
+    monkeypatch.undo()
+    assert marker.read_bytes() == b"peer"
+
+
+def test_empty_marker_on_unverifiable_fs_without_lock_is_refused(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, _build, log = env
+    _on_nfs(monkeypatch, None)
+    marker = build_stop.lock_marker_path(cfg)
     marker.write_text("")
+    with pytest.raises(LockUnattributableError), lock_owner_marker(cfg, log):
+        pass
+    assert marker.read_bytes() == b""
+
+
+def test_peer_write_between_reread_and_guard_is_honoured(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The two classifying reads see an empty marker; the guard's own read sees the peer's name."""
+    cfg, _build, log = env
+    _on_nfs(monkeypatch, True)
+    marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("peer")
+    real = build_stop.read_marker
+    calls: list[int] = []
+
+    def late_visibility(c: BuildConfig) -> tuple[str, str | None]:
+        calls.append(1)
+        if len(calls) <= 2:
+            return "empty", None
+        return real(c)
+
+    monkeypatch.setattr(build_stop, "read_marker", late_visibility)
+    entered = False
+    with pytest.raises(LockHeldByPeerError) as ei, lock_owner_marker(cfg, log):
+        entered = True
+    assert not entered
+    assert not isinstance(ei.value, LockUnattributableError)
+    assert ei.value.host == "peer"
+    assert marker.read_bytes() == b"peer"
+
+
+def test_garbled_marker_on_confirmed_local_fs_is_replaced(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, build, log = env
+    _on_nfs(monkeypatch, False)
+    (build / "bitbake.lock").write_text("1\n")
+    marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("a\nb\x00")
     with lock_owner_marker(cfg, log):
         assert marker.read_text() == "this-host"
+
+
+def test_marker_vanished_after_failed_create_is_recreated_exclusively(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, _build, log = env
+    marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("peer")
+    real = build_stop.read_marker
+    reads: list[int] = []
+
+    def vanish(c: BuildConfig) -> tuple[str, str | None]:
+        reads.append(1)
+        marker.unlink(missing_ok=True)
+        return real(c)
+
+    monkeypatch.setattr(build_stop, "read_marker", vanish)
+    with lock_owner_marker(cfg, log):
+        assert marker.read_text() == "this-host"
+    assert reads == [1]
+
+
+def test_marker_absent_but_never_creatable_retries_then_refuses(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read that keeps saying absent while the create keeps losing never falls through to a replace."""
+    cfg, _build, log = env
+    marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("peer")
+    monkeypatch.setattr(build_stop, "read_marker", lambda _c: ("absent", None))
+    creates: list[int] = []
+    real_create = kas_lock._create_marker_exclusive
+
+    def counting(m: Path, h: str) -> bool:
+        creates.append(1)
+        return real_create(m, h)
+
+    monkeypatch.setattr(kas_lock, "_create_marker_exclusive", counting)
+    with pytest.raises(LockUnattributableError), lock_owner_marker(cfg, log):
+        pass
+    assert len(creates) == 1 + kas_lock._MARKER_CREATE_ATTEMPTS
+    assert marker.read_bytes() == b"peer"
 
 
 def test_garbled_marker_on_nfs_with_lock_is_replaced(
@@ -310,32 +447,60 @@ def test_unattributable_marker_at_capture_site_logs_manual_clear(
 
 
 @pytest.mark.parametrize("err", [errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP])
-def test_create_marker_falls_back_when_hard_links_unsupported(
+def test_create_marker_refuses_clearly_when_hard_links_unsupported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, err: int
 ) -> None:
+    """No fallback exposes an empty marker: the refusal names hard links and leaves nothing behind."""
+
     def no_link(_src: object, _dst: object) -> None:
         raise OSError(err, os.strerror(err))
 
     monkeypatch.setattr(kas_lock.os, "link", no_link)
     marker = tmp_path / "bitbake.lock.owner"
-    assert kas_lock._create_marker_exclusive(marker, "this-host") is True
-    assert marker.read_text(encoding="utf-8") == "this-host"
-    umask = os.umask(0)
-    os.umask(umask)
-    assert marker.stat().st_mode & 0o777 == 0o666 & ~umask
-    assert kas_lock._create_marker_exclusive(marker, "other-host") is False
-    assert marker.read_text(encoding="utf-8") == "this-host"
-    assert [p.name for p in tmp_path.iterdir()] == [marker.name]
+    with pytest.raises(LockMarkerUnsupportedError) as exc:
+        kas_lock._create_marker_exclusive(marker, "this-host")
+    assert isinstance(exc.value, LockHeldByPeerError)
+    assert "does not support hard links" in str(exc.value)
+    assert str(marker) in str(exc.value)
+    assert not marker.exists()
+    assert list(tmp_path.iterdir()) == []
 
 
-def test_create_marker_other_link_errors_still_raise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_marker_other_link_errors_refuse_with_errno_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     def full(_src: object, _dst: object) -> None:
         raise OSError(errno.ENOSPC, "no space")
 
     monkeypatch.setattr(kas_lock.os, "link", full)
     marker = tmp_path / "bitbake.lock.owner"
-    with pytest.raises(OSError) as exc:
+    with pytest.raises(LockMarkerUnsupportedError) as exc:
         kas_lock._create_marker_exclusive(marker, "this-host")
-    assert exc.value.errno == errno.ENOSPC
+    assert os.strerror(errno.ENOSPC) in str(exc.value)
     assert not marker.exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_lock_owner_marker_on_hardlink_less_fs_never_enters_or_leaves_a_marker(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, build, log = env
+
+    def no_link(_src: object, _dst: object) -> None:
+        raise OSError(errno.EOPNOTSUPP, os.strerror(errno.EOPNOTSUPP))
+
+    monkeypatch.setattr(kas_lock.os, "link", no_link)
+    entered = False
+    with pytest.raises(LockHeldByPeerError), lock_owner_marker(cfg, log):
+        entered = True
+    assert not entered
+    assert list(build.iterdir()) == []
+
+
+def test_marker_unsupported_error_is_printed_without_traceback_reason() -> None:
+    from bakar.steps.kas_build import _peer_lock_reason
+
+    marker = Path("/b/\x1b]0;x\x07.bakar-lock-host")
+    reason = _peer_lock_reason(LockMarkerUnsupportedError(marker, OSError(errno.EPERM, "x")))
+    assert "\x1b" not in reason
+    assert "hard links" in reason

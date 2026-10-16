@@ -1,6 +1,6 @@
 """Overlay and local.conf materialization for the kas build step.
 
-Split out of :mod:`bakar.steps.kas_build` (task 10.2). Callers import these
+Split out of :mod:`bakar.steps.kas_build`. Callers import these
 names from this module directly; patch a name in the module that looks it up.
 
 ``_derive_parallelism_plan`` calls the module-level ``probe_cluster`` imported

@@ -497,6 +497,29 @@ def _container_liveness(runtime: str, cid: str) -> str:
     return _ALIVE if result.stdout.strip() == "true" else _DEAD
 
 
+def _container_gone(runtime: str, cid: str) -> bool | None:
+    """True when no container with id ``cid`` exists, False when one does, None when unknown.
+
+    ``<runtime> ps -a -q --filter id=<cid>`` lists by id including stopped
+    containers: a clean exit with empty output is conclusive, and unlike
+    ``inspect`` it does not error for a container that ``--rm`` already removed.
+    A runtime error, an absent binary or a timeout is ``None``, never ``True``.
+    """
+    try:
+        result = subprocess.run(
+            [runtime, "ps", "-a", "-q", "--filter", f"id={cid}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_RUNTIME_QUERY_TIMEOUT_S,
+        )
+    except OSError, subprocess.TimeoutExpired:
+        return None
+    if result.returncode != 0:
+        return None
+    return not result.stdout.strip()
+
+
 def _sigint_bitbake_in_container(runtime: str, cid: str) -> bool:
     """Send SIGINT to the main bitbake process INSIDE container ``cid``.
 
@@ -753,12 +776,14 @@ def _stop_container(runtime: str, cid: str, plan: _ContainerStopPlan) -> str:
     ``"lost_runtime"`` tells the caller the runtime went unreachable (exit 1).
 
     After an escalation the container is re-checked with
-    :func:`_container_liveness`. If it is still alive (or cannot be confirmed
+    :func:`_container_gone`. If it is still listed (or cannot be confirmed
     gone while a runtime command failed) the status is ``"incomplete"`` and the
     failed runtime commands, each with its exit status and error text, are
     appended to ``plan.failures`` so the caller can name them in its incomplete-stop
-    report. This function prints no "stopped" line: the caller prints it once,
-    after its own verification, so it can never precede an incomplete report.
+    report. A ladder command that failed while the container is gone anyway
+    (``rm -f`` racing the ``--rm`` removal) is not reported. This function
+    prints no "stopped" line: the caller prints it once, after its own
+    verification, so it can never precede an incomplete report.
 
     Uses ``--timeout`` (docker >= 29 deprecates ``--time``). Every subprocess
     call captures output and never raises on a non-zero exit.
@@ -792,15 +817,16 @@ def _stop_container(runtime: str, cid: str, plan: _ContainerStopPlan) -> str:
         _escalate()
         status = "forced"
 
-    # The ladder ran: confirm the container is actually gone. A removed
-    # container makes ``inspect`` fail (_ERROR), which is indistinguishable
-    # from a wedged runtime unless no runtime command reported a failure.
+    # The ladder ran: confirm the container is actually gone. kas-container runs
+    # with ``--rm``, so a stopped container is removed and ``inspect <cid>``
+    # errors for it exactly as it does for a wedged runtime. Listing by id
+    # separates the two: a successful empty listing is conclusive.
     try:
-        liveness = _container_liveness(runtime, cid)
+        gone = _container_gone(runtime, cid)
     except KeyboardInterrupt:
         # A second Ctrl-C during verification cannot confirm the outcome.
-        liveness = _ERROR
-    if liveness == _DEAD or (liveness == _ERROR and not escalate_failures):
+        gone = None
+    if gone or (gone is None and not escalate_failures):
         return status
     plan.failures.extend(escalate_failures or [f"container {cid} is still running after stop, kill and rm -f"])
     return "incomplete"
@@ -893,8 +919,8 @@ def read_lock_pid(lock_path: Path) -> int | None:
     bitbake creates the lock and writes its PID as a later, separate step, so
     an empty or unparseable lock is a server mid-startup, not a stale
     leftover. Returns ``None`` for a missing or unreadable file, empty
-    content, or a non-integer first token; callers must never treat ``None``
-    as license to remove the lock.
+    content, a non-integer first token, or a non-positive pid; callers must
+    never treat ``None`` as license to remove the lock.
     """
     try:
         raw = lock_path.read_text()
@@ -904,9 +930,12 @@ def read_lock_pid(lock_path: Path) -> int | None:
     if not tokens:
         return None
     try:
-        return int(tokens[0])
+        pid = int(tokens[0])
     except ValueError:
         return None
+    # -1 and 0 parse as ints but name no process: kill(-1, sig) signals every
+    # process the user owns and kill(0, sig) this process's own group.
+    return pid if pid > 0 else None
 
 
 def _read_bitbake_server_pid(run_dir: Path) -> int | None:
@@ -1188,7 +1217,15 @@ def _discover_host_cookers(
 
 
 def _kill_pid(pid: int, sig: int) -> bool:
-    """``os.kill`` ``pid`` with ``sig``; True if delivered, False if gone/denied."""
+    """``os.kill`` ``pid`` with ``sig``, guarding the dangerous pids.
+
+    A ``pid <= 0`` is refused outright, like :func:`_killpg` refuses a
+    non-positive group id: ``kill(-1, ...)`` signals every process the user can
+    reach and ``kill(0, ...)`` this process's own group. Returns True when the
+    signal was delivered, False when the process is gone, denied, or refused.
+    """
+    if pid <= 0:
+        return False
     try:
         os.kill(pid, sig)
     except OSError:
@@ -1404,11 +1441,11 @@ def escalate_container_tree(run_id: str) -> bool:
     False when none resolved (already gone, or the runtime is unreachable)
     OR the ladder ran without the container actually disappearing - the
     caller should fall back to :func:`escalate_process_tree` in either case.
-    ``_escalate_container`` swallows every runtime command's result by
-    design (an already-gone container is not a failure there), so nothing
-    upstream of this function otherwise knows whether ``stop``/``kill``/``rm
-    -f`` actually reached the runtime; re-querying by the same label is the
-    only way to tell "escalated" from "issued the commands and hoped".
+    ``_escalate_container`` returns the failed commands' descriptions, but
+    this caller drops them: a command's failure text cannot say whether the
+    container is gone (``rm -f`` can fail because the container is already
+    being removed), so re-querying by the same label is the only way to tell
+    "escalated" from "issued the commands and hoped".
 
     The post-escalation check uses :func:`_container_id_status`, not
     :func:`_container_id`, on purpose: ``_container_id`` collapses "no
@@ -1498,46 +1535,53 @@ def lock_marker_path(cfg: BuildConfig) -> Path:
     return cfg.bsp_root / cfg.build_dir_name / _LOCK_MARKER_FILENAME
 
 
-def read_marker_owner(cfg: BuildConfig) -> str | None:
-    """Read the hostname recorded in the ownership marker, or ``None``.
+def read_marker(cfg: BuildConfig) -> tuple[Literal["absent", "unreadable", "empty", "garbled", "owner"], str | None]:
+    """Classify the ownership marker once: ``(state, owner)``.
 
-    ``None`` covers every case that must NEVER be treated as a peer: the
-    marker is absent, empty, unreadable (``OSError``), or torn/garbled (an
-    interrupted write left embedded control bytes or more than one line of
-    content). A garbled marker is unattributable, never a foreign owner - a
-    partial write from this node's own crash must not read as a peer lock.
-    """
-    try:
-        raw = lock_marker_path(cfg).read_text()
-    except OSError:
-        return None
-    owner = raw.strip()
-    if not owner or "\n" in owner or "\x00" in owner or not owner.isprintable():
-        return None
-    return owner
+    The torn/garbled rules live here so every reader decides from the same
+    classification. ``owner`` is the hostname only when ``state`` is
+    ``"owner"``; every other state carries ``None``, and none of them may ever
+    be treated as a peer:
 
-
-def read_marker_state(cfg: BuildConfig) -> Literal["absent", "unreadable", "empty", "garbled", "owner"]:
-    """Classify the ownership marker without changing :func:`read_marker_owner`.
-
-    ``read_marker_owner`` folds every unattributable case into ``None``; the
-    lock-acquire path needs to tell "could not read it" (``unreadable``, or
-    ``empty`` - possibly a peer's mid-write on a filesystem with weak
-    visibility) apart from "read it and it is nonsense" (``garbled``), because
-    only the former may belong to a live peer.
+    - ``absent`` - no marker file.
+    - ``unreadable`` - ``OSError`` reading it.
+    - ``empty`` - blank content, possibly a peer's mid-write on a filesystem
+      with weak visibility.
+    - ``garbled`` - an interrupted write left embedded control bytes or more
+      than one line of content; a partial write from this node's own crash
+      must not read as a peer lock.
     """
     try:
         raw = lock_marker_path(cfg).read_text()
     except FileNotFoundError:
-        return "absent"
+        return "absent", None
     except OSError:
-        return "unreadable"
+        return "unreadable", None
     owner = raw.strip()
     if not owner:
-        return "empty"
+        return "empty", None
     if "\n" in owner or "\x00" in owner or not owner.isprintable():
-        return "garbled"
-    return "owner"
+        return "garbled", None
+    return "owner", owner
+
+
+def read_marker_owner(cfg: BuildConfig) -> str | None:
+    """Read the hostname recorded in the ownership marker, or ``None``.
+
+    ``None`` covers every state :func:`read_marker` does not classify as
+    ``"owner"``: absent, empty, unreadable or garbled.
+    """
+    return read_marker(cfg)[1]
+
+
+def read_marker_state(cfg: BuildConfig) -> Literal["absent", "unreadable", "empty", "garbled", "owner"]:
+    """The state half of :func:`read_marker`.
+
+    The lock-acquire path needs to tell "could not read it" (``unreadable``, or
+    ``empty``) apart from "read it and it is nonsense" (``garbled``), because
+    only the former may belong to a live peer.
+    """
+    return read_marker(cfg)[0]
 
 
 def lock_mutation_guard(cfg: BuildConfig) -> LockRefusal | None:
@@ -1558,8 +1602,7 @@ def lock_mutation_guard(cfg: BuildConfig) -> LockRefusal | None:
 
     Calls ``mounts.is_path_on_nfs`` through the module, never a from-import, so a
     test patching ``bakar.mounts.is_path_on_nfs`` is seen at call time instead of
-    leaving this guard reading the real ``/proc/mounts`` (spec patch-target-integrity:
-    the stop module's lock guard reads the NFS probe from its definer).
+    leaving this guard reading the real ``/proc/mounts``.
     """
     owner = read_marker_owner(cfg)
     if owner is not None:
@@ -1850,7 +1893,7 @@ def stop_run(run_dir: Path, cfg: BuildConfig | None = None, *, force: bool = Fal
                     _say(f"Sent SIGINT to build PGID {pgid}...")
                     os.killpg(pgid, signal.SIGINT)
                 bb_pid = _read_bitbake_server_pid(run_dir)
-                if bb_pid is not None:
+                if bb_pid is not None and _bitbake_server_pid_verified(bb_pid, run_dir.parent.parent):
                     _kill_pid(bb_pid, signal.SIGINT)
                 _graceful_wait(
                     ctx=_WaitCtx(
@@ -1935,7 +1978,13 @@ def stop_run(run_dir: Path, cfg: BuildConfig | None = None, *, force: bool = Fal
     if stop_status == "lost_runtime":
         return False
 
-    _report_stale_cleanup(run_dir, cfg)
+    if stop_status == "incomplete":
+        # The container is alive and kas-container mounts the build dir at /work,
+        # so the host argv scan cannot see its cooker: it would call the lock
+        # stale and delete it out from under a running build.
+        _say("leaving bitbake.lock/bitbake.sock in place: the build container is still running")
+    else:
+        _report_stale_cleanup(run_dir, cfg)
     # The runtime's own refusals lead the report: they say WHY the container
     # survived, which _verify_clean's "still running" cannot.
     reasons = [
@@ -1982,7 +2031,7 @@ class RunRoot:
     whose :attr:`BuildConfig.bsp_root` is unconditionally its own
     ``workspace`` input - mirroring
     ``resolve_run_config`` in ``commands/_helpers.py`` (not reused directly,
-    per Assumption A5: this module has no import of ``bakar.commands.*``).
+    because this module must not import ``bakar.commands.*``).
 
     A caller with just one already-known root - group 9's future host-mode
     correlation, scanning a topdir discovered via a ``/proc`` walk with no

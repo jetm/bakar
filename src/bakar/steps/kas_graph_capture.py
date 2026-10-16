@@ -1,5 +1,4 @@
-"""Build-time dependency-graph capture, split out of :mod:`bakar.steps.kas_build`
-(task 10.2).
+"""Build-time dependency-graph capture, split out of :mod:`bakar.steps.kas_build`.
 
 ``kas_build`` re-exports only the ``GRAPH_*`` constants and
 ``graph_capture_command``, which tests and external callers still import there.

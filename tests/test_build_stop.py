@@ -3479,3 +3479,86 @@ def test_default_tasks_reader_is_incremental_and_matches_running_tasks(
     monkeypatch.undo()
     assert got == eventlog.running_tasks(tmp_path)
     assert [t.recipe for t in got] == ["b-1.0-r0"]
+
+
+# --- graceful host stop signals only verified, positive pids ---------------
+
+
+def _graceful_host_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lock_text: str, *, verified: bool | None
+) -> list[tuple[int, int]]:
+    """Run a graceful host ``stop_run`` and return every ``os.kill`` (pid, sig) it issued.
+
+    ``verified`` stubs ``_bitbake_server_pid_verified``; ``None`` leaves the real
+    check in place.
+    """
+    run_dir = _make_run_dir(tmp_path)
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+    (run_dir.parent.parent / "bitbake.lock").write_text(lock_text)
+    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+    monkeypatch.setattr(build_stop, "_graceful_wait", lambda **_kw: "drained")
+    monkeypatch.setattr(build_stop, "_report_stale_cleanup", lambda *_a, **_k: [])
+    monkeypatch.setattr(build_stop, "_verify_clean", lambda *_a, **_k: [])
+    _record_killpg(monkeypatch)
+    if verified is not None:
+        monkeypatch.setattr(build_stop, "_bitbake_server_pid_verified", lambda _pid, _topdir: verified)
+    kills: list[tuple[int, int]] = []
+    monkeypatch.setattr(build_stop.os, "kill", lambda pid, sig: kills.append((pid, sig)))
+    assert build_stop.stop_run(run_dir) is True
+    return kills
+
+
+@pytest.mark.parametrize("pid", [-1, 0])
+def test_read_lock_pid_rejects_non_positive_pids(tmp_path: Path, pid: int) -> None:
+    lock = tmp_path / "bitbake.lock"
+    lock.write_text(f"{pid}\n")
+    assert build_stop.read_lock_pid(lock) is None
+
+
+@pytest.mark.parametrize("pid", [-1, 0])
+def test_kill_pid_refuses_non_positive_pids(monkeypatch: pytest.MonkeyPatch, pid: int) -> None:
+    kills: list[tuple[int, int]] = []
+    monkeypatch.setattr(build_stop.os, "kill", lambda p, s: kills.append((p, s)))
+    assert build_stop._kill_pid(pid, signal.SIGINT) is False
+    assert kills == []
+
+
+@pytest.mark.parametrize("pid", [-1, 0])
+def test_graceful_stop_with_non_positive_lock_pid_sends_no_signal_to_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pid: int
+) -> None:
+    kills = _graceful_host_stop(tmp_path, monkeypatch, f"{pid}\n", verified=True)
+    assert kills == []
+
+
+def test_graceful_stop_does_not_signal_an_unverified_lock_pid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    kills = _graceful_host_stop(tmp_path, monkeypatch, "999999\n", verified=False)
+    assert kills == []
+
+
+def test_graceful_stop_signals_a_verified_lock_pid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    kills = _graceful_host_stop(tmp_path, monkeypatch, "999999\n", verified=True)
+    assert kills == [(999999, signal.SIGINT)]
+
+
+def test_graceful_stop_verifies_the_lock_pid_against_this_builds_topdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[tuple[int, Path]] = []
+
+    def record(pid: int, topdir: Path) -> bool:
+        seen.append((pid, topdir))
+        return False
+
+    run_dir = _make_run_dir(tmp_path)
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+    (run_dir.parent.parent / "bitbake.lock").write_text("777\n")
+    monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
+    monkeypatch.setattr(build_stop, "_graceful_wait", lambda **_kw: "drained")
+    monkeypatch.setattr(build_stop, "_report_stale_cleanup", lambda *_a, **_k: [])
+    monkeypatch.setattr(build_stop, "_verify_clean", lambda *_a, **_k: [])
+    _record_killpg(monkeypatch)
+    monkeypatch.setattr(build_stop, "_bitbake_server_pid_verified", record)
+    monkeypatch.setattr(build_stop.os, "kill", lambda p, s: pytest.fail("signalled an unverified pid"))
+    build_stop.stop_run(run_dir)
+    assert seen == [(777, run_dir.parent.parent)]

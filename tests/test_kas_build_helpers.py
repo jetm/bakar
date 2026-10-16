@@ -566,7 +566,7 @@ def test_clear_stale_bitbake_locks_dead_pid_lock_is_removed(tmp_path: Path) -> N
 
     with (
         patch("bakar.steps.kas_build.os.kill", side_effect=_raise_dead),
-        patch("bakar.steps.kas_lock.is_path_on_nfs", return_value=False),
+        patch("bakar.mounts.is_path_on_nfs", return_value=False),
     ):
         outcome = clear_stale_bitbake_locks(cfg)
 
@@ -585,7 +585,7 @@ def test_clear_stale_bitbake_locks_orphan_sockets_removed_with_no_lock(tmp_path:
     hs_sock.write_text("", encoding="utf-8")
     assert not (build / "bitbake.lock").exists()
 
-    with patch("bakar.steps.kas_lock.is_path_on_nfs", return_value=False):
+    with patch("bakar.mounts.is_path_on_nfs", return_value=False):
         outcome = clear_stale_bitbake_locks(cfg)
 
     assert bb_sock in outcome.removed
@@ -626,7 +626,7 @@ def test_clear_stale_bitbake_locks_live_bitbake_pid_leaves_lock(tmp_path: Path) 
         patch("bakar.steps.kas_build.os.kill", return_value=None),
         patch("bakar.steps.kas_build.Path.exists", new=fake_exists),
         patch("bakar.steps.kas_build.Path.read_bytes", new=fake_read_bytes),
-        patch("bakar.steps.kas_lock.is_path_on_nfs", return_value=False),
+        patch("bakar.mounts.is_path_on_nfs", return_value=False),
         patch("bakar.steps.kas_build.build_stop._collect_build_pids", return_value=active_procs),
     ):
         outcome = clear_stale_bitbake_locks(cfg)
@@ -663,7 +663,7 @@ def test_clear_stale_bitbake_locks_live_non_bitbake_pid_removes_lock(tmp_path: P
         patch("bakar.steps.kas_build.os.kill", return_value=None),
         patch("bakar.steps.kas_build.Path.exists", new=fake_exists),
         patch("bakar.steps.kas_build.Path.read_bytes", new=fake_read_bytes),
-        patch("bakar.steps.kas_lock.is_path_on_nfs", return_value=False),
+        patch("bakar.mounts.is_path_on_nfs", return_value=False),
     ):
         outcome = clear_stale_bitbake_locks(cfg)
 
@@ -677,7 +677,7 @@ def test_clear_stale_bitbake_locks_no_lock_no_sockets_returns_empty(tmp_path: Pa
     cfg = _make_nxp_cfg(tmp_path)
     _seed_build_dir(cfg)
 
-    with patch("bakar.steps.kas_lock.is_path_on_nfs", return_value=False):
+    with patch("bakar.mounts.is_path_on_nfs", return_value=False):
         outcome = clear_stale_bitbake_locks(cfg)
 
     assert outcome.removed == []
@@ -732,7 +732,7 @@ def test_clear_stale_bitbake_locks_garbled_marker_never_classified_as_peer_held(
     marker.write_text("hosta\nhostb\n", encoding="utf-8")
     monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
 
-    with patch("bakar.steps.kas_lock.is_path_on_nfs", return_value=False):
+    with patch("bakar.mounts.is_path_on_nfs", return_value=False):
         outcome = clear_stale_bitbake_locks(cfg)
 
     assert outcome.refusal is None or outcome.refusal.reason != "peer-held"
@@ -766,7 +766,7 @@ def test_clear_stale_bitbake_locks_empty_lock_not_removed_no_marker_confirmed_lo
     lock = build / "bitbake.lock"
     lock.write_text("not-a-pid\n", encoding="utf-8")
 
-    with patch("bakar.steps.kas_lock.is_path_on_nfs", return_value=False):
+    with patch("bakar.mounts.is_path_on_nfs", return_value=False):
         outcome = clear_stale_bitbake_locks(cfg)
 
     assert outcome.removed == []
@@ -913,7 +913,7 @@ def test_clear_stale_bitbake_locks_no_marker_lock_present_live_bitbake_confirmed
         patch("bakar.steps.kas_build.os.kill", return_value=None),
         patch("bakar.steps.kas_build.Path.exists", new=fake_exists),
         patch("bakar.steps.kas_build.Path.read_bytes", new=fake_read_bytes),
-        patch("bakar.steps.kas_lock.is_path_on_nfs", return_value=False),
+        patch("bakar.mounts.is_path_on_nfs", return_value=False),
         patch("bakar.steps.kas_build.build_stop._collect_build_pids", return_value=active_procs),
     ):
         outcome = clear_stale_bitbake_locks(cfg)
@@ -957,7 +957,7 @@ def test_clear_stale_bitbake_locks_no_marker_lock_present_idle_bitbake_confirmed
         patch("bakar.steps.kas_build.os.kill", return_value=None),
         patch("bakar.steps.kas_build.Path.exists", new=fake_exists),
         patch("bakar.steps.kas_build.Path.read_bytes", new=fake_read_bytes),
-        patch("bakar.steps.kas_lock.is_path_on_nfs", return_value=False),
+        patch("bakar.mounts.is_path_on_nfs", return_value=False),
         patch("bakar.steps.kas_build.build_stop._collect_build_pids", return_value=idle_procs),
     ):
         outcome = clear_stale_bitbake_locks(cfg)
@@ -976,7 +976,7 @@ def test_clear_stale_bitbake_locks_no_marker_lock_present_shared_fs_unattributab
     lock = build / "bitbake.lock"
     lock.write_text("4242\n", encoding="utf-8")
 
-    with patch("bakar.steps.kas_lock.is_path_on_nfs", return_value=True):
+    with patch("bakar.mounts.is_path_on_nfs", return_value=True):
         outcome = clear_stale_bitbake_locks(cfg)
 
     assert outcome.removed == []
@@ -994,7 +994,7 @@ def test_clear_stale_bitbake_locks_no_marker_lock_absent_shared_fs_no_deletion(
     bb_sock = build / "bitbake.sock"
     bb_sock.write_text("", encoding="utf-8")
 
-    with patch("bakar.steps.kas_lock.is_path_on_nfs", return_value=None):
+    with patch("bakar.mounts.is_path_on_nfs", return_value=None):
         outcome = clear_stale_bitbake_locks(cfg)
 
     assert outcome.removed == []

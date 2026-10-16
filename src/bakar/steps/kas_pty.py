@@ -1,7 +1,7 @@
 """PTY and Live-UI orchestration for the kas build step.
 
-Split out of :mod:`bakar.steps.kas_build` (task 10.2). Every symbol here is
-re-exported at ``bakar.steps.kas_build``, and the test suite monkeypatches
+Split out of :mod:`bakar.steps.kas_build`, which imports ``_run_pty_with_ui``,
+``_PlainFrameController`` and a few helpers from here. The test suite patches
 ``kas_build._run_pty_with_ui`` and ``kas_build.subprocess.Popen`` expecting those
 patches to reach this module's code. ``subprocess`` is a shared singleton module
 object, so patching an attribute on it works regardless of which module imported
