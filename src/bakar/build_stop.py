@@ -28,7 +28,7 @@ import time
 # the import moving back. ``Path`` and ``Console`` annotate fields too and are
 # already imported at runtime above, so they need nothing here.
 from collections.abc import Callable  # noqa: TC003
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -413,19 +413,64 @@ def discover_running_containers_or_warn(runtime: str) -> tuple[list[ContainerCan
         return [], f"container discovery could not be completed: {exc}"
 
 
-def _run_runtime(args: list[str]) -> None:
-    """Run a runtime subcommand, capturing output and swallowing all errors.
+# Runtime error text meaning the container is already gone or already stopped:
+# the outcome the ladder wants, so it is not a failure to report.
+_CONTAINER_GONE_MARKERS = (
+    "no such container",
+    "no container with name or id",
+    "is not running",
+    "can only kill running containers",
+)
 
-    A missing or already-gone container is not an error here, so a non-zero
-    exit (or the runtime binary being absent) is ignored rather than raised.
+
+@dataclass(frozen=True)
+class _RuntimeResult:
+    """Outcome of one runtime subcommand: its argv, exit status and error text.
+
+    ``returncode`` is ``None`` when the command produced no exit status (the
+    runtime binary was absent, or the call timed out); ``detail`` then carries
+    the OSError text or a timeout marker. Otherwise ``detail`` is the
+    runtime's own stderr, stripped.
+    """
+
+    argv: list[str]
+    returncode: int | None
+    detail: str
+
+    @property
+    def ok(self) -> bool:
+        return self.returncode == 0
+
+    @property
+    def already_gone(self) -> bool:
+        """True when the runtime says the container no longer exists / is not running."""
+        text = self.detail.lower()
+        return any(marker in text for marker in _CONTAINER_GONE_MARKERS)
+
+    def describe(self) -> str:
+        status = "no exit status" if self.returncode is None else f"exit {self.returncode}"
+        suffix = f": {self.detail}" if self.detail else ""
+        return f"`{' '.join(self.argv)}` failed ({status}){suffix}"
+
+
+def _run_runtime(args: list[str]) -> _RuntimeResult:
+    """Run a runtime subcommand, capturing output; never raises.
+
+    Returns the exit status and stderr text (or an OSError/timeout marker) so
+    a caller can say WHY a command failed. A missing or already-gone container
+    is not an error to the ladder: callers filter it with
+    :attr:`_RuntimeResult.already_gone`.
     Bounded by ``_RUNTIME_QUERY_TIMEOUT_S``: a wedged runtime daemon must not
     turn this into an unbounded hang for a caller in the middle of its own
     timeout/escalation ladder.
     """
     try:
-        subprocess.run(args, capture_output=True, text=True, check=False, timeout=_RUNTIME_QUERY_TIMEOUT_S)
-    except OSError, subprocess.TimeoutExpired:
-        pass
+        proc = subprocess.run(args, capture_output=True, text=True, check=False, timeout=_RUNTIME_QUERY_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return _RuntimeResult(args, None, f"timed out after {_RUNTIME_QUERY_TIMEOUT_S}s")
+    except OSError as exc:
+        return _RuntimeResult(args, None, str(exc))
+    return _RuntimeResult(args, proc.returncode, (proc.stderr or "").strip())
 
 
 def _container_liveness(runtime: str, cid: str) -> str:
@@ -652,29 +697,47 @@ def _graceful_wait(*, ctx: _WaitCtx) -> str:
             signal.signal(signal.SIGINT, prev_handler)  # pragma: no cover
 
 
-def _escalate_container(runtime: str, cid: str, term_secs: int) -> None:
+def _escalate_container(runtime: str, cid: str, term_secs: int) -> list[str]:
     """Force-stop container ``cid``: ``stop --timeout`` -> ``kill`` -> ``rm -f``.
 
     The final ``rm -f`` force-removes the container even when a wedged cooker
     inside ignored the stop/kill, so a subsequent build is not blocked by the
     old container still holding the build dir. It also terminates the host-side
     ``docker run`` (kas-container) client, which exits once its container is
-    gone. Every step swallows errors (an already-gone container is not a
-    failure)."""
-    _run_runtime([runtime, "stop", f"--timeout={term_secs}", cid])
-    _run_runtime([runtime, "kill", "--signal=SIGKILL", cid])
-    _run_runtime([runtime, "rm", "-f", cid])
+    gone. Every step runs regardless of an earlier failure.
+
+    Returns one description per failed command (exit status plus the runtime's
+    own error text), so the caller can say why a container survived. A command
+    whose error says the container is already gone or not running is the
+    wanted outcome, not a failure, and is omitted. ``[]`` means no command
+    failed; callers that only want the side effect may ignore the return."""
+    failures: list[str] = []
+    for args in (
+        [runtime, "stop", f"--timeout={term_secs}", cid],
+        [runtime, "kill", "--signal=SIGKILL", cid],
+        [runtime, "rm", "-f", cid],
+    ):
+        result = _run_runtime(args)
+        if not result.ok and not result.already_gone:
+            failures.append(result.describe())
+    return failures
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class _ContainerStopPlan:
-    """How to stop one container: escalation policy plus where progress is shown."""
+    """How to stop one container: escalation policy plus where progress is shown.
+
+    ``failures`` is an out-parameter: when the stop ends ``"incomplete"``,
+    :func:`_stop_container` appends each failed runtime command (exit status
+    and error text) so the caller can name them in its incomplete-stop report.
+    """
 
     force: bool
     term_secs: int
     run_dir: Path | None = None
     console_out: Console | None = None
     grace_seconds: float = 0
+    failures: list[str] = field(default_factory=list)
 
 
 def _stop_container(runtime: str, cid: str, plan: _ContainerStopPlan) -> str:
@@ -685,16 +748,30 @@ def _stop_container(runtime: str, cid: str, plan: _ContainerStopPlan) -> str:
     SIGINT if the exec fails), then wait via :func:`_graceful_wait` until the
     container is no longer running, rendering live progress. A Ctrl-C, or
     ``grace_seconds`` elapsing, escalates through
-    ``stop --timeout=<term_secs>`` -> ``kill --signal=SIGKILL``. When ``force``
-    is True: skip the SIGINT step and go straight to that escalation ladder.
+    ``stop --timeout=<term_secs>`` -> ``kill --signal=SIGKILL`` -> ``rm -f``.
+    When ``force`` is True: skip the SIGINT step and go straight to that
+    escalation ladder.
 
     Returns the :func:`_graceful_wait` status (``"drained"``/``"escalated"``/
     ``"lost_runtime"``) for the graceful path, or ``"forced"`` for ``force=True``.
     ``"lost_runtime"`` tells the caller the runtime went unreachable (exit 1).
 
+    After an escalation the container is re-checked with
+    :func:`_container_liveness`. If it is still alive (or cannot be confirmed
+    gone while a runtime command failed) the status is ``"incomplete"`` and the
+    failed runtime commands, each with its exit status and error text, are
+    appended to ``plan.failures`` so the caller can name them in its incomplete-stop
+    report. This function prints no "stopped" line: the caller prints it once,
+    after its own verification, so it can never precede an incomplete report.
+
     Uses ``--timeout`` (docker >= 29 deprecates ``--time``). Every subprocess
     call captures output and never raises on a non-zero exit.
     """
+    escalate_failures: list[str] = []
+
+    def _escalate() -> None:
+        escalate_failures.extend(_escalate_container(runtime, cid, plan.term_secs) or [])
+
     if not plan.force:
         _say(f"Sent SIGINT to bitbake in container {cid}...")
         if not _sigint_bitbake_in_container(runtime, cid):
@@ -702,7 +779,7 @@ def _stop_container(runtime: str, cid: str, plan: _ContainerStopPlan) -> str:
         status = _graceful_wait(
             ctx=_WaitCtx(
                 liveness=lambda: _container_liveness(runtime, cid),
-                escalate=lambda: _escalate_container(runtime, cid, plan.term_secs),
+                escalate=_escalate,
                 target_desc=f"container {cid}",
                 run_dir=plan.run_dir,
                 console_out=plan.console_out,
@@ -711,14 +788,26 @@ def _stop_container(runtime: str, cid: str, plan: _ContainerStopPlan) -> str:
         )
         if status == "lost_runtime":
             _say("lost contact with the container runtime")
-        else:
-            _say("stopped")
-        return status
+            return status
+        if status == "drained":
+            return status
+    else:
+        _say(f"Sending SIGTERM to container {cid}...")
+        _escalate()
+        status = "forced"
 
-    _say(f"Sending SIGTERM to container {cid}...")
-    _escalate_container(runtime, cid, plan.term_secs)
-    _say("stopped")
-    return "forced"
+    # The ladder ran: confirm the container is actually gone. A removed
+    # container makes ``inspect`` fail (_ERROR), which is indistinguishable
+    # from a wedged runtime unless no runtime command reported a failure.
+    try:
+        liveness = _container_liveness(runtime, cid)
+    except KeyboardInterrupt:
+        # A second Ctrl-C during verification cannot confirm the outcome.
+        liveness = _ERROR
+    if liveness == _DEAD or (liveness == _ERROR and not escalate_failures):
+        return status
+    plan.failures.extend(escalate_failures or [f"container {cid} is still running after stop, kill and rm -f"])
+    return "incomplete"
 
 
 def stop_running_proc(proc: subprocess.Popen, cfg: BuildConfig, log: RunLogger) -> None:
@@ -1854,16 +1943,13 @@ def stop_run(run_dir: Path, cfg: BuildConfig | None = None, *, force: bool = Fal
         remove_pid(run_dir)
         return True
 
-    stop_status = _stop_container(
-        runtime,
-        cid,
-        _ContainerStopPlan(
-            force=force,
-            term_secs=_STOP_TERM_SECONDS,
-            run_dir=run_dir,
-            grace_seconds=grace_seconds,
-        ),
+    stop_plan = _ContainerStopPlan(
+        force=force,
+        term_secs=_STOP_TERM_SECONDS,
+        run_dir=run_dir,
+        grace_seconds=grace_seconds,
     )
+    stop_status = _stop_container(runtime, cid, stop_plan)
     # A runtime we lost contact with mid-wait is a hard failure (exit 1) -
     # and, like the pre-check _ERROR above, an unconfirmed outcome: the
     # container may still be running, so the launch record is left in place
@@ -1872,7 +1958,12 @@ def stop_run(run_dir: Path, cfg: BuildConfig | None = None, *, force: bool = Fal
         return False
 
     _report_stale_cleanup(run_dir, cfg)
-    reasons = _verify_clean(run_dir, None, runtime=runtime, container_label=record.container_label, cfg=cfg)
+    # The runtime's own refusals lead the report: they say WHY the container
+    # survived, which _verify_clean's "still running" cannot.
+    reasons = [
+        *stop_plan.failures,
+        *_verify_clean(run_dir, None, runtime=runtime, container_label=record.container_label, cfg=cfg),
+    ]
     if reasons:
         _say("stop incomplete - the following remain:")
         for reason in reasons:

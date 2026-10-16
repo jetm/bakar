@@ -18,6 +18,7 @@ import pytest
 from bakar import build_stop
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 pytestmark = pytest.mark.unit
@@ -26,25 +27,37 @@ pytestmark = pytest.mark.unit
 # --- _stop_container escalation order --------------------------------------
 
 
+def _runtime_ok(args: list[str]) -> build_stop._RuntimeResult:
+    """A runtime command that exited 0."""
+    return build_stop._RuntimeResult(args, 0, "")
+
+
+def _recording_runtime(issued: list[list[str]]) -> Callable[[list[str]], build_stop._RuntimeResult]:
+    """A ``_run_runtime`` stand-in that records each argv and reports success."""
+
+    def _record(args: list[str]) -> build_stop._RuntimeResult:
+        issued.append(args)
+        return _runtime_ok(args)
+
+    return _record
+
+
 def _patch_runtime_seams(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """Patch the build_stop runtime seams and return the recorded-argv list.
 
-    ``_run_runtime`` appends each issued argv to the returned list,
-    ``_sigint_bitbake_in_container`` records a ``["sigint-bitbake", runtime,
+    ``_run_runtime`` appends each issued argv to the returned list and reports
+    success, ``_sigint_bitbake_in_container`` records a ``["sigint-bitbake", runtime,
     cid]`` sentinel and reports success (True), ``_container_liveness`` reports
     the container already gone (``_DEAD``) so the unbounded graceful wait drains
     on its first poll, and ``time.sleep`` is a no-op.
     """
     issued: list[list[str]] = []
 
-    def _record(args: list[str]) -> None:
-        issued.append(args)
-
     def _record_sigint(runtime: str, cid: str) -> bool:
         issued.append(["sigint-bitbake", runtime, cid])
         return True
 
-    monkeypatch.setattr(build_stop, "_run_runtime", _record)
+    monkeypatch.setattr(build_stop, "_run_runtime", _recording_runtime(issued))
     monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", _record_sigint)
     monkeypatch.setattr(build_stop, "_container_liveness", lambda runtime, cid: build_stop._DEAD)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
@@ -94,7 +107,7 @@ def test_stop_container_force_skips_sigint(monkeypatch: pytest.MonkeyPatch) -> N
 def test_stop_container_falls_back_to_pid1_sigint_when_exec_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     """When the in-container SIGINT exec fails, fall back to a container-PID-1 SIGINT."""
     issued: list[list[str]] = []
-    monkeypatch.setattr(build_stop, "_run_runtime", issued.append)
+    monkeypatch.setattr(build_stop, "_run_runtime", _recording_runtime(issued))
     monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", lambda runtime, cid: False)
     monkeypatch.setattr(build_stop, "_container_liveness", lambda runtime, cid: build_stop._DEAD)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
@@ -115,7 +128,7 @@ def test_stop_container_ctrl_c_reaches_stop_kill_ladder(monkeypatch: pytest.Monk
     and fires the container escalate ladder.
     """
     issued: list[list[str]] = []
-    monkeypatch.setattr(build_stop, "_run_runtime", issued.append)
+    monkeypatch.setattr(build_stop, "_run_runtime", _recording_runtime(issued))
     monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", lambda runtime, cid: True)
 
     def _ctrl_c(_runtime: str, _cid: str) -> str:
@@ -146,7 +159,7 @@ def test_stop_container_lost_runtime_propagates_without_ladder(
     the caller can map it to exit 1.
     """
     issued: list[list[str]] = []
-    monkeypatch.setattr(build_stop, "_run_runtime", issued.append)
+    monkeypatch.setattr(build_stop, "_run_runtime", _recording_runtime(issued))
     monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", lambda runtime, cid: True)
     monkeypatch.setattr(build_stop, "_graceful_wait", lambda **_kwargs: "lost_runtime")
 
@@ -320,7 +333,7 @@ def test_stop_running_proc_container_falls_back_to_pgid(monkeypatch: pytest.Monk
     """When the container cannot be resolved, fall back to os.killpg(SIGINT)."""
     issued: list[list[str]] = []
     killpg_calls: list[tuple[int, int]] = []
-    monkeypatch.setattr(build_stop, "_run_runtime", issued.append)
+    monkeypatch.setattr(build_stop, "_run_runtime", _recording_runtime(issued))
     monkeypatch.setattr(build_stop, "detect_runtime", lambda: "docker")
     monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: None)
     monkeypatch.setattr(build_stop.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
@@ -338,7 +351,7 @@ def test_stop_running_proc_host_signals_pgid(monkeypatch: pytest.MonkeyPatch) ->
     """Host mode signals the wrapper PGID with SIGINT and makes no runtime call."""
     issued: list[list[str]] = []
     killpg_calls: list[tuple[int, int]] = []
-    monkeypatch.setattr(build_stop, "_run_runtime", issued.append)
+    monkeypatch.setattr(build_stop, "_run_runtime", _recording_runtime(issued))
     monkeypatch.setattr(build_stop.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
 
     proc = SimpleNamespace(pid=999)
@@ -461,3 +474,105 @@ def test_escalate_container_tree_returns_false_when_verification_query_errors(
     monkeypatch.setattr(build_stop, "_escalate_container", lambda *a, **k: None)
 
     assert build_stop.escalate_container_tree("20260101-000000") is False
+
+
+# --- container-runtime stop failures name the runtime's error ---------------
+
+
+def _container_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A container-mode run dir whose runtime and sleep seams are hermetic."""
+    run_dir = tmp_path / "build" / "runs" / "20260101-000000"
+    run_dir.mkdir(parents=True)
+    build_stop.write_launch_record(
+        run_dir, pgid=4242, mode="container", runtime="docker", container_label="bakar.run_id=X"
+    )
+    monkeypatch.setattr(build_stop.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", lambda _rt, _cid: True)
+    return run_dir
+
+
+def test_stop_run_names_the_runtime_error_when_stop_and_kill_are_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A permission-denied stop/kill on a live container is reported with the runtime's text.
+
+    The container stays alive, so the stop is incomplete: the report must carry
+    each failed command's exit status and stderr, and no "stopped" line may
+    precede it.
+    """
+    run_dir = _container_run(tmp_path, monkeypatch)
+    denied = "permission denied while trying to connect to the docker daemon socket"
+
+    def _refuse(args: list[str]) -> build_stop._RuntimeResult:
+        return build_stop._RuntimeResult(args, 126, denied)
+
+    monkeypatch.setattr(build_stop, "_run_runtime", _refuse)
+    monkeypatch.setattr(build_stop, "_container_liveness", lambda _rt, _cid: build_stop._ALIVE)
+    monkeypatch.setattr(build_stop, "_container_id_status", lambda _rt, _label: (build_stop._ALIVE, "cafef00d"))
+
+    assert build_stop.stop_run(run_dir, force=True) is False
+
+    err = capsys.readouterr().err
+    lines = err.splitlines()
+    assert "stop incomplete - the following remain:" in lines
+    assert "stopped" not in lines
+    assert err.count(denied) == 3  # stop, kill and rm -f each named with the runtime's own text
+    assert "exit 126" in err
+    assert "`docker stop --timeout=" in err
+    assert (run_dir / "build.pid").exists()  # the launch record survives a failed stop
+
+
+def test_stop_run_prints_stopped_exactly_once_after_a_clean_graceful_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The container dies on the first SIGINT: one "stopped" line, after verification."""
+    run_dir = _container_run(tmp_path, monkeypatch)
+    verified: list[str] = []
+    monkeypatch.setattr(build_stop, "_run_runtime", _recording_runtime([]))
+    monkeypatch.setattr(build_stop, "_container_liveness", lambda _rt, _cid: build_stop._DEAD)
+    statuses = iter([(build_stop._ALIVE, "cafef00d")])
+
+    def _status(_rt: str, _label: str) -> tuple[str, str | None]:
+        result = next(statuses, (build_stop._DEAD, None))
+        if result[0] == build_stop._DEAD:
+            verified.append("verify")
+        return result
+
+    monkeypatch.setattr(build_stop, "_container_id_status", _status)
+
+    assert build_stop.stop_run(run_dir) is True
+
+    lines = capsys.readouterr().err.splitlines()
+    assert lines.count("stopped") == 1
+    assert verified == ["verify"]
+    assert not (run_dir / "build.pid").exists()
+
+
+def test_stop_run_treats_an_already_gone_container_as_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Runtime "No such container" errors are the wanted outcome, not a failure."""
+    run_dir = _container_run(tmp_path, monkeypatch)
+
+    def _gone(args: list[str]) -> build_stop._RuntimeResult:
+        return build_stop._RuntimeResult(args, 1, "Error response from daemon: No such container: cafef00d")
+
+    monkeypatch.setattr(build_stop, "_run_runtime", _gone)
+    monkeypatch.setattr(build_stop, "_container_liveness", lambda _rt, _cid: build_stop._ERROR)
+    statuses = iter([(build_stop._ALIVE, "cafef00d")])
+    monkeypatch.setattr(
+        build_stop, "_container_id_status", lambda _rt, _label: next(statuses, (build_stop._DEAD, None))
+    )
+
+    assert build_stop.stop_run(run_dir, force=True) is True
+
+    err = capsys.readouterr().err
+    assert "stop incomplete" not in err
+    assert err.splitlines().count("stopped") == 1
