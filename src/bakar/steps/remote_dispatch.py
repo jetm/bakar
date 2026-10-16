@@ -907,6 +907,22 @@ def _follow_remote_log(host: str, unit: str, log: str) -> tuple[int, list[str], 
     return rc, list(captured), True
 
 
+@dataclass(slots=True)
+class _StreamState:
+    """Whether the current dispatch announced a transient unit.
+
+    Out-of-band because a Ctrl-C raises out of :func:`_stream_remote_build`
+    before it can return anything, and the interrupt message must differ on it:
+    a build detached into a unit survives the session, one that never got that
+    far dies with it.
+    """
+
+    unit_seen: bool = False
+
+
+_stream_state = _StreamState()
+
+
 def _stream_remote_build(host: str, script: str) -> tuple[int, list[str], bool]:
     """Run the dispatch script on ``host`` and stream the build's output back.
 
@@ -954,6 +970,8 @@ def _stream_remote_build(host: str, script: str) -> tuple[int, list[str], bool]:
         if in_launch_phase:
             if _DISPATCH_UNIT_RE.search(line) or _DISPATCH_LOG_RE.search(line) or _DISPATCH_WARN_RE.search(line):
                 # Transport, not build output.
+                if _DISPATCH_UNIT_RE.search(line):
+                    _stream_state.unit_seen = True
                 launch.append(line)
                 continue
             if _DISPATCH_START_RE.search(line):
@@ -993,12 +1011,25 @@ def _stream_remote_build(host: str, script: str) -> tuple[int, list[str], bool]:
     return follow_rc, [*launch, *follow_lines], finished
 
 
-def _discover_newest_run_id(host: str, ws_root: Path) -> str | None:
-    """Find the newest ``build/runs/<run-id>/`` dir under ``ws_root`` on ``host``.
+@dataclass(frozen=True, slots=True)
+class RunLookupFailed:
+    """The run-id lookup itself failed: ssh exit status and its first stderr line."""
+
+    rc: int
+    detail: str
+
+
+def _discover_newest_run_id(host: str, ws_root: Path) -> str | RunLookupFailed | None:
+    """Find the newest ``<build dir>/runs/<run-id>/`` dir under ``ws_root`` on ``host``.
+
+    Returns the run id, ``None`` when the lookup ran and found no run directory,
+    or :class:`RunLookupFailed` when ssh itself failed (a hung link included:
+    the capture helper's timeout surfaces as a nonzero exit).
 
     The success stream does not carry the run-id (RunLogger writes ``run_start``
     to events.jsonl only, observability.py:126-141), so discover it by mtime via
-    a second ssh and return the basename.
+    a second ssh and return the basename. Any build directory counts, not only
+    ``build/``: qcom runs live under ``build-DISTRO/runs``.
     """
     find_cmd = (
         f"find {shlex.quote(str(ws_root))} "
@@ -1006,11 +1037,12 @@ def _discover_newest_run_id(host: str, ws_root: Path) -> str | None:
         "-type d -name sstate-cache -prune -o "
         "-type d -name downloads -prune -o "
         "-type d -name .git -prune -o "
-        "-type d -path '*/build/runs/20*' -prune -printf '%T@ %p\\n' | sort -rn | head -1"
+        "-type d -path '*/runs/20*' -prune -printf '%T@ %p\\n' | sort -rn | head -1"
     )
-    # No BatchMode here, preserving this helper's pre-existing ssh behaviour;
-    # only the SHELL the payload lands in changes.
-    result = _ssh_bash_capture(host, find_cmd, batch_mode=False)
+    result = _ssh_bash_capture(host, find_cmd)
+    if result.returncode != 0:
+        stderr_lines = result.stderr.strip().splitlines()
+        return RunLookupFailed(result.returncode, stderr_lines[0] if stderr_lines else "")
     line = result.stdout.strip()
     if not line:
         return None
@@ -1040,17 +1072,28 @@ def _surface_run_id(host: str, ws_root: Path, captured: list[str], rc: int) -> N
     # failure the triage-hint line can be lost to Rich's 80-col wrap on a
     # non-TTY. Fence the discovered id by the dispatch-start marker so a build
     # that failed before creating a run dir does not surface a previous run.
+    lookup_failed: RunLookupFailed | None = None
     if run_id is None:
         discovered = _discover_newest_run_id(host, ws_root)
-        if discovered is not None and dispatch_start is not None and discovered < dispatch_start:
+        if isinstance(discovered, RunLookupFailed):
+            lookup_failed = discovered
+            discovered = None
+        elif discovered is not None and dispatch_start is not None and discovered < dispatch_start:
             discovered = None
         run_id = discovered
 
     if run_id:
         console.print(f"remote run-id: {run_id}")
         console.print(f"inspect the remote run: ssh {host} bakar triage {run_id}")
-    else:
+    elif lookup_failed is not None:
+        console.print(
+            f"could not look up the remote run-id (ssh exit {lookup_failed.rc}): {lookup_failed.detail}",
+            markup=False,
+        )
+    elif rc != 0:
         console.print("no remote run dir was created - the build failed before starting")
+    else:
+        console.print("the build succeeded but no remote run directory was found")
 
 
 def check_versions(remote_version: str | None, *, assume_yes: bool) -> bool:
@@ -1099,12 +1142,19 @@ def run_remote_build(host: str, script: str, run_root: Path) -> int:
     Returns the remote exit code, 130 on Ctrl-C, or ``_DISPATCH_LOST_EXIT`` when
     the log stream is lost while the build keeps running.
     """
+    _stream_state.unit_seen = False
     try:
         rc, captured, finished = _stream_remote_build(host, script)
     except KeyboardInterrupt:
-        console.print("[yellow]Ctrl-C does not stop the remote build[/] - it keeps running on the host.")
-        console.print(f"stop it:    bakar stop --on {host}  (or: ssh {host} bakar stop)")
-        console.print(f"triage it:  ssh {host} bakar triage <run-id>")
+        if _stream_state.unit_seen:
+            console.print("[yellow]Ctrl-C does not stop the remote build[/] - it keeps running on the host.")
+            console.print(f"stop it:    bakar stop --on {host}  (or: ssh {host} bakar stop)")
+            console.print(f"triage it:  ssh {host} bakar triage <run-id>")
+        else:
+            console.print(
+                "[yellow]interrupted before the remote build detached[/] - it ended with this session; "
+                "nothing is left running on the host."
+            )
         return 130
     if not finished:
         # A lost log stream is a transport failure, not a build result: the build

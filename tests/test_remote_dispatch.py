@@ -919,7 +919,10 @@ def test_dispatch_popen_uses_replace_decode(fake_sp: FakeSubprocess) -> None:
 def test_dispatch_keyboard_interrupt_returns_130(
     fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    monkeypatch.setattr(rd._stream_state, "unit_seen", False)
+
     def _interrupt(host: str, script: str):
+        rd._stream_state.unit_seen = True
         raise KeyboardInterrupt
 
     monkeypatch.setattr(rd, "_stream_remote_build", _interrupt)
@@ -934,6 +937,138 @@ def test_dispatch_keyboard_interrupt_returns_130(
     assert "does not stop the remote build" in out
     assert f"ssh {HOST} bakar stop" in out
     assert f"ssh {HOST} bakar triage" in out
+
+
+def test_interrupt_before_any_unit_marker_does_not_promise_a_running_build(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def _interrupt(host: str, script: str):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(rd, "_stream_remote_build", _interrupt)
+    assert rd.run_remote_build(HOST, "script", WS) == 130
+    _cap = capsys.readouterr()
+    out = _cap.out + _cap.err
+    assert "interrupted before the remote build detached" in out
+    assert "bakar stop --on" not in out
+
+
+def test_unit_seen_is_recorded_by_the_stream(fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_sp.popen_lines = ["BAKAR_DISPATCH_UNIT=bakar-dispatch-x\n", "BAKAR_DISPATCH_LOG=/tmp/x.log\n"]
+    fake_sp.popen_rc = 1
+    monkeypatch.setattr(rd._stream_state, "unit_seen", False)
+    rd._stream_remote_build(HOST, "script")
+    assert rd._stream_state.unit_seen is True
+
+
+def test_stream_without_unit_marker_leaves_unit_unseen(
+    fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_sp.popen_lines = ["plain build output\n"]
+    monkeypatch.setattr(rd._stream_state, "unit_seen", False)
+    rd._stream_remote_build(HOST, "script")
+    assert rd._stream_state.unit_seen is False
+
+
+# --- run-id lookup outcomes -----------------------------------------------------
+
+
+def _lookup_returning(monkeypatch: pytest.MonkeyPatch, rc: int, stdout: str = "", stderr: str = "") -> list[str]:
+    scripts: list[str] = []
+
+    def capture(host: str, script: str, *, batch_mode: bool = True) -> _Result:
+        scripts.append(script)
+        return _Result(rc, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(rd, "_ssh_bash_capture", capture)
+    return scripts
+
+
+def test_lookup_failure_with_rc_zero_never_claims_the_build_failed_before_starting(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _lookup_returning(monkeypatch, 255, stderr="Connection timed out\nmore\n")
+    rd._surface_run_id(HOST, WS, ["build ok\n"], 0)
+    _cap = capsys.readouterr()
+    out = _cap.out + _cap.err
+    assert "could not look up the remote run-id (ssh exit 255): Connection timed out" in out
+    assert "more" not in out
+    assert "failed before starting" not in out
+
+
+def test_lookup_failure_on_a_failed_build_still_reports_the_lookup(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _lookup_returning(monkeypatch, 255, stderr="denied")
+    rd._surface_run_id(HOST, WS, ["boom\n"], 2)
+    _cap = capsys.readouterr()
+    out = _cap.out + _cap.err
+    assert "could not look up the remote run-id (ssh exit 255): denied" in out
+    assert "failed before starting" not in out
+
+
+def test_no_run_dir_with_nonzero_rc_keeps_the_failed_before_starting_message(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _lookup_returning(monkeypatch, 0, stdout="")
+    rd._surface_run_id(HOST, WS, ["boom\n"], 1)
+    _cap = capsys.readouterr()
+    out = _cap.out + _cap.err
+    assert "no remote run dir was created - the build failed before starting" in out
+
+
+def test_no_run_dir_with_rc_zero_does_not_claim_a_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _lookup_returning(monkeypatch, 0, stdout="")
+    rd._surface_run_id(HOST, WS, ["ok\n"], 0)
+    _cap = capsys.readouterr()
+    out = _cap.out + _cap.err
+    assert "failed before starting" not in out
+    assert "no remote run directory was found" in out
+
+
+def test_lookup_that_hangs_is_a_lookup_failure(fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]) -> None:
+    fake_sp.run_times_out = True
+    result = rd._discover_newest_run_id(HOST, WS)
+    assert isinstance(result, rd.RunLookupFailed)
+    assert result.rc == 255
+    assert "no response within 60s" in result.detail
+    rd._surface_run_id(HOST, WS, ["ok\n"], 0)
+    _cap = capsys.readouterr()
+    assert "could not look up the remote run-id (ssh exit 255)" in _cap.out + _cap.err
+    for _, kwargs in _ssh_runs(fake_sp):
+        assert kwargs["timeout"] == 60
+
+
+def test_lookup_runs_under_batch_mode(fake_sp: FakeSubprocess) -> None:
+    fake_sp.find_stdout = "1.0 /x/build/runs/20260716-000000\n"
+    assert rd._discover_newest_run_id(HOST, WS) == "20260716-000000"
+    ((argv, _),) = _ssh_runs(fake_sp)
+    assert "BatchMode=yes" in argv
+
+
+def test_lookup_matches_a_qcom_build_directory_not_only_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    scripts = _lookup_returning(monkeypatch, 0, stdout="1.0 /ws/build-qcom-wayland/runs/20260716-000000\n")
+    assert rd._discover_newest_run_id(HOST, WS) == "20260716-000000"
+    assert "'*/runs/20*'" in scripts[0]
+    assert "build/runs" not in scripts[0]
+
+
+def test_lookup_find_pattern_finds_a_qcom_run_dir_on_a_real_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = tmp_path / "build-qcom-wayland" / "runs" / "20260716-120000"
+    run.mkdir(parents=True)
+    (tmp_path / "build" / "tmp" / "runs" / "20990101-000000").mkdir(parents=True)
+    scripts: list[str] = []
+
+    def capture(host: str, script: str, *, batch_mode: bool = True) -> subprocess.CompletedProcess[str]:
+        scripts.append(script)
+        return subprocess.run(["bash", "-s"], input=script, capture_output=True, text=True, check=False)
+
+    monkeypatch.setattr(rd, "_ssh_bash_capture", capture)
+    assert rd._discover_newest_run_id(HOST, tmp_path) == "20260716-120000"
 
 
 # --- C10: broken pipe on stdin.write ----------------------------------------
@@ -1442,8 +1577,11 @@ def test_dispatch_detached_keeps_the_dispatch_start_fence(
     )
     _cap = capsys.readouterr()
     out = _cap.out + _cap.err
-    # 20260716-000000 predates the 20260716-120000 dispatch-start marker.
-    assert "no remote run dir was created" in out
+    # 20260716-000000 predates the 20260716-120000 dispatch-start marker, so it is
+    # discarded; the build exited 0, so the message must not call it a failure.
+    assert "20260716-000000" not in out
+    assert "no remote run directory was found" in out
+    assert "failed before starting" not in out
 
 
 # --- bakar stop --on <host>: the kill path for a detached build --------------

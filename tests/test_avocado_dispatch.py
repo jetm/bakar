@@ -438,8 +438,19 @@ def test_plan_names_no_untracked_paths_without_a_snapshot(
     assert "untracked" not in rec.names()
 
 
-def test_interrupted_stream_returns_130(rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    rec.stream = KeyboardInterrupt
+def test_interrupted_stream_returns_130(
+    rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # run_remote_build resets the unit-seen flag before streaming, so the stream
+    # itself must record that a unit was announced; monkeypatch restores the flag.
+    monkeypatch.setattr(remote_dispatch._stream_state, "unit_seen", False)
+
+    class _InterruptAfterUnit(KeyboardInterrupt):
+        def __init__(self) -> None:
+            remote_dispatch._stream_state.unit_seen = True
+            super().__init__()
+
+    rec.stream = _InterruptAfterUnit
     rc = _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"])
     assert rc == 130
     err = capsys.readouterr().err
