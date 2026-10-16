@@ -5,18 +5,20 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 
 import typer
 
 from bakar.bsp_detect import is_meta_avocado_yaml
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
+    RunFamily,
     WorkspaceOption,
     _bbsetup_workspace,
     _find_run,
     _resolve_workspace,
     _workspace_from_cwd,
+    candidate_runs_dirs,
 )
 from bakar.config import meta_avocado_build_dir_name, worktree_build_template
 from bakar.observability import last_run_event
@@ -108,7 +110,7 @@ def _print_structured_failures(failures: list[dict], workspace: Path) -> None:
 def _resolve_triage_dirs(
     kas_yaml: Path | None,
     workspace: Path | None,
-) -> tuple[list[tuple[Path, Literal["nxp", "ti", "generic"]]], Path, str, Path]:
+) -> tuple[list[tuple[Path, RunFamily]], Path, str, Path]:
     """Resolve the run directories, report root, not-found label, and container
     translation workspace for triage.
 
@@ -138,42 +140,27 @@ def _resolve_triage_dirs(
         else:
             build_root = resolved.parent
             translation_workspace = build_root
-        runs_dirs: list[tuple[Path, Literal["nxp", "ti", "generic"]]] = [
+        runs_dirs: list[tuple[Path, RunFamily]] = [
             (build_root / "build" / "runs", "generic"),
         ]
         report_root = build_root
         not_found_label = f"{runs_dirs[0][0]}"
     elif (setup_dir := _bbsetup_workspace(workspace)) is not None:
-        runs_dirs = [(setup_dir / "build" / "runs", "generic")]
-        # Preset fan-out: bbsetup releases write to
-        # setup_dir/build/<subdir>/build/runs (one subdir deeper than the root
-        # run dir above), so discover those too or a multi-release preset run
-        # is invisible to default selection and --preset/--release.
-        runs_dirs.extend((d, "generic") for d in sorted(setup_dir.glob("build/*/build/runs")))
+        runs_dirs = candidate_runs_dirs(setup_dir)
         report_root = setup_dir
         translation_workspace = setup_dir
-        not_found_label = f"{runs_dirs[0][0]}"
+        not_found_label = f"{setup_dir / 'build' / 'runs'}"
     else:
         ws = workspace or _workspace_from_cwd()
-        # meta-avocado builds land in ws/build-<stem>/build/runs/
+        # One shared set of roots (nxp/ti/qcom, meta-avocado build-*, and the
+        # preset fan-out dirs) so triage, report and insights find the same
+        # runs. compose_preset_output_path() encodes <distro>-<machine>-<version>
+        # in the fan-out subdir, which --preset/--release match against.
+        runs_dirs = candidate_runs_dirs(ws)
         avocado_dirs = sorted(ws.glob("build-*/build/runs"))
         if avocado_dirs:
-            runs_dirs = [(d, "generic") for d in avocado_dirs]
             not_found_label = " or ".join(str(d) for d in avocado_dirs[:2])
         else:
-            runs_dirs = [
-                (ws / "nxp" / "build" / "runs", "nxp"),
-                (ws / "ti" / "build" / "runs", "ti"),
-            ]
-            # Preset fan-out: bbsetup/generic releases write to
-            # ws/build/<subdir>/build/runs, while nxp/ti releases nest one
-            # level deeper at ws/build/<subdir>/<family>/build/runs because
-            # their bsp_root is workspace/<family>. compose_preset_output_path()
-            # encodes <distro>-<machine>-<version> in <subdir>, which
-            # --preset/--release match against.
-            runs_dirs.extend((d, "generic") for d in sorted(ws.glob("build/*/build/runs")))
-            runs_dirs.extend((d, "nxp") for d in sorted(ws.glob("build/*/nxp/build/runs")))
-            runs_dirs.extend((d, "ti") for d in sorted(ws.glob("build/*/ti/build/runs")))
             not_found_label = "nxp/build/runs/ or ti/build/runs/"
         report_root = ws
         translation_workspace = ws
@@ -181,12 +168,12 @@ def _resolve_triage_dirs(
 
 
 def _select_run(
-    runs_dirs: list[tuple[Path, Literal["nxp", "ti", "generic"]]],
+    runs_dirs: list[tuple[Path, RunFamily]],
     *,
     run_id: str | None,
     preset: str | None,
     release: str | None,
-) -> tuple[Path, Literal["nxp", "ti", "generic"]] | None:
+) -> tuple[Path, RunFamily] | None:
     """Choose the run dir to triage among the resolved candidates.
 
     An explicit ``run_id`` (from the positional argument or ``--run``)
@@ -202,7 +189,7 @@ def _select_run(
     if run_id is not None:
         return _find_run(runs_dirs, run_id)
 
-    candidates: list[tuple[Path, Literal["nxp", "ti", "generic"]]] = []
+    candidates: list[tuple[Path, RunFamily]] = []
     for runs_dir, label in runs_dirs:
         if not runs_dir.is_dir():
             continue

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from pathlib import Path
 from typing import Annotated, Literal
 
 import typer
@@ -19,6 +18,7 @@ from bakar.commands._helpers import (
     _render_sstate_lines,
     _SstateRender,
     _workspace_from_cwd,
+    candidate_runs_dirs,
 )
 from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.report import assemble_report
@@ -52,29 +52,16 @@ def report(
     object. Kernel version and recipe count are best-effort and omitted when
     unavailable.
     """
-    family: Literal["nxp", "ti", "generic", "bbsetup"]
+    family: Literal["nxp", "ti", "qcom", "generic", "bbsetup"]
     if (setup_dir := _bbsetup_workspace(workspace)) is not None:
-        runs_dirs: list[tuple[Path, Literal["nxp", "ti", "generic"]]] = [
-            (setup_dir / "build" / "runs", "generic"),
-        ]
-        not_found_label = f"{runs_dirs[0][0]}"
-        ws_for_cfg = setup_dir
+        ws = setup_dir
+        not_found_label = f"{setup_dir / 'build' / 'runs'}"
         family = "bbsetup"
     else:
         ws = workspace or _workspace_from_cwd()
-        runs_dirs = [
-            (ws / "nxp" / "build" / "runs", "nxp"),
-            (ws / "ti" / "build" / "runs", "ti"),
-            (ws / "build" / "runs", "generic"),
-        ]
-        # Scan for meta-avocado / custom build-dir runs at ws/build-*/build/runs.
-        for build_dir in sorted(ws.glob("build-*")):
-            if build_dir.is_dir():
-                extra = build_dir / "build" / "runs"
-                runs_dirs.append((extra, "generic"))
         not_found_label = "nxp/build/runs/, ti/build/runs/, or build/runs/"
-        ws_for_cfg = ws
         family = "nxp"  # provisional default; overwritten by the resolved run's label below
+    runs_dirs = candidate_runs_dirs(ws)
 
     found = _find_run(runs_dirs, run_id)
     if found is None:
@@ -107,7 +94,7 @@ def report(
     else:
         cfg = resolve(
             ResolveRequest(
-                workspace=ws_for_cfg,
+                workspace=ws,
                 bsp_family=family,
                 spec=BSPSpec(manifest=manifest),
                 user_config=_state._USER_CONFIG,

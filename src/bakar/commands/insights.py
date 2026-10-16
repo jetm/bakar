@@ -65,6 +65,7 @@ from bakar.commands._helpers import (
     _bbsetup_workspace,
     _find_run,
     _workspace_from_cwd,
+    candidate_runs_dirs,
 )
 from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.fmt import neutralize
@@ -454,26 +455,16 @@ def insights(
     latest run under the workspace's search roots unless an explicit run ID
     is given, and always names the run it reported on.
     """
-    family: Literal["nxp", "ti", "generic", "bbsetup"]
-    runs_dirs: list[tuple[Path, Literal["nxp", "ti", "generic"]]]
+    family: Literal["nxp", "ti", "qcom", "generic", "bbsetup"]
     if (setup_dir := _bbsetup_workspace(workspace)) is not None:
-        runs_dirs = [(setup_dir / "build" / "runs", "generic")]
-        not_found_label = f"{runs_dirs[0][0]}"
-        ws_for_cfg = setup_dir
+        ws = setup_dir
+        not_found_label = f"{setup_dir / 'build' / 'runs'}"
         family = "bbsetup"
     else:
         ws = workspace or _workspace_from_cwd()
-        runs_dirs = [
-            (ws / "nxp" / "build" / "runs", "nxp"),
-            (ws / "ti" / "build" / "runs", "ti"),
-            (ws / "build" / "runs", "generic"),
-        ]
-        for build_dir in sorted(ws.glob("build-*")):
-            if build_dir.is_dir():
-                runs_dirs.append((build_dir / "build" / "runs", "generic"))
         not_found_label = "nxp/build/runs/, ti/build/runs/, or build/runs/"
-        ws_for_cfg = ws
         family = "nxp"  # provisional default; overwritten by the resolved run's label below
+    runs_dirs = candidate_runs_dirs(ws)
 
     found = _find_run(runs_dirs, run_id)
     if found is None:
@@ -508,7 +499,7 @@ def insights(
     else:
         cfg = resolve(
             ResolveRequest(
-                workspace=ws_for_cfg,
+                workspace=ws,
                 bsp_family=family,
                 spec=BSPSpec(manifest=manifest),
                 user_config=_state._USER_CONFIG,
@@ -575,8 +566,8 @@ def insights(
 
     if show_natives:
         # A generic workspace resolves cfg against its per-machine build directory, but its
-        # bitbake checkout sits at the workspace top, so the library is found from ws_for_cfg.
-        lib_workspace = ws_for_cfg if family == "generic" else None
+        # bitbake checkout sits at the workspace top, so the library is found from the workspace.
+        lib_workspace = ws if family == "generic" else None
         natives = _natives_for(cfg, run_dir, artifact, lib_workspace)
         _render_natives(natives)
         if natives.error:
