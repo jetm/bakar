@@ -27,6 +27,7 @@ import re
 import subprocess
 import threading
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING
 
 from rich.live import Live
@@ -57,6 +58,7 @@ from bakar.observability import RunLogger  # noqa: TC001 - runtime-required, see
 from bakar.output_mode import OutputMode
 from bakar.probes import probe_build_daemon, probe_ccache, probe_cluster
 from bakar.steps.build_ui import BuildUIState, _fmt_stall
+from bakar.steps.build_ui_render import make_renderable, plain_status_line
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -98,7 +100,7 @@ class _PlainFrameController:
     ``stop()``, ``start(*, refresh=False)``, and writable ``transient`` /
     ``vertical_overflow`` attributes - as
     no-ops / plain writes, so ``_run_pty_with_ui``'s body runs unchanged. As a context
-    manager it starts a daemon thread that prints ``ui.plain_status_line()`` on a fixed
+    manager it starts a daemon thread that prints ``plain_status_line(ui)`` on a fixed
     ``_PLAIN_STATUS_INTERVAL`` tick and joins it on exit (before the caller prints its
     post-build summary), so a stale heartbeat cannot interleave with the final lines.
     """
@@ -121,7 +123,7 @@ class _PlainFrameController:
 
     def _loop(self) -> None:  # pragma: no cover - timing-driven daemon thread
         while not self._stop_event.wait(timeout=_PLAIN_STATUS_INTERVAL):
-            line = self._ui.plain_status_line()
+            line = plain_status_line(self._ui)
             if line is not None:
                 # markup=False: the status line contains literal brackets (e.g.
                 # "bakar[build]") that Rich would otherwise parse as style tags.
@@ -591,7 +593,7 @@ def _run_pty_with_ui(ctx: _PtyCtx) -> _PtyOutcome:
             frame_cm: Live | _PlainFrameController = (
                 _PlainFrameController(ui, log.console, stop_event)
                 if output_mode is OutputMode.PLAIN
-                else Live(get_renderable=ui.make_renderable, console=log.console, refresh_per_second=8)
+                else Live(get_renderable=partial(make_renderable, ui), console=log.console, refresh_per_second=8)
             )
             with frame_cm as live:
                 pump = threading.Thread(target=_pump, daemon=True)  # pragma: no cover

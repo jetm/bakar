@@ -36,6 +36,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from functools import partial
 from pathlib import Path
 
 from rich.console import Console
@@ -43,6 +44,7 @@ from rich.live import Live
 from rich.logging import RichHandler
 
 from bakar.steps.build_ui import BuildUIState
+from bakar.steps.build_ui_render import make_renderable
 
 # VHS tape embedded here so the script is self-contained: it generates
 # a temp tape, calls vhs, and vhs re-invokes this script with --demo.
@@ -98,7 +100,7 @@ def _run_demo() -> None:
     # Backdate bakar start so the global timer reads ~1h02m, consistent with
     # the stuck glibc compile below (a real build that has been running that long).
     ui = BuildUIState(start_monotonic=time.monotonic() - 3750)
-    with Live(get_renderable=ui.make_renderable, console=console, refresh_per_second=12, screen=False):
+    with Live(get_renderable=partial(make_renderable, ui), console=console, refresh_per_second=12, screen=False):
         # --- parse phase: percentage bar ramps to 100% ---
         for pct in (0, 14, 30, 47, 63, 80, 93, 100):
             ui.process_line(f"Parsing recipes: {pct}% || ETA:  0:00:18")
