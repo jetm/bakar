@@ -238,12 +238,7 @@ def detect_runtime() -> str:
     return "docker"
 
 
-# Back-compat alias: steps/kas_build.py (owned by a different task/round) still
-# imports this module's runtime detection as ``_detect_runtime``. Keep the old
-# private name bound to the same function until that call site is migrated,
-# so this rename does not break an out-of-scope module mid-round.
-# remaining caller: src/bakar/steps/kas_build.py:1152. Removing this alias
-# requires migrating that call site to ``detect_runtime`` first.
+# Old private name, still read by steps/kas_pty.py and tests/test_build_stop_container.py.
 _detect_runtime = detect_runtime
 
 
