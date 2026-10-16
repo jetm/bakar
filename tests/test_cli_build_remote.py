@@ -18,6 +18,7 @@ Asserted:
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -27,8 +28,6 @@ from bakar.commands import build as build_cmd
 from bakar.steps import remote_dispatch as rd
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from typer.testing import CliRunner as _CliRunner
 
 pytestmark = pytest.mark.unit
@@ -391,116 +390,202 @@ def test_relative_workspace_script_uses_invoking_cwd(
 
 
 # ---------------------------------------------------------------------------
-# (j) A meta-avocado linked worktree is mirrored as a second root.
+# (j) A meta-avocado build routes to its release workspace; other forms mirror.
 # ---------------------------------------------------------------------------
 
 
-def _record_dispatch(monkeypatch: pytest.MonkeyPatch) -> list[tuple[tuple, dict]]:
+def _record(monkeypatch: pytest.MonkeyPatch, module, name: str) -> list[tuple[tuple, dict]]:
     calls: list[tuple[tuple, dict]] = []
 
     def fake(*args, **kwargs) -> int:
         calls.append((args, kwargs))
         return 0
 
-    monkeypatch.setattr(rd, "dispatch_remote_build", fake)
+    monkeypatch.setattr(module, name, fake)
     return calls
 
 
-def _invoke_on(runner: _CliRunner, monkeypatch: pytest.MonkeyPatch, yml: str):
-    argv = ["build", yml, "--on", HOST, "--yes"]
+def _user_config(monkeypatch: pytest.MonkeyPatch, **fields) -> None:
+    """Pin the user config the app callback loads, so the real ~/.config never leaks in."""
+    from bakar.user_config import UserConfig
+
+    cfg = UserConfig(**fields)
+    monkeypatch.setattr("bakar.commands._app.load_user_config", lambda *a, **k: cfg)
+
+
+def _probe(monkeypatch: pytest.MonkeyPatch, release: str = "wrynose") -> list[Path]:
+    from bakar.steps import kas_pins
+
+    probed: list[Path] = []
+
+    def fake(kas_yaml: Path, checkout: Path) -> str:
+        probed.append(checkout)
+        return release
+
+    monkeypatch.setattr(kas_pins, "probe_release", fake)
+    return probed
+
+
+def _invoke_on(runner: _CliRunner, monkeypatch: pytest.MonkeyPatch, *args: str):
+    argv = ["build", *args, "--on", HOST, "--yes"]
     monkeypatch.setattr(sys, "argv", ["bakar", *argv])
     return runner.invoke(app, argv)
 
 
-def test_worktree_dispatch_passes_checkout_as_extra_root(
+def test_meta_avocado_without_workspaces_config_exits_2_before_any_ssh(
     runner: _CliRunner,
     meta_avocado_worktree_layout,
+    fake_sp: FakeSubprocess,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from bakar.steps import avocado_dispatch
+
     lay = meta_avocado_worktree_layout
-    calls = _record_dispatch(monkeypatch)
+    _user_config(monkeypatch)
+    probed = _probe(monkeypatch)
+    avocado = _record(monkeypatch, avocado_dispatch, "dispatch_avocado_build")
+    mirror = _record(monkeypatch, rd, "dispatch_remote_build")
     monkeypatch.chdir(lay.worktree)
 
     result = _invoke_on(runner, monkeypatch, "kas/machine/m.yml")
 
-    assert result.exit_code == 0, result.output
-    assert len(calls) == 1
-    args, kwargs = calls[0]
-    assert args[1] == lay.ws
-    assert kwargs["extra_roots"] == (lay.worktree,)
+    assert result.exit_code == 2, result.output
+    assert "[workspaces] template" in " ".join(result.output.split())
+    assert fake_sp.calls == []
+    assert avocado == [] and mirror == [] and probed == []
 
 
-def test_worktree_main_checkout_dispatch_has_no_extra_roots(
+def test_meta_avocado_unmapped_release_exits_2_before_any_ssh(
     runner: _CliRunner,
     meta_avocado_worktree_layout,
+    fake_sp: FakeSubprocess,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    lay = meta_avocado_worktree_layout
-    calls = _record_dispatch(monkeypatch)
-    monkeypatch.chdir(lay.ws)
-
-    result = _invoke_on(runner, monkeypatch, "meta-avocado/kas/machine/m.yml")
-
-    assert result.exit_code == 0, result.output
-    args, kwargs = calls[0]
-    assert args[1] == lay.ws
-    assert kwargs.get("extra_roots", ()) == ()
-
-
-def test_worktree_inside_workspace_needs_no_extra_root(
-    runner: _CliRunner,
-    meta_avocado_worktree_layout,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A worktree whose main checkout is in the workspace is carried by the workspace transfer.
-
-    The real dispatcher accepts this layout (see
-    ``test_dispatch_allows_a_worktree_whose_main_checkout_is_inside_the_root``), so the
-    CLI layer leaves it out of the extra roots instead of mirroring it twice.
-    """
-    import os
-    import subprocess
+    from bakar.steps import avocado_dispatch
 
     lay = meta_avocado_worktree_layout
-    inner = lay.ws / ".wt" / "wt3"
-    inner.parent.mkdir(parents=True)
-    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
-    subprocess.run(
-        [
-            *("git", "-c", "user.email=t@example.invalid", "-c", "user.name=t", "-C", str(lay.main)),
-            *("worktree", "add", "-q", str(inner), "-b", "wt3"),
-        ],
-        check=True,
-        capture_output=True,
-        env=env,
-    )
-    calls = _record_dispatch(monkeypatch)
-    monkeypatch.chdir(inner)
+    _user_config(monkeypatch, workspaces_releases={"scarthgap": str(tmp_path / "sg")})
+    _probe(monkeypatch, "wrynose")
+    avocado = _record(monkeypatch, avocado_dispatch, "dispatch_avocado_build")
+    monkeypatch.chdir(lay.worktree)
 
     result = _invoke_on(runner, monkeypatch, "kas/machine/m.yml")
 
-    assert result.exit_code == 0, result.output
-    args, kwargs = calls[0]
-    assert args[1] == lay.ws
-    assert kwargs.get("extra_roots", ()) == ()
+    assert result.exit_code == 2, result.output
+    out = " ".join(result.output.split())
+    assert "[workspaces] template" in out and "'wrynose'" in out
+    assert fake_sp.calls == []
+    assert avocado == []
 
 
-def test_worktree_dispatch_refuses_a_mirror_root_without_the_main_checkout(
+def test_meta_avocado_routing_error_exits_2(
+    runner: _CliRunner,
+    meta_avocado_worktree_layout,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bakar.release_workspace import ReleaseRoutingError
+    from bakar.steps import avocado_dispatch, kas_pins
+
+    lay = meta_avocado_worktree_layout
+    _user_config(monkeypatch, workspaces_template="/srv/peridio-{release}")
+
+    def boom(kas_yaml: Path, checkout: Path) -> str:
+        raise ReleaseRoutingError("no openembedded-core pin")
+
+    monkeypatch.setattr(kas_pins, "probe_release", boom)
+    avocado = _record(monkeypatch, avocado_dispatch, "dispatch_avocado_build")
+    monkeypatch.chdir(lay.worktree)
+
+    result = _invoke_on(runner, monkeypatch, "kas/machine/m.yml")
+
+    assert result.exit_code == 2, result.output
+    assert "no openembedded-core pin" in " ".join(result.output.split())
+    assert fake_sp.calls == []
+    assert avocado == []
+
+
+def test_meta_avocado_mapping_dispatches_to_the_routed_workspace(
     runner: _CliRunner,
     meta_avocado_worktree_layout,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """``-w`` away from the main checkout: the worktree's git metadata would never reach the remote."""
+    """The routed workspace need not exist locally: only the remote copy matters."""
+    from bakar.steps import avocado_dispatch
+
     lay = meta_avocado_worktree_layout
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    calls = _record_dispatch(monkeypatch)
-    argv = ["build", str(lay.kas_yaml), "-w", str(elsewhere), "--on", HOST, "--yes"]
-    monkeypatch.setattr(sys, "argv", ["bakar", *argv])
+    _user_config(
+        monkeypatch,
+        workspaces_template=str(tmp_path / "absent-{release}"),
+        dispatch_worktree_root="/srv/wt",
+        dispatch_snapshot_untracked_cap_mb=7,
+        build_worktree_build_dir="build-{stem}-{worktree}",
+    )
+    probed = _probe(monkeypatch, "wrynose")
+    avocado = _record(monkeypatch, avocado_dispatch, "dispatch_avocado_build")
+    mirror = _record(monkeypatch, rd, "dispatch_remote_build")
+    monkeypatch.chdir(lay.worktree)
 
-    result = runner.invoke(app, argv)
+    result = _invoke_on(runner, monkeypatch, "kas/machine/m.yml")
 
-    assert result.exit_code == 2, result.output
-    assert "outside the mirror root" in " ".join(result.output.split())
-    assert calls == []
+    assert result.exit_code == 0, result.output
+    assert mirror == []
+    assert probed == [lay.worktree]
+    (args, kwargs) = avocado[0]
+    assert args == (HOST,)
+    assert kwargs["workspace"] == tmp_path / "absent-wrynose"
+    assert kwargs["checkout"] == lay.worktree
+    assert kwargs["worktree"].checkout == lay.worktree
+    assert kwargs["worktree"].main_checkout == lay.main
+    assert kwargs["kas_yaml"] == lay.kas_yaml
+    assert kwargs["kas_arg"] == "kas/machine/m.yml"
+    assert kwargs["invoking_cwd"] == lay.worktree
+    assert kwargs["release"] == "wrynose"
+    assert kwargs["local_args"] == ["build", "kas/machine/m.yml", "--on", HOST, "--yes"]
+    assert kwargs["worktree_root"] == Path("/srv/wt")
+    assert kwargs["build_dir_template"] == "build-{stem}-{worktree}"
+    assert kwargs["cap_mb"] == 7
+    assert kwargs["assume_yes"] is True
+    assert kwargs["sccache_dist"] is False
+
+
+def test_meta_avocado_dispatch_exit_code_propagates(
+    runner: _CliRunner,
+    meta_avocado_worktree_layout,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bakar.steps import avocado_dispatch
+
+    lay = meta_avocado_worktree_layout
+    _user_config(monkeypatch, workspaces_template="/srv/peridio-{release}")
+    _probe(monkeypatch)
+    monkeypatch.setattr(avocado_dispatch, "dispatch_avocado_build", lambda *a, **k: 17)
+    monkeypatch.chdir(lay.worktree)
+
+    result = _invoke_on(runner, monkeypatch, "kas/machine/m.yml")
+
+    assert result.exit_code == 17, result.output
+
+
+def test_nxp_manifest_build_uses_the_additive_mirror(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bakar.steps import avocado_dispatch
+
+    _user_config(monkeypatch, workspaces_template="/srv/peridio-{release}")
+    avocado = _record(monkeypatch, avocado_dispatch, "dispatch_avocado_build")
+    mirror = _record(monkeypatch, rd, "dispatch_remote_build")
+
+    result = _invoke_on(runner, monkeypatch, "-f", "imx-6.12.49-2.2.0.xml", "-m", "imx95-var-dart")
+
+    assert result.exit_code == 0, result.output
+    assert avocado == []
+    assert len(mirror) == 1
+    args, kwargs = mirror[0]
+    assert args[0] == HOST
+    assert args[1] == workspace
+    assert "extra_roots" not in kwargs

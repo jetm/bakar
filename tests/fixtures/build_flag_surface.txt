@@ -15,7 +15,7 @@ kas_yaml | argument | aliases= | required=False | flag=False | default=None | he
 --dry-run-script | option | aliases= | required=False | flag=False | default=None | help=Write a runnable bash script reproducing this build to PATH, or to stdout when PATH is '-'. Does not build. The existing --dry-run/-n preview behavior is unchanged.
 --preset | option | aliases= | required=False | flag=False | default=None | help=Named preset from config.toml; additive with explicit flags (explicit flags win).
 --on | option | aliases= | required=False | flag=False | default=None | help=Dispatch the build to a remote host (ssh alias or user@ip) instead of building locally: mirror the working tree with rsync, run the build there, stream logs, and surface the remote run-id. Unset builds locally.
---yes,-y | option | aliases= | required=False | flag=True | default=False | help=Skip the rsync --delete confirmation prompt for --on dispatch (non-interactive).
+--yes,-y | option | aliases= | required=False | flag=True | default=False | help=Proceed despite a local/remote bakar version mismatch for --on dispatch
 --feed | option | aliases= | required=False | flag=True | default=False | help=On build success, stage the RPMs into the local package feed and rewrite its index. A failed build never syncs, and neither does --dry-run.
 --feed-release | option | aliases= | required=False | flag=False | default='2024' | help=Feed release directory for --feed (see `bakar feed sync`).
 --feed-channel | option | aliases= | required=False | flag=False | default='edge' | help=Feed channel directory for --feed (see `bakar feed sync`).

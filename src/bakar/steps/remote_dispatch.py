@@ -938,7 +938,6 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
     *,
     sccache_dist: bool,
     assume_yes: bool,
-    extra_roots: tuple[Path, ...] = (),  # ignored; removed by task 6.1, which drops the caller
 ) -> int:
     """Mirror the workspace to ``host`` additively and run the build there, in strict order.
 
@@ -951,9 +950,6 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
     updates remote files and never deletes one; (5) stream the remote build over
     ``ssh <host> bash -s`` stdin; (6) surface the run-id + triage command;
     (7) return the remote build's exit code.
-
-    ``extra_roots`` is accepted and ignored: it is removed by task 6.1, which
-    drops the caller's extra-root block.
     """
     if host.startswith("-"):
         console.print(

@@ -1532,17 +1532,6 @@ def test_dispatch_prints_the_plan_and_never_prompts(
     assert not hasattr(rd, "typer")
 
 
-def test_dispatch_accepts_and_ignores_extra_roots(fake_sp: FakeSubprocess) -> None:
-    fake_sp.find_stdout = "1.0 /x/build/runs/20260716-000000\n"
-    extra = Path("/home/tiamarin/repos/work/meta-avocado")
-    rc = rd.dispatch_remote_build(
-        HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True, extra_roots=(extra,)
-    )
-    assert rc == 0
-    rsyncs = [argv for kind, argv in fake_sp.calls if kind == "run" and argv[0] == "rsync"]
-    assert rsyncs == [rd.build_rsync_argv(WS, HOST)]
-
-
 # --- check_remote_workspace -----------------------------------------------------
 
 RWS = "/home/u/work/peridio-wrynose"

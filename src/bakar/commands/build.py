@@ -15,7 +15,7 @@ from rich.table import Table
 
 import bakar.commands._app as _state
 from bakar import feed as feed_mod
-from bakar.bsp_detect import machine_from_yaml, meta_avocado_worktree
+from bakar.bsp_detect import is_meta_avocado_yaml, machine_from_yaml, meta_avocado_checkout, meta_avocado_worktree
 from bakar.commands._app import app, console
 
 # Re-exported, not merely imported. ``build()`` below calls every one of these
@@ -236,6 +236,75 @@ def _finish_build(
         _sync_feed(cfg, feed, sboms=filtered_sboms)
 
 
+_NO_ROUTING_MSG = "--on for meta-avocado builds needs \\[workspaces] template in the bakar user config"
+
+
+def _dispatch_meta_avocado(
+    host: str,
+    *,
+    kas_arg: str,
+    main_yaml: Path,
+    invoking_cwd: Path,
+    sccache_dist: bool,
+    assume_yes: bool,
+) -> int:
+    """Route a meta-avocado ``--on`` build to its release workspace and dispatch it.
+
+    Every refusal here returns before any ssh, rsync or git command runs.
+    """
+    from bakar import config as config_mod
+    from bakar.commands._helpers import logical_path
+    from bakar.release_workspace import ReleaseRoutingError, map_release
+    from bakar.steps import avocado_dispatch, kas_pins
+    from bakar.user_config import load_user_config
+
+    user_config = _state._USER_CONFIG
+    if user_config is None:
+        try:
+            user_config = load_user_config()
+        except ValueError as exc:
+            console.print(f"[red]Invalid bakar config:[/] {exc}")
+            return 2
+    if not (user_config.workspaces_template or user_config.workspaces_releases):
+        # Refused before the release probe: with nothing configured no release
+        # can map, so the kas dump would only delay the same answer.
+        console.print(f"[red]{_NO_ROUTING_MSG}[/]: it names the release workspace on {host}.")
+        return 2
+    checkout = meta_avocado_checkout(main_yaml)
+    if checkout is None:
+        console.print(f"[red]cannot dispatch {main_yaml}[/]: no meta-avocado checkout holds it.")
+        return 2
+    try:
+        release = kas_pins.probe_release(main_yaml, checkout)
+        workspace = map_release(release, user_config.workspaces_template, user_config.workspaces_releases)
+    except ReleaseRoutingError as exc:
+        console.print(f"[red]Cannot route {main_yaml} to a release workspace:[/] {exc}")
+        return 2
+    if workspace is None:
+        console.print(
+            f"[red]{_NO_ROUTING_MSG}[/] (or a \\[workspaces.releases] entry for {release!r}): "
+            f"it names the release workspace on {host}."
+        )
+        return 2
+    worktree_root = user_config.dispatch_worktree_root
+    return avocado_dispatch.dispatch_avocado_build(
+        host,
+        workspace=workspace,
+        checkout=logical_path(checkout),
+        worktree=meta_avocado_worktree(main_yaml),
+        kas_yaml=main_yaml,
+        kas_arg=kas_arg,
+        local_args=sys.argv[1:],
+        release=release,
+        sccache_dist=sccache_dist,
+        assume_yes=assume_yes,
+        worktree_root=Path(worktree_root).expanduser() if worktree_root else None,
+        build_dir_template=config_mod.worktree_build_template(user_config),
+        cap_mb=user_config.dispatch_snapshot_untracked_cap_mb,
+        invoking_cwd=invoking_cwd,
+    )
+
+
 @app.command()
 def build(
     kas_yaml: KasYamlArgument = None,
@@ -326,11 +395,32 @@ def build(
         # (the bakar-stop-and-workspace-cwd A10 lesson), so the remote reproduces
         # PC1's path resolution exactly - not the post-chdir workspace root.
         invoking_cwd = _invoking_cwd()
-        # Mirror the workspace the local build would resolve so a generic BYO YAML
-        # run from outside a workspace does not exit 2, and a manifest/bbsetup run
-        # mirrors the same tree the local build would.
+        # Both paths are sent to the remote, so each has to name a directory that
+        # exists THERE. Resolving them (which getcwd and detect_kas_workspace both
+        # do) yields paths that only exist on the node whose layout produced
+        # them: a shared workspace mounted at a home-relative path on every node
+        # is a symlink onto the storage volume on the node that owns it. See
+        # logical_path.
+        from bakar.commands._helpers import logical_path
+
+        # A meta-avocado build is routed to its release workspace BEFORE the local
+        # workspace is resolved: only the remote copy of that workspace matters,
+        # so one missing here must not block the dispatch.
         if kas_yaml is not None:
             _on_main_yaml, _ = split_kas_yaml_arg(kas_yaml)
+            if is_meta_avocado_yaml(_on_main_yaml):
+                rc = _dispatch_meta_avocado(
+                    on,
+                    kas_arg=kas_yaml,
+                    main_yaml=_on_main_yaml,
+                    invoking_cwd=invoking_cwd,
+                    sccache_dist=sccache_dist,
+                    assume_yes=yes,
+                )
+                raise typer.Exit(code=rc)
+            # Mirror the workspace the local build would resolve, so a generic BYO
+            # YAML run from outside a workspace does not exit 2, and a
+            # manifest/bbsetup run mirrors the same tree the local build would.
             _on_family, _ = _dispatch_from_yaml(_on_main_yaml)
             ws_root = _resolve_workspace(workspace, kas_yaml=_on_main_yaml, family=_on_family)
         elif manifest is not None:
@@ -338,36 +428,7 @@ def build(
             ws_root = _resolve_workspace(workspace, family=_on_family)
         else:
             ws_root = _bbsetup_workspace(workspace) or _workspace_from_cwd()
-        # Both paths are sent to the remote - ws_root as the rsync destination,
-        # invoking_cwd as the directory the remote build runs from - so each has
-        # to name a directory that exists THERE. Resolving them (which getcwd
-        # and detect_kas_workspace both do) yields paths that only exist on the
-        # node whose layout produced them: a shared workspace mounted at a
-        # home-relative path on every node is a symlink onto the storage volume
-        # on the node that owns it. See logical_path.
-        from bakar.commands._helpers import logical_path
         from bakar.steps.remote_dispatch import dispatch_remote_build
-
-        # A meta-avocado linked worktree usually lives outside the workspace, so
-        # it is mirrored as a second root. One already inside ws_root is left to
-        # the workspace transfer, which carries its main checkout's git metadata.
-        extra_roots: tuple[Path, ...] = ()
-        if kas_yaml is not None:
-            wt = meta_avocado_worktree(_on_main_yaml)
-            if wt is not None:
-                real_ws = ws_root.resolve()
-                # The worktree's .git points at <main checkout>/.git/worktrees/<name>. If
-                # the main checkout is not under the mirror root (an explicit -w away
-                # from it), that directory never travels and the remote copy dangles.
-                if not wt.main_checkout.is_relative_to(real_ws):
-                    console.print(
-                        f"[red]the worktree's main checkout {wt.main_checkout} is outside the mirror "
-                        f"root {ws_root}[/]: its git metadata would not reach {on}. Drop -w, or point "
-                        f"it at {wt.main_checkout.parent}."
-                    )
-                    raise typer.Exit(code=2)
-                if not wt.checkout.resolve().is_relative_to(real_ws):
-                    extra_roots = (logical_path(wt.checkout),)
 
         rc = dispatch_remote_build(
             on,
@@ -376,7 +437,6 @@ def build(
             sys.argv[1:],
             sccache_dist=sccache_dist,
             assume_yes=yes,
-            extra_roots=extra_roots,
         )
         raise typer.Exit(code=rc)
     # Resolve the active preset (if any) before dispatch.

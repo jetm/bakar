@@ -153,7 +153,7 @@ YesOption = Annotated[
     typer.Option(
         "--yes",
         "-y",
-        help="Skip the rsync --delete confirmation prompt for --on dispatch (non-interactive).",
+        help="Proceed despite a local/remote bakar version mismatch for --on dispatch",
     ),
 ]
 
