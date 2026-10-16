@@ -17,10 +17,7 @@ from __future__ import annotations
 
 import os
 import shutil
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from pathlib import Path
 
 # Thread-pool size for bulk rename/unlink/rmtree. These are I/O-bound syscalls
 # that release the GIL, so a small pool parallelizes real disk work. Capped low
@@ -146,30 +143,44 @@ def _gather_remove_targets(root: Path, min_fanout: int) -> list[Path]:
     return targets
 
 
-def parallel_rmtree(root: Path, description: str = "Removing") -> None:
+def parallel_rmtree(root: Path, description: str = "Removing") -> tuple[Path, OSError] | None:
     """Remove *root* and everything under it, parallelizing across subtrees.
 
-    No-op when *root* is absent. Picks deletion units via
+    No-op (returns None) when *root* is absent. Picks deletion units via
     :func:`_gather_remove_targets` (adapts to the tree's real fan-out), removes
     them across the shared pool, then drops the now-empty skeleton. A failure on
-    any single unit is skipped, not fatal.
+    one unit never stops the others. Returns None when *root* is gone afterwards,
+    otherwise the first remaining path with the error that blocked it.
     """
     if not root.exists() and not root.is_symlink():
-        return
+        return None
 
     targets = _gather_remove_targets(root, GC_WORKERS * 4)
+    failures: list[tuple[Path, OSError]] = []  # list.append is atomic across the pool threads
+
+    def _on_error(_func, path, exc, **_kwargs) -> None:
+        # Already-gone entries (a concurrent unit removed them) are not residue.
+        if not isinstance(exc, FileNotFoundError):
+            failures.append((Path(path), exc))
 
     def _rm(path: Path) -> None:
         try:
             if path.is_symlink() or not path.is_dir():
                 path.unlink()
             else:
-                shutil.rmtree(path, ignore_errors=True)
-        except OSError:
-            pass
+                shutil.rmtree(path, onexc=_on_error)
+        except OSError as exc:
+            failures.append((path, exc))
 
     # No ETA: deletion units are subtrees of wildly different size, so an
     # item-count time-remaining estimate is always wrong.
     parallel_apply(targets, _rm, description, show_eta=False)
     # Drop the skeleton (the now-empty parent dirs left behind by expansion).
-    shutil.rmtree(root, ignore_errors=True)
+    shutil.rmtree(root, onexc=_on_error)
+
+    if not root.exists() and not root.is_symlink():
+        return None
+    for path, exc in failures:
+        if path.exists() or path.is_symlink():
+            return path, exc
+    return root, failures[0][1] if failures else OSError(f"{root} still exists after removal")

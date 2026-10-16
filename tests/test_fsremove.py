@@ -10,6 +10,7 @@ many independent subtrees rather than one serial rmtree).
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import pytest
@@ -45,6 +46,33 @@ def test_parallel_rmtree_noop_on_absent_root(tmp_path: Path) -> None:
     # Must not raise.
     parallel_rmtree(missing)
     assert not missing.exists()
+
+
+def test_parallel_rmtree_returns_none_when_fully_removed(tmp_path: Path) -> None:
+    root = tmp_path / "build"
+    _populate(root, dirs=3, files_per_dir=2)
+    assert parallel_rmtree(root) is None
+    assert parallel_rmtree(root) is None, "absent root stays a no-op returning None"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_parallel_rmtree_reports_residue_and_removes_the_rest(tmp_path: Path) -> None:
+    root = tmp_path / "build"
+    _populate(root, dirs=12, files_per_dir=2)
+    locked = root / "locked"
+    (locked / "inner").mkdir(parents=True)
+    (locked / "inner" / "f").write_text("x")
+    locked.chmod(0o500)
+    try:
+        result = parallel_rmtree(root)
+        assert result is not None
+        path, exc = result
+        assert path.exists()
+        assert isinstance(exc, OSError)
+        survivors = {p.name for p in root.iterdir()}
+        assert survivors == {"locked"}, "every other subtree must be gone"
+    finally:
+        locked.chmod(0o700)
 
 
 def test_parallel_rmtree_removes_files_and_sockets_at_top(tmp_path: Path) -> None:
