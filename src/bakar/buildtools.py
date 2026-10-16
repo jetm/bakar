@@ -156,6 +156,19 @@ def resolve_oe_core_release_key(workspace: Path) -> str | None:
         text = layer_conf.read_text()
     except OSError:
         return None
+    return parse_layerseries_corenames(text)
+
+
+def parse_layerseries_corenames(text: str) -> str | None:
+    """Return the first ``LAYERSERIES_CORENAMES`` codename in layer.conf ``text``.
+
+    Takes the file's text rather than a path so a caller holding layer.conf
+    fetched from elsewhere (e.g. over ssh) applies the same rules as
+    ``resolve_oe_core_release_key``. Accepts the ``=``, ``?=``, ``:=`` and
+    ``+=`` operators, skips variables that merely share the prefix
+    (``LAYERSERIES_CORENAMES_foo``), and returns None when no assignment
+    carries a non-empty value.
+    """
     var = "LAYERSERIES_CORENAMES"
     for line in text.splitlines():
         stripped = line.strip()
