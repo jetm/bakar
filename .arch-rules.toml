@@ -10,7 +10,8 @@
 #                top of the model's allowed import set.
 #  steps       - subprocess wrappers; import foundation only at module level;
 #                bsp_model.BspModel/BuildConfig used under TYPE_CHECKING
-#  core        - diagnostics.py: pre-flight checks (import foundation + model)
+#  core        - diagnostics.py: pre-flight checks; between commands and steps
+#                in the layers order
 #  analysis    - triage / report / layers / renderers (import foundation; sit
 #                below steps in layer order, BESIDE the feature families)
 #  setup       - host-provisioning planner and its action classes
@@ -119,38 +120,23 @@ paths = ["src/bakar/bsp_model.py"]
 [[modules]]
 name = "core"
 paths = ["src/bakar/diagnostics.py"]
-# diagnostics.py: pre-flight check functions plus a cross-layer probe/detection
-# surface (probe_cluster/probe_build_daemon/probe_ccache, detect_buildtools,
-# split_host_port). It has a bidirectional deferred coupling with steps: steps
-# (kas_build) import the probes at module level, and diagnostics imports
-# steps.kas_build.clear_stale_bitbake_locks / steps.bitbake_override.status inside
-# function bodies (diagnostics.py:697,955). Like `model` (bsp_model), it is placed in
-# its own group OUTSIDE the layers order so those genuinely cross-layer edges are
-# ungoverned (SUGGESTION) rather than false-positive CRITICAL layer violations. The
-# forbidden rule below caps the top of its allowed import set.
+# diagnostics.py: pre-flight check functions. It sits in the main layers order
+# between commands and steps: commands may import it, and it may import steps
+# (it reaches steps.kas_build.clear_stale_bitbake_locks and
+# steps.bitbake_override.status inside function bodies), but steps, analysis and
+# foundation may not import it. Anything a lower layer needs from the probe and
+# detection surface (probe_cluster, probe_build_daemon, probe_ccache,
+# detect_buildtools, split_host_port) is imported from where it is defined
+# (bakar.probes, bakar.buildtools), not through diagnostics. The forbidden rule
+# at the bottom repeats the core -> commands cap explicitly.
 #
-# Measured after the four extractions (mounts, buildtools, probes, elfscan) that
-# shrank this module: the coupling survives, so `core` still cannot join the
-# layers order. Both candidate positions were run against the checker and both
-# fail, in opposite directions:
+# tests/test_import_edges.py walks every module-level, TYPE_CHECKING and
+# function-body import in src/bakar against this order, so the placement is
+# enforced by the suite and not only by the devspec fitness check.
 #
-#   [commands, steps, core, analysis, foundation]
-#     -> diagnostics.py[L697]: core must not import steps
-#   [commands, core, steps, analysis, foundation]
-#     -> steps/kas_build.py[L75]:    steps must not import core
-#        steps/qcom_common.py[L15]:  steps must not import core
-#
-# A total order has to place core either above or below steps, and each choice
-# turns one existing direction upward. The split reduced module size without
-# restoring layering; that is the finding, and it is not a reason to weaken a
-# rule. Both runs also newly flagged cache_render.py[L18] (analysis -> core) as
-# a type-only advisory, an edge this group's placement currently keeps
-# ungoverned.
-#
-# The steps -> core edges now resolve through re-exports (detect_buildtools
-# really lives in bakar.buildtools), so retargeting them would delete that
-# direction. It would not rescue the experiment on its own - the 697/955 edges
-# remain - but it is the candidate follow-up.
+# One edge is known and stays documented rather than governed: setup ->
+# diagnostics. `setup` is not in the main order and no rule pairs it with
+# `core`, so that edge is ungoverned by construction.
 
 [[modules]]
 name = "lock_authority"
@@ -191,8 +177,8 @@ paths = [
   "src/bakar/report.py",
   "src/bakar/layers.py",
   # Read/compute renderers over build output: same role as triage/report.
-  # cache_render formats the diagnostics report dataclasses; that edge lands on
-  # `core`, which sits outside the layers order and is therefore ungoverned.
+  # cache_render formats the probe report dataclasses and imports them from
+  # bakar.probes (foundation), not through diagnostics.
   "src/bakar/cache_render.py",
   "src/bakar/cve_report.py",
   "src/bakar/sbom_publish.py",
@@ -252,12 +238,13 @@ exempt = true  # never a violation source
 
 # Main dependency stack (outermost → innermost):
 # commands may import everything below it
+# core (diagnostics) may import steps and below; only commands may import core
 # steps may import analysis, the feature families, foundation
 # analysis may import foundation only
 # setup / insights / feed may import foundation only
 # foundation may not import anything above it (bsp_model ref is deferred, ungoverned)
-# core (diagnostics), model (bsp_model) and lock_authority (build_stop) sit
-# OUTSIDE the order - see their module comments above.
+# model (bsp_model) and lock_authority (build_stop) sit OUTSIDE the order - see
+# their module comments above.
 #
 # TWO layers rules rather than one seven-entry order. A `layers` order is TOTAL:
 # every entry may import every entry below it. Folding analysis and the
@@ -272,6 +259,7 @@ exempt = true  # never a violation source
 type = "layers"
 order = [
   "commands",
+  "core",
   "steps",
   "analysis",
   "foundation",

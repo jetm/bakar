@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 from rich.text import Text
 
 if TYPE_CHECKING:
-    from bakar.diagnostics import BuildDaemonReport, CcacheReport, ClusterReport
+    from bakar.probes import BuildDaemonReport, CcacheReport, ClusterReport
 
 
 def cluster_doc(report: ClusterReport, url: str | None) -> dict[str, Any]:
