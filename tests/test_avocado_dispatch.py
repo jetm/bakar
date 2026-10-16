@@ -61,8 +61,9 @@ class Recorder:
             self.calls.append(("snapshot", (checkout, cap_mb)))
             return COMMIT, self.snapshot
 
-        def run(argv: list[str], **_kw: Any) -> subprocess.CompletedProcess[str]:
+        def run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
             self.calls.append(("push", argv))
+            self.push_env = kw.get("env")
             return subprocess.CompletedProcess(argv, self.push_rc)
 
         def untracked(checkout: Path) -> list[str]:
@@ -289,6 +290,20 @@ def test_push_targets_remote_clone_and_ref(rec: Recorder, checkout: Path) -> Non
     assert push[:3] == ["git", "-C", str(checkout)]
     assert f"ssh://{HOST}{WORKSPACE}/meta-avocado" in push
     assert push[-1] == f"{COMMIT}:refs/bakar/feature-x/{COMMIT[:12]}"
+
+
+def test_push_bounds_ssh_when_user_sets_none(rec: Recorder, checkout: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"])
+    cmd = rec.push_env["GIT_SSH_COMMAND"]
+    for opt in ("BatchMode=yes", "ConnectTimeout=15", "ServerAliveInterval=15", "ServerAliveCountMax=4"):
+        assert opt in cmd
+
+
+def test_push_keeps_user_git_ssh_command(rec: Recorder, checkout: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i mykey")
+    _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"])
+    assert rec.push_env["GIT_SSH_COMMAND"] == "ssh -i mykey"
 
 
 def test_push_failure_stops_before_ensure(rec: Recorder, checkout: Path) -> None:

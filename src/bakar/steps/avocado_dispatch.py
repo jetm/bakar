@@ -45,6 +45,8 @@ console = rd.console
 _CAPABILITY_KEY = "dispatch.snapshot_untracked_cap_mb"
 # How many untracked paths the plan names before summarising the rest.
 _PLAN_UNTRACKED_SHOWN = 20
+# Bounds the delivery push so a dead link ends it through the keepalive instead of hanging.
+_PUSH_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
 
 
 class KasArgError(Exception):
@@ -260,7 +262,9 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
     except layer_delivery.DeliveryError as exc:
         console.print(f"[red]cannot deliver {checkout}:[/] {exc}")
         return 1
-    push_rc = subprocess.run(push, check=False).returncode
+    push_env = os.environ.copy()
+    push_env.setdefault("GIT_SSH_COMMAND", _PUSH_SSH_COMMAND)
+    push_rc = subprocess.run(push, check=False, env=push_env).returncode
     if push_rc != 0:
         console.print(f"[red]git push failed (exit {push_rc})[/]; remote build not started.")
         if layer_delivery.is_shallow(checkout):
