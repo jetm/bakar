@@ -96,6 +96,8 @@ paths = [
   # Standalone script that runs under a bitbake checkout's library path and
   # imports nothing from bakar.
   "src/bakar/sigdiff_helper.py",
+  # Release-keyed workspace routing: pure functions, stdlib imports only.
+  "src/bakar/release_workspace.py",
 ]
 
 [[modules]]
