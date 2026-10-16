@@ -768,7 +768,7 @@ def test_stop_build_container_mode_stops_container_not_pgid(
     monkeypatch.setattr(
         build_stop,
         "_stop_container",
-        lambda runtime, cid, **_kw: stop_calls.append((runtime, cid)),
+        lambda runtime, cid, _plan: stop_calls.append((runtime, cid)),
     )
     monkeypatch.setattr(build_stop.shutil, "which", lambda _name: "/usr/bin/docker")
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
@@ -797,7 +797,7 @@ def test_stop_build_host_mode_signals_pgid_not_container(
     monkeypatch.setattr(
         build_stop,
         "_stop_container",
-        lambda runtime, cid, **_kw: stop_calls.append((runtime, cid)),
+        lambda runtime, cid, _plan: stop_calls.append((runtime, cid)),
     )
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     calls = _record_killpg(monkeypatch)
@@ -829,7 +829,7 @@ def test_stop_build_legacy_run_targets_nothing(
     monkeypatch.setattr(
         build_stop,
         "_stop_container",
-        lambda runtime, cid, **_kw: stop_calls.append((runtime, cid)),
+        lambda runtime, cid, _plan: stop_calls.append((runtime, cid)),
     )
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     calls = _record_killpg(monkeypatch)
@@ -868,7 +868,7 @@ def test_stop_build_container_id_unresolved_is_idempotent_success(
     monkeypatch.setattr(
         build_stop,
         "_stop_container",
-        lambda runtime, cid, **_kw: stop_calls.append((runtime, cid)),
+        lambda runtime, cid, _plan: stop_calls.append((runtime, cid)),
     )
     monkeypatch.setattr(build_stop.shutil, "which", lambda _name: "/usr/bin/docker")
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
@@ -913,7 +913,7 @@ def test_stop_build_container_query_error_refuses_not_idempotent_success(
     monkeypatch.setattr(
         build_stop,
         "_stop_container",
-        lambda runtime, cid, **_kw: stop_calls.append((runtime, cid)),
+        lambda runtime, cid, _plan: stop_calls.append((runtime, cid)),
     )
     monkeypatch.setattr(build_stop.shutil, "which", lambda _name: "/usr/bin/docker")
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
@@ -991,7 +991,7 @@ def test_stop_build_container_verify_survivor_preserves_launch_record(
     monkeypatch.setattr(
         build_stop,
         "_stop_container",
-        lambda runtime, cid, **_kw: stop_calls.append((runtime, cid)),
+        lambda runtime, cid, _plan: stop_calls.append((runtime, cid)),
     )
     monkeypatch.setattr(build_stop.shutil, "which", lambda _name: "/usr/bin/docker")
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
@@ -1497,11 +1497,13 @@ def test_stop_container_wait_ctx_carries_every_field_unchanged(
     build_stop._stop_container(
         "podman",
         "cid123",
-        force=False,
-        term_secs=7,
-        run_dir=run_dir,
-        console_out=out,
-        grace_seconds=45,
+        build_stop._ContainerStopPlan(
+            force=False,
+            term_secs=7,
+            run_dir=run_dir,
+            console_out=out,
+            grace_seconds=45,
+        ),
     )
 
     assert len(captured) == 1, f"expected one ctx, got {len(captured)}"
@@ -1567,7 +1569,9 @@ def test_stop_container_wait_ctx_sets_only_the_none_field_passed(
     }
     captured = _capture_wait_ctx(monkeypatch)
 
-    build_stop._stop_container("podman", "cid123", force=False, term_secs=7, **{field: values[field]})
+    build_stop._stop_container(
+        "podman", "cid123", build_stop._ContainerStopPlan(force=False, term_secs=7, **{field: values[field]})
+    )
 
     assert len(captured) == 1, f"expected one ctx, got {len(captured)}"
     ctx = captured[0]
@@ -1996,12 +2000,14 @@ def test_collect_build_pids_matches_cooker_by_argv_path(tmp_path: Path) -> None:
     scoped = build_stop._collect_build_pids(
         topdir,
         None,
-        self_pid=1,
-        self_pgid=1,
-        pids_reader=pids,
-        cmdline_reader=cmdline,
-        ppid_reader=ppid,
-        pgid_reader=pgid,
+        build_stop._ProcView(
+            self_pid=1,
+            self_pgid=1,
+            pids_reader=pids,
+            cmdline_reader=cmdline,
+            ppid_reader=ppid,
+            pgid_reader=pgid,
+        ),
     )
 
     assert scoped.cooker == frozenset({4242})  # only THIS build's cooker
@@ -2025,12 +2031,14 @@ def test_collect_build_pids_includes_pgid_members_and_descendants(tmp_path: Path
     scoped = build_stop._collect_build_pids(
         topdir,
         100,
-        self_pid=1,
-        self_pgid=1,
-        pids_reader=pids,
-        cmdline_reader=cmdline,
-        ppid_reader=ppid,
-        pgid_reader=pgid,
+        build_stop._ProcView(
+            self_pid=1,
+            self_pgid=1,
+            pids_reader=pids,
+            cmdline_reader=cmdline,
+            ppid_reader=ppid,
+            pgid_reader=pgid,
+        ),
     )
 
     assert scoped.cooker == frozenset({555})
@@ -2052,12 +2060,14 @@ def test_collect_build_pids_never_includes_self_or_own_group(tmp_path: Path) -> 
     scoped = build_stop._collect_build_pids(
         topdir,
         None,
-        self_pid=42,
-        self_pgid=42,
-        pids_reader=pids,
-        cmdline_reader=cmdline,
-        ppid_reader=ppid,
-        pgid_reader=pgid,
+        build_stop._ProcView(
+            self_pid=42,
+            self_pgid=42,
+            pids_reader=pids,
+            cmdline_reader=cmdline,
+            ppid_reader=ppid,
+            pgid_reader=pgid,
+        ),
     )
 
     assert 42 not in scoped.all_pids  # never signal ourselves
@@ -2074,12 +2084,14 @@ def test_collect_build_pids_empty_when_no_match(tmp_path: Path) -> None:
     scoped = build_stop._collect_build_pids(
         topdir,
         None,
-        self_pid=1,
-        self_pgid=1,
-        pids_reader=pids,
-        cmdline_reader=cmdline,
-        ppid_reader=ppid,
-        pgid_reader=pgid,
+        build_stop._ProcView(
+            self_pid=1,
+            self_pgid=1,
+            pids_reader=pids,
+            cmdline_reader=cmdline,
+            ppid_reader=ppid,
+            pgid_reader=pgid,
+        ),
     )
 
     assert scoped.cooker == frozenset()

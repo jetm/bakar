@@ -663,19 +663,21 @@ def _escalate_container(runtime: str, cid: str, term_secs: int) -> None:
     _run_runtime([runtime, "rm", "-f", cid])
 
 
-def _stop_container(
-    runtime: str,
-    cid: str,
-    *,
-    force: bool,
-    term_secs: int,
-    run_dir: Path | None = None,
-    console_out: Console | None = None,
-    grace_seconds: float = 0,
-) -> str:
+@dataclass(frozen=True, kw_only=True, slots=True)
+class _ContainerStopPlan:
+    """How to stop one container: escalation policy plus where progress is shown."""
+
+    force: bool
+    term_secs: int
+    run_dir: Path | None = None
+    console_out: Console | None = None
+    grace_seconds: float = 0
+
+
+def _stop_container(runtime: str, cid: str, plan: _ContainerStopPlan) -> str:
     """Stop container ``cid`` via ``runtime`` with a graceful wait.
 
-    When ``force`` is False: send SIGINT to bitbake inside the container first
+    When ``plan.force`` is False: send SIGINT to bitbake inside the container first
     (via :func:`_sigint_bitbake_in_container`, falling back to a container-PID-1
     SIGINT if the exec fails), then wait via :func:`_graceful_wait` until the
     container is no longer running, rendering live progress. A Ctrl-C, or
@@ -690,18 +692,18 @@ def _stop_container(
     Uses ``--timeout`` (docker >= 29 deprecates ``--time``). Every subprocess
     call captures output and never raises on a non-zero exit.
     """
-    if not force:
+    if not plan.force:
         _say(f"Sent SIGINT to bitbake in container {cid}...")
         if not _sigint_bitbake_in_container(runtime, cid):
             _run_runtime([runtime, "kill", "--signal=SIGINT", cid])
         status = _graceful_wait(
             ctx=_WaitCtx(
                 liveness=lambda: _container_liveness(runtime, cid),
-                escalate=lambda: _escalate_container(runtime, cid, term_secs),
+                escalate=lambda: _escalate_container(runtime, cid, plan.term_secs),
                 target_desc=f"container {cid}",
-                run_dir=run_dir,
-                console_out=console_out,
-                grace_seconds=grace_seconds,
+                run_dir=plan.run_dir,
+                console_out=plan.console_out,
+                grace_seconds=plan.grace_seconds,
             )
         )
         if status == "lost_runtime":
@@ -711,7 +713,7 @@ def _stop_container(
         return status
 
     _say(f"Sending SIGTERM to container {cid}...")
-    _escalate_container(runtime, cid, term_secs)
+    _escalate_container(runtime, cid, plan.term_secs)
     _say("stopped")
     return "forced"
 
@@ -948,16 +950,25 @@ def _short_cmd(cmdline: str, limit: int = 60) -> str:
     return trimmed if len(trimmed) <= limit else trimmed[: limit - 3] + "..."
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class _ProcView:
+    """How the reaper observes /proc, and which process is the observer itself."""
+
+    self_pid: int | None = None
+    self_pgid: int | None = None
+    pids_reader: Callable[[], list[int]] = _all_pids
+    cmdline_reader: Callable[[int], str] = _proc_cmdline
+    ppid_reader: Callable[[int], int | None] = _proc_ppid
+    pgid_reader: Callable[[int], int] = os.getpgid
+
+
+_LIVE_PROC_VIEW = _ProcView()
+
+
 def _collect_build_pids(
     topdir: Path,
     pgid: int | None,
-    *,
-    self_pid: int | None = None,
-    self_pgid: int | None = None,
-    pids_reader: Callable[[], list[int]] = _all_pids,
-    cmdline_reader: Callable[[int], str] = _proc_cmdline,
-    ppid_reader: Callable[[int], int | None] = _proc_ppid,
-    pgid_reader: Callable[[int], int] = os.getpgid,
+    view: _ProcView = _LIVE_PROC_VIEW,
 ) -> _ScopedProcs:
     """Collect the process set attributable to the build rooted at ``topdir``.
 
@@ -969,19 +980,19 @@ def _collect_build_pids(
     never signal itself. The readers are injectable so the /proc walk is
     unit-testable against a fake procfs without real processes.
     """
-    resolved_self_pid = os.getpid() if self_pid is None else self_pid
-    resolved_self_pgid = os.getpgrp() if self_pgid is None else self_pgid
+    resolved_self_pid = os.getpid() if view.self_pid is None else view.self_pid
+    resolved_self_pgid = os.getpgrp() if view.self_pgid is None else view.self_pgid
     markers = [str(topdir / name) for name in _COOKER_ARGV_FILES]
 
-    pids = pids_reader()
-    cmdlines = {pid: cmdline_reader(pid) for pid in pids}
+    pids = view.pids_reader()
+    cmdlines = {pid: view.cmdline_reader(pid) for pid in pids}
     cooker = {pid for pid in pids if any(marker in cmdlines[pid] for marker in markers)}
 
     seeds = set(cooker)
     if pgid is not None and pgid > 0:
         for pid in pids:
             try:
-                if pgid_reader(pid) == pgid:
+                if view.pgid_reader(pid) == pgid:
                     seeds.add(pid)
             except OSError:
                 continue
@@ -994,7 +1005,7 @@ def _collect_build_pids(
 
     children: dict[int, list[int]] = {}
     for pid in pids:
-        parent = ppid_reader(pid)
+        parent = view.ppid_reader(pid)
         if parent is not None:
             children.setdefault(parent, []).append(pid)
 
@@ -1011,7 +1022,7 @@ def _collect_build_pids(
         if pid == resolved_self_pid:
             return True
         try:
-            return pgid_reader(pid) == resolved_self_pgid
+            return view.pgid_reader(pid) == resolved_self_pgid
         except OSError:
             return False
 
@@ -1809,10 +1820,12 @@ def stop_run(run_dir: Path, cfg: BuildConfig | None = None, *, force: bool = Fal
     stop_status = _stop_container(
         runtime,
         cid,
-        force=force,
-        term_secs=_STOP_TERM_SECONDS,
-        run_dir=run_dir,
-        grace_seconds=grace_seconds,
+        _ContainerStopPlan(
+            force=force,
+            term_secs=_STOP_TERM_SECONDS,
+            run_dir=run_dir,
+            grace_seconds=grace_seconds,
+        ),
     )
     # A runtime we lost contact with mid-wait is a hard failure (exit 1) -
     # and, like the pre-check _ERROR above, an unconfirmed outcome: the

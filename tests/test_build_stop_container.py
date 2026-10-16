@@ -60,7 +60,7 @@ def test_stop_container_graceful_drain_signals_bitbake_only(monkeypatch: pytest.
     """
     issued = _patch_runtime_seams(monkeypatch)
 
-    status = build_stop._stop_container("docker", "abc123", force=False, term_secs=5)
+    status = build_stop._stop_container("docker", "abc123", build_stop._ContainerStopPlan(force=False, term_secs=5))
 
     assert status == "drained"
     assert issued == [["sigint-bitbake", "docker", "abc123"]]
@@ -70,7 +70,7 @@ def test_stop_container_graceful_sigint_first(monkeypatch: pytest.MonkeyPatch) -
     """The very first action in the graceful path is the in-container bitbake SIGINT."""
     issued = _patch_runtime_seams(monkeypatch)
 
-    build_stop._stop_container("podman", "cid", force=False, term_secs=3)
+    build_stop._stop_container("podman", "cid", build_stop._ContainerStopPlan(force=False, term_secs=3))
 
     assert issued[0] == ["sigint-bitbake", "podman", "cid"]
 
@@ -79,7 +79,7 @@ def test_stop_container_force_skips_sigint(monkeypatch: pytest.MonkeyPatch) -> N
     """force=True signals no bitbake SIGINT; it runs the stop -> SIGKILL ladder."""
     issued = _patch_runtime_seams(monkeypatch)
 
-    status = build_stop._stop_container("docker", "abc", force=True, term_secs=7)
+    status = build_stop._stop_container("docker", "abc", build_stop._ContainerStopPlan(force=True, term_secs=7))
 
     assert status == "forced"
     assert not any(call[0] == "sigint-bitbake" for call in issued)
@@ -99,7 +99,7 @@ def test_stop_container_falls_back_to_pid1_sigint_when_exec_fails(monkeypatch: p
     monkeypatch.setattr(build_stop, "_container_liveness", lambda runtime, cid: build_stop._DEAD)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
 
-    build_stop._stop_container("docker", "abc", force=False, term_secs=4)
+    build_stop._stop_container("docker", "abc", build_stop._ContainerStopPlan(force=False, term_secs=4))
 
     assert issued[0] == ["docker", "kill", "--signal=SIGINT", "abc"]
 
@@ -123,7 +123,7 @@ def test_stop_container_ctrl_c_reaches_stop_kill_ladder(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(build_stop, "_container_liveness", _ctrl_c)
 
-    status = build_stop._stop_container("docker", "abc", force=False, term_secs=5)
+    status = build_stop._stop_container("docker", "abc", build_stop._ContainerStopPlan(force=False, term_secs=5))
 
     assert status == "escalated"
     assert issued == [
@@ -150,7 +150,7 @@ def test_stop_container_lost_runtime_propagates_without_ladder(
     monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", lambda runtime, cid: True)
     monkeypatch.setattr(build_stop, "_graceful_wait", lambda **_kwargs: "lost_runtime")
 
-    status = build_stop._stop_container("podman", "cid", force=False, term_secs=5)
+    status = build_stop._stop_container("podman", "cid", build_stop._ContainerStopPlan(force=False, term_secs=5))
 
     assert status == "lost_runtime"
     assert issued == []  # the SIGTERM->SIGKILL ladder never ran
