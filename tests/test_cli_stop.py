@@ -22,6 +22,7 @@ from bakar.cli import app
 from tests.conftest import make_build_config
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from typer.testing import CliRunner as _CliRunner
@@ -389,13 +390,14 @@ def test_run_option_errors_on_unmatched_id(
     runner: _CliRunner,
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """``stop --run <id>`` with no matching run directory anywhere exits nonzero.
 
     Nothing under any family root is named ``does-not-exist``, so this must be
     told apart from a match that simply is not live.
     """
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     result = runner.invoke(app, ["stop", "--run", "does-not-exist"])
 
@@ -407,12 +409,13 @@ def test_run_option_unmatched_id_surfaces_peer_held_root(
     runner: _CliRunner,
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """``stop --run <id>`` with no matching run ANYWHERE also surfaces any
     root the NFS lock-ownership gate refused - the id may live on exactly
     that root, which "no match" alone cannot tell apart from "no such id
     anywhere in this workspace"."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     ti_root = stop_cmd.build_stop.RunRoot(
         bsp_root=workspace / "ti", family="ti", resolve_workspace=workspace, resolve_family="ti"
@@ -439,13 +442,14 @@ def test_run_option_errors_on_matched_but_not_live_run(
     runner: _CliRunner,
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A ``--run`` id matching a real, non-live run directory must be told
 
     apart from "no match anywhere": it exits nonzero, states the run is not
     currently live, and must not send any signal.
     """
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     calls: list[Path] = []
     monkeypatch.setattr(
         stop_cmd.build_stop,
@@ -466,6 +470,7 @@ def test_run_option_errors_on_matched_container_run_whose_container_already_exit
     runner: _CliRunner,
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A ``--run`` id matching a container-mode run whose container has
     already exited must report "not currently live", not silently succeed.
@@ -480,7 +485,7 @@ def test_run_option_errors_on_matched_container_run_whose_container_already_exit
     container the runtime no longer has - so --run must perform its own
     real liveness query before ever reaching stop_run.
     """
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     run_dir = workspace / "nxp" / "build" / "runs" / "20260617-140000-container"
     run_dir.mkdir(parents=True)
@@ -511,12 +516,13 @@ def test_run_option_stops_matched_live_run_directly(
     runner: _CliRunner,
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A ``--run`` id matching a live run calls ``stop_run`` directly on it,
 
     without ever constructing the multi-build listing.
     """
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     run_dir = workspace / "nxp" / "build" / "runs" / "20260617-120000"
     stop_cmd.build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
@@ -541,6 +547,7 @@ def test_stop_no_args_stale_container_records_fall_through_to_zero_live(
     runner: _CliRunner,
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """Two or more container-mode run records whose containers have already
     exited (a launch record survives on disk after a runtime restart, a
@@ -559,7 +566,7 @@ def test_stop_no_args_stale_container_records_fall_through_to_zero_live(
     single-root stop_build call and its stale-cleanup path, exactly as it
     would for a workspace with no container records at all.
     """
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     nxp_dir = workspace / "nxp" / "build" / "runs" / "20260617-150000-nxp-dead"
     nxp_dir.mkdir(parents=True)
@@ -595,6 +602,7 @@ def test_stop_no_args_container_query_failure_keeps_candidate_live(
     runner: _CliRunner,
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A container-mode run whose runtime query FAILS (daemon unreachable,
     binary missing, timeout) must stay counted as live, not be dropped.
@@ -607,7 +615,7 @@ def test_stop_no_args_container_query_failure_keeps_candidate_live(
     exactly one such record present the command stops it directly instead
     of falling through to stop_build as though nothing were running.
     """
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     run_dir = workspace / "nxp" / "build" / "runs" / "20260617-170000-unreachable"
     run_dir.mkdir(parents=True)
@@ -644,13 +652,14 @@ def test_stop_no_args_single_live_build_stops_it_directly(
     runner: _CliRunner,
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """With exactly one live build, a bare ``stop`` calls ``stop_run`` on it
 
     directly - no listing, no prompt. This is the common case and must be a
     no-op change from the caller's perspective.
     """
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     run_dir = workspace / "nxp" / "build" / "runs" / "20260617-120000"
     stop_cmd.build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
@@ -681,6 +690,7 @@ def test_stop_no_args_single_live_build_honors_user_config_stop_grace_seconds(
     runner: _CliRunner,
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """The workspace-wide discovery path resolves each root's BuildConfig
     with the CLI layer's user_config, exactly like the legacy single-root
@@ -691,7 +701,7 @@ def test_stop_no_args_single_live_build_honors_user_config_stop_grace_seconds(
     from bakar.user_config import UserConfig
 
     monkeypatch.setattr(_state, "_load_user_config_safe", lambda: UserConfig(stop_grace_seconds=300))
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     run_dir = workspace / "nxp" / "build" / "runs" / "20260617-120000"
     stop_cmd.build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
@@ -715,12 +725,13 @@ def test_stop_no_args_peer_held_root_surfaced_before_falling_through(
     runner: _CliRunner,
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A root the NFS lock-ownership gate refuses is surfaced by name and
     reason, even when discovery finds zero live builds elsewhere - so a
     peer-held root's build is never indistinguishable from a workspace with
     genuinely nothing running."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     ti_root = stop_cmd.build_stop.RunRoot(
         bsp_root=workspace / "ti", family="ti", resolve_workspace=workspace, resolve_family="ti"
@@ -749,6 +760,7 @@ def test_stop_no_args_two_live_builds_refuses_and_lists(
     runner: _CliRunner,
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """Two or more live builds with no ``--run`` refuse to stop anything.
 
@@ -756,7 +768,7 @@ def test_stop_no_args_two_live_builds_refuses_and_lists(
     and the operator is told to pass ``--run <id>`` - mirroring
     ``stop_remote_dispatch``'s multi-unit refusal shape.
     """
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     run_a = workspace / "nxp" / "build" / "runs" / "20260617-120000"
     run_b = workspace / "nxp" / "build" / "runs" / "20260617-130000"
@@ -784,6 +796,7 @@ def test_stop_no_args_two_live_builds_tty_prompts_and_stops_chosen(
     runner: _CliRunner,
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """On an interactive terminal, two or more live builds get a numbered
 
@@ -791,7 +804,7 @@ def test_stop_no_args_two_live_builds_tty_prompts_and_stops_chosen(
     ``stop_run`` on the chosen candidate - the same call the non-interactive
     ``--run`` path makes, not a second stop-dispatch code path.
     """
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     monkeypatch.setattr(stop_cmd, "_is_tty", lambda: True)
 
     run_a = workspace / "nxp" / "build" / "runs" / "20260617-120000"
@@ -828,9 +841,10 @@ def test_stop_no_args_two_live_builds_tty_invalid_choice_exits_nonzero(
     runner: _CliRunner,
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """An out-of-range interactive pick exits nonzero without stopping anything."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     monkeypatch.setattr(stop_cmd, "_is_tty", lambda: True)
 
     run_a = workspace / "nxp" / "build" / "runs" / "20260617-120000"
@@ -862,6 +876,7 @@ def test_no_bulk_stop_and_isolation_between_concurrent_builds(
     runner: _CliRunner,
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """Two negative tests the design deliberately keeps out of scope.
 
@@ -876,7 +891,7 @@ def test_no_bulk_stop_and_isolation_between_concurrent_builds(
        byte-identical before and after, and ``stop_run`` is never called with
        their run directories.
     """
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     def _boom(*a: object, **k: object) -> bool:
         raise AssertionError("no invocation form may stop more than one live build")
@@ -1165,7 +1180,13 @@ def no_workspace_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return outside
 
 
-def _stage_host_wide_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, run_id: str = "20260617-150000") -> Path:
+def _stage_host_wide_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
+    *,
+    run_id: str = "20260617-150000",
+) -> Path:
     """Discover one live host-mode run on a peer topdir via the host-wide path."""
     topdir = tmp_path / "peer-workspace" / "nxp"
     run_dir = topdir / "build" / "runs" / run_id
@@ -1177,7 +1198,7 @@ def _stage_host_wide_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, run
         "_discover_host_cookers",
         lambda: {topdir / "build": frozenset({4242})},
     )
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     return run_dir
 
 
@@ -1186,11 +1207,12 @@ def test_run_option_host_wide_fallback_force_stops_without_confirmation(
     tmp_path: Path,
     no_workspace_cwd: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """``--force --run <id>`` from outside any workspace stops the discovered
     host-wide run directly, without ever calling the confirmation prompt."""
     run_id = "20260617-150000"
-    run_dir = _stage_host_wide_run(tmp_path, monkeypatch, run_id=run_id)
+    run_dir = _stage_host_wide_run(tmp_path, monkeypatch, nfs_probe, run_id=run_id)
 
     def _boom(_candidate: object) -> bool:
         raise AssertionError("confirm must not be called when --force is passed")
@@ -1215,12 +1237,13 @@ def test_run_option_host_wide_fallback_without_force_requires_confirmation(
     tmp_path: Path,
     no_workspace_cwd: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """Without ``--force``, a non-interactive terminal refuses rather than
     signalling - ``_confirm_host_wide`` returns False with no TTY, and the
     build must not be stopped."""
     run_id = "20260617-150000"
-    _stage_host_wide_run(tmp_path, monkeypatch, run_id=run_id)
+    _stage_host_wide_run(tmp_path, monkeypatch, nfs_probe, run_id=run_id)
     monkeypatch.setattr(stop_cmd, "_is_tty", lambda: False)
 
     def _boom(*a: object, **k: object) -> bool:
@@ -1239,13 +1262,14 @@ def test_run_option_host_wide_fallback_exits_2_when_explicit_workspace_given(
     tmp_path: Path,
     no_workspace_cwd: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """An explicit ``--workspace`` bypasses the host-wide fallback entirely,
     so a run id that only exists host-wide (not under that workspace) surfaces
     the ordinary "Not inside a BSP workspace" behaviour is not triggered, but
     the id is not found under the given workspace either."""
     run_id = "20260617-150000"
-    _stage_host_wide_run(tmp_path, monkeypatch, run_id=run_id)
+    _stage_host_wide_run(tmp_path, monkeypatch, nfs_probe, run_id=run_id)
     ws = tmp_path / "explicit-ws"
     (ws / "nxp" / "build" / "runs").mkdir(parents=True)
 
@@ -1265,11 +1289,12 @@ def test_run_option_host_wide_fallback_surfaces_peer_held_root(
     tmp_path: Path,
     no_workspace_cwd: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A peer-held root discovered host-wide contributes zero candidates, so
     a named ``--run`` id can never match it - the ownership warning must
     still surface via ``_stop_matched_run``'s existing no-match branch."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     topdir = tmp_path / "peer-workspace" / "nxp"
     (topdir / "build" / "runs").mkdir(parents=True)
     monkeypatch.setattr(
@@ -1302,12 +1327,13 @@ def test_run_option_host_wide_fallback_never_calls_correlate_host_discoveries(
     tmp_path: Path,
     no_workspace_cwd: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """The host-wide helper must scan each topdir directly, never through
     ``correlate_host_discoveries`` - that function discards the skipped-root
     list this fallback needs to diagnose a peer-held build."""
     run_id = "20260617-150000"
-    run_dir = _stage_host_wide_run(tmp_path, monkeypatch, run_id=run_id)
+    run_dir = _stage_host_wide_run(tmp_path, monkeypatch, nfs_probe, run_id=run_id)
 
     def _boom(*a: object, **k: object) -> list[object]:
         raise AssertionError("correlate_host_discoveries must not be called")
@@ -1360,6 +1386,7 @@ def test_no_run_host_wide_fallback_peer_held_root_is_diagnosed_not_dropped(
     tmp_path: Path,
     no_workspace_cwd: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A peer-held root discovered host-wide must be diagnosed via its
     ownership warning on the bare no-selector path too - not silently
@@ -1367,7 +1394,7 @@ def test_no_run_host_wide_fallback_peer_held_root_is_diagnosed_not_dropped(
     Mirrors ``test_run_option_host_wide_fallback_surfaces_peer_held_root``
     for the ``--run`` case, but exercises the bare-stop branch and proves no
     signal reaches the peer-held root's own process."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     bsp_root = tmp_path / "peer-workspace" / "nxp"
     build_dir = bsp_root / "build"
     (build_dir / "runs").mkdir(parents=True)
@@ -1440,12 +1467,13 @@ def test_no_run_host_wide_fallback_single_candidate_confirms_before_stopping(
     tmp_path: Path,
     no_workspace_cwd: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """Exactly one live build found host-wide: confirm before stopping,
     unlike the workspace-scoped sole-live-build path which stops with no
     prompt. A declined confirmation must not call ``stop_run``."""
     run_id = "20260617-150000"
-    _stage_host_wide_run(tmp_path, monkeypatch, run_id=run_id)
+    _stage_host_wide_run(tmp_path, monkeypatch, nfs_probe, run_id=run_id)
     monkeypatch.setattr(stop_cmd, "_is_tty", lambda: False)
 
     def _boom(*a: object, **k: object) -> bool:
@@ -1464,13 +1492,14 @@ def test_no_run_host_wide_fallback_single_candidate_force_still_confirms(
     tmp_path: Path,
     no_workspace_cwd: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """``--force`` never bypasses confirmation on the no-selector host-wide
     path - there is no explicit ``--run`` id the operator already committed
     to, so a sole live build still requires confirmation even with
     ``--force``."""
     run_id = "20260617-150000"
-    _stage_host_wide_run(tmp_path, monkeypatch, run_id=run_id)
+    _stage_host_wide_run(tmp_path, monkeypatch, nfs_probe, run_id=run_id)
     monkeypatch.setattr(stop_cmd, "_is_tty", lambda: False)
 
     def _boom(*a: object, **k: object) -> bool:
@@ -1489,11 +1518,12 @@ def test_no_run_host_wide_fallback_single_candidate_confirmed_stops_with_real_co
     tmp_path: Path,
     no_workspace_cwd: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A confirmed sole candidate is stopped via ``stop_run`` with the
     candidate's own resolved config - never ``None``."""
     run_id = "20260617-150000"
-    run_dir = _stage_host_wide_run(tmp_path, monkeypatch, run_id=run_id)
+    run_dir = _stage_host_wide_run(tmp_path, monkeypatch, nfs_probe, run_id=run_id)
     monkeypatch.setattr(stop_cmd, "_confirm_host_wide", lambda _candidate: True)
 
     calls: list[tuple[Path, object]] = []
@@ -1517,6 +1547,7 @@ def test_no_run_host_wide_fallback_multiple_candidates_non_interactive_lists_and
     tmp_path: Path,
     no_workspace_cwd: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """Two or more live builds found host-wide, no TTY: list every candidate
     under the host-wide header (distinct wording from the workspace-scoped
@@ -1536,7 +1567,7 @@ def test_no_run_host_wide_fallback_multiple_candidates_non_interactive_lists_and
         "_discover_host_cookers",
         lambda: {topdir_a: frozenset({111}), topdir_b: frozenset({222})},
     )
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     monkeypatch.setattr(stop_cmd, "_is_tty", lambda: False)
 
     def _boom(*a: object, **k: object) -> bool:
@@ -1559,6 +1590,7 @@ def test_no_run_host_wide_fallback_multiple_candidates_interactive_confirms_pick
     tmp_path: Path,
     no_workspace_cwd: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """Two or more live builds host-wide on an interactive terminal: present a
     numbered pick, then confirm the chosen candidate before dispatching -
@@ -1577,7 +1609,7 @@ def test_no_run_host_wide_fallback_multiple_candidates_interactive_confirms_pick
         "_discover_host_cookers",
         lambda: {topdir_a: frozenset({111}), topdir_b: frozenset({222})},
     )
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     monkeypatch.setattr(stop_cmd, "_is_tty", lambda: True)
     monkeypatch.setattr(stop_cmd.typer, "prompt", lambda *a, **k: 1)
 
@@ -1609,11 +1641,12 @@ def test_no_run_host_wide_fallback_surfaces_peer_held_root_on_zero_candidates(
     tmp_path: Path,
     no_workspace_cwd: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A peer-held root discovered host-wide contributes zero candidates, so
     the zero-candidate ``no running build found`` path still surfaces its
     ownership warning first."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     topdir = tmp_path / "peer-workspace" / "nxp"
     (topdir / "build" / "runs").mkdir(parents=True)
     monkeypatch.setattr(
@@ -1701,6 +1734,7 @@ def test_stop_explicit_workspace_scopes_discovery_even_with_a_live_build_elsewhe
     workspace: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """``stop -w WS`` with no live build in WS falls through to the ordinary
     single-root ``stop_build`` path scoped to WS - it must never widen to a
@@ -1720,7 +1754,7 @@ def test_stop_explicit_workspace_scopes_discovery_even_with_a_live_build_elsewhe
     peer_run_dir.mkdir(parents=True)
     stop_cmd.build_stop.write_launch_record(peer_run_dir, pgid=4242, mode="host")
     monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 4242, True))
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     def _boom() -> dict[Path, frozenset[int]]:
         raise AssertionError("_discover_host_cookers must not run when --workspace is given")
@@ -1748,6 +1782,7 @@ def test_stop_no_args_workspace_scoped_sole_live_build_unchanged_by_host_wide_ch
     runner: _CliRunner,
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """Guard the proposal's "preserve every existing workspace-scoped
 
@@ -1759,7 +1794,7 @@ def test_stop_no_args_workspace_scoped_sole_live_build_unchanged_by_host_wide_ch
     workspace resolves from cwd), so the host-wide machinery this change
     added must never engage on this path.
     """
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     run_dir = workspace / "nxp" / "build" / "runs" / "20260617-120000"
     stop_cmd.build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
@@ -1802,11 +1837,12 @@ def test_run_option_host_wide_fallback_refuses_ambiguous_match(
     tmp_path: Path,
     no_workspace_cwd: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """Two independently-discovered topdirs each holding a live host-mode run
     with the identical run directory name must refuse rather than silently
     stopping whichever one the candidate list happened to list first."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     run_id = "20260617-150000-4242"
 
     topdir_a = tmp_path / "workspace-a" / "nxp" / "build"

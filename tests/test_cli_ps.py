@@ -21,6 +21,7 @@ from bakar.cli import app
 from tests.conftest import make_build_config
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from typer.testing import CliRunner as _CliRunner
@@ -152,7 +153,10 @@ def test_ps_container_row_falls_back_to_unknown_when_run_record_unreadable(
 
 
 def test_ps_container_row_resolves_nxp_family_through_real_mount_seam(
-    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runner: _CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A container-mode row whose bind-mount source is an nxp/ti bsp_root
     resolves its real family and machine, not the generic/bbsetup
@@ -165,7 +169,7 @@ def test_ps_container_row_resolves_nxp_family_through_real_mount_seam(
     through the same code path `bakar ps` exercises in production, not
     around it.
     """
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     workspace = tmp_path / "ws"
     nxp_run_id = "20260618-170000-nxp"
@@ -196,7 +200,10 @@ def test_ps_container_row_resolves_nxp_family_through_real_mount_seam(
 
 
 def test_ps_container_row_resolves_meta_avocado_build_star_root(
-    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runner: _CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A container-mode row whose bind-mount source is the top-level
     WORKSPACE (a meta-avocado build's KAS_WORK_DIR, per
@@ -212,7 +219,7 @@ def test_ps_container_row_resolves_meta_avocado_build_star_root(
     ``<workspace>/build/runs`` - which does not exist for a meta-avocado
     build - instead of the real ``<workspace>/build-<stem>/build/runs``.
     """
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     workspace = tmp_path / "ws"
     avocado_run_id = "20260618-180000-avocado"
@@ -313,7 +320,9 @@ def test_ps_json_container_row_unknown_placeholder_is_a_string(
     assert isinstance(row["machine"], str)
 
 
-def test_ps_end_to_end_fixture_scenarios(runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ps_end_to_end_fixture_scenarios(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nfs_probe: Callable[[bool | None], None]
+) -> None:
     """End-to-end `bakar ps` coverage across 0, 1, and 2+ live-build fixtures,
     asserting both the human-readable table and ``--json`` output for each.
 
@@ -359,7 +368,7 @@ def test_ps_end_to_end_fixture_scenarios(runner: _CliRunner, tmp_path: Path, mon
     ps_cmd.build_stop.write_launch_record(run_dir, pgid=1, mode="host")
     solo_topdir = run_dir.parent.parent  # tmp_path/solo/nxp/build
 
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     monkeypatch.setattr(ps_cmd.build_stop, "is_build_running", lambda _rd: (True, 1, True))
     monkeypatch.setattr(ps_cmd.build_stop, "_discover_host_cookers", lambda: {solo_topdir: frozenset({1})})
     monkeypatch.setattr(ps_cmd.build_stop, "detect_runtime", lambda: "docker")
