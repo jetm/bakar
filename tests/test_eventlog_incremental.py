@@ -8,6 +8,7 @@ chunk, and after every chunk compares the reader against ``normalize`` and
 
 from __future__ import annotations
 
+import itertools
 import os
 from pathlib import Path
 
@@ -153,3 +154,53 @@ def test_missing_file_is_empty_then_recovers(tmp_path: Path) -> None:
     path.write_bytes(LOG)
     reader.poll()
     assert reader.normalized() == _expected(tmp_path, LOG)[0]
+
+
+@pytest.mark.unit
+def test_poison_line_does_not_replay_earlier_lines(tmp_path: Path) -> None:
+    path = tmp_path / "log"
+    good = (
+        _task_event("bb.build.TaskStarted", "a-1-r0", "do_x", started=1.0).encode()
+        + b"\n"
+        + _task_event("bb.build.TaskFailed", "a-1-r0", "do_x").encode()
+        + b"\n"
+    )
+    path.write_bytes(good + b"[" * 200000 + b"\n")
+    reader = IncrementalEventLog(path)
+    counts = []
+    for _ in range(3):
+        reader.poll()
+        counts.append(len(reader.normalized()["failures"]))
+    assert counts == [1, 1, 1]
+    assert reader.offset == path.stat().st_size
+
+
+@pytest.mark.unit
+def test_large_log_matches_one_shot_across_partial_polls(tmp_path: Path) -> None:
+    path = tmp_path / "log"
+    big = LOG * 1000
+    assert len(big) > 4 * 1024 * 1024
+    reader = IncrementalEventLog(path)
+    cuts = [0, len(big) // 3 + 7, 2 * len(big) // 3 + 3, len(big)]
+    for lo, hi in itertools.pairwise(cuts):
+        with path.open("ab") as fh:
+            fh.write(big[lo:hi])
+        reader.poll()
+    expected = _expected(tmp_path, big)
+    assert reader.normalized() == expected[0]
+    assert reader.running_tasks() == expected[1]
+    assert reader.offset == len(big)
+
+
+@pytest.mark.unit
+def test_incomplete_trailing_line_waits_for_newline(tmp_path: Path) -> None:
+    path = tmp_path / "log"
+    line = _task_event("bb.build.TaskStarted", "a-1-r0", "do_x", started=1.0).encode()
+    path.write_bytes(line + b"\n" + line[:10])
+    reader = IncrementalEventLog(path)
+    reader.poll()
+    assert reader.offset == len(line) + 1
+    with path.open("ab") as fh:
+        fh.write(line[10:] + b"\n")
+    reader.poll()
+    assert reader.offset == 2 * (len(line) + 1)

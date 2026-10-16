@@ -756,7 +756,13 @@ class IncrementalEventLog:
         return self._offset
 
     def poll(self) -> None:
-        """Consume complete lines appended since the previous poll. Never raises on I/O."""
+        """Consume complete lines appended since the previous poll. Never raises on I/O.
+
+        The offset advances line by line, before the line is folded in, so a
+        line that cannot be processed is skipped like an unrecognised one and
+        never causes earlier lines to be replayed on the next poll. A trailing
+        line without its newline is left unread.
+        """
         try:
             fh = self._path.open("rb")
         except OSError:
@@ -769,17 +775,23 @@ class IncrementalEventLog:
                     self._reset()
                 self._inode = st.st_ino
                 fh.seek(self._offset)
-                chunk = fh.read()
+                while True:
+                    # One line at a time keeps memory at the longest line, not the log.
+                    raw = fh.readline()
+                    if not raw.endswith(b"\n"):
+                        return
+                    self._offset += len(raw)
+                    self._fold(raw)
             except OSError:
                 return
-        end = chunk.rfind(b"\n")
-        if end < 0:
-            return
-        for raw in chunk[: end + 1].split(b"\n"):
+
+    def _fold(self, raw: bytes) -> None:
+        try:
             decoded = _recognized_line(raw.decode("utf-8", errors="replace"), self._state.keep_variables)
             if decoded is not None:
                 self._state.consume(*decoded)
-        self._offset += end + 1
+        except Exception:  # noqa: BLE001 - an unprocessable line (RecursionError, bad field type) is skipped like an unrecognised one
+            return
 
     def normalized(self) -> dict[str, Any]:
         """Return the artifact :func:`normalize` would give for the consumed prefix."""
