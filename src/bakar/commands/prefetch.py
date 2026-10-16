@@ -17,8 +17,9 @@ from bakar.commands._helpers import (
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
+    resolve_global_config,
 )
-from bakar.config import BSPSpec, ResolveRequest, resolve
+from bakar.config import BSPSpec, ResolveRequest
 from bakar.kas import write_bbsetup_yaml
 from bakar.observability import RunLogger
 from bakar.steps import kas_build as step_kas
@@ -57,7 +58,7 @@ def prefetch(
     """
     setup_dir = _bbsetup_workspace(workspace) if kas_yaml is None and manifest is None else None
     if setup_dir is not None:
-        cfg = resolve(
+        cfg = resolve_global_config(
             ResolveRequest(
                 workspace=setup_dir,
                 bsp_family="bbsetup",
@@ -78,7 +79,7 @@ def prefetch(
     else:
         family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
         ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
-        cfg = resolve(
+        cfg = resolve_global_config(
             ResolveRequest(
                 workspace=ws,
                 bsp_family=family,
