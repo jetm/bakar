@@ -1940,11 +1940,11 @@ def test_persist_run_artifacts_swallows_any_exception_and_warns(
 ) -> None:
     """A broad exception from any wrapped call is caught and printed as a warning, not raised."""
     cfg = _oe_eventlog_cfg(tmp_path)
-    log = RunLogger(runs_dir=cfg.runs_dir)
-    log.run_dir.mkdir(parents=True, exist_ok=True)
-    with patch("bakar.steps.kas_build.copy_oe_eventlog_to_run_dir", side_effect=RuntimeError("boom")):
+    with RunLogger(runs_dir=cfg.runs_dir) as log, patch(
+        "bakar.steps.kas_build.copy_oe_eventlog_to_run_dir", side_effect=RuntimeError("boom")
+    ):
         persist_run_artifacts(cfg, log)
-    assert "warning: failed to persist run artifacts: boom" in capsys.readouterr().err
+    assert "failed to persist run artifacts: boom" in capsys.readouterr().err
 
 
 def _native_artifact(log: RunLogger, *, executed: int = 1, restored: int = 0) -> None:
@@ -1966,7 +1966,8 @@ def _native_persist_setup(
     if sstate:
         cfg = replace(cfg, sstate_dir=str(tmp_path / "sstate"))
     log = RunLogger(runs_dir=cfg.runs_dir)
-    log.run_dir.mkdir(parents=True, exist_ok=True)
+    # warn() needs the logger that __enter__ creates; closing is left to teardown of the tmp dir.
+    log.__enter__()
     return cfg, log
 
 
