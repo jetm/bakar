@@ -98,7 +98,7 @@ def _invoke_bbsetup_build(
         patch("bakar.commands._build_flavors.write_bbsetup_yaml"),
         patch("bakar.commands._build_flavors._run_doctor_gate"),
         patch("bakar.commands._build_flavors._print_layer_hashes", print_layer_hashes),
-        patch("bakar.commands.build.RunLogger", _runlogger_cm()),
+        patch("bakar.commands._build_common.RunLogger", _runlogger_cm()),
         patch("bakar.commands.build.step_kas.run_build", run_build),
         patch("bakar.commands.build.step_kas.dry_run_preview_lines", return_value=[]),
     ):

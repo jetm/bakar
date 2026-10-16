@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 import typer
-from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
@@ -24,6 +23,12 @@ from bakar.commands._app import app, console
 # (``build_mod._run_single_preset_release`` is patched to count dispatches,
 # ``build_mod._preset_completer`` and ``build_mod._BuildCtx`` are called
 # directly), so the original import path has to keep resolving after the move.
+from bakar.commands._build_common import (  # noqa: F401
+    _finish_build,
+    _open_run_logger,
+    _output_mode,
+    _plain_render_console,
+)
 from bakar.commands._build_flavors import (
     _BbsetupCtx,
     _BuildCtx,
@@ -67,11 +72,9 @@ from bakar.commands._helpers import (
     _dispatch_bsp,
     _dispatch_from_yaml,
     _overlay_for,
-    _print_sstate_summary,
     _resolve_workspace,
     _uninitialized_bbsetup_dir,
     _workspace_from_cwd,
-    global_output_mode_override,
     resolve_global_config,
     split_kas_yaml_arg,
 )
@@ -83,20 +86,17 @@ from bakar.commands._helpers import (
 # criterion does not belong: _CVE_REPORT_TARGET was re-exported and pinned in
 # the same commit, so its pin was the only thing justifying it.
 from bakar.commands._post_build import (
-    _CveRequest,
-    _FeedRequest,
-    _filter_image_sbom,
-    _generate_cve_report,
+    _CveRequest,  # noqa: F401
+    _FeedRequest,  # noqa: F401
+    _filter_image_sbom,  # noqa: F401
+    _generate_cve_report,  # noqa: F401
     _resolve_cve_request,
     _resolve_feed_request,
     _resolve_sbom_request,
-    _SbomRequest,
-    _sync_feed,
+    _SbomRequest,  # noqa: F401
+    _sync_feed,  # noqa: F401
 )
 from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, ResolveRequest, compose_preset_output_path
-from bakar.fmt import fmt_duration
-from bakar.observability import RunLogger
-from bakar.output_mode import OutputMode, resolve_output_mode
 from bakar.preset_config import load_presets
 
 # step_override and step_qcom_build are read only by the flavor dispatchers in
@@ -120,120 +120,9 @@ from bakar.preset_config import load_presets
 from bakar.steps import bitbake_override as step_override  # noqa: F401
 from bakar.steps import kas_build as step_kas
 from bakar.steps import qcom_build as step_qcom_build  # noqa: F401
-from bakar.steps.kas_build import KasBuildContext
 
 if TYPE_CHECKING:
     from bakar.user_config import UserConfig
-
-
-def _output_mode() -> OutputMode:
-    """Resolve the human-output mode from the global override and this run's stream."""
-    return resolve_output_mode(global_output_mode_override(), isatty=sys.stderr.isatty(), ci_env=os.environ.get("CI"))
-
-
-def _plain_render_console() -> Console | None:
-    """A no-color render console for RunLogger under plain mode, else None (module default).
-
-    Keeps the out-of-Live summary/hint lines, layer tables, and alerts ANSI-free even on a
-    forced ``--plain`` TTY (design D9).
-    """
-    if _output_mode() is OutputMode.PLAIN:
-        # stderr for the same reason ``commands/_app.py`` uses it, and that
-        # module carries the full rationale: stdout is reserved for
-        # machine-readable payloads, so everything a human reads goes here.
-        # A RunLogger render console is diagnostics by definition.
-        return Console(no_color=True, force_terminal=False, stderr=True)
-    return None
-
-
-def _make_kas_ctx(cfg, log, overlay_source: Path, ctx) -> KasBuildContext:
-    """Build a KasBuildContext for run_build, threading the shared mode config.
-
-    ``ctx`` is either ``_BbsetupCtx`` or ``_BuildCtx``; both carry keep_going,
-    dry_run, and target, the only fields callers need beyond cfg/log/overlay.
-    """
-    return KasBuildContext(
-        cfg,
-        log,
-        cfg.kas_yaml,
-        overlay_source,
-        keep_going=ctx.keep_going,
-        dry_run=ctx.dry_run,
-        target=ctx.target,
-        output_mode=_output_mode(),
-    )
-
-
-def _open_run_logger(cfg) -> RunLogger:
-    """Open a RunLogger honoring the plain-mode render console override."""
-    return RunLogger(runs_dir=cfg.runs_dir, render_console=_plain_render_console())
-
-
-def _finish_build(
-    cfg,
-    log,
-    rc: int,
-    machine: str,
-    feed: _FeedRequest | None = None,
-    cve: _CveRequest | None = None,
-    sbom: _SbomRequest | None = None,
-) -> None:
-    """Shared build tail: rc check + triage hint, sstate summary, success line, artifacts path.
-
-    ``machine`` names the deploy/images subdir - ``cfg.machine`` for byo/manifest
-    builds, the bbsetup-translated machine for the bbsetup path.
-
-    ``feed`` drives a sync then an index once the build has succeeded. The work
-    sits here rather than in the callers because this function already returns
-    early on a non-zero rc: a failed build cannot reach it, so "success only"
-    holds for every call site including ones added later, rather than depending
-    on each remembering to guard. A partial deploy staged into the feed would
-    render a repository the index then advertises as installable.
-
-    ``cve`` is the context the build just ran with, present only when ``--cve``
-    was passed. The report is produced by a SECOND bitbake invocation derived
-    from it, for the same reason it sits here rather than in the image graph:
-    ``avocado-cve-report`` joins cve-check results across the whole tree, so a
-    run scheduled alongside the ``do_cve_check`` tasks it reads would summarise a
-    scan still in progress.
-
-    A dry run is NOT such a success and the callers filter it out before this
-    point, because ``run_build`` returns 0 after printing its preview - so rc
-    alone cannot tell "built" from "never ran".
-    """
-    if rc != 0:
-        exe = "kas" if cfg.host_mode else "kas-container"
-        console.print(f"[red]{exe} build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details.")
-        raise typer.Exit(code=rc)
-    # resolved_tmpdir is the single source of truth for the build TMPDIR: it
-    # honors a local_tmpdir_base override (so the banner points at the real
-    # images) and already encodes the family tmp-dir layout (tmp-glibc for qcom,
-    # tmp elsewhere).
-    deploy = cfg.resolved_tmpdir / "deploy" / "images" / machine
-    if _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary:
-        _print_sstate_summary(log.run_dir / "kas.log")
-    console.print(f"[bold green]build succeeded[/] in {fmt_duration(time.monotonic() - log.start_monotonic)}")
-    console.print(f"artifacts: {deploy}")
-
-    # Before the feed sync: this reads the build tree and writes one JSON beside
-    # the images, while the sync publishes that tree outward. Keeping every
-    # build-tree step ahead of the publish keeps the order readable, and the two
-    # do not otherwise interact - the report recipe inherits ``nopackages`` and
-    # deletes its install and sysroot tasks, so it adds no RPM the feed could
-    # pick up.
-    if cve is not None:
-        _generate_cve_report(cfg, log, cve, machine)
-
-    # Also before the feed sync, and for a sharper reason than the CVE report's:
-    # this produces the document a later publish step puts INTO the feed, so it
-    # has to exist and be checked before anything publishes.
-    filtered_sboms = _filter_image_sbom(cfg, log, sbom) if sbom is not None else []
-
-    if feed is not None:
-        # Only what THIS invocation filtered and checked reaches the feed. Reading
-        # the output directory instead would publish whatever a previous run left
-        # there, including a document produced before the filter was updated.
-        _sync_feed(cfg, log, feed, sboms=filtered_sboms)
 
 
 _NO_ROUTING_MSG = "--on for meta-avocado builds needs \\[workspaces] template in the bakar user config"

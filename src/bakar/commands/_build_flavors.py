@@ -5,11 +5,8 @@ flag plumbing while the four pipelines it dispatches to - bbsetup, byo,
 manifest, and the single-preset-release wrapper - live here with the two
 frozen contexts they read.
 
-``build.py`` and this module import each other: ``build()`` calls the
-dispatchers below, and the dispatchers call the run-logger, kas-context, and
-build-tail helpers that stay on ``build.py`` next to the console and RunLogger
-the tests patch there. The import at the BOTTOM of this file is what makes that
-cycle safe in both directions - see the comment beside it.
+``build.py`` imports this module; the run-logger, kas-context, and build-tail
+helpers the dispatchers call live in ``_build_common`` so no import cycle exists.
 """
 
 from __future__ import annotations
@@ -26,6 +23,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.bsp_detect import machine_from_yaml
 from bakar.commands._app import console
+from bakar.commands._build_common import _finish_build, _make_kas_ctx, _open_run_logger
 from bakar.commands._helpers import (
     _clean_build_dir,
     _combine_overlays_with_tuning,
@@ -182,7 +180,7 @@ def _run_bbsetup_build(
         raise typer.Exit(code=0)
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
-    with _build_mod._open_run_logger(cfg) as log:
+    with _open_run_logger(cfg) as log:
         log.info(f"build mode=bbsetup bsp=bbsetup yaml={cfg.kas_yaml} overlay={overlay_source}")
 
         _run_doctor_gate(cfg, log, None)
@@ -194,13 +192,13 @@ def _run_bbsetup_build(
             distro_override=ctx.distro,
         )
 
-        kas_ctx = _build_mod._make_kas_ctx(cfg, log, overlay_source, ctx)
+        kas_ctx = _make_kas_ctx(cfg, log, overlay_source, ctx)
         rc = step_kas.run_build(
             kas_ctx,
             extra_overlays=_tuning_extra_overlays(cfg),
             show_layers=effective_show_layers,
         )
-        _build_mod._finish_build(cfg, log, rc, translated["machine"])
+        _finish_build(cfg, log, rc, translated["machine"])
 
 
 @dataclass(frozen=True)
@@ -254,13 +252,13 @@ def _run_byo_build(
         else:
             step_override.apply(cfg, log)
 
-    kas_ctx = _build_mod._make_kas_ctx(cfg, log, ctx.overlay_source, ctx)
+    kas_ctx = _make_kas_ctx(cfg, log, ctx.overlay_source, ctx)
     rc = step_kas.run_build(
         kas_ctx,
         extra_overlays=ctx.extra_overlays,
         show_layers=ctx.effective_show_layers and not ctx.dry_run,
     )
-    _build_mod._finish_build(
+    _finish_build(
         cfg,
         log,
         rc,
@@ -332,13 +330,13 @@ def _run_manifest_build(
             step_override.apply(cfg, log)
             step_kas.regenerate_yaml(cfg, log, bsp=ctx.bsp)
 
-        kas_ctx = _build_mod._make_kas_ctx(cfg, log, ctx.overlay_source, ctx)
+        kas_ctx = _make_kas_ctx(cfg, log, ctx.overlay_source, ctx)
         rc = step_kas.run_build(
             kas_ctx,
             extra_overlays=_tuning_extra_overlays(cfg),
             show_layers=ctx.effective_show_layers and not ctx.dry_run,
         )
-    _build_mod._finish_build(cfg, log, rc, cfg.machine)
+    _finish_build(cfg, log, rc, cfg.machine)
 
 
 def _is_multi_release(preset: object) -> bool:
@@ -450,7 +448,7 @@ def _run_single_preset_release(
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
     try:
-        with _build_mod._open_run_logger(cfg) as log:
+        with _open_run_logger(cfg) as log:
             log.info(
                 f"build mode={'byo' if byo_form else 'manifest'} bsp={family}"
                 f" yaml={cfg.kas_yaml} overlay={overlay_source}"
@@ -467,13 +465,3 @@ def _run_single_preset_release(
         return 1
     else:
         return 0
-
-
-# Bound as the MODULE, not as the three names, and bound at the bottom rather
-# than the top. Both details are load-bearing for the cycle with ``build.py``.
-# Importing the names would fail when ``build.py`` is imported first, because it
-# reaches its own ``from ... _build_flavors import`` line before defining them;
-# binding the module object defers every attribute read to call time. Placing it
-# last is what covers the other order - when this module is imported first, its
-# own definitions are all in place by the time ``build.py`` imports them back.
-from bakar.commands import build as _build_mod  # noqa: E402

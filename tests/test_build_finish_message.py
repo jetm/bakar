@@ -21,6 +21,7 @@ import pytest
 import typer
 from rich.console import Console
 
+import bakar.commands._build_common as build_common
 import bakar.commands.build as build
 
 pytestmark = pytest.mark.unit
@@ -29,7 +30,7 @@ pytestmark = pytest.mark.unit
 def _failure_output(*, host_mode: bool, monkeypatch) -> str:
     """Drive ``_finish_build`` down the rc != 0 path and return what it printed."""
     buf = StringIO()
-    monkeypatch.setattr(build, "console", Console(file=buf, width=200, no_color=True))
+    monkeypatch.setattr(build_common, "console", Console(file=buf, width=200, no_color=True))
 
     cfg = MagicMock()
     cfg.host_mode = host_mode

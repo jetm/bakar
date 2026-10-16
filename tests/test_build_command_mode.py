@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import bakar.commands._build_common as build_common
 import bakar.commands._build_flavors as flavors
 import bakar.commands._build_options as build_options
 import bakar.commands._post_build as post_build
@@ -20,34 +21,34 @@ class _FakeStderr:
 
 
 def test_output_mode_plain_when_piped(monkeypatch) -> None:
-    monkeypatch.setattr(build, "global_output_mode_override", lambda: None)
+    monkeypatch.setattr(build_common, "global_output_mode_override", lambda: None)
     monkeypatch.delenv("CI", raising=False)
     monkeypatch.setattr("sys.stderr", _FakeStderr(tty=False))
     assert build._output_mode() is OutputMode.PLAIN
 
 
 def test_output_mode_honors_plain_override_on_tty(monkeypatch) -> None:
-    monkeypatch.setattr(build, "global_output_mode_override", lambda: OutputMode.PLAIN)
+    monkeypatch.setattr(build_common, "global_output_mode_override", lambda: OutputMode.PLAIN)
     monkeypatch.setattr("sys.stderr", _FakeStderr(tty=True))
     assert build._output_mode() is OutputMode.PLAIN
 
 
 def test_output_mode_rich_override_wins_when_piped(monkeypatch) -> None:
-    monkeypatch.setattr(build, "global_output_mode_override", lambda: OutputMode.RICH)
+    monkeypatch.setattr(build_common, "global_output_mode_override", lambda: OutputMode.RICH)
     monkeypatch.delenv("CI", raising=False)
     monkeypatch.setattr("sys.stderr", _FakeStderr(tty=False))
     assert build._output_mode() is OutputMode.RICH
 
 
 def test_plain_render_console_is_no_color(monkeypatch) -> None:
-    monkeypatch.setattr(build, "global_output_mode_override", lambda: OutputMode.PLAIN)
+    monkeypatch.setattr(build_common, "global_output_mode_override", lambda: OutputMode.PLAIN)
     console = build._plain_render_console()
     assert console is not None
     assert console.no_color is True
 
 
 def test_render_console_none_in_rich(monkeypatch) -> None:
-    monkeypatch.setattr(build, "global_output_mode_override", lambda: OutputMode.RICH)
+    monkeypatch.setattr(build_common, "global_output_mode_override", lambda: OutputMode.RICH)
     assert build._plain_render_console() is None
 
 
@@ -71,7 +72,10 @@ def test_every_build_site_threads_the_mode() -> None:
     # one kwarg order only. Widening the file set closed a file-scope gap; it did
     # not turn a literal count into a semantic one, and a future ad-hoc context
     # spelled differently still lands on the shared console unremarked.
-    src = "".join(Path(mod.__file__).read_text(encoding="utf-8") for mod in (build, flavors, post_build, build_options))
+    src = "".join(
+        Path(mod.__file__).read_text(encoding="utf-8")
+        for mod in (build, build_common, flavors, post_build, build_options)
+    )
     # Exactly one KasBuildContext(/RunLogger(runs_dir=cfg.runs_dir construction may
     # exist across both modules: the one inside the factory below. A stray ad hoc
     # construction added outside the factories bumps these counts and fails here.
