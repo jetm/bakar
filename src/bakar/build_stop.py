@@ -1980,9 +1980,9 @@ class RunRoot:
     bsp_family`` for those), while the plain ``build/runs`` root and every
     ``build-*`` root pass the root itself with ``bsp_family="bbsetup"``,
     whose :attr:`BuildConfig.bsp_root` is unconditionally its own
-    ``workspace`` input - mirroring ``commands/insights.py``'s identical
-    ``bsp_root_from_run``/family split (not reused directly, per Assumption
-    A5: this module has no import of ``bakar.commands.*``).
+    ``workspace`` input - mirroring
+    ``resolve_run_config`` in ``commands/_helpers.py`` (not reused directly,
+    per Assumption A5: this module has no import of ``bakar.commands.*``).
 
     A caller with just one already-known root - group 9's future host-mode
     correlation, scanning a topdir discovered via a ``/proc`` walk with no

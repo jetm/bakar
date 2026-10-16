@@ -2,8 +2,8 @@
 
 These are Category A CliRunner tests for ``bakar.commands.triage``. The
 workspace layout mirrors what the production code expects:
-``find_runs`` / ``_find_run`` walk ``<workspace>/{nxp,ti}/build/runs/``,
-not ``<workspace>/build/runs/`` directly. The shared ``fake_run_dir``
+``candidate_runs_dirs`` / ``_find_run`` walk ``<workspace>/{nxp,ti}/build/runs/``
+among other roots, not ``<workspace>/build/runs/`` directly. The shared ``fake_run_dir``
 fixture writes under ``<tmp>/build/runs/<ts>/`` so this file builds its
 own run dirs under ``<workspace>/nxp/build/runs/`` to match the discovery
 rules. ``SAMPLE_EVENTS_JSONL`` and ``SAMPLE_KAS_LOG`` from conftest are
@@ -50,7 +50,7 @@ def _make_workspace(tmp_path: Path) -> Path:
 
 
 def _make_run(workspace: Path, ts: str, events: str, kas_log: str) -> Path:
-    """Build a run dir under ``<workspace>/nxp/build/runs/<ts>/`` (the layout ``find_runs`` walks)."""
+    """Build a run dir under ``<workspace>/nxp/build/runs/<ts>/`` (a layout ``candidate_runs_dirs`` walks)."""
     run = workspace / "nxp" / "build" / "runs" / ts
     run.mkdir(parents=True)
     (run / "events.jsonl").write_text(events)

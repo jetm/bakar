@@ -1228,6 +1228,10 @@ def dispatch_remote_build(host: str, request: MirrorRequest, flags: DispatchFlag
     )
     print_dispatch_plan(host, plan)
 
+    # An argv list run without a shell, and ``preflight_or_report`` above already
+    # refused a host that begins with ``-``, so the host cannot parse as an rsync
+    # option. The directive must stay on the line directly above the call.
+    # nosemgrep: python.django.security.injection.command.subprocess-injection.subprocess-injection
     rsync_rc = subprocess.run(build_rsync_argv(ws_root, host), check=False).returncode
     if rsync_rc != 0:
         console.print(f"[red]rsync failed (exit {rsync_rc})[/]; remote build not started.")

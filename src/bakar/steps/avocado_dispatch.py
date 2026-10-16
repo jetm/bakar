@@ -284,6 +284,11 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
     push_env = os.environ.copy()
     if not _user_ssh_configured(checkout, push_env):
         push_env["GIT_SSH_COMMAND"] = _PUSH_SSH_COMMAND
+    # ``push`` is an argv list run without a shell, and ``preflight_or_report``
+    # above already refused a host that begins with ``-``, so the host cannot
+    # parse as an ssh or git option.
+    # The directive must stay on the line directly above the call.
+    # nosemgrep: python.django.security.injection.command.subprocess-injection.subprocess-injection
     push_rc = subprocess.run(push, check=False, env=push_env).returncode
     if push_rc != 0:
         console.print(f"[red]git push failed (exit {push_rc})[/]; remote build not started.")

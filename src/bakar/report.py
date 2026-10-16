@@ -354,6 +354,10 @@ def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
 
     layers = collect_layer_hashes(cfg)
     build_revision: str | None = (
+        # A short fingerprint of the layer set that names a build, never a signature,
+        # and changing the hash would change every revision already reported.
+        # The directive must stay on the line directly above the call.
+        # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
         hashlib.sha1("".join(sorted(layer.short_hash for layer in layers)).encode()).hexdigest()[:12]
         if layers
         else None
