@@ -31,7 +31,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from bakar.vendor_config import load_vendors
+from bakar.vendor_config import BspFamily, ManifestFamily, load_vendors
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -79,7 +79,7 @@ _TI_LAYER_PREFIX = "meta-variscite-bsp-ti"
 def detect_bsp_family(
     manifest_path: Path | None,
     config_file: Path | None = None,
-) -> Literal["nxp", "ti", "qcom", "generic", "bbsetup", "unknown"]:
+) -> BspFamily | Literal["unknown"]:
     """Detect the BSP family from a manifest filename and optional config.
 
     Only the filename (``path.name``) is inspected; the file need not
@@ -95,7 +95,7 @@ def detect_bsp_family(
             vendors = []
         for vendor in vendors:
             if re.match(vendor.manifest_regex, name):
-                return cast("Literal['nxp', 'ti', 'qcom', 'generic', 'bbsetup']", vendor.family)
+                return cast("BspFamily", vendor.family)
         if _NXP_MANIFEST_RE.match(name):
             return "nxp"
         if _TI_PROCESSOR_SDK_RE.match(name) or _TI_ARAGO_RE.match(name):
@@ -155,7 +155,7 @@ class BspModel:
     code reads the fields instead of switching on ``cfg.bsp_family``.
     """
 
-    family: Literal["nxp", "ti", "qcom"]
+    family: ManifestFamily
     workspace_subdir: str  # "nxp", "ti", or "qcom"
     kas_yaml_filename: str  # "kas-nxp.yml", "kas-ti.yml", or "kas-qcom.yml"
     tuning_overlay_filename: str  # "bakar-tuning-nxp.yml", "bakar-tuning-ti.yml", or "bakar-tuning-qcom.yml"
@@ -172,7 +172,7 @@ class BspModel:
     doctor_extras: tuple[DoctorCheck, ...]
 
 
-def get_model(family: Literal["nxp", "ti", "qcom"]) -> BspModel:
+def get_model(family: ManifestFamily) -> BspModel:
     """Return the BspModel singleton for ``family``.
 
     Imports are intentionally lazy. ``bsp_model`` is imported from

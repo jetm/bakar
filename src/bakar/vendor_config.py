@@ -4,8 +4,12 @@ import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, get_args
 
-_VALID_FAMILIES = {"nxp", "ti", "generic", "bbsetup", "qcom"}
+BspFamily = Literal["nxp", "ti", "qcom", "generic", "bbsetup"]
+ManifestFamily = Literal["nxp", "ti", "qcom"]
+
+_VALID_FAMILIES = frozenset(get_args(BspFamily))
 _MAX_REGEX_LEN = 200
 
 
