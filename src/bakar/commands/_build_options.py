@@ -143,8 +143,9 @@ OnOption = Annotated[
     typer.Option(
         "--on",
         help="Dispatch the build to a remote host (ssh alias or user@ip) instead of building "
-        "locally: mirror the working tree with rsync, run the build there, stream logs, and "
-        "surface the remote run-id. Unset builds locally.",
+        "locally. A meta-avocado kas build is delivered to the host's release workspace and "
+        "built there; other builds are mirrored additively with rsync. Nothing is deleted on "
+        "the host. Streams logs and surfaces the remote run-id. Unset builds locally.",
     ),
 ]
 

@@ -124,7 +124,7 @@
 - Keep package revisions monotonic across a wiped build tree: [prserv.md](prserv.md)
 - Publish a finished build's RPMs as a local package feed: [feed.md](feed.md)
 - Copy a published feed for offline use: [feed.md](feed.md) (`bakar feed mirror`)
-- Run a build on an idle remote node (mirror the tree, build over ssh): [build.md](build.md) (`--on <host>`)
+- Run a build on an idle remote node (deliver the layer or mirror the tree additively, build over ssh): [build.md](build.md) (`--on <host>`)
 
 ---
 

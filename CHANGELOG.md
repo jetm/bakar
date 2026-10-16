@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `bakar build --help` described `--on` as mirroring the working tree with rsync. It now says a meta-avocado kas build is delivered to the host's release workspace, other builds are mirrored additively, and nothing is deleted on the host.
+
 ## [0.37.0] - 2026-10-16
 
 ### Added
