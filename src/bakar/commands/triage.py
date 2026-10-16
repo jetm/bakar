@@ -9,11 +9,20 @@ from typing import Annotated, Literal
 
 import typer
 
-from bakar.bsp_detect import detect_kas_workspace, is_meta_avocado_yaml
+from bakar.bsp_detect import is_meta_avocado_yaml, meta_avocado_worktree
 from bakar.commands._app import app, console
-from bakar.commands._helpers import WorkspaceOption, _bbsetup_workspace, _find_run, _workspace_from_cwd
+from bakar.commands._helpers import (
+    WorkspaceOption,
+    _bbsetup_workspace,
+    _find_run,
+    _resolve_workspace,
+    _workspace_from_cwd,
+)
+from bakar.config import worktree_build_template
 from bakar.observability import last_run_event
+from bakar.release_workspace import ReleaseRoutingError, worktree_build_dir_name
 from bakar.triage import analyse, is_build_failure_event, tail_lines, translate_container_path
+from bakar.user_config import load_user_config
 
 _BITBAKE_EVENTS_FILENAME = "bitbake-events.json"
 
@@ -117,7 +126,20 @@ def _resolve_triage_dirs(
     if kas_yaml is not None:
         resolved = kas_yaml.resolve()
         if is_meta_avocado_yaml(resolved):
-            build_root = detect_kas_workspace(resolved) / f"build-{resolved.stem}"
+            # Same build root the build used: the routed release workspace
+            # (when [workspaces] maps this release) and the per-worktree dir.
+            wt = meta_avocado_worktree(resolved)
+            try:
+                build_dir = worktree_build_dir_name(
+                    resolved.stem,
+                    wt.checkout.name if wt else None,
+                    worktree_build_template(load_user_config()),
+                    source="BAKAR_WORKTREE_BUILD_DIR or build.worktree_build_dir",
+                )
+            except ReleaseRoutingError as exc:
+                console.print(f"[red]{exc}[/]")
+                raise typer.Exit(code=2) from exc
+            build_root = _resolve_workspace(None, kas_yaml=resolved, family="generic") / build_dir
             translation_workspace = build_root.parent
         else:
             build_root = resolved.parent

@@ -15,8 +15,16 @@ from typing import Annotated, Literal
 
 import typer
 
-from bakar.bsp_detect import detect_bsp_from_yaml, detect_kas_workspace, is_bbsetup_workspace
+from bakar.bsp_detect import (
+    detect_bsp_from_yaml,
+    detect_kas_workspace,
+    is_bbsetup_workspace,
+    is_meta_avocado_yaml,
+    meta_avocado_checkout,
+)
 from bakar.bsp_model import BspModel, detect_bsp_family, get_model
+from bakar.release_workspace import ReleaseRoutingError, map_release
+from bakar.user_config import load_user_config
 
 # ---------------------------------------------------------------------------
 # Workspace detection
@@ -212,11 +220,59 @@ def _resolve_workspace(
     if workspace is not None:
         return workspace
     if family == "generic" and kas_yaml is not None:
+        routed = _routed_release_workspace(kas_yaml)
+        if routed is not None:
+            return routed
         # For meta-avocado YAMLs this returns the parent of the
         # meta-avocado/ dir (e.g. sources/). For all other generic
         # YAMLs it returns yaml.parent - same as the old behaviour.
         return detect_kas_workspace(kas_yaml)
     return _workspace_from_cwd()
+
+
+def _routed_release_workspace(kas_yaml: Path) -> Path | None:
+    """Return the ``[workspaces]``-routed workspace for a meta-avocado kas file, else None.
+
+    Routing only runs when the user config names a template or a per-release
+    entry, so an unconfigured host never pays for the ``kas dump`` probe. A
+    routed workspace is shared by every checkout of that release, so the build
+    defaults to reusing its repositories rather than moving them to the pins
+    (``BAKAR_REPO_POLICY=reuse``) unless the caller already chose a policy.
+    """
+    if not is_meta_avocado_yaml(kas_yaml):
+        return None
+    from bakar.commands import console
+
+    try:
+        cfg = load_user_config()
+    except ValueError as exc:
+        console.print(f"[red]Invalid bakar config:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+    if not (cfg.workspaces_template or cfg.workspaces_releases):
+        return None
+    checkout = meta_avocado_checkout(kas_yaml)
+    if checkout is None:
+        return None
+
+    from bakar.steps import kas_pins
+
+    try:
+        release = kas_pins.probe_release(kas_yaml, checkout)
+        routed = map_release(release, cfg.workspaces_template, cfg.workspaces_releases)
+    except ReleaseRoutingError as exc:
+        console.print(f"[red]Cannot route {kas_yaml} to a release workspace:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+    if routed is None:
+        return None
+    if not routed.is_dir():
+        console.print(
+            f"[red]Release workspace {routed} for release {release!r} does not exist[/] "
+            "(create it, fix \\[workspaces] in the bakar config, or pass --workspace)."
+        )
+        raise typer.Exit(code=2)
+    if not os.environ.get("BAKAR_REPO_POLICY"):
+        os.environ["BAKAR_REPO_POLICY"] = "reuse"
+    return routed
 
 
 # Ordered manifest-family namespaces bakar manages under the workspace root.
