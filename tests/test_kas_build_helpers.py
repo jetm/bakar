@@ -2017,9 +2017,9 @@ def test_persist_run_artifacts_uses_environment_sstate_dir(tmp_path: Path, monke
     ):
         _persist_native(cfg, log)
     assert capture.call_args.kwargs["sstate_dir"] == env_dir
-    assert record.call_args.args[0] == env_dir
-    assert record.call_args.kwargs["run_id"] == log.run_id
-    assert record.call_args.kwargs["outcome"] == "success"
+    assert record.call_args.args[0].sstate_dir == env_dir
+    assert record.call_args.kwargs["sighting"].run_id == log.run_id
+    assert record.call_args.kwargs["sighting"].outcome == "success"
 
 
 def test_persist_run_artifacts_unwritable_ledger_warns_once(

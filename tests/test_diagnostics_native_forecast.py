@@ -73,13 +73,11 @@ def _record(workspace: Path, sstate: Path, *, run_id: str = "run-1", outcome: st
     cfg = _cfg(workspace, sstate)
     snap = native_provenance.snapshot_repos(workspace, cfg.bsp_root, probe_timeout=10.0)
     path = native_provenance.write_record(
-        sstate,
-        None,
+        native_provenance.RecordLocation(sstate_dir=sstate, release_key=None),
         snap,
-        node="node-a",
-        run_id=run_id,
-        outcome=outcome,
-        now=datetime(2026, 9, 1, 12, 0, tzinfo=UTC),
+        sighting=native_provenance.Sighting(
+            node="node-a", run_id=run_id, outcome=outcome, now=datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+        ),
     )
     assert path is not None
 

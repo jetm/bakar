@@ -176,17 +176,28 @@ def _release_dir(release_key: str | None) -> str:
     return _UNKNOWN_RELEASE
 
 
-def write_record(  # noqa: PLR0913
-    sstate_dir: Path,
-    release_key: str | None,
-    snapshot: RepoSnapshot,
-    *,
-    node: str,
-    run_id: str,
-    outcome: str,
-    now: datetime,
-) -> Path | None:
+@dataclass(frozen=True, kw_only=True, slots=True)
+class RecordLocation:
+    """The sstate directory and release key a revision-set record is filed under."""
+
+    sstate_dir: Path
+    release_key: str | None
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class Sighting:
+    """The node, run, outcome and time a record write attributes the revision set to."""
+
+    node: str
+    run_id: str
+    outcome: str
+    now: datetime
+
+
+def write_record(location: RecordLocation, snapshot: RepoSnapshot, *, sighting: Sighting) -> Path | None:
     """Publish the snapshot's revision-set record atomically; None if nothing to record."""
+    sstate_dir, release_key = location.sstate_dir, location.release_key
+    node, run_id, outcome, now = sighting.node, sighting.run_id, sighting.outcome, sighting.now
     readable = [r for r in snapshot.repos if not r.unreadable]
     if not readable:
         return None

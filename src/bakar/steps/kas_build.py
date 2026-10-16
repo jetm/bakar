@@ -1818,13 +1818,13 @@ def _write_native_record(cfg: BuildConfig, log: RunLogger, artifact: dict[str, A
         outcome = build.get("outcome") if isinstance(build, dict) else None
         snapshot = native_provenance.snapshot_repos(cfg.workspace, cfg.bsp_root, probe_timeout=10.0)
         written = native_provenance.write_record(
-            sstate_dir,
-            resolve_oe_core_release_key(cfg.workspace),
+            native_provenance.RecordLocation(
+                sstate_dir=sstate_dir, release_key=resolve_oe_core_release_key(cfg.workspace)
+            ),
             snapshot,
-            node=socket.gethostname(),
-            run_id=log.run_id,
-            outcome=str(outcome),
-            now=datetime.now(UTC),
+            sighting=native_provenance.Sighting(
+                node=socket.gethostname(), run_id=log.run_id, outcome=str(outcome), now=datetime.now(UTC)
+            ),
         )
     except Exception as exc:  # noqa: BLE001 - best-effort capture must never fail a completed build
         log.console.print(f"[yellow]warning: native revision record could not be written: {_neutralized(exc)}[/]")

@@ -55,7 +55,8 @@ def _snap(ws: Path) -> np_.RepoSnapshot:
 
 
 def _write(sstate: Path, snap: np_.RepoSnapshot, run_id: str = "r1", now: datetime = T0) -> Path | None:
-    return np_.write_record(sstate, "scarthgap", snap, node="n1", run_id=run_id, outcome="ok", now=now)
+    location = np_.RecordLocation(sstate_dir=sstate, release_key="scarthgap")
+    return np_.write_record(location, snap, sighting=np_.Sighting(node="n1", run_id=run_id, outcome="ok", now=now))
 
 
 def test_snapshot_discovers_and_flags_core(ws: Path) -> None:
@@ -102,7 +103,8 @@ def test_moving_a_layer_yields_two_files(ws: Path, tmp_path: Path) -> None:
 
 def test_unknown_release_bucket(ws: Path, tmp_path: Path) -> None:
     sstate = tmp_path / "sstate"
-    path = np_.write_record(sstate, None, _snap(ws), node="n", run_id="r", outcome="ok", now=T0)
+    location = np_.RecordLocation(sstate_dir=sstate, release_key=None)
+    path = np_.write_record(location, _snap(ws), sighting=np_.Sighting(node="n", run_id="r", outcome="ok", now=T0))
     assert path is not None and path.parent.name == "_unknown"
     recs, _ = np_.load_records(sstate, None)
     assert len(recs) == 1
@@ -371,7 +373,8 @@ def test_deeply_nested_record_is_unreadable_not_a_crash(ws: Path, tmp_path: Path
 @pytest.mark.parametrize("key", ["../../outside", "/abs", "a/b", "..", ".hidden", "x" * 65])
 def test_release_key_that_is_not_one_component_maps_to_unknown(ws: Path, tmp_path: Path, key: str) -> None:
     sstate = tmp_path / "sstate"
-    path = np_.write_record(sstate, key, _snap(ws), node="n1", run_id="r1", outcome="ok", now=T0)
+    location = np_.RecordLocation(sstate_dir=sstate, release_key=key)
+    path = np_.write_record(location, _snap(ws), sighting=np_.Sighting(node="n1", run_id="r1", outcome="ok", now=T0))
     assert path is not None
     assert path.parent == _ns_dir(sstate) / "_unknown"
     recs, bad = np_.load_records(sstate, key)
