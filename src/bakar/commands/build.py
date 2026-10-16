@@ -270,14 +270,20 @@ def _refuse_release_workspace_mirror(ws_root: Path, host: str) -> bool:
     user_config = _dispatch_user_config()
     if user_config is None:
         return True
-    if not (ws_root / "meta-avocado").is_dir() and not matches_release_workspace(
-        ws_root, user_config.workspaces_template, user_config.workspaces_releases
-    ):
+    configured = matches_release_workspace(ws_root, user_config.workspaces_template, user_config.workspaces_releases)
+    if not configured and not (ws_root / "meta-avocado").is_dir():
         return False
+    # A root that merely holds a meta-avocado directory (a layer repository whose
+    # layer sits at <repo>/meta-avocado) is refused too, since the mirror would
+    # still overwrite that clone, but calling it a release workspace misleads.
+    reason = (
+        "it is a configured release workspace, which bakar builds through the layer-delivery flow"
+        if configured
+        else "it holds a meta-avocado repository whose clone on the host the mirror would overwrite"
+    )
     console.print(
-        f"[red]cannot mirror {ws_root} to {host}[/]: it is a release workspace, which bakar builds through "
-        "the layer-delivery flow. Run `bakar build <path to a kas file inside the meta-avocado checkout> "
-        f"--on {host}` instead.",
+        f"[red]cannot mirror {ws_root} to {host}[/]: {reason}. Run `bakar build <path to a kas file inside a "
+        f"meta-avocado checkout> --on {host}` instead.",
     )
     return True
 
@@ -335,10 +341,13 @@ def _dispatch_meta_avocado(
         return 2
     # Without --on the same command builds in -w, so silently building in the
     # routed workspace instead would put the result somewhere the user did not name.
+    # The fix cannot be "pass -w <routed>" alone: -w must exist locally, and the
+    # routed workspace may exist only on the host.
     if workspace is not None and not _same_path(workspace, routed):
         console.print(
             f"[red]-w {workspace} does not match the release workspace {routed}[/] that the {release!r} "
-            f"build is routed to on {host}. Drop -w, or pass -w {routed}."
+            f"build is routed to on {host}: --on builds in the workspace the release maps to on {host}. "
+            f"Drop -w (or point it at {routed} if that path exists locally)."
         )
         return 2
     worktree_root = user_config.dispatch_worktree_root
@@ -448,7 +457,7 @@ def build(
     if on is not None:
         from bakar.steps.remote_dispatch import deleting_requests
 
-        requests = deleting_requests(target, os.environ)
+        requests = deleting_requests(target, os.environ, image=image)
         for request in requests:
             console.print(
                 f"[red]{escape(request)} cannot be combined with --on[/]: it runs a clean task that would delete the "

@@ -28,6 +28,9 @@ EXIT_NO_MARKER = 4
 EXIT_FOREIGN_MARKER = 5
 EXIT_DIRTY = 6
 EXIT_BUILD_RUNNING = 7
+# The build guard's own statuses, distinct from the delivery script's.
+EXIT_MOVED = 8
+EXIT_NO_BUILD_LOCK = 9
 
 _MARKER_KEYS = ("source_host", "source_path", "name", "commit", "snapshot", "delivered_at")
 
@@ -37,6 +40,8 @@ _EXIT_DESCRIPTIONS = {
     EXIT_FOREIGN_MARKER: "the delivered worktree belongs to another host or checkout",
     EXIT_DIRTY: "the delivered worktree has uncommitted changes",
     EXIT_BUILD_RUNNING: "a build is running in the delivered worktree's build directory",
+    EXIT_MOVED: "another dispatch moved the delivered worktree after delivery",
+    EXIT_NO_BUILD_LOCK: "the build lock could not be opened or taken, so the build did not start",
 }
 
 # Compares the marker's owner against the expected host and the JSON list of
@@ -69,16 +74,19 @@ if want_commit is not None and got_commit != want_commit:
 """
 
 
-EXIT_MOVED = 8
-
 # Takes the shared build lock on an fd the build inherits, then refuses to start
 # when another dispatch moved the worktree between delivery and the build. The
 # lock is taken with flock on an fd rather than with flock wrapping the build:
 # the wrapper form leaves a flock process between the unit and the build that
 # dies on the SIGINT of `bakar stop --on` while the build is still draining.
+# A failed open or flock (read-only root, a lock owned by another user, ENOLCK
+# on NFS) exits 9: running unlocked would let a move check out under the build.
 # $0 is the lock file, $1 the worktree, $2 the commit.
 _GUARD_SCRIPT = (
-    'exec 9>>"$0"; flock -s 9; '
+    'exec 9>>"$0" || { echo "bakar: cannot open the build lock $0" >&2; '
+    f"exit {EXIT_NO_BUILD_LOCK}; }}; "
+    'flock -s 9 || { echo "bakar: cannot take the build lock $0" >&2; '
+    f"exit {EXIT_NO_BUILD_LOCK}; }}; "
     'test "$(git -C "$1" rev-parse HEAD)" = "$2" || '
     '{ echo "bakar: $1 was moved by another dispatch after delivery; dispatch again" >&2; '
     f"exit {EXIT_MOVED}; }}; "
@@ -97,6 +105,10 @@ def build_guard(*, worktree_root: str, name: str, commit: str) -> str:
     It holds :func:`build_lock_path` shared for the whole build, which the
     delivery script's exclusive lock sees, and verifies the worktree is still at
     the delivered ``commit`` once the lock is held.
+
+    Exit statuses before the build starts: :data:`EXIT_NO_BUILD_LOCK` (9) when
+    the lock cannot be opened or taken, :data:`EXIT_MOVED` (8) when the worktree
+    is no longer at ``commit``. Otherwise the build's own status.
     """
     if not is_valid_delivered_name(name):
         raise ReleaseRoutingError(f"delivered name {name!r} must match [A-Za-z0-9._-]+")
@@ -146,7 +158,7 @@ def parse_marker(text: str) -> dict[str, str | bool]:
 
 
 def describe_exit(code: int) -> str:
-    """Return a human-readable reason for an exit status of the worktree script."""
+    """Return a human-readable reason for an exit status of the worktree script or the build guard."""
     if code == 0:
         return "delivered"
     return _EXIT_DESCRIPTIONS.get(code, f"the delivery script failed with exit status {code}")
@@ -200,7 +212,7 @@ build_lock_file={q(build_lock_path(worktree_root, name))}
 
 write_marker() {{
     local gitdir
-    gitdir=$(git -C "$dest" rev-parse --absolute-git-dir)
+    gitdir=$(git -C "$dest" rev-parse --absolute-git-dir 8>&- 9>&-)
     printf '%s' "$marker" > "$gitdir/{MARKER_FILENAME}"
     # The pending record has done its job; emptying it stops a stale one from
     # vouching for some later worktree at this path.
@@ -208,6 +220,11 @@ write_marker() {{
 }}
 
 mkdir -p -- "$root"
+# Every git, python and flock child started while fd 9 (and later fd 8) is
+# open runs with them closed: git hooks inherit open descriptors, and a hook
+# that backgrounds a child would otherwise keep the dispatch or build lock
+# after this script exits, hanging the next build guard and refusing the next
+# dispatch until that child dies.
 exec 9>>"$root/.$name.lock"
 if ! flock -n 9; then
     echo "bakar: another dispatch of $name holds $root/.$name.lock" >&2
@@ -220,7 +237,7 @@ if [ ! -e "$dest" ]; then
     printf '%s' "$marker" > "$pending"
     # A record left behind by a failed add would vouch for a worktree someone
     # later adds by hand at this path and commit.
-    git -C "$workspace/meta-avocado" worktree add -q --detach "$dest" "$commit" || {{
+    git -C "$workspace/meta-avocado" worktree add -q --detach "$dest" "$commit" 9>&- || {{
         rc=$?
         : > "$pending"
         exit "$rc"
@@ -234,7 +251,7 @@ if [ ! -e "$dest/.git" ]; then
     echo "bakar: $dest exists but is not a delivered worktree (no $dest/.git)" >&2
     exit {EXIT_NO_MARKER}
 fi
-gitdir=$(git -C "$dest" rev-parse --absolute-git-dir) || {{
+gitdir=$(git -C "$dest" rev-parse --absolute-git-dir 8>&- 9>&-) || {{
     echo "bakar: $dest exists but its git directory cannot be read" >&2
     exit {EXIT_NO_MARKER}
 }}
@@ -245,8 +262,9 @@ if [ ! -r "$marker_path" ]; then
     # mismatching record vouches for nothing, so a worktree bakar did not place
     # at this path is still refused.
     # An unborn HEAD names no commit, so no pending record can match it.
-    head_now=$(git -C "$dest" rev-parse --verify -q HEAD) || head_now=""
-    if [ -s "$pending" ] && python3 -c {q(_MARKER_CHECK_PY)} "$pending" "$src_host" "$src_paths" "$head_now"; then
+    head_now=$(git -C "$dest" rev-parse --verify -q HEAD 8>&- 9>&-) || head_now=""
+    if [ -s "$pending" ] && python3 -c {q(_MARKER_CHECK_PY)} \\
+            "$pending" "$src_host" "$src_paths" "$head_now" 8>&- 9>&-; then
         cat -- "$pending" > "$marker_path"
         : > "$pending"
     else
@@ -254,17 +272,17 @@ if [ ! -r "$marker_path" ]; then
         exit {EXIT_NO_MARKER}
     fi
 fi
-python3 -c {q(_MARKER_CHECK_PY)} "$marker_path" "$src_host" "$src_paths"
+python3 -c {q(_MARKER_CHECK_PY)} "$marker_path" "$src_host" "$src_paths" 8>&- 9>&-
 
-status=$(git -C "$dest" status --porcelain)
+status=$(git -C "$dest" status --porcelain 8>&- 9>&-)
 if [ -n "$status" ]; then
     echo "bakar: $dest has uncommitted changes:" >&2
     printf '%s\\n' "$status" >&2
     exit {EXIT_DIRTY}
 fi
 
-head=$(git -C "$dest" rev-parse HEAD)
-want=$(git -C "$dest" rev-parse --verify "$commit^{{commit}}")
+head=$(git -C "$dest" rev-parse HEAD 8>&- 9>&-)
+want=$(git -C "$dest" rev-parse --verify "$commit^{{commit}}" 8>&- 9>&-)
 if [ "$head" = "$want" ]; then
     echo "bakar: $dest already at $commit"
     exit 0
@@ -273,7 +291,7 @@ fi
 # The worktree is shared by every machine built from it, so any build
 # directory of the workspace holding its bitbake.lock blocks the move.
 for build_lock in "$workspace"/*/build/bitbake.lock; do
-    if [ -e "$build_lock" ] && ! flock -n -s "$build_lock" true; then
+    if [ -e "$build_lock" ] && ! flock -n -s "$build_lock" true 8>&- 9>&-; then
         echo "bakar: a build holds $build_lock" >&2
         exit {EXIT_BUILD_RUNNING}
     fi
@@ -288,7 +306,7 @@ if ! flock -n -x 8; then
     exit {EXIT_BUILD_RUNNING}
 fi
 
-git -C "$dest" checkout -q --detach "$commit"
+git -C "$dest" checkout -q --detach "$commit" 8>&- 9>&-
 write_marker
 echo "bakar: moved $dest to $commit"
 """

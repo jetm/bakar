@@ -641,12 +641,17 @@ def _squash(text: str) -> str:
     return "".join(text.split())
 
 
-def _assert_refused_before_any_remote_call(result, fake_sp: FakeSubprocess, mirror: list, ws: Path) -> None:
+_CONFIGURED_REASON = "it is a configured release workspace, which bakar builds through the layer-delivery flow"
+_HOLDS_REASON = "it holds a meta-avocado repository whose clone on the host the mirror would overwrite"
+
+
+def _assert_refused_before_any_remote_call(
+    result, fake_sp: FakeSubprocess, mirror: list, ws: Path, reason: str = _HOLDS_REASON
+) -> None:
     assert result.exit_code == 2, result.output
     out = _squash(result.output)
-    assert _squash(f"cannot mirror {ws} to {HOST}") in out
-    assert _squash("it is a release workspace, which bakar builds through the layer-delivery flow") in out
-    assert _squash(f"bakar build <path to a kas file inside the meta-avocado checkout> --on {HOST}") in out
+    assert _squash(f"cannot mirror {ws} to {HOST}: {reason}") in out
+    assert _squash(f"bakar build <path to a kas file inside a meta-avocado checkout> --on {HOST}") in out
     assert fake_sp.calls == []
     assert mirror == []
 
@@ -706,7 +711,45 @@ def test_workspace_named_by_the_template_is_refused_without_a_meta_avocado(
 
     result = _invoke_on(runner, monkeypatch)
 
-    _assert_refused_before_any_remote_call(result, fake_sp, mirror, ws)
+    _assert_refused_before_any_remote_call(result, fake_sp, mirror, ws, _CONFIGURED_REASON)
+
+
+def test_configured_release_workspace_holding_meta_avocado_says_configured(
+    runner: _CliRunner,
+    release_ws: Path,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Both signals hold; the configured mapping is the stronger statement.
+    _user_config(monkeypatch, workspaces_template=str(release_ws.parent / "peridio-{release}"))
+    mirror = _record(monkeypatch, rd, "dispatch_remote_build")
+    monkeypatch.chdir(release_ws)
+
+    result = _invoke_on(runner, monkeypatch)
+
+    _assert_refused_before_any_remote_call(result, fake_sp, mirror, release_ws, _CONFIGURED_REASON)
+
+
+def test_layer_repo_holding_meta_avocado_is_refused_without_release_wording(
+    runner: _CliRunner,
+    tmp_path: Path,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The meta-avocado-nonpublic shape: a layer repository whose layer directory
+    # is meta-avocado. It is no release workspace, but the mirror would still
+    # overwrite the host's clone of it.
+    repo = tmp_path / "meta-avocado-nonpublic"
+    (repo / "meta-avocado").mkdir(parents=True)
+    (repo / ".bakar.toml").write_text("")
+    _user_config(monkeypatch, workspaces_template=str(tmp_path / "peridio-{release}"))
+    mirror = _record(monkeypatch, rd, "dispatch_remote_build")
+    monkeypatch.chdir(repo)
+
+    result = _invoke_on(runner, monkeypatch)
+
+    _assert_refused_before_any_remote_call(result, fake_sp, mirror, repo, _HOLDS_REASON)
+    assert "release workspace" not in " ".join(result.output.split())
 
 
 def test_meta_avocado_kas_in_a_release_workspace_still_routes(
@@ -755,7 +798,12 @@ def test_meta_avocado_with_a_different_workspace_exits_2(
 
     assert result.exit_code == 2, result.output
     out = _squash(result.output)
-    assert _squash(f"-w {other} does not match the release workspace {tmp_path / 'peridio-wrynose'}") in out
+    routed = tmp_path / "peridio-wrynose"
+    assert _squash(f"-w {other} does not match the release workspace {routed}") in out
+    # -w must exist locally, so the advice cannot be a bare "pass -w <routed>".
+    assert _squash(f"--on builds in the workspace the release maps to on {HOST}") in out
+    assert _squash(f"Drop -w (or point it at {routed} if that path exists locally)") in out
+    assert _squash(f"pass -w {routed}") not in out
     assert avocado == []
     assert fake_sp.calls == []
 
@@ -794,8 +842,11 @@ def test_meta_avocado_with_the_routed_workspace_dispatches(
         (("-t", "busybox:do_cleanall"), {}, "--target busybox:do_cleanall"),
         (("--target", "busybox:cleansstate"), {}, "--target busybox:cleansstate"),
         ((), {"KAS_TARGET": "core-image-minimal busybox:do_clean"}, "KAS_TARGET busybox:do_clean"),
+        (("-i", "core-image-minimal:do_cleanall"), {}, "--image core-image-minimal:do_cleanall"),
+        (("--image", "core-image-minimal:cleansstate"), {}, "--image core-image-minimal:cleansstate"),
+        ((), {"BAKAR_IMAGE": "core-image-minimal:do_cleanall"}, "BAKAR_IMAGE core-image-minimal:do_cleanall"),
     ],
-    ids=["kas-task", "short-target", "long-target", "kas-target"],
+    ids=["kas-task", "short-target", "long-target", "kas-target", "short-image", "long-image", "bakar-image"],
 )
 def test_deleting_requests_with_on_are_refused(  # noqa: PLR0913 - pytest fixtures plus the three parameters
     runner: _CliRunner,

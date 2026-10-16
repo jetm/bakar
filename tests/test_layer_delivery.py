@@ -116,12 +116,23 @@ def _commit_count(repo: Path) -> int:
         "vault.kdbx",
         "notes.gpg",
         "id_rsa",
-        "id_rsa.pub",
         "id_ed25519",
         "keys/id_ecdsa_sk",
+        "id_dsa",
+        "keys/id_dsa_old",
         ".env",
         "sub/.env.local",
         "SERVER.PEM",
+        ".netrc",
+        ".git-credentials",
+        ".pgpass",
+        "aws/credentials",
+        "release.jks",
+        "upload.keystore",
+        "secrets.age",
+        "putty.ppk",
+        "AuthKey_ABC123.p8",
+        "ID_RSA.PUB.BAK",
     ],
 )
 def test_untracked_key_material_is_refused_before_any_commit(tmp_path: Path, path: str) -> None:
@@ -145,11 +156,35 @@ def test_untracked_key_material_is_refused_before_any_commit(tmp_path: Path, pat
     assert _commit_count(repo) == commits_before
 
 
-@pytest.mark.parametrize("path", ["notes.txt", "keyboard.c", "env.sh", "pem.md", "id.txt", "my.env.example.txt"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "notes.txt",
+        "keyboard.c",
+        "env.sh",
+        "pem.md",
+        "id.txt",
+        "my.env.example.txt",
+        "id_rsa.pub",
+        "keys/id_ed25519.pub",
+        "id_ecdsa_sk.pub",
+        "ID_DSA.PUB",
+        ".env.example",
+        "sub/.env.sample",
+        ".ENV.TEMPLATE",
+        "credentials.md",
+        "aws_credentials_setup.txt",
+    ],
+)
 def test_ordinary_untracked_files_are_snapshotted(tmp_path: Path, path: str) -> None:
     repo = tmp_path / "meta-avocado"
     _make_repo(repo)
-    (repo / path).write_text("plain\n")
+    # A user's global excludes file could hide .env.example and pass this test
+    # without the exemption being exercised.
+    _git(repo, "config", "core.excludesFile", os.devnull)
+    target = repo / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("plain\n")
     sha, is_snapshot = snapshot_commit(repo, cap_mb=1)
     assert is_snapshot
     assert _git(repo, "show", f"{sha}:{path}") == "plain"

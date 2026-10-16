@@ -33,6 +33,7 @@ class Recorder:
         self.push_rc = 0
         self.ensure_rc = 0
         self.capability_rc = 0
+        self.capability_stderr = ""
         self.untracked: list[str] = []
         self.stream: tuple[int, list[str], bool] | type[BaseException] = (0, ["ok\n"], True)
         self.ensure_script = ""
@@ -72,7 +73,7 @@ class Recorder:
             if script.startswith("bakar settings get "):
                 self.calls.append(("capability", host))
                 self.capability_script = script
-                return subprocess.CompletedProcess(["ssh"], self.capability_rc, "", "")
+                return subprocess.CompletedProcess(["ssh"], self.capability_rc, "", self.capability_stderr)
             self.calls.append(("ensure", host))
             self.ensure_script = script
             return subprocess.CompletedProcess(["ssh"], self.ensure_rc, "", "boom")
@@ -209,12 +210,35 @@ def test_old_remote_bakar_is_refused_even_with_yes(
     # and move the shared clones; --yes overrides only the version check.
     rec.preflight = (True, remote_version)
     rec.capability_rc = 2
+    rec.capability_stderr = "Unknown key: dispatch.snapshot_untracked_cap_mb\n"
     rc = _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"], assume_yes=assume_yes)
     err = " ".join(capsys.readouterr().err.split())
     assert rc == 1
-    assert f"the bakar on {HOST} predates release-workspace dispatch" in err
+    assert f"could not confirm that the bakar on {HOST} supports release-workspace dispatch" in err
+    assert "(exit 2): Unknown key: dispatch.snapshot_untracked_cap_mb;" in err
+    assert "if that bakar predates this feature, update it" in err
     assert "--yes does not override this" in err
     assert rec.capability_script.strip() == "bakar settings get dispatch.snapshot_untracked_cap_mb"
+    assert not {"check_workspace", "push", "ensure", "stream"} & set(rec.names())
+
+
+@pytest.mark.parametrize("assume_yes", [False, True])
+def test_remote_config_error_is_shown_not_called_old(
+    rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str], assume_yes: bool
+) -> None:
+    # A current remote bakar with a broken config fails the probe too; its own
+    # error is shown so the advice does not claim the bakar is outdated.
+    rec.capability_rc = 1
+    rec.capability_stderr = "".join(f"Invalid bakar config: line {n}\n" for n in range(1, 8))
+    rc = _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"], assume_yes=assume_yes)
+    err = " ".join(capsys.readouterr().err.split())
+    assert rc == 1
+    assert f"could not confirm that the bakar on {HOST} supports release-workspace dispatch (exit 1)" in err
+    assert "Invalid bakar config: line 1" in err
+    assert "Invalid bakar config: line 5" in err
+    assert "line 6" not in err
+    assert "predates release-workspace dispatch" not in err
+    assert "--yes does not override this" in err
     assert not {"check_workspace", "push", "ensure", "stream"} & set(rec.names())
 
 
@@ -222,8 +246,12 @@ def test_capability_probe_ssh_failure_is_reported_as_such(
     rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     rec.capability_rc = 255
+    rec.capability_stderr = "Connection refused\n"
     assert _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"]) == 1
-    assert f"could not probe the bakar on {HOST}" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert f"could not probe the bakar on {HOST}" in err
+    assert "Connection refused" in err
+    assert "could not confirm" not in err
     assert "push" not in rec.names()
 
 

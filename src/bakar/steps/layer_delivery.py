@@ -38,11 +38,29 @@ _KEY_PATTERNS = (
     "*.pfx",
     "*.kdbx",
     "*.gpg",
+    "*.jks",
+    "*.keystore",
+    "*.age",
+    "*.ppk",
+    "*.p8",
     "id_rsa*",
+    "id_dsa*",
     "id_ed25519*",
     "id_ecdsa*",
     ".env",
     ".env.*",
+    ".netrc",
+    ".git-credentials",
+    ".pgpass",
+    "credentials",
+)
+# Basenames a key pattern above would catch that carry no secret: public halves
+# of ssh keys and the example files a project commits to document its .env.
+_KEY_EXEMPT_PATTERNS = (
+    "id_*.pub",
+    ".env.example",
+    ".env.sample",
+    ".env.template",
 )
 
 
@@ -82,8 +100,15 @@ def _untracked_bytes(checkout: Path, paths: list[str]) -> int:
     return total
 
 
+def _looks_like_key(path: str) -> bool:
+    base = posixpath.basename(path).lower()
+    if any(fnmatch.fnmatchcase(base, pat) for pat in _KEY_EXEMPT_PATTERNS):
+        return False
+    return any(fnmatch.fnmatchcase(base, pat) for pat in _KEY_PATTERNS)
+
+
 def _key_material(paths: list[str]) -> list[str]:
-    return [p for p in paths if any(fnmatch.fnmatchcase(posixpath.basename(p).lower(), pat) for pat in _KEY_PATTERNS)]
+    return [p for p in paths if _looks_like_key(p)]
 
 
 def snapshot_commit(checkout: Path, *, cap_mb: int) -> tuple[str, bool]:

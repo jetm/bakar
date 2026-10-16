@@ -143,10 +143,15 @@ def _check_remote_capability(host: str) -> bool:
         if result.stderr.strip():
             console.print(result.stderr.strip(), markup=False)
         return False
+    # Any other exit is ambiguous: an older bakar rejects the unknown key, but a
+    # current one with a broken config fails the same probe, so the remote's own
+    # words are shown instead of asserting which it was.
+    stderr = "\n".join(result.stderr.strip().splitlines()[:5])
     console.print(
-        f"[red]the bakar on {host} predates release-workspace dispatch[/]: it would ignore "
-        f"{REPO_POLICY_ENV} and move the workspace's shared clones off their pins. Update bakar on {host} "
-        "(git pull + uv tool install --force) and retry; --yes does not override this."
+        f"[red]could not confirm that the bakar on {host} supports release-workspace dispatch[/] "
+        f"(exit {result.returncode}): {escape(stderr) if stderr else '(no stderr)'}; if that bakar predates this "
+        f"feature, update it (git pull + uv tool install --force). Without it {REPO_POLICY_ENV} would be ignored "
+        "and the workspace's shared clones moved off their pins; --yes does not override this."
     )
     return False
 

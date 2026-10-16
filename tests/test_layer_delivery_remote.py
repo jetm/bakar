@@ -22,6 +22,7 @@ from bakar.steps.layer_delivery_remote import (
     EXIT_FOREIGN_MARKER,
     EXIT_LOCKED,
     EXIT_MOVED,
+    EXIT_NO_BUILD_LOCK,
     EXIT_NO_MARKER,
     MARKER_FILENAME,
     build_guard,
@@ -385,7 +386,17 @@ def test_parse_marker_rejects_malformed(text: str):
 
 def test_describe_exit_names_each_refusal():
     assert describe_exit(0) == "delivered"
-    for code in (EXIT_LOCKED, EXIT_NO_MARKER, EXIT_FOREIGN_MARKER, EXIT_DIRTY, EXIT_BUILD_RUNNING):
+    codes = (
+        EXIT_LOCKED,
+        EXIT_NO_MARKER,
+        EXIT_FOREIGN_MARKER,
+        EXIT_DIRTY,
+        EXIT_BUILD_RUNNING,
+        EXIT_MOVED,
+        EXIT_NO_BUILD_LOCK,
+    )
+    assert len({describe_exit(code) for code in codes}) == len(codes)
+    for code in codes:
         assert describe_exit(code) != describe_exit(99)
     assert "99" in describe_exit(99)
 
@@ -740,3 +751,106 @@ def test_old_style_pending_record_is_accepted_via_alias(workspace: Path, tmp_pat
     assert res.returncode == 0, res.stderr
     assert (gitdir / MARKER_FILENAME).exists()
     assert (root / ".wt1.pending").stat().st_size == 0
+
+
+def _run_guard(root: Path, commit: str, ran: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    build = f"touch {shlex.quote(str(ran))}"
+    return subprocess.run(
+        ["bash", "-c", f"{build_guard(worktree_root=str(root), name='wt1', commit=commit)} {build}"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root opens files in a read-only directory")
+def test_build_guard_refuses_to_run_when_the_lock_cannot_be_opened(workspace: Path, tmp_path: Path):
+    root = tmp_path / "wts"
+    commit = _head(workspace / "meta-avocado")
+    assert _run(workspace, root, commit).returncode == 0
+    # No move has happened, so the build lock does not exist and cannot be created.
+    assert not Path(build_lock_path(str(root), "wt1")).exists()
+    ran = tmp_path / "build-ran"
+    root.chmod(0o555)
+    try:
+        res = _run_guard(root, commit, ran)
+    finally:
+        root.chmod(0o755)
+    assert res.returncode == EXIT_NO_BUILD_LOCK, res.stderr
+    assert "cannot open the build lock" in res.stderr
+    assert not ran.exists()
+
+
+def test_build_guard_refuses_to_run_when_the_lock_directory_is_missing(tmp_path: Path):
+    ran = tmp_path / "build-ran"
+    res = _run_guard(tmp_path / "missing" / "wts", "0" * 40, ran)
+    assert res.returncode == EXIT_NO_BUILD_LOCK, res.stderr
+    assert "cannot open the build lock" in res.stderr
+    assert not ran.exists()
+
+
+def test_build_guard_refuses_to_run_when_flock_fails(workspace: Path, tmp_path: Path):
+    root = tmp_path / "wts"
+    commit = _head(workspace / "meta-avocado")
+    assert _run(workspace, root, commit).returncode == 0
+    # Stands in for ENOLCK on NFS: the open succeeds and the lock call fails.
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    (shim / "flock").write_text("#!/bin/sh\necho 'flock: No locks available' >&2\nexit 1\n")
+    (shim / "flock").chmod(0o755)
+    env = {**os.environ, **_GIT_ENV, "PATH": f"{shim}:{os.environ['PATH']}"}
+    ran = tmp_path / "build-ran"
+    res = _run_guard(root, commit, ran, env=env)
+    assert res.returncode == EXIT_NO_BUILD_LOCK, res.stderr
+    assert "cannot take the build lock" in res.stderr
+    assert not ran.exists()
+
+
+def _install_lingering_hook(workspace: Path, pids: Path) -> None:
+    """Make every checkout start a background child that outlives git, as some hooks do."""
+    hook = workspace / "meta-avocado" / ".git" / "hooks" / "post-checkout"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    # The child's stdio goes to /dev/null so only the lock descriptors, never
+    # the captured pipes, can tie it to the delivery script.
+    hook.write_text(f"#!/bin/sh\n(sleep 20) </dev/null >/dev/null 2>&1 &\necho $! >> {shlex.quote(str(pids))}\n")
+    hook.chmod(0o755)
+
+
+def _kill_pids(pids: Path) -> None:
+    if not pids.exists():
+        return
+    for line in pids.read_text().split():
+        try:
+            os.kill(int(line), signal.SIGKILL)
+        except ProcessLookupError:
+            continue
+
+
+def test_hook_children_do_not_inherit_the_locks(workspace: Path, tmp_path: Path):
+    repo = workspace / "meta-avocado"
+    root = tmp_path / "wts"
+    pids = tmp_path / "hook-pids"
+    _install_lingering_hook(workspace, pids)
+    dispatch_lock = str(root / ".wt1.lock")
+    build_lock = build_lock_path(str(root), "wt1")
+    try:
+        first = _head(repo)
+        assert _run(workspace, root, first).returncode == 0
+        assert pids.exists(), "the post-checkout hook did not run on worktree add"
+        assert _flock_probe(dispatch_lock, "-x") == 0
+        second = _commit(repo, "b.txt", "b\n")
+        res = _run(workspace, root, second)
+        assert res.returncode == 0, res.stderr
+        assert len(pids.read_text().split()) == 2, "the post-checkout hook did not run on the move"
+        assert _flock_probe(dispatch_lock, "-x") == 0
+        assert _flock_probe(build_lock, "-x") == 0
+        # The redelivery and the build the reviewer saw refused and hung.
+        again = _run(workspace, root, second)
+        assert again.returncode == 0, again.stderr
+        ran = tmp_path / "build-ran"
+        assert _run_guard(root, second, ran).returncode == 0
+        assert ran.exists()
+    finally:
+        _kill_pids(pids)

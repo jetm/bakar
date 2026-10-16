@@ -206,20 +206,31 @@ _CLEAN_TASK_RE = re.compile(r"(do_)?clean.*")
 _BUILD_TASKS = frozenset({"", "build", "do_build"})
 
 
-def deleting_requests(target: str | None, env: Mapping[str, str]) -> list[str]:
+def deleting_requests(target: str | None, env: Mapping[str, str], *, image: str | None = None) -> list[str]:
     """Return each part of a build request that would delete on the remote, as shown to the user.
 
     kas runs ``KAS_TASK`` as ``bitbake -c $KAS_TASK``, and bakar passes no
     ``--task`` so kas reads it from the forwarded environment: anything but a
     plain build runs a task such as ``cleanall`` against the remote's shared
-    download and sstate caches. A ``recipe:task`` target from ``--target`` or the
-    space-separated ``KAS_TARGET`` does the same through the target list.
+    download and sstate caches. A ``recipe:task`` target does the same through
+    the target list, and every value that becomes a kas target is checked:
+    ``--target``, ``--image`` (the manifest flow's generated kas file targets the
+    image), the forwarded ``BAKAR_IMAGE`` and the space-separated ``KAS_TARGET``.
+
+    A ``task:`` or ``target:`` written inside a kas file is not inspected: the
+    file is user-authored and its clean task is as deliberate as running it by
+    hand on the host.
     """
     found: list[str] = []
     task = env.get("KAS_TASK", "").strip()
     if task not in _BUILD_TASKS:
         found.append(f"KAS_TASK={task}")
-    sources = (("--target", target or ""), ("KAS_TARGET", env.get("KAS_TARGET", "")))
+    sources = (
+        ("--target", target or ""),
+        ("--image", image or ""),
+        ("BAKAR_IMAGE", env.get("BAKAR_IMAGE", "")),
+        ("KAS_TARGET", env.get("KAS_TARGET", "")),
+    )
     # rsplit: a multiconfig target `mc:<name>:<recipe>:<task>` carries the task last.
     found.extend(
         f"{label} {item}"
