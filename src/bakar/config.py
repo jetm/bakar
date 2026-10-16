@@ -16,7 +16,10 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, cast
+
+if TYPE_CHECKING:
+    from bakar.vendor_config import BspFamily
 
 # Runtime, not TYPE_CHECKING-guarded: all three annotate fields of
 # ``ResolveRequest``, and a guarded import leaves ``get_type_hints`` on that
@@ -1203,10 +1206,10 @@ def resolve(request: ResolveRequest) -> BuildConfig:
     # See the ``family_is_explicit`` docstring paragraph above for what the
     # not-explicit branch below does and why.
     if bsp_family is None:
-        bsp_family = preset.family if preset is not None else "nxp"  # type: ignore[assignment]
+        bsp_family = cast("BspFamily", preset.family) if preset is not None else "nxp"
     elif preset is not None and bsp_family in ("nxp", "ti") and bsp_family != preset.family:
         if not family_is_explicit:
-            bsp_family = preset.family  # type: ignore[assignment]
+            bsp_family = cast("BspFamily", preset.family)
         else:
             raise ValueError(
                 f"bsp_family={bsp_family!r} conflicts with preset {preset.name!r}'s family={preset.family!r}"

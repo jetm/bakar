@@ -24,8 +24,10 @@ from __future__ import annotations
 import shlex
 from typing import TYPE_CHECKING
 
+from bakar.setup.actions.base import RunCommand
+
 if TYPE_CHECKING:
-    from bakar.setup.actions.base import RunCommand, WriteFile
+    from bakar.setup.actions.base import WriteFile
 
 _HEREDOC_DELIM = "BAKAR_EOF"
 
@@ -61,8 +63,8 @@ def render_script(operations: list[RunCommand | WriteFile]) -> str:
     for op in operations:
         if not op.needs_root:
             continue
-        if hasattr(op, "argv"):
-            body.append(_render_run_command(op))  # type: ignore[arg-type]
+        if isinstance(op, RunCommand):
+            body.append(_render_run_command(op))
         else:
-            body.append(_render_write_file(op))  # type: ignore[arg-type]
+            body.append(_render_write_file(op))
     return "\n".join(body) + "\n"
