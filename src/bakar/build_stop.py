@@ -36,6 +36,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
+from bakar import mounts
 from bakar.config import ResolveRequest, resolve
 from bakar.eventlog import (
     IncrementalEventLog,
@@ -1560,29 +1561,11 @@ def lock_mutation_guard(cfg: BuildConfig) -> LockRefusal | None:
     5. Otherwise (marker absent/garbled but the filesystem is CONFIRMED
        local) -> ``None``.
 
-    Reaches :func:`bakar.diagnostics.is_path_on_nfs` via a DEFERRED import
-    inside this function body, never at module level. Two separate reasons, and
-    only the second survives a determined tidy-up.
-
-    The cycle: ``probes -> build_stop -> diagnostics -> probes``.
-    :mod:`bakar.probes` imports this module at module level
-    (``probe_build_daemon`` calls :func:`detect_runtime`) and ``diagnostics``
-    imports ``probes`` at module level in turn, so hoisting this import as
-    written makes ``import bakar.probes`` fail on a partially initialized module.
-
-    That reason is removable and must not be relied on alone. ``is_path_on_nfs``
-    is DEFINED in :mod:`bakar.mounts`, which imports nothing from ``bakar``, so
-    ``from bakar.mounts import is_path_on_nfs`` at module level closes no cycle
-    and every module still imports clean. **Do not make that change.** Four
-    tests patch the string ``"bakar.diagnostics.is_path_on_nfs"``
-    (tests/test_build_stop.py) and rely on this deferred import resolving the
-    attribute at CALL time. Retarget the import at the defining module and those
-    four patches keep resolving, stop intercepting, and leave this guard reading
-    the developer's real ``/proc/mounts`` - the same silent seam
-    :func:`bakar.mounts.is_path_on_nfs` documents for ``_mount_entry_in``.
+    Calls ``mounts.is_path_on_nfs`` through the module, never a from-import, so a
+    test patching ``bakar.mounts.is_path_on_nfs`` is seen at call time instead of
+    leaving this guard reading the real ``/proc/mounts`` (spec patch-target-integrity:
+    the stop module's lock guard reads the NFS probe from its definer).
     """
-    from bakar.diagnostics import is_path_on_nfs
-
     owner = read_marker_owner(cfg)
     if owner is not None:
         if owner != socket.gethostname():
@@ -1590,7 +1573,7 @@ def lock_mutation_guard(cfg: BuildConfig) -> LockRefusal | None:
         return None
 
     build_dir = cfg.bsp_root / cfg.build_dir_name
-    nfs = is_path_on_nfs(build_dir)
+    nfs = mounts.is_path_on_nfs(build_dir)
     shared_or_unknown = nfs is not False  # True (nfs) or None (unverifiable) both fail closed
     if not shared_or_unknown:
         return None

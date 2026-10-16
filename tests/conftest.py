@@ -312,13 +312,11 @@ PN_CYCLE_TASK_DAG_DOT = (
 def nfs_probe(monkeypatch: pytest.MonkeyPatch) -> Callable[[bool | None], None]:
     """Return a setter that fixes the NFS probe answer the stop module sees.
 
-    build_stop reaches ``is_path_on_nfs`` through ``bakar.diagnostics`` today and
-    will import it from ``bakar.mounts`` after the seam retarget; patching both
-    keeps a stop test observing its answer on either side of that change.
+    build_stop calls ``mounts.is_path_on_nfs`` through the module, so patching
+    the definer is the seam it observes.
     """
 
     def _set(answer: bool | None) -> None:
-        monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: answer)
         monkeypatch.setattr("bakar.mounts.is_path_on_nfs", lambda _p: answer)
 
     return _set

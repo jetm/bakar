@@ -42,7 +42,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[BuildConfig, P
 
 
 def _on_nfs(monkeypatch: pytest.MonkeyPatch, value: bool | None) -> None:
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: value)
+    monkeypatch.setattr("bakar.mounts.is_path_on_nfs", lambda _p: value)
 
 
 def _break_read(monkeypatch: pytest.MonkeyPatch, marker: Path) -> None:
