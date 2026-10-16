@@ -10,20 +10,13 @@ import typer
 from rich.markup import escape
 
 from bakar.commands._app import app, console
+from bakar.commands._prompts import _ask
 from bakar.preset_config import load_presets
 from bakar.user_config import _dump_raw, _load_raw
 
 _CONFIG_PATH = Path.home() / ".config" / "bakar" / "config.toml"
 
 presets_app = typer.Typer(help="Manage named build presets.", no_args_is_help=True)
-
-
-def _ask(question: questionary.Question) -> object:
-    """Call question.ask() and abort cleanly on None (questionary swallows Ctrl-C)."""
-    result = question.ask()
-    if result is None:
-        raise typer.Abort
-    return result
 
 
 @presets_app.command("list")
@@ -91,16 +84,14 @@ def add_preset() -> None:
         console.print("[red]bakar presets add requires an interactive terminal[/] - stdin is not a TTY.")
         raise typer.Exit(1)
 
-    family: str = _ask(  # type: ignore[assignment]
+    family: str = _ask(
         questionary.select(
             "BSP family:",
             choices=["nxp", "ti", "bbsetup", "generic"],
         )
     )
 
-    name: str = _ask(  # type: ignore[assignment]
-        questionary.text("Preset name (unique identifier):")
-    )
+    name: str = _ask(questionary.text("Preset name (unique identifier):"))
 
     preset_dict: dict[str, object] = {"name": name, "family": family}
 
@@ -118,7 +109,7 @@ def add_preset() -> None:
 
     config_path = _CONFIG_PATH
     raw: dict[str, object] = _load_raw(config_path)
-    presets_list: list[dict[str, object]] = raw.setdefault("presets", [])  # type: ignore[assignment]
+    presets_list: list[dict[str, object]] = raw.setdefault("presets", [])
     existing_names = {d.get("name") for d in presets_list}
     if name in existing_names:
         console.print(f"[red]Preset '[bold]{escape(name)}[/bold]' already exists in {config_path}.[/red]")
@@ -134,7 +125,7 @@ def remove_preset(name: str = typer.Argument(..., help="Preset name to remove.")
     """Remove a named preset from config.toml."""
     config_path = _CONFIG_PATH
     raw: dict[str, object] = _load_raw(config_path)
-    original: list[dict[str, object]] = raw.get("presets", [])  # type: ignore[assignment]
+    original: list[dict[str, object]] = raw.get("presets", [])
     new_list = [d for d in original if d.get("name") != name]
 
     if len(new_list) == len(original):

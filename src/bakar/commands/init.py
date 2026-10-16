@@ -11,17 +11,10 @@ import typer
 
 from bakar.bsp_model import get_model
 from bakar.commands._app import app, console
+from bakar.commands._prompts import _ask
 from bakar.workspace_config import write_workspace_config
 
 _FAMILIES = ["nxp", "ti", "bbsetup", "generic"]
-
-
-def _ask(question: questionary.Question) -> object:
-    """Call question.ask() and abort cleanly on None (questionary swallows Ctrl-C)."""
-    result = question.ask()
-    if result is None:
-        raise typer.Abort
-    return result
 
 
 def _scaffold_workspace(
@@ -78,7 +71,7 @@ def _init_non_interactive(
 
     settings: dict[str, str] = {}
     if family in ("nxp", "ti"):
-        model = get_model(family)  # type: ignore[arg-type]
+        model = get_model(family)
         settings["manifest"] = manifest or model.default_manifest or ""
         settings["machine"] = machine or model.default_machine or ""
         settings["distro"] = distro or model.default_distro or ""
@@ -89,7 +82,7 @@ def _init_non_interactive(
     # bbsetup: no settings needed.
 
     try:
-        _scaffold_workspace(path, family, settings)  # type: ignore[arg-type]
+        _scaffold_workspace(path, family, settings)
     except FileExistsError as exc:
         console.print(f"[red]workspace already initialized:[/] {exc} already exists")
         raise typer.Exit(1) from exc
@@ -109,14 +102,14 @@ def _init_interactive(no_sync: bool, workspace: Path | None) -> None:
         raise typer.Exit(1)
 
     family_str: str = _ask(
-        questionary.select(  # type: ignore[assignment]
+        questionary.select(
             "BSP family:",
             choices=["nxp", "ti", "bbsetup", "generic"],
         )
     )
 
     workspace_str: str = _ask(
-        questionary.path(  # type: ignore[assignment]
+        questionary.path(
             "Workspace directory:",
             default=".",
         )
@@ -125,40 +118,40 @@ def _init_interactive(no_sync: bool, workspace: Path | None) -> None:
 
     settings: dict[str, str] = {}
     if family_str in ("nxp", "ti"):
-        model = get_model(family_str)  # type: ignore[arg-type]
+        model = get_model(family_str)
         settings["manifest"] = _ask(
-            questionary.text(  # type: ignore[assignment]
+            questionary.text(
                 "Manifest:",
                 default=model.default_manifest,
             )
         )
         settings["machine"] = _ask(
-            questionary.text(  # type: ignore[assignment]
+            questionary.text(
                 "Machine:",
                 default=model.default_machine,
             )
         )
         settings["distro"] = _ask(
-            questionary.text(  # type: ignore[assignment]
+            questionary.text(
                 "Distro:",
                 default=model.default_distro,
             )
         )
         settings["image"] = _ask(
-            questionary.text(  # type: ignore[assignment]
+            questionary.text(
                 "Image:",
                 default=model.default_image,
             )
         )
     elif family_str == "generic":
         settings["kas_yaml"] = _ask(
-            questionary.text(  # type: ignore[assignment]
+            questionary.text(
                 "kas YAML filename:",
                 default="kas-generic.yml",
             )
         )
         settings["machine"] = _ask(
-            questionary.text(  # type: ignore[assignment]
+            questionary.text(
                 "Machine:",
                 default="qemux86-64",
             )
@@ -166,7 +159,7 @@ def _init_interactive(no_sync: bool, workspace: Path | None) -> None:
     # bbsetup: no family-specific prompts.
 
     try:
-        _scaffold_workspace(path, family_str, settings)  # type: ignore[arg-type]
+        _scaffold_workspace(path, family_str, settings)
     except FileExistsError as exc:
         console.print(f"[red]workspace already initialized:[/] {exc} already exists")
         raise typer.Exit(1) from exc
