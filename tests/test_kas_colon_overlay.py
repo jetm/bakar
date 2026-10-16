@@ -438,7 +438,9 @@ def test_run_build_byo_extra_overlays_in_dry_run(tmp_path: Path) -> None:
     extra = tmp_path / "bringup.yml"
     extra.write_text("header:\n  version: 14\n", encoding="utf-8")
 
-    lines = kas_build.dry_run_preview_lines(cfg, kas_yaml, overlay, [extra])
+    lines = kas_build.dry_run_preview_lines(
+        cfg, kas_build.KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay, extra_overlays=[extra])
+    )
 
     command_line = next(ln for ln in lines if ln.startswith("command:"))
     assert "bringup.yml" in command_line, command_line

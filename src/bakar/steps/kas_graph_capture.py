@@ -167,11 +167,13 @@ def _resolve_capture_target(ctx: KasBuildContext, log: RunLogger) -> str | None:
     try:
         rc = kas_build.run_kas_subcommand(
             ctx,
-            "dump",
-            [],
-            step="graph_capture_kas_dump",
-            capture_to=dump_path,
-            timeout=GRAPH_CAPTURE_TARGET_RESOLVE_TIMEOUT_S,
+            kas_build.KasSubcommand(
+                subcommand="dump",
+                extra_args=[],
+                step="graph_capture_kas_dump",
+                capture_to=dump_path,
+                timeout=GRAPH_CAPTURE_TARGET_RESOLVE_TIMEOUT_S,
+            ),
         )
         if rc != 0:
             log.warn(f"dependency graph: kas dump exited {rc}; cannot resolve the build target")
@@ -254,11 +256,13 @@ def _capture_dependency_graph(ctx: KasBuildContext, log: RunLogger) -> dict[str,
         rc = kas_build.run_shell_capture(
             ctx,
             graph_capture_command(target),
-            log.run_dir / "depgraph.log",
-            step="graph_capture",
-            env_overrides={"SHELL": "/bin/bash"},
-            timeout=GRAPH_CAPTURE_TIMEOUT_S,
-            isolate_process_group=True,
+            kas_build.ShellCapture(
+                stdout_path=log.run_dir / "depgraph.log",
+                step="graph_capture",
+                env_overrides={"SHELL": "/bin/bash"},
+                timeout=GRAPH_CAPTURE_TIMEOUT_S,
+                isolate_process_group=True,
+            ),
         )
         if rc != 0:
             log.warn(f"dependency graph: capture exited {rc}; see {log.run_dir / 'depgraph.log'}")

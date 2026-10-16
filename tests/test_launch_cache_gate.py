@@ -138,7 +138,9 @@ def test_run_shell_capture_refuses_on_unresponsive_cache_mount(tmp_path: Path, m
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         ctx = _ctx(cfg, log)
         stdout_path = tmp_path / "capture.log"
-        rc = kas_build.run_shell_capture(ctx, "bitbake -c listtasks foo", stdout_path)
+        rc = kas_build.run_shell_capture(
+            ctx, "bitbake -c listtasks foo", kas_build.ShellCapture(stdout_path=stdout_path)
+        )
         events_path = log.events_path
 
     assert rc == 1

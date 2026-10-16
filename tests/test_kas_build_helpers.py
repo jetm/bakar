@@ -38,8 +38,10 @@ from bakar.native_ledger import CaptureResult
 from bakar.observability import RunLogger
 from bakar.steps.kas_build import (
     KasBuildContext,
+    KasSubcommand,
     LockHeldByPeerError,
     NativeRunSummary,
+    ShellCapture,
     _autocalibrate_psi,
     _build_env,
     _build_fail_reason,
@@ -1328,7 +1330,7 @@ def test_run_shell_capture_stays_unbounded_and_shares_the_group_by_default(
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         ctx = _capture_ctx(cfg, log)
-        rc = run_shell_capture(ctx, "bitbake -e", log.run_dir / "out.log")
+        rc = run_shell_capture(ctx, "bitbake -e", ShellCapture(stdout_path=log.run_dir / "out.log"))
 
     assert rc == 0
     assert proc.wait_timeouts == [None]
@@ -1371,7 +1373,7 @@ def test_run_shell_capture_keyboard_interrupt_skips_escalation_when_not_isolated
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         ctx = _capture_ctx(cfg, log)
         with pytest.raises(KeyboardInterrupt):
-            run_shell_capture(ctx, "bitbake -e", log.run_dir / "out.log")
+            run_shell_capture(ctx, "bitbake -e", ShellCapture(stdout_path=log.run_dir / "out.log"))
         events_path = log.events_path
 
     assert escalate_calls == []  # neither ladder was even consulted
@@ -1395,7 +1397,11 @@ def test_run_shell_capture_isolates_the_group_only_when_asked(tmp_path: Path, mo
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         ctx = _capture_ctx(cfg, log)
-        rc = run_shell_capture(ctx, "bitbake -g x", log.run_dir / "out.log", timeout=900.0, isolate_process_group=True)
+        rc = run_shell_capture(
+            ctx,
+            "bitbake -g x",
+            ShellCapture(stdout_path=log.run_dir / "out.log", timeout=900.0, isolate_process_group=True),
+        )
 
     assert rc == 0
     assert proc.wait_timeouts == [900.0]
@@ -1439,8 +1445,12 @@ def test_run_shell_capture_labels_the_container_only_when_isolated(
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         ctx = _capture_ctx(cfg, log)
-        run_shell_capture(ctx, "bitbake -e", log.run_dir / "out.log")  # not isolated
-        run_shell_capture(ctx, "bitbake -g x", log.run_dir / "out2.log", timeout=900.0, isolate_process_group=True)
+        run_shell_capture(ctx, "bitbake -e", ShellCapture(stdout_path=log.run_dir / "out.log"))  # not isolated
+        run_shell_capture(
+            ctx,
+            "bitbake -g x",
+            ShellCapture(stdout_path=log.run_dir / "out2.log", timeout=900.0, isolate_process_group=True),
+        )
 
     unlabeled_cmd = " ".join(commands[0])
     labeled_cmd = " ".join(commands[1])
@@ -1480,7 +1490,11 @@ def test_run_shell_capture_timeout_escalates_the_tree_and_raises(
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         ctx = _capture_ctx(cfg, log)
         with pytest.raises(subprocess.TimeoutExpired):
-            run_shell_capture(ctx, "bitbake -g x", log.run_dir / "out.log", timeout=900.0, isolate_process_group=True)
+            run_shell_capture(
+                ctx,
+                "bitbake -g x",
+                ShellCapture(stdout_path=log.run_dir / "out.log", timeout=900.0, isolate_process_group=True),
+            )
         events_path = log.events_path
 
     assert escalated == [(4242, log.run_dir)]
@@ -1521,7 +1535,11 @@ def test_run_shell_capture_timeout_prefers_the_container_ladder_in_container_mod
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         ctx = _capture_ctx(cfg, log)
         with pytest.raises(subprocess.TimeoutExpired):
-            run_shell_capture(ctx, "bitbake -g x", log.run_dir / "out.log", timeout=900.0, isolate_process_group=True)
+            run_shell_capture(
+                ctx,
+                "bitbake -g x",
+                ShellCapture(stdout_path=log.run_dir / "out.log", timeout=900.0, isolate_process_group=True),
+            )
 
     assert container_calls == [log.run_id]
     assert host_calls == []
@@ -1552,7 +1570,11 @@ def test_run_shell_capture_timeout_falls_back_to_host_ladder_when_no_container_r
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         ctx = _capture_ctx(cfg, log)
         with pytest.raises(subprocess.TimeoutExpired):
-            run_shell_capture(ctx, "bitbake -g x", log.run_dir / "out.log", timeout=900.0, isolate_process_group=True)
+            run_shell_capture(
+                ctx,
+                "bitbake -g x",
+                ShellCapture(stdout_path=log.run_dir / "out.log", timeout=900.0, isolate_process_group=True),
+            )
 
     assert host_calls == [(4242, log.run_dir)]
 
@@ -1575,7 +1597,7 @@ def test_run_kas_subcommand_stays_unbounded_by_default(tmp_path: Path, monkeypat
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         ctx = _capture_ctx(cfg, log)
-        rc = run_kas_subcommand(ctx, "dump", [])
+        rc = run_kas_subcommand(ctx, KasSubcommand(subcommand="dump", extra_args=[]))
 
     assert rc == 0
     assert seen["timeout"] is None
@@ -1596,7 +1618,7 @@ def test_run_kas_subcommand_timeout_returns_124_without_raising(
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         ctx = _capture_ctx(cfg, log)
-        rc = run_kas_subcommand(ctx, "dump", [], timeout=60.0)
+        rc = run_kas_subcommand(ctx, KasSubcommand(subcommand="dump", extra_args=[], timeout=60.0))
 
     assert rc == 124
 
@@ -1622,7 +1644,7 @@ def test_run_kas_subcommand_timeout_escalates_the_container_in_container_mode(
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         ctx = _capture_ctx(cfg, log)
-        rc = run_kas_subcommand(ctx, "dump", [], timeout=60.0)
+        rc = run_kas_subcommand(ctx, KasSubcommand(subcommand="dump", extra_args=[], timeout=60.0))
 
     assert rc == 124
     assert escalate_calls == [log.run_id]
@@ -1646,7 +1668,7 @@ def test_run_kas_subcommand_timeout_surfaces_an_unverified_container_escalation(
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         ctx = _capture_ctx(cfg, log)
-        rc = run_kas_subcommand(ctx, "dump", [], timeout=60.0)
+        rc = run_kas_subcommand(ctx, KasSubcommand(subcommand="dump", extra_args=[], timeout=60.0))
         events_path = log.events_path
 
     assert rc == 124
@@ -1675,7 +1697,7 @@ def test_run_kas_subcommand_timeout_does_not_escalate_a_container_in_host_mode(
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         ctx = _capture_ctx(cfg, log)
-        rc = run_kas_subcommand(ctx, "dump", [], timeout=60.0)
+        rc = run_kas_subcommand(ctx, KasSubcommand(subcommand="dump", extra_args=[], timeout=60.0))
 
     assert rc == 124
     assert escalate_calls == []
@@ -1699,8 +1721,8 @@ def test_run_kas_subcommand_labels_the_container_only_when_timeout_is_set(
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         ctx = _capture_ctx(cfg, log)
-        run_kas_subcommand(ctx, "dump", [])  # no timeout
-        run_kas_subcommand(ctx, "dump", [], timeout=60.0)
+        run_kas_subcommand(ctx, KasSubcommand(subcommand="dump", extra_args=[]))  # no timeout
+        run_kas_subcommand(ctx, KasSubcommand(subcommand="dump", extra_args=[], timeout=60.0))
 
     assert f"bakar.run_id={log.run_id}" not in " ".join(commands[0])
     assert f"bakar.run_id={log.run_id}" in " ".join(commands[1])

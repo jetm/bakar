@@ -27,7 +27,7 @@ from bakar.commands._helpers import (
 from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.observability import RunLogger
 from bakar.sigdiff_parse import _extract_dep_diff, _recipe_from_task
-from bakar.steps.kas_build import KasBuildContext, run_shell_capture
+from bakar.steps.kas_build import KasBuildContext, ShellCapture, run_shell_capture
 
 # ---------------------------------------------------------------------------
 # Output parsing helpers
@@ -195,8 +195,7 @@ def diffsigs(
         rc_printdiff = run_shell_capture(
             kas_ctx,
             f"bitbake -S printdiff {shlex.quote(recipe)}",
-            printdiff_out,
-            step="diffsigs_printdiff",
+            ShellCapture(stdout_path=printdiff_out, step="diffsigs_printdiff"),
         )
         if rc_printdiff != 0:
             console.print(
@@ -210,8 +209,7 @@ def diffsigs(
         rc_diffsigs = run_shell_capture(
             kas_ctx,
             f"bitbake-diffsigs -t {shlex.quote(recipe)} {shlex.quote(task)}",
-            diffsigs_out,
-            step="diffsigs_render",
+            ShellCapture(stdout_path=diffsigs_out, step="diffsigs_render"),
         )
 
         if rc_diffsigs != 0:

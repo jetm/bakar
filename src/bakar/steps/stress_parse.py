@@ -376,9 +376,11 @@ def run(ctx: StressParseContext) -> dict:
         rc = step_kas.run_shell_capture(
             kas_ctx,
             command,
-            iter_log,
-            step=f"stress_parse_iter_{i:02d}",
-            python_executable=python_executable,
+            step_kas.ShellCapture(
+                stdout_path=iter_log,
+                step=f"stress_parse_iter_{i:02d}",
+                python_executable=python_executable,
+            ),
         )
         elapsed = round(time.monotonic() - t0, 3)
 

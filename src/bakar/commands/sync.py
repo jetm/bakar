@@ -223,16 +223,14 @@ def _sync_impl(ctx: _SyncCtx) -> None:
         raise typer.Exit(code=0)
 
     if ctx.dry_run_script is not None:
-        from bakar.steps.kas_build import generate_dry_run_script
+        from bakar.steps.kas_build import KasBuildArgs, generate_dry_run_script
 
         overlay_source = _overlay_for(bsp)
         extra_overlays = _tuning_extra_overlays(cfg)
         try:
             script = generate_dry_run_script(
                 cfg,
-                cfg.kas_yaml,
-                overlay_source,
-                extra_overlays,
+                KasBuildArgs(kas_yaml=cfg.kas_yaml, overlay_source=overlay_source, extra_overlays=extra_overlays),
                 generating_command="bakar sync --dry-run-script",
             )
         except ValueError as exc:

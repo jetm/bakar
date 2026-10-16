@@ -264,7 +264,8 @@ def test_layers_inspect_text_output(tmp_path: Path) -> None:
         "meta-poky             /work/sources/poky/meta-poky              5\n"
     )
 
-    def fake_run_shell_capture(kas_ctx, command, capture_path, **kwargs):
+    def fake_run_shell_capture(kas_ctx, command, capture):
+        capture_path = capture.stdout_path
         capture_path.parent.mkdir(parents=True, exist_ok=True)
         capture_path.write_text(show_layers_output)
         return 0
@@ -287,7 +288,8 @@ def test_layers_inspect_json_output(tmp_path: Path) -> None:
         "meta                  /work/sources/poky/meta                   5\n"
     )
 
-    def fake_run_shell_capture(kas_ctx, command, capture_path, **kwargs):
+    def fake_run_shell_capture(kas_ctx, command, capture):
+        capture_path = capture.stdout_path
         capture_path.parent.mkdir(parents=True, exist_ok=True)
         capture_path.write_text(show_layers_output)
         return 0
@@ -317,7 +319,8 @@ def test_layers_inspect_local_layer_conf(tmp_path: Path) -> None:
 
     mock_cfg = _make_cfg_mock(tmp_path)
 
-    def fake_run_shell_capture(kas_ctx, command, capture_path, **kwargs):
+    def fake_run_shell_capture(kas_ctx, command, capture):
+        capture_path = capture.stdout_path
         capture_path.parent.mkdir(parents=True, exist_ok=True)
         capture_path.write_text("")
         return 1  # container not available - local data only
@@ -361,7 +364,8 @@ def test_layers_status_text_output(tmp_path: Path) -> None:
         }
     )
 
-    def fake_run_shell_capture(kas_ctx, command, capture_path, **kwargs):
+    def fake_run_shell_capture(kas_ctx, command, capture):
+        capture_path = capture.stdout_path
         capture_path.parent.mkdir(parents=True, exist_ok=True)
         capture_path.write_text(env_dump)
         return 0
@@ -393,7 +397,8 @@ def test_layers_status_json_output(tmp_path: Path) -> None:
         }
     )
 
-    def fake_run_shell_capture(kas_ctx, command, capture_path, **kwargs):
+    def fake_run_shell_capture(kas_ctx, command, capture):
+        capture_path = capture.stdout_path
         capture_path.parent.mkdir(parents=True, exist_ok=True)
         capture_path.write_text(env_dump)
         return 0
@@ -428,7 +433,8 @@ def test_layers_status_omits_unset_optional_fields(tmp_path: Path) -> None:
         }
     )
 
-    def fake_run_shell_capture(kas_ctx, command, capture_path, **kwargs):
+    def fake_run_shell_capture(kas_ctx, command, capture):
+        capture_path = capture.stdout_path
         capture_path.parent.mkdir(parents=True, exist_ok=True)
         capture_path.write_text(env_dump)
         return 0

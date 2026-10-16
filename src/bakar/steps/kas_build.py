@@ -667,6 +667,41 @@ class KasBuildContext:
     extra_overlays: list[Path] = field(default_factory=list)
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class KasBuildArgs:
+    """The kas YAML, overlay chain and build flags that make up one ``kas build`` command line."""
+
+    kas_yaml: Path
+    overlay_source: Path
+    extra_overlays: list[Path] | None = None
+    keep_going: bool = False
+    target: str | None = None
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ShellCapture:
+    """Where a captured kas shell command writes its output and how its process is run."""
+
+    stdout_path: Path
+    stderr_path: Path | None = None
+    step: str = "kas_shell_capture"
+    python_executable: Path | None = None
+    env_overrides: dict[str, str] | None = None
+    timeout: float | None = None
+    isolate_process_group: bool = False
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class KasSubcommand:
+    """One kas subcommand invocation plus where its output goes and how long it may run."""
+
+    subcommand: str
+    extra_args: list[str]
+    step: str = "kas_subcommand"
+    capture_to: Path | None = None
+    timeout: float | None = None
+
+
 def _build_kas_arg(
     cfg: BuildConfig,
     kas_yaml: Path,
@@ -746,15 +781,7 @@ def friendly_overlay_lines(overlays: list[Path], root: Path) -> str:
     return "\n".join(f"    - {_friendly_overlay_path(p, root)}" for p in overlays)
 
 
-def dry_run_preview_lines(
-    cfg: BuildConfig,
-    kas_yaml: Path,
-    overlay_source: Path,
-    extra_overlays: list[Path] | None = None,
-    *,
-    keep_going: bool = False,
-    target: str | None = None,
-) -> list[str]:
+def dry_run_preview_lines(cfg: BuildConfig, args: KasBuildArgs) -> list[str]:
     """Return structured ``key: value`` preview lines for a dry-run invocation.
 
     No filesystem side effects. Callers can print the returned list directly.
@@ -762,11 +789,11 @@ def dry_run_preview_lines(
     instead of a fully resolved path.
     """
     exe = "kas" if cfg.host_mode else "kas-container"
-    kas_arg = _dry_run_kas_arg(cfg, kas_yaml, overlay_source, extra_overlays)
+    kas_arg = _dry_run_kas_arg(cfg, args.kas_yaml, args.overlay_source, args.extra_overlays)
     cmd = [exe, *_ccache_args(cfg, dry_run=True), "build", kas_arg]
-    if target:
-        cmd += ["--target", target]
-    if keep_going:
+    if args.target:
+        cmd += ["--target", args.target]
+    if args.keep_going:
         cmd += ["--", "-k"]
     lines: list[str] = [f"command: {' '.join(cmd)}", f"overlay: {kas_arg}"]
     for key, value in _build_env(cfg, ensure_hashserv=False).items():
@@ -850,12 +877,8 @@ def _sync_step_lines(cfg: BuildConfig, kas_arg: str) -> list[str]:
 
 def generate_dry_run_script(
     cfg: BuildConfig,
-    kas_yaml: Path,
-    overlay_source: Path,
-    extra_overlays: list[Path] | None = None,
+    args: KasBuildArgs,
     *,
-    keep_going: bool = False,
-    target: str | None = None,
     generating_command: str = "bakar build --dry-run-script",
 ) -> str:
     """Return a runnable bash script reproducing the build invocation.
@@ -886,11 +909,11 @@ def generate_dry_run_script(
             "be captured statically. Use 'bakar build --dry-run' for a preview instead."
         )
     exe = "kas" if cfg.host_mode else "kas-container"
-    kas_arg = _dry_run_kas_arg(cfg, kas_yaml, overlay_source, extra_overlays)
+    kas_arg = _dry_run_kas_arg(cfg, args.kas_yaml, args.overlay_source, args.extra_overlays)
     build_cmd = [exe, *_ccache_args(cfg, dry_run=True), "build", kas_arg]
-    if target:
-        build_cmd += ["--target", target]
-    if keep_going:
+    if args.target:
+        build_cmd += ["--target", args.target]
+    if args.keep_going:
         build_cmd += ["--", "-k"]
     build_line = " ".join(shlex.quote(part) if " " in part else part for part in build_cmd)
 
@@ -936,7 +959,14 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
 
     if ctx.dry_run:
         for line in dry_run_preview_lines(
-            cfg, kas_yaml, overlay_source, extra_overlays, keep_going=ctx.keep_going, target=ctx.target
+            cfg,
+            KasBuildArgs(
+                kas_yaml=kas_yaml,
+                overlay_source=overlay_source,
+                extra_overlays=extra_overlays,
+                keep_going=ctx.keep_going,
+                target=ctx.target,
+            ),
         ):
             # Preview prose is for a human, so it goes to the diagnostic stream
             # with every other human-facing line (see ``commands/_app.py``);
@@ -1938,18 +1968,7 @@ def run_shell(ctx: KasBuildContext, args: list[str], command: str | None = None)
 _CAPTURE_REAP_TIMEOUT_S = 5.0
 
 
-def run_shell_capture(
-    ctx: KasBuildContext,
-    command: str,
-    stdout_path: Path,
-    *,
-    step: str = "kas_shell_capture",
-    python_executable: Path | None = None,
-    stderr_path: Path | None = None,
-    env_overrides: dict[str, str] | None = None,
-    timeout: float | None = None,
-    isolate_process_group: bool = False,
-) -> int:
+def run_shell_capture(ctx: KasBuildContext, command: str, capture: ShellCapture) -> int:
     """Run ``kas-container shell -c <command>`` with output captured to file.
 
     Sister to :func:`run_shell`. Same env+cwd plumbing via
@@ -1996,6 +2015,8 @@ def run_shell_capture(
     an isolated one.
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
+    stdout_path, stderr_path, step = capture.stdout_path, capture.stderr_path, capture.step
+    timeout, isolate_process_group = capture.timeout, capture.isolate_process_group
     log.step_start(step, command=command, stdout_path=str(stdout_path), host_mode=cfg.host_mode)
 
     refusal = cache_mount_refusal(cfg)
@@ -2032,7 +2053,7 @@ def run_shell_capture(
                 stderr_target = stack.enter_context(stderr_path.open("wb"))
             env = _build_env(
                 cfg,
-                python_executable=python_executable,
+                python_executable=capture.python_executable,
                 eventlog_path=_container_eventlog_path(cfg, log),
             )
             # Applied here rather than inside _build_env so an override reaches
@@ -2040,8 +2061,8 @@ def run_shell_capture(
             # kas hands a -c payload to $SHELL, so a bash-only payload needs it
             # pinned - but `bakar shell` spawns $SHELL as the user's interactive
             # shell, and pinning it there would silently replace their shell.
-            if env_overrides:
-                env.update(env_overrides)
+            if capture.env_overrides:
+                env.update(capture.env_overrides)
             proc = subprocess.Popen(
                 cmd,
                 cwd=cfg.bsp_root,
@@ -2091,15 +2112,7 @@ def run_shell_capture(
     return rc
 
 
-def run_kas_subcommand(
-    ctx: KasBuildContext,
-    subcommand: str,
-    extra_args: list[str],
-    *,
-    step: str = "kas_subcommand",
-    capture_to: Path | None = None,
-    timeout: float | None = None,
-) -> int:
+def run_kas_subcommand(ctx: KasBuildContext, invocation: KasSubcommand) -> int:
     """Run a kas subcommand (e.g. ``dump``, ``lock``) with overlay assembly.
 
     Sister to :func:`run_shell`/:func:`run_shell_capture`. Selects ``kas``
@@ -2141,6 +2154,8 @@ def run_kas_subcommand(
     the host-side kill stand when no container resolves.
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
+    subcommand, extra_args, step = invocation.subcommand, invocation.extra_args, invocation.step
+    capture_to, timeout = invocation.capture_to, invocation.timeout
     log.step_start(step, subcommand=subcommand, host_mode=cfg.host_mode)
     kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source, ctx.extra_overlays)
     exe = "kas" if cfg.host_mode else "kas-container"

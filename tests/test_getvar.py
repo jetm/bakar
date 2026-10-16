@@ -82,7 +82,8 @@ def _make_fake_capture_ctx(payloads: list[tuple[str, int]], calls: list[dict]):
     """
     payload_iter = iter(payloads)
 
-    def fake_capture(ctx, command, stdout_path, *, step="kas_shell_capture", python_executable=None, stderr_path=None):
+    def fake_capture(ctx, command, capture):
+        stdout_path = capture.stdout_path
         text, rc = next(payload_iter)
         stdout_path.parent.mkdir(parents=True, exist_ok=True)
         stdout_path.write_text(text)
@@ -438,7 +439,8 @@ def test_getvar_history_nonzero_exit_surfaces_error(runner: _CliRunner, nxp_work
 def _make_fake_split_capture(stdout_text: str, stderr_text: str, rc: int, calls: list[dict]):
     """Fake capture that writes distinct payloads to the stdout and stderr files."""
 
-    def fake_capture(ctx, command, stdout_path, *, step="kas_shell_capture", python_executable=None, stderr_path=None):
+    def fake_capture(ctx, command, capture):
+        stdout_path, stderr_path = capture.stdout_path, capture.stderr_path
         stdout_path.parent.mkdir(parents=True, exist_ok=True)
         stdout_path.write_text(stdout_text)
         if stderr_path is not None:
@@ -927,7 +929,8 @@ def test_getvar_dash_f_still_means_manifest(runner: _CliRunner, nxp_workspace: P
     calls: list[dict] = []
     manifests: list[str] = []
 
-    def fake_capture(ctx, command, stdout_path, *, step="kas_shell_capture", python_executable=None, stderr_path=None):
+    def fake_capture(ctx, command, capture):
+        stdout_path = capture.stdout_path
         stdout_path.parent.mkdir(parents=True, exist_ok=True)
         stdout_path.write_text(_GETVAR_OUTPUT)
         manifests.append(ctx.cfg.manifest)

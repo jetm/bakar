@@ -51,7 +51,7 @@ from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.graph_analyze import analyze, top_runtime_packages
 from bakar.inspect_parse import parse_getvar_value
 from bakar.observability import RunLogger
-from bakar.steps.kas_build import KasBuildContext, run_shell_capture
+from bakar.steps.kas_build import KasBuildContext, ShellCapture, run_shell_capture
 
 
 class GraphFormat(StrEnum):
@@ -185,8 +185,7 @@ def graph(
         rc_topdir = run_shell_capture(
             kas_ctx,
             f"bitbake-getvar -r {shlex.quote(recipe)} TOPDIR",
-            topdir_out,
-            step="graph_topdir",
+            ShellCapture(stdout_path=topdir_out, step="graph_topdir"),
         )
         topdir_text = topdir_out.read_text(errors="replace") if topdir_out.exists() else ""
 
@@ -208,8 +207,7 @@ def graph(
         rc_graph = run_shell_capture(
             kas_ctx,
             f"bitbake -g {shlex.quote(recipe)}",
-            graph_out,
-            step="graph_generate",
+            ShellCapture(stdout_path=graph_out, step="graph_generate"),
         )
         graph_text = graph_out.read_text(errors="replace") if graph_out.exists() else ""
 
@@ -224,8 +222,7 @@ def graph(
         rc_dot = run_shell_capture(
             kas_ctx,
             f"cat {shlex.quote(topdir)}/task-depends.dot",
-            dot_out,
-            step="graph_task_depends",
+            ShellCapture(stdout_path=dot_out, step="graph_task_depends"),
         )
         dot_text = dot_out.read_text(errors="replace") if dot_out.exists() else ""
 
@@ -245,8 +242,7 @@ def graph(
         rc_buildlist = run_shell_capture(
             kas_ctx,
             f"cat {shlex.quote(topdir)}/pn-buildlist",
-            buildlist_out,
-            step="graph_pn_buildlist",
+            ShellCapture(stdout_path=buildlist_out, step="graph_pn_buildlist"),
         )
         buildlist_text = buildlist_out.read_text(errors="replace") if buildlist_out.exists() else ""
 

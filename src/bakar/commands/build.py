@@ -760,7 +760,14 @@ def build(
     if dry_run_script is not None:
         try:
             script = step_kas.generate_dry_run_script(
-                cfg, cfg.kas_yaml, overlay_source, extra_overlays, keep_going=keep_going, target=target
+                cfg,
+                step_kas.KasBuildArgs(
+                    kas_yaml=cfg.kas_yaml,
+                    overlay_source=overlay_source,
+                    extra_overlays=extra_overlays,
+                    keep_going=keep_going,
+                    target=target,
+                ),
             )
         except ValueError as exc:
             console.print(f"[red]Cannot generate dry-run script:[/] {exc}")

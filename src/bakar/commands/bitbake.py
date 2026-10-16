@@ -46,6 +46,7 @@ from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.observability import RunLogger
 from bakar.steps.kas_build import (
     KasBuildContext,
+    ShellCapture,
     materialize_cache_classify_layer,
     materialize_host_layer,
     materialize_sccache_layer,
@@ -164,7 +165,7 @@ def _run_task(
 
         if task == "listtasks":
             stdout_path = log.run_dir / f"{step}.log"
-            rc = run_shell_capture(kas_ctx, command, stdout_path, step=step)
+            rc = run_shell_capture(kas_ctx, command, ShellCapture(stdout_path=stdout_path, step=step))
             persist_run_artifacts(cfg, log)
             out_text = stdout_path.read_text(errors="replace") if stdout_path.exists() else ""
             if rc != 0:

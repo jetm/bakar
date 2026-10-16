@@ -183,8 +183,7 @@ def layers_inspect(
         rc = step_kas.run_shell_capture(
             kas_ctx,
             "bitbake-layers show-layers",
-            capture_path,
-            step="layers_inspect",
+            step_kas.ShellCapture(stdout_path=capture_path, step="layers_inspect"),
         )
 
     if rc == 0 and capture_path.is_file():
@@ -288,8 +287,7 @@ def layers_status(
         rc = step_kas.run_shell_capture(
             kas_ctx,
             "bitbake -e",
-            capture_path,
-            step="layers_status",
+            step_kas.ShellCapture(stdout_path=capture_path, step="layers_status"),
         )
         if rc == 0 and capture_path.is_file():
             var_values = {

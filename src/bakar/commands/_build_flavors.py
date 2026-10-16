@@ -155,12 +155,17 @@ def _run_bbsetup_build(
     effective_show_layers = ctx.show_layers or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_hashes)
 
     extra_overlays_bbsetup = _tuning_extra_overlays(cfg)
+    bbsetup_args = step_kas.KasBuildArgs(
+        kas_yaml=cfg.kas_yaml,
+        overlay_source=overlay_source,
+        extra_overlays=extra_overlays_bbsetup,
+        keep_going=ctx.keep_going,
+        target=ctx.target,
+    )
 
     if ctx.dry_run_script is not None:
         try:
-            script = step_kas.generate_dry_run_script(
-                cfg, cfg.kas_yaml, overlay_source, extra_overlays_bbsetup, keep_going=ctx.keep_going, target=ctx.target
-            )
+            script = step_kas.generate_dry_run_script(cfg, bbsetup_args)
         except ValueError as exc:
             console.print(f"[red]Cannot generate dry-run script:[/] {exc}")
             raise typer.Exit(code=2) from None
@@ -175,9 +180,7 @@ def _run_bbsetup_build(
         # from any pre-existing conf (same as BYO dry-run).
         if effective_show_layers:
             _print_layer_hashes(cfg)
-        for line in step_kas.dry_run_preview_lines(
-            cfg, cfg.kas_yaml, overlay_source, extra_overlays_bbsetup, keep_going=ctx.keep_going, target=ctx.target
-        ):
+        for line in step_kas.dry_run_preview_lines(cfg, bbsetup_args):
             # stderr, like the kas path's identical preview loop in
             # ``steps/kas_build.py``: preview prose is human-facing and stdout is
             # reserved for machine-readable payloads (see ``commands/_app.py``).

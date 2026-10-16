@@ -33,7 +33,7 @@ from bakar.cli import app
 from bakar.config import BuildConfig
 from bakar.observability import RunLogger
 from bakar.steps import kas_build
-from bakar.steps.kas_build import dry_run_preview_lines
+from bakar.steps.kas_build import KasBuildArgs, dry_run_preview_lines
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -203,7 +203,7 @@ def test_dry_run_preview_lines_keep_going_appends_dash_k(tmp_path: Path) -> None
     would fail here without needing to mock the PTY/sampler infrastructure.
     """
     cfg, kas_yaml, overlay = _prepare_workspace(tmp_path)
-    lines = dry_run_preview_lines(cfg, kas_yaml, overlay, keep_going=True)
+    lines = dry_run_preview_lines(cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay, keep_going=True))
     command_line = next(ln for ln in lines if ln.startswith("command:"))
     assert "-- -k" in command_line, command_line
     # -- -k must come after the kas build arg, not before it
@@ -213,7 +213,7 @@ def test_dry_run_preview_lines_keep_going_appends_dash_k(tmp_path: Path) -> None
 def test_dry_run_preview_lines_no_keep_going(tmp_path: Path) -> None:
     """dry_run_preview_lines omits '-- -k' when keep_going=False."""
     cfg, kas_yaml, overlay = _prepare_workspace(tmp_path)
-    lines = dry_run_preview_lines(cfg, kas_yaml, overlay, keep_going=False)
+    lines = dry_run_preview_lines(cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay, keep_going=False))
     command_line = next(ln for ln in lines if ln.startswith("command:"))
     assert "-- -k" not in command_line, command_line
 
@@ -223,7 +223,7 @@ def test_dry_run_preview_lines_extra_overlays_included(tmp_path: Path) -> None:
     cfg, kas_yaml, overlay = _prepare_workspace(tmp_path)
     extra = tmp_path / "extra.yml"
     extra.write_text("header: {}\n", encoding="utf-8")
-    lines = dry_run_preview_lines(cfg, kas_yaml, overlay, [extra])
+    lines = dry_run_preview_lines(cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay, extra_overlays=[extra]))
     command_line = next(ln for ln in lines if ln.startswith("command:"))
     assert "extra.yml" in command_line, command_line
 
@@ -231,7 +231,9 @@ def test_dry_run_preview_lines_extra_overlays_included(tmp_path: Path) -> None:
 def test_dry_run_preview_lines_target_appends_override(tmp_path: Path) -> None:
     """dry_run_preview_lines includes '--target <T>' after the kas build arg."""
     cfg, kas_yaml, overlay = _prepare_workspace(tmp_path)
-    lines = dry_run_preview_lines(cfg, kas_yaml, overlay, target="avocado-complete")
+    lines = dry_run_preview_lines(
+        cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay, target="avocado-complete")
+    )
     command_line = next(ln for ln in lines if ln.startswith("command:"))
     assert "--target avocado-complete" in command_line, command_line
     assert command_line.index("build ") < command_line.index("--target"), command_line
@@ -240,7 +242,7 @@ def test_dry_run_preview_lines_target_appends_override(tmp_path: Path) -> None:
 def test_dry_run_preview_lines_no_target(tmp_path: Path) -> None:
     """dry_run_preview_lines omits '--target' when target is None (default)."""
     cfg, kas_yaml, overlay = _prepare_workspace(tmp_path)
-    lines = dry_run_preview_lines(cfg, kas_yaml, overlay)
+    lines = dry_run_preview_lines(cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay))
     command_line = next(ln for ln in lines if ln.startswith("command:"))
     assert "--target" not in command_line, command_line
 
@@ -248,7 +250,9 @@ def test_dry_run_preview_lines_no_target(tmp_path: Path) -> None:
 def test_dry_run_preview_lines_target_before_separator(tmp_path: Path) -> None:
     """--target must precede the '-- -k' bitbake-args separator (kas requires it)."""
     cfg, kas_yaml, overlay = _prepare_workspace(tmp_path)
-    lines = dry_run_preview_lines(cfg, kas_yaml, overlay, keep_going=True, target="avocado-complete")
+    lines = dry_run_preview_lines(
+        cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay, keep_going=True, target="avocado-complete")
+    )
     command_line = next(ln for ln in lines if ln.startswith("command:"))
     assert command_line.index("--target") < command_line.index("-- -k"), command_line
 

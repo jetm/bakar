@@ -48,7 +48,8 @@ _TARGET = "busybox"
 def _make_fake_capture(text: str, rc: int, calls: list[dict]):
     """Return a fake ``run_shell_capture`` writing ``text`` and returning ``rc``."""
 
-    def fake_capture(ctx, command, stdout_path, *, step="kas_shell_capture", python_executable=None):
+    def fake_capture(ctx, command, capture):
+        stdout_path = capture.stdout_path
         stdout_path.parent.mkdir(parents=True, exist_ok=True)
         stdout_path.write_text(text)
         calls.append({"command": command, "stdout_path": stdout_path})

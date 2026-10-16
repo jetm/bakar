@@ -177,7 +177,9 @@ def test_run_shell_capture_emits_step_ok_or_step_fail_matching_rc(
     with RunLogger(runs_dir=tmp_path / "runs") as log:
         ctx = _make_ctx(tmp_path, log)
         stdout_path = tmp_path / "capture.log"
-        result = kas_build.run_shell_capture(ctx, command="bitbake -c listtasks foo", stdout_path=stdout_path)
+        result = kas_build.run_shell_capture(
+            ctx, command="bitbake -c listtasks foo", capture=kas_build.ShellCapture(stdout_path=stdout_path)
+        )
         events_path = log.events_path
 
     assert result == rc

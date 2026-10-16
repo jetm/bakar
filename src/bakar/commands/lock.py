@@ -86,8 +86,7 @@ def lock(
         try:
             rc = step_kas.run_kas_subcommand(
                 kas_ctx,
-                "lock",
-                [],
+                step_kas.KasSubcommand(subcommand="lock", extra_args=[]),
             )
         except FileNotFoundError:
             exe = "kas" if cfg.host_mode else "kas-container"

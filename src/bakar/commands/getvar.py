@@ -43,6 +43,7 @@ from bakar.kas_errors import classify
 from bakar.observability import RunLogger
 from bakar.steps.kas_build import (
     KasBuildContext,
+    ShellCapture,
     _lock_refusal_message,
     cache_mount_refusal,
     clear_stale_bitbake_locks,
@@ -320,7 +321,9 @@ def _run_getvar(
     # sibling capture so the stdout file holds nothing but the value.
     capture_path = log.run_dir / f"getvar-{var}.log"
     err_path = log.run_dir / f"getvar-{var}.err"
-    rc = run_shell_capture(kas_ctx, command, capture_path, step="getvar", stderr_path=err_path)
+    rc = run_shell_capture(
+        kas_ctx, command, ShellCapture(stdout_path=capture_path, step="getvar", stderr_path=err_path)
+    )
 
     raw = capture_path.read_text(errors="replace") if capture_path.exists() else ""
 
@@ -364,7 +367,9 @@ def _run_history(
 
     capture_path = log.run_dir / f"getvar-history-{var}.log"
     err_path = log.run_dir / f"getvar-history-{var}.err"
-    rc = run_shell_capture(kas_ctx, command, capture_path, step="getvar_history", stderr_path=err_path)
+    rc = run_shell_capture(
+        kas_ctx, command, ShellCapture(stdout_path=capture_path, step="getvar_history", stderr_path=err_path)
+    )
 
     env_text = capture_path.read_text(errors="replace") if capture_path.exists() else ""
 

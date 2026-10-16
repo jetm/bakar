@@ -38,7 +38,7 @@ from bakar.commands._helpers import (
 from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.inspect_parse import parse_env_vars, parse_getvar_value
 from bakar.observability import RunLogger
-from bakar.steps.kas_build import KasBuildContext, run_shell_capture
+from bakar.steps.kas_build import KasBuildContext, ShellCapture, run_shell_capture
 
 # ---------------------------------------------------------------------------
 # Parsing helpers
@@ -379,8 +379,7 @@ def inspect(
         rc_show = run_shell_capture(
             kas_ctx,
             f"bitbake-layers show-recipes {shlex.quote(recipe)}",
-            show_recipes_out,
-            step="inspect_show_recipes",
+            ShellCapture(stdout_path=show_recipes_out, step="inspect_show_recipes"),
         )
         show_recipes_text = show_recipes_out.read_text(errors="replace") if show_recipes_out.exists() else ""
 
@@ -399,8 +398,7 @@ def inspect(
         rc_env = run_shell_capture(
             kas_ctx,
             f"bitbake -e {shlex.quote(recipe)}",
-            env_out,
-            step="inspect_env",
+            ShellCapture(stdout_path=env_out, step="inspect_env"),
         )
         env_text = env_out.read_text(errors="replace") if env_out.exists() else ""
 
@@ -417,8 +415,7 @@ def inspect(
             rc_topdir = run_shell_capture(
                 kas_ctx,
                 f"bitbake-getvar -r {shlex.quote(recipe)} TOPDIR",
-                topdir_out,
-                step="inspect_topdir",
+                ShellCapture(stdout_path=topdir_out, step="inspect_topdir"),
             )
             topdir_text = topdir_out.read_text(errors="replace") if topdir_out.exists() else ""
             if rc_topdir != 0:
@@ -438,8 +435,7 @@ def inspect(
             rc_rec = run_shell_capture(
                 kas_ctx,
                 f"bitbake -g {shlex.quote(recipe)}",
-                recursive_out,
-                step="inspect_recursive",
+                ShellCapture(stdout_path=recursive_out, step="inspect_recursive"),
             )
             recursive_gen_text = recursive_out.read_text(errors="replace") if recursive_out.exists() else ""
             if rc_rec != 0:
@@ -450,8 +446,7 @@ def inspect(
             rc_buildlist = run_shell_capture(
                 kas_ctx,
                 f"cat {shlex.quote(topdir)}/pn-buildlist",
-                buildlist_out,
-                step="inspect_pn_buildlist",
+                ShellCapture(stdout_path=buildlist_out, step="inspect_pn_buildlist"),
             )
             recursive_text = buildlist_out.read_text(errors="replace") if buildlist_out.exists() else ""
             if rc_buildlist != 0:

@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from bakar.config import BuildConfig
-from bakar.steps.kas_build import generate_dry_run_script
+from bakar.steps.kas_build import KasBuildArgs, generate_dry_run_script
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -78,7 +78,7 @@ def _assert_bash_valid(script: str, tmp_path: Path) -> None:
 def test_header_and_provenance(tmp_path: Path) -> None:
     """The script opens with the shebang, set line, and a bsp_family comment."""
     cfg, kas_yaml, overlay = _prepare(tmp_path, "nxp")
-    script = generate_dry_run_script(cfg, kas_yaml, overlay)
+    script = generate_dry_run_script(cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay))
     lines = script.splitlines()
     assert lines[0] == "#!/usr/bin/env bash"
     assert lines[1] == "set -euo pipefail"
@@ -89,7 +89,7 @@ def test_header_and_provenance(tmp_path: Path) -> None:
 def test_nxp_sync_step_uses_repo(tmp_path: Path) -> None:
     """An nxp script contains repo init + repo sync, not oe-layertool or checkout."""
     cfg, kas_yaml, overlay = _prepare(tmp_path, "nxp")
-    script = generate_dry_run_script(cfg, kas_yaml, overlay)
+    script = generate_dry_run_script(cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay))
     assert "repo init" in script, script
     assert "repo sync" in script, script
     assert "kas-container checkout" not in script, script
@@ -99,7 +99,7 @@ def test_nxp_sync_step_uses_repo(tmp_path: Path) -> None:
 def test_ti_sync_step_uses_layertool(tmp_path: Path) -> None:
     """A ti script invokes the oe-layertool setup script, not repo/checkout."""
     cfg, kas_yaml, overlay = _prepare(tmp_path, "ti", "processor-sdk-config_var1.txt")
-    script = generate_dry_run_script(cfg, kas_yaml, overlay)
+    script = generate_dry_run_script(cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay))
     assert "oe-layertool-setup.sh" in script, script
     assert "repo init" not in script, script
     assert "kas-container checkout" not in script, script
@@ -108,7 +108,7 @@ def test_ti_sync_step_uses_layertool(tmp_path: Path) -> None:
 def test_bbsetup_sync_step_uses_checkout(tmp_path: Path) -> None:
     """A bbsetup script uses kas-container checkout for the sync step."""
     cfg, kas_yaml, overlay = _prepare(tmp_path, "bbsetup")
-    script = generate_dry_run_script(cfg, kas_yaml, overlay)
+    script = generate_dry_run_script(cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay))
     assert "kas-container checkout" in script, script
     assert "repo init" not in script, script
     assert "oe-layertool-setup.sh" not in script, script
@@ -117,7 +117,7 @@ def test_bbsetup_sync_step_uses_checkout(tmp_path: Path) -> None:
 def test_generic_sync_step_uses_checkout(tmp_path: Path) -> None:
     """A generic script also uses kas-container checkout (bbsetup/generic share)."""
     cfg, kas_yaml, overlay = _prepare(tmp_path, "generic")
-    script = generate_dry_run_script(cfg, kas_yaml, overlay)
+    script = generate_dry_run_script(cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay))
     assert "kas-container checkout" in script, script
 
 
@@ -129,7 +129,7 @@ def test_host_mode_sync_step_uses_plain_kas_checkout(tmp_path: Path) -> None:
     """
     cfg, kas_yaml, overlay = _prepare(tmp_path, "bbsetup")
     cfg = replace(cfg, host_mode=True)
-    script = generate_dry_run_script(cfg, kas_yaml, overlay)
+    script = generate_dry_run_script(cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay))
     assert "kas checkout" in script, script
     assert "kas-container" not in script, script
 
@@ -137,7 +137,7 @@ def test_host_mode_sync_step_uses_plain_kas_checkout(tmp_path: Path) -> None:
 def test_build_step_present(tmp_path: Path) -> None:
     """Every family emits a family-agnostic kas-container build step."""
     cfg, kas_yaml, overlay = _prepare(tmp_path, "bbsetup")
-    script = generate_dry_run_script(cfg, kas_yaml, overlay)
+    script = generate_dry_run_script(cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay))
     assert " build " in script or script.rstrip().endswith("build"), script
     assert "kas-container" in script, script
 
@@ -145,7 +145,7 @@ def test_build_step_present(tmp_path: Path) -> None:
 def test_keep_going_appends_dash_k(tmp_path: Path) -> None:
     """keep_going=True puts ``-- -k`` after the build arg."""
     cfg, kas_yaml, overlay = _prepare(tmp_path, "nxp")
-    script = generate_dry_run_script(cfg, kas_yaml, overlay, keep_going=True)
+    script = generate_dry_run_script(cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay, keep_going=True))
     assert "-- -k" in script, script
     assert script.index("build") < script.index("-- -k"), script
 
@@ -153,14 +153,16 @@ def test_keep_going_appends_dash_k(tmp_path: Path) -> None:
 def test_no_keep_going_omits_dash_k(tmp_path: Path) -> None:
     """keep_going=False emits no ``-- -k`` suffix."""
     cfg, kas_yaml, overlay = _prepare(tmp_path, "nxp")
-    script = generate_dry_run_script(cfg, kas_yaml, overlay, keep_going=False)
+    script = generate_dry_run_script(cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay, keep_going=False))
     assert "-- -k" not in script, script
 
 
 def test_target_override_appears_in_build_step(tmp_path: Path) -> None:
     """A target override emits ``--target <T>`` after the build arg, before any separator."""
     cfg, kas_yaml, overlay = _prepare(tmp_path, "nxp")
-    script = generate_dry_run_script(cfg, kas_yaml, overlay, keep_going=True, target="avocado-complete")
+    script = generate_dry_run_script(
+        cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay, keep_going=True, target="avocado-complete")
+    )
     assert "--target avocado-complete" in script, script
     assert script.index("build") < script.index("--target"), script
     assert script.index("--target") < script.index("-- -k"), script
@@ -169,7 +171,7 @@ def test_target_override_appears_in_build_step(tmp_path: Path) -> None:
 def test_no_target_omits_override(tmp_path: Path) -> None:
     """No target override emits no ``--target`` flag."""
     cfg, kas_yaml, overlay = _prepare(tmp_path, "nxp")
-    script = generate_dry_run_script(cfg, kas_yaml, overlay)
+    script = generate_dry_run_script(cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay))
     assert "--target" not in script, script
 
 
@@ -182,7 +184,7 @@ def test_dollar_in_env_values_is_literal(tmp_path: Path, monkeypatch: pytest.Mon
     monkeypatch.setenv("BB_NICE_LEVEL_UNUSED", "x")
     monkeypatch.setenv("KAS_EXTRA", "literal-$NOT_EXPANDED-value")
     cfg, kas_yaml, overlay = _prepare(tmp_path, "nxp")
-    script = generate_dry_run_script(cfg, kas_yaml, overlay)
+    script = generate_dry_run_script(cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay))
     # shlex.quote produces 'literal-$NOT_EXPANDED-value' - dollar is literal inside single quotes.
     assert "'literal-$NOT_EXPANDED-value'" in script, script
     # Must NOT add a spurious backslash inside the single quotes.
@@ -195,7 +197,7 @@ def test_script_passes_bash_n(tmp_path: Path, family: str) -> None:
     """The generated script is syntactically valid for every family."""
     manifest = "processor-sdk-config_var1.txt" if family == "ti" else "imx-6.12.49-2.2.0.xml"
     cfg, kas_yaml, overlay = _prepare(tmp_path, family, manifest)
-    script = generate_dry_run_script(cfg, kas_yaml, overlay)
+    script = generate_dry_run_script(cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay))
     _assert_bash_valid(script, tmp_path)
 
 
@@ -204,5 +206,5 @@ def test_script_passes_bash_n_with_dollar_env(tmp_path: Path, monkeypatch: pytes
     """A ``$``-bearing env value does not break bash -n once escaped."""
     monkeypatch.setenv("KAS_EXTRA", "a-$b-c")
     cfg, kas_yaml, overlay = _prepare(tmp_path, "bbsetup")
-    script = generate_dry_run_script(cfg, kas_yaml, overlay)
+    script = generate_dry_run_script(cfg, KasBuildArgs(kas_yaml=kas_yaml, overlay_source=overlay))
     _assert_bash_valid(script, tmp_path)

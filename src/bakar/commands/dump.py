@@ -81,9 +81,7 @@ def dump(
         try:
             rc = step_kas.run_kas_subcommand(
                 kas_ctx,
-                "dump",
-                [],
-                capture_to=output,
+                step_kas.KasSubcommand(subcommand="dump", extra_args=[], capture_to=output),
             )
         except FileNotFoundError:
             exe = "kas" if cfg.host_mode else "kas-container"

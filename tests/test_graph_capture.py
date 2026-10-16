@@ -171,7 +171,8 @@ def test_resolve_capture_target_reads_the_kas_dump_yaml_round_trip(monkeypatch) 
     """
     from bakar.steps import kas_build
 
-    def _fake_dump(_ctx, _subcommand, _extra_args, *, capture_to, step="kas_subcommand", timeout=None):
+    def _fake_dump(_ctx, invocation):
+        capture_to = invocation.capture_to
         capture_to.write_text("target: core-image-minimal\n")
         return 0
 
@@ -187,7 +188,8 @@ def test_resolve_capture_target_graphs_the_first_of_several_targets(monkeypatch)
     """
     from bakar.steps import kas_build
 
-    def _fake_dump(_ctx, _subcommand, _extra_args, *, capture_to, step="kas_subcommand", timeout=None):
+    def _fake_dump(_ctx, invocation):
+        capture_to = invocation.capture_to
         capture_to.write_text("target:\n  - image-a\n  - image-b\n")
         return 0
 
@@ -202,7 +204,8 @@ def test_resolve_capture_target_graphs_the_first_of_several_targets(monkeypatch)
 def test_resolve_capture_target_returns_none_for_an_empty_target_list(monkeypatch) -> None:
     from bakar.steps import kas_build
 
-    def _fake_dump(_ctx, _subcommand, _extra_args, *, capture_to, step="kas_subcommand", timeout=None):
+    def _fake_dump(_ctx, invocation):
+        capture_to = invocation.capture_to
         capture_to.write_text("target: []\n")
         return 0
 
@@ -216,7 +219,8 @@ def test_resolve_capture_target_guards_a_non_dict_dump(monkeypatch) -> None:
     """`kas dump` is trusted to emit a mapping; a list or scalar must not crash."""
     from bakar.steps import kas_build
 
-    def _fake_dump(_ctx, _subcommand, _extra_args, *, capture_to, step="kas_subcommand", timeout=None):
+    def _fake_dump(_ctx, invocation):
+        capture_to = invocation.capture_to
         capture_to.write_text("- not\n- a\n- mapping\n")
         return 0
 
@@ -236,7 +240,8 @@ def test_resolve_capture_target_labels_its_dump_call_with_a_distinct_step_name(m
 
     calls: list[str] = []
 
-    def _fake_dump(_ctx, _subcommand, _extra_args, *, capture_to, step="kas_subcommand", timeout=None):
+    def _fake_dump(_ctx, invocation):
+        capture_to, step = invocation.capture_to, invocation.step
         calls.append(step)
         capture_to.write_text("target: core-image-minimal\n")
         return 0
@@ -285,8 +290,8 @@ def test_capture_opts_into_a_bound_and_its_own_process_group(monkeypatch, tmp_pa
     monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", lambda *_a, **_k: True)
     seen: dict[str, object] = {}
 
-    def _fake_capture(_ctx, _cmd, _out, **kwargs):
-        seen.update(kwargs)
+    def _fake_capture(_ctx, _cmd, capture):
+        seen.update(timeout=capture.timeout, isolate_process_group=capture.isolate_process_group)
         return 1  # stop before the artifact copy; the kwargs are what is under test
 
     monkeypatch.setattr(kas_build, "run_shell_capture", _fake_capture)
@@ -407,7 +412,7 @@ def test_fresh_artifact_is_published(monkeypatch, tmp_path) -> None:
     topdir.mkdir(parents=True)
     start_time = 2_000_000.0
 
-    def _fake_capture(_ctx, _cmd, _out, **_kwargs):
+    def _fake_capture(_ctx, _cmd, _capture):
         for name in kas_build.GRAPH_ARTIFACTS:
             artifact = topdir / name
             artifact.write_text("fresh")
@@ -443,7 +448,7 @@ def test_capture_copies_artifacts_and_writes_a_marker_with_provenance(monkeypatc
     topdir.mkdir(parents=True)
     start_time = 2_000_000.0
 
-    def _fake_capture(_ctx, _cmd, _out, **_kwargs):
+    def _fake_capture(_ctx, _cmd, _capture):
         for name in kas_build.GRAPH_ARTIFACTS:
             artifact = topdir / name
             artifact.write_text(f"content-of-{name}")
@@ -482,7 +487,7 @@ def test_capture_aborts_the_copy_loop_when_an_artifact_is_missing(monkeypatch, t
     topdir = ctx.cfg.resolved_tmpdir.parent
     topdir.mkdir(parents=True)
 
-    def _fake_capture(_ctx, _cmd, _out, **_kwargs):
+    def _fake_capture(_ctx, _cmd, _capture):
         # Only the first artifact is produced; the second is missing.
         (topdir / kas_build.GRAPH_ARTIFACTS[0]).write_text("present")
         return 0
@@ -515,7 +520,7 @@ def test_capture_reads_topdir_from_build_dir_name_not_resolved_tmpdir(monkeypatc
     real_topdir.mkdir(parents=True)
     start_time = 2_000_000.0
 
-    def _fake_capture(_ctx, _cmd, _out, **_kwargs):
+    def _fake_capture(_ctx, _cmd, _capture):
         for name in kas_build.GRAPH_ARTIFACTS:
             artifact = real_topdir / name
             artifact.write_text(f"content-of-{name}")

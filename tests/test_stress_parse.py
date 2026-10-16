@@ -81,14 +81,8 @@ def _patch_run_shell_capture(monkeypatch: pytest.MonkeyPatch, payloads: list[str
     calls: list[dict] = []
     payload_iter = iter(payloads)
 
-    def fake_capture(
-        ctx,
-        command,
-        stdout_path,
-        *,
-        step="kas_shell_capture",
-        python_executable=None,
-    ):
+    def fake_capture(ctx, command, capture):
+        stdout_path, step, python_executable = capture.stdout_path, capture.step, capture.python_executable
         body = next(payload_iter)
         stdout_path.parent.mkdir(parents=True, exist_ok=True)
         stdout_path.write_text(body)
@@ -403,14 +397,8 @@ def test_cache_cleared_between_iterations(tmp_path: Path, monkeypatch: pytest.Mo
 
     cleared_states: list[tuple[bool, bool]] = []
 
-    def fake_capture(
-        ctx,
-        command,
-        stdout_path,
-        *,
-        step="kas_shell_capture",
-        python_executable=None,
-    ):
+    def fake_capture(ctx, command, capture):
+        stdout_path, step = capture.stdout_path, capture.step
         # Capture observed cache state at the moment kas-container would
         # have run; the implementation must clear it BEFORE invoking
         # capture, not after.
@@ -501,14 +489,8 @@ def test_runtime_cleared_between_iterations(tmp_path: Path, monkeypatch: pytest.
 
     observed: list[tuple[bool, bool, bool, bool]] = []
 
-    def fake_capture(
-        ctx,
-        command,
-        stdout_path,
-        *,
-        step="kas_shell_capture",
-        python_executable=None,
-    ):
+    def fake_capture(ctx, command, capture):
+        stdout_path, step = capture.stdout_path, capture.step
         observed.append(
             (
                 lock_path.exists(),

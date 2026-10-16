@@ -34,22 +34,15 @@ class _Stub:
         self.rc = rc
         self.calls: list[dict[str, Any]] = []
 
-    def __call__(
-        self,
-        ctx: Any,
-        subcommand: str,
-        extra_args: list[str],
-        *,
-        capture_to: Any = None,
-    ) -> int:
+    def __call__(self, ctx: Any, invocation: Any) -> int:
         self.calls.append(
             {
-                "subcommand": subcommand,
-                "extra_args": extra_args,
+                "subcommand": invocation.subcommand,
+                "extra_args": invocation.extra_args,
                 "kas_yaml": ctx.kas_yaml,
                 "overlay_source": ctx.overlay_source,
                 "extra_overlays": ctx.extra_overlays,
-                "capture_to": capture_to,
+                "capture_to": invocation.capture_to,
             }
         )
         return self.rc
