@@ -58,7 +58,7 @@ def _patch_os_release(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, contents:
 @pytest.mark.unit
 def test_arch_probe_overlay_selected_on_arch_host_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Host mode on an Arch-family host yields the overlay."""
-    from bakar.commands._helpers import _arch_probe_extra_overlays
+    from bakar.commands._overlays import _arch_probe_extra_overlays
 
     _patch_os_release(monkeypatch, tmp_path, "ID=cachyos\nID_LIKE=arch\n")
 
@@ -72,7 +72,7 @@ def test_arch_probe_overlay_selected_on_arch_host_mode(monkeypatch: pytest.Monke
 @pytest.mark.unit
 def test_arch_probe_overlay_skipped_in_container_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Container builds run on a clean image, so no host headers can leak in."""
-    from bakar.commands._helpers import _arch_probe_extra_overlays
+    from bakar.commands._overlays import _arch_probe_extra_overlays
 
     _patch_os_release(monkeypatch, tmp_path, "ID=arch\n")
 
@@ -82,7 +82,7 @@ def test_arch_probe_overlay_skipped_in_container_mode(monkeypatch: pytest.Monkey
 @pytest.mark.unit
 def test_arch_probe_overlay_skipped_on_non_arch_host(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A Debian-family host does not ship idn2.h by default - leave its signatures alone."""
-    from bakar.commands._helpers import _arch_probe_extra_overlays
+    from bakar.commands._overlays import _arch_probe_extra_overlays
 
     _patch_os_release(monkeypatch, tmp_path, "ID=ubuntu\nID_LIKE=debian\n")
 
@@ -96,7 +96,7 @@ def test_arch_probe_overlay_skipped_when_uninative_off(monkeypatch: pytest.Monke
     This also keeps the tuning stack from varying with the build machine, which
     the getvar, bitbake, colon-overlay and mold suites assert byte-for-byte.
     """
-    from bakar.commands._helpers import _arch_probe_extra_overlays
+    from bakar.commands._overlays import _arch_probe_extra_overlays
 
     _patch_os_release(monkeypatch, tmp_path, "ID=cachyos\nID_LIKE=arch\n")
 

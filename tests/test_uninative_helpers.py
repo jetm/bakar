@@ -74,7 +74,7 @@ def test_host_is_arch_like_parses_os_release(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, os_release: str, expected: bool
 ) -> None:
     """ID or ID_LIKE containing 'arch' identifies the Arch family; others do not."""
-    from bakar.commands._helpers import _host_is_arch_like
+    from bakar.diagnostics import _host_is_arch_like
 
     _patch_env(monkeypatch, tmp_path, os_release=os_release, fragment=True)
 
@@ -84,7 +84,7 @@ def test_host_is_arch_like_parses_os_release(
 @pytest.mark.unit
 def test_host_is_arch_like_false_when_os_release_absent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """An unreadable /etc/os-release fails closed rather than raising."""
-    from bakar.commands._helpers import _host_is_arch_like
+    from bakar.diagnostics import _host_is_arch_like
 
     _patch_env(monkeypatch, tmp_path, os_release=None, fragment=True)
 

@@ -98,7 +98,7 @@ def _make_cfg(*, sstate_mirror_url: str | None = None) -> BuildConfig:
 
 def test_shared_cache_extra_overlays_returns_path_when_enabled() -> None:
     """When use_shared_cache is True the helper returns a single-element list."""
-    from bakar.commands._helpers import _shared_cache_extra_overlays
+    from bakar.commands._overlays import _shared_cache_extra_overlays
 
     cfg = _make_cfg(sstate_mirror_url="https://cache.example.com")
     result = _shared_cache_extra_overlays(cfg)
@@ -110,7 +110,7 @@ def test_shared_cache_extra_overlays_returns_path_when_enabled() -> None:
 
 def test_shared_cache_extra_overlays_returns_empty_when_disabled() -> None:
     """When use_shared_cache is False the helper returns an empty list."""
-    from bakar.commands._helpers import _shared_cache_extra_overlays
+    from bakar.commands._overlays import _shared_cache_extra_overlays
 
     cfg = _make_cfg(sstate_mirror_url=None)
     result = _shared_cache_extra_overlays(cfg)
