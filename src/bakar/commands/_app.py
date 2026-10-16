@@ -9,7 +9,6 @@ import typer
 from rich.console import Console
 
 from bakar import __version__, package_identity
-from bakar.output_mode import OutputMode
 from bakar.preset_config import PresetEntry, load_presets
 from bakar.user_config import load_user_config
 from bakar.vendor_config import load_vendors
@@ -44,26 +43,6 @@ console = Console(stderr=True)
 _VENDORS: list | None = None
 _USER_CONFIG: UserConfig | None = None
 _PRESETS: list[PresetEntry] | None = None
-_HIDE_DOCTOR_REPORT: bool = False
-
-# Global build-mode overrides, set from the top-level callback and read by every
-# command that resolves a BuildConfig. They are global (callback) options - passed
-# before the subcommand, e.g. ``bakar --host --sccache-dist build my.yml`` - so a
-# single flag set applies uniformly to build and the inspection/maintenance
-# commands (getvar, dump, bitbake, clean-recipe, rebuild, ...).
-_HOST_MODE: bool = False
-_CONTAINER_MODE: bool = False
-# --no-scope: opt out of the transient systemd scope (default is scoped). Read
-# via commands._helpers.apply_scope_override wherever a BuildConfig is resolved.
-_NO_SCOPE: bool = False
-_SCCACHE_DIST: bool = False
-_SCCACHE_SCHEDULER: str | None = None
-_MOLD: bool = False
-_MOLD_BASELINE: bool = False
-_MOLD_GLOBAL: bool = False
-# Human-output mode override from the global --plain/--ci/--rich flags; None means
-# auto-detect (see bakar.output_mode.resolve_output_mode). Read by build and monitor.
-_OUTPUT_MODE_OVERRIDE: OutputMode | None = None
 
 
 def _get_vendors() -> list:
@@ -124,8 +103,7 @@ class _GlobalOptions:
     rich_output: bool
 
 
-# The options of the latest callback invocation, published alongside the
-# per-flag globals above (which stay in sync until readers migrate to this).
+# The options of the latest callback invocation.
 _GLOBAL_OPTIONS: _GlobalOptions = _GlobalOptions(
     hide_doctor_report=False,
     host=False,
@@ -142,15 +120,13 @@ _GLOBAL_OPTIONS: _GlobalOptions = _GlobalOptions(
 
 
 def _main_impl(opts: _GlobalOptions) -> None:
-    """Validate the global flags and publish them as module state.
+    """Validate the global flags and publish them as ``_GLOBAL_OPTIONS``.
 
-    The assignments below are the load-bearing part: readers resolve these names
-    as attributes on this module at call time (``_state._SCCACHE_DIST`` in
-    commands/build.py, ``global_host_mode()`` and friends in commands/_helpers.py),
-    so holding the values on ``opts`` alone would leave every reader on defaults.
+    Readers go through ``_GLOBAL_OPTIONS`` (``global_host_mode()`` and friends in
+    commands/_helpers.py), so the object must be published here or every reader
+    stays on defaults.
     """
-    global _USER_CONFIG, _HIDE_DOCTOR_REPORT, _HOST_MODE, _CONTAINER_MODE, _SCCACHE_DIST
-    global _SCCACHE_SCHEDULER, _MOLD, _MOLD_BASELINE, _MOLD_GLOBAL, _OUTPUT_MODE_OVERRIDE, _NO_SCOPE
+    global _USER_CONFIG
     global _GLOBAL_OPTIONS
     if opts.plain and opts.rich_output:
         console.print("[red]choose either --plain/--ci or --rich, not both[/]")
@@ -167,16 +143,6 @@ def _main_impl(opts: _GlobalOptions) -> None:
         raise typer.Exit(code=2)
     _USER_CONFIG = _load_user_config_safe()
     _GLOBAL_OPTIONS = opts
-    _HIDE_DOCTOR_REPORT = opts.hide_doctor_report
-    _HOST_MODE = opts.host
-    _CONTAINER_MODE = opts.container
-    _NO_SCOPE = opts.no_scope
-    _SCCACHE_DIST = opts.sccache_dist
-    _SCCACHE_SCHEDULER = opts.sccache_scheduler
-    _MOLD = opts.mold
-    _MOLD_BASELINE = opts.mold_baseline
-    _MOLD_GLOBAL = opts.mold_global
-    _OUTPUT_MODE_OVERRIDE = OutputMode.PLAIN if opts.plain else (OutputMode.RICH if opts.rich_output else None)
     _get_vendors()
     _load_presets_safe()
 
