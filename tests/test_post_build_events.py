@@ -11,6 +11,7 @@ stub would pass whatever the helpers chose to call.
 
 from __future__ import annotations
 
+import errno
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -150,3 +151,25 @@ def test_leaking_filtered_sbom_records_step_fail_and_exits_zero(monkeypatch, cfg
     event, step, reason = _steps(log)[-1]
     assert (event, step) == ("step_fail", "sbom_filter")
     assert "vulnerability data" in (reason or "")
+
+
+class _FullDisk:
+    """Stands in for ``console_path``: every open fails like a full filesystem."""
+
+    def open(self, *_a, **_kw):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+
+def test_full_disk_on_console_log_does_not_change_the_post_build_exit(monkeypatch, cfg, log) -> None:
+    def boom(*_a, **_kw):
+        raise RuntimeError("rsync failed")
+
+    monkeypatch.setattr(feed_ops, "sync_then_index", boom)
+    monkeypatch.setattr(type(log), "console_path", property(lambda _self: _FullDisk()))
+    request = post_build._FeedRequest(kas_yaml=cfg.kas_yaml, release="dev", channel="local")
+
+    # Returning normally is the contract: an OSError escaping here would exit 1
+    # after "build succeeded".
+    build_mod._finish_build(cfg, log, 0, MACHINE, feed=request)
+
+    assert _steps(log)[-1][:2] == ("step_fail", "feed_sync")

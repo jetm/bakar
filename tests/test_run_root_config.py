@@ -77,6 +77,16 @@ def test_helper_bbsetup_fan_out(tmp_path: Path) -> None:
     assert resolve_run_config(run, "bbsetup").bsp_root == sub
 
 
+@pytest.mark.parametrize("distro", ["qcom-wayland", "qcom-robotics"])
+def test_helper_qcom_derives_distro_from_run_dir(tmp_path: Path, distro: str) -> None:
+    run = tmp_path / "qcom" / f"build-{distro}" / "runs" / _RUN_ID
+    run.mkdir(parents=True)
+    cfg = resolve_run_config(run, "qcom")
+    assert cfg.distro == distro
+    assert cfg.build_dir_name == f"build-{distro}"
+    assert cfg.bsp_root == tmp_path / "qcom"
+
+
 def test_report_nxp_fan_out_uses_sub_workspace(
     runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

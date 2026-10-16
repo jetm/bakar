@@ -813,3 +813,16 @@ def test_watch_sleeps_for_the_requested_interval(
     lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
     assert [json.loads(ln)["build"]["live"] for ln in lines] == [True, False]
     assert slept == [0.01]
+
+
+def test_recent_kas_errors_long_lines_tail_equals_full_read(tmp_path: Path) -> None:
+    """400 lines longer than the first read window still yield every error a full read shows."""
+    kas_log = tmp_path / "kas.log"
+    long_line = "| Running rustc " + "y" * 800 + "\n"
+    errors = "ERROR: task failed\n" + "".join(f"ERROR: Logfile of failure stored in: /x/log.{i}\n" for i in range(4))
+    body = long_line * 600 + errors + long_line * 395
+    assert len(long_line.encode()) * 395 > monitor_module._KAS_TAIL_BYTES
+    kas_log.write_text(body, encoding="utf-8")
+    expected = _full_recent_errors(body)
+    assert len(expected) == 5
+    assert monitor_module._recent_kas_errors(kas_log) == expected

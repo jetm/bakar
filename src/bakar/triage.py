@@ -37,7 +37,21 @@ _ERROR_REPORT_FILENAME = "error-report.json"
 # defaults to for `bakar dump`/`bakar lock`'s own genuine failures - so this
 # exclusion can no longer suppress a real dump/lock failure the way it could
 # when both shared one name.
-_POST_BUILD_STEPS = frozenset({"graph_capture", "graph_capture_kas_dump"})
+#
+# The post-build report/filter/sync steps (bakar.commands._post_build) share
+# that property: they run after "build succeeded" and never change the build
+# outcome. Their names are literals here because this analysis module must not
+# import the commands package; tests/test_triage_post_build_steps.py asserts
+# every _post_build ``_STEP_*`` name is listed so a new step cannot be forgotten.
+_POST_BUILD_STEPS = frozenset(
+    {
+        "graph_capture",
+        "graph_capture_kas_dump",
+        "cve_report",
+        "sbom_filter",
+        "feed_sync",
+    }
+)
 
 
 def is_build_failure_event(rec: dict) -> bool:

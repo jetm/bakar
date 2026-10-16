@@ -346,7 +346,10 @@ def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
 
     step_ok = last_run_event(
         events_path,
-        lambda rec: rec.get("event") == "step_ok" and rec.get("step") in ("kas_build", "qcom_build"),
+        # A dry run emits step_ok with dry_run set for a build that never ran.
+        lambda rec: (
+            rec.get("event") == "step_ok" and rec.get("step") in ("kas_build", "qcom_build") and not rec.get("dry_run")
+        ),
     )
 
     status = "success" if step_ok is not None else "failure"

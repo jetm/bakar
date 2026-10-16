@@ -118,6 +118,22 @@ def test_qcom_build_step_ok_reports_success(tmp_path: Path) -> None:
     assert assemble_report(run_dir, cfg).status == "success"
 
 
+def test_qcom_dry_run_step_ok_is_not_success(tmp_path: Path) -> None:
+    """A dry-run step_ok describes a build that never ran."""
+    cfg = _nxp_cfg(tmp_path)
+    run_dir = tmp_path / "runs" / "20260527-130000"
+    _write_events(
+        run_dir,
+        [
+            {"ts": "2026-05-27T13:00:00Z", "event": "run_start", "run_id": "20260527-130000"},
+            {"ts": "2026-05-27T13:01:00Z", "event": "step_ok", "step": "qcom_build", "dry_run": True},
+            {"ts": "2026-05-27T13:01:00Z", "event": "run_end"},
+        ],
+    )
+
+    assert assemble_report(run_dir, cfg).status == "failure"
+
+
 def _write_json(path: Path, payload: object) -> None:
     """Write ``payload`` as JSON into ``path`` (parent must already exist)."""
     path.write_text(json.dumps(payload))

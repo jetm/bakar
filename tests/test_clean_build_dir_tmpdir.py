@@ -100,3 +100,34 @@ def test_clean_build_dir_absent_directory_does_not_fail(tmp_path: Path) -> None:
     """Nothing to remove is a no-op, not an error."""
     cfg = _cfg(tmp_path / "ws", local_tmpdir_base=None, host_mode=True)
     _clean_build_dir(cfg)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("]y.go", "]y.go"),
+        ("[id].js", "[id].js"),
+        ("x[", "x["),
+        ("evil\x1b]0;pwn\x07.txt", "evil]0;pwn.txt"),
+    ],
+)
+def test_residue_report_neutralizes_filenames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, expected: str
+) -> None:
+    """Build-tree filenames reach Rich markup and the terminal only after neutralize()."""
+    from bakar.commands import console
+
+    cfg = _cfg(tmp_path / "ws", local_tmpdir_base=None, host_mode=True)
+    build_dir = cfg.bsp_root / cfg.build_dir_name
+    (build_dir / "tmp").mkdir(parents=True)
+    stuck = build_dir / "tmp" / name
+    monkeypatch.setattr("bakar.fsremove.parallel_rmtree", lambda root, description="": (stuck, OSError(f"busy {name}")))
+
+    with console.capture() as cap, pytest.raises(typer.Exit):
+        _clean_build_dir(cfg)
+
+    out = cap.get()
+    assert "could not fully remove" in out
+    assert expected in out
+    assert "\x1b]" not in out

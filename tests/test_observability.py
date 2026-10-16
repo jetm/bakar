@@ -6,6 +6,7 @@ Focused on the ``_console_header`` mechanism: headers must appear in
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -558,3 +559,18 @@ def test_run_id_epoch_parses_prefix_and_rejects_others() -> None:
     assert run_id_epoch("20260102-030405") == datetime(2026, 1, 2, 3, 4, 5).timestamp()
     for bad in ("", "latest", "2026010-2030405-1", "20261301-030405", "x0260102-030405", "20260102_030405"):
         assert run_id_epoch(bad) is None
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.tzset")
+def test_run_id_epoch_keeps_mktime_semantics_in_the_repeated_fall_back_hour(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 2026-11-01 01:30 happens twice in US Eastern; mktime (isdst=-1) and the
+    # naive datetime path disagree here by an hour.
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        expected = time.mktime(time.strptime("20261101-013000", "%Y%m%d-%H%M%S"))
+        assert run_id_epoch("20261101-013000-1") == expected
+        assert run_id_epoch("20261101-0130") is None
+    finally:
+        monkeypatch.undo()
+        time.tzset()

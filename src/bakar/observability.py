@@ -58,8 +58,11 @@ def run_id_epoch(name: str) -> float | None:
     ):
         return None
     try:
-        return datetime.strptime(prefix, RUN_ID_TS_FORMAT).timestamp()
-    except ValueError:
+        # mktime with isdst=-1 (strptime's tm_isdst) matches how the run id was
+        # rendered; a naive datetime.timestamp() has fold=0 and lands an hour
+        # early in the repeated fall-back hour.
+        return time.mktime(time.strptime(prefix, RUN_ID_TS_FORMAT))
+    except ValueError, OverflowError:
         return None
 
 
@@ -229,11 +232,18 @@ class RunLogger:
 
         Writes directly to the file to avoid routing through the logging
         handlers, which would also emit to the Rich/stderr console.
+
+        Best-effort like :meth:`_emit`: a full disk (ENOSPC) must not turn a
+        step record into an exception, since post-build steps log after
+        "build succeeded" and a raise there would change the exit code.
         """
         ts = _utc_now_iso()
         line = f"── [{ts}] {step} ──\n"
-        with self.console_path.open("a") as fh:
-            fh.write(line)
+        try:
+            with self.console_path.open("a") as fh:
+                fh.write(line)
+        except OSError as exc:
+            self._logger.warning(f"failed to write console header for {step!r}: {exc}")
 
     def step_start(self, step: str, **fields: Any) -> None:
         self._console_header(step)

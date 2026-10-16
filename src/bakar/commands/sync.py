@@ -22,8 +22,9 @@ from bakar.commands._helpers import (
     _run_doctor_gate,
     _tuning_extra_overlays,
     _workspace_from_cwd,
+    resolve_global_config,
 )
-from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, ResolveRequest, resolve
+from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, ResolveRequest
 from bakar.observability import RunLogger
 from bakar.workspace import detect
 
@@ -214,7 +215,7 @@ def _sync_impl(ctx: _SyncCtx) -> None:
 
     family, bsp = _dispatch_bsp(ctx.manifest)
     ws = ctx.workspace or _workspace_from_cwd()
-    cfg = resolve(
+    cfg = resolve_global_config(
         ResolveRequest(
             workspace=ws,
             bsp_family=family,

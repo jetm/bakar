@@ -42,6 +42,7 @@ def _fake_resolve(setup_dir: Path) -> MagicMock:
     cfg.kas_yaml = setup_dir / "kas.yml"
     cfg.bsp_root = setup_dir
     cfg.runs_dir = setup_dir / "build" / "runs"
+    cfg.resolved_tmpdir = setup_dir / "build" / "tmp"
     cfg.kas_container_image = "ghcr.io/example/kas:latest"
     cfg.sstate_mirror_url = None
     return cfg
@@ -57,13 +58,14 @@ def _runlogger_cm() -> MagicMock:
     return cm
 
 
-def _invoke_bbsetup_build(
+def _invoke_bbsetup_build(  # noqa: PLR0913
     runner: CliRunner,
     tmp_path: Path,
     *,
     show_layers: bool,
     show_hashes: bool,
     dry_run: bool = False,
+    clean: bool = False,
 ) -> tuple[int, MagicMock, MagicMock, str]:
     """Drive ``bakar build`` down the bbsetup path with all collaborators stubbed.
 
@@ -75,7 +77,7 @@ def _invoke_bbsetup_build(
     callback installs a ``UserConfig`` with the requested ``show_hashes`` value.
     """
     setup_dir = tmp_path / "ws"
-    setup_dir.mkdir()
+    setup_dir.mkdir(exist_ok=True)
 
     print_layer_hashes = MagicMock()
     run_build = MagicMock(return_value=0)
@@ -85,6 +87,8 @@ def _invoke_bbsetup_build(
         args.append("--show-layers")
     if dry_run:
         args.append("--dry-run")
+    if clean:
+        args.append("--clean")
 
     with (
         patch("bakar.commands._app._load_user_config_safe", return_value=user_config),
@@ -169,3 +173,24 @@ def test_no_flag_no_toggle_dry_run_skips_print_layer_hashes(runner: CliRunner, t
         "expected _print_layer_hashes NOT to be called in --dry-run when neither "
         f"--show-layers nor show_hashes is set, got {print_layer_hashes.call_count} call(s)"
     )
+
+
+def test_clean_with_undeletable_residue_fails_the_build_without_traceback(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--clean`` routes through the shared removal helper: residue is reported and exits 1."""
+    tmp_dir = tmp_path / "ws" / "build" / "tmp"
+    (tmp_dir / "stuck").mkdir(parents=True)
+    monkeypatch.setattr(
+        "bakar.fsremove.parallel_rmtree",
+        lambda root, description="": (tmp_dir / "stuck" / "file", PermissionError("denied")),
+    )
+
+    exit_code, _print_layer_hashes, run_build, output = _invoke_bbsetup_build(
+        runner, tmp_path, show_layers=False, show_hashes=False, clean=True
+    )
+
+    assert exit_code == 1, output
+    assert "could not fully remove" in output
+    assert "denied" in output
+    assert run_build.call_count == 0

@@ -50,22 +50,21 @@ from bakar.commands._helpers import (
     _family_from_workspace_contents,
     _resolve_workspace,
     _run_started_epoch,
-    apply_mold_overrides,
-    apply_sccache_overrides,
     global_output_mode_override,
-    global_sccache_dist_override,
     global_sccache_scheduler,
+    resolve_global_config,
 )
 from bakar.commands.log import _resolve_run_dir
-from bakar.config import BSPSpec, BuildConfig, ResolveRequest, resolve
-from bakar.diagnostics import probe_build_daemon, probe_ccache, probe_cluster, split_host_port
+from bakar.config import BSPSpec, BuildConfig, ResolveRequest
+from bakar.diagnostics import split_host_port
 from bakar.eventlog import IncrementalEventLog, running_from_rows
 from bakar.output_mode import OutputMode, resolve_output_mode
+from bakar.probes import probe_build_daemon, probe_ccache, probe_cluster
 from bakar.steps.build_ui import SEVERITY_PASSTHROUGH, _fmt_stall
 from bakar.steps.build_ui_render import _task_style
 
 if TYPE_CHECKING:
-    from bakar.diagnostics import BuildDaemonReport
+    from bakar.probes import BuildDaemonReport
 
 # probe_build_daemon shells out to docker twice with 15s timeouts; never call
 # it more than once per this window so a fast refresh interval cannot stack
@@ -78,8 +77,14 @@ _FAILURE_TAIL = 5
 # How many kas.log severity lines to scan/keep.
 _KAS_TAIL_LINES = 400
 
-# Bytes read from the end of kas.log; far more than 400 lines of severity output.
+# Bytes first read from the end of kas.log. Typical severity output fits, but
+# 400 lines of long ``| Running rustc ...`` output can exceed it, so the window
+# grows (doubling) until it holds 400 complete lines, up to the hard cap below.
 _KAS_TAIL_BYTES = 256 * 1024
+
+# Hard cap on the growing tail window: bounds memory on a pathological log while
+# staying far above any real 400-line tail.
+_KAS_TAIL_MAX_BYTES = 8 * 1024 * 1024
 
 # One incremental reader per monitored event log, so each refresh decodes only
 # the bytes appended since the last one. The reader resets itself when the file
@@ -93,7 +98,8 @@ def _progress_artifact(path: Path) -> dict[str, Any]:
     if reader is None:
         reader = _EVENT_READERS[path] = IncrementalEventLog(path)
     reader.poll()
-    return reader.normalized()
+    # Monitor only reads the artifact, so skip the per-refresh deep copy.
+    return reader.normalized(detach=False)
 
 
 class _DaemonProbe:
@@ -139,9 +145,16 @@ def _recent_kas_errors(kas_log: Path, limit: int = _FAILURE_TAIL) -> list[str]:
     try:
         with kas_log.open("rb") as fh:
             size = os.fstat(fh.fileno()).st_size
-            start = max(0, size - _KAS_TAIL_BYTES)
-            fh.seek(start)
-            data = fh.read()
+            window = _KAS_TAIL_BYTES
+            while True:
+                start = max(0, size - window)
+                fh.seek(start)
+                data = fh.read()
+                # More than _KAS_TAIL_LINES newlines leaves that many complete
+                # lines after the partial first one is dropped below.
+                if start == 0 or window >= _KAS_TAIL_MAX_BYTES or data.count(b"\n") > _KAS_TAIL_LINES:
+                    break
+                window = min(window * 2, _KAS_TAIL_MAX_BYTES)
     except OSError:
         return []
     if start > 0:
@@ -575,18 +588,15 @@ def monitor(
         family = _bsp_from_cwd(ws_probe) or _family_from_workspace_contents(ws_probe) or "nxp"
 
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family, strict_routing=False)
-    cfg = resolve(
+    cfg = resolve_global_config(
         ResolveRequest(
             workspace=ws,
             bsp_family=family,
             spec=BSPSpec(manifest=None),
             kas_yaml=kas_yaml,
             user_config=_state._USER_CONFIG,
-            sccache_dist_override=global_sccache_dist_override(),
         )
     )
-    cfg = apply_sccache_overrides(cfg)
-    cfg = apply_mold_overrides(cfg)
     runs_dir = cfg.runs_dir
     if not runs_dir.is_dir():
         if output_json:

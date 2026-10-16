@@ -47,6 +47,7 @@ from bakar.commands._workspace import (
     split_kas_yaml_arg,
 )
 from bakar.diagnostics import CheckEvent, CheckResult, Severity, Status, any_blocking_failure, group_results, run_all
+from bakar.fmt import neutralize
 from bakar.layers import collect_layer_hashes
 from bakar.observability import run_id_epoch
 
@@ -233,9 +234,37 @@ def apply_mold_overrides(cfg: BuildConfig) -> BuildConfig:
 
 
 # Commands that deliberately do not resolve through ``resolve_global_config``,
-# mapped to the reason. Tests read this to tell a declared exclusion from an
-# accidental omission.
-GLOBAL_MODE_EXCLUSIONS: dict[str, str] = {}
+# mapped to the reason. tests/test_global_container_flag.py walks every
+# registered command and requires it to either reach the helper or appear here,
+# so a new command that calls plain ``resolve()`` fails the suite until its
+# author picks one. Only commands that neither launch kas nor read
+# ``host_mode``/``container_mode`` belong here.
+GLOBAL_MODE_EXCLUSIONS: dict[str, str] = {
+    "bitbake-override": "edits the bitbake override repo and reports its status; launches no kas",
+    "changelog": "diffs pinned layer SHAs from local repo data; launches no kas",
+    "clean-cache": "garbage-collects sstate/downloads on disk; launches no kas",
+    "cluster-info": "probes the sccache-dist scheduler over the network; no kas, no host/container choice",
+    "drift": "compares pin state with checkouts from local repo data; launches no kas",
+    "feed": "manages the package feed on disk and over HTTP; launches no kas",
+    "for-all": "runs a user shell command in each source repo on the host; launches no kas",
+    "gen-kas": "converts a manifest into a kas YAML file; launches no kas",
+    "hashserv": "starts and stops the hash-equivalence server; no kas",
+    "init": "interactive wizard that writes .bakar.toml; resolves no build config",
+    "insights": "reads a finished run's artifacts through resolve_run_config; launches no kas",
+    "log": "tails a run's log file; launches no kas",
+    "mirror": "packs a download mirror on the host; launches no kas",
+    "presets": "reads and edits the preset file; resolves no build config",
+    "prserv": "starts and stops the PR server; no kas",
+    "ps": "lists running builds from the process table; launches no kas",
+    "report": "summarises a finished run through resolve_run_config; launches no kas",
+    "run": "boots a built image in QEMU from the build dir; launches no kas",
+    "sched-triage": "analyses scheduler events and journal output; launches no kas",
+    "settings": "reads and writes ~/.config/bakar/config.toml; resolves no build config",
+    "setup": "installs host prerequisites; resolves no build config",
+    "sstate-seed": "copies sstate objects between directories; launches no kas",
+    "stop": "signals a running build found through its run directory; launches no kas",
+    "triage": "analyses a failed run's logs; launches no kas",
+}
 
 
 def declare_global_mode_exclusion(command: str, reason: str) -> None:
@@ -288,9 +317,16 @@ def _remove_tree_or_exit(target: Path, description: str) -> None:
     residue = parallel_rmtree(target, description=description)
     if residue is not None:
         path, err = residue
-        console.print(f"[red]could not fully remove[/] {target}: {path}: {err}", highlight=False)
+        total = getattr(err, "residue_count", 1)
+        more = f" (+{total - 1} more undeletable entries)" if total > 1 else ""
+        # Build-tree filenames are untrusted: ``x[`` raises MarkupError, ``[id].js``
+        # loses its text, and an OSC escape reaches the terminal.
+        console.print(
+            f"[red]could not fully remove[/] {neutralize(target)}: {neutralize(path)}: {neutralize(err)}{more}",
+            highlight=False,
+        )
         raise typer.Exit(1)
-    console.print(f"[green]removed[/] {target}")
+    console.print(f"[green]removed[/] {neutralize(target)}")
 
 
 def _clean_build_dir(cfg: BuildConfig) -> None:
@@ -572,11 +608,18 @@ def resolve_run_config(run_dir: Path, family: RunFamily, manifest: str | None = 
     else:
         workspace = run_dir.parents[3]
         bsp_family = family
+    distro: str | None = None
+    if family == "qcom":
+        # ``<ws>/qcom/build-<distro>/runs/<id>``: the distro is encoded in the
+        # run's own path, and resolving the default would read another
+        # distro's bblayers.conf and TMPDIR.
+        dir_name = run_dir.parents[1].name
+        distro = dir_name.removeprefix("build-") or None
     return resolve(
         ResolveRequest(
             workspace=workspace,
             bsp_family=bsp_family,
-            spec=BSPSpec(manifest=manifest),
+            spec=BSPSpec(manifest=manifest, distro=distro),
             user_config=_state._USER_CONFIG,
         )
     )

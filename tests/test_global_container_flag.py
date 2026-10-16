@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
+import textwrap
 from dataclasses import replace
 from importlib import import_module
 from typing import TYPE_CHECKING
 
 import pytest
+import typer.main
 
 import bakar.commands._app as _state
 from bakar.commands import _helpers
@@ -59,7 +63,8 @@ def test_exclusion_registry_records_reason(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_registry_is_exported() -> None:
-    assert isinstance(GLOBAL_MODE_EXCLUSIONS, dict)
+    assert GLOBAL_MODE_EXCLUSIONS
+    assert all(reason.strip() for reason in GLOBAL_MODE_EXCLUSIONS.values())
 
 
 class _StoppedError(Exception):
@@ -68,7 +73,9 @@ class _StoppedError(Exception):
 
 _MANIFEST = "imx-6.6.52-2.2.0.xml"
 
-# command name -> (module holding the resolve_global_config binding, argv after the global flag)
+# command name -> (module holding the resolve_global_config binding, argv after the global flag).
+# Every argv here is invoked with the manifest/workspace options appended unless
+# the command is listed in _NO_MANIFEST_OPTION.
 _WALKED: dict[str, tuple[str, list[str]]] = {
     "graph": ("graph", ["graph", "busybox"]),
     "inspect": ("inspect", ["inspect", "busybox"]),
@@ -77,11 +84,73 @@ _WALKED: dict[str, tuple[str, list[str]]] = {
     "dump": ("dump", ["dump"]),
     "getvar": ("getvar", ["getvar", "MACHINE"]),
     "bitbake": ("bitbake", ["bitbake", "busybox"]),
+    "clean-recipe": ("bitbake", ["clean-recipe", "busybox"]),
+    "rebuild": ("bitbake", ["rebuild", "busybox"]),
     "shell": ("shell", ["shell"]),
     "stress-parse": ("stress_parse", ["stress-parse"]),
     "diffsigs": ("diffsigs", ["diffsigs", "busybox", "do_compile"]),
     "layers": ("layers", ["layers"]),
+    "show": ("show", ["show"]),
+    "sync": ("sync", ["sync"]),
+    "clean": ("clean", ["clean"]),
+    "diff": ("diff", ["diff", "a.txt", "b.txt"]),
+    "doctor": ("doctor", ["doctor"]),
+    "monitor": ("monitor", ["monitor"]),
 }
+_NO_MANIFEST_OPTION = frozenset({"monitor"})
+
+# Commands whose behaviour is exercised in tests/test_cli_build*.py; the walk
+# here only requires that their module reaches the helper.
+_STRUCTURAL = {"build": "build"}
+
+
+def _registered_commands() -> dict[str, object]:
+    """Top-level commands (and groups) as the CLI registers them, by name."""
+    import bakar.cli  # noqa: F401 - registers every subcommand
+
+    return dict(typer.main.get_command(_state.app).commands)
+
+
+def _calls_plain_resolve(callback: object) -> bool:
+    """True when the callback body calls the bare name ``resolve(...)`` (config.resolve)."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(callback)))  # type: ignore[arg-type]
+    return any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "resolve"
+        for node in ast.walk(tree)
+    )
+
+
+def _callback_module(command: object) -> str | None:
+    callback = getattr(command, "callback", None)
+    return callback.__module__ if callback is not None else None
+
+
+def test_every_registered_command_is_walked_or_declared_excluded() -> None:
+    """The walk is built from the CLI itself, so a new command cannot be forgotten."""
+    registered = set(_registered_commands())
+    walked = set(_WALKED) | set(_STRUCTURAL)
+    excluded = set(_helpers.GLOBAL_MODE_EXCLUSIONS)
+
+    assert registered - walked - excluded == set(), "new command: reach resolve_global_config or declare an exclusion"
+    assert walked & excluded == set()
+    assert (walked | excluded) - registered == set(), "stale entry names a command that no longer exists"
+
+
+def test_walked_commands_reach_the_helper_and_excluded_ones_do_not_call_plain_resolve() -> None:
+    commands = _registered_commands()
+    for name, command in commands.items():
+        module_name = _callback_module(command)
+        if module_name is None:
+            continue
+        module = import_module(module_name)
+        if name in _WALKED or name in _STRUCTURAL:
+            assert hasattr(module, "resolve_global_config"), name
+            assert command.callback is not None
+            assert not _calls_plain_resolve(command.callback), f"{name} calls plain resolve()"
+        else:
+            # Declared exclusions may keep the legacy plain resolve(); an
+            # undeclared command cannot (the membership test above catches it).
+            assert name in _helpers.GLOBAL_MODE_EXCLUSIONS or not _calls_plain_resolve(command.callback), name
 
 
 @pytest.mark.parametrize("command", sorted(_WALKED))
@@ -103,15 +172,8 @@ def test_kas_launching_command_honours_global_container(
 
     monkeypatch.setattr(module, "resolve_global_config", recording)
     monkeypatch.setattr(_state, "_GLOBAL_OPTIONS", replace(_state._GLOBAL_OPTIONS, container=False, host=False))
-    result = runner.invoke(app, ["--container", *argv, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)])
+    extra = [] if command in _NO_MANIFEST_OPTION else ["--manifest", _MANIFEST]
+    result = runner.invoke(app, ["--container", *argv, *extra, "--workspace", str(nxp_workspace)])
 
     assert isinstance(result.exception, _StoppedError), (result.output, result.exception)
     assert seen == [False]
-
-
-def test_run_is_a_declared_exclusion(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``bakar run`` still resolves without the helper; the exclusion is recorded, not implied."""
-    monkeypatch.setattr(_helpers, "GLOBAL_MODE_EXCLUSIONS", {})
-    declare_global_mode_exclusion("run", "resolves without resolve_global_config; migrated separately")
-    assert "run" in _helpers.GLOBAL_MODE_EXCLUSIONS
-    assert not set(_WALKED) & set(_helpers.GLOBAL_MODE_EXCLUSIONS)

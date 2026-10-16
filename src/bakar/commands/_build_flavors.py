@@ -12,7 +12,6 @@ helpers the dispatchers call live in ``_build_common`` so no import cycle exists
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -31,6 +30,7 @@ from bakar.commands._helpers import (
     _dispatch_from_yaml,
     _overlay_for,
     _print_layer_hashes,
+    _remove_tree_or_exit,
     _run_doctor_gate,
     _tuning_extra_overlays,
     resolve_global_config,
@@ -138,8 +138,9 @@ def _run_bbsetup_build(
         # workspace path and strand the redirected (~200G) tmp.
         tmp_dir = cfg.resolved_tmpdir
         if tmp_dir.exists():
-            shutil.rmtree(tmp_dir)
-            console.print(f"[green]removed[/] {tmp_dir}")
+            # Shared helper: a partial removal is reported and exits 1 instead
+            # of leaking a PermissionError traceback from the first stuck entry.
+            _remove_tree_or_exit(tmp_dir, f"Removing {tmp_dir.name}/")
 
     effective_show_layers = ctx.show_layers or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_hashes)
 

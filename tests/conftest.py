@@ -188,7 +188,7 @@ def _invoke_monitor(args, tmp_path):
     """Invoke the CLI with monitor-command args against MONITOR_SNAPSHOT."""
     cfg = mock.Mock(runs_dir=tmp_path)
     with (
-        mock.patch("bakar.commands.monitor.resolve", return_value=cfg),
+        mock.patch("bakar.commands.monitor.resolve_global_config", return_value=cfg),
         mock.patch("bakar.commands.monitor._resolve_workspace", return_value=tmp_path),
         mock.patch("bakar.commands.monitor._bsp_from_cwd", return_value="nxp"),
         mock.patch("bakar.commands.monitor._resolve_run_dir", return_value=tmp_path),
