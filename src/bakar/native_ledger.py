@@ -127,7 +127,7 @@ def _as_float(value: object) -> float | None:
     if value is None or isinstance(value, bool):
         return None
     try:
-        return float(value)  # type: ignore[arg-type]
+        return float(value)
     except TypeError, ValueError:
         return None
 

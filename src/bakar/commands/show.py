@@ -22,7 +22,7 @@ from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.layers import collect_layer_hashes, discover_source_repos
 
 
-def _build_command_str(cfg, overlay_source: Path, extra_overlays: list[Path]) -> str:  # type: ignore[no-untyped-def]
+def _build_command_str(cfg, overlay_source: Path, extra_overlays: list[Path]) -> str:
     """Return the exact kas-container invocation a build would run.
 
     Mirrors the logic in ``dry_run_preview_lines`` without importing

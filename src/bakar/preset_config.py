@@ -121,7 +121,7 @@ class PresetEntry:
         return [
             PresetSpec(
                 family=self.family,
-                kas_yaml=Path(ky),  # type: ignore[arg-type]
+                kas_yaml=Path(ky),
                 machine=self.machine,
                 image=self.image,
             )
