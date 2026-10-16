@@ -70,11 +70,11 @@ from bakar.config import BuildConfig
 from bakar.elfscan import (
     _elf_reader,
     _leak_report,
-    _neutralized,
     _scan_native_tree,
     _unchecked_note,
     _version_tuple,
 )
+from bakar.fmt import neutralize
 from bakar.kas import parse_bblayers
 from bakar.mounts import (
     _FS_NFS,
@@ -1932,12 +1932,12 @@ def check_uninative_mirror_hit(cfg: BuildConfig) -> CheckResult:
 def _forecast_diff_text(diff: native_provenance.RepoDiff) -> str:
     """One differing repository, with its commit distance or an honest unknown."""
     if diff.recorded is None:
-        return f"{_neutralized(diff.name)} (not in the recorded set)"
+        return f"{neutralize(diff.name)} (not in the recorded set)"
     if diff.current is None:
-        return f"{_neutralized(diff.name)} (in the recorded set but unreadable or absent now, distance unknown)"
+        return f"{neutralize(diff.name)} (in the recorded set but unreadable or absent now, distance unknown)"
     if diff.ahead is None or diff.behind is None:
-        return f"{_neutralized(diff.name)} (distance unknown)"
-    return f"{_neutralized(diff.name)} ({diff.ahead} ahead / {diff.behind} behind)"
+        return f"{neutralize(diff.name)} (distance unknown)"
+    return f"{neutralize(diff.name)} ({diff.ahead} ahead / {diff.behind} behind)"
 
 
 def check_native_forecast(cfg: BuildConfig) -> CheckResult:
@@ -1954,9 +1954,9 @@ def check_native_forecast(cfg: BuildConfig) -> CheckResult:
 
     release_key = resolve_oe_core_release_key(cfg.workspace)
     # Mirrors native_provenance._UNKNOWN_RELEASE, the bucket load_records reads.
-    release = _neutralized(release_key or "_unknown")
+    release = neutralize(release_key or "_unknown")
     records, bad_records = native_provenance.load_records(sstate_dir, release_key)
-    bad_names = [_neutralized(b) for b in bad_records]
+    bad_names = [neutralize(b) for b in bad_records]
     if not records:
         note = f"; unreadable record: {', '.join(bad_names)}" if bad_names else ""
         return _skip(name, Severity.INFO, f"no build has been recorded for {release} yet{note}")
@@ -1966,9 +1966,9 @@ def check_native_forecast(cfg: BuildConfig) -> CheckResult:
 
     extras: list[str] = []
     if result.dirty:
-        extras.append("dirty, not forecastable: " + ", ".join(_neutralized(d) for d in result.dirty))
+        extras.append("dirty, not forecastable: " + ", ".join(neutralize(d) for d in result.dirty))
     if result.unreadable:
-        extras.append("unreadable repository: " + ", ".join(_neutralized(u) for u in result.unreadable))
+        extras.append("unreadable repository: " + ", ".join(neutralize(u) for u in result.unreadable))
     if bad_names:
         extras.append("unreadable record: " + ", ".join(bad_names))
     tail = "".join(f"; {e}" for e in extras)
@@ -1976,9 +1976,9 @@ def check_native_forecast(cfg: BuildConfig) -> CheckResult:
     record = result.record
     if record is None:
         return _skip(name, Severity.INFO, f"no build has been recorded for {release} yet")
-    seen = _neutralized(record.last_seen)
-    node = _neutralized(record.last_node)
-    run_id = _neutralized(record.last_run_id)
+    seen = neutralize(record.last_seen)
+    node = neutralize(record.last_node)
+    run_id = neutralize(record.last_run_id)
     if result.kind == "exact":
         if result.dirty:
             return _fail(
@@ -2000,7 +2000,7 @@ def check_native_forecast(cfg: BuildConfig) -> CheckResult:
             name,
             Severity.INFO,
             f"this revision set was last seen on {seen} by {node} (run {run_id}, "
-            f"outcome {_neutralized(record.last_outcome)}; no completed build is recorded "
+            f"outcome {neutralize(record.last_outcome)}; no completed build is recorded "
             f"for this revision set); configuration changes are not forecast{tail}",
         )
 
@@ -2321,13 +2321,10 @@ def check_uninative_leak(cfg: BuildConfig) -> CheckResult:
                 # artifact-derived too - and _print_diagnosis renders it through
                 # markup just like the message.
                 #
-                # This is elfscan's neutralization invariant reaching outside
-                # elfscan: the other ten call sites live there, so a stub aimed
-                # at `bakar.diagnostics._neutralized` covers this one and misses
-                # those. Before the split all eleven sat in this module and one
-                # stub reached them all. Stub `bakar.elfscan._neutralized` when
-                # the assertion is about scan messages.
-                + " ".join(_neutralized(recipe) for recipe in recipes)
+                # This call uses the public bakar.fmt.neutralize; the scan
+                # messages in elfscan go through `bakar.elfscan._neutralized`,
+                # so a stub aimed at one does not reach the other.
+                + " ".join(neutralize(recipe) for recipe in recipes)
                 + "', then find why the compile escaped the buildtools toolchain before rebuilding."
             ),
         )
@@ -3999,9 +3996,9 @@ def run_all(
             cache_mounts_timed_out = True
         elif "exc" in cache_slot:
             cache_mounts_crashed = True
-            cache_crash_exc = cache_slot["exc"]  # type: ignore[assignment]
+            cache_crash_exc = cache_slot["exc"]
         else:
-            cache_statuses = cache_slot.get("result")  # type: ignore[assignment]
+            cache_statuses = cache_slot.get("result")
 
     # Gate on any problem: CacheMountStatus.blocking now covers every unusable
     # target regardless of criticality (cache-mount-readiness spec: "any
@@ -4104,7 +4101,7 @@ def run_all(
                 message=f"check crashed: {slot['exc']!r}",
             )
         else:
-            result = slot["result"]  # type: ignore[assignment]
+            result = slot["result"]
         results.append(result)
         _emit("end", resolved_name, result, elapsed)
     return results
