@@ -115,7 +115,7 @@ bakar sched-triage
 bakar sched-triage --since "2026-07-02 09:00" --client-log /var/log/sccache-client.log
 
 # Join scheduler polls against a run's do_compile timeline
-bakar sched-triage --events build/runs/20260702-091500/bitbake-events.json
+bakar sched-triage --events build/runs/20260702-091500-48213/bitbake-events.json
 
 # Machine-readable, for archiving next to the run
 bakar sched-triage --json > triage.json

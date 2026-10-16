@@ -23,7 +23,7 @@ or a specific one with `--run`. The positional `KAS_YAML` selects a BYO build
 
 | Flag | Description |
 |------|-------------|
-| `--run` | Run ID (`YYYYMMDD-HHMMSS`). Latest run if omitted |
+| `--run` | Run ID (`YYYYMMDD-HHMMSS-PID`). Latest run if omitted |
 | `--scheduler` | Scheduler URL override (default: from `--sccache-scheduler` or config) |
 | `--interval`, `-n` | Refresh interval in seconds (default: `2.0`) |
 | `--once` | Render a single snapshot, then exit (non-watch) |
@@ -49,7 +49,7 @@ the JSON document on stdout.
 
 ```json
 {
-  "run": "20260626-174304",
+  "run": "20260626-174304-48213",
   "cluster": {
     "reachable": true,
     "scheduler_url": "http://192.168.8.174:10600",
@@ -76,7 +76,7 @@ is `null` when no build container is running. When no run exists the document is
 (the same counts as bitbake's "X of Y tasks"); they are `null` until the first
 `runQueueTaskStarted` is seen (early parse/setscene), where `tasks_done` falls
 back to the executed-task success count. `elapsed_seconds` is derived from the
-run directory's `YYYYMMDD-HHMMSS` name, because bitbake's `BuildStarted` event
+run directory's `YYYYMMDD-HHMMSS-PID` name, because bitbake's `BuildStarted` event
 carries no timestamp (so `started` stays `null`).
 
 ## Examples
@@ -95,7 +95,26 @@ bakar --sccache-dist monitor --json --once meta-avocado/kas/machine/qemuarm64.ym
 bakar --sccache-dist monitor --json --watch -n 5 meta-avocado/kas/machine/qemuarm64.yml
 
 # Monitor a specific past run
-bakar monitor --run 20260626-174304
+bakar monitor --run 20260626-174304-48213
+```
+
+## Output mode flags
+
+Two global flags go before the subcommand and choose how `build` and `monitor`
+render:
+
+- `--plain` (alias `--ci`) forces plain, ANSI-free output, which suits CI logs.
+- `--rich` forces the Rich live display even when output is not a TTY.
+
+The two are mutually exclusive: passing both exits with code 2 and the message
+"choose either --plain/--ci or --rich, not both".
+
+```bash
+# Plain monitor output for a CI log
+bakar --plain monitor --run 20260626-174304-48213
+
+# Rich live display while output is piped
+bakar --rich monitor
 ```
 
 ## Notes

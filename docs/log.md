@@ -12,7 +12,7 @@ bakar log [KAS_YAML] [OPTIONS]
 
 | Flag | Description |
 |------|-------------|
-| `--run` | Run ID (`YYYYMMDD-HHMMSS`). Latest run if omitted |
+| `--run` | Run ID (`YYYYMMDD-HHMMSS-PID`). Latest run if omitted |
 | `--which` | Log file to follow: `kas`, `console`, or `events` (default: `kas`) |
 | `--manifest`, `-f` | Manifest filename for BSP family dispatch |
 | `--workspace`, `-w` | Workspace root override |
@@ -38,7 +38,7 @@ bakar log --which console
 bakar log --which events
 
 # Follow log for a specific past run
-bakar log --run 20260601-143022
+bakar log --run 20260601-143022-48213
 
 # Follow log for a BYO build
 bakar log my-project.yml
