@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import fcntl
 import os
-import subprocess
 import sys
 import time
 from contextlib import contextmanager
@@ -25,6 +24,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import yaml
+
+from bakar.gitutil import git_stdout
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -99,27 +100,11 @@ def workspace_lock(workspace: Path, *, wait_limit_s: float = LOCK_WAIT_LIMIT_S) 
             fcntl.flock(fh, fcntl.LOCK_UN)
 
 
-def _git_read(path: Path, *args: str) -> str | None:
-    """Run a read-only git query in *path*; None when git fails."""
-    try:
-        proc = subprocess.run(
-            ["git", "--no-optional-locks", "-C", str(path), *args],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        return None
-    if proc.returncode != 0:
-        return None
-    return proc.stdout
-
-
 def _at_pin_and_clean(path: Path, pin: str) -> bool:
-    head = _git_read(path, "rev-parse", "HEAD")
+    head = git_stdout(path, "--no-optional-locks", "rev-parse", "HEAD")
     if head is None or not head.strip().lower().startswith(pin.lower()):
         return False
-    status = _git_read(path, "status", "--porcelain")
+    status = git_stdout(path, "--no-optional-locks", "status", "--porcelain")
     return status is not None and status.strip() == ""
 
 

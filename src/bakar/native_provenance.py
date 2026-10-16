@@ -12,13 +12,14 @@ import hashlib
 import json
 import os
 import re
-import subprocess
 import tempfile
 import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
+
+from bakar.gitutil import git_stdout
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -79,28 +80,10 @@ class Forecast:
     core_moved: bool
 
 
-def _git(repo: Path, args: list[str], timeout: float) -> str | None:
-    """Run a git probe; return stdout, or None when it fails or times out."""
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(repo), *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-            start_new_session=True,
-        )
-    except subprocess.SubprocessError, OSError:
-        return None
-    if proc.returncode != 0:
-        return None
-    return proc.stdout
-
-
 def _probe(name: str, path: Path, probe_timeout: float) -> Repo:
     core = path.name in _CORE_REPOS
-    head = _git(path, ["rev-parse", "HEAD"], probe_timeout)
-    status = _git(path, ["status", "--porcelain", "--untracked-files=no"], probe_timeout)
+    head = git_stdout(path, "rev-parse", "HEAD", timeout=probe_timeout, new_session=True)
+    status = git_stdout(path, "status", "--porcelain", "--untracked-files=no", timeout=probe_timeout, new_session=True)
     sha = head.strip() if head is not None else ""
     if not sha or status is None:
         return Repo(name, path, None, None, core, unreadable=True)

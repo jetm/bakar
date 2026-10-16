@@ -11,6 +11,10 @@ precedent already used by :func:`bakar.workspace._head_sha`.
 from __future__ import annotations
 
 import subprocess
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def run_git(argv: list[str], *, timeout: float = 5) -> subprocess.CompletedProcess[str] | None:
@@ -31,3 +35,27 @@ def run_git(argv: list[str], *, timeout: float = 5) -> subprocess.CompletedProce
         )
     except OSError, subprocess.TimeoutExpired:
         return None
+
+
+def git_stdout(repo: Path, *args: str, timeout: float = 5, new_session: bool = False) -> str | None:
+    """Run ``git -C <repo> <args>``; return stdout, or None on any failure.
+
+    Failure covers a missing binary, a timeout and a non-zero exit, so callers
+    can treat "git could not answer" as one outcome. ``new_session`` puts git
+    in its own session so a timeout cannot leave a credential prompt attached
+    to the caller's terminal.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+            start_new_session=new_session,
+        )
+    except subprocess.SubprocessError, OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout

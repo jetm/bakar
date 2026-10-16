@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from bakar import gitutil
 from bakar import native_provenance as np_
 from bakar.pin_state import commit_distance
 
@@ -200,7 +201,7 @@ def test_probe_timeout_marks_unreadable(ws: Path, monkeypatch: pytest.MonkeyPatc
     def boom(*a, **k):
         raise subprocess.TimeoutExpired(cmd="git", timeout=0.1)
 
-    monkeypatch.setattr(np_.subprocess, "run", boom)
+    monkeypatch.setattr(gitutil.subprocess, "run", boom)
     snap = np_.snapshot_repos(ws, ws, probe_timeout=0.1)
     assert snap.repos and all(r.unreadable and r.sha is None for r in snap.repos)
     fc = np_.forecast(snap, [], distance=commit_distance)
@@ -310,7 +311,7 @@ def test_snapshot_budget_exhausted_marks_rest_unreadable_without_git(ws: Path, m
         calls.append(cmd)
         return real_run(cmd, **kw)
 
-    monkeypatch.setattr(np_.subprocess, "run", counting_run)
+    monkeypatch.setattr(gitutil.subprocess, "run", counting_run)
     snap = np_.snapshot_repos(ws, ws, probe_timeout=10.0, total_budget=60.0)
     assert len(snap.repos) == 3
     assert [r.unreadable for r in snap.repos].count(True) == 2
