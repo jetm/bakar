@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-10-16
+
 ### Added
 - Release workspace routing for meta-avocado kas builds. bakar reads the Yocto release a kas file builds from the `branch:` of its `openembedded-core` pin (`wrynose-avocado` builds `wrynose`), through a `kas dump` that skips every repository step and uses a throwaway `KAS_WORK_DIR`, and maps it to a workspace with the new `[workspaces] template` (placeholder `{release}`) and `[workspaces.releases]` keys in `~/.config/bakar/config.toml`. When a mapping resolves, local builds and `--on` dispatch both use that workspace, wherever the kas file's checkout lives; a routed path that does not exist stops the build with exit 2. With no mapping, local builds resolve their workspace as before. A mapped workspace that is missing, or a release that cannot be probed, stops every command that runs kas with exit 2; only `log`, `stop`, `show`, `monitor` and `triage` fall back to the unrouted workspace with a note. An explicit `-w` that names a mapped workspace still defaults to the `reuse` repository policy.
 - A repository reuse policy for builds in a shared release workspace, on by default whenever routing resolves a workspace (`BAKAR_REPO_POLICY=reuse`). A pinned repository at its pin and clean is frozen with `url: null`, so kas never moves it; a missing one is cloned by kas; one on another commit or with local changes gets a side checkout at `<workspace>/.bakar/pins/<repo>/<commit12>`, so the shared clone is never moved. The overlay is written to `<build dir>/avocado-reuse.yml`. Classification covers the whole stack the build merges, including colon-joined overlays such as `machine.yml:kas/feature/clang.yml`, and runs under one workspace lock together with the dump so two builds cannot both see a repository as missing; a diverged `bitbake` or `openembedded-core` stops the build because a side checkout of either is not the one the build runs. `BAKAR_REPO_POLICY=kas` restores kas's own behaviour; any other value is refused.
@@ -16,9 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **BREAKING.** `bakar build --on <host>` never deletes anything on the remote. A meta-avocado kas build no longer mirrors the workspace at all: it checks that the remote release workspace exists, holds a `meta-avocado` git clone and declares the release being built, then pushes the checkout's HEAD (or a snapshot commit of uncommitted work, built through a temporary index so your branch and index stay untouched) to a new `refs/bakar/<name>/<commit12>` ref without force and with automatic gc disabled, checks it out as a detached worktree at `<worktree_root>/<name>` carrying a `bakar-delivered.json` ownership marker, and builds there. Without a `[workspaces]` mapping for the release, `--on` for a meta-avocado build now refuses with exit 2 where it used to mirror. NXP, TI, bitbake-setup, qcom and other kas builds keep the same-path mirror, now as an additive `rsync -a`: a file removed locally lingers on the remote until removed by hand. The `rsync --delete` preview and its confirmation prompt are gone; dispatch prints a plan of additions and does not prompt. `--yes` now only overrides a local/remote bakar version mismatch. Delivered worktrees, `refs/bakar/*` refs, side checkouts and per-worktree build directories accumulate on the remote and are cleaned up by hand; `docs/build.md` lists the commands. `--on` also refuses what would delete on the remote: `--clean`, a `KAS_TASK` other than `build`, a target whose task is a clean task such as `do_cleanall`, and the workspace mirror of a release workspace (a generated kas file, a kas file outside a meta-avocado checkout, `--preset` or no kas file), which would overwrite the host's shared clones. The remote build holds a shared lock on the delivered worktree for its whole run, so a later dispatch cannot move the worktree under it; an untracked file named like key material (private keys, keystores, `.netrc`, `.git-credentials`, `.pgpass`, `.env`) blocks a snapshot; the build guard refuses to build (exit 9) when it cannot take the lock; and a host whose bakar predates this dispatch is refused even with `--yes`. The bakar version-mismatch check now works: it read stdout while `bakar --version` prints to stderr, so it never fired.
+- `--on` for a meta-avocado build now refuses a detached HEAD in a main checkout, and an explicit `-w` that differs from the routed workspace, instead of delivering under a shared name or ignoring the option.
+- A dispatch from a shallow meta-avocado checkout is now rejected when the host cannot accept the shallow push, before anything is placed on the remote. bakar prints the fetch to run on the host so the retry is one command.
+- `bakar triage` now finds build directories through the same workspace routing and per-worktree build directory naming that builds use.
 
 ### Fixed
 - Fixed a build started from a linked meta-avocado worktree resolving its workspace to the directory that holds all the worktrees. The doctor then failed because the sibling layers and `.bakar.toml` were not there, and `--on` mirrored every worktree in that directory. The workspace now resolves to the main checkout's parent, and the generated kas wrapper declares `meta-avocado` at the worktree's path so kas reads the worktree's configuration.
+- Fixed `bakar run` failing with a traceback, or looking for the run script in the wrong directory, when the kas file is in a linked meta-avocado worktree.
+- Fixed the doctor's kas syntax check reporting files that exist only in a linked worktree as missing, or passing on the main checkout's content. It now validates through the same wrapper the build uses, and the check no longer moves clean clones in a shared release workspace.
+- Fixed the local feed using scripts from the main checkout instead of the linked worktree being built. A worktree without scripts now fails with an error naming its path.
 
 ## [0.36.3] - 2026-10-07
 
@@ -908,7 +916,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.36.3...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.37.0...HEAD
+[0.37.0]: https://github.com/jetm/bakar/compare/v0.36.3...v0.37.0
 [0.36.3]: https://github.com/jetm/bakar/compare/v0.36.2...v0.36.3
 [0.36.2]: https://github.com/jetm/bakar/compare/v0.36.1...v0.36.2
 [0.36.1]: https://github.com/jetm/bakar/compare/v0.36.0...v0.36.1
