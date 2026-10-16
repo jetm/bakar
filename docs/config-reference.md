@@ -10,8 +10,12 @@ CLI, see [settings.md](settings.md).
 1. CLI flag (`-m`, `-f`, `--sstate-mirror`, ...)
 2. `BAKAR_*` environment variable
 3. Workspace `.bakar.toml` (`[defaults.<family>]`)
-4. User `~/.config/bakar/config.toml`
-5. Built-in BSP default
+4. Preset selected with `--preset` (`machine`, `distro`, `image`, `manifest`)
+5. User `~/.config/bakar/config.toml`
+6. Built-in BSP default
+
+The preset tier applies only to the four target fields named above. The
+`[build]` toggles resolve on their own tiers; see [Build toggles](#build-toggles).
 
 ---
 
@@ -48,7 +52,7 @@ one).
 |-----|------|---------|-------------|
 | `show_doctor_report` | bool | `true` | Show the pre-flight doctor report before every build and sync. Set to `false` to print only build-blocking issues; the global `--hide-doctor-report` flag does the same for one invocation. Doctor checks always run - a BLOCK-severity failure aborts regardless. |
 | `container` | bool | `false` | Route builds through `kas-container` instead of running `kas` on the host. Host execution is the default; this is the opt-in. Overridden by a workspace `.bakar.toml` `[build]` value, by `BAKAR_CONTAINER`, and by the global `--container` flag. |
-| `host_mode` | bool | `false` | Retained back-compat alias that forces host execution. Host is already the default, so this is a no-op; existing configs keep parsing. Superseded by `container`. |
+| `host_mode` | bool | `false` | Accepted and ignored. The key still parses so existing configs load, but it does not select host execution or anything else: host is already the default and `container` is the only opt-in away from it. |
 | `kas_container_image` | string | `jetm/kas-build-env:latest` | kas-container image tag. Names the image used once the container path is opted into via `container`; setting it does not select the container. Overridden by a workspace `.bakar.toml` `[build]` value and by the `KAS_CONTAINER_IMAGE` env var. |
 | `dl_dir` | string | *(not set)* | Override `DL_DIR` (shared download cache path). Passed to kas-container as an env var. |
 | `sstate_dir` | string | *(not set)* | Override `SSTATE_DIR` (sstate cache path). Passed to kas-container as an env var. |
@@ -84,6 +88,18 @@ one).
 | `parallel_make` | int | *(falls back to `nproc`)* | Compile `-j` (`PARALLEL_MAKE`), decoupled from recipe concurrency. Size it to the total cores available to compilation - for an sccache-dist cluster that is the sum across all build servers, so compile jobs spill to remote nodes. Exported as `BAKAR_PARALLEL_MAKE`. Must be `> 0`. |
 | `bb_number_threads` | int | *(falls back to `nproc`)* | Recipe concurrency (`BB_NUMBER_THREADS`; `BB_NUMBER_PARSE_THREADS` follows it), decoupled from compile `-j`. Size it to local RAM - too many parallel recipes OOM a full image build. Exported as `BAKAR_BB_NUMBER_THREADS`. Must be `> 0`. |
 | `worktree_build_dir` | string | `build-{stem}-{worktree}` | Build directory name for a kas file in a linked meta-avocado worktree. Only `{stem}` (the kas file's stem) and `{worktree}` (the worktree directory name) are allowed, with no format spec or conversion, and the rendered name must be one directory name (no `/`, `.` or `..`). A main checkout keeps `build-{stem}`. Overridden by `BAKAR_WORKTREE_BUILD_DIR`. |
+| `local_tmpdir_base` | string | *(not set)* | Node-local base directory for the build `TMPDIR`. When set and the build runs in host mode, the build tmp moves off the (possibly NFS) source workspace to a directory under this base on local disk, named from the workspace directory and the machine. Unset keeps the workspace-relative tmp. Ignored in container mode. |
+| `stop_grace_seconds` | int | `30` | How long `bakar stop` waits after the graceful SIGINT before escalating to SIGTERM and then SIGKILL. `0` restores the unbounded wait. Must be `>= 0`. Overridden per invocation by `bakar stop --timeout`. |
+| `show_baseline_drift` | bool | `false` | The live build UI loads the persisted per-task timing baselines and colors tasks that overrun their historical mean. Off by default so a checkout with no baseline history shows no misleading drift. Resolves `BAKAR_SHOW_BASELINE_DRIFT`, then the workspace `[build]` value, then this key. |
+| `mold` | bool | `false` | Enable the mold linker: adds the `meta-bakar-mold` layer and inherits `mold.bbclass`, which injects `-fuse-ld=mold` into target link steps. Resolves the CLI `--mold` / `--mold-global` flags, then `BAKAR_MOLD`, then this key. |
+| `mold_mode` | string | `list` | Which recipes mold applies to: `list` (allow-list through `MOLD_INCLUDED_PN`), `global` (deny-list through `MOLD_EXCLUDED_PN`), `baseline` (`-fuse-ld=bfd` over the allow-list, for a symmetric measurement) or `baseline-global` (the bfd arm at deny-list scope). Any other value fails when the build resolves its config. The CLI flags `--mold-baseline` and `--mold-global` override it. |
+| `mold_extra_excluded_pn` | string | *(not set)* | Space-separated recipe names appended to `MOLD_EXCLUDED_PN`. Applies to the deny-list scope only (`global`, `baseline-global`); records a recipe that breaks under global mold without editing `mold.bbclass`. |
+| `uninative` | bool | `false` | Use the host-provided uninative tarball. Takes effect only in host mode on an Arch-family host with the `yocto-uninative-tarball` fragment installed; elsewhere it adds nothing. Enabling it changes `NATIVELSBSTRING` to `universal` and so changes sstate signatures, which is why it is an explicit opt-in. Resolves `BAKAR_UNINATIVE`, then this key. |
+| `buildtools_dir` | string | *(not set)* | Persisted location of the buildtools-extended toolchain installed by `bakar setup`. Host builds read it after `BAKAR_BUILDTOOLS_DIR`, so the toolchain survives into a new shell. It serves callers that do not name a Yocto release (non-oe-core BSP families). A build that does name one reads only the per-release `[build.buildtools_dirs]` table (release codename to directory, edited by hand, not listed by `bakar settings`) and never falls back to this key. |
+| `cluster` | bool | `false` | Explicit cluster-mode opt-in. It is the one gate for the cluster doctor preflight checks (central hashserv and prserv liveness, shared-mount validation); a default single-node build never probes cluster infrastructure. Setting `bb_hashserve` or `prserv_host` alone does not turn it on. Resolves `BAKAR_CLUSTER`, then this key. |
+| `cluster_bind_host` | string | *(not set)* | Address the workspace `bitbake-hashserv` and prserv daemons bind to. Unset binds `localhost` only. Set it to the node's cluster-reachable IP so other nodes can share one daemon. |
+| `bb_hashserve` | string | *(not set)* | `host:port` of a central hash-equivalence server. When set, the build exports it as `BB_HASHSERVE` and does not start the per-workspace daemon, even with `hashserv = true`. |
+| `prserv_host` | string | *(not set)* | `host:port` of a central PR service. When set, the build exports it as `PRSERV_HOST` and does not start the per-workspace prserv. |
 
 ### `[workspaces]` - release workspaces for meta-avocado
 
@@ -234,6 +250,11 @@ A top-level table (not under `[defaults]`) that overrides the user
 | Key | Type | Description |
 |-----|------|-------------|
 | `kas_container_image` | string | Workspace override for the kas-container image tag. Names the image used once the container path is opted into; it does not select the container on its own. |
+| `container` | bool | Workspace opt-in to `kas-container`. Beaten by `BAKAR_CONTAINER` and the `--container` flag; beats the user `[build] container`. |
+| `ccache` | bool | Workspace override for the ccache overlay. Beaten by `BAKAR_CCACHE`; beats the user `[build] ccache`. |
+| `rm_work` | bool | Workspace override for stripping each recipe's WORKDIR. Beaten by `BAKAR_RM_WORK`; beats the user `[build] rm_work`. |
+| `show_baseline_drift` | bool | Workspace override for the live-UI baseline drift coloring. Beaten by `BAKAR_SHOW_BASELINE_DRIFT`; beats the user `[build] show_baseline_drift`. |
+| `host_mode` | bool | Accepted and ignored, as in the user config. Host execution is the default and this key changes nothing. |
 
 ### `[host]`
 
@@ -273,7 +294,7 @@ An absent file produces an empty vendor list.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | yes | Identifier shown in logs and error messages. |
-| `family` | string | yes | Base BSP family to inherit from: `nxp`, `ti`, `generic`, or `bbsetup`. |
+| `family` | string | yes | Base BSP family to inherit from: `nxp`, `ti`, `qcom`, `generic`, or `bbsetup`. |
 | `manifest_regex` | string | yes | Python regex matched against the manifest filename (not the full path). Max 200 characters. Must compile. |
 | `repo_url` | string | no | Override the repo manifest URL for this vendor. |
 | `kas_container_image` | string | no | Override the kas-container image for this vendor. |
@@ -327,8 +348,25 @@ still take precedence over env vars.
 | Variable | Description |
 |----------|-------------|
 | `BAKAR_CONTAINER` | Set to `1` to route the build through `kas-container` for one invocation. Host execution is the default; this is the opt-in, equivalent to the global `--container` flag. Beats the workspace and user `[build] container` toggles. |
-| `BAKAR_HOST_MODE` | Retained back-compat alias forcing host execution. Host is already the default, so this is a no-op. |
+| `BAKAR_HOST_MODE` | Accepted and ignored: bakar does not read this variable. Host execution is the default; the only opt-in away from it is `BAKAR_CONTAINER`, `--container` or a `[build] container` toggle. |
 | `KAS_CONTAINER_IMAGE` | Override the kas-container image for one invocation. Takes precedence over both the workspace `.bakar.toml` `[build]` value and `build.kas_container_image` in the user config. Names the image only; it does not select the container path. |
+
+### Build toggles
+
+Each variable toggles one `[build]` boolean for one invocation. A set,
+non-blank value is true when it is `1`, `true`, `yes` or `on` (any case) and
+false for anything else; an unset or blank variable is skipped and the next
+tier decides. `BAKAR_CONTAINER` is parsed the same way.
+
+| Variable | `[build]` key | Resolution (highest first) |
+|----------|---------------|----------------------------|
+| `BAKAR_MOLD` | `mold` | CLI `--mold` / `--mold-global`, env, user config, default off. No workspace tier. |
+| `BAKAR_UNINATIVE` | `uninative` | env, user config, default off. No workspace tier. |
+| `BAKAR_CLUSTER` | `cluster` | env, user config, default off. No workspace tier. |
+| `BAKAR_RM_WORK` | `rm_work` | env, workspace `[build]`, user config, default off. |
+| `BAKAR_SHOW_BASELINE_DRIFT` | `show_baseline_drift` | env, workspace `[build]`, user config, default off. |
+| `BAKAR_SCCACHE_DIST` | `sccache_dist` | CLI `--sccache-dist`, env, user config, default off. No workspace tier. |
+| `BAKAR_CCACHE` | `ccache` | env, workspace `[build]`, user config; when none sets it, follows the resolved `sccache_dist`. |
 
 ### Release workspaces and dispatch
 

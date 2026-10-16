@@ -1,14 +1,18 @@
 # Configuration
 
-bakar resolves configuration from five sources in priority order (highest first):
+bakar resolves configuration from six sources in priority order (highest first):
 
 1. **CLI flags** (e.g. `-m imx8mp-var-dart`)
 2. **`BAKAR_*` environment variables**
 3. **Workspace `.bakar.toml`** - per-workspace defaults written by `bakar init`
-4. **`~/.config/bakar/config.toml`** - persistent per-user defaults
-5. **Built-in BSP defaults** - per-family fallbacks compiled into bakar
+4. **Preset** - the entry named by `--preset`, which supplies `machine`, `distro`, `image` and `manifest`
+5. **`~/.config/bakar/config.toml`** - persistent per-user defaults
+6. **Built-in BSP defaults** - per-family fallbacks compiled into bakar
 
-The resolution order is: `CLI flag > BAKAR_* env var > workspace .bakar.toml > user config.toml > built-in default`.
+The resolution order is: `CLI flag > BAKAR_* env var > workspace .bakar.toml > preset > user config.toml > built-in default`.
+
+The preset tier covers only the four target fields above. The `[build]` toggles
+have their own tiers, listed in [config-reference.md](config-reference.md#build-toggles).
 
 ## Workspace .bakar.toml
 
@@ -25,8 +29,9 @@ flag.
 | `[defaults.generic]` | `kas_yaml`, `machine` |
 
 The same file may also carry a top-level `[build]` table (not under
-`[defaults]`) with `kas_container_image`, overriding the user `config.toml`
-`[build]` value for this workspace: precedence is workspace `.bakar.toml`
+`[defaults]`) with `kas_container_image`, `container`, `ccache`, `rm_work`,
+`show_baseline_drift` and `host_mode` (accepted and ignored), overriding the user
+`config.toml` `[build]` value for this workspace: precedence is workspace `.bakar.toml`
 `[build]` > user `config.toml` `[build]` > built-in default, with the
 `KAS_CONTAINER_IMAGE` env var still beating all three. Setting
 `kas_container_image` does not select the container path - it only names the
@@ -44,6 +49,12 @@ keys.
 wizard and [workspace.md](workspace.md) for the full `.bakar.toml` schema.
 
 ## Environment variables
+
+The table lists the build-target variables. The `[build]` toggle variables
+(`BAKAR_MOLD`, `BAKAR_UNINATIVE`, `BAKAR_CLUSTER`, `BAKAR_RM_WORK`,
+`BAKAR_SHOW_BASELINE_DRIFT`, `BAKAR_SCCACHE_DIST`, `BAKAR_CCACHE`,
+`BAKAR_CONTAINER`) and the release-workspace variables are documented in
+[config-reference.md](config-reference.md#bakar_-environment-variables).
 
 | Variable | Overrides | Example |
 |----------|-----------|---------|
@@ -171,12 +182,12 @@ show_hashes = true   # always print layer SHAs after build/sync
 
 ## vendors.toml
 
-For custom board families not covered by the built-in NXP/TI/bbsetup presets. Written to `~/.config/bakar/vendors.toml`.
+For custom board families not covered by the built-in NXP/TI/Qualcomm (qcom)/bbsetup presets. Written to `~/.config/bakar/vendors.toml`.
 
 ```toml
 [[vendors]]
 name           = "my-board"
-family         = "nxp"               # base family: nxp, ti, generic, or bbsetup
+family         = "nxp"               # base family: nxp, ti, qcom, generic, or bbsetup
 manifest_regex = "my-board-.*\\.xml" # Python regex matched against manifest filename
 
 # Override any BspModel field:
