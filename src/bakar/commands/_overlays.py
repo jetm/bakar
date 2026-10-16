@@ -15,6 +15,11 @@ from typing import TYPE_CHECKING
 import typer
 
 from bakar.config import _overlay_dir
+from bakar.diagnostics import (
+    _UNINATIVE_FRAGMENT,
+    _UNINATIVE_OS_RELEASE,  # noqa: F401  # re-exported through commands/_helpers
+    _host_is_arch_like,
+)
 
 if TYPE_CHECKING:
     from bakar.bsp_model import BspModel
@@ -67,35 +72,10 @@ def _mold_extra_overlays(cfg: BuildConfig) -> list[Path]:
     return _conditional_overlay(cfg.mold, "bakar-tuning-mold.yml")
 
 
-# Where the yocto-uninative-tarball Arch package installs its bitbake fragment.
-# Its presence is the opt-in signal: the package exists only for Arch-family
-# hosts, and installing it is a deliberate act, so no separate config toggle.
-_UNINATIVE_FRAGMENT = Path("/usr/share/yocto-uninative/uninative.inc")
-
-# Module-level so tests can point host detection at a fixture file.
-_UNINATIVE_OS_RELEASE = Path("/etc/os-release")
-
-
-def _host_is_arch_like() -> bool:
-    """Return True when the build host is Arch Linux or an Arch derivative.
-
-    Reads ID and ID_LIKE from /etc/os-release and looks for ``arch`` in either.
-    CachyOS reports ``ID=cachyos`` with ``ID_LIKE=arch``, so matching ID_LIKE
-    covers the derivatives (CachyOS, EndeavourOS, Manjaro) without enumerating
-    them. Returns False when /etc/os-release is absent or unreadable, which is
-    the safe direction: the overlay is skipped rather than required on a host
-    that cannot have the package installed.
-    """
-    try:
-        text = _UNINATIVE_OS_RELEASE.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    ids: set[str] = set()
-    for line in text.splitlines():
-        key, sep, value = line.partition("=")
-        if sep and key.strip() in ("ID", "ID_LIKE"):
-            ids.update(value.strip().strip('"').strip("'").split())
-    return "arch" in ids
+# The uninative fragment path, the os-release path and the Arch-family probe
+# are defined once in diagnostics (core); commands may import core. Tests
+# repoint the os-release path on ``bakar.diagnostics``, which is the module
+# ``_host_is_arch_like`` reads it from.
 
 
 def _uninative_extra_overlays(cfg: BuildConfig) -> list[Path]:

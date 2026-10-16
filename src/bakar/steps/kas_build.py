@@ -161,47 +161,10 @@ def cache_mount_refusal(cfg: BuildConfig) -> str | None:
     refuses a hashserv/prserv state directory sitting on a network
     filesystem.
     """
-    statuses = mounts.assess_cache_mounts(cfg.effective_cache_targets)
-    blocking = [status for status in statuses if status.blocking]
-    if blocking:
-        parts = [f"{s.label} {s.path} ({_cache_mount_server(s)}): {_cache_mount_blocking_detail(s)}" for s in blocking]
-        return (
-            f"{', '.join(parts)}; check the NFS server and this node's link; a client that stays "
-            "wedged after the server returns needs its mounts force-unmounted or a reboot"
-        )
+    detail = mounts.cache_mount_blocking_detail(mounts.assess_cache_mounts(cfg.effective_cache_targets))
+    if detail is not None:
+        return f"{detail}; {mounts.CACHE_MOUNT_REMEDIATION_HINT}"
     return hashserv.daemon_state_refusal(cfg)
-
-
-def _cache_mount_server(status: mounts.CacheMountStatus) -> str:
-    """Host part of a status's fstab or mount source, or ``"server unknown"``.
-
-    Prefers the ``/etc/fstab`` declaration over the live ``/proc/mounts``
-    source - mirrors :func:`bakar.diagnostics._cache_mount_server`, whose
-    docstring explains why fstab wins: for the "declared NFS but resolved to
-    a local filesystem" case, the mount table's source is a local device
-    (e.g. ``/dev/sda1``), which names no server at all.
-    """
-    src = status.fstab_source or status.source
-    if src is None:
-        return "server unknown"
-    return src.split(":/", 1)[0]
-
-
-def _cache_mount_blocking_detail(status: mounts.CacheMountStatus) -> str:
-    """Per-state explanation for a blocking :class:`mounts.CacheMountStatus`.
-
-    Mirrors :func:`bakar.diagnostics._cache_mount_blocking_detail` so the
-    launch-gate refusal and the ``cache-mounts`` doctor check read the same
-    way for the same failure.
-    """
-    if status.state == "unresponsive":
-        return f"did not answer within {int(mounts.CACHE_PROBE_DEADLINE_S)}s"
-    if status.state == "error":
-        return status.detail
-    if status.state == "missing":
-        return status.detail or "declared NFS in /etc/fstab but does not exist yet"
-    # state == "ready": declared NFS but resolved to a non-NFS filesystem.
-    return f"declared NFS in /etc/fstab but resolves to {status.fstype}"
 
 
 def _setup_meta_avocado_build_dir(cfg: BuildConfig) -> None:

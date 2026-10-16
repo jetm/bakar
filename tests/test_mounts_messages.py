@@ -33,11 +33,13 @@ CASES = [
 
 
 @pytest.mark.parametrize("status", CASES)
-def test_server_and_detail_match_existing_copies(status):
-    assert mounts.cache_mount_server(status) == diagnostics._cache_mount_server(status)
-    assert mounts.cache_mount_server(status) == kas_build._cache_mount_server(status)
-    assert mounts.cache_mount_state_detail(status) == diagnostics._cache_mount_blocking_detail(status)
-    assert mounts.cache_mount_state_detail(status) == kas_build._cache_mount_blocking_detail(status)
+def test_launch_gate_and_doctor_share_text(status, monkeypatch):
+    """The launch-gate refusal and the doctor check say the same thing for the same status."""
+    doctor = diagnostics._cache_mounts_result([status])
+    gate = kas_build.mounts.cache_mount_blocking_detail([status])
+    assert doctor.message == gate
+    assert not hasattr(diagnostics, "_cache_mount_server")
+    assert not hasattr(kas_build, "_cache_mount_server")
 
 
 def test_blocking_detail_matches_diagnostics_text():

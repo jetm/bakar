@@ -1334,11 +1334,10 @@ def check_host_preflight(cfg: BuildConfig) -> CheckResult:
 # ---------------------------------------------------------------------------
 
 # Where the yocto-uninative-tarball Arch package installs its bitbake fragment,
-# and the file host detection reads. Both mirror the constants of the same name
-# in commands/_helpers.py rather than importing them: .arch-rules.toml declares
-# `core` -> `commands` forbidden ("diagnostics must not depend on the CLI layer
-# (prevents an upward cycle)"), so importing would invert the layering. Kept at
-# module level so tests can repoint them at fixtures.
+# and the file host detection reads. This is the single definition: commands/
+# _overlays imports these names (commands may import core; the reverse is
+# forbidden by .arch-rules.toml). Kept at module level so tests can repoint
+# them at fixtures; a test repoints each on the module whose code reads it.
 _UNINATIVE_FRAGMENT = Path("/usr/share/yocto-uninative/uninative.inc")
 _UNINATIVE_OS_RELEASE = Path("/etc/os-release")
 
@@ -1439,8 +1438,7 @@ def _host_is_arch_like() -> bool:
     when the file is absent or unreadable, which skips the uninative checks
     rather than demanding a package the host cannot install.
 
-    Duplicated from ``commands/_helpers.py`` for the layering reason recorded on
-    :data:`_UNINATIVE_OS_RELEASE` above.
+    Also the probe ``commands/_overlays.py`` gates its uninative overlays on.
     """
     try:
         text = _UNINATIVE_OS_RELEASE.read_text(encoding="utf-8")
@@ -3551,39 +3549,6 @@ def check_shared_cache_mounts(cfg: BuildConfig) -> CheckResult:
     return _ok(name, Severity.BLOCK, detail or "shared cache mounts OK")
 
 
-def _cache_mount_server(status: mounts.CacheMountStatus) -> str:
-    """Host part of a status's fstab or mount source, or ``"server unknown"``.
-
-    Prefers the ``/etc/fstab`` declaration over the live ``/proc/mounts``
-    source: for the "declared NFS but resolved to a local filesystem" case,
-    the mount table's source is the local device (e.g. ``/dev/sda1``), which
-    names no server at all - the actionable host is the one fstab declares.
-    For every other blocking state the two agree on the NFS host when both
-    are present, so this order costs nothing there. Splitting on ``":/"``
-    strips the export path, leaving just the host bakar tells the user to go
-    check.
-    """
-    src = status.fstab_source or status.source
-    if src is None:
-        return "server unknown"
-    return src.split(":/", 1)[0]
-
-
-def _cache_mount_blocking_detail(status: mounts.CacheMountStatus) -> str:
-    """Per-state explanation for a blocking :class:`~bakar.mounts.CacheMountStatus`.
-
-    The wording only depends on ``state``/``detail``/``fstype``.
-    """
-    if status.state == "unresponsive":
-        return f"did not answer within {int(mounts.CACHE_PROBE_DEADLINE_S)}s"
-    if status.state == "error":
-        return status.detail
-    if status.state == "missing":
-        return status.detail or "declared NFS in /etc/fstab but does not exist yet"
-    # state == "ready": declared NFS but resolved to a non-NFS filesystem.
-    return f"declared NFS in /etc/fstab but resolves to {status.fstype}"
-
-
 def _cache_mounts_result(statuses: list[mounts.CacheMountStatus]) -> CheckResult:
     """Turn already-computed :class:`~bakar.mounts.CacheMountStatus` values into a result.
 
@@ -3601,18 +3566,9 @@ def _cache_mounts_result(statuses: list[mounts.CacheMountStatus]) -> CheckResult
     if not statuses:
         return _skip(name, Severity.BLOCK, "no effective cache directories configured")
 
-    blocking = [s for s in statuses if s.blocking]
-    if blocking:
-        parts = [f"{s.label} {s.path} ({_cache_mount_server(s)}): {_cache_mount_blocking_detail(s)}" for s in blocking]
-        return _fail(
-            name,
-            Severity.BLOCK,
-            ", ".join(parts),
-            fix_hint=(
-                "check the NFS server and this node's link; a client that stays wedged after the "
-                "server returns needs its mounts force-unmounted or a reboot"
-            ),
-        )
+    detail = mounts.cache_mount_blocking_detail(statuses)
+    if detail is not None:
+        return _fail(name, Severity.BLOCK, detail, fix_hint=mounts.CACHE_MOUNT_REMEDIATION_HINT)
 
     oks = [f"{s.label} {s.source or s.fstab_source or 'local'} ({s.fstype})" for s in statuses]
     return _ok(name, Severity.BLOCK, "; ".join(oks))
