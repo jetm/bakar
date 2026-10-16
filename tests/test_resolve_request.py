@@ -177,8 +177,7 @@ def test_machine_precedence_ladder_through_the_cli(case, tmp_path, monkeypatch) 
         # The doctor gate is host-state dependent and would abort the run
         # before resolve()'s result is observable; it is not what is under test.
         patch("bakar.commands._helpers.run_all", return_value=[]),
-        patch("bakar.commands.build.resolve", side_effect=_capturing_resolve(captured)),
-        patch("bakar.commands._build_flavors.resolve", side_effect=_capturing_resolve(captured)),
+        patch("bakar.config.resolve", side_effect=_capturing_resolve(captured)),
     ):
         result = CliRunner().invoke(app, argv)
 

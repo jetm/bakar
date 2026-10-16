@@ -90,8 +90,7 @@ def _invoke_bbsetup_build(
         patch("bakar.commands._app._load_user_config_safe", return_value=user_config),
         patch("bakar.commands._app._get_vendors", return_value=[]),
         patch("bakar.commands.build._bbsetup_workspace", return_value=setup_dir),
-        patch("bakar.commands.build.resolve", return_value=_fake_resolve(setup_dir)),
-        patch("bakar.commands._build_flavors.resolve", return_value=_fake_resolve(setup_dir)),
+        patch("bakar.config.resolve", return_value=_fake_resolve(setup_dir)),
         patch(
             "bakar.commands._build_flavors.translate_bbsetup_config",
             return_value={"machine": "qemux86-64"},

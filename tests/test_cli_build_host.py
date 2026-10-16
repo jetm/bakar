@@ -89,8 +89,7 @@ def test_build_host_flag_sets_host_mode(tmp_path: Path) -> None:
 
     with (
         patch("bakar.commands._app.load_vendors", return_value=[]),
-        patch("bakar.commands.build.resolve", side_effect=_capturing_resolve(captured)),
-        patch("bakar.commands._build_flavors.resolve", side_effect=_capturing_resolve(captured)),
+        patch("bakar.config.resolve", side_effect=_capturing_resolve(captured)),
     ):
         result = runner.invoke(
             app,
@@ -111,8 +110,7 @@ def test_build_image_set_without_container_flag_stays_host(tmp_path: Path, monke
 
     with (
         patch("bakar.commands._app.load_vendors", return_value=[]),
-        patch("bakar.commands.build.resolve", side_effect=_capturing_resolve(captured)),
-        patch("bakar.commands._build_flavors.resolve", side_effect=_capturing_resolve(captured)),
+        patch("bakar.config.resolve", side_effect=_capturing_resolve(captured)),
     ):
         result = runner.invoke(
             app,
@@ -133,8 +131,7 @@ def test_build_container_flag_selects_container(tmp_path: Path, monkeypatch) -> 
 
     with (
         patch("bakar.commands._app.load_vendors", return_value=[]),
-        patch("bakar.commands.build.resolve", side_effect=_capturing_resolve(captured)),
-        patch("bakar.commands._build_flavors.resolve", side_effect=_capturing_resolve(captured)),
+        patch("bakar.config.resolve", side_effect=_capturing_resolve(captured)),
     ):
         result = runner.invoke(
             app,
@@ -155,8 +152,7 @@ def test_build_no_host_flag_without_container_image_auto_enables_host(tmp_path: 
 
     with (
         patch("bakar.commands._app.load_vendors", return_value=[]),
-        patch("bakar.commands.build.resolve", side_effect=_capturing_resolve(captured)),
-        patch("bakar.commands._build_flavors.resolve", side_effect=_capturing_resolve(captured)),
+        patch("bakar.config.resolve", side_effect=_capturing_resolve(captured)),
     ):
         result = runner.invoke(
             app,

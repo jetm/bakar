@@ -35,9 +35,7 @@ from bakar.commands._helpers import (
     _print_layer_hashes,
     _run_doctor_gate,
     _tuning_extra_overlays,
-    apply_mold_overrides,
-    apply_scope_override,
-    global_sccache_dist_override,
+    resolve_global_config,
     split_kas_yaml_arg,
 )
 
@@ -46,7 +44,7 @@ from bakar.commands._helpers import (
 # pre-split ``build.py``. ``_CveRequest`` already makes this a runtime import,
 # so the guard deferred nothing.
 from bakar.commands._post_build import _CveRequest, _FeedRequest, _SbomRequest
-from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, ResolveRequest, compose_preset_output_path, resolve
+from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, ResolveRequest, compose_preset_output_path
 from bakar.kas import translate_bbsetup_config, write_bbsetup_yaml
 from bakar.preset_config import load_presets
 from bakar.steps import bitbake_override as step_override
@@ -74,8 +72,6 @@ class _BbsetupCtx:
     machine: str | None
     distro: str | None
     image: str | None
-    host_mode: bool
-    container_mode: bool
     clean: bool
     dry_run: bool
     keep_going: bool
@@ -98,7 +94,7 @@ def _run_bbsetup_build(
 
     Factored out of ``build()`` to keep the main function readable.
     """
-    cfg = resolve(
+    cfg = resolve_global_config(
         ResolveRequest(
             workspace=setup_dir,
             bsp_family="bbsetup",
@@ -106,19 +102,14 @@ def _run_bbsetup_build(
                 machine=ctx.machine,
                 distro=ctx.distro,
                 image=ctx.image,
-                host_mode=ctx.host_mode,
-                container_mode=ctx.container_mode,
             ),
             user_config=_state._USER_CONFIG,
-            sccache_dist_override=global_sccache_dist_override(),
         )
     )
     if ctx.sstate_mirror is not None:
         cfg = replace(cfg, sstate_mirror_url=ctx.sstate_mirror)
     if ctx.sccache_scheduler is not None:
         cfg = replace(cfg, sccache_scheduler_url=ctx.sccache_scheduler)
-    cfg = apply_mold_overrides(cfg)
-    cfg = apply_scope_override(cfg)
     if ctx.no_capture_graph:
         cfg = replace(cfg, capture_graph=False)
     overlay_source = _overlay_for(None)
@@ -368,8 +359,6 @@ class _ReleaseCtx:
     distro: str | None
     image: str | None
     branch: str | None
-    host_mode: bool
-    container_mode: bool
     skip_sync: bool
     dry_run: bool
     keep_going: bool
@@ -416,7 +405,7 @@ def _run_single_preset_release(
         family, bsp = _dispatch_bsp(spec.manifest)
         main_yaml = None
 
-    cfg = resolve(
+    cfg = resolve_global_config(
         ResolveRequest(
             workspace=ws,
             bsp_family=family,
@@ -426,21 +415,16 @@ def _run_single_preset_release(
                 image=ctx.image or spec.image,
                 manifest=spec.manifest,
                 repo_branch=ctx.branch or spec.branch,
-                host_mode=ctx.host_mode,
-                container_mode=ctx.container_mode,
             ),
             kas_yaml=main_yaml,
             user_config=_state._USER_CONFIG,
             preset=active_preset,
-            sccache_dist_override=global_sccache_dist_override(),
         )
     )
     if ctx.sstate_mirror is not None:
         cfg = replace(cfg, sstate_mirror_url=ctx.sstate_mirror)
     if ctx.sccache_scheduler is not None:
         cfg = replace(cfg, sccache_scheduler_url=ctx.sccache_scheduler)
-    cfg = apply_mold_overrides(cfg)
-    cfg = apply_scope_override(cfg)
     if ctx.no_capture_graph:
         cfg = replace(cfg, capture_graph=False)
 

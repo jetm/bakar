@@ -71,12 +71,8 @@ from bakar.commands._helpers import (
     _resolve_workspace,
     _uninitialized_bbsetup_dir,
     _workspace_from_cwd,
-    apply_mold_overrides,
-    apply_scope_override,
-    global_container_mode,
-    global_host_mode,
     global_output_mode_override,
-    global_sccache_dist_override,
+    resolve_global_config,
     split_kas_yaml_arg,
 )
 
@@ -97,7 +93,7 @@ from bakar.commands._post_build import (
     _SbomRequest,
     _sync_feed,
 )
-from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, ResolveRequest, compose_preset_output_path, resolve
+from bakar.config import DEFAULT_CONTAINER_IMAGE, BSPSpec, ResolveRequest, compose_preset_output_path
 from bakar.fmt import fmt_duration
 from bakar.observability import RunLogger
 from bakar.output_mode import OutputMode, resolve_output_mode
@@ -427,10 +423,9 @@ def build(
     The two forms are mutually exclusive: passing both a positional
     YAML and ``--manifest`` exits non-zero.
     """
-    # --host / --container / --sccache-dist / --sccache-scheduler are global
-    # callback options; read them into the local names the body threads through.
-    host_mode = global_host_mode()
-    container_mode = global_container_mode()
+    # --sccache-dist / --sccache-scheduler are global callback options; read them
+    # into the local names the body threads through. --host / --container are
+    # folded in by resolve_global_config.
     sccache_dist = _state._SCCACHE_DIST
     sccache_scheduler = _state._SCCACHE_SCHEDULER
 
@@ -625,8 +620,6 @@ def build(
                     distro=distro,
                     image=image,
                     branch=branch,
-                    host_mode=host_mode,
-                    container_mode=container_mode,
                     skip_sync=skip_sync,
                     dry_run=dry_run,
                     keep_going=keep_going,
@@ -672,8 +665,6 @@ def build(
                 machine=machine,
                 distro=distro,
                 image=image,
-                host_mode=host_mode,
-                container_mode=container_mode,
                 clean=clean,
                 dry_run=dry_run,
                 keep_going=keep_going,
@@ -718,7 +709,7 @@ def build(
     if active_preset is not None:
         ws = ws / "build" / compose_preset_output_path(active_preset, 0)
 
-    cfg = resolve(
+    cfg = resolve_global_config(
         ResolveRequest(
             workspace=ws,
             bsp_family=family,
@@ -728,21 +719,16 @@ def build(
                 image=image,
                 manifest=manifest,
                 repo_branch=branch,
-                host_mode=host_mode,
-                container_mode=container_mode,
             ),
             kas_yaml=main_yaml,
             user_config=_state._USER_CONFIG,
             preset=active_preset,
-            sccache_dist_override=global_sccache_dist_override(),
         )
     )
     if sstate_mirror is not None:
         cfg = replace(cfg, sstate_mirror_url=sstate_mirror)
     if sccache_scheduler is not None:
         cfg = replace(cfg, sccache_scheduler_url=sccache_scheduler)
-    cfg = apply_mold_overrides(cfg)
-    cfg = apply_scope_override(cfg)
     if no_capture_graph:
         cfg = replace(cfg, capture_graph=False)
 

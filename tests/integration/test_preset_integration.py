@@ -187,14 +187,15 @@ def test_nxp_preset_dispatches_via_bsp(
 
     # Capture workspace passed to resolve() to verify the output path prefix.
     resolved_workspaces: list = []
-    original_resolve = build_cmd.resolve
+    import bakar.config as config_mod
+
+    original_resolve = config_mod.resolve
 
     def capturing_resolve(request):  # type: ignore[no-untyped-def]
         resolved_workspaces.append(request.workspace)
         return original_resolve(request)
 
-    monkeypatch.setattr(build_cmd, "resolve", capturing_resolve)
-    monkeypatch.setattr(flavors_cmd, "resolve", capturing_resolve)
+    monkeypatch.setattr(config_mod, "resolve", capturing_resolve)
 
     result = runner.invoke(app, ["build", "--preset", "imx8mp-scarthgap", "--dry-run"])
 

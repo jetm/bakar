@@ -567,17 +567,16 @@ def test_preset_explicit_image_overrides_preset(
 
     resolved_configs: list = []
 
-    import bakar.commands.build as build_mod
+    import bakar.config as config_mod
 
-    original_resolve = build_mod.resolve
+    original_resolve = config_mod.resolve
 
     def capturing_resolve(request):  # type: ignore[no-untyped-def]
         cfg = original_resolve(request)
         resolved_configs.append(cfg)
         return cfg
 
-    monkeypatch.setattr(build_mod, "resolve", capturing_resolve)
-    monkeypatch.setattr(flavors_cmd, "resolve", capturing_resolve)
+    monkeypatch.setattr(config_mod, "resolve", capturing_resolve)
     _stub_dispatchers(monkeypatch)
 
     result = runner.invoke(
@@ -653,17 +652,16 @@ def test_nxp_preset_output_path_contains_manifest_version(
     nxp_preset = _make_nxp_preset()
     _stub_preset_loader(monkeypatch, [nxp_preset])
 
-    import bakar.commands.build as build_mod
+    import bakar.config as config_mod
 
     resolved_workspaces: list = []
-    original_resolve = build_mod.resolve
+    original_resolve = config_mod.resolve
 
     def capturing_resolve(request):  # type: ignore[no-untyped-def]
         resolved_workspaces.append(request.workspace)
         return original_resolve(request)
 
-    monkeypatch.setattr(build_mod, "resolve", capturing_resolve)
-    monkeypatch.setattr(flavors_cmd, "resolve", capturing_resolve)
+    monkeypatch.setattr(config_mod, "resolve", capturing_resolve)
     _stub_dispatchers(monkeypatch)
 
     result = runner.invoke(app, ["build", "--preset", "imx8mp-scarthgap", "--dry-run"])
@@ -889,8 +887,6 @@ def test_multi_release_ctx_carries_every_flag_unchanged(
     result = runner.invoke(
         app,
         [
-            "--host",
-            "--container",
             "--sccache-scheduler",
             "http://sched.example:10600",
             "build",
@@ -928,8 +924,6 @@ def test_multi_release_ctx_carries_every_flag_unchanged(
         "distro": "ctx-distro",
         "image": "ctx-image",
         "branch": "ctx-branch",
-        "host_mode": True,
-        "container_mode": True,
         "skip_sync": True,
         "dry_run": True,
         "keep_going": True,
@@ -957,8 +951,6 @@ def test_release_ctx_optional_fields_default_to_none(tmp_path: Path) -> None:
         distro=None,
         image=None,
         branch=None,
-        host_mode=False,
-        container_mode=False,
         skip_sync=False,
         dry_run=False,
         keep_going=False,
@@ -975,8 +967,6 @@ def test_release_ctx_optional_fields_default_to_none(tmp_path: Path) -> None:
 # `--container` are root-callback flags, the rest belong to `build`, so the
 # argv shape differs per case and the tuple carries both halves.
 _RELEASE_BOOL_CASES = [
-    (["--host"], [], "host_mode"),
-    (["--container"], [], "container_mode"),
     ([], ["--skip-sync"], "skip_sync"),
     ([], ["--dry-run"], "dry_run"),
     ([], ["--keep-going"], "keep_going"),
