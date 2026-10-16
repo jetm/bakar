@@ -1802,13 +1802,13 @@ def _capture_native_ledger(cfg: BuildConfig, log: RunLogger, artifact: dict[str,
             run_dir=log.run_dir,
         )
         if result.failed or result.invalid or result.manifest_failed:
-            log.console.print(
-                "[yellow]warning: native signature ledger could not be written: "
+            log.warn(
+                "native signature ledger could not be written: "
                 f"{result.failed} failed, {result.invalid} invalid, {result.missing} missing"
-                f"{', run manifest not written' if result.manifest_failed else ''}[/]"
+                f"{', run manifest not written' if result.manifest_failed else ''}"
             )
     except Exception as exc:  # noqa: BLE001 - best-effort capture must never fail a completed build
-        log.console.print(f"[yellow]warning: native signature ledger could not be written: {_neutralized(exc)}[/]")
+        log.warn(f"native signature ledger could not be written: {_neutralized(exc)}")
 
 
 def _write_native_record(cfg: BuildConfig, log: RunLogger, artifact: dict[str, Any], sstate_dir: Path) -> None:
@@ -1827,16 +1827,13 @@ def _write_native_record(cfg: BuildConfig, log: RunLogger, artifact: dict[str, A
             ),
         )
     except Exception as exc:  # noqa: BLE001 - best-effort capture must never fail a completed build
-        log.console.print(f"[yellow]warning: native revision record could not be written: {_neutralized(exc)}[/]")
+        log.warn(f"native revision record could not be written: {_neutralized(exc)}")
         return
     # write_record returns None both when no repository is readable (nothing to
     # record, so nothing to warn about) and when the write failed; only the
     # second is actionable.
     if written is None and any(not repo.unreadable for repo in snapshot.repos):
-        log.console.print(
-            "[yellow]warning: native revision record could not be written: "
-            f"cannot write under {_neutralized(sstate_dir)}[/]"
-        )
+        log.warn(f"native revision record could not be written: cannot write under {_neutralized(sstate_dir)}")
 
 
 def persist_run_artifacts(
@@ -1861,7 +1858,7 @@ def persist_run_artifacts(
         if timings_path is not None:
             log.persist_task_timings(timings_path)
     except Exception as exc:  # noqa: BLE001 - defense-in-depth; a completed command must not crash on persist failure
-        log.console.print(f"[yellow]warning: failed to persist run artifacts: {_neutralized(exc)}[/]")
+        log.warn(f"failed to persist run artifacts: {_neutralized(exc)}")
         return None
     artifact = _load_events_artifact(log)
     if artifact is None:
@@ -1869,9 +1866,7 @@ def persist_run_artifacts(
     try:
         sstate_dir = native_ledger.effective_sstate_dir(cfg.sstate_dir)
     except Exception as exc:  # noqa: BLE001 - an unresolvable sstate path must not fail a completed build
-        log.console.print(
-            f"[yellow]warning: native capture skipped, sstate directory unresolved: {_neutralized(exc)}[/]"
-        )
+        log.warn(f"native capture skipped, sstate directory unresolved: {_neutralized(exc)}")
         sstate_dir = None
     if sstate_dir is not None:
         _capture_native_ledger(cfg, log, artifact, sstate_dir)
