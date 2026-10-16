@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
@@ -21,12 +21,15 @@ from bakar.commands._helpers import (
 )
 from bakar.config import ResolveRequest, resolve
 
+if TYPE_CHECKING:
+    from bakar.vendor_config import ManifestFamily
+
 
 def _resolve_family(
     bsp: str | None,
     manifest: str | None,
     ws: Path,
-) -> Literal["nxp", "ti"]:
+) -> ManifestFamily:
     """Resolve the BSP family from clean's flag ladder.
 
     Order: explicit ``--bsp`` value (validated against ``nxp``/``ti``); the
@@ -36,10 +39,12 @@ def _resolve_family(
     inline behavior so callers do not need to special-case None.
     """
     if bsp is not None:
-        if bsp not in ("nxp", "ti"):
-            console.print(f"[red]invalid --bsp value[/]: {bsp!r} (expected 'nxp' or 'ti')")
-            raise typer.Exit(code=2)
-        return bsp  # type: ignore[return-value]
+        if bsp == "nxp":
+            return "nxp"
+        if bsp == "ti":
+            return "ti"
+        console.print(f"[red]invalid --bsp value[/]: {bsp!r} (expected 'nxp' or 'ti')")
+        raise typer.Exit(code=2)
     if manifest is not None:
         family, _bsp_model = _dispatch_bsp(manifest)
         return family

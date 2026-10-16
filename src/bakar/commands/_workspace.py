@@ -35,6 +35,7 @@ from bakar.user_config import UserConfig, load_user_config
 
 if TYPE_CHECKING:
     from bakar.config import BuildConfig
+    from bakar.vendor_config import BspFamily, ManifestFamily
 
 # ---------------------------------------------------------------------------
 # Workspace detection
@@ -343,10 +344,10 @@ def _default_reuse_for_release_workspace(workspace: Path, kas_yaml: Path) -> Non
 # Ordered manifest-family namespaces bakar manages under the workspace root.
 # ``_family_from_workspace_contents`` iterates this list, so a future
 # repo-manifest family is one entry here rather than a new code path.
-_MANIFEST_FAMILIES: tuple[Literal["nxp", "ti", "qcom"], ...] = ("nxp", "ti", "qcom")
+_MANIFEST_FAMILIES: tuple[ManifestFamily, ...] = ("nxp", "ti", "qcom")
 
 
-def _bsp_from_cwd(workspace: Path) -> Literal["nxp", "ti", "qcom"] | None:
+def _bsp_from_cwd(workspace: Path) -> ManifestFamily | None:
     """Detect BSP family from the current working directory.
 
     Returns ``"nxp"``, ``"ti"``, or ``"qcom"`` if cwd is inside
@@ -373,7 +374,7 @@ def _bsp_from_cwd(workspace: Path) -> Literal["nxp", "ti", "qcom"] | None:
     return None
 
 
-def _family_from_workspace_contents(workspace: Path) -> Literal["nxp", "ti", "qcom"] | None:
+def _family_from_workspace_contents(workspace: Path) -> ManifestFamily | None:
     """Detect the manifest family from the workspace tree, cwd-independently.
 
     Fallback for ``_bsp_from_cwd`` when the invoking cwd carries no family
@@ -397,7 +398,7 @@ def _family_from_workspace_contents(workspace: Path) -> Literal["nxp", "ti", "qc
 # ---------------------------------------------------------------------------
 
 
-def _dispatch_bsp(manifest_arg: str | None) -> tuple[Literal["nxp", "ti"], BspModel]:
+def _dispatch_bsp(manifest_arg: str | None) -> tuple[ManifestFamily, BspModel]:
     """Detect the BSP family from the manifest filename and return ``(family, model)``.
 
     Inspects ``--manifest`` first, then ``BAKAR_MANIFEST``, then falls
@@ -490,7 +491,7 @@ def split_kas_yaml_arg(raw: str | Path | None) -> tuple[Path | None, list[Path]]
 def _normalize_dispatch(
     kas_yaml: Path | None,
     manifest: str | None,
-) -> tuple[str, BspModel | None, Path | None, str | None]:
+) -> tuple[BspFamily, BspModel | None, Path | None, str | None]:
     """Normalize workspace dispatch args and return ``(family, bsp, kas_yaml, manifest)``.
 
     Call this instead of ``_dispatch_bsp``/``_dispatch_from_yaml`` directly.
