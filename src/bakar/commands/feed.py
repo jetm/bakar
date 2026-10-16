@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import typer
 
@@ -179,12 +179,12 @@ def sync(
 
     console.print(f"snapshot: {result['snapshot']}")
     console.print(f"channel:  {result['channel_root']}")
-    console.print(f"rendered: {', '.join(result['repos']) or '(none)'}")
-    console.print(f"pinned:   {', '.join(result['machines']) or '(no machine repo rendered)'}")
+    console.print(f"rendered: {', '.join(cast('list[str]', result['repos'])) or '(none)'}")
+    console.print(f"pinned:   {', '.join(cast('list[str]', result['machines'])) or '(no machine repo rendered)'}")
     if result["unstaged"]:
         # Declared-but-absent is normal - a map lists what a machine could
         # publish - so this is reported rather than treated as a failure.
-        console.print(f"declared but not built: {', '.join(result['unstaged'])}")
+        console.print(f"declared but not built: {', '.join(cast('list[str]', result['unstaged']))}")
 
 
 @feed_app.command("mirror")
@@ -319,12 +319,12 @@ def status(
         channel=channel,
         port=port,
     )
-    targets = report["targets"]
+    targets = cast("list[str]", report["targets"])
     console.print(f"feed:     {report['feed_root']}")
     console.print(f"channel:  {report['channel_root']}")
     console.print(f"targets:  {', '.join(targets) or '(none)'}")
     console.print(f"packages: {report['pool_entries']}")
-    console.print(f"snapshot: {', '.join(report['snapshots']) or '(none)'}")
+    console.print(f"snapshot: {', '.join(cast('list[str]', report['snapshots'])) or '(none)'}")
     console.print(f"serving:  {'yes, ' + str(report['url']) if report['serving'] else 'no'}")
 
     # The stage root is a fourth growth source and `gc` does not touch it, so

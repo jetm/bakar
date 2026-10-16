@@ -37,10 +37,11 @@ from typing import TYPE_CHECKING
 import typer
 from rich.console import Console
 
+from bakar.setup.actions.base import RunCommand
 from bakar.setup.script import render_script
 
 if TYPE_CHECKING:
-    from bakar.setup.actions.base import Action, RunCommand, WriteFile
+    from bakar.setup.actions.base import Action, WriteFile
     from bakar.setup.plan import SetupPlan
 
 
@@ -66,7 +67,7 @@ def _run_unprivileged(op: RunCommand | WriteFile) -> None:
     pre-existing target). Neither path uses ``sudo`` - these operations only ever
     touch user-owned paths.
     """
-    if hasattr(op, "argv"):
+    if isinstance(op, RunCommand):
         subprocess.run(op.argv, check=True)  # pragma: no cover - bare subprocess invocation
         return
     target = Path(op.path)

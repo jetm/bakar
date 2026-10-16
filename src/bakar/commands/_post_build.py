@@ -10,6 +10,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import cast
 
 import typer
 
@@ -333,6 +334,8 @@ def _sync_feed(cfg, log, request: _FeedRequest, *, sboms: list[Path] | None = No
         )
         return
     log.step_ok(_STEP_FEED_SYNC)
-    console.print(f"feed: snapshot {result['snapshot']} pinned for {', '.join(result['machines']) or '(none)'}")
+    console.print(
+        f"feed: snapshot {result['snapshot']} pinned for {', '.join(cast('list[str]', result['machines'])) or '(none)'}"
+    )
     if result["unstaged"]:
-        console.print(f"declared but not built: {', '.join(result['unstaged'])}")
+        console.print(f"declared but not built: {', '.join(cast('list[str]', result['unstaged']))}")

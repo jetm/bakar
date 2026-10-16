@@ -8,6 +8,8 @@ import subprocess
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from bakar.config import BuildConfig
     from bakar.observability import RunLogger
 
@@ -21,9 +23,9 @@ class RepoSyncError(RuntimeError):
         super().__init__(f"{' '.join(self.cmd)} exited {returncode}")
 
 
-def _run_repo(argv: list[str], log: RunLogger, **kwargs: object) -> None:
+def _run_repo(argv: list[str], log: RunLogger, *, cwd: Path, stdin: int | None = None) -> None:
     try:
-        subprocess.run(argv, check=True, **kwargs)  # type: ignore[call-overload]  # pragma: no cover
+        subprocess.run(argv, check=True, cwd=cwd, stdin=stdin)  # pragma: no cover
     except subprocess.CalledProcessError as exc:
         err = RepoSyncError(argv, exc.returncode)
         log.step_fail("repo_sync", reason=str(err), cmd=argv, returncode=exc.returncode)
