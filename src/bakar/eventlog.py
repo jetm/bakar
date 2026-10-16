@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import copy
 import io
 import json
 import os
@@ -205,27 +206,37 @@ def _iter_events(raw_path: Path, on_variables: Callable[[dict[str, Any]], None] 
     # which would escape the per-line guard in _decode_line and crash the caller.
     with raw_path.open("r", encoding="utf-8", errors="replace") as fh:
         for raw_line in fh:
-            line = raw_line.strip()
-            if not line:
-                continue
-            # Filter by class before decoding the payload so unrecognized lines
-            # never reach _decode_event.
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError, ValueError:
-                continue
-            if not isinstance(record, dict):
-                continue
-            if "allvariables" in record:
-                dump = record["allvariables"]
-                if on_variables is not None and isinstance(dump, dict):
-                    on_variables(dump)
-                continue
-            if record.get("class") not in _RECOGNIZED_CLASSES:
-                continue
-            decoded = _decode_record(record)
+            decoded = _recognized_line(raw_line, on_variables)
             if decoded is not None:
                 yield decoded
+
+
+def _recognized_line(raw_line: str, on_variables: Callable[[dict[str, Any]], None] | None = None):
+    """Decode one raw log line into ``(class_name, event)`` or ``None``.
+
+    The per-line half of :func:`_iter_events`, shared with
+    :class:`IncrementalEventLog` so the batch and incremental readers agree on
+    which lines count.
+    """
+    line = raw_line.strip()
+    if not line:
+        return None
+    # Filter by class before decoding the payload so unrecognized lines
+    # never reach _decode_event.
+    try:
+        record = json.loads(line)
+    except json.JSONDecodeError, ValueError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    if "allvariables" in record:
+        dump = record["allvariables"]
+        if on_variables is not None and isinstance(dump, dict):
+            on_variables(dump)
+        return None
+    if record.get("class") not in _RECOGNIZED_CLASSES:
+        return None
+    return _decode_record(record)
 
 
 def _decode_line(line: str) -> tuple[str, _EventStub] | None:
@@ -397,85 +408,44 @@ def _host_block(variables: dict[str, Any] | None = None) -> dict[str, Any]:
     }
 
 
-def normalize(raw_path: Path, *, record_host: bool = True) -> dict[str, Any]:
-    """Read a raw bitbake event log and return the normalized artifact.
+class _NormalizeState:
+    """Accumulated :func:`normalize` state, fed one decoded event at a time.
 
-    The returned dict always has exactly these top-level keys::
-
-        {schema_version, build, host, tasks, setscene, failures, psi, disk}
-
-    ``host`` carries the build host's ``cpu_count`` and its
-    ``bb_number_threads``/``parallel_make`` where reachable, read HERE rather
-    than at analysis time (see the module docstring). It is present on the
-    missing-log early return too - the host is knowable even when the build
-    recorded nothing, and omitting it there would make an unreadable log
-    indistinguishable from a pre-schema-5 artifact.
-
-    ``record_host=False`` emits ``host`` as ``None`` instead. Pass it whenever
-    this call is NOT running on the machine that built - reading an old run's
-    raw log during analysis, say - because ``_host_block`` describes the
-    process's own machine and every consumer reads that field as the build
-    host's. The key stays present either way, so the shape does not change and
-    a reader cannot tell this apart from a genuine pre-schema-5 artifact, which
-    is correct: in both cases nothing knows the build host's core count.
-
-    The flag lives here rather than at the call site because the caller
-    previously blanked the field itself, which coupled it to this module's key
-    name - rename ``host`` and that assignment silently stops neutralizing the
-    block, and the false-provenance defect returns with nothing failing.
-
-    ``failures[]`` entries carry ``recipe`` (from ``_package``), ``task``
-    (from ``_task``/``taskname``), ``logfile``, and ``errprinted``.
-    ``TaskFailedSilent`` (setscene) is recorded in ``tasks`` with outcome
-    ``failed_silent`` but excluded from top-level ``failures`` (mirrors
-    bitbake's ``BBUIHelper``). Setscene stats come from the first
-    ``runQueueTaskStarted.stats`` seen. Absent optional fields are emitted as
-    ``null``/empty, never dropped.
-
-    A missing, empty, or wholly-malformed log yields an artifact with empty
-    collections and an ``unknown`` build outcome rather than raising.
+    Owning the per-event fold here lets :func:`normalize` (one pass over a whole
+    file) and :class:`IncrementalEventLog` (appends over many polls) share one
+    definition of how events become task rows, so the two views cannot drift.
     """
-    build: dict[str, Any] = {
-        "started": None,
-        "completed": None,
-        "outcome": "unknown",
-        "run_id": None,
-        # Runqueue progress from the latest runQueueTaskStarted.stats. tasks_total
-        # is the full planned task count (constant once the runqueue is built);
-        # tasks_completed/tasks_active track progress. None until the first
-        # runQueueTaskStarted is seen (e.g. still parsing).
-        "tasks_total": None,
-        "tasks_completed": None,
-        "tasks_active": None,
-    }
-    # Keyed by (recipe, task) so a task's start/end events merge into one row.
-    tasks: dict[tuple[Any, Any], dict[str, Any]] = {}
-    failures: list[dict[str, Any]] = []
-    setscene: dict[str, Any] = {
-        "covered": 0,
-        "notcovered": 0,
-        "total": 0,
-    }
-    psi: dict[str, Any] = {"samples": []}
-    disk: dict[str, Any] = {"samples": [], "full_events": []}
-    setscene_seen = False
-    saw_failure = False
 
-    if raw_path is None or not raw_path.is_file():
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "build": build,
-            "host": _host_block() if record_host else None,
-            "tasks": [],
-            "setscene": setscene,
-            "failures": failures,
-            "psi": psi,
-            "disk": disk,
+    def __init__(self) -> None:
+        self.build: dict[str, Any] = {
+            "started": None,
+            "completed": None,
+            "outcome": "unknown",
+            "run_id": None,
+            # Runqueue progress from the latest runQueueTaskStarted.stats. tasks_total
+            # is the full planned task count (constant once the runqueue is built);
+            # tasks_completed/tasks_active track progress. None until the first
+            # runQueueTaskStarted is seen (e.g. still parsing).
+            "tasks_total": None,
+            "tasks_completed": None,
+            "tasks_active": None,
         }
+        # Keyed by (recipe, task) so a task's start/end events merge into one row.
+        self.tasks: dict[tuple[Any, Any], dict[str, Any]] = {}
+        self.failures: list[dict[str, Any]] = []
+        self.setscene: dict[str, Any] = {"covered": 0, "notcovered": 0, "total": 0}
+        self.psi: dict[str, Any] = {"samples": []}
+        self.disk: dict[str, Any] = {"samples": [], "full_events": []}
+        self.variables: dict[str, Any] = {}
+        self.setscene_seen = False
+        self.saw_failure = False
 
-    def _task_row(event: _EventStub) -> dict[str, Any]:
+    def keep_variables(self, dump: dict[str, Any]) -> None:
+        _keep_wanted_variables(dump, self.variables)
+
+    def _task_row(self, event: _EventStub) -> dict[str, Any]:
         key = _task_key(event)
-        row = tasks.get(key)
+        row = self.tasks.get(key)
         if row is None:
             row = {
                 "recipe": _first(event, "_package"),
@@ -487,11 +457,18 @@ def normalize(raw_path: Path, *, record_host: bool = True) -> dict[str, Any]:
                 "logfile": None,
                 "cache_backend": None,
             }
-            tasks[key] = row
+            self.tasks[key] = row
         return row
 
-    variables: dict[str, Any] = {}
-    for class_name, event in _iter_events(raw_path, on_variables=lambda dump: _keep_wanted_variables(dump, variables)):
+    def consume(self, class_name: str, event: _EventStub) -> None:
+        build = self.build
+        failures = self.failures
+        setscene = self.setscene
+        psi = self.psi
+        disk = self.disk
+        setscene_seen = self.setscene_seen
+        saw_failure = self.saw_failure
+        _task_row = self._task_row
         if class_name == _BUILD_STARTED:
             build["started"] = _first(event, "time", "timestamp")
         elif class_name == _BUILD_COMPLETED:
@@ -610,19 +587,72 @@ def normalize(raw_path: Path, *, record_host: bool = True) -> dict[str, Any]:
                 }
             )
 
-    if build["outcome"] == "unknown" and saw_failure:
-        build["outcome"] = "failed"
+        self.setscene_seen = setscene_seen
+        self.saw_failure = saw_failure
 
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "build": build,
-        "host": _host_block(variables) if record_host else None,
-        "tasks": list(tasks.values()),
-        "setscene": setscene,
-        "failures": failures,
-        "psi": psi,
-        "disk": disk,
-    }
+    def result(self, *, record_host: bool, detach: bool = False) -> dict[str, Any]:
+        """Build the artifact dict; ``detach=True`` deep-copies it off live state."""
+        build = dict(self.build)
+        if build["outcome"] == "unknown" and self.saw_failure:
+            build["outcome"] = "failed"
+        artifact = {
+            "schema_version": SCHEMA_VERSION,
+            "build": build,
+            "host": _host_block(self.variables) if record_host else None,
+            "tasks": list(self.tasks.values()),
+            "setscene": self.setscene,
+            "failures": self.failures,
+            "psi": self.psi,
+            "disk": self.disk,
+        }
+        return copy.deepcopy(artifact) if detach else artifact
+
+
+def normalize(raw_path: Path, *, record_host: bool = True) -> dict[str, Any]:
+    """Read a raw bitbake event log and return the normalized artifact.
+
+    The returned dict always has exactly these top-level keys::
+
+        {schema_version, build, host, tasks, setscene, failures, psi, disk}
+
+    ``host`` carries the build host's ``cpu_count`` and its
+    ``bb_number_threads``/``parallel_make`` where reachable, read HERE rather
+    than at analysis time (see the module docstring). It is present on the
+    missing-log early return too - the host is knowable even when the build
+    recorded nothing, and omitting it there would make an unreadable log
+    indistinguishable from a pre-schema-5 artifact.
+
+    ``record_host=False`` emits ``host`` as ``None`` instead. Pass it whenever
+    this call is NOT running on the machine that built - reading an old run's
+    raw log during analysis, say - because ``_host_block`` describes the
+    process's own machine and every consumer reads that field as the build
+    host's. The key stays present either way, so the shape does not change and
+    a reader cannot tell this apart from a genuine pre-schema-5 artifact, which
+    is correct: in both cases nothing knows the build host's core count.
+
+    The flag lives here rather than at the call site because the caller
+    previously blanked the field itself, which coupled it to this module's key
+    name - rename ``host`` and that assignment silently stops neutralizing the
+    block, and the false-provenance defect returns with nothing failing.
+
+    ``failures[]`` entries carry ``recipe`` (from ``_package``), ``task``
+    (from ``_task``/``taskname``), ``logfile``, and ``errprinted``.
+    ``TaskFailedSilent`` (setscene) is recorded in ``tasks`` with outcome
+    ``failed_silent`` but excluded from top-level ``failures`` (mirrors
+    bitbake's ``BBUIHelper``). Setscene stats come from the first
+    ``runQueueTaskStarted.stats`` seen. Absent optional fields are emitted as
+    ``null``/empty, never dropped.
+
+    A missing, empty, or wholly-malformed log yields an artifact with empty
+    collections and an ``unknown`` build outcome rather than raising.
+    """
+    state = _NormalizeState()
+    if raw_path is None or not raw_path.is_file():
+        return state.result(record_host=record_host)
+
+    for class_name, event in _iter_events(raw_path, on_variables=state.keep_variables):
+        state.consume(class_name, event)
+    return state.result(record_host=record_host)
 
 
 def _stat(stats: Any, name: str) -> Any:
@@ -689,3 +719,72 @@ def running_from_rows(rows: list[dict[str, Any]]) -> list[RunningTask]:
         for row in rows
         if row.get("outcome") is None and row.get("started") is not None
     ]
+
+
+class IncrementalEventLog:
+    """Follow a growing bitbake event log, decoding only what was appended.
+
+    Each :meth:`poll` reads from the stored byte offset to the last newline in
+    the file, folds those complete lines into the same accumulator
+    :func:`normalize` uses, and advances the offset. A trailing partial line
+    (the writer mid-append) is left unread until its newline arrives, so
+    :meth:`normalized` after any poll equals ``normalize`` on the file truncated
+    to its last newline.
+
+    The reader starts over from zero when the file shrinks below the stored
+    offset, its inode changes (replaced, rotated), or it disappears. A replace
+    that keeps the inode and grows past the old offset cannot be told from an
+    append; bitbake does not do that to a live log.
+
+    Memory is the normalized state, not the log: raw lines are dropped after
+    folding.
+    """
+
+    def __init__(self, path: Path, *, record_host: bool = True) -> None:
+        self._path = path
+        self._record_host = record_host
+        self._reset()
+
+    def _reset(self) -> None:
+        self._state = _NormalizeState()
+        self._offset = 0
+        self._inode: int | None = None
+
+    @property
+    def offset(self) -> int:
+        """Bytes of the log consumed so far (always at a line boundary)."""
+        return self._offset
+
+    def poll(self) -> None:
+        """Consume complete lines appended since the previous poll. Never raises on I/O."""
+        try:
+            fh = self._path.open("rb")
+        except OSError:
+            self._reset()
+            return
+        with fh:
+            try:
+                st = os.fstat(fh.fileno())
+                if (self._inode is not None and st.st_ino != self._inode) or st.st_size < self._offset:
+                    self._reset()
+                self._inode = st.st_ino
+                fh.seek(self._offset)
+                chunk = fh.read()
+            except OSError:
+                return
+        end = chunk.rfind(b"\n")
+        if end < 0:
+            return
+        for raw in chunk[: end + 1].split(b"\n"):
+            decoded = _recognized_line(raw.decode("utf-8", errors="replace"), self._state.keep_variables)
+            if decoded is not None:
+                self._state.consume(*decoded)
+        self._offset += end + 1
+
+    def normalized(self) -> dict[str, Any]:
+        """Return the artifact :func:`normalize` would give for the consumed prefix."""
+        return self._state.result(record_host=self._record_host, detach=True)
+
+    def running_tasks(self) -> list[RunningTask]:
+        """Return the running tasks, selected exactly as :func:`running_tasks` does."""
+        return running_from_rows(list(self._state.tasks.values()))
