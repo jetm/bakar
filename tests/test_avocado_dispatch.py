@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from bakar.release_workspace import sanitize_delivered_name
 from bakar.steps import avocado_dispatch as ad
 from bakar.steps import layer_delivery, remote_dispatch
 
@@ -299,6 +300,19 @@ def test_remote_failure_rc_propagates(rec: Recorder, checkout: Path) -> None:
     rc = _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"])
     assert rc == 1
     assert ("surface", (HOST, WORKSPACE, 1)) in rec.calls
+
+
+def test_unusable_name_exits_2_before_any_remote_write(
+    rec: Recorder, checkout: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def unusable(_checkout: Path, _worktree: Any) -> str:
+        return sanitize_delivered_name("...")
+
+    monkeypatch.setattr(layer_delivery, "delivered_name", unusable)
+    rc = _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml", "--on", HOST])
+    assert rc == 2
+    assert "no usable characters" in capsys.readouterr().err
+    assert not {"snapshot", "push", "ensure", "stream"} & set(rec.names())
 
 
 def test_hyphen_host_rejected(rec: Recorder, checkout: Path) -> None:

@@ -370,10 +370,8 @@ def build(
 
     # --feed writes into THIS host's feed, and --on moves the build to another
     # one. Allowing the combination renders the feed on the remote, where the
-    # local `bakar feed serve` cannot see it - and where the next --on dispatch's
-    # `rsync -a --delete` deletes it, because the feed roots are not in
-    # RSYNC_EXCLUDES. Refusing beats silently building something that a later,
-    # unrelated command destroys.
+    # local `bakar feed serve` cannot see it and nothing brings it back. Refusing
+    # beats silently building a feed on a host that is not serving it.
     if feed and on is not None:
         console.print(
             "[red]--feed cannot be combined with --on[/]: the feed would be rendered on the remote host. "

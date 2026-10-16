@@ -7,5 +7,5 @@
 
 Invocation: `bakar build kas/machine/raspberrypi5.yml --target python3-lgpio --on pc2 --yes` run from `/home/tiamarin/repos/work/.worktrees/meta-avocado/rpi5-lgpio-feed`
 Precondition: ssh alias `pc2` reachable with BatchMode; the new bakar installed on both nodes (identity-parity check refuses a mismatch); `/home/tiamarin/repos/work/peridio` present locally; the worktree registered in that checkout's `.git/worktrees`
-Success signal: exit 0 from the remote build; exactly two `rsync --delete preview` lines (main workspace, then worktree); doctor rows `kas-yaml-syntax` and `host-preflight` PASS; remote run id printed
-Silent failure: a mirrored worktree whose `gitdir:` pointer targets a `.git/worktrees/<name>` entry the remote's main `.git` lacks, which git reports only when kas or doctor first touches it; this happens if the workspace-root transfer is skipped or ordered after the worktree transfer
+Success signal: exit 0 from the remote build; the dispatch plan names only additive remote writes (since bakar-on-release-workspace-dispatch, nothing is deleted on the remote); doctor rows `kas-yaml-syntax` and `host-preflight` PASS; remote run id printed
+Silent failure: a delivered worktree left on an older commit when its ref push fails part-way; the dispatch reports the failed push and does not start the build, so check the exit code rather than the remote directory's presence

@@ -2472,17 +2472,19 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
     checkout = meta_avocado_checkout(kas_yaml)
     wt = meta_avocado_worktree(kas_yaml)
 
-    if os.environ.get("BAKAR_REPO_POLICY") == "reuse":
+    from bakar.release_workspace import REPO_POLICY_REUSE, ReleaseRoutingError, parse_repo_policy
+
+    try:
+        policy = parse_repo_policy(os.environ.get("BAKAR_REPO_POLICY"))
+    except ReleaseRoutingError as exc:
+        return _fail(name, Severity.BLOCK, str(exc), fix_hint="Unset BAKAR_REPO_POLICY or set it to kas or reuse.")
+
+    # The build applies reuse only to a kas file inside a meta-avocado checkout
+    # and falls back to kas otherwise; the check follows the same rule.
+    if policy == REPO_POLICY_REUSE and checkout is not None:
         # The workspace is shared: a plain `kas dump` with KAS_WORK_DIR at it
         # moves every clean repository to its pin. Read the merged config in a
         # throwaway work directory instead.
-        if checkout is None:
-            return _skip(
-                name,
-                Severity.BLOCK,
-                f"{kas_yaml} is not in a meta-avocado checkout; BAKAR_REPO_POLICY=reuse forbids a workspace dump",
-            )
-        from bakar.release_workspace import ReleaseRoutingError
         from bakar.steps.kas_pins import read_merged_config
 
         try:

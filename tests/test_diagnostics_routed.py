@@ -168,7 +168,7 @@ def _dumps_against(rec: _Recorder, workspace: Path) -> list[list[str]]:
         c["argv"]  # type: ignore[misc]
         for c in rec.calls
         if c["argv"][:2] == ["kas", "dump"]  # type: ignore[index]
-        and c["env"].get("KAS_WORK_DIR") in (str(workspace), str(workspace.resolve()))  # type: ignore[union-attr]
+        and c["env"].get("KAS_WORK_DIR") in (str(workspace), str(workspace.resolve()))  # ty: ignore[unresolved-attribute]
     ]
 
 
@@ -211,9 +211,10 @@ def test_reuse_policy_maps_a_routing_error_to_block(
     assert _dumps_against(rec, ws) == []
 
 
-def test_reuse_policy_skips_a_kas_file_outside_any_meta_avocado(
+def test_reuse_policy_outside_any_meta_avocado_validates_like_the_build(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # The build falls back to the kas policy for this file, so the check does too.
     ws = tmp_path / "ws"
     kas_yaml = ws / "kas.yml"
     kas_yaml.parent.mkdir()
@@ -224,6 +225,19 @@ def test_reuse_policy_skips_a_kas_file_outside_any_meta_avocado(
 
     result = check_kas_yaml_syntax(_cfg(ws, kas_yaml))
 
-    assert result.status is Status.SKIP
+    assert result.status is not Status.SKIP
+    assert rec.calls, "the kas file must be validated"
+
+
+def test_unknown_repo_policy_blocks(monkeypatch: pytest.MonkeyPatch, outside: tuple[Path, Path, Path]) -> None:
+    ws, _checkout, kas_yaml = outside
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "resue")
+    rec = _Recorder()
+    _install(monkeypatch, rec)
+
+    result = check_kas_yaml_syntax(_cfg(ws, kas_yaml))
+
+    assert result.status is Status.FAIL
     assert result.severity is Severity.BLOCK
+    assert "'resue'" in result.message
     assert rec.calls == []

@@ -225,6 +225,20 @@ def _reset_routing_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_user_workspaces(monkeypatch):
+    """Route every test through an empty user config unless it injects its own.
+
+    Routing reads ``~/.config/bakar/config.toml``; a real ``[workspaces]`` table
+    there would make any meta-avocado test run a real ``kas dump`` probe. Tests
+    that exercise routing patch these names themselves, which overrides this.
+    """
+    from bakar.user_config import UserConfig
+
+    monkeypatch.setattr("bakar.commands._workspace.load_user_config", UserConfig)
+    monkeypatch.setattr("bakar.commands.triage.load_user_config", UserConfig)
+
+
+@pytest.fixture(autouse=True)
 def _no_systemd_scope_probe(request, monkeypatch):
     """Default ``build_scope.systemd_run_available`` to False across the suite.
 

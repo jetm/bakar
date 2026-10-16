@@ -10,10 +10,22 @@ from bakar.release_workspace import (
     ReleaseRoutingError,
     is_valid_delivered_name,
     map_release,
+    parse_repo_policy,
     release_key_from_merged,
     sanitize_delivered_name,
     worktree_build_dir_name,
 )
+
+
+@pytest.mark.parametrize(("value", "want"), [(None, "kas"), ("", "kas"), ("kas", "kas"), ("reuse", "reuse")])
+def test_parse_repo_policy_known_values(value: str | None, want: str) -> None:
+    assert parse_repo_policy(value) == want
+
+
+@pytest.mark.parametrize("value", ["resue", "REUSE", "none"])
+def test_parse_repo_policy_refuses_unknown_values(value: str) -> None:
+    with pytest.raises(ReleaseRoutingError, match=repr(value)):
+        parse_repo_policy(value)
 
 
 def _merged(branch: str | None = None, *, series: object = None, **extra: str) -> dict:

@@ -208,7 +208,7 @@ def main() -> int:
     smoke_lib = _load_smoke_lib()
     manual = [smoke_lib.ManualStep(reason="human", text=text) for text in MANUAL_STEPS_TEXT]
     have_kas = shutil.which("kas") is not None
-    run = smoke_lib.SmokeRun(expected=CHECKS_WITH_KAS if have_kas else CHECKS_WITH_KAS - 1, manual_steps=manual)
+    run = smoke_lib.SmokeRun(expected=CHECKS_WITH_KAS if have_kas else CHECKS_WITH_KAS - 2, manual_steps=manual)
 
     with run, smoke_lib.isolated_env("smoke-bakar-worktree-") as (tmp, env):
         root = tmp.resolve()
@@ -246,8 +246,7 @@ def main() -> int:
         # (e) kas resolves the wrapper to the worktree's pin, not the main checkout's.
         def dump_pin() -> str:
             kas = shutil.which("kas")
-            if kas is None:
-                raise FileNotFoundError("kas is not on PATH")
+            assert kas is not None
             assert lw is not None, "no LinkedWorktree from scenario (a)"
             bsp_root = ws / "build-m"
             bsp_root.mkdir(exist_ok=True)
@@ -267,12 +266,15 @@ def main() -> int:
                 raise RuntimeError(f"kas dump exited {proc.returncode}: {proc.stderr.strip()[-500:]}")
             return yaml.safe_load(proc.stdout)["repos"]["pinned"]["commit"]
 
-        pin, err = attempt(dump_pin)
-        run.check(
-            "kas dump of the wrapper exits 0 and carries the worktree-only pin",
-            pin == lay.worktree_pin,
-            err or f"got {pin}, want {lay.worktree_pin} (main checkout pins {lay.main_pin})",
-        )
+        if have_kas:
+            pin, err = attempt(dump_pin)
+            run.check(
+                "kas dump of the wrapper exits 0 and carries the worktree-only pin",
+                pin == lay.worktree_pin,
+                err or f"got {pin}, want {lay.worktree_pin} (main checkout pins {lay.main_pin})",
+            )
+        else:
+            print("SKIP kas dump of the wrapper: kas is not on PATH; expected lowered by one")
 
         # (f) the release is read from the pinned openembedded-core branch without touching any workspace.
         if have_kas:

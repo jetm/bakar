@@ -180,15 +180,18 @@ def dispatch_avocado_build(  # noqa: PLR0913 - fixed dispatch signature consumed
 
     try:
         name = layer_delivery.delivered_name(checkout, worktree)
-        commit, snapshot = layer_delivery.snapshot_commit(checkout, cap_mb=cap_mb)
+        build_dir = worktree_build_dir_name(kas_yaml.stem, name, build_dir_template)
+    except ReleaseRoutingError as exc:
+        console.print(f"[red]cannot dispatch:[/] {exc}")
+        return 2
     except layer_delivery.DeliveryError as exc:
         console.print(f"[red]cannot deliver {checkout}:[/] {exc}")
         return 1
     try:
-        build_dir = worktree_build_dir_name(kas_yaml.stem, name, build_dir_template)
-    except ReleaseRoutingError as exc:
-        console.print(f"[red]{exc}[/]")
-        return 2
+        commit, snapshot = layer_delivery.snapshot_commit(checkout, cap_mb=cap_mb)
+    except layer_delivery.DeliveryError as exc:
+        console.print(f"[red]cannot deliver {checkout}:[/] {exc}")
+        return 1
 
     root = worktree_root if worktree_root is not None else workspace / ".bakar" / "worktrees"
     target = root / name

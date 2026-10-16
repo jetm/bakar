@@ -80,7 +80,7 @@ from bakar.kas import KasGenOptions, write_yaml
 from bakar.observability import RunLogger
 from bakar.output_mode import OutputMode
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
-from bakar.release_workspace import ReleaseRoutingError
+from bakar.release_workspace import REPO_POLICY_KAS, REPO_POLICY_REUSE, ReleaseRoutingError, parse_repo_policy
 from bakar.steps import kas_pins, repo_reuse
 from bakar.steps.build_ui import BuildUIState
 from bakar.steps.kas_graph_capture import (
@@ -284,8 +284,8 @@ def _write_meta_avocado_wrapper(cfg: BuildConfig, kas_yaml: Path) -> Path:
 
 
 _REPO_POLICY_ENV = "BAKAR_REPO_POLICY"
-_REPO_POLICY_KAS = "kas"
-_REPO_POLICY_REUSE = "reuse"
+_REPO_POLICY_KAS = REPO_POLICY_KAS
+_REPO_POLICY_REUSE = REPO_POLICY_REUSE
 _REUSE_OVERLAY_YAML = "avocado-reuse.yml"
 
 
@@ -296,7 +296,10 @@ def _repo_policy(kas_yaml: Path) -> str:
     entry with none (a sibling-repo entry, or a generated ``avocado-bakar.yml``
     rebuilt with the variable exported by hand) falls back to ``kas``.
     """
-    policy = os.environ.get(_REPO_POLICY_ENV, _REPO_POLICY_KAS)
+    try:
+        policy = parse_repo_policy(os.environ.get(_REPO_POLICY_ENV))
+    except ReleaseRoutingError as exc:
+        raise RuntimeError(str(exc)) from exc
     if policy != _REPO_POLICY_REUSE:
         return _REPO_POLICY_KAS
     if meta_avocado_checkout(kas_yaml) is None:

@@ -108,6 +108,14 @@ def test_delivered_name_falls_back_to_branch(tmp_path: Path) -> None:
     assert delivered_name(repo, None) == "user-fix"
 
 
+def test_delivered_name_refuses_detached_head(tmp_path: Path) -> None:
+    repo = tmp_path / "meta-avocado"
+    _make_repo(repo)
+    _git(repo, "checkout", "-q", "--detach")
+    with pytest.raises(DeliveryError, match="detached HEAD"):
+        delivered_name(repo, None)
+
+
 def test_delivered_name_unusable_raises(tmp_path: Path) -> None:
     repo = tmp_path / "meta-avocado"
     _make_repo(repo)

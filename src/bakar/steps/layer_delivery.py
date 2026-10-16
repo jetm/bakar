@@ -113,6 +113,9 @@ def delivered_name(checkout: Path, worktree: LinkedWorktree | None) -> str:
     if worktree is not None:
         return sanitize_delivered_name(worktree.checkout.name)
     branch = _git(checkout, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    if branch == "HEAD":
+        # Every detached checkout would share one remote worktree named HEAD.
+        raise DeliveryError(f"{checkout} has a detached HEAD; check out a branch or build from a linked worktree")
     return sanitize_delivered_name(branch)
 
 

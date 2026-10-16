@@ -22,8 +22,29 @@ _DELIVERED_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 _UNSAFE_CHAR_RE = re.compile(r"[^A-Za-z0-9._-]")
 
 
+REPO_POLICY_KAS = "kas"
+REPO_POLICY_REUSE = "reuse"
+_REPO_POLICIES = (REPO_POLICY_KAS, REPO_POLICY_REUSE)
+
+
 class ReleaseRoutingError(Exception):
     """A release could not be routed; the message is shown to the user as is."""
+
+
+def parse_repo_policy(value: str | None) -> str:
+    """Return the repository policy named by ``BAKAR_REPO_POLICY``'s ``value``.
+
+    Unset or empty means ``kas``. Any other unknown value is refused: falling
+    back to ``kas`` would let a typo move every clean clone of a shared
+    workspace to its pin.
+    """
+    if not value:
+        return REPO_POLICY_KAS
+    if value not in _REPO_POLICIES:
+        raise ReleaseRoutingError(
+            f"BAKAR_REPO_POLICY={value!r} is not a repository policy; use one of {', '.join(_REPO_POLICIES)}"
+        )
+    return value
 
 
 def release_key_from_merged(config: dict) -> str:

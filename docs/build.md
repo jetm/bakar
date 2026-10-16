@@ -482,7 +482,8 @@ branch tip. Under `reuse` the "does not contain commit" retry with
 `--skip repos_checkout` is not attempted, so the original kas error stands.
 
 Set `BAKAR_REPO_POLICY=kas` to opt out and let kas manage the repositories as it
-always has, retry included. Under `reuse`, a build whose kas file is not inside
+always has, retry included. Any other value is refused, so a typo never hands
+the shared clones back to kas. Under `reuse`, a build whose kas file is not inside
 a `meta-avocado` checkout prints
 `repo policy reuse skipped for <kas file>: not inside a meta-avocado checkout, using the kas policy`
 and uses the `kas` policy.
@@ -709,7 +710,9 @@ workspace.
 | `remote workspace check failed: <ws>/openembedded-core/meta/conf/layer.conf on <host> is missing or unreadable`, or `...declares no LAYERSERIES_CORENAMES` | the workspace was never checked out | run `kas checkout` in that workspace |
 | `remote workspace check failed: release mismatch: the build needs 'x' but <ws> on <host> declares 'y'` | the mapping points at another release's workspace | fix `[workspaces]` |
 | `cannot deliver <checkout>: untracked files in <checkout> total N MiB, above the <cap> MiB snapshot cap` | large untracked files would ride in the snapshot | commit, ignore or remove them, or raise `[dispatch] snapshot_untracked_cap_mb` |
-| `the name '<raw>' has no usable characters after sanitising` | the worktree or branch name has no character in `[A-Za-z0-9._-]` | rename the worktree or branch |
+| `cannot dispatch: the name '<raw>' has no usable characters after sanitising` | the worktree or branch name has no character in `[A-Za-z0-9._-]` (exit 2) | rename the worktree or branch |
+| `cannot deliver <checkout>: <checkout> has a detached HEAD` | a main checkout on no branch has no name to deliver under | check out a branch, or build from a linked worktree |
+| `BAKAR_REPO_POLICY='x' is not a repository policy` | the variable holds a value other than `kas` or `reuse`; the build and the doctor refuse it rather than fall back to `kas` | unset it, or set `kas` or `reuse` |
 | `git push failed (exit N); remote build not started.` | git's own message is printed above it | act on git's message |
 | `could not place the worktree <path> on <host>: another dispatch of the same name holds the delivery lock` | a dispatch of the same name is still delivering (script exit 3) | wait for it |
 | `...: the delivery path exists but carries no readable bakar marker` | bakar did not create `<worktree_root>/<name>` (script exit 4) | move that directory aside by hand, or dispatch from a worktree with another name |
