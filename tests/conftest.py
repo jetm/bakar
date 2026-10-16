@@ -39,6 +39,11 @@ from bakar.setup.actions.base import RunCommand, WriteFile
 from bakar.setup.profile import HostProfile
 from bakar.steps import build_ui_render
 
+# Test modules load tests/_feed_upstream.py through ``pytest_plugins``. pytest
+# rewrites asserts only in plugins registered before they are imported, so
+# register the helper here or PytestAssertRewriteWarning fires.
+pytest.register_assert_rewrite("tests._feed_upstream")
+
 # Prevent Rich from inserting ANSI escape codes into captured CLI output.
 # Without this, --help text arrives with mid-token color resets (e.g.
 # "--sstate" + ESC[0m + "-mirror"), breaking plain substring assertions.

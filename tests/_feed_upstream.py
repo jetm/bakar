@@ -14,6 +14,10 @@ import that the test parameter then shadows (F401 + F811), and the pre-commit
 hook runs ``ruff-check --fix``, which deletes that import at commit time and
 leaves "fixture not found" behind it.
 
+``tests/conftest.py`` calls ``pytest.register_assert_rewrite("tests._feed_upstream")``
+so pytest rewrites asserts in this module even though it is loaded as a plugin;
+without that registration pytest emits ``PytestAssertRewriteWarning``.
+
 The layout matches what the production feed publishes and what bakar's own
 renderer writes: a content-addressed pool at
 ``<root>/<release>/<channel>/_pkgs/<aa>/<sha256>.rpm``, and per repository a

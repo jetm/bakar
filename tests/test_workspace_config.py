@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from bakar import workspace_config
-from bakar.workspace_config import WorkspaceConfig, load_workspace_config
+from bakar.workspace_config import WorkspaceConfig, load_workspace_config, write_workspace_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -315,16 +315,7 @@ def test_unknown_key_in_host_table_warns_and_continues(tmp_path: Path) -> None:
         assert recognized in message
 
 
-# Round-trip tests for write_workspace_config (task 1.2). They skip until the
-# writer lands, then verify write -> load preserves every value.
-_has_writer = hasattr(workspace_config, "write_workspace_config")
-_requires_writer = pytest.mark.skipif(
-    not _has_writer,
-    reason="write_workspace_config not yet implemented (task 1.2)",
-)
-
-
-@_requires_writer
+# Round-trip tests for write_workspace_config: write -> load preserves every value.
 def test_write_load_round_trip_nxp(tmp_path: Path) -> None:
     settings = {
         "manifest": "imx-6.6.52-2.2.2.xml",
@@ -332,7 +323,7 @@ def test_write_load_round_trip_nxp(tmp_path: Path) -> None:
         "distro": "fsl-imx-xwayland",
         "image": "core-image-minimal",
     }
-    workspace_config.write_workspace_config(tmp_path, "nxp", settings)
+    write_workspace_config(tmp_path, "nxp", settings)
 
     cfg = load_workspace_config(tmp_path)
 
@@ -342,7 +333,6 @@ def test_write_load_round_trip_nxp(tmp_path: Path) -> None:
     assert cfg.nxp_image == "core-image-minimal"
 
 
-@_requires_writer
 def test_write_load_round_trip_ti(tmp_path: Path) -> None:
     settings = {
         "manifest": "processor-sdk-scarthgap.txt",
@@ -350,7 +340,7 @@ def test_write_load_round_trip_ti(tmp_path: Path) -> None:
         "distro": "arago",
         "image": "var-thin-image",
     }
-    workspace_config.write_workspace_config(tmp_path, "ti", settings)
+    write_workspace_config(tmp_path, "ti", settings)
 
     cfg = load_workspace_config(tmp_path)
 
@@ -360,13 +350,12 @@ def test_write_load_round_trip_ti(tmp_path: Path) -> None:
     assert cfg.ti_image == "var-thin-image"
 
 
-@_requires_writer
 def test_write_load_round_trip_generic(tmp_path: Path) -> None:
     settings = {
         "kas_yaml": "avocado-bspctl.yml",
         "machine": "qemux86-64",
     }
-    workspace_config.write_workspace_config(tmp_path, "generic", settings)
+    write_workspace_config(tmp_path, "generic", settings)
 
     cfg = load_workspace_config(tmp_path)
 
