@@ -193,11 +193,11 @@ def test_status_accepts_positional_kas_yaml(
 
     # Bypass real YAML parsing / cwd walk: route through the stubbed family/workspace.
     monkeypatch.setattr(
-        "bakar.commands.hashserv._dispatch_from_yaml",
+        "bakar.commands._workspace._dispatch_from_yaml",
         lambda _yaml: ("generic", None),
     )
     monkeypatch.setattr(
-        "bakar.commands.hashserv._resolve_workspace",
+        "bakar.commands._workspace._resolve_workspace",
         lambda workspace, kas_yaml=None, family=None: fake_workspace,
     )
     monkeypatch.setattr(hashserv_cmd.hashserv, "is_running", lambda _root: False)
@@ -225,11 +225,11 @@ def test_start_accepts_positional_kas_yaml(
     fake_workspace.mkdir()
 
     monkeypatch.setattr(
-        "bakar.commands.hashserv._dispatch_from_yaml",
+        "bakar.commands._workspace._dispatch_from_yaml",
         lambda _yaml: ("generic", None),
     )
     monkeypatch.setattr(
-        "bakar.commands.hashserv._resolve_workspace",
+        "bakar.commands._workspace._resolve_workspace",
         lambda workspace, kas_yaml=None, family=None: fake_workspace,
     )
     monkeypatch.setattr(
@@ -261,11 +261,11 @@ def test_stop_accepts_positional_kas_yaml(
     fake_workspace.mkdir()
 
     monkeypatch.setattr(
-        "bakar.commands.hashserv._dispatch_from_yaml",
+        "bakar.commands._workspace._dispatch_from_yaml",
         lambda _yaml: ("generic", None),
     )
     monkeypatch.setattr(
-        "bakar.commands.hashserv._resolve_workspace",
+        "bakar.commands._workspace._resolve_workspace",
         lambda workspace, kas_yaml=None, family=None: fake_workspace,
     )
     monkeypatch.setattr(hashserv_cmd.hashserv, "stop", lambda _root: True)

@@ -88,7 +88,7 @@ def test_fail_when_state_vanishes(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
 def test_status_names_bound_host(runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_state(tmp_path, 50000)
-    monkeypatch.setattr(hashserv_cmd, "_resolve_cfg", lambda _ws, _yaml: _cfg(tmp_path, "10.1.2.3"))
+    monkeypatch.setattr(hashserv_cmd, "_resolve_daemon_cfg", lambda _ws, _yaml: _cfg(tmp_path, "10.1.2.3"))
     monkeypatch.setattr(hashserv, "is_running", lambda _key: True)
 
     result = runner.invoke(app, ["hashserv", "status"])

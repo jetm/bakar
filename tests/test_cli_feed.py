@@ -48,7 +48,7 @@ def cfg(tmp_path: Path, feed_root: Path):
 
 
 def _patch_cfg(cfg):
-    return mock.patch("bakar.commands.feed._resolve_cfg", return_value=cfg)
+    return mock.patch("bakar.commands.feed._resolve_daemon_cfg", return_value=cfg)
 
 
 def _yaml(tmp_path: Path) -> Path:
@@ -591,7 +591,7 @@ def test_doctor_checks_host_tools_when_no_workspace_resolves(cli: CliRunner) -> 
     first-time user after the wrong problem.
     """
     with (
-        mock.patch("bakar.commands.feed._resolve_cfg", side_effect=typer.Exit(code=2)),
+        mock.patch("bakar.commands.feed._resolve_daemon_cfg", side_effect=typer.Exit(code=2)),
         _tools_present(),
     ):
         result = cli.invoke(app, ["feed", "doctor"])
@@ -605,7 +605,7 @@ def test_doctor_checks_host_tools_when_no_workspace_resolves(cli: CliRunner) -> 
 def test_doctor_still_blocks_on_a_missing_tool_with_no_workspace(cli: CliRunner) -> None:
     """The host tier must keep its teeth when the workspace tier is skipped."""
     with (
-        mock.patch("bakar.commands.feed._resolve_cfg", side_effect=typer.Exit(code=2)),
+        mock.patch("bakar.commands.feed._resolve_daemon_cfg", side_effect=typer.Exit(code=2)),
         mock.patch("bakar.feed_preflight.shutil.which", return_value=None),
     ):
         result = cli.invoke(app, ["feed", "doctor"])

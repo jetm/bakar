@@ -16,34 +16,17 @@ from typing import Annotated
 import typer
 from rich.markup import escape
 
-import bakar.commands._app as _state
 from bakar import prserv
 from bakar.commands._app import app, console
-from bakar.commands._helpers import WorkspaceOption, _dispatch_bsp, _dispatch_from_yaml, _resolve_workspace
-from bakar.config import BuildConfig, ResolveRequest, resolve
+from bakar.commands._helpers import WorkspaceOption
+from bakar.commands._workspace import _resolve_daemon_cfg
+from bakar.config import BuildConfig
 from bakar.hashserv import NetworkStateDirError
 
 prserv_app = typer.Typer(
     help="Manage the workspace bitbake-prserv daemon (start/stop/status).",
     no_args_is_help=True,
 )
-
-
-def _resolve_cfg(workspace: Path | None = None, kas_yaml: Path | None = None) -> BuildConfig:
-    """Resolve the :class:`BuildConfig` for the current workspace (see bakar hashserv)."""
-    if kas_yaml is not None:
-        family, _bsp = _dispatch_from_yaml(kas_yaml)
-    else:
-        family, _bsp = _dispatch_bsp(None)
-    ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
-    return resolve(
-        ResolveRequest(
-            workspace=ws,
-            bsp_family=family,
-            kas_yaml=kas_yaml,
-            user_config=_state._USER_CONFIG,
-        )
-    )
 
 
 def _bind_host(cfg: BuildConfig) -> str:
@@ -59,7 +42,7 @@ def start(
     workspace: WorkspaceOption = None,
 ) -> None:
     """Start the workspace prserv daemon (or report the existing PRSERV_HOST)."""
-    cfg = _resolve_cfg(workspace, kas_yaml)
+    cfg = _resolve_daemon_cfg(workspace, kas_yaml)
     try:
         addr = prserv.ensure_running(cfg.prserv_state_key, binary_root=cfg.bsp_root, bind_host=_bind_host(cfg))
     except NetworkStateDirError as exc:
@@ -83,7 +66,7 @@ def stop(
     workspace: WorkspaceOption = None,
 ) -> None:
     """Gracefully stop the workspace prserv daemon (preserves the PR DB)."""
-    cfg = _resolve_cfg(workspace, kas_yaml)
+    cfg = _resolve_daemon_cfg(workspace, kas_yaml)
     if prserv.stop(cfg.prserv_state_key, binary_root=cfg.bsp_root, bind_host=_bind_host(cfg)):
         console.print("stopped")
     else:
@@ -99,7 +82,7 @@ def status(
     workspace: WorkspaceOption = None,
 ) -> None:
     """Print the current daemon state (PRSERV_HOST, or ``not running``)."""
-    cfg = _resolve_cfg(workspace, kas_yaml)
+    cfg = _resolve_daemon_cfg(workspace, kas_yaml)
     host = _bind_host(cfg)
     if prserv.is_running(cfg.prserv_state_key, bind_host=host):
         port = prserv._workspace_port(cfg.prserv_state_key)

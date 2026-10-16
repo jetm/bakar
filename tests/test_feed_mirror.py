@@ -2,7 +2,7 @@
 
 Task 2.1's tracer bullet: no retries, resume, disk preflight, target
 selection, ownership guard or signatures - those are later tasks. Every test
-here either mocks ``bakar.commands.feed._resolve_cfg`` or isolates ``HOME``
+here either mocks ``bakar.commands.feed._resolve_daemon_cfg`` or isolates ``HOME``
 via ``monkeypatch``, per the task's own rule against touching the developer's
 real ``~/.config/bakar/config.toml`` or feed.
 """
@@ -37,7 +37,7 @@ def cfg(tmp_path: Path):
 
 
 def _patch_cfg(cfg):
-    return mock.patch("bakar.commands.feed._resolve_cfg", return_value=cfg)
+    return mock.patch("bakar.commands.feed._resolve_daemon_cfg", return_value=cfg)
 
 
 def _invoke(cli: CliRunner, cfg, *args: str):

@@ -16,48 +16,16 @@ from typing import Annotated
 import typer
 from rich.markup import escape
 
-import bakar.commands._app as _state
 from bakar import hashserv
 from bakar.commands._app import app, console
-from bakar.commands._helpers import WorkspaceOption, _dispatch_bsp, _dispatch_from_yaml, _resolve_workspace
-from bakar.config import BuildConfig, ResolveRequest, resolve
+from bakar.commands._helpers import WorkspaceOption
+from bakar.commands._workspace import _resolve_daemon_cfg
 from bakar.hashserv import NetworkStateDirError
 
 hashserv_app = typer.Typer(
     help="Manage the workspace bitbake-hashserv daemon (start/stop/status).",
     no_args_is_help=True,
 )
-
-
-def _resolve_cfg(workspace: Path | None = None, kas_yaml: Path | None = None) -> BuildConfig:
-    """Resolve the :class:`BuildConfig` for the current workspace.
-
-    Mirrors the doctor command's no-manifest path: walk up from CWD (or
-    use the explicit ``workspace`` when supplied) to find the workspace,
-    dispatch the BSP family (defaulting to NXP when no manifest argument
-    or env var is set), and return the resolved config. Callers read
-    ``hashserv_state_key`` (where the daemon's port/DB/PID live) and
-    ``bsp_root`` (where the bitbake-hashserv binary is found) off it.
-
-    When ``kas_yaml`` is supplied, the BSP family is inferred from the
-    YAML via :func:`_dispatch_from_yaml` instead of the NXP-default
-    manifest dispatch. ``_resolve_workspace`` then routes through the
-    generic-mode carve-out so generic kas YAMLs work from any directory
-    without ``--workspace``.
-    """
-    if kas_yaml is not None:
-        family, _bsp = _dispatch_from_yaml(kas_yaml)
-    else:
-        family, _bsp = _dispatch_bsp(None)
-    ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
-    return resolve(
-        ResolveRequest(
-            workspace=ws,
-            bsp_family=family,
-            kas_yaml=kas_yaml,
-            user_config=_state._USER_CONFIG,
-        )
-    )
 
 
 @hashserv_app.command("start")
@@ -72,7 +40,7 @@ def start(
     workspace: WorkspaceOption = None,
 ) -> None:
     """Start the workspace hashserv daemon (or report the existing URL)."""
-    cfg = _resolve_cfg(workspace, kas_yaml)
+    cfg = _resolve_daemon_cfg(workspace, kas_yaml)
     try:
         url = hashserv.ensure_running(
             cfg.hashserv_state_key,
@@ -103,7 +71,7 @@ def stop(
     workspace: WorkspaceOption = None,
 ) -> None:
     """Signal the workspace hashserv daemon to stop and clean PID/port files."""
-    cfg = _resolve_cfg(workspace, kas_yaml)
+    cfg = _resolve_daemon_cfg(workspace, kas_yaml)
     if hashserv.stop(cfg.hashserv_state_key):
         console.print("stopped")
     else:
@@ -122,7 +90,7 @@ def status(
     workspace: WorkspaceOption = None,
 ) -> None:
     """Print the current daemon state (URL + PID, or ``not running``)."""
-    cfg = _resolve_cfg(workspace, kas_yaml)
+    cfg = _resolve_daemon_cfg(workspace, kas_yaml)
     if not hashserv.is_running(cfg.hashserv_state_key):
         console.print("not running")
         return

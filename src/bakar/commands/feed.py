@@ -30,12 +30,11 @@ from typing import Annotated
 
 import typer
 
-import bakar.commands._app as _state
 from bakar import feed as feed_mod
 from bakar import feed_index, feed_mirror, feed_ops, feed_preflight, feed_retention, feed_serve
 from bakar.commands._app import app, console
-from bakar.commands._helpers import WorkspaceOption, _dispatch_bsp, _dispatch_from_yaml, _resolve_workspace
-from bakar.config import BuildConfig, ResolveRequest, resolve
+from bakar.commands._helpers import WorkspaceOption
+from bakar.commands._workspace import _resolve_daemon_cfg
 from bakar.diagnostics import Status
 from bakar.fmt import fmt_bytes_iec
 
@@ -76,23 +75,6 @@ TargetOption = Annotated[
 ]
 
 
-def _resolve_cfg(workspace: Path | None = None, kas_yaml: Path | None = None) -> BuildConfig:
-    """Resolve the :class:`BuildConfig` for the current workspace (see bakar prserv)."""
-    if kas_yaml is not None:
-        family, _bsp = _dispatch_from_yaml(kas_yaml)
-    else:
-        family, _bsp = _dispatch_bsp(None)
-    ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
-    return resolve(
-        ResolveRequest(
-            workspace=ws,
-            bsp_family=family,
-            kas_yaml=kas_yaml,
-            user_config=_state._USER_CONFIG,
-        )
-    )
-
-
 def _report_preflight(results: list) -> bool:
     """Print prerequisite results and return whether any of them blocks.
 
@@ -128,7 +110,7 @@ def doctor(
     report the wrong problem.
     """
     try:
-        cfg = _resolve_cfg(workspace, kas_yaml)
+        cfg = _resolve_daemon_cfg(workspace, kas_yaml)
     except typer.Exit, SystemExit:
         # _resolve_workspace prints its own diagnosis and raises typer.Exit(2).
         # click is deliberately not caught: typer no longer depends on it, so
@@ -164,7 +146,7 @@ def sync(
     channel: ChannelOption = feed_mod.DEFAULT_CHANNEL,
 ) -> None:
     """Stage a finished build and render every repository it declares."""
-    cfg = _resolve_cfg(workspace, kas_yaml)
+    cfg = _resolve_daemon_cfg(workspace, kas_yaml)
     scripts = feed_ops.scripts_dir(kas_yaml)
 
     # Every prerequisite at once, before anything is staged. The feed depends on
@@ -221,7 +203,7 @@ def mirror(
         console.print("nothing to mirror: pass at least one --target or --repo")
         raise typer.Exit(code=2)
 
-    cfg = _resolve_cfg(workspace, None)
+    cfg = _resolve_daemon_cfg(workspace, None)
     feed_root = feed_mod.resolve_feed_root(cfg)
 
     request = feed_mirror.MirrorRequest(
@@ -265,7 +247,7 @@ def index(
     channel: ChannelOption = feed_mod.DEFAULT_CHANNEL,
 ) -> None:
     """Write ``targets.json`` from what the channel has actually rendered."""
-    cfg = _resolve_cfg(workspace, kas_yaml)
+    cfg = _resolve_daemon_cfg(workspace, kas_yaml)
     feed_root = feed_mod.resolve_feed_root(cfg)
     channel_dir = feed_mod.channel_root(feed_root, release=release, channel=channel)
     if not channel_dir.is_dir():
@@ -290,7 +272,7 @@ def serve(
     bind: BindOption = feed_serve.DEFAULT_BIND,
 ) -> None:
     """Serve the feed root over HTTP in the background."""
-    cfg = _resolve_cfg(workspace, kas_yaml)
+    cfg = _resolve_daemon_cfg(workspace, kas_yaml)
     root = feed_mod.resolve_feed_root(cfg)
     if feed_serve.is_serving(root):
         running_port = feed_serve.recorded_port(root)
@@ -314,7 +296,7 @@ def stop(
     workspace: WorkspaceOption = None,
 ) -> None:
     """Stop the feed's static server."""
-    cfg = _resolve_cfg(workspace, kas_yaml)
+    cfg = _resolve_daemon_cfg(workspace, kas_yaml)
     if feed_serve.stop_serving(feed_mod.resolve_feed_root(cfg)):
         console.print("stopped")
     else:
@@ -330,7 +312,7 @@ def status(
     port: PortOption = feed_serve.DEFAULT_PORT,
 ) -> None:
     """Report what the feed holds, without starting anything."""
-    cfg = _resolve_cfg(workspace, kas_yaml)
+    cfg = _resolve_daemon_cfg(workspace, kas_yaml)
     report = feed_serve.feed_status(
         feed_mod.resolve_feed_root(cfg),
         release=release,
@@ -375,7 +357,7 @@ def gc(
     confirm: Annotated[bool, typer.Option("--confirm", help="Actually remove; default previews")] = False,
 ) -> None:
     """Prune old snapshots, stale metadata and orphaned pool entries."""
-    cfg = _resolve_cfg(workspace, kas_yaml)
+    cfg = _resolve_daemon_cfg(workspace, kas_yaml)
     feed_root = feed_mod.resolve_feed_root(cfg)
     channel_dir = feed_mod.channel_root(feed_root, release=release, channel=channel)
 

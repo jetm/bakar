@@ -8,7 +8,7 @@ threads.
 
 Same fixture-import and config-isolation rules as the sibling mirror test
 modules: the feed server comes in via ``pytest_plugins``, never a named
-fixture import, and every test mocks ``bakar.commands.feed._resolve_cfg``
+fixture import, and every test mocks ``bakar.commands.feed._resolve_daemon_cfg``
 rather than touching the developer's real ``~/.config/bakar/config.toml`` or
 feed.
 """
@@ -52,7 +52,7 @@ def cfg(tmp_path: Path):
 
 
 def _invoke(cli: CliRunner, cfg, *args: str):
-    with mock.patch("bakar.commands.feed._resolve_cfg", return_value=cfg):
+    with mock.patch("bakar.commands.feed._resolve_daemon_cfg", return_value=cfg):
         return cli.invoke(app, ["feed", "mirror", *args])
 
 
