@@ -16,9 +16,45 @@ import shutil
 import socket
 import subprocess
 import time
+from hashlib import sha256
 from pathlib import Path
 
-from bakar import daemon_log
+from bakar import daemon_log, mounts
+
+_PORT_FLOOR = 49152
+_PORT_SPAN = 16383
+
+
+def workspace_port(state_key: Path, salt: bytes = b"") -> int:
+    """Derive a stable ephemeral port (49152-65534) from the state-key path.
+
+    ``salt`` is prepended to the hashed path so daemons keyed to the same state
+    dir (hashserv: ``b""``, prserv: ``b"prserv:"``) land on different ports.
+    Lexically normalizes rather than ``Path.resolve()``, which stats every
+    component and can hang on a wedged NFS automount before the daemon-state
+    guard has a chance to run.
+    """
+    digest = sha256(salt + str(mounts._lexical_normalize(state_key)).encode()).hexdigest()
+    return _PORT_FLOOR + int(digest[:8], 16) % _PORT_SPAN
+
+
+def find_workspace_tool(binary_root: Path, name: str) -> Path | None:
+    """Return the workspace bitbake tool ``name``, or None if absent.
+
+    Only workspace paths are consulted - no host PATH fallback, since a PATH
+    binary may speak a different wire protocol than the workspace bitbake.
+    Search order: ``sources/poky/bitbake`` (NXP), ``sources/bitbake`` (TI),
+    ``bitbake`` under the root, then ``bitbake`` beside it (meta-avocado).
+    """
+    for candidate in (
+        binary_root / "sources" / "poky" / "bitbake" / "bin" / name,
+        binary_root / "sources" / "bitbake" / "bin" / name,
+        binary_root / "bitbake" / "bin" / name,
+        binary_root.parent / "bitbake" / "bin" / name,
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def probe_addr(bind_host: str) -> str:

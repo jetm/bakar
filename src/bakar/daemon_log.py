@@ -27,7 +27,7 @@ def stderr_log_path(binary: str, state_dir: Path) -> Path:
 
 
 @contextmanager
-def stderr_target(binary: str, state_dir: Path) -> Iterator[IO[bytes] | None]:
+def stderr_target(binary: str, state_dir: Path, log_path: Path | None = None) -> Iterator[IO[bytes] | None]:
     """Best-effort open a state-dir stderr log file for a spawned ``binary``.
 
     Yields the open file handle, or ``None`` when the state dir can't be
@@ -35,11 +35,16 @@ def stderr_target(binary: str, state_dir: Path) -> Iterator[IO[bytes] | None]:
     not block spawning the daemon itself. Always closes the handle on exit,
     including when the caller's ``Popen()`` raises, so a fork failure or a
     vanished binary never leaks the fd.
+
+    ``log_path`` overrides the derived ``<binary>-central.stderr`` name so the
+    per-workspace spawns keep their ``hashserv.stderr`` / ``prserv.stderr``
+    files; its parent directory is created when missing.
     """
     stderr_fh: IO[bytes] | None = None
     try:
-        state_dir.mkdir(parents=True, exist_ok=True)
-        stderr_fh = stderr_log_path(binary, state_dir).open("wb")
+        target = log_path if log_path is not None else stderr_log_path(binary, state_dir)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        stderr_fh = target.open("wb")
     except OSError:
         stderr_fh = None
     try:

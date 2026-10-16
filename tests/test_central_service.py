@@ -156,3 +156,58 @@ def test_ensure_running_closes_stderr_fh_when_popen_raises(
 
     assert len(opened_files) == 1
     assert opened_files[0].closed is True
+
+
+@pytest.mark.unit
+def test_workspace_port_matches_hashserv_and_prserv(tmp_path: Path) -> None:
+    from bakar import hashserv, prserv
+
+    for key in (tmp_path / "a", tmp_path / "sstate" / "x", tmp_path / "a" / ".." / "b"):
+        assert central_service.workspace_port(key) == hashserv._workspace_port(key)
+        assert central_service.workspace_port(key, b"prserv:") == prserv._workspace_port(key)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "rel",
+    [
+        ("root", "sources", "poky", "bitbake", "bin"),
+        ("root", "sources", "bitbake", "bin"),
+        ("root", "bitbake", "bin"),
+        ("bitbake", "bin"),
+    ],
+)
+def test_find_workspace_tool_finds_each_candidate(tmp_path: Path, rel: tuple[str, ...]) -> None:
+    from bakar import hashserv, prserv
+
+    root = tmp_path / "root"
+    d = tmp_path.joinpath(*rel)
+    d.mkdir(parents=True)
+    root.mkdir(exist_ok=True)
+    for name in ("bitbake-hashserv", "bitbake-prserv"):
+        (d / name).write_text("")
+    assert central_service.find_workspace_tool(root, "bitbake-hashserv") == d / "bitbake-hashserv"
+    assert central_service.find_workspace_tool(root, "bitbake-hashserv") == hashserv._find_binary(root)
+    assert central_service.find_workspace_tool(root, "bitbake-prserv") == prserv._find_binary(root)
+
+
+@pytest.mark.unit
+def test_find_workspace_tool_absent(tmp_path: Path) -> None:
+    assert central_service.find_workspace_tool(tmp_path, "bitbake-hashserv") is None
+
+
+@pytest.mark.unit
+def test_stderr_target_honours_explicit_path_and_closes_on_raise(tmp_path: Path) -> None:
+    from bakar import daemon_log
+
+    log = tmp_path / "state" / "hashserv.stderr"
+    held = None
+    with pytest.raises(RuntimeError), daemon_log.stderr_target("bitbake-hashserv", tmp_path / "state", log) as fh:
+        held = fh
+        assert fh is not None
+        assert not fh.closed
+        raise RuntimeError("spawn failed")
+    assert held is not None
+    assert held.closed
+    assert log.exists()
+    assert not (tmp_path / "state" / "bitbake-hashserv-central.stderr").exists()
