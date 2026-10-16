@@ -50,17 +50,18 @@ def _overlay_dir() -> Path:
 # Any of these can be overridden by BAKAR_* env vars; CLI flags override env.
 # ---------------------------------------------------------------------------
 
-# Workspace-relative directory names a per-workspace feed occupies. Named here
-# rather than spelled at each use because two modules need them to agree:
-# ``effective_feed_dir`` builds the default feed path from the first, and remote
-# dispatch keeps both out of an ``rsync --delete``. A rename that updated only
-# one of those would silently start deleting remote feeds again.
 # The flattened config bakar writes into the build dir. Named here rather than
 # inline because bsp_root branches on it: it is the one kas YAML that already
 # sits in the directory kas should run from, which is what separates it from
 # every source YAML.
 GENERATED_BUILD_YAML = "avocado-bakar.yml"
 
+# Workspace-relative directory names a per-workspace feed occupies. Named here
+# rather than spelled at each use because two modules need them to agree:
+# ``effective_feed_dir`` builds the default feed path from the first, and remote
+# dispatch excludes both from its additive mirror so the mirror can neither
+# overwrite a remote feed nor replace a remote feed symlink with a local
+# directory. A rename that updated only one of those would let it do so.
 WORKSPACE_FEED_DIRNAME = "_feed"
 FEED_STAGE_SUFFIX = "-stage"
 WORKSPACE_FEED_STAGE_DIRNAME = f"{WORKSPACE_FEED_DIRNAME}{FEED_STAGE_SUFFIX}"

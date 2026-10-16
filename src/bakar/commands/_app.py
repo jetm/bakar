@@ -164,7 +164,8 @@ def _main(
         bool,
         typer.Option(
             "--host",
-            help="Back-compat alias forcing the host path; host is the default, so this is a no-op.",
+            help="Force the host path, overriding a container toggle from BAKAR_CONTAINER or config "
+            "(host is the default, so alone this changes nothing; --container outranks it).",
         ),
     ] = False,
     container: Annotated[
@@ -208,7 +209,8 @@ def _main(
             "--mold-global",
             help=(
                 "Enable mold in deny-list mode (MOLD_EXCLUDED_PN) across all target recipes "
-                "instead of the default allow-list (mutually exclusive with --mold/--mold-baseline)."
+                "instead of the default allow-list (mutually exclusive with --mold; combine with --mold-baseline "
+                "for the global bfd baseline)."
             ),
         ),
     ] = False,
