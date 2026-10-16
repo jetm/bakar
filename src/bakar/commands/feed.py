@@ -179,10 +179,12 @@ def sync(
     try:
         result = feed_mod.sync(
             cfg,
-            deploy_dir=feed_ops.deploy_dir(cfg),
-            scripts=scripts,
-            release=release,
-            channel=channel,
+            publish=feed_mod.FeedPublish(
+                deploy_dir=feed_ops.deploy_dir(cfg),
+                scripts=scripts,
+                release=release,
+                channel=channel,
+            ),
         )
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
         # The staging and render scripts run with check=True. A non-zero exit

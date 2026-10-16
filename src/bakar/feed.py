@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -57,6 +58,27 @@ if TYPE_CHECKING:
 # release's target resolving another's packages is the failure being avoided.
 DEFAULT_RELEASE = "2024"
 DEFAULT_CHANNEL = "edge"
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class FeedRoots:
+    """The feed root a sync renders into and the stage root its packages union in."""
+
+    feed_root: Path
+    stage_root: Path
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class FeedPublish:
+    """One build to publish, the scripts that render it, and where in the feed it lands."""
+
+    deploy_dir: Path
+    scripts: Path
+    release: str = DEFAULT_RELEASE
+    channel: str = DEFAULT_CHANNEL
+    snapshot: str | None = None
+    sboms: list[Path] | None = None
+
 
 # Suffix appended to the feed root's own name to derive the stage root. A suffix
 # on the sibling rather than a subdirectory: `<feed>/_stage` would be inside the
@@ -314,16 +336,7 @@ def write_latest_pointer(
     return written
 
 
-def sync(  # noqa: PLR0913 - deploy_dir and scripts stay explicit so consolidation can reuse this against a discovered tree it cannot derive from one config
-    cfg: BuildConfig,
-    *,
-    deploy_dir: Path,
-    scripts: Path,
-    release: str = DEFAULT_RELEASE,
-    channel: str = DEFAULT_CHANNEL,
-    snapshot: str | None = None,
-    sboms: list[Path] | None = None,
-) -> dict[str, object]:
+def sync(cfg: BuildConfig, *, publish: FeedPublish) -> dict[str, object]:
     """Stage a build and render every repository it declares, head and snapshot.
 
     Ordering is the contract. Each repository is rendered twice - once at its
@@ -337,29 +350,11 @@ def sync(  # noqa: PLR0913 - deploy_dir and scripts stay explicit so consolidati
     catches the subprocess failure for the same reason - the exception must
     propagate before the pointer write is reached.
     """
-    return sync_paths(
-        feed_root=resolve_feed_root(cfg),
-        stage_root=resolve_stage_root(cfg),
-        deploy_dir=deploy_dir,
-        scripts=scripts,
-        release=release,
-        channel=channel,
-        snapshot=snapshot,
-        sboms=sboms,
-    )
+    roots = FeedRoots(feed_root=resolve_feed_root(cfg), stage_root=resolve_stage_root(cfg))
+    return sync_paths(roots=roots, publish=publish)
 
 
-def sync_paths(  # noqa: PLR0913 - the path pair replaces the config a discovered tree does not have
-    *,
-    feed_root: Path,
-    stage_root: Path,
-    deploy_dir: Path,
-    scripts: Path,
-    release: str = DEFAULT_RELEASE,
-    channel: str = DEFAULT_CHANNEL,
-    snapshot: str | None = None,
-    sboms: list[Path] | None = None,
-) -> dict[str, object]:
+def sync_paths(*, roots: FeedRoots, publish: FeedPublish) -> dict[str, object]:
     """Sync against explicit roots rather than a resolved build configuration.
 
     The same operation as :func:`sync`, addressed by path. Consolidation walks
@@ -368,7 +363,10 @@ def sync_paths(  # noqa: PLR0913 - the path pair replaces the config a discovere
     stage roots directly. :func:`sync` is the thin wrapper that derives both
     from a config for the ordinary in-workspace case.
     """
-    snap = snapshot or snapshot_id()
+    feed_root, stage_root = roots.feed_root, roots.stage_root
+    deploy_dir, scripts = publish.deploy_dir, publish.scripts
+    release, channel = publish.release, publish.channel
+    snap = publish.snapshot or snapshot_id()
     channel_dir = channel_root(feed_root, release=release, channel=channel)
     staged_base = stage_build(
         deploy_dir=deploy_dir,
@@ -408,7 +406,7 @@ def sync_paths(  # noqa: PLR0913 - the path pair replaces the config a discovere
     # it names, and fetches. Publishing afterwards leaves a window in which that
     # derived path 404s - and unlike a missing repository, nothing else in a sync
     # would report it, because the packages resolve perfectly.
-    published_sboms = feed_sbom.publish_sbom(channel_dir, snap, list(sboms or []))
+    published_sboms = feed_sbom.publish_sbom(channel_dir, snap, list(publish.sboms or []))
 
     machines = pointer_machines(rendered)
     pointers = write_latest_pointer(channel_dir, snap, machines=machines)

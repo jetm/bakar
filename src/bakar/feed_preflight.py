@@ -23,12 +23,15 @@ import os
 import platform
 import shutil
 import sys
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from bakar.diagnostics import CheckResult, Severity, Status
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from bakar.feed import FeedRoots
 
 # The binary render-pool-local.py invokes. Not a Python package, not installable
 # with bakar, and named differently on every distro - which is why the hint below
@@ -230,15 +233,17 @@ def check_platform() -> CheckResult:
     return _ok("platform", f"{platform.system()} {platform.machine()}", severity=Severity.INFO)
 
 
-def preflight(  # noqa: PLR0913 - each argument scopes a different tier of the check, and collapsing them into an object would hide which tiers a caller opted into
-    *,
-    feed_root: Path | None = None,
-    stage_root: Path | None = None,
-    scripts: Path | None = None,
-    deploy_dir: Path | None = None,
-    release: str | None = None,
-    channel: str | None = None,
-) -> list[CheckResult]:
+@dataclass(frozen=True, kw_only=True, slots=True)
+class PreflightBuild:
+    """The build a preflight checks: its deploy tree, its scripts, and the release/channel it renders under."""
+
+    deploy_dir: Path | None = None
+    scripts: Path | None = None
+    release: str | None = None
+    channel: str | None = None
+
+
+def preflight(*, roots: FeedRoots | None = None, build: PreflightBuild | None = None) -> list[CheckResult]:
     """Run every prerequisite check and return the results, in report order.
 
     EVERY argument is optional, including the roots. The host tools are the tier
@@ -248,15 +253,17 @@ def preflight(  # noqa: PLR0913 - each argument scopes a different tier of the c
     ``pip install bakar`` fail on workspace detection instead of telling them
     which package is missing.
     """
+    build = build or PreflightBuild()
+    deploy_dir, scripts = build.deploy_dir, build.scripts
     results = [check_interpreter(), check_platform(), check_createrepo(), *check_shell_tools()]
     if scripts is not None or deploy_dir is not None:
         results.extend(check_scripts(scripts))
     if deploy_dir is not None:
         results.append(check_build_output(deploy_dir))
-        if release is not None and channel is not None:
-            results.append(check_release_channel(deploy_dir, release, channel))
-    if feed_root is not None and stage_root is not None:
-        results.extend(check_writable(feed_root, stage_root))
+        if build.release is not None and build.channel is not None:
+            results.append(check_release_channel(deploy_dir, build.release, build.channel))
+    if roots is not None:
+        results.extend(check_writable(roots.feed_root, roots.stage_root))
     return results
 
 

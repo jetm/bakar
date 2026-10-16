@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar.feed import resolve_stage_root, sync
+from bakar.feed import FeedPublish, resolve_stage_root, sync
 from tests.conftest import make_build_config
 
 if TYPE_CHECKING:
@@ -97,11 +97,13 @@ def _sync_machine(tmp_path: Path, scripts: Path, machine: str) -> None:
         (tmp_path / "feed-stage" / "2026" / "edge" / root).mkdir(parents=True, exist_ok=True)
     sync(
         cfg,
-        deploy_dir=_deploy(tmp_path, machine),
-        scripts=scripts,
-        release="2026",
-        channel="edge",
-        snapshot=f"SNAP-{machine}",
+        publish=FeedPublish(
+            deploy_dir=_deploy(tmp_path, machine),
+            scripts=scripts,
+            release="2026",
+            channel="edge",
+            snapshot=f"SNAP-{machine}",
+        ),
     )
 
 
@@ -161,11 +163,13 @@ def test_sync_does_not_clear_the_stage_root(tmp_path, monkeypatch) -> None:
 
     sync(
         cfg,
-        deploy_dir=_deploy(tmp_path, "imx93-frdm"),
-        scripts=scripts,
-        release="2026",
-        channel="edge",
-        snapshot="SNAP",
+        publish=FeedPublish(
+            deploy_dir=_deploy(tmp_path, "imx93-frdm"),
+            scripts=scripts,
+            release="2026",
+            channel="edge",
+            snapshot="SNAP",
+        ),
     )
 
     assert earlier.is_file()

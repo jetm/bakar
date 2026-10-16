@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from bakar.feed import (
+    FeedPublish,
     render_repo,
     snapshot_id,
     stage_build,
@@ -138,7 +139,7 @@ def test_sync_renders_every_repo_root_head_and_snapshot(tmp_path, monkeypatch) -
     cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
     _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
 
-    sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+    sync(cfg, publish=FeedPublish(deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP"))
 
     assert rec.subpaths() == [
         "sdk/all",
@@ -161,7 +162,7 @@ def test_sync_snapshot_subpath_is_deeper_by_exactly_the_snapshot_prefix(tmp_path
     cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
     _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
 
-    sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+    sync(cfg, publish=FeedPublish(deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP"))
 
     heads = [s for s in rec.subpaths() if not s.startswith("snapshots/")]
     snaps = [s for s in rec.subpaths() if s.startswith("snapshots/")]
@@ -175,7 +176,7 @@ def test_sync_writes_the_latest_pointer_after_every_render(tmp_path, monkeypatch
     cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
     _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
 
-    sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+    sync(cfg, publish=FeedPublish(deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP"))
 
     pointer = tmp_path / "feed" / "2026" / "edge" / "target" / "qemux86-64" / "snapshots-latest.json"
     body = json.loads(pointer.read_text())
@@ -197,7 +198,10 @@ def test_sync_interrupted_mid_render_leaves_no_pointer(tmp_path, monkeypatch) ->
     _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
 
     with pytest.raises(subprocess.CalledProcessError):
-        sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+        sync(
+            cfg,
+            publish=FeedPublish(deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP"),
+        )
 
     pointer = tmp_path / "feed" / "2026" / "edge" / "target" / "qemux86-64" / "snapshots-latest.json"
     assert not pointer.exists()
@@ -220,7 +224,10 @@ def test_sync_interrupted_leaves_a_prior_pointer_untouched(tmp_path, monkeypatch
     _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
 
     with pytest.raises(subprocess.CalledProcessError):
-        sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+        sync(
+            cfg,
+            publish=FeedPublish(deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP"),
+        )
 
     assert json.loads(pointer.read_text())["id"] == "OLD"
 
@@ -233,7 +240,7 @@ def test_sync_stages_before_it_renders(tmp_path, monkeypatch) -> None:
     cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
     _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
 
-    sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+    sync(cfg, publish=FeedPublish(deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP"))
 
     assert rec.calls[0][0].endswith("repo-stage-rpms.sh")
     assert all("--subpath" not in c for c in rec.calls[:1])
@@ -262,7 +269,8 @@ def test_sync_skips_a_repo_root_that_was_never_staged(tmp_path, monkeypatch) -> 
 
     # _stage above created sdk/all and target/qemux86-64 only, so
     # sdk/never-staged has no directory - which is the case under test.
-    result = sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+    publish = FeedPublish(deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+    result = sync(cfg, publish=publish)
 
     assert "sdk/never-staged" not in rec.subpaths()
     assert "snapshots/SNAP/sdk/never-staged" not in rec.subpaths()
@@ -285,7 +293,7 @@ def test_sync_still_writes_the_pointer_when_a_repo_was_unstaged(tmp_path, monkey
     cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
     _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
 
-    sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+    sync(cfg, publish=FeedPublish(deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP"))
 
     pointer = tmp_path / "feed" / "2026" / "edge" / "target" / "qemux86-64" / "snapshots-latest.json"
     assert pointer.is_file()
@@ -306,7 +314,8 @@ def test_a_sync_that_rendered_no_machine_repo_writes_no_pointer(tmp_path, monkey
     cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
     _stage(tmp_path, ("sdk/all",), release="2026", channel="edge")
 
-    result = sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+    publish = FeedPublish(deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+    result = sync(cfg, publish=publish)
 
     assert result["machines"] == []
     assert result["pointers"] == []
@@ -329,7 +338,8 @@ def test_an_extension_repo_is_not_treated_as_a_machine(tmp_path, monkeypatch) ->
     cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
     _stage(tmp_path, ("target/qemux86-64", "target/qemux86-64-ext"), release="2026", channel="edge")
 
-    result = sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+    publish = FeedPublish(deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+    result = sync(cfg, publish=publish)
 
     assert result["machines"] == ["qemux86-64"]
     channel = tmp_path / "feed" / "2026" / "edge"
@@ -351,7 +361,7 @@ def test_the_pointer_lands_where_avocado_cli_reads_it(tmp_path, monkeypatch) -> 
     cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
     _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
 
-    sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+    sync(cfg, publish=FeedPublish(deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP"))
 
     channel = tmp_path / "feed" / "2026" / "edge"
     assert (channel / "target" / "qemux86-64" / "snapshots-latest.json").is_file()
@@ -370,7 +380,7 @@ def test_sync_points_each_render_at_that_repos_staged_subtree(tmp_path, monkeypa
     cfg = make_build_config(workspace=tmp_path, feed_dir=str(tmp_path / "feed"))
     _stage(tmp_path, ("sdk/all", "target/qemux86-64"), release="2026", channel="edge")
 
-    sync(cfg, deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP")
+    sync(cfg, publish=FeedPublish(deploy_dir=deploy, scripts=scripts, release="2026", channel="edge", snapshot="SNAP"))
 
     staged_base = tmp_path / "feed-stage" / "2026" / "edge"
     for argv in rec.calls[1:]:

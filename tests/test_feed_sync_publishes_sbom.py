@@ -75,14 +75,15 @@ def order(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 def _sync(tree, sboms):
     return feed_mod.sync_paths(
-        feed_root=tree["feed"],
-        stage_root=tree["stage"],
-        deploy_dir=tree["deploy"],
-        scripts=Path("/scripts"),
-        release="dev",
-        channel="local",
-        snapshot="20260101T000000Z",
-        sboms=sboms,
+        roots=feed_mod.FeedRoots(feed_root=tree["feed"], stage_root=tree["stage"]),
+        publish=feed_mod.FeedPublish(
+            deploy_dir=tree["deploy"],
+            scripts=Path("/scripts"),
+            release="dev",
+            channel="local",
+            snapshot="20260101T000000Z",
+            sboms=sboms,
+        ),
     )
 
 

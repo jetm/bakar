@@ -15,6 +15,7 @@ import pytest
 
 from bakar import feed_preflight
 from bakar.diagnostics import Severity, Status
+from bakar.feed import FeedRoots
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -227,7 +228,8 @@ def test_preflight_without_a_workspace_checks_only_the_host(roots) -> None:
     """
     feed_root, stage_root = roots
 
-    names = {r.name for r in feed_preflight.preflight(feed_root=feed_root, stage_root=stage_root)}
+    feed_roots = FeedRoots(feed_root=feed_root, stage_root=stage_root)
+    names = {r.name for r in feed_preflight.preflight(roots=feed_roots)}
 
     assert "createrepo_c" in names
     assert "meta-avocado" not in names
@@ -240,10 +242,8 @@ def test_preflight_reports_every_problem_not_just_the_first(monkeypatch, roots) 
     feed_root, stage_root = roots
 
     results = feed_preflight.preflight(
-        feed_root=feed_root,
-        stage_root=stage_root,
-        scripts=None,
-        deploy_dir=feed_root / "no-such-build",
+        roots=FeedRoots(feed_root=feed_root, stage_root=stage_root),
+        build=feed_preflight.PreflightBuild(scripts=None, deploy_dir=feed_root / "no-such-build"),
     )
 
     failed = {r.name for r in results if r.status is Status.FAIL}
@@ -254,7 +254,10 @@ def test_preflight_on_a_ready_machine_blocks_nothing(monkeypatch, roots, scripts
     monkeypatch.setattr(feed_preflight.shutil, "which", lambda tool: f"/usr/bin/{tool}")
     feed_root, stage_root = roots
 
-    results = feed_preflight.preflight(feed_root=feed_root, stage_root=stage_root, scripts=scripts, deploy_dir=deploy)
+    results = feed_preflight.preflight(
+        roots=FeedRoots(feed_root=feed_root, stage_root=stage_root),
+        build=feed_preflight.PreflightBuild(scripts=scripts, deploy_dir=deploy),
+    )
 
     assert feed_preflight.blocking(results) == []
 
@@ -307,14 +310,14 @@ def test_preflight_skips_the_pair_check_when_not_given_one(roots, scripts, deplo
     _with_codename(deploy, "dev/local")
     feed_root, stage_root = roots
 
-    without = feed_preflight.preflight(feed_root=feed_root, stage_root=stage_root, scripts=scripts, deploy_dir=deploy)
+    feed_roots = FeedRoots(feed_root=feed_root, stage_root=stage_root)
+
+    without = feed_preflight.preflight(
+        roots=feed_roots, build=feed_preflight.PreflightBuild(scripts=scripts, deploy_dir=deploy)
+    )
     with_pair = feed_preflight.preflight(
-        feed_root=feed_root,
-        stage_root=stage_root,
-        scripts=scripts,
-        deploy_dir=deploy,
-        release="2024",
-        channel="edge",
+        roots=feed_roots,
+        build=feed_preflight.PreflightBuild(scripts=scripts, deploy_dir=deploy, release="2024", channel="edge"),
     )
 
     assert "release/channel" not in {r.name for r in without}

@@ -83,14 +83,18 @@ def preflight_results(
     which only a caller that knows where it intends to render can ask for.
     """
     has_build = cfg is not None and kas_yaml is not None
-    return feed_preflight.preflight(
-        feed_root=feed.resolve_feed_root(cfg) if cfg is not None else None,
-        stage_root=feed.resolve_stage_root(cfg) if cfg is not None else None,
+    roots = (
+        feed.FeedRoots(feed_root=feed.resolve_feed_root(cfg), stage_root=feed.resolve_stage_root(cfg))
+        if cfg is not None
+        else None
+    )
+    build = feed_preflight.PreflightBuild(
         scripts=scripts_dir(kas_yaml) if has_build else None,
         deploy_dir=deploy_dir(cfg) if has_build else None,
         release=release,
         channel=channel,
     )
+    return feed_preflight.preflight(roots=roots, build=build)
 
 
 def describe_failure(exc: BaseException) -> str:
@@ -137,11 +141,13 @@ def sync_then_index(
     """
     result = feed.sync(
         cfg,
-        deploy_dir=deploy_dir(cfg),
-        scripts=feed.meta_avocado_scripts(kas_yaml),
-        release=release,
-        channel=channel,
-        sboms=sboms,
+        publish=feed.FeedPublish(
+            deploy_dir=deploy_dir(cfg),
+            scripts=feed.meta_avocado_scripts(kas_yaml),
+            release=release,
+            channel=channel,
+            sboms=sboms,
+        ),
     )
     result["index"] = feed_index.write_targets_index(Path(str(result["channel_root"])))
     return result

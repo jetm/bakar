@@ -38,10 +38,12 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from bakar.feed import parse_repo_map, sync_paths
+from bakar.feed import FeedPublish, parse_repo_map, sync_paths
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from bakar.feed import FeedRoots
 
 _MAP_NAME = "avocado-repo.map"
 
@@ -51,6 +53,16 @@ _TESTDATA_GLOB = "images/*/*.testdata.json"
 
 _CODENAME_KEY = "DISTRO_CODENAME"
 _MACHINE_KEY = "MACHINE"
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ConsolidatePlan:
+    """The scripts every tree renders with, plus release/channel/snapshot overrides for all of them."""
+
+    scripts: Path
+    release: str | None = None
+    channel: str | None = None
+    snapshot: str | None = None
 
 
 @dataclass(frozen=True)
@@ -126,21 +138,12 @@ def discover_trees(search_roots: list[Path]) -> list[DiscoveredTree]:
     return trees
 
 
-def consolidate(  # noqa: PLR0913 - the roots, the scripts and an optional release override are each independent
-    trees: list[DiscoveredTree],
-    *,
-    feed_root: Path,
-    stage_root: Path,
-    scripts: Path,
-    release: str | None = None,
-    channel: str | None = None,
-    snapshot: str | None = None,
-) -> list[dict[str, object]]:
+def consolidate(trees: list[DiscoveredTree], *, roots: FeedRoots, plan: ConsolidatePlan) -> list[dict[str, object]]:
     """Sync every discovered tree into one feed, returning a result per tree.
 
     Each tree is filed under the release and channel IT declared, so two trees
     from different releases cannot land on top of each other. An explicit
-    ``release``/``channel`` overrides that for every tree, which is how an
+    ``plan.release``/``plan.channel`` overrides that for every tree, which is how an
     operator consolidates local builds - they all declare ``dev/local`` - into
     the channel a client is configured to fetch.
 
@@ -158,8 +161,8 @@ def consolidate(  # noqa: PLR0913 - the roots, the scripts and an optional relea
     results: list[dict[str, object]] = []
 
     for tree in trees:
-        tree_release = release or tree.release
-        tree_channel = channel or tree.channel
+        tree_release = plan.release or tree.release
+        tree_channel = plan.channel or tree.channel
         if not tree_release or not tree_channel:
             results.append(
                 {
@@ -175,13 +178,14 @@ def consolidate(  # noqa: PLR0913 - the roots, the scripts and an optional relea
             continue
 
         outcome = sync_paths(
-            feed_root=feed_root,
-            stage_root=stage_root,
-            deploy_dir=tree.deploy_dir,
-            scripts=scripts,
-            release=tree_release,
-            channel=tree_channel,
-            snapshot=snapshot,
+            roots=roots,
+            publish=FeedPublish(
+                deploy_dir=tree.deploy_dir,
+                scripts=plan.scripts,
+                release=tree_release,
+                channel=tree_channel,
+                snapshot=plan.snapshot,
+            ),
         )
         results.append({"tree": tree.deploy_dir, "machine": tree.machine, **outcome})
 

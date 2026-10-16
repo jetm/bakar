@@ -85,12 +85,12 @@ def calls(monkeypatch: pytest.MonkeyPatch, cfg) -> list[tuple[str, object]]:
 
     sync_spec = create_autospec(feed_mod.sync, spec_set=True)
 
-    def record_sync(cfg_arg, **kwargs):
-        log.append(("sync", kwargs["deploy_dir"]))
+    def record_sync(cfg_arg, *, publish):
+        log.append(("sync", publish.deploy_dir))
         return {
             "snapshot": "20260101T000000Z",
             "machines": ["qemux86-64"],
-            "channel_root": cfg_arg.effective_feed_dir / kwargs["release"] / kwargs["channel"],
+            "channel_root": cfg_arg.effective_feed_dir / publish.release / publish.channel,
             "repos": ["target/qemux86-64"],
             "unstaged": [],
         }

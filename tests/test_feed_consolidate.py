@@ -23,7 +23,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar.feed_consolidate import consolidate, discover_trees
+from bakar.feed import FeedRoots
+from bakar.feed_consolidate import ConsolidatePlan, consolidate, discover_trees
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -80,9 +81,8 @@ def test_consolidate_syncs_every_discovered_tree(tmp_path, monkeypatch) -> None:
 
     results = consolidate(
         discover_trees([src]),
-        feed_root=tmp_path / "feed",
-        stage_root=tmp_path / "feed-stage",
-        scripts=_scripts(tmp_path),
+        roots=FeedRoots(feed_root=tmp_path / "feed", stage_root=tmp_path / "feed-stage"),
+        plan=ConsolidatePlan(scripts=_scripts(tmp_path)),
     )
 
     assert len(results) == 3
@@ -104,9 +104,8 @@ def test_consolidate_files_each_tree_under_the_release_it_declared(tmp_path, mon
 
     consolidate(
         discover_trees([src]),
-        feed_root=tmp_path / "feed",
-        stage_root=tmp_path / "feed-stage",
-        scripts=_scripts(tmp_path),
+        roots=FeedRoots(feed_root=tmp_path / "feed", stage_root=tmp_path / "feed-stage"),
+        plan=ConsolidatePlan(scripts=_scripts(tmp_path)),
     )
 
     assert sorted(rec.releasevers()) == ["2024/edge", "2026/edge"]
@@ -126,9 +125,8 @@ def test_consolidate_skips_a_tree_that_declared_no_release(tmp_path, monkeypatch
 
     results = consolidate(
         discover_trees([src]),
-        feed_root=tmp_path / "feed",
-        stage_root=tmp_path / "feed-stage",
-        scripts=_scripts(tmp_path),
+        roots=FeedRoots(feed_root=tmp_path / "feed", stage_root=tmp_path / "feed-stage"),
+        plan=ConsolidatePlan(scripts=_scripts(tmp_path)),
     )
 
     assert "skipped" in results[0]
@@ -149,11 +147,8 @@ def test_consolidate_override_files_undeclared_trees_under_one_channel(tmp_path,
 
     results = consolidate(
         discover_trees([src]),
-        feed_root=tmp_path / "feed",
-        stage_root=tmp_path / "feed-stage",
-        scripts=_scripts(tmp_path),
-        release="2026",
-        channel="edge",
+        roots=FeedRoots(feed_root=tmp_path / "feed", stage_root=tmp_path / "feed-stage"),
+        plan=ConsolidatePlan(scripts=_scripts(tmp_path), release="2026", channel="edge"),
     )
 
     assert "skipped" not in results[0]
@@ -174,9 +169,8 @@ def test_consolidate_shares_one_stage_root_across_every_tree(tmp_path, monkeypat
 
     consolidate(
         discover_trees([src]),
-        feed_root=tmp_path / "feed",
-        stage_root=tmp_path / "feed-stage",
-        scripts=_scripts(tmp_path),
+        roots=FeedRoots(feed_root=tmp_path / "feed", stage_root=tmp_path / "feed-stage"),
+        plan=ConsolidatePlan(scripts=_scripts(tmp_path)),
     )
 
     stage_args = {argv[2] for argv in rec.calls if argv[0].endswith("repo-stage-rpms.sh")}
@@ -191,9 +185,8 @@ def test_consolidate_reports_the_machine_for_each_result(tmp_path, monkeypatch) 
 
     results = consolidate(
         discover_trees([src]),
-        feed_root=tmp_path / "feed",
-        stage_root=tmp_path / "feed-stage",
-        scripts=_scripts(tmp_path),
+        roots=FeedRoots(feed_root=tmp_path / "feed", stage_root=tmp_path / "feed-stage"),
+        plan=ConsolidatePlan(scripts=_scripts(tmp_path)),
     )
 
     assert results[0]["machine"] == "avocado-qemux86-64"

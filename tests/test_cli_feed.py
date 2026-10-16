@@ -144,7 +144,7 @@ def test_sync_stages_from_the_rpm_deploy_dir(cli: CliRunner, cfg, tmp_path: Path
         result = cli.invoke(app, ["feed", "sync", str(_yaml(tmp_path))])
 
     assert result.exit_code == 0
-    assert synced.call_args.kwargs["deploy_dir"] == deploy
+    assert synced.call_args.kwargs["publish"].deploy_dir == deploy
     assert "20260823T000000Z" in result.output
 
 
