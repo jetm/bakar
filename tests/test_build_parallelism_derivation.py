@@ -120,14 +120,14 @@ def test_sccache_dist_feeds_cluster_cpus_into_parallel_make(tmp_path: Path, monk
     import types
 
     from bakar import probes
-    from bakar.steps import kas_build
+    from bakar.steps import kas_build, kas_overlay
     from bakar.steps.kas_build import _build_env
 
     _clear_env(monkeypatch)
     _patch_host(monkeypatch, nproc=32, ram_gb=96.0)
     # No real network: stub the cluster probe and the host server pre-start.
     monkeypatch.setattr(
-        kas_build,
+        kas_overlay,
         "probe_cluster",
         lambda url: types.SimpleNamespace(
             reachable=True,
@@ -147,7 +147,7 @@ def test_sccache_dist_feeds_cluster_cpus_into_parallel_make(tmp_path: Path, monk
 @pytest.mark.unit
 def test_cluster_probe_failure_falls_back_to_nproc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A raising cluster probe never breaks the env; PM falls back to nproc."""
-    from bakar.steps import kas_build
+    from bakar.steps import kas_build, kas_overlay
     from bakar.steps.kas_build import _build_env
 
     _clear_env(monkeypatch)
@@ -156,7 +156,7 @@ def test_cluster_probe_failure_falls_back_to_nproc(tmp_path: Path, monkeypatch: 
     def _boom(url: str | None) -> object:
         raise OSError("scheduler unreachable")
 
-    monkeypatch.setattr(kas_build, "probe_cluster", _boom)
+    monkeypatch.setattr(kas_overlay, "probe_cluster", _boom)
     monkeypatch.setattr(kas_build.sccache_server, "ensure_running", lambda url=None, **kw: True)
     cfg = _cfg(tmp_path, sccache_dist=True, ccache=False, sccache_scheduler_url="http://localhost:10600")
 
@@ -169,7 +169,7 @@ def test_cluster_probe_failure_falls_back_to_nproc(tmp_path: Path, monkeypatch: 
 @pytest.mark.unit
 def test_dry_run_does_not_probe_cluster(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Script-gen (ensure_hashserv=False) never probes the cluster; PM falls back to nproc."""
-    from bakar.steps import kas_build
+    from bakar.steps import kas_overlay
     from bakar.steps.kas_build import _build_env
 
     _clear_env(monkeypatch)
@@ -181,7 +181,7 @@ def test_dry_run_does_not_probe_cluster(tmp_path: Path, monkeypatch: pytest.Monk
         calls.append(url)
         raise AssertionError("probe_cluster must not run in dry-run")
 
-    monkeypatch.setattr(kas_build, "probe_cluster", _record)
+    monkeypatch.setattr(kas_overlay, "probe_cluster", _record)
     cfg = _cfg(tmp_path, sccache_dist=True, ccache=False, sccache_scheduler_url="http://localhost:10600")
 
     env = _build_env(cfg, ensure_hashserv=False)

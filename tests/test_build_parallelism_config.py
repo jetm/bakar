@@ -441,12 +441,12 @@ def test_resolve_parallelism_sccache_dist_uses_cluster_cpus(tmp_path: Path, monk
     import types
 
     from bakar import probes
-    from bakar.steps import kas_build
+    from bakar.steps import kas_overlay
 
     _clear_parallelism_env(monkeypatch)
     monkeypatch.setattr("bakar.tuning.host_ram_gb", lambda: 96.0)
     monkeypatch.setattr(
-        kas_build,
+        kas_overlay,
         "probe_cluster",
         lambda url: types.SimpleNamespace(
             reachable=True,
@@ -468,12 +468,12 @@ def test_inject_literal_parallelism_bakes_cluster_sized_pm(tmp_path: Path, monke
     import types
 
     from bakar import probes
-    from bakar.steps import kas_build
+    from bakar.steps import kas_overlay
 
     _clear_parallelism_env(monkeypatch)
     monkeypatch.setattr("bakar.tuning.host_ram_gb", lambda: 96.0)
     monkeypatch.setattr(
-        kas_build,
+        kas_overlay,
         "probe_cluster",
         lambda url: types.SimpleNamespace(
             reachable=True,

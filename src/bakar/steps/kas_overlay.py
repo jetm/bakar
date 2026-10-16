@@ -4,11 +4,8 @@ Split out of :mod:`bakar.steps.kas_build` (task 10.2). Every symbol here is
 re-exported at ``bakar.steps.kas_build`` so existing import sites and test
 monkeypatches keep working unchanged.
 
-``_derive_parallelism_plan``'s cluster probe goes through
-``bakar.steps.kas_build.probe_cluster`` via a function-body deferred import,
-not a module-level one (which would create an import cycle with
-``kas_build``), because the test suite monkeypatches ``kas_build.probe_cluster``
-and expects that patch to reach this call.
+``_derive_parallelism_plan`` calls the module-level ``probe_cluster`` imported
+from :mod:`bakar.probes`; tests patch ``bakar.steps.kas_overlay.probe_cluster``.
 """
 
 from __future__ import annotations
@@ -22,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from bakar import sccache_server, tuning
 from bakar.config import _overlay_dir
+from bakar.probes import probe_cluster
 
 if TYPE_CHECKING:
     from bakar.config import BuildConfig
@@ -75,11 +73,8 @@ def _derive_parallelism_plan(cfg: BuildConfig, *, probe_cluster_ok: bool) -> tun
     launcher = "sccache-dist" if cfg.use_sccache_dist else "ccache" if cfg.use_ccache else "none"
     cluster_cpus: int | None = None
     if cfg.use_sccache_dist and probe_cluster_ok:
-        # Deferred: see the module docstring for why this is not a top-level import.
-        from bakar.steps import kas_build
-
         try:
-            report = kas_build.probe_cluster(cfg.sccache_scheduler_url)
+            report = probe_cluster(cfg.sccache_scheduler_url)
             if report.reachable and report.capacity is not None:
                 cluster_cpus = report.capacity.num_cpus
         except OSError, subprocess.SubprocessError, ValueError:
