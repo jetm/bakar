@@ -5,7 +5,12 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import shlex
+import shutil
+import signal
 import subprocess
+import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -20,6 +25,7 @@ from bakar.steps.layer_delivery_remote import (
     EXIT_NO_MARKER,
     MARKER_FILENAME,
     build_guard,
+    build_lock_path,
     describe_exit,
     ensure_worktree_script,
     marker_json,
@@ -71,6 +77,31 @@ def workspace(tmp_path: Path) -> Path:
     return ws
 
 
+def _script(workspace: Path, root: Path, commit: str, *, src: str = SRC, aliases: tuple[str, ...] = ()) -> str:
+    return ensure_worktree_script(
+        workspace=str(workspace),
+        worktree_root=str(root),
+        name="wt1",
+        commit=commit,
+        snapshot=False,
+        source_host=HOST,
+        source_path=src,
+        source_path_aliases=aliases,
+    )
+
+
+def _exec(script: str) -> subprocess.CompletedProcess:
+    env = {**os.environ, **_GIT_ENV}
+    return subprocess.run(
+        ["bash", "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
 def _run(workspace: Path, root: Path, commit: str, *, host: str = HOST, src: str = SRC):
     script = ensure_worktree_script(
         workspace=str(workspace),
@@ -81,15 +112,7 @@ def _run(workspace: Path, root: Path, commit: str, *, host: str = HOST, src: str
         source_host=host,
         source_path=src,
     )
-    env = {**os.environ, **_GIT_ENV}
-    return subprocess.run(
-        ["bash", "-c", script],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
+    return _exec(script)
 
 
 def _head(path: Path) -> str:
@@ -264,6 +287,26 @@ def test_invalid_name_is_rejected(name: str):
         )
 
 
+_FORBIDDEN = (
+    "worktree remove",
+    "worktree prune",
+    "--force",
+    "rm ",
+    " -f ",
+    "reset --hard",
+    "clean -",
+    "update-ref -d",
+    "branch -D",
+    "checkout --",
+    " gc",
+    "rmdir",
+    " mv ",
+    "unlink",
+    "--prune",
+    "--del",
+)
+
+
 def test_script_has_no_destructive_operations():
     script = ensure_worktree_script(
         workspace="/w",
@@ -273,20 +316,29 @@ def test_script_has_no_destructive_operations():
         snapshot=True,
         source_host=HOST,
         source_path=SRC,
+        source_path_aliases=("/alias",),
     )
-    for forbidden in (
-        "worktree remove",
-        "worktree prune",
-        "--force",
-        "rm ",
-        " -f ",
-        "reset --hard",
-        "clean -",
-        "update-ref -d",
-        "branch -D",
-        "checkout --",
-    ):
-        assert forbidden not in script
+    for forbidden in _FORBIDDEN:
+        assert forbidden not in script, forbidden
+
+
+def test_build_guard_has_no_destructive_operations():
+    guard = build_guard(worktree_root="/r", name="wt1", commit="abc")
+    for forbidden in _FORBIDDEN:
+        assert forbidden not in guard, forbidden
+
+
+def test_build_lock_path_is_the_scripts_lock(workspace: Path, tmp_path: Path):
+    repo = workspace / "meta-avocado"
+    root = tmp_path / "wts"
+    lock = build_lock_path(str(root), "wt1")
+    assert f"build_lock_file={shlex.quote(lock)}\n" in _script(workspace, root, _head(repo))
+    assert shlex.quote(lock) in build_guard(worktree_root=str(root), name="wt1", commit="abc")
+    assert _run(workspace, root, _head(repo)).returncode == 0
+    second = _commit(repo, "b.txt", "b\n")
+    assert _run(workspace, root, second).returncode == 0
+    # The move path is the only one that opens the lock, so it now exists.
+    assert sorted(p.name for p in root.iterdir() if p.name.endswith(".build.lock")) == [Path(lock).name]
 
 
 def test_marker_roundtrip():
@@ -463,3 +515,228 @@ def test_build_guard_runs_only_at_the_delivered_commit(workspace: Path, tmp_path
     )
     assert stale.returncode == EXIT_MOVED
     assert "moved by another dispatch" in stale.stderr
+
+
+def _wait_for(predicate, what: str, timeout: float = 15.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            pytest.fail(f"timed out waiting for {what}")
+        time.sleep(0.05)
+
+
+def _flock_probe(lock: str, mode: str) -> int:
+    return subprocess.run(["flock", "-n", mode, lock, "true"], timeout=10, check=False).returncode
+
+
+def _slow_checkout_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
+    """Return an env whose ``git checkout`` touches a mark file, then sleeps."""
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    mark = tmp_path / "in-checkout"
+    real_git = shutil.which("git")
+    assert real_git is not None
+    (shim / "git").write_text(
+        "#!/bin/bash\n"
+        'for a in "$@"; do\n'
+        f'    if [ "$a" = checkout ]; then : > {shlex.quote(str(mark))}; sleep 1.5; fi\n'
+        "done\n"
+        f'exec {shlex.quote(real_git)} "$@"\n'
+    )
+    (shim / "git").chmod(0o755)
+    return {**os.environ, **_GIT_ENV, "PATH": f"{shim}:{os.environ['PATH']}"}, mark
+
+
+def _start_slow_move(workspace: Path, root: Path, tmp_path: Path) -> tuple[subprocess.Popen, str, str]:
+    """Deliver HEAD, then start moving to a new commit with a checkout that lingers."""
+    repo = workspace / "meta-avocado"
+    first = _head(repo)
+    assert _run(workspace, root, first).returncode == 0
+    second = _commit(repo, "b.txt", "b\n")
+    env, mark = _slow_checkout_env(tmp_path)
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(workspace, root, second)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    _wait_for(mark.exists, "the move to reach git checkout")
+    return proc, first, second
+
+
+def test_move_holds_the_build_lock_through_the_checkout(workspace: Path, tmp_path: Path):
+    root = tmp_path / "wts"
+    proc, _, second = _start_slow_move(workspace, root, tmp_path)
+    lock = build_lock_path(str(root), "wt1")
+    held = _flock_probe(lock, "-s")
+    _, err = proc.communicate(timeout=30)
+    assert proc.returncode == 0, err
+    assert held != 0
+    assert _flock_probe(lock, "-s") == 0
+    assert _head(root / "wt1") == second
+
+
+def test_build_started_during_a_move_refuses_the_moved_tree(workspace: Path, tmp_path: Path):
+    root = tmp_path / "wts"
+    proc, first, second = _start_slow_move(workspace, root, tmp_path)
+    guarded = subprocess.run(
+        ["bash", "-c", build_guard(worktree_root=str(root), name="wt1", commit=first) + " true"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    _, err = proc.communicate(timeout=30)
+    assert proc.returncode == 0, err
+    assert guarded.returncode == EXIT_MOVED, guarded.stderr
+    assert _head(root / "wt1") == second
+
+
+def test_build_guard_holds_the_lock_while_the_build_runs(workspace: Path, tmp_path: Path):
+    root = tmp_path / "wts"
+    commit = _head(workspace / "meta-avocado")
+    assert _run(workspace, root, commit).returncode == 0
+    ready = tmp_path / "ready"
+    build = f"bash -c {shlex.quote(f': > {shlex.quote(str(ready))}; sleep 30')}"
+    proc = subprocess.Popen(
+        ["bash", "-c", f"{build_guard(worktree_root=str(root), name='wt1', commit=commit)} {build}"],
+        start_new_session=True,
+    )
+    lock = build_lock_path(str(root), "wt1")
+    try:
+        _wait_for(ready.exists, "the guarded build to start")
+        assert _flock_probe(lock, "-x") != 0
+    finally:
+        os.killpg(proc.pid, signal.SIGTERM)
+        proc.wait(timeout=10)
+    assert _flock_probe(lock, "-x") == 0
+
+
+def _user_systemd_available() -> bool:
+    if shutil.which("systemd-run") is None or shutil.which("systemctl") is None:
+        return False
+    probe = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True, timeout=10, check=False)
+    return probe.returncode == 0
+
+
+@pytest.mark.skipif(not _user_systemd_available(), reason="needs a systemd user manager")
+def test_sigint_to_the_unit_lets_a_guarded_build_drain(workspace: Path, tmp_path: Path):
+    root = tmp_path / "wts"
+    commit = _head(workspace / "meta-avocado")
+    assert _run(workspace, root, commit).returncode == 0
+    fake = tmp_path / "fakebuild"
+    fake.write_text(
+        "#!/bin/bash\n"
+        "trap 'echo draining; sleep 1; echo drained; exit 0' INT\n"
+        "echo started\n"
+        "for i in $(seq 60); do sleep 1; done\n"
+    )
+    fake.chmod(0o755)
+    log = tmp_path / "log"
+    rc_file = tmp_path / "log.rc"
+    q = shlex.quote
+    guard = build_guard(worktree_root=str(root), name="wt1", commit=commit)
+    # The rc sentinel is what the dispatch follower waits for, so it must be
+    # written after the build has drained.
+    wrapped = (
+        f"{guard} {q(str(fake))} > {q(str(log))} 2>&1; rc=$?; printf '%s\\n' \"$rc\" > {q(str(rc_file))}; exit $rc"
+    )
+    unit = f"bakar-test-guard-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    subprocess.run(
+        ["systemd-run", "--user", "--collect", "--quiet", f"--unit={unit}", "--", "bash", "-c", wrapped],
+        check=True,
+        timeout=30,
+    )
+    try:
+        _wait_for(lambda: log.exists() and "started" in log.read_text(), "the fake build to start")
+        subprocess.run(["systemctl", "--user", "kill", "--signal=SIGINT", unit], check=True, timeout=10)
+        _wait_for(lambda: rc_file.exists() and rc_file.read_text().strip() != "", "the rc sentinel", timeout=20)
+    finally:
+        subprocess.run(["systemctl", "--user", "stop", unit], capture_output=True, timeout=30, check=False)
+    assert rc_file.read_text().strip() == "0"
+    assert "drained" in log.read_text()
+
+
+def test_failed_add_empties_the_pending_record(workspace: Path, tmp_path: Path):
+    repo = workspace / "meta-avocado"
+    root = tmp_path / "wts"
+    dest = root / "wt1"
+    first = _head(repo)
+    assert _run(workspace, root, first).returncode == 0
+    # git still has the moved-aside worktree registered, so the add fails.
+    dest.rename(dest.with_name("wt1.moved-aside"))
+    second = _commit(repo, "b.txt", "b\n")
+    res = _run(workspace, root, second)
+    assert res.returncode != 0
+    assert (root / ".wt1.pending").stat().st_size == 0
+    _git("-C", repo, "worktree", "prune")
+    _git("-C", repo, "worktree", "add", "-q", "--detach", dest, second)
+    third = _commit(repo, "c.txt", "c\n")
+    res = _run(workspace, root, third)
+    assert res.returncode == EXIT_NO_MARKER
+    assert _head(dest) == second
+
+
+@pytest.mark.parametrize("pending", ["", "record"])
+def test_unborn_head_without_marker_is_refused(workspace: Path, tmp_path: Path, pending: str):
+    root = tmp_path / "wts"
+    dest = root / "wt1"
+    _git("init", "-q", dest)
+    commit = _head(workspace / "meta-avocado")
+    if pending:
+        (root / ".wt1.pending").write_text(
+            marker_json(source_host=HOST, source_path=SRC, name="wt1", commit=commit, snapshot=False)
+        )
+    res = _run(workspace, root, commit)
+    assert res.returncode == EXIT_NO_MARKER, res.stderr
+    assert "fatal" not in res.stderr
+
+
+CANON = "/home/me/real/meta-avocado"
+
+
+def test_marker_with_the_canonical_spelling_is_accepted(workspace: Path, tmp_path: Path):
+    repo = workspace / "meta-avocado"
+    root = tmp_path / "wts"
+    assert _exec(_script(workspace, root, _head(repo), src=CANON, aliases=(SRC,))).returncode == 0
+    assert _marker(root / "wt1")["source_path"] == CANON
+    second = _commit(repo, "b.txt", "b\n")
+    res = _exec(_script(workspace, root, second, src=CANON, aliases=(SRC,)))
+    assert res.returncode == 0, res.stderr
+    assert _head(root / "wt1") == second
+
+
+def test_marker_with_an_alias_spelling_is_accepted(workspace: Path, tmp_path: Path):
+    repo = workspace / "meta-avocado"
+    root = tmp_path / "wts"
+    # A marker written before the canonical spelling was used: the logical path.
+    assert _run(workspace, root, _head(repo), src=SRC).returncode == 0
+    second = _commit(repo, "b.txt", "b\n")
+    res = _exec(_script(workspace, root, second, src=CANON, aliases=(SRC,)))
+    assert res.returncode == 0, res.stderr
+    assert _head(root / "wt1") == second
+    assert _marker(root / "wt1")["source_path"] == CANON
+
+
+def test_marker_from_a_third_path_is_refused_despite_aliases(workspace: Path, tmp_path: Path):
+    repo = workspace / "meta-avocado"
+    root = tmp_path / "wts"
+    first = _head(repo)
+    assert _run(workspace, root, first, src="/elsewhere").returncode == 0
+    second = _commit(repo, "b.txt", "b\n")
+    res = _exec(_script(workspace, root, second, src=CANON, aliases=(SRC,)))
+    assert res.returncode == EXIT_FOREIGN_MARKER
+    assert "/elsewhere" in res.stderr
+    assert _head(root / "wt1") == first
+
+
+def test_old_style_pending_record_is_accepted_via_alias(workspace: Path, tmp_path: Path):
+    root = tmp_path / "wts"
+    first = _head(workspace / "meta-avocado")
+    assert _run(workspace, root, first).returncode == 0
+    gitdir = _interrupt_after_add(root, first)
+    res = _exec(_script(workspace, root, first, src=CANON, aliases=(SRC,)))
+    assert res.returncode == 0, res.stderr
+    assert (gitdir / MARKER_FILENAME).exists()
+    assert (root / ".wt1.pending").stat().st_size == 0

@@ -606,3 +606,244 @@ def test_nxp_manifest_build_uses_the_additive_mirror(
     assert args[0] == HOST
     assert args[1] == workspace
     assert "extra_roots" not in kwargs
+
+
+# ---------------------------------------------------------------------------
+# (k) A release workspace never reaches the mirror, whatever shape the build takes.
+# ---------------------------------------------------------------------------
+
+_RELEASE_YAML = (
+    "header:\n  version: 16\nmachine: raspberrypi5\nrepos:\n  meta-avocado:\n    path: meta-avocado\n"
+    "  openembedded-core:\n    url: https://example.invalid/oe.git\n    branch: wrynose-avocado\n"
+)
+
+
+@pytest.fixture
+def release_ws(tmp_path: Path) -> Path:
+    """A release workspace: meta-avocado at the top, a sibling layer, a generated build dir."""
+    ws = tmp_path / "peridio-wrynose"
+    (ws / "meta-avocado" / "kas" / "machine").mkdir(parents=True)
+    (ws / "meta-peridio" / "kas").mkdir(parents=True)
+    (ws / "build-raspberrypi5").mkdir()
+    (ws / ".bakar.toml").write_text("")
+    for yml in (
+        ws / "build-raspberrypi5" / "avocado-bakar.yml",
+        ws / "local-rpi5.yml",
+        ws / "meta-peridio" / "kas" / "x.yml",
+        ws / "meta-avocado" / "kas" / "machine" / "raspberrypi5.yml",
+    ):
+        yml.write_text(_RELEASE_YAML)
+    return ws
+
+
+def _squash(text: str) -> str:
+    """``text`` without whitespace: Rich wraps a long tmp path mid-component."""
+    return "".join(text.split())
+
+
+def _assert_refused_before_any_remote_call(result, fake_sp: FakeSubprocess, mirror: list, ws: Path) -> None:
+    assert result.exit_code == 2, result.output
+    out = _squash(result.output)
+    assert _squash(f"cannot mirror {ws} to {HOST}") in out
+    assert _squash("it is a release workspace, which bakar builds through the layer-delivery flow") in out
+    assert _squash(f"bakar build <path to a kas file inside the meta-avocado checkout> --on {HOST}") in out
+    assert fake_sp.calls == []
+    assert mirror == []
+
+
+@pytest.mark.parametrize(
+    "yml",
+    ["build-raspberrypi5/avocado-bakar.yml", "local-rpi5.yml", "meta-peridio/kas/x.yml"],
+    ids=["generated-build-yml", "kas-at-workspace-root", "sibling-repo-kas"],
+)
+def test_release_workspace_kas_shapes_are_refused(
+    runner: _CliRunner,
+    release_ws: Path,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+    yml: str,
+) -> None:
+    _user_config(monkeypatch)
+    mirror = _record(monkeypatch, rd, "dispatch_remote_build")
+    monkeypatch.chdir(release_ws.parent)
+
+    result = _invoke_on(runner, monkeypatch, str(release_ws / yml))
+
+    _assert_refused_before_any_remote_call(result, fake_sp, mirror, release_ws)
+
+
+@pytest.mark.parametrize("args", [(), ("--preset", "rpi")], ids=["bare", "preset"])
+def test_release_workspace_bare_and_preset_builds_are_refused(
+    runner: _CliRunner,
+    release_ws: Path,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+    args: tuple[str, ...],
+) -> None:
+    # A preset resolves after the --on branch, so it reaches the mirror the way
+    # a bare build from inside the workspace does.
+    _user_config(monkeypatch)
+    mirror = _record(monkeypatch, rd, "dispatch_remote_build")
+    monkeypatch.chdir(release_ws)
+
+    result = _invoke_on(runner, monkeypatch, *args)
+
+    _assert_refused_before_any_remote_call(result, fake_sp, mirror, release_ws)
+
+
+def test_workspace_named_by_the_template_is_refused_without_a_meta_avocado(
+    runner: _CliRunner,
+    tmp_path: Path,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ws = tmp_path / "peridio-scarthgap"
+    ws.mkdir()
+    (ws / ".bakar.toml").write_text("")
+    _user_config(monkeypatch, workspaces_template=str(tmp_path / "peridio-{release}"))
+    mirror = _record(monkeypatch, rd, "dispatch_remote_build")
+    monkeypatch.chdir(ws)
+
+    result = _invoke_on(runner, monkeypatch)
+
+    _assert_refused_before_any_remote_call(result, fake_sp, mirror, ws)
+
+
+def test_meta_avocado_kas_in_a_release_workspace_still_routes(
+    runner: _CliRunner,
+    release_ws: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bakar.steps import avocado_dispatch
+
+    _user_config(monkeypatch, workspaces_template=str(release_ws.parent / "peridio-{release}"))
+    _probe(monkeypatch, "wrynose")
+    avocado = _record(monkeypatch, avocado_dispatch, "dispatch_avocado_build")
+    mirror = _record(monkeypatch, rd, "dispatch_remote_build")
+    monkeypatch.chdir(release_ws.parent)
+
+    result = _invoke_on(runner, monkeypatch, str(release_ws / "meta-avocado" / "kas" / "machine" / "raspberrypi5.yml"))
+
+    assert result.exit_code == 0, result.output
+    assert mirror == []
+    assert len(avocado) == 1
+
+
+# ---------------------------------------------------------------------------
+# (l) -w with a meta-avocado --on build must name the routed workspace.
+# ---------------------------------------------------------------------------
+
+
+def test_meta_avocado_with_a_different_workspace_exits_2(
+    runner: _CliRunner,
+    meta_avocado_worktree_layout,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from bakar.steps import avocado_dispatch
+
+    lay = meta_avocado_worktree_layout
+    other = tmp_path / "peridio-test"
+    other.mkdir()
+    _user_config(monkeypatch, workspaces_template=str(tmp_path / "peridio-{release}"))
+    _probe(monkeypatch, "wrynose")
+    avocado = _record(monkeypatch, avocado_dispatch, "dispatch_avocado_build")
+    monkeypatch.chdir(lay.worktree)
+
+    result = _invoke_on(runner, monkeypatch, "-w", str(other), str(lay.kas_yaml))
+
+    assert result.exit_code == 2, result.output
+    out = _squash(result.output)
+    assert _squash(f"-w {other} does not match the release workspace {tmp_path / 'peridio-wrynose'}") in out
+    assert avocado == []
+    assert fake_sp.calls == []
+
+
+def test_meta_avocado_with_the_routed_workspace_dispatches(
+    runner: _CliRunner,
+    meta_avocado_worktree_layout,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from bakar.steps import avocado_dispatch
+
+    lay = meta_avocado_worktree_layout
+    routed = tmp_path / "peridio-wrynose"
+    routed.mkdir()
+    _user_config(monkeypatch, workspaces_template=str(tmp_path / "peridio-{release}"))
+    _probe(monkeypatch, "wrynose")
+    avocado = _record(monkeypatch, avocado_dispatch, "dispatch_avocado_build")
+    monkeypatch.chdir(lay.worktree)
+
+    result = _invoke_on(runner, monkeypatch, "-w", str(routed), str(lay.kas_yaml))
+
+    assert result.exit_code == 0, result.output
+    assert avocado[0][1]["workspace"] == routed
+
+
+# ---------------------------------------------------------------------------
+# (m) Requests that run a clean task on the host are refused before any ssh.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("args", "env", "named"),
+    [
+        ((), {"KAS_TASK": "cleanall"}, "KAS_TASK=cleanall"),
+        (("-t", "busybox:do_cleanall"), {}, "--target busybox:do_cleanall"),
+        (("--target", "busybox:cleansstate"), {}, "--target busybox:cleansstate"),
+        ((), {"KAS_TARGET": "core-image-minimal busybox:do_clean"}, "KAS_TARGET busybox:do_clean"),
+    ],
+    ids=["kas-task", "short-target", "long-target", "kas-target"],
+)
+def test_deleting_requests_with_on_are_refused(  # noqa: PLR0913 - pytest fixtures plus the three parameters
+    runner: _CliRunner,
+    workspace: Path,
+    generic_yaml: Path,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+    args: tuple[str, ...],
+    env: dict[str, str],
+    named: str,
+) -> None:
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    _user_config(monkeypatch)
+    mirror = _record(monkeypatch, rd, "dispatch_remote_build")
+
+    result = _invoke_on(runner, monkeypatch, str(generic_yaml), *args)
+
+    assert result.exit_code == 2, result.output
+    assert f"{named} cannot be combined with --on" in " ".join(result.output.split())
+    assert fake_sp.calls == []
+    assert mirror == []
+
+
+@pytest.mark.parametrize(
+    ("args", "env"),
+    [
+        (("-t", "busybox"), {}),
+        (("-t", "busybox:do_build"), {}),
+        (("-t", "core-image-minimal"), {}),
+        ((), {"KAS_TASK": "build"}),
+    ],
+    ids=["recipe", "do-build", "image", "kas-task-build"],
+)
+def test_plain_build_requests_with_on_are_dispatched(  # noqa: PLR0913 - pytest fixtures plus the two parameters
+    runner: _CliRunner,
+    workspace: Path,
+    generic_yaml: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    args: tuple[str, ...],
+    env: dict[str, str],
+) -> None:
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    _user_config(monkeypatch)
+    mirror = _record(monkeypatch, rd, "dispatch_remote_build")
+
+    result = _invoke_on(runner, monkeypatch, str(generic_yaml), *args)
+
+    assert result.exit_code == 0, result.output
+    assert len(mirror) == 1

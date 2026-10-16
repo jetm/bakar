@@ -114,12 +114,6 @@ def test_rsync_argv_base_flags() -> None:
     assert "-i" not in argv
 
 
-def test_rsync_argv_dry_run_flags() -> None:
-    argv = build_rsync_argv(WS, HOST, dry_run=True)
-    assert "-n" in argv
-    assert "-i" in argv
-
-
 def test_rsync_argv_one_exclude_per_pattern() -> None:
     argv = build_rsync_argv(WS, HOST)
     for pat in RSYNC_EXCLUDES:
@@ -138,18 +132,6 @@ def test_rsync_argv_source_and_dest_same_absolute_path_with_trailing_slash() -> 
     assert dest == f"{HOST}:{WS}/"
     assert src.endswith("/")
     assert dest.endswith("/")
-
-
-def test_rsync_argv_extra_excludes_appended_anchored() -> None:
-    argv = build_rsync_argv(WS, HOST, extra_excludes=("openembedded-core",))
-    assert "--exclude=/openembedded-core/" in argv
-    assert "--delete" not in argv
-
-
-def test_rsync_argv_extra_excludes_default_adds_nothing() -> None:
-    base = build_rsync_argv(WS, HOST)
-    with_default = build_rsync_argv(WS, HOST, extra_excludes=())
-    assert base == with_default
 
 
 # ---------------------------------------------------------------------------
@@ -436,8 +418,8 @@ def test_assert_safe_workspace_rejects_home() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Orchestration: preflight_remote / confirm_destructive_sync /
-# dispatch_remote_build  (mocked subprocess, no live host)
+# Orchestration: preflight_remote / dispatch_remote_build
+# (mocked subprocess, no live host)
 # ---------------------------------------------------------------------------
 
 
@@ -913,6 +895,51 @@ def test_dispatch_proceeds_on_mismatch_with_yes(fake_sp: FakeSubprocess, capsys:
     assert "proceeding despite" in out
     assert "1.0.0" in out
     assert "2.0.0" in out
+
+
+class _StderrVersionSubprocess(FakeSubprocess):
+    """``bakar --version`` writes to stderr, as the real console does, on both hosts."""
+
+    def __init__(self, local: str, remote: str) -> None:
+        super().__init__()
+        self._local = local
+        self._remote = remote
+
+    def run(self, argv, **kwargs) -> _Result:
+        argv = list(argv)
+        if argv[0] == "bakar" and "--version" in argv:
+            self.calls.append(("run", argv))
+            self.run_inputs.append(kwargs.get("input"))
+            return _Result(0, stdout="", stderr=self._local)
+        if argv[0] == "ssh" and "bakar --version" in (kwargs.get("input") or ""):
+            self.calls.append(("run", argv))
+            self.run_inputs.append(kwargs.get("input"))
+            return _Result(0, stdout="", stderr=self._remote)
+        return super().run(argv, **kwargs)
+
+
+def test_versions_printed_on_stderr_are_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _StderrVersionSubprocess("bakar 1.0 (aaaa)\n", "bakar 1.0 (bbbb)\n")
+    monkeypatch.setattr(rd, "subprocess", fake)
+    assert rd._local_bakar_version() == "bakar 1.0 (aaaa)"
+    assert rd.preflight_remote(HOST) == (True, "bakar 1.0 (bbbb)")
+
+
+def test_stderr_version_mismatch_refuses_the_dispatch(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Reading stdout alone saw None on both sides, so this mismatch used to pass.
+    fake = _StderrVersionSubprocess("bakar 1.0 (aaaa)\n", "bakar 0.9 (bbbb)\n")
+    monkeypatch.setattr(rd, "subprocess", fake)
+    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=False)
+    assert rc == 1
+    assert "bakar mismatch" in capsys.readouterr().err
+    assert not any(argv[0] == "rsync" for _, argv in fake.calls)
+
+
+def test_preflight_probe_folds_the_remote_version_into_stdout(fake_sp: FakeSubprocess) -> None:
+    rd.preflight_remote(HOST)
+    assert "bakar --version 2>&1" in (fake_sp.run_inputs[0] or "")
 
 
 def test_package_identity_stable_and_content_sensitive(tmp_path: Path) -> None:
@@ -1459,19 +1486,13 @@ _SEGMENT = st.text(alphabet="abcdefghijklmnopqrstuvwxyz0123456789._-", min_size=
 
 
 def _is_delete_option(token: str) -> bool:
-    return token == "--delete" or token.startswith("--delete-") or token == "--remove-source-files"
+    # `--del` is rsync's alias for --delete-during.
+    return token in {"--del", "--delete", "--remove-source-files"} or token.startswith("--delete-")
 
 
-@given(
-    segments=st.lists(_SEGMENT, min_size=1, max_size=4),
-    host=_SEGMENT,
-    dry_run=st.booleans(),
-    extra=st.lists(_SEGMENT, max_size=3),
-)
-def test_rsync_argv_never_emits_a_delete_or_remove_option(
-    segments: list[str], host: str, dry_run: bool, extra: list[str]
-) -> None:
-    argv = build_rsync_argv(Path("/", *segments), host, dry_run=dry_run, extra_excludes=tuple(extra))
+@given(segments=st.lists(_SEGMENT, min_size=1, max_size=4), host=_SEGMENT)
+def test_rsync_argv_never_emits_a_delete_or_remove_option(segments: list[str], host: str) -> None:
+    argv = build_rsync_argv(Path("/", *segments), host)
     assert not [tok for tok in argv if _is_delete_option(tok)]
 
 
@@ -1529,6 +1550,10 @@ def test_dispatch_prints_the_plan_and_never_prompts(
     assert f"dispatch plan -> {HOST}" in err
     assert f"{HOST}:{WS}/" in err
     assert "nothing is deleted on the host" in err
+    flat = " ".join(err.split())
+    assert "never removes a path that exists only on the host" in flat
+    assert "a path whose type differs from the local one (file, directory, symlink) is replaced" in flat
+    assert "additive rsync, nothing deleted" not in flat
     assert not hasattr(rd, "typer")
 
 

@@ -35,15 +35,18 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.console import Console
 
 from bakar.buildtools import parse_layerseries_corenames
 from bakar.config import WORKSPACE_FEED_DIRNAME, WORKSPACE_FEED_STAGE_DIRNAME
 
-# stderr so `bakar build --on <host> > log` keeps chrome (preview, prompts,
-# run-id) out of the piped build log, matching the project convention in
-# commands/_app.py.
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+# stderr so `bakar build --on <host> > log` keeps chrome (plan, run-id) out of
+# the piped build log, matching the project convention in commands/_app.py.
 console = Console(stderr=True)
 
 
@@ -104,20 +107,13 @@ RSYNC_EXCLUDES: tuple[str, ...] = (
 )
 
 
-def build_rsync_argv(
-    ws_root: Path,
-    host: str,
-    *,
-    dry_run: bool = False,
-    extra_excludes: tuple[str, ...] = (),
-) -> list[str]:
+def build_rsync_argv(ws_root: Path, host: str) -> list[str]:
     """Construct the additive ``rsync`` argv mirroring ``ws_root`` to ``host``.
 
-    Returns ``rsync -a`` (plus ``-n -i`` when ``dry_run``) followed by one
-    ``--exclude=<pat>`` per :data:`RSYNC_EXCLUDES` entry, then one anchored
-    ``--exclude=/<name>/`` per :paramref:`extra_excludes` entry, and finally the
-    source ``<ws_root>/`` and destination ``<host>:<ws_root>/`` (same absolute
-    path, trailing slashes so directory contents map 1:1).
+    Returns ``rsync -a`` followed by one ``--exclude=<pat>`` per
+    :data:`RSYNC_EXCLUDES` entry, and finally the source ``<ws_root>/`` and
+    destination ``<host>:<ws_root>/`` (same absolute path, trailing slashes so
+    directory contents map 1:1).
 
     The mirror adds and updates, and never deletes: dispatch must leave every
     remote file that has no local counterpart in place, so no delete or
@@ -125,35 +121,67 @@ def build_rsync_argv(
     remote until someone removes it by hand.
     """
     argv = ["rsync", "-a"]
-    if dry_run:
-        argv += ["-n", "-i"]
     argv += [f"--exclude={pat}" for pat in RSYNC_EXCLUDES]
-    argv += [f"--exclude=/{name}/" for name in extra_excludes]
     argv += [f"{ws_root}/", f"{host}:{ws_root}/"]
     return argv
 
 
-# Confirm-gate bypass flags that exist only to drive `--on` dispatch and must
-# never reach the remote build (an older remote bakar rejects `--yes`, and it is
-# a no-op there in any case).
+# Version-mismatch override flags that exist only to drive `--on` dispatch and
+# must never reach the remote build (an older remote bakar rejects `--yes`, and
+# it is a no-op there in any case).
 _DISPATCH_ONLY_FLAGS = frozenset({"--yes", "-y"})
 
-# A short-option cluster such as `-nky` (click splits it into `-n -k -y`).
-_SHORT_CLUSTER_RE = re.compile(r"-[a-zA-Z]+")
+# `bakar build`'s single-dash options, split by whether they take a value. Click
+# reads a short-option token letter by letter: a flag lets the next letter be
+# another option, while a value-taking letter swallows the rest of the token as
+# its value. A test holds both sets to the real command, so a new short option
+# cannot slip past the strippers unclassified.
+BOOL_SHORT = frozenset("nky")
+VALUE_SHORT = frozenset("mditfbw")
+
+
+def strip_short_option(token: str, letter: str) -> tuple[str | None, bool]:
+    """Remove short option ``letter`` from the single-dash ``token``.
+
+    Returns ``(kept, skip_next)``: ``kept`` is the token to forward, or None when
+    nothing of it remains, and ``skip_next`` is True when ``letter`` takes a
+    value and that value is the next token. Only the letters before a
+    value-taking one are options, so ``-tmyimage`` (target ``myimage``) is kept
+    untouched while ``-ky`` loses its ``y``. A token that is not a single-dash
+    option is returned unchanged.
+    """
+    if not token.startswith("-") or token.startswith("--") or len(token) < 2:
+        return token, False
+    kept: list[str] = []
+    body = token[1:]
+    for index, char in enumerate(body):
+        if char == letter:
+            if letter in VALUE_SHORT:
+                # The rest of the token is this option's value, or the next
+                # token is when nothing follows the letter.
+                return (f"-{''.join(kept)}" if kept else None), not body[index + 1 :]
+            continue
+        if char in BOOL_SHORT:
+            kept.append(char)
+            continue
+        # Another option's value starts here; nothing after it is an option.
+        kept.append(body[index:])
+        break
+    return (f"-{''.join(kept)}" if kept else None), False
 
 
 def strip_dispatch_options(local_args: list[str]) -> list[str]:
     """Return ``local_args`` with the dispatch-only options removed.
 
     Strips ``--on <host>`` / ``--on=<host>`` (else the remote re-enters dispatch)
-    and the confirm-gate bypass ``--yes`` / ``-y``; every other token is left
-    intact so the remote build sees the same flag surface as the local one.
+    and the version-mismatch override ``--yes`` / ``-y``; every other token is
+    left intact so the remote build sees the same flag surface as the local one.
 
-    Short-option clusters are handled too: ``-nky`` becomes ``-nk`` (the
-    clustered ``y`` is dropped) so the bypass never rides to the remote inside a
-    cluster. The stripper is position-blind by design: a literal ``--yes``/``-y``
-    or a ``y``-bearing cluster appearing as another option's value is out of
-    scope (no build option takes such a value today).
+    Short-option clusters are handled too: ``-nky`` becomes ``-nk`` so the
+    override never rides to the remote inside a cluster, while ``-tmyimage``
+    keeps its ``y`` because it is part of the target. The stripper is otherwise
+    position-blind: a literal ``--yes``/``-y`` passed as the separate value of
+    another option is out of scope (no build option takes such a value today).
     """
     result: list[str] = []
     skip_next = False
@@ -164,17 +192,42 @@ def strip_dispatch_options(local_args: list[str]) -> list[str]:
         if arg == "--on":
             skip_next = True
             continue
-        if arg.startswith("--on="):
+        if arg.startswith("--on=") or arg in _DISPATCH_ONLY_FLAGS:
             continue
-        if arg in _DISPATCH_ONLY_FLAGS:
-            continue
-        if _SHORT_CLUSTER_RE.fullmatch(arg):
-            stripped = "-" + arg[1:].replace("y", "")
-            if stripped != "-":
-                result.append(stripped)
-            continue
-        result.append(arg)
+        kept, _ = strip_short_option(arg, "y")
+        if kept is not None:
+            result.append(kept)
     return result
+
+
+# A `recipe:task` target whose task is a clean variant (do_clean, cleanall,
+# cleansstate): bitbake deletes the recipe's output, downloads or sstate.
+_CLEAN_TASK_RE = re.compile(r"(do_)?clean.*")
+_BUILD_TASKS = frozenset({"", "build", "do_build"})
+
+
+def deleting_requests(target: str | None, env: Mapping[str, str]) -> list[str]:
+    """Return each part of a build request that would delete on the remote, as shown to the user.
+
+    kas runs ``KAS_TASK`` as ``bitbake -c $KAS_TASK``, and bakar passes no
+    ``--task`` so kas reads it from the forwarded environment: anything but a
+    plain build runs a task such as ``cleanall`` against the remote's shared
+    download and sstate caches. A ``recipe:task`` target from ``--target`` or the
+    space-separated ``KAS_TARGET`` does the same through the target list.
+    """
+    found: list[str] = []
+    task = env.get("KAS_TASK", "").strip()
+    if task not in _BUILD_TASKS:
+        found.append(f"KAS_TASK={task}")
+    sources = (("--target", target or ""), ("KAS_TARGET", env.get("KAS_TARGET", "")))
+    # rsplit: a multiconfig target `mc:<name>:<recipe>:<task>` carries the task last.
+    found.extend(
+        f"{label} {item}"
+        for label, raw in sources
+        for item in raw.split()
+        if ":" in item and _CLEAN_TASK_RE.fullmatch(item.rsplit(":", 1)[1])
+    )
+    return found
 
 
 # Where a detached dispatch parks its log and exit-code sentinel. NOT the
@@ -480,10 +533,16 @@ def preflight_remote(host: str) -> tuple[bool, str | None]:
     Returns ``(True, remote_version)`` when bakar is found, else
     ``(False, detail)`` where ``detail`` is a not-found hint or the captured ssh
     stderr for the caller to surface.
+
+    ``bakar --version`` prints to stderr (its console is the diagnostic
+    stream), so the probe folds it into stdout on the remote and keeps ssh's
+    own warnings on stderr; stderr is still read when stdout is empty.
+    Reading stdout alone saw no version on either side, and the mismatch check
+    then passed every time.
     """
     result = subprocess.run(
         ["ssh", "-o", "BatchMode=yes", host, "bash", "-s"],
-        input="command -v bakar >/dev/null 2>&1 || exit 127\nbakar --version\n",
+        input="command -v bakar >/dev/null 2>&1 || exit 127\nbakar --version 2>&1\n",
         capture_output=True,
         text=True,
         check=False,
@@ -494,15 +553,18 @@ def preflight_remote(host: str) -> tuple[bool, str | None]:
         )
     if result.returncode != 0:
         return False, (result.stderr.strip() or None)
-    return True, (result.stdout.strip() or None)
+    return True, (result.stdout.strip() or result.stderr.strip() or None)
 
 
 def _local_bakar_version() -> str | None:
-    """Return the local ``bakar --version`` string, or None when it cannot run."""
+    """Return the local ``bakar --version`` string, or None when it cannot run.
+
+    Read from stderr when stdout is empty, for the reason :func:`preflight_remote` gives.
+    """
     result = subprocess.run(["bakar", "--version"], capture_output=True, text=True, check=False)
     if result.returncode != 0:
         return None
-    return result.stdout.strip() or None
+    return result.stdout.strip() or result.stderr.strip() or None
 
 
 def _ssh_bash_capture(host: str, script: str, *, batch_mode: bool = True) -> subprocess.CompletedProcess[str]:
@@ -950,6 +1012,30 @@ def check_versions(remote_version: str | None, *, assume_yes: bool) -> bool:
     return True
 
 
+def preflight_or_report(host: str, *, assume_yes: bool) -> bool:
+    """Run the host checks every dispatch shares, printing the reason when one refuses.
+
+    The hyphen guard comes first and runs no subprocess: a host beginning with
+    ``-`` would parse as an ssh or rsync option. Then :func:`preflight_remote`
+    and :func:`check_versions`, the latter overridable by ``assume_yes``.
+    """
+    if host.startswith("-"):
+        console.print(
+            f"[red]invalid host {host!r}[/]: must not begin with '-' (it would parse as an ssh/rsync option)."
+        )
+        return False
+    ok, detail = preflight_remote(host)
+    if not ok:
+        console.print(
+            f"[red]remote preflight failed for {host}[/] - check connectivity, ssh key auth, "
+            f"and that a matching bakar is installed on the remote."
+        )
+        if detail:
+            console.print(detail, markup=False)
+        return False
+    return check_versions(detail, assume_yes=assume_yes)
+
+
 def run_remote_build(host: str, script: str, run_root: Path) -> int:
     """Stream ``script`` on ``host`` and report the run id found under ``run_root``.
 
@@ -987,41 +1073,32 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
 ) -> int:
     """Mirror the workspace to ``host`` additively and run the build there, in strict order.
 
-    Each step gates the next: (1) reject a hyphen-prefixed host and guard the
-    rsync destination; (2) preflight the host (reachable + bakar on the non-login
-    PATH), aborting with NO rsync/build when it fails; (2b) abort when the remote
-    bakar id/version differs from local (a build with different code/overlays),
-    unless ``assume_yes`` overrides; (3) print the dispatch plan, without a
-    prompt; (4) run the additive ``rsync -a`` for ``ws_root``, which adds and
-    updates remote files and never deletes one; (5) stream the remote build over
-    ``ssh <host> bash -s`` stdin; (6) surface the run-id + triage command;
-    (7) return the remote build's exit code.
+    Each step gates the next: (1) guard the rsync destination; (2) reject a
+    hyphen-prefixed host, preflight the host (reachable + bakar on the non-login
+    PATH) and abort when the remote bakar id/version differs from local unless
+    ``assume_yes`` overrides (:func:`preflight_or_report`), with NO rsync/build
+    when any of them refuses; (3) print the dispatch plan, without a prompt;
+    (4) run the additive ``rsync -a`` for ``ws_root``, which adds and updates
+    remote files and never removes a path that exists only on the host;
+    (5) stream the remote build over ``ssh <host> bash -s`` stdin; (6) surface
+    the run-id + triage command; (7) return the remote build's exit code.
     """
-    if host.startswith("-"):
-        console.print(
-            f"[red]invalid host {host!r}[/]: must not begin with '-' (it would parse as an ssh/rsync option)."
-        )
-        return 1
-
     try:
         assert_safe_workspace(ws_root)
     except ValueError as exc:
         console.print(f"[red]unsafe workspace for remote sync:[/] {exc}")
         return 1
 
-    ok, detail = preflight_remote(host)
-    if not ok:
-        console.print(
-            f"[red]remote preflight failed for {host}[/] - check connectivity, ssh key auth, "
-            f"and that a matching bakar is installed on the remote."
-        )
-        if detail:
-            console.print(detail, markup=False)
-        return 1
-    if not check_versions(detail, assume_yes=assume_yes):
+    if not preflight_or_report(host, assume_yes=assume_yes):
         return 1
 
-    plan = DispatchPlan(writes=[f"add/update {ws_root}/ -> {host}:{ws_root}/ (additive rsync, nothing deleted)"])
+    plan = DispatchPlan(
+        writes=[
+            f"{ws_root}/ -> {host}:{ws_root}/: adds and updates files; never removes a path that exists "
+            "only on the host; a path whose type differs from the local one (file, directory, symlink) "
+            "is replaced"
+        ]
+    )
     print_dispatch_plan(host, plan)
 
     rsync_rc = subprocess.run(build_rsync_argv(ws_root, host), check=False).returncode

@@ -15,17 +15,20 @@ here deletes anything on the remote.
 from __future__ import annotations
 
 import os
-import re
+import shlex
 import socket
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from rich.markup import escape
 
 from bakar.release_workspace import (
     DEFAULT_BUILD_DIR_TEMPLATE,
     REPO_POLICY_ENV,
     REPO_POLICY_REUSE,
     ReleaseRoutingError,
+    parse_repo_policy,
     worktree_build_dir_name,
 )
 from bakar.steps import layer_delivery, layer_delivery_remote
@@ -36,8 +39,11 @@ if TYPE_CHECKING:
 
 console = rd.console
 
-_WORKSPACE_FLAGS = frozenset({"-w", "--workspace"})
-_SHORT_CLUSTER_RE = re.compile(r"-([A-Za-z]*)w(.*)")
+# Answered only by a bakar that carries release-workspace dispatch: an older one
+# exits non-zero on the unknown key, and it would also ignore BAKAR_REPO_POLICY.
+_CAPABILITY_KEY = "dispatch.snapshot_untracked_cap_mb"
+# How many untracked paths the plan names before summarising the rest.
+_PLAN_UNTRACKED_SHOWN = 20
 
 
 class KasArgError(Exception):
@@ -73,29 +79,26 @@ def rewrite_kas_arg(kas_arg: str, checkout: Path, cwd: Path) -> str:
 
 
 def strip_workspace_option(args: list[str]) -> list[str]:
-    """Drop ``-w``/``--workspace`` and its value: the remote cwd decides the workspace."""
+    """Drop ``-w``/``--workspace`` and its value: the remote cwd decides the workspace.
+
+    Short tokens go through :func:`remote_dispatch.strip_short_option`, so the
+    ``w`` of a cluster such as ``-kw /ws`` is removed with its value while a
+    ``w`` inside another option's value (``-tweston``) is not an option at all.
+    """
     result: list[str] = []
     skip_next = False
     for arg in args:
         if skip_next:
             skip_next = False
             continue
-        if arg in _WORKSPACE_FLAGS:
+        if arg == "--workspace":
             skip_next = True
             continue
-        # `--workspace=X`, and click's attached short form `-wX`.
-        if arg.startswith("--workspace=") or (arg.startswith("-w") and not arg.startswith("--")):
+        if arg.startswith("--workspace="):
             continue
-        # A short cluster such as `-kw /ws`: keep the flags before the `w`; a
-        # trailing `w` takes the next token, anything after it is the value.
-        cluster = _SHORT_CLUSTER_RE.fullmatch(arg)
-        if cluster:
-            flags, value = cluster.groups()
-            if flags:
-                result.append(f"-{flags}")
-            skip_next = not value
-            continue
-        result.append(arg)
+        kept, skip_next = rd.strip_short_option(arg, "w")
+        if kept is not None:
+            result.append(kept)
     return result
 
 
@@ -124,6 +127,30 @@ def remote_env(build_dir_template: str | None) -> dict[str, str]:
     return env
 
 
+def _check_remote_capability(host: str) -> bool:
+    """Refuse a host whose bakar predates release-workspace dispatch, whatever ``--yes`` says.
+
+    The version check is overridable, and an older remote bakar runs plain kas:
+    it ignores ``BAKAR_REPO_POLICY=reuse`` and moves the workspace's shared
+    clones to their pins. Asking for a setting only this change added is a
+    read-only probe that such a bakar fails.
+    """
+    result = rd._ssh_bash_capture(host, f"bakar settings get {shlex.quote(_CAPABILITY_KEY)}\n")
+    if result.returncode == 0:
+        return True
+    if result.returncode == 255:
+        console.print(f"[red]could not probe the bakar on {host}[/] (ssh exit 255).")
+        if result.stderr.strip():
+            console.print(result.stderr.strip(), markup=False)
+        return False
+    console.print(
+        f"[red]the bakar on {host} predates release-workspace dispatch[/]: it would ignore "
+        f"{REPO_POLICY_ENV} and move the workspace's shared clones off their pins. Update bakar on {host} "
+        "(git pull + uv tool install --force) and retry; --yes does not override this."
+    )
+    return False
+
+
 def dispatch_avocado_build(  # noqa: PLR0913 - fixed dispatch signature consumed by the build command
     host: str,
     *,
@@ -149,13 +176,22 @@ def dispatch_avocado_build(  # noqa: PLR0913 - fixed dispatch signature consumed
     Returns the remote build's exit code, 130 on Ctrl-C, or ``_DISPATCH_LOST_EXIT``
     when the log stream is lost while the build keeps running.
     """
-    if host.startswith("-"):
+    # Everything up to the preflight is local, so a request that cannot be
+    # dispatched is refused before the host is contacted at all.
+    try:
+        # The remote is always sent `reuse`, but a typo here would build with
+        # `kas` locally, so it is refused rather than overridden silently.
+        parse_repo_policy(os.environ.get(REPO_POLICY_ENV))
+    except ReleaseRoutingError as exc:
+        console.print(f"[red]cannot dispatch:[/] {exc}")
+        return 2
+    if worktree_root is not None and not worktree_root.is_absolute():
         console.print(
-            f"[red]invalid host {host!r}[/]: must not begin with '-' (it would parse as an ssh/rsync option)."
+            f"[red]cannot dispatch:[/] '\\[dispatch] worktree_root' must be an absolute path on the host, "
+            f"got {escape(repr(str(worktree_root)))}"
         )
-        return 1
+        return 2
 
-    # Purely local, so it is checked before anything touches the host.
     cwd = invoking_cwd if invoking_cwd is not None else Path.cwd()
     try:
         remote_argv = build_remote_argv(local_args, kas_arg, rewrite_kas_arg(kas_arg, checkout, cwd))
@@ -163,37 +199,26 @@ def dispatch_avocado_build(  # noqa: PLR0913 - fixed dispatch signature consumed
         console.print(f"[red]cannot dispatch:[/] {exc}")
         return 2
 
-    ok, detail = rd.preflight_remote(host)
-    if not ok:
-        console.print(
-            f"[red]remote preflight failed for {host}[/] - check connectivity, ssh key auth, "
-            f"and that a matching bakar is installed on the remote."
-        )
-        if detail:
-            console.print(detail, markup=False)
-        return 1
-    if not rd.check_versions(detail, assume_yes=assume_yes):
-        return 1
-
-    try:
-        rd.check_remote_workspace(host, str(workspace), release)
-    except rd.DispatchError as exc:
-        console.print(f"[red]remote workspace check failed:[/] {exc}")
-        return 1
-
     try:
         name = layer_delivery.delivered_name(checkout, worktree)
         build_dir = worktree_build_dir_name(kas_yaml.stem, name, build_dir_template)
+        commit, snapshot = layer_delivery.snapshot_commit(checkout, cap_mb=cap_mb)
+        untracked = layer_delivery.snapshot_untracked_paths(checkout) if snapshot else []
     except ReleaseRoutingError as exc:
         console.print(f"[red]cannot dispatch:[/] {exc}")
         return 2
     except layer_delivery.DeliveryError as exc:
         console.print(f"[red]cannot deliver {checkout}:[/] {exc}")
         return 1
+
+    if not rd.preflight_or_report(host, assume_yes=assume_yes):
+        return 1
+    if not _check_remote_capability(host):
+        return 1
     try:
-        commit, snapshot = layer_delivery.snapshot_commit(checkout, cap_mb=cap_mb)
-    except layer_delivery.DeliveryError as exc:
-        console.print(f"[red]cannot deliver {checkout}:[/] {exc}")
+        rd.check_remote_workspace(host, str(workspace), release)
+    except rd.DispatchError as exc:
+        console.print(f"[red]remote workspace check failed:[/] {exc}")
         return 1
 
     root = worktree_root if worktree_root is not None else workspace / ".bakar" / "worktrees"
@@ -201,13 +226,22 @@ def dispatch_avocado_build(  # noqa: PLR0913 - fixed dispatch signature consumed
     remote_repo = f"{workspace}/meta-avocado"
     plan = rd.DispatchPlan(
         writes=[
-            f"worktree {target} (created, or moved to the delivered commit)",
+            f"worktree {target} (created, or moved to the delivered commit), with its git admin directory "
+            f"{remote_repo}/.git/worktrees/{name} holding the delivery marker "
+            f"{layer_delivery_remote.MARKER_FILENAME}",
+            f"bookkeeping files in {root} (created if missing): .{name}.lock, .{name}.pending, .{name}.build.lock",
             f"ref refs/bakar/{name}/{commit[:12]} in {remote_repo}",
             f"build directory {workspace}/{build_dir}",
         ]
     )
     rd.print_dispatch_plan(host, plan)
     console.print(f"  snapshot of uncommitted changes: {'yes' if snapshot else 'no'}")
+    if untracked:
+        console.print("  untracked paths the snapshot carries:")
+        for path in untracked[:_PLAN_UNTRACKED_SHOWN]:
+            console.print(f"    {path}", markup=False)
+        if len(untracked) > _PLAN_UNTRACKED_SHOWN:
+            console.print(f"    and {len(untracked) - _PLAN_UNTRACKED_SHOWN} more")
 
     try:
         push = layer_delivery.push_argv(checkout, host, remote_repo, commit, name)
@@ -226,7 +260,10 @@ def dispatch_avocado_build(  # noqa: PLR0913 - fixed dispatch signature consumed
         commit=commit,
         snapshot=snapshot,
         source_host=socket.gethostname(),
-        source_path=str(checkout),
+        source_path=os.path.realpath(checkout),
+        # Markers written before the canonical spelling carry the logical path,
+        # which differs from it when the checkout is reached through a symlink.
+        source_path_aliases=(str(checkout),),
     )
     ensured = rd._ssh_bash_capture(host, script)
     if ensured.returncode != 0:

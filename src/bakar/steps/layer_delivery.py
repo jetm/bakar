@@ -13,7 +13,9 @@ The commit is then pushed, without any force, to
 
 from __future__ import annotations
 
+import fnmatch
 import os
+import posixpath
 import re
 import subprocess
 import tempfile
@@ -27,6 +29,21 @@ if TYPE_CHECKING:
 
 _RECEIVE_PACK = "git -c receive.autogc=false -c receive.shallowUpdate=true receive-pack"
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+# Basenames of key material a snapshot refuses to carry, compared lowercased so
+# that a file named ID_RSA or SERVER.PEM is not let through by its case.
+_KEY_PATTERNS = (
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.pfx",
+    "*.kdbx",
+    "*.gpg",
+    "id_rsa*",
+    "id_ed25519*",
+    "id_ecdsa*",
+    ".env",
+    ".env.*",
+)
 
 
 class DeliveryError(Exception):
@@ -49,32 +66,49 @@ def _git(
     return proc
 
 
-def _untracked_bytes(checkout: Path) -> int:
+def snapshot_untracked_paths(checkout: Path) -> list[str]:
+    """Return the untracked, non-ignored paths a snapshot of ``checkout`` would carry."""
     out = _git(checkout, "ls-files", "--others", "--exclude-standard", "-z", text=False).stdout
+    return sorted(os.fsdecode(raw) for raw in out.split(b"\0") if raw)
+
+
+def _untracked_bytes(checkout: Path, paths: list[str]) -> int:
     total = 0
-    for raw in out.split(b"\0"):
-        if not raw:
-            continue
+    for path in paths:
         try:
-            total += (checkout / os.fsdecode(raw)).lstat().st_size
+            total += (checkout / path).lstat().st_size
         except OSError:
             continue
     return total
+
+
+def _key_material(paths: list[str]) -> list[str]:
+    return [p for p in paths if any(fnmatch.fnmatchcase(posixpath.basename(p).lower(), pat) for pat in _KEY_PATTERNS)]
 
 
 def snapshot_commit(checkout: Path, *, cap_mb: int) -> tuple[str, bool]:
     """Return ``(commit, is_snapshot)`` for delivering ``checkout``.
 
     A clean checkout yields HEAD. A dirty one yields a snapshot commit holding
-    every tracked change and every untracked non-ignored file, refused when the
-    untracked files together exceed ``cap_mb`` MiB.
+    every tracked change and every untracked non-ignored file, refused when an
+    untracked file looks like key material or the untracked files together
+    exceed ``cap_mb`` MiB.
     """
     head = _git(checkout, "rev-parse", "HEAD").stdout.strip()
     status = _git(checkout, "status", "--porcelain", "--untracked-files=all").stdout
     if not status.strip():
         return head, False
 
-    untracked = _untracked_bytes(checkout)
+    untracked_paths = snapshot_untracked_paths(checkout)
+    # The snapshot lands in a permanent ref on a shared build host, so key
+    # material must never ride along just because nobody ignored it.
+    keys = _key_material(untracked_paths)
+    if keys:
+        raise DeliveryError(
+            f"untracked files in {checkout} look like key material: {', '.join(keys)}; "
+            "move them out of the checkout, ignore them, or commit them after review"
+        )
+    untracked = _untracked_bytes(checkout, untracked_paths)
     cap = cap_mb * 1024 * 1024
     if untracked > cap:
         raise DeliveryError(

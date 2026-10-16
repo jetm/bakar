@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from bakar.release_workspace import sanitize_delivered_name
 from bakar.steps import avocado_dispatch as ad
@@ -30,8 +32,11 @@ class Recorder:
         self.snapshot = False
         self.push_rc = 0
         self.ensure_rc = 0
+        self.capability_rc = 0
+        self.untracked: list[str] = []
         self.stream: tuple[int, list[str], bool] | type[BaseException] = (0, ["ok\n"], True)
         self.ensure_script = ""
+        self.capability_script = ""
         self.remote_script = ""
 
         def preflight(host: str) -> tuple[bool, str | None]:
@@ -59,7 +64,15 @@ class Recorder:
             self.calls.append(("push", argv))
             return subprocess.CompletedProcess(argv, self.push_rc)
 
+        def untracked(checkout: Path) -> list[str]:
+            self.calls.append(("untracked", checkout))
+            return self.untracked
+
         def capture(host: str, script: str, **_kw: Any) -> subprocess.CompletedProcess[str]:
+            if script.startswith("bakar settings get "):
+                self.calls.append(("capability", host))
+                self.capability_script = script
+                return subprocess.CompletedProcess(["ssh"], self.capability_rc, "", "")
             self.calls.append(("ensure", host))
             self.ensure_script = script
             return subprocess.CompletedProcess(["ssh"], self.ensure_rc, "", "boom")
@@ -82,6 +95,8 @@ class Recorder:
         monkeypatch.setattr(remote_dispatch, "check_remote_workspace", check_ws)
         monkeypatch.setattr(layer_delivery, "delivered_name", name)
         monkeypatch.setattr(layer_delivery, "snapshot_commit", snapshot)
+        monkeypatch.setattr(layer_delivery, "snapshot_untracked_paths", untracked, raising=False)
+        monkeypatch.delenv("BAKAR_REPO_POLICY", raising=False)
         monkeypatch.setattr(ad.subprocess, "run", run)
         monkeypatch.setattr(remote_dispatch, "_ssh_bash_capture", capture)
         monkeypatch.setattr(remote_dispatch, "_stream_remote_build", stream)
@@ -129,18 +144,25 @@ def _dispatch(checkout: Path, kas_arg: str, local_args: list[str], **overrides: 
 
 
 def _remote_argv_line(script: str) -> str:
-    return next(line for line in script.splitlines() if " bakar " in line and line.lstrip().startswith("exec flock"))
+    # The build guard wraps the build either as `flock -s <lock> bash -c ...`
+    # or as `bash -c '<script>' <lock> ...`; the build line starts with either.
+    return next(
+        line
+        for line in script.splitlines()
+        if " bakar " in line and line.lstrip().startswith(("exec flock", "exec bash -c"))
+    )
 
 
 def test_call_order_and_success(rec: Recorder, checkout: Path) -> None:
     rc = _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml", "--on", HOST])
     assert rc == 0
     assert rec.names() == [
-        "preflight",
-        "local_version",
-        "check_workspace",
         "delivered_name",
         "snapshot",
+        "preflight",
+        "local_version",
+        "capability",
+        "check_workspace",
         "push",
         "ensure",
         "stream",
@@ -152,13 +174,15 @@ def test_call_order_and_success(rec: Recorder, checkout: Path) -> None:
 
 @pytest.mark.parametrize(
     "failure",
-    ["preflight", "version", "workspace"],
+    ["preflight", "version", "capability", "workspace"],
 )
 def test_no_remote_write_when_a_check_fails(rec: Recorder, checkout: Path, failure: str) -> None:
     if failure == "preflight":
         rec.preflight = (False, "unreachable")
     elif failure == "version":
         rec.preflight = (True, "bakar 2.0")
+    elif failure == "capability":
+        rec.capability_rc = 2
     else:
         rec.workspace_error = "release mismatch"
     rc = _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml", "--on", HOST])
@@ -175,6 +199,61 @@ def test_version_mismatch_proceeds_with_yes(rec: Recorder, checkout: Path) -> No
     )
     assert rc == 0
     assert "push" in rec.names()
+
+
+@pytest.mark.parametrize(("remote_version", "assume_yes"), [("bakar 1.0", False), ("bakar 2.0", True)])
+def test_old_remote_bakar_is_refused_even_with_yes(
+    rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str], remote_version: str, assume_yes: bool
+) -> None:
+    # A remote bakar from before release-workspace dispatch would run plain kas
+    # and move the shared clones; --yes overrides only the version check.
+    rec.preflight = (True, remote_version)
+    rec.capability_rc = 2
+    rc = _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"], assume_yes=assume_yes)
+    err = " ".join(capsys.readouterr().err.split())
+    assert rc == 1
+    assert f"the bakar on {HOST} predates release-workspace dispatch" in err
+    assert "--yes does not override this" in err
+    assert rec.capability_script.strip() == "bakar settings get dispatch.snapshot_untracked_cap_mb"
+    assert not {"check_workspace", "push", "ensure", "stream"} & set(rec.names())
+
+
+def test_capability_probe_ssh_failure_is_reported_as_such(
+    rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rec.capability_rc = 255
+    assert _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"]) == 1
+    assert f"could not probe the bakar on {HOST}" in capsys.readouterr().err
+    assert "push" not in rec.names()
+
+
+def test_repo_policy_typo_exits_2_before_any_ssh(
+    rec: Recorder, checkout: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuze")
+    rc = _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"])
+    assert rc == 2
+    assert "'reuze' is not a repository policy" in capsys.readouterr().err
+    assert rec.calls == []
+
+
+@pytest.mark.parametrize("policy", ["kas", "reuse", ""])
+def test_valid_local_repo_policy_dispatches(
+    rec: Recorder, checkout: Path, monkeypatch: pytest.MonkeyPatch, policy: str
+) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", policy)
+    assert _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"]) == 0
+    # The remote is always told to reuse, whatever the local policy is.
+    assert "BAKAR_REPO_POLICY=reuse" in rec.remote_script
+
+
+def test_relative_worktree_root_exits_2_before_any_ssh(
+    rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"], worktree_root=Path("wt"))
+    assert rc == 2
+    assert "[dispatch] worktree_root" in capsys.readouterr().err
+    assert rec.calls == []
 
 
 def test_push_targets_remote_clone_and_ref(rec: Recorder, checkout: Path) -> None:
@@ -267,14 +346,42 @@ def test_kas_segment_outside_checkout_exits_2(rec: Recorder, checkout: Path, tmp
 
 def test_plan_printed_without_prompt(rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]) -> None:
     rec.snapshot = True
+    rec.untracked = ["notes.txt", "kas/new.yml"]
     _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"])
-    err = capsys.readouterr().err
+    err = " ".join(capsys.readouterr().err.split())
+    root = f"{WORKSPACE}/.bakar/worktrees"
     assert "dispatch plan" in err
-    assert f"{WORKSPACE}/.bakar/worktrees/feature-x" in err
+    assert f"{root}/feature-x" in err
+    assert f"{WORKSPACE}/meta-avocado/.git/worktrees/feature-x" in err
+    assert "bakar-delivered.json" in err
+    assert f"bookkeeping files in {root} (created if missing)" in err
+    assert ".feature-x.lock, .feature-x.pending, .feature-x.build.lock" in err
     assert f"refs/bakar/feature-x/{COMMIT[:12]}" in err
     assert f"{WORKSPACE}/build-m-feature-x" in err
     assert "snapshot of uncommitted changes: yes" in err
+    assert "untracked paths the snapshot carries: notes.txt kas/new.yml" in err
     assert "nothing is deleted" in err
+
+
+def test_plan_lists_at_most_twenty_untracked_paths(
+    rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rec.snapshot = True
+    rec.untracked = [f"f{i:02d}" for i in range(23)]
+    _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"])
+    err = capsys.readouterr().err
+    assert "f19" in err
+    assert "f20" not in err
+    assert "and 3 more" in err
+
+
+def test_plan_names_no_untracked_paths_without_a_snapshot(
+    rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rec.untracked = ["never-shown"]
+    _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"])
+    assert "untracked" not in capsys.readouterr().err
+    assert "untracked" not in rec.names()
 
 
 def test_interrupted_stream_returns_130(rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -311,7 +418,21 @@ def test_unusable_name_exits_2_before_any_remote_write(
     rc = _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml", "--on", HOST])
     assert rc == 2
     assert "no usable characters" in capsys.readouterr().err
-    assert not {"snapshot", "push", "ensure", "stream"} & set(rec.names())
+    # Refused before the host is contacted at all, not only before a write.
+    assert not {"snapshot", "preflight", "capability", "check_workspace", "push", "ensure", "stream"} & set(rec.names())
+
+
+def test_snapshot_failure_exits_1_before_any_ssh(
+    rec: Recorder, checkout: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def too_big(_checkout: Path, *, cap_mb: int) -> tuple[str, bool]:
+        raise layer_delivery.DeliveryError("untracked files exceed the cap")
+
+    monkeypatch.setattr(layer_delivery, "snapshot_commit", too_big)
+    rc = _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"])
+    assert rc == 1
+    assert "untracked files exceed the cap" in capsys.readouterr().err
+    assert rec.names() == ["delivered_name"]
 
 
 def test_hyphen_host_rejected(rec: Recorder, checkout: Path) -> None:
@@ -332,7 +453,8 @@ def test_hyphen_host_rejected(rec: Recorder, checkout: Path) -> None:
         invoking_cwd=checkout,
     )
     assert rc == 1
-    assert rec.calls == []
+    # Only the local name and snapshot ran; nothing reached ssh or git push.
+    assert not {"preflight", "capability", "check_workspace", "push", "ensure", "stream"} & set(rec.names())
 
 
 def test_strip_workspace_option_forms() -> None:
@@ -358,3 +480,69 @@ def test_dispatched_scripts_carry_no_destructive_command(rec: Recorder, checkout
     assert _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml", "--on", HOST]) == 0
     assert forbidden not in rec.ensure_script
     assert forbidden not in rec.remote_script
+
+
+# Fragments of a command that deletes, moves or prunes on the host. A delivered
+# script carrying any of them could cost the shared workspace data.
+_DESTRUCTIVE = (
+    "rm ",
+    " gc",
+    "rmdir",
+    " mv ",
+    "unlink",
+    "--prune",
+    "--del",
+    "reset --hard",
+    "worktree remove",
+    "worktree prune",
+    "--force",
+)
+
+
+@settings(max_examples=25, deadline=None)
+@given(
+    snapshot=st.booleans(),
+    assume_yes=st.booleans(),
+    worktree_root=st.sampled_from([None, Path("/srv/wt"), Path("/home/u/.bakar wt")]),
+    build_dir_template=st.sampled_from([None, "b-{worktree}-{stem}"]),
+    sccache_dist=st.booleans(),
+)
+def test_every_avocado_dispatch_plan_and_script_is_non_destructive(  # noqa: PLR0913 - one argument per hypothesis strategy
+    tmp_path_factory: pytest.TempPathFactory,
+    snapshot: bool,
+    assume_yes: bool,
+    worktree_root: Path | None,
+    build_dir_template: str | None,
+    sccache_dist: bool,
+) -> None:
+    built: list[remote_dispatch.DispatchPlan] = []
+
+    # __init__ rather than __post_init__: the base dataclass's generated __init__
+    # only calls a __post_init__ that existed when it was decorated.
+    class _Recording(remote_dispatch.DispatchPlan):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            built.append(self)
+
+    co = tmp_path_factory.mktemp("prop") / "feature-x"
+    with pytest.MonkeyPatch.context() as mp:
+        rec = Recorder(mp)
+        rec.snapshot = snapshot
+        rec.untracked = ["notes.txt"]
+        mp.setattr(remote_dispatch, "DispatchPlan", _Recording)
+        rc = _dispatch(
+            co,
+            "kas/machine/m.yml",
+            ["build", "kas/machine/m.yml", "--on", HOST],
+            assume_yes=assume_yes,
+            worktree_root=worktree_root,
+            build_dir_template=build_dir_template,
+            sccache_dist=sccache_dist,
+        )
+    assert rc == 0
+    assert len(built) == 1
+    assert all(plan.deletes == [] for plan in built)
+    assert rec.ensure_script and rec.remote_script
+    for fragment in _DESTRUCTIVE:
+        assert fragment not in rec.ensure_script, fragment
+        assert fragment not in rec.remote_script, fragment

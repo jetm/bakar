@@ -7,10 +7,11 @@ import sys
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 import bakar.commands._app as _state
@@ -124,6 +125,9 @@ from bakar.steps import bitbake_override as step_override  # noqa: F401
 from bakar.steps import kas_build as step_kas
 from bakar.steps import qcom_build as step_qcom_build  # noqa: F401
 from bakar.steps.kas_build import KasBuildContext
+
+if TYPE_CHECKING:
+    from bakar.user_config import UserConfig
 
 
 def _output_mode() -> OutputMode:
@@ -239,32 +243,75 @@ def _finish_build(
 _NO_ROUTING_MSG = "--on for meta-avocado builds needs \\[workspaces] template in the bakar user config"
 
 
+def _dispatch_user_config() -> UserConfig | None:
+    """The user config the app callback loaded, or loaded now; None after printing why it is invalid."""
+    from bakar.user_config import load_user_config
+
+    if _state._USER_CONFIG is not None:
+        return _state._USER_CONFIG
+    try:
+        return load_user_config()
+    except ValueError as exc:
+        console.print(f"[red]Invalid bakar config:[/] {exc}")
+        return None
+
+
+def _refuse_release_workspace_mirror(ws_root: Path, host: str) -> bool:
+    """True, after printing why, when ``ws_root`` is a release workspace the mirror must not reach.
+
+    The mirror copies the workspace root with ``.git`` included, which moves a
+    shared clone's HEAD on the host and overwrites edits there. A release
+    workspace keeps its meta-avocado at the top, so its builds go through the
+    layer-delivery flow instead; NXP, TI, qcom and bbsetup workspaces keep theirs
+    under a family subdirectory or have none, and stay on the mirror.
+    """
+    from bakar.release_workspace import matches_release_workspace
+
+    user_config = _dispatch_user_config()
+    if user_config is None:
+        return True
+    if not (ws_root / "meta-avocado").is_dir() and not matches_release_workspace(
+        ws_root, user_config.workspaces_template, user_config.workspaces_releases
+    ):
+        return False
+    console.print(
+        f"[red]cannot mirror {ws_root} to {host}[/]: it is a release workspace, which bakar builds through "
+        "the layer-delivery flow. Run `bakar build <path to a kas file inside the meta-avocado checkout> "
+        f"--on {host}` instead.",
+    )
+    return True
+
+
+def _same_path(a: Path, b: Path) -> bool:
+    """True when ``a`` and ``b`` name the same directory, as spelled or with symlinks resolved."""
+    spellings = {os.path.normpath(a.expanduser()), os.path.realpath(a.expanduser())}
+    return bool(spellings & {os.path.normpath(b.expanduser()), os.path.realpath(b.expanduser())})
+
+
 def _dispatch_meta_avocado(
     host: str,
     *,
     kas_arg: str,
     main_yaml: Path,
     invoking_cwd: Path,
+    workspace: Path | None,
     sccache_dist: bool,
     assume_yes: bool,
 ) -> int:
     """Route a meta-avocado ``--on`` build to its release workspace and dispatch it.
 
+    ``workspace`` is an explicit ``-w``: the release decides where the build
+    runs, so a ``-w`` naming another workspace is refused rather than ignored.
     Every refusal here returns before any ssh, rsync or git command runs.
     """
     from bakar import config as config_mod
     from bakar.commands._helpers import logical_path
     from bakar.release_workspace import ReleaseRoutingError, map_release
     from bakar.steps import avocado_dispatch, kas_pins
-    from bakar.user_config import load_user_config
 
-    user_config = _state._USER_CONFIG
+    user_config = _dispatch_user_config()
     if user_config is None:
-        try:
-            user_config = load_user_config()
-        except ValueError as exc:
-            console.print(f"[red]Invalid bakar config:[/] {exc}")
-            return 2
+        return 2
     if not (user_config.workspaces_template or user_config.workspaces_releases):
         # Refused before the release probe: with nothing configured no release
         # can map, so the kas dump would only delay the same answer.
@@ -276,20 +323,28 @@ def _dispatch_meta_avocado(
         return 2
     try:
         release = kas_pins.probe_release(main_yaml, checkout)
-        workspace = map_release(release, user_config.workspaces_template, user_config.workspaces_releases)
+        routed = map_release(release, user_config.workspaces_template, user_config.workspaces_releases)
     except ReleaseRoutingError as exc:
         console.print(f"[red]Cannot route {main_yaml} to a release workspace:[/] {exc}")
         return 2
-    if workspace is None:
+    if routed is None:
         console.print(
             f"[red]{_NO_ROUTING_MSG}[/] (or a \\[workspaces.releases] entry for {release!r}): "
             f"it names the release workspace on {host}."
         )
         return 2
+    # Without --on the same command builds in -w, so silently building in the
+    # routed workspace instead would put the result somewhere the user did not name.
+    if workspace is not None and not _same_path(workspace, routed):
+        console.print(
+            f"[red]-w {workspace} does not match the release workspace {routed}[/] that the {release!r} "
+            f"build is routed to on {host}. Drop -w, or pass -w {routed}."
+        )
+        return 2
     worktree_root = user_config.dispatch_worktree_root
     return avocado_dispatch.dispatch_avocado_build(
         host,
-        workspace=workspace,
+        workspace=routed,
         checkout=logical_path(checkout),
         worktree=meta_avocado_worktree(main_yaml),
         kas_yaml=main_yaml,
@@ -379,14 +434,29 @@ def build(
         )
         raise typer.Exit(code=2)
 
-    # --clean is forwarded with every other flag, so the remote build would
-    # delete a build directory on the host. Dispatch never deletes on a remote.
+    # --clean, a clean KAS_TASK and a `recipe:clean*` target are forwarded with
+    # everything else, and on the host each deletes a build directory or entries
+    # of the shared download and sstate caches. Dispatch refuses every request
+    # that asks for a deletion; what bitbake itself replaces inside the build's
+    # own tmp tree is not such a request.
     if clean and on is not None:
         console.print(
             "[red]--clean cannot be combined with --on[/]: it would delete the build directory on the remote host. "
             "Build with --on, or run `bakar build --clean` on that host."
         )
         raise typer.Exit(code=2)
+    if on is not None:
+        from bakar.steps.remote_dispatch import deleting_requests
+
+        requests = deleting_requests(target, os.environ)
+        for request in requests:
+            console.print(
+                f"[red]{escape(request)} cannot be combined with --on[/]: it runs a clean task that would delete the "
+                "target's build output, downloads or sstate on the remote host. Build with --on, or run the "
+                "clean on that host.",
+            )
+        if requests:
+            raise typer.Exit(code=2)
 
     # --on <host>: dispatch the entire build to a remote node instead of building
     # locally. Runs before any form-specific branch (preset, bbsetup, byo/manifest)
@@ -421,6 +491,7 @@ def build(
                     kas_arg=kas_yaml,
                     main_yaml=_on_main_yaml,
                     invoking_cwd=invoking_cwd,
+                    workspace=workspace,
                     sccache_dist=sccache_dist,
                     assume_yes=yes,
                 )
@@ -434,7 +505,11 @@ def build(
             _on_family, _ = _dispatch_bsp(manifest)
             ws_root = _resolve_workspace(workspace, family=_on_family)
         else:
+            # A --preset resolves after this branch, so it lands here too and is
+            # caught by the release-workspace check below like a bare build.
             ws_root = _bbsetup_workspace(workspace) or _workspace_from_cwd()
+        if _refuse_release_workspace_mirror(ws_root, on):
+            raise typer.Exit(code=2)
         from bakar.steps.remote_dispatch import dispatch_remote_build
 
         rc = dispatch_remote_build(
