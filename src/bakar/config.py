@@ -1322,7 +1322,11 @@ def resolve(request: ResolveRequest) -> BuildConfig:
             ),
         ),
         manifest=resolved_manifest,
-        repo_url=os.environ.get("BAKAR_REPO_URL", _resolve_repo_url(bsp_family, user_config)),
+        repo_url=pick(
+            None,
+            "BAKAR_REPO_URL",
+            FallbackTiers(default=_resolve_repo_url(bsp_family, user_config)),
+        ),
         repo_branch=resolved_branch,
         kas_container_image=pick(
             None,

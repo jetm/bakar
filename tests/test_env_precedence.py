@@ -289,6 +289,26 @@ def test_empty_env_container_image_treated_as_unset(tmp_path, monkeypatch):
     assert cfg.kas_container_image == DEFAULT_CONTAINER_IMAGE
 
 
+def test_empty_env_repo_url_treated_as_unset(tmp_path, monkeypatch):
+    """An exported-but-empty BAKAR_REPO_URL falls through to the lower tiers."""
+    monkeypatch.delenv("BAKAR_REPO_URL", raising=False)
+    expected = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp")).repo_url
+    monkeypatch.setenv("BAKAR_REPO_URL", "")
+
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp"))
+
+    assert cfg.repo_url == expected
+    assert cfg.repo_url != ""
+
+
+def test_env_repo_url_wins_when_set(tmp_path, monkeypatch):
+    monkeypatch.setenv("BAKAR_REPO_URL", "https://example.invalid/bsp.git")
+
+    cfg = resolve(ResolveRequest(workspace=_workspace(tmp_path), bsp_family="nxp"))
+
+    assert cfg.repo_url == "https://example.invalid/bsp.git"
+
+
 # ---------------------------------------------------------------------------
 # 5. Build-tuning fields (dl_dir, sstate_dir, pressure_max_*)
 # ---------------------------------------------------------------------------
