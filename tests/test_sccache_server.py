@@ -19,6 +19,22 @@ if TYPE_CHECKING:
 
 
 @pytest.mark.unit
+def test_server_responding_uses_shared_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The TCP probe goes through central_service.is_listening on loopback."""
+    from bakar import central_service
+
+    calls: list[tuple[str, int]] = []
+
+    def _fake(host: str, port: int, **_kw: object) -> bool:
+        calls.append((host, port))
+        return True
+
+    monkeypatch.setattr(central_service, "is_listening", _fake)
+    assert sccache_server._server_responding(4226) is True
+    assert calls == [("127.0.0.1", 4226)]
+
+
+@pytest.mark.unit
 def test_ensure_running_returns_true_without_spawn_when_already_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

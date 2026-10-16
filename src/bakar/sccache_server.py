@@ -24,7 +24,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from bakar import daemon_log
+from bakar import central_service, daemon_log
 
 # sccache's default server port; overridable via SCCACHE_SERVER_PORT.
 _DEFAULT_PORT = 4226
@@ -81,12 +81,7 @@ def _server_responding(port: int) -> bool:
     A pure probe: it never starts a server, unlike ``sccache --show-stats``
     which would auto-spawn one.
     """
-    try:
-        sock = socket.create_connection(("127.0.0.1", port), timeout=0.5)
-    except OSError:
-        return False
-    sock.close()
-    return True
+    return central_service.is_listening("127.0.0.1", port)
 
 
 def ensure_running(scheduler_url: str | None = None, *, binary: str | None = None, uds_path: str | None = None) -> bool:
