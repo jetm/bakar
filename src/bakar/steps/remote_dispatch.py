@@ -1,11 +1,12 @@
 """Builders and orchestration for ``bakar build --on <host>`` remote dispatch.
 
-The pure section holds the host-free primitives that construct the rsync
-invocation, strip the ``--on`` dispatch option from the forwarded argv,
-generate the fish-safe remote bash script, and guard the ``rsync --delete``
-destination. The orchestration section (host preflight, confirm gate, rsync
-transfer, live remote-build streaming, and run-id surfacing) drives ssh/rsync
-subprocesses; it is exercised with a mocked ``subprocess`` and no live remote.
+The pure section holds the host-free primitives that construct the additive
+rsync invocation, strip the ``--on`` dispatch option from the forwarded argv,
+generate the fish-safe remote bash script, and guard the mirror destination.
+The orchestration section (host preflight, the remote workspace check, the
+printed dispatch plan, rsync transfer, live remote-build streaming, and run-id
+surfacing) drives ssh/rsync subprocesses; it is exercised with a mocked
+``subprocess`` and no live remote. No dispatch deletes anything on the remote.
 
 EVERY generated script - the launch, the log follower and the stop ladder - is
 delivered over ``ssh <host> bash -s`` stdin rather than ``ssh <host> '<cmd>'``
@@ -31,15 +32,14 @@ import shlex
 import subprocess
 import sys
 from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-import typer
 from rich.console import Console
 
-from bakar.bsp_detect import linked_worktree_common_dir
+from bakar.buildtools import parse_layerseries_corenames
 from bakar.config import WORKSPACE_FEED_DIRNAME, WORKSPACE_FEED_STAGE_DIRNAME
-from bakar.fmt import fmt_bytes
 
 # stderr so `bakar build --on <host> > log` keeps chrome (preview, prompts,
 # run-id) out of the piped build log, matching the project convention in
@@ -80,7 +80,7 @@ RSYNC_EXCLUDES: tuple[str, ...] = (
     # The package feed and its staging sibling. Unlike everything above these
     # are not caches: a feed accumulates across syncs, holds every retained
     # snapshot plus the content pool they reference, and cannot be rebuilt from
-    # the local tree - so `--delete` destroying it costs the snapshots
+    # the local tree - so a mirror overwriting it costs the snapshots
     # themselves, not just the time to regenerate them. A remote feed is
     # reachable whenever someone runs `bakar feed sync` on a node that is also
     # an `--on` target, which is the ordinary way a second builder gets one.
@@ -95,10 +95,10 @@ RSYNC_EXCLUDES: tuple[str, ...] = (
     # NO TRAILING SLASH, unlike every cache pattern above. A trailing slash makes
     # rsync match directories only, and a feed is routinely a SYMLINK onto a
     # storage volume rather than a real directory - which is how it is set up on
-    # the two-node cluster. Measured: with `/_feed/` the symlink is deleted and
-    # with `/_feed` it survives, while a real directory survives either way. The
-    # slashed form would therefore have protected the case that does not occur
-    # and missed the one that does.
+    # the two-node cluster. Measured (under the former deleting mirror): with
+    # `/_feed/` the symlink was removed and with `/_feed` it survived. A local
+    # feed directory would still replace a remote symlink of the same name in an
+    # additive mirror, so the unslashed form stays.
     f"/{WORKSPACE_FEED_DIRNAME}",
     f"/{WORKSPACE_FEED_STAGE_DIRNAME}",
 )
@@ -110,33 +110,23 @@ def build_rsync_argv(
     *,
     dry_run: bool = False,
     extra_excludes: tuple[str, ...] = (),
-    mkpath: bool = False,
 ) -> list[str]:
-    """Construct the ``rsync`` argv mirroring ``ws_root`` to ``host``.
+    """Construct the additive ``rsync`` argv mirroring ``ws_root`` to ``host``.
 
-    Returns ``rsync -a --delete`` (plus ``--mkpath`` when ``mkpath``, and ``-n -i``
-    when ``dry_run``) followed by
-    one ``--exclude=<pat>`` per :data:`RSYNC_EXCLUDES` entry, then one anchored
-    ``--exclude=/<name>/`` per :paramref:`extra_excludes` entry (remote-only
-    top-level dirs the local side does not carry, kept out of ``--delete`` so a
-    remote checkout is preserved), and finally the source ``<ws_root>/`` and
-    destination ``<host>:<ws_root>/`` (same absolute path, trailing slashes so
-    directory contents map 1:1). ``mkpath`` is for a mirror root whose parent
-    directories may not exist on the remote yet: without it rsync creates only
-    the last path component and exits 11 on a missing parent, after the
-    workspace root was already mirrored.
+    Returns ``rsync -a`` (plus ``-n -i`` when ``dry_run``) followed by one
+    ``--exclude=<pat>`` per :data:`RSYNC_EXCLUDES` entry, then one anchored
+    ``--exclude=/<name>/`` per :paramref:`extra_excludes` entry, and finally the
+    source ``<ws_root>/`` and destination ``<host>:<ws_root>/`` (same absolute
+    path, trailing slashes so directory contents map 1:1).
+
+    The mirror adds and updates, and never deletes: dispatch must leave every
+    remote file that has no local counterpart in place, so no delete or
+    remove-source option is ever emitted. A file removed locally lingers on the
+    remote until someone removes it by hand.
     """
-    argv = ["rsync", "-a", "--delete"]
-    if mkpath:
-        argv += ["--mkpath"]
+    argv = ["rsync", "-a"]
     if dry_run:
         argv += ["-n", "-i"]
-    # First match wins in rsync, so this must precede the excludes. A linked
-    # worktree is recognized on the remote through its admin directory,
-    # `<main>/.git/worktrees/<name>`, and `<name>` is the worktree's own directory
-    # name: one called `tmp` or `downloads` would otherwise match a cache exclude
-    # and never arrive (and an excluded path is also protected from `--delete`).
-    argv += ["--include=**/.git/worktrees/***"]
     argv += [f"--exclude={pat}" for pat in RSYNC_EXCLUDES]
     argv += [f"--exclude=/{name}/" for name in extra_excludes]
     argv += [f"{ws_root}/", f"{host}:{ws_root}/"]
@@ -188,8 +178,8 @@ def strip_dispatch_options(local_args: list[str]) -> list[str]:
 
 
 # Where a detached dispatch parks its log and exit-code sentinel. NOT the
-# workspace: the next `--on` dispatch mirrors it with `rsync --delete`, so a log
-# living there would be destroyed by the very next build - and `bakar stop --on`
+# workspace: the next `--on` dispatch mirrors the workspace over it, so a log
+# living there would be overwritten by the very next build - and `bakar stop --on`
 # has to find the sentinel of a build whose workspace has already moved on.
 #
 # NOT /tmp either, which is what this used to be. /tmp is drwxrwxrwt, the log
@@ -398,132 +388,24 @@ def build_remote_script(
 
 
 def assert_safe_workspace(ws_root: Path) -> None:
-    """Guard the ``rsync --delete`` destination.
+    """Guard the rsync mirror destination.
 
     Raises :class:`ValueError` when ``ws_root`` is empty, not absolute, or
-    equals the home directory or the filesystem root, so a destructive mirror
-    can never target ``~`` or ``/``.
+    equals the home directory or the filesystem root, so a mirror can never
+    target ``~`` or ``/``. The mirror is additive, but copying a whole workspace
+    over a home directory still overwrites same-named files there.
     """
     if not str(ws_root).strip():
         raise ValueError("workspace root is empty")
     if not ws_root.is_absolute():
         raise ValueError(f"workspace root is not absolute: {ws_root}")
     # Resolve before the equality checks so a symlinked home or root
-    # (e.g. /var/home/user -> /home/user) cannot slip a --delete past the guard.
+    # (e.g. /var/home/user -> /home/user) cannot slip past the guard.
     resolved = ws_root.resolve()
     if resolved == Path(resolved.anchor):
         raise ValueError(f"workspace root is the filesystem root: {ws_root}")
     if resolved == Path.home().resolve():
         raise ValueError(f"workspace root is the home directory: {ws_root}")
-
-
-def _child_dirs(directory: Path) -> list[Path]:
-    """Return the subdirectories of ``directory``, or ``[]`` when it cannot be read."""
-    try:
-        with os.scandir(directory) as it:
-            return [Path(e.path) for e in it if e.is_dir(follow_symlinks=False)]
-    except OSError:
-        return []
-
-
-# devtool-debt: scans two directory levels only, so a worktree three or more levels
-# below the root is not found and is mirrored with the rest. Ceiling: the layouts
-# seen so far, `<root>/<repo>/<name>`. Upgrade trigger: a mirror root that is the
-# parent of a worktree container (for example the parent of `.worktrees`), or any
-# report of a worktree mirrored from depth 3 or more.
-def find_linked_worktrees(root: Path) -> list[Path]:
-    """Return the linked git worktrees under ``root`` whose repository is outside it.
-
-    Looks at the first two directory levels. A worktree's ``.git`` file points at an
-    admin directory inside its repository's common git directory, so a worktree whose
-    common directory is also under ``root`` mirrors consistently and is not reported;
-    one whose repository is elsewhere would arrive on the remote with a dangling
-    pointer. That includes a worktree of a bare repository, which has no main checkout
-    to compare, so the common directory itself is what is tested.
-
-    Detection reads each directory's ``.git`` (via ``linked_worktree_common_dir``),
-    never its name. Symlinked directories are skipped at both levels, because
-    ``_child_dirs`` does not return them; the ``is_symlink`` test below repeats that on
-    purpose, so the guard on a ``--delete`` destination does not depend on a helper in
-    another function. Nothing deeper is visited.
-    """
-    real_root = root.resolve()
-    found: list[Path] = []
-    for first in _child_dirs(root):
-        candidates = [first]
-        if not first.is_symlink():
-            candidates.extend(_child_dirs(first))
-        for d in candidates:
-            common = linked_worktree_common_dir(d)
-            if common is not None and not common.is_relative_to(real_root):
-                found.append(d)
-    return sorted(found)
-
-
-# Directory names rsync never transfers (the `**/` entries of RSYNC_EXCLUDES) plus
-# the workspace-root build outputs, skipped by the size walk so it stays cheap on a
-# populated Yocto workspace and reports what a mirror would actually copy.
-_SIZE_SKIP_ANYWHERE = frozenset({"tmp", "sstate-cache", "downloads", ".venv", "__pycache__"})
-
-
-def _tree_size(root: Path) -> int:
-    """Sum ``lstat().st_size`` over the files under ``root`` that a mirror would copy.
-
-    Symlinks are not followed, and the directories :data:`RSYNC_EXCLUDES` drops
-    (build outputs and caches) are not entered.
-    """
-    total = 0
-    for dirpath, dirs, files in os.walk(root, followlinks=False):
-        at_root = Path(dirpath) == root
-        dirs[:] = [
-            d
-            for d in dirs
-            if d not in _SIZE_SKIP_ANYWHERE and not (at_root and (d in {"build", "ccache"} or d.startswith("build-")))
-        ]
-        for name in files:
-            try:
-                total += (Path(dirpath) / name).lstat().st_size
-            except OSError:
-                continue
-    return total
-
-
-def assert_no_linked_worktrees(root: Path) -> None:
-    """Refuse to mirror a root holding linked worktrees whose repository is elsewhere.
-
-    A linked worktree's ``.git`` file points at an admin directory in its repository's
-    common git directory. When that is outside the root, the mirror leaves the remote
-    copy with a dangling pointer and copies unrelated trees along with ``--delete``.
-    Raises :class:`ValueError` naming every such worktree and the root's on-disk size.
-    """
-    found = find_linked_worktrees(root)
-    if not found:
-        return
-    listing = "\n".join(f"  {p}" for p in found)
-    raise ValueError(
-        f"{root} ({fmt_bytes(_tree_size(root))}) contains {len(found)} linked git worktree(s) "
-        f"whose git repository is outside it; mirroring it would copy them with --delete:\n{listing}"
-    )
-
-
-def assert_roots_disjoint(roots: tuple[Path, ...]) -> None:
-    """Refuse mirror roots that are equal to, contain or sit inside one another.
-
-    Each root is transferred with ``--delete`` and its own exclusions. A root that
-    contains another would delete, on the remote, what the inner root's transfer
-    deliberately preserved (the workspace root keeps its remote-only directories,
-    an extra root does not). Raises :class:`ValueError` naming the first
-    overlapping pair.
-    """
-    resolved = [(root, root.resolve()) for root in roots]
-    for i, (first, first_real) in enumerate(resolved):
-        for second, second_real in resolved[i + 1 :]:
-            if (
-                first_real == second_real
-                or first_real.is_relative_to(second_real)
-                or second_real.is_relative_to(first_real)
-            ):
-                raise ValueError(f"mirror roots overlap: {first} and {second}; each root is mirrored with --delete")
 
 
 _RUN_ID_RE = re.compile(r"bakar triage (\S+)")
@@ -646,115 +528,126 @@ def _ssh_bash_capture(host: str, script: str, *, batch_mode: bool = True) -> sub
     return subprocess.run(argv, input=script, capture_output=True, text=True, check=False)
 
 
-def _remote_child_dirs(host: str, ws_root: Path) -> list[str] | None:
-    """List the immediate child directory names of ``ws_root`` on ``host``.
+@dataclass
+class DispatchPlan:
+    """What a dispatch is about to change on the remote host, printed before it does.
 
-    Uses ``ssh -o BatchMode=yes <host> ls -1p <ws_root>`` - ``-p`` marks
-    directories with a trailing ``/`` so files and symlinks are filtered out.
-    ``BatchMode=yes`` keeps a missing key or unreachable host from blocking on a
-    prompt. Returns the directory basenames, or None when the ssh listing fails
-    so the caller can fall back to no extra excludes.
+    ``deletes`` exists so the plan states the rule outright: no dispatch path ever
+    fills it, and a test holds every plan dispatch builds to an empty list.
     """
-    cmd = f"ls -1p {shlex.quote(str(ws_root))}"
-    result = _ssh_bash_capture(host, cmd)
-    if result.returncode != 0:
-        return None
-    return [ln[:-1] for ln in result.stdout.splitlines() if ln.endswith("/")]
+
+    writes: list[str]
+    deletes: list[str] = field(default_factory=list)
 
 
-def _remote_only_dirs(ws_root: Path, host: str) -> list[str]:
-    """Return top-level dir names present on the remote ``ws_root`` but absent locally.
+def print_dispatch_plan(host: str, plan: DispatchPlan) -> None:
+    """Print ``plan`` for ``host``. There is no prompt: nothing in it destroys data."""
+    console.print(f"[bold]dispatch plan[/] -> {host}")
+    for write in plan.writes:
+        # markup=False: paths may contain '[' which Rich would parse as markup.
+        console.print(f"  + {write}", markup=False)
+    for delete in plan.deletes:
+        console.print(f"  - {delete}", markup=False)
+    if not plan.deletes:
+        console.print("  nothing is deleted on the host")
 
-    These are the remote node's own repo checkouts the local side does not carry;
-    excluding them from ``rsync --delete`` keeps the mirror from wiping them. On
-    any ssh listing failure returns an empty list (preserve the current no-extra-
-    excludes behavior) after a warning - a failed listing must never crash the
-    dispatch.
+
+class DispatchError(Exception):
+    """A dispatch pre-write check failed; the message is shown to the user as is."""
+
+
+_WS_EXISTS_RE = re.compile(r"^BAKAR_WS_EXISTS=([01])$")
+_WS_GIT_RE = re.compile(r"^BAKAR_WS_GIT=([01])$")
+_WS_LAYERCONF_RE = re.compile(r"^BAKAR_WS_LAYERCONF=([01])$")
+_OE_LAYER_CONF = "openembedded-core/meta/conf/layer.conf"
+
+
+def build_workspace_check_script(workspace: str) -> str:
+    """Return the read-only bash script :func:`check_remote_workspace` runs on the host.
+
+    It prints one ``BAKAR_WS_*`` marker per check and then, when oe-core's
+    layer.conf is readable, the file itself, so the series is parsed locally by
+    the same parser the local release probe uses. Nothing in it writes.
     """
-    remote = _remote_child_dirs(host, ws_root)
-    if remote is None:
-        console.print(f"[yellow]could not list remote dirs on {host}[/]; proceeding without remote-only excludes.")
-        return []
-    try:
-        local = {p.name for p in ws_root.iterdir() if p.is_dir()}
-    except OSError:
-        # A missing or unreadable local workspace must not crash the dispatch any
-        # more than a failed remote listing does; fall back to no extra excludes
-        # and let the rsync step surface the real workspace problem.
-        console.print(f"[yellow]could not list local workspace {ws_root}[/]; proceeding without remote-only excludes.")
-        return []
-    return sorted(set(remote) - local)
-
-
-def _preview_sync(ws_root: Path, host: str, extra_excludes: tuple[str, ...], *, mkpath: bool = False) -> bool:
-    """Print the ``rsync --delete`` preview for one root; False when the dry-run fails.
-
-    Runs the dry-run rsync (``build_rsync_argv(..., dry_run=True)``) with the same
-    ``extra_excludes`` as the real transfer so the preview reflects what
-    ``--delete`` will actually remove, then shows only the safety-relevant signal:
-    the ``*deleting`` lines (bounded head with a ``(+N more)`` overflow count) plus
-    a one-line create/update count. This human gate layers on top of
-    :func:`assert_safe_workspace`: the deletions catch a wrong exclude set that
-    would still pass the path guard before ``--delete`` destroys remote data.
-    A failed dry-run returns False (never run ``--delete`` blind).
-    """
-    preview = subprocess.run(
-        build_rsync_argv(ws_root, host, dry_run=True, extra_excludes=extra_excludes, mkpath=mkpath),
-        capture_output=True,
-        text=True,
-        check=False,
+    q_ws = shlex.quote(workspace)
+    return "\n".join(
+        [
+            f"ws={q_ws}",
+            "if [ ! -d \"$ws\" ]; then printf 'BAKAR_WS_EXISTS=0\\n'; exit 0; fi",
+            "printf 'BAKAR_WS_EXISTS=1\\n'",
+            # The `.git` test keeps a plain directory inside an enclosing repository
+            # from passing as a repository of its own.
+            'if [ -e "$ws/meta-avocado/.git" ] && git -C "$ws/meta-avocado" rev-parse --git-dir >/dev/null 2>&1; then',
+            "  printf 'BAKAR_WS_GIT=1\\n'",
+            "else",
+            "  printf 'BAKAR_WS_GIT=0\\n'",
+            "fi",
+            f'conf="$ws/{_OE_LAYER_CONF}"',
+            'if [ -r "$conf" ]; then printf \'BAKAR_WS_LAYERCONF=1\\n\'; cat "$conf"; '
+            "else printf 'BAKAR_WS_LAYERCONF=0\\n'; fi",
+            "",
+        ]
     )
-    console.print(f"[bold]rsync --delete preview[/] -> {host}:{ws_root}")
-    if preview.returncode != 0:
-        # A failed dry-run cannot show what --delete would remove; never run the
-        # destructive mirror blind, even under --yes.
-        console.print(f"[red]preview failed (rsync exit {preview.returncode})[/]; refusing the destructive sync.")
-        if preview.stderr.strip():
-            console.print(preview.stderr.strip(), markup=False)
-        return False
-    lines = preview.stdout.splitlines()
-    deletions = [ln for ln in lines if ln.startswith("*deleting")]
-    other = [ln for ln in lines if ln and not ln.startswith("*deleting")]
-    head_limit = 40
-    if deletions:
-        # markup=False: rsync -i itemized paths may contain '[' which Rich would
-        # otherwise parse as markup and raise MarkupError on.
-        for ln in deletions[:head_limit]:
-            console.print(ln, markup=False)
-        if len(deletions) > head_limit:
-            console.print(f"(+{len(deletions) - head_limit} more deletions)")
-    else:
-        console.print("no deletions")
-    console.print(f"{len(other)} files to create/update")
-    return True
 
 
-def confirm_destructive_sync(
-    ws_root: Path,
-    host: str,
-    *,
-    assume_yes: bool,
-    extra_excludes: tuple[str, ...] = (),
-    extra_roots: tuple[Path, ...] = (),
-) -> bool:
-    """Preview every ``rsync --delete`` and gate the real transfers behind one prompt.
+def _missing_workspace_message(host: str, workspace: str, release: str) -> str:
+    q_ws = shlex.quote(workspace)
+    q_avocado = shlex.quote(f"{workspace}/meta-avocado")
+    # The placeholder stays outside the quoting so it reads as one to replace.
+    q_kas = shlex.quote(f"{workspace}/meta-avocado/kas/machine") + "/<machine>.yml"
+    return (
+        f"the release workspace {workspace} does not exist on {host}. Create it once on {host}:\n"
+        f"  mkdir -p {q_ws}\n"
+        f"  git clone --branch {shlex.quote(release)} <meta-avocado origin URL> {q_avocado}\n"
+        f"  env KAS_WORK_DIR={q_ws} kas checkout {q_kas}"
+    )
 
-    Previews ``ws_root`` (with ``extra_excludes``) and then each of ``extra_roots``
-    (no excludes) via :func:`_preview_sync`; any failed preview refuses the whole
-    sync even under ``assume_yes`` (never run ``--delete`` blind). Only after all
-    previews succeed does it return True under ``assume_yes``, else ask a single
-    ``typer.confirm`` that names the root count when more than one is mirrored.
+
+def check_remote_workspace(host: str, workspace: str, release: str) -> None:
+    """Verify on ``host`` that ``workspace`` is a usable ``release`` workspace.
+
+    One read-only ssh script reports whether the workspace exists, whether its
+    ``meta-avocado`` is a git repository, and the text of its oe-core layer.conf;
+    the series is parsed locally with :func:`buildtools.parse_layerseries_corenames`.
+    Raises :class:`DispatchError` on the first failed check, so a caller stops
+    before any remote write. ``--yes`` has no bearing on any of this.
     """
-    if not _preview_sync(ws_root, host, extra_excludes):
-        return False
-    for root in extra_roots:
-        if not _preview_sync(root, host, (), mkpath=True):
-            return False
-    if assume_yes:
-        return True
-    if extra_roots:
-        return typer.confirm(f"Mirror {1 + len(extra_roots)} roots to {host} (rsync --delete)?")
-    return typer.confirm(f"Mirror the workspace to {host} (rsync --delete)?")
+    result = _ssh_bash_capture(host, build_workspace_check_script(workspace))
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        raise DispatchError(
+            f"could not inspect {workspace} on {host} (ssh exit {result.returncode})"
+            + (f": {detail}" if detail else "")
+        )
+    lines = result.stdout.splitlines()
+    patterns = (_WS_EXISTS_RE, _WS_GIT_RE, _WS_LAYERCONF_RE)
+    matches = [pattern.match(line) for pattern, line in zip(patterns, lines, strict=False)]
+    if matches and matches[0] is not None and matches[0].group(1) == "0":
+        raise DispatchError(_missing_workspace_message(host, workspace, release))
+    if len(matches) < len(patterns) or any(m is None for m in matches):
+        raise DispatchError(f"unexpected output inspecting {workspace} on {host}: {result.stdout.strip()[:200]!r}")
+    _exists, is_git, has_conf = (m.group(1) for m in matches if m is not None)
+    if is_git != "1":
+        raise DispatchError(
+            f"{workspace}/meta-avocado on {host} is missing or is not a git repository; "
+            f"clone meta-avocado there at branch {release!r}"
+        )
+    if has_conf != "1":
+        raise DispatchError(
+            f"{workspace}/{_OE_LAYER_CONF} on {host} is missing or unreadable, so the workspace's release "
+            f"cannot be checked; run `kas checkout` in that workspace first"
+        )
+    series = parse_layerseries_corenames("\n".join(lines[len(patterns) :]))
+    if series is None:
+        raise DispatchError(
+            f"{workspace}/{_OE_LAYER_CONF} on {host} declares no LAYERSERIES_CORENAMES, "
+            f"so it cannot be confirmed as a {release!r} workspace"
+        )
+    if series != release:
+        raise DispatchError(
+            f"release mismatch: the build needs {release!r} but {workspace} on {host} "
+            f"declares {series!r} in {_OE_LAYER_CONF}"
+        )
 
 
 def _ssh_bash_popen(host: str) -> subprocess.Popen:
@@ -1045,21 +938,22 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
     *,
     sccache_dist: bool,
     assume_yes: bool,
-    extra_roots: tuple[Path, ...] = (),
+    extra_roots: tuple[Path, ...] = (),  # ignored; removed by task 6.1, which drops the caller
 ) -> int:
-    """Mirror the workspace to ``host`` and run the build there, in strict order.
+    """Mirror the workspace to ``host`` additively and run the build there, in strict order.
 
     Each step gates the next: (1) reject a hyphen-prefixed host and guard the
     rsync destination; (2) preflight the host (reachable + bakar on the non-login
     PATH), aborting with NO rsync/build when it fails; (2b) abort when the remote
     bakar id/version differs from local (a build with different code/overlays),
-    unless ``assume_yes`` overrides; (3) confirm the destructive sync, aborting
-    before any real transfer when declined; (4) run
-    the real ``rsync -a --delete`` for ``ws_root`` and then for each of
-    ``extra_roots`` in order (a linked worktree outside the workspace), stopping
-    at the first failure; (5) stream the remote build over
+    unless ``assume_yes`` overrides; (3) print the dispatch plan, without a
+    prompt; (4) run the additive ``rsync -a`` for ``ws_root``, which adds and
+    updates remote files and never deletes one; (5) stream the remote build over
     ``ssh <host> bash -s`` stdin; (6) surface the run-id + triage command;
     (7) return the remote build's exit code.
+
+    ``extra_roots`` is accepted and ignored: it is removed by task 6.1, which
+    drops the caller's extra-root block.
     """
     if host.startswith("-"):
         console.print(
@@ -1069,11 +963,6 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
 
     try:
         assert_safe_workspace(ws_root)
-        assert_no_linked_worktrees(ws_root)
-        for root in extra_roots:
-            assert_safe_workspace(root)
-            assert_no_linked_worktrees(root)
-        assert_roots_disjoint((ws_root, *extra_roots))
     except ValueError as exc:
         console.print(f"[red]unsafe workspace for remote sync:[/] {exc}")
         return 1
@@ -1099,29 +988,13 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
             return 1
         console.print("[yellow]--yes: proceeding despite the bakar mismatch.[/]")
 
-    # Compute the remote-only top-level dirs BEFORE the preview so both the
-    # dry-run and the real transfer keep them out of --delete (the remote node's
-    # own repo checkouts must survive a mirror from a local side that lacks them).
-    extra_excludes = tuple(_remote_only_dirs(ws_root, host))
-    if extra_excludes:
-        console.print(f"preserving {len(extra_excludes)} remote-only dir(s) from --delete: {', '.join(extra_excludes)}")
+    plan = DispatchPlan(writes=[f"add/update {ws_root}/ -> {host}:{ws_root}/ (additive rsync, nothing deleted)"])
+    print_dispatch_plan(host, plan)
 
-    if not confirm_destructive_sync(
-        ws_root, host, assume_yes=assume_yes, extra_excludes=extra_excludes, extra_roots=extra_roots
-    ):
-        console.print("[yellow]remote sync declined; nothing transferred.[/]")
-        return 1
-
-    rsync_rc = subprocess.run(build_rsync_argv(ws_root, host, extra_excludes=extra_excludes), check=False).returncode
+    rsync_rc = subprocess.run(build_rsync_argv(ws_root, host), check=False).returncode
     if rsync_rc != 0:
         console.print(f"[red]rsync failed (exit {rsync_rc})[/]; remote build not started.")
         return rsync_rc
-
-    for root in extra_roots:
-        root_rc = subprocess.run(build_rsync_argv(root, host, mkpath=True), check=False).returncode
-        if root_rc != 0:
-            console.print(f"[red]rsync failed for {root} (exit {root_rc})[/]; remote build not started.")
-            return root_rc
 
     env_vars = {k: v for k, v in os.environ.items() if k.startswith(("BAKAR_", "KAS_"))}
     script = build_remote_script(strip_dispatch_options(local_args), cwd, env_vars, sccache_off=not sccache_dist)

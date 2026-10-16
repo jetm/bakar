@@ -2,7 +2,7 @@
 
 These cover the host-free builders only: the exclude set, the rsync argv
 constructor, the ``--on`` stripper, the remote bash-script generator, and the
-``rsync --delete`` workspace guard. Orchestration (ssh/rsync subprocess) is a
+mirror workspace guard. Orchestration (ssh/rsync subprocess) is a
 later task; nothing here touches a live host.
 """
 
@@ -15,6 +15,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from bakar import build_scope, observability
 from bakar.steps.remote_dispatch import (
@@ -107,7 +109,7 @@ def test_rsync_argv_base_flags() -> None:
     argv = build_rsync_argv(WS, HOST)
     assert argv[0] == "rsync"
     assert "-a" in argv
-    assert "--delete" in argv
+    assert "--delete" not in argv
     assert "-n" not in argv
     assert "-i" not in argv
 
@@ -122,9 +124,10 @@ def test_rsync_argv_one_exclude_per_pattern() -> None:
     argv = build_rsync_argv(WS, HOST)
     for pat in RSYNC_EXCLUDES:
         assert f"--exclude={pat}" in argv
-    assert argv.count("--delete") == 1
     excludes = [a for a in argv if a.startswith("--exclude=")]
     assert len(excludes) == len(RSYNC_EXCLUDES)
+    # The former worktree-admin include rule went with the deleting mirror.
+    assert not [a for a in argv if a.startswith("--include=")]
 
 
 def test_rsync_argv_source_and_dest_same_absolute_path_with_trailing_slash() -> None:
@@ -137,12 +140,10 @@ def test_rsync_argv_source_and_dest_same_absolute_path_with_trailing_slash() -> 
     assert dest.endswith("/")
 
 
-def test_rsync_argv_extra_excludes_appended_and_delete_retained() -> None:
-    # Remote-only dirs are threaded in as anchored excludes so --delete cannot
-    # wipe a checkout the local side does not carry.
+def test_rsync_argv_extra_excludes_appended_anchored() -> None:
     argv = build_rsync_argv(WS, HOST, extra_excludes=("openembedded-core",))
     assert "--exclude=/openembedded-core/" in argv
-    assert "--delete" in argv
+    assert "--delete" not in argv
 
 
 def test_rsync_argv_extra_excludes_default_adds_nothing() -> None:
@@ -490,8 +491,6 @@ class FakeSubprocess:
         self.remote_version = ""
         self.local_version = ""
         self.rsync_rc = 0
-        self.dry_rsync_rc = 0
-        self.dry_rsync_stdout: str | None = None
         self.find_stdout = ""
         self.popen_lines: list[str] = []
         self.popen_rc = 0
@@ -536,12 +535,6 @@ class FakeSubprocess:
             return _Result(self.reachable_rc, stdout=self.remote_version, stderr=self.reachable_stderr)
         if argv[0] == "bakar" and "--version" in argv:
             return _Result(0, stdout=self.local_version)
-        if argv[0] == "rsync" and "-n" in argv:
-            if self.dry_rsync_stdout is not None:
-                preview = self.dry_rsync_stdout if self.dry_rsync_rc == 0 else ""
-            else:
-                preview = "itemized preview line\n" if self.dry_rsync_rc == 0 else ""
-            return _Result(self.dry_rsync_rc, stdout=preview)
         if argv[0] == "rsync":
             return _Result(self.rsync_rc)
         return _Result(0)
@@ -575,12 +568,6 @@ def _clean_bakar_kas_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def fake_sp(monkeypatch: pytest.MonkeyPatch) -> FakeSubprocess:
     fake = FakeSubprocess()
     monkeypatch.setattr(rd, "subprocess", fake)
-    # WS and EXTRA name real directories on a developer machine, so the worktree
-    # scan would read the live filesystem and a `git worktree add` near them would
-    # fail unrelated dispatch tests. Stub it for those two paths only; a test that
-    # builds its own tmp_path layout still gets the real scan.
-    real_find = rd.find_linked_worktrees
-    monkeypatch.setattr(rd, "find_linked_worktrees", lambda root: [] if root in (WS, EXTRA) else real_find(root))
     return fake
 
 
@@ -639,28 +626,6 @@ def test_preflight_false_when_bakar_missing(fake_sp: FakeSubprocess) -> None:
     assert detail is not None and "not found" in detail
 
 
-# --- confirm_destructive_sync -----------------------------------------------
-
-
-def test_confirm_assume_yes_returns_true_without_prompt(
-    fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def _boom(*a, **k):
-        raise AssertionError("typer.confirm must not be called under assume_yes")
-
-    monkeypatch.setattr(rd.typer, "confirm", _boom)
-    assert rd.confirm_destructive_sync(WS, HOST, assume_yes=True) is True
-    # The dry-run preview must have been produced first.
-    assert any(argv[0] == "rsync" and "-n" in argv for argv in _run_call_argvs(fake_sp))
-
-
-def test_confirm_prompt_answer_forwarded(fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(rd.typer, "confirm", lambda *a, **k: False)
-    assert rd.confirm_destructive_sync(WS, HOST, assume_yes=False) is False
-    monkeypatch.setattr(rd.typer, "confirm", lambda *a, **k: True)
-    assert rd.confirm_destructive_sync(WS, HOST, assume_yes=False) is True
-
-
 # --- dispatch_remote_build: guards and ordering -----------------------------
 
 
@@ -668,19 +633,8 @@ def test_dispatch_unreachable_aborts_before_rsync(fake_sp: FakeSubprocess) -> No
     fake_sp.reachable_rc = 255
     rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
     assert rc != 0
-    # No rsync (dry-run or real) and no remote Popen may run.
+    # No rsync and no remote Popen may run.
     assert not any(argv[0] == "rsync" for _, argv in fake_sp.calls)
-    assert not any(kind == "Popen" for kind, _ in fake_sp.calls)
-
-
-def test_dispatch_declined_confirm_aborts_before_real_rsync(
-    fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(rd.typer, "confirm", lambda *a, **k: False)
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=False)
-    assert rc != 0
-    # A dry-run preview may run (inside confirm), but the real rsync must not.
-    assert _real_rsync_index(fake_sp) == -1
     assert not any(kind == "Popen" for kind, _ in fake_sp.calls)
 
 
@@ -689,10 +643,11 @@ def test_dispatch_strict_ordering(fake_sp: FakeSubprocess) -> None:
     fake_sp.find_stdout = "1699999999.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-235959\n"
     rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
     reach_i = _index_of(fake_sp, lambda k, a: k == "run" and a[0] == "ssh" and a[-1] == "-s")
-    dry_i = _index_of(fake_sp, lambda k, a: k == "run" and a[0] == "rsync" and "-n" in a)
     real_i = _real_rsync_index(fake_sp)
     popen_i = _index_of(fake_sp, lambda k, a: k == "Popen")
-    assert -1 < reach_i < dry_i < real_i < popen_i
+    assert -1 < reach_i < real_i < popen_i
+    # The additive mirror runs no dry-run preview any more: there is nothing to confirm.
+    assert not any(a[0] == "rsync" and "-n" in a for _k, a in fake_sp.calls)
 
 
 def test_dispatch_rsync_failure_skips_remote_build(fake_sp: FakeSubprocess) -> None:
@@ -700,128 +655,6 @@ def test_dispatch_rsync_failure_skips_remote_build(fake_sp: FakeSubprocess) -> N
     rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
     assert rc == 23
     assert not any(kind == "Popen" for kind, _ in fake_sp.calls)
-
-
-# --- dispatch_remote_build: extra roots -------------------------------------
-
-EXTRA = Path("/home/tiamarin/repos/work/meta-avocado")
-
-
-def _root_rsyncs(fake: FakeSubprocess, *, dry: bool) -> list[tuple[int, list[str]]]:
-    return [
-        (i, argv)
-        for i, (kind, argv) in enumerate(fake.calls)
-        if kind == "run" and argv[0] == "rsync" and (("-n" in argv) == dry)
-    ]
-
-
-def _dispatch_extra(assume_yes: bool = True) -> int:
-    return rd.dispatch_remote_build(
-        HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=assume_yes, extra_roots=(EXTRA,)
-    )
-
-
-def test_dispatch_extra_root_mirrors_after_ws_root_before_launch(fake_sp: FakeSubprocess) -> None:
-    _dispatch_extra()
-    real = _root_rsyncs(fake_sp, dry=False)
-    assert len(real) == 2
-    (ws_i, ws_argv), (extra_i, extra_argv) = real
-    popen_i = _index_of(fake_sp, lambda k, a: k == "Popen")
-    assert ws_i < extra_i < popen_i
-    assert ws_argv[-2:] == [f"{WS}/", f"{HOST}:{WS}/"]
-    # The extra root's argv ends with its own source and destination and carries
-    # no remote-only anchored exclude (--exclude=/<name>/): identical to the bare
-    # argv plus --mkpath, because its parent directories may not exist on the host
-    # yet and a plain rsync would exit 11 after the workspace root was mirrored.
-    assert extra_argv[-2:] == [f"{EXTRA}/", f"{HOST}:{EXTRA}/"]
-    assert extra_argv == rd.build_rsync_argv(EXTRA, HOST, mkpath=True)
-    assert "--mkpath" not in ws_argv
-
-
-def test_dispatch_extra_root_preview_and_transfer_both_create_missing_parents(fake_sp: FakeSubprocess) -> None:
-    _dispatch_extra()
-    dry_extra = [argv for _i, argv in _root_rsyncs(fake_sp, dry=True) if argv[-1].startswith(f"{HOST}:{EXTRA}")]
-    real_extra = [argv for _i, argv in _root_rsyncs(fake_sp, dry=False) if argv[-1].startswith(f"{HOST}:{EXTRA}")]
-    assert len(dry_extra) == 1
-    assert len(real_extra) == 1
-    assert "--mkpath" in dry_extra[0]
-    assert "--mkpath" in real_extra[0]
-
-
-def test_tree_size_skips_the_directories_a_mirror_does_not_copy(tmp_path: Path) -> None:
-    (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "a.txt").write_bytes(b"x" * 100)
-    for skipped in ("build-qemux86-64/tmp", "build", "ccache", "src/tmp", "src/sstate-cache", "src/downloads"):
-        d = tmp_path / skipped
-        d.mkdir(parents=True)
-        (d / "big.bin").write_bytes(b"y" * 5000)
-    assert rd._tree_size(tmp_path) == 100
-
-
-def test_dispatch_extra_root_ws_rsync_failure_runs_no_extra_rsync(fake_sp: FakeSubprocess) -> None:
-    fake_sp.rsync_rc = 23
-    rc = _dispatch_extra()
-    assert rc == 23
-    assert len(_root_rsyncs(fake_sp, dry=False)) == 1
-    assert not any(kind == "Popen" for kind, _ in fake_sp.calls)
-
-
-def test_dispatch_extra_root_rsync_failure_skips_launch(fake_sp: FakeSubprocess) -> None:
-    orig = fake_sp.run
-
-    def run(argv, **kwargs):
-        if argv[0] == "rsync" and "-n" not in argv and str(argv[-1]).startswith(f"{HOST}:{EXTRA}"):
-            fake_sp.calls.append(("run", list(argv)))
-            fake_sp.run_inputs.append(None)
-            return _Result(12)
-        return orig(argv, **kwargs)
-
-    fake_sp.run = run  # type: ignore[method-assign]
-    assert _dispatch_extra() == 12
-    assert not any(kind == "Popen" for kind, _ in fake_sp.calls)
-
-
-def test_dispatch_extra_root_dry_run_failure_runs_no_real_rsync_under_yes(fake_sp: FakeSubprocess) -> None:
-    orig = fake_sp.run
-
-    def run(argv, **kwargs):
-        if argv[0] == "rsync" and "-n" in argv and str(argv[-1]).startswith(f"{HOST}:{EXTRA}"):
-            fake_sp.calls.append(("run", list(argv)))
-            fake_sp.run_inputs.append(None)
-            return _Result(23)
-        return orig(argv, **kwargs)
-
-    fake_sp.run = run  # type: ignore[method-assign]
-    assert _dispatch_extra(assume_yes=True) != 0
-    assert _root_rsyncs(fake_sp, dry=False) == []
-    assert not any(kind == "Popen" for kind, _ in fake_sp.calls)
-
-
-def test_dispatch_extra_root_single_confirm_after_both_previews(
-    fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    prompts: list[tuple[int, str]] = []
-
-    def confirm(msg, *a, **k):
-        prompts.append((len(fake_sp.calls), msg))
-        return True
-
-    monkeypatch.setattr(rd.typer, "confirm", confirm)
-    _dispatch_extra(assume_yes=False)
-    assert len(prompts) == 1
-    previews = _root_rsyncs(fake_sp, dry=True)
-    assert len(previews) == 2
-    assert previews[-1][0] < prompts[0][0] <= _root_rsyncs(fake_sp, dry=False)[0][0]
-    assert "2 roots" in prompts[0][1]
-
-
-def test_dispatch_extra_root_declined_confirm_runs_no_real_rsync(
-    fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(rd.typer, "confirm", lambda *a, **k: False)
-    assert _dispatch_extra(assume_yes=False) != 0
-    assert _root_rsyncs(fake_sp, dry=False) == []
-    assert len(_root_rsyncs(fake_sp, dry=True)) == 2
 
 
 # --- dispatch_remote_build: exit propagation and script construction --------
@@ -890,17 +723,6 @@ def test_dispatch_run_id_from_success_discovery(fake_sp: FakeSubprocess, capsys:
     assert f"ssh {HOST} bakar triage 20260716-235959" in out
     # Success path performs the discovery ssh(find).
     assert any((inp or "").lstrip().startswith("find ") for inp in fake_sp.run_inputs)
-
-
-def test_confirm_failed_preview_aborts(fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]) -> None:
-    # A failed dry-run must abort - never confirm rsync --delete (even under
-    # --yes) blind to what it would remove.
-    fake_sp.dry_rsync_rc = 5
-    assert rd.confirm_destructive_sync(WS, HOST, assume_yes=True) is False
-    _cap = capsys.readouterr()
-    out = _cap.out + _cap.err
-    assert "preview failed" in out
-    assert "rsync exit 5" in out
 
 
 def test_dispatch_failure_without_triage_falls_back_to_discovery(
@@ -1123,58 +945,6 @@ def test_package_identity_stable_and_content_sensitive(tmp_path: Path) -> None:
     before = _id(pkg)
     (pkg / "sub" / "o.bbclass").write_text("FOO = 'b'\n")
     assert _id(pkg) != before
-
-
-# --- S5: preview filters to deletions ---------------------------------------
-
-
-def test_confirm_preview_filters_to_deletions(fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]) -> None:
-    fake_sp.dry_rsync_stdout = (
-        "*deleting stale/file1\n*deleting stale/file2\n>f+++++++++ new/file\ncd+++++++++ new/dir/\n"
-    )
-    assert rd.confirm_destructive_sync(WS, HOST, assume_yes=True) is True
-    _cap = capsys.readouterr()
-    out = _cap.out + _cap.err
-    assert "*deleting stale/file1" in out
-    assert "*deleting stale/file2" in out
-    assert "2 files to create/update" in out
-    # The full creation itemization is summarized, not dumped line-by-line.
-    assert ">f+++++++++ new/file" not in out
-
-
-# --- remote-only dir computation (preserve remote checkouts from --delete) ---
-
-
-class _ListingSubprocess:
-    """Minimal subprocess stand-in returning a canned ssh-listing result."""
-
-    def __init__(self, returncode: int = 0, stdout: str = "") -> None:
-        self._result = _Result(returncode, stdout=stdout)
-        self.calls: list[list[str]] = []
-
-    def run(self, argv, **kwargs) -> _Result:
-        self.calls.append(list(argv))
-        return self._result
-
-
-def test_remote_only_dirs_returns_remote_minus_local(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Local carries meta-avocado/ and bitbake/; the remote also has an
-    # openembedded-core/ checkout the local side lacks -> only that is remote-only.
-    (tmp_path / "meta-avocado").mkdir()
-    (tmp_path / "bitbake").mkdir()
-    fake = _ListingSubprocess(0, "meta-avocado/\nbitbake/\nopenembedded-core/\n")
-    monkeypatch.setattr(rd, "subprocess", fake)
-    assert rd._remote_only_dirs(tmp_path, HOST) == ["openembedded-core"]
-    # Listing is over BatchMode ssh so a missing key fails fast instead of hanging.
-    assert fake.calls and fake.calls[0][:3] == ["ssh", "-o", "BatchMode=yes"]
-
-
-def test_remote_only_dirs_ssh_failure_yields_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # A failed listing must not crash the dispatch; fall back to no extra excludes.
-    (tmp_path / "meta-avocado").mkdir()
-    fake = _ListingSubprocess(255, "")
-    monkeypatch.setattr(rd, "subprocess", fake)
-    assert rd._remote_only_dirs(tmp_path, HOST) == []
 
 
 # --- detached dispatch: the local side follows the log, it does not own it ---
@@ -1640,17 +1410,6 @@ def test_every_generated_script_is_valid_bash(name: str, script_factory) -> None
     assert error is None, f"{name} script is not valid bash: {error}"
 
 
-def test_remote_only_dirs_missing_local_workspace_yields_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # A local workspace that does not exist (or is unreadable) must not crash the
-    # dispatch: iterdir() raises FileNotFoundError, which is swallowed the same
-    # way a failed remote listing is. Regression for the CI failure where the
-    # hardcoded WS path exists on the dev box but not on the runner.
-    missing = tmp_path / "does-not-exist"
-    fake = _ListingSubprocess(0, "meta-avocado/\nopenembedded-core/\n")
-    monkeypatch.setattr(rd, "subprocess", fake)
-    assert rd._remote_only_dirs(missing, HOST) == []
-
-
 def test_every_ssh_invocation_delivers_its_payload_via_bash_s() -> None:
     """No remote payload may ride as an ``ssh <host> <cmd>`` argument.
 
@@ -1692,227 +1451,205 @@ def test_every_ssh_invocation_delivers_its_payload_via_bash_s() -> None:
     )
 
 
-# --- linked worktree refusal ------------------------------------------------
+# --- never delete: property ---------------------------------------------------
+
+_SEGMENT = st.text(alphabet="abcdefghijklmnopqrstuvwxyz0123456789._-", min_size=1, max_size=12).filter(
+    lambda s: s not in {".", ".."}
+)
 
 
-def _no_ssh_or_rsync(fake: FakeSubprocess) -> bool:
-    return not any(argv[0] in ("ssh", "rsync") for _, argv in fake.calls)
+def _is_delete_option(token: str) -> bool:
+    return token == "--delete" or token.startswith("--delete-") or token == "--remove-source-files"
 
 
-def test_dispatch_refuses_linked_worktree_root_even_with_assume_yes(
-    fake_sp: FakeSubprocess, meta_avocado_worktree_layout, capsys: pytest.CaptureFixture[str]
+@given(
+    segments=st.lists(_SEGMENT, min_size=1, max_size=4),
+    host=_SEGMENT,
+    dry_run=st.booleans(),
+    extra=st.lists(_SEGMENT, max_size=3),
+)
+def test_rsync_argv_never_emits_a_delete_or_remove_option(
+    segments: list[str], host: str, dry_run: bool, extra: list[str]
 ) -> None:
-    layout = meta_avocado_worktree_layout
-    root = layout.worktree.parent.parent
+    argv = build_rsync_argv(Path("/", *segments), host, dry_run=dry_run, extra_excludes=tuple(extra))
+    assert not [tok for tok in argv if _is_delete_option(tok)]
+
+
+@settings(max_examples=25, deadline=None)
+@given(segments=st.lists(_SEGMENT, min_size=2, max_size=4), host=_SEGMENT, assume_yes=st.booleans())
+def test_every_dispatch_plan_has_no_deletes(segments: list[str], host: str, assume_yes: bool) -> None:
+    built: list[rd.DispatchPlan] = []
+
+    # __init__ rather than __post_init__: the base dataclass's generated __init__
+    # only calls a __post_init__ that existed when it was decorated.
+    class _Recording(rd.DispatchPlan):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            built.append(self)
+
+    fake = FakeSubprocess()
+    fake.find_stdout = "1.0 /x/build/runs/20260716-000000\n"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(rd, "subprocess", fake)
+        mp.setattr(rd, "DispatchPlan", _Recording)
+        ws = Path("/var/tmp/bakar-prop", *segments)
+        rd.dispatch_remote_build(
+            host, ws, ws, ["build", "my.yml", "--on", host], sccache_dist=False, assume_yes=assume_yes
+        )
+    assert built, "dispatch printed no plan"
+    assert all(plan.deletes == [] for plan in built)
+    for _kind, argv in fake.calls:
+        assert not [tok for tok in argv if _is_delete_option(tok)]
+
+
+# --- dispatch prints a plan and never prompts ---------------------------------
+
+
+def test_dispatch_prints_the_plan_and_never_prompts(
+    fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import typer
+
+    def _boom(*a, **k):
+        raise AssertionError("dispatch must not prompt")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(typer, "confirm", _boom)
+        mp.setattr("builtins.input", _boom)
+        fake_sp.find_stdout = "1.0 /x/build/runs/20260716-000000\n"
+        rc = rd.dispatch_remote_build(
+            HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=False
+        )
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert f"dispatch plan -> {HOST}" in err
+    assert f"{HOST}:{WS}/" in err
+    assert "nothing is deleted on the host" in err
+    assert not hasattr(rd, "typer")
+
+
+def test_dispatch_accepts_and_ignores_extra_roots(fake_sp: FakeSubprocess) -> None:
+    fake_sp.find_stdout = "1.0 /x/build/runs/20260716-000000\n"
+    extra = Path("/home/tiamarin/repos/work/meta-avocado")
     rc = rd.dispatch_remote_build(
-        HOST, root, root, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True
-    )
-    out = "".join(capsys.readouterr().err.split())
-    assert rc == 1
-    assert "unsafeworkspaceforremotesync:" in out
-    assert "".join(str(layout.worktree).split()) in out
-    # The refusal names the root's real on-disk size, not merely some number.
-    size = rd._tree_size(root)
-    assert size > 0
-    assert "".join(f"({rd.fmt_bytes(size)})".split()) in out
-    assert _no_ssh_or_rsync(fake_sp)
-    assert fake_sp.calls == []
-
-
-def test_find_linked_worktrees_names_every_worktree(meta_avocado_worktree_layout) -> None:
-    layout = meta_avocado_worktree_layout
-    assert rd.find_linked_worktrees(layout.worktree.parent.parent) == [layout.worktree]
-
-
-def test_linked_worktree_submodule_shaped_git_file_not_refused(tmp_path: Path) -> None:
-    root = tmp_path / "root"
-    sub = root / "sub"
-    sub.mkdir(parents=True)
-    admin = tmp_path / "main" / ".git" / "modules" / "sub"
-    admin.mkdir(parents=True)
-    (sub / ".git").write_text(f"gitdir: {admin}\n")
-    assert rd.find_linked_worktrees(root) == []
-    rd.assert_no_linked_worktrees(root)
-
-
-def test_linked_worktree_plain_main_checkouts_proceed(fake_sp: FakeSubprocess, tmp_path: Path) -> None:
-    root = tmp_path / "ws"
-    for name in ("a", "b"):
-        (root / name / ".git").mkdir(parents=True)
-    assert rd.find_linked_worktrees(root) == []
-    fake_sp.popen_rc = 0
-    fake_sp.find_stdout = f"1.0 {root}/build/runs/20260716-000000\n"
-    rc = rd.dispatch_remote_build(
-        HOST, root, root, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True
+        HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True, extra_roots=(extra,)
     )
     assert rc == 0
-    assert not _no_ssh_or_rsync(fake_sp)
+    rsyncs = [argv for kind, argv in fake_sp.calls if kind == "run" and argv[0] == "rsync"]
+    assert rsyncs == [rd.build_rsync_argv(WS, HOST)]
 
 
-def _dispatch_with_roots(root: Path, *extra: Path) -> int:
-    return rd.dispatch_remote_build(
-        HOST, root, root, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True, extra_roots=extra
+# --- check_remote_workspace -----------------------------------------------------
+
+RWS = "/home/u/work/peridio-wrynose"
+
+
+def _layer_conf(series: str) -> str:
+    return f'BBFILE_COLLECTIONS += "core"\nLAYERSERIES_CORENAMES = "{series}"\n'
+
+
+def _check(monkeypatch: pytest.MonkeyPatch, stdout: str, rc: int = 0, stderr: str = "") -> list[tuple[str, str]]:
+    calls: list[tuple[str, str]] = []
+
+    def capture(host: str, script: str, *, batch_mode: bool = True) -> _Result:
+        calls.append((host, script))
+        return _Result(rc, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(rd, "_ssh_bash_capture", capture)
+    return calls
+
+
+_OK_HEAD = "BAKAR_WS_EXISTS=1\nBAKAR_WS_GIT=1\nBAKAR_WS_LAYERCONF=1\n"
+
+
+def test_check_remote_workspace_accepts_a_matching_series(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _check(monkeypatch, _OK_HEAD + _layer_conf("wrynose"))
+    rd.check_remote_workspace(HOST, RWS, "wrynose")
+    assert len(calls) == 1
+    assert calls[0][0] == HOST
+    assert shlex.quote(RWS) in calls[0][1]
+
+
+def test_check_remote_workspace_refuses_a_series_mismatch_naming_both(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The check takes no assume_yes parameter at all, so --yes cannot bypass it.
+    assert "assume_yes" not in inspect.signature(rd.check_remote_workspace).parameters
+    _check(monkeypatch, _OK_HEAD + _layer_conf("wrynose"))
+    with pytest.raises(rd.DispatchError) as excinfo:
+        rd.check_remote_workspace(HOST, RWS, "scarthgap")
+    assert "'scarthgap'" in str(excinfo.value)
+    assert "'wrynose'" in str(excinfo.value)
+
+
+def test_check_remote_workspace_missing_lists_the_one_time_commands(monkeypatch: pytest.MonkeyPatch) -> None:
+    _check(monkeypatch, "BAKAR_WS_EXISTS=0\n")
+    with pytest.raises(rd.DispatchError) as excinfo:
+        rd.check_remote_workspace(HOST, RWS, "wrynose")
+    msg = str(excinfo.value)
+    assert f"mkdir -p {RWS}" in msg
+    assert f"git clone --branch wrynose <meta-avocado origin URL> {RWS}/meta-avocado" in msg
+    assert f"env KAS_WORK_DIR={RWS} kas checkout {RWS}/meta-avocado/kas/machine/" in msg
+
+
+def test_check_remote_workspace_refuses_a_non_git_meta_avocado(monkeypatch: pytest.MonkeyPatch) -> None:
+    _check(monkeypatch, "BAKAR_WS_EXISTS=1\nBAKAR_WS_GIT=0\nBAKAR_WS_LAYERCONF=1\n" + _layer_conf("wrynose"))
+    with pytest.raises(rd.DispatchError, match=f"{RWS}/meta-avocado"):
+        rd.check_remote_workspace(HOST, RWS, "wrynose")
+
+
+def test_check_remote_workspace_refuses_a_missing_layer_conf(monkeypatch: pytest.MonkeyPatch) -> None:
+    _check(monkeypatch, "BAKAR_WS_EXISTS=1\nBAKAR_WS_GIT=1\nBAKAR_WS_LAYERCONF=0\n")
+    with pytest.raises(rd.DispatchError, match=r"missing or unreadable"):
+        rd.check_remote_workspace(HOST, RWS, "wrynose")
+
+
+def test_check_remote_workspace_refuses_a_layer_conf_without_a_series(monkeypatch: pytest.MonkeyPatch) -> None:
+    _check(monkeypatch, _OK_HEAD + 'BBFILE_COLLECTIONS += "core"\n')
+    with pytest.raises(rd.DispatchError, match="LAYERSERIES_CORENAMES"):
+        rd.check_remote_workspace(HOST, RWS, "wrynose")
+
+
+def test_check_remote_workspace_surfaces_an_ssh_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    _check(monkeypatch, "", rc=255, stderr="Permission denied (publickey).")
+    with pytest.raises(rd.DispatchError, match="Permission denied"):
+        rd.check_remote_workspace(HOST, RWS, "wrynose")
+
+
+def test_check_remote_workspace_refuses_garbled_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    _check(monkeypatch, "Welcome to fish\n")
+    with pytest.raises(rd.DispatchError, match="unexpected output"):
+        rd.check_remote_workspace(HOST, RWS, "wrynose")
+
+
+def _run_check_script_locally(ws: Path) -> str:
+    bash = shutil.which("bash")
+    if bash is None:  # pragma: no cover - bash is present on every supported host
+        pytest.skip("bash is not installed")
+    result = subprocess.run(
+        [bash, "-s"], input=rd.build_workspace_check_script(str(ws)), capture_output=True, text=True, check=True
     )
+    return result.stdout
 
 
-def _add_worktree(main: Path, path: Path, branch: str) -> None:
-    import os
-    import subprocess
+def test_workspace_check_script_reads_a_real_layout_and_writes_nothing(tmp_path: Path) -> None:
+    ws = tmp_path / "peridio-wrynose"
+    assert _run_check_script_locally(ws) == "BAKAR_WS_EXISTS=0\n"
+    assert not ws.exists()
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
-    subprocess.run(
-        [
-            *("git", "-c", "user.email=t@example.invalid", "-c", "user.name=t", "-C", str(main)),
-            *("worktree", "add", "-q", str(path), "-b", branch),
-        ],
-        check=True,
-        capture_output=True,
-        env=env,
-    )
+    (ws / "meta-avocado").mkdir(parents=True)
+    conf = ws / "openembedded-core" / "meta" / "conf"
+    conf.mkdir(parents=True)
+    (conf / "layer.conf").write_text(_layer_conf("wrynose"))
+    before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
+    out = _run_check_script_locally(ws)
+    assert out.startswith("BAKAR_WS_EXISTS=1\nBAKAR_WS_GIT=0\nBAKAR_WS_LAYERCONF=1\n")
+    assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == before
 
-
-@pytest.mark.parametrize("relative", [".wt/wt3", "meta-avocado-feat", "a/b/wt3"], ids=["depth-2", "sibling", "depth-3"])
-def test_dispatch_allows_a_worktree_whose_main_checkout_is_inside_the_root(
-    fake_sp: FakeSubprocess, meta_avocado_worktree_layout, relative: str
-) -> None:
-    """A worktree next to its own main checkout mirrors consistently, so it is not refused.
-
-    Its ``.git`` points at an admin directory under ``<main>/.git/worktrees``, and that
-    directory travels in the same transfer. Refusing it would make every dispatch from
-    the main workspace fail as soon as someone runs ``git worktree add ../x``.
-    """
-    lay = meta_avocado_worktree_layout
-    _add_worktree(lay.main, lay.ws / relative, "inner")
-    assert rd.find_linked_worktrees(lay.ws) == []
-    fake_sp.popen_rc = 0
-    fake_sp.find_stdout = f"1.0 {lay.ws}/build/runs/20260716-000000\n"
-    assert _dispatch_with_roots(lay.ws) == 0
-    assert not _no_ssh_or_rsync(fake_sp)
+    subprocess.run(["git", "init", "-q", str(ws / "meta-avocado")], check=True, capture_output=True)
+    out = _run_check_script_locally(ws)
+    assert out.splitlines()[1] == "BAKAR_WS_GIT=1"
+    assert rd.parse_layerseries_corenames("\n".join(out.splitlines()[3:])) == "wrynose"
 
 
-def test_dispatch_refuses_a_worktree_whose_main_checkout_is_outside_the_root(
-    fake_sp: FakeSubprocess, meta_avocado_worktree_layout, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The incident shape: the container holds worktrees, their main checkout lives elsewhere."""
-    lay = meta_avocado_worktree_layout
-    container = lay.worktree.parent.parent
-    assert lay.main.resolve().is_relative_to(container.resolve()) is False
-    assert _dispatch_with_roots(container) == 1
-    err = "".join(capsys.readouterr().err.split())
-    assert "unsafeworkspaceforremotesync:" in err
-    assert "whosegitrepositoryisoutsideit" in err
-    assert fake_sp.calls == []
-
-
-@pytest.mark.parametrize("bad_root", [Path.home(), Path("/")], ids=["home", "filesystem-root"])
-def test_dispatch_refuses_an_unsafe_extra_root_even_with_assume_yes(fake_sp: FakeSubprocess, bad_root: Path) -> None:
-    assert _dispatch_with_roots(WS, bad_root) == 1
-    assert fake_sp.calls == []
-
-
-def test_dispatch_refuses_an_extra_root_holding_a_linked_worktree(
-    fake_sp: FakeSubprocess, meta_avocado_worktree_layout
-) -> None:
-    container = meta_avocado_worktree_layout.worktree.parent.parent
-    assert rd.find_linked_worktrees(container) != []
-    assert _dispatch_with_roots(WS, container) == 1
-    assert fake_sp.calls == []
-
-
-@pytest.mark.parametrize(
-    ("first", "second"),
-    [("ws", "ws"), ("ws", "ws/sub"), ("ws/sub", "ws"), ("ws/sub", "ws/sub/deeper")],
-    ids=["equal", "second-inside-first", "first-inside-second", "nested-pair"],
-)
-def test_assert_roots_disjoint_rejects_overlap_in_either_direction(tmp_path: Path, first: str, second: str) -> None:
-    (tmp_path / "ws" / "sub" / "deeper").mkdir(parents=True)
-    with pytest.raises(ValueError, match="mirror roots overlap"):
-        rd.assert_roots_disjoint((tmp_path / first, tmp_path / second))
-
-
-def test_assert_roots_disjoint_accepts_siblings_and_a_single_root(tmp_path: Path) -> None:
-    (tmp_path / "a").mkdir()
-    (tmp_path / "ab").mkdir()
-    rd.assert_roots_disjoint((tmp_path / "a", tmp_path / "ab"))  # a name prefix is not containment
-    rd.assert_roots_disjoint((tmp_path / "a",))
-    rd.assert_roots_disjoint(())
-
-
-def test_dispatch_refuses_an_extra_root_that_contains_the_workspace_root(
-    fake_sp: FakeSubprocess, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The worktree is an ancestor of ws_root when ``-w`` points inside it.
-
-    Its ``--delete`` transfer carries no remote-only excludes, so it would delete what
-    the workspace transfer deliberately preserved. ``--yes`` must not get past it.
-    """
-    checkout = tmp_path / "wt"
-    ws_inside = checkout / "sub"
-    ws_inside.mkdir(parents=True)
-    assert _dispatch_with_roots(ws_inside, checkout) == 1
-    assert "mirrorrootsoverlap" in "".join(capsys.readouterr().err.split())
-    assert fake_sp.calls == []
-
-
-def _git(*args: str) -> None:
-    import os
-
-    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
-    subprocess.run(
-        ["git", "-c", "user.email=t@example.invalid", "-c", "user.name=t", *args],
-        check=True,
-        capture_output=True,
-        env=env,
-    )
-
-
-def test_refusal_lists_only_worktrees_whose_repository_is_outside_the_root(
-    meta_avocado_worktree_layout, tmp_path: Path
-) -> None:
-    """A root with one allowed and one refused worktree names only the refused one."""
-    lay = meta_avocado_worktree_layout
-    _add_worktree(lay.main, lay.ws / "feat", "feat")  # main checkout inside the root: allowed
-    other = tmp_path / "other"
-    _git("init", "-q", "-b", "main", str(other))
-    _git("-C", str(other), "commit", "-q", "--allow-empty", "-m", "x")
-    foreign = lay.ws / "x" / "foreign"
-    _add_worktree(other, foreign, "foreign")  # repository elsewhere: refused
-
-    assert [p.resolve() for p in rd.find_linked_worktrees(lay.ws)] == [foreign.resolve()]
-    with pytest.raises(ValueError, match="1 linked git worktree") as excinfo:
-        rd.assert_no_linked_worktrees(lay.ws)
-    assert str(foreign) in str(excinfo.value)
-    assert str(lay.ws / "feat") not in str(excinfo.value)
-
-
-def test_refusal_covers_a_worktree_directly_under_the_root(meta_avocado_worktree_layout, tmp_path: Path) -> None:
-    lay = meta_avocado_worktree_layout
-    container = tmp_path / "container"
-    _add_worktree(lay.main, container / "wt", "d1")  # first level, main checkout outside
-    assert [p.resolve() for p in rd.find_linked_worktrees(container)] == [(container / "wt").resolve()]
-
-
-def test_refusal_covers_a_worktree_of_a_bare_repository(
-    fake_sp: FakeSubprocess, meta_avocado_worktree_layout, tmp_path: Path
-) -> None:
-    """A bare repository's common directory is not named ``.git``, so there is no main checkout.
-
-    The meta-avocado resolution (which needs a main checkout named ``meta-avocado``) does not
-    recognize such a worktree, but the mirror guard must still see it: otherwise its container
-    is mirrored with ``--delete`` and the remote copy points at a repository that is not there.
-    """
-    from bakar.bsp_detect import linked_worktree_at
-
-    lay = meta_avocado_worktree_layout
-    bare = tmp_path / "bare.git"
-    _git("clone", "-q", "--bare", str(lay.main), str(bare))
-    container = tmp_path / "container"
-    container.mkdir()
-    wt = container / "x"
-    _git("-C", str(bare), "worktree", "add", "-q", str(wt), "-b", "bx", "main")
-
-    assert linked_worktree_at(wt) is None  # no main checkout to report
-    assert [p.resolve() for p in rd.find_linked_worktrees(container)] == [wt.resolve()]
-    assert _dispatch_with_roots(container) == 1
-    assert fake_sp.calls == []
+def test_workspace_check_script_is_valid_bash() -> None:
+    error = _bash_syntax_error(rd.build_workspace_check_script("/home/u/work/peridio wrynose"))
+    assert error is None, error

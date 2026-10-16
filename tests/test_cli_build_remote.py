@@ -12,7 +12,7 @@ Asserted:
   ``--sccache-dist`` omits it;
 - a non-zero remote exit propagates to the CLI exit code;
 - the run-id + ``ssh <host> bakar triage <id>`` line is printed;
-- ``--yes`` skips the confirmation prompt, and declining without it aborts.
+- dispatch never prompts, with or without ``--yes``.
 """
 
 from __future__ import annotations
@@ -279,45 +279,33 @@ def test_run_id_and_triage_line_printed(
 
 
 # ---------------------------------------------------------------------------
-# (f) --yes skips the confirmation prompt; declining without it aborts.
+# (f) dispatch never prompts, with or without --yes.
 # ---------------------------------------------------------------------------
 
 
-def test_yes_skips_confirmation_prompt(
+@pytest.mark.usefixtures("workspace")
+@pytest.mark.parametrize("yes", [True, False], ids=["with-yes", "without-yes"])
+def test_dispatch_never_prompts(
     runner: _CliRunner,
-    workspace: Path,
     generic_yaml: Path,
     fake_sp: FakeSubprocess,
     monkeypatch: pytest.MonkeyPatch,
+    yes: bool,
 ) -> None:
+    import typer
+
     def _boom(*a, **k):
-        raise AssertionError("typer.confirm must not be called with --yes")
+        raise AssertionError("dispatch must not prompt")
 
-    monkeypatch.setattr(rd.typer, "confirm", _boom)
-    monkeypatch.setattr(sys, "argv", ["bakar", "build", str(generic_yaml), "--on", HOST, "--yes"])
-    fake_sp.find_stdout = f"1.0 {workspace}/build/runs/20260716-000000\n"
+    monkeypatch.setattr(typer, "confirm", _boom)
+    args = ["build", str(generic_yaml), "--on", HOST, *(["--yes"] if yes else [])]
+    monkeypatch.setattr(sys, "argv", ["bakar", *args])
+    fake_sp.find_stdout = f"1.0 {generic_yaml.parent}/build/runs/20260716-000000\n"
 
-    result = runner.invoke(app, ["build", str(generic_yaml), "--on", HOST, "--yes"])
+    result = runner.invoke(app, args)
 
     assert result.exit_code == 0, result.output
-
-
-def test_without_yes_declined_confirm_aborts(
-    runner: _CliRunner,
-    workspace: Path,
-    generic_yaml: Path,
-    fake_sp: FakeSubprocess,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(rd.typer, "confirm", lambda *a, **k: False)
-    monkeypatch.setattr(sys, "argv", ["bakar", "build", str(generic_yaml), "--on", HOST])
-
-    result = runner.invoke(app, ["build", str(generic_yaml), "--on", HOST])
-
-    assert result.exit_code != 0
-    # A dry-run preview may run inside confirm, but the real rsync must not.
-    assert not any(argv[0] == "rsync" and "-n" not in argv for _, argv in fake_sp.calls)
-    assert not any(kind == "Popen" for kind, _ in fake_sp.calls)
+    assert any(argv[0] == "rsync" for _, argv in fake_sp.calls)
 
 
 # ---------------------------------------------------------------------------

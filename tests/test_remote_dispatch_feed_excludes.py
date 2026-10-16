@@ -1,16 +1,15 @@
-"""``--on`` dispatch must not delete the remote node's package feed.
+"""``--on`` dispatch must not delete or overwrite the remote node's package feed.
 
-The mirror is ``rsync -a --delete``, so anything present on the remote and
-absent locally is removed before the build starts. A feed lives in the
-workspace by default (``<workspace>/_feed`` and its ``-stage`` sibling), it is
-built up over many syncs, and it is not reproducible from the local tree - so
-deleting it costs every retained snapshot and the content pool behind them.
+The mirror is an additive ``rsync -a``: it never deletes a remote file, but it
+does overwrite one whose name it also carries. A feed lives in the workspace by
+default (``<workspace>/_feed`` and its ``-stage`` sibling), it is built up over
+many syncs, and it is not reproducible from the local tree - so the excludes
+keep the mirror away from it entirely.
 
-The central test runs a REAL rsync between two directories rather than
-asserting on argv. An exclude pattern that is present but wrong - unanchored
-where it should be anchored, missing a trailing slash, matching a file but not
-a directory - still shows up in the argv a string assertion checks, and still
-deletes the feed. Only running the command distinguishes those.
+The tests run a REAL rsync between two directories rather than asserting on
+argv. An exclude pattern that is present but wrong - unanchored where it should
+be anchored, matching a file but not a directory - still shows up in the argv a
+string assertion checks. Only running the command distinguishes those.
 """
 
 from __future__ import annotations
@@ -66,7 +65,7 @@ def workspaces(tmp_path: Path) -> tuple[Path, Path]:
 
 @pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync not installed")
 def test_dispatch_mirror_preserves_a_remote_feed(workspaces) -> None:
-    """The feed and its stage survive a --delete mirror that does not carry them."""
+    """The feed and its stage survive a mirror that does not carry them."""
     local, remote = workspaces
 
     result = subprocess.run(_local_rsync_argv(local, remote), capture_output=True, text=True, check=False)
@@ -78,19 +77,20 @@ def test_dispatch_mirror_preserves_a_remote_feed(workspaces) -> None:
 
 
 @pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync not installed")
-def test_dispatch_mirror_still_deletes_stale_remote_sources(workspaces) -> None:
-    """The exclusion must not turn --delete off for everything else.
+def test_dispatch_mirror_never_deletes_a_stale_remote_file(workspaces) -> None:
+    """A remote file with no local counterpart survives: the mirror is additive.
 
-    A test that only asserts the feed survives also passes when --delete was
-    dropped entirely, which would leave removed source files live on the remote.
+    The deleting mirror removed 12,961 such files from one node in a single
+    preview; dispatch must leave every one of them in place.
     """
     local, remote = workspaces
     stale = remote / "meta-avocado" / "kas" / "deleted-upstream.yml"
     stale.write_text("header: {}\n")
 
-    subprocess.run(_local_rsync_argv(local, remote), capture_output=True, text=True, check=False)
+    result = subprocess.run(_local_rsync_argv(local, remote), capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
 
-    assert not stale.exists()
+    assert stale.read_text() == "header: {}\n"
     assert (remote / "meta-avocado" / "kas" / "machine.yml").is_file()
 
 
@@ -98,11 +98,8 @@ def test_dispatch_mirror_still_deletes_stale_remote_sources(workspaces) -> None:
 def test_a_symlinked_feed_survives_the_mirror(tmp_path: Path) -> None:
     """A feed is routinely a symlink onto a storage volume, not a real directory.
 
-    That is how it is set up on the two-node cluster, and it is the case a
-    directory-only exclude pattern silently fails to protect: measured, a
-    trailing-slash `/_feed/` deletes the symlink while a real directory under the
-    same pattern survives. Testing only the directory shape would pass against a
-    fix that does not work anywhere it is actually deployed.
+    That is how it is set up on the two-node cluster. The symlink, and the
+    storage behind it, must survive a mirror from a side that has no feed.
     """
     local = tmp_path / "local"
     remote = tmp_path / "remote"
@@ -143,31 +140,17 @@ def test_a_source_dir_merely_named_like_the_feed_is_still_mirrored(tmp_path: Pat
 
 
 @pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync not installed")
-def test_a_worktree_admin_dir_named_like_a_cache_dir_still_arrives(tmp_path: Path) -> None:
-    """``.git/worktrees/<name>`` is how the remote recognizes a mirrored worktree.
-
-    ``<name>`` is the worktree's own directory name, so one called ``tmp`` or
-    ``downloads`` matches a cache exclude at any depth. Without an include ahead of
-    the excludes its admin directory is never sent, bakar on the remote cannot
-    recognize the mirrored worktree, and an excluded path is also shielded from
-    ``--delete`` so a stale copy survives. A real rsync run is the only thing that
-    tells a working include from one that is merely present in the argv.
-    """
-    local = tmp_path / "local"
-    remote = tmp_path / "remote"
-    cache_names = ("tmp", "downloads", "sstate-cache", ".venv", "__pycache__")
-    for name in cache_names:
-        admin = local / "meta-avocado" / ".git" / "worktrees" / name
-        admin.mkdir(parents=True)
-        (admin / "commondir").write_text("../..\n")
-    # An ordinary cache directory that is NOT a worktree admin dir must stay excluded.
+def test_a_local_edit_is_carried_and_caches_stay_excluded(workspaces) -> None:
+    """Additive does not mean stale: an edited local file overwrites the remote copy."""
+    local, remote = workspaces
+    (remote / "meta-avocado" / "kas" / "machine.yml").write_text("header: {old: 1}\n")
+    # A different size, so rsync's size+mtime quick check cannot skip the file.
+    (local / "meta-avocado" / "kas" / "machine.yml").write_text("header: {newer: 1}\n")
     (local / "layer" / "tmp").mkdir(parents=True)
     (local / "layer" / "tmp" / "junk").write_text("x\n")
-    remote.mkdir()
 
     result = subprocess.run(_local_rsync_argv(local, remote), capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
 
-    for name in cache_names:
-        assert (remote / "meta-avocado" / ".git" / "worktrees" / name / "commondir").is_file(), name
+    assert (remote / "meta-avocado" / "kas" / "machine.yml").read_text() == "header: {newer: 1}\n"
     assert not (remote / "layer" / "tmp").exists()
