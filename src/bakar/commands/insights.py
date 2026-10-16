@@ -57,7 +57,6 @@ from typing import TYPE_CHECKING, Annotated, Literal
 import typer
 from rich.markup import escape
 
-import bakar.commands._app as _state
 from bakar import buildstats, eventlog, native_ledger, task_timings
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
@@ -66,8 +65,8 @@ from bakar.commands._helpers import (
     _find_run,
     _workspace_from_cwd,
     candidate_runs_dirs,
+    resolve_run_config,
 )
-from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.fmt import neutralize
 from bakar.insights_disk import disk_report
 from bakar.insights_natives import NativesInputs, NativesReport, natives_report
@@ -483,28 +482,9 @@ def insights(
     # scoped file (task_timings.timings_path_for) - the DEFAULT_TIMINGS_PATH
     # timing_report falls back to when no baselines_path is given is never
     # written to by a real build, so baseline annotation would silently never
-    # fire without this. Mirror bakar report's bsp_root/cfg resolution
-    # (run_dir.parents[2] is always ws/<fam> for nxp/ti, ws/build-<stem> for
-    # meta-avocado, ws for plain generic) to recover the same scoped path.
-    bsp_root_from_run = run_dir.parents[2]
-    if family == "generic":
-        cfg = resolve(
-            ResolveRequest(
-                workspace=bsp_root_from_run,
-                bsp_family="bbsetup",
-                spec=BSPSpec(manifest=manifest),
-                user_config=_state._USER_CONFIG,
-            )
-        )
-    else:
-        cfg = resolve(
-            ResolveRequest(
-                workspace=ws,
-                bsp_family=family,
-                spec=BSPSpec(manifest=manifest),
-                user_config=_state._USER_CONFIG,
-            )
-        )
+    # fire without this. Resolve the config from the run's own root (as
+    # ``bakar report`` does) to recover the same scoped path.
+    cfg = resolve_run_config(run_dir, family, manifest)
     baselines_path = task_timings.timings_path_for(cfg.bsp_root, cfg.machine, host_mode=cfg.host_mode)
 
     threshold_bytes = _parse_size_bytes(growth_threshold) if growth_threshold is not None else None

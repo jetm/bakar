@@ -94,7 +94,7 @@ def test_host_is_arch_like_false_when_os_release_absent(monkeypatch: pytest.Monk
 @pytest.mark.unit
 def test_uninative_overlay_selected_when_all_conditions_met(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Host mode + Arch-family host + fragment present yields the overlay."""
-    from bakar.commands._helpers import _uninative_extra_overlays
+    from bakar.commands._overlays import _uninative_extra_overlays
 
     _patch_env(monkeypatch, tmp_path, os_release="ID=cachyos\nID_LIKE=arch\n", fragment=True)
 
@@ -108,7 +108,7 @@ def test_uninative_overlay_selected_when_all_conditions_met(monkeypatch: pytest.
 @pytest.mark.unit
 def test_uninative_overlay_skipped_in_container_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Container builds must not require a fragment holding host-only paths."""
-    from bakar.commands._helpers import _uninative_extra_overlays
+    from bakar.commands._overlays import _uninative_extra_overlays
 
     _patch_env(monkeypatch, tmp_path, os_release="ID=arch\n", fragment=True)
 
@@ -118,7 +118,7 @@ def test_uninative_overlay_skipped_in_container_mode(monkeypatch: pytest.MonkeyP
 @pytest.mark.unit
 def test_uninative_overlay_skipped_on_non_arch_host(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A Debian-family host gets no overlay even if a fragment somehow exists."""
-    from bakar.commands._helpers import _uninative_extra_overlays
+    from bakar.commands._overlays import _uninative_extra_overlays
 
     _patch_env(monkeypatch, tmp_path, os_release="ID=ubuntu\nID_LIKE=debian\n", fragment=True)
 
@@ -128,7 +128,7 @@ def test_uninative_overlay_skipped_on_non_arch_host(monkeypatch: pytest.MonkeyPa
 @pytest.mark.unit
 def test_uninative_overlay_skipped_when_package_not_installed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """No fragment means the providing package is absent - skip, do not require."""
-    from bakar.commands._helpers import _uninative_extra_overlays
+    from bakar.commands._overlays import _uninative_extra_overlays
 
     _patch_env(monkeypatch, tmp_path, os_release="ID=arch\n", fragment=False)
 
@@ -164,7 +164,7 @@ def test_uninative_overlay_absent_from_tuning_stack_on_non_arch(
 @pytest.mark.unit
 def test_uninative_overlay_skipped_when_toggle_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Default-off toggle keeps the tuning stack byte-identical on an Arch host."""
-    from bakar.commands._helpers import _uninative_extra_overlays
+    from bakar.commands._overlays import _uninative_extra_overlays
 
     _patch_env(monkeypatch, tmp_path, os_release="ID=cachyos\nID_LIKE=arch\n", fragment=True)
 

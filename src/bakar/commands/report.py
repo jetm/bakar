@@ -19,8 +19,8 @@ from bakar.commands._helpers import (
     _SstateRender,
     _workspace_from_cwd,
     candidate_runs_dirs,
+    resolve_run_config,
 )
-from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.report import assemble_report
 
 
@@ -74,32 +74,7 @@ def report(
     run_dir, label = found
     if family != "bbsetup":
         family = label
-    # run_dir.parents[2] is always the correct bsp_root: ws/<fam>/build/runs/ID
-    # -> ws/<fam> for nxp/ti, ws/build-<stem>/build/runs/ID -> ws/build-<stem>
-    # for meta-avocado, and ws/build/runs/ID -> ws for plain generic.
-    bsp_root_from_run = run_dir.parents[2]
-    if family == "generic":
-        # Resolve with workspace=bsp_root_from_run and bsp_family="bbsetup" so that
-        # BuildConfig.bsp_root = workspace = bsp_root_from_run. Using kas_yaml_override
-        # as a sentinel triggers is_meta_avocado when the workspace path contains
-        # "meta-avocado" as a component, computing the wrong bsp_root.
-        cfg = resolve(
-            ResolveRequest(
-                workspace=bsp_root_from_run,
-                bsp_family="bbsetup",
-                spec=BSPSpec(manifest=manifest),
-                user_config=_state._USER_CONFIG,
-            )
-        )
-    else:
-        cfg = resolve(
-            ResolveRequest(
-                workspace=ws,
-                bsp_family=family,
-                spec=BSPSpec(manifest=manifest),
-                user_config=_state._USER_CONFIG,
-            )
-        )
+    cfg = resolve_run_config(run_dir, family, manifest)
 
     summary = assemble_report(run_dir, cfg)
 

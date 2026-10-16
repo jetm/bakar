@@ -1,7 +1,7 @@
 # Host-provided uninative tarball overlay.
 #
 # Never auto-loaded; bakar appends it only when all three of these hold (see
-# _uninative_extra_overlays in commands/_helpers.py):
+# _uninative_extra_overlays in commands/_overlays.py):
 #
 #   - the build runs in host mode,
 #   - the host is Arch Linux or an Arch derivative,

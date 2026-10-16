@@ -430,7 +430,7 @@ def test_overlay_sccache_extra_overlays_returns_empty_when_disabled() -> None:
 @pytest.mark.unit
 def test_overlay_ccache_extra_overlays_returns_path_when_effective() -> None:
     """ccache on and sccache off: the ccache overlay is selected."""
-    from bakar.commands._helpers import _ccache_extra_overlays
+    from bakar.commands._overlays import _ccache_extra_overlays
 
     cfg = _overlay_cfg(sccache_dist=False, ccache=True)
     result = _ccache_extra_overlays(cfg)  # type: ignore[arg-type]
@@ -449,7 +449,7 @@ def test_overlay_ccache_extra_overlays_present_under_sccache() -> None:
     heavy recipes. Falsifier: gating on cfg.use_ccache (False under sccache-dist)
     would drop the overlay and leave the tail with no compile cache.
     """
-    from bakar.commands._helpers import _ccache_extra_overlays
+    from bakar.commands._overlays import _ccache_extra_overlays
 
     cfg = _overlay_cfg(sccache_dist=True, ccache=True)
     result = _ccache_extra_overlays(cfg)  # type: ignore[arg-type]
@@ -461,7 +461,7 @@ def test_overlay_ccache_extra_overlays_present_under_sccache() -> None:
 @pytest.mark.unit
 def test_overlay_ccache_extra_overlays_empty_when_ccache_disabled() -> None:
     """ccache=False disables the ccache overlay even without sccache-dist."""
-    from bakar.commands._helpers import _ccache_extra_overlays
+    from bakar.commands._overlays import _ccache_extra_overlays
 
     cfg = _overlay_cfg(sccache_dist=False, ccache=False)
 
@@ -580,7 +580,7 @@ def test_materialize_host_layer_copies_rpm_bbappend_into_bsp_root(tmp_path: Path
 
 def _sccache_bbclass_text() -> str:
     """Return the packaged sccache.bbclass source text."""
-    from bakar.commands._helpers import _overlay_dir
+    from bakar.config import _overlay_dir
 
     return (_overlay_dir() / "meta-bakar-sccache" / "classes" / "sccache.bbclass").read_text()
 

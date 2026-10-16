@@ -20,15 +20,10 @@ from rich.table import Table
 
 from bakar.bsp_detect import is_bbsetup_workspace
 from bakar.commands._overlays import (
-    _UNINATIVE_FRAGMENT,
-    _UNINATIVE_OS_RELEASE,
-    _ccache_extra_overlays,
     _combine_overlays_with_tuning,
     _host_extra_overlays,
-    _overlay_dir,
     _overlay_for,
     _tuning_extra_overlays,
-    _uninative_extra_overlays,
 )
 from bakar.commands._workspace import (
     _INVOCATION,
@@ -67,8 +62,6 @@ __all__ = [
     "GLOBAL_MODE_EXCLUSIONS",
     "_INVOCATION",
     "_MANIFEST_FAMILIES",
-    "_UNINATIVE_FRAGMENT",
-    "_UNINATIVE_OS_RELEASE",
     "_WORKSPACE_HELP",
     "CheckResult",
     "RunFamily",
@@ -78,7 +71,6 @@ __all__ = [
     "_SstateRender",
     "_bbsetup_workspace",
     "_bsp_from_cwd",
-    "_ccache_extra_overlays",
     "_clean_build_dir",
     "_combine_overlays_with_tuning",
     "_dispatch_bsp",
@@ -89,7 +81,6 @@ __all__ = [
     "_find_workspace_from_cwd",
     "_host_extra_overlays",
     "_normalize_dispatch",
-    "_overlay_dir",
     "_overlay_for",
     "_print_diagnosis",
     "_print_layer_hashes",
@@ -98,7 +89,6 @@ __all__ = [
     "_resolve_workspace",
     "_run_doctor_gate",
     "_tuning_extra_overlays",
-    "_uninative_extra_overlays",
     "_uninitialized_bbsetup_dir",
     "_workspace_callback",
     "_workspace_from_cwd",
@@ -556,6 +546,40 @@ def candidate_runs_dirs(workspace: Path, kas_yaml: Path | None = None) -> list[t
             seen.add(key)
             unique.append((runs_dir, family))
     return unique
+
+
+def resolve_run_config(run_dir: Path, family: RunFamily, manifest: str | None = None) -> BuildConfig:
+    """Resolve the ``BuildConfig`` rooted at the workspace that owns ``run_dir``.
+
+    ``report`` and ``insights`` read layer hashes, buildhistory and timing
+    baselines off ``cfg.bsp_root``, so it must come from the selected run's own
+    location rather than the workspace the user passed: a preset fan-out run
+    (``<ws>/build/<preset>/{nxp,ti,qcom}/...``) lives in a sub-workspace.
+
+    - ``generic``/``bbsetup``: ``run_dir.parents[2]`` is the bsp root
+      (``ws/build/runs/ID`` -> ``ws``; ``ws/build/<p>/build/runs/ID`` ->
+      ``ws/build/<p>``), resolved as ``bbsetup`` so ``bsp_root == workspace``
+      (a kas-yaml sentinel would mis-detect meta-avocado from the path).
+    - ``nxp``/``ti``/``qcom``: ``run_dir.parents[3]`` is the workspace that
+      holds the ``<family>`` dir (``ws/nxp/build/runs/ID`` -> ``ws``).
+    """
+    import bakar.commands._app as _state
+    from bakar.config import BSPSpec, ResolveRequest, resolve
+
+    if family in ("generic", "bbsetup"):
+        workspace = run_dir.parents[2]
+        bsp_family: RunFamily = "bbsetup"
+    else:
+        workspace = run_dir.parents[3]
+        bsp_family = family
+    return resolve(
+        ResolveRequest(
+            workspace=workspace,
+            bsp_family=bsp_family,
+            spec=BSPSpec(manifest=manifest),
+            user_config=_state._USER_CONFIG,
+        )
+    )
 
 
 def _find_run[Family: str](

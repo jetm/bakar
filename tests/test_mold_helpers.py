@@ -81,13 +81,14 @@ def test_tuning_stack_byte_identical_when_mold_off() -> None:
     toggle is off.
     """
     from bakar.commands import _helpers, _overlays
-    from bakar.commands._helpers import _overlay_dir, _tuning_extra_overlays
+    from bakar.commands._helpers import _tuning_extra_overlays
+    from bakar.config import _overlay_dir
 
     cfg = _mold_cfg(mold=False)
     baseline = [
         _overlay_dir() / "bakar-tuning-cache-classify.yml",
         *_helpers._host_extra_overlays(cfg),
-        *_helpers._ccache_extra_overlays(cfg),
+        *_overlays._ccache_extra_overlays(cfg),
         *_overlays._hashequiv_extra_overlays(cfg),
         *_overlays._shared_cache_extra_overlays(cfg),
         *_overlays._sccache_extra_overlays(cfg),

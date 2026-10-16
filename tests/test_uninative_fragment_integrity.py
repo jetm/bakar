@@ -6,7 +6,7 @@ version comparator, and the three checks themselves (``uninative-fragment``,
 
 Every test patches ``diagnostics._UNINATIVE_FRAGMENT`` and
 ``diagnostics._UNINATIVE_OS_RELEASE`` at fixture files the way
-``tests/test_uninative_helpers.py`` patches the ``commands/_helpers`` copies, so
+``tests/test_uninative_helpers.py`` patches the ``commands/_overlays`` copy, so
 no result depends on the distro running the suite. The glibc tests go one step
 further and stand up a fake buildtools sysroot with an executable ``libc.so.6``
 stub, so an implementation that reached a verdict without consulting the sysroot

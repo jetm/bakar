@@ -8,7 +8,7 @@
 # active this overlay's INHERIT += "ccache" lands before the sccache overlay's
 # INHERIT += "sccache" (lower zz-bakar-NN key), so sccache.bbclass's per-recipe
 # CCACHE override wins for allowlisted PNs and the ccache value stands for the
-# rest. Selection lives in bakar.commands._helpers._ccache_extra_overlays (gated
+# rest. Selection lives in bakar.commands._overlays._ccache_extra_overlays (gated
 # on cfg.ccache).
 #
 # Extracted from the per-family base overlays (generic/nxp/ti) so ccache is

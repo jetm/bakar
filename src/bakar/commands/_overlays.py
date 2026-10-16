@@ -1,10 +1,7 @@
 """Kas tuning overlay resolution for bakar subcommands.
 
-Split out of ``_helpers.py`` (which re-exports everything here so existing
-``from bakar.commands._helpers import ...`` call sites keep working). Every
-symbol used from outside this module is re-exported at ``_helpers`` -
-import from there unless you are inside ``commands/`` and want the direct
-path.
+Split out of ``_helpers.py``. ``_helpers`` re-exports only the names that
+``commands/*.py`` modules import from it; import any other name from this module.
 """
 
 from __future__ import annotations
@@ -17,7 +14,6 @@ import typer
 from bakar.config import _overlay_dir
 from bakar.diagnostics import (
     _UNINATIVE_FRAGMENT,
-    _UNINATIVE_OS_RELEASE,  # noqa: F401  # re-exported through commands/_helpers
     _host_is_arch_like,
 )
 

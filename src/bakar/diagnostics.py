@@ -1455,9 +1455,9 @@ def _host_is_arch_like() -> bool:
 def _uninative_gate(cfg: BuildConfig) -> str | None:
     """Return None when the uninative checks apply, else why they do not.
 
-    Shares ``_uninative_extra_overlays``' gate (``commands/_helpers.py:319``)
+    Shares ``_uninative_extra_overlays``' gate (``commands/_overlays.py``)
     minus its ``_UNINATIVE_FRAGMENT.is_file()`` condition, exactly as
-    ``_arch_probe_extra_overlays`` (``_helpers.py:344``) already does. The
+    ``_arch_probe_extra_overlays`` (``commands/_overlays.py``) already does. The
     omission is load-bearing rather than a simplification: with the fragment
     condition included, the check whose whole purpose is to report a missing
     fragment would skip itself precisely when the fragment is missing.
