@@ -16,8 +16,7 @@ from bakar.commands._helpers import (
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
-    global_container_mode,
-    global_host_mode,
+    resolve_global_config,
 )
 from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.observability import RunLogger
@@ -61,11 +60,11 @@ def shell(
     """
     family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
-    cfg = resolve(
+    cfg = resolve_global_config(
         ResolveRequest(
             workspace=ws,
             bsp_family=family,
-            spec=BSPSpec(manifest=manifest, host_mode=global_host_mode(), container_mode=global_container_mode()),
+            spec=BSPSpec(manifest=manifest),
             kas_yaml=kas_yaml,
             user_config=_state._USER_CONFIG,
         )

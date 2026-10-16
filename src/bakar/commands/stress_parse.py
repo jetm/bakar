@@ -20,11 +20,11 @@ from bakar.commands._helpers import (
     _dispatch_from_yaml,
     _overlay_for,
     _resolve_workspace,
-    global_container_mode,
     global_host_mode,
+    resolve_global_config,
     split_kas_yaml_arg,
 )
-from bakar.config import BSPSpec, ResolveRequest, resolve
+from bakar.config import BSPSpec, ResolveRequest
 from bakar.observability import RunLogger
 from bakar.steps import bitbake_override as step_override
 from bakar.steps import kas_build as step_kas
@@ -176,9 +176,8 @@ def _stress_parse_impl(ctx: _StressParseCtx) -> None:
         console.print("[red]--runs must be >= 1[/]")
         raise typer.Exit(code=2)
 
-    # --host / --container are global callback options; read into locals used below.
+    # --host is a global callback option; the banner below reports it.
     host_mode = global_host_mode()
-    container_mode = global_container_mode()
 
     python_executable: Path | None = None
     if python is not None:
@@ -206,18 +205,11 @@ def _stress_parse_impl(ctx: _StressParseCtx) -> None:
         machine = machine_from_yaml(main_yaml)
 
     ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
-    cfg = resolve(
+    cfg = resolve_global_config(
         ResolveRequest(
             workspace=ws,
             bsp_family=family,
-            spec=BSPSpec(
-                machine=machine,
-                image=image,
-                manifest=manifest,
-                repo_branch=branch,
-                host_mode=host_mode,
-                container_mode=container_mode,
-            ),
+            spec=BSPSpec(machine=machine, image=image, manifest=manifest, repo_branch=branch),
             kas_yaml=main_yaml,
             user_config=_state._USER_CONFIG,
         )
