@@ -265,7 +265,7 @@ def test_write_meta_avocado_wrapper_worktree_pins_absolute_path(meta_avocado_wor
         kas_container_image="jetm/kas-build-env:latest",
         kas_yaml_override=layout.kas_yaml,
     )
-    assert cfg.bsp_root == layout.ws / "build-m"
+    assert cfg.bsp_root == layout.ws / "build-m-wt1"
     cfg.bsp_root.mkdir(parents=True, exist_ok=True)
 
     wrapper = _write_meta_avocado_wrapper(cfg, layout.kas_yaml)

@@ -23,7 +23,7 @@ from typing import Literal
 # dataclass raising ``NameError``. None of the three imports ``bakar.config``,
 # so this closes no cycle - the deferred imports inside ``resolve()`` further
 # down are a separate matter and stay deferred.
-from bakar import mounts
+from bakar import bsp_detect, mounts, release_workspace
 from bakar.preset_config import PresetEntry  # noqa: TC001
 from bakar.sstate_seed import MARKER_NAME, resolve_seed_for_workspace, seed_mirror_line
 from bakar.user_config import UserConfig  # noqa: TC001
@@ -409,6 +409,10 @@ class BuildConfig:
     # workspace to ``<local_tmpdir_base>/<bsp_root.name>-<machine>`` on local
     # disk. Absent (None) keeps the workspace-relative tmp; see resolved_tmpdir.
     local_tmpdir_base: str | None = field(default=None)
+    # Build-directory name template for a kas file in a linked meta-avocado
+    # worktree; None means the default ``build-{stem}-{worktree}``. See
+    # worktree_build_template and bsp_root.
+    worktree_build_dir_template: str | None = field(default=None)
     scheduler: str | None = field(default=None)
     pressure_max_cpu: float | None = field(default=None)
     pressure_max_io: float | None = field(default=None)
@@ -770,7 +774,19 @@ class BuildConfig:
                 # into a build tree.
                 if self.kas_yaml_override.name == GENERATED_BUILD_YAML:
                     return self.kas_yaml_override.resolve().parent
-                return self.workspace / f"build-{self.kas_yaml_override.stem}"
+                stem = self.kas_yaml_override.stem
+                # Each linked worktree gets its own build dir so two branches
+                # of meta-avocado never share TOPDIR (and so never share the
+                # digest-keyed local TMPDIR either).
+                wt = bsp_detect.meta_avocado_worktree(self.kas_yaml_override)
+                if wt is not None:
+                    return self.workspace / release_workspace.worktree_build_dir_name(
+                        stem,
+                        wt.checkout.name,
+                        self.worktree_build_dir_template,
+                        source="BAKAR_WORKTREE_BUILD_DIR or build.worktree_build_dir",
+                    )
+                return self.workspace / f"build-{stem}"
             return self.kas_yaml_override.parent
         if self.bsp_family == "bbsetup":
             return self.workspace
@@ -1006,6 +1022,18 @@ def _sstate_mirror_fields(
     if not (seed_dir / MARKER_NAME).is_file():
         return {"sstate_mirrors": None, "sstate_mirrors_source": None}
     return {"sstate_mirrors": seed_mirror_line(seed_dir), "sstate_mirrors_source": "seed"}
+
+
+def worktree_build_template(user_config: UserConfig | None) -> str | None:
+    """Return the worktree build-directory template: env first, then user config.
+
+    ``BAKAR_WORKTREE_BUILD_DIR`` wins over ``[build] worktree_build_dir`` so a
+    dispatched remote build can carry the dispatching host's choice.
+    """
+    env = os.environ.get("BAKAR_WORKTREE_BUILD_DIR")
+    if env:
+        return env
+    return user_config.build_worktree_build_dir if user_config is not None else None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1301,6 +1329,7 @@ def resolve(request: ResolveRequest) -> BuildConfig:
             user_config.sstate_dir if user_config else None,
             workspace,
         ),
+        worktree_build_dir_template=worktree_build_template(user_config),
         local_tmpdir_base=user_config.local_tmpdir_base if user_config else None,
         scheduler=user_config.scheduler if user_config else None,
         pressure_max_cpu=user_config.pressure_max_cpu if user_config else None,
