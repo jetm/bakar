@@ -373,9 +373,17 @@ def _download_to(url: str, dest: Path, *, size: int | None = None) -> Path:
     return part
 
 
-def _fetch_verified(  # noqa: PLR0913
-    url: str, dest: Path, *, checksum_type: str, checksum: str, size: int | None, what: str
-) -> int:
+@dataclass(frozen=True, kw_only=True, slots=True)
+class _ExpectedFile:
+    """What a fetched file must hash to and may weigh, and the name its errors report."""
+
+    checksum_type: str
+    checksum: str
+    size: int | None
+    what: str
+
+
+def _fetch_verified(url: str, dest: Path, *, expect: _ExpectedFile) -> int:
     """Download ``url`` to ``dest``, verify it, and replace it into place.
 
     A mismatch deletes the ``.part`` file and raises :class:`_TransientError` before
@@ -385,7 +393,8 @@ def _fetch_verified(  # noqa: PLR0913
     :class:`OSError` - this runs inside :func:`_download_all`'s executor
     threads too, where an unwrapped exception would bypass cancel-on-first-failure.
     """
-    part = _download_to(url, dest, size=size)
+    checksum_type, checksum, what = expect.checksum_type, expect.checksum, expect.what
+    part = _download_to(url, dest, size=expect.size)
     try:
         digest = meta.file_digest(part, checksum_type)
     except (meta.MetadataError, OSError) as exc:
@@ -480,7 +489,11 @@ def _plan_repo(repo: str, *, source_channel: str, channel_dir: Path, allow_missi
         url = f"{repo_url}/{_REPODATA}/{name}"
         _retrying(
             lambda url=url, dest=dest, entry=entry: _fetch_verified(
-                url, dest, checksum_type=entry.checksum_type, checksum=entry.checksum, size=entry.size, what=url
+                url,
+                dest,
+                expect=_ExpectedFile(
+                    checksum_type=entry.checksum_type, checksum=entry.checksum, size=entry.size, what=url
+                ),
             )
         )
         if entry.type == "primary":
@@ -646,12 +659,10 @@ def _resume_or_download(source_channel: str, package: _PlannedPackage) -> _Packa
         if digest == package.checksum:
             return _PackageResult(downloaded=False, size=package.size)
     url = f"{source_channel}/{package.relative}"
-    what = str(package.relative)
-    size = _retrying(
-        lambda: _fetch_verified(
-            url, dest, checksum_type=package.checksum_type, checksum=package.checksum, size=package.size, what=what
-        )
+    expect = _ExpectedFile(
+        checksum_type=package.checksum_type, checksum=package.checksum, size=package.size, what=str(package.relative)
     )
+    size = _retrying(lambda: _fetch_verified(url, dest, expect=expect))
     return _PackageResult(downloaded=True, size=size)
 
 
