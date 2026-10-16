@@ -142,7 +142,7 @@ def global_host_mode() -> bool:
     """
     import bakar.commands._app as _state
 
-    return _state._HOST_MODE
+    return _state._GLOBAL_OPTIONS.host
 
 
 def global_container_mode() -> bool:
@@ -152,7 +152,7 @@ def global_container_mode() -> bool:
     """
     import bakar.commands._app as _state
 
-    return _state._CONTAINER_MODE
+    return _state._GLOBAL_OPTIONS.container
 
 
 def global_output_mode_override() -> OutputMode | None:
@@ -161,8 +161,14 @@ def global_output_mode_override() -> OutputMode | None:
     A late import avoids a circular dependency between ``_helpers`` and ``_app``.
     """
     import bakar.commands._app as _state
+    from bakar.output_mode import OutputMode
 
-    return _state._OUTPUT_MODE_OVERRIDE
+    opts = _state._GLOBAL_OPTIONS
+    if opts.plain:
+        return OutputMode.PLAIN
+    if opts.rich_output:
+        return OutputMode.RICH
+    return None
 
 
 def apply_sccache_overrides(cfg: BuildConfig) -> BuildConfig:
@@ -174,8 +180,9 @@ def apply_sccache_overrides(cfg: BuildConfig) -> BuildConfig:
     """
     import bakar.commands._app as _state
 
-    if _state._SCCACHE_SCHEDULER is not None:
-        cfg = replace(cfg, sccache_scheduler_url=_state._SCCACHE_SCHEDULER)
+    scheduler = _state._GLOBAL_OPTIONS.sccache_scheduler
+    if scheduler is not None:
+        cfg = replace(cfg, sccache_scheduler_url=scheduler)
     return cfg
 
 
@@ -186,7 +193,7 @@ def global_no_scope() -> bool:
     """
     import bakar.commands._app as _state
 
-    return _state._NO_SCOPE
+    return _state._GLOBAL_OPTIONS.no_scope
 
 
 def global_sccache_scheduler() -> str | None:
@@ -196,7 +203,7 @@ def global_sccache_scheduler() -> str | None:
     """
     import bakar.commands._app as _state
 
-    return _state._SCCACHE_SCHEDULER
+    return _state._GLOBAL_OPTIONS.sccache_scheduler
 
 
 def global_sccache_dist_override() -> bool | None:
@@ -206,7 +213,7 @@ def global_sccache_dist_override() -> bool | None:
     """
     import bakar.commands._app as _state
 
-    if _state._SCCACHE_DIST:
+    if _state._GLOBAL_OPTIONS.sccache_dist:
         return True
     return None
 
@@ -239,13 +246,14 @@ def apply_mold_overrides(cfg: BuildConfig) -> BuildConfig:
     """
     import bakar.commands._app as _state
 
-    if _state._MOLD_BASELINE and _state._MOLD_GLOBAL:
+    opts = _state._GLOBAL_OPTIONS
+    if opts.mold_baseline and opts.mold_global:
         cfg = replace(cfg, mold=True, mold_mode="baseline-global")
-    elif _state._MOLD_BASELINE:
+    elif opts.mold_baseline:
         cfg = replace(cfg, mold=True, mold_mode="baseline")
-    elif _state._MOLD_GLOBAL:
+    elif opts.mold_global:
         cfg = replace(cfg, mold=True, mold_mode="global")
-    elif _state._MOLD:
+    elif opts.mold:
         cfg = replace(cfg, mold=True, mold_mode="list")
     return cfg
 
@@ -417,7 +425,7 @@ def _run_doctor_gate(cfg: BuildConfig, log, bsp: BspModel | None) -> None:
     diag_path.write_text(
         "\n".join(f"{r.severity.value:5} {r.status.value:4} {r.name:22} {r.message}" for r in results) + "\n"
     )
-    hide = _state._HIDE_DOCTOR_REPORT or (
+    hide = _state._GLOBAL_OPTIONS.hide_doctor_report or (
         _state._USER_CONFIG is not None and not _state._USER_CONFIG.show_doctor_report
     )
     if hide:

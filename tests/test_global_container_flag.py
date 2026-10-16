@@ -30,25 +30,24 @@ def _request(ws: Path) -> ResolveRequest:
 
 
 def test_global_container_flag_yields_container_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_state, "_CONTAINER_MODE", True)
+    monkeypatch.setattr(_state, "_GLOBAL_OPTIONS", replace(_state._GLOBAL_OPTIONS, container=True))
     cfg = resolve_global_config(_request(tmp_path))
     assert cfg.host_mode is False
 
 
 def test_no_global_flag_equals_plain_resolve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_state, "_CONTAINER_MODE", False)
-    monkeypatch.setattr(_state, "_HOST_MODE", False)
+    monkeypatch.setattr(_state, "_GLOBAL_OPTIONS", replace(_state._GLOBAL_OPTIONS, container=False, host=False))
     req = _request(tmp_path)
     assert resolve_global_config(req) == resolve(req)
 
 
 def test_global_host_flag_forces_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_state, "_HOST_MODE", True)
+    monkeypatch.setattr(_state, "_GLOBAL_OPTIONS", replace(_state._GLOBAL_OPTIONS, host=True))
     assert resolve_global_config(_request(tmp_path)).host_mode is True
 
 
 def test_request_without_spec_is_accepted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_state, "_CONTAINER_MODE", True)
+    monkeypatch.setattr(_state, "_GLOBAL_OPTIONS", replace(_state._GLOBAL_OPTIONS, container=True))
     req = replace(_request(tmp_path), spec=None)
     assert resolve_global_config(req).host_mode is False
 
@@ -103,8 +102,7 @@ def test_kas_launching_command_honours_global_container(
         raise _StoppedError
 
     monkeypatch.setattr(module, "resolve_global_config", recording)
-    monkeypatch.setattr(_state, "_CONTAINER_MODE", False)
-    monkeypatch.setattr(_state, "_HOST_MODE", False)
+    monkeypatch.setattr(_state, "_GLOBAL_OPTIONS", replace(_state._GLOBAL_OPTIONS, container=False, host=False))
     result = runner.invoke(app, ["--container", *argv, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)])
 
     assert isinstance(result.exception, _StoppedError), (result.output, result.exception)

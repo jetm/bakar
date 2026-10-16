@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from typer.testing import CliRunner
 
@@ -15,42 +17,41 @@ runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
-def _restore_output_mode_override() -> None:
-    """Save and restore the module global so tests can't leak override state."""
-    saved = _state._OUTPUT_MODE_OVERRIDE
+def _restore_global_options() -> None:
+    """Save and restore the published options object so tests can't leak override state."""
+    saved = _state._GLOBAL_OPTIONS
     try:
         yield
     finally:
-        _state._OUTPUT_MODE_OVERRIDE = saved
+        _state._GLOBAL_OPTIONS = saved
 
 
 def test_plain_flag_sets_override() -> None:
-    _state._OUTPUT_MODE_OVERRIDE = None
+    _state._GLOBAL_OPTIONS = replace(_state._GLOBAL_OPTIONS, plain=False, rich_output=False)
     result = runner.invoke(app, ["--plain", "doctor", "--help"])
     assert result.exit_code == 0
-    assert _state._OUTPUT_MODE_OVERRIDE is OutputMode.PLAIN
     assert global_output_mode_override() is OutputMode.PLAIN
 
 
 def test_ci_alias_sets_plain_override() -> None:
-    _state._OUTPUT_MODE_OVERRIDE = None
+    _state._GLOBAL_OPTIONS = replace(_state._GLOBAL_OPTIONS, plain=False, rich_output=False)
     result = runner.invoke(app, ["--ci", "doctor", "--help"])
     assert result.exit_code == 0
-    assert _state._OUTPUT_MODE_OVERRIDE is OutputMode.PLAIN
+    assert global_output_mode_override() is OutputMode.PLAIN
 
 
 def test_rich_flag_sets_override() -> None:
-    _state._OUTPUT_MODE_OVERRIDE = None
+    _state._GLOBAL_OPTIONS = replace(_state._GLOBAL_OPTIONS, plain=False, rich_output=False)
     result = runner.invoke(app, ["--rich", "doctor", "--help"])
     assert result.exit_code == 0
-    assert _state._OUTPUT_MODE_OVERRIDE is OutputMode.RICH
+    assert global_output_mode_override() is OutputMode.RICH
 
 
 def test_no_flag_leaves_override_none() -> None:
-    _state._OUTPUT_MODE_OVERRIDE = OutputMode.PLAIN
+    _state._GLOBAL_OPTIONS = replace(_state._GLOBAL_OPTIONS, plain=True, rich_output=False)
     result = runner.invoke(app, ["doctor", "--help"])
     assert result.exit_code == 0
-    assert _state._OUTPUT_MODE_OVERRIDE is None
+    assert global_output_mode_override() is None
 
 
 def test_both_flags_exit_2() -> None:

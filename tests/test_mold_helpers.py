@@ -7,6 +7,7 @@ reflecting the ``_app`` module globals set by the ``--mold`` callback.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -101,9 +102,9 @@ def test_apply_mold_overrides_noop_when_globals_unset(monkeypatch: pytest.Monkey
     import bakar.commands._app as _state
     from bakar.commands._helpers import apply_mold_overrides
 
-    monkeypatch.setattr(_state, "_MOLD", False)
-    monkeypatch.setattr(_state, "_MOLD_BASELINE", False)
-    monkeypatch.setattr(_state, "_MOLD_GLOBAL", False)
+    monkeypatch.setattr(
+        _state, "_GLOBAL_OPTIONS", replace(_state._GLOBAL_OPTIONS, mold=False, mold_baseline=False, mold_global=False)
+    )
 
     cfg = _mold_cfg(mold=False)
     result = apply_mold_overrides(cfg)
@@ -118,9 +119,9 @@ def test_apply_mold_overrides_enables_list_mode(monkeypatch: pytest.MonkeyPatch)
     import bakar.commands._app as _state
     from bakar.commands._helpers import apply_mold_overrides
 
-    monkeypatch.setattr(_state, "_MOLD", True)
-    monkeypatch.setattr(_state, "_MOLD_BASELINE", False)
-    monkeypatch.setattr(_state, "_MOLD_GLOBAL", False)
+    monkeypatch.setattr(
+        _state, "_GLOBAL_OPTIONS", replace(_state._GLOBAL_OPTIONS, mold=True, mold_baseline=False, mold_global=False)
+    )
 
     result = apply_mold_overrides(_mold_cfg(mold=False))
 
@@ -134,9 +135,9 @@ def test_apply_mold_overrides_baseline_wins(monkeypatch: pytest.MonkeyPatch) -> 
     import bakar.commands._app as _state
     from bakar.commands._helpers import apply_mold_overrides
 
-    monkeypatch.setattr(_state, "_MOLD", False)
-    monkeypatch.setattr(_state, "_MOLD_BASELINE", True)
-    monkeypatch.setattr(_state, "_MOLD_GLOBAL", False)
+    monkeypatch.setattr(
+        _state, "_GLOBAL_OPTIONS", replace(_state._GLOBAL_OPTIONS, mold=False, mold_baseline=True, mold_global=False)
+    )
 
     result = apply_mold_overrides(_mold_cfg(mold=False))
 
@@ -150,9 +151,9 @@ def test_apply_mold_overrides_global_mode(monkeypatch: pytest.MonkeyPatch) -> No
     import bakar.commands._app as _state
     from bakar.commands._helpers import apply_mold_overrides
 
-    monkeypatch.setattr(_state, "_MOLD", False)
-    monkeypatch.setattr(_state, "_MOLD_BASELINE", False)
-    monkeypatch.setattr(_state, "_MOLD_GLOBAL", True)
+    monkeypatch.setattr(
+        _state, "_GLOBAL_OPTIONS", replace(_state._GLOBAL_OPTIONS, mold=False, mold_baseline=False, mold_global=True)
+    )
 
     result = apply_mold_overrides(_mold_cfg(mold=False))
 
@@ -166,9 +167,9 @@ def test_apply_mold_overrides_baseline_global_mode(monkeypatch: pytest.MonkeyPat
     import bakar.commands._app as _state
     from bakar.commands._helpers import apply_mold_overrides
 
-    monkeypatch.setattr(_state, "_MOLD", False)
-    monkeypatch.setattr(_state, "_MOLD_BASELINE", True)
-    monkeypatch.setattr(_state, "_MOLD_GLOBAL", True)
+    monkeypatch.setattr(
+        _state, "_GLOBAL_OPTIONS", replace(_state._GLOBAL_OPTIONS, mold=False, mold_baseline=True, mold_global=True)
+    )
 
     result = apply_mold_overrides(_mold_cfg(mold=False))
 

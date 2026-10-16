@@ -11,6 +11,7 @@ helper and the ``_app`` callback here, not through a ``resolve()`` parameter. Th
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -104,9 +105,9 @@ def test_cli_mold_flips_cfg_via_apply(tmp_path: Path, monkeypatch: pytest.Monkey
     import bakar.commands._app as _state
     from bakar.commands._helpers import apply_mold_overrides
 
-    monkeypatch.setattr(_state, "_MOLD", True)
-    monkeypatch.setattr(_state, "_MOLD_BASELINE", False)
-    monkeypatch.setattr(_state, "_MOLD_GLOBAL", False)
+    monkeypatch.setattr(
+        _state, "_GLOBAL_OPTIONS", replace(_state._GLOBAL_OPTIONS, mold=True, mold_baseline=False, mold_global=False)
+    )
 
     cfg = resolve(ResolveRequest(workspace=_nxp_workspace(tmp_path), bsp_family="nxp"))
     assert cfg.mold is False  # resolve() alone does not see the CLI flag
@@ -122,9 +123,9 @@ def test_cli_mold_overrides_disabling_user_config(tmp_path: Path, monkeypatch: p
     import bakar.commands._app as _state
     from bakar.commands._helpers import apply_mold_overrides
 
-    monkeypatch.setattr(_state, "_MOLD", True)
-    monkeypatch.setattr(_state, "_MOLD_BASELINE", False)
-    monkeypatch.setattr(_state, "_MOLD_GLOBAL", False)
+    monkeypatch.setattr(
+        _state, "_GLOBAL_OPTIONS", replace(_state._GLOBAL_OPTIONS, mold=True, mold_baseline=False, mold_global=False)
+    )
     uc = UserConfig(mold=False)
 
     cfg = resolve(ResolveRequest(workspace=_nxp_workspace(tmp_path), bsp_family="nxp", user_config=uc))
@@ -165,9 +166,9 @@ def test_cli_mold_baseline_sets_baseline_mode_via_apply(tmp_path: Path, monkeypa
     import bakar.commands._app as _state
     from bakar.commands._helpers import apply_mold_overrides
 
-    monkeypatch.setattr(_state, "_MOLD", False)
-    monkeypatch.setattr(_state, "_MOLD_BASELINE", True)
-    monkeypatch.setattr(_state, "_MOLD_GLOBAL", False)
+    monkeypatch.setattr(
+        _state, "_GLOBAL_OPTIONS", replace(_state._GLOBAL_OPTIONS, mold=False, mold_baseline=True, mold_global=False)
+    )
 
     cfg = resolve(ResolveRequest(workspace=_nxp_workspace(tmp_path), bsp_family="nxp"))
     cfg = apply_mold_overrides(cfg)
