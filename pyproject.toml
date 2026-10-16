@@ -173,14 +173,11 @@ known-first-party = ["bakar"]
 "tests/test_getvar.py" = ["PLR0913"]
 
 [tool.ty.rules]
-# Noisy without full type annotations - project uses gradual typing
-call-non-callable = "ignore"
+# Still noisy under gradual typing; src reports nothing under the rules
+# removed from this table, so only these three remain ignored.
 invalid-argument-type = "ignore"
 invalid-assignment = "ignore"
 invalid-return-type = "ignore"
-invalid-type-form = "ignore"
-no-matching-overload = "ignore"
-not-subscriptable = "ignore"
 
 [tool.uv]
 package = true
