@@ -333,8 +333,13 @@ def _write_reuse_overlay(cfg: BuildConfig, kas_yaml: Path, overlay_rels: list[Pa
     if checkout is None:  # pragma: no cover - _repo_policy already fell back
         raise RuntimeError(f"kas YAML {kas_yaml} is not inside a meta-avocado checkout")
     try:
+        # wrap_parent puts the probe's wrapper beside the build's own, so the
+        # overlays' string includes resolve as they will in the real dump.
         merged = kas_pins.read_merged_config(
-            kas_yaml, checkout=checkout, extra_files=[cfg.bsp_root / rel for rel in overlay_rels]
+            kas_yaml,
+            checkout=checkout,
+            extra_files=[cfg.bsp_root / rel for rel in overlay_rels],
+            wrap_parent=cfg.bsp_root,
         )
         states = repo_reuse.classify(merged.get("repos") or {}, cfg.workspace)
     except (repo_reuse.RepoReuseError, ReleaseRoutingError) as exc:
@@ -350,7 +355,7 @@ def _write_reuse_overlay(cfg: BuildConfig, kas_yaml: Path, overlay_rels: list[Pa
         if st.state == "side" and not st.side_exists:
             print(f"side checkout {st.name} at {st.pin[:12]}: {st.side_path}", file=sys.stderr)
     overlay = cfg.bsp_root / _REUSE_OVERLAY_YAML
-    overlay.write_text(repo_reuse.reuse_overlay_text(states), encoding="utf-8")
+    overlay.write_text(repo_reuse.reuse_overlay_text(states, cfg.workspace), encoding="utf-8")
     return Path(_REUSE_OVERLAY_YAML)
 
 

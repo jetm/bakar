@@ -15,7 +15,10 @@ cache is refreshed.
 from __future__ import annotations
 
 import fcntl
+import os
 import subprocess
+import sys
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +32,12 @@ if TYPE_CHECKING:
 RepoStateKind = Literal["frozen", "missing", "side"]
 
 _KAS_HEADER_VERSION = 16
+
+# The holder runs a kas dump that may clone missing repositories, which on a
+# slow link or a stalled fetch takes long; past this a waiter gives up loudly.
+LOCK_WAIT_LIMIT_S = 20 * 60
+_LOCK_POLL_S = 0.25
+_LOCK_NOTICE_AFTER_S = 3.0
 
 
 class RepoReuseError(Exception):
@@ -46,18 +55,44 @@ class RepoState:
 
 
 @contextmanager
-def workspace_lock(workspace: Path) -> Iterator[None]:
+def workspace_lock(workspace: Path, *, wait_limit_s: float = LOCK_WAIT_LIMIT_S) -> Iterator[None]:
     """Hold the workspace's exclusive repository lock for the ``with`` body.
 
     Two builds that both classify a repository as ``missing`` would each let
     kas clone it, and the second kas would then check the first build's fresh
     clone out to its own pin. Serialising classify-through-dump closes that
     window: the second build classifies only after the first clone exists.
+
+    The lock is polled rather than awaited so a waiter says why it is stuck
+    and stops after ``wait_limit_s`` instead of hanging behind a holder whose
+    clone is waiting on a credential prompt.
+
+    Raises RuntimeError naming the lock file when the wait runs out.
     """
     lock_dir = workspace / ".bakar"
     lock_dir.mkdir(parents=True, exist_ok=True)
-    with (lock_dir / "repos.lock").open("a") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+    lock_path = lock_dir / "repos.lock"
+    with lock_path.open("a") as fh:
+        start = time.monotonic()
+        noticed = False
+        while True:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                waited = time.monotonic() - start
+                if waited >= wait_limit_s:
+                    raise RuntimeError(
+                        f"gave up after waiting {waited:.0f}s for {lock_path}: another bakar build on this "
+                        "workspace still holds it (its kas dump may be stuck cloning a repository)"
+                    ) from None
+                if not noticed and waited >= _LOCK_NOTICE_AFTER_S:
+                    print(
+                        f"waiting for {lock_path}: another bakar build on this workspace holds it",
+                        file=sys.stderr,
+                    )
+                    noticed = True
+                time.sleep(_LOCK_POLL_S)
         try:
             yield
         finally:
@@ -132,16 +167,34 @@ def classify(repos: dict, workspace: Path) -> list[RepoState]:
     return states
 
 
-def reuse_overlay_text(states: list[RepoState]) -> str:
+def _kas_path(path: Path, workspace: Path) -> str:
+    """Return ``path`` as the build's kas should name it.
+
+    kas resolves a relative repo path against ``KAS_WORK_DIR``, which is the
+    workspace on the host and ``/work`` inside kas-container, so a relative
+    path names the same clone in both modes while a host-absolute one does
+    not exist in the container. A repository outside the workspace has no
+    such form and stays absolute.
+    """
+    # normpath first so a ``..`` component cannot pass the lexical check while
+    # pointing outside; resolve second so a symlinked workspace still matches.
+    lexical = (Path(os.path.normpath(workspace.absolute())), Path(os.path.normpath(path.absolute())))
+    for base, target in (lexical, (workspace.resolve(), path.resolve())):
+        if target.is_relative_to(base):
+            return target.relative_to(base).as_posix()
+    return str(path.absolute())
+
+
+def reuse_overlay_text(states: list[RepoState], workspace: Path) -> str:
     """Render the kas overlay that keeps kas off every shared clone."""
     repos: dict[str, dict] = {}
     for st in states:
         if st.state == "frozen":
             # Without a path kas places a url-less repo at the dump file's
             # root, so name the clone classify actually checked.
-            repos[st.name] = {"path": str(st.path.absolute()), "url": None}
+            repos[st.name] = {"path": _kas_path(st.path, workspace), "url": None}
         elif st.state == "side" and st.side_path is not None:
-            override: dict = {"path": str(st.side_path.absolute())}
+            override: dict = {"path": _kas_path(st.side_path, workspace)}
             if st.side_exists:
                 override["url"] = None
             repos[st.name] = override

@@ -36,6 +36,8 @@ _MISSING_PREFIX = "Missing repos:"
 _DUMP_TIMEOUT_S = 120
 # The repository name meta_avocado_wrapper_text gives the checkout.
 _OWN_REPO = "meta-avocado"
+# Name prefix of the throwaway wrapper written into a build's bsp_root.
+PROBE_PREFIX = ".reuse-probe-"
 
 
 def _dump_argv(wrapper: Path, extras: Sequence[Path] = ()) -> list[str]:
@@ -108,13 +110,51 @@ def _first_error_line(stderr: str) -> str:
     return lines[0] if lines else "(no stderr)"
 
 
-def read_merged_config(kas_yaml: Path, *, checkout: Path, extra_files: Sequence[Path] = ()) -> dict:
+def _run_dump(
+    kas_yaml: Path, wrapper: Path, extras: Sequence[Path], *, cwd: Path, work_dir: str
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            _dump_argv(wrapper, extras),
+            capture_output=True,
+            text=True,
+            timeout=_DUMP_TIMEOUT_S,
+            check=False,
+            cwd=cwd,
+            env={**os.environ, "KAS_WORK_DIR": work_dir},
+        )
+    except FileNotFoundError as exc:
+        raise ReleaseRoutingError(f"cannot read the kas pins of {kas_yaml}: kas is not installed ({exc})") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ReleaseRoutingError(
+            f"cannot read the kas pins of {kas_yaml}: kas dump did not finish within {_DUMP_TIMEOUT_S}s"
+        ) from exc
+
+
+def read_merged_config(
+    kas_yaml: Path,
+    *,
+    checkout: Path,
+    extra_files: Sequence[Path] = (),
+    wrap_parent: Path | None = None,
+) -> dict:
     """Return the merged kas config of ``kas_yaml`` read from ``checkout``.
 
     ``extra_files`` are merged after the entry in the given order, as the
-    build's own dump merges its overlays. They are copied beside the throwaway
-    wrapper rather than named in place: kas refuses to concatenate files from
-    two repositories, and the wrapper sits outside any.
+    build's own dump merges its overlays.
+
+    With ``wrap_parent`` (the build's ``bsp_root``) the throwaway wrapper is a
+    uniquely named file directly in it and the extras are named in place, so
+    kas sees the layout of the build's own dump: the same repository for its
+    same-repo check, and the same include root, which kas takes from the first
+    file's git root or, outside git, from that file's own directory. That is
+    why the wrapper is not in a subdirectory: outside git a subdirectory would
+    move the root that an overlay's string includes resolve against.
+
+    Without it the wrapper goes to the system temp dir and the extras are
+    copied beside it, since kas refuses to concatenate files from two
+    repositories and that wrapper sits outside any. Copying changes how the
+    extras' string includes resolve, so the build passes ``wrap_parent``.
 
     Raises ReleaseRoutingError when kas cannot produce it, or when an include
     of ``kas_yaml`` needs a repository other than ``checkout``.
@@ -125,34 +165,30 @@ def read_merged_config(kas_yaml: Path, *, checkout: Path, extra_files: Sequence[
             f"{kas_yaml} includes files from repositories other than its own checkout ({', '.join(foreign)}); "
             "the release cannot be read without fetching them"
         )
-    with (
-        tempfile.TemporaryDirectory(prefix="bakar-kas-pins-") as wrap_dir,
-        tempfile.TemporaryDirectory(prefix="bakar-kas-pins-work-") as work_dir,
-    ):
-        wrapper = Path(wrap_dir) / "avocado-wrapper.yml"
-        wrapper.write_text(bsp_detect.meta_avocado_wrapper_text(checkout, kas_yaml))
-        extras: list[Path] = []
-        for index, extra in enumerate(extra_files):
-            # The index keeps two overlays with the same basename apart.
-            copy = Path(wrap_dir) / f"extra-{index:02d}-{extra.name}"
-            shutil.copyfile(extra, copy)
-            extras.append(copy)
-        try:
-            out = subprocess.run(
-                _dump_argv(wrapper, extras),
-                capture_output=True,
-                text=True,
-                timeout=_DUMP_TIMEOUT_S,
-                check=False,
-                cwd=wrap_dir,
-                env={**os.environ, "KAS_WORK_DIR": work_dir},
-            )
-        except FileNotFoundError as exc:
-            raise ReleaseRoutingError(f"cannot read the kas pins of {kas_yaml}: kas is not installed ({exc})") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise ReleaseRoutingError(
-                f"cannot read the kas pins of {kas_yaml}: kas dump did not finish within {_DUMP_TIMEOUT_S}s"
-            ) from exc
+    text = bsp_detect.meta_avocado_wrapper_text(checkout, kas_yaml)
+    with tempfile.TemporaryDirectory(prefix="bakar-kas-pins-work-") as work_dir:
+        if wrap_parent is None:
+            with tempfile.TemporaryDirectory(prefix="bakar-kas-pins-") as wrap_dir:
+                wrapper = Path(wrap_dir) / "avocado-wrapper.yml"
+                wrapper.write_text(text)
+                extras: list[Path] = []
+                for index, extra in enumerate(extra_files):
+                    # The index keeps two overlays with the same basename apart.
+                    copy = Path(wrap_dir) / f"extra-{index:02d}-{extra.name}"
+                    shutil.copyfile(extra, copy)
+                    extras.append(copy)
+                out = _run_dump(kas_yaml, wrapper, extras, cwd=Path(wrap_dir), work_dir=work_dir)
+        else:
+            parent = wrap_parent.absolute()
+            fd, name = tempfile.mkstemp(prefix=PROBE_PREFIX, suffix=".yml", dir=parent)
+            wrapper = Path(name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                extras = [extra.absolute() for extra in extra_files]
+                out = _run_dump(kas_yaml, wrapper, extras, cwd=parent, work_dir=work_dir)
+            finally:
+                wrapper.unlink(missing_ok=True)
 
     if out.returncode != 0:
         if _MISSING_MARKER in out.stderr:

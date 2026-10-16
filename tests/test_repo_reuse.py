@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import subprocess
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 import yaml
 
-from bakar.steps.repo_reuse import RepoReuseError, classify, reuse_overlay_text
+from bakar.steps.repo_reuse import RepoReuseError, RepoState, classify, reuse_overlay_text
 
-if TYPE_CHECKING:
-    from pathlib import Path
+PIN = "0123456789abcdef0123456789abcdef01234567"
 
 
 def _git(path: Path, *args: str) -> str:
@@ -125,8 +124,8 @@ def test_existing_clean_side_checkout_emits_path_and_null_url(tmp_path: Path) ->
     (state,) = classify({"meta-x": _entry(first)}, tmp_path)
     assert state.state == "side"
     assert state.side_exists is True
-    doc = yaml.safe_load(reuse_overlay_text([state]))
-    assert doc["repos"]["meta-x"] == {"path": str(side), "url": None}
+    doc = yaml.safe_load(reuse_overlay_text([state], tmp_path))
+    assert doc["repos"]["meta-x"] == {"path": side.relative_to(tmp_path).as_posix(), "url": None}
 
 
 def test_existing_dirty_side_checkout_raises(tmp_path: Path) -> None:
@@ -157,9 +156,44 @@ def test_overlay_parses_and_omits_missing(tmp_path: Path) -> None:
         },
         tmp_path,
     )
-    doc = yaml.safe_load(reuse_overlay_text(states))
+    doc = yaml.safe_load(reuse_overlay_text(states, tmp_path))
     assert doc["header"] == {"version": 16}
-    assert doc["repos"]["frozen"] == {"path": str((tmp_path / "frozen").absolute()), "url": None}
-    side = tmp_path / ".bakar" / "pins" / "off" / first[:12]
-    assert doc["repos"]["off"] == {"path": str(side)}
+    assert doc["repos"]["frozen"] == {"path": "frozen", "url": None}
+    assert doc["repos"]["off"] == {"path": f".bakar/pins/off/{first[:12]}"}
     assert "gone" not in doc["repos"]
+
+
+def test_overlay_path_under_the_workspace_is_relative(tmp_path: Path) -> None:
+    """kas resolves a relative path against KAS_WORK_DIR, which is ``/work`` in the container."""
+    ws = tmp_path / "ws"
+    states = [
+        RepoState("meta-a", ws / "layers" / "meta-a", PIN, "frozen"),
+        RepoState("meta-b", ws / "meta-b", PIN, "side", ws / ".bakar" / "pins" / "meta-b" / PIN[:12], True),
+    ]
+    doc = yaml.safe_load(reuse_overlay_text(states, ws))
+    assert doc["repos"]["meta-a"]["path"] == "layers/meta-a"
+    assert doc["repos"]["meta-b"]["path"] == f".bakar/pins/meta-b/{PIN[:12]}"
+
+
+def test_overlay_path_outside_the_workspace_stays_absolute(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    outside = tmp_path / "elsewhere" / "meta-a"
+    # A ``..`` that leaves the workspace must not pass as workspace-relative.
+    dotted = ws / ".." / "other" / "meta-c"
+    states = [
+        RepoState("meta-a", outside, PIN, "frozen"),
+        RepoState("meta-c", dotted, PIN, "frozen"),
+    ]
+    doc = yaml.safe_load(reuse_overlay_text(states, ws))
+    assert doc["repos"]["meta-a"]["path"] == str(outside)
+    assert Path(doc["repos"]["meta-c"]["path"]).is_absolute()
+
+
+def test_overlay_path_through_a_symlinked_workspace_is_relative(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    (real / "meta-a").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    state = RepoState("meta-a", real / "meta-a", PIN, "frozen")
+    doc = yaml.safe_load(reuse_overlay_text([state], link))
+    assert doc["repos"]["meta-a"]["path"] == "meta-a"

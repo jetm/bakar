@@ -9,14 +9,14 @@ import threading
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import pytest
+
 from bakar.config import BuildConfig
-from bakar.steps import kas_build
+from bakar.steps import kas_build, repo_reuse
 from bakar.steps.repo_reuse import RepoState, workspace_lock
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 PIN = "0123456789abcdef0123456789abcdef01234567"
 DUMP_YAML = "header:\n  version: 16\nrepos: {}\n"
@@ -85,6 +85,46 @@ def test_lock_waits_for_another_process(tmp_path: Path) -> None:
         _release(holder)
     assert entered.wait(_WAIT_S)
     worker.join(_WAIT_S)
+
+
+def test_waiter_names_the_lock_then_gives_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock = tmp_path / ".bakar" / "repos.lock"
+    holder = _hold(lock)
+    # The real notice comes after 3 s; the limit here is 1 s.
+    monkeypatch.setattr(repo_reuse, "_LOCK_NOTICE_AFTER_S", 0.2)
+    try:
+        with pytest.raises(RuntimeError) as exc, workspace_lock(tmp_path, wait_limit_s=1):
+            raise AssertionError("the body must not run while another process holds the lock")
+    finally:
+        _release(holder)
+    assert str(lock) in str(exc.value)
+    assert "1s" in str(exc.value)
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1
+    assert str(lock) in err
+    assert "another bakar build" in err
+
+
+def test_short_wait_prints_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    holder = _hold(tmp_path / ".bakar" / "repos.lock")
+    timer = threading.Timer(0.3, _release, args=(holder,))
+    timer.start()
+    try:
+        with workspace_lock(tmp_path, wait_limit_s=5):
+            pass
+    finally:
+        timer.join(_WAIT_S)
+    assert capsys.readouterr().err == ""
+
+
+def test_lock_is_released_when_the_body_raises(tmp_path: Path) -> None:
+    lock = tmp_path / ".bakar" / "repos.lock"
+    with pytest.raises(ValueError, match="boom"), workspace_lock(tmp_path):
+        assert _is_locked(lock)
+        raise ValueError("boom")
+    assert not _is_locked(lock)
 
 
 def _cfg(tmp_path: Path) -> tuple[BuildConfig, Path, Path]:

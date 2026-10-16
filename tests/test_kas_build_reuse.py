@@ -144,14 +144,18 @@ def test_reuse_policy_merges_reuse_overlay_last(
     assert read.call_args.kwargs["checkout"].resolve() == (tmp_path / "meta-avocado").resolve()
     # The pins come from the same stack the dump merges, minus the reuse overlay.
     assert read.call_args.kwargs["extra_files"] == [cfg.bsp_root / ".bakar" / "overlays" / overlay.name]
+    # Beside the build's own wrapper, so the overlays' includes resolve alike.
+    assert read.call_args.kwargs["wrap_parent"] == cfg.bsp_root
     classify.assert_called_once_with(merged["repos"], cfg.workspace)
     argv = run.call_args.args[0]
     assert argv[:2] == ["kas", "dump"]
     assert "--skip" not in argv
     assert argv[-1].split(":")[-1] == "avocado-reuse.yml"
     overlay_data = yaml.safe_load((cfg.bsp_root / "avocado-reuse.yml").read_text(encoding="utf-8"))
-    assert overlay_data["repos"]["poky"] == {"path": str((tmp_path / "poky").absolute()), "url": None}
-    assert overlay_data["repos"]["meta-foo"] == {"path": str(side.absolute())}
+    # Workspace-relative, so kas-container finds them under /work as well.
+    assert overlay_data["repos"]["poky"] == {"path": "poky", "url": None}
+    assert overlay_data["repos"]["meta-foo"] == {"path": f".bakar/pins/meta-foo/{PIN[:12]}"}
+    assert overlay_data["repos"]["meta-bar"] == {"path": "bar-side", "url": None}
     err = capsys.readouterr().err
     assert f"side checkout meta-foo at {PIN[:12]}: {side}" in err
     assert "meta-bar" not in err

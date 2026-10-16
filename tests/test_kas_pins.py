@@ -272,3 +272,62 @@ def test_extra_files_follow_the_wrapper_in_order(tmp_path: Path) -> None:
     assert "repo: meta-avocado" in wrapper
     assert one == first.read_text()
     assert two == second.read_text()
+
+
+# ---------------------------------------------------------------------------
+# wrap_parent: the build's probe sits beside its own wrapper
+# ---------------------------------------------------------------------------
+
+
+def test_wrap_parent_names_extras_in_place_beside_the_probe(tmp_path: Path) -> None:
+    checkout, kas_yaml = _layout(tmp_path)
+    bsp = tmp_path / "ws" / "build-m"
+    overlay = bsp / ".bakar" / "overlays" / "main.yml"
+    overlay.parent.mkdir(parents=True)
+    overlay.write_text("header:\n  version: 16\n")
+    seen: list[tuple[list[str], Path, str]] = []
+
+    def run(argv, **kwargs):
+        files = argv[-1].split(":")
+        seen.append((files, Path(kwargs["cwd"]), Path(files[0]).read_text()))
+        return subprocess.CompletedProcess(argv, 0, "repos: {}\n", "")
+
+    with patch.object(kas_pins.subprocess, "run", run):
+        kas_pins.read_merged_config(kas_yaml, checkout=checkout, extra_files=[overlay], wrap_parent=bsp)
+
+    ((files, cwd, wrapper_text),) = seen
+    wrapper = Path(files[0])
+    # Directly in bsp_root, not a subdirectory: outside git kas roots string
+    # includes at the first file's directory.
+    assert wrapper.parent == bsp
+    assert wrapper.name.startswith(kas_pins.PROBE_PREFIX)
+    assert "repo: meta-avocado" in wrapper_text
+    assert files[1:] == [str(overlay)]
+    assert cwd == bsp
+    assert not wrapper.exists()
+    assert list(bsp.glob(f"{kas_pins.PROBE_PREFIX}*")) == []
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        subprocess.CompletedProcess([], 1, "", "ERROR - Configuration file not found: x.yml\n"),
+        subprocess.TimeoutExpired(["kas"], 120),
+        FileNotFoundError("kas"),
+    ],
+)
+def test_wrap_parent_probe_is_removed_after_a_failure(tmp_path: Path, outcome: object) -> None:
+    checkout, kas_yaml = _layout(tmp_path)
+    bsp = tmp_path / "ws" / "build-m"
+    bsp.mkdir()
+
+    def run(argv, **_kwargs):
+        assert len(list(bsp.glob(f"{kas_pins.PROBE_PREFIX}*"))) == 1
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    with patch.object(kas_pins.subprocess, "run", run), pytest.raises(ReleaseRoutingError):
+        kas_pins.read_merged_config(kas_yaml, checkout=checkout, wrap_parent=bsp)
+
+    assert list(bsp.iterdir()) == []
