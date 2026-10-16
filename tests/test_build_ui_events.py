@@ -28,6 +28,7 @@ from bakar.steps.build_ui import (
     BuildUIState,
     _Phase,
 )
+from bakar.steps.build_ui_render import _render_breadcrumb, make_renderable
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "bitbake_eventlog.json"
 
@@ -319,7 +320,7 @@ def test_setscene_line_rendered_when_covered() -> None:
     ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, e)
     assert ui._phase is _Phase.BUILD
 
-    renderables = list(ui.make_renderable().renderables)
+    renderables = list(make_renderable(ui).renderables)
     texts = [r for r in renderables if isinstance(r, Text)]
     # Rendered as a ratio: pct = int(300 / 320 * 100) = 93.
     sstate = [r for r in texts if "93% sstate (300 cached, 20 will build)" in r.plain]
@@ -336,7 +337,7 @@ def test_setscene_line_absent_when_total_zero() -> None:
     assert ui._phase is _Phase.BUILD
     assert ui._setscene_total == 0
 
-    for r in ui.make_renderable().renderables:
+    for r in make_renderable(ui).renderables:
         plain = getattr(r, "plain", "")
         assert "sstate cache" not in plain
 
@@ -388,7 +389,7 @@ def test_frozen_frame_collapses_to_status_and_count() -> None:
     ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, e)
     ui.process_line(_HEAD_LINE)
 
-    out = _render(ui.make_renderable())
+    out = _render(make_renderable(ui))
     assert "93% sstate (300 cached, 20 will build)" in out
     assert "1 failed: glibc-2.39-r0:do_compile" in out
     assert "kas_build" not in out  # bar and task table dropped
@@ -402,7 +403,7 @@ def test_notify_restarted_restores_full_frame() -> None:
     ui.take_fail_freeze()
     ui.notify_restarted()
 
-    out = _render(ui.make_renderable())
+    out = _render(make_renderable(ui))
     assert "kas_build" in out  # bar back
     assert "1 failed" in out  # persistent failure summary stays
 
@@ -489,7 +490,7 @@ def test_failed_final_frame_collapses_to_header_and_sstate(tmp_path: Path) -> No
     ui.process_event(_EVT_RUNQUEUE_TASK_STARTED, e)
     ui.finish_failed()
 
-    out = _render(ui.make_renderable())
+    out = _render(make_renderable(ui))
     assert "93% sstate (300 cached, 20 will build)" in out
     assert "parse" in out  # breadcrumb present
     assert "kas_build" not in out
@@ -549,7 +550,7 @@ def test_task_failed_count_and_render() -> None:
     assert ui._task_failed_count == 2
     assert ui._phase is _Phase.BUILD
 
-    texts = [getattr(r, "plain", "") for r in ui.make_renderable().renderables]
+    texts = [getattr(r, "plain", "") for r in make_renderable(ui).renderables]
     assert any("2 failed" in t for t in texts)
 
 
@@ -587,7 +588,7 @@ def _header_text(ui: BuildUIState) -> str:
 
     con = Console(width=110, force_terminal=False)
     with con.capture() as cap:
-        con.print(ui._render_breadcrumb())
+        con.print(_render_breadcrumb(ui))
     return cap.get()
 
 

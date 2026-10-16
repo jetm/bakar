@@ -26,6 +26,7 @@ from bakar.commands._helpers import _overlay_dir
 from bakar.commands._overlays import _hashequiv_extra_overlays
 from bakar.config import BuildConfig
 from bakar.observability import RunLogger
+from bakar.steps.build_ui_render import plain_status_line
 from bakar.steps.kas_build import KasBuildContext, _PtyOutcome
 from bakar.user_config import UserConfig
 
@@ -1175,7 +1176,7 @@ def test_build_end_summary_prints_after_frame(tmp_path: Path) -> None:
         stop = threading.Event()
         stop.set()  # the plain frame loop exits on the first wait and joins immediately
         with _PlainFrameController(ui, log.console, stop) as live:
-            frame_line = ui.plain_status_line()
+            frame_line = plain_status_line(ui)
             assert frame_line is not None
             live.console.print(frame_line, markup=False)
         # Post-block: the frame has closed; print the build-end summary.

@@ -18,6 +18,7 @@ import bakar.steps.kas_pty as kas_pty
 from bakar import eventlog
 from bakar.output_mode import OutputMode, resolve_output_mode
 from bakar.steps.build_ui import BuildUIState
+from bakar.steps.build_ui_render import plain_status_line
 from bakar.steps.kas_build import _PlainFrameController
 from tests.conftest import _GLYPHS
 
@@ -92,7 +93,7 @@ def test_plain_has_no_ansi(tmp_path) -> None:
     stop = threading.Event()
     stop.set()
     with _PlainFrameController(ui, console, stop) as live:
-        line = ui.plain_status_line()
+        line = plain_status_line(ui)
         live.console.print(line, markup=False)
     out = buf.getvalue()
     assert _ESC not in out
@@ -193,6 +194,6 @@ def test_plain_runner_consumes_events() -> None:
     }
     ev = eventlog._EventStub(stats=stats)
     ui.process_event("bb.runqueue.runQueueTaskStarted", ev)
-    line = ui.plain_status_line()
+    line = plain_status_line(ui)
     assert line is not None
     assert "tasks=7/50" in line
