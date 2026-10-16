@@ -27,6 +27,7 @@ from bakar.steps.build_ui import (
     _stuck_color,
     _task_style,
 )
+from bakar.steps.build_ui_render import make_renderable
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -39,7 +40,7 @@ def _task_table(ui: BuildUIState) -> Table:
     does not say the entry is a ``Table``; assert it rather than reading
     ``.columns`` off whatever happens to be last.
     """
-    table = ui.make_renderable().renderables[-1]
+    table = make_renderable(ui).renderables[-1]
     assert isinstance(table, Table), f"last renderable is not the task table: {table!r}"
     return table
 
@@ -81,7 +82,7 @@ def test_loading_cache_updates_setup_bar() -> None:
 @pytest.mark.unit
 def test_setup_phase_render_only_setup_bar() -> None:
     ui = BuildUIState()
-    inner = ui.make_renderable().renderables
+    inner = make_renderable(ui).renderables
     # The pipeline header is always the first element; the setup bar follows.
     assert len(inner) == 2
     assert isinstance(inner[0], Text)
@@ -155,7 +156,7 @@ def test_global_timer_backdated_to_bakar_start() -> None:
     assert ui._start_monotonic == start
     con = Console(width=110, force_terminal=False)
     with con.capture() as cap:
-        con.print(ui.make_renderable())
+        con.print(make_renderable(ui))
     out = cap.get()
     assert _ICON_TIMER in out
     assert "2m34s" in out
@@ -255,7 +256,7 @@ def test_make_renderable_build_with_tasks() -> None:
     ui._running["c:do_install"] = _RunTask(pf="pkg-c-3.0-r0", task="do_install", start=base - 120)
 
     # Group is [header, build_progress, table] in the BUILD phase with tasks.
-    inner = ui.make_renderable().renderables
+    inner = make_renderable(ui).renderables
     assert len(inner) == 3
     assert isinstance(inner[0], Text)
     assert inner[1] is ui._build_progress
@@ -266,7 +267,7 @@ def test_make_renderable_build_empty_running() -> None:
     ui = BuildUIState()
     ui.process_line("NOTE: Running task 1200 of 9005 (/x.bb:do_compile)")
     # No running tasks: Group is [header, build_progress].
-    inner = ui.make_renderable().renderables
+    inner = make_renderable(ui).renderables
     assert len(inner) == 2
     assert isinstance(inner[0], Text)
     assert inner[1] is ui._build_progress
@@ -387,7 +388,7 @@ def test_estimate_never_rendered_but_colors_stuck_tasks() -> None:
     )
     con = Console(width=100, force_terminal=False)
     with con.capture() as cap:
-        con.print(ui.make_renderable())
+        con.print(make_renderable(ui))
     lines = [ln for ln in cap.get().splitlines() if "glibc-2.39-r0" in ln]
     # One row per task; the noisy per-row estimate is deliberately not shown -
     # the baseline only feeds the stuck-task coloring.
@@ -410,7 +411,7 @@ def test_red_stuck_task_shows_drift_over_reference() -> None:
     )
     con = Console(width=100, force_terminal=False)
     with con.capture() as cap:
-        con.print(ui.make_renderable())
+        con.print(make_renderable(ui))
     lines = [ln for ln in cap.get().splitlines() if "glibc-2.39-r0" in ln]
     assert len(lines) == 1
     assert "16m40s" in lines[0]
@@ -430,7 +431,7 @@ def test_task_table_capped_with_overflow_line() -> None:
         )
     con = Console(width=110, force_terminal=False)
     with con.capture() as cap:
-        con.print(ui.make_renderable())
+        con.print(make_renderable(ui))
     out = cap.get()
     rows = [ln for ln in out.splitlines() if "-1.0-r0" in ln]
     # 20 running tasks render at most _MAX_TASK_ROWS rows plus an overflow line.
@@ -555,7 +556,7 @@ def test_set_dist_lines_injected_in_building_frame() -> None:
     ui.set_dist_lines([Text("cluster: x"), Text("daemon: y")])
 
     # No running tasks: Group is [header, cluster, daemon, build_progress].
-    inner = ui.make_renderable().renderables
+    inner = make_renderable(ui).renderables
     plains = [r.plain for r in inner if isinstance(r, Text)]
     assert "cluster: x" in plains
     assert "daemon: y" in plains
@@ -571,7 +572,7 @@ def test_set_dist_lines_empty_by_default() -> None:
     ui = BuildUIState()
     ui.process_line("NOTE: Running task 1200 of 9005 (/x.bb:do_compile)")
     # No set_dist_lines call: Group is [header, build_progress] as before.
-    inner = ui.make_renderable().renderables
+    inner = make_renderable(ui).renderables
     assert len(inner) == 2
     assert inner[1] is ui._build_progress
 
@@ -581,7 +582,7 @@ def test_make_renderable_shows_cache_badge_when_active() -> None:
     ui = BuildUIState()
     ui.process_line("NOTE: Running task 10 of 100 (/x.bb:do_compile)")
     ui.set_cache_badge(active=True, hit_pct=90.0, verdict="DISTRIBUTING")
-    inner = ui.make_renderable().renderables
+    inner = make_renderable(ui).renderables
     flat = " ".join(r.plain for r in inner if isinstance(r, Text))
     assert "90%" in flat
     assert "dist on" in flat
@@ -593,7 +594,7 @@ def test_make_renderable_cache_badge_ccache_has_no_dist() -> None:
     ui.process_line("NOTE: Running task 10 of 100 (/x.bb:do_compile)")
     # A ccache build reports no verdict: cache badge only, no dist badge.
     ui.set_cache_badge(active=True, hit_pct=75.0, verdict=None)
-    inner = ui.make_renderable().renderables
+    inner = make_renderable(ui).renderables
     flat = " ".join(r.plain for r in inner if isinstance(r, Text))
     assert "75%" in flat
     assert "dist" not in flat
@@ -603,7 +604,7 @@ def test_make_renderable_cache_badge_ccache_has_no_dist() -> None:
 def test_make_renderable_no_cache_badge_by_default() -> None:
     ui = BuildUIState()
     ui.process_line("NOTE: Running task 10 of 100 (/x.bb:do_compile)")
-    inner = ui.make_renderable().renderables
+    inner = make_renderable(ui).renderables
     flat = " ".join(r.plain for r in inner if isinstance(r, Text))
     assert "dist" not in flat
     assert len(inner) == 2

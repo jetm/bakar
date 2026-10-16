@@ -1,10 +1,11 @@
-"""Tests for BuildUIState.plain_status_line (plain build status emitter)."""
+"""Tests for plain_status_line (plain build status emitter)."""
 
 from __future__ import annotations
 
 import time
 
 from bakar.steps.build_ui import BuildUIState
+from bakar.steps.build_ui_render import plain_status_line
 from tests.conftest import _GLYPHS
 
 _ESC = "\x1b"
@@ -18,14 +19,14 @@ def _building_state() -> BuildUIState:
 
 
 def test_plain_line_has_no_ansi_or_glyph() -> None:
-    line = _building_state().plain_status_line()
+    line = plain_status_line(_building_state())
     assert line is not None
     assert _ESC not in line
     assert not any(g in line for g in _GLYPHS)
 
 
 def test_plain_line_reports_counts() -> None:
-    line = _building_state().plain_status_line()
+    line = plain_status_line(_building_state())
     assert line is not None
     assert "tasks=142/1873" in line
     assert "running=1" in line
@@ -33,20 +34,20 @@ def test_plain_line_reports_counts() -> None:
 
 def test_plain_status_dedup() -> None:
     ui = _building_state()
-    first = ui.plain_status_line()
+    first = plain_status_line(ui)
     assert first is not None
     # Unchanged state -> deduped to None.
-    assert ui.plain_status_line() is None
+    assert plain_status_line(ui) is None
     # A real state change produces a fresh line.
     ui.process_line("Running task 200 of 1873")
-    changed = ui.plain_status_line()
+    changed = plain_status_line(ui)
     assert changed is not None
     assert "tasks=200/1873" in changed
 
 
 def test_plain_pre_total_renders_question_mark() -> None:
     ui = BuildUIState(start_monotonic=time.monotonic())
-    line = ui.plain_status_line()
+    line = plain_status_line(ui)
     assert line is not None
     assert "tasks=0/?" in line
 
@@ -54,7 +55,7 @@ def test_plain_pre_total_renders_question_mark() -> None:
 def test_plain_status_line_badge_tokens_no_ansi() -> None:
     ui = _building_state()
     ui.set_cache_badge(active=True, hit_pct=90.0, verdict="DISTRIBUTING")
-    line = ui.plain_status_line()
+    line = plain_status_line(ui)
     assert line is not None
     assert "cache=90%" in line
     assert "dist=on" in line
@@ -62,7 +63,7 @@ def test_plain_status_line_badge_tokens_no_ansi() -> None:
 
 
 def test_plain_status_line_no_badge_emits_no_cache_token() -> None:
-    line = _building_state().plain_status_line()
+    line = plain_status_line(_building_state())
     assert line is not None
     assert "cache=" not in line
     assert "dist=" not in line
@@ -71,7 +72,7 @@ def test_plain_status_line_no_badge_emits_no_cache_token() -> None:
 def test_plain_status_line_preserves_existing_field_order() -> None:
     ui = _building_state()
     ui.set_cache_badge(active=True, hit_pct=75.0, verdict=None)
-    line = ui.plain_status_line()
+    line = plain_status_line(ui)
     assert line is not None
     # The existing bakar[build] fields keep their order and precede the badge.
     assert line.index("bakar[build]") < line.index("phase=")
