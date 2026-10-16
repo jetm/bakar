@@ -208,6 +208,7 @@ def _resolve_workspace(
     *,
     kas_yaml: Path | None = None,
     family: Literal["nxp", "ti", "generic", "qcom"] | None = None,
+    strict_routing: bool = False,
 ) -> Path:
     """Resolve the workspace path with a BYO+generic carve-out.
 
@@ -216,11 +217,16 @@ def _resolve_workspace(
     overlay symlink and per-run state land next to the user's YAML.
     Skip the cwd walk in that case so generic builds work from any
     directory.
+
+    ``strict_routing`` is for a build, which must not run outside the routed
+    release workspace: a missing routed directory is an error. Every other
+    command falls back to the unrouted workspace so ``log``/``stop`` still
+    reach runs made before routing was configured.
     """
     if workspace is not None:
         return workspace
     if family == "generic" and kas_yaml is not None:
-        routed = _routed_release_workspace(kas_yaml)
+        routed = _routed_release_workspace(kas_yaml, strict=strict_routing)
         if routed is not None:
             return routed
         # For meta-avocado YAMLs this returns the parent of the
@@ -230,7 +236,7 @@ def _resolve_workspace(
     return _workspace_from_cwd()
 
 
-def _routed_release_workspace(kas_yaml: Path) -> Path | None:
+def _routed_release_workspace(kas_yaml: Path, *, strict: bool = True) -> Path | None:
     """Return the ``[workspaces]``-routed workspace for a meta-avocado kas file, else None.
 
     Routing only runs when the user config names a template or a per-release
@@ -263,6 +269,12 @@ def _routed_release_workspace(kas_yaml: Path) -> Path | None:
         console.print(f"[red]Cannot route {kas_yaml} to a release workspace:[/] {exc}")
         raise typer.Exit(code=2) from exc
     if routed is None:
+        return None
+    if not routed.is_dir() and not strict:
+        console.print(
+            f"[dim]Release workspace {routed} for release {release!r} does not exist here; "
+            "using the unrouted workspace.[/]"
+        )
         return None
     if not routed.is_dir():
         console.print(

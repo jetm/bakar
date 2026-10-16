@@ -251,15 +251,19 @@ def dispatch_unit_name(now: datetime | None = None) -> str:
     return f"bakar-dispatch-{stamp}-{secrets.token_hex(3)}"
 
 
-def build_remote_script(
+def build_remote_script(  # noqa: PLR0913 - keyword-only options of one script generator
     remote_argv: list[str],
     cwd: Path,
     env_vars: dict[str, str],
     *,
     sccache_off: bool,
     unit: str | None = None,
+    guard: str | None = None,
 ) -> str:
     """Generate the bash script fed to ``ssh <host> bash -s`` over stdin.
+
+    ``guard``, already shell-quoted, is a command prefix the build runs under
+    (the delivered worktree's shared build lock).
 
     The script changes into the invoking cwd (replicated on the identical-path
     remote), echoes a machine-clock dispatch-start marker, and runs
@@ -292,7 +296,7 @@ def build_remote_script(
     env_tokens += [shlex.quote(f"{name}={env_vars[name]}") for name in sorted(env_vars)]
     if sccache_off:
         env_tokens.append("BAKAR_SCCACHE_DIST=0")
-    build_cmd = " ".join([*env_tokens, "bakar", shlex.join(remote_argv)])
+    build_cmd = " ".join([*([guard] if guard else []), *env_tokens, "bakar", shlex.join(remote_argv)])
     exec_line = "exec " + build_cmd
     # The unit is `--collect`ed the moment it exits, so `systemctl show` cannot
     # be relied on to still carry ExecMainStatus - the wrapper writes the exit

@@ -129,7 +129,7 @@ def _dispatch(checkout: Path, kas_arg: str, local_args: list[str], **overrides: 
 
 
 def _remote_argv_line(script: str) -> str:
-    return next(line for line in script.splitlines() if " bakar " in line and line.lstrip().startswith("exec env"))
+    return next(line for line in script.splitlines() if " bakar " in line and line.lstrip().startswith("exec flock"))
 
 
 def test_call_order_and_success(rec: Recorder, checkout: Path) -> None:

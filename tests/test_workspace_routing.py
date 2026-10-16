@@ -142,12 +142,29 @@ def test_missing_routed_path_exits_2_naming_it(
     _probe_returns(monkeypatch, "wrynose")
 
     with pytest.raises(typer.Exit) as excinfo:
-        _resolve_workspace(None, kas_yaml=meta_avocado_worktree_layout.kas_yaml, family="generic")
+        _resolve_workspace(None, kas_yaml=meta_avocado_worktree_layout.kas_yaml, family="generic", strict_routing=True)
 
     assert excinfo.value.exit_code == 2
     err = capsys.readouterr().err.replace("\n", "")
     assert "absent-wrynose" in err
     assert "[workspaces]" in err
+    assert _POLICY not in workspace_mod.os.environ
+
+
+def test_missing_routed_path_falls_back_for_read_only_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    meta_avocado_worktree_layout: MetaAvocadoWorktreeLayout,
+) -> None:
+    monkeypatch.delenv(_POLICY, raising=False)
+    _use_config(monkeypatch, UserConfig(workspaces_template=str(tmp_path / "absent-{release}")))
+    _probe_returns(monkeypatch, "wrynose")
+
+    ws = _resolve_workspace(None, kas_yaml=meta_avocado_worktree_layout.kas_yaml, family="generic")
+
+    assert ws == workspace_mod.detect_kas_workspace(meta_avocado_worktree_layout.kas_yaml)
+    assert "absent-wrynose" in capsys.readouterr().err.replace("\n", "")
     assert _POLICY not in workspace_mod.os.environ
 
 

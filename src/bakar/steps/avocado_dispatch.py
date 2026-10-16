@@ -240,7 +240,11 @@ def dispatch_avocado_build(  # noqa: PLR0913 - fixed dispatch signature consumed
         return ensured.returncode
 
     remote_script = rd.build_remote_script(
-        remote_argv, target, remote_env(build_dir_template), sccache_off=not sccache_dist
+        remote_argv,
+        target,
+        remote_env(build_dir_template),
+        sccache_off=not sccache_dist,
+        guard=layer_delivery_remote.build_guard(worktree_root=str(root), name=name, commit=commit),
     )
     # Run ids are looked up under this dispatch's build directory: the release
     # workspace holds the runs of every worktree, and a concurrent one would

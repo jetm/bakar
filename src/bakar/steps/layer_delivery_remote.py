@@ -61,6 +61,33 @@ if (got_host, got_src) != (host, src):
 """
 
 
+EXIT_MOVED = 8
+
+# Run under the shared build lock; refuses to start when another dispatch moved
+# the worktree between delivery and the start of the build.
+_GUARD_SCRIPT = (
+    'test "$(git -C "$1" rev-parse HEAD)" = "$2" || '
+    '{ echo "bakar: $1 was moved by another dispatch after delivery; dispatch again" >&2; '
+    f"exit {EXIT_MOVED}; }}; "
+    'shift 2; exec "$@"'
+)
+
+
+def build_guard(*, worktree_root: str, name: str, commit: str) -> str:
+    """Return the shell-quoted command prefix a delivered build runs under.
+
+    It holds ``<root>/.<name>.build.lock`` shared for the whole build, which the
+    delivery script's exclusive probe sees, and verifies the worktree is still at
+    the delivered ``commit`` once the lock is held.
+    """
+    if not is_valid_delivered_name(name):
+        raise ReleaseRoutingError(f"delivered name {name!r} must match [A-Za-z0-9._-]+")
+    dest = f"{worktree_root}/{name}"
+    return shlex.join(
+        ["flock", "-s", f"{worktree_root}/.{name}.build.lock", "bash", "-c", _GUARD_SCRIPT, "_", dest, commit]
+    )
+
+
 def marker_json(  # noqa: PLR0913 - one keyword-only argument per marker field
     *,
     source_host: str,
@@ -146,6 +173,8 @@ src_host={q(source_host)}
 src_path={q(source_path)}
 marker={q(marker)}
 dest="$root/$name"
+pending="$root/.$name.pending"
+build_lock_file="$root/.$name.build.lock"
 
 write_marker() {{
     local gitdir
@@ -161,6 +190,9 @@ if ! flock -n 9; then
 fi
 
 if [ ! -e "$dest" ]; then
+    # Written before the worktree exists: if this script dies between the add
+    # and the marker, the next dispatch from the same owner finishes the marker.
+    printf '%s' "$marker" > "$pending"
     git -C "$workspace/meta-avocado" worktree add -q --detach "$dest" "$commit"
     write_marker
     echo "bakar: delivered $commit to $dest"
@@ -177,8 +209,13 @@ gitdir=$(git -C "$dest" rev-parse --absolute-git-dir) || {{
 }}
 marker_path="$gitdir/{MARKER_FILENAME}"
 if [ ! -r "$marker_path" ]; then
-    echo "bakar: $dest has no readable marker at $marker_path" >&2
-    exit {EXIT_NO_MARKER}
+    # An interrupted delivery by this same owner left a pending record: finish it.
+    if [ -r "$pending" ] && python3 -c {q(_MARKER_CHECK_PY)} "$pending" "$src_host" "$src_path"; then
+        write_marker
+    else
+        echo "bakar: $dest has no readable marker at $marker_path" >&2
+        exit {EXIT_NO_MARKER}
+    fi
 fi
 python3 -c {q(_MARKER_CHECK_PY)} "$marker_path" "$src_host" "$src_path"
 
@@ -204,6 +241,12 @@ for build_lock in "$workspace"/*/build/bitbake.lock; do
         exit {EXIT_BUILD_RUNNING}
     fi
 done
+# Builds dispatched from this worktree hold this lock shared for their whole
+# run, including the doctor and the kas checkout that precede bitbake.lock.
+if ! flock -n -x "$build_lock_file" true; then
+    echo "bakar: a dispatched build holds $build_lock_file" >&2
+    exit {EXIT_BUILD_RUNNING}
+fi
 
 git -C "$dest" checkout -q --detach "$commit"
 write_marker

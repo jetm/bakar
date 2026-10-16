@@ -585,23 +585,33 @@ Every check runs before the first remote write:
    clone is otherwise rejected.
 8. **Delivered worktree** - a remote script takes a per-name lock on
    `<worktree_root>/.<name>.lock`. When `<worktree_root>/<name>` does not exist
-   it runs `git worktree add --detach` for the commit and writes the marker
+   it first writes the marker text to `<worktree_root>/.<name>.pending`, runs
+   `git worktree add --detach` for the commit and writes the marker
    `bakar-delivered.json` (source host, source path, name, commit, snapshot
    flag, delivery time) into the worktree's git admin directory, so the work
-   tree stays clean. When it exists, bakar moves it to the new commit with
-   `git checkout --detach` only if the marker names this host and this checkout
-   path, the tree is clean (checked first, so a hand-edited tree at the same
-   commit is refused too), and no build holds the `bitbake.lock` of any build
-   directory in the workspace, because every machine built from the worktree
-   shares it. A worktree already at the commit is left as is.
+   tree stays clean. If the script dies between the add and the marker, the
+   next dispatch from the same host and checkout finishes the marker from the
+   pending record. When the worktree exists, bakar moves it to the new commit
+   with `git checkout --detach` only if the marker names this host and this
+   checkout path, the tree is clean (checked first, so a hand-edited tree at
+   the same commit is refused too), no build holds the `bitbake.lock` of any
+   build directory in the workspace, and no dispatched build holds
+   `<worktree_root>/.<name>.build.lock`. A worktree already at the commit is
+   left as is.
 9. **Remote build** - the build runs from the delivered worktree with the kas
-   path relative to it. The remote bakar recognises the linked worktree, takes
+   path relative to it, under `flock -s <worktree_root>/.<name>.build.lock` for
+   its whole run, so a later dispatch cannot move the worktree during the
+   doctor or the kas checkout, before `bitbake.lock` exists. Once it holds the
+   lock the build checks that the worktree is still at the delivered commit and
+   exits 8 with a message in the run log if another dispatch moved it first.
+   The remote bakar recognises the linked worktree, takes
    the parent of `<workspace>/meta-avocado` as its workspace and needs no
    config. The environment carries your `BAKAR_*` and `KAS_*` variables except
-   `KAS_WORK_DIR`, plus `BAKAR_REPO_POLICY=reuse` and, when a template is
-   configured, `BAKAR_WORKTREE_BUILD_DIR`. The remote build prints the side
-   checkouts it creates.
-10. **Run-id** - the remote run-id is discovered under the remote workspace; see
+   `KAS_WORK_DIR`, plus `BAKAR_REPO_POLICY=reuse` and `BAKAR_WORKTREE_BUILD_DIR`
+   (the configured template, else the default). The remote build prints the
+   side checkouts it creates.
+10. **Run-id** - the remote run-id is discovered under this dispatch's build
+    directory; see
     [Remote build, streaming and exit codes](#remote-build-streaming-and-exit-codes).
 
 ### Additive mirror for other build forms
@@ -702,7 +712,7 @@ workspace.
 | `Cannot route <kas> to a release workspace: the merged kas config has no openembedded-core pin`, `...has no branch:`, `...does not end in '-avocado'` | the release cannot be read from the pins (exit 2) | pin `openembedded-core` with `branch: <release>-avocado` |
 | `Cannot route <kas> ...: the openembedded-core pin names release 'x' but AVOCADO_YOCTO_SERIES is 'y'` | the kas tree contradicts itself (exit 2) | fix the pin or the variable |
 | `Cannot route <kas> ...: <kas> includes files from repositories other than its own checkout (<repos>)` | a kas include names a repository other than `meta-avocado` (exit 2) | include only files from the checkout |
-| `Release workspace <path> for release 'x' does not exist` | local build only: the routed path is missing (exit 2) | create the workspace, fix `[workspaces]`, or pass `-w` |
+| `Release workspace <path> for release 'x' does not exist` | local build only: the routed path is missing (exit 2); other commands print a dim note and use the unrouted workspace | create the workspace, fix `[workspaces]`, or pass `-w` |
 | `cannot dispatch: kas file '<segment>' is outside the meta-avocado checkout` | a kas segment would not exist in the delivered worktree (exit 2) | keep every kas file and overlay inside the checkout |
 | `remote preflight failed for <host>` | host unreachable, no key auth, or no `bakar` on the remote non-login PATH | fix ssh or install bakar on the remote |
 | `bakar mismatch: local '...' vs remote '...'` | different bakar builds on the two hosts | sync the remote bakar, or pass `--yes` |

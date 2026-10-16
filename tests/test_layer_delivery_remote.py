@@ -16,8 +16,10 @@ from bakar.steps.layer_delivery_remote import (
     EXIT_DIRTY,
     EXIT_FOREIGN_MARKER,
     EXIT_LOCKED,
+    EXIT_MOVED,
     EXIT_NO_MARKER,
     MARKER_FILENAME,
+    build_guard,
     describe_exit,
     ensure_worktree_script,
     marker_json,
@@ -360,3 +362,64 @@ def test_bitbake_lock_of_another_build_dir_is_refused(workspace: Path, tmp_path:
         res = _run(workspace, root, second)
     assert res.returncode == EXIT_BUILD_RUNNING
     assert _head(root / "wt1") == first
+
+
+def test_interrupted_delivery_is_completed_by_the_same_owner(workspace: Path, tmp_path: Path):
+    repo = workspace / "meta-avocado"
+    root = tmp_path / "wts"
+    first = _head(repo)
+    assert _run(workspace, root, first).returncode == 0
+    gitdir = Path(_git("-C", root / "wt1", "rev-parse", "--absolute-git-dir"))
+    (gitdir / MARKER_FILENAME).unlink()
+    res = _run(workspace, root, first)
+    assert res.returncode == 0, res.stderr
+    assert (gitdir / MARKER_FILENAME).is_file()
+
+
+def test_interrupted_delivery_is_not_completed_for_another_owner(workspace: Path, tmp_path: Path):
+    repo = workspace / "meta-avocado"
+    root = tmp_path / "wts"
+    first = _head(repo)
+    assert _run(workspace, root, first).returncode == 0
+    gitdir = Path(_git("-C", root / "wt1", "rev-parse", "--absolute-git-dir"))
+    (gitdir / MARKER_FILENAME).unlink()
+    res = _run(workspace, root, first, host="other")
+    assert res.returncode != 0
+    assert not (gitdir / MARKER_FILENAME).exists()
+
+
+def test_shared_build_lock_blocks_a_move(workspace: Path, tmp_path: Path):
+    repo = workspace / "meta-avocado"
+    root = tmp_path / "wts"
+    first = _head(repo)
+    assert _run(workspace, root, first).returncode == 0
+    second = _commit(repo, "b.txt", "b\n")
+    with (root / ".wt1.build.lock").open("w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        res = _run(workspace, root, second)
+    assert res.returncode == EXIT_BUILD_RUNNING
+    assert _head(root / "wt1") == first
+
+
+def test_build_guard_runs_only_at_the_delivered_commit(workspace: Path, tmp_path: Path):
+    repo = workspace / "meta-avocado"
+    root = tmp_path / "wts"
+    first = _head(repo)
+    assert _run(workspace, root, first).returncode == 0
+    ok = subprocess.run(
+        ["bash", "-c", build_guard(worktree_root=str(root), name="wt1", commit=first) + " true"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert ok.returncode == 0, ok.stderr
+    stale = subprocess.run(
+        ["bash", "-c", build_guard(worktree_root=str(root), name="wt1", commit="0" * 40) + " true"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert stale.returncode == EXIT_MOVED
+    assert "moved by another dispatch" in stale.stderr

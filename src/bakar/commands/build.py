@@ -626,7 +626,7 @@ def build(
     if byo_form and machine is None:
         machine = machine_from_yaml(main_yaml)
 
-    ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
+    ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family, strict_routing=True)
 
     # For preset builds, route all output into a composed subdirectory so
     # different presets and releases coexist without colliding in the same
