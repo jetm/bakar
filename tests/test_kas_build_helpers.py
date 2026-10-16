@@ -104,7 +104,8 @@ def _make_meta_avocado_cfg(workspace: Path) -> tuple[BuildConfig, Path]:
     is True for this config and ``cfg.bsp_root`` is
     ``workspace/build-<stem>``.
     """
-    meta = workspace / "sources" / "meta-avocado"
+    # Directly under the workspace: a checkout anywhere else gets an absolute wrapper.
+    meta = workspace / "meta-avocado"
     kas_dir = meta / "kas" / "machine"
     kas_dir.mkdir(parents=True, exist_ok=True)
     kas_yaml = kas_dir / "qemux86-64.yml"

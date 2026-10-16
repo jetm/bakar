@@ -66,7 +66,7 @@ from bakar import (
     sccache_server,
     task_timings,
 )
-from bakar.bsp_detect import meta_avocado_worktree, worktree_wrapper_text
+from bakar.bsp_detect import meta_avocado_checkout, meta_avocado_wrapper_text
 from bakar.config import GENERATED_BUILD_YAML, BuildConfig
 from bakar.diagnostics import (
     BUILDTOOLS_DIR_ENV,
@@ -80,6 +80,8 @@ from bakar.kas import KasGenOptions, write_yaml
 from bakar.observability import RunLogger
 from bakar.output_mode import OutputMode
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
+from bakar.release_workspace import ReleaseRoutingError
+from bakar.steps import kas_pins, repo_reuse
 from bakar.steps.build_ui import BuildUIState
 from bakar.steps.kas_graph_capture import (
     GRAPH_ARTIFACTS,  # noqa: F401 - re-exported for external/test imports
@@ -223,13 +225,15 @@ def _write_meta_avocado_wrapper(cfg: BuildConfig, kas_yaml: Path) -> Path:
 
     Returns the wrapper path (``bsp_root/avocado-wrapper.yml``).
     """
-    wt = meta_avocado_worktree(kas_yaml)
-    if wt is not None:
-        # A linked worktree's directory name is not the repo name, so the
-        # wrapper must pin meta-avocado to the worktree's absolute path.
-        wt_wrapper = cfg.bsp_root / "avocado-wrapper.yml"
-        wt_wrapper.write_text(worktree_wrapper_text(wt, kas_yaml), encoding="utf-8")
-        return wt_wrapper
+    checkout = meta_avocado_checkout(kas_yaml)
+    if checkout is not None and checkout.resolve() != (cfg.workspace / "meta-avocado").resolve():
+        # A linked worktree, or a checkout outside the workspace the build
+        # runs in (a routed release workspace): the relative ``path:
+        # meta-avocado`` would resolve against KAS_WORK_DIR and name a
+        # different clone, so pin meta-avocado to the checkout's absolute path.
+        abs_wrapper = cfg.bsp_root / "avocado-wrapper.yml"
+        abs_wrapper.write_text(meta_avocado_wrapper_text(checkout, kas_yaml), encoding="utf-8")
+        return abs_wrapper
     abs_yaml = kas_yaml.resolve()
     repo_dir: Path | None = None
     for parent in [abs_yaml, *abs_yaml.parents]:
@@ -277,6 +281,53 @@ def _write_meta_avocado_wrapper(cfg: BuildConfig, kas_yaml: Path) -> Path:
         encoding="utf-8",
     )
     return wrapper
+
+
+_REPO_POLICY_ENV = "BAKAR_REPO_POLICY"
+_REPO_POLICY_KAS = "kas"
+_REPO_POLICY_REUSE = "reuse"
+_REUSE_OVERLAY_YAML = "avocado-reuse.yml"
+
+
+def _repo_policy(kas_yaml: Path) -> str:
+    """Return the repository policy in effect for ``kas_yaml``.
+
+    ``reuse`` needs the meta-avocado checkout to read the merged pins from. An
+    entry with none (a sibling-repo entry, or a generated ``avocado-bakar.yml``
+    rebuilt with the variable exported by hand) falls back to ``kas``.
+    """
+    policy = os.environ.get(_REPO_POLICY_ENV, _REPO_POLICY_KAS)
+    if policy != _REPO_POLICY_REUSE:
+        return _REPO_POLICY_KAS
+    if meta_avocado_checkout(kas_yaml) is None:
+        print(
+            f"repo policy reuse skipped for {kas_yaml}: not inside a meta-avocado checkout, using the kas policy",
+            file=sys.stderr,
+        )
+        return _REPO_POLICY_KAS
+    return _REPO_POLICY_REUSE
+
+
+def _write_reuse_overlay(cfg: BuildConfig, kas_yaml: Path) -> Path:
+    """Write the overlay that keeps kas off the workspace's shared clones.
+
+    Returns its path relative to ``cfg.bsp_root``, ready for the dump's
+    overlay list. A repository that cannot be reused fails the build.
+    """
+    checkout = meta_avocado_checkout(kas_yaml)
+    if checkout is None:  # pragma: no cover - _repo_policy already fell back
+        raise RuntimeError(f"kas YAML {kas_yaml} is not inside a meta-avocado checkout")
+    try:
+        merged = kas_pins.read_merged_config(kas_yaml, checkout=checkout)
+        states = repo_reuse.classify(merged.get("repos") or {}, cfg.workspace)
+    except (repo_reuse.RepoReuseError, ReleaseRoutingError) as exc:
+        raise RuntimeError(str(exc)) from exc
+    for st in states:
+        if st.state == "side" and not st.side_exists:
+            print(f"side checkout {st.name} at {st.pin[:12]}: {st.side_path}", file=sys.stderr)
+    overlay = cfg.bsp_root / _REUSE_OVERLAY_YAML
+    overlay.write_text(repo_reuse.reuse_overlay_text(states), encoding="utf-8")
+    return Path(_REUSE_OVERLAY_YAML)
 
 
 # Sections bakar itself writes into the generated YAML. Each run regenerates them from
@@ -389,8 +440,12 @@ def _run_kas_dump(
     # reachable from origin/<branch> even though it is present locally.
     # kas validates against the remote tracking ref, so the checkout step
     # fails. Retry skipping that validation - all repos are locally present.
+    # Never under the reuse policy (the reuse overlay is in the stack): the
+    # workspace is shared, and skipping the checkout step there would hide a
+    # clone kas cannot place at its pin.
     _git_state_markers = ("does not contain commit", "no such remote ref")
-    if any(m in result.stderr for m in _git_state_markers):
+    reuse = Path(_REUSE_OVERLAY_YAML) in (extra_overlay_rels or [])
+    if not reuse and any(m in result.stderr for m in _git_state_markers):
         retry = subprocess.run(  # pragma: no cover
             ["kas", "dump", "--skip", "repos_checkout", kas_files],
             cwd=str(cfg.bsp_root),
@@ -611,6 +666,8 @@ def _build_kas_arg(
         entry = _entry_without_bakar_sections(kas_yaml)
         try:
             wrapper = _write_meta_avocado_wrapper(cfg, entry)
+            if _repo_policy(entry) == _REPO_POLICY_REUSE:
+                extra_overlay_rels.append(_write_reuse_overlay(cfg, entry))
             dump = _run_kas_dump(cfg, wrapper, overlay_rel, extra_overlay_rels)
         finally:
             if entry != kas_yaml:
