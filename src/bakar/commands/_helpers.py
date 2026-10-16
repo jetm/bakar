@@ -13,7 +13,6 @@ across ``commands/*.py`` before the split.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -63,6 +62,7 @@ from bakar.commands._workspace import (
 )
 from bakar.diagnostics import CheckEvent, CheckResult, Severity, Status, any_blocking_failure, group_results, run_all
 from bakar.layers import collect_layer_hashes
+from bakar.observability import run_id_epoch
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -597,7 +597,4 @@ def _run_started_epoch(run_dir: Path) -> float | None:
     the same second - see RunLogger.run_id), so parse the leading 15-char
     timestamp and ignore the rest. Returns None when the name does not parse.
     """
-    try:
-        return time.mktime(time.strptime(run_dir.name[:15], "%Y%m%d-%H%M%S"))
-    except ValueError, OverflowError:
-        return None
+    return run_id_epoch(run_dir.name)

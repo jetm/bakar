@@ -41,6 +41,7 @@ from rich.console import Console
 
 from bakar.buildtools import parse_layerseries_corenames
 from bakar.config import WORKSPACE_FEED_DIRNAME, WORKSPACE_FEED_STAGE_DIRNAME
+from bakar.observability import RUN_ID_TS_FORMAT
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -463,7 +464,7 @@ def build_remote_script(spec: RemoteScriptSpec, *, unit: str | None = None) -> s
     return "\n".join(
         [
             f"cd {shlex.quote(str(cwd))} || exit 1",
-            'echo "BAKAR_DISPATCH_START=$(date +%Y%m%d-%H%M%S)"',
+            f'echo "BAKAR_DISPATCH_START=$(date +{RUN_ID_TS_FORMAT})"',
             'if command -v systemd-run >/dev/null 2>&1 && [ -n "${XDG_RUNTIME_DIR:-}" ] &&'
             " systemd-run --user --scope --quiet -- true >/dev/null 2>&1; then",
             # printf with a literal format, not `echo "...={unit}"`: inside double

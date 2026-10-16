@@ -74,7 +74,7 @@ from bakar.kas import KasGenOptions, write_yaml
 from bakar.mounts import (
     is_path_on_nfs,  # noqa: F401 - re-exported; kas_lock.clear_stale_bitbake_locks patches it via kas_build.is_path_on_nfs
 )
-from bakar.observability import RunLogger
+from bakar.observability import RunLogger, run_id_epoch
 from bakar.output_mode import OutputMode
 from bakar.probes import (
     probe_cluster,  # noqa: F401 - re-exported; kas_overlay._derive_parallelism_plan patches it via kas_build.probe_cluster
@@ -1708,9 +1708,8 @@ def _find_oe_eventlog(cfg: BuildConfig, log: RunLogger) -> Path | None:
     eventlog_dir = cfg.resolved_tmpdir / "log" / "eventlog"
     if not eventlog_dir.is_dir():
         return None
-    try:
-        watermark = datetime.strptime(log.run_id[:15], "%Y%m%d-%H%M%S").timestamp()
-    except ValueError, OSError:
+    watermark = run_id_epoch(log.run_id)
+    if watermark is None:
         watermark = log.run_dir.stat().st_mtime - 60
     entries: list[tuple[float, Path]] = []
     for p in eventlog_dir.glob("*.json"):
