@@ -112,7 +112,7 @@ def patched_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BAKAR_SCCACHE_DIST", "1")
     monkeypatch.setattr(monitor_module, "probe_cluster", lambda _url: _reachable_cluster())
     monkeypatch.setattr(monitor_module, "probe_build_daemon", _running_daemon)
-    monkeypatch.setattr(monitor_module, "normalize", lambda _path: _synthetic_artifact())
+    monkeypatch.setattr(monitor_module, "_progress_artifact", lambda _path: _synthetic_artifact())
     # running_tasks re-reads the log via eventlog.normalize, so patch it there too.
     monkeypatch.setattr(eventlog_module, "normalize", lambda _path: _synthetic_artifact())
     # is_build_running shells out to /proc; force a deterministic "finished".
@@ -217,7 +217,7 @@ def test_progress_falls_back_before_runqueue_total_known(
     monkeypatch.setenv("BAKAR_SCCACHE_DIST", "1")
     monkeypatch.setattr(monitor_module, "probe_cluster", lambda _url: _reachable_cluster())
     monkeypatch.setattr(monitor_module, "probe_build_daemon", _running_daemon)
-    monkeypatch.setattr(monitor_module, "normalize", lambda _path: artifact)
+    monkeypatch.setattr(monitor_module, "_progress_artifact", lambda _path: artifact)
     monkeypatch.setattr(eventlog_module, "normalize", lambda _path: artifact)
     monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: (False, None, False))
 
@@ -302,7 +302,7 @@ def test_json_once_includes_cache_backend_for_classified_task(
     monkeypatch.setenv("BAKAR_SCCACHE_DIST", "1")
     monkeypatch.setattr(monitor_module, "probe_cluster", lambda _url: _reachable_cluster())
     monkeypatch.setattr(monitor_module, "probe_build_daemon", _running_daemon)
-    monkeypatch.setattr(monitor_module, "normalize", lambda _path: artifact)
+    monkeypatch.setattr(monitor_module, "_progress_artifact", lambda _path: artifact)
     monkeypatch.setattr(eventlog_module, "normalize", lambda _path: artifact)
     monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: (False, None, False))
 
@@ -331,7 +331,7 @@ def test_watch_ndjson_lines_include_cache_backend_for_classified_task(
     monkeypatch.setenv("BAKAR_SCCACHE_DIST", "1")
     monkeypatch.setattr(monitor_module, "probe_cluster", lambda _url: _reachable_cluster())
     monkeypatch.setattr(monitor_module, "probe_build_daemon", _running_daemon)
-    monkeypatch.setattr(monitor_module, "normalize", lambda _path: artifact)
+    monkeypatch.setattr(monitor_module, "_progress_artifact", lambda _path: artifact)
     monkeypatch.setattr(eventlog_module, "normalize", lambda _path: artifact)
     monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: (False, None, False))
 
@@ -409,7 +409,7 @@ def test_unreachable_cluster_does_not_crash_json(
         lambda _url: ClusterReport(reachable=False, error="scheduler unreachable"),
     )
     monkeypatch.setattr(monitor_module, "probe_build_daemon", lambda: BuildDaemonReport(running=False))
-    monkeypatch.setattr(monitor_module, "normalize", lambda _path: _synthetic_artifact())
+    monkeypatch.setattr(monitor_module, "_progress_artifact", lambda _path: _synthetic_artifact())
     monkeypatch.setattr(eventlog_module, "normalize", lambda _path: _synthetic_artifact())
     monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: (False, None, False))
 
@@ -586,7 +586,7 @@ def test_json_once_build_daemon_carries_per_language(
     monkeypatch.setenv("BAKAR_SCCACHE_DIST", "1")
     monkeypatch.setattr(monitor_module, "probe_cluster", lambda _url: _reachable_cluster())
     monkeypatch.setattr(monitor_module, "probe_build_daemon", _running_daemon_with_langs)
-    monkeypatch.setattr(monitor_module, "normalize", lambda _path: _synthetic_artifact())
+    monkeypatch.setattr(monitor_module, "_progress_artifact", lambda _path: _synthetic_artifact())
     monkeypatch.setattr(eventlog_module, "normalize", lambda _path: _synthetic_artifact())
     monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: (False, None, False))
 
@@ -637,7 +637,7 @@ def test_json_once_defaults_to_ccache_branch(
 
     monkeypatch.setattr(monitor_module, "probe_cluster", _must_not_probe_cluster)
     monkeypatch.setattr(monitor_module, "probe_ccache", lambda _dir: _available_ccache())
-    monkeypatch.setattr(monitor_module, "normalize", lambda _path: _synthetic_artifact())
+    monkeypatch.setattr(monitor_module, "_progress_artifact", lambda _path: _synthetic_artifact())
     monkeypatch.setattr(eventlog_module, "normalize", lambda _path: _synthetic_artifact())
     monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: (False, None, False))
 
@@ -665,7 +665,7 @@ def test_json_once_ccache_unavailable_is_none(
         "probe_ccache",
         lambda _dir: CcacheReport(available=False, error="ccache binary not on PATH"),
     )
-    monkeypatch.setattr(monitor_module, "normalize", lambda _path: _synthetic_artifact())
+    monkeypatch.setattr(monitor_module, "_progress_artifact", lambda _path: _synthetic_artifact())
     monkeypatch.setattr(eventlog_module, "normalize", lambda _path: _synthetic_artifact())
     monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: (False, None, False))
 
@@ -676,3 +676,58 @@ def test_json_once_ccache_unavailable_is_none(
 
     assert result.exit_code == 0, result.stderr
     assert json.loads(result.stdout)["ccache"] is None
+
+
+def test_progress_artifact_matches_full_normalize_over_growing_log(tmp_path: Path) -> None:
+    """Incremental progress equals a full normalize after each append."""
+    from pathlib import Path as _Path
+
+    fixture = _Path(__file__).parent / "fixtures" / "bitbake_eventlog.json"
+    lines = [ln for ln in fixture.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    log = tmp_path / "bitbake_eventlog.json"
+    log.write_text("", encoding="utf-8")
+    third = max(1, len(lines) // 3)
+    for stop in (third, 2 * third, len(lines)):
+        written = log.read_text(encoding="utf-8").count("\n")
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines[written:stop]) + "\n")
+        assert monitor_module._progress_artifact(log) == eventlog_module.normalize(log)
+
+
+def test_progress_artifact_does_not_call_full_normalize(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    log = tmp_path / "bitbake_eventlog.json"
+    log.write_text("", encoding="utf-8")
+
+    def _boom(_path: Path) -> dict[str, Any]:
+        raise AssertionError("monitor must not re-normalize the whole log")
+
+    monkeypatch.setattr(eventlog_module, "normalize", _boom)
+    monitor_module._progress_artifact(log)
+    monitor_module._progress_artifact(log)
+
+
+def _full_recent_errors(text: str, limit: int = 5) -> list[str]:
+    hits: list[str] = []
+    for line in text.splitlines()[-monitor_module._KAS_TAIL_LINES :]:
+        m = monitor_module.SEVERITY_PASSTHROUGH.search(line)
+        if m and m.group(1) in ("ERROR", "FATAL"):
+            hits.append(line.strip())
+    return hits[-limit:]
+
+
+def test_recent_kas_errors_tail_read_equals_full_read(tmp_path: Path) -> None:
+    """A log far larger than the tail window yields the same errors as a full read."""
+    kas_log = tmp_path / "kas.log"
+    filler = "NOTE: " + "x" * 120 + "\n"
+    body = filler * 6000 + "".join(f"ERROR: failure {i}\n" for i in range(8)) + filler * 50
+    assert len(body.encode()) > monitor_module._KAS_TAIL_BYTES
+    kas_log.write_text(body, encoding="utf-8")
+    assert monitor_module._recent_kas_errors(kas_log) == _full_recent_errors(body)
+    assert monitor_module._recent_kas_errors(kas_log)[-1] == "ERROR: failure 7"
+
+
+def test_recent_kas_errors_small_and_missing_log(tmp_path: Path) -> None:
+    kas_log = tmp_path / "kas.log"
+    assert monitor_module._recent_kas_errors(kas_log) == []
+    kas_log.write_text("ERROR: boom\nNOTE: ok\nFATAL: dead\n", encoding="utf-8")
+    assert monitor_module._recent_kas_errors(kas_log) == ["ERROR: boom", "FATAL: dead"]

@@ -120,7 +120,7 @@ def test_monitor_resolves_qcom_workspace_run(
     run.mkdir(parents=True)
 
     monkeypatch.setenv("BAKAR_SCCACHE_DIST", "0")
-    monkeypatch.setattr(monitor_module, "normalize", lambda _path: _synthetic_artifact())
+    monkeypatch.setattr(monitor_module, "_progress_artifact", lambda _path: _synthetic_artifact())
     monkeypatch.setattr(eventlog_module, "normalize", lambda _path: _synthetic_artifact())
     monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: (False, None, False))
     monkeypatch.setattr(

@@ -58,7 +58,7 @@ from bakar.commands._helpers import (
 from bakar.commands.log import _resolve_run_dir
 from bakar.config import BSPSpec, BuildConfig, ResolveRequest, resolve
 from bakar.diagnostics import probe_build_daemon, probe_ccache, probe_cluster, split_host_port
-from bakar.eventlog import normalize, running_from_rows
+from bakar.eventlog import IncrementalEventLog, running_from_rows
 from bakar.output_mode import OutputMode, resolve_output_mode
 from bakar.steps.build_ui import SEVERITY_PASSTHROUGH, _fmt_stall, _task_style
 
@@ -75,6 +75,23 @@ _FAILURE_TAIL = 5
 
 # How many kas.log severity lines to scan/keep.
 _KAS_TAIL_LINES = 400
+
+# Bytes read from the end of kas.log; far more than 400 lines of severity output.
+_KAS_TAIL_BYTES = 256 * 1024
+
+# One incremental reader per monitored event log, so each refresh decodes only
+# the bytes appended since the last one. The reader resets itself when the file
+# shrinks, is replaced, or disappears.
+_EVENT_READERS: dict[Path, IncrementalEventLog] = {}
+
+
+def _progress_artifact(path: Path) -> dict[str, Any]:
+    """Return the normalized event-log artifact for ``path``, read incrementally."""
+    reader = _EVENT_READERS.get(path)
+    if reader is None:
+        reader = _EVENT_READERS[path] = IncrementalEventLog(path)
+    reader.poll()
+    return reader.normalized()
 
 
 class _DaemonProbe:
@@ -118,9 +135,18 @@ def _recent_kas_errors(kas_log: Path, limit: int = _FAILURE_TAIL) -> list[str]:
     yields an empty list rather than raising.
     """
     try:
-        text = kas_log.read_text(encoding="utf-8", errors="replace")
+        with kas_log.open("rb") as fh:
+            size = os.fstat(fh.fileno()).st_size
+            start = max(0, size - _KAS_TAIL_BYTES)
+            fh.seek(start)
+            data = fh.read()
     except OSError:
         return []
+    if start > 0:
+        # The seek landed mid-line (or mid-character): drop the partial first line.
+        nl = data.find(b"\n")
+        data = data[nl + 1 :] if nl >= 0 else b""
+    text = data.decode("utf-8", errors="replace")
     hits: list[str] = []
     for line in text.splitlines()[-_KAS_TAIL_LINES:]:
         m = SEVERITY_PASSTHROUGH.search(line)
@@ -140,7 +166,7 @@ def _build_progress(run_dir: Path) -> dict[str, Any]:
     through :mod:`bakar.eventlog`, which decodes the base64-pickled raw log
     without importing bitbake.
     """
-    artifact = normalize(run_dir / "bitbake_eventlog.json")
+    artifact = _progress_artifact(run_dir / "bitbake_eventlog.json")
     tasks = artifact["tasks"]
 
     succeeded = 0
