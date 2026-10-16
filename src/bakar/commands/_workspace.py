@@ -23,8 +23,14 @@ from bakar.bsp_detect import (
     meta_avocado_checkout,
 )
 from bakar.bsp_model import BspModel, detect_bsp_family, get_model
-from bakar.release_workspace import REPO_POLICY_ENV, REPO_POLICY_REUSE, ReleaseRoutingError, map_release
-from bakar.user_config import load_user_config
+from bakar.release_workspace import (
+    REPO_POLICY_ENV,
+    REPO_POLICY_REUSE,
+    ReleaseRoutingError,
+    map_release,
+    matches_release_workspace,
+)
+from bakar.user_config import UserConfig, load_user_config
 
 # ---------------------------------------------------------------------------
 # Workspace detection
@@ -208,7 +214,7 @@ def _resolve_workspace(
     *,
     kas_yaml: Path | None = None,
     family: Literal["nxp", "ti", "generic", "qcom"] | None = None,
-    strict_routing: bool = False,
+    strict_routing: bool = True,
 ) -> Path:
     """Resolve the workspace path with a BYO+generic carve-out.
 
@@ -218,12 +224,19 @@ def _resolve_workspace(
     Skip the cwd walk in that case so generic builds work from any
     directory.
 
-    ``strict_routing`` is for a build, which must not run outside the routed
-    release workspace: a missing routed directory is an error. Every other
-    command falls back to the unrouted workspace so ``log``/``stop`` still
-    reach runs made before routing was configured.
+    ``strict_routing`` is the default because any command that runs kas against
+    the unrouted workspace moves its shared clones to the pins: a missing routed
+    directory or a failing release probe is an error. Only the read-only
+    commands (``log``, ``stop``, ``show``, ``monitor``, ``triage``) pass False and
+    fall back to the unrouted workspace, so they still reach runs made before
+    routing was configured.
+
+    An explicit ``-w`` always wins, but when it names a configured release
+    workspace the repository policy defaults to ``reuse`` as for a routed one.
     """
     if workspace is not None:
+        if kas_yaml is not None:
+            _default_reuse_for_release_workspace(workspace, kas_yaml)
         return workspace
     if family == "generic" and kas_yaml is not None:
         routed = _routed_release_workspace(kas_yaml, strict=strict_routing)
@@ -249,11 +262,7 @@ def _routed_release_workspace(kas_yaml: Path, *, strict: bool = True) -> Path | 
         return None
     from bakar.commands import console
 
-    try:
-        cfg = load_user_config()
-    except ValueError as exc:
-        console.print(f"[red]Invalid bakar config:[/] {exc}")
-        raise typer.Exit(code=2) from exc
+    cfg = _user_config_or_exit()
     if not (cfg.workspaces_template or cfg.workspaces_releases):
         return None
     checkout = meta_avocado_checkout(kas_yaml)
@@ -266,6 +275,13 @@ def _routed_release_workspace(kas_yaml: Path, *, strict: bool = True) -> Path | 
         release = kas_pins.probe_release(kas_yaml, checkout)
         routed = map_release(release, cfg.workspaces_template, cfg.workspaces_releases)
     except ReleaseRoutingError as exc:
+        if not strict:
+            # A read-only command must still reach its runs while kas is
+            # missing or the kas file is mid-edit.
+            console.print(
+                f"[dim]Cannot route {kas_yaml} to a release workspace ({exc}); using the unrouted workspace.[/]"
+            )
+            return None
         console.print(f"[red]Cannot route {kas_yaml} to a release workspace:[/] {exc}")
         raise typer.Exit(code=2) from exc
     if routed is None:
@@ -285,6 +301,35 @@ def _routed_release_workspace(kas_yaml: Path, *, strict: bool = True) -> Path | 
     if not os.environ.get(REPO_POLICY_ENV):
         os.environ[REPO_POLICY_ENV] = REPO_POLICY_REUSE
     return routed
+
+
+def _user_config_or_exit() -> UserConfig:
+    # Loaded through this module's own ``load_user_config`` binding rather than
+    # the app callback's cached copy: the test suite isolates routing by patching
+    # this name, and nothing resets the cached copy between CLI invocations.
+    from bakar.commands import console
+
+    try:
+        return load_user_config()
+    except ValueError as exc:
+        console.print(f"[red]Invalid bakar config:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+
+def _default_reuse_for_release_workspace(workspace: Path, kas_yaml: Path) -> None:
+    """Default ``BAKAR_REPO_POLICY`` to ``reuse`` when ``-w`` names a configured release workspace.
+
+    That workspace is shared by every checkout of its release whether it was
+    reached by routing or typed by hand, and plain kas would move every clean
+    clone in it to the pins. An explicit policy still wins.
+    """
+    if os.environ.get(REPO_POLICY_ENV) or not is_meta_avocado_yaml(kas_yaml):
+        return
+    cfg = _user_config_or_exit()
+    if not (cfg.workspaces_template or cfg.workspaces_releases):
+        return
+    if matches_release_workspace(workspace, cfg.workspaces_template, cfg.workspaces_releases):
+        os.environ[REPO_POLICY_ENV] = REPO_POLICY_REUSE
 
 
 # Ordered manifest-family namespaces bakar manages under the workspace root.

@@ -86,7 +86,7 @@ def show(
     Sources sections will appear empty. Exits 2 when no workspace can be found.
     """
     family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
-    ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
+    ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family, strict_routing=False)
     cfg = resolve(
         ResolveRequest(
             workspace=ws,

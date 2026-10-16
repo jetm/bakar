@@ -133,7 +133,7 @@ def _resolve_triage_dirs(
             except ReleaseRoutingError as exc:
                 console.print(f"[red]{exc}[/]")
                 raise typer.Exit(code=2) from exc
-            build_root = _resolve_workspace(None, kas_yaml=resolved, family="generic") / build_dir
+            build_root = _resolve_workspace(None, kas_yaml=resolved, family="generic", strict_routing=False) / build_dir
             translation_workspace = build_root.parent
         else:
             build_root = resolved.parent

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -70,7 +71,7 @@ class _Recorder:
     """Stand-in for subprocess.run that records every call and its wrapper content."""
 
     def __init__(self, *, returncode: int = 0, stderr: str = "", stdout: str = "header:\n  version: 16\n") -> None:
-        self.calls: list[dict[str, object]] = []
+        self.calls: list[dict[str, Any]] = []
         self.returncode = returncode
         self.stderr = stderr
         self.stdout = stdout
@@ -165,10 +166,10 @@ def test_failure_message_never_names_the_temporary_wrapper(
 
 def _dumps_against(rec: _Recorder, workspace: Path) -> list[list[str]]:
     return [
-        c["argv"]  # type: ignore[misc]
+        c["argv"]
         for c in rec.calls
-        if c["argv"][:2] == ["kas", "dump"]  # type: ignore[index]
-        and c["env"].get("KAS_WORK_DIR") in (str(workspace), str(workspace.resolve()))  # ty: ignore[unresolved-attribute]
+        if c["argv"][:2] == ["kas", "dump"]
+        and c["env"].get("KAS_WORK_DIR") in (str(workspace), str(workspace.resolve()))
     ]
 
 
@@ -232,6 +233,27 @@ def test_reuse_policy_outside_any_meta_avocado_validates_like_the_build(
 def test_unknown_repo_policy_blocks(monkeypatch: pytest.MonkeyPatch, outside: tuple[Path, Path, Path]) -> None:
     ws, _checkout, kas_yaml = outside
     monkeypatch.setenv("BAKAR_REPO_POLICY", "resue")
+    rec = _Recorder()
+    _install(monkeypatch, rec)
+
+    result = check_kas_yaml_syntax(_cfg(ws, kas_yaml))
+
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert "'resue'" in result.message
+    assert rec.calls == []
+
+
+@pytest.mark.parametrize("missing", ["kas-binary", "kas-yaml"])
+def test_unknown_repo_policy_blocks_before_either_skip(
+    monkeypatch: pytest.MonkeyPatch, outside: tuple[Path, Path, Path], missing: str
+) -> None:
+    ws, _checkout, kas_yaml = outside
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "resue")
+    if missing == "kas-binary":
+        monkeypatch.setattr("bakar.diagnostics.shutil.which", lambda _name: None)
+    else:
+        kas_yaml.unlink()
     rec = _Recorder()
     _install(monkeypatch, rec)
 

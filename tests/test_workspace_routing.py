@@ -161,10 +161,52 @@ def test_missing_routed_path_falls_back_for_read_only_commands(
     _use_config(monkeypatch, UserConfig(workspaces_template=str(tmp_path / "absent-{release}")))
     _probe_returns(monkeypatch, "wrynose")
 
-    ws = _resolve_workspace(None, kas_yaml=meta_avocado_worktree_layout.kas_yaml, family="generic")
+    ws = _resolve_workspace(
+        None, kas_yaml=meta_avocado_worktree_layout.kas_yaml, family="generic", strict_routing=False
+    )
 
     assert ws == workspace_mod.detect_kas_workspace(meta_avocado_worktree_layout.kas_yaml)
     assert "absent-wrynose" in capsys.readouterr().err.replace("\n", "")
+    assert _POLICY not in workspace_mod.os.environ
+
+
+def test_missing_routed_path_exits_2_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, meta_avocado_worktree_layout: MetaAvocadoWorktreeLayout
+) -> None:
+    monkeypatch.delenv(_POLICY, raising=False)
+    _use_config(monkeypatch, UserConfig(workspaces_template=str(tmp_path / "absent-{release}")))
+    _probe_returns(monkeypatch, "wrynose")
+
+    with pytest.raises(typer.Exit) as excinfo:
+        _resolve_workspace(None, kas_yaml=meta_avocado_worktree_layout.kas_yaml, family="generic")
+
+    assert excinfo.value.exit_code == 2
+    assert _POLICY not in workspace_mod.os.environ
+
+
+def test_routing_error_falls_back_for_read_only_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    meta_avocado_worktree_layout: MetaAvocadoWorktreeLayout,
+) -> None:
+    monkeypatch.delenv(_POLICY, raising=False)
+    (tmp_path / "peridio-wrynose").mkdir()
+    _use_config(monkeypatch, UserConfig(workspaces_template=str(tmp_path / "peridio-{release}")))
+
+    def boom(*_a: object, **_k: object) -> str:
+        raise ReleaseRoutingError("kas not found on PATH")
+
+    monkeypatch.setattr(kas_pins, "probe_release", boom)
+
+    ws = _resolve_workspace(
+        None, kas_yaml=meta_avocado_worktree_layout.kas_yaml, family="generic", strict_routing=False
+    )
+
+    assert ws == workspace_mod.detect_kas_workspace(meta_avocado_worktree_layout.kas_yaml)
+    err = capsys.readouterr().err.replace("\n", "")
+    assert "kas not found on PATH" in err
+    assert "unrouted workspace" in err
     assert _POLICY not in workspace_mod.os.environ
 
 
@@ -202,6 +244,58 @@ def test_explicit_workspace_wins_over_routing(
     result = _resolve_workspace(explicit, kas_yaml=meta_avocado_worktree_layout.kas_yaml, family="generic")
 
     assert result == explicit
+    assert _POLICY not in workspace_mod.os.environ
+
+
+@pytest.mark.parametrize("mapping", ["template", "releases"])
+def test_explicit_release_workspace_defaults_to_reuse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    meta_avocado_worktree_layout: MetaAvocadoWorktreeLayout,
+    mapping: str,
+) -> None:
+    monkeypatch.delenv(_POLICY, raising=False)
+    explicit = tmp_path / "peridio-wrynose"
+    explicit.mkdir()
+    if mapping == "template":
+        cfg = UserConfig(workspaces_template=str(tmp_path / "peridio-{release}"))
+    else:
+        cfg = UserConfig(workspaces_releases={"wrynose": str(explicit)})
+    _use_config(monkeypatch, cfg)
+    _probe_must_not_run(monkeypatch)
+
+    result = _resolve_workspace(explicit, kas_yaml=meta_avocado_worktree_layout.kas_yaml, family="generic")
+
+    assert result == explicit
+    assert workspace_mod.os.environ[_POLICY] == "reuse"
+
+
+def test_explicit_release_workspace_keeps_explicit_kas_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, meta_avocado_worktree_layout: MetaAvocadoWorktreeLayout
+) -> None:
+    monkeypatch.setenv(_POLICY, "kas")
+    explicit = tmp_path / "peridio-wrynose"
+    explicit.mkdir()
+    _use_config(monkeypatch, UserConfig(workspaces_template=str(tmp_path / "peridio-{release}")))
+    _probe_must_not_run(monkeypatch)
+
+    assert _resolve_workspace(explicit, kas_yaml=meta_avocado_worktree_layout.kas_yaml, family="generic") == explicit
+    assert workspace_mod.os.environ[_POLICY] == "kas"
+
+
+def test_explicit_workspace_with_non_meta_avocado_kas_file_is_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(_POLICY, raising=False)
+    explicit = tmp_path / "peridio-wrynose"
+    explicit.mkdir()
+    kas_yaml = tmp_path / "plain" / "kas.yml"
+    kas_yaml.parent.mkdir()
+    kas_yaml.write_text("header:\n  version: 16\nmachine: qemux86-64\n")
+    _use_config(monkeypatch, UserConfig(workspaces_template=str(tmp_path / "peridio-{release}")))
+    _probe_must_not_run(monkeypatch)
+
+    assert _resolve_workspace(explicit, kas_yaml=kas_yaml, family="generic") == explicit
     assert _POLICY not in workspace_mod.os.environ
 
 

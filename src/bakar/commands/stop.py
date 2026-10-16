@@ -384,7 +384,7 @@ def stop(
         console.print("refusing to stop more than one - pick one:  bakar stop --run <id>")
         raise typer.Exit(code=1)
 
-    ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
+    ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family, strict_routing=False)
 
     if run_id is not None:
         scan = build_stop.enumerate_workspace_runs(ws, user_config=_state._USER_CONFIG)

@@ -2457,6 +2457,16 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
     """
     name = "kas-yaml-syntax"
     kas_yaml = cfg.kas_yaml
+
+    from bakar.release_workspace import REPO_POLICY_ENV, REPO_POLICY_REUSE, ReleaseRoutingError, parse_repo_policy
+
+    # Parsed before either skip: the build refuses a misspelt policy in every
+    # mode, so doctor must not report SKIP for a run that cannot start.
+    try:
+        policy = parse_repo_policy(os.environ.get(REPO_POLICY_ENV))
+    except ReleaseRoutingError as exc:
+        return _fail(name, Severity.BLOCK, str(exc), fix_hint="Unset BAKAR_REPO_POLICY or set it to kas or reuse.")
+
     if not kas_yaml.exists():
         return _skip(name, Severity.BLOCK, f"kas YAML {kas_yaml} not yet generated")
     if not cfg.host_mode and shutil.which("kas") is None:
@@ -2471,13 +2481,6 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
     # that checkout rather than the workspace's meta-avocado.
     checkout = meta_avocado_checkout(kas_yaml)
     wt = meta_avocado_worktree(kas_yaml)
-
-    from bakar.release_workspace import REPO_POLICY_ENV, REPO_POLICY_REUSE, ReleaseRoutingError, parse_repo_policy
-
-    try:
-        policy = parse_repo_policy(os.environ.get(REPO_POLICY_ENV))
-    except ReleaseRoutingError as exc:
-        return _fail(name, Severity.BLOCK, str(exc), fix_hint="Unset BAKAR_REPO_POLICY or set it to kas or reuse.")
 
     # The build applies reuse only to a kas file inside a meta-avocado checkout
     # and falls back to kas otherwise; the check follows the same rule.

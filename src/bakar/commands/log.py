@@ -113,7 +113,7 @@ def log_cmd(
         raise typer.Exit(code=2)
 
     family, _bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
-    ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
+    ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family, strict_routing=False)
     cfg = resolve(
         ResolveRequest(
             workspace=ws,
