@@ -2,6 +2,51 @@
 
 from __future__ import annotations
 
+import re
+
+from rich.markup import escape
+
+# Characters stripped from untrusted text before it reaches a markup-enabled
+# Rich renderer: C0/DEL/C1 controls, lone surrogates (undecodable filesystem
+# bytes), Unicode ``Cf`` format characters (bidi overrides, zero-width), the
+# U+2028/U+2029 line breaks Rich renders as row splits, and U+2022 (the bullet
+# elfscan uses as its report entry separator). ``re`` has no category escape,
+# so the ``Cf`` ranges are spelled out.
+_CONTROL_RE = re.compile(
+    "["
+    "\x00-\x1f\x7f-\x9f"
+    "\ud800-\udfff"
+    "\\u00ad\\u0600-\\u0605\\u061c\\u06dd\\u070f\\u0890-\\u0891\\u08e2\\u180e"
+    "\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb"
+    "\\U000110bd\\U000110cd\\U00013430-\\U0001343f\\U0001bca0-\\U0001bca3\\U0001d173-\\U0001d17a"
+    "\\U000e0001\\U000e0020-\\U000e007f"
+    "\\u2028\\u2029"
+    "\\u2022"
+    "]"
+)
+
+# The bound's elision takes the MIDDLE so a long path keeps both its directory
+# and its file name.
+_NEUTRALIZE_LIMIT = 1024
+_ELISION = "..."
+
+
+def neutralize(value: object) -> str:
+    """Render an untrusted value safe to print through a markup-enabled Rich console.
+
+    A name such as ``foo[/]bar`` raises ``MarkupError``, ``[on red blink]``
+    forges formatting, and an ESC rewrites the terminal title. Three defences,
+    in this order: strip the characters ``_CONTROL_RE`` names, bound the length
+    to 1024 characters, then escape markup - escaping last so the backslashes
+    it inserts are neither stripped nor counted against the bound.
+    """
+    text = _CONTROL_RE.sub("", str(value))
+    if len(text) > _NEUTRALIZE_LIMIT:
+        keep = _NEUTRALIZE_LIMIT - len(_ELISION)
+        head = keep // 2
+        text = text[:head] + _ELISION + text[len(text) - (keep - head) :]
+    return escape(text)
+
 
 def fmt_duration(seconds: float) -> str:
     """Format an elapsed duration compactly: ``42s``, ``24m31s``, ``1h02m``.
