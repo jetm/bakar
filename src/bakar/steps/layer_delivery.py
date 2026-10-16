@@ -27,7 +27,7 @@ from bakar.release_workspace import is_valid_delivered_name, sanitize_delivered_
 if TYPE_CHECKING:
     from bakar.bsp_detect import LinkedWorktree
 
-_RECEIVE_PACK = "git -c receive.autogc=false -c receive.shallowUpdate=true receive-pack"
+_RECEIVE_PACK = "git -c receive.autogc=false receive-pack"
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 # Basenames of key material a snapshot refuses to carry, compared lowercased so
 # that a file named ID_RSA or SERVER.PEM is not let through by its case.
@@ -176,6 +176,17 @@ def delivered_name(checkout: Path, worktree: LinkedWorktree | None) -> str:
         # Every detached checkout would share one remote worktree named HEAD.
         raise DeliveryError(f"{checkout} has a detached HEAD; check out a branch or build from a linked worktree")
     return sanitize_delivered_name(branch)
+
+
+def is_shallow(checkout: Path) -> bool:
+    """Whether ``checkout`` is a shallow clone."""
+    result = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "--is-shallow-repository"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return (result.stdout or "").strip() == "true"
 
 
 def push_argv(checkout: Path, host: str, remote_repo: str, commit: str, name: str) -> list[str]:

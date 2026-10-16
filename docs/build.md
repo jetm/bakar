@@ -584,10 +584,11 @@ Every check runs before the first remote write:
    `<workspace>/meta-avocado` on the remote. Each commit gets its own ref; a ref
    is never overwritten and nothing is force-pushed, so every delivered commit
    stays reachable. The receiving side runs as
-   `git -c receive.autogc=false -c receive.shallowUpdate=true receive-pack`:
-   automatic gc is off because it would prune unreachable objects and stale
-   worktree records, and shallow updates are on because a push from a shallow
-   clone is otherwise rejected.
+   `git -c receive.autogc=false receive-pack`: automatic gc is off because it
+   would prune unreachable objects and stale worktree records. Shallow updates
+   stay off, so a push from a shallow checkout whose boundary commit the host
+   lacks is rejected, and bakar prints the `git -C <workspace>/meta-avocado
+   fetch` to run on the host before retrying.
 8. **Delivered worktree** - a remote script takes a per-name lock on
    `<worktree_root>/.<name>.lock`. When `<worktree_root>/<name>` does not exist
    it first writes the marker text to `<worktree_root>/.<name>.pending`, runs

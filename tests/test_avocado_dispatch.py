@@ -300,6 +300,18 @@ def test_push_failure_stops_before_ensure(rec: Recorder, checkout: Path) -> None
     assert "stream" not in rec.names()
 
 
+def test_push_failure_from_shallow_checkout_names_the_host_fetch(
+    rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rec.push_rc = 1
+    monkeypatch.setattr("bakar.steps.layer_delivery.is_shallow", lambda _checkout: True)
+    _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"])
+    out = capsys.readouterr().err
+    assert "shallow" in out
+    assert "git -C" in out
+    assert "fetch" in out
+
+
 @pytest.mark.parametrize("snapshot", [False, True])
 def test_marker_inputs(rec: Recorder, checkout: Path, snapshot: bool) -> None:
     rec.snapshot = snapshot

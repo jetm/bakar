@@ -262,7 +262,7 @@ def test_push_argv_shape_without_force(tmp_path: Path) -> None:
         "-C",
         str(tmp_path),
         "push",
-        "--receive-pack=git -c receive.autogc=false -c receive.shallowUpdate=true receive-pack",
+        "--receive-pack=git -c receive.autogc=false receive-pack",
         "ssh://pc2/ws/meta-avocado",
         f"{commit}:refs/bakar/wt1/{commit[:12]}",
     ]

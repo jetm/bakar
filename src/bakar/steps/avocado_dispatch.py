@@ -256,6 +256,12 @@ def dispatch_avocado_build(  # noqa: PLR0913 - fixed dispatch signature consumed
     push_rc = subprocess.run(push, check=False).returncode
     if push_rc != 0:
         console.print(f"[red]git push failed (exit {push_rc})[/]; remote build not started.")
+        if layer_delivery.is_shallow(checkout):
+            console.print(
+                f"{checkout} is a shallow checkout, which the host rejects when it lacks the boundary commit. "
+                f"Run `ssh {host} git -C {remote_repo} fetch` and retry.",
+                markup=False,
+            )
         return push_rc
 
     script = layer_delivery_remote.ensure_worktree_script(
