@@ -32,8 +32,32 @@ from bakar.steps.layer_delivery_remote import (
     describe_exit,
     ensure_worktree_script,
     marker_json,
-    parse_marker,
 )
+
+_MARKER_KEYS = ("source_host", "source_path", "name", "commit", "snapshot", "delivered_at")
+
+
+def parse_marker(text: str) -> dict[str, str | bool]:
+    """Read back a marker document, raising ``ValueError`` when it is malformed.
+
+    The oracle for ``marker_json``: the remote check runs its own embedded
+    script, so nothing in src parses a marker.
+    """
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"marker is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("marker is not a JSON object")  # noqa: TRY004
+    missing = [key for key in _MARKER_KEYS if key not in data]
+    if missing:
+        raise ValueError(f"marker is missing {', '.join(missing)}")
+    for key in _MARKER_KEYS:
+        expected = bool if key == "snapshot" else str
+        if not isinstance(data[key], expected):
+            raise ValueError(f"marker field {key} is not a {expected.__name__}")  # noqa: TRY004
+    return {key: data[key] for key in _MARKER_KEYS}
+
 
 _GIT_ENV = {
     "GIT_AUTHOR_NAME": "t",

@@ -33,8 +33,6 @@ EXIT_BUILD_RUNNING = 7
 EXIT_MOVED = 8
 EXIT_NO_BUILD_LOCK = 9
 
-_MARKER_KEYS = ("source_host", "source_path", "name", "commit", "snapshot", "delivered_at")
-
 _EXIT_DESCRIPTIONS = {
     EXIT_LOCKED: "another dispatch of the same name holds the delivery lock",
     EXIT_NO_MARKER: "the delivery path exists but carries no readable bakar marker",
@@ -149,24 +147,6 @@ def marker_json(fields: MarkerFields, *, delivered_at: str | None = None) -> str
         "delivered_at": delivered_at,
     }
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
-
-
-def parse_marker(text: str) -> dict[str, str | bool]:
-    """Parse a marker document, raising ``ValueError`` when it is malformed."""
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"marker is not valid JSON: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ValueError("marker is not a JSON object")  # noqa: TRY004
-    missing = [key for key in _MARKER_KEYS if key not in data]
-    if missing:
-        raise ValueError(f"marker is missing {', '.join(missing)}")
-    for key in _MARKER_KEYS:
-        expected = bool if key == "snapshot" else str
-        if not isinstance(data[key], expected):
-            raise ValueError(f"marker field {key} is not a {expected.__name__}")  # noqa: TRY004
-    return {key: data[key] for key in _MARKER_KEYS}
 
 
 def describe_exit(code: int) -> str:
