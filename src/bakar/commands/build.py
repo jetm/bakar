@@ -75,6 +75,8 @@ from bakar.commands._helpers import (
     _resolve_workspace,
     _uninitialized_bbsetup_dir,
     _workspace_from_cwd,
+    global_sccache_dist_override,
+    global_sccache_scheduler,
     resolve_global_config,
     split_kas_yaml_arg,
 )
@@ -315,8 +317,8 @@ def build(
     # --sccache-dist / --sccache-scheduler are global callback options; read them
     # into the local names the body threads through. --host / --container are
     # folded in by resolve_global_config.
-    sccache_dist = _state._SCCACHE_DIST
-    sccache_scheduler = _state._SCCACHE_SCHEDULER
+    sccache_dist = bool(global_sccache_dist_override())
+    sccache_scheduler = global_sccache_scheduler()
 
     # --feed writes into THIS host's feed, and --on moves the build to another
     # one. Allowing the combination renders the feed on the remote, where the

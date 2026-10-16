@@ -54,6 +54,7 @@ from bakar.commands._helpers import (
     apply_sccache_overrides,
     global_output_mode_override,
     global_sccache_dist_override,
+    global_sccache_scheduler,
 )
 from bakar.commands.log import _resolve_run_dir
 from bakar.config import BSPSpec, BuildConfig, ResolveRequest, resolve
@@ -120,7 +121,7 @@ def _resolve_scheduler_url(scheduler: str | None) -> str | None:
     """Resolve the scheduler URL the same way ``cluster-info`` does."""
     url = scheduler
     if url is None:
-        url = _state._SCCACHE_SCHEDULER
+        url = global_sccache_scheduler()
     if url is None and _state._USER_CONFIG is not None:
         url = _state._USER_CONFIG.sccache_scheduler_url
     return url

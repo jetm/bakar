@@ -189,6 +189,16 @@ def global_no_scope() -> bool:
     return _state._NO_SCOPE
 
 
+def global_sccache_scheduler() -> str | None:
+    """Return the global ``--sccache-scheduler`` URL, or None if not set.
+
+    A late import avoids a circular dependency between ``_helpers`` and ``_app``.
+    """
+    import bakar.commands._app as _state
+
+    return _state._SCCACHE_SCHEDULER
+
+
 def global_sccache_dist_override() -> bool | None:
     """Return the global ``--sccache-dist`` override, or None if not set.
 

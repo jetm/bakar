@@ -10,6 +10,7 @@ import typer
 import bakar.commands._app as _state
 from bakar.cache_render import daemon_doc
 from bakar.commands._app import app, console
+from bakar.commands._helpers import global_sccache_scheduler
 from bakar.diagnostics import probe_build_daemon, probe_cluster
 
 
@@ -37,7 +38,7 @@ def cluster_info(
     """
     url = scheduler
     if url is None:
-        url = _state._SCCACHE_SCHEDULER
+        url = global_sccache_scheduler()
     if url is None and _state._USER_CONFIG is not None:
         url = _state._USER_CONFIG.sccache_scheduler_url
 
