@@ -19,7 +19,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar.feed_sbom import SBOM_DIR, find_image_sboms, publish_sbom
+from bakar.feed_sbom import SBOM_DIR, publish_sbom
+from bakar.sbom_publish import find_image_sboms
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -50,7 +51,7 @@ def test_find_image_sboms_picks_only_the_spdx_document(tmp_path) -> None:
     """
     deploy = _images(tmp_path)
 
-    found = find_image_sboms(deploy)
+    found = find_image_sboms(deploy / "images")
 
     assert [p.name for p in found] == ["avocado-image-rootfs-qemux86-64.spdx.json"]
 
@@ -59,14 +60,14 @@ def test_find_image_sboms_is_empty_when_the_build_emitted_none(tmp_path) -> None
     """A build without SPDX enabled yields nothing, not an error."""
     (tmp_path / "deploy" / "images" / "avocado-qemuarm64").mkdir(parents=True)
 
-    assert find_image_sboms(tmp_path / "deploy") == []
+    assert find_image_sboms(tmp_path / "deploy" / "images") == []
 
 
 def test_find_image_sboms_is_empty_with_no_images_directory(tmp_path) -> None:
     """A deploy root with no images dir at all is also just empty."""
     (tmp_path / "deploy").mkdir()
 
-    assert find_image_sboms(tmp_path / "deploy") == []
+    assert find_image_sboms(tmp_path / "deploy" / "images") == []
 
 
 def test_publish_sbom_writes_under_the_snapshot_id(tmp_path) -> None:
@@ -74,7 +75,7 @@ def test_publish_sbom_writes_under_the_snapshot_id(tmp_path) -> None:
     deploy = _images(tmp_path)
     channel = tmp_path / "feed" / "2026" / "edge"
 
-    published = publish_sbom(channel, "20260822T090501Z", find_image_sboms(deploy))
+    published = publish_sbom(channel, "20260822T090501Z", find_image_sboms(deploy / "images"))
 
     expected = channel / "snapshots" / "20260822T090501Z" / SBOM_DIR / "avocado-image-rootfs-qemux86-64.spdx.json"
     assert published == [expected]
@@ -89,7 +90,7 @@ def test_publish_sbom_copies_the_document_verbatim(tmp_path) -> None:
     different artifact from the one the build attested to.
     """
     deploy = _images(tmp_path)
-    source = find_image_sboms(deploy)[0]
+    source = find_image_sboms(deploy / "images")[0]
     channel = tmp_path / "feed" / "2026" / "edge"
 
     published = publish_sbom(channel, "SNAP", [source])
@@ -118,7 +119,7 @@ def test_publish_sbom_is_idempotent(tmp_path) -> None:
     accumulate variants of one snapshot's inventory.
     """
     deploy = _images(tmp_path)
-    sboms = find_image_sboms(deploy)
+    sboms = find_image_sboms(deploy / "images")
     channel = tmp_path / "feed" / "2026" / "edge"
 
     first = publish_sbom(channel, "SNAP", sboms)
@@ -136,7 +137,7 @@ def test_publish_sbom_publishes_every_inventory_it_is_given(tmp_path) -> None:
     extra.write_text('{"@graph": []}')
     channel = tmp_path / "feed" / "2026" / "edge"
 
-    published = publish_sbom(channel, "SNAP", find_image_sboms(deploy))
+    published = publish_sbom(channel, "SNAP", find_image_sboms(deploy / "images"))
 
     assert sorted(p.name for p in published) == [
         "avocado-image-dev-qemux86-64.spdx.json",
@@ -153,7 +154,7 @@ def test_publish_sbom_does_not_write_to_the_mutable_head(tmp_path) -> None:
     deploy = _images(tmp_path)
     channel = tmp_path / "feed" / "2026" / "edge"
 
-    publish_sbom(channel, "SNAP", find_image_sboms(deploy))
+    publish_sbom(channel, "SNAP", find_image_sboms(deploy / "images"))
 
     outside = [p for p in channel.rglob("*.spdx.json") if "snapshots/SNAP" not in str(p)]
     assert outside == []

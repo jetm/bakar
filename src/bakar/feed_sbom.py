@@ -41,24 +41,7 @@ if TYPE_CHECKING:
 # several repositories, so filing it under any single one would misattribute it.
 SBOM_DIR = "sbom"
 
-# A build writes several JSON files per image - a manifest, testdata, a stone
-# descriptor - so the inventory is identified by the compound suffix. Matching
-# "*.json" would publish four files and call three of them inventories.
-_SBOM_GLOB = "*.spdx.json"
-
 _SNAPSHOTS_DIR = "snapshots"
-
-
-def find_image_sboms(deploy_root: Path) -> list[Path]:
-    """Return the image inventories a build emitted, sorted by path.
-
-    Empty when the build had SPDX disabled or wrote no images directory, which
-    is the common case rather than an error.
-    """
-    images = deploy_root / "images"
-    if not images.is_dir():
-        return []
-    return sorted(images.glob(f"*/{_SBOM_GLOB}"))
 
 
 def publish_sbom(channel_root: Path, snapshot: str, sboms: list[Path]) -> list[Path]:
