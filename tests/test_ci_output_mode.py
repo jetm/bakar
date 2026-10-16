@@ -14,7 +14,7 @@ from io import StringIO
 from rich.console import Console
 
 import bakar.cli  # noqa: F401 - registers all subcommands on the shared app
-import bakar.steps.kas_build as kas_build
+import bakar.steps.kas_pty as kas_pty
 from bakar import eventlog
 from bakar.output_mode import OutputMode, resolve_output_mode
 from bakar.steps.build_ui import BuildUIState
@@ -142,7 +142,7 @@ def test_rich_live_stop_clobbers_vertical_overflow() -> None:
 def test_plain_status_throttles(monkeypatch) -> None:
     # The tick is the throttle: many rapid state changes must emit ~window/interval
     # lines, not one per change.
-    monkeypatch.setattr(kas_build, "_PLAIN_STATUS_INTERVAL", 0.02)
+    monkeypatch.setattr(kas_pty, "_PLAIN_STATUS_INTERVAL", 0.02)
     ui = BuildUIState(start_monotonic=time.monotonic())
     buf = StringIO()
     console = Console(no_color=True, force_terminal=False, file=buf)

@@ -2,14 +2,14 @@
 
 Split out of :mod:`bakar.steps.kas_build` (task 10.2). Every symbol here is
 re-exported at ``bakar.steps.kas_build``, and the test suite monkeypatches
-``kas_build._run_pty_with_ui``, ``kas_build._PLAIN_STATUS_INTERVAL``, and
-``kas_build.subprocess.Popen`` expecting those patches to reach this module's
-code. ``subprocess`` is a shared singleton module object, so patching an
-attribute on it works regardless of which module imported it. A patch on a
-NAME bound in ``kas_build``'s own namespace (``_run_pty_with_ui``,
-``_PLAIN_STATUS_INTERVAL``) does not propagate here automatically, so
-``_PlainFrameController._loop`` reads ``_PLAIN_STATUS_INTERVAL`` through a
-deferred ``kas_build`` module reference rather than as a bare global.
+``kas_build._run_pty_with_ui`` and ``kas_build.subprocess.Popen`` expecting those
+patches to reach this module's code. ``subprocess`` is a shared singleton module
+object, so patching an attribute on it works regardless of which module imported
+it. A patch on a NAME bound in ``kas_build``'s own namespace
+(``_run_pty_with_ui``) does not propagate here automatically.
+``_PLAIN_STATUS_INTERVAL`` is defined here, so tests patch it on this module
+(``kas_pty._PLAIN_STATUS_INTERVAL``) and ``_PlainFrameController._loop`` reads it
+as a plain module global.
 
 ``_build_env``/``_container_eventlog_path`` stay in :mod:`bakar.steps.kas_build`
 (they are general build-env assembly, not PTY/UI-specific) and are reached
@@ -120,13 +120,7 @@ class _PlainFrameController:
         """No-op: mirrors ``Live.start(refresh=...)`` so the freeze/restart path is safe."""
 
     def _loop(self) -> None:  # pragma: no cover - timing-driven daemon thread
-        # Deferred: kas_build.probe_cluster-style indirection so
-        # `monkeypatch.setattr(kas_build, "_PLAIN_STATUS_INTERVAL", ...)` (a
-        # patch on kas_build's own namespace) reaches this loop, which a bare
-        # read of the module-level constant here would not.
-        from bakar.steps import kas_build
-
-        while not self._stop_event.wait(timeout=kas_build._PLAIN_STATUS_INTERVAL):
+        while not self._stop_event.wait(timeout=_PLAIN_STATUS_INTERVAL):
             line = self._ui.plain_status_line()
             if line is not None:
                 # markup=False: the status line contains literal brackets (e.g.
