@@ -7,9 +7,8 @@ command-map lookup and a CliRunner --help invocation to cover both surfaces.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-import click
 import pytest
 import typer
 
@@ -23,15 +22,15 @@ pytestmark = pytest.mark.unit
 REQUIRED_COMMANDS = {"show", "getvar", "inspect", "diffsigs", "layers", "drift", "changelog"}
 
 
-def _click_group() -> click.Group:
+def _click_group() -> Any:
     """The shared app as a Click group.
 
-    ``typer.main.get_command`` is declared to return ``click.Command``, which
+    ``typer.main.get_command`` is declared to return a plain command type, which
     carries no ``commands`` map; a Typer app with subcommands converts to a
-    ``click.Group``, so assert that rather than assuming it.
+    group, so assert that rather than assuming it.
     """
     command = typer.main.get_command(app)
-    assert isinstance(command, click.Group), f"app did not convert to a Click group: {command!r}"
+    assert hasattr(command, "commands"), f"app did not convert to a command group: {command!r}"
     return command
 
 

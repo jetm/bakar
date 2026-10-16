@@ -7,7 +7,8 @@ lost its ``w`` (``-t``), and ``-tmyimage`` lost its ``y`` (``-tmimage``).
 
 from __future__ import annotations
 
-import click
+from typing import Any
+
 import pytest
 import typer
 
@@ -65,11 +66,11 @@ def test_kw_cluster_keeps_the_flag_and_drops_the_workspace() -> None:
     assert argv == ["build", "-k", "kas/k.yml"]
 
 
-def _short_options(params: list[click.Parameter]) -> tuple[set[str], set[str]]:
+def _short_options(params: list[Any]) -> tuple[set[str], set[str]]:
     flags: set[str] = set()
     valued: set[str] = set()
     for param in params:
-        if not isinstance(param, click.Option):
+        if param.param_type_name != "option":
             continue
         for opt in [*param.opts, *param.secondary_opts]:
             if len(opt) == 2 and opt.startswith("-") and opt != "--":
@@ -79,7 +80,7 @@ def _short_options(params: list[click.Parameter]) -> tuple[set[str], set[str]]:
 
 def test_known_short_options_match_the_real_build_command() -> None:
     group = typer.main.get_command(app)
-    assert isinstance(group, click.Group)
+    assert hasattr(group, "commands"), f"app did not convert to a command group: {group!r}"
     build = group.commands["build"]
     flags, valued = _short_options(build.params)
     assert flags == rd.BOOL_SHORT, "bakar build's boolean short flags changed; update BOOL_SHORT"
