@@ -162,7 +162,7 @@ def test_recognized_keys_do_not_warn(tmp_path: Path) -> None:
     assert cfg.generic_machine == "qemux86-64"
 
 
-def test_unknown_section_is_ignored(tmp_path: Path) -> None:
+def test_unknown_family_warns_and_is_ignored(tmp_path: Path) -> None:
     toml_content = textwrap.dedent("""\
         [defaults.unknown_family]
         machine = "mystery-board"
@@ -172,16 +172,35 @@ def test_unknown_section_is_ignored(tmp_path: Path) -> None:
     """)
     (tmp_path / ".bakar.toml").write_text(toml_content)
 
-    # An unrecognized family section is dropped without warning (only unknown
-    # keys under a recognized section warn).
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
+    with pytest.warns(UserWarning, match="unknown key 'unknown_family' in \\[defaults\\]"):
         cfg = load_workspace_config(tmp_path)
 
     assert cfg.nxp_machine == "imx93-var-som"
     # Nothing from the unknown family leaked in.
     assert cfg.generic_machine is None
     assert cfg.ti_machine is None
+
+
+def test_unknown_top_level_section_warns(tmp_path: Path) -> None:
+    (tmp_path / ".bakar.toml").write_text("[mystery]\nx = 1\n\n[build]\nccache = true\n")
+
+    with pytest.warns(UserWarning, match="unknown top-level section 'mystery'"):
+        cfg = load_workspace_config(tmp_path)
+
+    assert cfg.ccache is True
+
+
+def test_generic_non_string_raises_valueerror_naming_field(tmp_path: Path) -> None:
+    (tmp_path / ".bakar.toml").write_text("[defaults.generic]\nmachine = 3\n")
+
+    with pytest.raises(ValueError, match="generic_machine"):
+        load_workspace_config(tmp_path)
+
+
+def test_host_keys_are_user_configs_table() -> None:
+    from bakar import user_config
+
+    assert workspace_config._WORKSPACE_TABLES[-1][1] is user_config._HOST_KEYS
 
 
 def test_host_table_populates_host_fields(tmp_path: Path) -> None:
@@ -232,10 +251,9 @@ def test_host_table_is_top_level_not_under_defaults(tmp_path: Path) -> None:
     """)
     (tmp_path / ".bakar.toml").write_text(toml_content)
 
-    # [defaults.host] is an unknown family section under defaults -> ignored
-    # without warning; the top-level host_* fields stay None.
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
+    # [defaults.host] is an unknown key under [defaults] -> warns; the top-level
+    # host_* fields stay None.
+    with pytest.warns(UserWarning, match="unknown key 'host' in \\[defaults\\]"):
         cfg = load_workspace_config(tmp_path)
 
     assert cfg.host_inotify_instances is None
@@ -412,7 +430,7 @@ def test_build_non_table_raises_valueerror_naming_section(tmp_path: Path) -> Non
     """A scalar `build` value must be rejected, not silently ignored."""
     (tmp_path / ".bakar.toml").write_text('build = "not-a-table"\n')
 
-    with pytest.raises(ValueError, match="'build' must be a table"):
+    with pytest.raises(ValueError, match=r"\[build\]' must be a table"):
         load_workspace_config(tmp_path)
 
 
@@ -420,7 +438,7 @@ def test_host_non_table_raises_valueerror_naming_section(tmp_path: Path) -> None
     """A scalar `host` value must be rejected, not silently ignored."""
     (tmp_path / ".bakar.toml").write_text('host = "not-a-table"\n')
 
-    with pytest.raises(ValueError, match="'host' must be a table"):
+    with pytest.raises(ValueError, match=r"\[host\]' must be a table"):
         load_workspace_config(tmp_path)
 
 
@@ -428,7 +446,7 @@ def test_defaults_non_table_raises_valueerror_naming_section(tmp_path: Path) -> 
     """A scalar `defaults` value must be rejected, not silently ignored."""
     (tmp_path / ".bakar.toml").write_text('defaults = "not-a-table"\n')
 
-    with pytest.raises(ValueError, match="'defaults' must be a table"):
+    with pytest.raises(ValueError, match=r"\[defaults\]' must be a table"):
         load_workspace_config(tmp_path)
 
 
@@ -440,5 +458,5 @@ def test_defaults_family_non_table_raises_valueerror_naming_section(tmp_path: Pa
     """)
     (tmp_path / ".bakar.toml").write_text(toml_content)
 
-    with pytest.raises(ValueError, match=r"'defaults\.nxp' must be a table"):
+    with pytest.raises(ValueError, match=r"\[defaults\.nxp\]' must be a table"):
         load_workspace_config(tmp_path)
