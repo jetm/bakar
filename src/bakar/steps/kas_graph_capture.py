@@ -1,16 +1,16 @@
 """Build-time dependency-graph capture, split out of :mod:`bakar.steps.kas_build`
 (task 10.2).
 
-Every symbol here is re-exported at ``bakar.steps.kas_build``, and
-``tests/test_graph_capture.py`` monkeypatches the cluster's collaborators
-(``_lock_holder_has_activity``, ``run_kas_subcommand``, ``run_shell_capture``)
-on the ``kas_build`` module rather than on this one. A bare call to any of
-those names from inside this module would resolve against THIS module's own
-globals and never see such a patch, so every call to a collaborator that
-lives on (or is re-exported at) ``kas_build`` goes through a function-body
-deferred ``from bakar.steps import kas_build`` and a ``kas_build.<name>(...)``
-call instead of a bare name - including calls between functions defined here,
-since the patch target is always ``kas_build``, never this module.
+Every symbol here is re-exported at ``bakar.steps.kas_build``.
+``tests/test_graph_capture.py`` patches ``_lock_holder_has_activity``,
+``_wait_for_cooker_idle`` and ``_resolve_capture_target`` on THIS module,
+because the calls to them are bare names resolved against this module's
+globals. ``run_kas_subcommand``, ``KasSubcommand``, ``run_shell_capture`` and
+``ShellCapture`` are defined in ``kas_build``, which imports this module back,
+so they are reached through a function-body deferred
+``from bakar.steps import kas_build``. That import exists to break the cycle,
+not to keep a patch alive; those four names are patched on ``kas_build``
+because that is where they are defined.
 """
 
 from __future__ import annotations
@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
+
+from bakar.steps.kas_lock import _lock_holder_has_activity
 
 if TYPE_CHECKING:
     from bakar.observability import RunLogger
@@ -130,11 +132,9 @@ def _wait_for_cooker_idle(
     a quiet cooker is an absent optional artifact, and blocking a completed
     build's teardown on one would be a worse trade than going without it.
     """
-    from bakar.steps import kas_build
-
     deadline = time.monotonic() + timeout
     while True:
-        if not kas_build._lock_holder_has_activity(build_dir):
+        if not _lock_holder_has_activity(build_dir):
             return True
         if time.monotonic() >= deadline:
             log.warn(
@@ -158,6 +158,8 @@ def _resolve_capture_target(ctx: KasBuildContext, log: RunLogger) -> str | None:
     any file in the stack. Reading the top-level YAML directly would get the
     common case right and the layered one silently wrong.
     """
+    # Deferred: kas_build defines run_kas_subcommand and KasSubcommand and
+    # imports this module back, so a module-level import would be a cycle.
     from bakar.steps import kas_build
 
     if ctx.target:
@@ -216,6 +218,8 @@ def _capture_dependency_graph(ctx: KasBuildContext, log: RunLogger) -> dict[str,
     the cooker-idle wait deliberately: that wait is up to 60s of pure waiting,
     and declining the capture has to cost nothing.
     """
+    # Deferred for the same cycle reason as in _resolve_capture_target:
+    # run_shell_capture and ShellCapture live in kas_build.
     from bakar.steps import kas_build
 
     cfg = ctx.cfg
@@ -233,14 +237,14 @@ def _capture_dependency_graph(ctx: KasBuildContext, log: RunLogger) -> dict[str,
         # a Ctrl-C during either used to escape this function's "never raises"
         # contract entirely, since the KeyboardInterrupt handler below could
         # only catch what happened after this point.
-        target = kas_build._resolve_capture_target(ctx, log)
+        target = _resolve_capture_target(ctx, log)
         if not target:
             log.warn("dependency graph: no build target resolved; skipping capture")
             return None
         # The build's own cooker still holds the lock at this point, with activity.
         # Without this wait every capture is refused before it starts - which is
         # what the first real build did, on every attempt.
-        if not kas_build._wait_for_cooker_idle(cfg.bsp_root / cfg.build_dir_name, log):
+        if not _wait_for_cooker_idle(cfg.bsp_root / cfg.build_dir_name, log):
             return None
         # Recorded before the capture runs so a source artifact can be checked
         # against it afterward: mtimes are wall-clock, so this must be too.

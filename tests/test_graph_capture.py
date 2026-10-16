@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from bakar.steps import kas_graph_capture
 from bakar.steps.kas_build import GRAPH_ARTIFACTS, GRAPH_MARKER_NAME, graph_capture_command
 
 
@@ -94,11 +95,11 @@ def test_marker_name_is_distinct_from_the_artifacts() -> None:
 def test_idle_wait_returns_immediately_when_the_cooker_is_already_quiet(monkeypatch, tmp_path) -> None:
     from bakar.steps import kas_build
 
-    monkeypatch.setattr(kas_build, "_lock_holder_has_activity", lambda _d: False)
+    monkeypatch.setattr(kas_graph_capture, "_lock_holder_has_activity", lambda _d: False)
     slept: list[float] = []
     monkeypatch.setattr(kas_build.time, "sleep", slept.append)
 
-    assert kas_build._wait_for_cooker_idle(tmp_path, _FakeLog()) is True
+    assert kas_graph_capture._wait_for_cooker_idle(tmp_path, _FakeLog()) is True
     assert slept == [], "a quiet cooker must not cost a single poll interval"
 
 
@@ -111,10 +112,10 @@ def test_idle_wait_returns_true_once_activity_stops(monkeypatch, tmp_path) -> No
     from bakar.steps import kas_build
 
     calls = iter([True, True, False])
-    monkeypatch.setattr(kas_build, "_lock_holder_has_activity", lambda _d: next(calls))
+    monkeypatch.setattr(kas_graph_capture, "_lock_holder_has_activity", lambda _d: next(calls))
     monkeypatch.setattr(kas_build.time, "sleep", lambda _s: None)
 
-    assert kas_build._wait_for_cooker_idle(tmp_path, _FakeLog()) is True
+    assert kas_graph_capture._wait_for_cooker_idle(tmp_path, _FakeLog()) is True
 
 
 def test_idle_wait_times_out_rather_than_blocking_teardown(monkeypatch, tmp_path) -> None:
@@ -125,11 +126,11 @@ def test_idle_wait_times_out_rather_than_blocking_teardown(monkeypatch, tmp_path
     """
     from bakar.steps import kas_build
 
-    monkeypatch.setattr(kas_build, "_lock_holder_has_activity", lambda _d: True)
+    monkeypatch.setattr(kas_graph_capture, "_lock_holder_has_activity", lambda _d: True)
     monkeypatch.setattr(kas_build.time, "sleep", lambda _s: None)
     log = _FakeLog()
 
-    assert kas_build._wait_for_cooker_idle(tmp_path, log, timeout=0.0) is False
+    assert kas_graph_capture._wait_for_cooker_idle(tmp_path, log, timeout=0.0) is False
     assert any("still active" in w for w in log.warnings)
 
 
@@ -159,7 +160,7 @@ def test_explicit_ctx_target_wins_without_shelling_out(monkeypatch) -> None:
     monkeypatch.setattr(kas_build, "run_kas_subcommand", _fail)
     ctx = type("Ctx", (), {"target": "my-image"})()
 
-    assert kas_build._resolve_capture_target(ctx, _FakeLog()) == "my-image"
+    assert kas_graph_capture._resolve_capture_target(ctx, _FakeLog()) == "my-image"
 
 
 def test_resolve_capture_target_reads_the_kas_dump_yaml_round_trip(monkeypatch) -> None:
@@ -179,7 +180,7 @@ def test_resolve_capture_target_reads_the_kas_dump_yaml_round_trip(monkeypatch) 
     monkeypatch.setattr(kas_build, "run_kas_subcommand", _fake_dump)
     ctx = type("Ctx", (), {"target": None})()
 
-    assert kas_build._resolve_capture_target(ctx, _FakeLog()) == "core-image-minimal"
+    assert kas_graph_capture._resolve_capture_target(ctx, _FakeLog()) == "core-image-minimal"
 
 
 def test_resolve_capture_target_graphs_the_first_of_several_targets(monkeypatch) -> None:
@@ -197,7 +198,7 @@ def test_resolve_capture_target_graphs_the_first_of_several_targets(monkeypatch)
     ctx = type("Ctx", (), {"target": None})()
     log = _FakeLog()
 
-    assert kas_build._resolve_capture_target(ctx, log) == "image-a"
+    assert kas_graph_capture._resolve_capture_target(ctx, log) == "image-a"
     assert any("2 targets" in m and "image-a" in m for m in log.infos), log.infos
 
 
@@ -212,7 +213,7 @@ def test_resolve_capture_target_returns_none_for_an_empty_target_list(monkeypatc
     monkeypatch.setattr(kas_build, "run_kas_subcommand", _fake_dump)
     ctx = type("Ctx", (), {"target": None})()
 
-    assert kas_build._resolve_capture_target(ctx, _FakeLog()) is None
+    assert kas_graph_capture._resolve_capture_target(ctx, _FakeLog()) is None
 
 
 def test_resolve_capture_target_guards_a_non_dict_dump(monkeypatch) -> None:
@@ -227,7 +228,7 @@ def test_resolve_capture_target_guards_a_non_dict_dump(monkeypatch) -> None:
     monkeypatch.setattr(kas_build, "run_kas_subcommand", _fake_dump)
     ctx = type("Ctx", (), {"target": None})()
 
-    assert kas_build._resolve_capture_target(ctx, _FakeLog()) is None
+    assert kas_graph_capture._resolve_capture_target(ctx, _FakeLog()) is None
 
 
 def test_resolve_capture_target_labels_its_dump_call_with_a_distinct_step_name(monkeypatch) -> None:
@@ -249,7 +250,7 @@ def test_resolve_capture_target_labels_its_dump_call_with_a_distinct_step_name(m
     monkeypatch.setattr(kas_build, "run_kas_subcommand", _fake_dump)
     ctx = type("Ctx", (), {"target": None})()
 
-    kas_build._resolve_capture_target(ctx, _FakeLog())
+    kas_graph_capture._resolve_capture_target(ctx, _FakeLog())
 
     assert calls == ["graph_capture_kas_dump"]
 
@@ -287,7 +288,7 @@ def test_capture_opts_into_a_bound_and_its_own_process_group(monkeypatch, tmp_pa
     from bakar.steps import kas_build
 
     ctx, log = _capture_ctx(tmp_path)
-    monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", lambda *_a, **_k: True)
+    monkeypatch.setattr(kas_graph_capture, "_wait_for_cooker_idle", lambda *_a, **_k: True)
     seen: dict[str, object] = {}
 
     def _fake_capture(_ctx, _cmd, capture):
@@ -326,7 +327,7 @@ def test_capture_reports_a_hang_distinctly_from_a_failure(monkeypatch, tmp_path)
     from bakar.steps import kas_build
 
     ctx, log = _capture_ctx(tmp_path)
-    monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", lambda *_a, **_k: True)
+    monkeypatch.setattr(kas_graph_capture, "_wait_for_cooker_idle", lambda *_a, **_k: True)
 
     def _hang(*_a, **_k):
         raise subprocess.TimeoutExpired(cmd="kas", timeout=900.0)
@@ -353,8 +354,8 @@ def test_declining_the_capture_skips_the_cooker_idle_wait(monkeypatch, tmp_path)
     def _must_not_run(*_a, **_k):
         raise AssertionError("declining the capture must not wait, resolve, or launch")
 
-    monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", _must_not_run)
-    monkeypatch.setattr(kas_build, "_resolve_capture_target", _must_not_run)
+    monkeypatch.setattr(kas_graph_capture, "_wait_for_cooker_idle", _must_not_run)
+    monkeypatch.setattr(kas_graph_capture, "_resolve_capture_target", _must_not_run)
     monkeypatch.setattr(kas_build, "run_shell_capture", _must_not_run)
 
     assert kas_build._capture_dependency_graph(ctx, log) is None
@@ -383,7 +384,7 @@ def test_stale_artifact_is_rejected_rather_than_published(monkeypatch, tmp_path)
         artifact.write_text("stale")
         os.utime(artifact, (old_time, old_time))
 
-    monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", lambda *_a, **_k: True)
+    monkeypatch.setattr(kas_graph_capture, "_wait_for_cooker_idle", lambda *_a, **_k: True)
     monkeypatch.setattr(kas_build, "run_shell_capture", lambda *_a, **_k: 0)
     monkeypatch.setattr(kas_build.time, "time", lambda: old_time + 3600)
 
@@ -419,7 +420,7 @@ def test_fresh_artifact_is_published(monkeypatch, tmp_path) -> None:
             os.utime(artifact, (start_time + 60, start_time + 60))
         return 0
 
-    monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", lambda *_a, **_k: True)
+    monkeypatch.setattr(kas_graph_capture, "_wait_for_cooker_idle", lambda *_a, **_k: True)
     monkeypatch.setattr(kas_build, "run_shell_capture", _fake_capture)
     monkeypatch.setattr(kas_build.time, "time", lambda: start_time)
 
@@ -455,7 +456,7 @@ def test_capture_copies_artifacts_and_writes_a_marker_with_provenance(monkeypatc
             os.utime(artifact, (start_time + 60, start_time + 60))
         return 0
 
-    monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", lambda *_a, **_k: True)
+    monkeypatch.setattr(kas_graph_capture, "_wait_for_cooker_idle", lambda *_a, **_k: True)
     monkeypatch.setattr(kas_build, "run_shell_capture", _fake_capture)
     monkeypatch.setattr(kas_build.time, "time", lambda: start_time)
 
@@ -492,7 +493,7 @@ def test_capture_aborts_the_copy_loop_when_an_artifact_is_missing(monkeypatch, t
         (topdir / kas_build.GRAPH_ARTIFACTS[0]).write_text("present")
         return 0
 
-    monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", lambda *_a, **_k: True)
+    monkeypatch.setattr(kas_graph_capture, "_wait_for_cooker_idle", lambda *_a, **_k: True)
     monkeypatch.setattr(kas_build, "run_shell_capture", _fake_capture)
 
     assert kas_build._capture_dependency_graph(ctx, log) is None
@@ -527,7 +528,7 @@ def test_capture_reads_topdir_from_build_dir_name_not_resolved_tmpdir(monkeypatc
             os.utime(artifact, (start_time + 60, start_time + 60))
         return 0
 
-    monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", lambda *_a, **_k: True)
+    monkeypatch.setattr(kas_graph_capture, "_wait_for_cooker_idle", lambda *_a, **_k: True)
     monkeypatch.setattr(kas_build, "run_shell_capture", _fake_capture)
     monkeypatch.setattr(kas_build.time, "time", lambda: start_time)
 
@@ -551,7 +552,7 @@ def test_keyboard_interrupt_during_capture_is_swallowed_not_reported_as_a_failur
     from bakar.steps import kas_build
 
     ctx, log = _capture_ctx(tmp_path)
-    monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", lambda *_a, **_k: True)
+    monkeypatch.setattr(kas_graph_capture, "_wait_for_cooker_idle", lambda *_a, **_k: True)
 
     def _interrupt(*_a, **_k):
         raise KeyboardInterrupt
@@ -579,7 +580,7 @@ def test_keyboard_interrupt_during_target_resolution_is_also_swallowed(monkeypat
     def _interrupt(*_a, **_k):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(kas_build, "_resolve_capture_target", _interrupt)
+    monkeypatch.setattr(kas_graph_capture, "_resolve_capture_target", _interrupt)
 
     assert kas_build._capture_dependency_graph(ctx, log) is None
     assert any("interrupted" in w for w in log.warnings), log.warnings
@@ -594,7 +595,7 @@ def test_keyboard_interrupt_during_cooker_idle_wait_is_also_swallowed(monkeypatc
     def _interrupt(*_a, **_k):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(kas_build, "_wait_for_cooker_idle", _interrupt)
+    monkeypatch.setattr(kas_graph_capture, "_wait_for_cooker_idle", _interrupt)
 
     assert kas_build._capture_dependency_graph(ctx, log) is None
     assert any("interrupted" in w for w in log.warnings), log.warnings
