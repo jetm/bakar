@@ -71,14 +71,8 @@ from bakar.buildtools import BUILDTOOLS_DIR_ENV, detect_buildtools, resolve_oe_c
 from bakar.config import GENERATED_BUILD_YAML, BuildConfig
 from bakar.fmt import neutralize
 from bakar.kas import KasGenOptions, write_yaml
-from bakar.mounts import (
-    is_path_on_nfs,  # noqa: F401 - re-exported; kas_lock.clear_stale_bitbake_locks patches it via kas_build.is_path_on_nfs
-)
 from bakar.observability import RunLogger, run_id_epoch
 from bakar.output_mode import OutputMode
-from bakar.probes import (
-    probe_cluster,  # noqa: F401 - re-exported; kas_overlay._derive_parallelism_plan patches it via kas_build.probe_cluster
-)
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
 from bakar.release_workspace import (
     REPO_POLICY_ENV,
@@ -92,18 +86,14 @@ from bakar.steps.build_ui import BuildUIState
 from bakar.steps.kas_graph_capture import (
     GRAPH_ARTIFACTS,  # noqa: F401 - re-exported for external/test imports
     GRAPH_CAPTURE_IDLE_TIMEOUT_S,  # noqa: F401 - re-exported for external/test imports
-    GRAPH_CAPTURE_POLL_S,  # noqa: F401 - re-exported for external/test imports
     GRAPH_CAPTURE_TIMEOUT_S,  # noqa: F401 - re-exported for external/test imports
     GRAPH_MARKER_NAME,  # noqa: F401 - re-exported for external/test imports
     _capture_dependency_graph,
-    _resolve_capture_target,  # noqa: F401 - re-exported; tests monkeypatch kas_build._resolve_capture_target
-    _wait_for_cooker_idle,  # noqa: F401 - re-exported; tests monkeypatch kas_build._wait_for_cooker_idle
     graph_capture_command,  # noqa: F401 - re-exported for external/test imports
 )
 from bakar.steps.kas_lock import (
     LockHeldByPeerError,
     LockUnattributableError,
-    _lock_holder_has_activity,  # noqa: F401 - re-exported; kas_graph_capture patches it via kas_build._lock_holder_has_activity
     _lock_refusal_message,
     clear_stale_bitbake_locks,
     lock_owner_marker,
@@ -125,7 +115,6 @@ from bakar.steps.kas_overlay import (
     materialize_sccache_layer,
 )
 from bakar.steps.kas_pty import (
-    _PLAIN_STATUS_INTERVAL,  # noqa: F401 - re-exported; _PlainFrameController._loop patches it via kas_build._PLAIN_STATUS_INTERVAL
     _build_fail_reason,
     _PlainFrameController,  # noqa: F401 - re-exported for external/test imports
     _print_cache_summary,
