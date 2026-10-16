@@ -1946,6 +1946,9 @@ def test_persist_run_artifacts_swallows_any_exception_and_warns(
     ):
         persist_run_artifacts(cfg, log)
     assert "failed to persist run artifacts: boom" in capsys.readouterr().err
+    events = [json.loads(line) for line in log.events_path.read_text().splitlines() if line.strip()]
+    warns = [e for e in events if e["event"] == "warn" and "failed to persist run artifacts: boom" in e["message"]]
+    assert len(warns) == 1
 
 
 def _native_artifact(log: RunLogger, *, executed: int = 1, restored: int = 0) -> None:
