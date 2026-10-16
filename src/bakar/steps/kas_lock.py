@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from rich.markup import escape
 
 from bakar import build_stop
+from bakar.mounts import is_path_on_nfs
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -166,11 +167,7 @@ def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
         return build_stop.LockClearOutcome(removed=removed)
 
     # owner is None: marker absent or garbled.
-    # Deferred: tests monkeypatch kas_build.is_path_on_nfs (this function is
-    # re-exported there) and expect that patch to reach this call.
-    from bakar.steps import kas_build
-
-    nfs = kas_build.is_path_on_nfs(build_dir)
+    nfs = is_path_on_nfs(build_dir)
     shared_or_unknown = nfs is not False  # True (nfs) or None (unverifiable) both fail closed.
 
     if lock.exists():
