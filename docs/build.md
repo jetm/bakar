@@ -61,7 +61,7 @@ bakar build -m imx8mp-var-dart    # machine override in bbsetup workspace
 | `--preset` | | Named preset from `config.toml`; additive with explicit flags (explicit flags win) |
 | `--workspace` | `-w` | Workspace root override |
 | `--on` | | Dispatch the build to a remote host (ssh alias or `user@ip`) instead of building locally. See [Remote dispatch](#remote-dispatch---on-host). |
-| `--yes` | `-y` | Skip the `rsync --delete` confirmation prompt for `--on` dispatch (non-interactive) |
+| `--yes` | `-y` | Proceed despite a local/remote bakar version mismatch for `--on` dispatch. Dispatch has no other prompt or override: it prints its plan and never deletes anything on the remote |
 | `--no-capture-graph` | | Skip the post-build `bitbake -g` dependency-graph capture, including the cooker-idle wait before it. Same effect as `[build] capture_graph = false` |
 
 `--container` (route the build through `kas-container` instead of the default
@@ -370,89 +370,296 @@ that class of failure.
 ## Remote dispatch (`--on <host>`)
 
 `--on <host>` runs the whole build on an idle remote node instead of the local
-machine. It mirrors your working tree (uncommitted edits included) to the remote,
-runs `bakar build` there, streams the output back live, and prints the remote
-run-id so you can triage failures over ssh. Every other build flag passes through
-unchanged. When `--on` is unset the build is byte-identical to a local run - no
-ssh or rsync is spawned.
+machine, streams the output back live, and prints the remote run-id so you can
+triage failures over ssh. Every other build flag passes through unchanged. When
+`--on` is unset the build is byte-identical to a local run: no ssh, git push or
+rsync is spawned.
 
 `<host>` is any ssh destination: an alias from `~/.ssh/config` or a `user@ip`.
-The remote must have the workspace checked out at the same absolute path as the
-local machine and run a matching `bakar` version.
+The remote must run a matching `bakar` version.
+
+Dispatch never deletes anything on the remote. It adds what the build needs and
+leaves every existing file, repository and ref in place. How your sources get
+there depends on the build:
+
+- A **meta-avocado kas build** (a kas file inside a `meta-avocado` checkout or
+  one of its linked worktrees) runs in a release workspace that already exists
+  on the remote. Only the checkout holding the kas file travels, as a git commit
+  pushed into the remote workspace's own `meta-avocado` clone and checked out
+  there as a linked worktree. Nothing is rsynced. See
+  [Meta-avocado dispatch](#meta-avocado-dispatch).
+- **Every other form** (NXP and TI manifests, bitbake-setup workspaces, qcom,
+  and kas files outside `meta-avocado`) mirrors the workspace root to the same
+  absolute path on the remote with an additive `rsync -a`. See
+  [Additive mirror for other build forms](#additive-mirror-for-other-build-forms).
 
 ```bash
-# Dispatch the build to the pc2 node; prompts before the destructive sync
-bakar build meta-avocado/kas/machine/qemux86-64.yml --on pc2
+# Dispatch a meta-avocado worktree build to pc3; needs [workspaces] template
+cd /home/tiamarin/repos/work/peridio
+bakar build /home/tiamarin/repos/work/.worktrees/meta-avocado/rpi5-lgpio-feed/kas/machine/raspberrypi5.yml \
+    --target python3-lgpio --on pc3
 
-# Non-interactive: skip the sync confirmation prompt
+# Proceed even though pc2 runs a different bakar build
 bakar build meta-avocado/kas/machine/qemux86-64.yml --on pc2 --yes
 
 # Force the remote build to join the sccache-dist cluster (off by default)
-bakar --sccache-dist build meta-avocado/kas/machine/qemux86-64.yml --on pc2 --yes
+bakar --sccache-dist build meta-avocado/kas/machine/qemux86-64.yml --on pc2
 ```
 
-### Dispatch sequence
+### Release workspaces
 
-1. **Host preflight** - `ssh -o BatchMode=yes <host> bash -s` runs
-   `command -v bakar && bakar --version` (the same non-login bash the build
-   uses). If the host is unreachable, key auth is not set up, or `bakar` is not
-   on the remote non-login PATH, the command fails fast with a clear message and
-   spawns no rsync. A local/remote `bakar --version` mismatch prints a warning
-   but does not block.
-2. **Working-tree mirror** - `rsync -a --delete` copies the workspace root to the
-   same absolute path on the remote. rsync carries uncommitted edits verbatim
-   (`git push` cannot), and the existing remote clone makes this a fast delta.
-   `.git` is kept (kas/bitbake read git state for `SRCREV`/`AUTOREV`); build
-   artifacts and caches are excluded. Workspace-root outputs are anchored with a
-   leading `/` so an unanchored basename cannot also drop a real source dir
-   (e.g. oe-core's `meta/recipes-devtools/ccache/`): `/build/`, `/build-*/`,
-   `/*/build/`, `/ccache/`, plus the depth-matched `**/tmp/`, `**/sstate-cache/`,
-   `**/downloads/`, `**/.venv/`, `**/__pycache__/`, and `**/*.pyc`. NFS-mounted
-   shared caches live outside the workspace, so they are never in scope. A build
-   started from a linked meta-avocado worktree mirrors the main workspace exactly
-   as a main-checkout dispatch does, then the worktree checkout to the same path,
-   in that order, because the worktree's git metadata lives in the main checkout.
-   A worktree that already sits inside the workspace root, next to its own main
-   checkout, is not mirrored a second time: the workspace transfer carries it and
-   the git metadata it points at.
-3. **Delete confirmation** - because `--delete` mutates the remote irreversibly,
-   bakar first runs an `rsync --delete --dry-run -i` preview for every mirrored
-   root and prompts once for confirmation before any real transfer. `--yes`
-   (`-y`) bypasses the prompt for non-interactive or scripted runs. A mirror root
-   that contains a linked worktree whose main checkout is outside that root (the
-   shape a `.worktrees` container has) is refused before any transfer with `unsafe
-   workspace for remote sync:`, listing the worktrees and the root's size, and
-   `--yes` does not bypass that refusal. Only the first two directory levels are
-   checked.
-4. **Remote build** - the build runs on the remote with sccache-dist forced
-   **off** by default (`BAKAR_SCCACHE_DIST=0`), so a node that is normally an
-   sccache-dist server runs as an independent worker (local ccache + shared
-   sstate) rather than re-coupling to the cluster. Pass `--sccache-dist` to opt
-   back in - the forwarded flag wins over the env default by CLI-over-env
-   precedence. The remote command is delivered fish-safely as a script over
-   stdin to `ssh <host> bash -s` (the remote login shell is fish, which mangles
-   a naive `ssh <host> '<cmd>'` or `bash -lc` invocation).
-5. **Detach** - the remote build runs under a transient
+A release workspace is a kas workspace for one Yocto release: a `meta-avocado`
+clone plus every repository the release's kas files pin, side by side. The
+layout is the same on every build host, for example
+`/home/tiamarin/repos/work/peridio-wrynose` and
+`/home/tiamarin/repos/work/peridio-scarthgap`, so one config maps a release to a
+path that is valid locally and on the remote.
+
+bakar reads the release a kas file builds from its pins. It runs
+`kas dump --skip repos_checkout --skip finish_setup_repos --skip repos_apply_patches`
+on a generated wrapper with a throwaway, empty `KAS_WORK_DIR`, so no existing
+repository is touched, and takes the `branch:` of the `openembedded-core` pin
+with its `-avocado` suffix removed: `wrynose-avocado` builds `wrynose`,
+`scarthgap-avocado` builds `scarthgap`. When the merged config also sets
+`env.AVOCADO_YOCTO_SERIES` to a different value, bakar refuses and names both.
+
+The mapping lives in the user-global `~/.config/bakar/config.toml`. Keep it
+identical on every host; a remote host needs no config of its own for dispatch:
+
+```toml
+[workspaces]
+# {release} is the only placeholder
+template = "/home/tiamarin/repos/work/peridio-{release}"
+
+[workspaces.releases]
+# A per-release entry wins over the template
+wrynose = "/home/tiamarin/repos/work/peridio-wrynose"
+```
+
+Neither key has a default. A `[workspaces.releases]` entry wins over
+`[workspaces] template`, and `~` is expanded in both. A template that uses any
+placeholder other than `{release}` is rejected when the config loads, and so is
+a `[workspaces.releases]` value that is not a string.
+
+Routing applies to local builds too. Whenever a mapping resolves for the
+release, a meta-avocado kas build without `-w` uses the routed workspace as its
+workspace and `KAS_WORK_DIR`, wherever the kas file's checkout lives. The
+generated wrapper declares `meta-avocado` at the checkout's absolute path, so
+kas reads your checkout and not the workspace's own `meta-avocado`. A routed
+path that does not exist stops the build with exit 2 before any kas command
+runs. With no mapping for the release, a local build resolves its workspace as
+before: the parent of the `meta-avocado` main checkout. `-w` always wins.
+
+bakar does not create release workspaces. Create one once per host with the
+commands the missing-workspace refusal prints (see
+[Refusals and fixes](#refusals-and-fixes)).
+
+### Repository reuse policy
+
+A release workspace is shared by every checkout and worktree that builds that
+release. kas moves every clean existing repository to its pin whenever it sets
+up repositories, so two worktrees with different pins would keep moving the
+shared clones under each other. The reuse policy stops that.
+
+`BAKAR_REPO_POLICY=reuse` is the default whenever routing resolves a workspace,
+for local and dispatched builds alike; dispatch always forwards it to the remote
+build. Before the kas dump, the build host classifies each pinned repository
+that has a `url:`:
+
+| State | Condition | What the build does |
+|-------|-----------|---------------------|
+| frozen | the checkout exists, sits at its pin and is clean | the overlay sets `url: null`, so kas performs no version-control operation on it |
+| missing | no checkout exists | left to kas, which clones it at its pin |
+| side | the checkout is on another commit or has local changes | the overlay points the repository's `path:` at `<workspace>/.bakar/pins/<repo>/<commit12>`, which kas clones from the pinned URL; the shared clone is never moved |
+
+The overlay is written to `<build dir>/avocado-reuse.yml` and merged last. Each
+new side checkout prints one line,
+`side checkout <repo> at <commit12>: <path>`. An existing side checkout that is
+clean at its pin is frozen and reused as is; one with local changes or another
+HEAD fails the build, naming the path. A repository with a `url:` but no
+`commit:` pin also fails the build, because kas would move the shared clone to a
+branch tip. Under `reuse` the "does not contain commit" retry with
+`--skip repos_checkout` is not attempted, so the original kas error stands.
+
+Set `BAKAR_REPO_POLICY=kas` to opt out and let kas manage the repositories as it
+always has, retry included. Under `reuse`, a build whose kas file is not inside
+a `meta-avocado` checkout prints
+`repo policy reuse skipped for <kas file>: not inside a meta-avocado checkout, using the kas policy`
+and uses the `kas` policy.
+
+### Worktree build directories
+
+A build whose kas file sits in a linked `meta-avocado` worktree gets its own
+build directory, named by `[build] worktree_build_dir`. The default is
+`build-{stem}-{worktree}`, where `{stem}` is the kas file stem (for example
+`raspberrypi5`) and `{worktree}` is the worktree directory name, so
+`rpi5-lgpio-feed` builds in `<workspace>/build-raspberrypi5-rpi5-lgpio-feed`.
+`{stem}` and `{worktree}` are the only placeholders. Set the value to
+`build-{stem}` to share one directory per machine again. A main-checkout build
+keeps `build-{stem}`.
+
+```toml
+[build]
+worktree_build_dir = "build-{stem}-{worktree}"
+```
+
+`BAKAR_WORKTREE_BUILD_DIR` in the environment overrides the config value.
+Dispatch forwards the dispatching host's template this way, so the remote build
+uses the same name. A value arriving through the environment skips the config
+loader, so an unsupported placeholder in it is refused when the build directory
+is computed.
+
+Each build directory has its own TOPDIR, so a `local_tmpdir_base` redirect gives
+each its own TMPDIR. Builds of the same machine from two worktrees no longer
+serialize on one bitbake lock or overwrite each other's generated
+`avocado-bakar.yml`.
+
+Worktree builds are tested in host mode only: `kas-container` mounts just the
+workspace, so a checkout outside it is not visible inside a container build.
+
+### Meta-avocado dispatch
+
+Dispatch settings, all optional:
+
+```toml
+[dispatch]
+# Where delivered worktrees go on the remote; default <workspace>/.bakar/worktrees
+worktree_root = "/home/tiamarin/repos/work/peridio-wrynose/.bakar/worktrees"
+# Refuse a snapshot whose untracked files exceed this many MiB; default 50
+snapshot_untracked_cap_mb = 50
+```
+
+The dispatcher resolves everything locally and stops at the first failure.
+Every check runs before the first remote write:
+
+1. **Release and workspace** - bakar probes the release from the kas pins and
+   maps it through `[workspaces]`. With no mapping, `--on` refuses with exit 2
+   before any ssh command. The routed path does not have to exist locally; only
+   the remote copy matters.
+2. **Kas argument** - every colon-separated segment of the kas argument is
+   rewritten relative to the checkout, because the remote build runs from the
+   delivered worktree. A segment outside the checkout is refused with exit 2.
+   `-w`/`--workspace` is dropped from the forwarded command line.
+3. **Host preflight** - `ssh -o BatchMode=yes <host> bash -s` runs
+   `command -v bakar && bakar --version` over the same non-login bash the build
+   uses. An unreachable host, missing key auth, or `bakar` absent from the
+   remote non-login PATH fails fast. A local/remote `bakar --version` mismatch
+   refuses the dispatch; `--yes` proceeds anyway.
+4. **Remote workspace check** - one read-only ssh script checks that the
+   workspace exists and that `<workspace>/meta-avocado` is a git repository,
+   and reads `<workspace>/openembedded-core/meta/conf/layer.conf`. bakar parses
+   `LAYERSERIES_CORENAMES` from that text locally and refuses when it differs
+   from the release being built, so a mapping that points at the wrong workspace
+   cannot build there.
+5. **Commit to deliver** - a clean checkout delivers its HEAD. A dirty one
+   (tracked changes, or untracked files that are not ignored) delivers a
+   snapshot commit whose parent is HEAD, built through a temporary index file.
+   Your branch, index, working tree and stash stack are untouched. The snapshot
+   is authored with your git identity, its message is
+   `bakar dispatch snapshot of <branch>@<head12>`, and its dates are pinned to
+   HEAD's committer date, so dispatching the same dirty tree twice delivers the
+   same commit.
+6. **Plan** - bakar prints what it is about to add and does not prompt:
+
+   ```text
+   dispatch plan -> pc3
+     + worktree <workspace>/.bakar/worktrees/<name> (created, or moved to the delivered commit)
+     + ref refs/bakar/<name>/<commit12> in <workspace>/meta-avocado
+     + build directory <workspace>/build-<stem>-<name>
+     nothing is deleted on the host
+     snapshot of uncommitted changes: no
+   ```
+
+   `<name>` is the worktree directory name, or for a main checkout its current
+   branch, with every character outside `[A-Za-z0-9._-]` replaced by `-`. The
+   build directory follows `[build] worktree_build_dir`, because the remote
+   builds from a linked worktree even when you dispatched from a main checkout.
+7. **Push** - `git push` sends the commit to `refs/bakar/<name>/<commit12>` of
+   `<workspace>/meta-avocado` on the remote. Each commit gets its own ref; a ref
+   is never overwritten and nothing is force-pushed, so every delivered commit
+   stays reachable. The receiving side runs as
+   `git -c receive.autogc=false -c receive.shallowUpdate=true receive-pack`:
+   automatic gc is off because it would prune unreachable objects and stale
+   worktree records, and shallow updates are on because a push from a shallow
+   clone is otherwise rejected.
+8. **Delivered worktree** - a remote script takes a per-name lock on
+   `<worktree_root>/.<name>.lock`. When `<worktree_root>/<name>` does not exist
+   it runs `git worktree add --detach` for the commit and writes the marker
+   `bakar-delivered.json` (source host, source path, name, commit, snapshot
+   flag, delivery time) into the worktree's git admin directory, so the work
+   tree stays clean. When it exists, bakar moves it to the new commit with
+   `git checkout --detach` only if the marker names this host and this checkout
+   path, the tree is clean, and no build holds
+   `<workspace>/<build dir>/build/bitbake.lock`. A worktree already at the
+   commit is left as is.
+9. **Remote build** - the build runs from the delivered worktree with the kas
+   path relative to it. The remote bakar recognises the linked worktree, takes
+   the parent of `<workspace>/meta-avocado` as its workspace and needs no
+   config. The environment carries your `BAKAR_*` and `KAS_*` variables except
+   `KAS_WORK_DIR`, plus `BAKAR_REPO_POLICY=reuse` and, when a template is
+   configured, `BAKAR_WORKTREE_BUILD_DIR`. The remote build prints the side
+   checkouts it creates.
+10. **Run-id** - the remote run-id is discovered under the remote workspace; see
+    [Remote build, streaming and exit codes](#remote-build-streaming-and-exit-codes).
+
+### Additive mirror for other build forms
+
+NXP and TI manifest builds, bitbake-setup workspaces, qcom builds and kas files
+outside `meta-avocado` keep the working-tree mirror. The remote must have the
+workspace at the same absolute path as the local machine.
+
+1. **Workspace guard** - an empty, relative, filesystem-root or home-directory
+   workspace root is refused before anything runs.
+2. **Host preflight** - the same preflight and version check as above.
+3. **Plan** - bakar prints the plan, one additive transfer of the workspace
+   root, with no prompt.
+4. **Mirror** - `rsync -a` copies the workspace root to the same absolute path
+   on the remote, uncommitted edits included. It adds and updates files and
+   never deletes one: a file you removed locally lingers on the remote until you
+   remove it by hand, and a stale recipe there can still be parsed. `.git` is
+   kept (kas and bitbake read git state for `SRCREV`/`AUTOREV`); build artifacts
+   and caches are excluded. Workspace-root outputs are anchored with a leading
+   `/` so an unanchored basename cannot also drop a real source directory (for
+   example oe-core's `meta/recipes-devtools/ccache/`): `/build/`, `/build-*/`,
+   `/*/build/`, `/ccache/`, the package feed `/_feed` and its staging sibling,
+   plus the depth-matched `**/tmp/`, `**/sstate-cache/`, `**/downloads/`,
+   `**/.venv/`, `**/__pycache__/` and `**/*.pyc`. NFS-mounted shared caches live
+   outside the workspace, so they are never in scope.
+5. **Remote build** - the build runs from the directory you invoked it from, as
+   described below.
+
+### Remote build, streaming and exit codes
+
+1. **sccache-dist off by default** - the remote build runs with
+   `BAKAR_SCCACHE_DIST=0`, so a node that is normally an sccache-dist server
+   runs as an independent worker (local ccache plus shared sstate) rather than
+   re-coupling to the cluster. Pass `--sccache-dist` to opt back in; the
+   forwarded flag wins over the env default. The remote command is delivered as
+   a script over stdin to `ssh <host> bash -s`, because the remote login shell
+   is fish, which mangles a naive `ssh <host> '<cmd>'` or `bash -lc` invocation.
+2. **Detach** - the remote build runs under a transient
    `systemd-run --user --unit=bakar-dispatch-<timestamp>` unit, not as a child of
    the ssh session. A child dies with the session: when the local dispatcher was
    killed, sshd sent SIGHUP and took a 50-minute build with it. Under a transient
    unit the build belongs to the remote user manager, so a local Ctrl-C, a
    dropped link or a dead dispatcher costs you the log stream and nothing more.
-   On a remote where `systemd-run --user` is unavailable (no systemd, no user
-   runtime dir), the script falls back to the old coupled form rather than
-   failing the dispatch - the build then still dies with the session.
+   The unit receives your session PATH with `--setenv=PATH`, because the user
+   manager's PATH lacks `~/.local/bin` and `kas` would not be found. On a remote
+   where `systemd-run --user` is unavailable (no systemd, no user runtime dir),
+   the script falls back to the old coupled form rather than failing the
+   dispatch; the build then still dies with the session.
 
    Detaching holds only while the remote user manager lives. Without lingering,
    systemd stops that manager when your last session on the host ends, taking
-   its transient units with it - so bakar checks and prints a hint when the
+   its transient units with it, so bakar checks and prints a hint when the
    remote user has no linger. Enable it once per build host:
    `ssh <host> loginctl enable-linger`. bakar does not enable it for you: it is a
    persistent change to someone else's machine.
    The unit also carries your ssh session's `SSH_AUTH_SOCK`, proxy and TLS
-   trust-store variables, which a transient unit would otherwise not inherit -
+   trust-store variables, which a transient unit would otherwise not inherit;
    without them a `SRC_URI = "git://...;protocol=ssh"` fetch or a fetch through
    a corporate proxy would fail on the detached path only.
-6. **Live streaming + run-id** - the build writes to
+3. **Live streaming and run-id** - the build writes to
    `$XDG_RUNTIME_DIR/<unit>.log` on the remote (0700 and per-user, so another
    local user cannot forge the exit-code sentinel that sits beside it) and your
    terminal tails it. Losing that tail does not touch the build; re-attach with
@@ -460,28 +667,99 @@ bakar --sccache-dist build meta-avocado/kas/machine/qemux86-64.yml --on pc2 --ye
    prints the remote run-id and a copy-pasteable
    `ssh <host> bakar triage <run-id>` line so you (or Claude, over ssh) can
    inspect the run remotely.
-7. **Exit propagation** - a non-zero remote build exits the local command with
+4. **Exit propagation** - a non-zero remote build exits the local command with
    the same code; the failure message points at the remote triage command. The
    code comes from a sentinel file the remote wrapper writes beside the log, not
    from the ssh session, which exits as soon as the unit starts. Losing the log
    stream exits **75** instead: that is a transport failure, not a build result,
-   and the build is still running - so it has to be distinguishable from a build
+   and the build is still running, so it has to be distinguishable from a build
    that genuinely exited 255.
 
 Stop a detached build with `bakar stop --on <host>` - see [stop.md](stop.md).
-Ctrl-C on the dispatching terminal no longer reaches it.
+Ctrl-C on the dispatching terminal does not reach it: the local command exits
+130 and prints the stop and triage commands.
 
-A build from a linked worktree uses the main checkout's workspace and shares its
-`build-<machine>` directory. Same-machine builds serialize on the bitbake lock,
-kas moves the main workspace's pinned sibling layers to the worktree's pins, and
-`build-<machine>/avocado-bakar.yml` names whichever tree built last. Worktree
-builds are tested in host mode only: `kas-container` mounts just the workspace, so
-a worktree outside it is not visible inside a container build.
+A meta-avocado dispatch opens about seven ssh connections (preflight, workspace
+check, the push, the worktree script, the launch, the log follower and the
+run-id discovery); the additive mirror opens five (rsync's own ssh in place of
+the workspace check, push and worktree script). On a high-latency link, a
+`~/.ssh/config` entry with `ControlMaster auto` and a `ControlPersist` window
+amortizes them onto one shared connection.
 
-A single `--on` dispatch opens up to five ssh connections (preflight, rsync's
-own ssh, the launch, the log follower, and the run-id discovery find). On a
-high-latency link, a `~/.ssh/config` entry with `ControlMaster auto` and a
-`ControlPersist` window amortizes them onto one shared connection.
+### Refusals and fixes
+
+The routing, preflight, workspace and delivery refusals happen before the first
+remote write. The worktree refusals come after the push, so the pushed ref and
+its objects stay on the remote; the next dispatch of the same commit reuses
+them. The last two refusals come from the build itself, before kas touches the
+workspace.
+
+| Message (abridged) | Cause | Fix |
+|--------------------|-------|-----|
+| `--on for meta-avocado builds needs [workspaces] template in the bakar user config` | no `[workspaces]` table, or no template and no `[workspaces.releases]` entry for this release (exit 2) | add `[workspaces] template` or a `[workspaces.releases]` entry |
+| `Cannot route <kas> to a release workspace: the merged kas config has no openembedded-core pin`, `...has no branch:`, `...does not end in '-avocado'` | the release cannot be read from the pins (exit 2) | pin `openembedded-core` with `branch: <release>-avocado` |
+| `Cannot route <kas> ...: the openembedded-core pin names release 'x' but AVOCADO_YOCTO_SERIES is 'y'` | the kas tree contradicts itself (exit 2) | fix the pin or the variable |
+| `Cannot route <kas> ...: <kas> includes files from repositories other than its own checkout (<repos>)` | a kas include names a repository other than `meta-avocado` (exit 2) | include only files from the checkout |
+| `Release workspace <path> for release 'x' does not exist` | local build only: the routed path is missing (exit 2) | create the workspace, fix `[workspaces]`, or pass `-w` |
+| `cannot dispatch: kas file '<segment>' is outside the meta-avocado checkout` | a kas segment would not exist in the delivered worktree (exit 2) | keep every kas file and overlay inside the checkout |
+| `remote preflight failed for <host>` | host unreachable, no key auth, or no `bakar` on the remote non-login PATH | fix ssh or install bakar on the remote |
+| `bakar mismatch: local '...' vs remote '...'` | different bakar builds on the two hosts | sync the remote bakar, or pass `--yes` |
+| `remote workspace check failed: the release workspace <ws> does not exist on <host>` | no workspace on the remote | run the printed one-time commands on the host: `mkdir -p <ws>`, `git clone --branch <release> <meta-avocado origin URL> <ws>/meta-avocado`, `env KAS_WORK_DIR=<ws> kas checkout <ws>/meta-avocado/kas/machine/<machine>.yml` |
+| `remote workspace check failed: <ws>/meta-avocado on <host> is missing or is not a git repository` | the workspace has no `meta-avocado` clone | clone it there at the release branch |
+| `remote workspace check failed: <ws>/openembedded-core/meta/conf/layer.conf on <host> is missing or unreadable`, or `...declares no LAYERSERIES_CORENAMES` | the workspace was never checked out | run `kas checkout` in that workspace |
+| `remote workspace check failed: release mismatch: the build needs 'x' but <ws> on <host> declares 'y'` | the mapping points at another release's workspace | fix `[workspaces]` |
+| `cannot deliver <checkout>: untracked files in <checkout> total N MiB, above the <cap> MiB snapshot cap` | large untracked files would ride in the snapshot | commit, ignore or remove them, or raise `[dispatch] snapshot_untracked_cap_mb` |
+| `the name '<raw>' has no usable characters after sanitising` | the worktree or branch name has no character in `[A-Za-z0-9._-]` | rename the worktree or branch |
+| `git push failed (exit N); remote build not started.` | git's own message is printed above it | act on git's message |
+| `could not place the worktree <path> on <host>: another dispatch of the same name holds the delivery lock` | a dispatch of the same name is still delivering (script exit 3) | wait for it |
+| `...: the delivery path exists but carries no readable bakar marker` | bakar did not create `<worktree_root>/<name>` (script exit 4) | move that directory aside by hand, or dispatch from a worktree with another name |
+| `...: the delivered worktree belongs to another host or checkout` | the marker names another dispatching host or checkout path (script exit 5) | dispatch under another name, or remove that worktree by hand |
+| `...: the delivered worktree has uncommitted changes` | the delivered tree was edited on the remote; the changed paths are listed (script exit 6) | inspect and clean it by hand; bakar never discards changes |
+| `...: a build is running in the delivered worktree's build directory` | its `bitbake.lock` is held (script exit 7) | wait for the build, or `bakar stop --on <host>` |
+| `repository 'x' has a url but no commit pin; kas would move the shared clone to a branch tip` | the build runs under `reuse` | pin the repository to a commit |
+| `side checkout <path> for 'x' is not clean at pin <commit>` | an existing side checkout was changed | inspect it by hand; bakar never modifies it |
+
+### Manual cleanup
+
+Dispatch only adds. Delivered worktrees, `refs/bakar/*` refs and their objects,
+side checkouts under `<workspace>/.bakar/pins` and per-worktree build
+directories accumulate on each remote, and bakar never removes them. Clean up by
+hand on the host. First make sure nothing is building there: no
+`bakar-dispatch-*` unit is active and no `bitbake.lock` you are about to remove
+is held.
+
+```bash
+ws=/home/tiamarin/repos/work/peridio-wrynose
+name=rpi5-lgpio-feed
+
+# Is anything building?
+systemctl --user list-units 'bakar-dispatch-*.service'
+flock -n -s "$ws/build-raspberrypi5-$name/build/bitbake.lock" true && echo idle
+
+# What dispatch has added
+git -C "$ws/meta-avocado" worktree list
+git -C "$ws/meta-avocado" for-each-ref refs/bakar/
+ls "$ws/.bakar/worktrees" "$ws/.bakar/pins"
+
+# A delivered worktree (git refuses if it has changes) and its lock file
+git -C "$ws/meta-avocado" worktree remove "$ws/.bakar/worktrees/$name"
+rm "$ws/.bakar/worktrees/.$name.lock"
+
+# Its refs, one per delivered commit
+git -C "$ws/meta-avocado" for-each-ref --format='%(refname)' "refs/bakar/$name/" |
+    xargs -r -n1 git -C "$ws/meta-avocado" update-ref -d
+
+# Its build directory
+rm -rf "$ws/build-raspberrypi5-$name"
+
+# A side checkout, once no build directory's avocado-reuse.yml names it
+grep -l '.bakar/pins/meta-raspberrypi/6295d0b1d51d' "$ws"/build-*/avocado-reuse.yml
+rm -rf "$ws/.bakar/pins/meta-raspberrypi/6295d0b1d51d"
+```
+
+Remove a worktree before its refs: the worktree's HEAD also keeps its commit
+reachable. Objects of deleted refs stay until you run `git gc` in
+`$ws/meta-avocado` yourself, because dispatch disables automatic gc on push.
 
 ## On failure
 
