@@ -152,3 +152,42 @@ def test_set_setting_validates(tmp_path: Path, key: str, value: str, match: str)
     with pytest.raises(ValueError, match=match):
         set_setting(key, value, path)
     assert not path.exists()
+
+
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        ('[workspaces]\ntemplate = "peridio-{release}"\n', r"workspaces\.template.*absolute"),
+        ('[workspaces.releases]\nwrynose = ""\n', r"workspaces\.releases\.wrynose.*absolute"),
+        ('[workspaces.releases]\nwrynose = "ws/wrynose"\n', r"workspaces\.releases\.wrynose.*absolute"),
+        ('[dispatch]\nworktree_root = ".bakar/worktrees"\n', r"dispatch\.worktree_root.*absolute"),
+        ('[dispatch]\nworktree_root = "~/wt"\n', r"dispatch\.worktree_root.*absolute"),
+        ('[build]\nworktree_build_dir = "build-{stem:>8}"\n', r"build\.worktree_build_dir.*format spec"),
+        ('[build]\nworktree_build_dir = "build-{stem"\n', r"build\.worktree_build_dir"),
+        ('[workspaces]\ntemplate = "/w/{release!r}"\n', r"workspaces\.template.*format spec"),
+    ],
+)
+def test_loader_refuses_paths_and_templates_the_runtime_cannot_use(tmp_path: Path, body: str, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        load_user_config(_write(tmp_path, body))
+
+
+def test_loader_accepts_a_tilde_workspace_but_not_a_tilde_remote_root(tmp_path: Path) -> None:
+    cfg = load_user_config(_write(tmp_path, '[workspaces]\ntemplate = "~/work/peridio-{release}"\n'))
+    assert cfg.workspaces_template == "~/work/peridio-{release}"
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "match"),
+    [
+        ("dispatch.worktree_root", "relative/dir", "absolute"),
+        ("dispatch.worktree_root", "~/wt", "absolute"),
+        ("workspaces.template", "peridio-{release}", "absolute"),
+        ("build.worktree_build_dir", "build-{stem:>8}", "format spec"),
+    ],
+)
+def test_set_setting_refuses_unusable_paths_and_templates(tmp_path: Path, key: str, value: str, match: str) -> None:
+    path = tmp_path / "config.toml"
+    with pytest.raises(ValueError, match=match):
+        set_setting(key, value, path)
+    assert not path.exists()

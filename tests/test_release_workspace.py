@@ -8,8 +8,10 @@ import pytest
 
 from bakar.release_workspace import (
     ReleaseRoutingError,
+    check_template,
     is_valid_delivered_name,
     map_release,
+    matches_release_workspace,
     parse_repo_policy,
     release_key_from_merged,
     sanitize_delivered_name,
@@ -165,3 +167,100 @@ class TestDeliveredName:
     @pytest.mark.parametrize("name", ["", "a/b", "a b", "a;rm", "x\n"])
     def test_invalid(self, name: str) -> None:
         assert not is_valid_delivered_name(name)
+
+
+@pytest.mark.parametrize(
+    "template",
+    ["build-{stem:>8}", "build-{stem!r}", "build-{stem.x}", "build-{stem[0]}", "build-{}", "build-{stem", "{machine}"],
+)
+def test_check_template_refuses_what_the_runtime_cannot_render(template: str) -> None:
+    with pytest.raises(ReleaseRoutingError, match=r"template|may only use|format spec"):
+        check_template("build.worktree_build_dir", template, frozenset({"stem", "worktree"}))
+
+
+def test_check_template_accepts_plain_placeholders_and_escaped_braces() -> None:
+    check_template("t", "b-{stem}-{worktree}", frozenset({"stem", "worktree"}))
+    check_template("t", "literal-only", frozenset({"stem"}))
+    check_template("t", "b{{x}}-{stem}", frozenset({"stem"}))
+
+
+@pytest.mark.parametrize("template", ["build-{stem:>8}", "build-{stem", "{machine}"])
+def test_runtime_and_loader_agree_on_a_refused_build_dir_template(template: str) -> None:
+    with pytest.raises(ReleaseRoutingError):
+        worktree_build_dir_name("m", "wt", template)
+
+
+@pytest.mark.parametrize("template", ["../{worktree}", "/tmp/{stem}", "builds/{stem}-{worktree}", "{stem}/{worktree}"])
+def test_build_dir_must_render_one_directory_name(template: str) -> None:
+    with pytest.raises(ReleaseRoutingError, match="single directory name"):
+        worktree_build_dir_name("m", "wt", template)
+
+
+@pytest.mark.parametrize("worktree", ["", ".", ".."])
+def test_build_dir_refuses_an_empty_or_dot_rendering(worktree: str) -> None:
+    with pytest.raises(ReleaseRoutingError, match="single directory name"):
+        worktree_build_dir_name("m", worktree, "{worktree}")
+
+
+def test_map_release_results_are_absolute() -> None:
+    assert map_release("wrynose", "/w/peridio-{release}", None) == Path("/w/peridio-wrynose")
+    assert map_release("wrynose", None, {"wrynose": "/w/x"}) == Path("/w/x")
+
+
+@pytest.mark.parametrize("releases", [{"wrynose": ""}, {"wrynose": "relative/ws"}])
+def test_map_release_refuses_an_empty_or_relative_entry(releases: dict[str, str]) -> None:
+    with pytest.raises(ReleaseRoutingError, match="absolute"):
+        map_release("wrynose", None, releases)
+
+
+def test_map_release_refuses_a_relative_template_and_a_format_spec() -> None:
+    with pytest.raises(ReleaseRoutingError, match="absolute"):
+        map_release("wrynose", "ws-{release}", None)
+    with pytest.raises(ReleaseRoutingError, match="format spec"):
+        map_release("wrynose", "/w/{release!r}", None)
+
+
+@pytest.mark.parametrize("branch", ["feature/wrynose-avocado", "../x-avocado"])
+def test_release_key_must_be_a_directory_name(branch: str) -> None:
+    with pytest.raises(ReleaseRoutingError, match="directory name"):
+        release_key_from_merged(_merged(branch))
+
+
+def test_matches_release_workspace_by_entry_template_and_symlink(tmp_path: Path) -> None:
+    real = tmp_path / "real-wrynose"
+    real.mkdir()
+    link = tmp_path / "peridio-wrynose"
+    link.symlink_to(real)
+    template = str(tmp_path / "peridio-{release}")
+    assert matches_release_workspace(tmp_path / "peridio-scarthgap", template, None)
+    assert matches_release_workspace(link, None, {"wrynose": str(real)})
+    assert not matches_release_workspace(tmp_path / "peridio-wrynose" / "sub", template, None)
+    assert not matches_release_workspace(tmp_path / "other", template, {"wrynose": str(real)})
+    assert not matches_release_workspace(tmp_path / "peridio-wrynose", None, None)
+
+
+@pytest.mark.parametrize("raw", ["a..b", "feat.lock", "x.build", "..b.lock"])
+def test_sanitize_refuses_names_git_or_the_lock_files_cannot_hold(raw: str) -> None:
+    with pytest.raises(ReleaseRoutingError):
+        sanitize_delivered_name(raw)
+
+
+@pytest.mark.parametrize("name", ["a..b", "feat.lock", "x.build", "ok.name-1", "wt1"])
+def test_is_valid_delivered_name_matches_sanitize(name: str) -> None:
+    refused = False
+    try:
+        sanitize_delivered_name(name)
+    except ReleaseRoutingError:
+        refused = True
+    assert is_valid_delivered_name(name) is not refused
+
+
+def test_a_delivered_name_is_a_valid_git_ref_component(tmp_path: Path) -> None:
+    import subprocess
+
+    for raw in ["feature/x y", "wt 1", "a.b", "UPPER_case-1"]:
+        name = sanitize_delivered_name(raw)
+        proc = subprocess.run(
+            ["git", "check-ref-format", f"refs/bakar/{name}/0123456789ab"], capture_output=True, check=False
+        )
+        assert proc.returncode == 0, name

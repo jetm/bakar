@@ -298,7 +298,7 @@ def _dispatch_meta_avocado(
         release=release,
         sccache_dist=sccache_dist,
         assume_yes=assume_yes,
-        worktree_root=Path(worktree_root).expanduser() if worktree_root else None,
+        worktree_root=Path(worktree_root) if worktree_root else None,
         build_dir_template=config_mod.worktree_build_template(user_config),
         cap_mb=user_config.dispatch_snapshot_untracked_cap_mb,
         invoking_cwd=invoking_cwd,

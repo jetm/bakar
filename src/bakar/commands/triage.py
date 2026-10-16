@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 
 import typer
 
-from bakar.bsp_detect import is_meta_avocado_yaml, meta_avocado_worktree
+from bakar.bsp_detect import is_meta_avocado_yaml
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     WorkspaceOption,
@@ -18,9 +18,9 @@ from bakar.commands._helpers import (
     _resolve_workspace,
     _workspace_from_cwd,
 )
-from bakar.config import worktree_build_template
+from bakar.config import meta_avocado_build_dir_name, worktree_build_template
 from bakar.observability import last_run_event
-from bakar.release_workspace import ReleaseRoutingError, worktree_build_dir_name
+from bakar.release_workspace import ReleaseRoutingError
 from bakar.triage import analyse, is_build_failure_event, tail_lines, translate_container_path
 from bakar.user_config import load_user_config
 
@@ -128,14 +128,8 @@ def _resolve_triage_dirs(
         if is_meta_avocado_yaml(resolved):
             # Same build root the build used: the routed release workspace
             # (when [workspaces] maps this release) and the per-worktree dir.
-            wt = meta_avocado_worktree(resolved)
             try:
-                build_dir = worktree_build_dir_name(
-                    resolved.stem,
-                    wt.checkout.name if wt else None,
-                    worktree_build_template(load_user_config()),
-                    source="BAKAR_WORKTREE_BUILD_DIR or build.worktree_build_dir",
-                )
+                build_dir = meta_avocado_build_dir_name(resolved, worktree_build_template(load_user_config()))
             except ReleaseRoutingError as exc:
                 console.print(f"[red]{exc}[/]")
                 raise typer.Exit(code=2) from exc

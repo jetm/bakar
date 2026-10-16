@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import string
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 import tomli_w
+
+from bakar import release_workspace
 
 # Bumped whenever a forward migration is added below. A config.toml without a
 # config_version field is treated as version 0 and migrated to this version.
@@ -389,16 +390,31 @@ _HOST_KEYS = {
 
 
 def _check_placeholders(label: str, value: str, allowed: frozenset[str]) -> None:
-    """Raise ValueError naming ``label`` if ``value`` uses a placeholder outside ``allowed``."""
+    """Raise ValueError naming ``label`` unless ``value`` is a valid template over ``allowed``.
+
+    The runtime applies the same check (``release_workspace.check_template``), so
+    a template that loads cannot then fail every build.
+    """
     try:
-        names = {name for _, name, _, _ in string.Formatter().parse(value) if name is not None}
-    except ValueError as exc:
-        raise ValueError(f"'{label}' is not a valid template ({exc}): {value!r}") from None
-    unknown = names - allowed
-    if unknown:
-        allowed_text = ", ".join(f"{{{n}}}" for n in sorted(allowed))
-        unknown_text = ", ".join(f"{{{n}}}" for n in sorted(unknown))
-        raise ValueError(f"'{label}' may only use {allowed_text}, got {unknown_text} in {value!r}")
+        release_workspace.check_template(label, value, allowed)
+    except release_workspace.ReleaseRoutingError as exc:
+        raise ValueError(str(exc)) from None
+
+
+def _check_path_setting(field: str, value: str) -> None:
+    """Raise ValueError unless a workspace or worktree-root setting is an absolute path.
+
+    ``workspaces.template`` and the ``workspaces.releases`` entries name paths on
+    this host (``~`` is expanded); ``dispatch.worktree_root`` names a path on the
+    REMOTE host, so ``~`` is refused there.
+    """
+    try:
+        if field == "workspaces_template":
+            release_workspace.map_release("x", value, None)
+        elif field == "dispatch_worktree_root":
+            release_workspace.check_absolute_path("dispatch.worktree_root", value)
+    except release_workspace.ReleaseRoutingError as exc:
+        raise ValueError(str(exc)) from None
 
 
 def _check_type(field: str, value: object, path: Path) -> None:
@@ -408,6 +424,11 @@ def _check_type(field: str, value: object, path: Path) -> None:
         label, allowed = _TEMPLATE_PLACEHOLDERS[field]
         try:
             _check_placeholders(label, value, allowed)
+        except ValueError as exc:
+            raise ValueError(f"{path}: {exc}") from None
+    if field in {"workspaces_template", "dispatch_worktree_root"} and isinstance(value, str):
+        try:
+            _check_path_setting(field, value)
         except ValueError as exc:
             raise ValueError(f"{path}: {exc}") from None
     if (
@@ -581,6 +602,11 @@ def load_user_config(path: Path | None = None) -> UserConfig:
             isinstance(k, str) and isinstance(v, str) for k, v in releases.items()
         ):
             raise ValueError(f"{path}: 'workspaces.releases' entries must be string -> string")
+        for release_key, workspace_path in releases.items():
+            try:
+                release_workspace.map_release(release_key, None, {release_key: workspace_path})
+            except release_workspace.ReleaseRoutingError as exc:
+                raise ValueError(f"{path}: {exc}") from None
         values["workspaces_releases"] = dict(releases)
 
     values["config_version"] = CURRENT_CONFIG_VERSION
@@ -698,6 +724,10 @@ def _coerce(spec: _SettingSpec, raw_value: str) -> str | bool | int | float:
     for label, allowed in _TEMPLATE_PLACEHOLDERS.values():
         if label == dotted:
             _check_placeholders(label, raw_value, allowed)
+    if dotted == "workspaces.template":
+        _check_path_setting("workspaces_template", raw_value)
+    elif dotted == "dispatch.worktree_root":
+        _check_path_setting("dispatch_worktree_root", raw_value)
     return raw_value
 
 

@@ -774,19 +774,12 @@ class BuildConfig:
                 # into a build tree.
                 if self.kas_yaml_override.name == GENERATED_BUILD_YAML:
                     return self.kas_yaml_override.resolve().parent
-                stem = self.kas_yaml_override.stem
                 # Each linked worktree gets its own build dir so two branches
                 # of meta-avocado never share TOPDIR (and so never share the
                 # digest-keyed local TMPDIR either).
-                wt = bsp_detect.meta_avocado_worktree(self.kas_yaml_override)
-                if wt is not None:
-                    return self.workspace / release_workspace.worktree_build_dir_name(
-                        stem,
-                        wt.checkout.name,
-                        self.worktree_build_dir_template,
-                        source="BAKAR_WORKTREE_BUILD_DIR or build.worktree_build_dir",
-                    )
-                return self.workspace / f"build-{stem}"
+                return self.workspace / meta_avocado_build_dir_name(
+                    self.kas_yaml_override, self.worktree_build_dir_template
+                )
             return self.kas_yaml_override.parent
         if self.bsp_family == "bbsetup":
             return self.workspace
@@ -1034,6 +1027,24 @@ def worktree_build_template(user_config: UserConfig | None) -> str | None:
     if env:
         return env
     return user_config.build_worktree_build_dir if user_config is not None else None
+
+
+def meta_avocado_build_dir_name(kas_yaml: Path, template: str | None) -> str:
+    """Return the build directory name for a meta-avocado kas file.
+
+    ``build-<stem>`` for a main checkout, the worktree template for a linked
+    worktree. The one place that decides it: ``BuildConfig.bsp_root`` and
+    ``bakar triage`` both call it, so triage looks where the build wrote.
+    Raises ``ReleaseRoutingError`` for a template that does not render one
+    directory name.
+    """
+    wt = bsp_detect.meta_avocado_worktree(kas_yaml)
+    return release_workspace.worktree_build_dir_name(
+        kas_yaml.stem,
+        wt.checkout.name if wt is not None else None,
+        template,
+        source="BAKAR_WORKTREE_BUILD_DIR or build.worktree_build_dir",
+    )
 
 
 @dataclass(frozen=True, kw_only=True)

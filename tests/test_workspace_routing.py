@@ -261,6 +261,53 @@ def test_triage_build_root_uses_routed_workspace_and_worktree_dir(
     assert translation == routed
 
 
+@pytest.mark.parametrize(
+    ("templates", "want_dir"),
+    [(("b-{worktree}", None), "b-wt1"), ((None, "env-{stem}"), "env-m"), (("b-{worktree}", "env-{stem}"), "env-m")],
+)
+def test_triage_uses_the_configured_worktree_build_dir_template(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    meta_avocado_worktree_layout: MetaAvocadoWorktreeLayout,
+    templates: tuple[str | None, str | None],
+    want_dir: str,
+) -> None:
+    config_template, env_template = templates
+    monkeypatch.delenv(_POLICY, raising=False)
+    if env_template is None:
+        monkeypatch.delenv("BAKAR_WORKTREE_BUILD_DIR", raising=False)
+    else:
+        monkeypatch.setenv("BAKAR_WORKTREE_BUILD_DIR", env_template)
+    routed = tmp_path / "peridio-wrynose"
+    routed.mkdir()
+    cfg = UserConfig(workspaces_template=str(tmp_path / "peridio-{release}"), build_worktree_build_dir=config_template)
+    _use_config(monkeypatch, cfg)
+    monkeypatch.setattr("bakar.commands.triage.load_user_config", lambda: cfg)
+    _probe_returns(monkeypatch, "wrynose")
+
+    _runs, report_root, _label, _translation = _resolve_triage_dirs(meta_avocado_worktree_layout.kas_yaml, None)
+
+    assert report_root == routed / want_dir
+
+
+def test_triage_refuses_a_build_dir_template_that_is_not_one_directory_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    meta_avocado_worktree_layout: MetaAvocadoWorktreeLayout,
+) -> None:
+    monkeypatch.delenv(_POLICY, raising=False)
+    monkeypatch.setenv("BAKAR_WORKTREE_BUILD_DIR", "../{worktree}")
+    _use_config(monkeypatch, UserConfig())
+    monkeypatch.setattr("bakar.commands.triage.load_user_config", UserConfig)
+
+    with pytest.raises(typer.Exit) as excinfo:
+        _resolve_triage_dirs(meta_avocado_worktree_layout.kas_yaml, None)
+
+    assert excinfo.value.exit_code == 2
+    assert "single directory name" in capsys.readouterr().err.replace("\n", "")
+
+
 def test_triage_build_root_unrouted_main_checkout(
     monkeypatch: pytest.MonkeyPatch, meta_avocado_worktree_layout: MetaAvocadoWorktreeLayout
 ) -> None:
