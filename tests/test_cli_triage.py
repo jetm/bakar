@@ -28,6 +28,12 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _isolated_home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point HOME at an empty dir so the CLI callback never reads the real ``~/.config/bakar``."""
+    monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("home")))
+
+
 # Events file with only step_start/step_end (no step_fail). analyse() must
 # leave ``failing_step=None`` so the command renders the "no step_fail
 # events found" branch and exits 0.
@@ -289,3 +295,99 @@ def test_triage_json_short_flag(runner: _CliRunner, tmp_path: Path, monkeypatch:
     assert result.exit_code == 0, result.output
     doc = _parse_json_output(result.output)
     assert doc["version"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Run selection: --preset / --run / --kas-yaml
+# ---------------------------------------------------------------------------
+
+
+def _make_fanout_run(workspace: Path, subdir: str, ts: str, events: str, kas_log: str) -> Path:
+    """Build a preset fan-out run dir under ``<ws>/build/<subdir>/build/runs/<ts>/``."""
+    run = workspace / "build" / subdir / "build" / "runs" / ts
+    run.mkdir(parents=True)
+    (run / "events.jsonl").write_text(events)
+    (run / "kas.log").write_text(kas_log)
+    return run
+
+
+def _two_preset_workspace(tmp_path: Path) -> tuple[Path, str, str]:
+    """Workspace whose default pick (newest failing run) is NOT the clean run.
+
+    ``alpha`` holds the newer failing run, so a selector that is ignored lands on
+    it; ``beta`` holds the older clean run that ``--preset beta`` / ``--run`` must reach.
+    """
+    workspace = _make_workspace(tmp_path)
+    beta_ts = "20260101-000000"
+    alpha_ts = "20260601-000000"
+    _make_fanout_run(workspace, "distro-alpha-1.0", alpha_ts, SAMPLE_EVENTS_JSONL, SAMPLE_KAS_LOG)
+    _make_fanout_run(workspace, "distro-beta-2.0", beta_ts, CLEAN_EVENTS_JSONL, "NOTE: beta run, clean\n")
+    return workspace, alpha_ts, beta_ts
+
+
+def test_triage_default_picks_the_newest_failing_fanout_run(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Baseline for the selector tests: with no selector the failing alpha run wins."""
+    workspace, alpha_ts, beta_ts = _two_preset_workspace(tmp_path)
+    monkeypatch.chdir(workspace)
+
+    result = runner.invoke(app, ["triage"])
+
+    assert result.exit_code == 0, result.output
+    assert f"triage {alpha_ts}" in result.output
+    assert beta_ts not in result.output
+
+
+def test_triage_preset_selects_the_matching_fanout_dir(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--preset beta`` must pick the older clean beta run over the default failing alpha run."""
+    workspace, alpha_ts, beta_ts = _two_preset_workspace(tmp_path)
+    monkeypatch.chdir(workspace)
+
+    result = runner.invoke(app, ["triage", "--preset", "beta"])
+
+    assert result.exit_code == 0, result.output
+    assert f"triage {beta_ts}" in result.output
+    assert alpha_ts not in result.output
+    assert "no step_fail events found" in result.output
+
+
+def test_triage_run_option_selects_the_named_fanout_run(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--run <id>`` must pick the older clean run, not the default failing one."""
+    workspace, alpha_ts, beta_ts = _two_preset_workspace(tmp_path)
+    monkeypatch.chdir(workspace)
+
+    result = runner.invoke(app, ["triage", "--run", beta_ts])
+
+    assert result.exit_code == 0, result.output
+    assert f"triage {beta_ts}" in result.output
+    assert alpha_ts not in result.output
+    assert "no step_fail events found" in result.output
+
+
+def test_triage_kas_yaml_reads_the_runs_next_to_that_yaml(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``-k my.yml`` reads ``<yaml-parent>/build/runs`` and ignores the workspace's own runs."""
+    (tmp_path / "ws").mkdir()
+    workspace = _make_workspace(tmp_path / "ws")
+    _make_run(workspace, "20260901-000000", CLEAN_EVENTS_JSONL, "NOTE: decoy workspace run\n")
+    byo = tmp_path / "byo"
+    run = byo / "build" / "runs" / "20260301-000000"
+    run.mkdir(parents=True)
+    (run / "events.jsonl").write_text(SAMPLE_EVENTS_JSONL)
+    (run / "kas.log").write_text(SAMPLE_KAS_LOG)
+    kas_yaml = byo / "my.yml"
+    kas_yaml.write_text("header:\n  version: 14\n")
+    monkeypatch.chdir(workspace)
+
+    result = runner.invoke(app, ["triage", "-k", str(kas_yaml)])
+
+    assert result.exit_code == 0, result.output
+    assert "triage 20260301-000000" in result.output
+    assert "20260901-000000" not in result.output
+    assert "kas-build" in result.output

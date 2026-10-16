@@ -393,3 +393,102 @@ def test_build_without_skip_doctor_aborts_on_block_finding(
         "expected step_kas.run_build NOT to be called when the doctor gate "
         f"blocks the build, got {run_build_mock.call_count} call(s)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Post-build flag wiring: --sbom gate, --cve, --feed-release, --feed-channel
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def byo_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, list[tuple[object, object]]]:
+    """Drive ``bakar build <yaml>`` with the BYO pipeline replaced by a recorder.
+
+    Returns the kas YAML and the list that collects ``(cfg, ctx)`` for every
+    build the command would have started. HOME is redirected so the CLI
+    callback never reads the real ``~/.config/bakar``.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    kas_yaml = ws / "machine.yml"
+    kas_yaml.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
+
+    captured: list[tuple[object, object]] = []
+
+    def _record(cfg: object, log: object, ctx: object) -> None:
+        captured.append((cfg, ctx))
+
+    monkeypatch.setattr("bakar.commands.build._run_byo_build", _record)
+    monkeypatch.setattr("bakar.commands._post_build.feed_ops.preflight_results", lambda *a, **k: [])
+    return kas_yaml, captured
+
+
+def test_sbom_without_the_publication_filter_exits_before_the_build(
+    runner: CliRunner, byo_capture: tuple[Path, list[tuple[object, object]]]
+) -> None:
+    """The workspace has no meta-avocado-sbom filter, so ``--sbom`` must refuse
+    up front: non-zero exit and the build pipeline never entered."""
+    kas_yaml, captured = byo_capture
+
+    result = runner.invoke(app, ["build", str(kas_yaml), "--sbom", "-w", str(kas_yaml.parent)])
+
+    assert result.exit_code != 0, result.output
+    assert "no publication filter" in result.output
+    assert captured == []
+
+
+def test_sbom_with_the_publication_filter_reaches_the_build_context(
+    runner: CliRunner, byo_capture: tuple[Path, list[tuple[object, object]]]
+) -> None:
+    """With the filter present the same invocation proceeds and carries the SBOM request."""
+    kas_yaml, captured = byo_capture
+    lib = kas_yaml.parent / "meta-avocado" / "meta-avocado-sbom" / "lib" / "avocado_sbom"
+    lib.mkdir(parents=True)
+    (lib / "publish.py").write_text("")
+
+    result = runner.invoke(app, ["build", str(kas_yaml), "--sbom", "-w", str(kas_yaml.parent)])
+
+    assert result.exit_code == 0, result.output
+    assert len(captured) == 1
+    assert captured[0][1].sbom is not None
+
+
+def test_cve_flag_reaches_the_build_context(
+    runner: CliRunner, byo_capture: tuple[Path, list[tuple[object, object]]]
+) -> None:
+    kas_yaml, captured = byo_capture
+
+    result = runner.invoke(app, ["build", str(kas_yaml), "--cve", "-w", str(kas_yaml.parent)])
+
+    assert result.exit_code == 0, result.output
+    assert len(captured) == 1
+    assert captured[0][1].cve is True
+
+
+def test_feed_release_and_channel_reach_the_build_context(
+    runner: CliRunner, byo_capture: tuple[Path, list[tuple[object, object]]]
+) -> None:
+    kas_yaml, captured = byo_capture
+
+    result = runner.invoke(
+        app,
+        [
+            "build",
+            str(kas_yaml),
+            "--feed",
+            "--feed-release",
+            "wrynose",
+            "--feed-channel",
+            "nightly",
+            "-w",
+            str(kas_yaml.parent),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(captured) == 1
+    feed = captured[0][1].feed
+    assert feed is not None
+    assert (feed.release, feed.channel) == ("wrynose", "nightly")
