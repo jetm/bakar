@@ -107,6 +107,38 @@ RSYNC_EXCLUDES: tuple[str, ...] = (
 )
 
 
+# Keepalive and connect bounds for every ssh this module starts, so a dead link
+# ends the call instead of hanging it. ServerAliveInterval x CountMax detects a
+# dead peer after ~60s; ConnectTimeout bounds the TCP/handshake phase.
+SSH_BOUND_OPTS = (
+    "-o",
+    "ServerAliveInterval=15",
+    "-o",
+    "ServerAliveCountMax=4",
+    "-o",
+    "ConnectTimeout=15",
+)
+
+# Subprocess timeout for the short request/response probes. The long build-log
+# stream deliberately has none: a healthy build runs for hours.
+PROBE_TIMEOUT_SECONDS = 60
+
+# rsync's own I/O stall bound, so a transfer over a dead link exits nonzero.
+RSYNC_IO_TIMEOUT_SECONDS = 60
+
+
+def _ssh_argv(host: str, *remote: str, batch_mode: bool = True) -> list[str]:
+    """Build an ``ssh`` argv carrying :data:`SSH_BOUND_OPTS` (and BatchMode when asked)."""
+    argv = ["ssh", *SSH_BOUND_OPTS]
+    if batch_mode:
+        argv += ["-o", "BatchMode=yes"]
+    return [*argv, host, *remote]
+
+
+def _unreachable(host: str, exc: subprocess.TimeoutExpired) -> str:
+    return f"could not reach {host}: no response within {exc.timeout:g}s"
+
+
 def build_rsync_argv(ws_root: Path, host: str) -> list[str]:
     """Construct the additive ``rsync`` argv mirroring ``ws_root`` to ``host``.
 
@@ -120,7 +152,8 @@ def build_rsync_argv(ws_root: Path, host: str) -> list[str]:
     remove-source option is ever emitted. A file removed locally lingers on the
     remote until someone removes it by hand.
     """
-    argv = ["rsync", "-a"]
+    ssh_cmd = shlex.join(["ssh", *SSH_BOUND_OPTS])
+    argv = ["rsync", "-a", f"--timeout={RSYNC_IO_TIMEOUT_SECONDS}", "-e", ssh_cmd]
     argv += [f"--exclude={pat}" for pat in RSYNC_EXCLUDES]
     argv += [f"{ws_root}/", f"{host}:{ws_root}/"]
     return argv
@@ -556,13 +589,17 @@ def preflight_remote(host: str) -> tuple[bool, str | None]:
     Reading stdout alone saw no version on either side, and the mismatch check
     then passed every time.
     """
-    result = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", host, "bash", "-s"],
-        input="command -v bakar >/dev/null 2>&1 || exit 127\nbakar --version 2>&1\n",
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            _ssh_argv(host, "bash", "-s"),
+            input="command -v bakar >/dev/null 2>&1 || exit 127\nbakar --version 2>&1\n",
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=PROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return False, _unreachable(host, exc)
     if result.returncode == 127:
         return False, (
             "bakar not found on the remote non-login PATH (uv-tool ~/.local/bin may be absent from ssh's PATH)"
@@ -603,11 +640,15 @@ def _ssh_bash_capture(host: str, script: str, *, batch_mode: bool = True) -> sub
     an existing command breaks it silently, and the breakage surfaces nowhere
     near the edit.
     """
-    argv = ["ssh"]
-    if batch_mode:
-        argv += ["-o", "BatchMode=yes"]
-    argv += [host, "bash", "-s"]
-    return subprocess.run(argv, input=script, capture_output=True, text=True, check=False)
+    argv = _ssh_argv(host, "bash", "-s", batch_mode=batch_mode)
+    try:
+        return subprocess.run(
+            argv, input=script, capture_output=True, text=True, check=False, timeout=PROBE_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired as exc:
+        # Surface as a failed ssh so every caller's existing nonzero-exit path
+        # handles it; 255 is ssh's own connection-failure code.
+        return subprocess.CompletedProcess(argv, 255, stdout="", stderr=_unreachable(host, exc))
 
 
 @dataclass
@@ -740,7 +781,7 @@ def _ssh_bash_popen(host: str) -> subprocess.Popen:
     cannot crash the stream.
     """
     return subprocess.Popen(
-        ["ssh", host, "bash", "-s"],
+        _ssh_argv(host, "bash", "-s", batch_mode=False),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -1283,7 +1324,7 @@ def stop_remote_dispatch(host: str, *, force: bool, grace_seconds: float, stop_a
     # kill path was silently non-functional. Same reason the build path delivers
     # its script this way; see the module docstring.
     result = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", host, "bash", "-s"],
+        _ssh_argv(host, "bash", "-s"),
         input=script,
         text=True,
         check=False,

@@ -509,6 +509,8 @@ class FakeSubprocess:
 
     PIPE = "PIPE"
     STDOUT = "STDOUT"
+    TimeoutExpired = subprocess.TimeoutExpired
+    CompletedProcess = subprocess.CompletedProcess
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, list[str]]] = []
@@ -536,10 +538,18 @@ class FakeSubprocess:
         # `calls`. The scripts that matter are delivered over `bash -s` stdin, not
         # as an ssh argument, so argv alone no longer shows what was run.
         self.run_inputs: list[str | None] = []
+        # Every `subprocess.run` call's kwargs, aligned with `run_inputs`.
+        self.run_kwargs: list[dict] = []
+        # When set, every ssh `run` raises TimeoutExpired as a hung link would.
+        self.run_times_out = False
 
     def run(self, argv, **kwargs) -> _Result:
         argv = list(argv)
         self.calls.append(("run", argv))
+        self.run_kwargs.append(kwargs)
+        if self.run_times_out and argv[0] == "ssh":
+            self.run_inputs.append(kwargs.get("input"))
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
         stdin_script = kwargs.get("input")
         self.run_inputs.append(stdin_script)
         # Both the preflight probe and the stop script ride `ssh <host> bash -s`;
@@ -597,6 +607,18 @@ def fake_sp(monkeypatch: pytest.MonkeyPatch) -> FakeSubprocess:
     return fake
 
 
+_SSH = [
+    "ssh",
+    "-o",
+    "ServerAliveInterval=15",
+    "-o",
+    "ServerAliveCountMax=4",
+    "-o",
+    "ConnectTimeout=15",
+]
+_BATCH = ["-o", "BatchMode=yes"]
+
+
 def _run_call_argvs(fake: FakeSubprocess) -> list[list[str]]:
     return [argv for kind, argv in fake.calls if kind == "run"]
 
@@ -634,7 +656,7 @@ def test_preflight_true_when_bakar_present(fake_sp: FakeSubprocess) -> None:
     assert ok is True
     assert detail == "bakar 1.2.3"
     # Probe runs over the non-login bash the build itself uses, with BatchMode.
-    assert _run_call_argvs(fake_sp)[0] == ["ssh", "-o", "BatchMode=yes", HOST, "bash", "-s"]
+    assert _run_call_argvs(fake_sp)[0] == [*_SSH, *_BATCH, HOST, "bash", "-s"]
 
 
 def test_preflight_false_when_unreachable_surfaces_stderr(fake_sp: FakeSubprocess) -> None:
@@ -721,7 +743,7 @@ def test_dispatch_script_strips_on_and_sets_sccache_off(fake_sp: FakeSubprocess)
     assert fake_sp.last_proc is not None
     script = fake_sp.last_proc.stdin.buffer
     # ssh bash -s stdin, never bash -lc.
-    assert ("Popen", ["ssh", HOST, "bash", "-s"]) in fake_sp.calls
+    assert ("Popen", [*_SSH, HOST, "bash", "-s"]) in fake_sp.calls
     assert "bash -lc" not in script
     # --on stripped, sccache forced off.
     assert "--on" not in script
@@ -1449,7 +1471,7 @@ def test_stop_script_is_delivered_over_bash_stdin_not_as_an_ssh_argument(fake_sp
     assert rd.stop_remote_dispatch(HOST, force=False, grace_seconds=30) is True
     ssh_calls = [argv for argv in _run_call_argvs(fake_sp) if argv[0] == "ssh"]
     delivery = ssh_calls[-1]
-    assert delivery == ["ssh", "-o", "BatchMode=yes", HOST, "bash", "-s"]
+    assert delivery == [*_SSH, *_BATCH, HOST, "bash", "-s"]
     # And the script itself went to stdin, not into argv.
     assert "systemctl --user" in _last_remote_stdin(fake_sp)
 
@@ -1640,8 +1662,13 @@ def test_every_ssh_invocation_delivers_its_payload_via_bash_s() -> None:
         consts = [e.value for e in node.args[0].elts if isinstance(e, ast.Constant)]
         if not consts or consts[0] != "ssh":
             continue
-        if "bash" not in consts or "-s" not in consts:
-            offenders.append(ast.unparse(node.args[0]))
+        offenders.append(ast.unparse(node.args[0]))
+    # Every ssh argv is built by `_ssh_argv`, whose call must name `bash -s`.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "_ssh_argv":
+            consts = [a.value for a in node.args if isinstance(a, ast.Constant)]
+            if "bash" not in consts or "-s" not in consts:
+                offenders.append(ast.unparse(node))
 
     assert offenders == [], (
         "ssh invocation(s) pass a command string to the remote LOGIN shell (fish) "
@@ -1846,3 +1873,72 @@ def test_workspace_check_script_reads_a_real_layout_and_writes_nothing(tmp_path:
 def test_workspace_check_script_is_valid_bash() -> None:
     error = _bash_syntax_error(rd.build_workspace_check_script("/home/u/work/peridio wrynose"))
     assert error is None, error
+
+
+# --- bounded dispatch network operations --------------------------------------
+
+
+def _ssh_runs(fake: FakeSubprocess) -> list[tuple[list[str], dict]]:
+    return [
+        (a, k)
+        for (kind, a), k in zip((c for c in fake.calls if c[0] == "run"), fake.run_kwargs, strict=True)
+        if a[0] == "ssh"
+    ]
+
+
+def test_every_ssh_argv_carries_keepalive_and_connect_bounds(fake_sp: FakeSubprocess) -> None:
+    rd._ssh_bash_capture(HOST, "true")
+    rd._ssh_bash_capture(HOST, "true", batch_mode=False)
+    rd.preflight_remote(HOST)
+    rd._ssh_bash_popen(HOST)
+    argvs = [a for _, a in fake_sp.calls]
+    assert len(argvs) == 4
+    for argv in argvs:
+        assert argv[: len(_SSH)] == _SSH
+        assert argv[-3:] == [HOST, "bash", "-s"] or argv[-2:] == ["bash", "-s"]
+
+
+def test_batch_mode_survives_where_it_was_set_and_stays_off_where_it_was_not(fake_sp: FakeSubprocess) -> None:
+    rd._ssh_bash_capture(HOST, "true")
+    rd._ssh_bash_capture(HOST, "true", batch_mode=False)
+    rd._ssh_bash_popen(HOST)
+    rd.preflight_remote(HOST)
+    (batched, _), (unbatched, _), (pre, _) = _ssh_runs(fake_sp)
+    assert "BatchMode=yes" in batched
+    assert "BatchMode=yes" not in unbatched
+    assert "BatchMode=yes" in pre
+    popen_argv = next(a for k, a in fake_sp.calls if k == "Popen")
+    assert "BatchMode=yes" not in popen_argv
+
+
+def test_rsync_argv_passes_ssh_options_and_io_timeout() -> None:
+    argv = rd.build_rsync_argv(Path("/ws"), HOST)
+    assert "--timeout=60" in argv
+    assert argv[argv.index("-e") + 1] == shlex.join(_SSH)
+    assert not any(a.startswith("--delete") for a in argv)
+
+
+def test_probes_carry_a_subprocess_timeout_and_the_stream_does_not(fake_sp: FakeSubprocess) -> None:
+    rd._ssh_bash_capture(HOST, "true")
+    rd.preflight_remote(HOST)
+    for _, kwargs in _ssh_runs(fake_sp):
+        assert kwargs["timeout"] == 60
+    rd._ssh_bash_popen(HOST)
+    assert "timeout" not in fake_sp.popen_kwargs
+
+
+def test_preflight_timeout_reads_as_unreachable(fake_sp: FakeSubprocess) -> None:
+    fake_sp.run_times_out = True
+    ok, detail = rd.preflight_remote(HOST)
+    assert ok is False
+    assert detail is not None
+    assert f"could not reach {HOST}" in detail
+
+
+def test_capture_timeout_takes_the_existing_failure_path(fake_sp: FakeSubprocess) -> None:
+    fake_sp.run_times_out = True
+    with pytest.raises(rd.DispatchError, match=f"could not reach {HOST}"):
+        rd.check_remote_workspace(HOST, "/ws", "wrynose")
+    assert rd._running_dispatch_units(HOST) is None
+    # No write was attempted: only ssh probes ran, no rsync.
+    assert not any(a[0] == "rsync" for _, a in fake_sp.calls)
