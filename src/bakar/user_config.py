@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import tomllib
+import warnings
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -389,6 +391,75 @@ _HOST_KEYS = {
 }
 
 
+# One entry per config.toml table: (table path, key -> field mapping, keys that
+# are read elsewhere in this module and so are known but not in the mapping).
+SchemaTable = tuple[tuple[str, ...], Mapping[str, str], frozenset[str]]
+
+USER_CONFIG_TABLES: tuple[SchemaTable, ...] = (
+    (("defaults",), {}, frozenset({"nxp", "ti"})),
+    (("defaults", "nxp"), _NXP_KEYS, frozenset()),
+    (("defaults", "ti"), _TI_KEYS, frozenset()),
+    (("build",), _BUILD_KEYS, frozenset({"buildtools_dirs"})),
+    (("layers",), _LAYERS_KEYS, frozenset()),
+    (("host",), _HOST_KEYS, frozenset()),
+    (("workspaces",), _WORKSPACES_KEYS, frozenset({"releases"})),
+    (("dispatch",), _DISPATCH_KEYS, frozenset()),
+)
+# Top-level names that are not tables of settings: the version stamp, and the
+# [[presets]] array that preset_config reads from this same file.
+_TOP_LEVEL_EXTRA = frozenset({"config_version", "presets"})
+
+
+def walk_schema(
+    data: Mapping[str, object],
+    path: Path,
+    tables: Sequence[SchemaTable],
+    *,
+    top_level_extra: frozenset[str] = frozenset(),
+) -> dict[str, object]:
+    """Walk ``data`` against ``tables`` and return the mapped ``{field: value}`` pairs.
+
+    A known table that is present but not a table raises ``ValueError`` naming
+    ``path`` and the table. An unknown key inside a known table, and an unknown
+    top-level name, each emit one ``UserWarning`` naming what is recognized, and
+    the load continues. Values are checked with :func:`_check_type`.
+    """
+    values: dict[str, object] = {}
+    for section, mapping, extra in tables:
+        node: object = data
+        for depth, name in enumerate(section):
+            node = node.get(name) if isinstance(node, Mapping) else None
+            if node is None:
+                break
+            if not isinstance(node, Mapping):
+                label = ".".join(section[: depth + 1])
+                raise ValueError(f"{path}: section '[{label}]' must be a table, got {type(node).__name__}")
+        if not isinstance(node, Mapping):
+            continue
+        label = ".".join(section)
+        known = set(mapping) | extra
+        for key in node:
+            if key not in known:
+                warnings.warn(
+                    f"{path}: unknown key '{key}' in [{label}] (recognized: {', '.join(sorted(known))})",
+                    UserWarning,
+                    stacklevel=2,
+                )
+        for key, field in mapping.items():
+            if key in node:
+                _check_type(field, node[key], path)
+                values[field] = node[key]
+    top_known = {section[0] for section, _, _ in tables} | top_level_extra
+    for name in data:
+        if name not in top_known:
+            warnings.warn(
+                f"{path}: unknown top-level section '{name}' (recognized: {', '.join(sorted(top_known))})",
+                UserWarning,
+                stacklevel=2,
+            )
+    return values
+
+
 def _check_placeholders(label: str, value: str, allowed: frozenset[str]) -> None:
     """Raise ValueError naming ``label`` unless ``value`` is a valid template over ``allowed``.
 
@@ -558,33 +629,7 @@ def load_user_config(path: Path | None = None) -> UserConfig:
         data = _migrate_config(data, raw_version)
         _dump_raw(path, data)
 
-    values: dict[str, object] = {}
-
-    defaults = data.get("defaults", {})
-    if isinstance(defaults, dict):
-        for section, mapping in (("nxp", _NXP_KEYS), ("ti", _TI_KEYS)):
-            section_data = defaults.get(section, {})
-            if not isinstance(section_data, dict):
-                continue
-            for key, field in mapping.items():
-                if key in section_data:
-                    _check_type(field, section_data[key], path)
-                    values[field] = section_data[key]
-
-    for section, mapping in (
-        ("build", _BUILD_KEYS),
-        ("layers", _LAYERS_KEYS),
-        ("host", _HOST_KEYS),
-        ("workspaces", _WORKSPACES_KEYS),
-        ("dispatch", _DISPATCH_KEYS),
-    ):
-        section_data = data.get(section, {})
-        if not isinstance(section_data, dict):
-            continue
-        for key, field in mapping.items():
-            if key in section_data:
-                _check_type(field, section_data[key], path)
-                values[field] = section_data[key]
+    values = walk_schema(data, path, USER_CONFIG_TABLES, top_level_extra=_TOP_LEVEL_EXTRA)
 
     build_section = data.get("build", {})
     if isinstance(build_section, dict):

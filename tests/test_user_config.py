@@ -503,3 +503,69 @@ def test_set_setting_build_capture_graph_round_trip(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     set_setting("build.capture_graph", "false", path)
     assert load_user_config(path).capture_graph is False
+
+
+def _warnings_for(path: Path) -> list[str]:
+    import warnings
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        load_user_config(path)
+    return [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
+
+
+def test_scalar_known_section_raises_naming_file_and_section(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('config_version = 3\nbuild = "x"\n')
+    with pytest.raises(ValueError, match=r"config\.toml.*\[build\]"):
+        load_user_config(path)
+
+
+def test_unknown_key_in_known_section_warns_and_loads(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("config_version = 3\n[build]\nrm_work = true\nbogus_key = 1\n")
+    msgs = _warnings_for(path)
+    assert len(msgs) == 1
+    assert "bogus_key" in msgs[0]
+    assert "[build]" in msgs[0]
+    assert load_user_config(path).rm_work is True
+
+
+def test_unknown_top_level_section_warns_naming_recognized(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("config_version = 3\n[mystery]\nx = 1\n")
+    msgs = _warnings_for(path)
+    assert len(msgs) == 1
+    assert "mystery" in msgs[0]
+    assert "workspaces" in msgs[0]
+
+
+def test_workspaces_dispatch_and_presets_do_not_warn(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        textwrap.dedent(
+            """\
+            config_version = 3
+            [workspaces]
+            template = "/ws/{release}"
+            [workspaces.releases]
+            wrynose = "/ws/wrynose"
+            [dispatch]
+            worktree_root = "/srv/wt"
+            [build.buildtools_dirs]
+            wrynose = "/bt"
+            [[presets]]
+            name = "p"
+            """
+        )
+    )
+    assert _warnings_for(path) == []
+
+
+def test_recognized_only_file_warns_nothing(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        'config_version = 3\n[defaults.nxp]\nmachine = "m"\n[defaults.ti]\nimage = "i"\n'
+        "[layers]\nshow_hashes = true\n[host]\ninotify_instances = 5\n"
+    )
+    assert _warnings_for(path) == []
