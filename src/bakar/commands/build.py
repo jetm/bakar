@@ -519,15 +519,12 @@ def build(
             ws_root = _bbsetup_workspace(workspace) or _workspace_from_cwd()
         if _refuse_release_workspace_mirror(ws_root, on):
             raise typer.Exit(code=2)
-        from bakar.steps.remote_dispatch import dispatch_remote_build
+        from bakar.steps.remote_dispatch import DispatchFlags, MirrorRequest, dispatch_remote_build
 
         rc = dispatch_remote_build(
             on,
-            logical_path(ws_root),
-            logical_path(invoking_cwd),
-            sys.argv[1:],
-            sccache_dist=sccache_dist,
-            assume_yes=yes,
+            MirrorRequest(ws_root=logical_path(ws_root), cwd=logical_path(invoking_cwd), local_args=sys.argv[1:]),
+            DispatchFlags(sccache_dist=sccache_dist, assume_yes=yes),
         )
         raise typer.Exit(code=rc)
     # Resolve the active preset (if any) before dispatch.

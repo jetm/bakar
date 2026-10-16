@@ -21,6 +21,7 @@ from hypothesis import strategies as st
 from bakar import build_scope, observability
 from bakar.steps.remote_dispatch import (
     RSYNC_EXCLUDES,
+    RemoteScriptSpec,
     assert_safe_workspace,
     build_remote_script,
     build_rsync_argv,
@@ -191,38 +192,50 @@ def test_strip_dispatch_non_y_cluster_untouched() -> None:
 
 
 def test_remote_script_sccache_off_default() -> None:
-    script = build_remote_script(["build", "my.yml"], Path("/home/tiamarin/ws"), {}, sccache_off=True)
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build", "my.yml"], cwd=Path("/home/tiamarin/ws"), env_vars={}, sccache_off=True)
+    )
     lines = script.splitlines()
     assert lines[0] == f"cd {shlex.quote('/home/tiamarin/ws')} || exit 1"
     assert lines[-1] == "exec env BAKAR_SCCACHE_DIST=0 bakar build my.yml"
 
 
 def test_remote_script_sccache_on_omits_token() -> None:
-    script = build_remote_script(["build", "my.yml"], Path("/home/tiamarin/ws"), {}, sccache_off=False)
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build", "my.yml"], cwd=Path("/home/tiamarin/ws"), env_vars={}, sccache_off=False)
+    )
     assert "BAKAR_SCCACHE_DIST=0" not in script
     assert script.splitlines()[-1] == "exec env bakar build my.yml"
 
 
 def test_remote_script_never_uses_bash_lc() -> None:
-    script = build_remote_script(["build", "my.yml"], Path("/tmp/ws"), {}, sccache_off=True)
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build", "my.yml"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True)
+    )
     assert "bash -lc" not in script
 
 
 def test_remote_script_no_bare_name_value_prefix() -> None:
     # The env assignment must live behind env(1), never as a bare shell prefix.
-    script = build_remote_script(["build", "my.yml"], Path("/tmp/ws"), {}, sccache_off=True)
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build", "my.yml"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True)
+    )
     exec_line = script.splitlines()[-1]
     assert exec_line.startswith("exec env ")
     assert not exec_line.startswith("BAKAR_SCCACHE_DIST=0")
 
 
 def test_remote_script_quotes_cwd_with_spaces() -> None:
-    script = build_remote_script(["build"], Path("/home/tia marin/ws"), {}, sccache_off=True)
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build"], cwd=Path("/home/tia marin/ws"), env_vars={}, sccache_off=True)
+    )
     assert script.splitlines()[0] == "cd '/home/tia marin/ws' || exit 1"
 
 
 def test_remote_script_shlex_joins_argv() -> None:
-    script = build_remote_script(["build", "kas/my file.yml"], Path("/tmp/ws"), {}, sccache_off=True)
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build", "kas/my file.yml"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True)
+    )
     assert "'kas/my file.yml'" in script.splitlines()[-1]
 
 
@@ -230,7 +243,9 @@ def test_remote_script_forwards_env_as_sorted_tokens() -> None:
     # BAKAR_*/KAS_* env is forwarded as sorted, shlex-quoted NAME=value tokens
     # after `env`, so the remote resolves the same build as the local one.
     env = {"KAS_CONTAINER_IMAGE": "img", "BAKAR_MACHINE": "imx8mp"}
-    script = build_remote_script(["build"], Path("/tmp/ws"), env, sccache_off=False)
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build"], cwd=Path("/tmp/ws"), env_vars=env, sccache_off=False)
+    )
     exec_line = script.splitlines()[-1]
     assert exec_line == "exec env BAKAR_MACHINE=imx8mp KAS_CONTAINER_IMAGE=img bakar build"
 
@@ -239,7 +254,9 @@ def test_remote_script_sccache_off_token_wins_over_forwarded() -> None:
     # A forwarded BAKAR_SCCACHE_DIST=1 is overridden by the appended =0 (env(1)
     # applies tokens left-to-right, last wins), so the token must come LAST.
     env = {"BAKAR_SCCACHE_DIST": "1"}
-    script = build_remote_script(["build"], Path("/tmp/ws"), env, sccache_off=True)
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build"], cwd=Path("/tmp/ws"), env_vars=env, sccache_off=True)
+    )
     exec_line = script.splitlines()[-1]
     assert exec_line == "exec env BAKAR_SCCACHE_DIST=1 BAKAR_SCCACHE_DIST=0 bakar build"
     assert exec_line.index("BAKAR_SCCACHE_DIST=1") < exec_line.index("BAKAR_SCCACHE_DIST=0")
@@ -248,7 +265,9 @@ def test_remote_script_sccache_off_token_wins_over_forwarded() -> None:
 def test_remote_script_emits_dispatch_start_marker() -> None:
     # The dispatch-start marker is echoed before exec so it streams back and
     # fences run-id discovery against a stale previous run.
-    script = build_remote_script(["build"], Path("/tmp/ws"), {}, sccache_off=True)
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True)
+    )
     lines = script.splitlines()
     assert lines[1] == 'echo "BAKAR_DISPATCH_START=$(date +%Y%m%d-%H%M%S)"'
 
@@ -267,7 +286,9 @@ def test_dispatch_start_marker_uses_the_same_clock_as_run_ids() -> None:
     #
     # East of UTC the same bug fails the other way and is quieter: a genuinely
     # stale run dir sorts ABOVE the marker and gets surfaced as this build's.
-    script = build_remote_script(["build"], Path("/tmp/ws"), {}, sccache_off=True)
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True)
+    )
     assert "date -u" not in script
     assert "$(date +%Y%m%d-%H%M%S)" in script
 
@@ -287,7 +308,10 @@ def test_remote_script_detaches_the_build_from_the_ssh_session() -> None:
     # with it (observed: a 50-minute cryptsetup-var build killed by "Keyboard
     # Interrupt, closing down" / bitbake exit -15). Under a transient user unit
     # the build is reparented to the user manager and survives.
-    script = build_remote_script(["build", "my.yml"], Path("/tmp/ws"), {}, sccache_off=True, unit="bakar-dispatch-u1")
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build", "my.yml"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True),
+        unit="bakar-dispatch-u1",
+    )
     assert "systemd-run --user --unit=bakar-dispatch-u1" in script
     assert "--collect" in script
     assert "--same-dir" in script
@@ -299,7 +323,10 @@ def test_remote_script_emits_parseable_unit_and_log_markers() -> None:
     # printf with a LITERAL format, not an interpolating `echo "...=$unit"`: the
     # unit is public API and inside double quotes a `$(...)` in it would be
     # command-substituted on the remote.
-    script = build_remote_script(["build"], Path("/tmp/ws"), {}, sccache_off=True, unit="bakar-dispatch-u2")
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True),
+        unit="bakar-dispatch-u2",
+    )
     log = remote_log_expr("bakar-dispatch-u2")
     assert "printf 'BAKAR_DISPATCH_UNIT=%s\\n' bakar-dispatch-u2" in script
     assert f"printf 'BAKAR_DISPATCH_LOG=%s\\n' {log}" in script
@@ -311,7 +338,9 @@ def test_remote_script_quotes_the_unit_everywhere_it_interpolates_it() -> None:
     # remote_argv) are all shlex-quoted; leaving this one bare was the odd one
     # out, and only tests pass a hand-written unit today.
     evil = "u$(touch /tmp/pwned) x"
-    script = build_remote_script(["build"], Path("/tmp/ws"), {}, sccache_off=True, unit=evil)
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True), unit=evil
+    )
     assert f"--unit={shlex.quote(evil)}" in script
     assert f"printf 'BAKAR_DISPATCH_UNIT=%s\\n' {shlex.quote(evil)}" in script
     assert shlex.quote(f"{evil}.log") in script
@@ -322,7 +351,10 @@ def test_remote_script_records_the_build_exit_code_in_a_sentinel() -> None:
     # The unit is `--collect`ed away once it exits, so `systemctl show` cannot be
     # trusted to still hold the exit status. The wrapper writes it to a sentinel
     # file beside the log instead, which is also what ends the local follower.
-    script = build_remote_script(["build"], Path("/tmp/ws"), {}, sccache_off=True, unit="bakar-dispatch-u3")
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True),
+        unit="bakar-dispatch-u3",
+    )
     log = remote_log_expr("bakar-dispatch-u3")
     assert f"{log}.rc" in script
 
@@ -335,7 +367,10 @@ def test_dispatch_log_lives_under_the_per_user_runtime_dir_not_tmp() -> None:
     # or to pre-place a symlink there for a truncate primitive.
     # $XDG_RUNTIME_DIR is 0700 and per-user.
     assert remote_log_expr("bakar-dispatch-u7").startswith('"$XDG_RUNTIME_DIR"/')
-    script = build_remote_script(["build"], Path("/tmp/ws"), {}, sccache_off=True, unit="bakar-dispatch-u7")
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True),
+        unit="bakar-dispatch-u7",
+    )
     assert "/tmp/bakar-dispatch-u7.log" not in script
     # The unit's own bash writes the log, so it must resolve the same value the
     # follower does rather than betting on the user manager carrying it.
@@ -348,7 +383,10 @@ def test_remote_script_forwards_session_env_the_transient_unit_would_lose() -> N
     # form dropped them just as silently, so an agent-forwarded ssh key or a
     # corporate proxy broke on the detached path only - i.e. exactly on the hosts
     # this feature targets.
-    script = build_remote_script(["build"], Path("/tmp/ws"), {}, sccache_off=True, unit="bakar-dispatch-u8")
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True),
+        unit="bakar-dispatch-u8",
+    )
     for name in ("SSH_AUTH_SOCK", "https_proxy", "NO_PROXY", "SSL_CERT_FILE", "LC_ALL"):
         assert name in script
     # Guarded on non-empty: an unset var must be left alone, not turned into an
@@ -363,7 +401,10 @@ def test_remote_script_falls_back_to_exec_when_systemd_run_unavailable() -> None
     # container) must still build - falling back to the old coupled `exec` form
     # rather than failing the dispatch. The fallback is the script's last line,
     # reached when the availability probe's `if` does not exec.
-    script = build_remote_script(["build", "my.yml"], Path("/tmp/ws"), {}, sccache_off=True, unit="bakar-dispatch-u4")
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build", "my.yml"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True),
+        unit="bakar-dispatch-u4",
+    )
     lines = script.splitlines()
     assert lines[-1] == "exec env BAKAR_SCCACHE_DIST=0 bakar build my.yml"
     assert lines[-2] == "fi"
@@ -376,7 +417,10 @@ def test_remote_script_probe_mirrors_the_local_availability_check() -> None:
     # WSL and in minimal containers the first two pass while --user cannot reach
     # the manager bus. If the Python probe grows a fourth precondition this test
     # should fail rather than let the two drift apart.
-    script = build_remote_script(["build"], Path("/tmp/ws"), {}, sccache_off=True, unit="bakar-dispatch-u5")
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True),
+        unit="bakar-dispatch-u5",
+    )
     # Sliced out of the module source rather than read off the attribute: the
     # suite-wide autouse fixture in conftest replaces systemd_run_available with
     # a `lambda: False`, so inspect.getsource on the attribute returns the stub.
@@ -613,7 +657,11 @@ def test_preflight_false_when_bakar_missing(fake_sp: FakeSubprocess) -> None:
 
 def test_dispatch_unreachable_aborts_before_rsync(fake_sp: FakeSubprocess) -> None:
     fake_sp.reachable_rc = 255
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert rc != 0
     # No rsync and no remote Popen may run.
     assert not any(argv[0] == "rsync" for _, argv in fake_sp.calls)
@@ -623,7 +671,11 @@ def test_dispatch_unreachable_aborts_before_rsync(fake_sp: FakeSubprocess) -> No
 def test_dispatch_strict_ordering(fake_sp: FakeSubprocess) -> None:
     fake_sp.popen_rc = 0
     fake_sp.find_stdout = "1699999999.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-235959\n"
-    rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     reach_i = _index_of(fake_sp, lambda k, a: k == "run" and a[0] == "ssh" and a[-1] == "-s")
     real_i = _real_rsync_index(fake_sp)
     popen_i = _index_of(fake_sp, lambda k, a: k == "Popen")
@@ -634,7 +686,11 @@ def test_dispatch_strict_ordering(fake_sp: FakeSubprocess) -> None:
 
 def test_dispatch_rsync_failure_skips_remote_build(fake_sp: FakeSubprocess) -> None:
     fake_sp.rsync_rc = 23
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert rc == 23
     assert not any(kind == "Popen" for kind, _ in fake_sp.calls)
 
@@ -647,14 +703,20 @@ def test_dispatch_propagates_remote_exit(fake_sp: FakeSubprocess, remote_rc: int
     fake_sp.popen_rc = remote_rc
     fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000\n"
     fake_sp.popen_lines = ["Run `bakar triage 20260716-000000` for details.\n"] if remote_rc else []
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert rc == remote_rc
 
 
 def test_dispatch_script_strips_on_and_sets_sccache_off(fake_sp: FakeSubprocess) -> None:
     fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-010101\n"
     rd.dispatch_remote_build(
-        HOST, WS, Path("/home/tiamarin/ws"), ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=Path("/home/tiamarin/ws"), local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
     )
     assert fake_sp.last_proc is not None
     script = fake_sp.last_proc.stdin.buffer
@@ -669,7 +731,9 @@ def test_dispatch_script_strips_on_and_sets_sccache_off(fake_sp: FakeSubprocess)
 def test_dispatch_sccache_dist_opt_in_omits_env_token(fake_sp: FakeSubprocess) -> None:
     fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-020202\n"
     rd.dispatch_remote_build(
-        HOST, WS, Path("/home/tiamarin/ws"), ["build", "my.yml", "--on", HOST], sccache_dist=True, assume_yes=True
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=Path("/home/tiamarin/ws"), local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=True, assume_yes=True),
     )
     assert fake_sp.last_proc is not None
     script = fake_sp.last_proc.stdin.buffer
@@ -683,7 +747,11 @@ def test_dispatch_sccache_dist_opt_in_omits_env_token(fake_sp: FakeSubprocess) -
 def test_dispatch_run_id_from_failure_stream(fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]) -> None:
     fake_sp.popen_rc = 1
     fake_sp.popen_lines = ["some build output\n", "Run `bakar triage 20260716-120000` for details.\n"]
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert rc == 1
     _cap = capsys.readouterr()
     out = _cap.out + _cap.err
@@ -697,7 +765,11 @@ def test_dispatch_run_id_from_success_discovery(fake_sp: FakeSubprocess, capsys:
     fake_sp.popen_rc = 0
     fake_sp.popen_lines = ["build succeeded\n"]
     fake_sp.find_stdout = "1699999999.5 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-235959\n"
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert rc == 0
     _cap = capsys.readouterr()
     out = _cap.out + _cap.err
@@ -715,7 +787,11 @@ def test_dispatch_failure_without_triage_falls_back_to_discovery(
     fake_sp.popen_rc = 1
     fake_sp.popen_lines = ["some build output with no triage hint\n"]
     fake_sp.find_stdout = "1699999999.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-333333\n"
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert rc == 1
     _cap = capsys.readouterr()
     out = _cap.out + _cap.err
@@ -728,7 +804,9 @@ def test_dispatch_unsafe_workspace_aborts_cleanly(fake_sp: FakeSubprocess) -> No
     # An unsafe workspace (filesystem root) must abort with exit 1 via a caught
     # ValueError - no traceback, and no ssh/rsync touched.
     rc = rd.dispatch_remote_build(
-        HOST, Path("/"), Path("/"), ["build", "--on", HOST], sccache_dist=False, assume_yes=True
+        HOST,
+        rd.MirrorRequest(ws_root=Path("/"), cwd=Path("/"), local_args=["build", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
     )
     assert rc == 1
     assert not fake_sp.calls
@@ -746,7 +824,11 @@ def test_dispatch_discards_stale_run_id_before_dispatch_start(
     fake_sp.popen_rc = 1
     fake_sp.popen_lines = ["BAKAR_DISPATCH_START=20260716-120000\n", "config error, no run dir\n"]
     fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000\n"
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert rc == 1
     _cap = capsys.readouterr()
     out = _cap.out + _cap.err
@@ -762,7 +844,11 @@ def test_dispatch_keeps_run_id_after_dispatch_start(
     fake_sp.popen_rc = 0
     fake_sp.popen_lines = ["BAKAR_DISPATCH_START=20260716-120000\n", "build succeeded\n"]
     fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-235959\n"
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert rc == 0
     _cap = capsys.readouterr()
     out = _cap.out + _cap.err
@@ -778,7 +864,9 @@ def test_dispatch_forwards_bakar_kas_env(fake_sp: FakeSubprocess, monkeypatch: p
     monkeypatch.setenv("UNRELATED_VAR", "x")
     fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000\n"
     rd.dispatch_remote_build(
-        HOST, WS, Path("/home/tiamarin/ws"), ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=Path("/home/tiamarin/ws"), local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
     )
     assert fake_sp.last_proc is not None
     exec_line = fake_sp.last_proc.stdin.buffer.splitlines()[-1]
@@ -794,7 +882,11 @@ def test_dispatch_forwards_bakar_kas_env(fake_sp: FakeSubprocess, monkeypatch: p
 
 def test_dispatch_popen_uses_replace_decode(fake_sp: FakeSubprocess) -> None:
     fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000\n"
-    rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert fake_sp.popen_kwargs.get("encoding") == "utf-8"
     assert fake_sp.popen_kwargs.get("errors") == "replace"
 
@@ -809,7 +901,11 @@ def test_dispatch_keyboard_interrupt_returns_130(
         raise KeyboardInterrupt
 
     monkeypatch.setattr(rd, "_stream_remote_build", _interrupt)
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert rc == 130
     _cap = capsys.readouterr()
     out = _cap.out + _cap.err
@@ -823,7 +919,11 @@ def test_dispatch_keyboard_interrupt_returns_130(
 
 def test_dispatch_broken_pipe_returns_255_cleanly(fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]) -> None:
     fake_sp.broken_pipe = True
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert rc == 255
     _cap = capsys.readouterr()
     out = _cap.out + _cap.err
@@ -838,7 +938,11 @@ def test_dispatch_preflight_failure_surfaces_stderr(
 ) -> None:
     fake_sp.reachable_rc = 255
     fake_sp.reachable_stderr = "Host key verification failed."
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert rc == 1
     _cap = capsys.readouterr()
     out = _cap.out + _cap.err
@@ -851,7 +955,9 @@ def test_dispatch_preflight_failure_surfaces_stderr(
 
 def test_dispatch_rejects_hyphen_prefixed_host(fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]) -> None:
     rc = rd.dispatch_remote_build(
-        "-oProxyCommand=evil", WS, WS, ["build", "--on", "-x"], sccache_dist=False, assume_yes=True
+        "-oProxyCommand=evil",
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "--on", "-x"]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
     )
     assert rc == 1
     # Rejected before any ssh/rsync is spawned.
@@ -870,7 +976,9 @@ def test_dispatch_aborts_on_mismatch_without_yes(fake_sp: FakeSubprocess, capsys
     fake_sp.remote_version = "bakar 0.22.0 (deadbeef0000)"
     fake_sp.local_version = "bakar 0.22.0 (0123456789ab)"
     rc = rd.dispatch_remote_build(
-        HOST, WS, Path("/home/tiamarin/ws"), ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=False
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=Path("/home/tiamarin/ws"), local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=False),
     )
     assert rc == 1
     _cap = capsys.readouterr()
@@ -886,7 +994,9 @@ def test_dispatch_proceeds_on_mismatch_with_yes(fake_sp: FakeSubprocess, capsys:
     fake_sp.local_version = "bakar 1.0.0"
     fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000\n"
     rc = rd.dispatch_remote_build(
-        HOST, WS, Path("/home/tiamarin/ws"), ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=Path("/home/tiamarin/ws"), local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
     )
     assert rc == 0
     _cap = capsys.readouterr()
@@ -931,7 +1041,11 @@ def test_stderr_version_mismatch_refuses_the_dispatch(
     # Reading stdout alone saw None on both sides, so this mismatch used to pass.
     fake = _StderrVersionSubprocess("bakar 1.0 (aaaa)\n", "bakar 0.9 (bbbb)\n")
     monkeypatch.setattr(rd, "subprocess", fake)
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=False)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=False),
+    )
     assert rc == 1
     assert "bakar mismatch" in capsys.readouterr().err
     assert not any(argv[0] == "rsync" for _, argv in fake.calls)
@@ -991,7 +1105,11 @@ def test_dispatch_detached_launch_tails_the_remote_log(fake_sp: FakeSubprocess) 
     fake_sp.popen_lines = _DETACHED_LAUNCH
     fake_sp.follow_lines = ["compiling\n", "BAKAR_DISPATCH_RC=0\n"]
     fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-235959\n"
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert rc == 0
     popens = [argv for kind, argv in fake_sp.calls if kind == "Popen"]
     assert len(popens) == 2
@@ -1007,7 +1125,11 @@ def test_dispatch_detached_exit_code_comes_from_the_sentinel(fake_sp: FakeSubpro
     fake_sp.popen_lines = _DETACHED_LAUNCH
     fake_sp.popen_rc = 0
     fake_sp.follow_lines = ["boom\n", "BAKAR_DISPATCH_RC=42\n"]
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert rc == 42
 
 
@@ -1017,7 +1139,11 @@ def test_dispatch_detached_rc_line_is_not_echoed_to_the_user(
     # The sentinel line is transport, not build output.
     fake_sp.popen_lines = _DETACHED_LAUNCH
     fake_sp.follow_lines = ["real build output\n", "BAKAR_DISPATCH_RC=0\n"]
-    rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     _cap = capsys.readouterr()
     out = _cap.out + _cap.err
     assert "real build output" in out
@@ -1033,7 +1159,11 @@ def test_dispatch_detached_stream_goes_to_stderr_not_stdout(
     # same redirect run locally.
     fake_sp.popen_lines = _DETACHED_LAUNCH
     fake_sp.follow_lines = ["compiling glibc\n", "BAKAR_DISPATCH_RC=0\n"]
-    rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     _cap = capsys.readouterr()
     assert _cap.out == ""
     assert "compiling glibc" in _cap.err
@@ -1046,7 +1176,11 @@ def test_dispatch_coupled_stream_goes_to_stderr_not_stdout(
     # The fallback `exec` form (no BAKAR_DISPATCH_UNIT marker) makes the launch
     # stream the build's own. It takes the same stream as the detached path.
     fake_sp.popen_lines = ["NOTE: Executing Tasks\n", "NOTE: Tasks Summary\n"]
-    rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     _cap = capsys.readouterr()
     assert _cap.out == ""
     assert "NOTE: Executing Tasks" in _cap.err
@@ -1066,7 +1200,11 @@ def test_dispatch_detached_lost_follower_says_the_build_survives(
     # it ended". _DISPATCH_LOST_EXIT is outside that space.
     fake_sp.popen_lines = _DETACHED_LAUNCH
     fake_sp.follow_lines = ["partial output\n"]
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert rc == rd._DISPATCH_LOST_EXIT
     assert rc != 255
     _cap = capsys.readouterr()
@@ -1085,7 +1223,11 @@ def test_dispatch_lost_stream_does_not_narrate_a_build_failure(
     fake_sp.popen_lines = _DETACHED_LAUNCH
     fake_sp.follow_lines = ["compiling\n"]
     fake_sp.find_stdout = ""
-    rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     _cap = capsys.readouterr()
     out = _cap.out + _cap.err
     assert "the build failed before starting" not in out
@@ -1116,7 +1258,11 @@ def test_dispatch_malformed_rc_sentinel_is_a_lost_stream(fake_sp: FakeSubprocess
     # both take the lost-stream path.
     fake_sp.popen_lines = _DETACHED_LAUNCH
     fake_sp.follow_lines = ["output\n", sentinel_line]
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert rc == rd._DISPATCH_LOST_EXIT
 
 
@@ -1171,7 +1317,11 @@ def test_build_stream_ignores_dispatch_markers_after_the_launch_phase(fake_sp: F
         "BAKAR_DISPATCH_LOG=/tmp/forged.log\n",
     ]
     fake_sp.popen_rc = 3
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert rc == 3
     # One Popen: no follower was opened against the forged unit.
     assert len([argv for kind, argv in fake_sp.calls if kind == "Popen"]) == 1
@@ -1183,7 +1333,11 @@ def test_follower_ignores_a_forged_rc_line_in_the_build_output(fake_sp: FakeSubp
     # tail is dead, is eligible to be the sentinel.
     fake_sp.popen_lines = _DETACHED_LAUNCH
     fake_sp.follow_lines = ["BAKAR_DISPATCH_RC=0\n", "ERROR: build failed\n", "BAKAR_DISPATCH_RC=1\n"]
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert rc == 1
 
 
@@ -1208,7 +1362,10 @@ def test_remote_script_warns_when_the_remote_user_has_no_linger() -> None:
     # build, with it. That is the exact failure this change exists to remove, so
     # it must be visible rather than silent: the script reports the condition and
     # the local side turns it into an actionable hint.
-    script = build_remote_script(["build"], Path("/tmp/ws"), {}, sccache_off=True, unit="bakar-dispatch-u6")
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True),
+        unit="bakar-dispatch-u6",
+    )
     assert "loginctl" in script
     assert "BAKAR_DISPATCH_WARN=linger-disabled" in script
 
@@ -1218,7 +1375,11 @@ def test_dispatch_detached_surfaces_the_linger_warning(
 ) -> None:
     fake_sp.popen_lines = [*_DETACHED_LAUNCH, "BAKAR_DISPATCH_WARN=linger-disabled\n"]
     fake_sp.follow_lines = ["BAKAR_DISPATCH_RC=0\n"]
-    rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     _cap = capsys.readouterr()
     out = _cap.out + _cap.err
     assert f"ssh {HOST} loginctl enable-linger" in out
@@ -1233,7 +1394,11 @@ def test_dispatch_detached_failed_launch_is_not_followed(fake_sp: FakeSubprocess
     fake_sp.popen_lines = _DETACHED_LAUNCH
     fake_sp.popen_rc = 1
     fake_sp.follow_lines = ["must not be reached\n"]
-    rc = rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     assert rc == 1
     assert len([argv for kind, argv in fake_sp.calls if kind == "Popen"]) == 1
 
@@ -1248,7 +1413,11 @@ def test_dispatch_detached_keeps_the_dispatch_start_fence(
     fake_sp.popen_lines = _DETACHED_LAUNCH
     fake_sp.follow_lines = [*[f"line {i}\n" for i in range(500)], "BAKAR_DISPATCH_RC=0\n"]
     fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000\n"
-    rd.dispatch_remote_build(HOST, WS, WS, ["build", "--on", HOST], sccache_dist=False, assume_yes=True)
+    rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
     _cap = capsys.readouterr()
     out = _cap.out + _cap.err
     # 20260716-000000 predates the 20260716-120000 dispatch-start marker.
@@ -1414,10 +1583,12 @@ def test_stop_script_keeps_its_two_second_cadence_for_the_default_grace() -> Non
         (
             "launch",
             lambda: rd.build_remote_script(
-                ["build", "my.yml"],
-                Path("/tmp/ws"),
-                {"BAKAR_MACHINE": "imx8mp", "KAS_WORK_DIR": "/tmp/k"},
-                sccache_off=True,
+                rd.RemoteScriptSpec(
+                    remote_argv=["build", "my.yml"],
+                    cwd=Path("/tmp/ws"),
+                    env_vars={"BAKAR_MACHINE": "imx8mp", "KAS_WORK_DIR": "/tmp/k"},
+                    sccache_off=True,
+                ),
                 unit="bakar-dispatch-u9",
             ),
         ),
@@ -1515,7 +1686,9 @@ def test_every_dispatch_plan_has_no_deletes(segments: list[str], host: str, assu
         mp.setattr(rd, "DispatchPlan", _Recording)
         ws = Path("/var/tmp/bakar-prop", *segments)
         rd.dispatch_remote_build(
-            host, ws, ws, ["build", "my.yml", "--on", host], sccache_dist=False, assume_yes=assume_yes
+            host,
+            rd.MirrorRequest(ws_root=ws, cwd=ws, local_args=["build", "my.yml", "--on", host]),
+            rd.DispatchFlags(sccache_dist=False, assume_yes=assume_yes),
         )
     # A dispatch refused before transferring (a version mismatch without --yes)
     # prints no plan and runs no rsync; any dispatch that does transfer must have
@@ -1543,7 +1716,9 @@ def test_dispatch_prints_the_plan_and_never_prompts(
         mp.setattr("builtins.input", _boom)
         fake_sp.find_stdout = "1.0 /x/build/runs/20260716-000000\n"
         rc = rd.dispatch_remote_build(
-            HOST, WS, WS, ["build", "my.yml", "--on", HOST], sccache_dist=False, assume_yes=False
+            HOST,
+            rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
+            rd.DispatchFlags(sccache_dist=False, assume_yes=False),
         )
     assert rc == 0
     err = capsys.readouterr().err

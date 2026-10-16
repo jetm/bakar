@@ -604,7 +604,7 @@ def test_nxp_manifest_build_uses_the_additive_mirror(
     assert len(mirror) == 1
     args, kwargs = mirror[0]
     assert args[0] == HOST
-    assert args[1] == workspace
+    assert args[1].ws_root == workspace
     assert "extra_roots" not in kwargs
 
 

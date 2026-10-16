@@ -315,18 +315,21 @@ def dispatch_unit_name(now: datetime | None = None) -> str:
     return f"bakar-dispatch-{stamp}-{secrets.token_hex(3)}"
 
 
-def build_remote_script(  # noqa: PLR0913 - keyword-only options of one script generator
-    remote_argv: list[str],
-    cwd: Path,
-    env_vars: dict[str, str],
-    *,
-    sccache_off: bool,
-    unit: str | None = None,
-    guard: str | None = None,
-) -> str:
+@dataclass(frozen=True, kw_only=True, slots=True)
+class RemoteScriptSpec:
+    """The remote build command a dispatch script runs: argv, cwd, environment and guard."""
+
+    remote_argv: list[str]
+    cwd: Path
+    env_vars: dict[str, str]
+    sccache_off: bool
+    guard: str | None = None
+
+
+def build_remote_script(spec: RemoteScriptSpec, *, unit: str | None = None) -> str:
     """Generate the bash script fed to ``ssh <host> bash -s`` over stdin.
 
-    ``guard``, already shell-quoted, is a command prefix the build runs under
+    ``spec.guard``, already shell-quoted, is a command prefix the build runs under
     (the delivered worktree's shared build lock).
 
     The script changes into the invoking cwd (replicated on the identical-path
@@ -354,6 +357,8 @@ def build_remote_script(  # noqa: PLR0913 - keyword-only options of one script g
     pass while ``--user`` cannot reach the manager bus); when it fails the script
     falls through to the original ``exec`` form rather than failing the dispatch.
     """
+    remote_argv, cwd, env_vars = spec.remote_argv, spec.cwd, spec.env_vars
+    sccache_off, guard = spec.sccache_off, spec.guard
     unit = unit or dispatch_unit_name()
     log = remote_log_expr(unit)
     env_tokens = ["env"]
@@ -1073,27 +1078,39 @@ def run_remote_build(host: str, script: str, run_root: Path) -> int:
     return rc
 
 
-def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed by the build command
-    host: str,
-    ws_root: Path,
-    cwd: Path,
-    local_args: list[str],
-    *,
-    sccache_dist: bool,
-    assume_yes: bool,
-) -> int:
+@dataclass(frozen=True, kw_only=True, slots=True)
+class MirrorRequest:
+    """The local workspace, invoking cwd and argv a mirrored ``--on`` build replays remotely."""
+
+    ws_root: Path
+    cwd: Path
+    local_args: list[str]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class DispatchFlags:
+    """The user's ``--sccache-dist`` and ``--yes`` choices for one dispatch."""
+
+    sccache_dist: bool
+    assume_yes: bool
+
+
+def dispatch_remote_build(host: str, request: MirrorRequest, flags: DispatchFlags) -> int:
     """Mirror the workspace to ``host`` additively and run the build there, in strict order.
 
     Each step gates the next: (1) guard the rsync destination; (2) reject a
     hyphen-prefixed host, preflight the host (reachable + bakar on the non-login
     PATH) and abort when the remote bakar id/version differs from local unless
-    ``assume_yes`` overrides (:func:`preflight_or_report`), with NO rsync/build
-    when any of them refuses; (3) print the dispatch plan, without a prompt;
-    (4) run the additive ``rsync -a`` for ``ws_root``, which adds and updates
-    remote files and never removes a path that exists only on the host;
-    (5) stream the remote build over ``ssh <host> bash -s`` stdin; (6) surface
-    the run-id + triage command; (7) return the remote build's exit code.
+    ``flags.assume_yes`` overrides (:func:`preflight_or_report`), with NO
+    rsync/build when any of them refuses; (3) print the dispatch plan, without a
+    prompt; (4) run the additive ``rsync -a`` for ``request.ws_root``, which adds
+    and updates remote files and never removes a path that exists only on the
+    host; (5) stream the remote build over ``ssh <host> bash -s`` stdin;
+    (6) surface the run-id + triage command; (7) return the remote build's exit
+    code.
     """
+    ws_root, cwd, local_args = request.ws_root, request.cwd, request.local_args
+    sccache_dist, assume_yes = flags.sccache_dist, flags.assume_yes
     try:
         assert_safe_workspace(ws_root)
     except ValueError as exc:
@@ -1118,7 +1135,11 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
         return rsync_rc
 
     env_vars = {k: v for k, v in os.environ.items() if k.startswith(("BAKAR_", "KAS_"))}
-    script = build_remote_script(strip_dispatch_options(local_args), cwd, env_vars, sccache_off=not sccache_dist)
+    script = build_remote_script(
+        RemoteScriptSpec(
+            remote_argv=strip_dispatch_options(local_args), cwd=cwd, env_vars=env_vars, sccache_off=not sccache_dist
+        )
+    )
     return run_remote_build(host, script, ws_root)
 
 
