@@ -43,7 +43,13 @@ def test_clean_byo_meta_avocado_yaml_wipes_build_stem_dir(
     monkeypatch.chdir(tmp_path)
 
     removed: list[str] = []
-    monkeypatch.setattr(shutil, "rmtree", lambda path, *a, **kw: removed.append(str(path)))
+    real_rmtree = shutil.rmtree
+
+    def _recording_rmtree(path, *a, **kw):
+        removed.append(str(path))
+        real_rmtree(path, *a, **kw)
+
+    monkeypatch.setattr(shutil, "rmtree", _recording_rmtree)
 
     result = runner.invoke(app, ["clean", "meta-avocado/kas/machine/qtest.yml"])
 

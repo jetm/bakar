@@ -281,21 +281,35 @@ def resolve_global_config(request: ResolveRequest) -> BuildConfig:
 # ---------------------------------------------------------------------------
 
 
+def _remove_tree_or_exit(target: Path, description: str) -> None:
+    """Remove ``target`` via ``parallel_rmtree``; exit 1 naming the residue.
+
+    A partial removal must not read as success: the caller would go on to build
+    on a half-deleted tree. Prints "removed" only when nothing was left behind.
+    """
+    from bakar.commands import console
+    from bakar.fsremove import parallel_rmtree
+
+    residue = parallel_rmtree(target, description=description)
+    if residue is not None:
+        path, err = residue
+        console.print(f"[red]could not fully remove[/] {target}: {path}: {err}", highlight=False)
+        raise typer.Exit(1)
+    console.print(f"[green]removed[/] {target}")
+
+
 def _clean_build_dir(cfg: BuildConfig) -> None:
     """Remove the BSP-specific ``build/`` dir. Shared by ``bakar clean``
-    and ``bakar build --clean``. No-op if the dir is already absent.
+    and ``bakar build --clean``. No-op if the dir is already absent; exits 1
+    when the removal leaves anything behind.
 
     Uses :func:`bakar.fsremove.parallel_rmtree` - the same pooled-removal path
     ``clean-cache`` uses for sstate GC - so wiping a multi-hundred-GB ``tmp/``
     parallelizes per-recipe subtree deletion instead of serializing one rmtree.
     """
-    from bakar.commands import console
-    from bakar.fsremove import parallel_rmtree
-
     build_dir = cfg.bsp_root / cfg.build_dir_name
     if build_dir.exists():
-        parallel_rmtree(build_dir, description=f"Removing {build_dir.name}/")
-        console.print(f"[green]removed[/] {build_dir}")
+        _remove_tree_or_exit(build_dir, f"Removing {build_dir.name}/")
 
     # A host-mode local_tmpdir_base override relocates the build TMPDIR to
     # node-local disk, outside build_dir; wiping build_dir alone would strand
@@ -303,8 +317,7 @@ def _clean_build_dir(cfg: BuildConfig) -> None:
     # unset default resolves under build_dir and was already removed above).
     tmpdir = cfg.resolved_tmpdir
     if not tmpdir.is_relative_to(build_dir) and tmpdir.exists():
-        parallel_rmtree(tmpdir, description=f"Removing {tmpdir.name}/ (local TMPDIR)")
-        console.print(f"[green]removed[/] {tmpdir}")
+        _remove_tree_or_exit(tmpdir, f"Removing {tmpdir.name}/ (local TMPDIR)")
 
 
 # ---------------------------------------------------------------------------

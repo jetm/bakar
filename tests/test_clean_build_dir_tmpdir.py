@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+import typer
 
 from bakar.commands._helpers import _clean_build_dir
 from bakar.config import BuildConfig
@@ -69,3 +70,33 @@ def test_clean_build_dir_knob_unset_only_removes_build_dir(tmp_path: Path) -> No
 
     assert not build_dir.exists()
     assert sibling.exists()
+
+
+@pytest.mark.unit
+def test_clean_build_dir_residue_exits_1_without_removed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A partial removal names the surviving path, never says "removed", and exits 1."""
+    cfg = _cfg(tmp_path / "ws", local_tmpdir_base=None, host_mode=True)
+    build_dir = cfg.bsp_root / cfg.build_dir_name
+    (build_dir / "tmp").mkdir(parents=True)
+    stuck = build_dir / "tmp" / "stuck"
+
+    printed: list[str] = []
+    monkeypatch.setattr("bakar.commands.console.print", lambda *a, **kw: printed.append(str(a[0])))
+    monkeypatch.setattr("bakar.fsremove.parallel_rmtree", lambda root, description="": (stuck, OSError("busy")))
+
+    with pytest.raises(typer.Exit) as excinfo:
+        _clean_build_dir(cfg)
+
+    assert excinfo.value.exit_code == 1
+    out = " ".join(printed)
+    assert "could not fully remove" in out
+    assert "stuck" in out
+    assert "busy" in out
+    assert "removed" not in out.replace("could not fully remove", "")
+
+
+@pytest.mark.unit
+def test_clean_build_dir_absent_directory_does_not_fail(tmp_path: Path) -> None:
+    """Nothing to remove is a no-op, not an error."""
+    cfg = _cfg(tmp_path / "ws", local_tmpdir_base=None, host_mode=True)
+    _clean_build_dir(cfg)

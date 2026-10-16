@@ -23,9 +23,9 @@ import typer
 
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
-from bakar.commands._helpers import _find_workspace_from_cwd
+from bakar.commands._helpers import _find_workspace_from_cwd, _remove_tree_or_exit
 from bakar.config import shared_ccache_dir
-from bakar.fsremove import parallel_apply, parallel_rmtree
+from bakar.fsremove import parallel_apply
 from bakar.mounts import _mount_entry_in
 from bakar.sccache_cluster import _parse_dist_status_servers as _parse_dist_status_servers  # re-exported for tests
 from bakar.sccache_cluster import (
@@ -409,7 +409,7 @@ def _run_full_reset(
 
     def _wipe_build_dir(b: Path) -> None:
         _log(f"wiping local build dir {b} ...")
-        parallel_rmtree(b, description=f"Removing {b.name}/")
+        _remove_tree_or_exit(b, f"Removing {b.name}/")
 
     def _wipe_cache_dir(c: Path) -> None:
         _log(f"wiping sccache client disk cache {c} ...")
