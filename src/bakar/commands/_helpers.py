@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Literal
 import typer
 from rich.table import Table
 
+from bakar.bsp_detect import is_bbsetup_workspace
 from bakar.commands._overlays import (
     _UNINATIVE_FRAGMENT,
     _UNINATIVE_OS_RELEASE,
@@ -79,6 +80,7 @@ __all__ = [
     "_UNINATIVE_OS_RELEASE",
     "_WORKSPACE_HELP",
     "CheckResult",
+    "RunFamily",
     "Severity",
     "Status",
     "WorkspaceOption",
@@ -119,6 +121,7 @@ __all__ = [
     "apply_mold_overrides",
     "apply_sccache_overrides",
     "apply_scope_override",
+    "candidate_runs_dirs",
     "declare_global_mode_exclusion",
     "global_container_mode",
     "global_host_mode",
@@ -506,10 +509,57 @@ def _print_sstate_summary(kas_log: Path) -> None:
     )
 
 
-def _find_run(
-    runs_dirs: list[tuple[Path, Literal["nxp", "ti", "generic"]]],
+RunFamily = Literal["nxp", "ti", "qcom", "generic", "bbsetup"]
+
+
+def candidate_runs_dirs(workspace: Path, kas_yaml: Path | None = None) -> list[tuple[Path, RunFamily]]:
+    """Return every run-search root for ``workspace``, each tagged with its family.
+
+    The union of the locations ``report``, ``insights``, ``triage`` and
+    ``triage.find_runs`` each used to spell for themselves, in a stable order:
+
+    - ``<ws>/nxp``, ``<ws>/ti`` run roots (``BuildConfig.bsp_root/build/runs``);
+    - the qcom roots ``<ws>/qcom/build-<distro>/runs`` (``BuildConfig`` names the
+      qcom BUILDDIR ``build-<distro>`` under ``bsp_root = <ws>/qcom``);
+    - ``<ws>/build/runs`` (generic, or ``bbsetup`` when ``ws`` is a bitbake-setup
+      workspace) and every ``<ws>/build-*/build/runs`` (meta-avocado);
+    - the preset fan-outs ``<ws>/build/*/build/runs`` (generic or bbsetup),
+      ``<ws>/build/*/{nxp,ti}/build/runs`` and ``<ws>/build/*/qcom/build-*/runs``;
+    - ``<yaml-parent>/build/runs`` when ``kas_yaml`` is given (BYO build).
+
+    Fixed roots are listed whether or not they exist (callers skip missing
+    directories); glob-derived roots only appear when present. Duplicates are
+    dropped by resolved path, first tag wins.
+    """
+    root_family: RunFamily = "bbsetup" if is_bbsetup_workspace(workspace) else "generic"
+    out: list[tuple[Path, RunFamily]] = [
+        (workspace / "nxp" / "build" / "runs", "nxp"),
+        (workspace / "ti" / "build" / "runs", "ti"),
+    ]
+    out.extend((d, "qcom") for d in sorted(workspace.glob("qcom/build-*/runs")))
+    out.append((workspace / "build" / "runs", root_family))
+    out.extend((d, "generic") for d in sorted(workspace.glob("build-*/build/runs")))
+    out.extend((d, root_family) for d in sorted(workspace.glob("build/*/build/runs")))
+    out.extend((d, "nxp") for d in sorted(workspace.glob("build/*/nxp/build/runs")))
+    out.extend((d, "ti") for d in sorted(workspace.glob("build/*/ti/build/runs")))
+    out.extend((d, "qcom") for d in sorted(workspace.glob("build/*/qcom/build-*/runs")))
+    if kas_yaml is not None:
+        out.append((kas_yaml.resolve().parent / "build" / "runs", "generic"))
+
+    seen: set[Path] = set()
+    unique: list[tuple[Path, RunFamily]] = []
+    for runs_dir, family in out:
+        key = runs_dir.resolve()
+        if key not in seen:
+            seen.add(key)
+            unique.append((runs_dir, family))
+    return unique
+
+
+def _find_run[Family: str](
+    runs_dirs: list[tuple[Path, Family]],
     run_id: str | None,
-) -> tuple[Path, Literal["nxp", "ti", "generic"]] | None:
+) -> tuple[Path, Family] | None:
     """Locate a run directory by ID across the supplied search roots.
 
     Each entry is a ``(runs_dir, label)`` pair so the caller can mix
@@ -519,7 +569,7 @@ def _find_run(
     most recent run across all roots; with an explicit ID, the first
     matching entry. Returns ``None`` when nothing matches.
     """
-    candidates: list[tuple[Path, Literal["nxp", "ti", "generic"]]] = []
+    candidates: list[tuple[Path, Family]] = []
     for runs_dir, label in runs_dirs:
         if not runs_dir.is_dir():
             continue
