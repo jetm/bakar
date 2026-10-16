@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.1] - 2026-10-16
+
 ### Fixed
 - `bakar build --help` described `--on` as mirroring the working tree with rsync. It now says a meta-avocado kas build is delivered to the host's release workspace, other builds are mirrored additively, and nothing is deleted on the host.
 
@@ -919,7 +921,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.37.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.37.1...HEAD
+[0.37.1]: https://github.com/jetm/bakar/compare/v0.37.0...v0.37.1
 [0.37.0]: https://github.com/jetm/bakar/compare/v0.36.3...v0.37.0
 [0.36.3]: https://github.com/jetm/bakar/compare/v0.36.2...v0.36.3
 [0.36.2]: https://github.com/jetm/bakar/compare/v0.36.1...v0.36.2
