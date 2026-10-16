@@ -127,6 +127,10 @@ PROBE_TIMEOUT_SECONDS = 60
 # rsync's own I/O stall bound, so a transfer over a dead link exits nonzero.
 RSYNC_IO_TIMEOUT_SECONDS = 60
 
+# The worktree ensure/delivery script can check out a large tree, so it gets
+# ten minutes (git checkout of a big layer on a loaded host) instead of the probe bound.
+DELIVERY_SCRIPT_TIMEOUT_SECONDS = 600
+
 
 def _ssh_argv(host: str, *remote: str, batch_mode: bool = True) -> list[str]:
     """Build an ``ssh`` argv carrying :data:`SSH_BOUND_OPTS` (and BatchMode when asked)."""
@@ -153,8 +157,10 @@ def build_rsync_argv(ws_root: Path, host: str) -> list[str]:
     remove-source option is ever emitted. A file removed locally lingers on the
     remote until someone removes it by hand.
     """
-    ssh_cmd = shlex.join(["ssh", *SSH_BOUND_OPTS])
-    argv = ["rsync", "-a", f"--timeout={RSYNC_IO_TIMEOUT_SECONDS}", "-e", ssh_cmd]
+    argv = ["rsync", "-a", f"--timeout={RSYNC_IO_TIMEOUT_SECONDS}"]
+    # A user's RSYNC_RSH is honoured: passing -e would override it.
+    if not os.environ.get("RSYNC_RSH"):
+        argv += ["-e", shlex.join(["ssh", *SSH_BOUND_OPTS])]
     argv += [f"--exclude={pat}" for pat in RSYNC_EXCLUDES]
     argv += [f"{ws_root}/", f"{host}:{ws_root}/"]
     return argv
@@ -621,7 +627,9 @@ def _local_bakar_version() -> str | None:
     return result.stdout.strip() or result.stderr.strip() or None
 
 
-def _ssh_bash_capture(host: str, script: str, *, batch_mode: bool = True) -> subprocess.CompletedProcess[str]:
+def _ssh_bash_capture(
+    host: str, script: str, *, batch_mode: bool = True, timeout: float = PROBE_TIMEOUT_SECONDS
+) -> subprocess.CompletedProcess[str]:
     """Run ``script`` on ``host`` through ``bash -s`` and capture its output.
 
     Every remote payload in this module goes over stdin to ``bash -s`` rather
@@ -643,9 +651,7 @@ def _ssh_bash_capture(host: str, script: str, *, batch_mode: bool = True) -> sub
     """
     argv = _ssh_argv(host, "bash", "-s", batch_mode=batch_mode)
     try:
-        return subprocess.run(
-            argv, input=script, capture_output=True, text=True, check=False, timeout=PROBE_TIMEOUT_SECONDS
-        )
+        return subprocess.run(argv, input=script, capture_output=True, text=True, check=False, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         # Surface as a failed ssh so every caller's existing nonzero-exit path
         # handles it; 255 is ssh's own connection-failure code.
@@ -1153,8 +1159,9 @@ def run_remote_build(host: str, script: str, run_root: Path) -> int:
             console.print(f"triage it:  ssh {host} bakar triage <run-id>")
         else:
             console.print(
-                "[yellow]interrupted before the remote build detached[/] - it ended with this session; "
-                "nothing is left running on the host."
+                "[yellow]interrupted before the remote build detached[/] - the dispatch session was closed and the "
+                "build was not started under a unit. If unsure whether anything is still running, check with "
+                f"`bakar ps` / `bakar stop` on {host}."
             )
         return 130
     if not finished:

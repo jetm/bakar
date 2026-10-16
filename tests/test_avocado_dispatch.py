@@ -31,6 +31,7 @@ class Recorder:
         self.workspace_error: str | None = None
         self.snapshot = False
         self.push_rc = 0
+        self.core_ssh_command = ""
         self.ensure_rc = 0
         self.capability_rc = 0
         self.capability_stderr = ""
@@ -62,6 +63,8 @@ class Recorder:
             return COMMIT, self.snapshot
 
         def run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+            if argv[-3:] == ["config", "--get", "core.sshCommand"]:
+                return subprocess.CompletedProcess(argv, 0 if self.core_ssh_command else 1, self.core_ssh_command, "")
             self.calls.append(("push", argv))
             self.push_env = kw.get("env")
             return subprocess.CompletedProcess(argv, self.push_rc)
@@ -294,6 +297,7 @@ def test_push_targets_remote_clone_and_ref(rec: Recorder, checkout: Path) -> Non
 
 def test_push_bounds_ssh_when_user_sets_none(rec: Recorder, checkout: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    monkeypatch.delenv("GIT_SSH", raising=False)
     _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"])
     cmd = rec.push_env["GIT_SSH_COMMAND"]
     for opt in ("BatchMode=yes", "ConnectTimeout=15", "ServerAliveInterval=15", "ServerAliveCountMax=4"):
@@ -304,6 +308,38 @@ def test_push_keeps_user_git_ssh_command(rec: Recorder, checkout: Path, monkeypa
     monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i mykey")
     _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"])
     assert rec.push_env["GIT_SSH_COMMAND"] == "ssh -i mykey"
+
+
+def test_push_keeps_user_git_ssh(rec: Recorder, checkout: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    monkeypatch.setenv("GIT_SSH", "/usr/local/bin/my-ssh")
+    _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"])
+    assert "GIT_SSH_COMMAND" not in rec.push_env
+    assert rec.push_env["GIT_SSH"] == "/usr/local/bin/my-ssh"
+
+
+def test_push_keeps_core_ssh_command(rec: Recorder, checkout: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    monkeypatch.delenv("GIT_SSH", raising=False)
+    rec.core_ssh_command = "ssh -F /home/u/cfg\n"
+    _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"])
+    assert "GIT_SSH_COMMAND" not in rec.push_env
+
+
+def test_ensure_script_gets_the_long_timeout(checkout: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+    rec = Recorder(monkeypatch)
+
+    def capture(host: str, script: str, **kw: Any) -> subprocess.CompletedProcess[str]:
+        if not script.startswith("bakar settings get "):
+            seen.update(kw)
+        return subprocess.CompletedProcess(["ssh"], 0, "", "")
+
+    monkeypatch.setattr(remote_dispatch, "_ssh_bash_capture", capture)
+    _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"])
+    assert rec.push_env is not None
+    assert seen["timeout"] == remote_dispatch.DELIVERY_SCRIPT_TIMEOUT_SECONDS
+    assert remote_dispatch.DELIVERY_SCRIPT_TIMEOUT_SECONDS > remote_dispatch.PROBE_TIMEOUT_SECONDS
 
 
 def test_push_failure_stops_before_ensure(rec: Recorder, checkout: Path) -> None:

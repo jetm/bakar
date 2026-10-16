@@ -592,9 +592,13 @@ from bakar.steps import remote_dispatch as rd  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _clean_bakar_kas_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Clear ambient BAKAR_*/KAS_* env so forwarded-env assertions are deterministic."""
+    """Clear ambient BAKAR_*/KAS_* env so forwarded-env assertions are deterministic.
+
+    RSYNC_RSH goes too: ``build_rsync_argv`` omits ``-e`` when it is set.
+    """
     import os
 
+    monkeypatch.delenv("RSYNC_RSH", raising=False)
     for key in list(os.environ):
         if key.startswith(("BAKAR_", "KAS_")):
             monkeypatch.delenv(key, raising=False)
@@ -951,6 +955,8 @@ def test_interrupt_before_any_unit_marker_does_not_promise_a_running_build(
     out = _cap.out + _cap.err
     assert "interrupted before the remote build detached" in out
     assert "bakar stop --on" not in out
+    assert "nothing is left running" not in out
+    assert "bakar ps" in out
 
 
 def test_unit_seen_is_recorded_by_the_stream(fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2049,7 +2055,21 @@ def test_batch_mode_survives_where_it_was_set_and_stays_off_where_it_was_not(fak
     assert "BatchMode=yes" not in popen_argv
 
 
-def test_rsync_argv_passes_ssh_options_and_io_timeout() -> None:
+def test_rsync_argv_leaves_rsync_rsh_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RSYNC_RSH", "ssh -i mykey")
+    argv = rd.build_rsync_argv(Path("/ws"), HOST)
+    assert "-e" not in argv
+    assert "--timeout=60" in argv
+
+
+def test_ssh_bash_capture_timeout_is_overridable(fake_sp: FakeSubprocess) -> None:
+    rd._ssh_bash_capture(HOST, "true", timeout=600)
+    ((_, kwargs),) = _ssh_runs(fake_sp)
+    assert kwargs["timeout"] == 600
+
+
+def test_rsync_argv_passes_ssh_options_and_io_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RSYNC_RSH", raising=False)
     argv = rd.build_rsync_argv(Path("/ws"), HOST)
     assert "--timeout=60" in argv
     assert argv[argv.index("-e") + 1] == shlex.join(_SSH)

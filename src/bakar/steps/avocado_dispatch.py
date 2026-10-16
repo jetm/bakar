@@ -48,6 +48,25 @@ _PLAN_UNTRACKED_SHOWN = 20
 # Bounds the delivery push so a dead link ends it through the keepalive instead of hanging.
 _PUSH_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
 
+_GIT_CONFIG_TIMEOUT_SECONDS = 10
+
+
+def _user_ssh_configured(checkout: Path, env: dict[str, str]) -> bool:
+    """True when the user already chose a git ssh command (env or core.sshCommand)."""
+    if env.get("GIT_SSH_COMMAND") or env.get("GIT_SSH"):
+        return True
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(checkout), "config", "--get", "core.sshCommand"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_GIT_CONFIG_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired, OSError:
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
+
 
 class KasArgError(Exception):
     """A kas argument segment cannot be named relative to the delivered checkout."""
@@ -263,7 +282,8 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
         console.print(f"[red]cannot deliver {checkout}:[/] {exc}")
         return 1
     push_env = os.environ.copy()
-    push_env.setdefault("GIT_SSH_COMMAND", _PUSH_SSH_COMMAND)
+    if not _user_ssh_configured(checkout, push_env):
+        push_env["GIT_SSH_COMMAND"] = _PUSH_SSH_COMMAND
     push_rc = subprocess.run(push, check=False, env=push_env).returncode
     if push_rc != 0:
         console.print(f"[red]git push failed (exit {push_rc})[/]; remote build not started.")
@@ -288,7 +308,7 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
         # which differs from it when the checkout is reached through a symlink.
         source_path_aliases=(str(checkout),),
     )
-    ensured = rd._ssh_bash_capture(host, script)
+    ensured = rd._ssh_bash_capture(host, script, timeout=rd.DELIVERY_SCRIPT_TIMEOUT_SECONDS)
     if ensured.returncode != 0:
         console.print(
             f"[red]could not place the worktree {target} on {host}:[/] "
