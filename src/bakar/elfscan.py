@@ -54,7 +54,7 @@ from glob import iglob
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rich.markup import escape
+from bakar.fmt import neutralize
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -273,31 +273,12 @@ _ELISION = "..."
 _ENTRY_SEPARATOR = " • "
 
 
-def _neutralized(value: object) -> str:
-    """Render an artifact-derived value safe to put in a ``CheckResult`` message.
-
-    Everything the leak scan reports - the artifact path, the recipe name, the
-    declared soname, the path a dependency resolved to - is read out of a file in
-    the work tree, and ``_print_diagnosis`` hands the message to a markup-enabled
-    Rich table. So a directory named ``foo[/]bar`` raises ``MarkupError`` and
-    destroys the whole doctor report rather than one row, ``[on red blink]``
-    forges report formatting, an ESC in a soname rewrites the operator's terminal
-    title, and an undecodable byte in a filename kills the gate at the point it
-    writes the report to disk. Three defences, in this order: strip the
-    characters ``_CONTROL_RE`` names, bound the length, then escape markup -
-    escaping last so the backslashes it inserts are neither stripped nor counted
-    against the bound.
-
-    Applied where a message is BUILT, never inside ``_read_elf``: containment
-    tests, the ``dep_cache`` key and node comparisons all have to keep comparing
-    the bytes the artifact actually declared.
-    """
-    text = _CONTROL_RE.sub("", str(value))
-    if len(text) > _ARTIFACT_TEXT_LIMIT:
-        keep = _ARTIFACT_TEXT_LIMIT - len(_ELISION)
-        head = keep // 2
-        text = text[:head] + _ELISION + text[len(text) - (keep - head) :]
-    return escape(text)
+# The sanitizer lives in ``bakar.fmt``; the old private name stays bound so
+# existing callers and test stubs that resolve ``elfscan._neutralized`` keep
+# working. Applied where a message is BUILT, never inside ``_read_elf``:
+# containment tests, the ``dep_cache`` key and node comparisons all have to keep
+# comparing the bytes the artifact actually declared.
+_neutralized = neutralize
 
 
 @dataclass(frozen=True)

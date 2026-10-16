@@ -67,7 +67,7 @@ from bakar.commands._helpers import (
     _workspace_from_cwd,
 )
 from bakar.config import BSPSpec, ResolveRequest, resolve
-from bakar.elfscan import _neutralized
+from bakar.fmt import neutralize
 from bakar.insights_disk import disk_report
 from bakar.insights_natives import NativesInputs, NativesReport, natives_report
 from bakar.insights_pressure import pressure_report
@@ -358,10 +358,10 @@ def _native_seed_dirs(sstate_dir: Path) -> list[Path]:
 def _render_natives(report: NativesReport) -> None:
     console.print("[bold]natives:[/]")
     if report.error:
-        console.print(f"  [red]{_neutralized(report.error)}[/]")
+        console.print(f"  [red]{neutralize(report.error)}[/]")
         return
     if report.message:
-        console.print(f"  {_neutralized(report.message)}")
+        console.print(f"  {neutralize(report.message)}")
     console.print(f"  executed tasks: {report.executed_tasks}, restored: {report.restored}")
     console.print(
         f"  rebuilt recipes: {report.rebuilt_recipes} "
@@ -370,10 +370,10 @@ def _render_natives(report: NativesReport) -> None:
     )
     for group in report.groups:
         examples = ", ".join(
-            f"{_neutralized(recipe)}:{_neutralized(task)}" for recipe, task in group.examples[:_NATIVES_EXAMPLES]
+            f"{neutralize(recipe)}:{neutralize(task)}" for recipe, task in group.examples[:_NATIVES_EXAMPLES]
         )
         console.print(
-            f"  {_neutralized(group.kind)} {_neutralized(group.subject)}: {group.recipes} recipes"
+            f"  {neutralize(group.kind)} {neutralize(group.subject)}: {group.recipes} recipes"
             + (f" (e.g. {examples})" if examples else "")
         )
     for title, groups in (
@@ -381,7 +381,7 @@ def _render_natives(report: NativesReport) -> None:
         ("no previous signature", report.no_previous_groups),
     ):
         for rgroup in groups:
-            console.print(f"  {title}: {_neutralized(rgroup.reason)}: {rgroup.recipes} recipes")
+            console.print(f"  {title}: {neutralize(rgroup.reason)}: {rgroup.recipes} recipes")
 
 
 def _render_disk(report) -> None:
