@@ -575,6 +575,47 @@ class CacheMountStatus:
         return self._has_problem
 
 
+CACHE_MOUNT_REMEDIATION_HINT = (
+    "check the NFS server and this node's link; a client that stays wedged after the "
+    "server returns needs its mounts force-unmounted or a reboot"
+)
+
+
+def cache_mount_server(status: CacheMountStatus) -> str:
+    """Host part of a status's fstab or mount source, or ``"server unknown"``.
+
+    Prefers the ``/etc/fstab`` declaration over the live ``/proc/mounts``
+    source: for the "declared NFS but resolved to a local filesystem" case,
+    the mount table's source is a local device (e.g. ``/dev/sda1``), which
+    names no server at all - the actionable host is the one fstab declares.
+    Splitting on ``":/"`` strips the export path, leaving just the host.
+    """
+    src = status.fstab_source or status.source
+    if src is None:
+        return "server unknown"
+    return src.split(":/", 1)[0]
+
+
+def cache_mount_state_detail(status: CacheMountStatus) -> str:
+    """Per-state explanation for a blocking :class:`CacheMountStatus`."""
+    if status.state == "unresponsive":
+        return f"did not answer within {int(CACHE_PROBE_DEADLINE_S)}s"
+    if status.state == "error":
+        return status.detail
+    if status.state == "missing":
+        return status.detail or "declared NFS in /etc/fstab but does not exist yet"
+    # state == "ready": declared NFS but resolved to a non-NFS filesystem.
+    return f"declared NFS in /etc/fstab but resolves to {status.fstype}"
+
+
+def cache_mount_blocking_detail(statuses: list[CacheMountStatus]) -> str | None:
+    """Comma-joined description of every blocking status, or ``None`` if none block."""
+    parts = [
+        f"{s.label} {s.path} ({cache_mount_server(s)}): {cache_mount_state_detail(s)}" for s in statuses if s.blocking
+    ]
+    return ", ".join(parts) if parts else None
+
+
 def _fstab_nfs_entry_for_target(fstab_text: str, target: Path) -> tuple[str, str] | None:
     """Longest-prefix ``/etc/fstab`` NFS entry covering an ALREADY-resolved ``target``.
 
