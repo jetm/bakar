@@ -38,6 +38,30 @@ if TYPE_CHECKING:
 # definition, so it never belongs on stdout.
 console = Console(stderr=True)
 
+# Run ids start with a LOCAL-time timestamp, on purpose: the remote dispatch
+# marker compares against them, so switching to UTC would shift every
+# comparison by the host's offset. The format is rendered as a fixed-width
+# prefix, so readers slice RUN_ID_TS_LEN chars rather than strptime the whole
+# name (the "-PID" suffix would not parse).
+RUN_ID_TS_FORMAT = "%Y%m%d-%H%M%S"
+RUN_ID_TS_LEN = 15
+
+
+def run_id_epoch(name: str) -> float | None:
+    """Epoch seconds of a run id or run directory name, or None if unparseable."""
+    prefix = name[:RUN_ID_TS_LEN]
+    # strptime accepts unpadded fields, so enforce the fixed width explicitly.
+    if (
+        len(prefix) != RUN_ID_TS_LEN
+        or not (prefix[:8] + prefix[9:]).isascii()
+        or not (prefix[:8] + prefix[9:]).isdigit()
+    ):
+        return None
+    try:
+        return datetime.strptime(prefix, RUN_ID_TS_FORMAT).timestamp()
+    except ValueError:
+        return None
+
 
 def _utc_now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -67,7 +91,7 @@ class RunLogger:
     # no reader of the suffix) must slice the first 15 chars rather than
     # strptime the whole string - see commands/monitor.py's
     # _run_started_epoch and steps/kas_build.py's _find_oe_eventlog.
-    run_id: str = field(default_factory=lambda: f"{datetime.now():%Y%m%d-%H%M%S}-{os.getpid()}")
+    run_id: str = field(default_factory=lambda: f"{datetime.now():{RUN_ID_TS_FORMAT}}-{os.getpid()}")
     # Monotonic stamp at construction (start of the `bakar` run, before doctor),
     # so the build UI's global timer can count from the command invocation.
     start_monotonic: float = field(default_factory=time.monotonic)

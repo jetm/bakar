@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from bakar.observability import RunEventStats, RunLogger, iter_run_events, last_run_event
+from bakar.observability import RunEventStats, RunLogger, iter_run_events, last_run_event, run_id_epoch
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -540,3 +540,21 @@ def test_check_start_and_check_end_write_events_only(tmp_path: Path) -> None:
     assert not log.console_path.read_text()
     header_calls = [c for c in calls if "──" in c]
     assert len(header_calls) == 0, f"header marker was emitted to Rich console: {calls}"
+
+
+def test_run_id_prefix_is_local_timestamp_then_pid() -> None:
+    import os
+    import re
+
+    rid = RunLogger.__dataclass_fields__["run_id"].default_factory()
+    assert re.fullmatch(r"\d{8}-\d{6}-" + str(os.getpid()), rid)
+    assert run_id_epoch(rid) is not None
+
+
+def test_run_id_epoch_parses_prefix_and_rejects_others() -> None:
+    from datetime import datetime
+
+    assert run_id_epoch("20260102-030405-77") == datetime(2026, 1, 2, 3, 4, 5).timestamp()
+    assert run_id_epoch("20260102-030405") == datetime(2026, 1, 2, 3, 4, 5).timestamp()
+    for bad in ("", "latest", "2026010-2030405-1", "20261301-030405", "x0260102-030405", "20260102_030405"):
+        assert run_id_epoch(bad) is None
