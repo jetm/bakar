@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 import bakar.mounts as mounts_module
+from bakar import central_service
 from bakar.hashserv import _find_binary, _workspace_port, is_running
 
 pytestmark = pytest.mark.unit
@@ -316,7 +317,7 @@ def test_ensure_running_starts_process_and_probe_succeeds(
         del timeout
         return _FakeSocket()
 
-    monkeypatch.setattr(hashserv_mod.socket, "create_connection", _fake_create_connection)
+    monkeypatch.setattr(central_service.socket, "create_connection", _fake_create_connection)
 
     expected_port = hashserv_mod._workspace_port(tmp_path)
     url = hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path)
@@ -359,7 +360,7 @@ def test_ensure_running_binds_to_cluster_host(
         captured["probe_addr"] = addr
         return _FakeSocket()
 
-    monkeypatch.setattr(hashserv_mod.socket, "create_connection", _fake_create_connection)
+    monkeypatch.setattr(central_service.socket, "create_connection", _fake_create_connection)
 
     expected_port = hashserv_mod._workspace_port(tmp_path)
     url = hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path, bind_host="10.42.0.1")
@@ -370,6 +371,67 @@ def test_ensure_running_binds_to_cluster_host(
     assert f"ws://10.42.0.1:{expected_port}" in popen_args
     # a specific (non-0.0.0.0) bind host is also the probe target
     assert captured["probe_addr"] == ("10.42.0.1", expected_port)
+
+
+def test_ensure_running_wildcard_bind_probes_loopback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 0.0.0.0 bind is probed on loopback, so the daemon is reported listening."""
+    from bakar import hashserv as hashserv_mod
+
+    _create_workspace_binary(tmp_path)
+    monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    monkeypatch.setattr(hashserv_mod.subprocess, "Popen", lambda *_a, **_k: _FakeProc(pid=7, poll_returns=[None]))
+
+    probed: list[tuple[str, int]] = []
+
+    def _fake_create_connection(addr: tuple[str, int], timeout: float) -> _FakeSocket:
+        del timeout
+        probed.append(addr)
+        return _FakeSocket()
+
+    monkeypatch.setattr(central_service.socket, "create_connection", _fake_create_connection)
+
+    port = hashserv_mod._workspace_port(tmp_path)
+    assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path, bind_host="0.0.0.0") == f"ws://0.0.0.0:{port}"
+    assert probed == [("127.0.0.1", port)]
+
+
+def test_ensure_running_closes_stderr_handle_when_spawn_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Popen failure must not leak the startup stderr file handle."""
+    from bakar import hashserv as hashserv_mod
+
+    _create_workspace_binary(tmp_path)
+    monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+
+    seen: dict[str, object] = {}
+
+    def _failing_popen(*_args: object, **kwargs: object) -> None:
+        seen["stderr"] = kwargs["stderr"]
+        raise OSError
+
+    monkeypatch.setattr(hashserv_mod.subprocess, "Popen", _failing_popen)
+
+    with pytest.raises(OSError):
+        hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path)
+    handle = seen["stderr"]
+    assert hasattr(handle, "closed")
+    assert handle.closed  # type: ignore[union-attr]
+    assert (tmp_path / ".bakar" / "hashserv.stderr").exists()
+
+
+def test_workspace_port_byte_identical_to_legacy_derivation(tmp_path: Path) -> None:
+    """The unsalted shared derivation matches the pre-refactor sha256 formula."""
+    from hashlib import sha256
+
+    digest = sha256(str(mounts_module._lexical_normalize(tmp_path)).encode()).hexdigest()
+    assert _workspace_port(tmp_path) == 49152 + int(digest[:8], 16) % 16383
 
 
 def test_ensure_running_aborts_when_probe_times_out(
@@ -395,7 +457,7 @@ def test_ensure_running_aborts_when_probe_times_out(
     def _refuse(*_args: object, **_kwargs: object) -> None:
         raise ConnectionRefusedError
 
-    monkeypatch.setattr(hashserv_mod.socket, "create_connection", _refuse)
+    monkeypatch.setattr(central_service.socket, "create_connection", _refuse)
     monkeypatch.setattr(hashserv_mod.time, "sleep", lambda _s: None)
 
     # Drive monotonic forward fast so the deadline trips after a few probes.
@@ -449,7 +511,7 @@ def test_ensure_running_handles_immediate_exit(
         msg = "socket probe must not run when proc.poll() reports immediate exit"
         raise AssertionError(msg)
 
-    monkeypatch.setattr(hashserv_mod.socket, "create_connection", _should_not_probe)
+    monkeypatch.setattr(central_service.socket, "create_connection", _should_not_probe)
 
     result = hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path)
 
@@ -736,7 +798,7 @@ def test_ensure_running_keys_state_to_state_key_not_binary_root(
 
     monkeypatch.setattr(hashserv_mod.subprocess, "Popen", _fake_popen)
     monkeypatch.setattr(
-        hashserv_mod.socket,
+        central_service.socket,
         "create_connection",
         lambda _addr, timeout: _FakeSocket(),
     )

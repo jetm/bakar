@@ -23,14 +23,12 @@ from __future__ import annotations
 
 import os
 import signal
-import socket
 import subprocess
 import time
-from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bakar import central_service, mounts
+from bakar import central_service, daemon_log, mounts
 
 if TYPE_CHECKING:
     from bakar.config import BuildConfig
@@ -40,8 +38,7 @@ _PORT_FILENAME = "hashserv.port"
 _DB_FILENAME = "hashserv.db"
 _STDERR_FILENAME = "hashserv.stderr"
 _STATE_SUBDIR = ".bakar"
-_PORT_FLOOR = 49152
-_PORT_SPAN = 16383
+_BINARY_NAME = "bitbake-hashserv"
 _TERM_GRACE_SECONDS = 5
 _STARTUP_PROBE_DEADLINE_SECONDS = 2.0
 
@@ -110,56 +107,13 @@ def daemon_state_refusal(cfg: BuildConfig) -> str | None:
 
 
 def _workspace_port(state_key: Path) -> int:
-    """Derive a stable ephemeral port from the state-key path.
-
-    Two daemons on the same machine must not collide; a random pick would need
-    a port-file lookup to be authoritative. Hashing a lexically normalized
-    ``state_key`` into the 49152-65534 range gives a stable URL for the
-    lifetime of the daemon without making any state file load-bearing for
-    routing. Two callers sharing one (already-normalized) state key therefore
-    land on the same port - the shared-daemon contract.
-
-    Uses ``mounts._lexical_normalize`` rather than ``Path.resolve()``: the
-    latter stats every path component to follow symlinks, which can hang
-    indefinitely on a wedged NFS automount - defeating this daemon-state
-    guard before it ever runs, since a port has to be derivable before the
-    guard can refuse to start the daemon at all. The tradeoff is that two
-    state keys reaching the same real directory through different symlinks
-    now hash to different ports instead of colliding on purpose; that case is
-    not this codebase's shared-daemon path (state keys come from
-    ``BuildConfig.hashserv_state_key``, itself lexically normalized - see
-    there), so it costs nothing in practice.
-    """
-    digest = sha256(str(mounts._lexical_normalize(state_key)).encode()).hexdigest()
-    return _PORT_FLOOR + int(digest[:8], 16) % _PORT_SPAN
+    """Port for ``state_key`` (unsalted; prserv salts its own)."""
+    return central_service.workspace_port(state_key)
 
 
 def _find_binary(binary_root: Path) -> Path | None:
-    """Return the workspace ``bitbake-hashserv`` path, or None if absent.
-
-    Only workspace paths are consulted - no host PATH fallback. A PATH binary
-    may be from a different bitbake version whose hashserv wire protocol does
-    not match the workspace bitbake, which silently corrupts the equivalence
-    cache.
-
-    Search order:
-    1. ``<binary_root>/sources/poky/bitbake/``  - NXP (poky umbrella)
-    2. ``<binary_root>/sources/bitbake/``       - TI (bare oe-core)
-    3. ``<binary_root>/bitbake/``               - generic workspace-root bitbake
-    4. ``<binary_root.parent>/bitbake/``        - meta-avocado style (binary_root
-                                                  is ``<workspace>/build-<stem>``;
-                                                  the workspace ships bitbake as
-                                                  a sibling)
-    """
-    for candidate in (
-        binary_root / "sources" / "poky" / "bitbake" / "bin" / "bitbake-hashserv",
-        binary_root / "sources" / "bitbake" / "bin" / "bitbake-hashserv",
-        binary_root / "bitbake" / "bin" / "bitbake-hashserv",
-        binary_root.parent / "bitbake" / "bin" / "bitbake-hashserv",
-    ):
-        if candidate.is_file():
-            return candidate
-    return None
+    """Return the workspace ``bitbake-hashserv`` path, or None if absent."""
+    return central_service.find_workspace_tool(binary_root, _BINARY_NAME)
 
 
 def _state_dir(state_key: Path) -> Path:
@@ -298,42 +252,36 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
         return None
 
     port = _workspace_port(state_key)
-    # 0.0.0.0 (and empty) are bind-only addresses; probe loopback for them.
-    probe_host = "127.0.0.1" if bind_host in ("0.0.0.0", "") else bind_host
     state_dir.mkdir(parents=True, exist_ok=True)
     # Redirect daemon stderr directly to a log file rather than PIPE so the
     # daemon never blocks when the kernel pipe buffer fills (default 64 KiB)
-    # on verbose or long-running builds.
-    stderr_log = state_dir / _STDERR_FILENAME
-    stderr_fh = stderr_log.open("wb")
-    proc = subprocess.Popen(
-        [
-            str(binary),
-            "--bind",
-            f"ws://{bind_host}:{port}",
-            "--database",
-            str(state_dir / _DB_FILENAME),
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=stderr_fh,
-        start_new_session=True,
-    )
-    stderr_fh.close()
+    # on verbose or long-running builds. stderr_target closes the handle even
+    # when Popen raises.
+    with daemon_log.stderr_target(str(binary), state_dir, log_path=state_dir / _STDERR_FILENAME) as stderr_fh:
+        proc = subprocess.Popen(
+            [
+                str(binary),
+                "--bind",
+                f"ws://{bind_host}:{port}",
+                "--database",
+                str(state_dir / _DB_FILENAME),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_fh if stderr_fh is not None else subprocess.DEVNULL,
+            start_new_session=True,
+        )
 
     deadline = time.monotonic() + _STARTUP_PROBE_DEADLINE_SECONDS
     while True:
         if proc.poll() is not None:
             _abort_startup(proc, state_dir)
             return None
-        try:
-            sock = socket.create_connection((probe_host, port), timeout=0.5)
-        except OSError:
+        if not central_service.is_listening(bind_host, port):
             if time.monotonic() > deadline:
                 _abort_startup(proc, state_dir)
                 return None
             time.sleep(0.1)
             continue
-        sock.close()
         pid_file.write_text(f"{proc.pid}\n")
         port_file.write_text(f"{port}\n")
         return f"ws://{bind_host}:{port}"
