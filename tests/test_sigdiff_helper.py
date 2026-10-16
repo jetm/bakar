@@ -232,8 +232,17 @@ def _write_zstd_json(path: Path, data: dict) -> None:
     path.write_bytes(zstd.compress(json.dumps(data).encode()))
 
 
-@pytest.mark.skipif(not os.environ.get("BAKAR_TEST_BITBAKE_LIB"), reason="BAKAR_TEST_BITBAKE_LIB unset")
+def _bitbake_lib() -> Path | None:
+    for cand in (os.environ.get("BAKAR_TEST_BITBAKE_LIB"), "~/repos/personal/yocto/bitbake/lib"):
+        if cand and (path := Path(cand).expanduser()).is_dir():
+            return path
+    return None
+
+
 def test_end_to_end_against_real_bitbake(tmp_path: Path) -> None:
+    bitbake_lib = _bitbake_lib()
+    if bitbake_lib is None:
+        pytest.skip("bitbake lib not found - set BAKAR_TEST_BITBAKE_LIB or check out yocto/bitbake")
     dep1, dep2 = "1" * 40, "2" * 40
     top1, top2 = "3" * 40, "4" * 40
     ledger = tmp_path / "ledger"
@@ -254,7 +263,7 @@ def test_end_to_end_against_real_bitbake(tmp_path: Path) -> None:
             {"recipe": "lone", "task": "do_compile", "old": str(g1), "new": str(g2)},
         ],
     }
-    env = dict(os.environ, PYTHONPATH=os.environ["BAKAR_TEST_BITBAKE_LIB"])
+    env = dict(os.environ, PYTHONPATH=str(bitbake_lib))
     out_file = tmp_path / "out.json"
     err_file = tmp_path / "err.txt"
     with out_file.open("w") as out, err_file.open("w") as err:

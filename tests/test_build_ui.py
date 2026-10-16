@@ -143,10 +143,15 @@ def test_fallback_parse_complete_stores_segment_duration() -> None:
 
 
 @pytest.mark.unit
-def test_global_timer_backdated_to_bakar_start() -> None:
+def test_global_timer_backdated_to_bakar_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
     from rich.console import Console
 
-    start = time.monotonic() - 154.0
+    from bakar.steps import build_ui_render
+
+    monkeypatch.setattr(build_ui_render, "time", SimpleNamespace(monotonic=lambda: 1154.0))
+    start = 1000.0
     ui = BuildUIState(start_monotonic=start)
     # The global timer lives on the pipeline header and counts from the bakar
     # start stamp, so it includes pre-build time (doctor, sync, parse).

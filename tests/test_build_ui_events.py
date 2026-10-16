@@ -680,10 +680,13 @@ def test_finish_cached_build_ends_at_setscene() -> None:
 
 
 @pytest.mark.unit
-def test_header_timer_seeded_from_start_monotonic() -> None:
-    import time as _time
+def test_header_timer_seeded_from_start_monotonic(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
 
-    ui = BuildUIState(start_monotonic=_time.monotonic() - 154.0)
+    from bakar.steps import build_ui_render
+
+    monkeypatch.setattr(build_ui_render, "time", SimpleNamespace(monotonic=lambda: 1154.0))
+    ui = BuildUIState(start_monotonic=1000.0)
     out = _header_text(ui)
     assert "2m34s" in out
 
