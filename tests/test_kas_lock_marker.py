@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import socket
 from pathlib import Path
@@ -113,7 +114,7 @@ def test_link_failure_with_nlink_one_raises(
     marker = build_stop.lock_marker_path(cfg)
 
     def fail(src: os.PathLike[str], dst: os.PathLike[str]) -> None:
-        raise OSError(1, "no links")
+        raise OSError(errno.EIO, "no links")
 
     monkeypatch.setattr(os, "link", fail)
     with pytest.raises(OSError, match="no links"):
@@ -306,3 +307,35 @@ def test_unattributable_marker_at_capture_site_logs_manual_clear(
     assert "delete" in failures[0]
     assert "manually" in failures[0]
     assert "unknown (marker unreadable)" not in failures[0]
+
+
+@pytest.mark.parametrize("err", [errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP])
+def test_create_marker_falls_back_when_hard_links_unsupported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, err: int
+) -> None:
+    def no_link(_src: object, _dst: object) -> None:
+        raise OSError(err, os.strerror(err))
+
+    monkeypatch.setattr(kas_lock.os, "link", no_link)
+    marker = tmp_path / "bitbake.lock.owner"
+    assert kas_lock._create_marker_exclusive(marker, "this-host") is True
+    assert marker.read_text(encoding="utf-8") == "this-host"
+    umask = os.umask(0)
+    os.umask(umask)
+    assert marker.stat().st_mode & 0o777 == 0o666 & ~umask
+    assert kas_lock._create_marker_exclusive(marker, "other-host") is False
+    assert marker.read_text(encoding="utf-8") == "this-host"
+    assert [p.name for p in tmp_path.iterdir()] == [marker.name]
+
+
+def test_create_marker_other_link_errors_still_raise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def full(_src: object, _dst: object) -> None:
+        raise OSError(errno.ENOSPC, "no space")
+
+    monkeypatch.setattr(kas_lock.os, "link", full)
+    marker = tmp_path / "bitbake.lock.owner"
+    with pytest.raises(OSError) as exc:
+        kas_lock._create_marker_exclusive(marker, "this-host")
+    assert exc.value.errno == errno.ENOSPC
+    assert not marker.exists()
+    assert list(tmp_path.iterdir()) == []

@@ -1,8 +1,7 @@
 """Overlay and local.conf materialization for the kas build step.
 
-Split out of :mod:`bakar.steps.kas_build` (task 10.2). Every symbol here is
-re-exported at ``bakar.steps.kas_build`` so existing import sites and test
-monkeypatches keep working unchanged.
+Split out of :mod:`bakar.steps.kas_build` (task 10.2). Callers import these
+names from this module directly; patch a name in the module that looks it up.
 
 ``_derive_parallelism_plan`` calls the module-level ``probe_cluster`` imported
 from :mod:`bakar.probes`; tests patch ``bakar.steps.kas_overlay.probe_cluster``.

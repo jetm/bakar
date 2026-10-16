@@ -1,7 +1,8 @@
 """Build-time dependency-graph capture, split out of :mod:`bakar.steps.kas_build`
 (task 10.2).
 
-Every symbol here is re-exported at ``bakar.steps.kas_build``.
+``kas_build`` re-exports only the ``GRAPH_*`` constants and
+``graph_capture_command``, which tests and external callers still import there.
 ``tests/test_graph_capture.py`` patches ``_lock_holder_has_activity``,
 ``_wait_for_cooker_idle`` and ``_resolve_capture_target`` on THIS module,
 because the calls to them are bare names resolved against this module's

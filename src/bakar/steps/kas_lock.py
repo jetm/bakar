@@ -1,13 +1,15 @@
 """Bitbake lock/ownership arbitration for the kas build step.
 
-Split out of :mod:`bakar.steps.kas_build` (task 10.2). Every symbol here is
-re-exported at ``bakar.steps.kas_build``, including :func:`clear_stale_bitbake_locks`
-which :mod:`bakar.diagnostics` reaches via a function-body deferred import of
-``bakar.steps.kas_build`` (not of this module), so the re-export is load-bearing.
+Split out of :mod:`bakar.steps.kas_build` (task 10.2). Consumers import these
+names from this module directly (``kas_graph_capture`` takes
+``_lock_holder_has_activity`` from here), so a test patches a name in the module
+that looks it up: ``bakar.steps.kas_lock`` for calls made inside this module,
+and the consuming module's own namespace for a name it imported.
 """
 
 from __future__ import annotations
 
+import errno
 import os
 import socket
 import tempfile
@@ -65,16 +67,10 @@ def _lock_holder_has_activity(build_dir: Path) -> bool:
     transitive ``/proc``-ppid descendants (workers, clients). More than the
     bare cooker PID itself in that set means genuine worker/client activity.
 
-    Defined here, re-exported at :mod:`bakar.steps.kas_build` for
-    :mod:`bakar.steps.kas_graph_capture`'s deferred-import call (that module's
-    own docstring explains why it must reach collaborators through
-    ``kas_build`` rather than by name). A test wanting to fake this predicate
-    for BOTH consumers has two separate bindings to patch: this module's own
-    calls below resolve against ``kas_lock``'s globals and need
-    ``monkeypatch.setattr(kas_lock, "_lock_holder_has_activity", ...)``;
-    :func:`kas_graph_capture._wait_for_cooker_idle` needs
-    ``monkeypatch.setattr(kas_build, "_lock_holder_has_activity", ...)``
-    instead - patching one does not affect the other.
+    Defined here and imported by name into
+    :mod:`bakar.steps.kas_graph_capture`. Each importer holds its own binding,
+    so patch the module whose code does the lookup: ``kas_lock`` for this
+    module's calls, ``kas_graph_capture`` for its ``_wait_for_cooker_idle``.
     """
     procs = build_stop._collect_build_pids(build_dir, None)
     return len(procs.all_pids) > 1
@@ -252,6 +248,31 @@ def _chmod_to_umask_default(path: Path) -> None:
     path.chmod(0o666 & ~umask)
 
 
+# errnos from link(2) meaning the filesystem has no hard links (CIFS without
+# unix extensions, some FUSE); EXDEV is deliberately absent, the temp file
+# shares the marker's directory.
+_NO_HARDLINK_ERRNOS = frozenset({errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP})
+
+
+def _create_marker_without_link(marker: Path, local_host: str) -> bool:
+    """Exclusive-create ``marker`` on a filesystem without hard links; False when it exists.
+
+    ``O_EXCL`` keeps the exclusivity of the link path. A reader may see the
+    marker empty for a moment, which it already treats as unattributable.
+    """
+    umask = os.umask(0)
+    os.umask(umask)
+    try:
+        fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666 & ~umask)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(local_host)
+        fh.flush()
+        os.fsync(fh.fileno())
+    return True
+
+
 def _create_marker_exclusive(marker: Path, local_host: str) -> bool:
     """Create ``marker`` holding ``local_host`` in one step; False when it already exists.
 
@@ -273,7 +294,9 @@ def _create_marker_exclusive(marker: Path, local_host: str) -> bool:
             os.link(tmp, marker)
         except FileExistsError:
             return False
-        except OSError:
+        except OSError as exc:
+            if exc.errno in _NO_HARDLINK_ERRNOS:
+                return _create_marker_without_link(marker, local_host)
             if tmp.stat().st_nlink != 2:
                 raise
         return True
