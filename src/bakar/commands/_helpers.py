@@ -67,11 +67,12 @@ if TYPE_CHECKING:
     from rich.console import Console
 
     from bakar.bsp_model import BspModel
-    from bakar.config import BuildConfig
+    from bakar.config import BuildConfig, ResolveRequest
     from bakar.layers import LayerHash
     from bakar.output_mode import OutputMode
 
 __all__ = [
+    "GLOBAL_MODE_EXCLUSIONS",
     "_INVOCATION",
     "_MANIFEST_FAMILIES",
     "_UNINATIVE_FRAGMENT",
@@ -118,6 +119,7 @@ __all__ = [
     "apply_mold_overrides",
     "apply_sccache_overrides",
     "apply_scope_override",
+    "declare_global_mode_exclusion",
     "global_container_mode",
     "global_host_mode",
     "global_no_scope",
@@ -125,6 +127,7 @@ __all__ = [
     "global_sccache_dist_override",
     "invoking_cwd",
     "logical_path",
+    "resolve_global_config",
     "split_kas_yaml_arg",
 ]
 
@@ -232,6 +235,45 @@ def apply_mold_overrides(cfg: BuildConfig) -> BuildConfig:
     elif _state._MOLD:
         cfg = replace(cfg, mold=True, mold_mode="list")
     return cfg
+
+
+# Commands that deliberately do not resolve through ``resolve_global_config``,
+# mapped to the reason. Tests read this to tell a declared exclusion from an
+# accidental omission.
+GLOBAL_MODE_EXCLUSIONS: dict[str, str] = {}
+
+
+def declare_global_mode_exclusion(command: str, reason: str) -> None:
+    """Record that ``command`` intentionally skips the global build-mode flags."""
+    GLOBAL_MODE_EXCLUSIONS[command] = reason
+
+
+def resolve_global_config(request: ResolveRequest) -> BuildConfig:
+    """Resolve ``request`` with every global build-mode flag folded in.
+
+    Sets ``host_mode``/``container_mode`` on the request's ``BSPSpec`` and the
+    sccache-dist override, resolves, then applies the sccache, scope and mold
+    overrides. A flag that is unset leaves the request's own value alone, so a
+    run with no global flag equals a plain ``resolve(request)``.
+    """
+    from bakar.config import BSPSpec, resolve
+
+    spec = request.spec or BSPSpec()
+    spec = replace(
+        spec,
+        host_mode=spec.host_mode or global_host_mode(),
+        container_mode=spec.container_mode or global_container_mode(),
+    )
+    dist = global_sccache_dist_override()
+    request = replace(
+        request,
+        spec=spec,
+        sccache_dist_override=request.sccache_dist_override if dist is None else dist,
+    )
+    cfg = resolve(request)
+    cfg = apply_sccache_overrides(cfg)
+    cfg = apply_scope_override(cfg)
+    return apply_mold_overrides(cfg)
 
 
 # ---------------------------------------------------------------------------
