@@ -5,10 +5,8 @@ Typer commands. Every subcommand module imports from here rather than
 from ``cli``.
 
 Workspace resolution and BSP dispatch live in :mod:`bakar.commands._workspace`;
-overlay resolution lives in :mod:`bakar.commands._overlays`. Both are
-re-exported below so every existing ``from bakar.commands._helpers import
-...`` call site keeps working unchanged - this module had ~38 importers
-across ``commands/*.py`` before the split.
+overlay resolution lives in :mod:`bakar.commands._overlays`. Only the names
+that ``commands/*.py`` modules import from here are re-exported below.
 """
 
 from __future__ import annotations
@@ -24,18 +22,11 @@ from bakar.bsp_detect import is_bbsetup_workspace
 from bakar.commands._overlays import (
     _UNINATIVE_FRAGMENT,
     _UNINATIVE_OS_RELEASE,
-    _arch_probe_extra_overlays,
     _ccache_extra_overlays,
     _combine_overlays_with_tuning,
-    _conditional_overlay,
-    _hashequiv_extra_overlays,
     _host_extra_overlays,
-    _host_is_arch_like,
-    _mold_extra_overlays,
     _overlay_dir,
     _overlay_for,
-    _sccache_extra_overlays,
-    _shared_cache_extra_overlays,
     _tuning_extra_overlays,
     _uninative_extra_overlays,
 )
@@ -85,23 +76,18 @@ __all__ = [
     "Status",
     "WorkspaceOption",
     "_SstateRender",
-    "_arch_probe_extra_overlays",
     "_bbsetup_workspace",
     "_bsp_from_cwd",
     "_ccache_extra_overlays",
     "_clean_build_dir",
     "_combine_overlays_with_tuning",
-    "_conditional_overlay",
     "_dispatch_bsp",
     "_dispatch_from_yaml",
     "_enter_workspace",
     "_family_from_workspace_contents",
     "_find_run",
     "_find_workspace_from_cwd",
-    "_hashequiv_extra_overlays",
     "_host_extra_overlays",
-    "_host_is_arch_like",
-    "_mold_extra_overlays",
     "_normalize_dispatch",
     "_overlay_dir",
     "_overlay_for",
@@ -111,8 +97,6 @@ __all__ = [
     "_render_sstate_lines",
     "_resolve_workspace",
     "_run_doctor_gate",
-    "_sccache_extra_overlays",
-    "_shared_cache_extra_overlays",
     "_tuning_extra_overlays",
     "_uninative_extra_overlays",
     "_uninitialized_bbsetup_dir",
