@@ -101,8 +101,8 @@ def _print_structured_failures(failures: list[dict], workspace: Path) -> None:
         console.print(f"[bold]task log:[/] {host_path}")
         console.print(f"[dim]{host_path.name} (tail):[/]")
         for line in tail:
-            sys.stdout.write(f"  {line.rstrip()}\n")
-        sys.stdout.flush()
+            sys.stderr.write(f"  {line.rstrip()}\n")
+        sys.stderr.flush()
 
 
 def _resolve_triage_dirs(
@@ -353,15 +353,15 @@ def triage(
     if report.kas_log_tail:
         console.print("[dim]kas.log (tail):[/]")
         for line in report.kas_log_tail:
-            sys.stdout.write(f"  {line.rstrip()}\n")
-        sys.stdout.flush()
+            sys.stderr.write(f"  {line.rstrip()}\n")
+        sys.stderr.flush()
     if report.recipe_log:
         console.print(f"[bold]bitbake recipe log:[/] {report.recipe_log}")
         if report.recipe_log_tail:
             console.print(f"[dim]{report.recipe_log.name} (tail):[/]")
             for line in report.recipe_log_tail:
-                sys.stdout.write(f"  {line.rstrip()}\n")
-            sys.stdout.flush()
+                sys.stderr.write(f"  {line.rstrip()}\n")
+            sys.stderr.flush()
     if report.suggestions:
         console.print("[cyan]suggestions:[/]")
         for s in report.suggestions:
