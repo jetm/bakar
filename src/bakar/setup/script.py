@@ -27,8 +27,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from bakar.setup.actions.base import RunCommand, WriteFile
 
-_SCRIPT_NAME = "bakar-host-setup.sh"
-
 _HEREDOC_DELIM = "BAKAR_EOF"
 
 

@@ -93,13 +93,6 @@ DEFAULT_QCOM_MANIFEST = "qcom-6.6.119-QLI.1.8-Ver.1.1_qim-product-sdk-2.3.1.xml"
 DEFAULT_QCOM_REPO_BRANCH = "qcom-linux-scarthgap"
 DEFAULT_QCOM_REPO_URL = "https://github.com/quic-yocto/qcom-manifest"
 
-# Back-compat aliases for any caller importing the pre-TI names.
-DEFAULT_MACHINE = DEFAULT_NXP_MACHINE
-DEFAULT_DISTRO = DEFAULT_NXP_DISTRO
-DEFAULT_IMAGE = DEFAULT_NXP_IMAGE
-DEFAULT_MANIFEST = DEFAULT_NXP_MANIFEST
-DEFAULT_REPO_BRANCH = DEFAULT_NXP_REPO_BRANCH
-
 DEFAULT_REPO_URL = "https://github.com/varigit/variscite-bsp-platform.git"
 DEFAULT_CONTAINER_IMAGE = "jetm/kas-build-env:latest"
 

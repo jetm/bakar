@@ -214,10 +214,6 @@ class WorkspaceState:
             return True
         return not self.bblayers_present
 
-    @property
-    def needs_gen_kas(self) -> bool:
-        return not self.kas_yaml_present
-
 
 def detect(cfg: BuildConfig) -> WorkspaceState:
     """Inspect the workspace and return a state snapshot.
