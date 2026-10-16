@@ -126,15 +126,13 @@ def status(
     if not hashserv.is_running(cfg.hashserv_state_key):
         console.print("not running")
         return
-    state_dir = cfg.hashserv_state_key / ".bakar"
-    try:
-        pid = (state_dir / "hashserv.pid").read_text().strip()
-        port = (state_dir / "hashserv.port").read_text().strip()
-    except OSError:
+    state = hashserv.read_state(cfg.hashserv_state_key)
+    if state is None:
         # Race: daemon exited between is_running() and the file reads.
         console.print("not running")
         return
-    console.print(f"running, pid={pid}, url=ws://localhost:{port}")
+    pid, port = state
+    console.print(f"running, pid={pid}, url={hashserv.bound_url(port, cfg.cluster_bind_host)}")
 
 
 app.add_typer(hashserv_app, name="hashserv")

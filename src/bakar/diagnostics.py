@@ -3173,14 +3173,15 @@ def check_hashserv(cfg: BuildConfig) -> CheckResult:
 
     When configured, the check probes three layers in order: (1) the
     recorded PID is alive AND its cmdline names ``bitbake-hashserv``
-    (delegated to :func:`bakar.hashserv.is_running`), (2) the port
-    file under ``<bsp_root>/.bakar/`` is still present (a concurrent
-    ``bakar hashserv stop`` between the PID-liveness probe and the
-    port read is treated as "not running"), and (3) a TCP
-    ``create_connection`` to ``127.0.0.1:<port>`` succeeds within 1s.
+    (delegated to :func:`bakar.hashserv.is_running`), (2) the PID and port
+    state is still readable via :func:`bakar.hashserv.read_state` (a
+    concurrent ``bakar hashserv stop`` between the PID-liveness probe and
+    the read is treated as "not running"), and (3) a TCP connect to the
+    configured bind host (``localhost`` when unset) on ``<port>`` succeeds
+    within 1s.
     Only when all three pass does the check PASS at WARN severity.
     """
-    from bakar import hashserv
+    from bakar import central_service, hashserv
 
     name = "hashserv"
     if not cfg.use_hashequiv:
@@ -3206,33 +3207,26 @@ def check_hashserv(cfg: BuildConfig) -> CheckResult:
     # is_running() returned True but the PID/port files may vanish mid-check (a
     # concurrent `bakar hashserv stop`, or a crash between the two writes): treat
     # that race as the daemon not running.
-    not_running_msg = "hashserv daemon is not running (state files vanished mid-check)"
-    not_running_hint = "bakar hashserv start"
-    state_dir = cfg.hashserv_state_key / ".bakar"
-    port_file = state_dir / "hashserv.port"
-    pid_file = state_dir / "hashserv.pid"
-
-    try:
-        port = int(port_file.read_text().strip())
-    except ValueError, OSError:
-        return _fail(name, Severity.WARN, not_running_msg, fix_hint=not_running_hint)
-
-    try:
-        pid = int(pid_file.read_text().strip())
-    except ValueError, OSError:
-        return _fail(name, Severity.WARN, not_running_msg, fix_hint=not_running_hint)
-
-    try:
-        sock = socket.create_connection(("127.0.0.1", port), timeout=1.0)
-    except OSError:
+    state = hashserv.read_state(cfg.hashserv_state_key)
+    if state is None:
         return _fail(
             name,
             Severity.WARN,
-            f"daemon configured but unreachable at ws://localhost:{port} (PID {pid} alive, TCP probe failed)",
+            "hashserv daemon is not running (state files vanished mid-check)",
+            fix_hint="bakar hashserv start",
+        )
+    pid, port = state
+
+    bind_host = cfg.cluster_bind_host or "localhost"
+    url = hashserv.bound_url(port, cfg.cluster_bind_host)
+    if not central_service.is_listening(bind_host, port, timeout=1.0):
+        return _fail(
+            name,
+            Severity.WARN,
+            f"daemon configured but unreachable at {url} (PID {pid} alive, TCP probe failed)",
             fix_hint="bakar hashserv stop && bakar hashserv start",
         )
-    sock.close()
-    return _ok(name, Severity.WARN, f"running at ws://localhost:{port} (PID {pid})")
+    return _ok(name, Severity.WARN, f"running at {url} (PID {pid})")
 
 
 def check_daemon_state(cfg: BuildConfig) -> CheckResult:
