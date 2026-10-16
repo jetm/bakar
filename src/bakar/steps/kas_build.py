@@ -67,18 +67,18 @@ from bakar import (
     task_timings,
 )
 from bakar.bsp_detect import meta_avocado_checkout, meta_avocado_wrapper_text
+from bakar.buildtools import BUILDTOOLS_DIR_ENV, detect_buildtools, resolve_oe_core_release_key
 from bakar.config import GENERATED_BUILD_YAML, BuildConfig
-from bakar.diagnostics import (
-    BUILDTOOLS_DIR_ENV,
-    detect_buildtools,
-    is_path_on_nfs,  # noqa: F401 - re-exported; kas_lock.clear_stale_bitbake_locks patches it via kas_build.is_path_on_nfs
-    probe_cluster,  # noqa: F401 - re-exported; kas_overlay._derive_parallelism_plan patches it via kas_build.probe_cluster
-    resolve_oe_core_release_key,
-)
-from bakar.elfscan import _neutralized
+from bakar.fmt import neutralize
 from bakar.kas import KasGenOptions, write_yaml
+from bakar.mounts import (
+    is_path_on_nfs,  # noqa: F401 - re-exported; kas_lock.clear_stale_bitbake_locks patches it via kas_build.is_path_on_nfs
+)
 from bakar.observability import RunLogger
 from bakar.output_mode import OutputMode
+from bakar.probes import (
+    probe_cluster,  # noqa: F401 - re-exported; kas_overlay._derive_parallelism_plan patches it via kas_build.probe_cluster
+)
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
 from bakar.release_workspace import (
     REPO_POLICY_ENV,
@@ -102,6 +102,7 @@ from bakar.steps.kas_graph_capture import (
 )
 from bakar.steps.kas_lock import (
     LockHeldByPeerError,
+    LockUnattributableError,
     _lock_holder_has_activity,  # noqa: F401 - re-exported; kas_graph_capture patches it via kas_build._lock_holder_has_activity
     _lock_refusal_message,
     clear_stale_bitbake_locks,
@@ -1071,7 +1072,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
             rc = 1
             log.step_fail(
                 "kas_build",
-                reason=f"bitbake lock claimed by peer host {escape(exc.host)} during acquire; aborting before launch",
+                reason=_peer_lock_reason(exc),
             )
             terminated = True
             return rc
@@ -1259,7 +1260,7 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
             rc = 1
             log.step_fail(
                 "kas_shell_live",
-                reason=f"bitbake lock claimed by peer host {escape(exc.host)} during acquire; aborting before launch",
+                reason=_peer_lock_reason(exc),
             )
             terminated = True
             return rc
@@ -1607,7 +1608,8 @@ def _build_env(
     # falls through to "auto" when this block omits the key.
     if cfg.bb_hashserve is not None:
         # Central cross-node tier: point at the shared Rust/PostgreSQL hashserv
-        # (CentralTierAction persisted this host:port endpoint) instead of the
+        # (the host:port endpoint comes from user configuration; the setup
+        # action that would persist it is not wired) instead of the
         # per-workspace bitbake daemon. In container mode the cluster IP is
         # reachable directly, so no host.docker.internal rewrite is needed.
         # ``is not None`` (not truthiness) matches hashserv.daemon_state_refusal's
@@ -1635,7 +1637,8 @@ def _build_env(
     # cluster_bind_host. ``ensure_hashserv`` is the dry-run/script-gen guard.
     if cfg.prserv_host is not None:
         # Central cross-node tier: the shared Rust/PostgreSQL prserv
-        # (CentralTierAction persisted this endpoint). One monotonic PR DB for the
+        # (the endpoint comes from user configuration; the setup action that
+        # would persist it is not wired). One monotonic PR DB for the
         # whole cluster, surviving TMPDIR wipes, instead of the per-workspace
         # bitbake daemon - so PRs never go backwards regardless of build tree.
         # ``is not None`` matches hashserv.daemon_state_refusal's own gate - see
@@ -1771,7 +1774,7 @@ def _capture_native_ledger(cfg: BuildConfig, log: RunLogger, artifact: dict[str,
                 f"{', run manifest not written' if result.manifest_failed else ''}"
             )
     except Exception as exc:  # noqa: BLE001 - best-effort capture must never fail a completed build
-        log.warn(f"native signature ledger could not be written: {_neutralized(exc)}")
+        log.warn(f"native signature ledger could not be written: {neutralize(exc)}")
 
 
 def _write_native_record(cfg: BuildConfig, log: RunLogger, artifact: dict[str, Any], sstate_dir: Path) -> None:
@@ -1790,13 +1793,13 @@ def _write_native_record(cfg: BuildConfig, log: RunLogger, artifact: dict[str, A
             ),
         )
     except Exception as exc:  # noqa: BLE001 - best-effort capture must never fail a completed build
-        log.warn(f"native revision record could not be written: {_neutralized(exc)}")
+        log.warn(f"native revision record could not be written: {neutralize(exc)}")
         return
     # write_record returns None both when no repository is readable (nothing to
     # record, so nothing to warn about) and when the write failed; only the
     # second is actionable.
     if written is None and any(not repo.unreadable for repo in snapshot.repos):
-        log.warn(f"native revision record could not be written: cannot write under {_neutralized(sstate_dir)}")
+        log.warn(f"native revision record could not be written: cannot write under {neutralize(sstate_dir)}")
 
 
 def persist_run_artifacts(
@@ -1821,7 +1824,7 @@ def persist_run_artifacts(
         if timings_path is not None:
             log.persist_task_timings(timings_path)
     except Exception as exc:  # noqa: BLE001 - defense-in-depth; a completed command must not crash on persist failure
-        log.warn(f"failed to persist run artifacts: {_neutralized(exc)}")
+        log.warn(f"failed to persist run artifacts: {neutralize(exc)}")
         return None
     artifact = _load_events_artifact(log)
     if artifact is None:
@@ -1829,7 +1832,7 @@ def persist_run_artifacts(
     try:
         sstate_dir = native_ledger.effective_sstate_dir(cfg.sstate_dir)
     except Exception as exc:  # noqa: BLE001 - an unresolvable sstate path must not fail a completed build
-        log.warn(f"native capture skipped, sstate directory unresolved: {_neutralized(exc)}")
+        log.warn(f"native capture skipped, sstate directory unresolved: {neutralize(exc)}")
         sstate_dir = None
     if sstate_dir is not None:
         _capture_native_ledger(cfg, log, artifact, sstate_dir)
@@ -1874,6 +1877,17 @@ def _container_eventlog_path(cfg: BuildConfig, log: RunLogger) -> str:
         # than crashing the command.
         return str(host_path)
     return str(Path("/work") / rel)
+
+
+def _peer_lock_reason(exc: LockHeldByPeerError) -> str:
+    """Failure reason for a peer-held bitbake lock.
+
+    An unattributable marker has only a placeholder host, so its own message is
+    logged: it names the marker path and the manual clear.
+    """
+    if isinstance(exc, LockUnattributableError):
+        return escape(str(exc))
+    return f"bitbake lock claimed by peer host {escape(exc.host)} during acquire; aborting before launch"
 
 
 def _finish_step(log: RunLogger, step: str, rc: int) -> None:
@@ -2062,7 +2076,7 @@ def run_shell_capture(ctx: KasBuildContext, command: str, capture: ShellCapture)
     except LockHeldByPeerError as exc:
         log.step_fail(
             step,
-            reason=f"bitbake lock claimed by peer host {escape(exc.host)} during acquire; aborting before launch",
+            reason=_peer_lock_reason(exc),
             exit_code=1,
         )
         return 1

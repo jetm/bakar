@@ -276,3 +276,33 @@ def test_replaced_marker_mode_honours_umask(env: tuple[BuildConfig, Path, RunLog
             assert marker.stat().st_mode & 0o777 == 0o644
     finally:
         os.umask(old)
+
+
+def test_unattributable_marker_at_capture_site_logs_manual_clear(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from bakar.steps import kas_build
+
+    cfg, build, log = env
+    _on_nfs(monkeypatch, True)
+    (build / "bitbake.lock").write_text("1\n")
+    marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("peer")
+    _break_read(monkeypatch, marker)
+    monkeypatch.setattr(kas_build, "cache_mount_refusal", lambda _cfg, **_kw: None)
+    monkeypatch.setattr(kas_build, "clear_stale_bitbake_locks", lambda _cfg: build_stop.LockClearOutcome(removed=[]))
+    failures: list[str] = []
+    monkeypatch.setattr(log, "step_fail", lambda _step, reason="", **_kw: failures.append(reason))
+    kas_yaml = cfg.bsp_root / "kas.yml"
+    kas_yaml.write_text("header:\n  version: 14\n")
+    ctx = kas_build.KasBuildContext(cfg=cfg, log=log, kas_yaml=kas_yaml, overlay_source=kas_yaml)
+
+    with log:
+        rc = kas_build.run_shell_capture(ctx, "true", kas_build.ShellCapture(stdout_path=tmp_path / "out.log"))
+
+    assert rc == 1
+    assert len(failures) == 1
+    assert str(marker) in failures[0]
+    assert "delete" in failures[0]
+    assert "manually" in failures[0]
+    assert "unknown (marker unreadable)" not in failures[0]
