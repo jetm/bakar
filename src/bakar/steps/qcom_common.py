@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
-from bakar.diagnostics import detect_buildtools
+from bakar.buildtools import detect_buildtools
 
 if TYPE_CHECKING:
     from bakar.config import BuildConfig

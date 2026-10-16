@@ -52,10 +52,10 @@ from bakar.cache_render import (
 # ``test_arity_boundaries.py``, which introspects every packed-context
 # dataclass this way).
 from bakar.config import BuildConfig  # noqa: TC001 - runtime-required, see the comment above
-from bakar.diagnostics import probe_build_daemon, probe_ccache, probe_cluster
 from bakar.eventlog import tail_events
 from bakar.observability import RunLogger  # noqa: TC001 - runtime-required, see the comment above
 from bakar.output_mode import OutputMode
+from bakar.probes import probe_build_daemon, probe_ccache, probe_cluster
 from bakar.steps.build_ui import BuildUIState, _fmt_stall
 
 if TYPE_CHECKING:
