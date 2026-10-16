@@ -46,7 +46,7 @@ The bitbake calls issued are:
 3. `cat ${TOPDIR}/task-depends.dot` - retrieve the task-level dependency graph
 4. `cat ${TOPDIR}/pn-buildlist` - retrieve the full build list
 
-Run logs for each step are written to `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/`
+Run logs for each step are written to `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS-PID>/`
 as `graph-topdir.log`, `graph-bitbake-g.log`, `graph-task-depends.dot`, and
 `graph-pn-buildlist.log`. Use `bakar log` to inspect them.
 

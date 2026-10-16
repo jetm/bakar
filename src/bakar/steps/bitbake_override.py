@@ -66,7 +66,7 @@ class OverrideStatus:
         ``active`` means the BSP-bundled bitbake path is the symlink we
         expect AND the clone is checked out. ``stale`` means a real BSP
         directory is in place (post-resync, or never applied). ``disabled``
-    means the user set ``BAKAR_BITBAKE_OVERRIDE=0`` and we should leave
+    means the user set ``BAKAR_BITBAKE_OVERRIDE`` to ``0``, ``false``, ``no`` or ``off`` and we should leave
         it alone.
 
         ``poky_bitbake`` is the BSP-bundled bitbake path. The field name is
@@ -106,6 +106,11 @@ _FALSY = frozenset({"0", "false", "no", "off"})
 def _disabled() -> bool:
     """True only for an explicit falsy spelling; unset, empty or unknown stays enabled."""
     return os.environ.get("BAKAR_BITBAKE_OVERRIDE", "").strip().lower() in _FALSY
+
+
+def _disabled_reason() -> str:
+    """Name the spelling the user actually set, e.g. ``BAKAR_BITBAKE_OVERRIDE=off``."""
+    return f"BAKAR_BITBAKE_OVERRIDE={os.environ.get('BAKAR_BITBAKE_OVERRIDE', '').strip()}"
 
 
 def _read_bb_version(bitbake_dir: Path) -> str | None:
@@ -404,7 +409,7 @@ def status(cfg: BuildConfig) -> OverrideStatus:
             bsp_version=_read_bb_version(poky_bitbake) if poky_bitbake.is_dir() else None,
             poky_bitbake=poky_bitbake,
             upstream_dir=upstream_dir,
-            detail="BAKAR_BITBAKE_OVERRIDE=0",
+            detail=_disabled_reason(),
         )
 
     if not poky_bitbake.exists() and not upstream_dir.exists():
@@ -468,7 +473,7 @@ def apply(
     """
     if _disabled():
         if log is not None:
-            log.step_skip("bitbake_override", reason="BAKAR_BITBAKE_OVERRIDE=0")
+            log.step_skip("bitbake_override", reason=_disabled_reason())
         return status(cfg)
 
     poky_bitbake = _bsp_bitbake(cfg)

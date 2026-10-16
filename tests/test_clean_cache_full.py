@@ -481,7 +481,7 @@ def test_full_verifies_distribution_reports_ok(tmp_path: Path, monkeypatch: pyte
         lambda cmd, **_k: subprocess.CompletedProcess(cmd, 0, stdout=""),
     )
     monkeypatch.setattr(
-        "bakar.diagnostics.probe_cluster",
+        "bakar.probes.probe_cluster",
         lambda *a, **k: SimpleNamespace(
             reachable=True, capacity=SimpleNamespace(num_servers=2, num_cpus=53, in_progress=0), error=None
         ),
@@ -512,7 +512,7 @@ def test_full_verify_distribution_warns_when_no_server(tmp_path: Path, monkeypat
         lambda cmd, **_k: subprocess.CompletedProcess(cmd, 0, stdout=""),
     )
     monkeypatch.setattr(
-        "bakar.diagnostics.probe_cluster",
+        "bakar.probes.probe_cluster",
         lambda *a, **k: SimpleNamespace(reachable=False, capacity=None, error="unreachable"),
     )
 

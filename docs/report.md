@@ -12,7 +12,7 @@ bakar report [RUN_ID] [OPTIONS]
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `RUN_ID` | | Run ID (`YYYYMMDD-HHMMSS`). Latest run if omitted |
+| `RUN_ID` | | Run ID (`YYYYMMDD-HHMMSS-PID`). Latest run if omitted |
 | `--manifest` | `-f` | Manifest filename for BSP family dispatch |
 | `--workspace` | `-w` | Workspace root override |
 | `--json` | | Emit the summary as a single JSON object on stdout |

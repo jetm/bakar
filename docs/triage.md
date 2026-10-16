@@ -12,7 +12,7 @@ bakar triage [RUN_ID] [OPTIONS]
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `RUN_ID` | | Run ID (`YYYYMMDD-HHMMSS`). Most recent failing run if omitted |
+| `RUN_ID` | | Run ID (`YYYYMMDD-HHMMSS-PID`). Most recent failing run if omitted |
 | `--run` | | Run ID to triage; alias for the positional argument and takes precedence |
 | `--preset` | | Restrict run-dir selection to a preset (matches the preset build subdir name) |
 | `--release` | | Restrict run-dir selection to a release (matches the version in the build subdir name) |
@@ -171,7 +171,7 @@ Recognized patterns include:
 
 ## Notes
 
-- Run IDs come from the timestamps bakar assigns at build start (`YYYYMMDD-HHMMSS`). Use `bakar log` to see what files are in a run directory.
+- Run IDs come from the timestamps bakar assigns at build start (`YYYYMMDD-HHMMSS-PID`, where `PID` is the process id of the bakar run). Use `bakar log` to see what files are in a run directory.
 - Suggestions are printed only when a pattern matches; a clean kas.log prints none.
 
 ## See also

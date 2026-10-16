@@ -203,12 +203,10 @@ Vendor entries are checked before built-in regexes. `bakar build -f my-board-2.2
 Every build run writes to:
 
 ```text
-<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/
+<bsp_root>/build/runs/<YYYYMMDD-HHMMSS-PID>/
   events.jsonl          - structured step events (machine-readable)
   console.log           - human-readable step progress
   kas.log               - stdout+stderr from kas-container
-  time.log              - wall-clock timing per step
-  du.tsv                - disk usage snapshot after build
   env.txt               - environment variables at build time
   diagnosis.txt         - doctor check results
   bitbake_eventlog.json - raw bitbake event log (JSON Lines, base64-pickle payloads)

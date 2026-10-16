@@ -46,6 +46,7 @@ bakar clean meta-avocado/kas/machine/qemuarm64.yml
 ## Notes
 
 - `clean` removes `<bsp_root>/build/` which contains `tmp/`, `sstate-cache/`, `conf/`, and `runs/`. It does not remove `sources/` (synced layers).
+- When something under `build/` cannot be deleted, `clean` prints `could not fully remove <target>: <path>: <error>` (plus `(+N more undeletable entries)` when several are left), exits 1, and does not go on to remove the generated kas YAML. It prints `removed <target>` and exits 0 only when nothing was left behind, so a rerun after fixing the cause (permissions, a busy mount) that finds a clean tree exits 0. `bakar build --clean` stops on the same failure instead of building on a half-deleted tree.
 - With `--all`, the generated `kas-<bsp>.yml` is also removed. The next `bakar build` will regenerate it from the manifest.
 - BSP family is auto-detected from cwd by looking for `nxp/` or `ti/` subdirectories.
 - `--all` stops the persistent hashserv daemon before the wipe **only when the daemon is keyed to this workspace** (`hashserv_state_key == bsp_root`, the no-shared-sstate fallback), so it gets the SIGTERM grace it needs to flush SQLite cleanly and its `<bsp_root>/.bakar/hashserv.db` is wiped with the rest of the workspace. When the daemon is keyed to a shared `SSTATE_DIR`, its database lives outside this build dir and sibling workspaces depend on it, so `--all` leaves it running and the wipe does not touch it. Use `bakar hashserv stop` to stop the daemon without dropping its database.

@@ -148,21 +148,14 @@ paths = ["src/bakar/build_stop.py"]
 # edges are ungoverned (SUGGESTION) rather than false-positive CRITICAL layer
 # violations, instead of leaving it unclassified by accident.
 #
-# The cycle that makes build_stop's deferred import load-bearing is
-# probes -> build_stop -> diagnostics -> probes: probes.py imports build_stop at
-# module level (probe_build_daemon calls detect_runtime), build_stop's
-# lock_mutation_guard imports diagnostics.is_path_on_nfs inside its own function
-# body, and diagnostics imports probes at module level. Hoisting that deferred
-# import makes `import bakar.probes` die on a partially initialized module;
-# test_extracted_module_imports_first_in_a_fresh_interpreter catches it.
-#
-# The cycle is not the only reason, and on its own it is removable: is_path_on_nfs
-# is defined in bakar.mounts, which imports nothing from bakar, so importing it
-# from there at module level closes no cycle and every module still imports
-# clean. The non-removable reason is that four tests patch the string
-# "bakar.diagnostics.is_path_on_nfs" and depend on call-time resolution through
-# that path. See build_stop.lock_mutation_guard's docstring, which carries the
-# whole argument.
+# build_stop.lock_mutation_guard calls ``mounts.is_path_on_nfs`` through the
+# ``bakar.mounts`` module. ``mounts`` imports nothing from bakar, so build_stop
+# imports it at module level and closes no cycle: the old
+# probes -> build_stop -> diagnostics -> probes cycle, which a function-body
+# import of ``diagnostics.is_path_on_nfs`` used to break, no longer exists.
+# Tests that need to stub the NFS probe patch ``bakar.mounts.is_path_on_nfs``,
+# the one name build_stop looks up. See build_stop.lock_mutation_guard's
+# docstring for the argument.
 #
 # This comment used to describe the cycle as diagnostics -> build_stop, via a
 # function called check_container_runtime. That function has never existed, and

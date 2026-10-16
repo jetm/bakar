@@ -19,7 +19,7 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bakar.diagnostics import detect_buildtools, resolve_buildtools_dir
+from bakar.buildtools import detect_buildtools, resolve_buildtools_dir
 from bakar.setup.actions.base import RunCommand, WriteFile
 from bakar.user_config import set_buildtools_dir_for_release, set_setting
 

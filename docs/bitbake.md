@@ -91,7 +91,7 @@ filesystem - see [hashserv.md](hashserv.md) and [prserv.md](prserv.md).
 ## Run logging
 
 Each non-interactive invocation writes its captured output to
-`<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/` as `bitbake.log` (for `bakar bitbake`),
+`<bsp_root>/build/runs/<YYYYMMDD-HHMMSS-PID>/` as `bitbake.log` (for `bakar bitbake`),
 `clean-recipe.log` (for `bakar clean-recipe`), or `rebuild.log` (for `bakar rebuild`). Use
 `bakar log` to inspect them. The `devshell` path is interactive and produces no captured log.
 

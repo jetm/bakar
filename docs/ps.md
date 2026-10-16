@@ -45,8 +45,8 @@ you've found its run id here.
 Plain text, one row per live build:
 
 ```text
-20260701-090000-aaa  mode=host  family=nxp  machine=imx8mp-var-dart  elapsed=12m30s
-20260701-120000-ccc  mode=container  family=unknown  machine=unknown  elapsed=3m10s
+20260701-090000-48213  mode=host  family=nxp  machine=imx8mp-var-dart  elapsed=12m30s
+20260701-120000-52304  mode=container  family=unknown  machine=unknown  elapsed=3m10s
 ```
 
 With no live builds:
@@ -77,7 +77,7 @@ parse as a timestamp. An empty result emits `[]`.
 
 ```bash
 $ bakar ps --json
-[{"run_id": "20260701-090000-aaa", "mode": "host", "family": "nxp", "machine": "imx8mp-var-dart", "elapsed_seconds": 750}]
+[{"run_id": "20260701-090000-48213", "mode": "host", "family": "nxp", "machine": "imx8mp-var-dart", "elapsed_seconds": 750}]
 ```
 
 ## Examples
@@ -91,7 +91,7 @@ bakar ps --json
 
 # Find the run id of a stuck build, then stop it by id
 bakar ps
-bakar stop --run 20260701-090000-aaa
+bakar stop --run 20260701-090000-48213
 ```
 
 ## See also

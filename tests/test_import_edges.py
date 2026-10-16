@@ -165,3 +165,54 @@ def test_type_checking_and_submodule_imports_count() -> None:
 
     # The package __init__ is reported too; the submodule edge is the one that matters.
     assert any("src/bakar/triage.py" in v and "src/bakar/steps/kas_build.py" in v for v in violations)
+
+
+# commands/monitor.py is migrated off the diagnostics re-exports in this same
+# change by a separate edit, so the scan leaves that one module out.
+_REEXPORT_SCAN_SKIP = frozenset({"src/bakar/commands/monitor.py"})
+
+
+def _names_defined_in(source: str) -> set[str]:
+    """Names a module binds itself (def, class, assignment), not by importing."""
+    out: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            out.add(node.name)
+        elif isinstance(node, ast.Assign):
+            out.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            out.add(node.target.id)
+    return out
+
+
+def _diagnostics_reexport_imports(files: dict[str, str], own: set[str]) -> list[str]:
+    """``module: name`` for each ``from bakar.diagnostics import name`` that is a re-export."""
+    found: list[str] = []
+    for rel, source in files.items():
+        if rel == "src/bakar/diagnostics.py" or rel in _REEXPORT_SCAN_SKIP:
+            continue
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.ImportFrom) and node.module == "bakar.diagnostics":
+                found.extend(f"{rel}: {a.name}" for a in node.names if a.name not in own)
+    return sorted(found)
+
+
+def test_no_module_reaches_a_foundation_name_through_diagnostics() -> None:
+    """Import a name from the module that defines it, not from a diagnostics re-export."""
+    files = _tree_sources()
+    own = _names_defined_in(files["src/bakar/diagnostics.py"])
+
+    offenders = _diagnostics_reexport_imports(files, own)
+
+    assert offenders == [], "import these from their defining module, not bakar.diagnostics:\n" + "\n".join(offenders)
+
+
+def test_reexport_scan_names_module_and_name() -> None:
+    """The scan itself must flag a re-exported name and pass a name diagnostics defines."""
+    files = {
+        "src/bakar/commands/x.py": "from bakar.diagnostics import probe_cluster, Status\n",
+        "src/bakar/diagnostics.py": "class Status: ...\n",
+    }
+    own = _names_defined_in(files["src/bakar/diagnostics.py"])
+
+    assert _diagnostics_reexport_imports(files, own) == ["src/bakar/commands/x.py: probe_cluster"]

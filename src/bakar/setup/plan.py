@@ -42,11 +42,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bakar import config
+from bakar.buildtools import resolve_oe_core_release_key
 from bakar.diagnostics import (
     Status,
     _git_identity_probe_dir,
     check_host_preflight,
-    resolve_oe_core_release_key,
     run_all,
 )
 from bakar.setup.actions.cache import CacheDirsAction

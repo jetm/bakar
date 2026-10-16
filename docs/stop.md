@@ -49,7 +49,7 @@ bakar stop --on pc2
 
 # Two or more builds live in this workspace: stop one by run id
 bakar ps
-bakar stop --run 20260701-090000-aaa
+bakar stop --run 20260701-090000-48213
 ```
 
 ## Multiple live builds in one workspace
@@ -88,8 +88,8 @@ It lists every live run - run id, family, machine, elapsed time - and exits
 
 ```text
 2 live builds are running in this workspace:
-  20260701-090000-aaa  family=nxp  machine=imx8mp-var-dart  elapsed=12m30s
-  20260701-110000-bbb  family=ti   machine=am62x-sk          elapsed=3m10s
+  20260701-090000-48213  family=nxp  machine=imx8mp-var-dart  elapsed=12m30s
+  20260701-110000-51877  family=ti   machine=am62x-sk          elapsed=3m10s
 refusing to stop more than one - pick one:  bakar stop --run <id>
 ```
 
@@ -101,8 +101,8 @@ prompts for a choice instead of refusing:
 
 ```text
 2 live builds are running in this workspace:
-  [1] 20260701-090000-aaa  family=nxp  machine=imx8mp-var-dart  elapsed=12m30s
-  [2] 20260701-110000-bbb  family=ti   machine=am62x-sk          elapsed=3m10s
+  [1] 20260701-090000-48213  family=nxp  machine=imx8mp-var-dart  elapsed=12m30s
+  [2] 20260701-110000-51877  family=ti   machine=am62x-sk          elapsed=3m10s
 Stop which build [1-2]:
 ```
 

@@ -116,8 +116,10 @@ def stress_parse(
 ) -> None:
     """Stress-test the bitbake parser fork-race fix with N parse-only iterations.
 
-    Loops ``bitbake -p <target>`` inside ``kas-container`` (or directly on
-    the host when ``--host`` is given) and scans each iteration's output
+    Loops ``bitbake -p <target>`` directly on the host (the default; the
+    global ``--container`` flag or a container toggle in ``BAKAR_CONTAINER``
+    or config runs it inside ``kas-container`` instead, and ``--host``
+    forces the host over that toggle) and scans each iteration's output
     for the canonical fork-race signatures. Writes per-iteration logs
     and a ``summary.json`` under
     ``<bsp>/build/runs/<run-id>/stress-parse/``. Exits non-zero if any

@@ -301,7 +301,7 @@ def _verify_distribution() -> None:
     if shutil.which("sccache") is None:
         _log("sccache not on PATH; skipping distribution verification")
         return
-    from bakar.diagnostics import probe_cluster
+    from bakar.probes import probe_cluster
 
     _log("verifying sccache-dist distribution is back ...")
     for attempt in range(_DIST_VERIFY_RETRIES):

@@ -84,7 +84,7 @@ including the kas startup lines.
 
 - Both steps run inside kas-container - a synced workspace and a working container image are required.
 - The `printdiff` step may take several minutes for complex recipes because bitbake parses the full recipe environment before computing signatures.
-- Run logs for both steps are written to `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/` as `diffsigs-printdiff.log` and `diffsigs-render.log`. Use `bakar log` to inspect them.
+- Run logs for both steps are written to `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS-PID>/` as `diffsigs-printdiff.log` and `diffsigs-render.log`. Use `bakar log` to inspect them.
 - `diffsigs` is read-only with respect to deploy artifacts and sstate. The `.sigdata` stamps written by the `printdiff` step are normal bitbake build state, not mutations of existing build outputs.
 
 ## See also

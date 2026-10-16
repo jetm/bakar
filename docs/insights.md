@@ -15,7 +15,7 @@ bakar insights [RUN_ID] [OPTIONS]
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `RUN_ID` | | Run ID (`YYYYMMDD-HHMMSS`). Latest run if omitted |
+| `RUN_ID` | | Run ID (`YYYYMMDD-HHMMSS-PID`). Latest run if omitted |
 | `--manifest` | `-f` | Manifest filename used to dispatch BSP family |
 | `--workspace` | `-w` | Workspace root override |
 | `--sstate` | | Show the per-recipe sstate hit/miss report |

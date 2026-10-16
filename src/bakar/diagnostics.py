@@ -37,9 +37,10 @@ from typing import TYPE_CHECKING
 
 from rich.markup import escape
 
-# ``is_path_on_nfs`` has no reader in this module: build_stop resolves it
-# through ``bakar.diagnostics`` with a function-body deferred import to break a
-# cycle, so the name has to stay reachable at this path.
+# ``is_path_on_nfs`` has no reader in this module. build_stop calls it as
+# ``mounts.is_path_on_nfs`` through the module, so there is no import cycle and
+# no patch string aimed at this path; the name stays reachable here only for
+# callers that still look it up on ``bakar.diagnostics``.
 from bakar import build_scope, mounts, native_ledger, native_provenance, pin_state
 from bakar.bsp_detect import (
     is_meta_avocado_yaml,
@@ -48,9 +49,9 @@ from bakar.bsp_detect import (
     meta_avocado_wrapper_text,
 )
 
-# ``resolve_buildtools_dir`` has no reader in this module: setup/actions/tools.py
-# imports it through ``bakar.diagnostics``, so the name has to stay reachable at
-# this path.
+# ``resolve_buildtools_dir`` has no reader in this module and no production
+# importer: setup/actions/tools.py imports it from ``bakar.buildtools``. The name
+# stays reachable here for tests that still look it up at this path.
 from bakar.buildtools import (
     BUILDTOOLS_DIR_ENV,
     BuildtoolsToolchain,
@@ -88,9 +89,9 @@ from bakar.mounts import (
 # Only ``_parse_cluster_capacity`` and ``_query_cluster_capacity`` have readers
 # left in this module. The rest are re-exported because PRODUCTION code reaches
 # them through ``bakar.diagnostics``: ``cache_render`` and ``commands/monitor``
-# type-annotate the three report dataclasses, ``steps/kas_build`` and
-# ``commands/cluster_info`` import the three probes, and ``commands/clean_cache``
-# resolves ``probe_cluster`` through a call-time deferred import.
+# type-annotate the three report dataclasses and ``steps/kas_build`` imports the
+# three probes. tests/test_import_edges.py fails on any other production module
+# that imports a re-exported name from here instead of its defining module.
 # A name whose only caller is a test does NOT belong here. A stub aimed at this
 # path would reach no reader at all while reading as though it had taken, which
 # is the failure the elfscan block above exists to prevent - and one the
@@ -750,7 +751,7 @@ def check_bitbake_override(cfg: BuildConfig) -> CheckResult:
             fix_hint="Run `bakar bitbake-override --apply` (or it auto-applies on `bakar build`).",
         )
     if st.state == "disabled":
-        return _skip("bitbake-override", Severity.INFO, "BAKAR_BITBAKE_OVERRIDE=0")
+        return _skip("bitbake-override", Severity.INFO, st.detail)
     return _skip("bitbake-override", Severity.INFO, detail)
 
 

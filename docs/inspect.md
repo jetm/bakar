@@ -42,7 +42,7 @@ The bitbake calls issued are:
 2. `bitbake -e <recipe>` - full environment dump (Identity `FILE`, Sources, Paths, Inherits, Packages, Dependencies). `bitbake -e` is a superset of `bitbake-getvar`, so WORKDIR/S/B/D/T are read from this dump rather than a separate getvar call
 3. `bitbake -g <recipe>` - transitive dep graph (`--recursive` only)
 
-Run logs for each step are written to `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/` as
+Run logs for each step are written to `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS-PID>/` as
 `inspect-show-recipes.log`, `inspect-env.log`, and (when `--recursive`)
 `inspect-recursive.log`. Use `bakar log` to inspect them.
 

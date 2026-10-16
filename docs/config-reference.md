@@ -23,9 +23,13 @@ The preset tier applies only to the four target fields named above. The
 
 Managed with `bakar settings list/get/set/unset`. Editable directly as TOML.
 Writes are atomic; a crash mid-write leaves the previous file intact.
-Unknown keys are rejected by `bakar settings set` but silently ignored when the
-file is loaded directly (future keys added by a newer bakar won't break an older
-one).
+Unknown keys are rejected by `bakar settings set`. When the file is loaded, an
+unknown key inside a known section and an unknown top-level section each emit
+one warning that names the offender and the recognized names, and are then
+ignored, so a key added by a newer bakar does not break an older one. A known
+section that is not a table (for example `build = "x"`) and a value of the wrong
+type (for example `scheduler = 5`) raise an error that names the file and the
+section or key, and the load stops.
 
 ### `[defaults.nxp]` - NXP i.MX default targets
 
@@ -212,8 +216,12 @@ Per-workspace defaults written by `bakar init`. Lives at the workspace root
 (the directory containing `nxp/`, `ti/`, or the `.bakar.toml` marker file).
 
 Priority: below `BAKAR_*` env vars, above `~/.config/bakar/config.toml`.
-An unrecognized key under a known `[defaults.<family>]` section emits a warning
-but does not fail the load. Unknown sections are silently ignored.
+The file is loaded by the same rules as `config.toml`. An unrecognized key under
+a known section and an unrecognized top-level section each emit one warning
+naming the offender and the recognized names, and are then ignored. A known
+section (`[defaults]`, `[defaults.<family>]`, `[build]`, `[host]`) that is not a
+table, or a value of the wrong type, fails the load with an error that names the
+file.
 
 ### `[defaults.nxp]`
 
@@ -375,11 +383,17 @@ tier decides. `BAKAR_CONTAINER` is parsed the same way.
 | `BAKAR_REPO_POLICY` | `reuse` or `kas`; any other value is refused by the build and the doctor. `reuse` classifies each pinned repository (at its pin and clean: left alone; missing: cloned; anywhere else: a side checkout under `<workspace>/.bakar/pins/`) so a build never moves a clone of a shared release workspace. It is the default for a meta-avocado build routed through `[workspaces]` and for an explicit `-w` that names a configured release workspace, and a dispatched build always runs under it. `kas` restores kas's own behaviour, which moves every clean clone to the pins of the file being built. |
 | `BAKAR_WORKTREE_BUILD_DIR` | Overrides `build.worktree_build_dir` for one invocation. A dispatched build always carries the dispatching host's template (the default when none is configured), so the remote never picks another directory than the plan names. |
 
+### Buildtools
+
+| Variable | Description |
+|----------|-------------|
+| `BAKAR_BUILDTOOLS_DIR` | Directory holding the buildtools-extended `environment-setup-*` script. Host builds source that script before running bitbake. Resolution order: a toolchain already sourced in the shell (`OECORE_NATIVE_SYSROOT` set and its `usr/bin/gcc` present) wins; then this variable, which beats every config key, including the release-scoped `[build.buildtools_dirs]` entry; then `[build.buildtools_dirs]` for the build's release; then `[build] buildtools_dir` for callers that do not distinguish a release. A non-empty value is final: if the directory has no `environment-setup-*` script, detection reports the toolchain as absent and does not fall back to the config keys. |
+
 ### bitbake-override
 
 | Variable | Description |
 |----------|-------------|
-| `BAKAR_BITBAKE_OVERRIDE` | Set to `0` to disable the bitbake override step even when a `sources/bitbake` symlink exists. |
+| `BAKAR_BITBAKE_OVERRIDE` | Set to `0`, `false`, `no` or `off` (any case, surrounding whitespace ignored) to disable the bitbake override step even when a `sources/bitbake` symlink exists. Unset, empty or any other value leaves the step enabled. The status line and doctor check report the spelling you set, for example `BAKAR_BITBAKE_OVERRIDE=off`. |
 | `BAKAR_BITBAKE_OVERRIDE_REPO` | Path to a local bitbake repo to swap in. |
 | `BAKAR_BITBAKE_OVERRIDE_BRANCH` | Branch to check out in the override repo. |
 

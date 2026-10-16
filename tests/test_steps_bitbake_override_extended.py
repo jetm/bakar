@@ -389,6 +389,52 @@ def test_status_disabled_env(
     assert st.detail == "BAKAR_BITBAKE_OVERRIDE=0"
 
 
+@pytest.mark.parametrize("value", ["off", "FALSE", " no "])
+def test_status_disabled_reports_the_spelling_the_user_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    """A non-'0' falsy spelling is named as set, not rewritten to ``=0``."""
+    monkeypatch.setenv("BAKAR_BITBAKE_OVERRIDE", value)
+    cfg = _cfg(tmp_path, "nxp")
+    _write_bsp_bitbake(cfg, "2.8.0")
+
+    st = bbo.status(cfg)
+
+    assert st.state == "disabled"
+    assert st.detail == f"BAKAR_BITBAKE_OVERRIDE={value.strip()}"
+
+
+def test_apply_disabled_skip_reason_names_the_spelling_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BAKAR_BITBAKE_OVERRIDE", "off")
+    cfg = _cfg(tmp_path, "nxp")
+    _write_bsp_bitbake(cfg, "2.8.0")
+
+    log = MagicMock()
+    bbo.apply(cfg, log=log)
+
+    assert log.step_skip.call_args.kwargs["reason"] == "BAKAR_BITBAKE_OVERRIDE=off"
+
+
+def test_doctor_check_names_the_spelling_set_when_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bakar.diagnostics import check_bitbake_override
+
+    monkeypatch.setenv("BAKAR_BITBAKE_OVERRIDE", "off")
+    cfg = _cfg(tmp_path, "nxp")
+    _write_bsp_bitbake(cfg, "2.8.0")
+
+    result = check_bitbake_override(cfg)
+
+    assert result.message == "BAKAR_BITBAKE_OVERRIDE=off"
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers: _read_bb_version, _is_correct_symlink, _swap_to_symlink
 # ---------------------------------------------------------------------------

@@ -11,7 +11,7 @@ import bakar.commands._app as _state
 from bakar.cache_render import daemon_doc
 from bakar.commands._app import app, console
 from bakar.commands._helpers import global_sccache_scheduler
-from bakar.diagnostics import probe_build_daemon, probe_cluster
+from bakar.probes import probe_build_daemon, probe_cluster
 
 
 @app.command("cluster-info")

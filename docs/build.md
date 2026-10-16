@@ -667,6 +667,8 @@ workspace at the same absolute path as the local machine.
 5. **Remote build** - the build runs from the directory you invoked it from, as
    described below.
 
+Both transfers bound the ssh they start with keepalive and connect timeouts so a dead link ends the call instead of hanging it. When you set `GIT_SSH_COMMAND`, `GIT_SSH` or git's `core.sshCommand`, `bakar build --on` uses that command for the layer push unchanged and the keepalive and connect bounds do not apply to it. When you set `RSYNC_RSH`, the working-tree mirror uses it unchanged for the same reason.
+
 ### Remote build, streaming and exit codes
 
 1. **sccache-dist off by default** - the remote build runs with
