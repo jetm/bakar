@@ -41,7 +41,7 @@ from rich.markup import escape
 # through ``bakar.diagnostics`` with a function-body deferred import to break a
 # cycle, so the name has to stay reachable at this path.
 from bakar import build_scope, mounts, native_ledger, native_provenance, pin_state
-from bakar.bsp_detect import meta_avocado_worktree, worktree_wrapper_text
+from bakar.bsp_detect import meta_avocado_checkout, meta_avocado_worktree, meta_avocado_wrapper_text
 
 # ``resolve_buildtools_dir`` has no reader in this module: setup/actions/tools.py
 # imports it through ``bakar.diagnostics``, so the name has to stay reachable at
@@ -2465,9 +2465,36 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
             Severity.BLOCK,
             "kas binary not on host PATH; container-mode workspace, deferring to in-container parse",
         )
-    # A kas file inside a linked meta-avocado worktree is validated through the
-    # same wrapper the build uses, so its includes resolve against the worktree.
+    # A kas file whose meta-avocado checkout is not the workspace's own (a linked
+    # worktree, or a main checkout outside a routed workspace) is validated
+    # through the same wrapper the build uses, so its includes resolve against
+    # that checkout rather than the workspace's meta-avocado.
+    checkout = meta_avocado_checkout(kas_yaml)
     wt = meta_avocado_worktree(kas_yaml)
+
+    if os.environ.get("BAKAR_REPO_POLICY") == "reuse":
+        # The workspace is shared: a plain `kas dump` with KAS_WORK_DIR at it
+        # moves every clean repository to its pin. Read the merged config in a
+        # throwaway work directory instead.
+        if checkout is None:
+            return _skip(
+                name,
+                Severity.BLOCK,
+                f"{kas_yaml} is not in a meta-avocado checkout; BAKAR_REPO_POLICY=reuse forbids a workspace dump",
+            )
+        from bakar.release_workspace import ReleaseRoutingError
+        from bakar.steps.kas_pins import read_merged_config
+
+        try:
+            read_merged_config(kas_yaml, checkout=checkout)
+        except ReleaseRoutingError as exc:
+            return _fail(name, Severity.BLOCK, str(exc), fix_hint=f"Edit {kas_yaml} and re-run.")
+        return _ok(name, Severity.BLOCK, f"{kas_yaml} parses cleanly")
+
+    try:
+        routed = checkout is not None and checkout.resolve() != (cfg.workspace / "meta-avocado").resolve()
+    except OSError:
+        routed = checkout is not None
 
     def _dump(target: Path) -> subprocess.CompletedProcess[str]:
         # Pin KAS_WORK_DIR (and cwd) to the workspace so kas validates the
@@ -2487,7 +2514,7 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
         )
 
     try:
-        if wt is None:
+        if not routed or checkout is None:
             # The common case dumps the user's file directly and touches no
             # temporary directory, so an unusable TMPDIR cannot affect it.
             wrapper_path = str(kas_yaml)
@@ -2495,7 +2522,7 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
         else:
             with tempfile.TemporaryDirectory() as tmp:
                 target = Path(tmp) / "avocado-wrapper.yml"
-                target.write_text(worktree_wrapper_text(wt, kas_yaml))
+                target.write_text(meta_avocado_wrapper_text(checkout, kas_yaml))
                 wrapper_path = str(target)
                 out = _dump(target)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
@@ -2522,13 +2549,14 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
                 Severity.BLOCK,
                 f"git-state mismatch (run bakar sync): {msg}",
             )
-        if wt is not None:
-            # Plain `kas dump <file>` resolves `{repo: meta-avocado}` includes from the
-            # main checkout, which is the wrong tree for a worktree kas file.
+        if routed:
+            # Plain `kas dump <file>` resolves `{repo: meta-avocado}` includes from
+            # the workspace's checkout, which is the wrong tree for this kas file.
+            kind = "worktree" if wt is not None else "meta-avocado"
             hint = (
-                f"Edit {kas_yaml} and re-run. This check validated it through bakar's worktree "
-                "wrapper, so `kas dump` on the file alone resolves meta-avocado includes from the "
-                "main checkout and can report a different error."
+                f"Edit {kas_yaml} and re-run. This check validated it through bakar's {kind} "
+                f"wrapper pinning meta-avocado to {checkout}, so `kas dump` on the file alone "
+                "resolves meta-avocado includes from another checkout and can report a different error."
             )
         else:
             hint = f"Edit {kas_yaml} and re-run; see `kas dump {kas_yaml}` for the full parser error."
