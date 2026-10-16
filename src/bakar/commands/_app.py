@@ -124,6 +124,23 @@ class _GlobalOptions:
     rich_output: bool
 
 
+# The options of the latest callback invocation, published alongside the
+# per-flag globals above (which stay in sync until readers migrate to this).
+_GLOBAL_OPTIONS: _GlobalOptions = _GlobalOptions(
+    hide_doctor_report=False,
+    host=False,
+    container=False,
+    no_scope=False,
+    sccache_dist=False,
+    sccache_scheduler=None,
+    mold=False,
+    mold_baseline=False,
+    mold_global=False,
+    plain=False,
+    rich_output=False,
+)
+
+
 def _main_impl(opts: _GlobalOptions) -> None:
     """Validate the global flags and publish them as module state.
 
@@ -134,6 +151,7 @@ def _main_impl(opts: _GlobalOptions) -> None:
     """
     global _USER_CONFIG, _HIDE_DOCTOR_REPORT, _HOST_MODE, _CONTAINER_MODE, _SCCACHE_DIST
     global _SCCACHE_SCHEDULER, _MOLD, _MOLD_BASELINE, _MOLD_GLOBAL, _OUTPUT_MODE_OVERRIDE, _NO_SCOPE
+    global _GLOBAL_OPTIONS
     if opts.plain and opts.rich_output:
         console.print("[red]choose either --plain/--ci or --rich, not both[/]")
         raise typer.Exit(code=2)
@@ -148,6 +166,7 @@ def _main_impl(opts: _GlobalOptions) -> None:
         )
         raise typer.Exit(code=2)
     _USER_CONFIG = _load_user_config_safe()
+    _GLOBAL_OPTIONS = opts
     _HIDE_DOCTOR_REPORT = opts.hide_doctor_report
     _HOST_MODE = opts.host
     _CONTAINER_MODE = opts.container
