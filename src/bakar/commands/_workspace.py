@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 import typer
 
@@ -32,6 +32,9 @@ from bakar.release_workspace import (
     matches_release_workspace,
 )
 from bakar.user_config import UserConfig, load_user_config
+
+if TYPE_CHECKING:
+    from bakar.config import BuildConfig
 
 # ---------------------------------------------------------------------------
 # Workspace detection
@@ -524,3 +527,28 @@ def _normalize_dispatch(
         family, bsp = _dispatch_bsp(manifest)
 
     return family, bsp, kas_yaml, manifest
+
+
+def _resolve_daemon_cfg(workspace: Path | None = None, kas_yaml: Path | None = None) -> BuildConfig:
+    """Resolve the :class:`BuildConfig` for a workspace-scoped daemon command.
+
+    Shared by ``bakar hashserv``, ``bakar prserv`` and ``bakar feed``. Mirrors
+    the doctor command's no-manifest path: dispatch the BSP family (the NXP
+    default when no ``kas_yaml`` is given, the YAML's family otherwise), then
+    locate the workspace (walking up from CWD, or the explicit ``workspace``)
+    and return the resolved config. Callers read the daemon state key and
+    ``bsp_root`` off it.
+    """
+    import bakar.commands._app as _state
+    from bakar.config import ResolveRequest, resolve
+
+    family, _bsp, kas_yaml, _manifest = _normalize_dispatch(kas_yaml, None)
+    ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
+    return resolve(
+        ResolveRequest(
+            workspace=ws,
+            bsp_family=family,
+            kas_yaml=kas_yaml,
+            user_config=_state._USER_CONFIG,
+        )
+    )
