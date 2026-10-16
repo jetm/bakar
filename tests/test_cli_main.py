@@ -139,10 +139,9 @@ class TestTerminalExceptionsReadFromPublicNames:
     def _shim_without_abort_and_exit(self, monkeypatch: pytest.MonkeyPatch):
         from types import SimpleNamespace
 
-        from click import exceptions as real
-
         import bakar.cli as cli_mod
 
+        real = cli_mod._click_exc
         monkeypatch.setattr(
             cli_mod,
             "_click_exc",

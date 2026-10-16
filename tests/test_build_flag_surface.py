@@ -26,8 +26,8 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
-import click
 import pytest
 import typer
 from typer.testing import CliRunner
@@ -45,10 +45,15 @@ _HELP_ENV = {"COLUMNS": "200", "TERM": "dumb", "NO_COLOR": "1"}
 _FIELD_SEP = " | "
 
 
-def _build_command() -> click.Command:
-    """Return the click command backing ``bakar build``."""
+def _build_command() -> Any:
+    """Return the command object backing ``bakar build``.
+
+    Read through the group's ``commands`` map so the test never names the
+    click package: typer decides which implementation backs the object.
+    """
     cli = typer.main.get_command(app)
-    command = cli.get_command(click.Context(cli), "build")
+    assert hasattr(cli, "commands"), f"app did not convert to a command group: {cli!r}"
+    command = cli.commands.get("build")
     assert command is not None, "bakar build is no longer a registered command"
     return command
 
@@ -57,8 +62,8 @@ def _one_line(text: str | None) -> str:
     return " ".join(text.split()) if text else ""
 
 
-def _record(param: click.Parameter) -> str:
-    kind = "argument" if isinstance(param, click.Argument) else "option"
+def _record(param: Any) -> str:
+    kind = "argument" if param.param_type_name == "argument" else "option"
     return _FIELD_SEP.join(
         [
             ",".join(param.opts),
@@ -67,7 +72,10 @@ def _record(param: click.Parameter) -> str:
             f"required={param.required}",
             f"flag={bool(getattr(param, 'is_flag', False))}",
             f"default={param.default!r}",
-            f"help={_one_line(getattr(param, 'help', None))}",
+            # Only options carry help in the fixture: typer 0.27's own command
+            # classes expose an argument's help text where click-backed typer
+            # leaves it empty, so recording it would pin the typer version.
+            f"help={_one_line(getattr(param, 'help', None)) if kind == 'option' else ''}",
         ]
     )
 
