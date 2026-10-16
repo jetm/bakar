@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import unicodedata
+
 import pytest
 
-from bakar import elfscan
 from bakar.fmt import fmt_duration, neutralize
 
 pytestmark = pytest.mark.unit
@@ -24,21 +25,52 @@ def test_neutralize_bounds_length_keeping_both_ends() -> None:
     assert out.startswith("A") and out.endswith("B") and "..." in out
 
 
-def test_neutralize_strips_exactly_what_elfscan_strips() -> None:
-    from bakar import fmt
+def test_neutralize_strips_every_unicode_format_character() -> None:
+    """Independent of the module's own regex: walk the code space with ``unicodedata``."""
+    missed = [
+        hex(code) for code in range(0x110000) if unicodedata.category(chr(code)) == "Cf" and neutralize(chr(code)) != ""
+    ]
+    assert missed == []
 
-    for code in range(0x110000):
-        ch = chr(code)
-        assert fmt._CONTROL_RE.sub("", ch) == elfscan._CONTROL_RE.sub("", ch), hex(code)
+
+def test_neutralize_strips_every_c0_c1_control_and_surrogate() -> None:
+    for code in [*range(0x20), *range(0x7F, 0xA0), *range(0xD800, 0xE000)]:
+        assert neutralize(f"a{chr(code)}b") == "ab", hex(code)
 
 
 def test_neutralize_accepts_non_str() -> None:
     assert neutralize(ValueError("x [y]")) == "x \\[y]"
 
 
-@pytest.mark.parametrize("value", ["plain", "[bold]x", "a\x00b​c", "z" * 3000, "p[/]q"])
-def test_neutralize_matches_elfscan_copy(value: str) -> None:
-    assert neutralize(value) == elfscan._neutralized(value)
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("plain", "plain"),
+        ("[bold]x", "\\[bold]x"),
+        ("p[/]q", "p\\[/]q"),
+        ("a\x00b" + chr(0x200B) + "c", "abc"),
+        ("lib\x1b]0;pwned\x07z.so", "lib]0;pwnedz.so"),
+        ("a" + chr(0x202E) + "b" + chr(0x2066) + "c", "abc"),
+        ("x" + chr(0x2028) + "y" + chr(0x2029) + "z", "xyz"),
+        ("a " + chr(0x2022) + " b", "a  b"),
+        ("", ""),
+    ],
+)
+def test_neutralize_table(value: str, expected: str) -> None:
+    assert neutralize(value) == expected
+
+
+@pytest.mark.parametrize("length", [1023, 1024])
+def test_neutralize_leaves_values_at_or_under_the_limit_untouched(length: int) -> None:
+    value = "z" * length
+    assert neutralize(value) == value
+
+
+def test_neutralize_elides_the_middle_just_over_the_limit() -> None:
+    out = neutralize("z" * 1025)
+    assert len(out) == 1024
+    assert out.count("...") == 1
+    assert out.startswith("z") and out.endswith("z")
 
 
 @pytest.mark.parametrize(

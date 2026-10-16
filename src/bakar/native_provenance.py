@@ -82,8 +82,16 @@ class Forecast:
 
 def _probe(name: str, path: Path, probe_timeout: float) -> Repo:
     core = path.name in _CORE_REPOS
-    head = git_stdout(path, "rev-parse", "HEAD", timeout=probe_timeout, new_session=True)
-    status = git_stdout(path, "status", "--porcelain", "--untracked-files=no", timeout=probe_timeout, new_session=True)
+    head = git_stdout(path, "--no-optional-locks", "rev-parse", "HEAD", timeout=probe_timeout, new_session=True)
+    status = git_stdout(
+        path,
+        "--no-optional-locks",
+        "status",
+        "--porcelain",
+        "--untracked-files=no",
+        timeout=probe_timeout,
+        new_session=True,
+    )
     sha = head.strip() if head is not None else ""
     if not sha or status is None:
         return Repo(name, path, None, None, core, unreadable=True)

@@ -381,3 +381,20 @@ def test_release_key_that_is_not_one_component_maps_to_unknown(ws: Path, tmp_pat
     recs, bad = np_.load_records(sstate, key)
     assert bad == [] and len(recs) == 1
     assert not (tmp_path / "outside").exists()
+
+
+def test_probe_git_reads_pass_no_optional_locks(ws: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Doctor's read-only probes must not take index.lock beside a running build."""
+    calls: list[tuple[str, ...]] = []
+    real = np_.git_stdout
+
+    def spy(path, *args, **kwargs):
+        calls.append(args)
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(np_, "git_stdout", spy)
+    snap = np_.snapshot_repos(ws, ws, probe_timeout=10.0)
+    assert calls
+    assert all(argv[0] == "--no-optional-locks" for argv in calls)
+    assert {argv[1] for argv in calls} == {"rev-parse", "status"}
+    assert not any(r.unreadable for r in snap.repos)

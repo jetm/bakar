@@ -48,7 +48,7 @@ from rich.markup import escape
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-from bakar import diagnostics, elfscan
+from bakar import diagnostics, elfscan, fmt
 from bakar.config import BuildConfig
 from bakar.diagnostics import BuildtoolsToolchain, CheckResult, Severity, Status
 from bakar.elfscan import _VERNEED_HEADER
@@ -1388,8 +1388,8 @@ def test_neutralized_bounds_length() -> None:
     """One crafted name must not flood a report the operator has to read."""
     rendered = elfscan._neutralized("x" * 5000)
 
-    assert len(rendered) == elfscan._ARTIFACT_TEXT_LIMIT
-    assert elfscan._ELISION in rendered
+    assert len(rendered) == fmt._NEUTRALIZE_LIMIT
+    assert fmt._ELISION in rendered
 
 
 @pytest.mark.unit
@@ -1877,7 +1877,7 @@ def test_the_block_verdict_records_the_exclusion_too(monkeypatch: pytest.MonkeyP
 def test_neutralized_strips_every_format_character() -> None:
     """Walks the whole code space against ``unicodedata`` rather than a sample.
 
-    ``_CONTROL_RE`` spells the ``Cf`` ranges out because ``re`` has no category
+    ``fmt._CONTROL_RE`` spells the ``Cf`` ranges out because ``re`` has no category
     escape, so the class is a snapshot of one Unicode version. This is what
     turns the next assignment into a failure here instead of a bidi override
     reaching the operator's terminal.
@@ -1887,7 +1887,7 @@ def test_neutralized_strips_every_format_character() -> None:
     missed = [
         code
         for code in range(0x110000)
-        if unicodedata.category(chr(code)) == "Cf" and elfscan._CONTROL_RE.sub("", chr(code)) != ""
+        if unicodedata.category(chr(code)) == "Cf" and fmt._CONTROL_RE.sub("", chr(code)) != ""
     ]
 
     assert missed == [], [hex(code) for code in missed]

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
 from pathlib import Path
 
 # Thread-pool size for bulk rename/unlink/rmtree. These are I/O-bound syscalls
@@ -143,25 +144,43 @@ def _gather_remove_targets(root: Path, min_fanout: int) -> list[Path]:
     return targets
 
 
+RESIDUE_SAMPLE_LIMIT = 64
+
+
 def parallel_rmtree(root: Path, description: str = "Removing") -> tuple[Path, OSError] | None:
     """Remove *root* and everything under it, parallelizing across subtrees.
 
     No-op (returns None) when *root* is absent. Picks deletion units via
     :func:`_gather_remove_targets` (adapts to the tree's real fan-out), removes
     them across the shared pool, then drops the now-empty skeleton. A failure on
-    one unit never stops the others. Returns None when *root* is gone afterwards,
-    otherwise the first remaining path with the error that blocked it.
+    one unit never stops the others. Returns None when *root* is gone afterwards
+    (or is an empty directory that only its own rmdir could not remove, e.g. a
+    mount point), otherwise the first remaining path with the error that blocked
+    it. The error carries ``residue_count`` (every undeletable entry seen) and
+    ``residue_sample`` (the first :data:`RESIDUE_SAMPLE_LIMIT` ``(path, error)``
+    pairs); only that sample is retained, so a huge undeletable tree costs
+    bounded memory. Stored errors have their tracebacks dropped.
     """
     if not root.exists() and not root.is_symlink():
         return None
 
     targets = _gather_remove_targets(root, GC_WORKERS * 4)
-    failures: list[tuple[Path, OSError]] = []  # list.append is atomic across the pool threads
+    sample: list[tuple[Path, OSError]] = []
+    count = 0
+    lock = threading.Lock()
+    record = True  # False during the skeleton pass once the unit pass found residue
+
+    def _record(path: Path, exc: OSError) -> None:
+        nonlocal count
+        with lock:
+            count += 1
+            if len(sample) < RESIDUE_SAMPLE_LIMIT:
+                sample.append((path, exc.with_traceback(None)))
 
     def _on_error(_func, path, exc, **_kwargs) -> None:
         # Already-gone entries (a concurrent unit removed them) are not residue.
-        if not isinstance(exc, FileNotFoundError):
-            failures.append((Path(path), exc))
+        if record and not isinstance(exc, FileNotFoundError):
+            _record(Path(path), exc)
 
     def _rm(path: Path) -> None:
         try:
@@ -170,17 +189,34 @@ def parallel_rmtree(root: Path, description: str = "Removing") -> tuple[Path, OS
             else:
                 shutil.rmtree(path, onexc=_on_error)
         except OSError as exc:
-            failures.append((path, exc))
+            _record(path, exc)
 
     # No ETA: deletion units are subtrees of wildly different size, so an
     # item-count time-remaining estimate is always wrong.
     parallel_apply(targets, _rm, description, show_eta=False)
     # Drop the skeleton (the now-empty parent dirs left behind by expansion).
+    # Residue from the unit pass would be re-walked and re-reported here, so
+    # once it exists the skeleton pass records nothing further.
+    record = count == 0
     shutil.rmtree(root, onexc=_on_error)
 
     if not root.exists() and not root.is_symlink():
         return None
-    for path, exc in failures:
+    if not root.is_symlink() and root.is_dir():
+        try:
+            empty = next(root.iterdir(), None) is None
+        except OSError:
+            empty = False
+        if empty:
+            return None  # only the root's own rmdir failed; the tree is gone
+    for path, exc in sample:
         if path.exists() or path.is_symlink():
-            return path, exc
-    return root, failures[0][1] if failures else OSError(f"{root} still exists after removal")
+            return path, _with_residue(exc, count, sample)
+    first = sample[0][1] if sample else OSError(f"{root} still exists after removal")
+    return root, _with_residue(first, count, sample)
+
+
+def _with_residue(exc: OSError, count: int, sample: list[tuple[Path, OSError]]) -> OSError:
+    exc.residue_count = count  # ty: ignore[unresolved-attribute]
+    exc.residue_sample = list(sample)  # ty: ignore[unresolved-attribute]
+    return exc

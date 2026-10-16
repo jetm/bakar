@@ -204,3 +204,77 @@ def test_incomplete_trailing_line_waits_for_newline(tmp_path: Path) -> None:
         fh.write(line[10:] + b"\n")
     reader.poll()
     assert reader.offset == 2 * (len(line) + 1)
+
+
+@pytest.mark.unit
+def test_skipped_lines_counts_lines_that_raise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reader skips a line that makes consume raise, and says so."""
+    path = tmp_path / "log"
+    good = _task_event("bb.build.TaskStarted", "a-1-r0", "do_x", started=1.0).encode() + b"\n"
+    path.write_bytes(good + good + good)
+
+    real = eventlog._NormalizeState.consume
+    calls = {"n": 0}
+
+    def flaky(self, class_name, event):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise TypeError("bad field")
+        return real(self, class_name, event)
+
+    monkeypatch.setattr(eventlog._NormalizeState, "consume", flaky)
+    reader = IncrementalEventLog(path)
+    assert reader.skipped_lines == 0
+    reader.poll()
+    assert reader.skipped_lines == 1
+    assert reader.offset == path.stat().st_size
+    reader.poll()
+    assert reader.skipped_lines == 1, "an idle poll must not recount"
+
+
+@pytest.mark.unit
+def test_skipped_lines_resets_when_log_is_replaced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "log"
+    good = _task_event("bb.build.TaskStarted", "a-1-r0", "do_x", started=1.0).encode() + b"\n"
+    path.write_bytes(good)
+
+    def boom(self, class_name, event):
+        raise TypeError("bad field")
+
+    monkeypatch.setattr(eventlog._NormalizeState, "consume", boom)
+    reader = IncrementalEventLog(path)
+    reader.poll()
+    assert reader.skipped_lines == 1
+    path.write_bytes(b"")
+    reader.poll()
+    assert reader.skipped_lines == 0
+
+
+@pytest.mark.unit
+def test_normalize_raises_where_the_reader_skips(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pins the documented divergence: one-shot normalize propagates, the reader skips."""
+    path = tmp_path / "bitbake_eventlog.json"
+    path.write_bytes(_task_event("bb.build.TaskStarted", "a-1-r0", "do_x", started=1.0).encode() + b"\n")
+
+    def boom(self, class_name, event):
+        raise TypeError("bad field")
+
+    monkeypatch.setattr(eventlog._NormalizeState, "consume", boom)
+    with pytest.raises(TypeError):
+        eventlog.normalize(path)
+    reader = IncrementalEventLog(path)
+    reader.poll()
+    assert reader.skipped_lines == 1
+
+
+@pytest.mark.unit
+def test_normalized_detach_false_returns_live_state_without_copy(tmp_path: Path) -> None:
+    path = tmp_path / "log"
+    path.write_bytes(_task_event("bb.build.TaskStarted", "a-1-r0", "do_x", started=1.0).encode() + b"\n")
+    reader = IncrementalEventLog(path)
+    reader.poll()
+    live = reader.normalized(detach=False)
+    assert live == reader.normalized()
+    assert live["psi"] is reader.normalized(detach=False)["psi"], "no copy on the read-only path"
+    copied = reader.normalized()
+    assert copied["psi"] is not live["psi"], "the default stays detached"

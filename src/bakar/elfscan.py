@@ -220,50 +220,6 @@ _HOST_LIB_DIRS: tuple[str, ...] = _unique(
 # so a systemically broken tree reports a readable verdict instead of megabytes.
 _LEAK_REPORT_LIMIT = 10
 
-# Everything stripped out of artifact-derived text, in one pass:
-#
-# * C0 (including ESC), DEL and C1. A soname is matched with ``\S+``, which
-#   admits ESC, so an artifact can carry a full OSC sequence through the reader
-#   intact.
-# * The surrogate block. ``os.walk`` and ``Path`` decode an undecodable
-#   filesystem byte with ``surrogateescape``, yielding a lone U+DC80-U+DCFF that
-#   no UTF-8 encoder will accept - and the doctor gate writes the report to
-#   ``diagnosis.txt`` BEFORE rendering it, so one such name raises
-#   ``UnicodeEncodeError`` there and takes the whole gate, and the build, with
-#   it rather than garbling a row.
-# * The Unicode ``Cf`` format characters: the bidi overrides (U+202A-U+202E,
-#   U+2066-U+2069) let a crafted name render as a different path, and the
-#   zero-width ones hide a difference entirely. ``re`` has no category escape,
-#   so the ranges are spelled out; a test walks the whole code space against
-#   ``unicodedata`` so a future assignment fails here instead of leaking.
-# * U+2028 and U+2029, which Rich renders as a line break - one crafted name
-#   splits a table cell into two rendered rows, which is how a forged finding
-#   gets its own line.
-# * The report's own entry separator (see ``_ENTRY_SEPARATOR``), so that a
-#   boundary between findings can only be produced by ``_leak_report``.
-_CONTROL_RE = re.compile(
-    "["
-    "\x00-\x1f\x7f-\x9f"
-    "\ud800-\udfff"
-    "\u00ad\u0600-\u0605\u061c\u06dd\u070f\u0890-\u0891\u08e2\u180e"
-    "\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb"
-    "\U000110bd\U000110cd\U00013430-\U0001343f\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
-    "\U000e0001\U000e0020-\U000e007f"
-    "\u2028\u2029"
-    "\u2022"
-    "]"
-)
-
-# Bounds one artifact-derived string so a crafted name cannot flood a report the
-# operator has to read. Measured on a real native work tree: 3,520 of its ELF
-# artifacts exceed 240 characters and the longest path is 445, because
-# ``sysroot-destdir/`` embeds a second absolute copy of the work path and so
-# roughly doubles it. The bound sits well clear of that, and when it does fire
-# the ELISION takes the MIDDLE - a path truncated at its tail names a directory
-# rather than a file and matches nothing the operator can look up.
-_ARTIFACT_TEXT_LIMIT = 1024
-_ELISION = "..."
-
 # What separates one finding from the next in a report. ``_neutralized`` strips
 # this character from every artifact-derived string, so an entry boundary can
 # only be produced by ``_leak_report`` - a directory named

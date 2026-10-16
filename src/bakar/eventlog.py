@@ -466,15 +466,13 @@ class _NormalizeState:
         setscene = self.setscene
         psi = self.psi
         disk = self.disk
-        setscene_seen = self.setscene_seen
-        saw_failure = self.saw_failure
         _task_row = self._task_row
         if class_name == _BUILD_STARTED:
             build["started"] = _first(event, "time", "timestamp")
         elif class_name == _BUILD_COMPLETED:
             build["completed"] = _first(event, "time", "timestamp")
             if build["outcome"] == "unknown":
-                build["outcome"] = "failed" if saw_failure else "success"
+                build["outcome"] = "failed" if self.saw_failure else "success"
         elif class_name == _TASK_STARTED:
             row = _task_row(event)
             row["started"] = _first(event, "time", "timestamp")
@@ -499,7 +497,7 @@ class _NormalizeState:
             logfile = _first(event, "logfile")
             if logfile is not None:
                 row["logfile"] = logfile
-            saw_failure = True
+            self.saw_failure = True
             failures.append(
                 {
                     "recipe": _first(event, "_package"),
@@ -525,7 +523,7 @@ class _NormalizeState:
                 build["tasks_total"] = rq_total
                 build["tasks_completed"] = _stat(stats, "completed") or 0
                 build["tasks_active"] = _stat(stats, "active") or 0
-            if not setscene_seen:
+            if not self.setscene_seen:
                 covered = _stat(stats, "setscene_covered")
                 notcovered = _stat(stats, "setscene_notcovered")
                 total = _stat(stats, "setscene_total")
@@ -533,7 +531,7 @@ class _NormalizeState:
                     setscene["covered"] = covered or 0
                     setscene["notcovered"] = notcovered or 0
                     setscene["total"] = total or 0
-                    setscene_seen = True
+                    self.setscene_seen = True
         elif class_name == _PSI_EVENT:
             psi["samples"].append(
                 {
@@ -586,9 +584,6 @@ class _NormalizeState:
                     "mountpoint": _first(event, "_mountpoint"),
                 }
             )
-
-        self.setscene_seen = setscene_seen
-        self.saw_failure = saw_failure
 
     def result(self, *, record_host: bool, detach: bool = False) -> dict[str, Any]:
         """Build the artifact dict; ``detach=True`` deep-copies it off live state."""
@@ -738,6 +733,15 @@ class IncrementalEventLog:
 
     Memory is the normalized state, not the log: raw lines are dropped after
     folding.
+
+    One deliberate difference from :func:`normalize`: a line whose processing
+    raises (a ``RecursionError`` from a deeply nested payload, a field of the
+    wrong type) is skipped here, so one bad line cannot stall a live reader
+    forever, while :func:`normalize` lets the exception propagate. On a log
+    containing such a line :meth:`normalized` therefore does not equal
+    ``normalize`` (which raises). Every skip increments :attr:`skipped_lines`,
+    so the divergence is observable rather than silent; the counter resets
+    with the rest of the state when the log is replaced or shrinks.
     """
 
     def __init__(self, path: Path, *, record_host: bool = True) -> None:
@@ -746,6 +750,7 @@ class IncrementalEventLog:
         self._reset()
 
     def _reset(self) -> None:
+        self.skipped_lines = 0
         self._state = _NormalizeState()
         self._offset = 0
         self._inode: int | None = None
@@ -791,11 +796,19 @@ class IncrementalEventLog:
             if decoded is not None:
                 self._state.consume(*decoded)
         except Exception:  # noqa: BLE001 - an unprocessable line (RecursionError, bad field type) is skipped like an unrecognised one
-            return
+            self.skipped_lines += 1
 
-    def normalized(self) -> dict[str, Any]:
-        """Return the artifact :func:`normalize` would give for the consumed prefix."""
-        return self._state.result(record_host=self._record_host, detach=True)
+    def normalized(self, *, detach: bool = True) -> dict[str, Any]:
+        """Return the artifact :func:`normalize` would give for the consumed prefix.
+
+        The default deep-copies the artifact, which costs O(state) per call but
+        keeps the result valid after later polls. ``detach=False`` returns the
+        live accumulator without copying: cheap, for a read-only consumer that
+        finishes with the result before the next :meth:`poll` (the monitor's
+        refresh loop). The caller must not mutate it, and must not hold it
+        across a poll, which mutates it in place.
+        """
+        return self._state.result(record_host=self._record_host, detach=detach)
 
     def running_tasks(self) -> list[RunningTask]:
         """Return the running tasks, selected exactly as :func:`running_tasks` does."""

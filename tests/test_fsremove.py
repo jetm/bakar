@@ -174,3 +174,112 @@ def test_parallel_rmtree_removes_without_eta_column(tmp_path: Path, monkeypatch:
 
     assert seen["show_eta"] is False
     assert not root.exists()
+
+
+def test_parallel_rmtree_residue_memory_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Undeletable entries are counted but only a capped sample (no tracebacks) is kept."""
+    import bakar.fsremove as fsremove
+
+    root = tmp_path / "build"
+    _populate(root, dirs=6, files_per_dir=1)
+    emitted = 0
+
+    def fake_rmtree(path, onexc=None, **_kw):
+        nonlocal emitted
+        for i in range(500):
+            emitted += 1
+            try:
+                raise PermissionError(13, "denied")
+            except PermissionError as exc:
+                onexc(os.unlink, f"{path}/entry{i}", exc)
+
+    monkeypatch.setattr(fsremove.shutil, "rmtree", fake_rmtree)
+    result = parallel_rmtree(root)
+
+    assert result is not None
+    _path, exc = result
+    sample = exc.residue_sample  # ty: ignore[unresolved-attribute]
+    assert len(sample) <= fsremove.RESIDUE_SAMPLE_LIMIT
+    assert all(e.__traceback__ is None for _p, e in sample)
+    assert exc.residue_count > fsremove.RESIDUE_SAMPLE_LIMIT  # ty: ignore[unresolved-attribute]
+    # The skeleton pass emitted 500 more on the root; those are not re-recorded.
+    assert exc.residue_count == emitted - 500  # ty: ignore[unresolved-attribute]
+
+
+def _rmtree_leaving_root(root: Path, real_rmtree):
+    """Stand-in for ``shutil.rmtree`` whose rmdir of *root* itself fails (EBUSY-like)."""
+
+    def fake(path, onexc=None, **kw):
+        if str(path) == str(root):
+            real_rmtree_children(root, real_rmtree)
+            onexc(os.rmdir, str(path), OSError(16, "Device or resource busy"))
+            return
+        return real_rmtree(path, onexc=onexc, **kw)
+
+    return fake
+
+
+def real_rmtree_children(root: Path, real_rmtree) -> None:
+    for child in list(root.iterdir()):
+        if child.is_dir() and not child.is_symlink():
+            real_rmtree(child)
+        else:
+            child.unlink()
+
+
+def test_parallel_rmtree_empty_root_that_cannot_be_removed_is_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mount-point root: contents gone, only its own rmdir fails -> success, not residue."""
+    import bakar.fsremove as fsremove
+
+    root = tmp_path / "build"
+    _populate(root, dirs=3, files_per_dir=2)
+    monkeypatch.setattr(fsremove.shutil, "rmtree", _rmtree_leaving_root(root, fsremove.shutil.rmtree))
+
+    assert parallel_rmtree(root) is None
+    assert root.is_dir()
+    assert list(root.iterdir()) == []
+
+
+def test_parallel_rmtree_root_failure_with_entries_left_is_residue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import bakar.fsremove as fsremove
+
+    root = tmp_path / "build"
+    _populate(root, dirs=2, files_per_dir=1)
+    (root / "stuck").write_text("x")
+    real = fsremove.shutil.rmtree
+    real_unlink = type(root).unlink
+
+    def fake(path, onexc=None, **kw):
+        if str(path) == str(root):
+            onexc(os.rmdir, str(path), OSError(16, "busy"))
+            return
+        return real(path, onexc=onexc, **kw)
+
+    def stuck_unlink(self, *a, **kw):
+        if self.name == "stuck":
+            raise PermissionError(13, "denied")
+        return real_unlink(self, *a, **kw)
+
+    monkeypatch.setattr(fsremove.shutil, "rmtree", fake)
+    monkeypatch.setattr(type(root), "unlink", stuck_unlink)
+    result = parallel_rmtree(root)
+    assert result is not None, "root still holds an entry, so it is residue"
+    assert result[0].name == "stuck"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_parallel_rmtree_empty_root_under_readonly_parent_is_success(tmp_path: Path) -> None:
+    parent = tmp_path / "parent"
+    root = parent / "build"
+    _populate(root, dirs=3, files_per_dir=1)
+    parent.chmod(0o555)
+    try:
+        assert parallel_rmtree(root) is None
+        assert root.is_dir()
+        assert list(root.iterdir()) == []
+    finally:
+        parent.chmod(0o755)
