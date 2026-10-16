@@ -158,10 +158,6 @@ known-first-party = ["bakar"]
 # parameter); the line is pragma: no-cover and this lint cannot reach it.
 # Typer CLI commands use boolean Options/Flags (FBT*) and many args (PLR0913) by design.
 "src/bakar/commands/*.py" = ["TC001", "TC003", "FBT001", "FBT002", "FBT003", "PLR0913"]
-# Internal helpers with many params that are not Typer commands but exceed max-args by design.
-"src/bakar/config.py" = ["PLR0913"]
-"src/bakar/steps/kas_build.py" = ["PLR0913"]
-"src/bakar/build_stop.py" = ["PLR0913"]
 # permanent: module-level lazy-load singletons (_VENDORS, _USER_CONFIG).
 "src/bakar/commands/_app.py" = ["PLW0603"]
 # Test functions receive bool params from @pytest.mark.parametrize, not from callers.
