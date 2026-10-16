@@ -364,27 +364,67 @@ def test_bitbake_lock_of_another_build_dir_is_refused(workspace: Path, tmp_path:
     assert _head(root / "wt1") == first
 
 
-def test_interrupted_delivery_is_completed_by_the_same_owner(workspace: Path, tmp_path: Path):
-    repo = workspace / "meta-avocado"
+def _interrupt_after_add(root: Path, commit: str, *, host: str = HOST, head_commit: str | None = None) -> Path:
+    """Leave the state a script killed between ``worktree add`` and the marker write leaves.
+
+    The marker is removed and the pending record holds the text the script wrote
+    before the add. ``head_commit`` is the commit the pending record names.
+    """
+    gitdir = Path(_git("-C", root / "wt1", "rev-parse", "--absolute-git-dir"))
+    (gitdir / MARKER_FILENAME).unlink()
+    (root / ".wt1.pending").write_text(
+        marker_json(source_host=host, source_path=SRC, name="wt1", commit=head_commit or commit, snapshot=False)
+    )
+    return gitdir
+
+
+def test_consumed_pending_record_is_empty_after_delivery(workspace: Path, tmp_path: Path):
     root = tmp_path / "wts"
-    first = _head(repo)
+    assert _run(workspace, root, _head(workspace / "meta-avocado")).returncode == 0
+    assert (root / ".wt1.pending").stat().st_size == 0
+
+
+def test_interrupted_delivery_is_completed_by_the_same_owner(workspace: Path, tmp_path: Path):
+    root = tmp_path / "wts"
+    first = _head(workspace / "meta-avocado")
+    assert _run(workspace, root, first).returncode == 0
+    gitdir = _interrupt_after_add(root, first)
+    res = _run(workspace, root, first)
+    assert res.returncode == 0, res.stderr
+    assert json.loads((gitdir / MARKER_FILENAME).read_text())["source_host"] == HOST
+    assert (root / ".wt1.pending").stat().st_size == 0
+
+
+def test_interrupted_delivery_is_not_completed_for_another_owner(workspace: Path, tmp_path: Path):
+    root = tmp_path / "wts"
+    first = _head(workspace / "meta-avocado")
+    assert _run(workspace, root, first).returncode == 0
+    gitdir = _interrupt_after_add(root, first, host="other")
+    res = _run(workspace, root, first)
+    assert res.returncode != 0
+    assert not (gitdir / MARKER_FILENAME).exists()
+
+
+def test_consumed_pending_record_does_not_vouch_for_a_worktree_without_a_marker(workspace: Path, tmp_path: Path):
+    root = tmp_path / "wts"
+    first = _head(workspace / "meta-avocado")
     assert _run(workspace, root, first).returncode == 0
     gitdir = Path(_git("-C", root / "wt1", "rev-parse", "--absolute-git-dir"))
     (gitdir / MARKER_FILENAME).unlink()
     res = _run(workspace, root, first)
-    assert res.returncode == 0, res.stderr
-    assert (gitdir / MARKER_FILENAME).is_file()
+    assert res.returncode == EXIT_NO_MARKER
+    assert not (gitdir / MARKER_FILENAME).exists()
 
 
-def test_interrupted_delivery_is_not_completed_for_another_owner(workspace: Path, tmp_path: Path):
+def test_pending_record_for_another_commit_does_not_vouch_for_the_worktree(workspace: Path, tmp_path: Path):
     repo = workspace / "meta-avocado"
     root = tmp_path / "wts"
     first = _head(repo)
     assert _run(workspace, root, first).returncode == 0
-    gitdir = Path(_git("-C", root / "wt1", "rev-parse", "--absolute-git-dir"))
-    (gitdir / MARKER_FILENAME).unlink()
-    res = _run(workspace, root, first, host="other")
-    assert res.returncode != 0
+    other = _commit(repo, "b.txt", "b\n")
+    gitdir = _interrupt_after_add(root, first, head_commit=other)
+    res = _run(workspace, root, first)
+    assert res.returncode == EXIT_NO_MARKER
     assert not (gitdir / MARKER_FILENAME).exists()
 
 

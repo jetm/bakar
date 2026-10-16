@@ -591,10 +591,13 @@ Every check runs before the first remote write:
    flag, delivery time) into the worktree's git admin directory, so the work
    tree stays clean. If the script dies between the add and the marker, the
    next dispatch from the same host and checkout finishes the marker from the
-   pending record. When the worktree exists, bakar moves it to the new commit
-   with `git checkout --detach` only if the marker names this host and this
-   checkout path, the tree is clean (checked first, so a hand-edited tree at
-   the same commit is refused too), no build holds the `bitbake.lock` of any
+   pending record, but only when the worktree sits at the commit that record
+   names. The record is emptied once the marker is written, so a leftover one
+   never vouches for a worktree bakar did not place. When the worktree exists,
+   bakar moves it to the new commit with `git checkout --detach` only if the
+   marker names this host and this checkout path, the tree is clean (checked
+   first, so a hand-edited tree at the same commit is refused too), no build
+   holds the `bitbake.lock` of any
    build directory in the workspace, and no dispatched build holds
    `<worktree_root>/.<name>.build.lock`. A worktree already at the commit is
    left as is.

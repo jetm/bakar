@@ -39,15 +39,18 @@ _EXIT_DESCRIPTIONS = {
     EXIT_BUILD_RUNNING: "a build is running in the delivered worktree's build directory",
 }
 
-# Compares the marker's owner against the expected host and path. Exit 4 when
-# the marker cannot be read or parsed, 5 when it names another owner.
+# Compares the marker's owner against the expected host and path, and, when a
+# fourth argument is given, the commit it names. Exit 4 when the marker cannot
+# be read or parsed or names another commit, 5 when it names another owner.
 _MARKER_CHECK_PY = """\
 import json, sys
 path, host, src = sys.argv[1:4]
+want_commit = sys.argv[4] if len(sys.argv) > 4 else None
 try:
     with open(path, encoding="utf-8") as fh:
         data = json.load(fh)
     got_host, got_src = data["source_host"], data["source_path"]
+    got_commit = data["commit"] if want_commit is not None else None
 except (OSError, ValueError, KeyError, TypeError) as exc:
     print(f"bakar: cannot read marker {path}: {exc}", file=sys.stderr)
     sys.exit(4)
@@ -58,6 +61,9 @@ if (got_host, got_src) != (host, src):
         file=sys.stderr,
     )
     sys.exit(5)
+if want_commit is not None and got_commit != want_commit:
+    print(f"bakar: {path} names commit {got_commit}, not {want_commit}", file=sys.stderr)
+    sys.exit(4)
 """
 
 
@@ -180,6 +186,9 @@ write_marker() {{
     local gitdir
     gitdir=$(git -C "$dest" rev-parse --absolute-git-dir)
     printf '%s' "$marker" > "$gitdir/{MARKER_FILENAME}"
+    # The pending record has done its job; emptying it stops a stale one from
+    # vouching for some later worktree at this path.
+    if [ -s "$pending" ]; then : > "$pending"; fi
 }}
 
 mkdir -p -- "$root"
@@ -209,9 +218,14 @@ gitdir=$(git -C "$dest" rev-parse --absolute-git-dir) || {{
 }}
 marker_path="$gitdir/{MARKER_FILENAME}"
 if [ ! -r "$marker_path" ]; then
-    # An interrupted delivery by this same owner left a pending record: finish it.
-    if [ -r "$pending" ] && python3 -c {q(_MARKER_CHECK_PY)} "$pending" "$src_host" "$src_path"; then
-        write_marker
+    # An interrupted delivery by this same owner leaves a non-empty pending
+    # record naming the commit the worktree was added at. A consumed (empty) or
+    # mismatching record vouches for nothing, so a worktree bakar did not place
+    # at this path is still refused.
+    head_now=$(git -C "$dest" rev-parse HEAD)
+    if [ -s "$pending" ] && python3 -c {q(_MARKER_CHECK_PY)} "$pending" "$src_host" "$src_path" "$head_now"; then
+        cat -- "$pending" > "$marker_path"
+        : > "$pending"
     else
         echo "bakar: $dest has no readable marker at $marker_path" >&2
         exit {EXIT_NO_MARKER}
