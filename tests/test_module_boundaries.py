@@ -403,6 +403,60 @@ def test_extracted_module_is_matched_by_exactly_one_arch_group(module_path: str)
     )
 
 
+# Modules deliberately left outside every group. The seven parsers are named in
+# ``.arch-rules.toml`` as an open design question, not an oversight. Adding a
+# name here is a decision to leave its imports ungoverned; give the module a
+# group in the rules file instead unless that is the intent.
+DELIBERATELY_UNCLASSIFIED: frozenset[str] = frozenset(
+    {
+        "src/bakar/__init__.py",
+        "src/bakar/task_timings.py",
+        "src/bakar/eventlog.py",
+        "src/bakar/fmt.py",
+        "src/bakar/graph_analyze.py",
+        "src/bakar/inspect_parse.py",
+        "src/bakar/pin_state.py",
+        "src/bakar/preset_config.py",
+    }
+)
+
+# Static kas overlay data tree (a vendored bitbake layer), not bakar code.
+_UNCLASSIFIED_TREES: tuple[str, ...] = ("src/bakar/overlays/**",)
+
+_REPO_ROOT = _ARCH_RULES.parent
+
+
+def _all_bakar_modules() -> list[str]:
+    """Every governed ``src/bakar`` module, as repo-relative POSIX paths."""
+    found = (path.relative_to(_REPO_ROOT).as_posix() for path in sorted((_REPO_ROOT / "src" / "bakar").rglob("*.py")))
+    return [
+        module
+        for module in found
+        if module not in DELIBERATELY_UNCLASSIFIED
+        and not any(PurePosixPath(module).full_match(tree) for tree in _UNCLASSIFIED_TREES)
+    ]
+
+
+@pytest.mark.parametrize("module_path", _all_bakar_modules())
+def test_every_bakar_module_is_matched_by_exactly_one_arch_group(module_path: str) -> None:
+    """No ``src/bakar`` module may fall outside the groups unless declared so.
+
+    ``EXTRACTED_MODULES`` only covers modules someone remembered to list, so a
+    new module matching no group slipped through the fitness check unnoticed.
+    Enumerating the tree closes that: a module absent from every group fails
+    here by name, and the only way past is an explicit entry in
+    ``DELIBERATELY_UNCLASSIFIED``.
+    """
+    target = PurePosixPath(module_path)
+
+    matched = [group["name"] for group in _arch_groups() for pattern in group["paths"] if target.full_match(pattern)]
+
+    assert len(matched) == 1, (
+        f"{module_path} must match exactly one group in .arch-rules.toml, matched {len(matched)}: {matched or 'none'}. "
+        "Add it to a group, or to DELIBERATELY_UNCLASSIFIED if leaving it ungoverned is intended."
+    )
+
+
 def test_every_arch_group_matches_at_least_one_file() -> None:
     """A group whose patterns match nothing governs nothing.
 
