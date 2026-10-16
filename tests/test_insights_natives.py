@@ -51,19 +51,25 @@ class Env:
         if prev is not None:
             self.sig(recipe, _h(prev[0]), prev[1])
 
-    def report(self, artifact_extra: dict[str, Any] | None = None, **kw: Any) -> mod.NativesReport:
+    def report(
+        self,
+        artifact_extra: dict[str, Any] | None = None,
+        *,
+        extra_allowed_roots: list[Path] | tuple[Path, ...] = (),
+        **kw: Any,
+    ) -> mod.NativesReport:
         (self.run_dir / MANIFEST_NAME).write_text(json.dumps({"schema": 1, "tasks": self.manifest}))
         artifact: dict[str, Any] = {"build": {"started": START, "completed": END}, "tasks": self.rows}
         artifact.update(artifact_extra or {})
-        return mod.natives_report(
-            artifact,
+        inputs = mod.NativesInputs(
             run_dir=self.run_dir,
             sstate_dir=self.sstate,
             sstate_namespaces=[],
             stamp_roots=[],
             bitbake_lib=self.lib,
-            **kw,
+            extra_allowed_roots=extra_allowed_roots,
         )
+        return mod.natives_report(artifact, inputs=inputs, **kw)
 
 
 @pytest.fixture
@@ -246,14 +252,10 @@ def test_helper_error_and_unrecoverable_are_not_recoverable(env: Env, fake: Fake
 def test_missing_manifest_sets_error_with_counts(env: Env, fake: FakeRun) -> None:
     env.recipe("x-native", "c")
     artifact = {"tasks": env.rows}
-    report = mod.natives_report(
-        artifact,
-        run_dir=env.run_dir,
-        sstate_dir=env.sstate,
-        sstate_namespaces=[],
-        stamp_roots=[],
-        bitbake_lib=env.lib,
+    inputs = mod.NativesInputs(
+        run_dir=env.run_dir, sstate_dir=env.sstate, sstate_namespaces=[], stamp_roots=[], bitbake_lib=env.lib
     )
+    report = mod.natives_report(artifact, inputs=inputs)
     assert report.error == mod.ERR_NO_MANIFEST
     assert report.executed_tasks == 1
     assert report.groups == ()
@@ -261,14 +263,10 @@ def test_missing_manifest_sets_error_with_counts(env: Env, fake: FakeRun) -> Non
 
 
 def test_nothing_executed_gives_message(env: Env, fake: FakeRun) -> None:
-    report = mod.natives_report(
-        {"tasks": []},
-        run_dir=env.run_dir,
-        sstate_dir=env.sstate,
-        sstate_namespaces=[],
-        stamp_roots=[],
-        bitbake_lib=env.lib,
+    inputs = mod.NativesInputs(
+        run_dir=env.run_dir, sstate_dir=env.sstate, sstate_namespaces=[], stamp_roots=[], bitbake_lib=env.lib
     )
+    report = mod.natives_report({"tasks": []}, inputs=inputs)
     assert report.message == mod.NO_DATA_MESSAGE
     assert report.error == ""
 

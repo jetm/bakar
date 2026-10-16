@@ -69,7 +69,7 @@ from bakar.commands._helpers import (
 from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.elfscan import _neutralized
 from bakar.insights_disk import disk_report
-from bakar.insights_natives import NativesReport, natives_report
+from bakar.insights_natives import NativesInputs, NativesReport, natives_report
 from bakar.insights_pressure import pressure_report
 from bakar.insights_sstate import sstate_report
 from bakar.insights_timing import correlation_window, timing_report
@@ -587,8 +587,7 @@ def _natives_for(cfg, run_dir: Path, artifact: dict, lib_workspace: Path | None 
     sstate_dir = native_ledger.effective_sstate_dir(cfg.sstate_dir)
     if sstate_dir is None:
         return NativesReport(error="no sstate directory is configured (set SSTATE_DIR or the sstate_dir config key)")
-    return natives_report(
-        artifact,
+    inputs = NativesInputs(
         run_dir=run_dir,
         sstate_dir=sstate_dir,
         sstate_namespaces=_sstate_namespaces(sstate_dir),
@@ -596,3 +595,4 @@ def _natives_for(cfg, run_dir: Path, artifact: dict, lib_workspace: Path | None 
         bitbake_lib=(lib_workspace / "bitbake" if lib_workspace else cfg.bitbake_bin_path.parent) / "lib",
         extra_allowed_roots=_native_seed_dirs(sstate_dir),
     )
+    return natives_report(artifact, inputs=inputs)

@@ -26,7 +26,7 @@ import pytest
 import bakar.commands.insights as insights_module
 from bakar import eventlog
 from bakar.cli import app
-from bakar.insights_natives import CauseGroup, NativesReport, ReasonGroup
+from bakar.insights_natives import CauseGroup, NativesInputs, NativesReport, ReasonGroup
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -633,11 +633,11 @@ def _natives_cfg(tmp_path: Path) -> SimpleNamespace:
     )
 
 
-def _capture_natives_kwargs(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
-    captured: dict[str, object] = {}
+def _capture_natives_kwargs(monkeypatch: pytest.MonkeyPatch) -> dict[str, NativesInputs]:
+    captured: dict[str, NativesInputs] = {}
 
-    def fake(*a: object, **k: object) -> NativesReport:
-        captured.update(k)
+    def fake(*a: object, inputs: NativesInputs, **k: object) -> NativesReport:
+        captured["inputs"] = inputs
         return NativesReport()
 
     monkeypatch.setattr(insights_module, "natives_report", fake)
@@ -649,13 +649,13 @@ def test_natives_for_passes_native_seed_dirs(tmp_path: Path, monkeypatch: pytest
     (tmp_path / ".native-seed" / "scarthgap").mkdir(parents=True)
     captured = _capture_natives_kwargs(monkeypatch)
     insights_module._natives_for(_natives_cfg(tmp_path), tmp_path, {})
-    assert captured["extra_allowed_roots"] == [tmp_path / ".native-seed" / "scarthgap"]
+    assert captured["inputs"].extra_allowed_roots == [tmp_path / ".native-seed" / "scarthgap"]
 
 
 def test_natives_for_passes_nothing_without_seed_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     captured = _capture_natives_kwargs(monkeypatch)
     insights_module._natives_for(_natives_cfg(tmp_path), tmp_path, {})
-    assert captured["extra_allowed_roots"] == []
+    assert captured["inputs"].extra_allowed_roots == []
 
 
 def test_natives_for_finds_bitbake_at_the_workspace_top_for_a_generic_layout(
@@ -666,6 +666,6 @@ def test_natives_for_finds_bitbake_at_the_workspace_top_for_a_generic_layout(
     cfg = _natives_cfg(tmp_path)
     cfg.bitbake_bin_path = tmp_path / "build-x" / "bitbake" / "bin"
     insights_module._natives_for(cfg, tmp_path, {}, tmp_path / "ws")
-    assert captured["bitbake_lib"] == tmp_path / "ws" / "bitbake" / "lib"
+    assert captured["inputs"].bitbake_lib == tmp_path / "ws" / "bitbake" / "lib"
     insights_module._natives_for(cfg, tmp_path, {})
-    assert captured["bitbake_lib"] == tmp_path / "build-x" / "bitbake" / "lib"
+    assert captured["inputs"].bitbake_lib == tmp_path / "build-x" / "bitbake" / "lib"

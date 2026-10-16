@@ -202,18 +202,23 @@ def _run_helper(request: dict[str, Any], bitbake_lib: Path, timeout: float) -> t
     return response, ""
 
 
-def natives_report(  # noqa: PLR0913 - keyword-only signature fixed by the spec
-    artifact: dict[str, Any],
-    *,
-    run_dir: Path,
-    sstate_dir: Path,
-    sstate_namespaces: list[Path],
-    stamp_roots: list[Path],
-    bitbake_lib: Path,
-    timeout: float = 600.0,
-    extra_allowed_roots: Sequence[Path] = (),
-) -> NativesReport:
+@dataclass(frozen=True, kw_only=True, slots=True)
+class NativesInputs:
+    """Where a natives report reads the run's manifest, signature files and the bitbake library."""
+
+    run_dir: Path
+    sstate_dir: Path
+    sstate_namespaces: list[Path]
+    stamp_roots: list[Path]
+    bitbake_lib: Path
+    extra_allowed_roots: Sequence[Path] = ()
+
+
+def natives_report(artifact: dict[str, Any], *, inputs: NativesInputs, timeout: float = 600.0) -> NativesReport:
     """Attribute the run's native/cross rebuilds to signature changes."""
+    run_dir, sstate_dir, bitbake_lib = inputs.run_dir, inputs.sstate_dir, inputs.bitbake_lib
+    sstate_namespaces, stamp_roots = inputs.sstate_namespaces, inputs.stamp_roots
+    extra_allowed_roots = inputs.extra_allowed_roots
     rows = list(native_ledger.executed_native_tasks(artifact))
     restored = native_ledger.restored_native_count(artifact)
     if not rows:

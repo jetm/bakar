@@ -326,14 +326,10 @@ def test_natives_report_recaptured_same_hash_is_unchanged(tmp_path, monkeypatch)
     (lib / "bb" / "siggen.py").write_text("")
     _run_once(tmp_path, 0, H1)
     art2, run2, stamps2, _ = _run_once(tmp_path, 1, H1)
-    rep = mod.natives_report(
-        art2,
-        run_dir=run2,
-        sstate_dir=tmp_path / "sstate",
-        sstate_namespaces=[],
-        stamp_roots=[stamps2],
-        bitbake_lib=lib,
+    inputs = mod.NativesInputs(
+        run_dir=run2, sstate_dir=tmp_path / "sstate", sstate_namespaces=[], stamp_roots=[stamps2], bitbake_lib=lib
     )
+    rep = mod.natives_report(art2, inputs=inputs)
     assert (rep.unchanged, rep.no_previous, rep.attributed) == (1, 0, 0)
 
 
