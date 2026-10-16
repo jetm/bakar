@@ -261,7 +261,7 @@ def _no_systemd_scope_probe(request, monkeypatch):
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
 # Two synthetic projects pinned to 40-hex-char SHAs.  parse_manifest_pins
@@ -306,6 +306,22 @@ NOTE: Tasks Summary: Attempted 4321 tasks of which 4320 didn't need to be rerun 
 PN_CYCLE_TASK_DAG_DOT = (
     'digraph depends {\n"a.do_configure" -> "b.do_populate_sysroot"\n"b.do_package" -> "a.do_populate_sysroot"\n}\n'
 )
+
+
+@pytest.fixture
+def nfs_probe(monkeypatch: pytest.MonkeyPatch) -> Callable[[bool | None], None]:
+    """Return a setter that fixes the NFS probe answer the stop module sees.
+
+    build_stop reaches ``is_path_on_nfs`` through ``bakar.diagnostics`` today and
+    will import it from ``bakar.mounts`` after the seam retarget; patching both
+    keeps a stop test observing its answer on either side of that change.
+    """
+
+    def _set(answer: bool | None) -> None:
+        monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: answer)
+        monkeypatch.setattr("bakar.mounts.is_path_on_nfs", lambda _p: answer)
+
+    return _set
 
 
 @pytest.fixture

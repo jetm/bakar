@@ -29,6 +29,8 @@ from bakar.commands import triage as commands_triage
 from tests.conftest import make_build_config
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from bakar.config import BuildConfig
 
 pytestmark = pytest.mark.unit
@@ -2231,11 +2233,13 @@ def test_discover_host_cookers_empty_when_no_match(tmp_path: Path) -> None:
 
 
 def test_correlate_host_discoveries_matches_live_run_under_topdir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A discovered topdir with a live cooker resolves to its live run candidate
     via live_workspace_runs(topdir / "runs") - not a second launch-record reader."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     run_dir = _make_run_dir(tmp_path / "nxp", "20260618-120000-111")
     build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
     topdir = run_dir.parent.parent  # tmp_path/nxp/build
@@ -2248,12 +2252,13 @@ def test_correlate_host_discoveries_matches_live_run_under_topdir(
 
 
 def test_correlate_host_discoveries_drops_topdir_with_no_matching_live_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A topdir with a live cooker but no run directory underneath it (launch-record
     write race, or a cooker started outside bakar's own entry point) is dropped
     silently - not reported with a missing or fabricated run id."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     topdir = tmp_path / "orphan" / "build"  # no runs/ subdirectory exists at all
 
     candidates = build_stop.correlate_host_discoveries({topdir: frozenset({7777})})
@@ -2262,11 +2267,13 @@ def test_correlate_host_discoveries_drops_topdir_with_no_matching_live_run(
 
 
 def test_correlate_host_discoveries_multiple_topdirs_each_correlate_independently(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """Two discovered topdirs on the same host each resolve to their own live run,
     and a dead run under one of them never leaks into the result."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     nxp_run = _make_run_dir(tmp_path / "nxp", "20260618-120000-111")
     build_stop.write_launch_record(nxp_run, pgid=4242, mode="host")
@@ -2293,7 +2300,9 @@ def test_correlate_host_discoveries_multiple_topdirs_each_correlate_independentl
 
 
 def test_correlate_host_discoveries_multiple_worker_pids_collapse_to_one_row(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """Confirming test for group 12's host-mode dedup: when the cooker has spawned
     several bitbake-worker processes that also match group 7's argv scan under the
@@ -2302,7 +2311,7 @@ def test_correlate_host_discoveries_multiple_worker_pids_collapse_to_one_row(
     never iterated for row content; the single candidate's metadata comes from
     the run directory's own launch record (the cooker), reached once per topdir
     via live_workspace_runs, regardless of how many PIDs matched there."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     run_dir = _make_run_dir(tmp_path / "nxp", "20260618-120000-111")
     build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
     topdir = run_dir.parent.parent  # tmp_path/nxp/build
@@ -2323,11 +2332,13 @@ def test_correlate_host_discoveries_multiple_worker_pids_collapse_to_one_row(
 
 
 def test_dedup_across_sources_drops_host_row_matching_container_run_id(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A run id reported by both host-mode correlation and container-mode discovery
     keeps only the container-mode row; the duplicate host row is dropped."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     run_dir = _make_run_dir(tmp_path / "nxp", "20260618-120000-111")
     build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
     topdir = run_dir.parent.parent
@@ -2344,10 +2355,12 @@ def test_dedup_across_sources_drops_host_row_matching_container_run_id(
 
 
 def test_dedup_across_sources_keeps_host_row_with_no_container_match(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A host-mode run id with no matching container-mode row is kept unchanged."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     run_dir = _make_run_dir(tmp_path / "nxp", "20260618-120000-111")
     build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
     topdir = run_dir.parent.parent
@@ -2592,12 +2605,13 @@ def test_lock_mutation_guard_local_marker_is_safe(tmp_path: Path, monkeypatch: p
 def test_lock_mutation_guard_garbled_marker_never_classifies_as_peer_held(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A garbled (torn multiline) marker must never classify as peer-held."""
     cfg, build_dir = _cfg_with_build_dir(tmp_path)
     (build_dir / ".bakar-lock-host").write_text("hosta\nhostb\n")
     monkeypatch.setattr(build_stop.socket, "gethostname", lambda: "this-host")
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     refusal = build_stop.lock_mutation_guard(cfg)
 
@@ -2606,12 +2620,12 @@ def test_lock_mutation_guard_garbled_marker_never_classifies_as_peer_held(
 
 def test_lock_mutation_guard_unattributable_lock_present_shared_fs(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """No reliable owner + lock PRESENT + shared/unknown fs -> unattributable."""
     cfg, build_dir = _cfg_with_build_dir(tmp_path)
     (build_dir / "bitbake.lock").write_text("4242\n")
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: True)
+    nfs_probe(True)
 
     refusal = build_stop.lock_mutation_guard(cfg)
 
@@ -2621,7 +2635,7 @@ def test_lock_mutation_guard_unattributable_lock_present_shared_fs(
 
 def test_lock_mutation_guard_shared_inaction_lock_absent_shared_fs(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """No reliable owner + lock ABSENT + shared/unknown fs -> shared-inaction, not a bare None.
 
@@ -2630,7 +2644,7 @@ def test_lock_mutation_guard_shared_inaction_lock_absent_shared_fs(
     for up to ~60s after a peer creates the lock.
     """
     cfg, _build_dir = _cfg_with_build_dir(tmp_path)
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: None)
+    nfs_probe(None)
 
     refusal = build_stop.lock_mutation_guard(cfg)
 
@@ -2638,11 +2652,13 @@ def test_lock_mutation_guard_shared_inaction_lock_absent_shared_fs(
     assert refusal.reason == "shared-inaction"
 
 
-def test_lock_mutation_guard_none_when_confirmed_local(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_lock_mutation_guard_none_when_confirmed_local(
+    tmp_path: Path, nfs_probe: Callable[[bool | None], None]
+) -> None:
     """No reliable owner but the filesystem is CONFIRMED local -> safe (None)."""
     cfg, build_dir = _cfg_with_build_dir(tmp_path)
     (build_dir / "bitbake.lock").write_text("4242\n")
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     assert build_stop.lock_mutation_guard(cfg) is None
 
@@ -3018,9 +3034,11 @@ def test_verify_clean_no_cfg_unchanged(tmp_path: Path, monkeypatch: pytest.Monke
 # --- is_candidate_live: standalone per-candidate liveness check -------------
 
 
-def test_is_candidate_live_host_mode_alive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_is_candidate_live_host_mode_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nfs_probe: Callable[[bool | None], None]
+) -> None:
     """A host-mode candidate is live when is_build_running reports alive+cmdline_ok."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     ws = tmp_path
     run_dir = _make_run_dir(ws / "nxp", "20260618-120000-111")
     build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
@@ -3032,9 +3050,11 @@ def test_is_candidate_live_host_mode_alive(tmp_path: Path, monkeypatch: pytest.M
     assert build_stop.is_candidate_live(candidate) is True
 
 
-def test_is_candidate_live_host_mode_dead(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_is_candidate_live_host_mode_dead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nfs_probe: Callable[[bool | None], None]
+) -> None:
     """A host-mode candidate is not live when is_build_running reports dead."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     ws = tmp_path
     run_dir = _make_run_dir(ws / "nxp", "20260618-120000-111")
     build_stop.write_launch_record(run_dir, pgid=9999, mode="host")
@@ -3046,9 +3066,11 @@ def test_is_candidate_live_host_mode_dead(tmp_path: Path, monkeypatch: pytest.Mo
     assert build_stop.is_candidate_live(candidate) is False
 
 
-def test_is_candidate_live_container_mode_alive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_is_candidate_live_container_mode_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nfs_probe: Callable[[bool | None], None]
+) -> None:
     """A container-mode candidate is live when the runtime confirms a match."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     ws = tmp_path
     run_dir = _make_run_dir(ws / "ti", "20260618-130000-222")
     build_stop.write_launch_record(
@@ -3062,9 +3084,11 @@ def test_is_candidate_live_container_mode_alive(tmp_path: Path, monkeypatch: pyt
     assert build_stop.is_candidate_live(candidate) is True
 
 
-def test_is_candidate_live_container_mode_dead(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_is_candidate_live_container_mode_dead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nfs_probe: Callable[[bool | None], None]
+) -> None:
     """A container-mode candidate is not live once the runtime confirms _DEAD."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     ws = tmp_path
     run_dir = _make_run_dir(ws / "ti", "20260618-130000-222")
     build_stop.write_launch_record(
@@ -3079,10 +3103,12 @@ def test_is_candidate_live_container_mode_dead(tmp_path: Path, monkeypatch: pyte
 
 
 def test_is_candidate_live_container_mode_error_fails_conservative(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """An unanswerable runtime query (_ERROR) is not treated as dead."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     ws = tmp_path
     run_dir = _make_run_dir(ws / "ti", "20260618-130000-222")
     build_stop.write_launch_record(
@@ -3096,9 +3122,11 @@ def test_is_candidate_live_container_mode_error_fails_conservative(
     assert build_stop.is_candidate_live(candidate) is True
 
 
-def test_is_candidate_live_no_label_no_host_mode_is_false(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_is_candidate_live_no_label_no_host_mode_is_false(
+    tmp_path: Path, nfs_probe: Callable[[bool | None], None]
+) -> None:
     """A malformed/missing launch record (no container_label, not host mode) is not live."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     ws = tmp_path
     run_dir = _make_run_dir(ws / "nxp", "20260618-170000-666")
     (run_dir / "build.meta.json").write_text("{not json")
@@ -3116,6 +3144,7 @@ def test_is_candidate_live_no_label_no_host_mode_is_false(tmp_path: Path, monkey
 def test_workspace_wide_discovery_finds_live_builds_across_family_roots(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A live build under a different family root than the one the CLI args
     pointed at (e.g. a live TI build while ``--manifest`` selected NXP) must
@@ -3123,7 +3152,7 @@ def test_workspace_wide_discovery_finds_live_builds_across_family_roots(
     caller happened to resolve. A finished run under the SAME root as a live
     one must not leak into the live-only result either.
     """
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     ws = tmp_path
 
     nxp_run = _make_run_dir(ws / "nxp", "20260618-120000-111")
@@ -3157,11 +3186,12 @@ def test_workspace_wide_discovery_finds_live_builds_across_family_roots(
 
 
 def test_enumerate_workspace_runs_covers_plain_and_build_star_roots(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """The plain ``<ws>/build/runs`` root and every ``<ws>/build-*/build/runs``
     root are scanned too, not just nxp/ti."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     ws = tmp_path
 
     plain_run = _make_run_dir(ws, "20260618-140000-333")
@@ -3177,12 +3207,13 @@ def test_enumerate_workspace_runs_covers_plain_and_build_star_roots(
 
 
 def test_enumerate_workspace_runs_callable_against_bare_runs_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """Passing a bare ``.../build/runs`` path scans that one root directly,
     without probing for nxp/ti/build-* subdirectories - the shape group 9's
     future host-mode correlation needs (a discovered topdir, not a workspace)."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     topdir = tmp_path / "some" / "topdir"
     run_dir = _make_run_dir(topdir, "20260618-160000-555")
     build_stop.write_launch_record(run_dir, pgid=1, mode="host")
@@ -3194,7 +3225,8 @@ def test_enumerate_workspace_runs_callable_against_bare_runs_dir(
 
 
 def test_enumerate_workspace_runs_bare_runs_dir_preserves_nxp_ti_family(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A bare ``.../nxp/build/runs`` (or ``.../ti/build/runs``) path - the shape
     a host-mode /proc scan discovers with no workspace in hand - resolves to
@@ -3204,7 +3236,7 @@ def test_enumerate_workspace_runs_bare_runs_dir_preserves_nxp_ti_family(
     calls it via ``topdir / "runs"``), so a wrong family here means every
     ``bakar ps`` row for an nxp/ti host-mode build reports the wrong family
     and resolves machine as if the build were bbsetup."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     nxp_run = _make_run_dir(tmp_path / "nxp", "20260618-170000-666")
     build_stop.write_launch_record(nxp_run, pgid=1, mode="host")
@@ -3227,12 +3259,12 @@ def test_enumerate_workspace_runs_bare_runs_dir_preserves_nxp_ti_family(
 
 def test_enumerate_workspace_runs_malformed_launch_record_excluded_from_live(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A malformed/unreadable launch record excludes that candidate from the
     live-only result rather than raising; it still appears in the unfiltered
     enumeration."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     ws = tmp_path
     run_dir = _make_run_dir(ws / "nxp", "20260618-170000-666")
     (run_dir / "build.meta.json").write_text("{not json")
@@ -3274,13 +3306,14 @@ def test_enumerate_workspace_runs_resolve_failure_excludes_root_without_crashing
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A root whose config resolution raises is excluded from the scan
     entirely rather than crashing the whole workspace-wide discovery, and
     the drop is logged rather than fully silent - it is not recorded in
     ``scan.skipped``, which is reserved for the lock-ownership gate's own
     refusal reasons, a different failure class."""
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     ws = tmp_path
     nxp_run = _make_run_dir(ws / "nxp", "20260618-190000-888")
     build_stop.write_launch_record(nxp_run, pgid=1, mode="host")
@@ -3307,13 +3340,14 @@ def test_enumerate_workspace_runs_resolve_failure_excludes_root_without_crashing
 def test_live_workspace_runs_timing_20_candidates_across_4_roots(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """The live-only filter completes well under a second against a fixture
     with >=20 candidate run directories spread across the 4 roots - per-root
     config resolution (a handful of calls) must not become per-run."""
     import time as time_module
 
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
     ws = tmp_path
     roots = [ws / "nxp", ws / "ti", ws, ws / "build-qemux86-64"]
     all_run_dirs: list[Path] = []
@@ -3340,6 +3374,7 @@ def test_live_workspace_runs_timing_20_candidates_across_4_roots(
 def test_host_wide_candidates_excludes_container_mode_run_sharing_topdir(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
 ) -> None:
     """A container-mode run sharing a topdir's ``runs/`` with a host-mode run
     must survive plain enumeration (proving the shared-topdir case is really
@@ -3355,7 +3390,7 @@ def test_host_wide_candidates_excludes_container_mode_run_sharing_topdir(
     ``build_stop._container_id_status`` directly, so the assertion holds
     whether or not a container runtime is installed on this host.
     """
-    monkeypatch.setattr("bakar.diagnostics.is_path_on_nfs", lambda _p: False)
+    nfs_probe(False)
 
     # One shared topdir: <workspace>/nxp/build, holding both a host-mode and
     # a container-mode run under the same runs/ directory.
