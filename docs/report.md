@@ -25,11 +25,11 @@ bakar report [RUN_ID] [OPTIONS]
 bakar report
 
 # Report on a specific run
-bakar report 20260601-143022
+bakar report 20260601-143022-48213
 
 # Machine-readable JSON output (pipe to jq, etc.)
 bakar report --json | jq '.duration_s'
-bakar report 20260601-143022 --json
+bakar report 20260601-143022-48213 --json
 
 # Include the sstate cache summary (one-off flag or persisted toggle)
 bakar report --show-sstate
@@ -39,7 +39,7 @@ bakar settings set layers.show_sstate_summary true
 ## Output (human)
 
 ```text
-:: report 20260601-143022
+:: report 20260601-143022-48213
 status: success
 duration: 1823s
 deploy: /bsp/nxp/build/tmp/deploy/images/imx8mp-var-dart
@@ -54,7 +54,7 @@ poky             11223344  dunfell
 
 ```json
 {
-  "run_id": "20260601-143022",
+  "run_id": "20260601-143022-48213",
   "status": "success",
   "duration_s": 1823.4,
   "build_revision": "a3f9c21b8e04",

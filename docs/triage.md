@@ -27,8 +27,8 @@ bakar triage [RUN_ID] [OPTIONS]
 bakar triage
 
 # Triage a specific run by ID (positional or --run, equivalent)
-bakar triage 20260601-143022
-bakar triage --run 20260601-143022
+bakar triage 20260601-143022-48213
+bakar triage --run 20260601-143022-48213
 
 # Under a multi-release preset fan-out, pick which run dir to triage
 bakar triage --release 6.6
@@ -38,7 +38,7 @@ bakar triage --preset imx-multi
 bakar triage --kas-yaml my-project.yml
 
 # Triage a BYO build from a specific run
-bakar triage 20260601-143022 --kas-yaml my-project.yml
+bakar triage 20260601-143022-48213 --kas-yaml my-project.yml
 ```
 
 ## Output
@@ -49,7 +49,7 @@ recorded task logfile (resolved from its container `/work/...` path to the
 host path):
 
 ```text
-:: triage 20260601-143022
+:: triage 20260601-143022-48213
 ✗ recipe linux-imx task do_compile failed
 task log: .../work/imx8mp-poky-linux/linux-imx/.../temp/log.do_compile.1234
 log.do_compile.1234 (tail):
@@ -60,7 +60,7 @@ When no `bitbake-events.json` artifact is present, triage falls back to the
 `kas.log` analysis:
 
 ```text
-:: triage 20260601-143022
+:: triage 20260601-143022-48213
 ✗ step kas_build failed: recipe failed
 
 kas.log (tail):
@@ -78,7 +78,7 @@ suggestions:
 When no failure is recorded on the fallback path:
 
 ```text
-:: triage 20260601-150000
+:: triage 20260601-150000-51877
 no step_fail events found
 ```
 

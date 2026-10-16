@@ -40,7 +40,7 @@ bbsetup workspace's `build/runs/`). `bakar insights` always prints which run
 it targeted:
 
 ```text
-:: insights 20260601-143022
+:: insights 20260601-143022-48213
 ```
 
 so a `--preset` multi-release build's `bakar insights` (no selector) never
@@ -57,7 +57,7 @@ sections.
 bakar insights
 
 # All four sections for a specific run
-bakar insights 20260601-143022
+bakar insights 20260601-143022-48213
 
 # Just the sstate breakdown
 bakar insights --sstate
