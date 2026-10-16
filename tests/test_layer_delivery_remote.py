@@ -25,6 +25,8 @@ from bakar.steps.layer_delivery_remote import (
     EXIT_NO_BUILD_LOCK,
     EXIT_NO_MARKER,
     MARKER_FILENAME,
+    DeliveryTarget,
+    MarkerFields,
     build_guard,
     build_lock_path,
     describe_exit,
@@ -80,13 +82,8 @@ def workspace(tmp_path: Path) -> Path:
 
 def _script(workspace: Path, root: Path, commit: str, *, src: str = SRC, aliases: tuple[str, ...] = ()) -> str:
     return ensure_worktree_script(
-        workspace=str(workspace),
-        worktree_root=str(root),
-        name="wt1",
-        commit=commit,
-        snapshot=False,
-        source_host=HOST,
-        source_path=src,
+        DeliveryTarget(workspace=str(workspace), worktree_root=str(root)),
+        MarkerFields(source_host=HOST, source_path=src, name="wt1", commit=commit, snapshot=False),
         source_path_aliases=aliases,
     )
 
@@ -105,13 +102,8 @@ def _exec(script: str) -> subprocess.CompletedProcess:
 
 def _run(workspace: Path, root: Path, commit: str, *, host: str = HOST, src: str = SRC):
     script = ensure_worktree_script(
-        workspace=str(workspace),
-        worktree_root=str(root),
-        name="wt1",
-        commit=commit,
-        snapshot=False,
-        source_host=host,
-        source_path=src,
+        DeliveryTarget(workspace=str(workspace), worktree_root=str(root)),
+        MarkerFields(source_host=host, source_path=src, name="wt1", commit=commit, snapshot=False),
     )
     return _exec(script)
 
@@ -278,13 +270,8 @@ def test_workspace_path_with_space_works(workspace: Path, tmp_path: Path):
 def test_invalid_name_is_rejected(name: str):
     with pytest.raises(ReleaseRoutingError):
         ensure_worktree_script(
-            workspace="/w",
-            worktree_root="/r",
-            name=name,
-            commit="abc",
-            snapshot=False,
-            source_host=HOST,
-            source_path=SRC,
+            DeliveryTarget(workspace="/w", worktree_root="/r"),
+            MarkerFields(source_host=HOST, source_path=SRC, name=name, commit="abc", snapshot=False),
         )
 
 
@@ -310,13 +297,8 @@ _FORBIDDEN = (
 
 def test_script_has_no_destructive_operations():
     script = ensure_worktree_script(
-        workspace="/w",
-        worktree_root="/r",
-        name="wt1",
-        commit="abc",
-        snapshot=True,
-        source_host=HOST,
-        source_path=SRC,
+        DeliveryTarget(workspace="/w", worktree_root="/r"),
+        MarkerFields(source_host=HOST, source_path=SRC, name="wt1", commit="abc", snapshot=True),
         source_path_aliases=("/alias",),
     )
     for forbidden in _FORBIDDEN:
@@ -344,11 +326,7 @@ def test_build_lock_path_is_the_scripts_lock(workspace: Path, tmp_path: Path):
 
 def test_marker_roundtrip():
     text = marker_json(
-        source_host=HOST,
-        source_path=SRC,
-        name="wt1",
-        commit="abc",
-        snapshot=True,
+        MarkerFields(source_host=HOST, source_path=SRC, name="wt1", commit="abc", snapshot=True),
         delivered_at="2026-01-01T00:00:00+00:00",
     )
     assert parse_marker(text) == {
@@ -436,7 +414,9 @@ def _interrupt_after_add(root: Path, commit: str, *, host: str = HOST, head_comm
     gitdir = Path(_git("-C", root / "wt1", "rev-parse", "--absolute-git-dir"))
     (gitdir / MARKER_FILENAME).unlink()
     (root / ".wt1.pending").write_text(
-        marker_json(source_host=host, source_path=SRC, name="wt1", commit=head_commit or commit, snapshot=False)
+        marker_json(
+            MarkerFields(source_host=host, source_path=SRC, name="wt1", commit=head_commit or commit, snapshot=False)
+        )
     )
     return gitdir
 
@@ -697,7 +677,7 @@ def test_unborn_head_without_marker_is_refused(workspace: Path, tmp_path: Path, 
     commit = _head(workspace / "meta-avocado")
     if pending:
         (root / ".wt1.pending").write_text(
-            marker_json(source_host=HOST, source_path=SRC, name="wt1", commit=commit, snapshot=False)
+            marker_json(MarkerFields(source_host=HOST, source_path=SRC, name="wt1", commit=commit, snapshot=False))
         )
     res = _run(workspace, root, commit)
     assert res.returncode == EXIT_NO_MARKER, res.stderr

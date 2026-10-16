@@ -265,13 +265,14 @@ def dispatch_avocado_build(  # noqa: PLR0913 - fixed dispatch signature consumed
         return push_rc
 
     script = layer_delivery_remote.ensure_worktree_script(
-        workspace=str(workspace),
-        worktree_root=str(root),
-        name=name,
-        commit=commit,
-        snapshot=snapshot,
-        source_host=socket.gethostname(),
-        source_path=os.path.realpath(checkout),
+        layer_delivery_remote.DeliveryTarget(workspace=str(workspace), worktree_root=str(root)),
+        layer_delivery_remote.MarkerFields(
+            source_host=socket.gethostname(),
+            source_path=os.path.realpath(checkout),
+            name=name,
+            commit=commit,
+            snapshot=snapshot,
+        ),
         # Markers written before the canonical spelling carry the logical path,
         # which differs from it when the checkout is reached through a symlink.
         source_path_aliases=(str(checkout),),

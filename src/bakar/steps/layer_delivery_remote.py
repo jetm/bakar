@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import shlex
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from bakar.release_workspace import ReleaseRoutingError, is_valid_delivered_name
@@ -116,24 +117,35 @@ def build_guard(*, worktree_root: str, name: str, commit: str) -> str:
     return shlex.join(["bash", "-c", _GUARD_SCRIPT, build_lock_path(worktree_root, name), dest, commit])
 
 
-def marker_json(  # noqa: PLR0913 - one keyword-only argument per marker field
-    *,
-    source_host: str,
-    source_path: str,
-    name: str,
-    commit: str,
-    snapshot: bool,
-    delivered_at: str | None = None,
-) -> str:
+@dataclass(frozen=True, kw_only=True, slots=True)
+class MarkerFields:
+    """The owner and content of one delivery, as recorded in its marker."""
+
+    source_host: str
+    source_path: str
+    name: str
+    commit: str
+    snapshot: bool
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class DeliveryTarget:
+    """Where on the host a delivered worktree is placed."""
+
+    workspace: str
+    worktree_root: str
+
+
+def marker_json(fields: MarkerFields, *, delivered_at: str | None = None) -> str:
     """Return the marker document recorded in a delivered worktree's git dir."""
     if delivered_at is None:
         delivered_at = datetime.now(UTC).isoformat(timespec="seconds")
     payload = {
-        "source_host": source_host,
-        "source_path": source_path,
-        "name": name,
-        "commit": commit,
-        "snapshot": snapshot,
+        "source_host": fields.source_host,
+        "source_path": fields.source_path,
+        "name": fields.name,
+        "commit": fields.commit,
+        "snapshot": fields.snapshot,
         "delivered_at": delivered_at,
     }
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
@@ -164,38 +176,30 @@ def describe_exit(code: int) -> str:
     return _EXIT_DESCRIPTIONS.get(code, f"the delivery script failed with exit status {code}")
 
 
-def ensure_worktree_script(  # noqa: PLR0913 - every value is keyword-only and lands in a distinct script variable
+def ensure_worktree_script(
+    target: DeliveryTarget,
+    fields: MarkerFields,
     *,
-    workspace: str,
-    worktree_root: str,
-    name: str,
-    commit: str,
-    snapshot: bool,
-    source_host: str,
-    source_path: str,
     source_path_aliases: tuple[str, ...] = (),
 ) -> str:
-    """Return the bash script that places ``commit`` at ``<worktree_root>/<name>``.
+    """Return the bash script that places ``fields.commit`` at ``<worktree_root>/<name>``.
 
-    ``source_path`` is written into new markers; a marker naming it or any of
-    ``source_path_aliases`` (other spellings of the same checkout, such as one
+    ``fields.source_path`` is written into new markers; a marker naming it or any
+    of ``source_path_aliases`` (other spellings of the same checkout, such as one
     reached through a symlink) counts as this owner's.
 
     Exit statuses: 0 delivered or already current, 3 lock held, 4 no readable
     marker, 5 marker from another owner, 6 dirty tree, 7 build running.
     """
+    workspace, worktree_root = target.workspace, target.worktree_root
+    name, commit = fields.name, fields.commit
+    source_host, source_path = fields.source_host, fields.source_path
     if not is_valid_delivered_name(name):
         raise ReleaseRoutingError(
             f"delivered name {name!r} must match [A-Za-z0-9._-]+",
         )
     q = shlex.quote
-    marker = marker_json(
-        source_host=source_host,
-        source_path=source_path,
-        name=name,
-        commit=commit,
-        snapshot=snapshot,
-    )
+    marker = marker_json(fields)
     accepted_paths = json.dumps([source_path, *(p for p in source_path_aliases if p != source_path)])
     return f"""\
 set -euo pipefail
