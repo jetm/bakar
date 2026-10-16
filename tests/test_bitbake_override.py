@@ -24,6 +24,7 @@ import pytest
 from bakar.config import BuildConfig
 from bakar.steps.bitbake_override import (
     _bsp_bitbake,
+    _disabled,
     _upstream_dir,
     apply,
     status,
@@ -296,3 +297,31 @@ def test_disabled_env_short_circuits_apply(
     # BSP tree untouched:
     assert bsp_bitbake.is_dir()
     assert not bsp_bitbake.is_symlink()
+
+
+@pytest.mark.parametrize(
+    ("value", "disabled"),
+    [
+        ("false", True),
+        ("0", True),
+        ("OFF", True),
+        ("No", True),
+        ("true", False),
+        ("1", False),
+        ("on", False),
+        ("", False),
+        ("maybe", False),
+    ],
+)
+def test_disabled_accepts_standard_boolean_spellings(
+    value: str,
+    disabled: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BAKAR_BITBAKE_OVERRIDE", value)
+    assert _disabled() is disabled
+
+
+def test_disabled_unset_stays_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BAKAR_BITBAKE_OVERRIDE", raising=False)
+    assert _disabled() is False

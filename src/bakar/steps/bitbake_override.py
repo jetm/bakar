@@ -100,8 +100,12 @@ def _override_repo() -> Path:
     return Path(raw).expanduser() if raw else DEFAULT_OVERRIDE_REPO
 
 
+_FALSY = frozenset({"0", "false", "no", "off"})
+
+
 def _disabled() -> bool:
-    return os.environ.get("BAKAR_BITBAKE_OVERRIDE", "1") == "0"
+    """True only for an explicit falsy spelling; unset, empty or unknown stays enabled."""
+    return os.environ.get("BAKAR_BITBAKE_OVERRIDE", "").strip().lower() in _FALSY
 
 
 def _read_bb_version(bitbake_dir: Path) -> str | None:
