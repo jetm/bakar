@@ -17,8 +17,9 @@ from bakar.commands._helpers import (
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
+    resolve_global_config,
 )
-from bakar.config import BSPSpec, ResolveRequest, resolve
+from bakar.config import BSPSpec, ResolveRequest
 from bakar.observability import RunLogger
 from bakar.steps import kas_build as step_kas
 from bakar.steps.kas_build import KasBuildContext
@@ -56,7 +57,7 @@ def lock(
     """
     family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
-    cfg = resolve(
+    cfg = resolve_global_config(
         ResolveRequest(
             workspace=ws,
             bsp_family=family,
