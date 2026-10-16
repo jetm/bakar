@@ -1,26 +1,27 @@
 """Rich renderer for ``BuildUIState``.
 
 Pure functions that read a ``BuildUIState`` and produce the Live renderable, the
-pipeline breadcrumb, or the plain status line. They hold no state of their own,
-so the build UI state machine in ``build_ui`` stays independent of how it is
-drawn. ``BuildUIState``'s render methods delegate here.
+pipeline breadcrumb, or the plain status line, plus the helpers that construct
+the Rich objects the state holds (``default_progress_factory``,
+``failure_alert``). The functions hold no state of their own, so the build UI
+state machine in ``build_ui`` stays independent of how it is drawn.
 
-This module must not import ``build_ui`` at module level (``build_ui`` imports
-it), only under ``TYPE_CHECKING`` for annotations.
+This module imports ``build_ui`` at module level for the rich-free ``_Phase`` and
+``_fmt_stall``; ``build_ui`` therefore imports this module only inside functions.
 """
 
 from __future__ import annotations
 
 import time
-from enum import Enum
 from typing import TYPE_CHECKING
 
 from rich.console import Group, RenderableType
+from rich.progress import BarColumn, Progress, TextColumn
 from rich.table import Table
 from rich.text import Text
 
 from bakar import cache_render
-from bakar.fmt import fmt_duration
+from bakar.steps.build_ui import _fmt_stall, _Phase
 
 if TYPE_CHECKING:
     from bakar.steps.build_ui import BuildUIState
@@ -44,13 +45,36 @@ _ICON_TIMER = "󰦗"  # md-progress-clock (build elapsed)
 _ICON_DRIFT = ""  # fa-warning (stuck task: time drifted past its reference)
 
 
-class _Phase(Enum):
-    SETUP = "setup"
-    BUILD = "build"
+def default_progress_factory() -> tuple[Progress, Progress]:
+    """Build the (setup, build) ``Progress`` pair a ``BuildUIState`` owns.
+
+    Plain objects, never entered as context managers: the outer ``Live`` owns the
+    terminal refresh loop and a second internal ``Live`` would corrupt the cursor.
+    """
+    setup = Progress(
+        TextColumn("[cyan]{task.fields[stage]}[/]"),
+        BarColumn(style="grey30", complete_style="cyan", finished_style="green"),
+        TextColumn("{task.percentage:>3.0f}%"),
+    )
+    build = Progress(
+        TextColumn("[cyan]kas_build[/]"),
+        BarColumn(style="grey30", complete_style="cyan", finished_style="green"),
+        TextColumn("{task.completed}/{task.total} {task.fields[kind]}"),
+    )
+    return setup, build
 
 
-def _fmt_stall(seconds: int) -> str:
-    return fmt_duration(seconds)
+def failure_alert(recipe: str, taskname: str, logfile: str | None, tail: list[str]) -> Group:
+    """Build the one-shot alert block printed below the frozen frame for a failed task."""
+    block: list[RenderableType] = [
+        Text.assemble(("✗ FAILED:", "bold red"), f" {recipe} {taskname}"),
+    ]
+    if logfile:
+        block.append(Text(f"   log: {logfile}"))
+    if tail:
+        block.append(Text("\n".join(tail), style="dim"))
+    block.append(Text(""))
+    return Group(*block)
 
 
 def _task_style(task: str) -> tuple[str, str]:

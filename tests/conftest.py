@@ -37,7 +37,7 @@ from bakar.config import BuildConfig
 from bakar.report import ReportSummary
 from bakar.setup.actions.base import RunCommand, WriteFile
 from bakar.setup.profile import HostProfile
-from bakar.steps import build_ui
+from bakar.steps import build_ui_render
 
 # Prevent Rich from inserting ANSI escape codes into captured CLI output.
 # Without this, --help text arrives with mid-token color resets (e.g.
@@ -132,13 +132,13 @@ def make_report_summary(**overrides: object) -> ReportSummary:
 # Shared by test_ci_output_mode.py, test_monitor_plain.py, test_build_ui_plain.py
 # (each previously carried its own identical copy of this tuple).
 _GLYPHS = (
-    build_ui._ICON_COMPILE,
-    build_ui._ICON_FETCH,
-    build_ui._ICON_CONFIGURE,
-    build_ui._ICON_PACKAGE,
-    build_ui._ICON_SETSCENE,
-    build_ui._ICON_TIMER,
-    build_ui._ICON_DRIFT,
+    build_ui_render._ICON_COMPILE,
+    build_ui_render._ICON_FETCH,
+    build_ui_render._ICON_CONFIGURE,
+    build_ui_render._ICON_PACKAGE,
+    build_ui_render._ICON_SETSCENE,
+    build_ui_render._ICON_TIMER,
+    build_ui_render._ICON_DRIFT,
     # Cache-backend "none" badge glyph (nf-fa-ban) - rendered only in the Rich
     # make_renderable() task table, never in plain_status_line()'s ASCII
     # cache_backend= token.

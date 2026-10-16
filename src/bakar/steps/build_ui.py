@@ -38,11 +38,8 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-
-from rich.console import Group, RenderableType
-from rich.progress import BarColumn, Progress, TextColumn
-from rich.text import Text
+from enum import Enum
+from typing import TYPE_CHECKING, Any
 
 from bakar import task_timings
 from bakar.eventlog import (
@@ -56,28 +53,23 @@ from bakar.eventlog import (
     _stat,
     _task_key,
 )
-from bakar.steps import build_ui_render
-from bakar.steps.build_ui_render import (  # noqa: F401 - re-exported for callers and tests
-    _ICON_COMPILE,
-    _ICON_CONFIGURE,
-    _ICON_DRIFT,
-    _ICON_FETCH,
-    _ICON_PACKAGE,
-    _ICON_SETSCENE,
-    _ICON_TIMER,
-    _MAX_TASK_ROWS,
-    _SPINNER,
-    _fmt_stall,
-    _Phase,
-    _stuck_color,
-    _task_style,
-)
+from bakar.fmt import fmt_duration
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
     from bakar.eventlog import _EventStub
+
+
+class _Phase(Enum):
+    SETUP = "setup"
+    BUILD = "build"
+
+
+def _fmt_stall(seconds: int) -> str:
+    return fmt_duration(seconds)
+
 
 # bitbake event class names (the decoded line's ``class`` field) the live feed
 # consumes. Mirrors eventlog.py's naming; classified by string, not isinstance.
@@ -136,7 +128,7 @@ class BuildUIState:
     """Mutable UI state that parses knotty fallback lines and renders a Rich Live display.
 
     Construct the two ``Progress`` objects as plain objects -- do NOT use them as
-    context managers. The outer ``Live(get_renderable=ui.make_renderable)`` owns
+    context managers. The outer ``Live(get_renderable=partial(make_renderable, ui))`` owns
     the terminal refresh loop; entering ``Progress`` as a context manager would
     start a second internal ``Live`` and corrupt the cursor.
 
@@ -152,6 +144,7 @@ class BuildUIState:
         timings_path: Path | None = None,
         *,
         show_baseline_drift: bool = False,
+        progress_factory: Callable[[], tuple[Any, Any]] | None = None,
     ) -> None:
         """``start_monotonic`` is the ``time.monotonic()`` stamp of when ``bakar``
         started (RunLogger captures it before doctor). When given, the global
@@ -172,18 +165,14 @@ class BuildUIState:
         # same place in every phase and never resets across transitions.
         self._start_monotonic = start_monotonic if start_monotonic is not None else time.monotonic()
 
-        self._setup_progress = Progress(
-            TextColumn("[cyan]{task.fields[stage]}[/]"),
-            BarColumn(style="grey30", complete_style="cyan", finished_style="green"),
-            TextColumn("{task.percentage:>3.0f}%"),
-        )
-        self._setup_task_id = self._setup_progress.add_task("setup", total=100, stage="starting")
+        if progress_factory is None:
+            # Lazy import: the renderer imports this module at module level, and
+            # only the renderer may import rich, so the default is resolved here.
+            from bakar.steps.build_ui_render import default_progress_factory
 
-        self._build_progress = Progress(
-            TextColumn("[cyan]kas_build[/]"),
-            BarColumn(style="grey30", complete_style="cyan", finished_style="green"),
-            TextColumn("{task.completed}/{task.total} {task.fields[kind]}"),
-        )
+            progress_factory = default_progress_factory
+        self._setup_progress, self._build_progress = progress_factory()
+        self._setup_task_id = self._setup_progress.add_task("setup", total=100, stage="starting")
         self._build_task_id = self._build_progress.add_task("build", total=None, kind="")
 
         self._phase = _Phase.SETUP
@@ -223,10 +212,10 @@ class BuildUIState:
         # alert blocks (✗ FAILED line, host log path, log tail) the caller
         # drains via take_pending_alerts() and prints below the frozen frame.
         self._failures: list[tuple[str, str]] = []
-        self._pending_alerts: list[RenderableType] = []
+        self._pending_alerts: list[Any] = []
         # Cluster/cache header lines shown during a build, fed by a probe thread
         # via set_dist_lines() and injected into the normal building frame.
-        self._dist_lines: list[RenderableType] = []
+        self._dist_lines: list[Any] = []
         # At-a-glance cache/dist badge state, fed by the cache-probe thread via
         # set_cache_badge() and read by make_renderable/plain_status_line. Guarded
         # by _lock (like _dist_lines): a daemon thread writes, render threads read.
@@ -547,20 +536,16 @@ class BuildUIState:
             # it from whatever follows (resumed live region or the runner's
             # exit lines). The failures append is deduped against the
             # TASK_FAIL_HEAD knotty line that usually precedes this event.
-            block: list[RenderableType] = [
-                Text.assemble(("✗ FAILED:", "bold red"), f" {recipe} {taskname}"),
-            ]
-            if logfile:
-                block.append(Text(f"   log: {logfile}"))
-            if tail:
-                block.append(Text("\n".join(tail), style="dim"))
-            block.append(Text(""))
+            # Lazy import: the renderer imports this module, and only it may import rich.
+            from bakar.steps.build_ui_render import failure_alert
+
+            alert = failure_alert(recipe, taskname, logfile, tail)
             with self._lock:
                 self._running.pop(f"{recipe}:{taskname}", None)
                 if (recipe, taskname) not in self._failures:
                     self._failures.append((recipe, taskname))
                     self._task_failed_count += 1
-                self._pending_alerts.append(Group(*block))
+                self._pending_alerts.append(alert)
             return
 
         if class_name in (_EVT_TASK_SUCCEEDED, _EVT_TASK_FAILED_SILENT):
@@ -704,7 +689,7 @@ class BuildUIState:
         msg, self._pending_log = self._pending_log, None
         return msg
 
-    def take_pending_alerts(self) -> list[RenderableType]:
+    def take_pending_alerts(self) -> list[Any]:
         """Return and clear the queued failure-alert blocks.
 
         Mirrors take_pending_log() but drains a list: the caller prints each
@@ -716,7 +701,7 @@ class BuildUIState:
             out, self._pending_alerts = self._pending_alerts, []
         return out
 
-    def set_dist_lines(self, lines: list[RenderableType]) -> None:
+    def set_dist_lines(self, lines: list[Any]) -> None:
         """Replace the cluster/cache header lines shown during the build (thread-safe)."""
         with self._lock:
             self._dist_lines = list(lines)
@@ -827,26 +812,11 @@ class BuildUIState:
         with self._lock:
             self._failed_final = True
 
-    def _render_breadcrumb(self) -> Text:
-        """Render the pipeline header; see ``build_ui_render._render_breadcrumb``."""
-        return build_ui_render._render_breadcrumb(self)
-
-    def make_renderable(self) -> Group:
-        """Build the renderable for the current frame; see ``build_ui_render.make_renderable``.
-
-        Called by ``Live`` on every refresh tick -- must be fast and never block.
-        """
-        return build_ui_render.make_renderable(self)
-
-    def plain_status_line(self) -> str | None:
-        """Return a plain status line, or None when unchanged; see ``build_ui_render.plain_status_line``."""
-        return build_ui_render.plain_status_line(self)
-
     def journal_report(self) -> dict[str, object]:
         """Return the current build state as structured fields for the journal.
 
-        Reads the same ``_lock``-guarded state as :meth:`plain_status_line` and
-        :meth:`make_renderable`, but returns values rather than a formatted line
+        Reads the same ``_lock``-guarded state as ``build_ui_render.plain_status_line`` and
+        ``build_ui_render.make_renderable``, but returns values rather than a formatted line
         so ``journalctl`` can filter and sort on them (``BAKAR_TASKS_DONE``,
         ``BAKAR_PCT``) instead of forcing callers to re-parse a string. Never
         dedups: unlike the plain status line this is emitted on a slow fixed

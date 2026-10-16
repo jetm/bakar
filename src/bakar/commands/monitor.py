@@ -61,7 +61,8 @@ from bakar.config import BSPSpec, BuildConfig, ResolveRequest, resolve
 from bakar.diagnostics import probe_build_daemon, probe_ccache, probe_cluster, split_host_port
 from bakar.eventlog import IncrementalEventLog, running_from_rows
 from bakar.output_mode import OutputMode, resolve_output_mode
-from bakar.steps.build_ui import SEVERITY_PASSTHROUGH, _fmt_stall, _task_style
+from bakar.steps.build_ui import SEVERITY_PASSTHROUGH, _fmt_stall
+from bakar.steps.build_ui_render import _task_style
 
 if TYPE_CHECKING:
     from bakar.diagnostics import BuildDaemonReport

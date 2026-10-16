@@ -20,14 +20,11 @@ from rich.text import Text
 
 from bakar import cache_render
 from bakar.steps.build_ui import (
-    _ICON_TIMER,
     BuildUIState,
     _Phase,
     _RunTask,
-    _stuck_color,
-    _task_style,
 )
-from bakar.steps.build_ui_render import make_renderable
+from bakar.steps.build_ui_render import _ICON_TIMER, _stuck_color, _task_style, make_renderable
 
 if TYPE_CHECKING:
     from pathlib import Path
