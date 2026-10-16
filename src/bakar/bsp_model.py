@@ -29,7 +29,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from bakar.vendor_config import load_vendors
 
@@ -79,7 +79,7 @@ _TI_LAYER_PREFIX = "meta-variscite-bsp-ti"
 def detect_bsp_family(
     manifest_path: Path | None,
     config_file: Path | None = None,
-) -> Literal["nxp", "ti", "qcom", "unknown"]:
+) -> Literal["nxp", "ti", "qcom", "generic", "bbsetup", "unknown"]:
     """Detect the BSP family from a manifest filename and optional config.
 
     Only the filename (``path.name``) is inspected; the file need not
@@ -95,7 +95,7 @@ def detect_bsp_family(
             vendors = []
         for vendor in vendors:
             if re.match(vendor.manifest_regex, name):
-                return vendor.family  # type: ignore[return-value]
+                return cast("Literal['nxp', 'ti', 'qcom', 'generic', 'bbsetup']", vendor.family)
         if _NXP_MANIFEST_RE.match(name):
             return "nxp"
         if _TI_PROCESSOR_SDK_RE.match(name) or _TI_ARAGO_RE.match(name):

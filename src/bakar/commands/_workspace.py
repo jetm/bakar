@@ -10,6 +10,7 @@ path.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -411,6 +412,19 @@ def _dispatch_bsp(manifest_arg: str | None) -> tuple[Literal["nxp", "ti"], BspMo
             f"{pre!r} matches neither NXP (imx-A.B.C-X.Y.Z.xml) nor TI "
             "(processor-sdk-...-config_var<N>.txt / arago-*.txt). "
             "Check the manifest filename format.",
+            markup=True,
+        )
+        raise typer.Exit(code=2)
+    if family in ("generic", "bbsetup"):
+        from bakar.vendor_config import load_vendors
+
+        name = Path(pre).name
+        entry = next((v for v in load_vendors() if re.match(v.manifest_regex, name)), None)
+        vendor = entry.name if entry is not None else "?"
+        console.print(
+            f"[red]Vendor entry {vendor!r} declares family {family!r}, which has no manifest "
+            f"build model:[/red] {pre!r} cannot be built with --manifest. "
+            "Use a kas YAML (bakar build my.yml) or a manifest family (nxp, ti, qcom).",
             markup=True,
         )
         raise typer.Exit(code=2)
