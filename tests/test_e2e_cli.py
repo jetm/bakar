@@ -26,18 +26,23 @@ import json
 import os
 import shutil
 import subprocess
-from typing import TYPE_CHECKING
+import sys
+from pathlib import Path
 
 import pytest
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
 pytestmark = pytest.mark.integration
 
-_BAKAR = shutil.which("bakar")
-if _BAKAR is None:
-    pytest.skip("bakar not installed - run: uv tool install .", allow_module_level=True)
+# Resolve the bakar console script from the interpreter's own environment so the
+# suite exercises this checkout, never a bakar found elsewhere on PATH.
+_BAKAR_PATH = Path(sys.executable).parent / "bakar"
+if not _BAKAR_PATH.is_file():
+    pytest.fail(
+        f"bakar console script not found beside the test interpreter ({_BAKAR_PATH}) - "
+        "install the project into this environment with: uv sync",
+        pytrace=False,
+    )
+_BAKAR = str(_BAKAR_PATH)
 
 
 # ---------------------------------------------------------------------------
