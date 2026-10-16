@@ -8,8 +8,13 @@ The worktree's kas file pins a repository to a commit the main checkout's copy
 does not name, so a wrapper that silently resolved to the main checkout is
 caught by the dump rather than passing.
 
-The live-remote steps (a real build from a worktree, and dispatch to pc3) need
-a person and are printed as the manual remainder.
+It also reads the worktree's release with ``bakar.steps.kas_pins.probe_release``
+(skipped with a printed reason when kas is not on PATH) and classifies an
+off-pin clone with ``bakar.steps.repo_reuse.classify``, which must report it as
+``side`` without moving its HEAD.
+
+The live steps (a local routed build, and dispatch to pc3 into the shared
+release workspace) need a person and are printed as the manual remainder.
 
 Usage:
     python3 scripts/smoke_bakar_on_worktree_dispatch.py
@@ -33,21 +38,28 @@ GIT_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": 
 GIT_IDENT = ["-c", "user.email=smoke@example.invalid", "-c", "user.name=smoke"]
 
 WORKTREE_DIR = Path("/home/tiamarin/repos/work/.worktrees/meta-avocado/rpi5-lgpio-feed")
+CENTRAL_DIR = Path("/home/tiamarin/repos/work/peridio")
+RELEASE_WS = Path("/home/tiamarin/repos/work/peridio-wrynose")
+BUILD_DIR_NAME = "build-raspberrypi5-rpi5-lgpio-feed"
+RELEASE = "wrynose"
+CHECKS_WITH_KAS = 7
+KAS_FILE = WORKTREE_DIR / "kas" / "machine" / "raspberrypi5.yml"
 MANUAL_STEPS_TEXT = (
-    f"From {WORKTREE_DIR}, run `bakar build kas/machine/raspberrypi5.yml --target python3-lgpio` and read the "
-    "doctor output: kas-yaml-syntax must PASS and name the worktree kas file (not a wrapper or the main "
-    "checkout), host-preflight must find the release-keyed buildtools, and the run directory must appear under "
-    "/home/tiamarin/repos/work/peridio/build-raspberrypi5*/build/runs/ with nothing new under "
-    "/home/tiamarin/repos/work/.worktrees/.",
-    "Install this bakar on both nodes (the identity-parity check refuses a mismatch), then from the same worktree "
-    "run `bakar build kas/machine/raspberrypi5.yml --target python3-lgpio --on pc3` without --yes and answer n: "
-    "both `rsync --delete preview -> pc3:/home/tiamarin/repos/work/peridio` and `rsync --delete preview -> "
-    f"pc3:{WORKTREE_DIR}` must print before one prompt and nothing may transfer. Re-run with --yes: exactly two "
-    "transfers in that order, none for /home/tiamarin/repos/work/.worktrees or a sibling worktree, python3-lgpio "
-    f"builds on pc3, and `ssh pc3 cat {WORKTREE_DIR}/.git` names a path that exists on pc3. Finally run the same "
-    "command with an absolute kas path and `-w /home/tiamarin/repos/work/.worktrees`: it must exit non-zero "
-    "before any rsync preview, naming the worktree and the root's size. Destructive rsync --delete into pc3's "
-    "peridio tree, so a person runs it.",
+    f'With `[workspaces] template = "/home/tiamarin/repos/work/peridio-{{release}}"` in ~/.config/bakar/config.toml, '
+    f"run from {CENTRAL_DIR}: `bakar build {KAS_FILE} --target python3-lgpio` (local routed build). The doctor "
+    f"must show the workspace as {RELEASE_WS}, kas-yaml-syntax must PASS naming {KAS_FILE} (never a temporary "
+    f"wrapper), host-preflight must find the wrynose buildtools, the run directory must land under "
+    f"{RELEASE_WS}/{BUILD_DIR_NAME}/build/runs/, and {RELEASE_WS}/{BUILD_DIR_NAME}/avocado-reuse.yml must exist.",
+    "Install this bakar on PC1 and pc3 (the identity-parity check refuses a mismatch). Record a pc3 listing of "
+    f"{RELEASE_WS} first: every top-level entry, and for every repository `git rev-parse HEAD`, `git branch -a`, "
+    "`git status --porcelain` and `git remote get-url origin`. Then from "
+    f"{CENTRAL_DIR} run `bakar build {KAS_FILE} --target python3-lgpio --on pc3 </dev/null`: it must complete "
+    "without a prompt, and the printed plan must list only additions "
+    f"({RELEASE_WS}/.bakar/worktrees/rpi5-lgpio-feed, refs/bakar/rpi5-lgpio-feed/<commit12>, {BUILD_DIR_NAME}) and "
+    "no deletion. Re-take the pc3 listing: it must be unchanged except the new delivered worktree "
+    f"(.bakar/worktrees/rpi5-lgpio-feed), the new .bakar entry and {BUILD_DIR_NAME}; every pre-existing "
+    "repository keeps its HEAD, branches, status and origin URL. A person runs this because it writes into "
+    "pc3's shared release workspace.",
 )
 
 
@@ -100,14 +112,26 @@ def kas_yaml_text(pin_url: str, pin_commit: str) -> str:
     )
 
 
+def release_kas_yaml_text(pin_url: str, pin_commit: str) -> str:
+    """A kas file whose openembedded-core pin names the wrynose release."""
+    return (
+        "header:\n  version: 16\nmachine: qemux86-64\n"
+        "repos:\n  meta-avocado:\n    path: meta-avocado\n"
+        f"  openembedded-core:\n    url: {pin_url}\n    branch: {RELEASE}-avocado\n    commit: {pin_commit}\n"
+    )
+
+
 @dataclass(frozen=True)
 class Layout:
     ws: Path
     main: Path
     worktree: Path
     kas_yaml: Path
+    release_kas_yaml: Path
     main_pin: str
     worktree_pin: str
+    pin_url: str
+    offpin: Path
 
 
 def build_layout(root: Path) -> Layout:
@@ -141,18 +165,26 @@ def build_layout(root: Path) -> Layout:
     worktree.parent.mkdir(parents=True)
     git("-C", str(main), "worktree", "add", "-q", str(worktree), "-b", "wt1")
     (worktree / "kas" / "machine" / "m.yml").write_text(kas_yaml_text(pin_url, worktree_pin))
+    (worktree / "kas" / "machine" / "rel.yml").write_text(release_kas_yaml_text(pin_url, worktree_pin))
     (worktree / "scripts").mkdir()
     (worktree / "scripts" / "render-pool-local.py").write_text("")
     git("-C", str(worktree), "add", "-A")
     git("-C", str(worktree), "commit", "-q", "-m", "worktree-only pin")
+
+    # A shared clone sitting at the second commit while the pin names the first.
+    offpin = ws / "offpin"
+    git("clone", "-q", pin_url, str(offpin))
 
     return Layout(
         ws=ws,
         main=main,
         worktree=worktree,
         kas_yaml=worktree / "kas" / "machine" / "m.yml",
+        release_kas_yaml=worktree / "kas" / "machine" / "rel.yml",
         main_pin=main_pin,
         worktree_pin=worktree_pin,
+        pin_url=pin_url,
+        offpin=offpin,
     )
 
 
@@ -170,10 +202,13 @@ def main() -> int:
 
     from bakar.bsp_detect import detect_kas_workspace, linked_worktree_at, worktree_wrapper_text
     from bakar.feed import meta_avocado_scripts
+    from bakar.steps.kas_pins import probe_release
+    from bakar.steps.repo_reuse import classify
 
     smoke_lib = _load_smoke_lib()
     manual = [smoke_lib.ManualStep(reason="human", text=text) for text in MANUAL_STEPS_TEXT]
-    run = smoke_lib.SmokeRun(expected=5, manual_steps=manual)
+    have_kas = shutil.which("kas") is not None
+    run = smoke_lib.SmokeRun(expected=CHECKS_WITH_KAS if have_kas else CHECKS_WITH_KAS - 1, manual_steps=manual)
 
     with run, smoke_lib.isolated_env("smoke-bakar-worktree-") as (tmp, env):
         root = tmp.resolve()
@@ -238,6 +273,40 @@ def main() -> int:
             pin == lay.worktree_pin,
             err or f"got {pin}, want {lay.worktree_pin} (main checkout pins {lay.main_pin})",
         )
+
+        # (f) the release is read from the pinned openembedded-core branch without touching any workspace.
+        if have_kas:
+            release, err = attempt(lambda: probe_release(lay.release_kas_yaml, worktree))
+            run.check(
+                f"probe_release returns the pinned release {RELEASE!r}",
+                release == RELEASE,
+                err or f"got {release!r}",
+            )
+        else:
+            print("SKIP probe_release: kas is not on PATH, so the release cannot be read; expected lowered by one")
+
+        # (g) an off-pin shared clone is routed to a side checkout and never moved.
+        def classify_offpin() -> tuple[list, str, str]:
+            before = git("-C", str(lay.offpin), "rev-parse", "HEAD")
+            repos = {"offpin": {"url": lay.pin_url, "commit": lay.main_pin, "path": str(lay.offpin)}}
+            states = classify(repos, ws)
+            after = git("-C", str(lay.offpin), "rev-parse", "HEAD")
+            return states, before, after
+
+        result, err = attempt(classify_offpin)
+        ok = False
+        detail = err or ""
+        if result is not None:
+            states, before, after = result
+            want_side = ws / ".bakar" / "pins" / "offpin" / lay.main_pin[:12]
+            ok = (
+                len(states) == 1
+                and states[0].state == "side"
+                and states[0].side_path == want_side
+                and before == after == lay.worktree_pin
+            )
+            detail = f"states {states!r}, HEAD before {before}, after {after}"
+        run.check("classify reports an off-pin repo as side and leaves its HEAD unchanged", ok, detail)
 
     return smoke_lib.finish(run)
 
