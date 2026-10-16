@@ -170,3 +170,41 @@ def test_is_running_probes_loopback_for_bind_only_host(tmp_path: Path, monkeypat
 
     assert prserv.is_running(tmp_path, bind_host="0.0.0.0") is True
     assert probed == [("127.0.0.1", _workspace_port(tmp_path))]
+
+
+def test_port_matches_pre_refactor_salted_derivation(tmp_path: Path) -> None:
+    """The shared derivation with prserv's salt yields the historical port."""
+    from hashlib import sha256
+
+    digest = sha256(b"prserv:" + str(mounts_module._lexical_normalize(tmp_path)).encode()).hexdigest()
+    assert _workspace_port(tmp_path) == 49152 + int(digest[:8], 16) % 16383
+
+
+def test_ensure_running_closes_stderr_handle_when_popen_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed spawn must not leak the prserv.stderr handle."""
+    _create_binary(tmp_path)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+
+    def _down(_addr: tuple[str, int], timeout: float) -> _FakeSocket:
+        del timeout
+        raise OSError("down")
+
+    monkeypatch.setattr(central_service.socket, "create_connection", _down)
+    seen: dict[str, object] = {}
+
+    def _boom(_args: list[str], **kwargs: object) -> object:
+        seen["fh"] = kwargs["stderr"]
+        raise OSError("fork failed")
+
+    monkeypatch.setattr(prserv.subprocess, "Popen", _boom)
+
+    with pytest.raises(OSError, match="fork failed"):
+        prserv.ensure_running(tmp_path, binary_root=tmp_path)
+
+    fh = seen["fh"]
+    assert getattr(fh, "closed", False) is True
+    assert (tmp_path / ".bakar" / "prserv.stderr").exists()
+
+
+def test_binary_available_removed() -> None:
+    assert not hasattr(prserv, "binary_available")

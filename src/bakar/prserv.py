@@ -36,50 +36,29 @@ from __future__ import annotations
 import subprocess
 import time
 from contextlib import suppress
-from hashlib import sha256
 from pathlib import Path
 
-from bakar import central_service, mounts
+from bakar import central_service, daemon_log
 from bakar.hashserv import NetworkStateDirError, network_state_reason
 
 _DB_FILENAME = "prserv.sqlite3"
 _LOG_FILENAME = "prserv.log"
 _STDERR_FILENAME = "prserv.stderr"
 _STATE_SUBDIR = ".bakar"
-_PORT_FLOOR = 49152
-_PORT_SPAN = 16383
 _STARTUP_PROBE_DEADLINE_SECONDS = 5.0
+# Salt keeps prserv's port distinct from hashserv's for the same shared state key.
+_PORT_SALT = b"prserv:"
+_BINARY_NAME = "bitbake-prserv"
 
 
 def _workspace_port(state_key: Path) -> int:
-    """Derive a stable port from the state-key path, salted to avoid hashserv.
-
-    Mirrors :func:`bakar.hashserv._workspace_port` but prepends a ``prserv:``
-    salt so the prserv and hashserv daemons keyed to the *same* state dir
-    (the shared SSTATE_DIR) never collide on one port. Same hang-safety
-    rationale as the hashserv counterpart: lexically normalize rather than
-    ``Path.resolve()``, which stats every path component and can hang
-    indefinitely on a wedged NFS automount.
-    """
-    digest = sha256(b"prserv:" + str(mounts._lexical_normalize(state_key)).encode()).hexdigest()
-    return _PORT_FLOOR + int(digest[:8], 16) % _PORT_SPAN
+    """Port for ``state_key``, salted so it never collides with hashserv's."""
+    return central_service.workspace_port(state_key, _PORT_SALT)
 
 
 def _find_binary(binary_root: Path) -> Path | None:
-    """Return the workspace ``bitbake-prserv`` path, or None if absent.
-
-    Same search order and no-host-PATH-fallback rationale as
-    :func:`bakar.hashserv._find_binary`.
-    """
-    for candidate in (
-        binary_root / "sources" / "poky" / "bitbake" / "bin" / "bitbake-prserv",
-        binary_root / "sources" / "bitbake" / "bin" / "bitbake-prserv",
-        binary_root / "bitbake" / "bin" / "bitbake-prserv",
-        binary_root.parent / "bitbake" / "bin" / "bitbake-prserv",
-    ):
-        if candidate.is_file():
-            return candidate
-    return None
+    """Return the workspace ``bitbake-prserv`` path, or None if absent."""
+    return central_service.find_workspace_tool(binary_root, _BINARY_NAME)
 
 
 def _state_dir(state_key: Path) -> Path:
@@ -100,11 +79,6 @@ def _clean_stale_pidfiles(port: int) -> None:
     for stale in Path("/tmp").glob(f"PRServer_*_{port}.pid"):
         with suppress(OSError):
             stale.unlink()
-
-
-def binary_available(binary_root: Path) -> bool:
-    """True when the workspace's bitbake-prserv binary exists under binary_root."""
-    return _find_binary(binary_root) is not None
 
 
 def is_running(state_key: Path, *, bind_host: str = "localhost") -> bool:
@@ -152,26 +126,24 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
     # --start double-forks into a daemon and the launcher exits, so we do not
     # track the returned process - liveness is the TCP probe below. Redirect the
     # launcher's stderr to a file so a startup failure leaves a diagnostic.
-    stderr_log = state_dir / _STDERR_FILENAME
-    stderr_fh = stderr_log.open("wb")
-    subprocess.Popen(
-        [
-            str(binary),
-            "--start",
-            "--host",
-            bind_host,
-            "--port",
-            str(port),
-            "-f",
-            str(state_dir / _DB_FILENAME),
-            "-l",
-            str(state_dir / _LOG_FILENAME),
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=stderr_fh,
-        start_new_session=True,
-    )
-    stderr_fh.close()
+    with daemon_log.stderr_target(str(binary), state_dir, log_path=state_dir / _STDERR_FILENAME) as stderr_fh:
+        subprocess.Popen(
+            [
+                str(binary),
+                "--start",
+                "--host",
+                bind_host,
+                "--port",
+                str(port),
+                "-f",
+                str(state_dir / _DB_FILENAME),
+                "-l",
+                str(state_dir / _LOG_FILENAME),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_fh if stderr_fh is not None else subprocess.DEVNULL,
+            start_new_session=True,
+        )
 
     deadline = time.monotonic() + _STARTUP_PROBE_DEADLINE_SECONDS
     while time.monotonic() < deadline:
