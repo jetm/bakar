@@ -33,7 +33,7 @@ def _mold_cfg(*, mold: bool = False) -> BuildConfig:
 @pytest.mark.unit
 def test_mold_extra_overlays_returns_path_when_enabled() -> None:
     """cfg.mold True yields the mold overlay path, and the file exists."""
-    from bakar.commands._helpers import _mold_extra_overlays
+    from bakar.commands._overlays import _mold_extra_overlays
 
     result = _mold_extra_overlays(_mold_cfg(mold=True))
 
@@ -45,7 +45,7 @@ def test_mold_extra_overlays_returns_path_when_enabled() -> None:
 @pytest.mark.unit
 def test_mold_extra_overlays_empty_when_disabled() -> None:
     """cfg.mold False yields an empty list (falsifier)."""
-    from bakar.commands._helpers import _mold_extra_overlays
+    from bakar.commands._overlays import _mold_extra_overlays
 
     assert _mold_extra_overlays(_mold_cfg(mold=False)) == []
 
@@ -79,7 +79,7 @@ def test_tuning_stack_byte_identical_when_mold_off() -> None:
     be byte-identical to it, proving the mold registration adds nothing when the
     toggle is off.
     """
-    from bakar.commands import _helpers
+    from bakar.commands import _helpers, _overlays
     from bakar.commands._helpers import _overlay_dir, _tuning_extra_overlays
 
     cfg = _mold_cfg(mold=False)
@@ -87,9 +87,9 @@ def test_tuning_stack_byte_identical_when_mold_off() -> None:
         _overlay_dir() / "bakar-tuning-cache-classify.yml",
         *_helpers._host_extra_overlays(cfg),
         *_helpers._ccache_extra_overlays(cfg),
-        *_helpers._hashequiv_extra_overlays(cfg),
-        *_helpers._shared_cache_extra_overlays(cfg),
-        *_helpers._sccache_extra_overlays(cfg),
+        *_overlays._hashequiv_extra_overlays(cfg),
+        *_overlays._shared_cache_extra_overlays(cfg),
+        *_overlays._sccache_extra_overlays(cfg),
     ]
 
     assert _tuning_extra_overlays(cfg) == baseline

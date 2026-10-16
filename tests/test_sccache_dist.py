@@ -406,7 +406,7 @@ def _overlay_cfg(*, sccache_dist: bool = False, ccache: bool = True, host_mode: 
 @pytest.mark.unit
 def test_overlay_sccache_extra_overlays_returns_path_when_enabled() -> None:
     """When use_sccache_dist is True the helper returns the sccache overlay path."""
-    from bakar.commands._helpers import _sccache_extra_overlays
+    from bakar.commands._overlays import _sccache_extra_overlays
 
     cfg = _overlay_cfg(sccache_dist=True)
     result = _sccache_extra_overlays(cfg)  # type: ignore[arg-type]
@@ -419,7 +419,7 @@ def test_overlay_sccache_extra_overlays_returns_path_when_enabled() -> None:
 @pytest.mark.unit
 def test_overlay_sccache_extra_overlays_returns_empty_when_disabled() -> None:
     """When use_sccache_dist is False the helper returns an empty list (falsifier)."""
-    from bakar.commands._helpers import _sccache_extra_overlays
+    from bakar.commands._overlays import _sccache_extra_overlays
 
     cfg = _overlay_cfg(sccache_dist=False)
     result = _sccache_extra_overlays(cfg)  # type: ignore[arg-type]
@@ -598,7 +598,8 @@ def test_overlay_hybrid_co_selects_ccache_before_sccache() -> None:
     launcher; a stack that dropped or reordered the ccache overlay would flip the
     per-recipe precedence.
     """
-    from bakar.commands._helpers import _sccache_extra_overlays, _tuning_extra_overlays
+    from bakar.commands._helpers import _tuning_extra_overlays
+    from bakar.commands._overlays import _sccache_extra_overlays
 
     cfg = _overlay_cfg(sccache_dist=True, ccache=True)
     names = [p.name for p in _tuning_extra_overlays(cfg)]  # type: ignore[arg-type]
@@ -621,7 +622,7 @@ def test_overlay_adds_sccache_layer_repo() -> None:
     relative repos path resolves against bsp_root in both host and container
     modes. Without the repo entry, `INHERIT += "sccache"` cannot find the class.
     """
-    from bakar.commands._helpers import _sccache_extra_overlays
+    from bakar.commands._overlays import _sccache_extra_overlays
 
     cfg = _overlay_cfg(sccache_dist=True)
     overlay = _sccache_extra_overlays(cfg)[0]  # type: ignore[arg-type]
@@ -1159,7 +1160,7 @@ def test_materialize_sccache_layer_targets_workspace_for_meta_avocado(tmp_path: 
 @pytest.mark.unit
 def test_overlay_exports_sccache_scheduler_env() -> None:
     """The overlay declares the scheduler-URL passthrough env var so kas whitelists it."""
-    from bakar.commands._helpers import _sccache_extra_overlays
+    from bakar.commands._overlays import _sccache_extra_overlays
 
     cfg = _overlay_cfg(sccache_dist=True)
     overlay = _sccache_extra_overlays(cfg)[0]  # type: ignore[arg-type]

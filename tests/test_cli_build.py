@@ -22,7 +22,8 @@ import bakar.steps.kas_build as step_kas
 from bakar.cli import app
 from bakar.commands import _build_flavors as flavors_cmd
 from bakar.commands import build as build_cmd
-from bakar.commands._helpers import _hashequiv_extra_overlays, _overlay_dir
+from bakar.commands._helpers import _overlay_dir
+from bakar.commands._overlays import _hashequiv_extra_overlays
 from bakar.config import BuildConfig
 from bakar.observability import RunLogger
 from bakar.steps.kas_build import KasBuildContext, _PtyOutcome
