@@ -799,6 +799,28 @@ def is_build_running(run_dir: Path) -> tuple[bool, int | None, bool]:
     return (True, pgid, cmdline_ok)
 
 
+def read_lock_pid(lock_path: Path) -> int | None:
+    """Parse the PID bitbake wrote as the first token of ``bitbake.lock``.
+
+    bitbake creates the lock and writes its PID as a later, separate step, so
+    an empty or unparseable lock is a server mid-startup, not a stale
+    leftover. Returns ``None`` for a missing or unreadable file, empty
+    content, or a non-integer first token; callers must never treat ``None``
+    as license to remove the lock.
+    """
+    try:
+        raw = lock_path.read_text()
+    except OSError:
+        return None
+    tokens = raw.split()
+    if not tokens:
+        return None
+    try:
+        return int(tokens[0])
+    except ValueError:
+        return None
+
+
 def _read_bitbake_server_pid(run_dir: Path) -> int | None:
     """Read bitbake-server's own PID from ``bitbake.lock``'s first line.
 
@@ -816,18 +838,7 @@ def _read_bitbake_server_pid(run_dir: Path) -> int | None:
     Returns None when the lock is missing, empty, or unparseable - already
     exited, a mid-write race, or a container build with no host-side lock.
     """
-    lock_path = run_dir.parent.parent / "bitbake.lock"
-    try:
-        raw = lock_path.read_text()
-    except OSError:
-        return None
-    tokens = raw.split()
-    if not tokens:
-        return None
-    try:
-        return int(tokens[0])
-    except ValueError:
-        return None
+    return read_lock_pid(run_dir.parent.parent / "bitbake.lock")
 
 
 def _pid_alive(pid: int) -> bool:

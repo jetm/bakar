@@ -27,28 +27,6 @@ if TYPE_CHECKING:
     from bakar.observability import RunLogger
 
 
-def _parse_lock_pid(lock: Path) -> int | None:
-    """Tolerant PID parse mirroring ``build_stop._read_bitbake_server_pid``.
-
-    bitbake creates ``bitbake.lock`` and only writes its PID as a later,
-    separate step (bb.server.process), so an empty or unparseable lock is a
-    server MID-STARTUP, not a stale leftover. Returns ``None`` for that case
-    (missing, unreadable, empty, or non-numeric first token) - callers must
-    never treat ``None`` here as license to remove the lock.
-    """
-    try:
-        raw = lock.read_text()
-    except OSError:
-        return None
-    tokens = raw.split()
-    if not tokens:
-        return None
-    try:
-        return int(tokens[0])
-    except ValueError:
-        return None
-
-
 def _lock_pid_is_live_bitbake(pid: int) -> bool:
     """True when ``pid`` is a live process that looks like bitbake.
 
@@ -171,7 +149,7 @@ def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
             _remove_own_marker()
             return build_stop.LockClearOutcome(removed=removed)
         # Row 3.
-        pid = _parse_lock_pid(lock)
+        pid = build_stop.read_lock_pid(lock)
         if pid is None:
             # Lock is mid-startup - this node's own build. Leave it intact.
             return build_stop.LockClearOutcome(removed=[])
@@ -206,7 +184,7 @@ def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
                 ),
             )
         # Row 5: confirmed-local, today's probe.
-        pid = _parse_lock_pid(lock)
+        pid = build_stop.read_lock_pid(lock)
         if pid is None:
             # Mid-startup lock on a confirmed-local fs - leave it intact.
             return build_stop.LockClearOutcome(removed=[])
