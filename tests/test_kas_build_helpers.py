@@ -1940,8 +1940,9 @@ def test_persist_run_artifacts_swallows_any_exception_and_warns(
 ) -> None:
     """A broad exception from any wrapped call is caught and printed as a warning, not raised."""
     cfg = _oe_eventlog_cfg(tmp_path)
-    with RunLogger(runs_dir=cfg.runs_dir) as log, patch(
-        "bakar.steps.kas_build.copy_oe_eventlog_to_run_dir", side_effect=RuntimeError("boom")
+    with (
+        RunLogger(runs_dir=cfg.runs_dir) as log,
+        patch("bakar.steps.kas_build.copy_oe_eventlog_to_run_dir", side_effect=RuntimeError("boom")),
     ):
         persist_run_artifacts(cfg, log)
     assert "failed to persist run artifacts: boom" in capsys.readouterr().err

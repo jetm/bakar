@@ -433,7 +433,8 @@ def walk_schema(
                 break
             if not isinstance(node, Mapping):
                 label = ".".join(section[: depth + 1])
-                raise ValueError(f"{path}: section '[{label}]' must be a table, got {type(node).__name__}")
+                # ValueError is the config-error contract callers catch, not TypeError.
+                raise ValueError(f"{path}: section '[{label}]' must be a table, got {type(node).__name__}")  # noqa: TRY004
         if not isinstance(node, Mapping):
             continue
         label = ".".join(section)
