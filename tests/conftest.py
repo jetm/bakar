@@ -212,6 +212,19 @@ def _reset_invocation_cwd():
 
 
 @pytest.fixture(autouse=True)
+def _reset_routing_env(monkeypatch):
+    """Clear the process-wide routing variables around every test.
+
+    ``_resolve_workspace`` sets ``BAKAR_REPO_POLICY=reuse`` in ``os.environ`` when
+    it routes a build, and a dispatched build reads ``BAKAR_WORKTREE_BUILD_DIR``.
+    A test that routes without isolating them leaks the reuse policy into later
+    tests, which then build an overlay their mocks do not expect.
+    """
+    monkeypatch.delenv("BAKAR_REPO_POLICY", raising=False)
+    monkeypatch.delenv("BAKAR_WORKTREE_BUILD_DIR", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_systemd_scope_probe(request, monkeypatch):
     """Default ``build_scope.systemd_run_available`` to False across the suite.
 

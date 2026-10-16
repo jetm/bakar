@@ -1496,7 +1496,11 @@ def test_every_dispatch_plan_has_no_deletes(segments: list[str], host: str, assu
         rd.dispatch_remote_build(
             host, ws, ws, ["build", "my.yml", "--on", host], sccache_dist=False, assume_yes=assume_yes
         )
-    assert built, "dispatch printed no plan"
+    # A dispatch refused before transferring (a version mismatch without --yes)
+    # prints no plan and runs no rsync; any dispatch that does transfer must have
+    # printed a plan first.
+    rsync_ran = any(argv and argv[0] == "rsync" for _kind, argv in fake.calls)
+    assert built or not rsync_ran, "rsync ran without a printed plan"
     assert all(plan.deletes == [] for plan in built)
     for _kind, argv in fake.calls:
         assert not [tok for tok in argv if _is_delete_option(tok)]
