@@ -387,9 +387,30 @@ def meta_avocado_worktree(kas_yaml: Path) -> LinkedWorktree | None:
     return None
 
 
-def worktree_wrapper_text(worktree: LinkedWorktree, kas_yaml: Path) -> str:
-    """Render a kas wrapper YAML that pins ``meta-avocado`` to the worktree."""
-    rel = kas_yaml.resolve().relative_to(worktree.checkout).as_posix()
+def meta_avocado_checkout(kas_yaml: Path) -> Path | None:
+    """Return the meta-avocado checkout holding ``kas_yaml``, worktree or main, else None.
+
+    A linked worktree is checked first: its container under
+    ``.worktrees/meta-avocado`` is itself named ``meta-avocado`` and would
+    otherwise win the ancestor-name walk.
+    """
+    wt = meta_avocado_worktree(kas_yaml)
+    if wt is not None:
+        return wt.checkout
+    try:
+        resolved = kas_yaml.resolve()
+    except OSError:
+        return None
+    for parent in resolved.parents:
+        if parent.name == "meta-avocado":
+            return parent
+    return None
+
+
+def meta_avocado_wrapper_text(checkout: Path, kas_yaml: Path) -> str:
+    """Render a kas wrapper YAML that pins ``meta-avocado`` to ``checkout`` by absolute path."""
+    checkout = checkout.resolve()
+    rel = kas_yaml.resolve().relative_to(checkout).as_posix()
     return (
         "header:\n"
         "  version: 16\n"
@@ -398,5 +419,10 @@ def worktree_wrapper_text(worktree: LinkedWorktree, kas_yaml: Path) -> str:
         f"      file: {json.dumps(rel, ensure_ascii=False)}\n"
         "repos:\n"
         "  meta-avocado:\n"
-        f"    path: {json.dumps(str(worktree.checkout), ensure_ascii=False)}\n"
+        f"    path: {json.dumps(str(checkout), ensure_ascii=False)}\n"
     )
+
+
+def worktree_wrapper_text(worktree: LinkedWorktree, kas_yaml: Path) -> str:
+    """Render a kas wrapper YAML that pins ``meta-avocado`` to the worktree."""
+    return meta_avocado_wrapper_text(worktree.checkout, kas_yaml)

@@ -24,7 +24,9 @@ from bakar.bsp_detect import (
     linked_worktree_at,
     linked_worktree_of,
     machine_from_yaml,
+    meta_avocado_checkout,
     meta_avocado_worktree,
+    meta_avocado_wrapper_text,
     worktree_wrapper_text,
 )
 
@@ -525,6 +527,56 @@ def test_worktree_wrapper_text_keeps_characters_outside_the_bmp(tmp_path: Path) 
     data = yaml.safe_load(worktree_wrapper_text(found, kas_yaml))
     assert data["repos"]["meta-avocado"]["path"] == str(checkout.resolve())
     assert data["header"]["includes"][0]["file"] == "kas/m-\U0001f600.yml"
+
+
+def test_meta_avocado_checkout_for_worktree_is_the_worktree(meta_avocado_worktree_layout) -> None:
+    """The ``.worktrees/meta-avocado`` container is also named meta-avocado; the worktree must win."""
+    lay = meta_avocado_worktree_layout
+    assert meta_avocado_checkout(lay.kas_yaml) == lay.worktree.resolve()
+
+
+def test_meta_avocado_checkout_for_main_checkout(meta_avocado_worktree_layout) -> None:
+    lay = meta_avocado_worktree_layout
+    assert meta_avocado_checkout(lay.main / "kas" / "machine" / "m.yml") == lay.main.resolve()
+
+
+def test_meta_avocado_checkout_none_outside_meta_avocado(tmp_path: Path) -> None:
+    yml = tmp_path / "other" / "kas" / "m.yml"
+    yml.parent.mkdir(parents=True)
+    yml.write_text("machine: x\n")
+    assert meta_avocado_checkout(yml) is None
+
+
+def test_meta_avocado_wrapper_text_main_checkout_uses_absolute_path(meta_avocado_worktree_layout) -> None:
+    lay = meta_avocado_worktree_layout
+    checkout = lay.main.resolve()
+    data = yaml.safe_load(meta_avocado_wrapper_text(checkout, lay.main / "kas" / "machine" / "m.yml"))
+    path = data["repos"]["meta-avocado"]["path"]
+    assert path == str(checkout)
+    assert Path(path).is_absolute()
+    assert data["header"] == {
+        "version": 16,
+        "includes": [{"repo": "meta-avocado", "file": "kas/machine/m.yml"}],
+    }
+
+
+def test_worktree_wrapper_text_unchanged_by_delegation(meta_avocado_worktree_layout) -> None:
+    """Byte-for-byte the text worktree_wrapper_text rendered before meta_avocado_wrapper_text existed."""
+    lay = meta_avocado_worktree_layout
+    found = linked_worktree_at(lay.worktree)
+    assert found is not None
+    expected = (
+        "header:\n"
+        "  version: 16\n"
+        "  includes:\n"
+        "    - repo: meta-avocado\n"
+        '      file: "kas/machine/m.yml"\n'
+        "repos:\n"
+        "  meta-avocado:\n"
+        f"    path: {json.dumps(str(lay.worktree.resolve()), ensure_ascii=False)}\n"
+    )
+    assert worktree_wrapper_text(found, lay.kas_yaml) == expected
+    assert meta_avocado_wrapper_text(found.checkout, lay.kas_yaml) == expected
 
 
 # --- worktree-aware workspace detection ------------------------------------
