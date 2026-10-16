@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import re
 
-from rich.markup import escape
-
 # Characters stripped from untrusted text before it reaches a markup-enabled
 # Rich renderer: C0/DEL/C1 controls, lone surrogates (undecodable filesystem
 # bytes), Unicode ``Cf`` format characters (bidi overrides, zero-width), the
@@ -40,6 +38,9 @@ def neutralize(value: object) -> str:
     to 1024 characters, then escape markup - escaping last so the backslashes
     it inserts are neither stripped nor counted against the bound.
     """
+    # Deferred: bakar.steps.build_ui imports this module, and only the renderer may load rich.
+    from rich.markup import escape
+
     text = _CONTROL_RE.sub("", str(value))
     if len(text) > _NEUTRALIZE_LIMIT:
         keep = _NEUTRALIZE_LIMIT - len(_ELISION)
