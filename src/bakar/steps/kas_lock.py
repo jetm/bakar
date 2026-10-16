@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import socket
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -244,16 +245,81 @@ class LockHeldByPeerError(Exception):
         super().__init__(f"bitbake lock owned by peer host {host!r}")
 
 
+class LockUnattributableError(LockHeldByPeerError):
+    """The marker could not be attributed while a lock is present on a shared filesystem.
+
+    A subclass of :class:`LockHeldByPeerError` so the acquirer call sites in
+    :mod:`bakar.steps.kas_build` keep refusing before launch. ``host`` is a
+    placeholder, since no host could be read.
+    """
+
+    def __init__(self, marker: Path) -> None:
+        super().__init__("unknown (marker unreadable)")
+        self.marker = marker
+        self.args = (
+            f"bitbake lock marker {marker} could not be attributed (unreadable or empty) while bitbake.lock is "
+            f"present on a shared or unverifiable filesystem; if no build is running on any node, "
+            f"delete {marker} and bitbake.lock manually and retry",
+        )
+
+
+_MARKER_REREAD_DELAY_S = 0.2
+
+
+def _chmod_to_umask_default(path: Path) -> None:
+    """Give a mkstemp file (mode 0600) the mode ``open(path, "x")`` would have used.
+
+    A peer node running as another uid must be able to read the published
+    marker; an unreadable one is refused as unattributable.
+    """
+    umask = os.umask(0)
+    os.umask(umask)
+    path.chmod(0o666 & ~umask)
+
+
+def _create_marker_exclusive(marker: Path, local_host: str) -> bool:
+    """Create ``marker`` holding ``local_host`` in one step; False when it already exists.
+
+    The content is written to a temp file in the marker's directory and
+    hard-linked to the marker path, so no reader on any node ever sees an
+    empty marker (``open(marker, "x")`` then ``write`` exposes that window).
+    ``os.link`` fails with ``FileExistsError`` when the target exists; any other
+    ``OSError`` may be the NFS lost-reply case where the link succeeded but the
+    reply did not arrive, which open(2) documents: a link count of 2 on the
+    temp file means it did.
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=str(marker.parent), prefix=f".{marker.name}.")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(local_host)
+        _chmod_to_umask_default(tmp)
+        try:
+            os.link(tmp, marker)
+        except FileExistsError:
+            return False
+        except OSError:
+            if tmp.stat().st_nlink != 2:
+                raise
+        return True
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 @contextmanager
 def lock_owner_marker(cfg: BuildConfig, log: RunLogger) -> Iterator[None]:
     """Claim the TOPDIR's ownership marker for the duration of one bitbake launch.
 
-    On enter: atomically create the marker (``open(..., "x")`` - O_EXCL,
-    atomic even on NFS) recording this node's hostname. If the marker
-    already exists: a FOREIGN owner raises :class:`LockHeldByPeerError`
-    without entering the ``with`` body (the caller must not launch bitbake);
-    an OWN or GARBLED marker is overwritten atomically (temp file +
-    ``os.replace`` in the same directory) and the launch proceeds.
+    On enter: atomically create the marker with its full content (temp file +
+    ``os.link``, see :func:`_create_marker_exclusive`) recording this node's
+    hostname. If the marker already exists: a FOREIGN owner raises
+    :class:`LockHeldByPeerError` without entering the ``with`` body (the
+    caller must not launch bitbake); an OWN or GARBLED marker is overwritten
+    atomically (temp file + ``os.replace`` in the same directory) and the
+    launch proceeds. A marker that reads as unattributable twice (0.2 s apart)
+    and is unreadable or empty, while ``bitbake.lock`` is present on a
+    network or unverifiable filesystem, raises :class:`LockUnattributableError`
+    instead: it may belong to a live peer whose write is not yet visible.
 
     On exit: the marker is removed IFF ``bitbake.lock`` is absent at that
     point (read fresh, never cached) - this is NEVER gated on the launch's
@@ -265,18 +331,23 @@ def lock_owner_marker(cfg: BuildConfig, log: RunLogger) -> Iterator[None]:
     marker = build_stop.lock_marker_path(cfg)
     marker.parent.mkdir(parents=True, exist_ok=True)
     local_host = socket.gethostname()
-    try:
-        with open(marker, "x", encoding="utf-8") as fh:
-            fh.write(local_host)
-    except FileExistsError:
+    if not _create_marker_exclusive(marker, local_host):
         owner = build_stop.read_marker_owner(cfg)
+        if owner is None:
+            time.sleep(_MARKER_REREAD_DELAY_S)
+            owner = build_stop.read_marker_owner(cfg)
         if owner is not None and owner != local_host:
-            raise LockHeldByPeerError(owner) from None
+            raise LockHeldByPeerError(owner)
+        if owner is None and build_stop.read_marker_state(cfg) in ("unreadable", "empty"):
+            refusal = build_stop.lock_mutation_guard(cfg)
+            if refusal is not None and refusal.reason == "unattributable":
+                raise LockUnattributableError(marker)
         fd, tmp_name = tempfile.mkstemp(dir=str(marker.parent), prefix=f".{marker.name}.")
         tmp = Path(tmp_name)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(local_host)
+            _chmod_to_umask_default(tmp)
             os.replace(tmp, marker)
         except BaseException:
             tmp.unlink(missing_ok=True)

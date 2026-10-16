@@ -1418,6 +1418,29 @@ def read_marker_owner(cfg: BuildConfig) -> str | None:
     return owner
 
 
+def read_marker_state(cfg: BuildConfig) -> Literal["absent", "unreadable", "empty", "garbled", "owner"]:
+    """Classify the ownership marker without changing :func:`read_marker_owner`.
+
+    ``read_marker_owner`` folds every unattributable case into ``None``; the
+    lock-acquire path needs to tell "could not read it" (``unreadable``, or
+    ``empty`` - possibly a peer's mid-write on a filesystem with weak
+    visibility) apart from "read it and it is nonsense" (``garbled``), because
+    only the former may belong to a live peer.
+    """
+    try:
+        raw = lock_marker_path(cfg).read_text()
+    except FileNotFoundError:
+        return "absent"
+    except OSError:
+        return "unreadable"
+    owner = raw.strip()
+    if not owner:
+        return "empty"
+    if "\n" in owner or "\x00" in owner or not owner.isprintable():
+        return "garbled"
+    return "owner"
+
+
 def lock_mutation_guard(cfg: BuildConfig) -> LockRefusal | None:
     """Return why ``cfg``'s lock/socket state must not be touched, or ``None``.
 
