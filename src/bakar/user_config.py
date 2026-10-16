@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import string
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,9 @@ _STR_FIELDS = {
     "cluster_bind_host",
     "mold_mode",
     "mold_extra_excluded_pn",
+    "workspaces_template",
+    "dispatch_worktree_root",
+    "build_worktree_build_dir",
 }
 _BOOL_FIELDS = {
     "show_doctor_report",
@@ -71,6 +75,13 @@ _INT_FIELDS: set[str] = {
     "scope_cpu_weight",
     "scope_io_weight",
     "journal_interval",
+    "dispatch_snapshot_untracked_cap_mb",
+}
+# Path templates and the placeholders each may use, keyed by field. Anything else
+# in braces is a typo that would otherwise surface only as a KeyError at dispatch.
+_TEMPLATE_PLACEHOLDERS: dict[str, tuple[str, frozenset[str]]] = {
+    "workspaces_template": ("workspaces.template", frozenset({"release"})),
+    "build_worktree_build_dir": ("build.worktree_build_dir", frozenset({"stem", "worktree"})),
 }
 # The three [build] parallelism knobs; all require a strictly positive value.
 _PARALLELISM_FIELDS = {"nproc", "parallel_make", "bb_number_threads"}
@@ -263,6 +274,16 @@ class UserConfig:
     nproc: int | None = None
     parallel_make: int | None = None
     bb_number_threads: int | None = None
+    # Build-dir template for a worktree-dispatched build; may use {stem} and
+    # {worktree}. None keeps the default build dir.
+    build_worktree_build_dir: str | None = None
+    # [workspaces] release workspace location: template may use {release};
+    # [workspaces.releases] maps a release codename to an explicit path.
+    workspaces_template: str | None = None
+    workspaces_releases: dict[str, str] | None = None
+    # [dispatch] remote worktree dispatch.
+    dispatch_worktree_root: str | None = None
+    dispatch_snapshot_untracked_cap_mb: int = 50
     # [layers]
     show_hashes: bool = False
     show_sstate_summary: bool = False
@@ -343,6 +364,14 @@ _BUILD_KEYS = {
     "nproc": "nproc",
     "parallel_make": "parallel_make",
     "bb_number_threads": "bb_number_threads",
+    "worktree_build_dir": "build_worktree_build_dir",
+}
+_WORKSPACES_KEYS = {
+    "template": "workspaces_template",
+}
+_DISPATCH_KEYS = {
+    "worktree_root": "dispatch_worktree_root",
+    "snapshot_untracked_cap_mb": "dispatch_snapshot_untracked_cap_mb",
 }
 _LAYERS_KEYS = {
     "show_hashes": "show_hashes",
@@ -359,9 +388,35 @@ _HOST_KEYS = {
 }
 
 
+def _check_placeholders(label: str, value: str, allowed: frozenset[str]) -> None:
+    """Raise ValueError naming ``label`` if ``value`` uses a placeholder outside ``allowed``."""
+    try:
+        names = {name for _, name, _, _ in string.Formatter().parse(value) if name is not None}
+    except ValueError as exc:
+        raise ValueError(f"'{label}' is not a valid template ({exc}): {value!r}") from None
+    unknown = names - allowed
+    if unknown:
+        allowed_text = ", ".join(f"{{{n}}}" for n in sorted(allowed))
+        unknown_text = ", ".join(f"{{{n}}}" for n in sorted(unknown))
+        raise ValueError(f"'{label}' may only use {allowed_text}, got {unknown_text} in {value!r}")
+
+
 def _check_type(field: str, value: object, path: Path) -> None:
     if field in _STR_FIELDS and not isinstance(value, str):
         raise ValueError(f"{path}: '{field}' must be a string, got {type(value).__name__}")
+    if field in _TEMPLATE_PLACEHOLDERS and isinstance(value, str):
+        label, allowed = _TEMPLATE_PLACEHOLDERS[field]
+        try:
+            _check_placeholders(label, value, allowed)
+        except ValueError as exc:
+            raise ValueError(f"{path}: {exc}") from None
+    if (
+        field == "dispatch_snapshot_untracked_cap_mb"
+        and isinstance(value, int)
+        and not isinstance(value, bool)
+        and value <= 0
+    ):
+        raise ValueError(f"{path}: '{field}' must be > 0, got {value}")
     # bool is a subclass of int; reject ints that are not bools explicitly.
     if field in _BOOL_FIELDS and not isinstance(value, bool):
         raise ValueError(f"{path}: '{field}' must be a boolean, got {type(value).__name__}")
@@ -495,7 +550,13 @@ def load_user_config(path: Path | None = None) -> UserConfig:
                     _check_type(field, section_data[key], path)
                     values[field] = section_data[key]
 
-    for section, mapping in (("build", _BUILD_KEYS), ("layers", _LAYERS_KEYS), ("host", _HOST_KEYS)):
+    for section, mapping in (
+        ("build", _BUILD_KEYS),
+        ("layers", _LAYERS_KEYS),
+        ("host", _HOST_KEYS),
+        ("workspaces", _WORKSPACES_KEYS),
+        ("dispatch", _DISPATCH_KEYS),
+    ):
         section_data = data.get(section, {})
         if not isinstance(section_data, dict):
             continue
@@ -512,6 +573,15 @@ def load_user_config(path: Path | None = None) -> UserConfig:
                 if not isinstance(release_key, str) or not isinstance(dir_value, str):
                     raise ValueError(f"{path}: 'build.buildtools_dirs' entries must be string -> string")  # noqa: TRY004
             values["buildtools_dirs"] = dict(dirs)
+
+    workspaces_section = data.get("workspaces", {})
+    if isinstance(workspaces_section, dict) and "releases" in workspaces_section:
+        releases = workspaces_section["releases"]
+        if not isinstance(releases, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in releases.items()
+        ):
+            raise ValueError(f"{path}: 'workspaces.releases' entries must be string -> string")
+        values["workspaces_releases"] = dict(releases)
 
     values["config_version"] = CURRENT_CONFIG_VERSION
     return UserConfig(**values)
@@ -549,6 +619,8 @@ def _build_settings_schema() -> dict[str, _SettingSpec]:
         (("build",), _BUILD_KEYS),
         (("layers",), _LAYERS_KEYS),
         (("host",), _HOST_KEYS),
+        (("workspaces",), _WORKSPACES_KEYS),
+        (("dispatch",), _DISPATCH_KEYS),
     )
     for section, mapping in table_specs:
         for key, field in mapping.items():
@@ -599,7 +671,9 @@ def _coerce(spec: _SettingSpec, raw_value: str) -> str | bool | int | float:
             raise ValueError(f"value for integer key {spec.key!r} must be a valid integer, got {raw_value!r}") from None
         if spec.key == "stall_abort_secs" and v < 0:
             raise ValueError(f"value for {spec.key!r} must be >= 0 (0 disables), got {v}")
-        if (spec.key in _HOST_KEYS or spec.key in _PARALLELISM_FIELDS) and v <= 0:
+        if (
+            spec.key in _HOST_KEYS or spec.key in _PARALLELISM_FIELDS or spec.key == "snapshot_untracked_cap_mb"
+        ) and v <= 0:
             raise ValueError(f"value for {spec.key!r} must be > 0, got {v}")
         if spec.key == "scope_oom_score_adjust" and not 0 <= v <= 1000:
             raise ValueError(f"value for {spec.key!r} must be in [0, 1000] (0 disables), got {v}")
@@ -620,6 +694,10 @@ def _coerce(spec: _SettingSpec, raw_value: str) -> str | bool | int | float:
         elif v < 1:
             raise ValueError(f"value for {spec.key!r} must be >= 1 (bitbake minimum), got {v}")
         return v
+    dotted = ".".join((*spec.section, spec.key))
+    for label, allowed in _TEMPLATE_PLACEHOLDERS.values():
+        if label == dotted:
+            _check_placeholders(label, raw_value, allowed)
     return raw_value
 
 
