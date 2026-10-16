@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
@@ -315,7 +316,7 @@ def _render_text(
     modified: list[str],
     from_pins: dict[str, str],
     to_pins: dict[str, str],
-    find_checkout: object,
+    find_checkout: Callable[[str], Path | None],
 ) -> None:
     """Render plain-text Added/Removed/Modified sections."""
     if added:
@@ -335,7 +336,7 @@ def _render_text(
         for name in modified:
             old_sha = from_pins[name]
             new_sha = to_pins[name]
-            checkout = find_checkout(name)  # type: ignore[operator]
+            checkout = find_checkout(name)
             count = pin_state.commit_distance(checkout, old_sha, new_sha) if checkout else None
             count_str = f" ({count} commit{'s' if count != 1 else ''})" if count is not None else ""
             console.print(f"  ~ {name}: {old_sha[:8]}..{new_sha[:8]}{count_str}")
@@ -356,7 +357,7 @@ def _render_markdown(
     modified: list[str],
     from_pins: dict[str, str],
     to_pins: dict[str, str],
-    find_checkout: object,
+    find_checkout: Callable[[str], Path | None],
 ) -> None:
     """Render markdown output with a heading naming from/to states."""
     console.print(f"## Changelog: {from_state} -> {to_state}")
@@ -384,7 +385,7 @@ def _render_markdown(
         for name in modified:
             old_sha = from_pins[name]
             new_sha = to_pins[name]
-            checkout = find_checkout(name)  # type: ignore[operator]
+            checkout = find_checkout(name)
             count = pin_state.commit_distance(checkout, old_sha, new_sha) if checkout else None
             count_str = f" ({count} commit{'s' if count != 1 else ''})" if count is not None else ""
             console.print(f"- **{name}**: `{old_sha[:8]}..{new_sha[:8]}`{count_str}")

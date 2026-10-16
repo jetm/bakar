@@ -194,7 +194,7 @@ def _assemble_report(
 
     # Dependencies
     deps_vars = parse_env_vars(env_text, ["DEPENDS", "RDEPENDS"])
-    dependencies: dict[str, object] = {
+    dependencies: dict[str, list[str]] = {
         "DEPENDS": [d.strip() for d in deps_vars.get("DEPENDS", "").split() if d.strip()],
         "RDEPENDS": [d.strip() for d in deps_vars.get("RDEPENDS", "").split() if d.strip()],
     }
@@ -224,7 +224,7 @@ def _print_report(recipe: str, report: dict, *, output_json: bool) -> None:
     paths = report.get("paths", {})
     inherits = report.get("inherits", [])
     packages = report.get("packages", [])
-    dependencies = report.get("dependencies", {})
+    dependencies: dict[str, list[str]] = report.get("dependencies", {})
 
     # Identity
     console.print("[bold]Identity:[/]", highlight=False)
@@ -272,7 +272,7 @@ def _print_report(recipe: str, report: dict, *, output_json: bool) -> None:
             rdeps = pkg_info["rdepends"]
             if rdeps:
                 console.print(f"  {pkg}:", highlight=False)
-                for rd in rdeps:  # type: ignore[union-attr]
+                for rd in rdeps:
                     console.print(f"    {rd}", highlight=False)
             else:
                 console.print(f"  {pkg}", highlight=False)
@@ -285,24 +285,24 @@ def _print_report(recipe: str, report: dict, *, output_json: bool) -> None:
     rdepends = dependencies.get("RDEPENDS", [])
     console.print("  build (DEPENDS):", highlight=False)
     if depends:
-        for dep in depends:  # type: ignore[union-attr]
+        for dep in depends:
             console.print(f"    {dep}", highlight=False)
     else:
         console.print("    (none)", highlight=False)
     console.print("  runtime (RDEPENDS):", highlight=False)
     if rdepends:
-        for dep in rdepends:  # type: ignore[union-attr]
+        for dep in rdepends:
             console.print(f"    {dep}", highlight=False)
     else:
         console.print("    (none)", highlight=False)
 
     if "transitive_forward" in dependencies:
         console.print("  transitive forward deps:", highlight=False)
-        for dep in dependencies["transitive_forward"]:  # type: ignore[union-attr]
+        for dep in dependencies["transitive_forward"]:
             console.print(f"    {dep}", highlight=False)
     if "transitive_reverse" in dependencies:
         console.print("  transitive reverse deps:", highlight=False)
-        for dep in dependencies["transitive_reverse"]:  # type: ignore[union-attr]
+        for dep in dependencies["transitive_reverse"]:
             console.print(f"    {dep}", highlight=False)
 
 
