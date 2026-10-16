@@ -163,3 +163,112 @@ def test_real_kas_probe_release(tmp_path: Path) -> None:
     assert kas_pins.probe_release(kas_yaml, checkout) == "wrynose"
     # The throwaway work dir kept kas away from the checkout's parent.
     assert not sibling.exists()
+
+
+# ---------------------------------------------------------------------------
+# Include walk: a foreign repository is refused before kas runs
+# ---------------------------------------------------------------------------
+
+
+def _no_kas(*_args, **_kwargs):
+    raise AssertionError("kas must not run when an include needs another repository")
+
+
+def test_foreign_include_found_through_nested_includes_is_refused(tmp_path: Path) -> None:
+    checkout, kas_yaml = _layout(tmp_path)
+    kas_yaml.write_text("header:\n  version: 16\n  includes:\n    - kas/include/a.yml\n")
+    (checkout / "kas" / "include").mkdir()
+    (checkout / "kas" / "include" / "a.yml").write_text(
+        "header:\n  version: 16\n  includes:\n    - repo: meta-avocado\n      file: kas/include/b.yml\n"
+    )
+    (checkout / "kas" / "include" / "b.yml").write_text(
+        "header:\n  version: 16\n  includes:\n    - repo: meta-extra\n      file: conf.yml\n"
+    )
+    with patch.object(kas_pins.subprocess, "run", _no_kas), pytest.raises(ReleaseRoutingError) as exc:
+        kas_pins.read_merged_config(kas_yaml, checkout=checkout)
+    assert "meta-extra" in str(exc.value)
+    assert str(kas_yaml) in str(exc.value)
+
+
+def test_include_cycle_terminates_and_reaches_kas(tmp_path: Path) -> None:
+    checkout, kas_yaml = _layout(tmp_path)
+    kas_yaml.write_text("header:\n  version: 16\n  includes:\n    - kas/machine/other.yml\n")
+    (checkout / "kas" / "machine" / "other.yml").write_text(
+        "header:\n  version: 16\n  includes:\n    - kas/machine/m.yml\n"
+    )
+    rec = _Recorder(stdout=yaml.safe_dump({"repos": {}}))
+    with patch.object(kas_pins.subprocess, "run", rec):
+        assert kas_pins.read_merged_config(kas_yaml, checkout=checkout) == {"repos": {}}
+    assert len(rec.calls) == 1
+
+
+def test_file_relative_include_is_followed(tmp_path: Path) -> None:
+    checkout, kas_yaml = _layout(tmp_path)
+    kas_yaml.write_text("header:\n  version: 16\n  includes:\n    - sibling.yml\n")
+    (checkout / "kas" / "machine" / "sibling.yml").write_text(
+        "header:\n  version: 16\n  includes:\n    - repo: meta-extra\n      file: conf.yml\n"
+    )
+    with patch.object(kas_pins.subprocess, "run", _no_kas), pytest.raises(ReleaseRoutingError, match="meta-extra"):
+        kas_pins.read_merged_config(kas_yaml, checkout=checkout)
+
+
+def test_foreign_include_with_unreachable_url_is_refused_before_any_fetch(tmp_path: Path) -> None:
+    """The include repo's url names a path that does not exist: kas would fail cloning it, so a
+    refusal naming the repo proves the walk ran first and nothing was contacted."""
+    checkout = tmp_path / "meta-avocado"
+    kas_yaml = checkout / "kas" / "machine" / "m.yml"
+    kas_yaml.parent.mkdir(parents=True)
+    absent = tmp_path / "absent" / "meta-inc.git"
+    kas_yaml.write_text(
+        "header:\n"
+        "  version: 16\n"
+        "  includes:\n"
+        "    - repo: meta-inc\n"
+        "      file: kas/inc.yml\n"
+        "repos:\n"
+        "  meta-inc:\n"
+        f"    url: file://{absent}\n"
+        "    commit: 0123456789abcdef0123456789abcdef01234567\n"
+    )
+    _git(checkout, "init", "-q")
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-q", "-m", "init")
+
+    with pytest.raises(ReleaseRoutingError) as exc:
+        kas_pins.read_merged_config(kas_yaml, checkout=checkout)
+
+    assert "meta-inc" in str(exc.value)
+    assert "other than its own checkout" in str(exc.value)
+    assert not absent.parent.exists()
+    assert not (tmp_path / "meta-inc").exists()
+
+
+# ---------------------------------------------------------------------------
+# extra_files: merged after the entry, in order
+# ---------------------------------------------------------------------------
+
+
+def test_extra_files_follow_the_wrapper_in_order(tmp_path: Path) -> None:
+    checkout, kas_yaml = _layout(tmp_path)
+    bsp = tmp_path / "ws" / "build-m"
+    bsp.mkdir()
+    first = bsp / "main.yml"
+    first.write_text("header:\n  version: 16\nmachine: one\n")
+    second = bsp / "sub" / "main.yml"
+    second.parent.mkdir()
+    second.write_text("header:\n  version: 16\nmachine: two\n")
+    seen: list[list[str]] = []
+
+    def run(argv, **kwargs):
+        files = argv[-1].split(":")
+        seen.append([Path(f).read_text() for f in files])
+        assert all(Path(f).parent == Path(kwargs["cwd"]) for f in files)
+        return subprocess.CompletedProcess(argv, 0, "repos: {}\n", "")
+
+    with patch.object(kas_pins.subprocess, "run", run):
+        kas_pins.read_merged_config(kas_yaml, checkout=checkout, extra_files=[first, second])
+
+    ((wrapper, one, two),) = seen
+    assert "repo: meta-avocado" in wrapper
+    assert one == first.read_text()
+    assert two == second.read_text()

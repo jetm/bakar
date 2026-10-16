@@ -314,8 +314,17 @@ def _repo_policy(kas_yaml: Path) -> str:
     return REPO_POLICY_REUSE
 
 
-def _write_reuse_overlay(cfg: BuildConfig, kas_yaml: Path) -> Path:
+# The build puts <workspace>/bitbake/bin first on PATH and oe-core finds bitbake
+# as ../bitbake, so a side checkout of either is never the copy the build runs.
+_NO_SIDE_CHECKOUT = ("bitbake", "openembedded-core")
+
+
+def _write_reuse_overlay(cfg: BuildConfig, kas_yaml: Path, overlay_rels: list[Path]) -> Path:
     """Write the overlay that keeps kas off the workspace's shared clones.
+
+    ``overlay_rels`` are the overlays the dump merges after the wrapper, in
+    order and relative to ``cfg.bsp_root``. The pins are classified from that
+    same merge, since an overlay may add a repository or re-pin one.
 
     Returns its path relative to ``cfg.bsp_root``, ready for the dump's
     overlay list. A repository that cannot be reused fails the build.
@@ -324,10 +333,19 @@ def _write_reuse_overlay(cfg: BuildConfig, kas_yaml: Path) -> Path:
     if checkout is None:  # pragma: no cover - _repo_policy already fell back
         raise RuntimeError(f"kas YAML {kas_yaml} is not inside a meta-avocado checkout")
     try:
-        merged = kas_pins.read_merged_config(kas_yaml, checkout=checkout)
+        merged = kas_pins.read_merged_config(
+            kas_yaml, checkout=checkout, extra_files=[cfg.bsp_root / rel for rel in overlay_rels]
+        )
         states = repo_reuse.classify(merged.get("repos") or {}, cfg.workspace)
     except (repo_reuse.RepoReuseError, ReleaseRoutingError) as exc:
         raise RuntimeError(str(exc)) from exc
+    for st in states:
+        if st.state == "side" and st.name in _NO_SIDE_CHECKOUT:
+            raise RuntimeError(
+                f"repository {st.name!r} is pinned at {st.pin} but the shared clone {st.path} is off that pin "
+                "or has local changes; the build cannot use a side checkout of it in a shared workspace "
+                "(use a separate workspace, or move the shared clone to the pin by hand)"
+            )
     for st in states:
         if st.state == "side" and not st.side_exists:
             print(f"side checkout {st.name} at {st.pin[:12]}: {st.side_path}", file=sys.stderr)
@@ -673,8 +691,14 @@ def _build_kas_arg(
         try:
             wrapper = _write_meta_avocado_wrapper(cfg, entry)
             if _repo_policy(entry) == REPO_POLICY_REUSE:
-                extra_overlay_rels.append(_write_reuse_overlay(cfg, entry))
-            dump = _run_kas_dump(cfg, wrapper, overlay_rel, extra_overlay_rels)
+                # Held through the dump, because the dump is where kas clones
+                # whatever classify found missing.
+                with repo_reuse.workspace_lock(cfg.workspace):
+                    stack = [overlay_rel, *extra_overlay_rels]
+                    extra_overlay_rels.append(_write_reuse_overlay(cfg, entry, stack))
+                    dump = _run_kas_dump(cfg, wrapper, overlay_rel, extra_overlay_rels)
+            else:
+                dump = _run_kas_dump(cfg, wrapper, overlay_rel, extra_overlay_rels)
         finally:
             if entry != kas_yaml:
                 entry.unlink(missing_ok=True)

@@ -14,12 +14,17 @@ cache is refreshed.
 
 from __future__ import annotations
 
+import fcntl
 import subprocess
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import yaml
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 RepoStateKind = Literal["frozen", "missing", "side"]
 
@@ -38,6 +43,25 @@ class RepoState:
     state: RepoStateKind
     side_path: Path | None = None
     side_exists: bool = False
+
+
+@contextmanager
+def workspace_lock(workspace: Path) -> Iterator[None]:
+    """Hold the workspace's exclusive repository lock for the ``with`` body.
+
+    Two builds that both classify a repository as ``missing`` would each let
+    kas clone it, and the second kas would then check the first build's fresh
+    clone out to its own pin. Serialising classify-through-dump closes that
+    window: the second build classifies only after the first clone exists.
+    """
+    lock_dir = workspace / ".bakar"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    with (lock_dir / "repos.lock").open("a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 def _git_read(path: Path, *args: str) -> str | None:
@@ -113,7 +137,9 @@ def reuse_overlay_text(states: list[RepoState]) -> str:
     repos: dict[str, dict] = {}
     for st in states:
         if st.state == "frozen":
-            repos[st.name] = {"url": None}
+            # Without a path kas places a url-less repo at the dump file's
+            # root, so name the clone classify actually checked.
+            repos[st.name] = {"path": str(st.path.absolute()), "url": None}
         elif st.state == "side" and st.side_path is not None:
             override: dict = {"path": str(st.side_path.absolute())}
             if st.side_exists:

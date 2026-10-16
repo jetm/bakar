@@ -159,7 +159,7 @@ def test_overlay_parses_and_omits_missing(tmp_path: Path) -> None:
     )
     doc = yaml.safe_load(reuse_overlay_text(states))
     assert doc["header"] == {"version": 16}
-    assert doc["repos"]["frozen"] == {"url": None}
+    assert doc["repos"]["frozen"] == {"path": str((tmp_path / "frozen").absolute()), "url": None}
     side = tmp_path / ".bakar" / "pins" / "off" / first[:12]
     assert doc["repos"]["off"] == {"path": str(side)}
     assert "gone" not in doc["repos"]
