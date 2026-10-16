@@ -186,6 +186,30 @@ def _read_pid(state_key: Path) -> int | None:
         return None
 
 
+def read_state(state_key: Path) -> tuple[int, int] | None:
+    """Return ``(pid, port)`` recorded for the daemon, or None.
+
+    None when either file is absent, unreadable or not an integer: a half
+    recorded daemon is not a daemon a caller can reach.
+    """
+    pid = _read_pid(state_key)
+    if pid is None:
+        return None
+    try:
+        port = int((_state_dir(state_key) / _PORT_FILENAME).read_text().strip())
+    except OSError, ValueError:
+        return None
+    return pid, port
+
+
+def bound_url(port: int, bind_host: str | None = None) -> str:
+    """Return the ``ws://`` URL for a daemon bound on ``port``.
+
+    Uses ``bind_host`` when given, else ``localhost``.
+    """
+    return f"ws://{bind_host or 'localhost'}:{port}"
+
+
 def binary_available(binary_root: Path) -> bool:
     """True when the workspace's bitbake-hashserv binary exists under binary_root.
 

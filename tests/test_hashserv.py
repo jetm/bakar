@@ -780,3 +780,38 @@ def test_binary_available_checks_binary_root(tmp_path: Path) -> None:
 
     _create_workspace_binary(binary_root)
     assert binary_available(binary_root) is True
+
+
+def _write_state(state_key: Path, pid: str | None, port: str | None) -> None:
+    state = state_key / ".bakar"
+    state.mkdir(parents=True, exist_ok=True)
+    if pid is not None:
+        (state / "hashserv.pid").write_text(pid)
+    if port is not None:
+        (state / "hashserv.port").write_text(port)
+
+
+def test_read_state_returns_pid_and_port(tmp_path: Path) -> None:
+    from bakar.hashserv import read_state
+
+    _write_state(tmp_path, "123\n", "45678\n")
+    assert read_state(tmp_path) == (123, 45678)
+
+
+@pytest.mark.parametrize(
+    ("pid", "port"),
+    [(None, "45678"), ("123", None), (None, None), ("abc", "45678"), ("123", "notaport"), ("", "")],
+)
+def test_read_state_none_when_either_file_bad(tmp_path: Path, pid: str | None, port: str | None) -> None:
+    from bakar.hashserv import read_state
+
+    _write_state(tmp_path, pid, port)
+    assert read_state(tmp_path) is None
+
+
+def test_bound_url_uses_bind_host_else_localhost() -> None:
+    from bakar.hashserv import bound_url
+
+    assert bound_url(5000, "10.0.0.2") == "ws://10.0.0.2:5000"
+    assert bound_url(5000, None) == "ws://localhost:5000"
+    assert bound_url(5000) == "ws://localhost:5000"
