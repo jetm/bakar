@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from importlib import import_module
 from typing import TYPE_CHECKING
 
 import pytest
@@ -18,6 +19,8 @@ from bakar.config import BSPSpec, ResolveRequest, resolve
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from typer.testing import CliRunner
 
 pytestmark = pytest.mark.unit
 
@@ -58,3 +61,57 @@ def test_exclusion_registry_records_reason(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_registry_is_exported() -> None:
     assert isinstance(GLOBAL_MODE_EXCLUSIONS, dict)
+
+
+class _StoppedError(Exception):
+    """Raised by the recording wrapper to halt a command right after resolution."""
+
+
+_MANIFEST = "imx-6.6.52-2.2.0.xml"
+
+# command name -> (module holding the resolve_global_config binding, argv after the global flag)
+_WALKED: dict[str, tuple[str, list[str]]] = {
+    "graph": ("graph", ["graph", "busybox"]),
+    "inspect": ("inspect", ["inspect", "busybox"]),
+    "prefetch": ("prefetch", ["prefetch"]),
+    "lock": ("lock", ["lock"]),
+    "dump": ("dump", ["dump"]),
+    "getvar": ("getvar", ["getvar", "MACHINE"]),
+    "bitbake": ("bitbake", ["bitbake", "busybox"]),
+    "shell": ("shell", ["shell"]),
+    "stress-parse": ("stress_parse", ["stress-parse"]),
+}
+
+
+@pytest.mark.parametrize("command", sorted(_WALKED))
+def test_kas_launching_command_honours_global_container(
+    command: str, monkeypatch: pytest.MonkeyPatch, runner: CliRunner, nxp_workspace: Path
+) -> None:
+    from bakar.cli import app
+
+    module_name, argv = _WALKED[command]
+    module = import_module(f"bakar.commands.{module_name}")
+    assert command not in _helpers.GLOBAL_MODE_EXCLUSIONS
+    real = module.resolve_global_config
+    seen: list[bool] = []
+
+    def recording(request: ResolveRequest) -> object:
+        cfg = real(request)
+        seen.append(cfg.host_mode)
+        raise _StoppedError
+
+    monkeypatch.setattr(module, "resolve_global_config", recording)
+    monkeypatch.setattr(_state, "_CONTAINER_MODE", False)
+    monkeypatch.setattr(_state, "_HOST_MODE", False)
+    result = runner.invoke(app, ["--container", *argv, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)])
+
+    assert isinstance(result.exception, _StoppedError), (result.output, result.exception)
+    assert seen == [False]
+
+
+def test_run_is_a_declared_exclusion(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``bakar run`` still resolves without the helper; the exclusion is recorded, not implied."""
+    monkeypatch.setattr(_helpers, "GLOBAL_MODE_EXCLUSIONS", {})
+    declare_global_mode_exclusion("run", "resolves without resolve_global_config; migrated separately")
+    assert "run" in _helpers.GLOBAL_MODE_EXCLUSIONS
+    assert not set(_WALKED) & set(_helpers.GLOBAL_MODE_EXCLUSIONS)
