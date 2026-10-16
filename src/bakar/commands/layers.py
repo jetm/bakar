@@ -18,8 +18,9 @@ from bakar.commands._helpers import (
     _overlay_for,
     _print_layer_hashes,
     _resolve_workspace,
+    resolve_global_config,
 )
-from bakar.config import BSPSpec, ResolveRequest, resolve
+from bakar.config import BSPSpec, ResolveRequest
 from bakar.inspect_parse import parse_env_vars, parse_layer_conf
 from bakar.kas import parse_bblayers
 from bakar.layers import _parse_bbsetup_layer_repos, collect_layer_hashes
@@ -54,7 +55,7 @@ def _common_options(
     """Validate mutual-exclusion, normalize dispatch, and resolve (family, bsp, ws, cfg)."""
     family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
-    cfg = resolve(
+    cfg = resolve_global_config(
         ResolveRequest(
             workspace=ws,
             bsp_family=family,
@@ -91,7 +92,7 @@ def layers(
 
     family, _bsp, _kas_yaml, manifest = _normalize_dispatch(None, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=_kas_yaml, family=family)
-    cfg = resolve(
+    cfg = resolve_global_config(
         ResolveRequest(
             workspace=ws,
             bsp_family=family,

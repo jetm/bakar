@@ -165,7 +165,7 @@ def test_bare_layers_prints_hash_listing(tmp_path: Path) -> None:
         patch("bakar.commands.layers._normalize_dispatch", return_value=("nxp", MagicMock(), None, None)),
         patch("bakar.commands.layers._resolve_workspace", return_value=tmp_path),
         patch(
-            "bakar.commands.layers.resolve",
+            "bakar.commands.layers.resolve_global_config",
             return_value=MagicMock(
                 bblayers_conf=tmp_path / "build" / "conf" / "bblayers.conf",
                 kas_yaml=None,
@@ -186,7 +186,7 @@ def test_bare_layers_no_hashes_prints_hint(tmp_path: Path) -> None:
         patch("bakar.commands.layers._normalize_dispatch", return_value=("nxp", MagicMock(), None, None)),
         patch("bakar.commands.layers._resolve_workspace", return_value=tmp_path),
         patch(
-            "bakar.commands.layers.resolve",
+            "bakar.commands.layers.resolve_global_config",
             return_value=MagicMock(
                 bblayers_conf=tmp_path / "build" / "conf" / "bblayers.conf",
                 kas_yaml=None,

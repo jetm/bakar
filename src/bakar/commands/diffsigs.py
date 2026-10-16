@@ -23,8 +23,9 @@ from bakar.commands._helpers import (
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
+    resolve_global_config,
 )
-from bakar.config import BSPSpec, ResolveRequest, resolve
+from bakar.config import BSPSpec, ResolveRequest
 from bakar.observability import RunLogger
 from bakar.sigdiff_parse import _extract_dep_diff, _recipe_from_task
 from bakar.steps.kas_build import KasBuildContext, ShellCapture, run_shell_capture
@@ -173,7 +174,7 @@ def diffsigs(
     """
     family, bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
-    cfg = resolve(
+    cfg = resolve_global_config(
         ResolveRequest(
             workspace=ws,
             bsp_family=family,

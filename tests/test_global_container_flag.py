@@ -80,6 +80,8 @@ _WALKED: dict[str, tuple[str, list[str]]] = {
     "bitbake": ("bitbake", ["bitbake", "busybox"]),
     "shell": ("shell", ["shell"]),
     "stress-parse": ("stress_parse", ["stress-parse"]),
+    "diffsigs": ("diffsigs", ["diffsigs", "busybox", "do_compile"]),
+    "layers": ("layers", ["layers"]),
 }
 
 
