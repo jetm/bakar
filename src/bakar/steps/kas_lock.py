@@ -278,7 +278,9 @@ def _create_marker_exclusive(marker: Path, local_host: str) -> bool:
 
     The content is written to a temp file in the marker's directory and
     hard-linked to the marker path, so no reader on any node ever sees an
-    empty marker (``open(marker, "x")`` then ``write`` exposes that window).
+    empty marker (an exclusive create followed by a write exposes that window,
+    which :func:`_create_marker_without_link` accepts only where hard links
+    are unsupported).
     ``os.link`` fails with ``FileExistsError`` when the target exists; any other
     ``OSError`` may be the NFS lost-reply case where the link succeeded but the
     reply did not arrive, which open(2) documents: a link count of 2 on the
