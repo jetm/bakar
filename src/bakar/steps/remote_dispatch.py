@@ -930,6 +930,48 @@ def _surface_run_id(host: str, ws_root: Path, captured: list[str], rc: int) -> N
         console.print("no remote run dir was created - the build failed before starting")
 
 
+def check_versions(remote_version: str | None, *, assume_yes: bool) -> bool:
+    """Refuse a remote whose bakar differs from the local one, unless ``assume_yes``."""
+    local_ver = _local_bakar_version()
+    if local_ver and remote_version and remote_version != local_ver:
+        console.print(
+            f"[red]bakar mismatch[/]: local {local_ver!r} vs remote {remote_version!r}. The remote would "
+            "build with different bakar code/overlays (the parenthesised id is a content hash), so "
+            "the result may not match a local build. Sync the remote bakar (git pull + "
+            "uv tool install --force), or pass --yes to override."
+        )
+        if not assume_yes:
+            return False
+        console.print("[yellow]--yes: proceeding despite the bakar mismatch.[/]")
+    return True
+
+
+def run_remote_build(host: str, script: str, run_root: Path) -> int:
+    """Stream ``script`` on ``host`` and report the run id found under ``run_root``.
+
+    Returns the remote exit code, 130 on Ctrl-C, or ``_DISPATCH_LOST_EXIT`` when
+    the log stream is lost while the build keeps running.
+    """
+    try:
+        rc, captured, finished = _stream_remote_build(host, script)
+    except KeyboardInterrupt:
+        console.print("[yellow]Ctrl-C does not stop the remote build[/] - it keeps running on the host.")
+        console.print(f"stop it:    bakar stop --on {host}  (or: ssh {host} bakar stop)")
+        console.print(f"triage it:  ssh {host} bakar triage <run-id>")
+        return 130
+    if not finished:
+        # A lost log stream is a transport failure, not a build result: the build
+        # is still running under its unit and its exit status is unknown.
+        # _surface_run_id would take its `rc != 0` branch here and narrate a
+        # healthy in-flight build as "no remote run dir was created - the build
+        # failed before starting", sending someone hunting an error that does not
+        # exist. _stream_remote_build has already printed the re-attach/stop
+        # advice, which is the only actionable thing there is to say.
+        return _DISPATCH_LOST_EXIT
+    _surface_run_id(host, run_root, captured, rc)
+    return rc
+
+
 def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed by the build command
     host: str,
     ws_root: Path,
@@ -972,17 +1014,8 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
         if detail:
             console.print(detail, markup=False)
         return 1
-    local_ver = _local_bakar_version()
-    if local_ver and detail and detail != local_ver:
-        console.print(
-            f"[red]bakar mismatch[/]: local {local_ver!r} vs remote {detail!r}. The remote would "
-            "build with different bakar code/overlays (the parenthesised id is a content hash), so "
-            "the result may not match a local build. Sync the remote bakar (git pull + "
-            "uv tool install --force), or pass --yes to override."
-        )
-        if not assume_yes:
-            return 1
-        console.print("[yellow]--yes: proceeding despite the bakar mismatch.[/]")
+    if not check_versions(detail, assume_yes=assume_yes):
+        return 1
 
     plan = DispatchPlan(writes=[f"add/update {ws_root}/ -> {host}:{ws_root}/ (additive rsync, nothing deleted)"])
     print_dispatch_plan(host, plan)
@@ -994,24 +1027,7 @@ def dispatch_remote_build(  # noqa: PLR0913 - fixed dispatch signature consumed 
 
     env_vars = {k: v for k, v in os.environ.items() if k.startswith(("BAKAR_", "KAS_"))}
     script = build_remote_script(strip_dispatch_options(local_args), cwd, env_vars, sccache_off=not sccache_dist)
-    try:
-        rc, captured, finished = _stream_remote_build(host, script)
-    except KeyboardInterrupt:
-        console.print("[yellow]Ctrl-C does not stop the remote build[/] - it keeps running on the host.")
-        console.print(f"stop it:    bakar stop --on {host}  (or: ssh {host} bakar stop)")
-        console.print(f"triage it:  ssh {host} bakar triage <run-id>")
-        return 130
-    if not finished:
-        # A lost log stream is a transport failure, not a build result: the build
-        # is still running under its unit and its exit status is unknown.
-        # _surface_run_id would take its `rc != 0` branch here and narrate a
-        # healthy in-flight build as "no remote run dir was created - the build
-        # failed before starting", sending someone hunting an error that does not
-        # exist. _stream_remote_build has already printed the re-attach/stop
-        # advice, which is the only actionable thing there is to say.
-        return _DISPATCH_LOST_EXIT
-    _surface_run_id(host, ws_root, captured, rc)
-    return rc
+    return run_remote_build(host, script, ws_root)
 
 
 def _running_dispatch_units(host: str) -> list[str] | None:

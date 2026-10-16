@@ -147,7 +147,7 @@ def test_call_order_and_success(rec: Recorder, checkout: Path) -> None:
         "surface",
     ]
     assert ("check_workspace", (HOST, str(WORKSPACE), "scarthgap")) in rec.calls
-    assert ("surface", (HOST, WORKSPACE, 0)) in rec.calls
+    assert ("surface", (HOST, WORKSPACE / "build-m-feature-x", 0)) in rec.calls
 
 
 @pytest.mark.parametrize(
@@ -202,7 +202,6 @@ def test_marker_inputs(rec: Recorder, checkout: Path, snapshot: bool) -> None:
     assert str(checkout) in script
     assert f'"snapshot": {"true" if snapshot else "false"}' in script
     assert f"{WORKSPACE}/.bakar/worktrees" in script
-    assert "build-m-feature-x" in script
 
 
 def test_ensure_failure_reports_reason(rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -299,7 +298,7 @@ def test_remote_failure_rc_propagates(rec: Recorder, checkout: Path) -> None:
     rec.stream = (1, ["Run `bakar triage 20260101-000000` for details.\n"], True)
     rc = _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"])
     assert rc == 1
-    assert ("surface", (HOST, WORKSPACE, 1)) in rec.calls
+    assert ("surface", (HOST, WORKSPACE / "build-m-feature-x", 1)) in rec.calls
 
 
 def test_unusable_name_exits_2_before_any_remote_write(
@@ -339,3 +338,23 @@ def test_hyphen_host_rejected(rec: Recorder, checkout: Path) -> None:
 def test_strip_workspace_option_forms() -> None:
     args = ["build", "-w", "/a", "--workspace", "/b", "--workspace=/c", "-w/d", "k.yml"]
     assert ad.strip_workspace_option(args) == ["build", "k.yml"]
+
+
+def test_strip_workspace_option_in_short_clusters() -> None:
+    assert ad.strip_workspace_option(["build", "-kw", "/a", "k.yml"]) == ["build", "-k", "k.yml"]
+    assert ad.strip_workspace_option(["build", "-kw/a", "k.yml"]) == ["build", "-k", "k.yml"]
+    assert ad.strip_workspace_option(["build", "-nk", "k.yml"]) == ["build", "-nk", "k.yml"]
+
+
+def test_remote_env_always_names_the_build_dir_template() -> None:
+    assert ad.remote_env(None)["BAKAR_WORKTREE_BUILD_DIR"] == "build-{stem}-{worktree}"
+    assert ad.remote_env("b-{stem}")["BAKAR_WORKTREE_BUILD_DIR"] == "b-{stem}"
+
+
+@pytest.mark.parametrize(
+    "forbidden", ["rm ", "worktree remove", "worktree prune", "reset --hard", "clean -f", "--force"]
+)
+def test_dispatched_scripts_carry_no_destructive_command(rec: Recorder, checkout: Path, forbidden: str) -> None:
+    assert _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml", "--on", HOST]) == 0
+    assert forbidden not in rec.ensure_script
+    assert forbidden not in rec.remote_script

@@ -80,7 +80,13 @@ from bakar.kas import KasGenOptions, write_yaml
 from bakar.observability import RunLogger
 from bakar.output_mode import OutputMode
 from bakar.psi import PSI_DIMS, apply_autocalibration, read_psi_avg10
-from bakar.release_workspace import REPO_POLICY_KAS, REPO_POLICY_REUSE, ReleaseRoutingError, parse_repo_policy
+from bakar.release_workspace import (
+    REPO_POLICY_ENV,
+    REPO_POLICY_KAS,
+    REPO_POLICY_REUSE,
+    ReleaseRoutingError,
+    parse_repo_policy,
+)
 from bakar.steps import kas_pins, repo_reuse
 from bakar.steps.build_ui import BuildUIState
 from bakar.steps.kas_graph_capture import (
@@ -283,9 +289,6 @@ def _write_meta_avocado_wrapper(cfg: BuildConfig, kas_yaml: Path) -> Path:
     return wrapper
 
 
-_REPO_POLICY_ENV = "BAKAR_REPO_POLICY"
-_REPO_POLICY_KAS = REPO_POLICY_KAS
-_REPO_POLICY_REUSE = REPO_POLICY_REUSE
 _REUSE_OVERLAY_YAML = "avocado-reuse.yml"
 
 
@@ -297,18 +300,18 @@ def _repo_policy(kas_yaml: Path) -> str:
     rebuilt with the variable exported by hand) falls back to ``kas``.
     """
     try:
-        policy = parse_repo_policy(os.environ.get(_REPO_POLICY_ENV))
+        policy = parse_repo_policy(os.environ.get(REPO_POLICY_ENV))
     except ReleaseRoutingError as exc:
         raise RuntimeError(str(exc)) from exc
-    if policy != _REPO_POLICY_REUSE:
-        return _REPO_POLICY_KAS
+    if policy != REPO_POLICY_REUSE:
+        return REPO_POLICY_KAS
     if meta_avocado_checkout(kas_yaml) is None:
         print(
             f"repo policy reuse skipped for {kas_yaml}: not inside a meta-avocado checkout, using the kas policy",
             file=sys.stderr,
         )
-        return _REPO_POLICY_KAS
-    return _REPO_POLICY_REUSE
+        return REPO_POLICY_KAS
+    return REPO_POLICY_REUSE
 
 
 def _write_reuse_overlay(cfg: BuildConfig, kas_yaml: Path) -> Path:
@@ -669,7 +672,7 @@ def _build_kas_arg(
         entry = _entry_without_bakar_sections(kas_yaml)
         try:
             wrapper = _write_meta_avocado_wrapper(cfg, entry)
-            if _repo_policy(entry) == _REPO_POLICY_REUSE:
+            if _repo_policy(entry) == REPO_POLICY_REUSE:
                 extra_overlay_rels.append(_write_reuse_overlay(cfg, entry))
             dump = _run_kas_dump(cfg, wrapper, overlay_rel, extra_overlay_rels)
         finally:

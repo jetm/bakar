@@ -2472,10 +2472,10 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
     checkout = meta_avocado_checkout(kas_yaml)
     wt = meta_avocado_worktree(kas_yaml)
 
-    from bakar.release_workspace import REPO_POLICY_REUSE, ReleaseRoutingError, parse_repo_policy
+    from bakar.release_workspace import REPO_POLICY_ENV, REPO_POLICY_REUSE, ReleaseRoutingError, parse_repo_policy
 
     try:
-        policy = parse_repo_policy(os.environ.get("BAKAR_REPO_POLICY"))
+        policy = parse_repo_policy(os.environ.get(REPO_POLICY_ENV))
     except ReleaseRoutingError as exc:
         return _fail(name, Severity.BLOCK, str(exc), fix_hint="Unset BAKAR_REPO_POLICY or set it to kas or reuse.")
 

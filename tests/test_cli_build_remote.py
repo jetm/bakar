@@ -328,6 +328,23 @@ def test_dry_run_with_on_refused_no_ssh_rsync(
     assert fake_sp.calls == []
 
 
+def test_clean_with_on_refused_no_ssh_rsync(
+    runner: _CliRunner,
+    workspace: Path,
+    generic_yaml: Path,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # --clean would ride to the remote build and delete a build directory there.
+    monkeypatch.setattr(sys, "argv", ["bakar", "build", str(generic_yaml), "--on", HOST, "--clean"])
+
+    result = runner.invoke(app, ["build", str(generic_yaml), "--on", HOST, "--clean"])
+
+    assert result.exit_code == 2
+    assert "--clean cannot be combined with --on" in result.output
+    assert fake_sp.calls == []
+
+
 # ---------------------------------------------------------------------------
 # (h) C2: a generic BYO YAML from a non-workspace cwd resolves ws_root (no exit 2).
 # ---------------------------------------------------------------------------

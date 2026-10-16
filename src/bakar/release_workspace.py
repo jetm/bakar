@@ -15,13 +15,14 @@ from pathlib import Path
 _OE_CORE = "openembedded-core"
 _AVOCADO_SUFFIX = "-avocado"
 _SERIES_ENV = "AVOCADO_YOCTO_SERIES"
-_DEFAULT_BUILD_DIR_TEMPLATE = "build-{stem}-{worktree}"
+DEFAULT_BUILD_DIR_TEMPLATE = "build-{stem}-{worktree}"
 _BUILD_DIR_PLACEHOLDERS = frozenset({"stem", "worktree"})
 _PLACEHOLDER_RE = re.compile(r"\{([^{}]*)\}")
 _DELIVERED_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 _UNSAFE_CHAR_RE = re.compile(r"[^A-Za-z0-9._-]")
 
 
+REPO_POLICY_ENV = "BAKAR_REPO_POLICY"
 REPO_POLICY_KAS = "kas"
 REPO_POLICY_REUSE = "reuse"
 _REPO_POLICIES = (REPO_POLICY_KAS, REPO_POLICY_REUSE)
@@ -105,7 +106,7 @@ def worktree_build_dir_name(
     """
     if worktree is None:
         return f"build-{stem}"
-    tmpl = template or _DEFAULT_BUILD_DIR_TEMPLATE
+    tmpl = template or DEFAULT_BUILD_DIR_TEMPLATE
     unknown = sorted(set(_PLACEHOLDER_RE.findall(tmpl)) - _BUILD_DIR_PLACEHOLDERS)
     if unknown:
         names = ", ".join("{" + u + "}" for u in unknown)

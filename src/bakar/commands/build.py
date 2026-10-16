@@ -379,6 +379,15 @@ def build(
         )
         raise typer.Exit(code=2)
 
+    # --clean is forwarded with every other flag, so the remote build would
+    # delete a build directory on the host. Dispatch never deletes on a remote.
+    if clean and on is not None:
+        console.print(
+            "[red]--clean cannot be combined with --on[/]: it would delete the build directory on the remote host. "
+            "Build with --on, or run `bakar build --clean` on that host."
+        )
+        raise typer.Exit(code=2)
+
     # --on <host>: dispatch the entire build to a remote node instead of building
     # locally. Runs before any form-specific branch (preset, bbsetup, byo/manifest)
     # so it covers every build form (design A2). When --on is unset the body below

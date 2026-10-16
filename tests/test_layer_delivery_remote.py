@@ -78,7 +78,6 @@ def _run(workspace: Path, root: Path, commit: str, *, host: str = HOST, src: str
         snapshot=False,
         source_host=host,
         source_path=src,
-        build_dir=BUILD_DIR,
     )
     env = {**os.environ, **_GIT_ENV}
     return subprocess.run(
@@ -260,7 +259,6 @@ def test_invalid_name_is_rejected(name: str):
             snapshot=False,
             source_host=HOST,
             source_path=SRC,
-            build_dir=BUILD_DIR,
         )
 
 
@@ -273,9 +271,19 @@ def test_script_has_no_destructive_operations():
         snapshot=True,
         source_host=HOST,
         source_path=SRC,
-        build_dir=BUILD_DIR,
     )
-    for forbidden in ("worktree remove", "worktree prune", "--force", "rm ", " -f "):
+    for forbidden in (
+        "worktree remove",
+        "worktree prune",
+        "--force",
+        "rm ",
+        " -f ",
+        "reset --hard",
+        "clean -",
+        "update-ref -d",
+        "branch -D",
+        "checkout --",
+    ):
         assert forbidden not in script
 
 
@@ -326,3 +334,29 @@ def test_describe_exit_names_each_refusal():
     for code in (EXIT_LOCKED, EXIT_NO_MARKER, EXIT_FOREIGN_MARKER, EXIT_DIRTY, EXIT_BUILD_RUNNING):
         assert describe_exit(code) != describe_exit(99)
     assert "99" in describe_exit(99)
+
+
+def test_same_commit_with_hand_edits_is_refused(workspace: Path, tmp_path: Path):
+    repo = workspace / "meta-avocado"
+    root = tmp_path / "wts"
+    first = _head(repo)
+    assert _run(workspace, root, first).returncode == 0
+    (root / "wt1" / "a.txt").write_text("edited\n")
+    res = _run(workspace, root, first)
+    assert res.returncode == EXIT_DIRTY
+    assert (root / "wt1" / "a.txt").read_text() == "edited\n"
+
+
+def test_bitbake_lock_of_another_build_dir_is_refused(workspace: Path, tmp_path: Path):
+    repo = workspace / "meta-avocado"
+    root = tmp_path / "wts"
+    first = _head(repo)
+    assert _run(workspace, root, first).returncode == 0
+    lock = workspace / "build-other-wt1" / "build" / "bitbake.lock"
+    lock.parent.mkdir(parents=True)
+    second = _commit(repo, "b.txt", "b\n")
+    with lock.open("w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        res = _run(workspace, root, second)
+    assert res.returncode == EXIT_BUILD_RUNNING
+    assert _head(root / "wt1") == first

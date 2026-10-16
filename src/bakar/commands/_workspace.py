@@ -23,7 +23,7 @@ from bakar.bsp_detect import (
     meta_avocado_checkout,
 )
 from bakar.bsp_model import BspModel, detect_bsp_family, get_model
-from bakar.release_workspace import ReleaseRoutingError, map_release
+from bakar.release_workspace import REPO_POLICY_ENV, REPO_POLICY_REUSE, ReleaseRoutingError, map_release
 from bakar.user_config import load_user_config
 
 # ---------------------------------------------------------------------------
@@ -270,8 +270,8 @@ def _routed_release_workspace(kas_yaml: Path) -> Path | None:
             "(create it, fix \\[workspaces] in the bakar config, or pass --workspace)."
         )
         raise typer.Exit(code=2)
-    if not os.environ.get("BAKAR_REPO_POLICY"):
-        os.environ["BAKAR_REPO_POLICY"] = "reuse"
+    if not os.environ.get(REPO_POLICY_ENV):
+        os.environ[REPO_POLICY_ENV] = REPO_POLICY_REUSE
     return routed
 
 

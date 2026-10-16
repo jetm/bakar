@@ -15,12 +15,19 @@ here deletes anything on the remote.
 from __future__ import annotations
 
 import os
+import re
 import socket
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bakar.release_workspace import ReleaseRoutingError, worktree_build_dir_name
+from bakar.release_workspace import (
+    DEFAULT_BUILD_DIR_TEMPLATE,
+    REPO_POLICY_ENV,
+    REPO_POLICY_REUSE,
+    ReleaseRoutingError,
+    worktree_build_dir_name,
+)
 from bakar.steps import layer_delivery, layer_delivery_remote
 from bakar.steps import remote_dispatch as rd
 
@@ -30,6 +37,7 @@ if TYPE_CHECKING:
 console = rd.console
 
 _WORKSPACE_FLAGS = frozenset({"-w", "--workspace"})
+_SHORT_CLUSTER_RE = re.compile(r"-([A-Za-z]*)w(.*)")
 
 
 class KasArgError(Exception):
@@ -78,6 +86,15 @@ def strip_workspace_option(args: list[str]) -> list[str]:
         # `--workspace=X`, and click's attached short form `-wX`.
         if arg.startswith("--workspace=") or (arg.startswith("-w") and not arg.startswith("--")):
             continue
+        # A short cluster such as `-kw /ws`: keep the flags before the `w`; a
+        # trailing `w` takes the next token, anything after it is the value.
+        cluster = _SHORT_CLUSTER_RE.fullmatch(arg)
+        if cluster:
+            flags, value = cluster.groups()
+            if flags:
+                result.append(f"-{flags}")
+            skip_next = not value
+            continue
         result.append(arg)
     return result
 
@@ -100,25 +117,11 @@ def remote_env(build_dir_template: str | None) -> dict[str, str]:
     by where the delivered worktree sits, so it is dropped.
     """
     env = {k: v for k, v in os.environ.items() if k.startswith(("BAKAR_", "KAS_")) and k != "KAS_WORK_DIR"}
-    env["BAKAR_REPO_POLICY"] = "reuse"
-    if build_dir_template:
-        env["BAKAR_WORKTREE_BUILD_DIR"] = build_dir_template
+    env[REPO_POLICY_ENV] = REPO_POLICY_REUSE
+    # Always sent: the remote's own config must not pick another directory than
+    # the one the plan names and the remote run is scoped to.
+    env["BAKAR_WORKTREE_BUILD_DIR"] = build_dir_template or DEFAULT_BUILD_DIR_TEMPLATE
     return env
-
-
-def _check_versions(remote_version: str | None, *, assume_yes: bool) -> bool:
-    local_ver = rd._local_bakar_version()
-    if local_ver and remote_version and remote_version != local_ver:
-        console.print(
-            f"[red]bakar mismatch[/]: local {local_ver!r} vs remote {remote_version!r}. The remote would "
-            "build with different bakar code/overlays (the parenthesised id is a content hash), so "
-            "the result may not match a local build. Sync the remote bakar (git pull + "
-            "uv tool install --force), or pass --yes to override."
-        )
-        if not assume_yes:
-            return False
-        console.print("[yellow]--yes: proceeding despite the bakar mismatch.[/]")
-    return True
 
 
 def dispatch_avocado_build(  # noqa: PLR0913 - fixed dispatch signature consumed by the build command
@@ -169,7 +172,7 @@ def dispatch_avocado_build(  # noqa: PLR0913 - fixed dispatch signature consumed
         if detail:
             console.print(detail, markup=False)
         return 1
-    if not _check_versions(detail, assume_yes=assume_yes):
+    if not rd.check_versions(detail, assume_yes=assume_yes):
         return 1
 
     try:
@@ -224,7 +227,6 @@ def dispatch_avocado_build(  # noqa: PLR0913 - fixed dispatch signature consumed
         snapshot=snapshot,
         source_host=socket.gethostname(),
         source_path=str(checkout),
-        build_dir=build_dir,
     )
     ensured = rd._ssh_bash_capture(host, script)
     if ensured.returncode != 0:
@@ -240,15 +242,7 @@ def dispatch_avocado_build(  # noqa: PLR0913 - fixed dispatch signature consumed
     remote_script = rd.build_remote_script(
         remote_argv, target, remote_env(build_dir_template), sccache_off=not sccache_dist
     )
-    try:
-        rc, captured, finished = rd._stream_remote_build(host, remote_script)
-    except KeyboardInterrupt:
-        console.print("[yellow]Ctrl-C does not stop the remote build[/] - it keeps running on the host.")
-        console.print(f"stop it:    bakar stop --on {host}  (or: ssh {host} bakar stop)")
-        console.print(f"triage it:  ssh {host} bakar triage <run-id>")
-        return 130
-    if not finished:
-        # The build is still running under its unit; see dispatch_remote_build.
-        return rd._DISPATCH_LOST_EXIT
-    rd._surface_run_id(host, workspace, captured, rc)
-    return rc
+    # Run ids are looked up under this dispatch's build directory: the release
+    # workspace holds the runs of every worktree, and a concurrent one would
+    # otherwise be named.
+    return rd.run_remote_build(host, remote_script, workspace / build_dir)

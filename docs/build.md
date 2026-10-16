@@ -590,9 +590,10 @@ Every check runs before the first remote write:
    flag, delivery time) into the worktree's git admin directory, so the work
    tree stays clean. When it exists, bakar moves it to the new commit with
    `git checkout --detach` only if the marker names this host and this checkout
-   path, the tree is clean, and no build holds
-   `<workspace>/<build dir>/build/bitbake.lock`. A worktree already at the
-   commit is left as is.
+   path, the tree is clean (checked first, so a hand-edited tree at the same
+   commit is refused too), and no build holds the `bitbake.lock` of any build
+   directory in the workspace, because every machine built from the worktree
+   shares it. A worktree already at the commit is left as is.
 9. **Remote build** - the build runs from the delivered worktree with the kas
    path relative to it. The remote bakar recognises the linked worktree, takes
    the parent of `<workspace>/meta-avocado` as its workspace and needs no
@@ -718,7 +719,8 @@ workspace.
 | `...: the delivery path exists but carries no readable bakar marker` | bakar did not create `<worktree_root>/<name>` (script exit 4) | move that directory aside by hand, or dispatch from a worktree with another name |
 | `...: the delivered worktree belongs to another host or checkout` | the marker names another dispatching host or checkout path (script exit 5) | dispatch under another name, or remove that worktree by hand |
 | `...: the delivered worktree has uncommitted changes` | the delivered tree was edited on the remote; the changed paths are listed (script exit 6) | inspect and clean it by hand; bakar never discards changes |
-| `...: a build is running in the delivered worktree's build directory` | its `bitbake.lock` is held (script exit 7) | wait for the build, or `bakar stop --on <host>` |
+| `--clean cannot be combined with --on` | `--clean` would delete a build directory on the remote (exit 2) | build with `--on`, or run `bakar build --clean` on that host |
+| `...: a build is running in the delivered worktree's build directory` | a `bitbake.lock` in any build directory of the workspace is held (script exit 7) | wait for the build, or `bakar stop --on <host>` |
 | `repository 'x' has a url but no commit pin; kas would move the shared clone to a branch tip` | the build runs under `reuse` | pin the repository to a commit |
 | `side checkout <path> for 'x' is not clean at pin <commit>` | an existing side checkout was changed | inspect it by hand; bakar never modifies it |
 

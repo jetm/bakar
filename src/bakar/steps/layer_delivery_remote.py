@@ -8,8 +8,9 @@ local checkout own the worktree.
 
 The script only ever adds: it creates directories and lock files, adds a
 worktree or checks out a new commit in one it already owns. It never deletes,
-never prunes worktrees and never passes a force option, so a refusal leaves
-the remote exactly as it found it.
+never prunes worktrees and never passes a force option. A refusal leaves the
+worktree untouched; the pushed ref and objects, the worktree root and the lock
+file are already there by then, because the push precedes the script.
 """
 
 from __future__ import annotations
@@ -117,7 +118,6 @@ def ensure_worktree_script(  # noqa: PLR0913 - every value is keyword-only and l
     snapshot: bool,
     source_host: str,
     source_path: str,
-    build_dir: str,
 ) -> str:
     """Return the bash script that places ``commit`` at ``<worktree_root>/<name>``.
 
@@ -144,7 +144,6 @@ name={q(name)}
 commit={q(commit)}
 src_host={q(source_host)}
 src_path={q(source_path)}
-build_lock="$workspace"/{q(build_dir)}/build/bitbake.lock
 marker={q(marker)}
 dest="$root/$name"
 
@@ -183,13 +182,6 @@ if [ ! -r "$marker_path" ]; then
 fi
 python3 -c {q(_MARKER_CHECK_PY)} "$marker_path" "$src_host" "$src_path"
 
-head=$(git -C "$dest" rev-parse HEAD)
-want=$(git -C "$dest" rev-parse --verify "$commit^{{commit}}")
-if [ "$head" = "$want" ]; then
-    echo "bakar: $dest already at $commit"
-    exit 0
-fi
-
 status=$(git -C "$dest" status --porcelain)
 if [ -n "$status" ]; then
     echo "bakar: $dest has uncommitted changes:" >&2
@@ -197,10 +189,21 @@ if [ -n "$status" ]; then
     exit {EXIT_DIRTY}
 fi
 
-if [ -e "$build_lock" ] && ! flock -n -s "$build_lock" true; then
-    echo "bakar: a build holds $build_lock" >&2
-    exit {EXIT_BUILD_RUNNING}
+head=$(git -C "$dest" rev-parse HEAD)
+want=$(git -C "$dest" rev-parse --verify "$commit^{{commit}}")
+if [ "$head" = "$want" ]; then
+    echo "bakar: $dest already at $commit"
+    exit 0
 fi
+
+# The worktree is shared by every machine built from it, so any build
+# directory of the workspace holding its bitbake.lock blocks the move.
+for build_lock in "$workspace"/*/build/bitbake.lock; do
+    if [ -e "$build_lock" ] && ! flock -n -s "$build_lock" true; then
+        echo "bakar: a build holds $build_lock" >&2
+        exit {EXIT_BUILD_RUNNING}
+    fi
+done
 
 git -C "$dest" checkout -q --detach "$commit"
 write_marker
