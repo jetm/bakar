@@ -334,18 +334,19 @@ def assemble_report(run_dir: Path, cfg: BuildConfig) -> ReportSummary:
     """Assemble a best-effort summary of the run in ``run_dir``.
 
     Reads ``events.jsonl`` for the ``run_start``/``run_end`` timestamps and the
-    ``kas_build`` ``step_ok``/``step_fail`` outcome, and ``collect_layer_hashes``
-    for the per-layer SHAs. Status is ``"success"`` when a ``kas_build``
+    ``kas_build``/``qcom_build`` ``step_ok``/``step_fail`` outcome, and ``collect_layer_hashes``
+    for the per-layer SHAs. Status is ``"success"`` when a ``kas_build`` or ``qcom_build``
     ``step_ok`` exists, else ``"failure"``.
     """
     events_path = run_dir / "events.jsonl"
 
     run_start = last_run_event(events_path, lambda rec: rec.get("event") == "run_start")
-    run_end = last_run_event(events_path, lambda rec: rec.get("event") == "run_end")
+    # RunLogger writes run_error, not run_end, when the run block raises.
+    run_end = last_run_event(events_path, lambda rec: rec.get("event") in ("run_end", "run_error"))
 
     step_ok = last_run_event(
         events_path,
-        lambda rec: rec.get("event") == "step_ok" and rec.get("step") == "kas_build",
+        lambda rec: rec.get("event") == "step_ok" and rec.get("step") in ("kas_build", "qcom_build"),
     )
 
     status = "success" if step_ok is not None else "failure"

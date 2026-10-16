@@ -84,6 +84,40 @@ def test_failure_run_status(tmp_path: Path) -> None:
     assert summary.status == "failure"
 
 
+def test_run_error_gives_failed_run_a_duration(tmp_path: Path) -> None:
+    """A run ending in run_error (no run_end) still has a numeric duration."""
+    cfg = _nxp_cfg(tmp_path)
+    run_dir = tmp_path / "runs" / "20260527-120000"
+    _write_events(
+        run_dir,
+        [
+            {"ts": "2026-05-27T12:00:00Z", "event": "run_start", "run_id": "20260527-120000"},
+            {"ts": "2026-05-27T12:02:00Z", "event": "run_error", "error": "boom"},
+        ],
+    )
+
+    summary = assemble_report(run_dir, cfg)
+
+    assert summary.status == "failure"
+    assert summary.duration_s == pytest.approx(120.0)
+
+
+def test_qcom_build_step_ok_reports_success(tmp_path: Path) -> None:
+    """A qcom run whose qcom_build step succeeded is a success."""
+    cfg = _nxp_cfg(tmp_path)
+    run_dir = tmp_path / "runs" / "20260527-130000"
+    _write_events(
+        run_dir,
+        [
+            {"ts": "2026-05-27T13:00:00Z", "event": "run_start", "run_id": "20260527-130000"},
+            {"ts": "2026-05-27T13:01:00Z", "event": "step_ok", "step": "qcom_build"},
+            {"ts": "2026-05-27T13:01:00Z", "event": "run_end"},
+        ],
+    )
+
+    assert assemble_report(run_dir, cfg).status == "success"
+
+
 def _write_json(path: Path, payload: object) -> None:
     """Write ``payload`` as JSON into ``path`` (parent must already exist)."""
     path.write_text(json.dumps(payload))
