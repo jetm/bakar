@@ -8,7 +8,7 @@ estimate per-task progress and flag tasks running long.
 
 The baselines persist as a small JSON file updated incrementally with
 Welford's online algorithm, so a running mean/variance is maintained without
-storing every sample. ``fcntl.flock`` guards the read-modify-write because
+storing every sample. ``fcntl.flock`` on a sidecar lock file guards the read-modify-write because
 concurrent bakar processes may update the same file.
 
 No ``bb`` module is imported; this reads only the already-normalized artifact.
@@ -20,7 +20,9 @@ import fcntl
 import hashlib
 import json
 import math
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -192,23 +194,15 @@ def update_from_events(events_json: Path, timings_path: Path) -> None:
 
     timings_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Open r+ when possible so the read and write share one locked handle.
-    # Fall back to "a+" (create-without-truncate) so the fallback handle is
-    # readable (not write-only) and the file creation does not race with the
-    # flock: a+ creates the file but never truncates it, so two concurrent
-    # first-run writers do not discard each other's samples.
-    try:
-        fh = timings_path.open("r+", encoding="utf-8")
-    except OSError:
-        fh = timings_path.open("a+", encoding="utf-8")
-
-    with fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+    # The lock lives on a sidecar file, never on the data file: the data file
+    # is replaced by rename, which would orphan a lock held on its old inode
+    # and let a second writer lock the new one concurrently.
+    lock_path = timings_path.with_name(timings_path.name + ".lock")
+    with lock_path.open("a+", encoding="utf-8") as lock_fh:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
         try:
-            fh.seek(0)
-            raw = fh.read()
-            data: Any = json.loads(raw) if raw.strip() else None
-        except ValueError:
+            data: Any = json.loads(timings_path.read_text(encoding="utf-8"))
+        except OSError, ValueError:
             data = None
         # A different schema_version (e.g. v1 bare-task keys) is discarded
         # wholesale: the keying changed, and re-accumulating is cheap.
@@ -233,8 +227,13 @@ def update_from_events(events_json: Path, timings_path: Path) -> None:
                 # load_baselines' tolerance of the same malformed shape.
                 continue
 
-        fh.seek(0)
-        fh.truncate()
-        json.dump(data, fh)
-        fh.flush()
-        fcntl.flock(fh, fcntl.LOCK_UN)
+        fd, tmp_name = tempfile.mkstemp(dir=timings_path.parent, prefix=timings_path.name + ".")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as tmp_fh:
+                json.dump(data, tmp_fh)
+                tmp_fh.flush()
+                os.fsync(tmp_fh.fileno())
+            os.replace(tmp_name, timings_path)
+        except BaseException:
+            Path(tmp_name).unlink(missing_ok=True)
+            raise

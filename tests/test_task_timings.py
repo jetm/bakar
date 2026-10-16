@@ -265,3 +265,67 @@ def _all_numbers(node: object) -> list[float]:
     if isinstance(node, list):
         return [n for v in node for n in _all_numbers(v)]
     return []
+
+
+def _one_task_events(path: Path, recipe: str, completed: float) -> Path:
+    _write_events(path, [{"recipe": recipe, "task": "do_compile", "started": 100.0, "completed": completed}])
+    return path
+
+
+@pytest.mark.unit
+def test_interrupted_write_keeps_previous_store_and_baselines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    timings = tmp_path / "t.json"
+    task_timings.update_from_events(_one_task_events(tmp_path / "e1.json", "glibc-2.39-r0", 110.0), timings)
+    before = timings.read_text(encoding="utf-8")
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(task_timings.json, "dump", boom)
+    with pytest.raises(RuntimeError):
+        task_timings.update_from_events(_one_task_events(tmp_path / "e2.json", "glibc-2.39-r0", 130.0), timings)
+    monkeypatch.undo()
+
+    assert timings.read_text(encoding="utf-8") == before
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith("t.json.") and p.suffix != ".lock"]
+    assert leftovers == []
+
+    task_timings.update_from_events(_one_task_events(tmp_path / "e3.json", "glibc-2.39-r0", 130.0), timings)
+    mean, _ = task_timings.load_baselines(timings)["glibc:do_compile"]
+    assert mean == pytest.approx(20.0)
+
+
+@pytest.mark.unit
+def test_sequential_updates_both_persist(tmp_path: Path) -> None:
+    timings = tmp_path / "t.json"
+    task_timings.update_from_events(_one_task_events(tmp_path / "e1.json", "aaa-1.0-r0", 110.0), timings)
+    task_timings.update_from_events(_one_task_events(tmp_path / "e2.json", "bbb-1.0-r0", 110.0), timings)
+    assert {"aaa:do_compile", "bbb:do_compile"} <= set(task_timings.load_baselines(timings))
+
+
+@pytest.mark.unit
+def test_concurrent_updates_do_not_lose_each_other(tmp_path: Path) -> None:
+    import threading
+
+    timings = tmp_path / "t.json"
+    n = 8
+    barrier = threading.Barrier(n)
+    errors: list[BaseException] = []
+
+    def work(i: int) -> None:
+        events = _one_task_events(tmp_path / f"e{i}.json", f"recipe{i}-1.0-r0", 110.0)
+        try:
+            barrier.wait()
+            task_timings.update_from_events(events, timings)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=work, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    baselines = task_timings.load_baselines(timings)
+    assert {f"recipe{i}:do_compile" for i in range(n)} <= set(baselines)
