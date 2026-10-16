@@ -226,18 +226,18 @@ def _finish_build(
     # deletes its install and sysroot tasks, so it adds no RPM the feed could
     # pick up.
     if cve is not None:
-        _generate_cve_report(cfg, cve, machine)
+        _generate_cve_report(cfg, log, cve, machine)
 
     # Also before the feed sync, and for a sharper reason than the CVE report's:
     # this produces the document a later publish step puts INTO the feed, so it
     # has to exist and be checked before anything publishes.
-    filtered_sboms = _filter_image_sbom(cfg, sbom) if sbom is not None else []
+    filtered_sboms = _filter_image_sbom(cfg, log, sbom) if sbom is not None else []
 
     if feed is not None:
         # Only what THIS invocation filtered and checked reaches the feed. Reading
         # the output directory instead would publish whatever a previous run left
         # there, including a document produced before the filter was updated.
-        _sync_feed(cfg, feed, sboms=filtered_sboms)
+        _sync_feed(cfg, log, feed, sboms=filtered_sboms)
 
 
 _NO_ROUTING_MSG = "--on for meta-avocado builds needs \\[workspaces] template in the bakar user config"

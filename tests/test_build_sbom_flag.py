@@ -62,6 +62,9 @@ def cfg(tmp_path: Path) -> SimpleNamespace:
 def log_stub(tmp_path: Path) -> SimpleNamespace:
     return SimpleNamespace(
         run_id="r0",
+        step_start=lambda *a, **k: None,
+        step_ok=lambda *a, **k: None,
+        step_fail=lambda *a, **k: None,
         run_dir=tmp_path / "run",
         start_monotonic=time.monotonic(),
         step_skip=lambda *_a, **_kw: None,

@@ -30,6 +30,11 @@ from bakar.steps.kas_build import KasBuildContext
 # is the only way to reach it.
 _CVE_REPORT_TARGET = "avocado-cve-report"
 
+# Step names written to the run's events.jsonl.
+_STEP_CVE_REPORT = "cve_report"
+_STEP_SBOM_FILTER = "sbom_filter"
+_STEP_FEED_SYNC = "feed_sync"
+
 
 @dataclass(frozen=True)
 class _CveRequest:
@@ -74,7 +79,7 @@ def _resolve_cve_request(*, cve: bool, dry_run: bool) -> bool:
     return True
 
 
-def _generate_cve_report(cfg, request: _CveRequest, machine: str) -> None:
+def _generate_cve_report(cfg, log, request: _CveRequest, machine: str) -> None:
     """Run ``avocado-cve-report`` against the finished build.
 
     Skips rather than fails when the build carries no cve-check results. That is
@@ -87,8 +92,10 @@ def _generate_cve_report(cfg, request: _CveRequest, machine: str) -> None:
     failure into a non-zero exit discards that over something the user can
     repeat with the one command named in the message.
     """
+    log.step_start(_STEP_CVE_REPORT)
     cve_dir = cve_report.cve_data_dir(cfg, machine)
     if not cve_report.has_cve_data(cve_dir):
+        log.step_skip(_STEP_CVE_REPORT, reason=f"no cve-check results in {cve_dir}")
         console.print(
             f"[yellow]--cve: no cve-check results in {cve_dir}[/], so there is nothing to report on. "
             "Stack `kas/feature/cve-check.yml` onto the build and run it again."
@@ -103,6 +110,7 @@ def _generate_cve_report(cfg, request: _CveRequest, machine: str) -> None:
         extra_overlays=request.extra_overlays,
     )
     if rc != 0:
+        log.step_fail(_STEP_CVE_REPORT, reason=f"{_CVE_REPORT_TARGET} exited {rc}")
         console.print(
             f"[yellow]build succeeded but the CVE report was not produced[/] "
             f"({_CVE_REPORT_TARGET} exited {rc}). "
@@ -110,6 +118,7 @@ def _generate_cve_report(cfg, request: _CveRequest, machine: str) -> None:
         )
         return
 
+    log.step_ok(_STEP_CVE_REPORT)
     console.print(f"CVE report: {cve_report.report_path(cfg, machine)}")
 
 
@@ -153,7 +162,7 @@ def _resolve_sbom_request(cfg, *, sbom: bool, dry_run: bool) -> _SbomRequest | N
     return _SbomRequest(workspace=cfg.workspace)
 
 
-def _filter_image_sbom(cfg, request: _SbomRequest) -> list[Path]:
+def _filter_image_sbom(cfg, log, request: _SbomRequest) -> list[Path]:
     """Filter the build's per-image SPDX into a publishable inventory.
 
     Does not fail the build on any outcome, matching ``_sync_feed`` and
@@ -164,9 +173,11 @@ def _filter_image_sbom(cfg, request: _SbomRequest) -> list[Path]:
     matters - is THIS file safe to publish - and it fails closed on a document it
     cannot read, because an unparseable file is not a file with no CVEs in it.
     """
+    log.step_start(_STEP_SBOM_FILTER)
     images = sbom_publish.images_dir(cfg)
     documents = sbom_publish.find_image_sboms(images)
     if not documents:
+        log.step_fail(_STEP_SBOM_FILTER, reason=f"no per-image SBOM under {images}")
         console.print(
             f"[yellow]--sbom: no per-image SBOM under {images}[/]. A distro build only emits one when "
             "the image recipe's do_build is reached; check that avocado-distro depends on it."
@@ -200,25 +211,29 @@ def _filter_image_sbom(cfg, request: _SbomRequest) -> list[Path]:
         # nosemgrep: python.django.security.injection.command.subprocess-injection.subprocess-injection
         result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
     except OSError as exc:
+        log.step_fail(_STEP_SBOM_FILTER, reason=str(exc))
         console.print(f"[yellow]build succeeded but the SBOM was not filtered:[/] {exc}")
         return []
 
     if result.returncode != 0:
-        console.print(
-            f"[yellow]build succeeded but the SBOM filter exited {result.returncode}[/]: "
-            f"{(result.stderr or '').strip().splitlines()[-1] if (result.stderr or '').strip() else 'no output'}"
-        )
+        detail = (result.stderr or "").strip().splitlines()[-1] if (result.stderr or "").strip() else "no output"
+        log.step_fail(_STEP_SBOM_FILTER, reason=f"filter exited {result.returncode}: {detail}")
+        console.print(f"[yellow]build succeeded but the SBOM filter exited {result.returncode}[/]: {detail}")
         return []
 
     filtered = sbom_publish.find_image_sboms(out_dir)
     leaks = [reason for document in filtered for reason in sbom_publish.vulnerability_leaks(document)]
     if leaks:
+        log.step_fail(
+            _STEP_SBOM_FILTER, reason="filtered document still carries vulnerability data: " + "; ".join(leaks)
+        )
         console.print("[red]--sbom: the filtered document is not publishable.[/] It still carries:")
         for reason in leaks:
             console.print(f"  {reason}")
         console.print("Do NOT publish it. This is a filter defect or a document shape it did not anticipate.")
         return []
 
+    log.step_ok(_STEP_SBOM_FILTER)
     for document in filtered:
         console.print(f"SBOM (publishable): {document}")
     return filtered
@@ -282,7 +297,7 @@ def _resolve_feed_request(
     return _FeedRequest(kas_yaml=cfg.kas_yaml, release=release, channel=channel)
 
 
-def _sync_feed(cfg, request: _FeedRequest, *, sboms: list[Path] | None = None) -> None:
+def _sync_feed(cfg, log, request: _FeedRequest, *, sboms: list[Path] | None = None) -> None:
     """Stage the finished build into the feed, then rewrite ``targets.json``.
 
     Failures here do not fail the build. The build itself succeeded and its
@@ -299,6 +314,7 @@ def _sync_feed(cfg, request: _FeedRequest, *, sboms: list[Path] | None = None) -
     as a traceback AFTER "build succeeded" has printed, which is the one outcome
     this path exists to prevent.
     """
+    log.step_start(_STEP_FEED_SYNC)
     try:
         result = feed_ops.sync_then_index(
             cfg,
@@ -308,12 +324,15 @@ def _sync_feed(cfg, request: _FeedRequest, *, sboms: list[Path] | None = None) -
             sboms=sboms,
         )
     except Exception as exc:  # noqa: BLE001 - see the docstring: the contract is absolute
-        console.print(f"[yellow]build succeeded but the feed was not updated:[/] {feed_ops.describe_failure(exc)}")
+        reason = feed_ops.describe_failure(exc)
+        log.step_fail(_STEP_FEED_SYNC, reason=reason)
+        console.print(f"[yellow]build succeeded but the feed was not updated:[/] {reason}")
         console.print(
             f"Re-run `bakar feed sync --release {request.release} --channel {request.channel} "
             f"{request.kas_yaml}` once the cause is fixed; the build output is untouched."
         )
         return
+    log.step_ok(_STEP_FEED_SYNC)
     console.print(f"feed: snapshot {result['snapshot']} pinned for {', '.join(result['machines']) or '(none)'}")
     if result["unstaged"]:
         console.print(f"declared but not built: {', '.join(result['unstaged'])}")

@@ -64,7 +64,15 @@ def cfg(tmp_path: Path) -> SimpleNamespace:
 @pytest.fixture
 def log_stub(tmp_path: Path) -> SimpleNamespace:
     """The minimum ``_finish_build`` reads off a RunLogger."""
-    return SimpleNamespace(run_id="r0", run_dir=tmp_path / "run", start_monotonic=time.monotonic())
+    return SimpleNamespace(
+        run_id="r0",
+        run_dir=tmp_path / "run",
+        start_monotonic=time.monotonic(),
+        step_start=lambda *a, **k: None,
+        step_ok=lambda *a, **k: None,
+        step_skip=lambda *a, **k: None,
+        step_fail=lambda *a, **k: None,
+    )
 
 
 @pytest.fixture
