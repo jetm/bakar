@@ -166,7 +166,12 @@ def test_missing_routed_path_falls_back_for_read_only_commands(
     )
 
     assert ws == workspace_mod.detect_kas_workspace(meta_avocado_worktree_layout.kas_yaml)
-    assert "absent-wrynose" in capsys.readouterr().err.replace("\n", "")
+    err = capsys.readouterr().err.replace("\n", "")
+    assert "absent-wrynose" in err
+    # The note names the workspace actually used and how to pick another, so
+    # a ``stop`` that fell back is never silently pointed at the wrong build.
+    assert f"using the unrouted workspace {ws}" in err
+    assert "pass -w <workspace> to name another one" in err
     assert _POLICY not in workspace_mod.os.environ
 
 
@@ -206,7 +211,8 @@ def test_routing_error_falls_back_for_read_only_commands(
     assert ws == workspace_mod.detect_kas_workspace(meta_avocado_worktree_layout.kas_yaml)
     err = capsys.readouterr().err.replace("\n", "")
     assert "kas not found on PATH" in err
-    assert "unrouted workspace" in err
+    assert f"using the unrouted workspace {ws}" in err
+    assert "pass -w <workspace> to name another one" in err
     assert _POLICY not in workspace_mod.os.environ
 
 

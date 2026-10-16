@@ -239,6 +239,76 @@ def test_matches_release_workspace_by_entry_template_and_symlink(tmp_path: Path)
     assert not matches_release_workspace(tmp_path / "peridio-wrynose", None, None)
 
 
+@pytest.fixture
+def linked_parent(tmp_path: Path) -> tuple[Path, Path]:
+    """``link -> real`` with ``real/peridio-wrynose`` a directory; returns (real, link)."""
+    real = tmp_path / "real"
+    (real / "peridio-wrynose").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    return real, link
+
+
+def test_template_with_symlinked_parent_matches_resolved_workspace(linked_parent: tuple[Path, Path]) -> None:
+    real, link = linked_parent
+    # The -w callback hands over the resolved path, never the symlinked spelling.
+    assert matches_release_workspace(real / "peridio-wrynose", str(link / "peridio-{release}"), None)
+
+
+def test_symlinked_workspace_matches_real_template(linked_parent: tuple[Path, Path]) -> None:
+    real, link = linked_parent
+    assert matches_release_workspace(link / "peridio-wrynose", str(real / "peridio-{release}"), None)
+
+
+def test_template_whose_release_directory_is_a_symlink_matches(tmp_path: Path) -> None:
+    data = tmp_path / "data" / "peridio-wrynose"
+    data.mkdir(parents=True)
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / "peridio-wrynose").symlink_to(data)
+    assert matches_release_workspace(data, str(tmp_path / "home" / "peridio-{release}"), None)
+
+
+def test_template_with_dotdot_and_trailing_slash_matches(linked_parent: tuple[Path, Path]) -> None:
+    real, _link = linked_parent
+    template = f"{real}/../real/peridio-{{release}}/"
+    assert matches_release_workspace(real / "peridio-wrynose", template, None)
+
+
+def test_template_with_escaped_braces_matches_what_map_release_renders(tmp_path: Path) -> None:
+    template = str(tmp_path / "{{x}}-{release}")
+    rendered = map_release("wrynose", template, None)
+    assert rendered == tmp_path / "{x}-wrynose"
+    assert matches_release_workspace(rendered, template, None)
+    assert not matches_release_workspace(tmp_path / "{{x}}-wrynose", template, None)
+
+
+@pytest.mark.parametrize(("link_name", "real_name"), [("{x}", "real"), ("link", "{x}")])
+def test_braces_in_a_symlinked_prefix_match(tmp_path: Path, link_name: str, real_name: str) -> None:
+    real = tmp_path / real_name
+    (real / "peridio-wrynose").mkdir(parents=True)
+    (tmp_path / link_name).symlink_to(real)
+    template = str(tmp_path / link_name.replace("{", "{{").replace("}", "}}") / "peridio-{release}")
+    assert matches_release_workspace(real / "peridio-wrynose", template, None)
+
+
+def test_prefix_or_sub_path_of_a_match_is_not_a_match(linked_parent: tuple[Path, Path]) -> None:
+    real, link = linked_parent
+    (real / "peridio-wrynose" / "sub" / "deeper").mkdir(parents=True)
+    for template in (str(link / "peridio-{release}"), str(real / "peridio-{release}")):
+        # The template's parent directory is a prefix of every match.
+        assert not matches_release_workspace(real, template, None)
+        assert not matches_release_workspace(link, template, None)
+        for base in (real, link):
+            assert not matches_release_workspace(base / "peridio-wrynose" / "sub", template, None)
+            assert not matches_release_workspace(base / "peridio-wrynose" / "sub" / "deeper", template, None)
+
+
+def test_nothing_configured_matches_nothing(linked_parent: tuple[Path, Path]) -> None:
+    real, _link = linked_parent
+    assert not matches_release_workspace(real / "peridio-wrynose", None, None)
+    assert not matches_release_workspace(real / "peridio-wrynose", "", {})
+
+
 @pytest.mark.parametrize("raw", ["a..b", "feat.lock", "x.build", "..b.lock"])
 def test_sanitize_refuses_names_git_or_the_lock_files_cannot_hold(raw: str) -> None:
     with pytest.raises(ReleaseRoutingError):

@@ -154,9 +154,67 @@ def map_release(release: str, template: str | None, releases: dict[str, str] | N
     return None
 
 
-def _template_pattern(template: str) -> re.Pattern[str]:
-    parts = re.split(r"\{release\}", template)
-    return re.compile("[^/]+".join(re.escape(part) for part in parts))
+def _template_regex(template: str, field: str = "[^/]+") -> str:
+    # Formatter.parse unescapes ``{{``/``}}`` in the literal pieces, so the
+    # pattern matches what ``str.format`` (and therefore ``map_release``) renders.
+    pieces: list[str] = []
+    for literal, name, _spec, _conversion in string.Formatter().parse(template):
+        pieces.append(re.escape(literal))
+        if name is not None:
+            pieces.append(field)
+    return "".join(pieces)
+
+
+def _has_field(segment: str) -> bool:
+    return any(name is not None for _lit, name, _spec, _conv in string.Formatter().parse(segment))
+
+
+def _unescape(literal_template: str) -> str:
+    return "".join(lit for lit, _name, _spec, _conv in string.Formatter().parse(literal_template))
+
+
+def _instances_under(real_dir: str, segment: str, rest: str) -> set[str]:
+    """Realpaths of every existing workspace the template names under ``real_dir``.
+
+    Resolving the literal prefix cannot see a symlink at or after the
+    ``{release}`` segment (``peridio-wrynose -> /data/peridio-wrynose``), because
+    the release is unknown until a directory name supplies it.
+    """
+    segment_re = re.compile(_template_regex(segment, "([^/]+)"))
+    try:
+        names = os.listdir(real_dir)
+    except OSError:
+        return set()
+    found: set[str] = set()
+    for name in names:
+        match = segment_re.fullmatch(name)
+        if match is None or not match.groups():
+            continue
+        rendered = os.path.join(real_dir, (segment + rest).format(release=match.group(1)))
+        found.add(os.path.realpath(rendered))
+    return found
+
+
+def _template_matches(spellings: set[str], template: str) -> bool:
+    normalised = os.path.normpath(os.path.expanduser(template))
+    if any(re.fullmatch(_template_regex(normalised), s) for s in spellings):
+        return True
+    if not normalised.startswith("/"):
+        return False
+    segments = normalised.split("/")
+    index = next((i for i, seg in enumerate(segments) if _has_field(seg)), len(segments))
+    # The literal directory prefix is resolved because the ``-w`` callback has
+    # already resolved the workspace, so a symlink anywhere in it would otherwise
+    # make a configured release workspace look unconfigured.
+    real_prefix = os.path.realpath(_unescape("/".join(segments[:index])) or "/")
+    if index == len(segments):
+        return real_prefix in spellings
+    segment = segments[index]
+    rest = "".join("/" + seg for seg in segments[index + 1 :])
+    real_pattern = re.escape(real_prefix.rstrip("/")) + "/" + _template_regex(segment + rest)
+    if any(re.fullmatch(real_pattern, s) for s in spellings):
+        return True
+    return bool(_instances_under(real_prefix, segment, rest) & spellings)
 
 
 def matches_release_workspace(path: Path, template: str | None, releases: dict[str, str] | None) -> bool:
@@ -164,7 +222,8 @@ def matches_release_workspace(path: Path, template: str | None, releases: dict[s
 
     Compares the path as spelled and with symlinks resolved, against every
     per-release entry and against the template with ``{release}`` standing for
-    one path component. Needs no kas dump, so it can run before any build.
+    one path component, both as written and with symlinks in it resolved. Needs
+    no kas dump, so it can run before any build.
     """
     spellings = {os.path.normpath(path.expanduser()), os.path.realpath(path.expanduser())}
     if releases:
@@ -177,8 +236,7 @@ def matches_release_workspace(path: Path, template: str | None, releases: dict[s
             check_template("workspaces.template", template, frozenset({"release"}))
         except ReleaseRoutingError:
             return False
-        pattern = _template_pattern(str(Path(template).expanduser()))
-        return any(pattern.fullmatch(spelling) for spelling in spellings)
+        return _template_matches(spellings, template)
     return False
 
 

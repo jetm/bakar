@@ -278,9 +278,7 @@ def _routed_release_workspace(kas_yaml: Path, *, strict: bool = True) -> Path | 
         if not strict:
             # A read-only command must still reach its runs while kas is
             # missing or the kas file is mid-edit.
-            console.print(
-                f"[dim]Cannot route {kas_yaml} to a release workspace ({exc}); using the unrouted workspace.[/]"
-            )
+            console.print(f"[dim]Cannot route {kas_yaml} to a release workspace ({exc}); {_unrouted_note(kas_yaml)}[/]")
             return None
         console.print(f"[red]Cannot route {kas_yaml} to a release workspace:[/] {exc}")
         raise typer.Exit(code=2) from exc
@@ -289,7 +287,7 @@ def _routed_release_workspace(kas_yaml: Path, *, strict: bool = True) -> Path | 
     if not routed.is_dir() and not strict:
         console.print(
             f"[dim]Release workspace {routed} for release {release!r} does not exist here; "
-            "using the unrouted workspace.[/]"
+            f"{_unrouted_note(kas_yaml)}[/]"
         )
         return None
     if not routed.is_dir():
@@ -301,6 +299,12 @@ def _routed_release_workspace(kas_yaml: Path, *, strict: bool = True) -> Path | 
     if not os.environ.get(REPO_POLICY_ENV):
         os.environ[REPO_POLICY_ENV] = REPO_POLICY_REUSE
     return routed
+
+
+def _unrouted_note(kas_yaml: Path) -> str:
+    # Named in full because a read-only command such as ``stop`` would otherwise
+    # act on the unrouted workspace's build without saying which one it picked.
+    return f"using the unrouted workspace {detect_kas_workspace(kas_yaml)}; pass -w <workspace> to name another one."
 
 
 def _user_config_or_exit() -> UserConfig:

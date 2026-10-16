@@ -41,7 +41,12 @@ from rich.markup import escape
 # through ``bakar.diagnostics`` with a function-body deferred import to break a
 # cycle, so the name has to stay reachable at this path.
 from bakar import build_scope, mounts, native_ledger, native_provenance, pin_state
-from bakar.bsp_detect import meta_avocado_checkout, meta_avocado_worktree, meta_avocado_wrapper_text
+from bakar.bsp_detect import (
+    is_meta_avocado_yaml,
+    meta_avocado_checkout,
+    meta_avocado_worktree,
+    meta_avocado_wrapper_text,
+)
 
 # ``resolve_buildtools_dir`` has no reader in this module: setup/actions/tools.py
 # imports it through ``bakar.diagnostics``, so the name has to stay reachable at
@@ -2458,14 +2463,24 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
     name = "kas-yaml-syntax"
     kas_yaml = cfg.kas_yaml
 
-    from bakar.release_workspace import REPO_POLICY_ENV, REPO_POLICY_REUSE, ReleaseRoutingError, parse_repo_policy
+    from bakar.release_workspace import (
+        REPO_POLICY_ENV,
+        REPO_POLICY_KAS,
+        REPO_POLICY_REUSE,
+        ReleaseRoutingError,
+        parse_repo_policy,
+    )
 
-    # Parsed before either skip: the build refuses a misspelt policy in every
-    # mode, so doctor must not report SKIP for a run that cannot start.
+    # Parsed before either skip: the build refuses a misspelt policy for a
+    # meta-avocado kas file in every mode, so doctor must not report SKIP for a
+    # run that cannot start. Any other kas file never reads the policy, so a bad
+    # value there blocks nothing and is ignored.
     try:
         policy = parse_repo_policy(os.environ.get(REPO_POLICY_ENV))
     except ReleaseRoutingError as exc:
-        return _fail(name, Severity.BLOCK, str(exc), fix_hint="Unset BAKAR_REPO_POLICY or set it to kas or reuse.")
+        if is_meta_avocado_yaml(kas_yaml) or meta_avocado_checkout(kas_yaml) is not None:
+            return _fail(name, Severity.BLOCK, str(exc), fix_hint="Unset BAKAR_REPO_POLICY or set it to kas or reuse.")
+        policy = REPO_POLICY_KAS
 
     if not kas_yaml.exists():
         return _skip(name, Severity.BLOCK, f"kas YAML {kas_yaml} not yet generated")

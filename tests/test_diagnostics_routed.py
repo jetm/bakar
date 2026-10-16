@@ -248,6 +248,9 @@ def test_unknown_repo_policy_blocks(monkeypatch: pytest.MonkeyPatch, outside: tu
 def test_unknown_repo_policy_blocks_before_either_skip(
     monkeypatch: pytest.MonkeyPatch, outside: tuple[Path, Path, Path], missing: str
 ) -> None:
+    # The fixture's kas file sits in a meta-avocado checkout, the only kind of
+    # build that reads the policy, so a typo must block even when the file is
+    # not generated yet.
     ws, _checkout, kas_yaml = outside
     monkeypatch.setenv("BAKAR_REPO_POLICY", "resue")
     if missing == "kas-binary":
@@ -263,3 +266,28 @@ def test_unknown_repo_policy_blocks_before_either_skip(
     assert result.severity is Severity.BLOCK
     assert "'resue'" in result.message
     assert rec.calls == []
+
+
+@pytest.mark.parametrize("generated", [False, True])
+def test_unknown_repo_policy_is_ignored_for_a_plain_kas_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, generated: bool
+) -> None:
+    # A kas file outside any meta-avocado checkout never reads the policy at
+    # build time, so a bad value must not block the doctor for it.
+    ws = tmp_path / "plain"
+    ws.mkdir()
+    kas_yaml = ws / "kas.yml"
+    if generated:
+        kas_yaml.write_text(_MACHINE)
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "resue")
+    rec = _Recorder()
+    _install(monkeypatch, rec)
+
+    result = check_kas_yaml_syntax(_cfg(ws, kas_yaml))
+
+    if generated:
+        assert result.status is Status.PASS
+        assert [call["argv"] for call in rec.calls] == [["kas", "dump", str(kas_yaml)]]
+    else:
+        assert result.status is Status.SKIP
+        assert rec.calls == []
