@@ -314,6 +314,7 @@ def _dispatch_meta_avocado(
     from bakar.commands._helpers import logical_path
     from bakar.release_workspace import ReleaseRoutingError, map_release
     from bakar.steps import avocado_dispatch, kas_pins
+    from bakar.steps.remote_dispatch import DispatchFlags
 
     user_config = _dispatch_user_config()
     if user_config is None:
@@ -353,19 +354,20 @@ def _dispatch_meta_avocado(
     worktree_root = user_config.dispatch_worktree_root
     return avocado_dispatch.dispatch_avocado_build(
         host,
-        workspace=routed,
-        checkout=logical_path(checkout),
-        worktree=meta_avocado_worktree(main_yaml),
-        kas_yaml=main_yaml,
-        kas_arg=kas_arg,
-        local_args=sys.argv[1:],
-        release=release,
-        sccache_dist=sccache_dist,
-        assume_yes=assume_yes,
-        worktree_root=Path(worktree_root) if worktree_root else None,
-        build_dir_template=config_mod.worktree_build_template(user_config),
-        cap_mb=user_config.dispatch_snapshot_untracked_cap_mb,
-        invoking_cwd=invoking_cwd,
+        avocado_dispatch.AvocadoDispatchRequest(
+            workspace=routed,
+            checkout=logical_path(checkout),
+            worktree=meta_avocado_worktree(main_yaml),
+            kas_yaml=main_yaml,
+            kas_arg=kas_arg,
+            local_args=sys.argv[1:],
+            release=release,
+            worktree_root=Path(worktree_root) if worktree_root else None,
+            build_dir_template=config_mod.worktree_build_template(user_config),
+            cap_mb=user_config.dispatch_snapshot_untracked_cap_mb,
+            invoking_cwd=invoking_cwd,
+        ),
+        DispatchFlags(sccache_dist=sccache_dist, assume_yes=assume_yes),
     )
 
 

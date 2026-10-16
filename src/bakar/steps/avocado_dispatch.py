@@ -18,6 +18,7 @@ import os
 import shlex
 import socket
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -156,24 +157,25 @@ def _check_remote_capability(host: str) -> bool:
     return False
 
 
-def dispatch_avocado_build(  # noqa: PLR0913 - fixed dispatch signature consumed by the build command
-    host: str,
-    *,
-    workspace: Path,
-    checkout: Path,
-    worktree: LinkedWorktree | None,
-    kas_yaml: Path,
-    kas_arg: str,
-    local_args: list[str],
-    release: str,
-    sccache_dist: bool,
-    assume_yes: bool,
-    worktree_root: Path | None,
-    build_dir_template: str | None,
-    cap_mb: int,
-    invoking_cwd: Path | None = None,
-) -> int:
-    """Deliver ``checkout`` to the ``release`` workspace on ``host`` and build there.
+@dataclass(frozen=True, kw_only=True, slots=True)
+class AvocadoDispatchRequest:
+    """One meta-avocado checkout's build, its release workspace, and the delivery settings for the host."""
+
+    workspace: Path
+    checkout: Path
+    worktree: LinkedWorktree | None
+    kas_yaml: Path
+    kas_arg: str
+    local_args: list[str]
+    release: str
+    worktree_root: Path | None
+    build_dir_template: str | None
+    cap_mb: int
+    invoking_cwd: Path | None = None
+
+
+def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd.DispatchFlags) -> int:
+    """Deliver ``request.checkout`` to the ``request.release`` workspace on ``host`` and build there.
 
     ``checkout`` must already be the logical (unresolved) path: it is recorded
     in the remote marker as the delivery's source. ``invoking_cwd`` is where
@@ -181,6 +183,11 @@ def dispatch_avocado_build(  # noqa: PLR0913 - fixed dispatch signature consumed
     Returns the remote build's exit code, 130 on Ctrl-C, or ``_DISPATCH_LOST_EXIT``
     when the log stream is lost while the build keeps running.
     """
+    workspace, checkout, worktree = request.workspace, request.checkout, request.worktree
+    kas_yaml, kas_arg, local_args = request.kas_yaml, request.kas_arg, request.local_args
+    release, invoking_cwd = request.release, request.invoking_cwd
+    worktree_root, build_dir_template, cap_mb = request.worktree_root, request.build_dir_template, request.cap_mb
+    sccache_dist, assume_yes = flags.sccache_dist, flags.assume_yes
     # Everything up to the preflight is local, so a request that cannot be
     # dispatched is refused before the host is contacted at all.
     try:

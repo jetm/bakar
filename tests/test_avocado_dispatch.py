@@ -133,15 +133,14 @@ def _dispatch(checkout: Path, kas_arg: str, local_args: list[str], **overrides: 
         "kas_arg": kas_arg,
         "local_args": local_args,
         "release": "scarthgap",
-        "sccache_dist": False,
-        "assume_yes": False,
         "worktree_root": None,
         "build_dir_template": None,
         "cap_mb": 64,
         "invoking_cwd": checkout,
     }
+    flags = {"sccache_dist": overrides.pop("sccache_dist", False), "assume_yes": overrides.pop("assume_yes", False)}
     kwargs.update(overrides)
-    return ad.dispatch_avocado_build(HOST, **kwargs)
+    return ad.dispatch_avocado_build(HOST, ad.AvocadoDispatchRequest(**kwargs), remote_dispatch.DispatchFlags(**flags))
 
 
 def _remote_argv_line(script: str) -> str:
@@ -478,19 +477,20 @@ def test_snapshot_failure_exits_1_before_any_ssh(
 def test_hyphen_host_rejected(rec: Recorder, checkout: Path) -> None:
     rc = ad.dispatch_avocado_build(
         "-oProxyCommand=x",
-        workspace=WORKSPACE,
-        checkout=checkout,
-        worktree=None,
-        kas_yaml=checkout / "kas" / "machine" / "m.yml",
-        kas_arg="kas/machine/m.yml",
-        local_args=["build", "kas/machine/m.yml"],
-        release="scarthgap",
-        sccache_dist=False,
-        assume_yes=False,
-        worktree_root=None,
-        build_dir_template=None,
-        cap_mb=64,
-        invoking_cwd=checkout,
+        ad.AvocadoDispatchRequest(
+            workspace=WORKSPACE,
+            checkout=checkout,
+            worktree=None,
+            kas_yaml=checkout / "kas" / "machine" / "m.yml",
+            kas_arg="kas/machine/m.yml",
+            local_args=["build", "kas/machine/m.yml"],
+            release="scarthgap",
+            worktree_root=None,
+            build_dir_template=None,
+            cap_mb=64,
+            invoking_cwd=checkout,
+        ),
+        remote_dispatch.DispatchFlags(sccache_dist=False, assume_yes=False),
     )
     assert rc == 1
     # Only the local name and snapshot ran; nothing reached ssh or git push.

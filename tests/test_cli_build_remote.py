@@ -551,21 +551,23 @@ def test_meta_avocado_mapping_dispatches_to_the_routed_workspace(
     assert mirror == []
     assert probed == [lay.worktree]
     (args, kwargs) = avocado[0]
-    assert args == (HOST,)
-    assert kwargs["workspace"] == tmp_path / "absent-wrynose"
-    assert kwargs["checkout"] == lay.worktree
-    assert kwargs["worktree"].checkout == lay.worktree
-    assert kwargs["worktree"].main_checkout == lay.main
-    assert kwargs["kas_yaml"] == lay.kas_yaml
-    assert kwargs["kas_arg"] == "kas/machine/m.yml"
-    assert kwargs["invoking_cwd"] == lay.worktree
-    assert kwargs["release"] == "wrynose"
-    assert kwargs["local_args"] == ["build", "kas/machine/m.yml", "--on", HOST, "--yes"]
-    assert kwargs["worktree_root"] == Path("/srv/wt")
-    assert kwargs["build_dir_template"] == "build-{stem}-{worktree}"
-    assert kwargs["cap_mb"] == 7
-    assert kwargs["assume_yes"] is True
-    assert kwargs["sccache_dist"] is False
+    assert kwargs == {}
+    host, request, flags = args
+    assert host == HOST
+    assert request.workspace == tmp_path / "absent-wrynose"
+    assert request.checkout == lay.worktree
+    assert request.worktree.checkout == lay.worktree
+    assert request.worktree.main_checkout == lay.main
+    assert request.kas_yaml == lay.kas_yaml
+    assert request.kas_arg == "kas/machine/m.yml"
+    assert request.invoking_cwd == lay.worktree
+    assert request.release == "wrynose"
+    assert request.local_args == ["build", "kas/machine/m.yml", "--on", HOST, "--yes"]
+    assert request.worktree_root == Path("/srv/wt")
+    assert request.build_dir_template == "build-{stem}-{worktree}"
+    assert request.cap_mb == 7
+    assert flags.assume_yes is True
+    assert flags.sccache_dist is False
 
 
 def test_meta_avocado_dispatch_exit_code_propagates(
@@ -827,7 +829,7 @@ def test_meta_avocado_with_the_routed_workspace_dispatches(
     result = _invoke_on(runner, monkeypatch, "-w", str(routed), str(lay.kas_yaml))
 
     assert result.exit_code == 0, result.output
-    assert avocado[0][1]["workspace"] == routed
+    assert avocado[0][0][1].workspace == routed
 
 
 # ---------------------------------------------------------------------------
