@@ -13,6 +13,7 @@ import dataclasses
 import json
 import os
 import subprocess
+from collections import Counter
 from pathlib import Path
 from typing import Annotated
 
@@ -71,6 +72,24 @@ def _journal_lines(unit: str, since: str) -> list[str]:
     return out.stdout.splitlines()
 
 
+def _jsonable(obj: object) -> object:
+    """Dataclass-aware JSON conversion that keeps Counter fields as str-keyed dicts.
+
+    ``dataclasses.asdict`` rebuilds a Counter from (key, value) tuples, which
+    ``json.dumps`` cannot encode. Counters are emitted ordered by descending
+    count then key, matching the text report.
+    """
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return {f.name: _jsonable(getattr(obj, f.name)) for f in dataclasses.fields(obj)}
+    if isinstance(obj, Counter):
+        return {str(k): v for k, v in sorted(obj.items(), key=lambda kv: (-kv[1], str(kv[0])))}
+    if isinstance(obj, dict):
+        return {str(k): _jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, list | tuple):
+        return [_jsonable(v) for v in obj]
+    return obj
+
+
 @app.command("sched-triage")
 def sched_triage(
     since: Annotated[
@@ -124,17 +143,16 @@ def sched_triage(
         doc = {
             "since": since,
             "client_log": str(log_path) if log_path else None,
-            "routing": dataclasses.asdict(alloc),
-            "saturation": dataclasses.asdict(sat),
-            "time_weighted": dataclasses.asdict(weighted),
-            "client": dataclasses.asdict(client),
+            "routing": _jsonable(alloc),
+            "saturation": _jsonable(sat),
+            "time_weighted": _jsonable(weighted),
+            "client": _jsonable(client),
         }
         if events is not None:
             doc["conditioned"] = {
-                name: dataclasses.asdict(bucket)
-                for name, bucket in conditioned_util(series, _compile_intervals(events)).items()
+                name: _jsonable(bucket) for name, bucket in conditioned_util(series, _compile_intervals(events)).items()
             }
-        typer.echo(json.dumps(doc, indent=2, default=dict))
+        typer.echo(json.dumps(doc, indent=2))
         return
 
     console.print(f"[bold]sccache-dist triage[/] (since {since})", highlight=False)

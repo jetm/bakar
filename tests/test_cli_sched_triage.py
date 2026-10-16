@@ -69,13 +69,6 @@ def _serve(monkeypatch: pytest.MonkeyPatch, lines: list[str]) -> list[tuple[str,
     return calls
 
 
-# NOTE: --json serialises with dataclasses.asdict, which rebuilds each Counter
-# field from (key, value) tuples, so any populated Counter (per-node jobs,
-# fallback reasons, rustc codes, routing buckets) makes json.dumps raise
-# TypeError. The JSON tests therefore feed only inputs that leave every Counter
-# empty; the populated case is pinned by the strict xfail below.
-
-
 def _doc(runner: _CliRunner, *args: str) -> dict:
     result = runner.invoke(app, ["sched-triage", "--json", *args])
     assert result.exit_code == 0, result.output
@@ -158,20 +151,27 @@ def test_unreadable_client_log_reports_zero_client_section(
     assert doc["client"]["not_eligible"] == 0
 
 
-@pytest.mark.xfail(strict=True, raises=TypeError, reason="asdict() turns a populated Counter into tuple keys")
 def test_json_report_with_populated_counters(
     runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Pins the known --json crash for a realistic log; flips to XPASS once the command is fixed."""
+    """Populated Counter fields serialise as str-keyed dicts, ordered by count then key."""
     _serve(monkeypatch, _JOURNAL)
     log = tmp_path / "client.log"
     log.write_text(_CLIENT_LOG + "\n")
 
-    result = runner.invoke(app, ["sched-triage", "--json", "--client-log", str(log)])
+    doc = _doc(runner, "--client-log", str(log))
 
-    if result.exception is not None:
-        raise result.exception
-    assert json.loads(result.output)["routing"]["misroutes"] == 1
+    routing = doc["routing"]
+    assert routing["per_node_chosen"] == {"10.42.0.2:10501": 1, "192.168.8.172:10501": 1}
+    assert list(routing["per_node_chosen"]) == ["10.42.0.2:10501", "192.168.8.172:10501"]
+    assert routing["total_by_bucket"] == {"low": 2}
+    assert routing["misroutes_by_bucket"] == {"low": 1}
+    assert routing["idle_skips_by_bucket"] == {"low": 1}
+    assert routing["misroutes"] == 1
+    client = doc["client"]
+    assert client["per_node_jobs"] == {"10.42.0.2:10501": 1, "192.168.8.172:10501": 1}
+    assert client["fallback_reasons"] == {"gate-full (insufficient cluster capacity)": 1}
+    assert client["rust_error_codes"] == {}
 
 
 def test_text_report_sections(runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
