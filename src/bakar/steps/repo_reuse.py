@@ -40,6 +40,10 @@ LOCK_WAIT_LIMIT_S = 20 * 60
 _LOCK_POLL_S = 0.25
 _LOCK_NOTICE_AFTER_S = 3.0
 
+# git status on a large clone with a cold cache is legitimately slow, and a
+# timeout there reads as "not clean", misclassifying a clean frozen repository.
+_GIT_READ_TIMEOUT_S = 30 * 60
+
 
 class RepoReuseError(Exception):
     """A shared repository cannot be reused without kas moving something."""
@@ -101,10 +105,10 @@ def workspace_lock(workspace: Path, *, wait_limit_s: float = LOCK_WAIT_LIMIT_S) 
 
 
 def _at_pin_and_clean(path: Path, pin: str) -> bool:
-    head = git_stdout(path, "--no-optional-locks", "rev-parse", "HEAD")
+    head = git_stdout(path, "--no-optional-locks", "rev-parse", "HEAD", timeout=_GIT_READ_TIMEOUT_S)
     if head is None or not head.strip().lower().startswith(pin.lower()):
         return False
-    status = git_stdout(path, "--no-optional-locks", "status", "--porcelain")
+    status = git_stdout(path, "--no-optional-locks", "status", "--porcelain", timeout=_GIT_READ_TIMEOUT_S)
     return status is not None and status.strip() == ""
 
 

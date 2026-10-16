@@ -73,6 +73,21 @@ def test_dirty_at_pin_is_side(tmp_path: Path) -> None:
     assert (repo / "f.txt").read_text() == "modified\n"
 
 
+def test_slow_git_read_does_not_misclassify_clean_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, second = _make_repo(tmp_path / "meta-x")
+    real_run = subprocess.run
+
+    def slow_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+        timeout = kwargs.get("timeout")
+        if isinstance(timeout, int | float) and timeout <= 5:
+            raise subprocess.TimeoutExpired(cmd="git", timeout=timeout)
+        return real_run(*args, **kwargs)  # type: ignore[call-overload]
+
+    monkeypatch.setattr("bakar.gitutil.subprocess.run", slow_run)
+    (state,) = classify({"meta-x": _entry(second)}, tmp_path)
+    assert state.state == "frozen"
+
+
 def test_absent_is_missing(tmp_path: Path) -> None:
     (state,) = classify({"meta-x": _entry("a" * 40)}, tmp_path)
     assert state.state == "missing"
