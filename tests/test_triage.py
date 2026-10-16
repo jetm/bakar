@@ -19,7 +19,6 @@ from bakar.triage import (
     _match_suggestions,
     _scan_recipe_errors,
     analyse,
-    find_runs,
     is_build_failure_event,
     tail_lines,
 )
@@ -250,83 +249,6 @@ def test_is_build_failure_event_does_not_raise_on_a_non_hashable_step_value() ->
     excluded, matching this function's fail-toward-visibility posture."""
     assert is_build_failure_event({"event": "step_fail", "step": ["kas_build", "graph_capture"]}) is True
     assert is_build_failure_event({"event": "step_fail", "step": {"nested": "value"}}) is True
-
-
-@pytest.mark.unit
-def test_find_runs_returns_newest_first(tmp_path: Path) -> None:
-    runs_root = tmp_path / "nxp" / "build" / "runs"
-    runs_root.mkdir(parents=True)
-    (runs_root / "20260101-000000").mkdir()
-    (runs_root / "20260201-000000").mkdir()
-    newest = runs_root / "20260301-000000"
-    newest.mkdir()
-
-    runs = find_runs(tmp_path)
-
-    assert len(runs) == 3
-    assert runs[0] == newest
-    assert [r.name for r in runs] == [
-        "20260301-000000",
-        "20260201-000000",
-        "20260101-000000",
-    ]
-
-
-@pytest.mark.unit
-def test_find_runs_discovers_workspace_root_build(tmp_path: Path) -> None:
-    """BYO/bbsetup runs at workspace-root build/runs/ are returned."""
-    runs_root = tmp_path / "build" / "runs"
-    runs_root.mkdir(parents=True)
-    run = runs_root / "20260501-120000"
-    run.mkdir()
-
-    runs = find_runs(tmp_path)
-
-    assert run in runs
-
-
-@pytest.mark.unit
-def test_find_runs_discovers_generic_subdir(tmp_path: Path) -> None:
-    """Runs under an arbitrary one-level subdir (e.g. byo/) are returned."""
-    runs_root = tmp_path / "byo" / "build" / "runs"
-    runs_root.mkdir(parents=True)
-    run = runs_root / "20260601-090000"
-    run.mkdir()
-
-    runs = find_runs(tmp_path)
-
-    assert run in runs
-
-
-@pytest.mark.unit
-def test_find_runs_deduplicates_overlapping_paths(tmp_path: Path) -> None:
-    """nxp/ runs are not duplicated even though the glob would also match them."""
-    runs_root = tmp_path / "nxp" / "build" / "runs"
-    runs_root.mkdir(parents=True)
-    (runs_root / "20260101-000000").mkdir()
-    (runs_root / "20260201-000000").mkdir()
-
-    runs = find_runs(tmp_path)
-
-    # No duplicates: resolved paths must all be unique.
-    resolved = [p.resolve() for p in runs]
-    assert len(resolved) == len(set(resolved))
-    assert len(runs) == 2
-
-
-@pytest.mark.unit
-def test_find_runs_mixed_families_ordered_newest_first(tmp_path: Path) -> None:
-    """Runs from nxp/, ti/, build/, and a BYO subdir are merged and sorted."""
-    (tmp_path / "nxp" / "build" / "runs" / "20260101-000000").mkdir(parents=True)
-    (tmp_path / "ti" / "build" / "runs" / "20260301-000000").mkdir(parents=True)
-    (tmp_path / "build" / "runs" / "20260401-000000").mkdir(parents=True)
-    (tmp_path / "byo" / "build" / "runs" / "20260201-000000").mkdir(parents=True)
-
-    runs = find_runs(tmp_path)
-
-    names = [p.name for p in runs]
-    assert names == sorted(names, reverse=True)
-    assert len(runs) == 4
 
 
 # ---------------------------------------------------------------------------

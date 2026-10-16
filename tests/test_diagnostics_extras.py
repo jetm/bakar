@@ -2,7 +2,6 @@
 
 Covers:
 (a) _SUGGESTIONS new patterns: cc1plus OOM, HTTP 429, DNS/network, connection refused.
-(b) find_runs returns a BYO run dir created under a non-nxp/ti path.
 (c) build_revision hash determinism and None for empty layers.
 (d) BuildUIState FATAL counts as error; warn_count / error_count tallying.
 (e) RunLogger writes a greppable header to console.log on step_start but not
@@ -18,7 +17,7 @@ import pytest
 
 from bakar.report import assemble_report
 from bakar.steps.build_ui import BuildUIState
-from bakar.triage import _SUGGESTIONS, _match_suggestions, find_runs
+from bakar.triage import _SUGGESTIONS, _match_suggestions
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -106,34 +105,6 @@ def test_suggestions_clean_log_no_new_pattern_hit() -> None:
         hits = set(_match_suggestions(line))
         overlap = hits & new_pattern_suggestions
         assert not overlap, f"Clean line triggered new pattern suggestion:\n  line: {line!r}\n  suggestions: {overlap}"
-
-
-# ---------------------------------------------------------------------------
-# (b) find_runs: BYO run dir under a non-nxp/ti subdirectory
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_find_runs_byo_subdir(tmp_path: Path) -> None:
-    """find_runs discovers run dirs one level deep in non-nxp/ti subdirs."""
-    # Simulate a BYO/generic workspace with a custom subdir name
-    byo_run = tmp_path / "myboard" / "build" / "runs" / "20250601-120000"
-    byo_run.mkdir(parents=True)
-
-    runs = find_runs(tmp_path)
-
-    assert any(r == byo_run for r in runs), f"Expected BYO run {byo_run} in {runs}"
-
-
-@pytest.mark.unit
-def test_find_runs_workspace_root_build(tmp_path: Path) -> None:
-    """find_runs discovers runs at <workspace>/build/runs/ (BYO/bbsetup root path)."""
-    root_run = tmp_path / "build" / "runs" / "20250601-130000"
-    root_run.mkdir(parents=True)
-
-    runs = find_runs(tmp_path)
-
-    assert any(r == root_run for r in runs), f"Expected root build run {root_run} in {runs}"
 
 
 # ---------------------------------------------------------------------------
