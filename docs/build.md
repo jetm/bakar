@@ -62,17 +62,28 @@ bakar build -m imx8mp-var-dart    # machine override in bbsetup workspace
 | `--workspace` | `-w` | Workspace root override |
 | `--on` | | Dispatch the build to a remote host (ssh alias or `user@ip`) instead of building locally. See [Remote dispatch](#remote-dispatch---on-host). |
 | `--yes` | `-y` | Proceed despite a local/remote bakar version mismatch for `--on` dispatch. Dispatch has no other prompt or override: it prints its plan and never deletes anything on the remote |
+| `--feed` | | On build success, stage the RPMs into the local package feed and rewrite its index. A failed build never syncs, and neither does `--dry-run`. See [feed.md](feed.md) |
+| `--feed-release` | | Feed release directory for `--feed` (default `2024`; see `bakar feed sync`) |
+| `--feed-channel` | | Feed channel directory for `--feed` (default `edge`; see `bakar feed sync`) |
+| `--cve` | | On build success, run `avocado-cve-report` to correlate the runtime packages with unpatched CVEs. Needs `kas/feature/cve-check.yml` stacked onto the build; skips with a note when the build carries no cve-check results. Neither a failed build nor `--dry-run` produces a report |
+| `--sbom` | | On build success, filter the per-image SPDX document into a publishable inventory under `deploy/avocado-sbom`. Needs `kas/feature/sbom.yml` stacked onto the build and a meta-avocado checkout carrying the publication filter; refuses up front when the filter is absent, because the unfiltered document carries vulnerability data |
 | `--no-capture-graph` | | Skip the post-build `bitbake -g` dependency-graph capture, including the cooker-idle wait before it. Same effect as `[build] capture_graph = false` |
 
 `--container` (route the build through `kas-container` instead of the default
-host `kas build`), `--host` (retained no-op alias that forces the already-default
-host path),
+host `kas build`), `--host` (forces the host path, overriding a container toggle
+from `BAKAR_CONTAINER` or config; only `--container` outranks it),
 `--no-scope` (run the build directly instead of inside a transient systemd
 scope; see [Transient systemd scope](#transient-systemd-scope)), and
 `--sccache-dist` / `--sccache-scheduler URL` are **global** options handled by the
 top-level callback, so they go *before* the subcommand: `bakar --container build ...`,
 `bakar --no-scope build ...`, `bakar --sccache-dist build ...`. Placing them after
 `build` is rejected with `No such option`.
+
+The global `--plain` (alias `--ci`) flag forces plain, ANSI-free output for
+`build` and `monitor`, which suits CI. `--rich` forces the Rich live display even
+when output is not a TTY. They are mutually exclusive: passing both exits with
+code 2. Like the other globals they go before the subcommand:
+`bakar --plain build ...`.
 
 **Global option:** `--hide-doctor-report`, placed before the subcommand
 (`bakar --hide-doctor-report build ...`), runs the doctor checks but prints
@@ -139,7 +150,7 @@ bakar build my-board.yml --dry-run-script -
 7. **shared-cache overlay** - when `--sstate-mirror <URL>` is passed (or `sstate_mirror_url` is set in config.toml), bakar exports `BAKAR_SSTATE_MIRROR_URL` into the container env and appends `bakar-tuning-shared-cache.yml` to the overlay list. That overlay wires `SSTATE_MIRRORS` (using the `/all/PATH;downloadfilename=PATH` layout required by the Yocto Project autobuilder convention) and `BB_HASHSERVE_UPSTREAM` to enable sstate reuse from the mirror. The official Yocto Project mirror is `http://sstate.yoctoproject.org`. No hand-edited YAML needed.
 8. **kas build** - invokes `kas build <kas_yaml>:<overlay>` on the host (or `kas-container build` when the container path is opted into), wrapped in a transient systemd scope by default (see below)
 
-Run telemetry is written to `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>/`.
+Run telemetry is written to `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>-<pid>/`, where `<pid>` is the process id of the bakar run (for example `20260601-143022-4321`).
 
 ## Native signature capture
 
@@ -292,7 +303,7 @@ directly:
 
 ```bash
 # Follow one run's milestones
-journalctl --user BAKAR_RUN_ID=20260807-101500 -f
+journalctl --user BAKAR_RUN_ID=20260807-101500-4321 -f
 
 # Every task failure across all builds this week
 journalctl --user BAKAR_EVENT=task_failed --since "1 week ago"
@@ -803,7 +814,7 @@ reachable. Objects of deleted refs stay until you run `git gc` in
 
 ```bash
 bakar triage                        # inspect the most recent failed run
-bakar triage 20260601-143022        # inspect a specific run
+bakar triage 20260601-143022-4321   # inspect a specific run
 ```
 
 ## See also
