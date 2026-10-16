@@ -165,26 +165,29 @@ def shared_feed_dir(feed_dir: str | None, *, feed_shared: bool) -> Path | None:
     return None
 
 
-def pick(
-    arg: str | None,
-    env_key: str,
-    ws_val: str | None,
-    preset_val: str | None = None,
-    user_val: str | None = None,
-    default: str = "",
-) -> str:
+@dataclass(frozen=True, kw_only=True, slots=True)
+class FallbackTiers:
+    """The workspace, preset, user and built-in values pick() falls back to, highest first."""
+
+    workspace: str | None = None
+    preset: str | None = None
+    user: str | None = None
+    default: str = ""
+
+
+def pick(arg: str | None, env_key: str, tiers: FallbackTiers) -> str:
     if arg is not None:
         return arg
     env_val = os.environ.get(env_key)
     if env_val:
         return env_val
-    if ws_val is not None:
-        return ws_val
-    if preset_val is not None:
-        return preset_val
-    if user_val is not None:
-        return user_val
-    return default
+    if tiers.workspace is not None:
+        return tiers.workspace
+    if tiers.preset is not None:
+        return tiers.preset
+    if tiers.user is not None:
+        return tiers.user
+    return tiers.default
 
 
 def pick_bool(env_key: str, *, ws_val: bool | None, user_val: bool) -> bool:
@@ -894,22 +897,19 @@ def _resolve_branch(
     """Resolve the effective repo branch from CLI flag, env, and BSP family inference."""
     # qcom uses a fixed branch (no per-manifest inference), like generic/bbsetup.
     if bsp_family in ("generic", "bbsetup", "qcom"):
-        return pick(repo_branch, "BAKAR_REPO_BRANCH", None, None, None, fd.d_branch)
+        return pick(repo_branch, "BAKAR_REPO_BRANCH", FallbackTiers(default=fd.d_branch))
     if bsp_family == "ti":
         from bakar.bsp_model import infer_bsp_branch
 
         inferred = infer_bsp_branch(resolved_manifest)
         if inferred == "<unknown>":
             inferred = fd.d_branch
-        return pick(repo_branch, "BAKAR_REPO_BRANCH", None, None, None, inferred)
+        return pick(repo_branch, "BAKAR_REPO_BRANCH", FallbackTiers(default=inferred))
     # nxp
     return pick(
         repo_branch,
         "BAKAR_REPO_BRANCH",
-        None,
-        None,
-        None,
-        infer_repo_branch(resolved_manifest, fd.d_branch),
+        FallbackTiers(default=infer_repo_branch(resolved_manifest, fd.d_branch)),
     )
 
 
@@ -1206,10 +1206,12 @@ def resolve(request: ResolveRequest) -> BuildConfig:
     resolved_manifest = pick(
         spec.manifest,
         "BAKAR_MANIFEST",
-        fd.ws_manifest,
-        preset.manifest if preset is not None else None,
-        fd.u_manifest,
-        fd.d_manifest,
+        FallbackTiers(
+            workspace=fd.ws_manifest,
+            preset=preset.manifest if preset is not None else None,
+            user=fd.u_manifest,
+            default=fd.d_manifest,
+        ),
     )
     resolved_branch = _resolve_branch(bsp_family, fd, spec.repo_branch, resolved_manifest)
 
@@ -1299,26 +1301,32 @@ def resolve(request: ResolveRequest) -> BuildConfig:
         machine=pick(
             spec.machine or yaml_machine,
             "BAKAR_MACHINE",
-            fd.ws_machine,
-            preset.machine if preset is not None else None,
-            fd.u_machine,
-            fd.d_machine,
+            FallbackTiers(
+                workspace=fd.ws_machine,
+                preset=preset.machine if preset is not None else None,
+                user=fd.u_machine,
+                default=fd.d_machine,
+            ),
         ),
         distro=pick(
             spec.distro,
             "BAKAR_DISTRO",
-            fd.ws_distro,
-            preset.distro if preset is not None else None,
-            fd.u_distro,
-            fd.d_distro,
+            FallbackTiers(
+                workspace=fd.ws_distro,
+                preset=preset.distro if preset is not None else None,
+                user=fd.u_distro,
+                default=fd.d_distro,
+            ),
         ),
         image=pick(
             spec.image,
             "BAKAR_IMAGE",
-            fd.ws_image,
-            preset.image if preset is not None else None,
-            fd.u_image,
-            fd.d_image,
+            FallbackTiers(
+                workspace=fd.ws_image,
+                preset=preset.image if preset is not None else None,
+                user=fd.u_image,
+                default=fd.d_image,
+            ),
         ),
         manifest=resolved_manifest,
         repo_url=os.environ.get("BAKAR_REPO_URL", _resolve_repo_url(bsp_family, user_config)),
@@ -1326,10 +1334,11 @@ def resolve(request: ResolveRequest) -> BuildConfig:
         kas_container_image=pick(
             None,
             "KAS_CONTAINER_IMAGE",
-            workspace_config.kas_container_image if workspace_config is not None else None,
-            None,
-            user_config.kas_container_image if user_config and user_config.kas_container_image else None,
-            DEFAULT_CONTAINER_IMAGE,
+            FallbackTiers(
+                workspace=workspace_config.kas_container_image if workspace_config is not None else None,
+                user=user_config.kas_container_image if user_config and user_config.kas_container_image else None,
+                default=DEFAULT_CONTAINER_IMAGE,
+            ),
         ),
         host_mode=effective_host_mode,
         kas_yaml_override=kas_yaml.resolve() if kas_yaml is not None else None,
