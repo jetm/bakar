@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import json
 import pickle
+import re
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -669,3 +670,61 @@ def test_natives_for_finds_bitbake_at_the_workspace_top_for_a_generic_layout(
     assert captured["inputs"].bitbake_lib == tmp_path / "ws" / "bitbake" / "lib"
     insights_module._natives_for(cfg, tmp_path, {})
     assert captured["inputs"].bitbake_lib == tmp_path / "build-x" / "bitbake" / "lib"
+
+
+@pytest.mark.unit
+def test_insights_pressure_and_disk_flags_render_only_those_sections(
+    runner: _CliRunner, nxp_workspace: Path, insights_run_dir: Path
+) -> None:
+    """``--pressure --disk`` reach the persisted PSI and disk samples, and nothing else renders."""
+    result = runner.invoke(app, ["insights", "--pressure", "--disk", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 0, result.output
+    assert "CPU pressure dominated" in result.output
+    assert "cpu: 17.5%" in result.output
+    assert "growth: 500000 bytes" in result.output
+    assert "disk full:" in result.output
+    assert "sstate:" not in result.output
+    assert "timing:" not in result.output
+    assert "threshold" not in result.output
+
+
+@pytest.mark.unit
+def test_insights_growth_threshold_warns_only_when_exceeded(
+    runner: _CliRunner, nxp_workspace: Path, insights_run_dir: Path
+) -> None:
+    """Growth is 500000 bytes: a 100KB threshold warns, a 1MB threshold does not."""
+    over = runner.invoke(app, ["insights", "--disk", "--growth-threshold", "100KB", "--workspace", str(nxp_workspace)])
+    assert over.exit_code == 0, over.output
+    assert "disk growth 500000 bytes exceeds threshold 102400 bytes" in over.output
+
+    under = runner.invoke(app, ["insights", "--disk", "--growth-threshold", "1MB", "--workspace", str(nxp_workspace)])
+    assert under.exit_code == 0, under.output
+    assert "growth: 500000 bytes" in under.output
+    assert "exceeds threshold" not in under.output
+
+
+@pytest.mark.unit
+def test_insights_top_limits_the_timing_table_to_three_rows(
+    runner: _CliRunner, nxp_workspace: Path, insights_run_dir: Path
+) -> None:
+    """``--top 3`` yields exactly three ``recipe:task: N.Ns`` rows under ``timing:``."""
+    result = runner.invoke(app, ["insights", "--timing", "--top", "3", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 0, result.output
+    rows = [line for line in result.output.splitlines() if re.fullmatch(r"\s+\S+:do_\w+: \d+\.\ds.*", line)]
+    assert len(rows) == 3, result.output
+    assert "busybox-1.36.1-r0:do_compile" in rows[0]
+
+    narrower = runner.invoke(app, ["insights", "--timing", "--top", "2", "--workspace", str(nxp_workspace)])
+    assert narrower.exit_code == 0, narrower.output
+    assert len([line for line in narrower.output.splitlines() if re.fullmatch(r"\s+\S+:do_\w+: \d+\.\ds.*", line)]) == 2
+
+
+@pytest.mark.unit
+def test_insights_malformed_growth_threshold_is_rejected(
+    runner: _CliRunner, nxp_workspace: Path, insights_run_dir: Path
+) -> None:
+    """A size that is neither a byte count nor ``<number><unit>`` exits 2 with the documented message."""
+    result = runner.invoke(app, ["insights", "--disk", "--growth-threshold", "lots", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 2, result.output
+    assert "could not parse size: 'lots'" in " ".join(result.output.split())
+    assert "disk:" not in result.output

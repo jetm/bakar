@@ -731,3 +731,85 @@ def test_recent_kas_errors_small_and_missing_log(tmp_path: Path) -> None:
     assert monitor_module._recent_kas_errors(kas_log) == []
     kas_log.write_text("ERROR: boom\nNOTE: ok\nFATAL: dead\n", encoding="utf-8")
     assert monitor_module._recent_kas_errors(kas_log) == ["ERROR: boom", "FATAL: dead"]
+
+
+def test_run_option_reaches_run_selection(
+    runner: _CliRunner,
+    nxp_workspace_with_run: Path,
+    patched_probes: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--run <id>`` is handed to run selection, which then picks that run over the newer one."""
+    newer = nxp_workspace_with_run / "nxp" / "build" / "runs" / "20260602-120000"
+    newer.mkdir()
+    seen: list[tuple[Path, str | None]] = []
+    real = monitor_module._resolve_run_dir
+
+    def _spy(runs_dir: Path, run: str | None) -> Path:
+        chosen = real(runs_dir, run)
+        seen.append((chosen, run))
+        return chosen
+
+    monkeypatch.setattr(monitor_module, "_resolve_run_dir", _spy)
+
+    result = runner.invoke(
+        app,
+        ["monitor", "--json", "--run", _RUN_ID, "--workspace", str(nxp_workspace_with_run)],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert [(chosen.name, run) for chosen, run in seen] == [(_RUN_ID, _RUN_ID)]
+
+
+def test_scheduler_option_reaches_the_cluster_query(
+    runner: _CliRunner,
+    nxp_workspace_with_run: Path,
+    patched_probes: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--scheduler URL`` is the URL ``probe_cluster`` is asked about, ahead of any configured default."""
+    queried: list[str | None] = []
+
+    def _probe(url: str | None) -> ClusterReport:
+        queried.append(url)
+        return _reachable_cluster()
+
+    monkeypatch.setattr(monitor_module, "probe_cluster", _probe)
+
+    result = runner.invoke(
+        app,
+        [
+            "monitor",
+            "--json",
+            "--scheduler",
+            "http://sched.invalid:10600",
+            "--workspace",
+            str(nxp_workspace_with_run),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert queried == ["http://sched.invalid:10600"]
+
+
+def test_watch_sleeps_for_the_requested_interval(
+    runner: _CliRunner,
+    nxp_workspace_with_run: Path,
+    patched_probes: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--json --watch -n 0.01`` sleeps 0.01s between a live snapshot and the final one."""
+    states = iter([(True, 1234, True), (False, None, False)])
+    monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: next(states))
+    slept: list[float] = []
+    monkeypatch.setattr(monitor_module.time, "sleep", slept.append)
+
+    result = runner.invoke(
+        app,
+        ["monitor", "--json", "--watch", "-n", "0.01", "--workspace", str(nxp_workspace_with_run)],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
+    assert [json.loads(ln)["build"]["live"] for ln in lines] == [True, False]
+    assert slept == [0.01]

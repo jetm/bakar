@@ -85,6 +85,20 @@ def test_mirror_reports_the_workspace_in_the_next_hint(cli: CliRunner, cfg, tmp_
     assert f"next: bakar feed index --release 2024 --channel edge -w {tmp_path}" in unwrapped
 
 
+def test_mirror_release_and_channel_select_the_pair(cli: CliRunner, cfg, tmp_path: Path, feed_server) -> None:
+    upstream = build_feed(tmp_path / "upstream", FeedSpec(repos={"target/m1": 2}, release="2025", channel="stable"))
+    server = feed_server(upstream)
+
+    result = _invoke(cli, cfg, server.url, "--repo", "target/m1", "--release", "2025", "--channel", "stable")
+
+    assert result.exit_code == 0, result.output
+    stable = cfg.effective_feed_dir / "2025" / "stable"
+    assert (stable / "target" / "m1" / "repodata" / "repomd.xml").is_file()
+    assert not (cfg.effective_feed_dir / "2024").exists()
+    assert not (cfg.effective_feed_dir / "2025" / "edge").exists()
+    assert "next: bakar feed index --release 2025 --channel stable" in result.output.replace("\n", "")
+
+
 # --- failures during phase 1 (metadata) --------------------------------
 
 
