@@ -14,14 +14,14 @@ This module exports:
   :mod:`bakar.cli` and the ``check_host_tools`` decision. For the
   complementary BYO-yaml classifier (content-based, not filename-based)
   see :func:`bakar.bsp_detect.detect_bsp_from_yaml`.
-* :func:`infer_bsp_branch` - synthesize the
-  ``meta-variscite-bsp-ti`` branch suffix from a TI config filename.
+* :func:`infer_bsp_branch` - re-exported from :mod:`bakar.config`, where
+  it is defined; synthesizes the ``meta-variscite-bsp-ti`` branch suffix
+  from a TI config filename.
 * :class:`BspModel` - dataclass + registry that hold every per-BSP
   knob: defaults, kas template, sync/setup steps, doctor extras.
-* :func:`get_model` - factory returning the dispatched model. Imports
-  are lazy so :mod:`bakar.config` (which imports
-  :func:`infer_bsp_branch` for TI branch fallback) can keep its
-  circular dep-free top-level import.
+* :func:`get_model` - factory returning the dispatched model. Its
+  heavy imports (diagnostics, steps, kas) are lazy so importing this
+  module for :func:`detect_bsp_family` stays cheap.
 """
 
 from __future__ import annotations
@@ -31,7 +31,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from bakar.config import _TI_PROCESSOR_SDK_RE, infer_bsp_branch
 from bakar.vendor_config import BspFamily, ManifestFamily, load_vendors
+
+__all__ = ["infer_bsp_branch"]
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -47,20 +50,6 @@ if TYPE_CHECKING:
 # NXP manifest filename: imx-<kernel>-<bsp>.xml
 # Examples: imx-6.6.52-2.2.2.xml, imx-6.12.49-2.2.0.xml
 _NXP_MANIFEST_RE = re.compile(r"^imx-\d+\.\d+\.\d+-\d+\.\d+\.\d+\.xml$")
-
-# TI Processor SDK config filename:
-#   processor-sdk-<poky>-<flavour>-<sdk>-config_<var>.txt
-# where <poky> is the LTS code name (scarthgap, walnascar, ...),
-# <flavour> is "chromium" / "non-chromium" / etc,
-# <sdk> is a 4-part TI SDK version (11.00.09.04),
-# <var>  is "var01" / "var02" / ...
-_TI_PROCESSOR_SDK_RE = re.compile(
-    r"^processor-sdk-"
-    r"(?P<poky>[A-Za-z]\w*)-"
-    r".*?-"
-    r"(?P<sdk>\d+\.\d+\.\d+\.\d+)-"
-    r"config_(?P<var>var\d+)\.txt$"
-)
 
 # TI legacy/Arago manifest filename: arago-<anything>.txt
 # Kept as alternation for forward compatibility with older
@@ -114,25 +103,6 @@ def detect_bsp_family(
     return "unknown"
 
 
-def infer_bsp_branch(config_filename: str) -> str:
-    """Derive the ``meta-variscite-bsp-ti`` branch from a TI config name.
-
-    The canonical filename
-    ``processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt``
-    parses to ``(poky=scarthgap, sdk=11.00.09.04, var=var01)`` and
-    yields ``scarthgap_11.00.09.04_var01`` - the actual branch name on
-    the layer repo.
-
-    Returns ``"<unknown>"`` for inputs that do not match the regex
-    (legacy ``arago-*.txt`` configs go through the legacy versioning
-    scheme, which is out of scope for this helper).
-    """
-    m = _TI_PROCESSOR_SDK_RE.match(config_filename)
-    if not m:
-        return "<unknown>"
-    return f"{m.group('poky')}_{m.group('sdk')}_{m.group('var')}"
-
-
 # ---------------------------------------------------------------------------
 # BspModel registry
 # ---------------------------------------------------------------------------
@@ -176,13 +146,12 @@ def get_model(family: ManifestFamily) -> BspModel:
     """Return the BspModel singleton for ``family``.
 
     Imports are intentionally lazy. ``bsp_model`` is imported from
-    ``config.py`` (``infer_bsp_branch``) and from ``cli.py``; deferring
-    the heavy imports until ``get_model`` is actually called keeps the
-    import graph clean and lets unit tests construct dummy models
-    without dragging in diagnostics or steps.
+    ``cli.py`` and others; deferring the heavy imports until ``get_model``
+    is actually called keeps the import graph clean and lets unit tests
+    construct dummy models without dragging in diagnostics or steps.
     """
     # Lazy: avoid pulling diagnostics/steps/kas into every consumer of
-    # detect_bsp_family or infer_bsp_branch.
+    # detect_bsp_family.
     from bakar import config as cfg_mod
     from bakar.diagnostics import (
         check_forks_linux_imx,

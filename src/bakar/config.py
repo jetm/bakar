@@ -114,6 +114,40 @@ def infer_repo_branch(manifest: str, fallback: str = DEFAULT_NXP_REPO_BRANCH) ->
     return fallback
 
 
+# TI Processor SDK config filename:
+#   processor-sdk-<poky>-<flavour>-<sdk>-config_<var>.txt
+# where <poky> is the LTS code name (scarthgap, walnascar, ...),
+# <flavour> is "chromium" / "non-chromium" / etc,
+# <sdk> is a 4-part TI SDK version (11.00.09.04),
+# <var>  is "var01" / "var02" / ...
+_TI_PROCESSOR_SDK_RE = re.compile(
+    r"^processor-sdk-"
+    r"(?P<poky>[A-Za-z]\w*)-"
+    r".*?-"
+    r"(?P<sdk>\d+\.\d+\.\d+\.\d+)-"
+    r"config_(?P<var>var\d+)\.txt$"
+)
+
+
+def infer_bsp_branch(config_filename: str) -> str:
+    """Derive the ``meta-variscite-bsp-ti`` branch from a TI config name.
+
+    The canonical filename
+    ``processor-sdk-scarthgap-chromium-11.00.09.04-config_var01.txt``
+    parses to ``(poky=scarthgap, sdk=11.00.09.04, var=var01)`` and
+    yields ``scarthgap_11.00.09.04_var01`` - the actual branch name on
+    the layer repo.
+
+    Returns ``"<unknown>"`` for inputs that do not match the regex
+    (legacy ``arago-*.txt`` configs go through the legacy versioning
+    scheme, which is out of scope for this helper).
+    """
+    m = _TI_PROCESSOR_SDK_RE.match(config_filename)
+    if not m:
+        return "<unknown>"
+    return f"{m.group('poky')}_{m.group('sdk')}_{m.group('var')}"
+
+
 def shared_ccache_dir(ccache_dir: str | None, *, ccache_shared: bool) -> Path | None:
     """Resolve a non-per-workspace ccache directory, or None for per-workspace.
 
@@ -521,8 +555,9 @@ class BuildConfig:
     # means localhost-only (single-node default); set to a cluster-reachable IP
     # so other nodes can share one hashserv/prserv. See user_config.cluster_bind_host.
     cluster_bind_host: str | None = field(default=None)
-    # Central cross-node tier endpoints (host:port), provisioned by `bakar setup`
-    # (CentralTierAction). When set, the build points BB_HASHSERVE / PRSERV_HOST at
+    # Central cross-node tier endpoints (host:port), user-configured; the `bakar
+    # setup` action that would provision them (CentralTierAction) is not wired to
+    # any caller. When set, the build points BB_HASHSERVE / PRSERV_HOST at
     # the shared Rust/PostgreSQL services and skips the per-workspace bitbake
     # daemons; None keeps the per-workspace daemon path. See user_config.bb_hashserve.
     bb_hashserve: str | None = field(default=None)
@@ -892,8 +927,6 @@ def _resolve_branch(
     if bsp_family in ("generic", "bbsetup", "qcom"):
         return pick(repo_branch, "BAKAR_REPO_BRANCH", FallbackTiers(default=fd.d_branch))
     if bsp_family == "ti":
-        from bakar.bsp_model import infer_bsp_branch
-
         inferred = infer_bsp_branch(resolved_manifest)
         if inferred == "<unknown>":
             inferred = fd.d_branch
@@ -1097,7 +1130,7 @@ def resolve(request: ResolveRequest) -> BuildConfig:
     config field, so when neither arg nor env is set, NXP infers it from the
     manifest filename via :data:`BRANCH_BY_MANIFEST_PREFIX`; TI infers it from
     the ``processor-sdk-<poky>-...-<sdk>-config_<var>`` regex via
-    :func:`bakar.bsp_model.infer_bsp_branch`.
+    :func:`bakar.config.infer_bsp_branch`.
 
     ``kas_yaml`` is the BYO override path. When set, it lands in
     :attr:`BuildConfig.kas_yaml_override` and ``cfg.kas_yaml`` returns
