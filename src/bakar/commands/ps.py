@@ -82,8 +82,8 @@ def _container_mount_source(runtime: str, container_id: str) -> str | None:
     """Recover the host-side source path of ``container_id``'s ``/work`` bind mount.
 
     Runs ``<runtime> inspect -f '{{json .Mounts}}' <container_id>`` - the same
-    ``-f`` flag form build_stop's own inspect calls use (e.g.
-    ``_container_running``) - and parses the JSON array for the entry whose
+    ``-f`` flag form build_stop's own inspect calls use - and parses the
+    JSON array for the entry whose
     ``Destination`` is ``/work`` (see :data:`_WORK_MOUNT_DESTINATION`). Returns
     ``None`` when the inspect call fails or times out, its output does not
     parse as JSON, or no mount matches - never raises, so the caller falls

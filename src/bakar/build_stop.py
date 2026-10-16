@@ -428,33 +428,11 @@ def _run_runtime(args: list[str]) -> None:
         pass
 
 
-def _container_running(runtime: str, cid: str) -> bool:
-    """Return True while ``cid`` reports ``State.Running == true``.
-
-    Anything else (the inspect command erroring, empty output, ``"false"``)
-    means the container is no longer running. Bounded by
-    ``_RUNTIME_QUERY_TIMEOUT_S`` for the same reason as its siblings above.
-    """
-    try:
-        result = subprocess.run(
-            [runtime, "inspect", "-f", "{{.State.Running}}", cid],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=_RUNTIME_QUERY_TIMEOUT_S,
-        )
-    except OSError, subprocess.TimeoutExpired:
-        return False
-    if result.returncode != 0:
-        return False
-    return result.stdout.strip() == "true"
-
-
 def _container_liveness(runtime: str, cid: str) -> str:
     """Return the tri-state liveness of container ``cid``.
 
-    Unlike :func:`_container_running`, this distinguishes a definitive
-    not-running result from a query that could not be answered:
+    This distinguishes a definitive not-running result from a query that
+    could not be answered:
 
     - ``_ALIVE``  - ``inspect`` reported ``State.Running == true``;
     - ``_DEAD``   - ``inspect`` succeeded and the container is stopped/gone
