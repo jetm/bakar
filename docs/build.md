@@ -378,9 +378,14 @@ rsync is spawned.
 `<host>` is any ssh destination: an alias from `~/.ssh/config` or a `user@ip`.
 The remote must run a matching `bakar` version.
 
-Dispatch never deletes anything on the remote. It adds what the build needs and
-leaves every existing file, repository and ref in place. How your sources get
-there depends on the build:
+Dispatch itself never deletes anything on the remote. It adds what the build
+needs and leaves every existing file, repository and ref in place. What the
+remote build then does is what the same build does locally (an NXP or qcom
+sync re-renders `build/conf` and force-syncs its repo projects), and the
+requests that would delete there are refused with `--on`: `--clean`, a
+`KAS_TASK` other than `build`, and a target whose task is a clean task such as
+`busybox:do_cleanall`; run those on the host. How your sources get there
+depends on the build:
 
 - A **meta-avocado kas build** (a kas file inside a `meta-avocado` checkout or
   one of its linked worktrees) runs in a release workspace that already exists
@@ -630,8 +635,15 @@ workspace at the same absolute path as the local machine.
    root, with no prompt.
 4. **Mirror** - `rsync -a` copies the workspace root to the same absolute path
    on the remote, uncommitted edits included. It adds and updates files and
-   never deletes one: a file you removed locally lingers on the remote until you
-   remove it by hand, and a stale recipe there can still be parsed. `.git` is
+   never removes a path that exists only on the host: a file you removed
+   locally lingers on the remote until you remove it by hand, and a stale recipe
+   there can still be parsed. A remote path whose type differs from the local
+   one (file, directory, symlink) is replaced. A workspace root that is a
+   release workspace (it holds `meta-avocado`, or `[workspaces]` names it) is
+   never mirrored: a preset, a generated `avocado-bakar.yml`, a kas file at the
+   root and a bare `--on` are refused, because the mirror would overwrite the
+   host's shared clones; dispatch a kas file inside a `meta-avocado` checkout
+   instead. `.git` is
    kept (kas and bitbake read git state for `SRCREV`/`AUTOREV`); build artifacts
    and caches are excluded. Workspace-root outputs are anchored with a leading
    `/` so an unanchored basename cannot also drop a real source directory (for
@@ -724,7 +736,13 @@ workspace.
 | `remote workspace check failed: <ws>/openembedded-core/meta/conf/layer.conf on <host> is missing or unreadable`, or `...declares no LAYERSERIES_CORENAMES` | the workspace was never checked out | run `kas checkout` in that workspace |
 | `remote workspace check failed: release mismatch: the build needs 'x' but <ws> on <host> declares 'y'` | the mapping points at another release's workspace | fix `[workspaces]` |
 | `cannot deliver <checkout>: untracked files in <checkout> total N MiB, above the <cap> MiB snapshot cap` | large untracked files would ride in the snapshot | commit, ignore or remove them, or raise `[dispatch] snapshot_untracked_cap_mb` |
-| `cannot dispatch: the name '<raw>' has no usable characters after sanitising` | the worktree or branch name has no character in `[A-Za-z0-9._-]` (exit 2) | rename the worktree or branch |
+| `cannot dispatch: the name '<raw>' has no usable characters after sanitising`, or `...contains '..'`, or `...ends in '.lock'` / `'.build'` | the worktree or branch name has no character in `[A-Za-z0-9._-]`, or git or a bakar lock file name would reject it (exit 2, before any ssh) | rename the worktree or branch |
+| `cannot mirror <ws> to <host>: it is a release workspace` | `--on` resolved the workspace root to a release workspace through a preset, a generated `avocado-bakar.yml`, a kas file outside a `meta-avocado` checkout, or no kas file (exit 2) | run `bakar build <kas file inside the meta-avocado checkout> --on <host>` |
+| `--clean cannot be combined with --on`, or `KAS_TASK=... cannot be combined with --on`, or `<target> cannot be combined with --on` | the request would delete on the remote: `--clean`, a `KAS_TASK` other than `build`, a clean task in `-t`/`KAS_TARGET` (exit 2) | run it on the host with `ssh <host> bakar ...` |
+| `-w <path> does not match the routed workspace <path>` | `--on` routes by release and `-w` names another workspace (exit 2) | drop `-w`, or point it at the routed workspace |
+| `the bakar on <host> predates release-workspace dispatch` | the host's bakar lacks `dispatch.snapshot_untracked_cap_mb` and would ignore the reuse policy; `--yes` does not override it | update bakar on the host |
+| `untracked files in <checkout> look like key material: ...` | a snapshot would put a key, certificate bundle or `.env` file into a permanent ref on the host | move it out of the checkout, ignore it, or commit it after review |
+| `'[dispatch] worktree_root' must be an absolute path on the host` | the root is relative or starts with `~` (exit 2; the loader refuses it too) | use an absolute remote path |
 | `cannot deliver <checkout>: <checkout> has a detached HEAD` | a main checkout on no branch has no name to deliver under | check out a branch, or build from a linked worktree |
 | `BAKAR_REPO_POLICY='x' is not a repository policy` | the variable holds a value other than `kas` or `reuse`; the build and the doctor refuse it rather than fall back to `kas` | unset it, or set `kas` or `reuse` |
 | `git push failed (exit N); remote build not started.` | git's own message is printed above it | act on git's message |

@@ -83,6 +83,35 @@ one).
 | `nproc` | int | *(auto: `os.cpu_count()`)* | Base build parallelism, exported as the `NPROC` env var. The tuning overlays fan it out to `BB_NUMBER_THREADS`, `PARALLEL_MAKE`, and `BB_NUMBER_PARSE_THREADS` unless `parallel_make` / `bb_number_threads` override them. A live `NPROC=` env var still wins over this value. Must be `> 0`. |
 | `parallel_make` | int | *(falls back to `nproc`)* | Compile `-j` (`PARALLEL_MAKE`), decoupled from recipe concurrency. Size it to the total cores available to compilation - for an sccache-dist cluster that is the sum across all build servers, so compile jobs spill to remote nodes. Exported as `BAKAR_PARALLEL_MAKE`. Must be `> 0`. |
 | `bb_number_threads` | int | *(falls back to `nproc`)* | Recipe concurrency (`BB_NUMBER_THREADS`; `BB_NUMBER_PARSE_THREADS` follows it), decoupled from compile `-j`. Size it to local RAM - too many parallel recipes OOM a full image build. Exported as `BAKAR_BB_NUMBER_THREADS`. Must be `> 0`. |
+| `worktree_build_dir` | string | `build-{stem}-{worktree}` | Build directory name for a kas file in a linked meta-avocado worktree. Only `{stem}` (the kas file's stem) and `{worktree}` (the worktree directory name) are allowed, with no format spec or conversion, and the rendered name must be one directory name (no `/`, `.` or `..`). A main checkout keeps `build-{stem}`. Overridden by `BAKAR_WORKTREE_BUILD_DIR`. |
+
+### `[workspaces]` - release workspaces for meta-avocado
+
+A meta-avocado kas build is built in a per-release workspace chosen from the
+release its pins name (the `openembedded-core` branch with `-avocado` removed).
+Nothing is routed until one of these is set. The mapping is read from this file
+only.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `template` | string | *(not set)* | Absolute path with a `{release}` placeholder, for example `/home/me/repos/work/peridio-{release}`. `~` is expanded. Any other placeholder, a format spec (`{release:>8}`), a conversion (`{release!r}`) or a relative path is a configuration error. |
+
+`[workspaces.releases]` maps single releases and wins over `template`:
+
+```toml
+[workspaces.releases]
+scarthgap = "/mnt/old/peridio-scarthgap"
+```
+
+Each value is an absolute path; an empty or relative value is a configuration
+error. `bakar settings` does not list this table; edit `config.toml` directly.
+
+### `[dispatch]` - `bakar build --on` for meta-avocado
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `worktree_root` | string | `<workspace>/.bakar/worktrees` | Absolute path on the REMOTE host where the delivered worktrees are placed. `~` and relative paths are refused: `~` would expand to the local home, and a relative path would place the worktree inside the shared `meta-avocado` clone. |
+| `snapshot_untracked_cap_mb` | int | `50` | Largest amount of untracked content, in MiB, a dispatch snapshot may carry. Must be `> 0`. |
 
 ### `[host]` - doctor host-environment thresholds
 
@@ -135,6 +164,17 @@ disk_free_threshold_gb = 50.0
 hashserv = true
 ccache_shared = true
 # ccache_dir = "/mnt/yocto-cache/ccache"
+# worktree_build_dir = "build-{stem}-{worktree}"
+
+[workspaces]
+template = "/home/me/repos/work/peridio-{release}"
+
+# [workspaces.releases]
+# scarthgap = "/mnt/old/peridio-scarthgap"
+
+[dispatch]
+# worktree_root = "/home/me/repos/work/peridio-wrynose/.bakar/worktrees"
+snapshot_untracked_cap_mb = 50
 
 [host]
 inotify_instances = 4096
@@ -289,6 +329,13 @@ still take precedence over env vars.
 | `BAKAR_CONTAINER` | Set to `1` to route the build through `kas-container` for one invocation. Host execution is the default; this is the opt-in, equivalent to the global `--container` flag. Beats the workspace and user `[build] container` toggles. |
 | `BAKAR_HOST_MODE` | Retained back-compat alias forcing host execution. Host is already the default, so this is a no-op. |
 | `KAS_CONTAINER_IMAGE` | Override the kas-container image for one invocation. Takes precedence over both the workspace `.bakar.toml` `[build]` value and `build.kas_container_image` in the user config. Names the image only; it does not select the container path. |
+
+### Release workspaces and dispatch
+
+| Variable | Description |
+|----------|-------------|
+| `BAKAR_REPO_POLICY` | `reuse` or `kas`; any other value is refused by the build and the doctor. `reuse` classifies each pinned repository (at its pin and clean: left alone; missing: cloned; anywhere else: a side checkout under `<workspace>/.bakar/pins/`) so a build never moves a clone of a shared release workspace. It is the default for a meta-avocado build routed through `[workspaces]` and for an explicit `-w` that names a configured release workspace, and a dispatched build always runs under it. `kas` restores kas's own behaviour, which moves every clean clone to the pins of the file being built. |
+| `BAKAR_WORKTREE_BUILD_DIR` | Overrides `build.worktree_build_dir` for one invocation. A dispatched build always carries the dispatching host's template (the default when none is configured), so the remote never picks another directory than the plan names. |
 
 ### bitbake-override
 

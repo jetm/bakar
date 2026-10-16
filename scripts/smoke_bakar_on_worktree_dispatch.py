@@ -208,7 +208,10 @@ def main() -> int:
     smoke_lib = _load_smoke_lib()
     manual = [smoke_lib.ManualStep(reason="human", text=text) for text in MANUAL_STEPS_TEXT]
     have_kas = shutil.which("kas") is not None
-    run = smoke_lib.SmokeRun(expected=CHECKS_WITH_KAS if have_kas else CHECKS_WITH_KAS - 2, manual_steps=manual)
+    # Expected stays at the full count without kas: the two kas checks are
+    # skipped, the run prints "checks: 5/7 run" and fails, so a host without
+    # kas cannot report a clean smoke over checks that never ran.
+    run = smoke_lib.SmokeRun(expected=CHECKS_WITH_KAS, manual_steps=manual)
 
     with run, smoke_lib.isolated_env("smoke-bakar-worktree-") as (tmp, env):
         root = tmp.resolve()
@@ -274,7 +277,7 @@ def main() -> int:
                 err or f"got {pin}, want {lay.worktree_pin} (main checkout pins {lay.main_pin})",
             )
         else:
-            print("SKIP kas dump of the wrapper: kas is not on PATH; expected lowered by one")
+            print("SKIP kas dump of the wrapper: kas is not on PATH")
 
         # (f) the release is read from the pinned openembedded-core branch without touching any workspace.
         if have_kas:
@@ -285,7 +288,7 @@ def main() -> int:
                 err or f"got {release!r}",
             )
         else:
-            print("SKIP probe_release: kas is not on PATH, so the release cannot be read; expected lowered by one")
+            print("SKIP probe_release: kas is not on PATH, so the release cannot be read")
 
         # (g) an off-pin shared clone is routed to a side checkout and never moved.
         def classify_offpin() -> tuple[list, str, str]:

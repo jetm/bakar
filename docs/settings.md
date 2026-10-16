@@ -73,6 +73,22 @@ All keys use dotted notation (`section.subsection.key`).
 | `build.nproc` | int | Base build parallelism, exported as `NPROC` (default: auto-detected `os.cpu_count()`) |
 | `build.parallel_make` | int | Compile `-j` (`PARALLEL_MAKE`), decoupled from recipe concurrency (default: falls back to `nproc`) |
 | `build.bb_number_threads` | int | Recipe concurrency (`BB_NUMBER_THREADS`), decoupled from compile `-j` (default: falls back to `nproc`) |
+| `build.worktree_build_dir` | string | Build directory name for a kas file in a linked meta-avocado worktree, with `{stem}` and `{worktree}` placeholders only (default: `build-{stem}-{worktree}`). The rendered name must be a single directory name. `BAKAR_WORKTREE_BUILD_DIR` overrides it. |
+
+### Release workspaces (`workspaces.*`)
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `workspaces.template` | string | Absolute workspace path with a `{release}` placeholder, for example `/home/me/repos/work/peridio-{release}`. A meta-avocado kas build is routed to the workspace of the release its pins name. No other placeholder, no format spec, no relative path. |
+
+Per-release overrides live in the `[workspaces.releases]` table (`wrynose = "/abs/path"`), which `settings list` does not print; edit `config.toml` directly. See [config-reference.md](config-reference.md).
+
+### Dispatch (`dispatch.*`)
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `dispatch.worktree_root` | string | Absolute path ON THE REMOTE host where `--on` places delivered worktrees (default: `<workspace>/.bakar/worktrees`). `~` is refused because it would expand to the local home. |
+| `dispatch.snapshot_untracked_cap_mb` | int | Largest amount of untracked content, in MiB, a dispatch snapshot may carry before it is refused (default: `50`; must be `> 0`) |
 
 ### Host thresholds (`host.*`)
 

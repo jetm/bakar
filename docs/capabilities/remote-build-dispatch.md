@@ -1,4 +1,4 @@
-# `remote-build-dispatch`: dispatch never deletes anything on the remote; a meta-avocado build delivers the layer under change as a git worktree of the remote release workspace's `meta-avocado` clone (pushed to a new `refs/bakar/<name>/<commit12>` ref, uncommitted state as a snapshot commit) and runs the remote build from it; other build families keep an add-and-update-only mirror; the delete preview and its confirmation are gone and `--yes` only overrides a bakar version mismatch
+# `remote-build-dispatch`: dispatch itself never deletes anything on the remote (`--clean`, `KAS_TASK` and clean-task targets are refused with `--on`); a meta-avocado build delivers the layer under change as a git worktree of the remote release workspace's `meta-avocado` clone (pushed to a new `refs/bakar/<name>/<commit12>` ref, uncommitted state as a snapshot commit) and runs the remote build from it; other build families keep an add-and-update-only mirror; the delete preview and its confirmation are gone and `--yes` only overrides a bakar version mismatch
 
 **Delivered by:** bakar-on-release-workspace-dispatch
 **Modules touched:** other, tests
