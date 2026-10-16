@@ -871,6 +871,36 @@ def test_read_state_none_when_either_file_bad(tmp_path: Path, pid: str | None, p
     assert read_state(tmp_path) is None
 
 
+@pytest.mark.parametrize("port", ["0", "-1", "65536", "70000", "99999999999"])
+def test_read_state_none_when_port_out_of_range(tmp_path: Path, port: str) -> None:
+    from bakar.hashserv import read_state
+
+    _write_state(tmp_path, "123\n", f"{port}\n")
+    assert read_state(tmp_path) is None
+
+
+@pytest.mark.parametrize("port", ["1", "65535"])
+def test_read_state_accepts_the_port_range_boundaries(tmp_path: Path, port: str) -> None:
+    from bakar.hashserv import read_state
+
+    _write_state(tmp_path, "123\n", f"{port}\n")
+    assert read_state(tmp_path) == (123, int(port))
+
+
+def test_ensure_running_recovers_port_when_recorded_port_out_of_range(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import bakar.hashserv as hs
+
+    _write_state(tmp_path, "123\n", "70000\n")
+    monkeypatch.setattr(hs, "network_state_reason", lambda *a, **k: None)
+    monkeypatch.setattr(hs, "is_running", lambda _key: True)
+    url = hs.ensure_running(tmp_path, binary_root=tmp_path, bind_host="127.0.0.1")
+    port = hs._workspace_port(tmp_path)
+    assert url == f"ws://127.0.0.1:{port}"
+    assert (tmp_path / ".bakar" / "hashserv.port").read_text().strip() == str(port)
+
+
 def test_bound_url_uses_bind_host_else_localhost() -> None:
     from bakar.hashserv import bound_url
 

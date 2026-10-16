@@ -648,3 +648,74 @@ def test_every_avocado_dispatch_plan_and_script_is_non_destructive(  # noqa: PLR
     for fragment in _DESTRUCTIVE:
         assert fragment not in rec.ensure_script, fragment
         assert fragment not in rec.remote_script, fragment
+
+
+def _config_answer(monkeypatch: pytest.MonkeyPatch, answer: Any) -> None:
+    def run(argv: list[str], **_kw: Any) -> subprocess.CompletedProcess[str]:
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+
+@pytest.mark.parametrize(
+    "error", [subprocess.TimeoutExpired(["git"], 10), FileNotFoundError("git")], ids=["timeout", "oserror"]
+)
+def test_unreadable_core_ssh_command_counts_as_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: BaseException
+) -> None:
+    _config_answer(monkeypatch, error)
+    assert ad._user_ssh_configured(tmp_path, {}) is True
+
+
+def test_absent_core_ssh_command_is_not_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _config_answer(monkeypatch, subprocess.CompletedProcess(["git"], 1, "", ""))
+    assert ad._user_ssh_configured(tmp_path, {}) is False
+
+
+def test_set_core_ssh_command_is_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _config_answer(monkeypatch, subprocess.CompletedProcess(["git"], 0, "ssh -F cfg\n", ""))
+    assert ad._user_ssh_configured(tmp_path, {}) is True
+
+
+def test_git_failure_other_than_absent_key_counts_as_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config_answer(monkeypatch, subprocess.CompletedProcess(["git"], 128, "", "fatal: not a git repository"))
+    assert ad._user_ssh_configured(tmp_path, {}) is True
+
+
+def test_env_ssh_command_wins_without_asking_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _config_answer(monkeypatch, AssertionError("git must not be asked"))
+    assert ad._user_ssh_configured(tmp_path, {"GIT_SSH_COMMAND": "ssh -i k"}) is True
+    assert ad._user_ssh_configured(tmp_path, {"GIT_SSH": "/bin/ssh"}) is True
+
+
+def test_push_ssh_command_is_built_from_the_shared_bounds() -> None:
+    expected = " ".join(["ssh", *remote_dispatch.SSH_BOUND_OPTS, "-o", "BatchMode=yes"])
+    assert expected == ad._PUSH_SSH_COMMAND
+
+
+def test_delivery_script_timeout_says_the_host_answered_and_the_script_may_still_run(
+    checkout: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rec = Recorder(monkeypatch)
+
+    def capture(host: str, script: str, **_kw: Any) -> subprocess.CompletedProcess[str]:
+        if script.startswith("bakar settings get "):
+            return subprocess.CompletedProcess(["ssh"], 0, "", "")
+        timed_out = remote_dispatch.CaptureTimedOut(["ssh"], 255, "", "could not reach pc2: no response within 600s")
+        timed_out.timeout = 600.0
+        return timed_out
+
+    monkeypatch.setattr(remote_dispatch, "_ssh_bash_capture", capture)
+    rc = _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml"])
+    out = capsys.readouterr().err
+    assert rc == 255
+    assert "stream" not in rec.names()
+    assert "did not finish within 600s" in out
+    assert "may still be running" in out
+    assert "delivery lock" in out
+    assert "could not reach" not in out
+    assert "exit status 255" not in out

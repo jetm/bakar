@@ -522,6 +522,7 @@ def assert_safe_workspace(ws_root: Path) -> None:
 
 
 _RUN_ID_RE = re.compile(r"bakar triage (\S+)")
+_RUN_DIR_NAME_RE = re.compile(r"^\d{8}-\d{6}")
 # Anchored at line start, and deliberately not re.MULTILINE - the scanned stream
 # IS the build's own output, so an unanchored `.search` let any build that
 # happens to print `BAKAR_DISPATCH_RC=0` (a bitbake environment dump, a recipe
@@ -627,6 +628,16 @@ def _local_bakar_version() -> str | None:
     return result.stdout.strip() or result.stderr.strip() or None
 
 
+class CaptureTimedOut(subprocess.CompletedProcess[str]):
+    """The result :func:`_ssh_bash_capture` returns when its subprocess timed out.
+
+    Exit status 255 and a "could not reach" stderr, so a caller that only checks
+    the status behaves as before. ``timeout`` is the bound that elapsed.
+    """
+
+    timeout: float = 0.0
+
+
 def _ssh_bash_capture(
     host: str, script: str, *, batch_mode: bool = True, timeout: float = PROBE_TIMEOUT_SECONDS
 ) -> subprocess.CompletedProcess[str]:
@@ -654,8 +665,13 @@ def _ssh_bash_capture(
         return subprocess.run(argv, input=script, capture_output=True, text=True, check=False, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         # Surface as a failed ssh so every caller's existing nonzero-exit path
-        # handles it; 255 is ssh's own connection-failure code.
-        return subprocess.CompletedProcess(argv, 255, stdout="", stderr=_unreachable(host, exc))
+        # handles it; 255 is ssh's own connection-failure code. The default
+        # stderr says "could not reach", which is only true of a short probe;
+        # a caller whose script ran on a host that had already answered tells
+        # the two apart by the type and words the timeout itself.
+        timed_out = CaptureTimedOut(argv, 255, stdout="", stderr=_unreachable(host, exc))
+        timed_out.timeout = float(exc.timeout)
+        return timed_out
 
 
 @dataclass
@@ -1026,34 +1042,54 @@ class RunLookupFailed:
     detail: str
 
 
-def _discover_newest_run_id(host: str, ws_root: Path) -> str | RunLookupFailed | None:
+def _discover_newest_run_id(host: str, ws_root: Path, not_before: str | None = None) -> str | RunLookupFailed | None:
     """Find the newest ``<build dir>/runs/<run-id>/`` dir under ``ws_root`` on ``host``.
 
-    Returns the run id, ``None`` when the lookup ran and found no run directory,
-    or :class:`RunLookupFailed` when ssh itself failed (a hung link included:
-    the capture helper's timeout surfaces as a nonzero exit).
+    Returns the run id, ``None`` when the lookup ran and found no run directory
+    (at or after ``not_before``, when given), or :class:`RunLookupFailed` when
+    ssh itself failed (a hung link included: the capture helper's timeout
+    surfaces as a nonzero exit, worded as a lookup timeout because the host
+    answered the preflight).
 
     The success stream does not carry the run-id (RunLogger writes ``run_start``
-    to events.jsonl only, observability.py:126-141), so discover it by mtime via
-    a second ssh and return the basename. Any build directory counts, not only
-    ``build/``: qcom runs live under ``build-DISTRO/runs``.
+    to events.jsonl only, observability.py:126-141), so discover it from the
+    run directory names. Any build directory counts, not only ``build/``: qcom
+    runs live under ``build-DISTRO/runs``.
+
+    The pick is by RUN ID, not mtime: ids are ``%Y%m%d-%H%M%S-<pid>`` and sort
+    chronologically, and ``not_before`` is the dispatch-start fence in the same
+    clock. Newest-by-mtime then fence would let a build started later in another
+    build dir win, and a touched older run dir (an mtime bump) shadow or evict
+    the dir this dispatch created. Two runs in the same second compare by pid as
+    a string, which is arbitrary but never crosses seconds.
+
+    Every ``tmp*`` directory is pruned (qcom's TMPDIR is ``tmp-glibc``), so the
+    walk never enters a bitbake work tree.
     """
     find_cmd = (
-        f"find {shlex.quote(str(ws_root))} "
-        "-type d -name tmp -prune -o "
+        f"find {shlex.quote(str(ws_root))} -mindepth 1 "
+        "-type d -name 'tmp*' -prune -o "
         "-type d -name sstate-cache -prune -o "
         "-type d -name downloads -prune -o "
         "-type d -name .git -prune -o "
-        "-type d -path '*/runs/20*' -prune -printf '%T@ %p\\n' | sort -rn | head -1"
+        "-type d -path '*/runs/20*' -prune -printf '%T@ %p\\n'"
     )
     result = _ssh_bash_capture(host, find_cmd)
+    if isinstance(result, CaptureTimedOut):
+        return RunLookupFailed(
+            result.returncode, f"the run-id lookup timed out: no response within {result.timeout:g}s"
+        )
     if result.returncode != 0:
         stderr_lines = result.stderr.strip().splitlines()
         return RunLookupFailed(result.returncode, stderr_lines[0] if stderr_lines else "")
-    line = result.stdout.strip()
-    if not line:
-        return None
-    return Path(line.split(maxsplit=1)[-1]).name
+    ids = [
+        name
+        for line in result.stdout.splitlines()
+        if line.strip() and _RUN_DIR_NAME_RE.match(name := Path(line.split(maxsplit=1)[-1]).name)
+    ]
+    if not_before is not None:
+        ids = [name for name in ids if name >= not_before]
+    return max(ids, default=None)
 
 
 def _surface_run_id(host: str, ws_root: Path, captured: list[str], rc: int) -> None:
@@ -1081,11 +1117,9 @@ def _surface_run_id(host: str, ws_root: Path, captured: list[str], rc: int) -> N
     # that failed before creating a run dir does not surface a previous run.
     lookup_failed: RunLookupFailed | None = None
     if run_id is None:
-        discovered = _discover_newest_run_id(host, ws_root)
+        discovered = _discover_newest_run_id(host, ws_root, dispatch_start)
         if isinstance(discovered, RunLookupFailed):
             lookup_failed = discovered
-            discovered = None
-        elif discovered is not None and dispatch_start is not None and discovered < dispatch_start:
             discovered = None
         run_id = discovered
 
@@ -1154,7 +1188,13 @@ def run_remote_build(host: str, script: str, run_root: Path) -> int:
         rc, captured, finished = _stream_remote_build(host, script)
     except KeyboardInterrupt:
         if _stream_state.unit_seen:
-            console.print("[yellow]Ctrl-C does not stop the remote build[/] - it keeps running on the host.")
+            # The unit marker is printed before systemd-run runs (the script ends in
+            # `exec systemd-run`, so nothing can be printed after it succeeds), so
+            # it means the unit was requested, not that it is running.
+            console.print(
+                "[yellow]Ctrl-C does not stop the remote build[/] - a unit was requested and, if it started, "
+                f"it keeps running on the host. `bakar ps` / `bakar stop` on {host} show whether it is."
+            )
             console.print(f"stop it:    bakar stop --on {host}  (or: ssh {host} bakar stop)")
             console.print(f"triage it:  ssh {host} bakar triage <run-id>")
         else:

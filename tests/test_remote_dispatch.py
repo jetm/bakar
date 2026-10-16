@@ -9,6 +9,7 @@ later task; nothing here touches a live host.
 from __future__ import annotations
 
 import inspect
+import os
 import shlex
 import shutil
 import subprocess
@@ -2036,10 +2037,15 @@ def test_every_ssh_argv_carries_keepalive_and_connect_bounds(fake_sp: FakeSubpro
     rd.preflight_remote(HOST)
     rd._ssh_bash_popen(HOST)
     argvs = [a for _, a in fake_sp.calls]
-    assert len(argvs) == 4
-    for argv in argvs:
-        assert argv[: len(_SSH)] == _SSH
-        assert argv[-3:] == [HOST, "bash", "-s"] or argv[-2:] == ["bash", "-s"]
+    batch = ["-o", "BatchMode=yes"]
+    # Options first, then the host, then the remote command - nothing in between.
+    # Order of the four call paths: batched capture, unbatched capture, preflight, popen.
+    assert argvs == [
+        [*_SSH, *batch, HOST, "bash", "-s"],
+        [*_SSH, HOST, "bash", "-s"],
+        [*_SSH, *batch, HOST, "bash", "-s"],
+        [*_SSH, HOST, "bash", "-s"],
+    ]
 
 
 def test_batch_mode_survives_where_it_was_set_and_stays_off_where_it_was_not(fake_sp: FakeSubprocess) -> None:
@@ -2100,3 +2106,119 @@ def test_capture_timeout_takes_the_existing_failure_path(fake_sp: FakeSubprocess
     assert rd._running_dispatch_units(HOST) is None
     # No write was attempted: only ssh probes ran, no rsync.
     assert not any(a[0] == "rsync" for _, a in fake_sp.calls)
+
+
+# --- run-id lookup: pick by id, prune every tmp* ---------------------------------
+
+
+def _real_find(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Run the lookup's script through a local ``bash -s`` standing in for the remote."""
+    scripts: list[str] = []
+
+    def capture(host: str, script: str, *, batch_mode: bool = True) -> subprocess.CompletedProcess[str]:
+        scripts.append(script)
+        return subprocess.run(["bash", "-s"], input=script, capture_output=True, text=True, check=False)
+
+    monkeypatch.setattr(rd, "_ssh_bash_capture", capture)
+    return scripts
+
+
+def _run_dir(root: Path, build: str, run_id: str, mtime: int | None = None) -> Path:
+    path = root / build / "runs" / run_id
+    path.mkdir(parents=True)
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+    return path
+
+
+def test_lookup_picks_the_greatest_id_not_the_newest_mtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _real_find(monkeypatch)
+    # This dispatch's run, then an older run in another build dir that was touched
+    # afterwards (its mtime is the newest on the host).
+    _run_dir(tmp_path, "build", "20260716-120500-111", mtime=1_000)
+    _run_dir(tmp_path, "build-qcom", "20260716-110000-222", mtime=9_000)
+    assert rd._discover_newest_run_id(HOST, tmp_path, "20260716-120000") == "20260716-120500-111"
+
+
+def test_lookup_with_a_bumped_older_run_still_finds_this_dispatchs_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _real_find(monkeypatch)
+    _run_dir(tmp_path, "build", "20260716-100000-1", mtime=9_000)
+    _run_dir(tmp_path, "build", "20260716-120500-2", mtime=1_000)
+    assert rd._discover_newest_run_id(HOST, tmp_path, "20260716-120000") == "20260716-120500-2"
+
+
+def test_lookup_returns_none_when_every_run_predates_the_fence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _real_find(monkeypatch)
+    _run_dir(tmp_path, "build", "20260716-100000-1", mtime=9_000)
+    assert rd._discover_newest_run_id(HOST, tmp_path, "20260716-120000") is None
+    assert rd._discover_newest_run_id(HOST, tmp_path) == "20260716-100000-1"
+
+
+def test_lookup_fence_accepts_a_run_id_in_the_fence_second(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _real_find(monkeypatch)
+    _run_dir(tmp_path, "build", "20260716-120000-77")
+    assert rd._discover_newest_run_id(HOST, tmp_path, "20260716-120000") == "20260716-120000-77"
+
+
+def test_lookup_does_not_walk_a_tmp_glibc_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    scripts = _real_find(monkeypatch)
+    _run_dir(tmp_path, "build-qcom", "20260716-120000-1")
+    # A decoy that only a walk into the TMPDIR would find.
+    _run_dir(tmp_path / "build-qcom", "tmp-glibc/work/x", "29990101-000000-9")
+    assert rd._discover_newest_run_id(HOST, tmp_path) == "20260716-120000-1"
+    assert "-name 'tmp*' -prune" in scripts[0]
+
+
+def test_lookup_timeout_is_reported_as_a_lookup_timeout_not_unreachable(
+    fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_sp.run_times_out = True
+    result = rd._discover_newest_run_id(HOST, WS)
+    assert isinstance(result, rd.RunLookupFailed)
+    assert "lookup timed out" in result.detail
+    assert "could not reach" not in result.detail
+    rd._surface_run_id(HOST, WS, ["ok\n"], 0)
+    out = capsys.readouterr()
+    assert "could not reach" not in out.out + out.err
+
+
+def test_surface_run_id_passes_the_dispatch_start_as_the_fence(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str | None] = []
+
+    def discover(host: str, ws_root: Path, not_before: str | None = None) -> str | None:
+        seen.append(not_before)
+        return None
+
+    monkeypatch.setattr(rd, "_discover_newest_run_id", discover)
+    rd._surface_run_id(HOST, WS, ["BAKAR_DISPATCH_START=20260716-120000\n"], 0)
+    assert seen == ["20260716-120000"]
+
+
+# --- capture timeout is a typed result --------------------------------------------
+
+
+def test_capture_timeout_is_typed_and_keeps_the_probe_wording(fake_sp: FakeSubprocess) -> None:
+    fake_sp.run_times_out = True
+    result = rd._ssh_bash_capture(HOST, "true", timeout=600)
+    assert isinstance(result, rd.CaptureTimedOut)
+    assert result.returncode == 255
+    assert result.timeout == 600
+    assert f"could not reach {HOST}" in result.stderr
+
+
+def test_interrupt_message_after_a_unit_marker_does_not_claim_it_is_running(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def _interrupt(host: str, script: str):
+        rd._stream_state.unit_seen = True
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(rd, "_stream_remote_build", _interrupt)
+    assert rd.run_remote_build(HOST, "script", WS) == 130
+    cap = capsys.readouterr()
+    out = cap.out + cap.err
+    assert "a unit was requested" in out
+    assert f"`bakar ps` / `bakar stop` on {HOST}" in out
+    assert "if it started" in out

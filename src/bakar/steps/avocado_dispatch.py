@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from rich.markup import escape
 
+from bakar.gitutil import run_git
 from bakar.release_workspace import (
     DEFAULT_BUILD_DIR_TEMPLATE,
     REPO_POLICY_ENV,
@@ -46,26 +47,29 @@ _CAPABILITY_KEY = "dispatch.snapshot_untracked_cap_mb"
 # How many untracked paths the plan names before summarising the rest.
 _PLAN_UNTRACKED_SHOWN = 20
 # Bounds the delivery push so a dead link ends it through the keepalive instead of hanging.
-_PUSH_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+_PUSH_SSH_COMMAND = shlex.join(["ssh", *rd.SSH_BOUND_OPTS, "-o", "BatchMode=yes"])
 
 _GIT_CONFIG_TIMEOUT_SECONDS = 10
 
 
 def _user_ssh_configured(checkout: Path, env: dict[str, str]) -> bool:
-    """True when the user already chose a git ssh command (env or core.sshCommand)."""
+    """True when the user already chose a git ssh command, or when we cannot tell.
+
+    ``GIT_SSH_COMMAND`` / ``GIT_SSH`` in ``env`` and a non-empty
+    ``core.sshCommand`` both count. A timeout, a missing git or any exit other
+    than "key absent" (status 1, no output) is UNKNOWN and also counts: replacing
+    a command we could not read would override the user's choice.
+    """
     if env.get("GIT_SSH_COMMAND") or env.get("GIT_SSH"):
         return True
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(checkout), "config", "--get", "core.sshCommand"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=_GIT_CONFIG_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired, OSError:
-        return False
-    return result.returncode == 0 and bool(result.stdout.strip())
+    result = run_git(
+        ["git", "-C", str(checkout), "config", "--get", "core.sshCommand"], timeout=_GIT_CONFIG_TIMEOUT_SECONDS
+    )
+    if result is None:
+        return True
+    if result.returncode == 0:
+        return bool(result.stdout.strip())
+    return result.returncode != 1 or bool(result.stdout.strip())
 
 
 class KasArgError(Exception):
@@ -314,6 +318,16 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
         source_path_aliases=(str(checkout),),
     )
     ensured = rd._ssh_bash_capture(host, script, timeout=rd.DELIVERY_SCRIPT_TIMEOUT_SECONDS)
+    if isinstance(ensured, rd.CaptureTimedOut):
+        # Only the local ssh was killed. The host answered the preflight, so
+        # "could not reach" would be false, and the script may still be running.
+        console.print(
+            f"[red]the delivery script did not finish within {ensured.timeout:g}s on {host}:[/] "
+            f"{host} was reachable, but the script may still be running there, so retrying right away "
+            f"can hit the delivery lock. Wait a few minutes, or inspect {host} (the worktree under "
+            f"{escape(str(root))}), before retrying."
+        )
+        return ensured.returncode
     if ensured.returncode != 0:
         console.print(
             f"[red]could not place the worktree {target} on {host}:[/] "

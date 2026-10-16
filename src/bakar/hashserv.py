@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
 _PID_FILENAME = "hashserv.pid"
 _PORT_FILENAME = "hashserv.port"
+_MAX_PORT = 65535
 _DB_FILENAME = "hashserv.db"
 _STDERR_FILENAME = "hashserv.stderr"
 _STATE_SUBDIR = ".bakar"
@@ -143,17 +144,24 @@ def _read_pid(state_key: Path) -> int | None:
 def read_state(state_key: Path) -> tuple[int, int] | None:
     """Return ``(pid, port)`` recorded for the daemon, or None.
 
-    None when either file is absent, unreadable or not an integer: a half
-    recorded daemon is not a daemon a caller can reach.
+    None when either file is absent, unreadable or not an integer, or the port
+    is outside 1..65535: a half recorded daemon (or a stale or forged port file)
+    is not a daemon a caller can reach, and must never print as a URL.
     """
     pid = _read_pid(state_key)
-    if pid is None:
+    port = _read_port(state_key)
+    if pid is None or port is None:
         return None
+    return pid, port
+
+
+def _read_port(state_key: Path) -> int | None:
+    """Return the recorded port when it is an integer in 1..65535, else None."""
     try:
         port = int((_state_dir(state_key) / _PORT_FILENAME).read_text().strip())
     except OSError, ValueError:
         return None
-    return pid, port
+    return port if 1 <= port <= _MAX_PORT else None
 
 
 def bound_url(port: int, bind_host: str | None = None) -> str:
@@ -235,10 +243,11 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
     pid_file = state_dir / _PID_FILENAME
 
     if is_running(state_key):
-        try:
-            port = int(port_file.read_text().strip())
-        except FileNotFoundError, ValueError:
-            # Port file missing or corrupt (PID/port written non-atomically;
+        recorded_port = _read_port(state_key)
+        if recorded_port is not None:
+            port = recorded_port
+        else:
+            # Port file missing, corrupt or out of range (PID/port written non-atomically;
             # crash between the two writes leaves an orphan PID file). The live
             # daemon is deterministically bound to _workspace_port(state_key),
             # so recover the port from there and rewrite the port file rather
