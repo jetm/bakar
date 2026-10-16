@@ -1525,7 +1525,7 @@ def test_stop_container_wait_ctx_carries_every_field_unchanged(
         "error_cap": build_stop._RUNTIME_ERROR_CAP,
         "sleep": build_stop.time.sleep,
         "clock": build_stop.time.monotonic,
-        "tasks_reader": build_stop.running_tasks,
+        "tasks_reader": None,
         "poll_interval": build_stop._STOP_POLL_SECONDS,
         "stale_after": build_stop._STOP_STALE_SECONDS,
         "hint_interval": build_stop._STOP_HINT_SECONDS,
@@ -3414,3 +3414,33 @@ def test_host_wide_candidates_excludes_container_mode_run_sharing_topdir(
 
     assert host_run_dir in filtered_dirs
     assert container_run_dir not in filtered_dirs
+
+
+@pytest.mark.unit
+def test_default_tasks_reader_is_incremental_and_matches_running_tasks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default wait reader never normalizes the whole log, yet agrees with running_tasks."""
+    from bakar import eventlog
+    from tests.test_eventlog import _task_event
+
+    path = tmp_path / "bitbake_eventlog.json"
+    first = _task_event("bb.build.TaskStarted", "a-1.0-r0", "do_compile", started=100.0)
+    path.write_text(first + "\n", encoding="utf-8")
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("full normalize called during a wait poll")
+
+    monkeypatch.setattr(eventlog, "normalize", _boom)
+    read = build_stop._incremental_reader()
+
+    got = read(tmp_path)
+    assert [(t.recipe, t.task) for t in got] == [("a-1.0-r0", "do_compile")]
+
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(_task_event("bb.build.TaskSucceeded", "a-1.0-r0", "do_compile") + "\n")
+        fh.write(_task_event("bb.build.TaskStarted", "b-1.0-r0", "do_fetch", started=101.0) + "\n")
+    got = read(tmp_path)
+    monkeypatch.undo()
+    assert got == eventlog.running_tasks(tmp_path)
+    assert [t.recipe for t in got] == ["b-1.0-r0"]

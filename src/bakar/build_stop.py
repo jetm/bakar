@@ -38,8 +38,8 @@ from rich.panel import Panel
 
 from bakar.config import ResolveRequest, resolve
 from bakar.eventlog import (
+    IncrementalEventLog,
     RunningTask,
-    running_tasks,
 )
 from bakar.observability import iter_run_events
 
@@ -538,12 +538,36 @@ class _WaitCtx:
     error_cap: int = _RUNTIME_ERROR_CAP
     sleep: Callable[[float], None] = time.sleep
     clock: Callable[[], float] = time.monotonic
-    tasks_reader: Callable[[Path], list[RunningTask]] = running_tasks
+    tasks_reader: Callable[[Path], list[RunningTask]] | None = None
     poll_interval: float = _STOP_POLL_SECONDS
     stale_after: float = _STOP_STALE_SECONDS
     hint_interval: float = _STOP_HINT_SECONDS
     install_signal: bool = True
     grace_seconds: float = 0
+
+
+def _incremental_reader() -> Callable[[Path], list[RunningTask]]:
+    """Return a per-wait running-task reader that decodes only appended log bytes.
+
+    One ``IncrementalEventLog`` is held per wait (rebuilt if the run dir changes),
+    replacing a full ``normalize`` of the event log on every poll. Its task list
+    is selected the same way ``eventlog.running_tasks`` selects it.
+    """
+    log: IncrementalEventLog | None = None
+    log_dir: Path | None = None
+
+    def read(run_dir: Path) -> list[RunningTask]:
+        nonlocal log, log_dir
+        if log is None or log_dir != run_dir:
+            log = IncrementalEventLog(run_dir / "bitbake_eventlog.json")
+            log_dir = run_dir
+        try:
+            log.poll()
+            return log.running_tasks()
+        except Exception:  # noqa: BLE001 - a poll mid-shutdown must degrade to no tasks, as running_tasks does
+            return []
+
+    return read
 
 
 def _graceful_wait(*, ctx: _WaitCtx) -> str:
@@ -582,6 +606,7 @@ def _graceful_wait(*, ctx: _WaitCtx) -> str:
     last_signature: frozenset[tuple[str, str]] | None = None
     last_change = start
     last_hint = start
+    read_tasks = ctx.tasks_reader if ctx.tasks_reader is not None else _incremental_reader()
 
     prev_handler = None
     if ctx.install_signal:
@@ -603,7 +628,7 @@ def _graceful_wait(*, ctx: _WaitCtx) -> str:
             if ctx.grace_seconds > 0 and elapsed >= ctx.grace_seconds:
                 ctx.escalate()
                 return "escalated"
-            tasks = ctx.tasks_reader(ctx.run_dir) if ctx.run_dir is not None else []
+            tasks = read_tasks(ctx.run_dir) if ctx.run_dir is not None else []
             signature = frozenset((t.recipe, t.task) for t in tasks)
             if signature != last_signature:
                 last_signature = signature
