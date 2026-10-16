@@ -61,6 +61,7 @@ from bakar.commands._app import console
 from bakar.hashserv import NetworkStateDirError
 from bakar.release_workspace import ReleaseRoutingError
 from bakar.steps.kas_build import BitbakeBinMissingError, BuildtoolsMissingError
+from bakar.steps.repo import RepoSyncError
 
 __all__ = ["app", "main"]
 
@@ -106,6 +107,10 @@ def main() -> int:
         # it cleanly - a read-only `bakar getvar`/`dump` on a workspace whose
         # daemon state sits on NFS must not dump a raw traceback either.
         console.print(f"Error: {exc}")
+        return 1
+    except RepoSyncError as exc:
+        # step_fail("repo_sync") is already recorded by the repo step.
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
 
 

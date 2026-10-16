@@ -12,6 +12,24 @@ if TYPE_CHECKING:
     from bakar.observability import RunLogger
 
 
+class RepoSyncError(RuntimeError):
+    """A ``repo init`` or ``repo sync`` call exited non-zero."""
+
+    def __init__(self, cmd: list[str], returncode: int) -> None:
+        self.cmd = list(cmd)
+        self.returncode = returncode
+        super().__init__(f"{' '.join(self.cmd)} exited {returncode}")
+
+
+def _run_repo(argv: list[str], log: RunLogger, **kwargs: object) -> None:
+    try:
+        subprocess.run(argv, check=True, **kwargs)  # type: ignore[call-overload]  # pragma: no cover
+    except subprocess.CalledProcessError as exc:
+        err = RepoSyncError(argv, exc.returncode)
+        log.step_fail("repo_sync", reason=str(err), cmd=argv, returncode=exc.returncode)
+        raise err from exc
+
+
 def init_and_sync(
     cfg: BuildConfig,
     log: RunLogger,
@@ -32,7 +50,7 @@ def init_and_sync(
     SHAs across branches - the prior bblayers.conf is not guaranteed
     to parse against the new tree, so rebuild it.
 
-    Raises ``CalledProcessError`` on ``repo`` failure.
+    Raises ``RepoSyncError`` on ``repo`` failure (after recording ``step_fail``).
     """
     log.step_start(
         "repo_sync",
@@ -58,12 +76,7 @@ def init_and_sync(
         # qcom (and any other) manifest layout does not use it.
         if cfg.bsp_family == "nxp":
             init_argv.append("--config-name")
-        subprocess.run(  # pragma: no cover
-            init_argv,
-            cwd=root,
-            check=True,
-            stdin=subprocess.DEVNULL,
-        )
+        _run_repo(init_argv, log, cwd=root, stdin=subprocess.DEVNULL)
     # Wipe build/conf/ on every sync (init or drift). bblayers.conf
     # rendered against the old tree may reference layer state that has
     # moved under the sync - setup_env regenerates it correctly.
@@ -71,10 +84,6 @@ def init_and_sync(
     if build_conf.is_dir():
         shutil.rmtree(build_conf)
     nproc = os.environ.get("NPROC", str(os.cpu_count() or 8))
-    subprocess.run(  # pragma: no cover
-        ["repo", "sync", "-j", nproc, "--force-sync", "--no-clone-bundle"],
-        cwd=root,
-        check=True,
-    )
+    _run_repo(["repo", "sync", "-j", nproc, "--force-sync", "--no-clone-bundle"], log, cwd=root)
     count = len(list((root / "sources").iterdir())) if (root / "sources").is_dir() else 0
     log.step_ok("repo_sync", repo_count=count)
