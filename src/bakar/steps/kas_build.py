@@ -1927,6 +1927,10 @@ def run_shell(
     log.step_start("kas_shell", command=command, host_mode=cfg.host_mode)
     try:
         if take_lock_marker:
+            cache_refusal = cache_mount_refusal(cfg)
+            if cache_refusal is not None:
+                log.step_fail("kas_shell", reason=cache_refusal, exit_code=1)
+                return 1
             lock_outcome = clear_stale_bitbake_locks(cfg)
             for removed_path in lock_outcome.removed:
                 log.warn(f"removed stale bitbake lock: {removed_path} (owning process was gone)")

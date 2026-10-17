@@ -22,6 +22,7 @@ import pytest
 
 import bakar.commands.prefetch as prefetch_module
 from bakar.cli import app
+from bakar.steps import kas_build
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -265,3 +266,21 @@ def test_prefetch_bbsetup_honors_bakar_image_env(
     assert result.exit_code == 0, result.output
     assert stub.command is not None
     assert "bitbake --runall=fetch my-env-image" in stub.command
+
+
+@pytest.mark.unit
+def test_prefetch_with_a_refused_cache_mount_starts_no_bitbake(
+    runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The opt-in lock branch of run_shell checks the cache mount like the other launchers."""
+    popen_calls: list[object] = []
+    monkeypatch.setattr(kas_build.subprocess, "Popen", lambda *a, **k: popen_calls.append(a))
+    monkeypatch.setattr(kas_build, "cache_mount_refusal", lambda _cfg: "cache mount wedged")
+    gate_calls: list[object] = []
+    monkeypatch.setattr(kas_build, "clear_stale_bitbake_locks", gate_calls.append)
+
+    result = runner.invoke(app, ["prefetch", "--workspace", str(nxp_workspace)])
+
+    assert result.exit_code != 0, result.output
+    assert popen_calls == []
+    assert gate_calls == []

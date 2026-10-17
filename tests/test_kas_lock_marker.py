@@ -1120,3 +1120,118 @@ def test_own_marker_removal_failure_is_a_refusal_not_a_bare_oserror(
         kas_lock.clear_stale_bitbake_locks(cfg)
     assert str(marker) in str(ei.value)
     assert os.strerror(errno.EIO) in str(ei.value)
+
+
+# ---------------------------------------------------------------------------
+# clear_stale_bitbake_locks: a live launch record blocks rows 2 and 3
+# ---------------------------------------------------------------------------
+
+
+def _container_build(
+    cfg: BuildConfig,
+    build: Path,
+    tmp_path: Path,
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+    *,
+    container_alive: bool,
+) -> tuple[Path, int]:
+    """A container build's on-disk state: container-ns pid in the lock, sockets, own marker, record."""
+    wrapper_pid = _dead_pid(live_child)
+    (build / "bitbake.lock").write_text("4194000\n")
+    (build / "bitbake.sock").write_text("")
+    (build / "hashserve.sock").write_text("")
+    marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("this-host\n")
+    build_stop.write_launch_record(
+        _run_dir(cfg),
+        pgid=wrapper_pid,
+        mode="container",
+        runtime=str(_fake_runtime(tmp_path, container_alive=container_alive)),
+        container_label="bakar.run_id=x",
+    )
+    return marker, wrapper_pid
+
+
+def test_clear_keeps_the_lock_sockets_and_marker_of_a_live_container_build(
+    env: tuple[BuildConfig, Path, RunLogger],
+    tmp_path: Path,
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    cfg, build, _log = env
+    marker, wrapper_pid = _container_build(cfg, build, tmp_path, live_child, container_alive=True)
+
+    outcome = kas_lock.clear_stale_bitbake_locks(cfg)
+
+    assert outcome.removed == []
+    assert outcome.refusal is not None
+    assert outcome.refusal.reason == "held-locally"
+    assert outcome.refusal.pid == wrapper_pid
+    assert "bakar.run_id=x" in outcome.refusal.detail
+    assert "bakar.run_id=x" in kas_lock._lock_refusal_message(outcome.refusal)
+    assert marker.exists()
+    assert {p.name for p in build.iterdir()} >= {"bitbake.lock", "bitbake.sock", "hashserve.sock"}
+
+
+def test_clear_recovers_a_crashed_container_build_whose_record_is_not_live(
+    env: tuple[BuildConfig, Path, RunLogger],
+    tmp_path: Path,
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    cfg, build, _log = env
+    marker, _pid = _container_build(cfg, build, tmp_path, live_child, container_alive=False)
+
+    outcome = kas_lock.clear_stale_bitbake_locks(cfg)
+
+    assert outcome.refusal is None
+    assert not marker.exists()
+    assert not (build / "bitbake.lock").exists()
+    assert not (build / "bitbake.sock").exists()
+
+
+def test_clear_keeps_the_marker_of_a_build_in_its_checkout_phase(
+    env: tuple[BuildConfig, Path, RunLogger],
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    """Own marker, no lock yet, live host record: row 2 must not delete the marker."""
+    cfg, _build, _log = env
+    marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("this-host\n")
+    with live_child("kas-container") as wrapper:
+        build_stop.write_launch_record(_run_dir(cfg), pgid=wrapper.pid, mode="host")
+
+        outcome = kas_lock.clear_stale_bitbake_locks(cfg)
+
+        assert outcome.removed == []
+        assert outcome.refusal is not None
+        assert outcome.refusal.reason == "held-locally"
+        assert outcome.refusal.pid == wrapper.pid
+        assert marker.exists()
+
+
+def test_clear_removes_the_marker_when_the_checkout_phase_build_crashed(
+    env: tuple[BuildConfig, Path, RunLogger],
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    cfg, _build, _log = env
+    marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("this-host\n")
+    build_stop.write_launch_record(_run_dir(cfg), pgid=_dead_pid(live_child), mode="host")
+
+    outcome = kas_lock.clear_stale_bitbake_locks(cfg)
+
+    assert outcome.refusal is None
+    assert not marker.exists()
+
+
+def test_clear_does_not_refuse_a_fresh_build_whose_own_run_has_no_record_yet(
+    env: tuple[BuildConfig, Path, RunLogger],
+) -> None:
+    """The gate runs before the build writes its launch record: the caller's own run dir holds none."""
+    cfg, build, _log = env
+    build_stop.lock_marker_path(cfg).write_text("this-host\n")
+    (build / "bitbake.sock").write_text("")
+
+    outcome = kas_lock.clear_stale_bitbake_locks(cfg)
+
+    assert outcome.refusal is None
+    assert not (build / "bitbake.sock").exists()

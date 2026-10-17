@@ -135,3 +135,67 @@ def test_global_container_flag_disables_host_mode(runner: _CliRunner, nxp_worksp
 
     assert result.exit_code == 0, result.output
     assert calls[0]["host_mode"] is False
+
+
+def test_shell_command_keeps_the_state_of_a_live_container_build(
+    runner: _CliRunner,
+    nxp_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """``shell -c`` while a container build runs: container pid reads dead, the record says live."""
+    import socket
+    from datetime import UTC, datetime
+
+    from bakar import build_stop, observability
+    from bakar.steps import kas_build
+
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
+    monkeypatch.setattr(kas_build, "cache_mount_refusal", lambda _cfg: None)
+    popen_calls: list[object] = []
+    real_popen = kas_build.subprocess.Popen
+
+    def fake_popen(cmd, *a, **k):
+        # The container-runtime liveness probe is a real subprocess; only a kas launch is recorded.
+        if str(cmd[0]).startswith("kas"):
+            popen_calls.append(cmd)
+            raise AssertionError("kas must not be launched")
+        return real_popen(cmd, *a, **k)
+
+    monkeypatch.setattr(kas_build.subprocess, "Popen", fake_popen)
+    runtime = tmp_path / "fake-runtime"
+    runtime.write_text("#!/bin/sh\necho cid0123\n")
+    runtime.chmod(0o755)
+    real_gate = kas_build.clear_stale_bitbake_locks
+    seen: dict[str, Path] = {}
+
+    def gate_over_a_live_build(cfg):
+        # Seed the on-disk state of a running container build under the cfg the
+        # command resolved, then hand it to the real gate.
+        build = cfg.bsp_root / cfg.build_dir_name
+        build.mkdir(parents=True, exist_ok=True)
+        (build / "bitbake.lock").write_text("4194000\n")
+        (build / "bitbake.sock").write_text("")
+        (build / "hashserve.sock").write_text("")
+        marker = build_stop.lock_marker_path(cfg)
+        marker.write_text("this-host\n")
+        seen["build"], seen["marker"] = build, marker
+        stamp = datetime.now(UTC).strftime(observability.RUN_ID_TS_FORMAT)
+        run_dir = cfg.runs_dir / f"{stamp}-4242"
+        run_dir.mkdir(parents=True)
+        build_stop.write_launch_record(
+            run_dir, pgid=4194001, mode="container", runtime=str(runtime), container_label="bakar.run_id=x"
+        )
+        return real_gate(cfg)
+
+    monkeypatch.setattr(kas_build, "clear_stale_bitbake_locks", gate_over_a_live_build)
+
+    result = runner.invoke(app, ["shell", "--manifest", _MANIFEST, "--workspace", str(nxp_workspace), "-c", "true"])
+
+    assert result.exit_code == 1, result.output
+    assert popen_calls == []
+    build = seen["build"]
+    assert seen["marker"].exists()
+    assert (build / "bitbake.lock").exists()
+    assert (build / "bitbake.sock").exists()
+    assert (build / "hashserve.sock").exists()

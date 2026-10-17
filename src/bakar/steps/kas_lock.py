@@ -224,6 +224,35 @@ def local_build_holder(cfg: BuildConfig) -> int | None:
     return None
 
 
+# How many of the newest run directories the stale-lock gate consults for a live
+# launch record. The caller's own RunLogger directory is already the newest by
+# the time the gate runs and holds no record, so looking at the newest alone
+# would hide the live build the gate exists to find.
+_LAUNCH_RECORD_SCAN_RUNS = 8
+
+
+def _live_launch_refusal(cfg: BuildConfig) -> build_stop.LockRefusal | None:
+    """A ``held-locally`` refusal naming the live build recorded under ``cfg.runs_dir``, else None.
+
+    A live launch record means a build of this workspace is running even when
+    its lock pid reads as dead (a container pid is not a host pid) or its lock
+    does not exist yet (the kas checkout phase). A crashed build leaves a
+    record that is not live, so it never blocks recovery.
+    """
+    try:
+        run_dirs = sorted((d for d in cfg.runs_dir.iterdir() if d.is_dir()), reverse=True)
+    except OSError:
+        return None
+    for run_dir in run_dirs[:_LAUNCH_RECORD_SCAN_RUNS]:
+        live, _seed, report_pid = _launch_record_state(run_dir)
+        if not live:
+            continue
+        label = build_stop.read_launch_record(run_dir).container_label
+        detail = f"container {label}" if label is not None else ""
+        return build_stop.LockRefusal(reason="held-locally", pid=report_pid, detail=detail)
+    return None
+
+
 def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
     """Ownership-aware removal of stale bitbake lock and socket files.
 
@@ -299,6 +328,9 @@ def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
         # owner == local_host.
         if not lock.exists():
             # Row 2.
+            live_refusal = _live_launch_refusal(cfg)
+            if live_refusal is not None:
+                return build_stop.LockClearOutcome(removed=[], refusal=live_refusal)
             removed = _remove_all()
             _remove_own_marker()
             return build_stop.LockClearOutcome(removed=removed)
@@ -315,6 +347,9 @@ def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
             # Live but idle (bare cookerdaemon, no worker/client activity) - the
             # server still owns this lock; leave it for bitbake's reconnect.
             return build_stop.LockClearOutcome(removed=[])
+        live_refusal = _live_launch_refusal(cfg)
+        if live_refusal is not None:
+            return build_stop.LockClearOutcome(removed=[], refusal=live_refusal)
         removed = _remove_all()
         _remove_own_marker()
         return build_stop.LockClearOutcome(removed=removed)
@@ -685,7 +720,8 @@ def _lock_refusal_message(refusal: build_stop.LockRefusal) -> str:
         return f"bitbake lock held by peer host {host}; refusing to start.{hint}"
     if refusal.reason == "held-locally":
         pid = refusal.pid if refusal.pid is not None else "unknown"
-        return f"bitbake lock held locally by live process pid {pid}; refusing to start"
+        where = f" ({escape(refusal.detail)})" if refusal.detail else ""
+        return f"bitbake lock held locally by live process pid {pid}{where}; refusing to start"
     if refusal.reason == "unattributable":
         return (
             f"bitbake lock present with no reliable owner on a shared/unverifiable filesystem; refusing to start.{hint}"
