@@ -1796,7 +1796,7 @@ def test_find_oe_eventlog_returns_none_when_dir_absent(tmp_path: Path) -> None:
 
 def test_find_oe_eventlog_returns_none_when_no_new_files(tmp_path: Path) -> None:
     """Eventlog dir exists but all files predate the run start -> None."""
-    from datetime import datetime
+    import calendar
 
     cfg = _oe_eventlog_cfg(tmp_path)
     log = RunLogger(runs_dir=cfg.runs_dir)
@@ -1806,7 +1806,7 @@ def test_find_oe_eventlog_returns_none_when_no_new_files(tmp_path: Path) -> None
     old_file = elog_dir / "20260101120000.json"
     old_file.write_text("{}")
     # backdate: set mtime 10 seconds before the run_id-derived watermark
-    watermark = datetime.strptime(log.run_id[:15], "%Y%m%d-%H%M%S").timestamp()
+    watermark = calendar.timegm(time.strptime(log.run_id[:15], "%Y%m%d-%H%M%S"))
     os.utime(old_file, (watermark - 10, watermark - 10))
     assert _find_oe_eventlog(cfg, log) is None
 

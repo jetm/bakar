@@ -15,6 +15,7 @@ matching kas.log excerpt plus the bitbake recipe log that triggered it.
 
 from __future__ import annotations
 
+import calendar
 import json
 import logging
 import os
@@ -38,9 +39,9 @@ if TYPE_CHECKING:
 # definition, so it never belongs on stdout.
 console = Console(stderr=True)
 
-# Run ids start with a LOCAL-time timestamp, on purpose: the remote dispatch
-# marker compares against them, so switching to UTC would shift every
-# comparison by the host's offset. The format is rendered as a fixed-width
+# Run ids start with a UTC timestamp so they share one clock with the remote
+# dispatch fence (rendered with `date -u`) and no comparison shifts by the
+# host's offset. The format is rendered as a fixed-width
 # prefix, so readers slice RUN_ID_TS_LEN chars rather than strptime the whole
 # name (the "-PID" suffix would not parse).
 RUN_ID_TS_FORMAT = "%Y%m%d-%H%M%S"
@@ -58,9 +59,7 @@ def run_id_epoch(name: str) -> float | None:
     ):
         return None
     try:
-        # mktime with isdst=-1 (strptime's tm_isdst) renders the local time the
-        # way the run id was; the repeated fall-back hour is ambiguous either way.
-        return time.mktime(time.strptime(prefix, RUN_ID_TS_FORMAT))
+        return float(calendar.timegm(time.strptime(prefix, RUN_ID_TS_FORMAT)))
     except ValueError, OverflowError:
         return None
 
@@ -91,9 +90,9 @@ class RunLogger:
     # the lifetime of both processes, which is exactly the window a collision
     # would need. Consumers that parse the leading timestamp back out (there is
     # no reader of the suffix) must slice the first 15 chars rather than
-    # strptime the whole string - see commands/monitor.py's
+    # strptime the whole string - see commands/_helpers.py's
     # _run_started_epoch and steps/kas_build.py's _find_oe_eventlog.
-    run_id: str = field(default_factory=lambda: f"{datetime.now():{RUN_ID_TS_FORMAT}}-{os.getpid()}")
+    run_id: str = field(default_factory=lambda: f"{datetime.now(UTC):{RUN_ID_TS_FORMAT}}-{os.getpid()}")
     # Monotonic stamp at construction (start of the `bakar` run, before doctor),
     # so the build UI's global timer can count from the command invocation.
     start_monotonic: float = field(default_factory=time.monotonic)

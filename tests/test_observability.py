@@ -7,12 +7,20 @@ Focused on the ``_console_header`` mechanism: headers must appear in
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 
-from bakar.observability import RunEventStats, RunLogger, iter_run_events, last_run_event, run_id_epoch
+from bakar.observability import (
+    RUN_ID_TS_FORMAT,
+    RunEventStats,
+    RunLogger,
+    iter_run_events,
+    last_run_event,
+    run_id_epoch,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -543,7 +551,20 @@ def test_check_start_and_check_end_write_events_only(tmp_path: Path) -> None:
     assert len(header_calls) == 0, f"header marker was emitted to Rich console: {calls}"
 
 
-def test_run_id_prefix_is_local_timestamp_then_pid() -> None:
+def _set_tz(monkeypatch: pytest.MonkeyPatch, tz: str) -> None:
+    monkeypatch.setenv("TZ", tz)
+    time.tzset()
+
+
+@pytest.fixture
+def _restore_tz(monkeypatch: pytest.MonkeyPatch):
+    """Re-read the TZ environment after monkeypatch has restored it."""
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+def test_run_id_prefix_is_utc_timestamp_then_pid() -> None:
     import os
     import re
 
@@ -552,37 +573,80 @@ def test_run_id_prefix_is_local_timestamp_then_pid() -> None:
     assert run_id_epoch(rid) is not None
 
 
-def test_run_id_epoch_parses_prefix_and_rejects_others() -> None:
-    from datetime import datetime
-
-    assert run_id_epoch("20260102-030405-77") == datetime(2026, 1, 2, 3, 4, 5).timestamp()
-    assert run_id_epoch("20260102-030405") == datetime(2026, 1, 2, 3, 4, 5).timestamp()
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.tzset")
+@pytest.mark.parametrize("tz", ["America/New_York", "Asia/Tokyo", "UTC"])
+@pytest.mark.usefixtures("_restore_tz")
+def test_run_id_epoch_parses_prefix_as_utc_and_rejects_others(monkeypatch: pytest.MonkeyPatch, tz: str) -> None:
+    _set_tz(monkeypatch, tz)
+    assert run_id_epoch("20260102-030405-77") == 1767323045
+    assert run_id_epoch("20260102-030405") == 1767323045
     for bad in ("", "latest", "2026010-2030405-1", "20261301-030405", "x0260102-030405", "20260102_030405"):
         assert run_id_epoch(bad) is None
 
 
 @pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.tzset")
-def test_run_id_epoch_pins_new_york_local_time_epochs(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin the epochs run ids resolve to under a fixed TZ, against UTC values computed by hand.
+@pytest.mark.parametrize("tz", ["America/New_York", "Asia/Tokyo", "UTC"])
+@pytest.mark.usefixtures("_restore_tz")
+def test_run_id_epoch_pins_utc_epochs_under_any_tz(monkeypatch: pytest.MonkeyPatch, tz: str) -> None:
+    """The same id resolves to one exact instant whatever the host zone, including the US fall-back hour."""
+    _set_tz(monkeypatch, tz)
+    assert run_id_epoch("20260102-030405-1") == 1767323045
+    assert run_id_epoch("20260716-120500-1") == 1784203500
+    assert run_id_epoch("20261101-013000-1") == 1793496600
+    assert run_id_epoch("20261101-083000-1") == 1793521800
+    assert run_id_epoch("20261101-0130") is None
 
-    Outside a transition the local time names one instant and is pinned
-    exactly. 2026-11-01 01:30 happens twice in US Eastern, and glibc's
-    mktime(isdst=-1) picks either occurrence depending on its state from
-    earlier calls (measured: EDT in a fresh interpreter, EST under pytest), so
-    only "one of the two real instants" is pinned there. A naive
-    ``datetime.timestamp()`` satisfies every assertion here too: this pins
-    values, it does not tell the implementations apart.
-    """
-    monkeypatch.setenv("TZ", "America/New_York")
-    time.tzset()
-    try:
-        # 2026-01-02 08:04:05 UTC (03:04:05 EST, UTC-5).
-        assert run_id_epoch("20260102-030405-1") == 1767341045
-        # 2026-07-16 16:05:00 UTC (12:05:00 EDT, UTC-4).
-        assert run_id_epoch("20260716-120500-1") == 1784217900
-        # 2026-11-01 05:30 UTC (01:30 EDT) or 06:30 UTC (01:30 EST).
-        assert run_id_epoch("20261101-013000-1") in {1793511000, 1793514600}
-        assert run_id_epoch("20261101-0130") is None
-    finally:
-        monkeypatch.undo()
-        time.tzset()
+
+class _FrozenDatetime(datetime):
+    """datetime whose now() is a fixed UTC instant, ignoring the host zone."""
+
+    @classmethod
+    def now(cls, tz=None):  # type: ignore[override]
+        return cls(2026, 3, 4, 5, 6, 7, tzinfo=UTC).astimezone(tz)
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.tzset")
+@pytest.mark.usefixtures("_restore_tz")
+def test_run_id_timestamp_is_utc_on_a_host_west_of_utc(monkeypatch: pytest.MonkeyPatch) -> None:
+    from bakar import observability
+
+    _set_tz(monkeypatch, "America/Costa_Rica")
+    monkeypatch.setattr(observability, "datetime", _FrozenDatetime)
+    rid = RunLogger.__dataclass_fields__["run_id"].default_factory()
+    assert rid.startswith("20260304-050607-")
+
+
+def test_run_id_shape_is_unchanged_by_the_utc_clock() -> None:
+    import re
+
+    rid = RunLogger.__dataclass_fields__["run_id"].default_factory()
+    assert re.fullmatch(r"\d{8}-\d{6}-\d+", rid)
+    assert len(rid[:15]) == len(f"{datetime.now(UTC):{RUN_ID_TS_FORMAT}}") == 15
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.tzset")
+@pytest.mark.usefixtures("_restore_tz")
+def test_run_id_round_trips_to_creation_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_tz(monkeypatch, "America/Costa_Rica")
+    before = time.time()
+    rid = RunLogger.__dataclass_fields__["run_id"].default_factory()
+    epoch = run_id_epoch(rid)
+    assert epoch is not None
+    assert abs(epoch - before) < 2
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.tzset")
+@pytest.mark.usefixtures("_restore_tz")
+def test_run_started_epoch_elapsed_time_is_correct_west_of_utc(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import calendar
+
+    from bakar.commands._helpers import _run_started_epoch
+
+    _set_tz(monkeypatch, "America/Costa_Rica")
+    run_dir = tmp_path / "20260304-050607-4242"
+    run_dir.mkdir()
+    started = calendar.timegm((2026, 3, 4, 5, 6, 7))
+    monkeypatch.setattr(time, "time", lambda: started + 10.0)
+    epoch = _run_started_epoch(run_dir)
+    assert epoch is not None
+    assert time.time() - epoch == 10.0
