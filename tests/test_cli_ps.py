@@ -599,7 +599,6 @@ def test_ps_never_modifies_discovered_build_state(
         "_killpg",
         "remove_pid",
         "_stop_container",
-        "_escalate_container",
     ):
         monkeypatch.setattr(ps_cmd.build_stop, destructive_name, _forbid(destructive_name))
 

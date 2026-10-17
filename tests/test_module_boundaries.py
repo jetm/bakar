@@ -179,6 +179,45 @@ BUILD_RE_EXPORTED_NAMES: tuple[str, ...] = (
     "step_qcom_build",
 )
 
+# Container names that moved to ``bakar.stop_container`` and are NOT re-exported
+# from ``bakar.build_stop``. Every reader (src and tests) goes through
+# ``stop_container``; a re-export would revive stale ``build_stop.<name>``
+# patches that install a mock nothing reads.
+RELOCATED_STOP_SYMBOLS: list[tuple[str, str]] = [
+    ("bakar.build_stop", name)
+    for name in (
+        "_run_runtime",
+        "_container_gone",
+        "_container_id",
+        "_sigint_bitbake_in_container",
+        "_container_liveness",
+        "_escalate_container",
+        "_RuntimeResult",
+        "discover_running_containers",
+        "discover_running_containers_or_warn",
+        "dedup_container_candidates",
+        "ContainerCandidate",
+        "run_id_label",
+        "_detect_runtime",
+        "_RUNTIME_QUERY_TIMEOUT_S",
+        "_RUN_ID_LABEL_KEY",
+        "_CONTAINER_GONE_MARKERS",
+        "subprocess",
+    )
+]
+
+# The INVERSE contract for ``bakar.build_stop``: moved names that stay reachable
+# through it. ``_ALIVE``/``_DEAD``/``_ERROR`` are read bare by functions that did
+# not move. ``_container_id_status`` and ``detect_runtime`` are read bare by the
+# discovery code until the discovery contract step drops them.
+STOP_RE_EXPORTED_NAMES: tuple[str, ...] = (
+    "_ALIVE",
+    "_DEAD",
+    "_ERROR",
+    "_container_id_status",
+    "detect_runtime",
+)
+
 # Public surface ``bakar.diagnostics`` must keep exposing regardless of what
 # moves out of it.
 DIAGNOSTICS_PUBLIC_NAMES: tuple[str, ...] = (
@@ -206,6 +245,7 @@ DIAGNOSTICS_PUBLIC_NAMES: tuple[str, ...] = (
 # extraction adds a module.
 EXTRACTED_MODULES: tuple[str, ...] = (
     "src/bakar/mounts.py",
+    "src/bakar/stop_container.py",
     "src/bakar/buildtools.py",
     "src/bakar/probes.py",
     "src/bakar/elfscan.py",
@@ -321,6 +361,20 @@ def test_relocated_build_symbols_are_not_re_exported() -> None:
         if hasattr(import_module(module_path), symbol)
     ]
     assert not still_present, f"relocated names re-exported from their origin: {still_present}"
+
+
+def test_relocated_stop_symbols_are_not_re_exported() -> None:
+    still_present = [
+        f"{module_path}.{symbol}"
+        for module_path, symbol in RELOCATED_STOP_SYMBOLS
+        if hasattr(import_module(module_path), symbol)
+    ]
+    assert not still_present, f"relocated names re-exported from their origin: {still_present}"
+
+
+@pytest.mark.parametrize("name", STOP_RE_EXPORTED_NAMES)
+def test_stop_re_exported_surface_is_intact(name: str) -> None:
+    assert hasattr(import_module("bakar.build_stop"), name), f"bakar.build_stop lost {name}"
 
 
 @pytest.mark.parametrize("name", BUILD_RE_EXPORTED_NAMES)
@@ -532,12 +586,12 @@ def test_extracted_module_imports_first_in_a_fresh_interpreter(module_path: str)
     module-level import order an extraction rearranged is actually exercised.
 
     Two couplings are deliberate and must survive this, not be excluded from it.
-    ``probes`` imports ``build_stop`` at module level while ``build_stop`` reaches
-    ``diagnostics`` through a function-body deferred import, and
-    ``_build_flavors`` binds ``bakar.commands.build`` as a module object on its
-    last line because the moved dispatchers call back into helpers that stayed on
-    ``build.py``. Both are cycles held open by placement alone, which is precisely
-    the kind of arrangement a later edit breaks without noticing.
+    ``probes`` imports ``build_stop`` at module level (``build_stop`` itself no
+    longer reaches ``diagnostics`` at all), and ``_build_flavors`` binds
+    ``bakar.commands.build`` as a module object on its last line because the
+    moved dispatchers call back into helpers that stayed on ``build.py``. Both
+    are cycles held open by placement alone, which is precisely the kind of
+    arrangement a later edit breaks without noticing.
     """
     result = subprocess.run(
         [sys.executable, "-c", f"import {_dotted(module_path)}"],

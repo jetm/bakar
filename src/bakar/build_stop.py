@@ -18,7 +18,6 @@ import os
 import shutil
 import signal
 import socket
-import subprocess  # noqa: TC003
 import sys
 import time
 
@@ -43,6 +42,11 @@ from bakar.eventlog import (
     RunningTask,
 )
 from bakar.observability import iter_run_events
+
+# Permanent re-exports (pinned by STOP_RE_EXPORTED_NAMES in
+# tests/test_module_boundaries.py): the tri-state is read bare by the functions
+# that stayed here, and the last two are read bare by the discovery code until
+# the discovery contract step moves it.
 from bakar.stop_container import (
     _ALIVE as _ALIVE,
 )
@@ -53,47 +57,19 @@ from bakar.stop_container import (
     _ERROR as _ERROR,
 )
 from bakar.stop_container import (
-    _RUNTIME_QUERY_TIMEOUT_S as _RUNTIME_QUERY_TIMEOUT_S,
-)
-from bakar.stop_container import (
-    ContainerCandidate as ContainerCandidate,
-)
-from bakar.stop_container import (
     _container_id_status as _container_id_status,
-)
-from bakar.stop_container import (
-    _container_liveness as _container_liveness,
-)
-from bakar.stop_container import (
-    _detect_runtime as _detect_runtime,
-)
-from bakar.stop_container import (
-    _escalate_container as _escalate_container,
-)
-from bakar.stop_container import (
-    _sigint_bitbake_in_container as _sigint_bitbake_in_container,
-)
-from bakar.stop_container import (
-    dedup_container_candidates as dedup_container_candidates,
 )
 from bakar.stop_container import (
     detect_runtime as detect_runtime,
 )
-from bakar.stop_container import (
-    discover_running_containers as discover_running_containers,
-)
-from bakar.stop_container import (
-    discover_running_containers_or_warn as discover_running_containers_or_warn,
-)
-from bakar.stop_container import (
-    run_id_label as run_id_label,
-)
 
 if TYPE_CHECKING:
+    import subprocess
     from typing import Literal
 
     from bakar.config import BuildConfig
     from bakar.observability import RunLogger
+    from bakar.stop_container import ContainerCandidate
     from bakar.user_config import UserConfig
 
 _logger = logging.getLogger(__name__)
