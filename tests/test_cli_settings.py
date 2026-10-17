@@ -6,9 +6,11 @@ sub-app calls them with no path argument, so monkeypatching
 ``bakar.user_config._config_path`` to return a tmp path isolates every test
 from the real config file.
 
-``commands/settings.py`` prints via the shared ``Console(stderr=True)`` from
-``commands/_app.py``; ``CliRunner`` merges stderr into ``result.output``, so all
-output assertions read ``result.output`` rather than ``result.stdout``.
+``commands/settings.py`` writes the ``get`` and ``list`` payload (the
+``key = value`` lines, the value, the ``(unset)`` marker) to stdout via
+``typer.echo``; errors go to stderr through the shared ``Console(stderr=True)``
+from ``commands/_app.py``. Payload assertions therefore read ``result.stdout``
+and error assertions read ``result.stderr``.
 
 Importing ``bakar.commands.settings`` registers the sub-app on the shared
 ``app`` (``cli.py`` does not import it yet - that wiring lands in task 5.1).

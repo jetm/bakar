@@ -143,32 +143,35 @@ class TestSettings:
     def test_list_shows_all_recognized_keys(self, home_env: dict) -> None:
         result = _run(["settings", "list"], env=home_env)
         assert result.returncode == 0
-        assert "defaults.nxp.machine" in result.stderr
-        assert "defaults.ti.machine" in result.stderr
-        assert "build.kas_container_image" in result.stderr
-        assert "layers.show_hashes" in result.stderr
-        assert "(unset)" in result.stderr
+        assert "defaults.nxp.machine" in result.stdout
+        assert "defaults.ti.machine" in result.stdout
+        assert "build.kas_container_image" in result.stdout
+        assert "layers.show_hashes" in result.stdout
+        assert "(unset)" in result.stdout
+        assert "defaults.nxp.machine" not in result.stderr
 
     def test_set_get_round_trip(self, home_env: dict) -> None:
         _run(["settings", "set", "defaults.nxp.machine", "imx8mp-var-dart"], env=home_env)
         result = _run(["settings", "get", "defaults.nxp.machine"], env=home_env)
         assert result.returncode == 0
-        assert "imx8mp-var-dart" in result.stderr
+        assert "imx8mp-var-dart" in result.stdout
+        assert "imx8mp-var-dart" not in result.stderr
 
     def test_unset_clears_key(self, home_env: dict) -> None:
         _run(["settings", "set", "defaults.nxp.machine", "imx8mp-var-dart"], env=home_env)
         _run(["settings", "unset", "defaults.nxp.machine"], env=home_env)
         result = _run(["settings", "get", "defaults.nxp.machine"], env=home_env)
-        assert "(unset)" in result.stderr
+        assert "(unset)" in result.stdout
+        assert "(unset)" not in result.stderr
 
     def test_multiple_keys_survive_independently(self, home_env: dict) -> None:
         _run(["settings", "set", "defaults.nxp.machine", "imx8mp-var-dart"], env=home_env)
         _run(["settings", "set", "defaults.nxp.distro", "fsl-imx-xwayland"], env=home_env)
         _run(["settings", "set", "build.kas_container_image", "jetm/kas-build-env:latest"], env=home_env)
         result = _run(["settings", "list"], env=home_env)
-        assert "imx8mp-var-dart" in result.stderr
-        assert "fsl-imx-xwayland" in result.stderr
-        assert "jetm/kas-build-env:latest" in result.stderr
+        assert "imx8mp-var-dart" in result.stdout
+        assert "fsl-imx-xwayland" in result.stdout
+        assert "jetm/kas-build-env:latest" in result.stdout
 
     def test_invalid_key_rejected(self, home_env: dict) -> None:
         result = _run(["settings", "set", "nonexistent.key", "val"], env=home_env)
@@ -189,11 +192,11 @@ class TestSettings:
     def test_host_keys_in_settings_list(self, home_env: dict) -> None:
         result = _run(["settings", "list"], env=home_env)
         assert result.returncode == 0
-        assert "host.inotify_instances" in result.stderr
-        assert "host.inotify_watches" in result.stderr
-        assert "host.swappiness_max" in result.stderr
-        assert "host.nofile_soft" in result.stderr
-        assert "host.mem_min_gb" in result.stderr
+        assert "host.inotify_instances" in result.stdout
+        assert "host.inotify_watches" in result.stdout
+        assert "host.swappiness_max" in result.stdout
+        assert "host.nofile_soft" in result.stdout
+        assert "host.mem_min_gb" in result.stdout
 
     def test_host_swappiness_max_round_trip(self, home_env: dict) -> None:
         result = _run(["settings", "set", "host.swappiness_max", "10"], env=home_env)
@@ -201,13 +204,14 @@ class TestSettings:
 
         result = _run(["settings", "get", "host.swappiness_max"], env=home_env)
         assert result.returncode == 0
-        assert "10" in result.stderr
+        assert "10" in result.stdout
 
         result = _run(["settings", "unset", "host.swappiness_max"], env=home_env)
         assert result.returncode == 0
 
         result = _run(["settings", "get", "host.swappiness_max"], env=home_env)
-        assert "(unset)" in result.stderr
+        assert "(unset)" in result.stdout
+        assert "(unset)" not in result.stderr
 
 
 # ---------------------------------------------------------------------------
