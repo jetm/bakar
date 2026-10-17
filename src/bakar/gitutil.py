@@ -45,9 +45,11 @@ def git_stdout(repo: Path, *args: str, timeout: float = 5, new_session: bool = F
     in its own session so a timeout cannot leave a credential prompt attached
     to the caller's terminal.
 
-    Output is decoded with ``errors="replace"``: git emits raw filename bytes
-    (``status --porcelain`` with a non-UTF-8 untracked name), and a strict
-    decode would raise ``UnicodeDecodeError`` and turn a dirty tree into a
+    Output is decoded with ``errors="replace"``: git can emit raw filename
+    bytes (``status --porcelain`` prints a non-UTF-8 name unquoted when
+    ``core.quotePath`` is false, which a user's config may set; the default
+    octal-quotes it into ASCII), and a strict decode would raise
+    ``UnicodeDecodeError`` and turn a dirty tree into a
     crash. The callers only test emptiness or read a SHA, so a replacement
     character costs nothing and the "is it dirty" signal survives, where
     returning None would have hidden it.

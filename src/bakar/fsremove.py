@@ -15,6 +15,7 @@ tree's real fan-out rather than assuming a fixed depth.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import threading
@@ -145,6 +146,8 @@ def _gather_remove_targets(root: Path, min_fanout: int) -> list[Path]:
 
 
 RESIDUE_SAMPLE_LIMIT = 64
+# POSIX lets rmdir report a non-empty directory as either.
+_NOT_EMPTY_ERRNOS = frozenset({errno.ENOTEMPTY, errno.EEXIST})
 
 
 def parallel_rmtree(root: Path, description: str = "Removing") -> tuple[Path, OSError] | None:
@@ -156,10 +159,13 @@ def parallel_rmtree(root: Path, description: str = "Removing") -> tuple[Path, OS
     one unit never stops the others. Returns None when *root* is gone afterwards
     (or is an empty directory that only its own rmdir could not remove, e.g. a
     mount point), otherwise the first remaining path with the error that blocked
-    it. The error carries ``residue_count`` (every undeletable entry seen) and
+    it. The error carries ``residue_count`` (every undeletable entry seen,
+    each counted once: a directory refused as non-empty only because of
+    residue already counted below it is not counted again) and
     ``residue_sample`` (the first :data:`RESIDUE_SAMPLE_LIMIT` ``(path, error)``
-    pairs); only that sample is retained, so a huge undeletable tree costs
-    bounded memory. Stored errors have their tracebacks dropped.
+    pairs). Only that sample of errors is retained; beyond it, memory grows
+    with the number of directories holding residue, not with the number of
+    undeletable files. Stored errors have their tracebacks dropped.
     """
     if not root.exists() and not root.is_symlink():
         return None
@@ -168,37 +174,66 @@ def parallel_rmtree(root: Path, description: str = "Removing") -> tuple[Path, OS
     sample: list[tuple[Path, OSError]] = []
     count = 0
     lock = threading.Lock()
-    record = True  # False during the skeleton pass once the unit pass found residue
+    # Each failed directory and every ancestor of a recorded entry, up to
+    # root. An rmdir refused as non-empty on one of these is the consequence
+    # of residue already counted below it, not a new undeletable entry.
+    blocked: set[Path] = set()
+    # Units the first pass left residue in. The skeleton pass re-walks them,
+    # and its errors there repeat entries already counted.
+    failed_units: set[Path] = set()
 
-    def _record(path: Path, exc: OSError) -> None:
+    def _record(path: Path, exc: OSError, func: object, unit: Path | None) -> None:
+        """Count one undeletable entry, unless it only repeats known residue. Caller holds ``lock``."""
         nonlocal count
-        with lock:
-            count += 1
-            if len(sample) < RESIDUE_SAMPLE_LIMIT:
-                sample.append((path, exc.with_traceback(None)))
+        if func is os.rmdir and exc.errno in _NOT_EMPTY_ERRNOS and path in blocked:
+            return
+        count += 1
+        if len(sample) < RESIDUE_SAMPLE_LIMIT:
+            sample.append((path, exc.with_traceback(None)))
+        if unit is not None:
+            failed_units.add(unit)
+        node = path.parent if func is os.unlink else path
+        while node not in blocked:
+            blocked.add(node)
+            if node == root or node == node.parent:
+                break
+            node = node.parent
 
-    def _on_error(_func, path, exc, **_kwargs) -> None:
-        # Already-gone entries (a concurrent unit removed them) are not residue.
-        if record and not isinstance(exc, FileNotFoundError):
-            _record(Path(path), exc)
+    def _unit_on_error(unit: Path):
+        def _on_error(func, path, exc, **_kwargs) -> None:
+            # Already-gone entries (a concurrent unit removed them) are not residue.
+            if isinstance(exc, FileNotFoundError):
+                return
+            with lock:
+                _record(Path(path), exc, func, unit)
+
+        return _on_error
+
+    def _skeleton_on_error(func, path, exc, **_kwargs) -> None:
+        if isinstance(exc, FileNotFoundError):
+            return
+        entry = Path(path)
+        with lock:
+            if any(entry == unit or unit in entry.parents for unit in failed_units):
+                return
+            _record(entry, exc, func, None)
 
     def _rm(path: Path) -> None:
         try:
             if path.is_symlink() or not path.is_dir():
                 path.unlink()
             else:
-                shutil.rmtree(path, onexc=_on_error)
+                shutil.rmtree(path, onexc=_unit_on_error(path))
         except OSError as exc:
-            _record(path, exc)
+            with lock:
+                _record(path, exc, None, path)
 
     # No ETA: deletion units are subtrees of wildly different size, so an
     # item-count time-remaining estimate is always wrong.
     parallel_apply(targets, _rm, description, show_eta=False)
     # Drop the skeleton (the now-empty parent dirs left behind by expansion).
-    # Residue from the unit pass would be re-walked and re-reported here, so
-    # once it exists the skeleton pass records nothing further.
-    record = count == 0
-    shutil.rmtree(root, onexc=_on_error)
+    # A failure on a skeleton directory itself is new residue and is counted.
+    shutil.rmtree(root, onexc=_skeleton_on_error)
 
     if not root.exists() and not root.is_symlink():
         return None

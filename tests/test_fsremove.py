@@ -183,15 +183,28 @@ def test_parallel_rmtree_residue_memory_is_bounded(tmp_path: Path, monkeypatch: 
     root = tmp_path / "build"
     _populate(root, dirs=6, files_per_dir=1)
     emitted = 0
+    re_emitted = 0
+    units: list[str] = []
+
+    def _emit(onexc, path: str) -> None:
+        try:
+            raise PermissionError(13, "denied")
+        except PermissionError as exc:
+            onexc(os.unlink, path, exc)
 
     def fake_rmtree(path, onexc=None, **_kw):
-        nonlocal emitted
+        nonlocal emitted, re_emitted
+        if str(path) == str(root):
+            # The skeleton pass re-walks every unit and hits the same entries.
+            for unit in units:
+                for i in range(500):
+                    re_emitted += 1
+                    _emit(onexc, f"{unit}/entry{i}")
+            return
+        units.append(str(path))
         for i in range(500):
             emitted += 1
-            try:
-                raise PermissionError(13, "denied")
-            except PermissionError as exc:
-                onexc(os.unlink, f"{path}/entry{i}", exc)
+            _emit(onexc, f"{path}/entry{i}")
 
     monkeypatch.setattr(fsremove.shutil, "rmtree", fake_rmtree)
     result = parallel_rmtree(root)
@@ -202,8 +215,9 @@ def test_parallel_rmtree_residue_memory_is_bounded(tmp_path: Path, monkeypatch: 
     assert len(sample) <= fsremove.RESIDUE_SAMPLE_LIMIT
     assert all(e.__traceback__ is None for _p, e in sample)
     assert exc.residue_count > fsremove.RESIDUE_SAMPLE_LIMIT  # ty: ignore[unresolved-attribute]
-    # The skeleton pass emitted 500 more on the root; those are not re-recorded.
-    assert exc.residue_count == emitted - 500  # ty: ignore[unresolved-attribute]
+    # The skeleton pass re-reported every entry; none is recorded twice.
+    assert re_emitted == emitted
+    assert exc.residue_count == emitted  # ty: ignore[unresolved-attribute]
 
 
 def _rmtree_leaving_root(root: Path, real_rmtree):
@@ -283,3 +297,78 @@ def test_parallel_rmtree_empty_root_under_readonly_parent_is_success(tmp_path: P
         assert list(root.iterdir()) == []
     finally:
         parent.chmod(0o755)
+
+
+def _refuse(monkeypatch: pytest.MonkeyPatch, *, unlink: set[str] = frozenset(), rmdir: set[str] = frozenset()) -> None:
+    """Make ``os.unlink``/``os.rmdir`` refuse the named basenames, as root too."""
+    real_unlink, real_rmdir = os.unlink, os.rmdir
+
+    def fake_unlink(path, *a, **kw):
+        if os.path.basename(os.fsdecode(path)) in unlink:
+            raise PermissionError(13, "Permission denied", os.fsdecode(path))
+        return real_unlink(path, *a, **kw)
+
+    def fake_rmdir(path, *a, **kw):
+        if os.path.basename(os.fsdecode(path)) in rmdir:
+            raise PermissionError(13, "Permission denied", os.fsdecode(path))
+        return real_rmdir(path, *a, **kw)
+
+    monkeypatch.setattr(os, "unlink", fake_unlink)
+    monkeypatch.setattr(os, "rmdir", fake_rmdir)
+
+
+def _residue(result: tuple[Path, OSError] | None) -> tuple[int, list[str]]:
+    assert result is not None
+    exc = result[1]
+    sample = exc.residue_sample  # ty: ignore[unresolved-attribute]
+    return exc.residue_count, [p.name for p, _e in sample]  # ty: ignore[unresolved-attribute]
+
+
+def test_parallel_rmtree_counts_one_deep_undeletable_file_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The non-empty rmdirs of the file's ancestors are its consequence, not more residue."""
+    root = tmp_path / "build"
+    _populate(root, dirs=4, files_per_dir=1)
+    deep = root / "a" / "b" / "c"
+    deep.mkdir(parents=True)
+    (deep / "stuck").write_text("x")
+    _refuse(monkeypatch, unlink={"stuck"})
+
+    count, names = _residue(parallel_rmtree(root))
+
+    assert count == 1
+    assert names == ["stuck"]
+
+
+def test_parallel_rmtree_counts_undeletable_files_in_two_units(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "build"
+    _populate(root, dirs=4, files_per_dir=1)
+    for unit, name in (("a", "stuck1"), ("b", "stuck2")):
+        (root / unit / "x").mkdir(parents=True)
+        (root / unit / "x" / name).write_text("x")
+    _refuse(monkeypatch, unlink={"stuck1", "stuck2"})
+
+    count, names = _residue(parallel_rmtree(root))
+
+    assert count == 2
+    assert sorted(names) == ["stuck1", "stuck2"]
+
+
+def test_parallel_rmtree_counts_an_undeletable_skeleton_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A skeleton dir failing its own rmdir is counted even after a unit left residue."""
+    import bakar.fsremove as fsremove
+
+    root = tmp_path / "build"
+    work = root / "tmp" / "work"
+    for d in range(fsremove.GC_WORKERS * 4):
+        (work / f"recipe{d}").mkdir(parents=True)
+    (work / "recipe0" / "stuck").write_text("x")
+    (root / "conf").mkdir()
+    assert work not in _gather_remove_targets(root, fsremove.GC_WORKERS * 4), "work must be skeleton"
+    _refuse(monkeypatch, unlink={"stuck"}, rmdir={"work"})
+
+    count, names = _residue(parallel_rmtree(root))
+
+    assert count == 2
+    assert sorted(names) == ["stuck", "work"]

@@ -17,22 +17,19 @@ pytestmark = pytest.mark.unit
 
 
 def test_git_stdout_survives_non_utf8_filename(tmp_path: Path) -> None:
+    """Raw non-UTF-8 filename bytes reach the decoder and are replaced, not raised."""
     subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
     with open(os.path.join(os.fsencode(tmp_path), b"name-\xff.txt"), "wb"):
         pass
-    out = git_stdout(tmp_path, "status", "--porcelain")
+    # quotePath=false makes git print the name's raw bytes; the default
+    # octal-quotes them into ASCII, which would never exercise the decode.
+    raw = subprocess.run(
+        ["git", "-C", str(tmp_path), "-c", "core.quotePath=false", "status", "--porcelain"],
+        capture_output=True,
+        check=True,
+    ).stdout
+    assert b"\xff" in raw
+    out = git_stdout(tmp_path, "-c", "core.quotePath=false", "status", "--porcelain")
     assert out is not None
-    assert "name-" in out
+    assert "name-�.txt" in out
     assert out.strip(), "a dirty tree must still read as dirty"
-
-
-def test_git_stdout_replaces_undecodable_bytes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    seen: dict[str, object] = {}
-
-    def fake_run(cmd, **kwargs):
-        seen.update(kwargs)
-        return subprocess.CompletedProcess(cmd, 0, stdout="ok�", stderr="")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    assert git_stdout(tmp_path, "status") == "ok�"
-    assert seen["errors"] == "replace"
