@@ -25,6 +25,7 @@ from bakar.observability import RunLogger
 from bakar.steps import stress_parse
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 pytestmark = pytest.mark.unit
@@ -765,3 +766,109 @@ def test_python_executable_omitted_when_unset(
         )
 
     assert "python_executable" not in summary
+
+
+def _run_two_iterations(cfg: BuildConfig, tmp_path: Path) -> None:
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        stress_parse.run(
+            ctx=stress_parse.StressParseContext(
+                cfg=cfg,
+                log=log,
+                overlay_source=tmp_path / "bakar-tuning-nxp.yml",
+                runs=2,
+                target="world",
+                parse_threads=None,
+            )
+        )
+
+
+def _seed_between_iteration_state(
+    cfg: BuildConfig, monkeypatch: pytest.MonkeyPatch, on_first_iteration: Callable[[], None]
+) -> tuple[list[Path], list[dict]]:
+    """Seed caches and lock files, and run ``on_first_iteration`` inside iteration 1."""
+    cfg.runs_dir.mkdir(parents=True, exist_ok=True)
+    build_dir = cfg.bsp_root / cfg.build_dir_name
+    build_dir.mkdir(parents=True, exist_ok=True)
+    kept = [
+        build_dir / "bitbake.lock",
+        build_dir / "bitbake.sock",
+        cfg.bsp_root / "build" / "cache" / "bb_codeparser.dat",
+    ]
+    for path in kept:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x")
+    _patch_override_status(monkeypatch)
+    _clear_fork_race_env(monkeypatch)
+    calls = _patch_run_shell_capture(monkeypatch, [_benign_payload(), _benign_payload()])
+    stub_capture = stress_parse.step_kas.run_shell_capture
+
+    def capture_then_appear(ctx, command, capture):
+        rc = stub_capture(ctx, command, capture)
+        if len(calls) == 1:
+            on_first_iteration()
+            for path in kept:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("rebuilt-by-iteration-1")
+        return rc
+
+    monkeypatch.setattr(stress_parse.step_kas, "run_shell_capture", capture_then_appear)
+    return kept, calls
+
+
+def test_peer_marker_between_iterations_stops_before_second_wipe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A marker naming a peer that appears after iteration 1 removes nothing in iteration 2."""
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr("bakar.build_stop.socket.gethostname", lambda: "this-host")
+
+    def peer_appears() -> None:
+        build_stop.lock_marker_path(cfg).write_text("peer-host\n")
+
+    kept, calls = _seed_between_iteration_state(cfg, monkeypatch, peer_appears)
+
+    with pytest.raises(stress_parse.BuildLiveError, match="peer-host"):
+        _run_two_iterations(cfg, tmp_path)
+
+    assert len(calls) == 1
+    assert all(p.read_text() == "rebuilt-by-iteration-1" for p in kept)
+
+
+def test_live_local_build_between_iterations_stops_before_second_wipe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live local build appearing after iteration 1 removes nothing in iteration 2."""
+    cfg = _cfg(tmp_path)
+    live: dict[str, int | None] = {"pid": None}
+    monkeypatch.setattr(stress_parse.kas_lock, "local_build_holder", lambda _cfg: live["pid"])
+
+    def build_appears() -> None:
+        live["pid"] = 4242
+
+    kept, calls = _seed_between_iteration_state(cfg, monkeypatch, build_appears)
+
+    with pytest.raises(stress_parse.BuildLiveError, match="4242"):
+        _run_two_iterations(cfg, tmp_path)
+
+    assert len(calls) == 1
+    assert all(p.read_text() == "rebuilt-by-iteration-1" for p in kept)
+
+
+def test_clear_bitbake_runtime_keeps_lock_while_local_build_holds_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lock/socket unlink consults ``local_build_holder`` as well as the marker guard."""
+    cfg = _cfg(tmp_path)
+    cfg.runs_dir.mkdir(parents=True, exist_ok=True)
+    build_dir = cfg.bsp_root / cfg.build_dir_name
+    build_dir.mkdir(parents=True, exist_ok=True)
+    (build_dir / "bitbake.lock").write_text("12345\n")
+    (build_dir / "bitbake.sock").write_text("")
+    monkeypatch.setattr(stress_parse.build_stop, "lock_mutation_guard", lambda _cfg: None)
+    monkeypatch.setattr(stress_parse.kas_lock, "local_build_holder", lambda _cfg: 4242)
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        assert not stress_parse._clear_bitbake_runtime(cfg, log, 1)
+
+    assert (build_dir / "bitbake.lock").exists()
+    assert (build_dir / "bitbake.sock").exists()

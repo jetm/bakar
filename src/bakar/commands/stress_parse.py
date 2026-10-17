@@ -236,26 +236,34 @@ def _stress_parse_impl(ctx: _StressParseCtx) -> None:
     _refuse_if_build_live(cfg, action="wipe the parse caches", doing="wiping the parse caches")
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
-    with RunLogger(runs_dir=cfg.runs_dir) as log:
-        if family == "generic":
-            log.step_skip("bitbake_override", reason="generic mode")
-        else:
-            step_override.apply(cfg, log)
-        if not byo_form:
-            step_kas.regenerate_yaml(cfg, log, bsp=bsp)
-        summary = step_stress_parse.run(
-            ctx=step_stress_parse.StressParseContext(
-                cfg=cfg,
-                log=log,
-                overlay_source=overlay_source,
-                extra_overlays=extra_overlays,
-                runs=runs,
-                target=target,
-                parse_threads=parse_threads,
-                label=label,
-                python_executable=python_executable,
+    try:
+        with RunLogger(runs_dir=cfg.runs_dir) as log:
+            if family == "generic":
+                log.step_skip("bitbake_override", reason="generic mode")
+            else:
+                step_override.apply(cfg, log)
+            if not byo_form:
+                step_kas.regenerate_yaml(cfg, log, bsp=bsp)
+            summary = step_stress_parse.run(
+                ctx=step_stress_parse.StressParseContext(
+                    cfg=cfg,
+                    log=log,
+                    overlay_source=overlay_source,
+                    extra_overlays=extra_overlays,
+                    runs=runs,
+                    target=target,
+                    parse_threads=parse_threads,
+                    label=label,
+                    python_executable=python_executable,
+                )
             )
-        )
+    except step_stress_parse.BuildLiveError:
+        # A build appeared between iterations. Re-running the exiting gate
+        # prints the one refusal wording and exits 1; the logger has already
+        # recorded run_error on the way out of the with block.
+        _refuse_if_build_live(cfg, action="wipe the parse caches", doing="wiping the parse caches")
+        console.print("[red]refusing to wipe the parse caches: a build holds this build directory[/]")
+        raise typer.Exit(code=1) from None
 
     table = Table(title=f"stress-parse summary ({family})", show_edge=False)
     table.add_column("metric", no_wrap=True)

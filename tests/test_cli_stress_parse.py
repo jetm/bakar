@@ -668,3 +668,32 @@ def test_stress_parse_proceeds_with_warning_when_unattributable(
     assert "remove the build directory" not in result.output
     assert "removing the build directory" not in result.output
     assert mock_run.call_count == 1
+
+
+def test_stress_parse_mid_run_refusal_exits_one_with_the_gate_wording(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A peer marker appearing after the up-front gate stops the run with the same refusal and exit 1."""
+    from bakar.steps.stress_parse import BuildLiveError
+
+    workspace = _make_workspace(tmp_path)
+    monkeypatch.chdir(workspace)
+    build, caches = _seed_build_dir(workspace)
+    monkeypatch.setattr("bakar.build_stop.socket.gethostname", lambda: "this-host")
+    override_p, kas_p, _stress_p = _patch_steps(summary=_clean_summary(2))
+
+    def peer_appears_then_refuse(**_kwargs: object) -> dict:
+        (build / ".bakar-lock-host").write_text("some-peer-host\n")
+        raise BuildLiveError("build owned by some-peer-host")
+
+    with (
+        override_p,
+        kas_p,
+        patch("bakar.commands.stress_parse.step_stress_parse.run", side_effect=peer_appears_then_refuse),
+    ):
+        result = runner.invoke(app, ["stress-parse", "--manifest", "imx-6.6.52-2.2.2.xml", "--runs", "2"])
+
+    assert result.exit_code == 1, result.output
+    assert "some-peer-host" in result.output
+    assert "refusing to wipe the parse caches" in " ".join(result.output.split())
+    assert all(c.exists() for c in caches)

@@ -39,6 +39,7 @@ from bakar.fork_race_signatures import scan
 from bakar.observability import RunLogger  # noqa: TC001
 from bakar.steps import bitbake_override as step_override
 from bakar.steps import kas_build as step_kas
+from bakar.steps import kas_lock
 from bakar.steps.kas_build import KasBuildContext
 
 
@@ -87,6 +88,26 @@ def _clear_parse_cache(cfg: BuildConfig, log: RunLogger, iteration: int) -> bool
     return cleared_any
 
 
+class BuildLiveError(Exception):
+    """A peer or a live local build holds this build directory; no wipe may run."""
+
+
+def _refuse_if_build_live(cfg: BuildConfig) -> None:
+    """Raise :class:`BuildLiveError` when a peer marker or a local build holds ``cfg``.
+
+    The non-exiting core of the command layer's removal gate, run before every
+    iteration's wipes so a build that starts between iterations is not
+    destroyed. Only the refusing verdicts raise; the unattributable case is
+    the command's up-front warning and does not stop a run.
+    """
+    refusal = build_stop.lock_mutation_guard(cfg)
+    if refusal is not None and refusal.reason == "peer-held":
+        raise BuildLiveError(f"build owned by {refusal.host or 'another host'}")
+    pid = kas_lock.local_build_holder(cfg)
+    if pid is not None:
+        raise BuildLiveError(f"a local build is running (pid {pid})")
+
+
 def _clear_bitbake_runtime(cfg: BuildConfig, log: RunLogger, iteration: int) -> bool:
     """Force a fresh bitbake-server and fresh bytecode load per iteration.
 
@@ -124,10 +145,15 @@ def _clear_bitbake_runtime(cfg: BuildConfig, log: RunLogger, iteration: int) -> 
     cleared_any = False
 
     refusal = build_stop.lock_mutation_guard(cfg)
+    holder = kas_lock.local_build_holder(cfg) if refusal is None else None
     if refusal is not None:
         log.info(
             f"stress-parse[{iteration:02d}]: skipping bitbake.lock/sock removal "
             f"({escape(refusal.reason)}): {escape(refusal.detail)}"
+        )
+    elif holder is not None:
+        log.info(
+            f"stress-parse[{iteration:02d}]: skipping bitbake.lock/sock removal (local build running, pid {holder})"
         )
     else:
         build_dir = cfg.bsp_root / cfg.build_dir_name
@@ -359,6 +385,11 @@ def run(ctx: StressParseContext) -> dict:
 
     for i in range(1, runs + 1):
         iter_log = out_dir / f"run-{i:02d}.log"
+        try:
+            _refuse_if_build_live(cfg)
+        except BuildLiveError as exc:
+            log.step_fail("stress_parse_iter", reason=f"refused before wipe: {exc}", iteration=i, of=runs)
+            raise
         cache_was_cleared = _clear_parse_cache(cfg, log, i)
         summary["cache_cleared_pre_iter"].append(cache_was_cleared)
         runtime_was_cleared = _clear_bitbake_runtime(cfg, log, i)
