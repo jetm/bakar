@@ -3176,7 +3176,7 @@ def test_host_wide_candidates_excludes_container_mode_run_sharing_topdir(
     # bitbake.lock path - no real bitbake process, no real /proc scan.
     fake_pid = 987654
     lock_path = topdir / "bitbake.lock"
-    real_discover_host_cookers = build_stop._discover_host_cookers
+    real_discover_host_cookers = proc_tree._discover_host_cookers
 
     def _fake_discover_host_cookers() -> dict[Path, frozenset[int]]:
         return real_discover_host_cookers(
@@ -3184,7 +3184,7 @@ def test_host_wide_candidates_excludes_container_mode_run_sharing_topdir(
             cmdline_reader=lambda pid: f"bitbake-server decafbad 5 6 log {lock_path} 0" if pid == fake_pid else "",
         )
 
-    monkeypatch.setattr(build_stop, "_discover_host_cookers", _fake_discover_host_cookers)
+    monkeypatch.setattr(proc_tree, "_discover_host_cookers", _fake_discover_host_cookers)
 
     # Host-mode leg is live; container-mode leg is reported alive by the
     # monkeypatched runtime query, independent of any real container runtime.

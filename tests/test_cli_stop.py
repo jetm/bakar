@@ -1118,7 +1118,7 @@ def test_host_wide_candidates_combines_topdirs_and_filters_mode_and_liveness(
     (topdir_b / "runs").mkdir(parents=True)
 
     monkeypatch.setattr(
-        stop_cmd.build_stop,
+        stop_cmd.proc_tree,
         "_discover_host_cookers",
         lambda: {topdir_a: frozenset({111}), topdir_b: frozenset({222})},
     )
@@ -1194,7 +1194,7 @@ def _stage_host_wide_run(
     stop_cmd.build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
     monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 4242, True))
     monkeypatch.setattr(
-        stop_cmd.build_stop,
+        stop_cmd.proc_tree,
         "_discover_host_cookers",
         lambda: {topdir / "build": frozenset({4242})},
     )
@@ -1276,7 +1276,7 @@ def test_run_option_host_wide_fallback_exits_2_when_explicit_workspace_given(
     def _boom() -> dict[Path, frozenset[int]]:
         raise AssertionError("_discover_host_cookers must not run when --workspace is given")
 
-    monkeypatch.setattr(stop_cmd.build_stop, "_discover_host_cookers", _boom)
+    monkeypatch.setattr(stop_cmd.proc_tree, "_discover_host_cookers", _boom)
 
     result = runner.invoke(app, ["stop", "--workspace", str(ws), "--run", run_id])
 
@@ -1298,7 +1298,7 @@ def test_run_option_host_wide_fallback_surfaces_peer_held_root(
     topdir = tmp_path / "peer-workspace" / "nxp"
     (topdir / "build" / "runs").mkdir(parents=True)
     monkeypatch.setattr(
-        stop_cmd.build_stop,
+        stop_cmd.proc_tree,
         "_discover_host_cookers",
         lambda: {topdir / "build": frozenset({4242})},
     )
@@ -1367,7 +1367,7 @@ def test_no_run_host_wide_fallback_zero_candidates_reports_no_running_build(
     """Bare ``stop`` from outside any workspace, with nothing live anywhere on
     the host: ``no running build found``, not the missing-workspace error, and
     the workspace-scoped stale-lock cleanup path must not run."""
-    monkeypatch.setattr(stop_cmd.build_stop, "_discover_host_cookers", dict)
+    monkeypatch.setattr(stop_cmd.proc_tree, "_discover_host_cookers", dict)
 
     def _boom(*a: object, **k: object) -> object:
         raise AssertionError("stop_build must not run on the zero-candidate host-wide path")
@@ -1418,9 +1418,9 @@ def test_no_run_host_wide_fallback_peer_held_root_is_diagnosed_not_dropped(
         # code takes. Capture the original before patching the module
         # attribute, since the patched name would otherwise resolve to
         # itself once replaced.
-        real_discover_host_cookers = stop_cmd.build_stop._discover_host_cookers
+        real_discover_host_cookers = stop_cmd.proc_tree._discover_host_cookers
         monkeypatch.setattr(
-            stop_cmd.build_stop,
+            stop_cmd.proc_tree,
             "_discover_host_cookers",
             lambda: real_discover_host_cookers(pids_reader=_pids, cmdline_reader=_cmdline),
         )
@@ -1563,7 +1563,7 @@ def test_no_run_host_wide_fallback_multiple_candidates_non_interactive_lists_and
     stop_cmd.build_stop.write_launch_record(run_b, pgid=222, mode="host")
     monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 4242, True))
     monkeypatch.setattr(
-        stop_cmd.build_stop,
+        stop_cmd.proc_tree,
         "_discover_host_cookers",
         lambda: {topdir_a: frozenset({111}), topdir_b: frozenset({222})},
     )
@@ -1605,7 +1605,7 @@ def test_no_run_host_wide_fallback_multiple_candidates_interactive_confirms_pick
     stop_cmd.build_stop.write_launch_record(run_b, pgid=222, mode="host")
     monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 4242, True))
     monkeypatch.setattr(
-        stop_cmd.build_stop,
+        stop_cmd.proc_tree,
         "_discover_host_cookers",
         lambda: {topdir_a: frozenset({111}), topdir_b: frozenset({222})},
     )
@@ -1650,7 +1650,7 @@ def test_no_run_host_wide_fallback_surfaces_peer_held_root_on_zero_candidates(
     topdir = tmp_path / "peer-workspace" / "nxp"
     (topdir / "build" / "runs").mkdir(parents=True)
     monkeypatch.setattr(
-        stop_cmd.build_stop,
+        stop_cmd.proc_tree,
         "_discover_host_cookers",
         lambda: {topdir / "build": frozenset({4242})},
     )
@@ -1698,7 +1698,7 @@ def test_stop_invalid_explicit_workspace_exits_2_before_host_wide_discovery(
     def _boom() -> dict[Path, frozenset[int]]:
         raise AssertionError("_discover_host_cookers must not run for an invalid --workspace")
 
-    monkeypatch.setattr(stop_cmd.build_stop, "_discover_host_cookers", _boom)
+    monkeypatch.setattr(stop_cmd.proc_tree, "_discover_host_cookers", _boom)
 
     result = runner.invoke(app, ["stop", "-w", str(missing)])
 
@@ -1721,7 +1721,7 @@ def test_stop_workspace_path_that_is_a_file_exits_2_before_host_wide_discovery(
     def _boom() -> dict[Path, frozenset[int]]:
         raise AssertionError("_discover_host_cookers must not run for a non-directory --workspace")
 
-    monkeypatch.setattr(stop_cmd.build_stop, "_discover_host_cookers", _boom)
+    monkeypatch.setattr(stop_cmd.proc_tree, "_discover_host_cookers", _boom)
 
     result = runner.invoke(app, ["stop", "-w", str(not_a_dir)])
 
@@ -1759,7 +1759,7 @@ def test_stop_explicit_workspace_scopes_discovery_even_with_a_live_build_elsewhe
     def _boom() -> dict[Path, frozenset[int]]:
         raise AssertionError("_discover_host_cookers must not run when --workspace is given")
 
-    monkeypatch.setattr(stop_cmd.build_stop, "_discover_host_cookers", _boom)
+    monkeypatch.setattr(stop_cmd.proc_tree, "_discover_host_cookers", _boom)
 
     calls: list[tuple[Path, bool]] = []
 
@@ -1855,7 +1855,7 @@ def test_run_option_host_wide_fallback_refuses_ambiguous_match(
     stop_cmd.build_stop.write_launch_record(run_dir_b, pgid=5252, mode="host")
     monkeypatch.setattr(stop_cmd.build_stop, "is_build_running", lambda _rd: (True, 4242, True))
     monkeypatch.setattr(
-        stop_cmd.build_stop,
+        stop_cmd.proc_tree,
         "_discover_host_cookers",
         lambda: {topdir_a: frozenset({4242}), topdir_b: frozenset({5252})},
     )

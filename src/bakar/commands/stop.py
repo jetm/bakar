@@ -11,7 +11,7 @@ from typing import Annotated
 import typer
 
 import bakar.commands._app as _state
-from bakar import build_stop
+from bakar import build_stop, proc_tree
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     WorkspaceOption,
@@ -135,7 +135,7 @@ def _stop_matched_run(
 def _host_wide_candidates() -> tuple[list[build_stop.RunCandidate], list[build_stop.SkippedRoot]]:
     """Scan every live, host-mode build on this host, not just one workspace.
 
-    Calls :func:`build_stop._discover_host_cookers` to find every topdir
+    Calls :func:`proc_tree._discover_host_cookers` to find every topdir
     carrying a running bitbake cooker anywhere on the host, then re-scans
     each topdir's own ``runs/`` directory directly via
     :func:`build_stop.enumerate_workspace_runs` - never
@@ -155,7 +155,7 @@ def _host_wide_candidates() -> tuple[list[build_stop.RunCandidate], list[build_s
     (bounded by its own timeout); checking mode first means that query is
     never made for a candidate the mode filter would discard anyway.
     """
-    discovered = build_stop._discover_host_cookers()
+    discovered = proc_tree._discover_host_cookers()
     candidates: list[build_stop.RunCandidate] = []
     skipped: list[build_stop.SkippedRoot] = []
     for topdir in discovered:
