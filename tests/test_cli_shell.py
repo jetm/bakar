@@ -37,8 +37,15 @@ def _clean_user_config(monkeypatch: pytest.MonkeyPatch) -> None:
 def _fake_run_shell(rc: int, calls: list[dict]):
     """Return a fake ``run_shell`` recording command, extra args and host_mode."""
 
-    def fake(ctx, args, command=None):
-        calls.append({"args": args, "command": command, "host_mode": ctx.cfg.host_mode})
+    def fake(ctx, args, command=None, *, take_lock_marker=False):
+        calls.append(
+            {
+                "args": args,
+                "command": command,
+                "host_mode": ctx.cfg.host_mode,
+                "take_lock_marker": take_lock_marker,
+            }
+        )
         return rc
 
     return fake
@@ -62,6 +69,22 @@ def test_exit_code_propagates_and_command_is_passed(runner: _CliRunner, nxp_work
     assert len(calls) == 1
     assert calls[0]["command"] == "bitbake-layers show-layers"
     assert calls[0]["args"] == []
+
+
+def test_shell_with_a_command_takes_the_lock_marker(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """``-c CMD`` rewrites the build configuration, so it takes the gate and marker."""
+    result, calls = _invoke(runner, nxp_workspace, 0, "-c", "true")
+
+    assert result.exit_code == 0, result.output
+    assert calls[0]["take_lock_marker"] is True
+
+
+def test_interactive_shell_does_not_take_the_lock_marker(runner: _CliRunner, nxp_workspace: Path) -> None:
+    """An interactive shell is unbounded, so it must not hold a marker."""
+    result, calls = _invoke(runner, nxp_workspace, 0)
+
+    assert result.exit_code == 0, result.output
+    assert calls[0]["take_lock_marker"] is False
 
 
 def test_long_command_option(runner: _CliRunner, nxp_workspace: Path) -> None:

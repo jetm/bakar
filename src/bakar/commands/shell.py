@@ -79,6 +79,7 @@ def shell(
             kas_ctx,
             list(extra or []),
             command=command,
+            take_lock_marker=command is not None,
         )
     raise typer.Exit(code=rc)
 
