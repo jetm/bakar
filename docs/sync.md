@@ -53,6 +53,7 @@ bakar sync -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart --dry-run-script sync.sh
 ## Notes
 
 - bitbake-setup workspaces are initialized externally via `bitbake-setup init`; `bakar sync` exits 2 for them.
+- `--clean` removes `build/` through the same check as `bakar clean`. It refuses with exit 1 when a peer node owns the build marker or a build is running on this node, naming the marker and the manual clear (delete the marker and the `bitbake.lock` beside it by hand once no build runs on any node). When the lock cannot be attributed, it warns and proceeds. There is no force flag.
 - bakar detects manifest drift (wrong manifest, wrong branch, SHA drift) and forces a full re-sync when it detects it. The drift check is independent of the doctor pre-flight; `--hide-doctor-report` hides the doctor report but never suppresses the drift check.
 
 ## See also

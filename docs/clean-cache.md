@@ -63,6 +63,11 @@ found - stop the build with `bakar stop` first, or pass `--force` to override.
 After the reset it polls `sccache --dist-status` and confirms a server is serving
 again before returning, warning if distribution did not come back.
 
+Every step runs even when an earlier one leaves something behind. Each leftover
+(cache, ccache and sstate wipes included) is printed as it happens, and the
+command exits 1 after the last step when any leftover remains. It exits 0 only
+when nothing was left.
+
 Use `--dry-run` to print the ordered plan without touching anything (the
 running-build guard does not apply to a dry run).
 
