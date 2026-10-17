@@ -844,11 +844,16 @@ def read_marker(cfg: BuildConfig) -> tuple[Literal["absent", "unreadable", "empt
       must not read as a peer lock.
     """
     try:
-        raw = lock_marker_path(cfg).read_text()
+        raw_bytes = lock_marker_path(cfg).read_bytes()
     except FileNotFoundError:
         return "absent", None
     except OSError:
         return "unreadable", None
+    try:
+        raw = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        # Bytes no hostname can be made of: never a peer's name.
+        return "garbled", None
     owner = raw.strip()
     if not owner:
         return "empty", None

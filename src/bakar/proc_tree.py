@@ -24,7 +24,7 @@ def read_lock_pid(lock_path: Path) -> int | None:
     never treat ``None`` as license to remove the lock.
     """
     try:
-        raw = lock_path.read_text()
+        raw = lock_path.read_bytes().decode("utf-8", errors="replace")
     except OSError:
         return None
     tokens = raw.split()
@@ -36,7 +36,17 @@ def read_lock_pid(lock_path: Path) -> int | None:
         return None
     # -1 and 0 parse as ints but name no process: kill(-1, sig) signals every
     # process the user owns and kill(0, sig) this process's own group.
-    return pid if pid > 0 else None
+    if pid <= 0 or pid > _pid_max():
+        return None
+    return pid
+
+
+def _pid_max() -> int:
+    """The kernel's pid ceiling; 4194304 (the 64-bit default) when unreadable."""
+    try:
+        return int(Path("/proc/sys/kernel/pid_max").read_text().strip())
+    except OSError, ValueError:
+        return 4194304
 
 
 def _read_bitbake_server_pid(run_dir: Path) -> int | None:
@@ -63,7 +73,7 @@ def _pid_alive(pid: int) -> bool:
     """Return True while process ``pid`` still exists (single-PID, not group)."""
     try:
         os.kill(pid, 0)
-    except ProcessLookupError:
+    except ProcessLookupError, OverflowError:
         return False
     except OSError:
         # EPERM: still alive, just owned by someone else.
@@ -95,7 +105,7 @@ def _pgid_alive(pgid: int) -> bool:
     """
     try:
         os.killpg(pgid, 0)
-    except ProcessLookupError:
+    except ProcessLookupError, OverflowError:
         return False
     except OSError:
         # EPERM: still alive, just owned by someone else.

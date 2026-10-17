@@ -60,14 +60,21 @@ def _on_nfs(monkeypatch: pytest.MonkeyPatch, value: bool | None) -> None:
 
 
 def _break_read(monkeypatch: pytest.MonkeyPatch, marker: Path) -> None:
-    real = Path.read_text
+    real_text = Path.read_text
+    real_bytes = Path.read_bytes
 
-    def fake(self: Path, *a: object, **k: object) -> str:
+    def fake_text(self: Path, *a: object, **k: object) -> str:
         if self == marker:
             raise PermissionError("denied")
-        return real(self, *a, **k)  # type: ignore[arg-type]
+        return real_text(self, *a, **k)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(Path, "read_text", fake)
+    def fake_bytes(self: Path) -> bytes:
+        if self == marker:
+            raise PermissionError("denied")
+        return real_bytes(self)
+
+    monkeypatch.setattr(Path, "read_text", fake_text)
+    monkeypatch.setattr(Path, "read_bytes", fake_bytes)
 
 
 def test_marker_created_with_full_content_and_no_temp_left(env: tuple[BuildConfig, Path, RunLogger]) -> None:
@@ -219,7 +226,8 @@ def test_unreadable_marker_on_nfs_with_lock_refuses(
     assert isinstance(ei.value, LockHeldByPeerError)
     assert "could not be attributed" in str(ei.value)
     assert str(marker) in str(ei.value)
-    assert marker.read_bytes() == b"peer"  # not overwritten
+    with marker.open("rb") as fh:
+        assert fh.read() == b"peer"  # not overwritten
 
 
 def test_empty_marker_on_unverifiable_fs_with_lock_refuses(
@@ -1005,3 +1013,11 @@ def test_lock_pid_liveness_treats_a_cmdline_read_race_as_live(
     assert kas_lock._lock_pid_is_live_bitbake(pid) is True
     # Unverifiable as this build's idle cooker, so the probe fails closed.
     assert kas_lock.local_build_holder(cfg) == pid
+
+
+def test_marker_names_host_non_utf8_marker_is_not_a_match(tmp_path: Path) -> None:
+    from bakar.steps.kas_lock import _marker_names_host
+
+    marker = tmp_path / ".bakar-lock-host"
+    marker.write_bytes(b"\xff\xfehost")
+    assert _marker_names_host(marker, "host") is False

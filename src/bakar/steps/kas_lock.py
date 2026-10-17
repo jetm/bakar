@@ -45,7 +45,7 @@ def _lock_pid_is_live_bitbake(pid: int) -> bool:
     """
     try:
         os.kill(pid, 0)
-    except ProcessLookupError:
+    except ProcessLookupError, OverflowError:
         return False
     except PermissionError:
         return True
@@ -452,7 +452,7 @@ def _chmod_to_umask_default(path: Path) -> None:
 def _marker_names_host(marker: Path, local_host: str) -> bool:
     """True when ``marker`` exists and holds exactly ``local_host``."""
     try:
-        return marker.read_text(encoding="utf-8") == local_host
+        return marker.read_bytes().decode("utf-8", errors="replace") == local_host
     except OSError:
         return False
 

@@ -468,3 +468,23 @@ def test_kill_pid_refuses_non_positive_pids(monkeypatch: pytest.MonkeyPatch, pid
     monkeypatch.setattr(proc_tree.os, "kill", lambda p, s: kills.append((p, s)))
     assert proc_tree._kill_pid(pid, signal.SIGINT) is False
     assert kills == []
+
+
+# --- total gate readers ----------------------------------------------------
+
+
+def test_read_lock_pid_non_utf8_lock_is_unreadable(tmp_path: Path) -> None:
+    lock = tmp_path / "bitbake.lock"
+    lock.write_bytes(b"\xff\xfe 123\n")
+    assert proc_tree.read_lock_pid(lock) is None
+
+
+def test_read_lock_pid_rejects_pid_beyond_pid_max(tmp_path: Path) -> None:
+    lock = tmp_path / "bitbake.lock"
+    lock.write_text("99999999999\n")
+    assert proc_tree.read_lock_pid(lock) is None
+
+
+def test_pid_and_pgid_alive_treat_overflow_as_dead() -> None:
+    assert proc_tree._pid_alive(99999999999) is False
+    assert proc_tree._pgid_alive(99999999999) is False

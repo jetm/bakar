@@ -182,3 +182,37 @@ def test_clean_consults_the_gate_once_and_warns_once_when_unattributable(
     assert len(guard_calls) == 1
     assert result.output.count("cannot attribute the build lock") == 1
     assert not (workspace / "nxp" / "build").exists()
+
+
+@pytest.mark.parametrize(
+    ("marker", "lock"),
+    [
+        (b"\xff\xfehost\n", b""),
+        (None, b"\xff\xfe 123\n"),
+        (None, b"99999999999\n"),
+    ],
+    ids=["marker-non-utf8", "lock-non-utf8", "lock-pid-beyond-int"],
+)
+def test_clean_warns_and_proceeds_on_undecodable_gate_files(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    marker: bytes | None,
+    lock: bytes | None,
+) -> None:
+    from bakar import hashserv, mounts
+
+    build = workspace / "nxp" / "build"
+    if marker is not None:
+        (build / ".bakar-lock-host").write_bytes(marker)
+    if lock is not None:
+        (build / "bitbake.lock").write_bytes(lock)
+    monkeypatch.setattr(mounts, "is_path_on_nfs", lambda p: True)
+    monkeypatch.setattr(hashserv, "stop", lambda root: True)
+
+    result = runner.invoke(app, ["clean", "--bsp", "nxp"])
+
+    assert result.exit_code == 0, result.output
+    assert result.exception is None
+    assert "cannot attribute the build lock" in result.output
+    assert not build.exists()
