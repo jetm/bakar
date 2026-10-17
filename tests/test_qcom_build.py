@@ -300,6 +300,121 @@ def test_qcom_build_wraps_in_systemd_scope(tmp_path: Path, monkeypatch: pytest.M
 
 
 # ---------------------------------------------------------------------------
+# qcom_build.run - lock gate and ownership marker
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _local_filesystem(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Report every path as local: the NFS probe shells out, and these tests replace ``Popen``."""
+    monkeypatch.setattr("bakar.mounts.is_path_on_nfs", lambda _path: False)
+
+
+def test_qcom_marker_path_is_the_distro_build_directory(tmp_path: Path) -> None:
+    """The marker sits in ``build-<distro>`` beside the ``bitbake.lock`` bitbake creates."""
+    from bakar import build_stop
+
+    cfg = _qcom_cfg(tmp_path)
+
+    marker = build_stop.lock_marker_path(cfg)
+
+    build_dir = tmp_path / cfg.workspace_subdir / "build-qcom-wayland"
+    assert marker.parent == build_dir
+    assert marker.parent == cfg.bsp_root / cfg.build_dir_name
+
+
+def test_qcom_build_writes_the_marker_around_the_stream(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The marker exists, naming this host, while bitbake streams, and is gone afterwards."""
+    import socket
+
+    from bakar import build_stop
+
+    _no_buildtools(monkeypatch)
+    cfg = _qcom_cfg(tmp_path)
+    log = _FakeLogger(tmp_path)
+    marker = build_stop.lock_marker_path(cfg)
+    seen: list[str | None] = []
+
+    def fake_stream(argv: list[str], *, cwd: Path, env: dict[str, str], log_path: Path) -> int:
+        seen.append(marker.read_text().strip() if marker.exists() else None)
+        return 0
+
+    monkeypatch.setattr(qcom_build_step, "_stream_build", fake_stream)
+
+    rc = qcom_build_step.run(cfg, log, target="qcom-multimedia-image")
+
+    assert rc == 0
+    assert seen == [socket.gethostname()]
+    assert not marker.exists()
+
+
+def test_qcom_build_refuses_on_a_peer_held_lock_without_starting_bitbake(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A foreign-host marker refuses the run with step_fail and never starts bitbake."""
+    from bakar import build_stop
+
+    _no_buildtools(monkeypatch)
+    cfg = _qcom_cfg(tmp_path)
+    log = _FakeLogger(tmp_path)
+    marker = build_stop.lock_marker_path(cfg)
+    marker.parent.mkdir(parents=True)
+    marker.write_text("some-peer-node\n")
+    recorder = _PopenRecorder(returncode=0)
+    monkeypatch.setattr(qcom_build_step.subprocess, "Popen", recorder)
+
+    rc = qcom_build_step.run(cfg, log, target="qcom-multimedia-image")
+
+    assert rc == 1
+    assert recorder.calls == [], "bitbake must not start while a peer holds the marker"
+    fails = [ev for ev in log.events if ev[0] == "step_fail"]
+    assert len(fails) == 1
+    assert fails[0][1] == "qcom_build"
+    assert "some-peer-node" in fails[0][2]["reason"]
+    assert fails[0][2]["target"] == "qcom-multimedia-image"
+    assert marker.read_text().strip() == "some-peer-node"
+
+
+def test_qcom_build_refuses_when_the_marker_claim_finds_a_peer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A peer that appears after the gate passed still stops the launch via the marker claim."""
+    from bakar import build_stop
+
+    _no_buildtools(monkeypatch)
+    cfg = _qcom_cfg(tmp_path)
+    log = _FakeLogger(tmp_path)
+    marker = build_stop.lock_marker_path(cfg)
+    marker.parent.mkdir(parents=True)
+    marker.write_text("late-peer\n")
+    monkeypatch.setattr(qcom_build_step, "clear_stale_bitbake_locks", lambda _cfg: build_stop.LockClearOutcome([]))
+    recorder = _PopenRecorder(returncode=0)
+    monkeypatch.setattr(qcom_build_step.subprocess, "Popen", recorder)
+
+    rc = qcom_build_step.run(cfg, log, target="qcom-multimedia-image")
+
+    assert rc == 1
+    assert recorder.calls == []
+    assert any(ev[0] == "step_fail" and "late-peer" in ev[2]["reason"] for ev in log.events)
+
+
+def test_qcom_build_dry_run_takes_no_gate_or_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A dry run neither consults the lock gate nor touches the marker."""
+    from bakar import build_stop
+
+    _no_buildtools(monkeypatch)
+    cfg = _qcom_cfg(tmp_path)
+    log = _FakeLogger(tmp_path)
+    gate = MagicMock()
+    monkeypatch.setattr(qcom_build_step, "clear_stale_bitbake_locks", gate)
+    monkeypatch.setattr(qcom_build_step, "lock_owner_marker", gate)
+
+    rc = qcom_build_step.run(cfg, log, target="qcom-multimedia-image", dry_run=True)
+
+    assert rc == 0
+    gate.assert_not_called()
+    assert not build_stop.lock_marker_path(cfg).exists()
+
+
+# ---------------------------------------------------------------------------
 # _run_manifest_build dispatch
 # ---------------------------------------------------------------------------
 
