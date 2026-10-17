@@ -145,7 +145,14 @@ paths = ["src/bakar/diagnostics.py"]
 
 [[modules]]
 name = "lock_authority"
-paths = ["src/bakar/build_stop.py"]
+paths = [
+  "src/bakar/build_stop.py",
+  # Workspace-wide run discovery, split out of build_stop.py. Not in foundation:
+  # it reads the lock gate (build_stop.lock_mutation_guard), the launch record
+  # and container status (stop_container), so it imports the stop module and is
+  # not an import-free leaf. It stays here beside build_stop.py instead.
+  "src/bakar/run_discovery.py",
+]
 # build_stop.py: per-run build-process lifecycle + the shared bitbake
 # lock-ownership gate (lock_mutation_guard). It matched no group before this
 # change, leaving its edges silently ungoverned. Like `model` and `core`, it is
