@@ -15,7 +15,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from bakar import build_stop
+from bakar import stop_container
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -162,14 +162,14 @@ def probe_build_daemon() -> BuildDaemonReport:
     in-container daemon's stats, so ``bakar cluster-info`` can show whether an
     in-progress build is actually distributing - not just the scheduler's
     aggregate capacity, which says nothing about the client. Uses
-    :func:`bakar.build_stop.detect_runtime` to resolve the container runtime
+    :func:`bakar.stop_container.detect_runtime` to resolve the container runtime
     (docker or podman) the same way ``kas-container`` does. Host-mode builds
     run no container, so an empty result falls back to the host UDS
     daemon (:func:`_probe_host_uds_daemon`). Never raises: returns
     ``running=False`` only when neither a container nor a host daemon answers,
     and ``error=...`` when the query fails.
     """
-    runtime = build_stop.detect_runtime()
+    runtime = stop_container.detect_runtime()
     try:
         ps = subprocess.run(
             [runtime, "ps", "--filter", "label=bakar.run_id", "--format", "{{.ID}}"],

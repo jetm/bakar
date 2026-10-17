@@ -72,9 +72,9 @@ paths = [
   # Extracted out of diagnostics.py. Each is a leaf parser or probe over host
   # state, and each was checked against its own imports before being filed
   # here: mounts and elfscan reach nothing in bakar at all; buildtools reaches
-  # only user_config (foundation); probes reaches build_stop (lock_authority,
-  # outside the layers order) at module level and sccache_server (foundation)
-  # inside a function body. No edge from any of the four lands above
+  # only user_config (foundation); probes reaches stop_container (the container
+  # leaf split out of build_stop) at module level and sccache_server
+  # (foundation) inside a function body. No edge from any of the four lands above
   # foundation, so none of them makes foundation a violation source.
   "src/bakar/mounts.py",
   "src/bakar/buildtools.py",

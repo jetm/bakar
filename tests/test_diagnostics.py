@@ -2508,10 +2508,10 @@ def test_probe_build_daemon_no_container_no_host_daemon_returns_not_running(
 def test_probe_build_daemon_uses_detect_runtime_not_hardcoded_docker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``probe_build_daemon`` resolves the runtime via ``build_stop.detect_runtime``
+    """``probe_build_daemon`` resolves the runtime via ``stop_container.detect_runtime``
     instead of hardcoding ``"docker"``, so a podman host's ``ps``/``exec`` argv
     uses ``podman``."""
-    monkeypatch.setattr("bakar.probes.build_stop.detect_runtime", lambda: "podman")
+    monkeypatch.setattr("bakar.probes.stop_container.detect_runtime", lambda: "podman")
 
     seen_cmds: list[list[str]] = []
 
