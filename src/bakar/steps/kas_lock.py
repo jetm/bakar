@@ -393,10 +393,12 @@ def lock_owner_marker(cfg: BuildConfig, log: RunLogger) -> Iterator[None]:
     confirmed-local filesystem lets the launch overwrite it.
 
     On exit: the marker is removed IFF ``bitbake.lock`` is absent at that
-    point (read fresh, never cached) - this is NEVER gated on the launch's
-    return code or on any exception. If the lock is still present (e.g. the
-    launch was SIGKILLed and bitbake never got to clean up), the marker is
-    left in place so the next run's row-3 recovery in
+    point (read fresh, never cached) AND the marker still reads exactly this
+    node's hostname - this is NEVER gated on the launch's return code or on
+    any exception. A marker a peer rewrote meanwhile, or one that cannot be
+    read, belongs to someone else and is left alone. If the lock is still
+    present (e.g. the launch was SIGKILLed and bitbake never got to clean
+    up), the marker is left in place so the next run's row-3 recovery in
     :func:`clear_stale_bitbake_locks` can reclaim it.
     """
     marker = build_stop.lock_marker_path(cfg)
@@ -408,7 +410,7 @@ def lock_owner_marker(cfg: BuildConfig, log: RunLogger) -> Iterator[None]:
         yield
     finally:
         lock = cfg.bsp_root / cfg.build_dir_name / "bitbake.lock"
-        if not lock.exists():
+        if not lock.exists() and _marker_names_host(marker, local_host):
             marker.unlink(missing_ok=True)
 
 

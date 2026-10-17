@@ -676,6 +676,40 @@ def test_stop_container_unknown_goneness_with_a_failed_command_is_incomplete(
     assert build_stop._stop_container("docker", "abc", plan) == "incomplete"
 
 
+def test_stop_container_unknown_goneness_after_a_clean_ladder_is_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every ladder command succeeded, but an unanswered goneness query proves nothing."""
+    monkeypatch.setattr(build_stop, "_run_runtime", _runtime_ok)
+    monkeypatch.setattr(build_stop, "_container_gone", lambda _rt, _cid: None)
+    plan = build_stop._ContainerStopPlan(force=True, term_secs=5)
+    assert build_stop._stop_container("docker", "abc", plan) == "incomplete"
+    assert plan.failures == ["could not confirm container abc is gone after stop, kill and rm -f"]
+
+
+def test_stop_run_unknown_goneness_after_a_clean_ladder_leaves_bitbake_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_dir = _container_run(tmp_path, monkeypatch)
+    topdir = run_dir.parent.parent
+    (topdir / "bitbake.lock").write_text("1\n")
+    monkeypatch.setattr(build_stop, "_run_runtime", _runtime_ok)
+    monkeypatch.setattr(build_stop, "_container_gone", lambda _rt, _cid: None)
+    monkeypatch.setattr(build_stop, "_container_id_status", lambda _rt, _label: (build_stop._ALIVE, "cafef00d"))
+    cleanups: list[object] = []
+    monkeypatch.setattr(build_stop, "_report_stale_cleanup", lambda *a, **_k: cleanups.append(a) or [])
+
+    assert build_stop.stop_run(run_dir, force=True) is False
+
+    assert cleanups == []
+    assert (topdir / "bitbake.lock").exists()
+    err = capsys.readouterr().err
+    assert "could not confirm container cafef00d is gone" in err
+    assert "stopped" not in err.splitlines()
+
+
 def test_incomplete_container_stop_leaves_bitbake_lock_and_socket_in_place(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

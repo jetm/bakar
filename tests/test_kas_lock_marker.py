@@ -96,7 +96,7 @@ def test_existing_marker_reports_false(env: tuple[BuildConfig, Path, RunLogger])
     assert [p.name for p in build.iterdir()] == [marker.name]
 
 
-def test_link_lost_reply_with_nlink_two_is_success(
+def test_link_error_with_marker_naming_this_host_is_success(
     env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg, _build, _log = env
@@ -113,7 +113,7 @@ def test_link_lost_reply_with_nlink_two_is_success(
 
 
 @pytest.mark.parametrize("err", [errno.EPERM, errno.EIO])
-def test_link_failure_with_nlink_one_raises(
+def test_link_failure_without_host_naming_marker_raises_unsupported(
     env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch, err: int
 ) -> None:
     """A link failure that did not publish the marker is a clear refusal, never a raw OSError."""
@@ -166,6 +166,33 @@ def test_own_marker_is_replaced(env: tuple[BuildConfig, Path, RunLogger], monkey
     marker.write_text("this-host")
     with lock_owner_marker(cfg, log):
         assert marker.read_text() == "this-host"
+
+
+def test_exit_leaves_marker_a_peer_overwrote_during_the_body(env: tuple[BuildConfig, Path, RunLogger]) -> None:
+    cfg, _build, log = env
+    marker = build_stop.lock_marker_path(cfg)
+    with lock_owner_marker(cfg, log):
+        marker.write_text("peer")
+    assert marker.read_text() == "peer"
+
+
+def test_exit_leaves_unreadable_marker(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, _build, log = env
+    marker = build_stop.lock_marker_path(cfg)
+    with lock_owner_marker(cfg, log):
+        _break_read(monkeypatch, marker)
+    assert marker.exists()
+
+
+def test_exit_removes_own_marker_when_lock_absent(env: tuple[BuildConfig, Path, RunLogger]) -> None:
+    cfg, build, log = env
+    marker = build_stop.lock_marker_path(cfg)
+    with lock_owner_marker(cfg, log):
+        assert marker.read_text() == "this-host"
+    assert not marker.exists()
+    assert not (build / "bitbake.lock").exists()
 
 
 def test_unreadable_marker_on_nfs_with_lock_refuses(

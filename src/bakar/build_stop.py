@@ -776,11 +776,13 @@ def _stop_container(runtime: str, cid: str, plan: _ContainerStopPlan) -> str:
     ``"lost_runtime"`` tells the caller the runtime went unreachable (exit 1).
 
     After an escalation the container is re-checked with
-    :func:`_container_gone`. If it is still listed (or cannot be confirmed
-    gone while a runtime command failed) the status is ``"incomplete"`` and the
-    failed runtime commands, each with its exit status and error text, are
-    appended to ``plan.failures`` so the caller can name them in its incomplete-stop
-    report. A ladder command that failed while the container is gone anyway
+    :func:`_container_gone`. Only a conclusive "gone" answer keeps the status;
+    a container still listed, or one whose goneness cannot be determined
+    (whether or not a ladder command failed), makes it ``"incomplete"``, and
+    the failed runtime commands, each with its exit status and error text, or
+    a line naming the unconfirmed container, are appended to ``plan.failures``
+    so the caller can name them in its incomplete-stop report. A ladder
+    command that failed while the container is gone anyway
     (``rm -f`` racing the ``--rm`` removal) is not reported. This function
     prints no "stopped" line: the caller prints it once, after its own
     verification, so it can never precede an incomplete report.
@@ -820,15 +822,23 @@ def _stop_container(runtime: str, cid: str, plan: _ContainerStopPlan) -> str:
     # The ladder ran: confirm the container is actually gone. kas-container runs
     # with ``--rm``, so a stopped container is removed and ``inspect <cid>``
     # errors for it exactly as it does for a wedged runtime. Listing by id
-    # separates the two: a successful empty listing is conclusive.
+    # separates the two: a successful empty listing is conclusive. Only that
+    # conclusive answer is success: an unanswered query says nothing about the
+    # container, which may still hold bitbake.lock, so it is incomplete even
+    # when every ladder command reported success.
     try:
         gone = _container_gone(runtime, cid)
     except KeyboardInterrupt:
         # A second Ctrl-C during verification cannot confirm the outcome.
         gone = None
-    if gone or (gone is None and not escalate_failures):
+    if gone is True:
         return status
-    plan.failures.extend(escalate_failures or [f"container {cid} is still running after stop, kill and rm -f"])
+    if escalate_failures:
+        plan.failures.extend(escalate_failures)
+    elif gone is None:
+        plan.failures.append(f"could not confirm container {cid} is gone after stop, kill and rm -f")
+    else:
+        plan.failures.append(f"container {cid} is still running after stop, kill and rm -f")
     return "incomplete"
 
 
@@ -1979,10 +1989,13 @@ def stop_run(run_dir: Path, cfg: BuildConfig | None = None, *, force: bool = Fal
         return False
 
     if stop_status == "incomplete":
-        # The container is alive and kas-container mounts the build dir at /work,
-        # so the host argv scan cannot see its cooker: it would call the lock
-        # stale and delete it out from under a running build.
-        _say("leaving bitbake.lock/bitbake.sock in place: the build container is still running")
+        # The container may be alive and kas-container mounts the build dir at
+        # /work, so the host argv scan cannot see its cooker: it would call the
+        # lock stale and delete it out from under a running build.
+        _say(
+            "leaving bitbake.lock/bitbake.sock in place: the build container is still running"
+            " or could not be confirmed stopped"
+        )
     else:
         _report_stale_cleanup(run_dir, cfg)
     # The runtime's own refusals lead the report: they say WHY the container
