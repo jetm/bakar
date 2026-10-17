@@ -38,7 +38,7 @@ Checks cover:
 - Host tools (`repo`, `kas-container`, `git`, global git identity)
 - Disk space (build root partition, ccache fill ratio)
 - CPU threads (resolved `NPROC` and the bitbake settings it drives: task threads, parse threads, `make -j`; flags `local.conf` assignments that override the NPROC-derived values)
-- Workspace filesystem (rejects vfat/exfat/ntfs/9p/nfs; sstate hardlinks need a local fs)
+- Workspace filesystem (a workspace on an NFS mount, nfs or nfs4, is a blocking failure whatever the `TMPDIR` is: building through NFS is not supported, and the fix is to move the workspace to a node-local ext4, btrfs or xfs path. Shared sstate, downloads and ccache directories on NFS remain supported. A resolved `TMPDIR` on NFS also blocks; vfat/exfat/ntfs/9p workspaces warn, since sstate hardlinks need a local fs)
 - NFS delegations on the build device (warns when this host exports the build tree and a peer holds delegations on it: every conflicting local open must recall one, blocking in the kernel's `__break_lease` for up to `/proc/sys/fs/lease-break-time` seconds each, which makes a local build look hung - ~0% CPU cooker, no parser children, no progress)
 - Kernel sysctls (`fs.inotify.max_user_instances`, `fs.inotify.max_user_watches`)
 - Kas YAML syntax (`kas dump` parse check)

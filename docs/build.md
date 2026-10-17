@@ -91,6 +91,11 @@ output only for build-blocking issues. Set `[build] show_doctor_report = false`
 for the same effect on every invocation. Doctor checks always run - a blocking
 failure aborts the build whether or not the report is shown.
 
+A workspace on an NFS mount is one such blocking failure, whatever the
+`TMPDIR` is: building through NFS is not supported, so move the workspace to a
+node-local ext4, btrfs or xfs path. Shared sstate, downloads and ccache
+directories on NFS remain supported.
+
 ## Examples
 
 ```bash
