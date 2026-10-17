@@ -39,6 +39,8 @@ bakar prefetch -f processor-sdk-10.1.0.8-config_var1.txt -m am62x-var-som
 
 - Positional YAML and `--manifest` are mutually exclusive.
 - The download cache path is controlled by `build.dl_dir` in `~/.config/bakar/config.toml` or the `DL_DIR` variable in your kas YAML.
+- Prefetch is gated on the build directory's bitbake lock. It refuses to start (exit code 1) while a peer node's ownership marker or a live local build holds that lock. The refusal message names the marker file and tells you how to clear it by hand when no build runs on any node.
+- For the run, prefetch writes the ownership marker so a peer sees the build directory as in use. It removes the marker when the run ends, but only when the bitbake lock is absent; a marker is left alone if the lock is still held.
 - Useful before a conference, lab session, or air-gapped build where network access will be unavailable.
 
 ## Typical offline workflow
