@@ -120,7 +120,8 @@ RELOCATED_SYMBOLS: list[tuple[str, str]] = [
     # The probes took the last module-level reader of build_stop with them, so
     # diagnostics dropped the binding. Pinned because a re-export would silently
     # revive the stale patch path: tests/test_diagnostics.py patches
-    # bakar.probes.build_stop.detect_runtime, and the bakar.diagnostics spelling
+    # the detect_runtime attribute of bakar.probes' build_stop binding, and the
+    # bakar.diagnostics spelling
     # it replaced would start resolving again while intercepting nothing.
     ("bakar.diagnostics", "build_stop"),
 ]
@@ -222,19 +223,37 @@ RELOCATED_STOP_SYMBOLS: list[tuple[str, str]] = [
         "_killpg",
         "_host_build_alive",
         "_bitbake_server_pid_verified",
+        # The workspace-wide discovery section, moved whole to
+        # ``bakar.run_discovery`` together with what only it used. It cannot be
+        # re-exported: run_discovery imports build_stop, so a re-export would
+        # break a cold ``import bakar.run_discovery``.
+        "_logger",
+        "RunRoot",
+        "SkippedRoot",
+        "RunCandidate",
+        "RunScan",
+        "_workspace_roots",
+        "enumerate_workspace_runs",
+        "is_candidate_live",
+        "live_workspace_runs",
+        "correlate_host_discoveries",
+        "dedup_across_sources",
+        # Read bare only by the discovery code, which now calls
+        # ``stop_container`` directly.
+        "_container_id_status",
+        "detect_runtime",
+        "resolve",
+        "ResolveRequest",
     )
 ]
 
 # The INVERSE contract for ``bakar.build_stop``: moved names that stay reachable
 # through it. ``_ALIVE``/``_DEAD``/``_ERROR`` are read bare by functions that did
-# not move. ``_container_id_status`` and ``detect_runtime`` are read bare by the
-# discovery code until the discovery contract step drops them.
+# not move (``_graceful_wait``, ``stop_run``); they are all that remains.
 STOP_RE_EXPORTED_NAMES: tuple[str, ...] = (
     "_ALIVE",
     "_DEAD",
     "_ERROR",
-    "_container_id_status",
-    "detect_runtime",
 )
 
 # Public surface ``bakar.diagnostics`` must keep exposing regardless of what
@@ -266,6 +285,7 @@ EXTRACTED_MODULES: tuple[str, ...] = (
     "src/bakar/mounts.py",
     "src/bakar/stop_container.py",
     "src/bakar/proc_tree.py",
+    "src/bakar/run_discovery.py",
     "src/bakar/buildtools.py",
     "src/bakar/probes.py",
     "src/bakar/elfscan.py",
