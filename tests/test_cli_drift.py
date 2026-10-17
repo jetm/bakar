@@ -169,7 +169,8 @@ def test_drift_json_output_parseable(runner: CliRunner, tmp_path: Path, kas_yaml
     result = runner.invoke(app, ["drift", str(kas_yaml), "-w", str(tmp_path), "--json"])
 
     assert result.exit_code == 1, result.output
-    parsed = json.loads(result.output.strip())
+    assert result.stderr.strip() == ""
+    parsed = json.loads(result.stdout)
     assert isinstance(parsed, list)
     assert len(parsed) == 1
     entry = parsed[0]
@@ -193,12 +194,32 @@ def test_drift_json_keys_present(runner: CliRunner, tmp_path: Path, kas_yaml: Pa
         ["drift", str(kas_yaml), "-w", str(tmp_path), "--json"],
     )
 
-    parsed = json.loads(result.output.strip())
+    assert result.stderr.strip() == ""
+    parsed = json.loads(result.stdout)
     assert parsed, "Expected at least one entry"
     for obj in parsed:
         assert "pinned" in obj
         assert "actual" in obj
         assert "distance" in obj
+
+
+def test_drift_json_payload_on_stdout(runner: CliRunner, tmp_path: Path, kas_yaml: Path) -> None:
+    """The JSON document goes to stdout unwrapped, even with a path far wider than a terminal."""
+    long_name = "meta-" + "x" * 200
+    sources_dir = tmp_path / "sources"
+    _make_git_repo(sources_dir / long_name)
+    pinned_sha = "f" * 40
+
+    lock = tmp_path / "kas.lock"
+    lock.write_text(json.dumps({"repos": {long_name: {"commit": pinned_sha}}}))
+
+    result = runner.invoke(app, ["drift", str(kas_yaml), "-w", str(tmp_path), "--json"])
+
+    assert result.exit_code == 1, result.output
+    assert result.stderr.strip() == ""
+    parsed = json.loads(result.stdout)
+    assert [e["source"] for e in parsed] == [long_name]
+    assert long_name in result.stdout
 
 
 def test_drift_markdown_format(runner: CliRunner, tmp_path: Path, kas_yaml: Path) -> None:

@@ -169,7 +169,7 @@ def drift(
     # -- Render output ----------------------------------------------------
     if show_json:
         out = [{k: r[k] for k in ("source", "pinned", "actual", "distance")} for r in rows]
-        console.print(json.dumps(out))
+        typer.echo(json.dumps(out, indent=2))
         raise typer.Exit(code=1 if any(r["drifted"] for r in rows) else 0)
 
     if not rows:
