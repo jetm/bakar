@@ -388,7 +388,7 @@ def _stop_container(runtime: str, cid: str, plan: _ContainerStopPlan) -> str:
     """Stop container ``cid`` via ``runtime`` with a graceful wait.
 
     When ``plan.force`` is False: send SIGINT to bitbake inside the container first
-    (via :func:`_sigint_bitbake_in_container`, falling back to a container-PID-1
+    (via :func:`stop_container._sigint_bitbake_in_container`, falling back to a container-PID-1
     SIGINT if the exec fails), then wait via :func:`_graceful_wait` until the
     container is no longer running, rendering live progress. A Ctrl-C, or
     ``grace_seconds`` elapsing, escalates through
@@ -401,7 +401,7 @@ def _stop_container(runtime: str, cid: str, plan: _ContainerStopPlan) -> str:
     ``"lost_runtime"`` tells the caller the runtime went unreachable (exit 1).
 
     After an escalation the container is re-checked with
-    :func:`_container_gone`. Only a conclusive "gone" answer keeps the status;
+    :func:`stop_container._container_gone`. Only a conclusive "gone" answer keeps the status;
     a container still listed, or one whose goneness cannot be determined
     (whether or not a ladder command failed), makes it ``"incomplete"``, and
     the failed runtime commands, each with its exit status and error text, or
@@ -587,7 +587,7 @@ def _escalate_host(pgid: int | None, run_dir: Path | None = None) -> list[_Kille
     there is nothing to wait out, and the caller (a build already reporting
     its own completion, or an interrupt handler) should not pay a real
     ``_STOP_TERM_SECONDS`` for a no-op. Layer 2 is re-verified against
-    :func:`_bitbake_server_pid_verified` again before the SIGKILL, not only
+    :func:`proc_tree._bitbake_server_pid_verified` again before the SIGKILL, not only
     before the SIGTERM: the two rungs are ``_STOP_TERM_SECONDS`` apart, which
     is the same recycled-PID window this function exists to close, only wider
     - the PID it SIGTERM'd can exit and be reused by the kernel during the
@@ -698,7 +698,7 @@ def escalate_container_tree(run_id: str) -> bool:
     strand this module exists to prevent.
 
     Resolves the container by its ``bakar.run_id`` label
-    (:func:`run_id_label`) and force-stops it through the same
+    (:func:`stop_container.run_id_label`) and force-stops it through the same
     stop -> kill -> rm -f ladder :func:`_stop_container` uses.
 
     Returns True when a container was found AND verified gone afterward,
@@ -711,8 +711,8 @@ def escalate_container_tree(run_id: str) -> bool:
     being removed), so re-querying by the same label is the only way to tell
     "escalated" from "issued the commands and hoped".
 
-    The post-escalation check uses :func:`_container_id_status`, not
-    :func:`_container_id`, on purpose: ``_container_id`` collapses "no
+    The post-escalation check uses :func:`stop_container._container_id_status`, not
+    :func:`stop_container._container_id`, on purpose: ``_container_id`` collapses "no
     container matches" and "the query itself failed" into the same ``None``,
     and the two must not collapse into one "escalated" verdict here - a
     wedged runtime after the ladder ran must read as unverified, not as

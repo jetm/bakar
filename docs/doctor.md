@@ -56,8 +56,8 @@ Checks cover:
 `bitbake-locks` removes stale `bitbake.lock` and socket files, but only after
 checking who owns them. It blocks when a local build holds the lock, when a
 peer node holds it, or when ownership on a shared filesystem cannot be
-confirmed. A peer-held or unattributable result names the lock marker file
-in its fix hint. When no build runs on any node, delete that marker and the
+confirmed. A peer-held result ends its message with `(marker <path>)`, and a peer-held or
+unattributable result names the lock marker file in its fix hint. When no build runs on any node, delete that marker and the
 `bitbake.lock` beside it by hand, then re-run `bakar doctor`.
 
 ## NFS cache-mount readiness

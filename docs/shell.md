@@ -45,7 +45,7 @@ bakar --host shell -f imx-6.12.49-2.2.0.xml -c "bitbake -c cleansstate glibc"
 ## Notes
 
 - Positional YAML and `--manifest` are mutually exclusive.
-- `bakar shell -c` is gated on the build directory's bitbake lock. It refuses to start (exit code 1) while a peer node's ownership marker or a live local build holds that lock. The refusal message names the marker file and tells you how to clear it by hand when no build runs on any node.
+- `bakar shell -c` is gated on the build directory's bitbake lock. It refuses to start (exit code 1) while a peer node's ownership marker or a live local build holds that lock. A peer-held or unattributable lock names the marker file and tells you how to clear it by hand when no build runs on any node; a live local build names its pid (or the container label in parentheses for a container build). A marker file that cannot be read or written is refused with the marker path and the errno.
 - For a `-c` run, `bakar shell` writes the ownership marker and removes it when the command ends, but only when the bitbake lock is absent.
 - The interactive shell (no `-c`) is not gated and writes no marker, and neither does the `devshell` task started through `bakar bitbake`. An unbounded session would otherwise hold the marker for its whole lifetime.
 - Shell sessions are recorded in `<bsp_root>/build/runs/<ts>/` like builds; use `bakar log` to inspect them.

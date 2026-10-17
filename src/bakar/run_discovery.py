@@ -39,7 +39,7 @@ class RunRoot:
     """One family/build root scanned for workspace-wide live-build discovery.
 
     ``bsp_root`` is where ``build/runs`` actually lives on disk.
-    ``resolve_workspace``/``resolve_family`` are the two :func:`resolve`
+    ``resolve_workspace``/``resolve_family`` are the two :func:`bakar.config.resolve`
     inputs that reproduce it: the nxp/ti roots pass the top-level workspace
     with their own family (``resolve()`` computes ``bsp_root = workspace /
     bsp_family`` for those), while the plain ``build/runs`` root and every
@@ -219,10 +219,10 @@ def is_candidate_live(candidate: RunCandidate) -> bool:
     """Report whether ``candidate`` is a currently live build.
 
     Host mode: the launch record parses as ``mode="host"`` and
-    :func:`is_build_running` confirms a live, cmdline-verified PGID.
+    :func:`build_stop.is_build_running` confirms a live, cmdline-verified PGID.
     Container mode: a recorded container label is a NECESSARY but not
-    sufficient signal - queries the runtime via :func:`_container_id_status`
-    directly, not :func:`_container_id`, since an unanswerable query
+    sufficient signal - queries the runtime via :func:`stop_container._container_id_status`
+    directly, not :func:`stop_container._container_id`, since an unanswerable query
     (``_ERROR``) must not be read as "dead"; only a confirmed ``_DEAD``
     excludes the candidate. Anything else (no ``container_label`` and not
     host mode) is not live. Extracted from :func:`live_workspace_runs` so a
@@ -245,9 +245,9 @@ def live_workspace_runs(path: Path, *, user_config: UserConfig | None = None) ->
     """Live-only filter over :func:`enumerate_workspace_runs`'s candidates.
 
     Host mode: the launch record parses as ``mode="host"`` and
-    :func:`is_build_running` confirms a live, cmdline-verified PGID.
+    :func:`build_stop.is_build_running` confirms a live, cmdline-verified PGID.
     Container mode: a recorded container label is a NECESSARY but not
-    sufficient signal - :func:`remove_pid` deletes the launch record on
+    sufficient signal - :func:`build_stop.remove_pid` deletes the launch record on
     every stop path that reaches it, so a label surviving on disk usually
     means either a genuinely live container or one that exited outside
     ``bakar stop``'s own cleanup (a runtime restart, a manual ``docker
@@ -261,8 +261,8 @@ def live_workspace_runs(path: Path, *, user_config: UserConfig | None = None) ->
     closes that gap for every caller of this function, not only the
     explicitly-targeted one.
 
-    The query uses :func:`_container_id_status` directly, not
-    :func:`_container_id` - the two-state collapse the latter does (a
+    The query uses :func:`stop_container._container_id_status` directly, not
+    :func:`stop_container._container_id` - the two-state collapse the latter does (a
     matching container found, or not - folding "confirmed dead" and "the
     query itself failed" into the same "no id" result) is wrong here. An
     unanswerable query (missing runtime binary, unreachable daemon,
@@ -275,7 +275,7 @@ def live_workspace_runs(path: Path, *, user_config: UserConfig | None = None) ->
     refuses rather than guesses when it cannot confirm an answer.
 
     A candidate whose launch record is malformed or unreadable is excluded
-    rather than raising: :func:`read_launch_record` already degrades
+    rather than raising: :func:`build_stop.read_launch_record` already degrades
     gracefully for that case (see its own docstring), so it never produces
     an entry this loop would need to special-case.
 
