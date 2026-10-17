@@ -583,3 +583,97 @@ def test_stress_parse_step_context_one_flag_moves_one_field(
     for name, want in expected.items():
         got = getattr(ctx, name)
         assert got == want, f"{flag} -> StressParseContext.{name}: expected {want!r}, got {got!r}"
+
+
+# --- Gate: refuse before any parse-cache wipe (nfs-safe-lock-clearing) ---
+
+
+def _seed_build_dir(workspace: Path) -> tuple[Path, list[Path]]:
+    """Create the nxp TOPDIR with both parse-cache files the step would wipe."""
+    build = workspace / "nxp" / "build"
+    caches = [build / "cache" / "bb_codeparser.dat", build / "tmp" / "cache" / "bb_cache.dat.x"]
+    for cache in caches:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text("warm")
+    return build, caches
+
+
+def test_stress_parse_refuses_before_cache_wipe_on_peer_held(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A marker naming another host exits 1 before the step, so no cache is removed."""
+    workspace = _make_workspace(tmp_path)
+    monkeypatch.chdir(workspace)
+    build, caches = _seed_build_dir(workspace)
+    (build / ".bakar-lock-host").write_text("some-peer-host\n")
+    monkeypatch.setattr("bakar.build_stop.socket.gethostname", lambda: "this-host")
+    override_p, kas_p, stress_p = _patch_steps(summary=_clean_summary(1))
+
+    with override_p, kas_p, stress_p as mock_run:
+        result = runner.invoke(app, ["stress-parse", "--manifest", "imx-6.6.52-2.2.2.xml"])
+
+    assert result.exit_code == 1, result.output
+    assert "some-peer-host" in result.output
+    mock_run.assert_not_called()
+    assert all(c.exists() for c in caches)
+
+
+def test_stress_parse_refuses_before_cache_wipe_when_a_local_build_is_live(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real bitbake pid in the lock, with only the activity probe patched, refuses."""
+    import os
+    import signal
+    import subprocess
+    import sys
+    from types import SimpleNamespace
+
+    from bakar import build_stop
+
+    workspace = _make_workspace(tmp_path)
+    monkeypatch.chdir(workspace)
+    build, caches = _seed_build_dir(workspace)
+    monkeypatch.setattr("bakar.build_stop.socket.gethostname", lambda: "this-host")
+    (build / ".bakar-lock-host").write_text("this-host\n")
+    monkeypatch.setattr(build_stop, "_collect_build_pids", lambda _d, _r: SimpleNamespace(all_pids=[1, 2]))
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)", "bitbake"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        assert os.getpgid(child.pid) == child.pid
+        (build / "bitbake.lock").write_text(f"{child.pid}\n")
+        override_p, kas_p, stress_p = _patch_steps(summary=_clean_summary(1))
+
+        with override_p, kas_p, stress_p as mock_run:
+            result = runner.invoke(app, ["stress-parse", "--manifest", "imx-6.6.52-2.2.2.xml"])
+    finally:
+        if child.poll() is None and os.getpgid(child.pid) == child.pid:
+            os.killpg(child.pid, signal.SIGTERM)
+        child.wait(timeout=10)
+
+    assert result.exit_code == 1, result.output
+    assert str(child.pid) in result.output
+    mock_run.assert_not_called()
+    assert all(c.exists() for c in caches)
+
+
+def test_stress_parse_proceeds_with_warning_when_unattributable(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No marker plus a lock on an unverifiable filesystem warns and still runs."""
+    workspace = _make_workspace(tmp_path)
+    monkeypatch.chdir(workspace)
+    build, _caches = _seed_build_dir(workspace)
+    (build / "bitbake.lock").write_text("not-a-pid\n")
+    monkeypatch.setattr("bakar.mounts.is_path_on_nfs", lambda _p: None)
+    override_p, kas_p, stress_p = _patch_steps(summary=_clean_summary(1))
+
+    with override_p, kas_p, stress_p as mock_run:
+        result = runner.invoke(app, ["stress-parse", "--manifest", "imx-6.6.52-2.2.2.xml"])
+
+    assert result.exit_code == 0, result.output
+    assert "cannot attribute the build lock" in result.output
+    assert mock_run.call_count == 1
