@@ -41,11 +41,13 @@ class _ShellStub:
         self.cfg: BuildConfig | None = None
         self.command: str | None = None
         self.called = False
+        self.take_lock_marker: bool | None = None
 
-    def __call__(self, ctx, args, *, command=None) -> int:
+    def __call__(self, ctx, args, *, command=None, take_lock_marker=False) -> int:
         self.called = True
         self.cfg = ctx.cfg
         self.command = command
+        self.take_lock_marker = take_lock_marker
         return self.rc
 
 
@@ -133,6 +135,30 @@ def test_prefetch_nonzero_return_propagates(
     monkeypatch.setattr(prefetch_module.step_kas, "run_shell", stub)
     result = runner.invoke(app, ["prefetch", "--workspace", str(nxp_workspace)])
     assert result.exit_code != 0, result.output
+
+
+@pytest.mark.unit
+def test_prefetch_takes_the_lock_marker(
+    runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """prefetch runs a full bitbake, so it opts in to the stale-lock gate and marker."""
+    stub = _ShellStub(rc=0)
+    monkeypatch.setattr(prefetch_module.step_kas, "run_shell", stub)
+    result = runner.invoke(app, ["prefetch", "--workspace", str(nxp_workspace)])
+    assert result.exit_code == 0, result.output
+    assert stub.take_lock_marker is True
+
+
+@pytest.mark.unit
+def test_prefetch_exits_nonzero_when_the_launcher_refuses(
+    runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refused launch (run_shell returns 1 for a live peer lock) exits non-zero."""
+    stub = _ShellStub(rc=1)
+    monkeypatch.setattr(prefetch_module.step_kas, "run_shell", stub)
+    result = runner.invoke(app, ["prefetch", "--workspace", str(nxp_workspace)])
+    assert stub.take_lock_marker is True
+    assert result.exit_code == 1, result.output
 
 
 @pytest.mark.unit

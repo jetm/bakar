@@ -100,5 +100,6 @@ def prefetch(
             kas_ctx,
             [],
             command=f"bitbake --runall=fetch {shlex.quote(fetch_target)}",
+            take_lock_marker=True,
         )
     raise typer.Exit(code=rc)
