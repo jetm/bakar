@@ -274,7 +274,11 @@ def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
         return removed
 
     def _remove_own_marker() -> None:
-        build_stop.lock_marker_path(cfg).unlink(missing_ok=True)
+        marker = build_stop.lock_marker_path(cfg)
+        try:
+            marker.unlink(missing_ok=True)
+        except OSError as exc:
+            raise LockMarkerFileError(marker, exc, "remove the marker") from exc
 
     owner = build_stop.read_marker_owner(cfg)
     local_host = socket.gethostname()
@@ -420,13 +424,35 @@ class LockMarkerUnsupportedError(LockUnattributableError):
 class LockMarkerOutcomeUnknownError(LockUnattributableError):
     """Publishing the ownership marker failed and whether it landed could not be determined."""
 
-    def __init__(self, marker: Path) -> None:
+    def __init__(self, marker: Path, cause: OSError | None = None) -> None:
         super().__init__(marker)
+        detail = f" ({_errno_text(cause)})" if cause is not None else ""
         self.args = (
-            f"the outcome of publishing bitbake lock ownership marker {marker} could not be determined; it may "
-            f"name this host, and re-running bakar here clears it; if no build runs on any node, delete the "
+            f"the outcome of publishing bitbake lock ownership marker {marker} could not be determined{detail}; it "
+            f"may name this host, and re-running bakar here clears it; if no build runs on any node, delete the "
             f"marker {marker} by hand",
         )
+
+
+class LockMarkerFileError(LockUnattributableError):
+    """A marker file operation failed before anything was published (or while removing it).
+
+    Raised for the temp-file create, write, mode change, the marker's
+    directory, and the removal of this node's own marker, so no bare
+    ``OSError`` escapes :func:`lock_owner_marker` or the stale-lock clear.
+    """
+
+    def __init__(self, marker: Path, cause: OSError, action: str = "publish the marker") -> None:
+        super().__init__(marker)
+        published = "nothing was published" if action == "publish the marker" else "the marker was left as it was"
+        self.args = (
+            f"cannot {action} for bitbake lock ownership marker {marker}: {_errno_text(cause)}; {published}. "
+            f"{build_stop.manual_clear_hint(marker)}",
+        )
+
+
+def _errno_text(exc: OSError) -> str:
+    return os.strerror(exc.errno) if exc.errno else str(exc)
 
 
 _MARKER_REREAD_DELAY_S = 0.2
@@ -480,6 +506,27 @@ def _link_landed(tmp: Path, marker: Path, local_host: str) -> bool | None:
         return None
 
 
+def _write_temp_marker(marker: Path, local_host: str) -> Path:
+    """Write ``local_host`` to a unique temp file beside ``marker``; any OSError becomes a refusal.
+
+    Nothing is published here, so a failure leaves no temp file behind and
+    raises :class:`LockMarkerFileError` instead of a bare ``OSError``.
+    """
+    tmp: Path | None = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(dir=str(marker.parent), prefix=f".{marker.name}.")
+        tmp = Path(tmp_name)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(local_host)
+        _chmod_to_umask_default(tmp)
+    except OSError as exc:
+        if tmp is not None:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+        raise LockMarkerFileError(marker, exc) from exc
+    return tmp
+
+
 def _create_marker_exclusive(marker: Path, local_host: str) -> bool:
     """Create ``marker`` holding ``local_host`` in one step; False when it already exists.
 
@@ -492,12 +539,8 @@ def _create_marker_exclusive(marker: Path, local_host: str) -> bool:
     :class:`LockMarkerUnsupportedError` (hard links unsupported, or an I/O
     error): the marker is never published by any path that exposes it empty.
     """
-    fd, tmp_name = tempfile.mkstemp(dir=str(marker.parent), prefix=f".{marker.name}.")
-    tmp = Path(tmp_name)
+    tmp = _write_temp_marker(marker, local_host)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(local_host)
-        _chmod_to_umask_default(tmp)
         try:
             os.link(tmp, marker)
         except FileExistsError:
@@ -507,7 +550,7 @@ def _create_marker_exclusive(marker: Path, local_host: str) -> bool:
             if landed:
                 return True
             if landed is None:
-                raise LockMarkerOutcomeUnknownError(marker) from exc
+                raise LockMarkerOutcomeUnknownError(marker, exc) from exc
             raise LockMarkerUnsupportedError(marker, exc) from exc
         return True
     finally:
@@ -517,16 +560,14 @@ def _create_marker_exclusive(marker: Path, local_host: str) -> bool:
 
 def _replace_marker(marker: Path, local_host: str) -> None:
     """Atomically overwrite ``marker`` with ``local_host`` (temp file + ``os.replace``)."""
-    fd, tmp_name = tempfile.mkstemp(dir=str(marker.parent), prefix=f".{marker.name}.")
-    tmp = Path(tmp_name)
+    tmp = _write_temp_marker(marker, local_host)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(local_host)
-        _chmod_to_umask_default(tmp)
         try:
             os.replace(tmp, marker)
         except OSError as exc:
-            raise LockMarkerOutcomeUnknownError(marker) from exc
+            if _marker_names_host(marker, local_host):
+                return
+            raise LockMarkerOutcomeUnknownError(marker, exc) from exc
     except BaseException:
         with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)
@@ -541,7 +582,7 @@ def _claim_existing_marker(cfg: BuildConfig, marker: Path, local_host: str) -> N
     marker holds ``local_host``; raises when it cannot be attributed to this host.
 
     - A different host's name -> :class:`LockHeldByPeerError`.
-    - This host's name -> replaced.
+    - This host's name -> left as it is: it already attributes the lock here.
     - Readable but garbled -> replaced: a peer publishes by hard link, so a
       live peer's marker is never garbled; only a crash leaves one.
     - Unreadable or empty, still so after one re-read -> the lock gate is
@@ -564,6 +605,8 @@ def _claim_existing_marker(cfg: BuildConfig, marker: Path, local_host: str) -> N
             continue
         if state == "owner" and owner is not None and owner != local_host:
             raise LockHeldByPeerError(owner, marker=marker)
+        if state == "owner" and owner == local_host:
+            return
         if state in ("unreadable", "empty"):
             refusal = build_stop.lock_mutation_guard(cfg)
             if refusal is not None:
@@ -616,7 +659,10 @@ def lock_owner_marker(cfg: BuildConfig, log: RunLogger) -> Iterator[None]:
     :func:`clear_stale_bitbake_locks` can reclaim it.
     """
     marker = build_stop.lock_marker_path(cfg)
-    marker.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise LockMarkerFileError(marker, exc) from exc
     local_host = socket.gethostname()
     if not _create_marker_exclusive(marker, local_host):
         _claim_existing_marker(cfg, marker, local_host)

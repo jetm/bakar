@@ -102,19 +102,21 @@ def run(
     # The doctor's lock check runs before the repository sync, so a crash in
     # between leaves a lock nobody attributed. Gate here, after the dry-run
     # return, and mark ownership around the multi-hour stream.
-    lock_outcome = clear_stale_bitbake_locks(cfg)
-    for removed_path in lock_outcome.removed:
-        log.warn(f"removed stale bitbake lock: {removed_path} (owning process was gone)")
-    if lock_outcome.refusal is not None:
-        log.step_fail("qcom_build", reason=_lock_refusal_message(lock_outcome.refusal), target=target)
-        return 1
-
     try:
+        lock_outcome = clear_stale_bitbake_locks(cfg)
+        for removed_path in lock_outcome.removed:
+            log.warn(f"removed stale bitbake lock: {removed_path} (owning process was gone)")
+        if lock_outcome.refusal is not None:
+            log.step_fail("qcom_build", reason=_lock_refusal_message(lock_outcome.refusal), target=target)
+            return 1
         with lock_owner_marker(cfg, log):
             rc = _stream_build(argv, cwd=qcom, env=env, log_path=log.run_dir / "kas.log")
     except LockHeldByPeerError as exc:
-        log.step_fail("qcom_build", reason=peer_lock_reason(exc), target=target)
+        log.step_fail("qcom_build", reason=peer_lock_reason(exc), exit_code=1, target=target)
         return 1
+    except OSError as exc:
+        log.step_fail("qcom_build", reason=f"unexpected {type(exc).__name__}: {exc}", exit_code=1, target=target)
+        raise
     if rc != 0:
         log.step_fail("qcom_build", reason=f"bitbake exited {rc}", target=target)
     else:

@@ -381,3 +381,44 @@ def test_run_shell_with_the_opt_in_removes_the_marker_when_the_lock_is_absent(
     assert rc == 3
     assert probe.launches == ["this-host"]
     assert not marker.exists()
+
+
+@pytest.mark.unit
+def test_run_shell_unexpected_oserror_records_step_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg, kas_yaml, overlay, _marker = _shell_lock_env(tmp_path, monkeypatch)
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError(5, "EIO")
+
+    monkeypatch.setattr(kas_build.subprocess, "Popen", boom)
+    with RunLogger(runs_dir=tmp_path / "runs") as log:
+        ctx = KasBuildContext(cfg=cfg, log=log, kas_yaml=kas_yaml, overlay_source=overlay)
+        with pytest.raises(OSError, match="EIO"):
+            kas_build.run_shell(ctx, args=[], command="bitbake -e", take_lock_marker=True)
+        events_path = log.events_path
+    fails = [e for e in _step_events(events_path) if e["step"] == "kas_shell" and e["event"] == "step_fail"]
+    assert len(fails) == 1
+    assert fails[0]["exit_code"] == 1
+
+
+@pytest.mark.unit
+def test_run_shell_capture_marker_refusal_from_the_stale_gate_records_step_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bakar.steps.kas_lock import LockMarkerFileError
+
+    cfg, kas_yaml, overlay, marker = _shell_lock_env(tmp_path, monkeypatch)
+
+    def gate(_cfg: object) -> None:
+        raise LockMarkerFileError(marker, OSError(5, "EIO"), "remove the marker")
+
+    monkeypatch.setattr(kas_build, "clear_stale_bitbake_locks", gate)
+    with RunLogger(runs_dir=tmp_path / "runs") as log:
+        ctx = KasBuildContext(cfg=cfg, log=log, kas_yaml=kas_yaml, overlay_source=overlay)
+        cap = kas_build.ShellCapture(stdout_path=tmp_path / "out.log", step="getvar")
+        rc = kas_build.run_shell_capture(ctx, "bitbake -e", cap)
+        events_path = log.events_path
+    assert rc == 1
+    fails = [e for e in _step_events(events_path) if e["step"] == "getvar" and e["event"] == "step_fail"]
+    assert len(fails) == 1
+    assert fails[0]["exit_code"] == 1

@@ -1925,28 +1925,31 @@ def run_shell(
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
     log.step_start("kas_shell", command=command, host_mode=cfg.host_mode)
-    if take_lock_marker:
-        lock_outcome = clear_stale_bitbake_locks(cfg)
-        for removed_path in lock_outcome.removed:
-            log.warn(f"removed stale bitbake lock: {removed_path} (owning process was gone)")
-        if lock_outcome.refusal is not None:
-            log.step_fail("kas_shell", reason=_lock_refusal_message(lock_outcome.refusal), exit_code=1)
-            return 1
-    kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source, ctx.extra_overlays)
-    exe = "kas" if cfg.host_mode else "kas-container"
-    cmd = [exe, *_ccache_args(cfg), "shell", kas_arg]
-    if command is not None:
-        cmd.extend(["-c", command])
-    cmd.extend(args)
-    env = _build_env(cfg, eventlog_path=_container_eventlog_path(cfg, log))
-    marker = lock_owner_marker(cfg, log) if take_lock_marker else nullcontext()
     try:
+        if take_lock_marker:
+            lock_outcome = clear_stale_bitbake_locks(cfg)
+            for removed_path in lock_outcome.removed:
+                log.warn(f"removed stale bitbake lock: {removed_path} (owning process was gone)")
+            if lock_outcome.refusal is not None:
+                log.step_fail("kas_shell", reason=_lock_refusal_message(lock_outcome.refusal), exit_code=1)
+                return 1
+        kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source, ctx.extra_overlays)
+        exe = "kas" if cfg.host_mode else "kas-container"
+        cmd = [exe, *_ccache_args(cfg), "shell", kas_arg]
+        if command is not None:
+            cmd.extend(["-c", command])
+        cmd.extend(args)
+        env = _build_env(cfg, eventlog_path=_container_eventlog_path(cfg, log))
+        marker = lock_owner_marker(cfg, log) if take_lock_marker else nullcontext()
         with marker:
             proc = subprocess.Popen(cmd, cwd=cfg.bsp_root, env=env)
             rc = proc.wait()
     except LockHeldByPeerError as exc:
         log.step_fail("kas_shell", reason=peer_lock_reason(exc), exit_code=1)
         return 1
+    except OSError as exc:
+        log.step_fail("kas_shell", reason=f"unexpected {type(exc).__name__}: {exc}", exit_code=1)
+        raise
     _finish_step(log, "kas_shell", rc)
     return rc
 
@@ -2014,7 +2017,11 @@ def run_shell_capture(ctx: KasBuildContext, command: str, capture: ShellCapture)
         log.step_fail(step, reason=refusal, exit_code=1)
         return 1
 
-    lock_outcome = clear_stale_bitbake_locks(cfg)
+    try:
+        lock_outcome = clear_stale_bitbake_locks(cfg)
+    except LockHeldByPeerError as exc:
+        log.step_fail(step, reason=peer_lock_reason(exc), exit_code=1)
+        return 1
     for removed_path in lock_outcome.removed:
         log.warn(f"removed stale bitbake lock: {removed_path} (owning process was gone)")
     if lock_outcome.refusal is not None:
@@ -2031,10 +2038,10 @@ def run_shell_capture(ctx: KasBuildContext, command: str, capture: ShellCapture)
     # returns whichever container answers the label first.
     label_run_id = log.run_id if isolate_process_group else None
     cmd = [exe, *_ccache_args(cfg, run_id=label_run_id), "shell", kas_arg, "-c", command]
-    stdout_path.parent.mkdir(parents=True, exist_ok=True)
-    if stderr_path is not None:
-        stderr_path.parent.mkdir(parents=True, exist_ok=True)
     try:
+        stdout_path.parent.mkdir(parents=True, exist_ok=True)
+        if stderr_path is not None:
+            stderr_path.parent.mkdir(parents=True, exist_ok=True)
         with ExitStack() as stack:
             stack.enter_context(lock_owner_marker(cfg, log))
             fh = stack.enter_context(stdout_path.open("wb"))
@@ -2098,6 +2105,9 @@ def run_shell_capture(ctx: KasBuildContext, command: str, capture: ShellCapture)
             exit_code=1,
         )
         return 1
+    except OSError as exc:
+        log.step_fail(step, reason=f"unexpected {type(exc).__name__}: {exc}", exit_code=1)
+        raise
     _finish_step(log, step, rc)
     return rc
 

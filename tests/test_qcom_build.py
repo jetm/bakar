@@ -492,3 +492,22 @@ def test_manifest_nxp_branch_still_runs_kas(tmp_path: Path) -> None:
     parent.step_override_apply.assert_called_once()
     parent.regenerate_yaml.assert_called_once()
     parent.qcom_run.assert_not_called()
+
+
+def test_qcom_build_unexpected_oserror_records_step_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from bakar import build_stop
+
+    _no_buildtools(monkeypatch)
+    cfg = _qcom_cfg(tmp_path)
+    log = _FakeLogger(tmp_path)
+
+    def boom(_cfg: object) -> None:
+        raise OSError(5, "EIO")
+
+    monkeypatch.setattr(qcom_build_step, "clear_stale_bitbake_locks", boom)
+    with pytest.raises(OSError, match="EIO"):
+        qcom_build_step.run(cfg, log, target="qcom-multimedia-image")
+    fails = [ev for ev in log.events if ev[0] == "step_fail"]
+    assert len(fails) == 1
+    assert fails[0][2]["exit_code"] == 1
+    assert not build_stop.lock_marker_path(cfg).exists()

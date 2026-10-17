@@ -644,7 +644,7 @@ def test_replace_lost_reply_is_refused_as_unknown_outcome(
 ) -> None:
     cfg, _build, _log = env
     marker = build_stop.lock_marker_path(cfg)
-    marker.write_text("this-host")
+    marker.write_text("bad host!\n\x01")
 
     def fail(_src: object, _dst: object) -> None:
         raise OSError(errno.EIO, "reply lost")
@@ -1021,3 +1021,102 @@ def test_marker_names_host_non_utf8_marker_is_not_a_match(tmp_path: Path) -> Non
     marker = tmp_path / ".bakar-lock-host"
     marker.write_bytes(b"\xff\xfehost")
     assert _marker_names_host(marker, "host") is False
+
+
+def _tmpfiles(marker: Path) -> list[str]:
+    return [p.name for p in marker.parent.iterdir() if p.name.startswith(f".{marker.name}.")]
+
+
+def _raise_oserror(code: int) -> Callable[..., None]:
+    def fail(*_a: object, **_k: object) -> None:
+        raise OSError(code, os.strerror(code))
+
+    return fail
+
+
+@pytest.mark.parametrize(
+    ("target", "attr", "code"),
+    [
+        ("tempfile", "mkstemp", errno.EDQUOT),
+        ("os", "fdopen", errno.ENOSPC),
+        ("pathlib", "chmod", errno.EDQUOT),
+        ("pathlib", "mkdir", errno.EIO),
+    ],
+)
+def test_marker_file_operation_failure_is_a_refusal_naming_marker_and_errno(
+    env: tuple[BuildConfig, Path, RunLogger],
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    attr: str,
+    code: int,
+) -> None:
+    import pathlib
+    import tempfile
+
+    cfg, _build, log = env
+    marker = build_stop.lock_marker_path(cfg)
+    owner = {"tempfile": tempfile, "os": os, "pathlib": pathlib.Path}[target]
+    monkeypatch.setattr(owner, attr, _raise_oserror(code))
+    with pytest.raises(LockUnattributableError) as ei, lock_owner_marker(cfg, log):
+        pass
+    msg = str(ei.value)
+    assert str(marker) in msg
+    assert os.strerror(code) in msg
+    assert "nothing was published" in msg
+    assert "delete the marker" in msg
+    monkeypatch.undo()
+    assert not marker.exists()
+    assert _tmpfiles(marker) == []
+
+
+def test_own_marker_is_not_replaced_so_a_replace_failure_cannot_touch_it(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, _build, log = env
+    marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("this-host")
+    monkeypatch.setattr(os, "replace", _raise_oserror(errno.EIO))
+    with lock_owner_marker(cfg, log):
+        assert marker.read_text() == "this-host"
+
+
+def test_garbled_marker_replace_lost_reply_reads_back_and_proceeds(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, _build, log = env
+    marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("bad host!\n\x01")
+    real_replace = os.replace
+
+    def lost(src: object, dst: object) -> None:
+        real_replace(src, dst)
+        raise OSError(errno.EIO, "reply lost")
+
+    monkeypatch.setattr(os, "replace", lost)
+    with lock_owner_marker(cfg, log):
+        assert marker.read_text() == "this-host"
+
+
+def test_unknown_outcome_message_carries_the_errno_text(
+    env: tuple[BuildConfig, Path, RunLogger],
+) -> None:
+    cfg, _build, _log = env
+    marker = build_stop.lock_marker_path(cfg)
+    exc = kas_lock.LockMarkerOutcomeUnknownError(marker, OSError(errno.EIO, "x"))
+    assert os.strerror(errno.EIO) in str(exc)
+    assert str(marker) in str(exc)
+
+
+def test_own_marker_removal_failure_is_a_refusal_not_a_bare_oserror(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pathlib
+
+    cfg, _build, _log = env
+    marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("this-host")
+    monkeypatch.setattr(pathlib.Path, "unlink", _raise_oserror(errno.EIO))
+    with pytest.raises(LockUnattributableError) as ei:
+        kas_lock.clear_stale_bitbake_locks(cfg)
+    assert str(marker) in str(ei.value)
+    assert os.strerror(errno.EIO) in str(ei.value)
