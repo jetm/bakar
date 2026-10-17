@@ -1045,9 +1045,10 @@ class RunLookupFailed:
 
 
 def _discover_newest_run_id(host: str, ws_root: Path, not_before: str | None = None) -> str | RunLookupFailed | None:
-    """Find the newest ``<build dir>/runs/<run-id>/`` dir under ``ws_root`` on ``host``.
+    """Find the run id of a ``<build dir>/runs/<run-id>/`` dir under ``ws_root`` on ``host``.
 
-    Returns the run id, ``None`` when the lookup ran and found no run directory
+    With ``not_before`` the earliest qualifying id is returned (this dispatch's
+    run); without it, the greatest id. Returns the run id, ``None`` when the lookup ran and found no run directory
     (at or after ``not_before``, when given), or :class:`RunLookupFailed` when
     ssh itself failed (a hung link included: the capture helper's timeout
     surfaces as a nonzero exit, worded as a lookup timeout because the host
@@ -1062,8 +1063,10 @@ def _discover_newest_run_id(host: str, ws_root: Path, not_before: str | None = N
     chronologically, and ``not_before`` is the dispatch-start fence in the same
     clock. Newest-by-mtime then fence would let a build started later in another
     build dir win, and a touched older run dir (an mtime bump) shadow or evict
-    the dir this dispatch created. Two runs in the same second compare by pid as
-    a string, which is arbitrary but never crosses seconds.
+    the dir this dispatch created. With the fence the earliest id at or after it
+    wins, because a build started later in the workspace sorts after this
+    dispatch's run. Ids in the same second compare by complete name, which is
+    arbitrary but never crosses seconds.
 
     Every ``tmp*`` directory is pruned (qcom's TMPDIR is ``tmp-glibc``), so the
     walk never enters a bitbake work tree.
@@ -1090,7 +1093,10 @@ def _discover_newest_run_id(host: str, ws_root: Path, not_before: str | None = N
         if line.strip() and _RUN_DIR_NAME_RE.fullmatch(name := Path(line.split(maxsplit=1)[-1]).name)
     ]
     if not_before is not None:
-        ids = [name for name in ids if name >= not_before]
+        # The dispatch creates its run seconds after the fence, so the earliest
+        # qualifying id is this dispatch's run; a build started later in the
+        # workspace sorts after it and must not win.
+        return min((name for name in ids if name >= not_before), default=None)
     return max(ids, default=None)
 
 

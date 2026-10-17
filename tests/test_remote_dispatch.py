@@ -2180,6 +2180,32 @@ def test_lookup_ignores_leftover_dirs_named_after_a_run_in_the_same_second(
     assert rd._discover_newest_run_id(HOST, tmp_path) == "20260716-120500-1"
 
 
+def test_lookup_with_fence_reports_the_earliest_run_not_a_later_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _real_find(monkeypatch)
+    _run_dir(tmp_path, "build", "20260716-120500-111", mtime=1_000)
+    # A later build in another build dir with the newest mtime.
+    _run_dir(tmp_path, "build-qcom", "20260716-130000-222", mtime=9_000)
+    assert rd._discover_newest_run_id(HOST, tmp_path, "20260716-120000") == "20260716-120500-111"
+
+
+def test_lookup_without_fence_still_reports_the_greatest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _real_find(monkeypatch)
+    _run_dir(tmp_path, "build", "20260716-120500-111", mtime=9_000)
+    _run_dir(tmp_path, "build-qcom", "20260716-130000-222", mtime=1_000)
+    assert rd._discover_newest_run_id(HOST, tmp_path) == "20260716-130000-222"
+
+
+def test_lookup_same_second_runs_report_the_name_that_sorts_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _real_find(monkeypatch)
+    _run_dir(tmp_path, "build", "20260716-120500-9")
+    _run_dir(tmp_path, "build-qcom", "20260716-120500-10")
+    assert rd._discover_newest_run_id(HOST, tmp_path, "20260716-120000") == "20260716-120500-10"
+
+
 def test_lookup_does_not_walk_a_tmp_glibc_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     scripts = _real_find(monkeypatch)
     _run_dir(tmp_path, "build-qcom", "20260716-120000-1")
