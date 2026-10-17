@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 import pytest
 from rich.console import Console
 
-from bakar import build_stop, observability, report, stop_container, triage
+from bakar import build_stop, observability, proc_tree, report, stop_container, triage
 from bakar.commands import stop as stop_cmd
 from bakar.commands import triage as commands_triage
 from tests.conftest import make_build_config
@@ -184,7 +184,7 @@ def test_stop_build_sigint_then_clean_exit(
     build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
 
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
-    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(proc_tree, "_pgid_alive", lambda _pgid: False)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     calls = _record_killpg(monkeypatch)
 
@@ -218,7 +218,7 @@ def test_stop_build_targets_older_live_run_when_newest_is_dead(
         return (False, 5555, False)
 
     monkeypatch.setattr(build_stop, "is_build_running", fake_running)
-    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(proc_tree, "_pgid_alive", lambda _pgid: False)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     calls = _record_killpg(monkeypatch)
 
@@ -232,7 +232,7 @@ def test_escalate_host_sigterm_then_sigkill_when_lingering(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """_escalate_host sends SIGTERM then SIGKILL when the PGID survives the term wait."""
-    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: True)
+    monkeypatch.setattr(proc_tree, "_pgid_alive", lambda _pgid: True)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     calls = _record_killpg(monkeypatch)
 
@@ -245,7 +245,7 @@ def test_escalate_host_no_sigkill_when_dead_after_sigterm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """_escalate_host skips SIGKILL when the group is gone after SIGTERM."""
-    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(proc_tree, "_pgid_alive", lambda _pgid: False)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     calls = _record_killpg(monkeypatch)
 
@@ -277,7 +277,7 @@ def test_escalate_process_tree_escalates_a_self_led_child(
 ) -> None:
     """A child that leads its own group is escalated through the usual ladder."""
     monkeypatch.setattr(build_stop.os, "getpgid", lambda pid: pid)
-    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: True)
+    monkeypatch.setattr(proc_tree, "_pgid_alive", lambda _pgid: True)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     calls = _record_killpg(monkeypatch)
 
@@ -337,7 +337,7 @@ def test_escalate_process_tree_still_reaches_a_detached_cooker_when_the_leader_i
         raise ProcessLookupError
 
     monkeypatch.setattr(build_stop.os, "getpgid", _gone)
-    monkeypatch.setattr(build_stop, "_bitbake_server_pid_verified", lambda _pid, _topdir: True)
+    monkeypatch.setattr(proc_tree, "_bitbake_server_pid_verified", lambda _pid, _topdir: True)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     killpg_calls = _record_killpg(monkeypatch)
 
@@ -366,7 +366,7 @@ def test_escalate_process_tree_still_reaches_a_detached_cooker_when_refused(
     (run_dir.parent.parent / "bitbake.lock").write_text(f"{os.getpid()}\n")
 
     monkeypatch.setattr(build_stop.os, "getpgid", lambda _pid: 999)
-    monkeypatch.setattr(build_stop, "_bitbake_server_pid_verified", lambda _pid, _topdir: True)
+    monkeypatch.setattr(proc_tree, "_bitbake_server_pid_verified", lambda _pid, _topdir: True)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     killpg_calls = _record_killpg(monkeypatch)
 
@@ -409,7 +409,7 @@ def test_stop_build_host_ctrl_c_runs_escalation_ladder(
         return alive["n"] == 1
 
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
-    monkeypatch.setattr(build_stop, "_pgid_alive", _stateful_pgid_alive)
+    monkeypatch.setattr(proc_tree, "_pgid_alive", _stateful_pgid_alive)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
 
     def _fake_wait(*, ctx: build_stop._WaitCtx) -> str:
@@ -436,7 +436,7 @@ def test_stop_build_grace_seconds_threaded_to_graceful_wait(
     build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
 
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
-    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(proc_tree, "_pgid_alive", lambda _pgid: False)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     _record_killpg(monkeypatch)
 
@@ -461,7 +461,7 @@ def test_stop_build_force_skips_sigint(
     build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
 
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
-    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(proc_tree, "_pgid_alive", lambda _pgid: False)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     calls = _record_killpg(monkeypatch)
 
@@ -517,13 +517,13 @@ def test_read_bitbake_server_pid_from_lock_file(tmp_path: Path) -> None:
     run_dir = _make_run_dir(tmp_path)
     (run_dir.parent.parent / "bitbake.lock").write_text("424242\n")
 
-    assert build_stop._read_bitbake_server_pid(run_dir) == 424242
+    assert proc_tree._read_bitbake_server_pid(run_dir) == 424242
 
 
 def test_read_bitbake_server_pid_missing_lock_returns_none(tmp_path: Path) -> None:
     run_dir = _make_run_dir(tmp_path)
 
-    assert build_stop._read_bitbake_server_pid(run_dir) is None
+    assert proc_tree._read_bitbake_server_pid(run_dir) is None
 
 
 def test_read_bitbake_server_pid_unparseable_lock_returns_none(tmp_path: Path) -> None:
@@ -531,11 +531,11 @@ def test_read_bitbake_server_pid_unparseable_lock_returns_none(tmp_path: Path) -
     run_dir = _make_run_dir(tmp_path)
     (run_dir.parent.parent / "bitbake.lock").write_text("not-a-pid\n")
 
-    assert build_stop._read_bitbake_server_pid(run_dir) is None
+    assert proc_tree._read_bitbake_server_pid(run_dir) is None
 
 
 def test_pid_alive_true_for_current_process() -> None:
-    assert build_stop._pid_alive(os.getpid()) is True
+    assert proc_tree._pid_alive(os.getpid()) is True
 
 
 def test_pid_alive_false_for_reaped_process() -> None:
@@ -543,7 +543,7 @@ def test_pid_alive_false_for_reaped_process() -> None:
     proc = subprocess.Popen(["true"])
     proc.wait()
 
-    assert build_stop._pid_alive(proc.pid) is False
+    assert proc_tree._pid_alive(proc.pid) is False
 
 
 def test_bitbake_server_alive_true_when_lock_pid_is_alive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -552,15 +552,15 @@ def test_bitbake_server_alive_true_when_lock_pid_is_alive(tmp_path: Path, monkey
     # This test process's own cmdline is real pytest argv, not this fake
     # topdir's bitbake.lock path - stub verification, which is unit-tested on
     # its own below, so this test stays scoped to liveness alone.
-    monkeypatch.setattr(build_stop, "_bitbake_server_pid_verified", lambda _pid, _topdir: True)
+    monkeypatch.setattr(proc_tree, "_bitbake_server_pid_verified", lambda _pid, _topdir: True)
 
-    assert build_stop._bitbake_server_alive(run_dir) is True
+    assert proc_tree._bitbake_server_alive(run_dir) is True
 
 
 def test_bitbake_server_alive_false_when_lock_missing(tmp_path: Path) -> None:
     run_dir = _make_run_dir(tmp_path)
 
-    assert build_stop._bitbake_server_alive(run_dir) is False
+    assert proc_tree._bitbake_server_alive(run_dir) is False
 
 
 def test_stop_build_liveness_stays_alive_while_bitbake_server_pid_lives(
@@ -576,9 +576,9 @@ def test_stop_build_liveness_stays_alive_while_bitbake_server_pid_lives(
     (run_dir.parent.parent / "bitbake.lock").write_text(f"{os.getpid()}\n")
 
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
-    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(proc_tree, "_pgid_alive", lambda _pgid: False)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(build_stop, "_bitbake_server_pid_verified", lambda _pid, _topdir: True)
+    monkeypatch.setattr(proc_tree, "_bitbake_server_pid_verified", lambda _pid, _topdir: True)
     _record_killpg(monkeypatch)
     # stop_build's initial SIGINT to bb_pid uses the real os.kill; bb_pid here
     # is this test process's own PID (to make _bitbake_server_alive's real
@@ -619,9 +619,9 @@ def test_escalate_host_signals_bitbake_server_pid_too(
     (run_dir.parent.parent / "bitbake.lock").write_text("999999\n")
 
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
-    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(proc_tree, "_pgid_alive", lambda _pgid: False)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(build_stop, "_bitbake_server_pid_verified", lambda _pid, _topdir: True)
+    monkeypatch.setattr(proc_tree, "_bitbake_server_pid_verified", lambda _pid, _topdir: True)
     _record_killpg(monkeypatch)
 
     kill_calls: list[tuple[int, int]] = []
@@ -648,9 +648,9 @@ def test_escalate_host_does_not_signal_a_stale_recycled_bitbake_server_pid(
     (run_dir.parent.parent / "bitbake.lock").write_text("999999\n")
 
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
-    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(proc_tree, "_pgid_alive", lambda _pgid: False)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(build_stop, "_proc_cmdline", lambda _pid: "/usr/bin/some-unrelated-daemon")
+    monkeypatch.setattr(proc_tree, "_proc_cmdline", lambda _pid: "/usr/bin/some-unrelated-daemon")
     _record_killpg(monkeypatch)
 
     kill_calls: list[tuple[int, int]] = []
@@ -675,14 +675,14 @@ def test_bitbake_server_pid_verified_true_when_cmdline_references_this_builds_lo
     topdir = tmp_path
     lock_path = topdir / "bitbake.lock"
     sock_path = topdir / "bitbake.sock"
-    monkeypatch.setattr(build_stop, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(proc_tree, "_pid_alive", lambda _pid: True)
     monkeypatch.setattr(
-        build_stop,
+        proc_tree,
         "_proc_cmdline",
         lambda _pid: f"/usr/bin/python3 bitbake-server decafbad 5 6 log {lock_path} {sock_path} 0",
     )
 
-    assert build_stop._bitbake_server_pid_verified(999999, topdir) is True
+    assert proc_tree._bitbake_server_pid_verified(999999, topdir) is True
 
 
 def test_bitbake_server_pid_verified_false_for_an_unrelated_process(
@@ -691,10 +691,10 @@ def test_bitbake_server_pid_verified_false_for_an_unrelated_process(
 ) -> None:
     """A live, but non-matching, cmdline is positive evidence the PID is not
     this build's own bitbake-server."""
-    monkeypatch.setattr(build_stop, "_pid_alive", lambda _pid: True)
-    monkeypatch.setattr(build_stop, "_proc_cmdline", lambda _pid: "/usr/bin/some-unrelated-daemon")
+    monkeypatch.setattr(proc_tree, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(proc_tree, "_proc_cmdline", lambda _pid: "/usr/bin/some-unrelated-daemon")
 
-    assert build_stop._bitbake_server_pid_verified(999999, tmp_path) is False
+    assert proc_tree._bitbake_server_pid_verified(999999, tmp_path) is False
 
 
 def test_bitbake_server_pid_verified_false_for_a_different_builds_lock_path(
@@ -705,9 +705,9 @@ def test_bitbake_server_pid_verified_false_for_a_different_builds_lock_path(
     the bare basename - a cmdline naming another build's bitbake.lock is a
     live bitbake-server, just not this one's, and must not verify."""
     other_topdir = tmp_path / "some-other-build"
-    monkeypatch.setattr(build_stop, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(proc_tree, "_pid_alive", lambda _pid: True)
     monkeypatch.setattr(
-        build_stop,
+        proc_tree,
         "_proc_cmdline",
         lambda _pid: (
             f"/usr/bin/python3 bitbake-server decafbad 5 6 log "
@@ -715,16 +715,16 @@ def test_bitbake_server_pid_verified_false_for_a_different_builds_lock_path(
         ),
     )
 
-    assert build_stop._bitbake_server_pid_verified(999999, tmp_path / "this-build") is False
+    assert proc_tree._bitbake_server_pid_verified(999999, tmp_path / "this-build") is False
 
 
 def test_bitbake_server_pid_verified_false_when_pid_no_longer_exists(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(build_stop, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(proc_tree, "_pid_alive", lambda _pid: False)
 
-    assert build_stop._bitbake_server_pid_verified(999999, tmp_path) is False
+    assert proc_tree._bitbake_server_pid_verified(999999, tmp_path) is False
 
 
 def test_bitbake_server_pid_verified_true_when_cmdline_is_unreadable(
@@ -734,10 +734,10 @@ def test_bitbake_server_pid_verified_true_when_cmdline_is_unreadable(
     """An unreadable cmdline (hidepid, a different uid) is NOT evidence the PID
     is stale - it is unverifiable, and this function must not conflate the
     two or a hardened /proc silently disables the whole escalation layer."""
-    monkeypatch.setattr(build_stop, "_pid_alive", lambda _pid: True)
-    monkeypatch.setattr(build_stop, "_proc_cmdline", lambda _pid: "")
+    monkeypatch.setattr(proc_tree, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(proc_tree, "_proc_cmdline", lambda _pid: "")
 
-    assert build_stop._bitbake_server_pid_verified(999999, tmp_path) is True
+    assert proc_tree._bitbake_server_pid_verified(999999, tmp_path) is True
 
 
 # --- mode-aware stop_build branching ---------------------------------------
@@ -795,7 +795,7 @@ def test_stop_build_host_mode_signals_pgid_not_container(
     stop_calls: list[tuple[str, str]] = []
 
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
-    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(proc_tree, "_pgid_alive", lambda _pgid: False)
     monkeypatch.setattr(
         build_stop,
         "_stop_container",
@@ -1692,10 +1692,10 @@ def test_collect_build_pids_matches_cooker_by_argv_path(tmp_path: Path) -> None:
     }
     pids, cmdline, ppid, pgid = _fake_proc(procs)
 
-    scoped = build_stop._collect_build_pids(
+    scoped = proc_tree._collect_build_pids(
         topdir,
         None,
-        build_stop._ProcView(
+        proc_tree._ProcView(
             self_pid=1,
             self_pgid=1,
             pids_reader=pids,
@@ -1723,10 +1723,10 @@ def test_collect_build_pids_includes_pgid_members_and_descendants(tmp_path: Path
     pgids = {100: 100, 101: 100, 555: 555, 556: 555}
     pids, cmdline, ppid, pgid = _fake_proc(procs, pgids)
 
-    scoped = build_stop._collect_build_pids(
+    scoped = proc_tree._collect_build_pids(
         topdir,
         100,
-        build_stop._ProcView(
+        proc_tree._ProcView(
             self_pid=1,
             self_pgid=1,
             pids_reader=pids,
@@ -1752,10 +1752,10 @@ def test_collect_build_pids_never_includes_self_or_own_group(tmp_path: Path) -> 
     pgids = {42: 42, 43: 42, 555: 555}
     pids, cmdline, ppid, pgid = _fake_proc(procs, pgids)
 
-    scoped = build_stop._collect_build_pids(
+    scoped = proc_tree._collect_build_pids(
         topdir,
         None,
-        build_stop._ProcView(
+        proc_tree._ProcView(
             self_pid=42,
             self_pgid=42,
             pids_reader=pids,
@@ -1776,10 +1776,10 @@ def test_collect_build_pids_empty_when_no_match(tmp_path: Path) -> None:
     procs = {10: (1, "unrelated"), 11: (1, "also unrelated")}
     pids, cmdline, ppid, pgid = _fake_proc(procs)
 
-    scoped = build_stop._collect_build_pids(
+    scoped = proc_tree._collect_build_pids(
         topdir,
         None,
-        build_stop._ProcView(
+        proc_tree._ProcView(
             self_pid=1,
             self_pgid=1,
             pids_reader=pids,
@@ -1810,7 +1810,7 @@ def test_discover_host_cookers_finds_topdir_from_bare_marker_filename(tmp_path: 
     }
     pids, cmdline, _ppid, _pgid = _fake_proc(procs)
 
-    discovered = build_stop._discover_host_cookers(pids_reader=pids, cmdline_reader=cmdline)
+    discovered = proc_tree._discover_host_cookers(pids_reader=pids, cmdline_reader=cmdline)
 
     assert discovered == {topdir: frozenset({4242})}
 
@@ -1827,7 +1827,7 @@ def test_discover_host_cookers_matches_all_three_marker_filenames(tmp_path: Path
     }
     pids, cmdline, _ppid, _pgid = _fake_proc(procs)
 
-    discovered = build_stop._discover_host_cookers(pids_reader=pids, cmdline_reader=cmdline)
+    discovered = proc_tree._discover_host_cookers(pids_reader=pids, cmdline_reader=cmdline)
 
     assert discovered == {
         lock_dir: frozenset({1}),
@@ -1851,7 +1851,7 @@ def test_discover_host_cookers_worker_subprocess_has_no_argv_marker(tmp_path: Pa
     }
     pids, cmdline, _ppid, _pgid = _fake_proc(procs)
 
-    discovered = build_stop._discover_host_cookers(pids_reader=pids, cmdline_reader=cmdline)
+    discovered = proc_tree._discover_host_cookers(pids_reader=pids, cmdline_reader=cmdline)
 
     assert discovered == {topdir: frozenset({4242})}  # only the cooker, never the worker
 
@@ -1866,7 +1866,7 @@ def test_discover_host_cookers_multiple_builds_on_host(tmp_path: Path) -> None:
     }
     pids, cmdline, _ppid, _pgid = _fake_proc(procs)
 
-    discovered = build_stop._discover_host_cookers(pids_reader=pids, cmdline_reader=cmdline)
+    discovered = proc_tree._discover_host_cookers(pids_reader=pids, cmdline_reader=cmdline)
 
     assert discovered == {topdir_a: frozenset({100}), topdir_b: frozenset({200})}
 
@@ -1887,7 +1887,7 @@ def test_discover_host_cookers_skips_unreadable_cmdline(tmp_path: Path) -> None:
             return ""  # matches _proc_cmdline's OSError -> "" contract
         return cmdline(pid)
 
-    discovered = build_stop._discover_host_cookers(pids_reader=pids, cmdline_reader=_cmdline_permission_denied)
+    discovered = proc_tree._discover_host_cookers(pids_reader=pids, cmdline_reader=_cmdline_permission_denied)
 
     assert discovered == {topdir: frozenset({4242})}
 
@@ -1907,7 +1907,7 @@ def test_discover_host_cookers_skips_pid_whose_cmdline_reader_raises(tmp_path: P
             raise PermissionError("denied")
         return cmdline(pid)
 
-    discovered = build_stop._discover_host_cookers(pids_reader=lambda: [*pids(), 5000], cmdline_reader=_cmdline_raises)
+    discovered = proc_tree._discover_host_cookers(pids_reader=lambda: [*pids(), 5000], cmdline_reader=_cmdline_raises)
 
     assert discovered == {topdir: frozenset({4242})}
 
@@ -1917,7 +1917,7 @@ def test_discover_host_cookers_empty_when_no_match(tmp_path: Path) -> None:
     procs = {10: (1, "unrelated"), 11: (1, "also unrelated")}
     pids, cmdline, _ppid, _pgid = _fake_proc(procs)
 
-    discovered = build_stop._discover_host_cookers(pids_reader=pids, cmdline_reader=cmdline)
+    discovered = proc_tree._discover_host_cookers(pids_reader=pids, cmdline_reader=cmdline)
 
     assert discovered == {}
 
@@ -2094,9 +2094,9 @@ def test_killpg_refuses_zero_and_negative(monkeypatch: pytest.MonkeyPatch) -> No
     calls: list[tuple[int, int]] = []
     monkeypatch.setattr(build_stop.os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
 
-    assert build_stop._killpg(0, signal.SIGKILL) is False
-    assert build_stop._killpg(-1, signal.SIGKILL) is False
-    assert build_stop._killpg(4242, signal.SIGTERM) is True
+    assert proc_tree._killpg(0, signal.SIGKILL) is False
+    assert proc_tree._killpg(-1, signal.SIGKILL) is False
+    assert proc_tree._killpg(4242, signal.SIGTERM) is True
 
     assert calls == [(4242, signal.SIGTERM)]  # only the valid group was signalled
 
@@ -2116,9 +2116,9 @@ def test_report_stale_cleanup_skips_removal_when_held(
     (topdir / "bitbake.sock").write_text("x")
 
     monkeypatch.setattr(
-        build_stop,
+        proc_tree,
         "_collect_build_pids",
-        lambda _td, _pgid, **_kw: build_stop._ScopedProcs(cooker=frozenset({777}), all_pids=frozenset({777})),
+        lambda _td, _pgid, **_kw: proc_tree._ScopedProcs(cooker=frozenset({777}), all_pids=frozenset({777})),
     )
 
     removed = build_stop._report_stale_cleanup(run_dir)
@@ -2139,9 +2139,9 @@ def test_report_stale_cleanup_removes_when_unheld(
     (topdir / "bitbake.sock").write_text("x")
 
     monkeypatch.setattr(
-        build_stop,
+        proc_tree,
         "_collect_build_pids",
-        lambda _td, _pgid, **_kw: build_stop._ScopedProcs(cooker=frozenset(), all_pids=frozenset()),
+        lambda _td, _pgid, **_kw: proc_tree._ScopedProcs(cooker=frozenset(), all_pids=frozenset()),
     )
 
     removed = build_stop._report_stale_cleanup(run_dir)
@@ -2164,13 +2164,13 @@ def test_verify_clean_reports_all_remaining(
     (topdir / "bitbake.sock").write_text("x")
 
     monkeypatch.setattr(
-        build_stop,
+        proc_tree,
         "_collect_build_pids",
-        lambda _td, _pgid, **_kw: build_stop._ScopedProcs(cooker=frozenset({321}), all_pids=frozenset({321})),
+        lambda _td, _pgid, **_kw: proc_tree._ScopedProcs(cooker=frozenset({321}), all_pids=frozenset({321})),
     )
-    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: True)
+    monkeypatch.setattr(proc_tree, "_pgid_alive", lambda _pgid: True)
     monkeypatch.setattr(stop_container, "_container_id_status", lambda _rt, _label: (build_stop._ALIVE, "cid123"))
-    monkeypatch.setattr(build_stop, "_bitbake_server_pid_verified", lambda _pid, _topdir: True)
+    monkeypatch.setattr(proc_tree, "_bitbake_server_pid_verified", lambda _pid, _topdir: True)
 
     reasons = build_stop._verify_clean(run_dir, 4242, runtime="docker", container_label="bakar.run_id=X")
 
@@ -2191,11 +2191,11 @@ def test_verify_clean_empty_when_all_gone(
     run_dir = _make_run_dir(tmp_path)
 
     monkeypatch.setattr(
-        build_stop,
+        proc_tree,
         "_collect_build_pids",
-        lambda _td, _pgid, **_kw: build_stop._ScopedProcs(cooker=frozenset(), all_pids=frozenset()),
+        lambda _td, _pgid, **_kw: proc_tree._ScopedProcs(cooker=frozenset(), all_pids=frozenset()),
     )
-    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(proc_tree, "_pgid_alive", lambda _pgid: False)
 
     assert build_stop._verify_clean(run_dir, 4242) == []
 
@@ -2209,7 +2209,7 @@ def test_stop_build_host_returns_false_when_verify_finds_survivor(
     build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
 
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
-    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(proc_tree, "_pgid_alive", lambda _pgid: False)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     monkeypatch.setattr(build_stop, "_graceful_wait", lambda **_kw: "escalated")
     # Verify finds a lingering cooker the kill could not reach (e.g. EPERM).
@@ -2498,14 +2498,14 @@ def _make_run_dir_for_cfg(cfg: BuildConfig, run_id: str = "20260618-120000") -> 
 
 
 def _record_kill_pid(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
-    """Patch build_stop._kill_pid to record (pid, sig) calls instead of signalling."""
+    """Patch proc_tree._kill_pid to record (pid, sig) calls instead of signalling."""
     calls: list[tuple[int, int]] = []
 
     def fake_kill_pid(pid: int, sig: int) -> bool:
         calls.append((pid, sig))
         return True
 
-    monkeypatch.setattr(build_stop, "_kill_pid", fake_kill_pid)
+    monkeypatch.setattr(proc_tree, "_kill_pid", fake_kill_pid)
     return calls
 
 
@@ -2651,7 +2651,7 @@ def test_stop_build_local_marker_stop_path_unchanged(
 
     monkeypatch.setattr(build_stop, "lock_mutation_guard", lambda _cfg: None)
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
-    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(proc_tree, "_pgid_alive", lambda _pgid: False)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     calls = _record_killpg(monkeypatch)
 
@@ -2670,7 +2670,7 @@ def test_stop_build_no_cfg_skips_gate_and_uses_hardcoded_build(
     build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
 
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
-    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(proc_tree, "_pgid_alive", lambda _pgid: False)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     calls = _record_killpg(monkeypatch)
 
@@ -2699,7 +2699,7 @@ def test_stop_build_uses_build_dir_name_for_runs_scan(
 
     monkeypatch.setattr(build_stop, "lock_mutation_guard", lambda _cfg: None)
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
-    monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: False)
+    monkeypatch.setattr(proc_tree, "_pgid_alive", lambda _pgid: False)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     calls = _record_killpg(monkeypatch)
 
@@ -2771,7 +2771,7 @@ def test_verify_clean_excludes_gate_refused_files_and_skips_liveness_probe(
         lambda _cfg: build_stop.LockRefusal(reason="peer-held", host="peer-host"),
     )
     # If the liveness probe were NOT skipped, this would inject a failure reason.
-    monkeypatch.setattr(build_stop, "_bitbake_server_alive", lambda _rd: True)
+    monkeypatch.setattr(proc_tree, "_bitbake_server_alive", lambda _rd: True)
 
     reasons = build_stop._verify_clean(run_dir, None, cfg=cfg)
 
@@ -2784,7 +2784,7 @@ def test_verify_clean_no_cfg_unchanged(tmp_path: Path, monkeypatch: pytest.Monke
     build_dir = run_dir.parent.parent
     (build_dir / "bitbake.lock").write_text("4242\n")
 
-    monkeypatch.setattr(build_stop, "_bitbake_server_alive", lambda _rd: True)
+    monkeypatch.setattr(proc_tree, "_bitbake_server_alive", lambda _rd: True)
 
     reasons = build_stop._verify_clean(run_dir, None)
 
@@ -3261,7 +3261,7 @@ def _graceful_host_stop(
     monkeypatch.setattr(build_stop, "_verify_clean", lambda *_a, **_k: [])
     _record_killpg(monkeypatch)
     if verified is not None:
-        monkeypatch.setattr(build_stop, "_bitbake_server_pid_verified", lambda _pid, _topdir: verified)
+        monkeypatch.setattr(proc_tree, "_bitbake_server_pid_verified", lambda _pid, _topdir: verified)
     kills: list[tuple[int, int]] = []
     monkeypatch.setattr(build_stop.os, "kill", lambda pid, sig: kills.append((pid, sig)))
     assert build_stop.stop_run(run_dir) is True
@@ -3272,14 +3272,14 @@ def _graceful_host_stop(
 def test_read_lock_pid_rejects_non_positive_pids(tmp_path: Path, pid: int) -> None:
     lock = tmp_path / "bitbake.lock"
     lock.write_text(f"{pid}\n")
-    assert build_stop.read_lock_pid(lock) is None
+    assert proc_tree.read_lock_pid(lock) is None
 
 
 @pytest.mark.parametrize("pid", [-1, 0])
 def test_kill_pid_refuses_non_positive_pids(monkeypatch: pytest.MonkeyPatch, pid: int) -> None:
     kills: list[tuple[int, int]] = []
     monkeypatch.setattr(build_stop.os, "kill", lambda p, s: kills.append((p, s)))
-    assert build_stop._kill_pid(pid, signal.SIGINT) is False
+    assert proc_tree._kill_pid(pid, signal.SIGINT) is False
     assert kills == []
 
 
@@ -3318,7 +3318,7 @@ def test_graceful_stop_verifies_the_lock_pid_against_this_builds_topdir(
     monkeypatch.setattr(build_stop, "_report_stale_cleanup", lambda *_a, **_k: [])
     monkeypatch.setattr(build_stop, "_verify_clean", lambda *_a, **_k: [])
     _record_killpg(monkeypatch)
-    monkeypatch.setattr(build_stop, "_bitbake_server_pid_verified", record)
+    monkeypatch.setattr(proc_tree, "_bitbake_server_pid_verified", record)
     monkeypatch.setattr(build_stop.os, "kill", lambda p, s: pytest.fail("signalled an unverified pid"))
     build_stop.stop_run(run_dir)
     assert seen == [(777, run_dir.parent.parent)]
