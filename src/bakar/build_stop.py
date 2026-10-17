@@ -1532,6 +1532,23 @@ def manual_clear_hint(marker: Path) -> str:
     return f"If no build runs on any node, delete the marker {marker} and the bitbake.lock beside it by hand."
 
 
+def _say_stop_refusal(refusal: LockRefusal) -> None:
+    """Print why a stop was refused, plus the manual-clear hint when a marker is known."""
+    if refusal.reason == "peer-held":
+        # _say prints plain text to stderr, never through Rich markup
+        # rendering, so the host name needs no escaping here.
+        host = refusal.host if refusal.host else "another host"
+        message = f"build owned by {host}; run `bakar stop` there"
+    else:
+        message = (
+            f"cannot confirm this node owns the build lock ({refusal.reason}); "
+            "refusing to send any signal - resolve ownership manually"
+        )
+    if refusal.marker is not None:
+        message = f"{message}. {manual_clear_hint(refusal.marker)}"
+    _say(message)
+
+
 @dataclass
 class LockClearOutcome:
     """Result of a stale-lock clearing attempt: what was removed, if anything.
@@ -1809,16 +1826,7 @@ def stop_build(
     if cfg is not None:
         refusal = lock_mutation_guard(cfg)
         if refusal is not None:
-            if refusal.reason == "peer-held":
-                # _say prints plain text to stderr, never through Rich markup
-                # rendering, so the host name needs no escaping here.
-                host = refusal.host if refusal.host else "another host"
-                _say(f"build owned by {host}; run `bakar stop` there")
-            else:
-                _say(
-                    f"cannot confirm this node owns the build lock ({refusal.reason}); "
-                    "refusing to send any signal - resolve ownership manually"
-                )
+            _say_stop_refusal(refusal)
             return False
 
     build_dir_name = cfg.build_dir_name if cfg is not None else "build"
@@ -1886,16 +1894,7 @@ def stop_run(run_dir: Path, cfg: BuildConfig | None = None, *, force: bool = Fal
     if cfg is not None:
         refusal = lock_mutation_guard(cfg)
         if refusal is not None:
-            if refusal.reason == "peer-held":
-                # _say prints plain text to stderr, never through Rich markup
-                # rendering, so the host name needs no escaping here.
-                host = refusal.host if refusal.host else "another host"
-                _say(f"build owned by {host}; run `bakar stop` there")
-            else:
-                _say(
-                    f"cannot confirm this node owns the build lock ({refusal.reason}); "
-                    "refusing to send any signal - resolve ownership manually"
-                )
+            _say_stop_refusal(refusal)
             return False
 
     record = read_launch_record(run_dir)

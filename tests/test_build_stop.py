@@ -2838,6 +2838,7 @@ def _forbid_wait_and_escalate(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_stop_build_sends_zero_signals_on_any_refusal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
     reason: str,
 ) -> None:
     """Any hard-refusing guard verdict sends ZERO signals and touches nothing.
@@ -2856,10 +2857,13 @@ def test_stop_build_sends_zero_signals_on_any_refusal(
     run_dir = _make_run_dir_for_cfg(cfg)
     build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
 
+    marker = tmp_path / "bakar-owner.marker"
     monkeypatch.setattr(
         build_stop,
         "lock_mutation_guard",
-        lambda _cfg: build_stop.LockRefusal(reason=reason, host="peer-host" if reason == "peer-held" else None),
+        lambda _cfg: build_stop.LockRefusal(
+            reason=reason, host="peer-host" if reason == "peer-held" else None, marker=marker
+        ),
     )
     killpg_calls = _record_killpg(monkeypatch)
     kill_pid_calls = _record_kill_pid(monkeypatch)
@@ -2873,6 +2877,69 @@ def test_stop_build_sends_zero_signals_on_any_refusal(
     # The refusal must fire before any run-dir/pidfile bookkeeping runs.
     assert (run_dir / "build.pid").exists()
     assert (run_dir / "build.meta.json").exists()
+    err = capsys.readouterr().err
+    assert str(marker) in err
+    assert "by hand" in err
+
+
+def test_stop_refusal_names_marker_and_manual_clear(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Both stop_build and stop_run print the marker path and the by-hand clear.
+
+    The peer-held text keeps its "run `bakar stop` there" guidance, a refusal
+    without a marker prints no manual-clear sentence, and no signal is sent.
+    """
+    cfg = make_build_config(workspace=tmp_path)
+    run_dir = _make_run_dir_for_cfg(cfg)
+    build_stop.write_launch_record(run_dir, pgid=4242, mode="host")
+    marker = tmp_path / "bakar-owner.marker"
+    killpg_calls = _record_killpg(monkeypatch)
+    kill_pid_calls = _record_kill_pid(monkeypatch)
+    _forbid_wait_and_escalate(monkeypatch)
+
+    def run_both() -> list[str]:
+        outputs = []
+        for call in (
+            lambda: build_stop.stop_build(cfg.bsp_root, cfg),
+            lambda: build_stop.stop_run(run_dir, cfg),
+        ):
+            assert call() is False
+            outputs.append(capsys.readouterr().err)
+        return outputs
+
+    monkeypatch.setattr(
+        build_stop,
+        "lock_mutation_guard",
+        lambda _cfg: build_stop.LockRefusal(reason="peer-held", host="peer-host", marker=marker),
+    )
+    for err in run_both():
+        assert "build owned by peer-host; run `bakar stop` there" in err
+        assert str(marker) in err
+        assert "by hand" in err
+
+    monkeypatch.setattr(
+        build_stop,
+        "lock_mutation_guard",
+        lambda _cfg: build_stop.LockRefusal(reason="unattributable", marker=marker),
+    )
+    for err in run_both():
+        assert "cannot confirm this node owns the build lock (unattributable)" in err
+        assert str(marker) in err
+        assert "by hand" in err
+
+    monkeypatch.setattr(
+        build_stop,
+        "lock_mutation_guard",
+        lambda _cfg: build_stop.LockRefusal(reason="unattributable"),
+    )
+    for err in run_both():
+        assert "by hand" not in err
+
+    assert killpg_calls == []
+    assert kill_pid_calls == []
 
 
 def test_stop_build_local_marker_stop_path_unchanged(
