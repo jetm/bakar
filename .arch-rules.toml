@@ -99,6 +99,11 @@ paths = [
   "src/bakar/sigdiff_helper.py",
   # Release-keyed workspace routing: pure functions, stdlib imports only.
   "src/bakar/release_workspace.py",
+  # Split out of build_stop.py: container-runtime control and process-tree
+  # walking/signalling. Both are true leaves (stdlib imports only), so they
+  # belong here and not in lock_authority, which build_stop.py stays in.
+  "src/bakar/stop_container.py",
+  "src/bakar/proc_tree.py",
 ]
 
 [[modules]]
