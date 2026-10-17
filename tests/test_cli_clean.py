@@ -179,7 +179,8 @@ def test_clean_consults_the_gate_once_and_warns_once_when_unattributable(
     result = runner.invoke(app, ["clean", "--bsp", "nxp"])
 
     assert result.exit_code == 0, result.output
-    assert len(guard_calls) == 1
+    # One gate run: the guard, then its single marker re-read. Not a second gate.
+    assert len(guard_calls) == 2
     assert result.output.count("cannot attribute the build lock") == 1
     assert not (workspace / "nxp" / "build").exists()
 

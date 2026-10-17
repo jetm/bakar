@@ -144,7 +144,7 @@ def _run_bbsetup_build(
         if tmp_dir.exists():
             # Shared helper: a partial removal is reported and exits 1 instead
             # of leaking a PermissionError traceback from the first stuck entry.
-            _remove_tree_or_exit(tmp_dir, f"Removing {tmp_dir.name}/")
+            _remove_tree_or_exit(tmp_dir, f"Removing {tmp_dir.name}/", via_trash=True)
 
     effective_show_layers = ctx.show_layers or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_hashes)
 

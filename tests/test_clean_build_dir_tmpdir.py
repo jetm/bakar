@@ -326,3 +326,159 @@ def test_clean_build_dir_gate_runs_before_any_removal(tmp_path: Path, monkeypatc
     _clean_build_dir(cfg)
 
     assert events == ["guard", "holder", "rmtree"]
+
+
+@pytest.mark.unit
+def test_clean_build_dir_warns_and_proceeds_on_shared_inaction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from bakar import build_stop
+    from bakar.commands import console
+
+    cfg, build_dir = _live_cfg(tmp_path)
+    marker = build_stop.lock_marker_path(cfg)
+    refusal = build_stop.LockRefusal(reason="shared-inaction", marker=marker)
+    monkeypatch.setattr("bakar.build_stop.lock_mutation_guard", lambda c: refusal)
+    monkeypatch.setattr("bakar.steps.kas_lock.local_build_holder", lambda c: None)
+    monkeypatch.setattr("bakar.steps.kas_lock._MARKER_REREAD_DELAY_S", 0)
+
+    with console.capture() as cap:
+        _clean_build_dir(cfg)
+
+    assert not build_dir.exists()
+    out = "".join(cap.get().split())
+    assert "warning" in out
+    assert str(marker) in out
+
+
+@pytest.mark.unit
+def test_clean_build_dir_rereads_after_one_failed_marker_read_and_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A single OSError on the marker read must not delete a peer's build."""
+    from pathlib import Path as RealPath
+
+    from bakar import build_stop
+
+    cfg, build_dir = _live_cfg(tmp_path)
+    marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("peer-node-that-is-not-this-host")
+    monkeypatch.setattr("bakar.mounts.is_path_on_nfs", lambda p: True)
+    monkeypatch.setattr("bakar.steps.kas_lock._MARKER_REREAD_DELAY_S", 0)
+    real = RealPath.read_bytes
+    calls = {"n": 0}
+
+    def flaky(self: Path) -> bytes:
+        if self == marker and calls["n"] == 0:
+            calls["n"] += 1
+            raise OSError("EIO")
+        return real(self)
+
+    monkeypatch.setattr(RealPath, "read_bytes", flaky)
+
+    with pytest.raises(typer.Exit) as excinfo:
+        _clean_build_dir(cfg)
+
+    assert excinfo.value.exit_code == 1
+    assert calls["n"] == 1
+    assert (build_dir / "tmp").exists()
+
+
+@pytest.mark.unit
+def test_held_locally_refusal_omits_the_marker_hint_when_no_marker_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bakar.commands import console
+
+    cfg, build_dir = _live_cfg(tmp_path)
+    monkeypatch.setattr("bakar.build_stop.lock_mutation_guard", lambda c: None)
+    monkeypatch.setattr("bakar.steps.kas_lock.local_build_holder", lambda c: 4242)
+
+    with console.capture() as cap, pytest.raises(typer.Exit) as excinfo:
+        _clean_build_dir(cfg)
+
+    assert excinfo.value.exit_code == 1
+    out = "".join(cap.get().split())
+    assert "4242" in out
+    assert "byhand" not in out
+    assert (build_dir / "tmp").exists()
+
+
+@pytest.mark.unit
+def test_removal_moves_the_tree_aside_so_a_marker_published_during_the_delete_survives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A build starting mid-delete creates a fresh directory the removal never touches."""
+    from bakar.fsremove import parallel_rmtree
+
+    cfg, build_dir = _live_cfg(tmp_path)
+    (build_dir / "tmp" / "work").mkdir()
+
+    def racing_rmtree(root: Path, description: str = "") -> object:
+        # A peer starts after the gate, while the delete is running.
+        build_dir.mkdir()
+        (build_dir / ".bakar-lock-host").write_text("peer-node")
+        (build_dir / "bitbake.lock").write_text("1\n")
+        return parallel_rmtree(root, description)
+
+    monkeypatch.setattr("bakar.build_stop.lock_mutation_guard", lambda c: None)
+    monkeypatch.setattr("bakar.steps.kas_lock.local_build_holder", lambda c: None)
+    monkeypatch.setattr("bakar.fsremove.parallel_rmtree", racing_rmtree)
+
+    _clean_build_dir(cfg)
+
+    assert (build_dir / ".bakar-lock-host").read_text() == "peer-node"
+    assert (build_dir / "bitbake.lock").exists()
+    assert not list(build_dir.parent.glob(".bakar-trash-*"))
+
+
+@pytest.mark.unit
+def test_removal_falls_back_in_place_when_the_rename_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pathlib import Path as RealPath
+
+    from bakar.commands import console
+
+    cfg, build_dir = _live_cfg(tmp_path)
+    monkeypatch.setattr("bakar.build_stop.lock_mutation_guard", lambda c: None)
+    monkeypatch.setattr("bakar.steps.kas_lock.local_build_holder", lambda c: None)
+
+    def no_rename(self: Path, target: object) -> None:
+        raise OSError("EXDEV")
+
+    monkeypatch.setattr(RealPath, "rename", no_rename)
+
+    with console.capture() as cap:
+        _clean_build_dir(cfg)
+
+    assert not build_dir.exists()
+    assert "in place" in cap.get()
+
+
+@pytest.mark.unit
+def test_second_removal_gets_its_own_trash_when_the_first_leaves_residue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two targets sharing a parent never collide on one trash name."""
+    from bakar.commands._helpers import _remove_tree_or_exit
+    from bakar.fsremove import parallel_rmtree
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    (first / "x").mkdir(parents=True)
+    (second / "y").mkdir(parents=True)
+    seen: list[Path] = []
+
+    def remover(root: Path, description: str = "") -> tuple[Path, OSError] | None:
+        seen.append(root)
+        if root.name.endswith("first"):
+            return (root / "x", OSError("busy"))  # residue stays behind
+        return parallel_rmtree(root, description)
+
+    monkeypatch.setattr("bakar.fsremove.parallel_rmtree", remover)
+
+    with pytest.raises(typer.Exit):
+        _remove_tree_or_exit(first, "first", via_trash=True)
+    _remove_tree_or_exit(second, "second", via_trash=True)
+
+    assert [p.name.rsplit("-", 1)[-1] for p in seen] == ["first", "second"]
+    assert len({p.name for p in seen}) == 2
+    assert not second.exists()
+    assert not seen[1].exists()

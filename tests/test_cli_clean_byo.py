@@ -9,6 +9,7 @@ the kas YAML positionally and clean *that* build dir.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import pytest
@@ -54,4 +55,9 @@ def test_clean_byo_meta_avocado_yaml_wipes_build_stem_dir(
     result = runner.invoke(app, ["clean", "meta-avocado/kas/machine/qtest.yml"])
 
     assert result.exit_code == 0, result.output
-    assert str(build_dir) in removed, f"expected build-qtest/build wiped, got {removed!r}"
+    trash = build_dir.with_name(f".bakar-trash-{os.getpid()}-{build_dir.name}")
+    assert str(trash) in removed, f"expected build-qtest/build wiped, got {removed!r}"
+    assert not build_dir.exists()
+    assert not trash.exists()
+    # Every removal ran against a per-target trash sibling, never the shared bare name.
+    assert all(f".bakar-trash-{os.getpid()}-" in r for r in removed), removed

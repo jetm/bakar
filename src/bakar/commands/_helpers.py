@@ -11,6 +11,8 @@ that ``commands/*.py`` modules import from here are re-exported below.
 
 from __future__ import annotations
 
+import os
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -320,8 +322,11 @@ def _print_leftover(target: Path, path: Path, err: BaseException) -> None:
     )
 
 
-def _remove_tree_report(target: Path, description: str) -> bool:
+def _remove_tree_report(target: Path, description: str, *, label: Path | None = None) -> bool:
     """Remove ``target`` via ``parallel_rmtree``; return False naming the residue.
+
+    ``label`` is the path shown in the "removed" line when ``target`` is a
+    trash sibling standing in for the directory the user asked to remove.
 
     A partial removal must not read as success: the caller would go on to build
     on a half-deleted tree. Prints "removed" only when nothing was left behind.
@@ -334,12 +339,35 @@ def _remove_tree_report(target: Path, description: str) -> bool:
         path, err = residue
         _print_leftover(target, path, err)
         return False
-    console.print(f"[green]removed[/] {neutralize(target)}")
+    console.print(f"[green]removed[/] {neutralize(label if label is not None else target)}")
     return True
 
 
-def _remove_tree_or_exit(target: Path, description: str) -> None:
-    """Remove ``target`` via ``_remove_tree_report``; exit 1 on any residue."""
+def _remove_tree_or_exit(target: Path, description: str, *, via_trash: bool = False) -> None:
+    """Remove ``target`` via ``_remove_tree_report``; exit 1 on any residue.
+
+    ``via_trash`` renames ``target`` to a sibling ``.bakar-trash-<pid>-<name>`` first
+    and deletes that, so a build that starts while the delete runs creates a
+    fresh ``target`` the removal never touches (the live-build gate ran before
+    the delete started and cannot see it). A failed rename falls back to the
+    in-place delete and says so.
+    """
+    if via_trash:
+        from bakar.commands import console
+
+        trash = target.with_name(f".bakar-trash-{os.getpid()}-{target.name}")
+        try:
+            target.rename(trash)
+        except OSError as exc:
+            console.print(
+                f"[yellow]warning: could not move {neutralize(target)} aside ({neutralize(exc)}); "
+                "removing it in place[/]",
+                highlight=False,
+            )
+        else:
+            if not _remove_tree_report(trash, description, label=target):
+                raise typer.Exit(1)
+            return
     if not _remove_tree_report(target, description):
         raise typer.Exit(1)
 
@@ -355,14 +383,20 @@ def _refuse_if_build_live(
     A ``peer-held`` marker refuses outright. The guard never reports a build
     running on THIS node (a marker naming this host returns None), so every
     non-peer verdict also consults :func:`kas_lock.local_build_holder`.
-    ``unattributable`` with no local holder only warns: ``clean`` is the
-    recovery path from an unreadable lock.
+    ``unattributable`` and ``shared-inaction`` with no local holder only warn
+    (``clean`` is the recovery path from an unreadable lock), after one
+    re-read of the marker so a single failed read cannot pass for "no owner".
     """
     from bakar import build_stop
     from bakar.commands import console
     from bakar.steps import kas_lock
 
     refusal = build_stop.lock_mutation_guard(cfg)
+    if refusal is not None and refusal.reason in ("unattributable", "shared-inaction"):
+        # One failed or torn marker read (a peer mid-write, a transient
+        # OSError) must not stand in for "no owner": look once more.
+        time.sleep(kas_lock._MARKER_REREAD_DELAY_S)
+        refusal = build_stop.lock_mutation_guard(cfg)
     if refusal is not None and refusal.reason == "peer-held":
         host = neutralize(refusal.host) if refusal.host else "another host"
         marker = refusal.marker if refusal.marker is not None else build_stop.lock_marker_path(cfg)
@@ -376,14 +410,14 @@ def _refuse_if_build_live(
     pid = kas_lock.local_build_holder(cfg)
     if pid is not None:
         marker = build_stop.lock_marker_path(cfg)
+        hint = f" {neutralize(build_stop.manual_clear_hint(marker))}" if marker.exists() else ""
         console.print(
-            f"[red]refusing to {action}: a local build is running (pid {pid})[/]. "
-            f"Run `bakar stop` first. {neutralize(build_stop.manual_clear_hint(marker))}",
+            f"[red]refusing to {action}: a local build is running (pid {pid})[/]. Run `bakar stop` first.{hint}",
             highlight=False,
         )
         raise typer.Exit(1)
 
-    if refusal is not None and refusal.reason == "unattributable":
+    if refusal is not None and refusal.reason in ("unattributable", "shared-inaction"):
         marker = refusal.marker if refusal.marker is not None else build_stop.lock_marker_path(cfg)
         console.print(
             f"[yellow]warning: cannot attribute the build lock (marker {neutralize(marker)}); {doing} anyway[/]",
@@ -408,7 +442,7 @@ def _clean_build_dir(cfg: BuildConfig, *, gated: bool = False) -> None:
         _refuse_if_build_live(cfg)
     build_dir = cfg.bsp_root / cfg.build_dir_name
     if build_dir.exists():
-        _remove_tree_or_exit(build_dir, f"Removing {build_dir.name}/")
+        _remove_tree_or_exit(build_dir, f"Removing {build_dir.name}/", via_trash=True)
 
     # A host-mode local_tmpdir_base override relocates the build TMPDIR to
     # node-local disk, outside build_dir; wiping build_dir alone would strand
@@ -416,7 +450,7 @@ def _clean_build_dir(cfg: BuildConfig, *, gated: bool = False) -> None:
     # unset default resolves under build_dir and was already removed above).
     tmpdir = cfg.resolved_tmpdir
     if not tmpdir.is_relative_to(build_dir) and tmpdir.exists():
-        _remove_tree_or_exit(tmpdir, f"Removing {tmpdir.name}/ (local TMPDIR)")
+        _remove_tree_or_exit(tmpdir, f"Removing {tmpdir.name}/ (local TMPDIR)", via_trash=True)
 
 
 # ---------------------------------------------------------------------------
