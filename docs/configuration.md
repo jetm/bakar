@@ -200,7 +200,7 @@ Vendor entries are checked before built-in regexes. `bakar build -f my-board-2.2
 
 ## Build telemetry directories
 
-Every build run writes to:
+Every build run writes to the directory below. The timestamp in the run id is UTC; directories from earlier versions use local time.
 
 ```text
 <bsp_root>/build/runs/<YYYYMMDD-HHMMSS-PID>/

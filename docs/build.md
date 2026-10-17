@@ -55,7 +55,7 @@ bakar build -m imx8mp-var-dart    # machine override in bbsetup workspace
 | `--keep-going` | `-k` | Pass `-k` to bitbake: continue building other targets when one fails |
 | `--dry-run` | `-n` | Regenerate YAML and exit before invoking kas |
 | `--dry-run-script` | | Write a runnable bash script to PATH instead of building; use `-` for stdout. Distinct from `--dry-run`: this produces an executable script, not a preview. |
-| `--clean` | | Remove `<bsp>/build/` before running (forces from-scratch build) |
+| `--clean` | | Remove `<bsp>/build/` before running (forces from-scratch build). Refuses, deletes nothing and exits 1 while a peer node's marker or a live local build holds the lock; the message names the holder and the marker, and the marker can be deleted by hand if no build runs on any node. An unreadable lock only warns and proceeds. |
 | `--show-layers` | | Print layer git hashes before the build starts |
 | `--sstate-mirror` | | HTTP sstate/downloads mirror URL; activates `bakar-tuning-shared-cache.yml` for this build |
 | `--preset` | | Named preset from `config.toml`; additive with explicit flags (explicit flags win) |
@@ -150,7 +150,7 @@ bakar build my-board.yml --dry-run-script -
 7. **shared-cache overlay** - when `--sstate-mirror <URL>` is passed (or `sstate_mirror_url` is set in config.toml), bakar exports `BAKAR_SSTATE_MIRROR_URL` into the container env and appends `bakar-tuning-shared-cache.yml` to the overlay list. That overlay wires `SSTATE_MIRRORS` (using the `/all/PATH;downloadfilename=PATH` layout required by the Yocto Project autobuilder convention) and `BB_HASHSERVE_UPSTREAM` to enable sstate reuse from the mirror. The official Yocto Project mirror is `http://sstate.yoctoproject.org`. No hand-edited YAML needed.
 8. **kas build** - invokes `kas build <kas_yaml>:<overlay>` on the host (or `kas-container build` when the container path is opted into), wrapped in a transient systemd scope by default (see below)
 
-Run telemetry is written to `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>-<pid>/`, where `<pid>` is the process id of the bakar run (for example `20260601-143022-4321`).
+Run telemetry is written to `<bsp_root>/build/runs/<YYYYMMDD-HHMMSS>-<pid>/`, where `<pid>` is the process id of the bakar run (for example `20260601-143022-4321`). The timestamp is UTC, whatever the host's time zone. Run directories created by earlier versions use local time; they keep their names and are never renamed.
 
 ## Native signature capture
 
@@ -630,8 +630,9 @@ Every check runs before the first remote write:
    `KAS_WORK_DIR`, plus `BAKAR_REPO_POLICY=reuse` and `BAKAR_WORKTREE_BUILD_DIR`
    (the configured template, else the default). The remote build prints the
    side checkouts it creates.
-10. **Run-id** - the remote run-id is discovered under this dispatch's build
-    directory; see
+10. **Run-id** - the remote run-id is the earliest run directory in this
+    dispatch's build directory created at or after the moment the dispatch
+    started, on the remote host's UTC clock; see
     [Remote build, streaming and exit codes](#remote-build-streaming-and-exit-codes).
 
 ### Additive mirror for other build forms
@@ -705,7 +706,9 @@ Both transfers bound the ssh they start with keepalive and connect timeouts so a
    local user cannot forge the exit-code sentinel that sits beside it) and your
    terminal tails it. Losing that tail does not touch the build; re-attach with
    `ssh <host> tail -F <the log path bakar printed>`. On completion bakar
-   prints the remote run-id and a copy-pasteable
+   prints the remote run-id (the earliest run directory created at or after
+   the dispatch started, so a later build in the same workspace is not
+   reported) and a copy-pasteable
    `ssh <host> bakar triage <run-id>` line so you (or Claude, over ssh) can
    inspect the run remotely.
 4. **Exit propagation** - a non-zero remote build exits the local command with
