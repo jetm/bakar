@@ -221,7 +221,7 @@ def test_clean_build_dir_refuses_when_a_local_build_is_live(
     build_stop.lock_marker_path(cfg).write_text(socket.gethostname())
     (build_dir / "bitbake.lock").write_text(f"{bitbake_child.pid}\n")
     procs = SimpleNamespace(all_pids={bitbake_child.pid, bitbake_child.pid + 1})
-    monkeypatch.setattr("bakar.build_stop._collect_build_pids", lambda topdir, pgid, *a, **kw: procs)
+    monkeypatch.setattr("bakar.proc_tree._collect_build_pids", lambda topdir, pgid, *a, **kw: procs)
 
     with console.capture() as cap, pytest.raises(typer.Exit) as excinfo:
         _clean_build_dir(cfg)
@@ -243,7 +243,7 @@ def test_clean_build_dir_ignores_an_idle_local_cooker(
     build_stop.lock_marker_path(cfg).write_text(socket.gethostname())
     (build_dir / "bitbake.lock").write_text(f"{bitbake_child.pid}\n")
     procs = SimpleNamespace(all_pids={bitbake_child.pid})
-    monkeypatch.setattr("bakar.build_stop._collect_build_pids", lambda topdir, pgid, *a, **kw: procs)
+    monkeypatch.setattr("bakar.proc_tree._collect_build_pids", lambda topdir, pgid, *a, **kw: procs)
 
     _clean_build_dir(cfg)
 

@@ -625,14 +625,14 @@ def test_stress_parse_refuses_before_cache_wipe_when_a_local_build_is_live(
     """A real bitbake pid in the lock, with only the activity probe patched, refuses."""
     from types import SimpleNamespace
 
-    from bakar import build_stop
+    from bakar import proc_tree
 
     workspace = _make_workspace(tmp_path)
     monkeypatch.chdir(workspace)
     build, caches = _seed_build_dir(workspace)
     monkeypatch.setattr("bakar.build_stop.socket.gethostname", lambda: "this-host")
     (build / ".bakar-lock-host").write_text("this-host\n")
-    monkeypatch.setattr(build_stop, "_collect_build_pids", lambda _d, _r: SimpleNamespace(all_pids=[1, 2]))
+    monkeypatch.setattr(proc_tree, "_collect_build_pids", lambda _d, _r: SimpleNamespace(all_pids=[1, 2]))
     (build / "bitbake.lock").write_text(f"{bitbake_child.pid}\n")
     override_p, kas_p, stress_p = _patch_steps(summary=_clean_summary(1))
 

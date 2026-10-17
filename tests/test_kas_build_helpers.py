@@ -31,7 +31,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from bakar import build_stop
+from bakar import build_stop, proc_tree
 from bakar.bsp_model import get_model
 from bakar.config import BuildConfig
 from bakar.native_ledger import CaptureResult
@@ -620,14 +620,14 @@ def test_clear_stale_bitbake_locks_live_bitbake_pid_leaves_lock(tmp_path: Path) 
         return real_read_bytes(self)  # type: ignore[arg-type]
 
     # Activity beyond the bare server PID (a worker) - genuine held-locally.
-    active_procs = build_stop._ScopedProcs(cooker=frozenset({1234}), all_pids=frozenset({1234, 1235}))
+    active_procs = proc_tree._ScopedProcs(cooker=frozenset({1234}), all_pids=frozenset({1234, 1235}))
 
     with (
         patch("bakar.steps.kas_build.os.kill", return_value=None),
         patch("bakar.steps.kas_build.Path.exists", new=fake_exists),
         patch("bakar.steps.kas_build.Path.read_bytes", new=fake_read_bytes),
         patch("bakar.mounts.is_path_on_nfs", return_value=False),
-        patch("bakar.steps.kas_build.build_stop._collect_build_pids", return_value=active_procs),
+        patch("bakar.steps.kas_lock.proc_tree._collect_build_pids", return_value=active_procs),
     ):
         outcome = clear_stale_bitbake_locks(cfg)
 
@@ -799,13 +799,13 @@ def test_clear_stale_bitbake_locks_local_marker_live_pid_refuses_held_locally(
         return real_read_bytes(self)  # type: ignore[arg-type]
 
     # Activity beyond the bare server PID (a worker) - genuine held-locally.
-    active_procs = build_stop._ScopedProcs(cooker=frozenset({1234}), all_pids=frozenset({1234, 1235}))
+    active_procs = proc_tree._ScopedProcs(cooker=frozenset({1234}), all_pids=frozenset({1234, 1235}))
 
     with (
         patch("bakar.steps.kas_build.os.kill", return_value=None),
         patch("bakar.steps.kas_build.Path.exists", new=fake_exists),
         patch("bakar.steps.kas_build.Path.read_bytes", new=fake_read_bytes),
-        patch("bakar.steps.kas_build.build_stop._collect_build_pids", return_value=active_procs),
+        patch("bakar.steps.kas_lock.proc_tree._collect_build_pids", return_value=active_procs),
     ):
         outcome = clear_stale_bitbake_locks(cfg)
 
@@ -846,13 +846,13 @@ def test_clear_stale_bitbake_locks_local_marker_idle_pid_not_refused(
         return real_read_bytes(self)  # type: ignore[arg-type]
 
     # Only the bare server PID - no worker/client descendants.
-    idle_procs = build_stop._ScopedProcs(cooker=frozenset({1234}), all_pids=frozenset({1234}))
+    idle_procs = proc_tree._ScopedProcs(cooker=frozenset({1234}), all_pids=frozenset({1234}))
 
     with (
         patch("bakar.steps.kas_build.os.kill", return_value=None),
         patch("bakar.steps.kas_build.Path.exists", new=fake_exists),
         patch("bakar.steps.kas_build.Path.read_bytes", new=fake_read_bytes),
-        patch("bakar.steps.kas_build.build_stop._collect_build_pids", return_value=idle_procs),
+        patch("bakar.steps.kas_lock.proc_tree._collect_build_pids", return_value=idle_procs),
     ):
         outcome = clear_stale_bitbake_locks(cfg)
 
@@ -907,14 +907,14 @@ def test_clear_stale_bitbake_locks_no_marker_lock_present_live_bitbake_confirmed
         return real_read_bytes(self)  # type: ignore[arg-type]
 
     # Activity beyond the bare server PID (a worker) - genuine held-locally.
-    active_procs = build_stop._ScopedProcs(cooker=frozenset({1234}), all_pids=frozenset({1234, 1235}))
+    active_procs = proc_tree._ScopedProcs(cooker=frozenset({1234}), all_pids=frozenset({1234, 1235}))
 
     with (
         patch("bakar.steps.kas_build.os.kill", return_value=None),
         patch("bakar.steps.kas_build.Path.exists", new=fake_exists),
         patch("bakar.steps.kas_build.Path.read_bytes", new=fake_read_bytes),
         patch("bakar.mounts.is_path_on_nfs", return_value=False),
-        patch("bakar.steps.kas_build.build_stop._collect_build_pids", return_value=active_procs),
+        patch("bakar.steps.kas_lock.proc_tree._collect_build_pids", return_value=active_procs),
     ):
         outcome = clear_stale_bitbake_locks(cfg)
 
@@ -951,14 +951,14 @@ def test_clear_stale_bitbake_locks_no_marker_lock_present_idle_bitbake_confirmed
         return real_read_bytes(self)  # type: ignore[arg-type]
 
     # Only the bare server PID - no worker/client descendants.
-    idle_procs = build_stop._ScopedProcs(cooker=frozenset({1234}), all_pids=frozenset({1234}))
+    idle_procs = proc_tree._ScopedProcs(cooker=frozenset({1234}), all_pids=frozenset({1234}))
 
     with (
         patch("bakar.steps.kas_build.os.kill", return_value=None),
         patch("bakar.steps.kas_build.Path.exists", new=fake_exists),
         patch("bakar.steps.kas_build.Path.read_bytes", new=fake_read_bytes),
         patch("bakar.mounts.is_path_on_nfs", return_value=False),
-        patch("bakar.steps.kas_build.build_stop._collect_build_pids", return_value=idle_procs),
+        patch("bakar.steps.kas_lock.proc_tree._collect_build_pids", return_value=idle_procs),
     ):
         outcome = clear_stale_bitbake_locks(cfg)
 

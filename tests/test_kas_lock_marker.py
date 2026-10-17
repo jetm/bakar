@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar import build_stop
+from bakar import build_stop, proc_tree
 from bakar.config import BuildConfig
 from bakar.observability import RunLogger
 from bakar.steps import kas_lock
@@ -757,7 +757,7 @@ def test_unattributable_clear_refusal_carries_the_marker(
 
 def _report_activity(monkeypatch: pytest.MonkeyPatch, active: bool) -> None:
     pids = [1, 2] if active else [1]
-    monkeypatch.setattr(build_stop, "_collect_build_pids", lambda _d, _r: SimpleNamespace(all_pids=pids))
+    monkeypatch.setattr(proc_tree, "_collect_build_pids", lambda _d, _r: SimpleNamespace(all_pids=pids))
 
 
 def _tree_snapshot(root: Path) -> dict[str, tuple[int, int]]:

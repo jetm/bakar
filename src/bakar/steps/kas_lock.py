@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 from rich.markup import escape
 
-from bakar import build_stop, mounts
+from bakar import build_stop, mounts, proc_tree
 from bakar.fmt import neutralize
 
 if TYPE_CHECKING:
@@ -65,7 +65,7 @@ def _lock_holder_has_activity(build_dir: Path) -> bool:
     A bare idle server must NOT trip ``held-locally``, or the very next
     ``bakar build`` on this node would refuse instead of reconnecting.
 
-    Reuses :func:`build_stop._collect_build_pids`' argv-scan machinery: its
+    Reuses :func:`proc_tree._collect_build_pids`' argv-scan machinery: its
     ``all_pids`` is the argv-matched cooker plus PGID members plus their
     transitive ``/proc``-ppid descendants (workers, clients). More than the
     bare cooker PID itself in that set means genuine worker/client activity.
@@ -75,7 +75,7 @@ def _lock_holder_has_activity(build_dir: Path) -> bool:
     so patch the module whose code does the lookup: ``kas_lock`` for this
     module's calls, ``kas_graph_capture`` for its ``_wait_for_cooker_idle``.
     """
-    procs = build_stop._collect_build_pids(build_dir, None)
+    procs = proc_tree._collect_build_pids(build_dir, None)
     return len(procs.all_pids) > 1
 
 
@@ -90,7 +90,7 @@ def local_build_holder(cfg: BuildConfig) -> int | None:
     :func:`clear_stale_bitbake_locks`. Never removes or writes anything.
     """
     build_dir = cfg.bsp_root / cfg.build_dir_name
-    pid = build_stop.read_lock_pid(build_dir / "bitbake.lock")
+    pid = proc_tree.read_lock_pid(build_dir / "bitbake.lock")
     if pid is None:
         return None
     if _lock_pid_is_live_bitbake(pid) and _lock_holder_has_activity(build_dir):
@@ -173,7 +173,7 @@ def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
             _remove_own_marker()
             return build_stop.LockClearOutcome(removed=removed)
         # Row 3.
-        pid = build_stop.read_lock_pid(lock)
+        pid = proc_tree.read_lock_pid(lock)
         if pid is None:
             # Lock is mid-startup - this node's own build. Leave it intact.
             return build_stop.LockClearOutcome(removed=[])
@@ -205,7 +205,7 @@ def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
                 ),
             )
         # Row 5: confirmed-local, today's probe.
-        pid = build_stop.read_lock_pid(lock)
+        pid = proc_tree.read_lock_pid(lock)
         if pid is None:
             # Mid-startup lock on a confirmed-local fs - leave it intact.
             return build_stop.LockClearOutcome(removed=[])
