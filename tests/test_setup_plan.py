@@ -444,7 +444,7 @@ def test_host_preflight_release_scoped_install_dir_when_oe_core_declares_codenam
 ) -> None:
     """A real oe-core git checkout under the workspace scopes install_dir to its
     release key, so a differently-pinned workspace never reuses this install."""
-    from bakar.setup.actions.tools import DEFAULT_BUILDTOOLS_DIR
+    from bakar.setup.actions import tools
 
     _patch_results(monkeypatch, [_fail("host-preflight")])
     monkeypatch.setattr(BuildtoolsInstallAction, "is_satisfied", lambda _self, _p: False)
@@ -456,7 +456,7 @@ def test_host_preflight_release_scoped_install_dir_when_oe_core_declares_codenam
 
     installs = [a for a in result.actions if isinstance(a, BuildtoolsInstallAction)]
     persists = [a for a in result.actions if isinstance(a, BuildtoolsConfigPersistAction)]
-    assert installs[0].install_dir == DEFAULT_BUILDTOOLS_DIR / release_key
+    assert installs[0].install_dir == tools.DEFAULT_BUILDTOOLS_DIR / release_key
     assert installs[0].release_key == release_key
     assert persists[0].install_dir == installs[0].install_dir
     assert persists[0].release_key == release_key
@@ -466,7 +466,7 @@ def test_host_preflight_no_release_codename_keeps_flat_install_dir(monkeypatch: 
     """The existing non-git fixture (install-buildtools present, no .git) must
     keep resolving to the flat DEFAULT_BUILDTOOLS_DIR - the release-scoping
     feature must not regress a workspace without a resolvable release key."""
-    from bakar.setup.actions.tools import DEFAULT_BUILDTOOLS_DIR
+    from bakar.setup.actions import tools
 
     _patch_results(monkeypatch, [_fail("host-preflight")])
     monkeypatch.setattr(BuildtoolsInstallAction, "is_satisfied", lambda _self, _p: False)
@@ -476,5 +476,5 @@ def test_host_preflight_no_release_codename_keeps_flat_install_dir(monkeypatch: 
     result = plan_mod.build(make_host_profile(), cfg=cfg)
 
     installs = [a for a in result.actions if isinstance(a, BuildtoolsInstallAction)]
-    assert installs[0].install_dir == DEFAULT_BUILDTOOLS_DIR
+    assert installs[0].install_dir == tools.DEFAULT_BUILDTOOLS_DIR
     assert installs[0].release_key is None

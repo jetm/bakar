@@ -14,9 +14,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from bakar.diagnostics import BuildtoolsToolchain
+from bakar.setup.actions import tools
 from bakar.setup.actions.base import Action, RunCommand
 from bakar.setup.actions.tools import (
-    DEFAULT_BUILDTOOLS_DIR,
     BuildtoolsConfigPersistAction,
     BuildtoolsInstallAction,
     DockerPullAction,
@@ -107,8 +107,8 @@ def test_buildtools_install_is_an_action_remediating_host_preflight() -> None:
 def test_buildtools_install_default_dir_is_host_level() -> None:
     """No install_dir given -> the host-level default under $HOME."""
     action = BuildtoolsInstallAction(install_buildtools="/ws/install-buildtools")
-    assert action.install_dir == DEFAULT_BUILDTOOLS_DIR
-    assert Path.home() / ".local" / "share" / "bakar" / "buildtools" == DEFAULT_BUILDTOOLS_DIR
+    assert action.install_dir == tools.DEFAULT_BUILDTOOLS_DIR
+    assert Path.home() / ".local" / "share" / "bakar" / "buildtools" == tools.DEFAULT_BUILDTOOLS_DIR
 
 
 def test_buildtools_install_operations_have_install_dir_argv() -> None:
@@ -212,13 +212,13 @@ def test_buildtools_persist_targets_explicit_global_path_not_workspace(tmp_path,
 def test_buildtools_install_release_scoped_dir_default() -> None:
     """release_key given, no explicit install_dir -> DEFAULT_BUILDTOOLS_DIR/<release_key>."""
     action = BuildtoolsInstallAction(install_buildtools="/ws/install-buildtools", release_key="wrynose-abc123")
-    assert action.install_dir == DEFAULT_BUILDTOOLS_DIR / "wrynose-abc123"
+    assert action.install_dir == tools.DEFAULT_BUILDTOOLS_DIR / "wrynose-abc123"
 
 
 def test_buildtools_install_no_release_key_keeps_flat_default() -> None:
     """No release_key (back-compat) -> the old flat DEFAULT_BUILDTOOLS_DIR, unchanged."""
     action = BuildtoolsInstallAction(install_buildtools="/ws/install-buildtools")
-    assert action.install_dir == DEFAULT_BUILDTOOLS_DIR
+    assert action.install_dir == tools.DEFAULT_BUILDTOOLS_DIR
 
 
 def test_buildtools_install_is_satisfied_passes_release_key(monkeypatch) -> None:

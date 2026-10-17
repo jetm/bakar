@@ -21,23 +21,36 @@ in ``src/bakar``:
 
 from __future__ import annotations
 
+import atexit
+import importlib
 import os
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest import mock
 
 import pytest
 from typer.testing import CliRunner
 
-import bakar.cli  # noqa: F401 - registers all subcommands on the shared app
-from bakar import cache_render
-from bakar.commands._app import app
-from bakar.config import BuildConfig
-from bakar.report import ReportSummary
-from bakar.setup.actions.base import RunCommand, WriteFile
-from bakar.setup.profile import HostProfile
-from bakar.steps import build_ui_render
+# Record the developer's real home, then point HOME at a throwaway directory
+# BEFORE the first ``bakar`` import: several modules compute state locations
+# from ``Path.home()`` at import time, and those must land in the session home.
+REAL_HOME = Path.home()
+_SESSION_HOME = Path(tempfile.mkdtemp(prefix="bakar-test-home-"))
+os.environ["HOME"] = str(_SESSION_HOME)
+atexit.register(shutil.rmtree, _SESSION_HOME, ignore_errors=True)
+
+import bakar.cli  # noqa: E402, F401 - registers all subcommands on the shared app
+from bakar import cache_render  # noqa: E402
+from bakar.commands._app import app  # noqa: E402
+from bakar.config import BuildConfig  # noqa: E402
+from bakar.report import ReportSummary  # noqa: E402
+from bakar.setup.actions.base import RunCommand, WriteFile  # noqa: E402
+from bakar.setup.profile import HostProfile  # noqa: E402
+from bakar.steps import build_ui_render  # noqa: E402
 
 # Test modules load tests/_feed_upstream.py through ``pytest_plugins``. pytest
 # rewrites asserts only in plugins registered before they are imported, so
@@ -229,6 +242,56 @@ def _reset_routing_env(monkeypatch):
     monkeypatch.delenv("BAKAR_WORKTREE_BUILD_DIR", raising=False)
 
 
+def home_constants(home: Path) -> list[tuple[str, str, Path]]:
+    """Every module-level constant derived from the home, as ``(module, attr, value)``."""
+    state = home / ".local" / "state" / "bakar"
+    buildtools = home / ".local" / "share" / "bakar" / "buildtools"
+    return [
+        ("bakar.daemon_log", "STATE_DIR", state),
+        ("bakar.central_service", "_STATE_DIR", state),
+        ("bakar.sccache_server", "_STATE_DIR", state),
+        ("bakar.task_timings", "TIMINGS_DIR", home / ".local/state/bakar/task-timings"),
+        ("bakar.task_timings", "DEFAULT_TIMINGS_PATH", home / ".local/state/bakar/task-timings.json"),
+        ("bakar.commands.presets", "_CONFIG_PATH", home / ".config" / "bakar" / "config.toml"),
+        ("bakar.steps.bitbake_override", "DEFAULT_OVERRIDE_REPO", home / "repos" / "personal" / "yocto" / "bitbake"),
+        ("bakar.setup.actions.tools", "DEFAULT_BUILDTOOLS_DIR", buildtools),
+        ("bakar.setup.plan", "DEFAULT_BUILDTOOLS_DIR", buildtools),
+    ]
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(request, tmp_path_factory, monkeypatch):
+    """Give every test a fresh empty home, or the real one under ``real_home``.
+
+    The import-time constants were computed under the session home, so they are
+    repointed on every test: at a fresh per-test home normally, back at the
+    real home for a ``real_home``-marked test. monkeypatch restores them.
+    """
+    if request.node.get_closest_marker("real_home"):
+        home = REAL_HOME
+    else:
+        home = tmp_path_factory.mktemp("home")
+        # git reads identity and commit signing from the developer's global config
+        # (home and XDG); give fixtures that run ``git commit`` a neutral one.
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+        for who in ("AUTHOR", "COMMITTER"):
+            monkeypatch.setenv(f"GIT_{who}_NAME", "bakar-test")
+            monkeypatch.setenv(f"GIT_{who}_EMAIL", "bakar-test@example.invalid")
+    monkeypatch.setenv("HOME", str(home))
+    for module, attr, value in home_constants(home):
+        monkeypatch.setattr(importlib.import_module(module), attr, value)
+    return home
+
+
+@pytest.fixture
+def user_config_file() -> Path:
+    """Path of the isolated ``$HOME/.config/bakar/config.toml``, parents created."""
+    path = Path(os.environ["HOME"]) / ".config" / "bakar" / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 @pytest.fixture(autouse=True)
 def _no_user_workspaces(monkeypatch):
     """Route every test through an empty user config unless it injects its own.
@@ -267,7 +330,6 @@ def _no_systemd_scope_probe(request, monkeypatch):
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
-    from pathlib import Path
 
 # Two synthetic projects pinned to 40-hex-char SHAs.  parse_manifest_pins
 # only emits pins whose revision matches _HEX40_RE, so the SHAs below are

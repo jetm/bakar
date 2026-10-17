@@ -88,6 +88,7 @@ addopts = ["-v", "--tb=short", "--cov=bakar", "--cov-report=term-missing"]
 markers = [
   "unit: fast hermetic tests with no external tools or services",
   "integration: tests requiring external tools or services",
+  "real_home: test that must see the developer's real home instead of the isolated one",
 ]
 pythonpath = ["src"]
 testpaths = ["tests"]
