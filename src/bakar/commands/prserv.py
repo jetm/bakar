@@ -54,7 +54,7 @@ def start(
             f"see {cfg.prserv_state_key}/.bakar/prserv.stderr"
         )
         raise typer.Exit(code=1)
-    console.print(f"started: PRSERV_HOST={addr}")
+    typer.echo(f"started: PRSERV_HOST={addr}")
 
 
 @prserv_app.command("stop")
@@ -68,9 +68,9 @@ def stop(
     """Gracefully stop the workspace prserv daemon (preserves the PR DB)."""
     cfg = _resolve_daemon_cfg(workspace, kas_yaml)
     if prserv.stop(cfg.prserv_state_key, binary_root=cfg.bsp_root, bind_host=_bind_host(cfg)):
-        console.print("stopped")
+        typer.echo("stopped")
     else:
-        console.print("not running")
+        typer.echo("not running")
 
 
 @prserv_app.command("status")
@@ -86,9 +86,9 @@ def status(
     host = _bind_host(cfg)
     if prserv.is_running(cfg.prserv_state_key, bind_host=host):
         port = prserv._workspace_port(cfg.prserv_state_key)
-        console.print(f"running, PRSERV_HOST={host}:{port}")
+        typer.echo(f"running, PRSERV_HOST={host}:{port}")
     else:
-        console.print("not running")
+        typer.echo("not running")
 
 
 app.add_typer(prserv_app, name="prserv")

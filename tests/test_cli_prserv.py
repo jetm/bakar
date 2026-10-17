@@ -48,7 +48,8 @@ def test_stop_when_running_prints_stopped(runner: _CliRunner, workspace: Path, m
     result = runner.invoke(app, ["prserv", "stop"])
 
     assert result.exit_code == 0, result.output
-    assert result.output.strip() == "stopped"
+    assert result.stdout.strip() == "stopped"
+    assert result.stderr == ""
     assert len(calls) == 1
     assert calls[0]["binary_root"] == workspace / "nxp"
     assert calls[0]["bind_host"] == "localhost"
@@ -63,7 +64,8 @@ def test_stop_when_not_running_prints_not_running(
     result = runner.invoke(app, ["prserv", "stop"])
 
     assert result.exit_code == 0, result.output
-    assert result.output.strip() == "not running"
+    assert result.stdout.strip() == "not running"
+    assert result.stderr == ""
 
 
 def test_status_when_running_prints_host_and_port(
@@ -82,7 +84,8 @@ def test_status_when_running_prints_host_and_port(
     result = runner.invoke(app, ["prserv", "status"])
 
     assert result.exit_code == 0, result.output
-    assert result.output.strip() == "running, PRSERV_HOST=localhost:4242"
+    assert result.stdout.strip() == "running, PRSERV_HOST=localhost:4242"
+    assert result.stderr == ""
     assert probes == ["localhost"]
 
 
@@ -95,4 +98,43 @@ def test_status_when_not_running_prints_not_running(
     result = runner.invoke(app, ["prserv", "status"])
 
     assert result.exit_code == 0, result.output
-    assert result.output.strip() == "not running"
+    assert result.stdout.strip() == "not running"
+    assert result.stderr == ""
+
+
+def test_prserv_status_running_payload_on_stdout(
+    runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The running answer is the whole of stdout and nothing lands on stderr."""
+    monkeypatch.setattr(prserv_cmd.prserv, "is_running", lambda *_a, **_k: True)
+    monkeypatch.setattr(prserv_cmd.prserv, "_workspace_port", lambda _state_key: 4242)
+
+    result = runner.invoke(app, ["prserv", "status"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "running, PRSERV_HOST=localhost:4242\n"
+    assert result.stderr == ""
+
+
+def test_prserv_status_not_running_payload_on_stdout(
+    runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The not-running answer is the whole of stdout and nothing lands on stderr."""
+    monkeypatch.setattr(prserv_cmd.prserv, "is_running", lambda *_a, **_k: False)
+
+    result = runner.invoke(app, ["prserv", "status"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "not running\n"
+    assert result.stderr == ""
+
+
+def test_prserv_start_payload_on_stdout(runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The started address is the whole of stdout and nothing lands on stderr."""
+    monkeypatch.setattr(prserv_cmd.prserv, "ensure_running", lambda *_a, **_k: "localhost:4242")
+
+    result = runner.invoke(app, ["prserv", "start"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "started: PRSERV_HOST=localhost:4242\n"
+    assert result.stderr == ""
