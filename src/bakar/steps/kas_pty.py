@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 
 from rich.live import Live
 
-from bakar import build_scope, build_stop, journal
+from bakar import build_scope, build_stop, journal, stop_container
 from bakar.cache_render import (
     build_end_summary_plain,
     build_end_summary_rich,
@@ -302,8 +302,8 @@ def _run_pty_with_ui(ctx: _PtyCtx) -> _PtyOutcome:
                 log.run_dir,
                 pgid=proc.pid,
                 mode=("host" if cfg.host_mode else "container"),
-                runtime=(None if cfg.host_mode else build_stop._detect_runtime()),
-                container_label=(None if cfg.host_mode else build_stop.run_id_label(log.run_id)),
+                runtime=(None if cfg.host_mode else stop_container.detect_runtime()),
+                container_label=(None if cfg.host_mode else stop_container.run_id_label(log.run_id)),
             )
 
             live_frozen = False

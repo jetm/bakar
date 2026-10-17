@@ -63,6 +63,7 @@ from bakar import (
     native_provenance,
     prserv,
     sccache_server,
+    stop_container,
     task_timings,
 )
 from bakar.bsp_detect import meta_avocado_checkout, meta_avocado_wrapper_text
@@ -566,7 +567,7 @@ def _ccache_args(
     if eventlog_path is not None:
         runtime_args += f" -e BB_DEFAULT_EVENTLOG={eventlog_path}"
     if run_id is not None:
-        runtime_args += f" --label {build_stop.run_id_label(run_id)}"
+        runtime_args += f" --label {stop_container.run_id_label(run_id)}"
     runtime_args = runtime_args.strip()
     if not runtime_args:
         return []
