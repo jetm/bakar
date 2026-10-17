@@ -31,6 +31,7 @@ from bakar.cli import app
 from bakar.fork_race_signatures import FORK_RACE_SIGNATURES
 
 if TYPE_CHECKING:
+    import subprocess
     from pathlib import Path
 
     from typer.testing import CliRunner
@@ -619,13 +620,9 @@ def test_stress_parse_refuses_before_cache_wipe_on_peer_held(
 
 
 def test_stress_parse_refuses_before_cache_wipe_when_a_local_build_is_live(
-    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bitbake_child: subprocess.Popen[bytes]
 ) -> None:
     """A real bitbake pid in the lock, with only the activity probe patched, refuses."""
-    import os
-    import signal
-    import subprocess
-    import sys
     from types import SimpleNamespace
 
     from bakar import build_stop
@@ -636,26 +633,14 @@ def test_stress_parse_refuses_before_cache_wipe_when_a_local_build_is_live(
     monkeypatch.setattr("bakar.build_stop.socket.gethostname", lambda: "this-host")
     (build / ".bakar-lock-host").write_text("this-host\n")
     monkeypatch.setattr(build_stop, "_collect_build_pids", lambda _d, _r: SimpleNamespace(all_pids=[1, 2]))
-    child = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)", "bitbake"],
-        start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    try:
-        assert os.getpgid(child.pid) == child.pid
-        (build / "bitbake.lock").write_text(f"{child.pid}\n")
-        override_p, kas_p, stress_p = _patch_steps(summary=_clean_summary(1))
+    (build / "bitbake.lock").write_text(f"{bitbake_child.pid}\n")
+    override_p, kas_p, stress_p = _patch_steps(summary=_clean_summary(1))
 
-        with override_p, kas_p, stress_p as mock_run:
-            result = runner.invoke(app, ["stress-parse", "--manifest", "imx-6.6.52-2.2.2.xml"])
-    finally:
-        if child.poll() is None and os.getpgid(child.pid) == child.pid:
-            os.killpg(child.pid, signal.SIGTERM)
-        child.wait(timeout=10)
+    with override_p, kas_p, stress_p as mock_run:
+        result = runner.invoke(app, ["stress-parse", "--manifest", "imx-6.6.52-2.2.2.xml"])
 
     assert result.exit_code == 1, result.output
-    assert str(child.pid) in result.output
+    assert str(bitbake_child.pid) in result.output
     mock_run.assert_not_called()
     assert all(c.exists() for c in caches)
 

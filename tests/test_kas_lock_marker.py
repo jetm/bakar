@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import errno
 import os
-import signal
 import socket
-import subprocess
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -27,7 +24,9 @@ from bakar.steps.kas_lock import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    import subprocess
+    from collections.abc import Callable
+    from contextlib import AbstractContextManager
 
 
 def _cfg(workspace: Path) -> BuildConfig:
@@ -756,25 +755,6 @@ def test_unattributable_clear_refusal_carries_the_marker(
     assert "by hand" in message
 
 
-def _spawn_sleeper(*extra_argv: str) -> subprocess.Popen[bytes]:
-    """Real child in its own session; argv carries ``extra_argv`` for /proc matching."""
-    child = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)", *extra_argv],
-        start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    # A fresh session leader: its pgid is its own pid.
-    assert os.getpgid(child.pid) == child.pid
-    return child
-
-
-def _terminate(child: subprocess.Popen[bytes]) -> None:
-    if child.poll() is None and os.getpgid(child.pid) == child.pid:
-        os.killpg(child.pid, signal.SIGTERM)
-    child.wait(timeout=10)
-
-
 def _report_activity(monkeypatch: pytest.MonkeyPatch, active: bool) -> None:
     pids = [1, 2] if active else [1]
     monkeypatch.setattr(build_stop, "_collect_build_pids", lambda _d, _r: SimpleNamespace(all_pids=pids))
@@ -782,15 +762,6 @@ def _report_activity(monkeypatch: pytest.MonkeyPatch, active: bool) -> None:
 
 def _tree_snapshot(root: Path) -> dict[str, tuple[int, int]]:
     return {str(p): (p.stat().st_mtime_ns, p.stat().st_size) for p in sorted(root.rglob("*"))}
-
-
-@pytest.fixture
-def bitbake_child() -> Iterator[subprocess.Popen[bytes]]:
-    child = _spawn_sleeper("bitbake")
-    try:
-        yield child
-    finally:
-        _terminate(child)
 
 
 def test_local_build_holder_reports_a_live_pid_with_activity(
@@ -818,24 +789,23 @@ def test_local_build_holder_ignores_an_idle_cooker(
 
 
 def test_local_build_holder_ignores_a_dead_or_reused_pid(
-    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+    env: tuple[BuildConfig, Path, RunLogger],
+    monkeypatch: pytest.MonkeyPatch,
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
 ) -> None:
     cfg, build, _log = env
     lock = build / "bitbake.lock"
     # Activity is reported in both cases so only the liveness check can say no.
     _report_activity(monkeypatch, True)
 
-    dead = _spawn_sleeper("bitbake")
-    _terminate(dead)
+    with live_child("bitbake") as dead:
+        pass  # exiting the context terminates and reaps it
     lock.write_text(f"{dead.pid}\n")
     assert kas_lock.local_build_holder(cfg) is None
 
-    reused = _spawn_sleeper()  # live pid, argv does not mention bitbake
-    try:
+    with live_child() as reused:  # live pid, argv does not mention bitbake
         lock.write_text(f"{reused.pid}\n")
         assert kas_lock.local_build_holder(cfg) is None
-    finally:
-        _terminate(reused)
 
 
 def test_local_build_holder_never_mutates_the_build_directory(

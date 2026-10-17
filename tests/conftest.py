@@ -22,11 +22,15 @@ in ``src/bakar``:
 from __future__ import annotations
 
 import atexit
+import contextlib
 import importlib
 import os
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -329,7 +333,7 @@ def _no_systemd_scope_probe(request, monkeypatch):
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
 # Two synthetic projects pinned to 40-hex-char SHAs.  parse_manifest_pins
 # only emits pins whose revision matches _HEX40_RE, so the SHAs below are
@@ -475,3 +479,65 @@ def meta_avocado_worktree_layout(tmp_path: Path) -> MetaAvocadoWorktreeLayout:
     return MetaAvocadoWorktreeLayout(
         ws=ws, main=main, worktree=worktree, kas_yaml=worktree / "kas" / "machine" / "m.yml"
     )
+
+
+_CHILD_READY_TIMEOUT_S = 5.0
+
+
+@contextlib.contextmanager
+def _live_child(*extra_argv: str) -> Iterator[subprocess.Popen[bytes]]:
+    """Start a sleeping child in its own session, yield it once /proc shows ``extra_argv``.
+
+    ``Popen`` returns before the child's ``/proc/<pid>/cmdline`` is guaranteed
+    to carry the final argv under load, and the bitbake liveness probe reads
+    exactly that file. Polling (bounded) until every ``extra_argv`` word is
+    visible removes the race; a timeout fails the test with the cmdline seen.
+    Teardown signals only the child's own process group.
+    """
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)", *extra_argv],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        assert os.getpgid(child.pid) == child.pid  # fresh session leader
+        deadline = time.monotonic() + _CHILD_READY_TIMEOUT_S
+        cmdline = ""
+        while True:
+            try:
+                raw = Path(f"/proc/{child.pid}/cmdline").read_bytes()
+                cmdline = raw.replace(b"\x00", b" ").decode(errors="replace")
+            except OSError:
+                cmdline = ""
+            if child.poll() is None and all(word in cmdline for word in extra_argv):
+                break
+            if time.monotonic() > deadline:
+                pytest.fail(
+                    f"child {child.pid} not ready within {_CHILD_READY_TIMEOUT_S}s "
+                    f"(alive={child.poll() is None}, cmdline={cmdline!r}, wanted={extra_argv!r})"
+                )
+            time.sleep(0.01)
+        yield child
+    finally:
+        if child.poll() is None and os.getpgid(child.pid) == child.pid:
+            os.killpg(child.pid, signal.SIGTERM)
+        try:
+            child.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            if os.getpgid(child.pid) == child.pid:
+                os.killpg(child.pid, signal.SIGKILL)
+            child.wait()
+
+
+@pytest.fixture
+def live_child() -> Callable[..., contextlib.AbstractContextManager[subprocess.Popen[bytes]]]:
+    """Factory for ``_live_child``: ``with live_child("bitbake") as child:``."""
+    return _live_child
+
+
+@pytest.fixture
+def bitbake_child() -> Iterator[subprocess.Popen[bytes]]:
+    """A live child whose cmdline is confirmed to contain ``bitbake``."""
+    with _live_child("bitbake") as child:
+        yield child

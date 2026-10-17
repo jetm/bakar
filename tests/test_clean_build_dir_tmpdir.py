@@ -7,11 +7,7 @@ the redirected (potentially ~200G) tmp.
 
 from __future__ import annotations
 
-import os
-import signal
 import socket
-import subprocess
-import sys
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -22,7 +18,7 @@ from bakar.commands._helpers import _clean_build_dir
 from bakar.config import BuildConfig
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    import subprocess
     from pathlib import Path
 
 
@@ -185,23 +181,6 @@ def test_residue_report_neutralizes_filenames(
 # ---------------------------------------------------------------------------
 # Removal gate: a live build blocks the deletion, an unreadable lock does not
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def bitbake_child() -> Iterator[subprocess.Popen[bytes]]:
-    """A real child process with ``bitbake`` in its argv, in its own session."""
-    child = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)", "bitbake"],
-        start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    try:
-        yield child
-    finally:
-        if os.getpgid(child.pid) == child.pid:
-            os.killpg(child.pid, signal.SIGKILL)
-        child.wait()
 
 
 def _live_cfg(tmp_path: Path) -> tuple[BuildConfig, Path]:
