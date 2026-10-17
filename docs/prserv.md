@@ -39,6 +39,8 @@ up from the cwd. `--workspace`/`-w` overrides the workspace root directly.
 | `stop` | Run `bitbake-prserv --stop` so the SQLite DB is flushed cleanly, then clear any stale pidfile. Prints `stopped`, or `not running` when the port does not answer or the binary is missing. Exits 0 either way. The PR DB is preserved. |
 | `status` | Print `running, PRSERV_HOST=<host>:<port>` or `not running`. Exits 0 either way. |
 
+The answers of `start`, `stop` and `status` (`started: ...`, `stopped`, `not running`, `running, ...`) go to standard output. Failure messages, such as a missing binary or a startup probe timeout, go to standard error.
+
 ## Bind address
 
 The daemon binds `cluster_bind_host` from `~/.config/bakar/config.toml`, falling

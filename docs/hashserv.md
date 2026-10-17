@@ -26,6 +26,8 @@ when given, the daemon is resolved next to that YAML (the same dispatch as
 | `stop` | Signal SIGTERM, wait up to 5 s for a graceful flush, then SIGKILL if still alive. Removes the PID and port state files. The SQLite hash database is preserved so the next `start` resumes the cache. |
 | `status` | Print `running, pid=<N>, url=ws://localhost:<port>` or `not running`. Exits 0 either way. |
 
+The answers of `start`, `stop` and `status` (`started: <url>`, `stopped`, `not running`, `running, ...`) go to standard output. Failure messages, such as a missing binary or a failed startup probe, go to standard error.
+
 ## State files
 
 Daemon state lives under `<state_key>/.bakar/`, where the **state key** is the effective `SSTATE_DIR` (a live `SSTATE_DIR` env var, else `[build] sstate_dir` in config), falling back to `<bsp_root>` when no sstate dir is set:
@@ -89,7 +91,8 @@ Without `hashserv = true`, no auto-append happens and `BB_SIGNATURE_HANDLER` sta
 |-----------|--------|
 | `[build] hashserv = false` (or unset) | SKIP (INFO) |
 | Daemon configured, PID alive, TCP probe succeeds | PASS (WARN) |
-| Daemon configured, PID dead or PID file absent | FAIL (WARN) → `bakar hashserv start` |
+| Daemon configured, PID dead or PID file absent, `bitbake-hashserv` present | PASS (INFO) with the note "daemon not running; bakar build will auto-start it" |
+| Daemon configured, PID dead or PID file absent, `bitbake-hashserv` not synced | FAIL (WARN) → sync the workspace, then `bakar hashserv start` |
 | Daemon configured, PID alive, TCP probe fails | FAIL (WARN) → `bakar hashserv stop && bakar hashserv start` |
 
 The TCP probe (1 s timeout, against the derived port) catches a wedged daemon that the PID-check alone would falsely pass. The check tolerates concurrent state-file deletion: if `hashserv stop` removes the PID/port files between the PID check and the file read, the check degrades to FAIL rather than propagating `FileNotFoundError`.

@@ -119,7 +119,8 @@ poky
 ### JSON output
 
 `--json` emits a JSON object with a `layers` array and a `cross_validation_warnings`
-array. Each element of `layers` has these fields:
+array. The document goes to standard output, so it can be piped to `jq`. Each
+element of `layers` has these fields:
 
 ```text
 name      string  layer name
@@ -184,7 +185,7 @@ status:
 
 ### JSON output
 
-`--json` emits a JSON object with these fields:
+`--json` emits a JSON object with these fields. The document goes to standard output, so it can be piped to `jq`:
 
 ```text
 machine                  string       MACHINE value
