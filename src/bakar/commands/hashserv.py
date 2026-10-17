@@ -56,7 +56,7 @@ def start(
             f"see {cfg.hashserv_state_key}/.bakar/hashserv.stderr"
         )
         raise typer.Exit(code=1)
-    console.print(f"started: {url}")
+    typer.echo(f"started: {url}")
 
 
 @hashserv_app.command("stop")
@@ -73,9 +73,9 @@ def stop(
     """Signal the workspace hashserv daemon to stop and clean PID/port files."""
     cfg = _resolve_daemon_cfg(workspace, kas_yaml)
     if hashserv.stop(cfg.hashserv_state_key):
-        console.print("stopped")
+        typer.echo("stopped")
     else:
-        console.print("not running")
+        typer.echo("not running")
 
 
 @hashserv_app.command("status")
@@ -92,15 +92,15 @@ def status(
     """Print the current daemon state (URL + PID, or ``not running``)."""
     cfg = _resolve_daemon_cfg(workspace, kas_yaml)
     if not hashserv.is_running(cfg.hashserv_state_key):
-        console.print("not running")
+        typer.echo("not running")
         return
     state = hashserv.read_state(cfg.hashserv_state_key)
     if state is None:
         # Race: daemon exited between is_running() and the file reads.
-        console.print("not running")
+        typer.echo("not running")
         return
     pid, port = state
-    console.print(f"running, pid={pid}, url={hashserv.bound_url(port, cfg.cluster_bind_host)}")
+    typer.echo(f"running, pid={pid}, url={hashserv.bound_url(port, cfg.cluster_bind_host)}")
 
 
 app.add_typer(hashserv_app, name="hashserv")

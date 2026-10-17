@@ -54,7 +54,7 @@ def test_status_when_not_running(runner: _CliRunner, workspace: Path, monkeypatc
     result = runner.invoke(app, ["hashserv", "status"])
 
     assert result.exit_code == 0, result.output
-    assert "not running" in result.output
+    assert result.stdout.strip() == "not running"
 
 
 def test_status_when_running(runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -69,8 +69,8 @@ def test_status_when_running(runner: _CliRunner, workspace: Path, monkeypatch: p
     result = runner.invoke(app, ["hashserv", "status"])
 
     assert result.exit_code == 0, result.output
-    assert "running, pid=12345" in result.output
-    assert "ws://localhost:50000" in result.output
+    assert "running, pid=12345" in result.stdout
+    assert "ws://localhost:50000" in result.stdout
 
 
 def test_start_success(runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -84,7 +84,7 @@ def test_start_success(runner: _CliRunner, workspace: Path, monkeypatch: pytest.
     result = runner.invoke(app, ["hashserv", "start"])
 
     assert result.exit_code == 0, result.output
-    assert "started: ws://localhost:50000" in result.output
+    assert "started: ws://localhost:50000" in result.stdout
 
 
 def test_start_failure(runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -94,7 +94,7 @@ def test_start_failure(runner: _CliRunner, workspace: Path, monkeypatch: pytest.
     result = runner.invoke(app, ["hashserv", "start"])
 
     assert result.exit_code == 1, result.output
-    assert "bitbake-hashserv not found or startup probe failed" in result.output
+    assert "bitbake-hashserv not found or startup probe failed" in result.stderr
 
 
 def test_stop_when_running(runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -104,7 +104,7 @@ def test_stop_when_running(runner: _CliRunner, workspace: Path, monkeypatch: pyt
     result = runner.invoke(app, ["hashserv", "stop"])
 
     assert result.exit_code == 0, result.output
-    assert "stopped" in result.output
+    assert result.stdout.strip() == "stopped"
 
 
 def test_stop_when_not_running(runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -114,7 +114,7 @@ def test_stop_when_not_running(runner: _CliRunner, workspace: Path, monkeypatch:
     result = runner.invoke(app, ["hashserv", "stop"])
 
     assert result.exit_code == 0, result.output
-    assert "not running" in result.output
+    assert result.stdout.strip() == "not running"
 
 
 def test_status_accepts_explicit_workspace(
@@ -132,7 +132,7 @@ def test_status_accepts_explicit_workspace(
     result = runner.invoke(app, ["hashserv", "status", "--workspace", str(workspace)])
 
     assert result.exit_code == 0, result.output
-    assert "not running" in result.output
+    assert result.stdout.strip() == "not running"
 
 
 def test_start_accepts_explicit_workspace(
@@ -154,7 +154,7 @@ def test_start_accepts_explicit_workspace(
     result = runner.invoke(app, ["hashserv", "start", "--workspace", str(workspace)])
 
     assert result.exit_code == 0, result.output
-    assert "started:" in result.output
+    assert "started:" in result.stdout
 
 
 def test_stop_accepts_explicit_workspace(
@@ -172,7 +172,7 @@ def test_stop_accepts_explicit_workspace(
     result = runner.invoke(app, ["hashserv", "stop", "--workspace", str(workspace)])
 
     assert result.exit_code == 0, result.output
-    assert "stopped" in result.output
+    assert result.stdout.strip() == "stopped"
 
 
 def test_status_accepts_positional_kas_yaml(
@@ -205,7 +205,7 @@ def test_status_accepts_positional_kas_yaml(
     result = runner.invoke(app, ["hashserv", "status", str(kas_yaml)])
 
     assert result.exit_code == 0, result.output
-    assert "not running" in result.output
+    assert result.stdout.strip() == "not running"
 
 
 def test_start_accepts_positional_kas_yaml(
@@ -241,7 +241,7 @@ def test_start_accepts_positional_kas_yaml(
     result = runner.invoke(app, ["hashserv", "start", str(kas_yaml)])
 
     assert result.exit_code == 0, result.output
-    assert "started:" in result.output
+    assert "started:" in result.stdout
 
 
 def test_stop_accepts_positional_kas_yaml(
@@ -273,4 +273,58 @@ def test_stop_accepts_positional_kas_yaml(
     result = runner.invoke(app, ["hashserv", "stop", str(kas_yaml)])
 
     assert result.exit_code == 0, result.output
-    assert "stopped" in result.output
+    assert result.stdout.strip() == "stopped"
+
+
+def test_hashserv_status_running_payload_on_stdout(
+    runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``status`` writes exactly one answer line to stdout and nothing to stderr."""
+    monkeypatch.setattr(hashserv_cmd.hashserv, "is_running", lambda _root: True)
+    monkeypatch.setattr(hashserv_cmd.hashserv, "read_state", lambda _root: (12345, 50000))
+
+    result = runner.invoke(app, ["hashserv", "status"])
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.strip() == "running, pid=12345, url=ws://localhost:50000"
+    assert len(result.stdout.splitlines()) == 1
+    assert result.stderr == ""
+
+
+def test_hashserv_status_not_running_payload_on_stdout(
+    runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``status`` on a stopped daemon answers ``not running`` on stdout only."""
+    monkeypatch.setattr(hashserv_cmd.hashserv, "is_running", lambda _root: False)
+
+    result = runner.invoke(app, ["hashserv", "status"])
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout == "not running\n"
+    assert result.stderr == ""
+
+
+def test_hashserv_start_already_running_payload_on_stdout(
+    runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``start`` against a live daemon reports its address on stdout, stderr empty."""
+    monkeypatch.setattr(hashserv_cmd.hashserv, "ensure_running", lambda _state_key, **_kw: "ws://localhost:50000")
+
+    result = runner.invoke(app, ["hashserv", "start"])
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout == "started: ws://localhost:50000\n"
+    assert result.stderr == ""
+
+
+def test_hashserv_start_failure_text_on_stderr_not_stdout(
+    runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed start names ``bitbake-hashserv`` on stderr, exits 1, leaves stdout empty."""
+    monkeypatch.setattr(hashserv_cmd.hashserv, "ensure_running", lambda _state_key, **_kw: None)
+
+    result = runner.invoke(app, ["hashserv", "start"])
+
+    assert result.exit_code == 1
+    assert "bitbake-hashserv" in result.stderr
+    assert result.stdout == ""
