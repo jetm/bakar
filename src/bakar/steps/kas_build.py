@@ -92,10 +92,10 @@ from bakar.steps.kas_graph_capture import (
 )
 from bakar.steps.kas_lock import (
     LockHeldByPeerError,
-    LockUnattributableError,
     _lock_refusal_message,
     clear_stale_bitbake_locks,
     lock_owner_marker,
+    peer_lock_reason,
 )
 from bakar.steps.kas_overlay import (
     _MOLD_LAYER_NAME,
@@ -1069,7 +1069,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
             rc = 1
             log.step_fail(
                 step,
-                reason=_peer_lock_reason(exc),
+                reason=peer_lock_reason(exc),
             )
             terminated = True
             return rc
@@ -1265,7 +1265,7 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
             rc = 1
             log.step_fail(
                 "kas_shell_live",
-                reason=_peer_lock_reason(exc),
+                reason=peer_lock_reason(exc),
             )
             terminated = True
             return rc
@@ -1883,19 +1883,6 @@ def _container_eventlog_path(cfg: BuildConfig, log: RunLogger) -> str:
     return str(Path("/work") / rel)
 
 
-def _peer_lock_reason(exc: LockHeldByPeerError) -> str:
-    """Failure reason for a peer-held bitbake lock.
-
-    An unattributable marker has only a placeholder host, so its own message is
-    logged: it names the marker path and the manual clear. The message embeds a
-    build-directory path, so it goes through :func:`bakar.fmt.neutralize`, which
-    strips control characters as well as escaping markup.
-    """
-    if isinstance(exc, LockUnattributableError):
-        return neutralize(exc)
-    return f"bitbake lock claimed by peer host {neutralize(exc.host)} during acquire; aborting before launch"
-
-
 def _finish_step(log: RunLogger, step: str, rc: int) -> None:
     """Log a step's terminal event, deriving pass/fail from its exit code.
 
@@ -2082,7 +2069,7 @@ def run_shell_capture(ctx: KasBuildContext, command: str, capture: ShellCapture)
     except LockHeldByPeerError as exc:
         log.step_fail(
             step,
-            reason=_peer_lock_reason(exc),
+            reason=peer_lock_reason(exc),
             exit_code=1,
         )
         return 1

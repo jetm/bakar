@@ -23,6 +23,7 @@ from bakar.steps.kas_lock import (
     LockMarkerUnsupportedError,
     LockUnattributableError,
     lock_owner_marker,
+    peer_lock_reason,
 )
 
 if TYPE_CHECKING:
@@ -533,12 +534,22 @@ def test_lock_owner_marker_on_hardlink_less_fs_never_enters_or_leaves_a_marker(
 
 
 def test_marker_unsupported_error_is_printed_without_traceback_reason() -> None:
-    from bakar.steps.kas_build import _peer_lock_reason
-
     marker = Path("/b/\x1b]0;x\x07.bakar-lock-host")
-    reason = _peer_lock_reason(LockMarkerUnsupportedError(marker, OSError(errno.EPERM, "x")))
+    reason = peer_lock_reason(LockMarkerUnsupportedError(marker, OSError(errno.EPERM, "x")))
     assert "\x1b" not in reason
     assert "hard links" in reason
+
+
+def test_peer_lock_reason_for_a_plain_peer_names_marker_and_manual_clear() -> None:
+    marker = Path("/b/.bakar-lock-host")
+    reason = peer_lock_reason(LockHeldByPeerError("node-b", marker=marker))
+    assert "node-b" in reason
+    assert str(marker) in reason
+    assert "by hand" in reason
+    # Without a marker the reason is the original, hint-free wording.
+    bare = peer_lock_reason(LockHeldByPeerError("node-b"))
+    assert "by hand" not in bare
+    assert reason.startswith(bare)
 
 
 def _lost_reply_link(monkeypatch: pytest.MonkeyPatch) -> None:

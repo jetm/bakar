@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 from rich.markup import escape
 
 from bakar import build_stop, mounts
+from bakar.fmt import neutralize
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -238,8 +239,9 @@ def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
 class LockHeldByPeerError(Exception):
     """Raised by :func:`lock_owner_marker` when a peer host holds the ownership marker."""
 
-    def __init__(self, host: str) -> None:
+    def __init__(self, host: str, marker: Path | None = None) -> None:
         self.host = host
+        self.marker = marker
         super().__init__(f"bitbake lock owned by peer host {host!r}")
 
 
@@ -252,8 +254,7 @@ class LockUnattributableError(LockHeldByPeerError):
     """
 
     def __init__(self, marker: Path) -> None:
-        super().__init__("unknown (marker unreadable)")
-        self.marker = marker
+        super().__init__("unknown (marker unreadable)", marker=marker)
         self.args = (
             f"bitbake lock marker {marker} could not be attributed (unreadable or empty) while bitbake.lock is "
             f"present on a shared or unverifiable filesystem; if no build is running on any node, "
@@ -436,16 +437,33 @@ def _claim_existing_marker(cfg: BuildConfig, marker: Path, local_host: str) -> N
                 return
             continue
         if state == "owner" and owner is not None and owner != local_host:
-            raise LockHeldByPeerError(owner)
+            raise LockHeldByPeerError(owner, marker=marker)
         if state in ("unreadable", "empty"):
             refusal = build_stop.lock_mutation_guard(cfg)
             if refusal is not None:
                 if refusal.reason == "peer-held" and refusal.host:
-                    raise LockHeldByPeerError(refusal.host)
+                    raise LockHeldByPeerError(refusal.host, marker=marker)
                 raise LockUnattributableError(marker)
         _replace_marker(marker, local_host)
         return
     raise LockUnattributableError(marker)
+
+
+def peer_lock_reason(exc: LockHeldByPeerError) -> str:
+    """Failure reason for a peer-held bitbake lock.
+
+    An unattributable marker has only a placeholder host, so its own message is
+    logged: it names the marker path and the manual clear. A plain peer reason
+    appends the manual-clear hint when the refusal carries its marker. Both
+    embed a build-directory path, so they go through :func:`bakar.fmt.neutralize`,
+    which strips control characters as well as escaping markup.
+    """
+    if isinstance(exc, LockUnattributableError):
+        return neutralize(exc)
+    reason = f"bitbake lock claimed by peer host {neutralize(exc.host)} during acquire; aborting before launch"
+    if exc.marker is not None:
+        reason += f" {neutralize(build_stop.manual_clear_hint(exc.marker))}"
+    return reason
 
 
 @contextmanager
