@@ -146,15 +146,21 @@ def _recent_kas_errors(kas_log: Path, limit: int = _FAILURE_TAIL) -> list[str]:
         with kas_log.open("rb") as fh:
             size = os.fstat(fh.fileno()).st_size
             window = _KAS_TAIL_BYTES
-            while True:
-                start = max(0, size - window)
-                fh.seek(start)
-                data = fh.read()
-                # More than _KAS_TAIL_LINES newlines leaves that many complete
-                # lines after the partial first one is dropped below.
-                if start == 0 or window >= _KAS_TAIL_MAX_BYTES or data.count(b"\n") > _KAS_TAIL_LINES:
-                    break
+            start = max(0, size - window)
+            fh.seek(start)
+            data = fh.read(size - start)
+            newlines = data.count(b"\n")
+            # More than _KAS_TAIL_LINES newlines leaves that many complete
+            # lines after the partial first one is dropped below. Each doubling
+            # reads only the bytes in front of what is already held.
+            while start > 0 and window < _KAS_TAIL_MAX_BYTES and newlines <= _KAS_TAIL_LINES:
                 window = min(window * 2, _KAS_TAIL_MAX_BYTES)
+                new_start = max(0, size - window)
+                fh.seek(new_start)
+                prefix = fh.read(start - new_start)
+                newlines += prefix.count(b"\n")
+                data = prefix + data
+                start = new_start
     except OSError:
         return []
     if start > 0:

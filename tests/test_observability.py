@@ -562,14 +562,26 @@ def test_run_id_epoch_parses_prefix_and_rejects_others() -> None:
 
 
 @pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.tzset")
-def test_run_id_epoch_keeps_mktime_semantics_in_the_repeated_fall_back_hour(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 2026-11-01 01:30 happens twice in US Eastern; mktime (isdst=-1) and the
-    # naive datetime path disagree here by an hour.
+def test_run_id_epoch_pins_new_york_local_time_epochs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the epochs run ids resolve to under a fixed TZ, against UTC values computed by hand.
+
+    Outside a transition the local time names one instant and is pinned
+    exactly. 2026-11-01 01:30 happens twice in US Eastern, and glibc's
+    mktime(isdst=-1) picks either occurrence depending on its state from
+    earlier calls (measured: EDT in a fresh interpreter, EST under pytest), so
+    only "one of the two real instants" is pinned there. A naive
+    ``datetime.timestamp()`` satisfies every assertion here too: this pins
+    values, it does not tell the implementations apart.
+    """
     monkeypatch.setenv("TZ", "America/New_York")
     time.tzset()
     try:
-        expected = time.mktime(time.strptime("20261101-013000", "%Y%m%d-%H%M%S"))
-        assert run_id_epoch("20261101-013000-1") == expected
+        # 2026-01-02 08:04:05 UTC (03:04:05 EST, UTC-5).
+        assert run_id_epoch("20260102-030405-1") == 1767341045
+        # 2026-07-16 16:05:00 UTC (12:05:00 EDT, UTC-4).
+        assert run_id_epoch("20260716-120500-1") == 1784217900
+        # 2026-11-01 05:30 UTC (01:30 EDT) or 06:30 UTC (01:30 EST).
+        assert run_id_epoch("20261101-013000-1") in {1793511000, 1793514600}
         assert run_id_epoch("20261101-0130") is None
     finally:
         monkeypatch.undo()

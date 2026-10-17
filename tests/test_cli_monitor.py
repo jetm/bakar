@@ -826,3 +826,52 @@ def test_recent_kas_errors_long_lines_tail_equals_full_read(tmp_path: Path) -> N
     expected = _full_recent_errors(body)
     assert len(expected) == 5
     assert monitor_module._recent_kas_errors(kas_log) == expected
+
+
+def test_recent_kas_errors_split_multibyte_first_line_reads_each_byte_once(tmp_path: Path) -> None:
+    """Every window start lands mid-character; the result still equals a full read.
+
+    The doubling reads only the bytes in front of what it already holds, so the
+    bytes read total the final window, not the sum of every window tried.
+    """
+    import io
+
+    euro_line = "€" * 1000 + "\n"  # 3001 bytes, so 400 lines overflow two doublings
+    errors = "".join(f"ERROR: failure {i}\n" for i in range(6))
+    head = euro_line * 1000
+    tail = euro_line * 300 + errors + euro_line * 98
+    windows: list[int] = []
+    w = monitor_module._KAS_TAIL_BYTES
+    while w < monitor_module._KAS_TAIL_MAX_BYTES:
+        windows.append(w)
+        w *= 2
+    windows.append(monitor_module._KAS_TAIL_MAX_BYTES)
+    for pad in range(3001):
+        body = head + tail + "a" * pad + "\n"
+        raw = body.encode()
+        starts = [len(raw) - w for w in windows if len(raw) - w > 0]
+        if all(raw[s] & 0xC0 == 0x80 for s in starts):
+            break
+    else:
+        pytest.fail("no padding puts every window start mid-character")
+    kas_log = tmp_path / "kas.log"
+    kas_log.write_bytes(raw)
+    read_bytes = 0
+
+    class _CountingReader(io.BufferedReader):
+        def read(self, size: int | None = -1) -> bytes:
+            nonlocal read_bytes
+            chunk = super().read(size)
+            read_bytes += len(chunk)
+            return chunk
+
+    class _CountingPath(type(kas_log)):
+        def open(self, *_a, **_kw):  # type: ignore[override]
+            return _CountingReader(io.FileIO(str(self), "rb"))
+
+    expected = _full_recent_errors(body)
+    assert len(expected) == 5
+    assert monitor_module._recent_kas_errors(_CountingPath(kas_log)) == expected
+    final_window = next(w for w in windows if raw[len(raw) - w :].count(b"\n") > monitor_module._KAS_TAIL_LINES)
+    assert final_window > monitor_module._KAS_TAIL_BYTES, "the doubling path must run"
+    assert read_bytes == final_window

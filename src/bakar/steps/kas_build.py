@@ -617,6 +617,13 @@ class KasBuildContext:
     # User-supplied overlays from colon syntax (machine.yml:extra.yml:...).
     # Materialized and appended after the bakar tuning overlay in the kas arg.
     extra_overlays: list[Path] = field(default_factory=list)
+    # Step name run_build records its events under. A post-build kas run (the
+    # CVE report target) shares the build's RunLogger and passes its own
+    # post-build step so triage never reads its failure as the build's. Only
+    # the main build ("kas_build") writes the run dir's error-report.json,
+    # dependency graph, bitbake-events.json and samples: they describe the
+    # build the run dir is for, and a post-build run would overwrite them.
+    step: str = "kas_build"
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -908,6 +915,8 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     into ``.bakar/overlays/`` alongside the main tuning overlay.
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
+    step = ctx.step
+    main_build = step == "kas_build"
 
     if ctx.dry_run:
         for line in dry_run_preview_lines(
@@ -924,19 +933,19 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
             # with every other human-facing line (see ``commands/_app.py``);
             # ``bakar build --dry-run > payload`` leaves stdout empty.
             print(line, file=sys.stderr)
-        log.step_skip("kas_build", reason="dry-run")
+        log.step_skip(step, reason="dry-run")
         return 0
 
     refusal = cache_mount_refusal(cfg)
     if refusal is not None:
-        log.step_fail("kas_build", reason=refusal)
+        log.step_fail(step, reason=refusal)
         return 1
 
     lock_outcome = clear_stale_bitbake_locks(cfg)
     for removed_path in lock_outcome.removed:
         log.warn(f"removed stale bitbake lock: {removed_path} (owning process was gone)")
     if lock_outcome.refusal is not None:
-        log.step_fail("kas_build", reason=_lock_refusal_message(lock_outcome.refusal))
+        log.step_fail(step, reason=_lock_refusal_message(lock_outcome.refusal))
         return 1
 
     build_stop.check_unclean_stop(cfg.bsp_root, log.console)
@@ -952,7 +961,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         log.info(f"sstate: consuming the native seed for this release ({cfg.sstate_mirrors})")
 
     log.step_start(
-        "kas_build",
+        step,
         yaml=str(kas_yaml),
         overlay=str(overlay_source),
         extra_overlays=[str(p) for p in (extra_overlays or [])],
@@ -1059,7 +1068,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         except LockHeldByPeerError as exc:
             rc = 1
             log.step_fail(
-                "kas_build",
+                step,
                 reason=_peer_lock_reason(exc),
             )
             terminated = True
@@ -1067,16 +1076,17 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         rc, stall_tasks = outcome.rc, outcome.stall_tasks
         if rc == 0:
             deploy = cfg.resolved_tmpdir / "deploy" / "images" / cfg.machine
-            log.step_ok("kas_build", deploy_dir=str(deploy), exit_code=rc)
+            log.step_ok(step, deploy_dir=str(deploy), exit_code=rc)
             _autocalibrate_psi(cfg, psi_peaks, log)
         else:
             log.step_fail(
-                "kas_build",
+                step,
                 reason=_build_fail_reason(rc, stall_tasks),
                 exit_code=rc,
                 kas_log=str(log.kas_log_path),
             )
-            write_error_report(log.run_dir, cfg, rc)
+            if main_build:
+                write_error_report(log.run_dir, cfg, rc)
         # step_ok/step_fail above is the true terminal event for kas_build.
         # Mark terminated before the persistence tail so an exception escaping
         # copy_oe_eventlog_to_run_dir/persist_* cannot make the finally block
@@ -1097,13 +1107,18 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         # which does not carry the build's tuning overlays (they arrive as this
         # function's argument), so without them the file is left with the base
         # overlay only - no mold, hashequiv, uninative or arch probes.
-        if rc == 0:
+        #
+        # A post-build run skips this and the persistence below: the run dir's
+        # graph, bitbake-events.json and samples describe the main build, and
+        # a failing CVE run's events would otherwise mark the run as failed.
+        if rc == 0 and main_build:
             _capture_dependency_graph(replace(ctx, extra_overlays=list(extra_overlays or [])), log)
         # Normalize the raw bitbake event log into bitbake-events.json for both
         # outcomes. Best-effort: a no-op when bitbake wrote no event log.
         # Belt-and-braces alongside the RunLogger-side never-raises fix (task
         # 1.1): a failure here must not crash the CLI after a completed build.
-        native_summary = persist_run_artifacts(cfg, log, timings_path=timings_path)
+        if main_build:
+            native_summary = persist_run_artifacts(cfg, log, timings_path=timings_path)
     finally:
         warn = ui.warn_count
         err = ui.error_count
@@ -1122,22 +1137,24 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
             # step_start and `bakar triage` has something to find.
             if rc == 0:
                 deploy = cfg.resolved_tmpdir / "deploy" / "images" / cfg.machine
-                log.step_ok("kas_build", deploy_dir=str(deploy), exit_code=rc)
+                log.step_ok(step, deploy_dir=str(deploy), exit_code=rc)
             else:
                 _report_opaque_failure(log, ui)
                 log.step_fail(
-                    "kas_build",
+                    step,
                     reason=_build_fail_reason(rc, stall_tasks),
                     exit_code=rc if rc is not None else -1,
                     kas_log=str(log.kas_log_path),
                 )
-                write_error_report(log.run_dir, cfg, rc if rc is not None else -1)
+                if main_build:
+                    write_error_report(log.run_dir, cfg, rc if rc is not None else -1)
         stop_event.set()
         if psi_sampler is not None:
             psi_sampler.join(timeout=5)
-        log.persist_psi_samples(psi_samples)
         disk_sampler.join(timeout=5)
-        log.persist_disk_samples(disk_samples)
+        if main_build:
+            log.persist_psi_samples(psi_samples)
+            log.persist_disk_samples(disk_samples)
         # Last statement of the finally so the build output ends with it.
         if native_summary is not None and native_summary.executed >= 1:
             log.console.print(

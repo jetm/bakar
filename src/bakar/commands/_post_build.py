@@ -105,9 +105,11 @@ def _generate_cve_report(cfg, log, request: _CveRequest, machine: str) -> None:
 
     # dry_run is forced off rather than inherited: the caller already filtered a
     # dry run out, so a True here could only be stale - and would print a preview
-    # while this function reported a report as produced.
+    # while this function reported a report as produced. The run shares the
+    # build's RunLogger, so it records under this step: as "kas_build" its
+    # failure would read to triage as the build's own.
     rc = step_kas.run_build(
-        replace(request.kas_ctx, target=_CVE_REPORT_TARGET, dry_run=False),
+        replace(request.kas_ctx, target=_CVE_REPORT_TARGET, dry_run=False, step=_STEP_CVE_REPORT),
         extra_overlays=request.extra_overlays,
     )
     if rc != 0:

@@ -111,13 +111,41 @@ def _registered_commands() -> dict[str, object]:
     return dict(typer.main.get_command(_state.app).commands)
 
 
+def _bare_calls(func: object) -> set[str]:
+    """Bare names called in ``func``'s body."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))  # type: ignore[arg-type]
+    return {node.func.id for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+
+
 def _calls_plain_resolve(callback: object) -> bool:
-    """True when the callback body calls the bare name ``resolve(...)`` (config.resolve)."""
-    tree = ast.parse(textwrap.dedent(inspect.getsource(callback)))  # type: ignore[arg-type]
-    return any(
-        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "resolve"
-        for node in ast.walk(tree)
-    )
+    """True when the callback, or a same-module function it calls, calls bare ``resolve(...)``.
+
+    Follows one level of helpers so a command that delegates its body (``sync``
+    to ``_sync_impl``) is still checked.
+    """
+    called = _bare_calls(callback)
+    if "resolve" in called:
+        return True
+    module = import_module(callback.__module__)  # type: ignore[attr-defined]
+    for name in called:
+        helper = getattr(module, name, None)
+        if inspect.isfunction(helper) and helper.__module__ == module.__name__ and "resolve" in _bare_calls(helper):
+            return True
+    return False
+
+
+def _plain_resolve_helper(request: ResolveRequest) -> object:
+    return resolve(request)
+
+
+def _delegating_callback(request: ResolveRequest) -> object:
+    return _plain_resolve_helper(request)
+
+
+def test_calls_plain_resolve_follows_a_same_module_helper() -> None:
+    assert _calls_plain_resolve(_delegating_callback)
+    # The shape the follow exists for: sync's callback hands its body to a helper.
+    assert "_sync_impl" in _bare_calls(import_module("bakar.commands.sync").sync)
 
 
 def _callback_module(command: object) -> str | None:
@@ -136,21 +164,18 @@ def test_every_registered_command_is_walked_or_declared_excluded() -> None:
     assert (walked | excluded) - registered == set(), "stale entry names a command that no longer exists"
 
 
-def test_walked_commands_reach_the_helper_and_excluded_ones_do_not_call_plain_resolve() -> None:
+def test_walked_commands_reach_the_helper_and_do_not_call_plain_resolve() -> None:
+    # Declared exclusions may keep the legacy plain resolve(); a command that is
+    # neither walked nor excluded fails the membership test above.
     commands = _registered_commands()
     for name, command in commands.items():
-        module_name = _callback_module(command)
-        if module_name is None:
+        if name not in _WALKED and name not in _STRUCTURAL:
             continue
+        module_name = _callback_module(command)
+        assert module_name is not None, name
         module = import_module(module_name)
-        if name in _WALKED or name in _STRUCTURAL:
-            assert hasattr(module, "resolve_global_config"), name
-            assert command.callback is not None
-            assert not _calls_plain_resolve(command.callback), f"{name} calls plain resolve()"
-        else:
-            # Declared exclusions may keep the legacy plain resolve(); an
-            # undeclared command cannot (the membership test above catches it).
-            assert name in _helpers.GLOBAL_MODE_EXCLUSIONS or not _calls_plain_resolve(command.callback), name
+        assert hasattr(module, "resolve_global_config"), name
+        assert not _calls_plain_resolve(command.callback), f"{name} calls plain resolve()"
 
 
 @pytest.mark.parametrize("command", sorted(_WALKED))

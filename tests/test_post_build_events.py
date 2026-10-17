@@ -173,3 +173,54 @@ def test_full_disk_on_console_log_does_not_change_the_post_build_exit(monkeypatc
     build_mod._finish_build(cfg, log, 0, MACHINE, feed=request)
 
     assert _steps(log)[-1][:2] == ("step_fail", "feed_sync")
+
+
+def test_failing_cve_report_build_does_not_read_as_a_failed_build(monkeypatch, tmp_path: Path) -> None:
+    """The nested report run shares the build's RunLogger: its failure must stay a post-build failure."""
+    from bakar.commands.triage import _run_has_failure
+    from bakar.config import BuildConfig
+    from bakar.steps import kas_build
+    from bakar.triage import is_build_failure_event
+
+    cfg = BuildConfig(
+        workspace=tmp_path,
+        host_mode=False,
+        bsp_family="nxp",
+        machine="imx95-var-dart",
+        distro="fsl-imx-xwayland",
+        image="core-image-minimal",
+        manifest="imx-6.12.49-2.2.0.xml",
+        repo_url="https://example.invalid/none.git",
+        repo_branch="walnascar",
+        kas_container_image="jetm/kas-build-env:latest",
+    )
+    cfg.bsp_root.mkdir(parents=True, exist_ok=True)
+    kas_yaml = cfg.bsp_root / "build.yml"
+    kas_yaml.write_text("header: {}\n", encoding="utf-8")
+    overlay = tmp_path / "bakar-tuning-nxp.yml"
+    overlay.write_text("header: {}\n", encoding="utf-8")
+    cve_dir = cve_report.cve_data_dir(cfg, cfg.machine)
+    cve_dir.mkdir(parents=True)
+    (cve_dir / "glibc_cve.json").write_text("{}", encoding="utf-8")
+
+    rcs = iter([0, 1])
+    persisted: list[str] = []
+    monkeypatch.setattr(kas_build, "_run_pty_with_ui", lambda *_a, **_k: kas_build._PtyOutcome(rc=next(rcs)))
+    monkeypatch.setattr(kas_build, "_capture_dependency_graph", lambda *_a, **_k: None)
+    monkeypatch.setattr(kas_build, "persist_run_artifacts", lambda _cfg, log, **_k: persisted.append(log.run_id))
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        ctx = KasBuildContext(cfg=cfg, log=log, kas_yaml=kas_yaml, overlay_source=overlay)
+        assert kas_build.run_build(ctx) == 0
+        post_build._generate_cve_report(cfg, log, post_build._CveRequest(kas_ctx=ctx, extra_overlays=[]), cfg.machine)
+        run_dir = log.run_dir
+
+    records = [json.loads(line) for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    fails = [r for r in records if r.get("event") == "step_fail"]
+    assert fails, "the report run's failure is still recorded"
+    assert all(r["step"] == "cve_report" for r in fails)
+    assert not any(is_build_failure_event(r) for r in records)
+    assert not _run_has_failure(run_dir)
+    assert not (run_dir / "error-report.json").exists()
+    # Only the main build normalized its artifacts into the run dir.
+    assert len(persisted) == 1

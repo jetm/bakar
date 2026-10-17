@@ -58,9 +58,8 @@ def run_id_epoch(name: str) -> float | None:
     ):
         return None
     try:
-        # mktime with isdst=-1 (strptime's tm_isdst) matches how the run id was
-        # rendered; a naive datetime.timestamp() has fold=0 and lands an hour
-        # early in the repeated fall-back hour.
+        # mktime with isdst=-1 (strptime's tm_isdst) renders the local time the
+        # way the run id was; the repeated fall-back hour is ambiguous either way.
         return time.mktime(time.strptime(prefix, RUN_ID_TS_FORMAT))
     except ValueError, OverflowError:
         return None
