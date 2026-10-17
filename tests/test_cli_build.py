@@ -1278,3 +1278,55 @@ def test_no_capture_graph_reaches_the_bbsetup_ctx(
 
     assert result.exit_code == 0, result.output
     assert [c.no_capture_graph for c in captured] == [True]
+
+
+def test_build_clean_refuses_when_a_peer_holds_the_marker(
+    runner: _CliRunner,
+    workspace: Path,
+    generic_yaml: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``build --clean`` hits the live-build gate before it removes anything.
+
+    Only ``lock_mutation_guard`` is patched, so the real ``_refuse_if_build_live``
+    and ``_clean_build_dir`` run. A peer-held verdict must exit 1 naming the
+    marker and the by-hand clear, leave the build directory alone, and never
+    reach the sync or kas build step.
+    """
+    from pathlib import Path as _Path
+
+    import bakar.build_stop as build_stop
+
+    _stub_user_config_loader(monkeypatch, hashserv=False)
+
+    seen: list[BuildConfig] = []
+    marker = _Path(workspace) / "build" / "bakar-lock-owner.marker"
+    refusal = build_stop.LockRefusal(reason="peer-held", host="pc2", marker=marker)
+
+    def fake_guard(cfg: BuildConfig) -> build_stop.LockRefusal:
+        seen.append(cfg)
+        return refusal
+
+    monkeypatch.setattr(build_stop, "lock_mutation_guard", fake_guard)
+
+    started: list[str] = []
+    monkeypatch.setattr(build_cmd.step_kas, "run_build", lambda *a, **kw: started.append("run_build") or 0)
+    monkeypatch.setattr(build_cmd, "_run_byo_build", lambda *a, **kw: started.append("byo"))
+    monkeypatch.setattr(build_cmd, "_run_manifest_build", lambda *a, **kw: started.append("manifest"))
+
+    build_dir = generic_yaml.parent / "build"
+    build_dir.mkdir()
+    sentinel = build_dir / "keep.txt"
+    sentinel.write_text("keep")
+
+    result = runner.invoke(app, ["build", str(generic_yaml), "--clean"])
+
+    assert result.exit_code == 1, result.output
+    assert len(seen) == 1, "the real gate must have run exactly once"
+    assert seen[0].bsp_root / seen[0].build_dir_name == build_dir
+    # Rich wraps the message at the terminal width, so compare with whitespace removed.
+    flat = "".join(result.output.split())
+    assert "".join(str(marker).split()) in flat
+    assert "byhand" in flat
+    assert sentinel.read_text() == "keep"
+    assert started == []
