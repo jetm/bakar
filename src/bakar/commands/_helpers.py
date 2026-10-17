@@ -86,6 +86,7 @@ __all__ = [
     "_print_diagnosis",
     "_print_layer_hashes",
     "_print_sstate_summary",
+    "_refuse_if_build_live",
     "_render_sstate_lines",
     "_resolve_workspace",
     "_run_doctor_gate",
@@ -329,6 +330,49 @@ def _remove_tree_or_exit(target: Path, description: str) -> None:
     console.print(f"[green]removed[/] {neutralize(target)}")
 
 
+def _refuse_if_build_live(cfg: BuildConfig) -> None:
+    """Exit 1 before any removal when a build still holds this build directory.
+
+    A ``peer-held`` marker refuses outright. The guard never reports a build
+    running on THIS node (a marker naming this host returns None), so every
+    non-peer verdict also consults :func:`kas_lock.local_build_holder`.
+    ``unattributable`` with no local holder only warns: ``clean`` is the
+    recovery path from an unreadable lock.
+    """
+    from bakar import build_stop
+    from bakar.commands import console
+    from bakar.steps import kas_lock
+
+    refusal = build_stop.lock_mutation_guard(cfg)
+    if refusal is not None and refusal.reason == "peer-held":
+        host = neutralize(refusal.host) if refusal.host else "another host"
+        marker = refusal.marker if refusal.marker is not None else build_stop.lock_marker_path(cfg)
+        console.print(
+            f"[red]refusing to remove the build directory: build owned by {host}[/] "
+            f"(marker {neutralize(marker)}). {neutralize(build_stop.manual_clear_hint(marker))}",
+            highlight=False,
+        )
+        raise typer.Exit(1)
+
+    pid = kas_lock.local_build_holder(cfg)
+    if pid is not None:
+        marker = build_stop.lock_marker_path(cfg)
+        console.print(
+            f"[red]refusing to remove the build directory: a local build is running (pid {pid})[/]. "
+            f"Run `bakar stop` first. {neutralize(build_stop.manual_clear_hint(marker))}",
+            highlight=False,
+        )
+        raise typer.Exit(1)
+
+    if refusal is not None and refusal.reason == "unattributable":
+        marker = refusal.marker if refusal.marker is not None else build_stop.lock_marker_path(cfg)
+        console.print(
+            f"[yellow]warning: cannot attribute the build lock (marker {neutralize(marker)}); "
+            "removing the build directory anyway[/]",
+            highlight=False,
+        )
+
+
 def _clean_build_dir(cfg: BuildConfig) -> None:
     """Remove the BSP-specific ``build/`` dir. Shared by ``bakar clean``
     and ``bakar build --clean``. No-op if the dir is already absent; exits 1
@@ -338,6 +382,7 @@ def _clean_build_dir(cfg: BuildConfig) -> None:
     ``clean-cache`` uses for sstate GC - so wiping a multi-hundred-GB ``tmp/``
     parallelizes per-recipe subtree deletion instead of serializing one rmtree.
     """
+    _refuse_if_build_live(cfg)
     build_dir = cfg.bsp_root / cfg.build_dir_name
     if build_dir.exists():
         _remove_tree_or_exit(build_dir, f"Removing {build_dir.name}/")
@@ -662,7 +707,7 @@ def _run_started_epoch(run_dir: Path) -> float | None:
 
     bitbake's BuildStarted event carries no timestamp, so the event log cannot
     supply one. The run directory is named ``YYYYMMDD-HHMMSS-<pid>`` at the
-    local wall-clock start (the pid suffix disambiguates two builds started in
+    start time in UTC (the pid suffix disambiguates two builds started in
     the same second - see RunLogger.run_id), so parse the leading 15-char
     timestamp and ignore the rest. Returns None when the name does not parse.
     """

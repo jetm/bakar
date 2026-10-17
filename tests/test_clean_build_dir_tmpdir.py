@@ -7,6 +7,12 @@ the redirected (potentially ~200G) tmp.
 
 from __future__ import annotations
 
+import os
+import signal
+import socket
+import subprocess
+import sys
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -16,6 +22,7 @@ from bakar.commands._helpers import _clean_build_dir
 from bakar.config import BuildConfig
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
 
@@ -131,3 +138,146 @@ def test_residue_report_neutralizes_filenames(
     assert "could not fully remove" in out
     assert expected in out
     assert "\x1b]" not in out
+
+
+# ---------------------------------------------------------------------------
+# Removal gate: a live build blocks the deletion, an unreadable lock does not
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def bitbake_child() -> Iterator[subprocess.Popen[bytes]]:
+    """A real child process with ``bitbake`` in its argv, in its own session."""
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)", "bitbake"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        yield child
+    finally:
+        if os.getpgid(child.pid) == child.pid:
+            os.killpg(child.pid, signal.SIGKILL)
+        child.wait()
+
+
+def _live_cfg(tmp_path: Path) -> tuple[BuildConfig, Path]:
+    cfg = _cfg(tmp_path / "ws", local_tmpdir_base=None, host_mode=True)
+    build_dir = cfg.bsp_root / cfg.build_dir_name
+    (build_dir / "tmp").mkdir(parents=True)
+    return cfg, build_dir
+
+
+@pytest.mark.unit
+def test_clean_build_dir_refuses_when_a_peer_holds_the_marker(tmp_path: Path) -> None:
+    from bakar import build_stop
+    from bakar.commands import console
+
+    cfg, build_dir = _live_cfg(tmp_path)
+    marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("peer-node-that-is-not-this-host")
+
+    with console.capture() as cap, pytest.raises(typer.Exit) as excinfo:
+        _clean_build_dir(cfg)
+
+    assert excinfo.value.exit_code == 1
+    assert (build_dir / "tmp").exists()
+    out = "".join(cap.get().split())
+    assert "peer-node-that-is-not-this-host" in out
+    assert str(marker) in out
+    assert "byhand" in out
+
+
+@pytest.mark.unit
+def test_clean_build_dir_refuses_when_a_local_build_is_live(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bitbake_child: subprocess.Popen[bytes]
+) -> None:
+    from bakar import build_stop
+    from bakar.commands import console
+
+    cfg, build_dir = _live_cfg(tmp_path)
+    build_stop.lock_marker_path(cfg).write_text(socket.gethostname())
+    (build_dir / "bitbake.lock").write_text(f"{bitbake_child.pid}\n")
+    procs = SimpleNamespace(all_pids={bitbake_child.pid, bitbake_child.pid + 1})
+    monkeypatch.setattr("bakar.build_stop._collect_build_pids", lambda topdir, pgid, *a, **kw: procs)
+
+    with console.capture() as cap, pytest.raises(typer.Exit) as excinfo:
+        _clean_build_dir(cfg)
+
+    assert excinfo.value.exit_code == 1
+    assert (build_dir / "tmp").exists()
+    out = "".join(cap.get().split())
+    assert str(bitbake_child.pid) in out
+    assert "byhand" in out
+
+
+@pytest.mark.unit
+def test_clean_build_dir_ignores_an_idle_local_cooker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bitbake_child: subprocess.Popen[bytes]
+) -> None:
+    from bakar import build_stop
+
+    cfg, build_dir = _live_cfg(tmp_path)
+    build_stop.lock_marker_path(cfg).write_text(socket.gethostname())
+    (build_dir / "bitbake.lock").write_text(f"{bitbake_child.pid}\n")
+    procs = SimpleNamespace(all_pids={bitbake_child.pid})
+    monkeypatch.setattr("bakar.build_stop._collect_build_pids", lambda topdir, pgid, *a, **kw: procs)
+
+    _clean_build_dir(cfg)
+
+    assert not build_dir.exists()
+
+
+@pytest.mark.unit
+def test_clean_build_dir_warns_and_proceeds_when_unattributable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bakar import build_stop
+    from bakar.commands import console
+
+    cfg, build_dir = _live_cfg(tmp_path)
+    marker = build_stop.lock_marker_path(cfg)
+    refusal = build_stop.LockRefusal(reason="unattributable", marker=marker)
+    monkeypatch.setattr("bakar.build_stop.lock_mutation_guard", lambda c: refusal)
+    monkeypatch.setattr("bakar.steps.kas_lock.local_build_holder", lambda c: None)
+
+    with console.capture() as cap:
+        _clean_build_dir(cfg)
+
+    assert not build_dir.exists()
+    assert str(marker) in "".join(cap.get().split())
+
+
+@pytest.mark.unit
+def test_clean_build_dir_proceeds_when_the_gate_has_no_refusal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg, build_dir = _live_cfg(tmp_path)
+    monkeypatch.setattr("bakar.build_stop.lock_mutation_guard", lambda c: None)
+    monkeypatch.setattr("bakar.steps.kas_lock.local_build_holder", lambda c: None)
+
+    _clean_build_dir(cfg)
+
+    assert not build_dir.exists()
+
+
+@pytest.mark.unit
+def test_clean_build_dir_gate_runs_before_any_removal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg, _ = _live_cfg(tmp_path)
+    events: list[str] = []
+
+    def guard(c: BuildConfig) -> None:
+        events.append("guard")
+
+    def holder(c: BuildConfig) -> None:
+        events.append("holder")
+
+    def rmtree(root: Path, description: str = "") -> None:
+        events.append("rmtree")
+
+    monkeypatch.setattr("bakar.build_stop.lock_mutation_guard", guard)
+    monkeypatch.setattr("bakar.steps.kas_lock.local_build_holder", holder)
+    monkeypatch.setattr("bakar.fsremove.parallel_rmtree", rmtree)
+
+    _clean_build_dir(cfg)
+
+    assert events == ["guard", "holder", "rmtree"]
