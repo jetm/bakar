@@ -67,6 +67,7 @@ def _install_workspace_binary(workspace: Path, real_binary: Path) -> None:
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+@pytest.mark.real_home
 @pytest.mark.integration
 def test_hashserv_real_daemon_lifecycle(tmp_path: Path) -> None:
     """End-to-end: spawn the real daemon, connect TCP, stop it, restart it."""

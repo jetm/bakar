@@ -239,6 +239,7 @@ def _bitbake_lib() -> Path | None:
     return None
 
 
+@pytest.mark.real_home
 def test_end_to_end_against_real_bitbake(tmp_path: Path) -> None:
     bitbake_lib = _bitbake_lib()
     if bitbake_lib is None:
