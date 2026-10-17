@@ -455,15 +455,15 @@ def _stop_container(runtime: str, cid: str, plan: _ContainerStopPlan) -> str:
     escalate_failures: list[str] = []
 
     def _escalate() -> None:
-        escalate_failures.extend(_escalate_container(runtime, cid, plan.term_secs) or [])
+        escalate_failures.extend(stop_container._escalate_container(runtime, cid, plan.term_secs) or [])
 
     if not plan.force:
         _say(f"Sent SIGINT to bitbake in container {cid}...")
-        if not _sigint_bitbake_in_container(runtime, cid):
+        if not stop_container._sigint_bitbake_in_container(runtime, cid):
             stop_container._run_runtime([runtime, "kill", "--signal=SIGINT", cid])
         status = _graceful_wait(
             ctx=_WaitCtx(
-                liveness=lambda: _container_liveness(runtime, cid),
+                liveness=lambda: stop_container._container_liveness(runtime, cid),
                 escalate=_escalate,
                 target_desc=f"container {cid}",
                 run_dir=plan.run_dir,
@@ -519,8 +519,8 @@ def stop_running_proc(proc: subprocess.Popen, cfg: BuildConfig, log: RunLogger) 
         return
 
     try:
-        runtime = detect_runtime()
-        cid = stop_container._container_id(runtime, run_id_label(log.run_id))
+        runtime = stop_container.detect_runtime()
+        cid = stop_container._container_id(runtime, stop_container.run_id_label(log.run_id))
         if cid is None:
             os.killpg(proc.pid, signal.SIGINT)
             return
@@ -533,7 +533,7 @@ def stop_running_proc(proc: subprocess.Popen, cfg: BuildConfig, log: RunLogger) 
         # (the out-of-process `bakar stop`), which has no proc.wait() backstop;
         # running it here would block the Ctrl-C handler / stall watchdog for
         # the full grace period and hang the UI.
-        if not _sigint_bitbake_in_container(runtime, cid):
+        if not stop_container._sigint_bitbake_in_container(runtime, cid):
             os.killpg(proc.pid, signal.SIGINT)
     except OSError:
         return
@@ -1129,12 +1129,12 @@ def escalate_container_tree(run_id: str) -> bool:
     ``inspect`` on it returns non-zero - indistinguishable from a query
     failure - rather than the clean "not running" `_DEAD` this needs.)
     """
-    runtime = detect_runtime()
-    cid = stop_container._container_id(runtime, run_id_label(run_id))
+    runtime = stop_container.detect_runtime()
+    cid = stop_container._container_id(runtime, stop_container.run_id_label(run_id))
     if cid is None:
         return False
-    _escalate_container(runtime, cid, _STOP_TERM_SECONDS)
-    status, _cid = _container_id_status(runtime, run_id_label(run_id))
+    stop_container._escalate_container(runtime, cid, _STOP_TERM_SECONDS)
+    status, _cid = stop_container._container_id_status(runtime, stop_container.run_id_label(run_id))
     return status == _DEAD
 
 
@@ -1432,7 +1432,7 @@ def _verify_clean(
         # after the stop ladder signals the container, so a transient runtime
         # hiccup at exactly this moment would otherwise clear the one reason
         # that keeps the caller from declaring "stopped" it cannot back up.
-        container_status, _cid = _container_id_status(runtime, container_label)
+        container_status, _cid = stop_container._container_id_status(runtime, container_label)
         if container_status != _DEAD:
             reasons.append("build container still running")
     if refusal is None:
@@ -1618,7 +1618,7 @@ def stop_run(run_dir: Path, cfg: BuildConfig | None = None, *, force: bool = Fal
         remove_pid(run_dir)
         return False
 
-    runtime = record.runtime or detect_runtime()
+    runtime = record.runtime or stop_container.detect_runtime()
     if shutil.which(runtime) is None:
         _say(f"cannot target build: container runtime {runtime!r} is not installed")
         remove_pid(run_dir)
@@ -1632,7 +1632,7 @@ def stop_run(run_dir: Path, cfg: BuildConfig | None = None, *, force: bool = Fal
     # that may still be running. Only a confirmed _DEAD reaches the
     # idempotent clean-tree stop below; an _ERROR refuses without
     # claiming a stop happened.
-    container_status, cid = _container_id_status(runtime, record.container_label)
+    container_status, cid = stop_container._container_id_status(runtime, record.container_label)
     if container_status == _ERROR:
         _say(f"cannot confirm container state ({runtime!r} query failed); refusing to report a stop - resolve manually")
         # Deliberately does NOT remove_pid: this record still names a real

@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 import pytest
 from rich.console import Console
 
-from bakar import build_stop, observability, report, triage
+from bakar import build_stop, observability, report, stop_container, triage
 from bakar.commands import stop as stop_cmd
 from bakar.commands import triage as commands_triage
 from tests.conftest import make_build_config
@@ -765,7 +765,7 @@ def test_stop_build_container_mode_stops_container_not_pgid(
     # docker rm -f).
     container_ids = iter([(build_stop._ALIVE, "cafef00d"), (build_stop._DEAD, None)])
     monkeypatch.setattr(
-        build_stop, "_container_id_status", lambda _rt, _label: next(container_ids, (build_stop._DEAD, None))
+        stop_container, "_container_id_status", lambda _rt, _label: next(container_ids, (build_stop._DEAD, None))
     )
     monkeypatch.setattr(
         build_stop,
@@ -866,7 +866,7 @@ def test_stop_build_container_id_unresolved_is_idempotent_success(
 
     stop_calls: list[tuple[str, str]] = []
 
-    monkeypatch.setattr(build_stop, "_container_id_status", lambda _rt, _label: (build_stop._DEAD, None))
+    monkeypatch.setattr(stop_container, "_container_id_status", lambda _rt, _label: (build_stop._DEAD, None))
     monkeypatch.setattr(
         build_stop,
         "_stop_container",
@@ -911,7 +911,7 @@ def test_stop_build_container_query_error_refuses_not_idempotent_success(
 
     stop_calls: list[tuple[str, str]] = []
 
-    monkeypatch.setattr(build_stop, "_container_id_status", lambda _rt, _label: (build_stop._ERROR, None))
+    monkeypatch.setattr(stop_container, "_container_id_status", lambda _rt, _label: (build_stop._ERROR, None))
     monkeypatch.setattr(
         build_stop,
         "_stop_container",
@@ -948,7 +948,7 @@ def test_stop_build_container_lost_runtime_preserves_launch_record(
         container_label="bakar.run_id=20260618-120000",
     )
 
-    monkeypatch.setattr(build_stop, "_container_id_status", lambda _rt, _label: (build_stop._ALIVE, "cafef00d"))
+    monkeypatch.setattr(stop_container, "_container_id_status", lambda _rt, _label: (build_stop._ALIVE, "cafef00d"))
     monkeypatch.setattr(build_stop, "_stop_container", lambda *_a, **_kw: "lost_runtime")
     monkeypatch.setattr(build_stop.shutil, "which", lambda _name: "/usr/bin/docker")
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
@@ -986,7 +986,7 @@ def test_stop_build_container_verify_survivor_preserves_launch_record(
     # verify, inside _verify_clean) reports it survived the ladder.
     container_ids = iter([(build_stop._ALIVE, "cafef00d"), (build_stop._ALIVE, "cafef00d")])
     monkeypatch.setattr(
-        build_stop,
+        stop_container,
         "_container_id_status",
         lambda _rt, _label: next(container_ids, (build_stop._ALIVE, "cafef00d")),
     )
@@ -1460,7 +1460,7 @@ def _capture_wait_ctx(monkeypatch: pytest.MonkeyPatch, status: str = "drained") 
         return status
 
     monkeypatch.setattr(build_stop, "_graceful_wait", _fake_wait)
-    monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", lambda _rt, _cid: True)
+    monkeypatch.setattr(stop_container, "_sigint_bitbake_in_container", lambda _rt, _cid: True)
     return captured
 
 
@@ -1489,9 +1489,9 @@ def test_stop_container_wait_ctx_carries_every_field_unchanged(
         liveness_calls.append((runtime, cid))
         return build_stop._ALIVE
 
-    monkeypatch.setattr(build_stop, "_container_liveness", _record_liveness)
+    monkeypatch.setattr(stop_container, "_container_liveness", _record_liveness)
     monkeypatch.setattr(
-        build_stop,
+        stop_container,
         "_escalate_container",
         lambda rt, cid, secs: escalate_calls.append((rt, cid, secs)),
     )
@@ -2476,7 +2476,7 @@ def test_verify_clean_reports_all_remaining(
         lambda _td, _pgid, **_kw: build_stop._ScopedProcs(cooker=frozenset({321}), all_pids=frozenset({321})),
     )
     monkeypatch.setattr(build_stop, "_pgid_alive", lambda _pgid: True)
-    monkeypatch.setattr(build_stop, "_container_id_status", lambda _rt, _label: (build_stop._ALIVE, "cid123"))
+    monkeypatch.setattr(stop_container, "_container_id_status", lambda _rt, _label: (build_stop._ALIVE, "cid123"))
     monkeypatch.setattr(build_stop, "_bitbake_server_pid_verified", lambda _pid, _topdir: True)
 
     reasons = build_stop._verify_clean(run_dir, 4242, runtime="docker", container_label="bakar.run_id=X")
