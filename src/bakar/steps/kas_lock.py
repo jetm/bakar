@@ -137,7 +137,12 @@ def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
         # Row 1: foreign marker - touch NOTHING.
         return build_stop.LockClearOutcome(
             removed=[],
-            refusal=build_stop.LockRefusal(reason="peer-held", host=owner, detail=f"lock marker names {escape(owner)}"),
+            refusal=build_stop.LockRefusal(
+                reason="peer-held",
+                host=owner,
+                detail=f"lock marker names {escape(owner)}",
+                marker=build_stop.lock_marker_path(cfg),
+            ),
         )
 
     if owner is not None:
@@ -176,6 +181,7 @@ def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
                 refusal=build_stop.LockRefusal(
                     reason="unattributable",
                     detail="lock present, no reliable owner, shared/unverifiable filesystem",
+                    marker=build_stop.lock_marker_path(cfg),
                 ),
             )
         # Row 5: confirmed-local, today's probe.
@@ -464,13 +470,16 @@ def lock_owner_marker(cfg: BuildConfig, log: RunLogger) -> Iterator[None]:
 
 def _lock_refusal_message(refusal: build_stop.LockRefusal) -> str:
     """Markup-escaped, human-readable description of a lock refusal for logging."""
+    hint = f" {escape(build_stop.manual_clear_hint(refusal.marker))}" if refusal.marker is not None else ""
     if refusal.reason == "peer-held":
         host = escape(refusal.host) if refusal.host else "another host"
-        return f"bitbake lock held by peer host {host}; refusing to start"
+        return f"bitbake lock held by peer host {host}; refusing to start.{hint}"
     if refusal.reason == "held-locally":
         pid = refusal.pid if refusal.pid is not None else "unknown"
         return f"bitbake lock held locally by live process pid {pid}; refusing to start"
     if refusal.reason == "unattributable":
-        return "bitbake lock present with no reliable owner on a shared/unverifiable filesystem; refusing to start"
+        return (
+            f"bitbake lock present with no reliable owner on a shared/unverifiable filesystem; refusing to start.{hint}"
+        )
     detail = escape(refusal.detail) if refusal.detail else refusal.reason
     return f"bitbake lock refusal ({escape(refusal.reason)}): {detail}"

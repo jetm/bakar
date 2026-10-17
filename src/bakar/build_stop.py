@@ -1519,6 +1519,17 @@ class LockRefusal:
     host: str | None = None
     pid: int | None = None
     detail: str = ""
+    marker: Path | None = None
+
+
+def manual_clear_hint(marker: Path) -> str:
+    """One sentence telling the user how to clear a marker by hand.
+
+    NFS attribute caching can leave a marker (and its ``bitbake.lock``) that
+    no node will clear on its own; the user is the only party who knows
+    whether a build still runs anywhere.
+    """
+    return f"If no build runs on any node, delete the marker {marker} and the bitbake.lock beside it by hand."
 
 
 @dataclass
@@ -1614,10 +1625,13 @@ def lock_mutation_guard(cfg: BuildConfig) -> LockRefusal | None:
     test patching ``bakar.mounts.is_path_on_nfs`` is seen at call time instead of
     leaving this guard reading the real ``/proc/mounts``.
     """
+    marker = lock_marker_path(cfg)
     owner = read_marker_owner(cfg)
     if owner is not None:
         if owner != socket.gethostname():
-            return LockRefusal(reason="peer-held", host=owner, detail=f"lock marker names {escape(owner)}")
+            return LockRefusal(
+                reason="peer-held", host=owner, detail=f"lock marker names {escape(owner)}", marker=marker
+            )
         return None
 
     build_dir = cfg.bsp_root / cfg.build_dir_name
@@ -1629,10 +1643,12 @@ def lock_mutation_guard(cfg: BuildConfig) -> LockRefusal | None:
         return LockRefusal(
             reason="unattributable",
             detail="lock present, no reliable owner, shared/unverifiable filesystem",
+            marker=marker,
         )
     return LockRefusal(
         reason="shared-inaction",
         detail="lock absent, no reliable owner, shared/unverifiable filesystem",
+        marker=marker,
     )
 
 

@@ -658,3 +658,80 @@ def test_link_failure_proven_not_landed_names_marker_and_manual_clear(
         kas_lock._create_marker_exclusive(marker, "this-host")
     assert str(marker) in str(ei.value)
     assert "by hand" in str(ei.value)
+
+
+def test_peer_held_refusal_carries_clear_hint(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, _build, _log = env
+    marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("pc1")
+    monkeypatch.setattr(socket, "gethostname", lambda: "pc2")
+    _on_nfs(monkeypatch, True)
+
+    outcome = kas_lock.clear_stale_bitbake_locks(cfg)
+
+    assert outcome.refusal is not None
+    assert outcome.refusal.reason == "peer-held"
+    assert outcome.refusal.marker == marker
+    message = kas_lock._lock_refusal_message(outcome.refusal)
+    assert str(marker) in message
+    assert "by hand" in message
+
+
+def test_lock_mutation_guard_refusal_carries_clear_hint(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, build, _log = env
+    marker = build_stop.lock_marker_path(cfg)
+    _on_nfs(monkeypatch, True)
+
+    # No marker, lock present, shared filesystem: unattributable.
+    (build / "bitbake.lock").write_text("123\n")
+    refusal = build_stop.lock_mutation_guard(cfg)
+    assert refusal is not None
+    assert refusal.reason == "unattributable"
+    assert refusal.marker == marker
+
+    # No marker, no lock, shared filesystem: shared-inaction.
+    (build / "bitbake.lock").unlink()
+    refusal = build_stop.lock_mutation_guard(cfg)
+    assert refusal is not None
+    assert refusal.reason == "shared-inaction"
+    assert refusal.marker == marker
+
+    # Foreign marker: peer-held.
+    marker.write_text("pc1")
+    refusal = build_stop.lock_mutation_guard(cfg)
+    assert refusal is not None
+    assert refusal.reason == "peer-held"
+    assert refusal.marker == marker
+
+
+def test_clear_hint_text_names_marker_and_lock(tmp_path: Path) -> None:
+    marker = tmp_path / "build" / ".bakar-lock-host"
+    hint = build_stop.manual_clear_hint(marker)
+    assert str(marker) in hint
+    assert "bitbake.lock" in hint
+    assert "by hand" in hint
+    assert hint.endswith(".")
+    assert "\n" not in hint
+    assert build_stop.LockRefusal(reason="peer-held").marker is None
+
+
+def test_unattributable_clear_refusal_carries_the_marker(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, build, _log = env
+    marker = build_stop.lock_marker_path(cfg)
+    (build / "bitbake.lock").write_text("123\n")
+    _on_nfs(monkeypatch, True)
+
+    outcome = kas_lock.clear_stale_bitbake_locks(cfg)
+
+    assert outcome.refusal is not None
+    assert outcome.refusal.reason == "unattributable"
+    assert outcome.refusal.marker == marker
+    message = kas_lock._lock_refusal_message(outcome.refusal)
+    assert str(marker) in message
+    assert "by hand" in message
