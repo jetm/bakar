@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-10-16
+
+### Added
+
+- Added warnings for unrecognized keys in `config.toml` and in workspace `.bakar.toml`, including unknown top-level sections and unknown families under `[defaults]`. The warning lists the recognized names.
+- Added step records for the post-build CVE report, SBOM filter and feed sync in the run's `events.jsonl`, including skip and failure reasons. These steps still never change the build's exit status.
+- Added a message naming the marker path and the manual clear steps when a bitbake lock marker is unreadable and its owner cannot be identified.
+- Added the underlying runtime error text to the incomplete-stop report when a container survives a stop attempt.
+- Added a warning for post-build artifact, signature-ledger and native-revision capture failures. It appears on the console and as a `warn` record in `events.jsonl`.
+
+### Changed
+
+- Changed `bakar clean`, `bakar build --clean` and the full `clean-cache` reset to exit with status 1 and report the offending path and error when the build directory or TMPDIR cannot be fully removed. They print "removed" only when the tree is actually gone.
+- Changed remote dispatch to bound its ssh, rsync and git push calls with connect timeouts and keepalives, so a dead link to the build host fails instead of hanging. Long build-log streaming has no overall timeout.
+- Changed remote dispatch to leave your own ssh configuration in control. The bounded defaults apply only when `GIT_SSH_COMMAND`, `GIT_SSH`, `core.sshCommand` or `RSYNC_RSH` are not set.
+- Changed the remote delivery script to have a much longer timeout than probes. A delivery timeout is now reported as "the host answered and the script may still be running", not as an unreachable host.
+- Changed the Ctrl-C message during remote dispatch. It no longer claims the remote build is still running or that nothing is left running. It tells you to verify with the status and stop commands on the host.
+- Changed the remote run-id lookup to pick this dispatch's run. It now finds builds in distro-suffixed build directories such as the qcom layout, matches full run directory names, and reports ssh failures separately from "no run found".
+- Changed `bakar report`, `bakar insights` and `bakar triage` to search the same run directories, including qcom and preset fan-out layouts.
+- Changed `bakar report` and `bakar insights` to resolve their configuration from the selected run's own location, so preset fan-out runs use the correct layer, buildhistory and timing data.
+- Changed `bakar monitor` and the stop wait loop to read event logs incrementally, so refresh cost no longer grows with build length. `kas.log` is read through a bounded tail window.
+- Changed the `--host` and `--mold-global` help text to match their actual behavior.
+- Changed the `uv_build` build requirement to `>=0.13.1,<0.14`.
+
+### Fixed
+
+- Fixed `--manifest` with a vendor entry of family `generic` or `bbsetup` showing a raw traceback. It now exits with code 2 and a clear message.
+- Fixed global `--host`, `--container`, sccache, scope and mold flags being ignored by `lock`, `shell`, `stress-parse`, `graph`, `inspect`, `prefetch`, `dump`, `getvar`, `diffsigs`, `layers`, `show`, `sync`, `clean`, `diff`, `doctor` and `monitor`. They are also now applied to each release in multi-release builds.
+- Fixed the bitbake lock marker being written non-atomically. Peers on NFS could see it empty or unreadable and overwrite it, so two nodes could start bitbake in the same TOPDIR.
+- Fixed bakar overwriting an unreadable lock marker on network filesystems. It now refuses to launch instead.
+- Fixed a node deleting a peer's live marker on exit. Only a marker that still names this host is removed.
+- Fixed bakar creating lock markers on filesystems without hard-link support, such as CIFS without unix extensions and some FUSE mounts. It now refuses with a clear message instead.
+- Fixed `bakar stop` signalling invalid PIDs and unverified bitbake server PIDs.
+- Fixed `bakar stop` removing `bitbake.lock` after an incomplete or unconfirmed container stop.
+- Fixed `bakar stop` printing "stopped" before the outcome was verified.
+- Fixed a failed `repo init` or `repo sync` showing a raw traceback. It now prints a single error line, exits non-zero, and records the failure in the run log.
+- Fixed skipped qcom syncs being labeled `ti_layertool` instead of `repo_sync`.
+- Fixed `bakar report` reporting successful qcom builds as failures, and runs ending in `run_error` having no duration.
+- Fixed `bakar report` counting dry-run steps as successes.
+- Fixed `bakar triage` treating failed post-build steps as build failures.
+- Fixed a failing CVE report being recorded as a build failure, which made triage pick a successful build as the failed one.
+- Fixed `bakar triage` mixing log tails into stdout, so `--json` now emits a single parseable document.
+- Fixed `bakar sched-triage --json` crashing with a `TypeError` when any counter was populated.
+- Fixed corruption of the task timing baselines when a write was interrupted or the disk filled. Updates are now atomic and safe under concurrent writers.
+- Fixed `bakar doctor` and `bakar hashserv status` assuming the daemon listens on localhost. They now use the configured bind host. The recorded port is also validated.
+- Fixed `BAKAR_BITBAKE_OVERRIDE` only being disabled by `0`. `false`, `no` and `off` now disable it, case-insensitively and ignoring surrounding whitespace.
+- Fixed an empty `BAKAR_REPO_URL` overriding lower-precedence repo URL settings. It is now treated as unset.
+- Fixed clean frozen shared repositories being misclassified as modified when `git status` was slow.
+- Fixed a markup-like or control-character file name in clean residue reports breaking or spoofing terminal output.
+- Fixed `bakar build --clean` for bbsetup raising on undeletable residue.
+- Fixed a full disk on `console.log` changing a build's exit status.
+- Fixed `bakar monitor` missing errors on very long `kas.log` lines.
+- Fixed run-id timestamp parsing during the repeated daylight-saving hour.
+- Fixed `python -m bakar` not running the CLI.
+
 ## [0.37.1] - 2026-10-16
 
 ### Fixed
@@ -921,7 +976,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.37.1...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.38.0...HEAD
+[0.38.0]: https://github.com/jetm/bakar/compare/v0.37.1...v0.38.0
 [0.37.1]: https://github.com/jetm/bakar/compare/v0.37.0...v0.37.1
 [0.37.0]: https://github.com/jetm/bakar/compare/v0.36.3...v0.37.0
 [0.36.3]: https://github.com/jetm/bakar/compare/v0.36.2...v0.36.3
