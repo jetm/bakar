@@ -5,13 +5,13 @@ from __future__ import annotations
 import errno
 import os
 import socket
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar import build_stop, proc_tree
+from bakar import build_stop, observability
 from bakar.config import BuildConfig
 from bakar.observability import RunLogger
 from bakar.steps import kas_lock
@@ -755,52 +755,194 @@ def test_unattributable_clear_refusal_carries_the_marker(
     assert "by hand" in message
 
 
-def _report_activity(monkeypatch: pytest.MonkeyPatch, active: bool) -> None:
-    pids = [1, 2] if active else [1]
-    monkeypatch.setattr(proc_tree, "_collect_build_pids", lambda _d, _r: SimpleNamespace(all_pids=pids))
+# ---------------------------------------------------------------------------
+# local_build_holder: real fake bitbake-server processes, the process collector
+# runs for real against /proc in every test below.
+# ---------------------------------------------------------------------------
 
 
 def _tree_snapshot(root: Path) -> dict[str, tuple[int, int]]:
     return {str(p): (p.stat().st_mtime_ns, p.stat().st_size) for p in sorted(root.rglob("*"))}
 
 
+def _run_dir(cfg: BuildConfig, *, started: datetime | None = None, pid: int = 4242) -> Path:
+    stamp = (started or datetime.now(UTC)).strftime(observability.RUN_ID_TS_FORMAT)
+    run_dir = cfg.runs_dir / f"{stamp}-{pid}"
+    run_dir.mkdir(parents=True)
+    return run_dir
+
+
+def _dead_pid(live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]]) -> int:
+    with live_child() as child:
+        pass  # exiting the context terminates and reaps it
+    return child.pid
+
+
+def _fake_runtime(tmp_path: Path, *, container_alive: bool) -> Path:
+    script = tmp_path / "fake-runtime"
+    script.write_text("#!/bin/sh\n" + ("echo cid0123\n" if container_alive else "") + "exit 0\n")
+    script.chmod(0o755)
+    return script
+
+
 def test_local_build_holder_reports_a_live_pid_with_activity(
     env: tuple[BuildConfig, Path, RunLogger],
-    monkeypatch: pytest.MonkeyPatch,
-    bitbake_child: subprocess.Popen[bytes],
+    bitbake_server: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
 ) -> None:
     cfg, build, _log = env
-    (build / "bitbake.lock").write_text(f"{bitbake_child.pid}\n")
-    _report_activity(monkeypatch, True)
+    with bitbake_server(build, children="worker") as server:
+        (build / "bitbake.lock").write_text(f"{server.pid}\n")
+        assert kas_lock.local_build_holder(cfg) == server.pid
 
-    assert kas_lock.local_build_holder(cfg) == bitbake_child.pid
+
+def test_local_build_holder_reports_a_server_with_no_child_while_its_launch_record_is_live(
+    env: tuple[BuildConfig, Path, RunLogger],
+    bitbake_server: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    """Task initialisation runs before bitbake starts a worker: no child, still a build."""
+    cfg, build, _log = env
+    with bitbake_server(build) as server, live_child("kas-container") as wrapper:
+        (build / "bitbake.lock").write_text(f"{server.pid}\n")
+        build_stop.write_launch_record(_run_dir(cfg), pgid=wrapper.pid, mode="host")
+        assert kas_lock.local_build_holder(cfg) == server.pid
+
+
+def test_local_build_holder_counts_an_attached_client_in_its_own_session(
+    env: tuple[BuildConfig, Path, RunLogger],
+    bitbake_server: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    """The client is no child of the server; the recorded group seeds the scan."""
+    cfg, build, _log = env
+    with bitbake_server(build) as server, live_child("bitbake", "core-image-minimal") as client:
+        assert os.getpgid(client.pid) != os.getpgid(server.pid)
+        (build / "bitbake.lock").write_text(f"{server.pid}\n")
+        build_stop.write_pid(_run_dir(cfg), client.pid)
+        assert kas_lock.local_build_holder(cfg) == server.pid
+
+
+def test_local_build_holder_reports_a_container_build_with_a_live_launch_record(
+    env: tuple[BuildConfig, Path, RunLogger],
+    tmp_path: Path,
+    bitbake_server: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    """Container pid in the lock and /work/... argv: the launch record decides."""
+    cfg, build, _log = env
+    container_pid = _dead_pid(live_child)
+    wrapper_pid = _dead_pid(live_child)  # the kas-container wrapper exited; the container lives
+    run_dir = _run_dir(cfg)
+    with bitbake_server("/work/build", children="worker"):
+        (build / "bitbake.lock").write_text(f"{container_pid}\n")
+        build_stop.write_launch_record(
+            run_dir,
+            pgid=wrapper_pid,
+            mode="container",
+            runtime=str(_fake_runtime(tmp_path, container_alive=True)),
+            container_label="bakar.run_id=x",
+        )
+        assert kas_lock.local_build_holder(cfg) == wrapper_pid
+
+        build_stop.write_launch_record(
+            run_dir,
+            pgid=wrapper_pid,
+            mode="container",
+            runtime=str(_fake_runtime(tmp_path, container_alive=False)),
+            container_label="bakar.run_id=x",
+        )
+        assert kas_lock.local_build_holder(cfg) is None
+
+
+def test_local_build_holder_reports_an_empty_lock_with_a_live_launch_record(
+    env: tuple[BuildConfig, Path, RunLogger],
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    cfg, build, _log = env
+    (build / "bitbake.lock").write_text("")
+    with live_child("kas-container") as wrapper:
+        build_stop.write_launch_record(
+            _run_dir(cfg, started=datetime(2020, 1, 1, tzinfo=UTC)), pgid=wrapper.pid, mode="host"
+        )
+        assert kas_lock.local_build_holder(cfg) == wrapper.pid
+
+
+def test_local_build_holder_reads_an_empty_lock_from_a_recent_run_on_this_host_as_a_holder(
+    env: tuple[BuildConfig, Path, RunLogger],
+) -> None:
+    cfg, build, _log = env
+    (build / "bitbake.lock").write_text("")
+    build_stop.lock_marker_path(cfg).write_text("this-host\n")
+    _run_dir(cfg, pid=4242)
+
+    assert kas_lock.local_build_holder(cfg) == 4242
+
+
+def test_local_build_holder_ignores_an_empty_lock_without_a_recent_run_or_own_marker(
+    env: tuple[BuildConfig, Path, RunLogger],
+) -> None:
+    cfg, build, _log = env
+    (build / "bitbake.lock").write_text("")
+    assert kas_lock.local_build_holder(cfg) is None  # no run, no marker
+
+    recent = _run_dir(cfg, pid=4242)
+    assert kas_lock.local_build_holder(cfg) is None  # recent run, but no marker naming this host
+
+    build_stop.lock_marker_path(cfg).write_text("this-host\n")
+    old = datetime.now(UTC) - timedelta(seconds=kas_lock._EMPTY_LOCK_RECENT_RUN_S + 60)
+    recent.rename(cfg.runs_dir / f"{old.strftime(observability.RUN_ID_TS_FORMAT)}-4242")
+    assert kas_lock.local_build_holder(cfg) is None  # marker names this host, the run is old
 
 
 def test_local_build_holder_ignores_an_idle_cooker(
     env: tuple[BuildConfig, Path, RunLogger],
-    monkeypatch: pytest.MonkeyPatch,
-    bitbake_child: subprocess.Popen[bytes],
+    bitbake_server: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
 ) -> None:
+    """A warm idle cooker with no launch record is not a holder (the user's ruling)."""
     cfg, build, _log = env
-    (build / "bitbake.lock").write_text(f"{bitbake_child.pid}\n")
-    _report_activity(monkeypatch, False)
+    build_stop.lock_marker_path(cfg).write_text("this-host\n")
+    with bitbake_server(build) as server:
+        (build / "bitbake.lock").write_text(f"{server.pid}\n")
+        assert kas_lock.local_build_holder(cfg) is None
 
-    assert kas_lock.local_build_holder(cfg) is None
+
+def test_local_build_holder_ignores_an_idle_cooker_with_its_autostarted_hashserv(
+    env: tuple[BuildConfig, Path, RunLogger],
+    bitbake_server: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    """BB_HASHSERVE=auto keeps a forked hashserv child beside an idle cooker."""
+    cfg, build, _log = env
+    with bitbake_server(build, children="service") as server:
+        (build / "bitbake.lock").write_text(f"{server.pid}\n")
+        assert kas_lock.local_build_holder(cfg) is None
+
+
+def test_local_build_holder_ignores_an_idle_cooker_started_through_the_resolved_path(
+    env: tuple[BuildConfig, Path, RunLogger],
+    tmp_path: Path,
+    bitbake_server: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    """A symlinked workspace puts the resolved path in the server's argv."""
+    _cfg_real, build, _log = env
+    link = tmp_path / "linked-ws"
+    link.symlink_to(tmp_path, target_is_directory=True)
+    cfg = _cfg(link)
+    with bitbake_server(build.resolve()) as server:
+        (build / "bitbake.lock").write_text(f"{server.pid}\n")
+        assert kas_lock.local_build_holder(cfg) is None
+    with bitbake_server(build.resolve(), children="worker") as server:
+        (build / "bitbake.lock").write_text(f"{server.pid}\n")
+        assert kas_lock.local_build_holder(cfg) == server.pid
 
 
 def test_local_build_holder_ignores_a_dead_or_reused_pid(
     env: tuple[BuildConfig, Path, RunLogger],
-    monkeypatch: pytest.MonkeyPatch,
     live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
 ) -> None:
     cfg, build, _log = env
     lock = build / "bitbake.lock"
-    # Activity is reported in both cases so only the liveness check can say no.
-    _report_activity(monkeypatch, True)
 
-    with live_child("bitbake") as dead:
-        pass  # exiting the context terminates and reaps it
-    lock.write_text(f"{dead.pid}\n")
+    lock.write_text(f"{_dead_pid(live_child)}\n")
     assert kas_lock.local_build_holder(cfg) is None
 
     with live_child() as reused:  # live pid, argv does not mention bitbake
@@ -810,20 +952,36 @@ def test_local_build_holder_ignores_a_dead_or_reused_pid(
 
 def test_local_build_holder_never_mutates_the_build_directory(
     env: tuple[BuildConfig, Path, RunLogger],
-    monkeypatch: pytest.MonkeyPatch,
-    bitbake_child: subprocess.Popen[bytes],
+    tmp_path: Path,
+    bitbake_server: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
 ) -> None:
     cfg, build, _log = env
-    (build / "bitbake.lock").write_text(f"{bitbake_child.pid}\n")
     (build / "bitbake.sock").write_text("")
     build_stop.lock_marker_path(cfg).write_text("this-host\n")
-    before = _tree_snapshot(build)
-    _report_activity(monkeypatch, True)
-    assert kas_lock.local_build_holder(cfg) == bitbake_child.pid
-    _report_activity(monkeypatch, False)
-    assert kas_lock.local_build_holder(cfg) is None
-
-    assert _tree_snapshot(build) == before
+    with bitbake_server(build, children="worker") as busy, bitbake_server(build) as idle:
+        (build / "bitbake.lock").write_text(f"{busy.pid}\n")
+        before = _tree_snapshot(build)
+        assert kas_lock.local_build_holder(cfg) == busy.pid
+        (build / "bitbake.lock").write_text(f"{idle.pid}\n")
+        before_idle = _tree_snapshot(build)
+        # Both servers name this build dir, so the scan sees busy's worker too.
+        assert kas_lock.local_build_holder(cfg) == idle.pid
+        assert _tree_snapshot(build) == before_idle
+    assert set(before) == set(_tree_snapshot(build))
+    with live_child("kas-container") as wrapper:
+        run_dir = _run_dir(cfg)
+        (build / "bitbake.lock").write_text("")
+        build_stop.write_launch_record(
+            run_dir,
+            pgid=wrapper.pid,
+            mode="container",
+            runtime=str(_fake_runtime(tmp_path, container_alive=True)),
+            container_label="bakar.run_id=x",
+        )
+        before_record = _tree_snapshot(build)
+        assert kas_lock.local_build_holder(cfg) == wrapper.pid
+        assert _tree_snapshot(build) == before_record
 
 
 def test_lock_pid_liveness_treats_a_cmdline_read_race_as_live(
@@ -843,7 +1001,7 @@ def test_lock_pid_liveness_treats_a_cmdline_read_race_as_live(
 
     monkeypatch.setattr(Path, "read_bytes", racing_read_bytes)
     (build / "bitbake.lock").write_text(f"{pid}\n")
-    _report_activity(monkeypatch, False)
 
     assert kas_lock._lock_pid_is_live_bitbake(pid) is True
-    assert kas_lock.local_build_holder(cfg) is None
+    # Unverifiable as this build's idle cooker, so the probe fails closed.
+    assert kas_lock.local_build_holder(cfg) == pid

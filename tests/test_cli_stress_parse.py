@@ -32,6 +32,8 @@ from bakar.fork_race_signatures import FORK_RACE_SIGNATURES
 
 if TYPE_CHECKING:
     import subprocess
+    from collections.abc import Callable
+    from contextlib import AbstractContextManager
     from pathlib import Path
 
     from typer.testing import CliRunner
@@ -622,27 +624,26 @@ def test_stress_parse_refuses_before_cache_wipe_on_peer_held(
 
 
 def test_stress_parse_refuses_before_cache_wipe_when_a_local_build_is_live(
-    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bitbake_child: subprocess.Popen[bytes]
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bitbake_server: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
 ) -> None:
-    """A real bitbake pid in the lock, with only the activity probe patched, refuses."""
-    from types import SimpleNamespace
-
-    from bakar import proc_tree
-
+    """A real bitbake-server with a worker child holds the lock; nothing is patched in the probe."""
     workspace = _make_workspace(tmp_path)
     monkeypatch.chdir(workspace)
     build, caches = _seed_build_dir(workspace)
     monkeypatch.setattr("bakar.build_stop.socket.gethostname", lambda: "this-host")
     (build / ".bakar-lock-host").write_text("this-host\n")
-    monkeypatch.setattr(proc_tree, "_collect_build_pids", lambda _d, _r: SimpleNamespace(all_pids=[1, 2]))
-    (build / "bitbake.lock").write_text(f"{bitbake_child.pid}\n")
     override_p, kas_p, stress_p = _patch_steps(summary=_clean_summary(1))
 
-    with override_p, kas_p, stress_p as mock_run:
-        result = runner.invoke(app, ["stress-parse", "--manifest", "imx-6.6.52-2.2.2.xml"])
+    with bitbake_server(build, children="worker") as server:
+        (build / "bitbake.lock").write_text(f"{server.pid}\n")
+        with override_p, kas_p, stress_p as mock_run:
+            result = runner.invoke(app, ["stress-parse", "--manifest", "imx-6.6.52-2.2.2.xml"])
 
     assert result.exit_code == 1, result.output
-    assert str(bitbake_child.pid) in result.output
+    assert str(server.pid) in result.output
     mock_run.assert_not_called()
     assert all(c.exists() for c in caches)
 

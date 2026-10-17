@@ -8,7 +8,6 @@ the redirected (potentially ~200G) tmp.
 from __future__ import annotations
 
 import socket
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -19,6 +18,8 @@ from bakar.config import BuildConfig
 
 if TYPE_CHECKING:
     import subprocess
+    from collections.abc import Callable
+    from contextlib import AbstractContextManager
     from pathlib import Path
 
 
@@ -212,40 +213,63 @@ def test_clean_build_dir_refuses_when_a_peer_holds_the_marker(tmp_path: Path) ->
 
 @pytest.mark.unit
 def test_clean_build_dir_refuses_when_a_local_build_is_live(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bitbake_child: subprocess.Popen[bytes]
+    tmp_path: Path, bitbake_server: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]]
 ) -> None:
     from bakar import build_stop
     from bakar.commands import console
 
     cfg, build_dir = _live_cfg(tmp_path)
     build_stop.lock_marker_path(cfg).write_text(socket.gethostname())
-    (build_dir / "bitbake.lock").write_text(f"{bitbake_child.pid}\n")
-    procs = SimpleNamespace(all_pids={bitbake_child.pid, bitbake_child.pid + 1})
-    monkeypatch.setattr("bakar.proc_tree._collect_build_pids", lambda topdir, pgid, *a, **kw: procs)
+    with bitbake_server(build_dir, children="worker") as server:
+        (build_dir / "bitbake.lock").write_text(f"{server.pid}\n")
 
-    with console.capture() as cap, pytest.raises(typer.Exit) as excinfo:
-        _clean_build_dir(cfg)
+        with console.capture() as cap, pytest.raises(typer.Exit) as excinfo:
+            _clean_build_dir(cfg)
 
     assert excinfo.value.exit_code == 1
     assert (build_dir / "tmp").exists()
     out = "".join(cap.get().split())
-    assert str(bitbake_child.pid) in out
+    assert str(server.pid) in out
     assert "byhand" in out
 
 
 @pytest.mark.unit
+def test_clean_build_dir_refuses_while_a_childless_server_has_a_live_launch_record(
+    tmp_path: Path,
+    bitbake_server: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    """bitbake initialises tasks before it starts a worker; the build is live all the same."""
+    from bakar import build_stop
+    from bakar.commands import console
+
+    cfg, build_dir = _live_cfg(tmp_path)
+    build_stop.lock_marker_path(cfg).write_text(socket.gethostname())
+    run_dir = cfg.runs_dir / "20261017-120000-4242"
+    run_dir.mkdir(parents=True)
+    with bitbake_server(build_dir) as server, live_child("kas-container") as wrapper:
+        (build_dir / "bitbake.lock").write_text(f"{server.pid}\n")
+        build_stop.write_launch_record(run_dir, pgid=wrapper.pid, mode="host")
+
+        with console.capture() as cap, pytest.raises(typer.Exit) as excinfo:
+            _clean_build_dir(cfg)
+
+    assert excinfo.value.exit_code == 1
+    assert (build_dir / "tmp").exists()
+    assert str(server.pid) in "".join(cap.get().split())
+
+
+@pytest.mark.unit
 def test_clean_build_dir_ignores_an_idle_local_cooker(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bitbake_child: subprocess.Popen[bytes]
+    tmp_path: Path, bitbake_server: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]]
 ) -> None:
     from bakar import build_stop
 
     cfg, build_dir = _live_cfg(tmp_path)
     build_stop.lock_marker_path(cfg).write_text(socket.gethostname())
-    (build_dir / "bitbake.lock").write_text(f"{bitbake_child.pid}\n")
-    procs = SimpleNamespace(all_pids={bitbake_child.pid})
-    monkeypatch.setattr("bakar.proc_tree._collect_build_pids", lambda topdir, pgid, *a, **kw: procs)
-
-    _clean_build_dir(cfg)
+    with bitbake_server(build_dir, children="service") as server:
+        (build_dir / "bitbake.lock").write_text(f"{server.pid}\n")
+        _clean_build_dir(cfg)
 
     assert not build_dir.exists()
 

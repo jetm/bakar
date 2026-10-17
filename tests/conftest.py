@@ -485,7 +485,7 @@ _CHILD_READY_TIMEOUT_S = 5.0
 
 
 @contextlib.contextmanager
-def _live_child(*extra_argv: str) -> Iterator[subprocess.Popen[bytes]]:
+def _live_child(*extra_argv: str, script: str = "import time; time.sleep(60)") -> Iterator[subprocess.Popen[bytes]]:
     """Start a sleeping child in its own session, yield it once /proc shows ``extra_argv``.
 
     ``Popen`` returns before the child's ``/proc/<pid>/cmdline`` is guaranteed
@@ -495,7 +495,7 @@ def _live_child(*extra_argv: str) -> Iterator[subprocess.Popen[bytes]]:
     Teardown signals only the child's own process group.
     """
     child = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)", *extra_argv],
+        [sys.executable, "-c", script, *extra_argv],
         start_new_session=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -541,3 +541,69 @@ def bitbake_child() -> Iterator[subprocess.Popen[bytes]]:
     """A live child whose cmdline is confirmed to contain ``bitbake``."""
     with _live_child("bitbake") as child:
         yield child
+
+
+# A stand-in bitbake-server: argv[1] picks its children, argv[2] is a sentinel it
+# creates once they exist. "worker" execs a bitbake-worker-like child; "service"
+# forks without exec, the way bitbake autostarts hashserv under BB_HASHSERVE=auto.
+# Every child stays in the server's process group, so teardown reaches it.
+_FAKE_BITBAKE_SERVER = """\
+import os, subprocess, sys, time
+mode, ready = sys.argv[1], sys.argv[2]
+if mode == "worker":
+    subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "bitbake-worker", "decafbad"])
+elif mode == "service" and os.fork() == 0:
+    time.sleep(60)
+    os._exit(0)
+open(ready, "w").close()
+time.sleep(60)
+"""
+
+
+@contextlib.contextmanager
+def _bitbake_server(
+    argv_build_dir: Path | str, ready_dir: Path, *, children: str = "none"
+) -> Iterator[subprocess.Popen[bytes]]:
+    """Start a fake bitbake-server whose argv carries ``argv_build_dir``'s lock paths.
+
+    The argv mirrors bb.server.process execServer (lock, socket and cookerdaemon
+    log as absolute paths), and the server leads its own session the way
+    bb.daemonize does. Yields once the requested children exist.
+    """
+    build = str(argv_build_dir)
+    ready = ready_dir / f"server-ready-{children}-{time.monotonic_ns()}"
+    argv = (
+        children,
+        str(ready),
+        "bitbake-server",
+        "decafbad",
+        f"{build}/bitbake-cookerdaemon.log",
+        f"{build}/bitbake.lock",
+        f"{build}/bitbake.sock",
+        "0",
+    )
+    with _live_child(*argv, script=_FAKE_BITBAKE_SERVER) as server:
+        deadline = time.monotonic() + 2 * _CHILD_READY_TIMEOUT_S
+        while not ready.exists():
+            if server.poll() is not None or time.monotonic() > deadline:
+                pytest.fail(f"fake bitbake-server {server.pid} did not start its children ({children})")
+            time.sleep(0.01)
+        yield server
+
+
+@pytest.fixture
+def bitbake_server(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Callable[..., contextlib.AbstractContextManager[subprocess.Popen[bytes]]]:
+    """Factory: ``with bitbake_server(build_dir, children="worker") as server:``.
+
+    ``children`` is ``"none"``, ``"worker"`` or ``"service"`` (a forked hashserv).
+    """
+    ready_dir = tmp_path_factory.mktemp("bitbake-server")
+
+    def _factory(
+        argv_build_dir: Path | str, *, children: str = "none"
+    ) -> contextlib.AbstractContextManager[subprocess.Popen[bytes]]:
+        return _bitbake_server(argv_build_dir, ready_dir, children=children)
+
+    return _factory

@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 from rich.markup import escape
 
-from bakar import build_stop, mounts, proc_tree
+from bakar import build_stop, mounts, observability, proc_tree, stop_container
 from bakar.fmt import neutralize
 
 if TYPE_CHECKING:
@@ -83,22 +83,144 @@ def _lock_holder_has_activity(build_dir: Path) -> bool:
     return len(procs.all_pids) > 1
 
 
+# An empty or unreadable bitbake.lock beside this host's marker reads as a build
+# still starting up (bitbake creates the lock and writes its pid as a separate
+# later step) only while the newest run is younger than this.
+_EMPTY_LOCK_RECENT_RUN_S = 300.0
+
+
+def _newest_run_dir(cfg: BuildConfig) -> Path | None:
+    try:
+        run_dirs = sorted(d for d in cfg.runs_dir.iterdir() if d.is_dir())
+    except OSError:
+        return None
+    return run_dirs[-1] if run_dirs else None
+
+
+def _run_id_pid(run_dir: Path) -> int | None:
+    """The bakar pid a ``<timestamp>-<pid>`` run directory name ends with."""
+    head, sep, tail = run_dir.name.rpartition("-")
+    if not sep or len(head) != observability.RUN_ID_TS_LEN or not tail.isdigit():
+        return None
+    pid = int(tail)
+    return pid if pid > 0 else None
+
+
+def _launch_record_state(run_dir: Path | None) -> tuple[bool, int | None, int | None]:
+    """``(live, seed_pgid, report_pid)`` for the launch record in ``run_dir``.
+
+    ``live``: a host record whose process group is alive and cmdline-verified,
+    or a container record whose label the runtime does not confirm dead (an
+    unanswerable query is not proof the container is gone). ``seed_pgid`` is
+    the recorded group whenever it is alive, verified or not, so the argv scan
+    counts its members (an attached client in its own session). ``report_pid``
+    is the host pid to name in a refusal.
+    """
+    if run_dir is None:
+        return False, None, None
+    alive, pgid, cmdline_ok = build_stop.is_build_running(run_dir)
+    seed_pgid = pgid if alive and pgid is not None and pgid > 0 else None
+    record = build_stop.read_launch_record(run_dir)
+    report_pid = seed_pgid or record.pgid or _run_id_pid(run_dir)
+    live = alive and cmdline_ok
+    if not live and record.mode == "container" and record.container_label is not None:
+        runtime = record.runtime or stop_container.detect_runtime()
+        status, _cid = stop_container._container_id_status(runtime, record.container_label)
+        live = status != stop_container._DEAD
+    # A live record with no pid anywhere (a sidecar without pgid, a run
+    # directory not named by RunLogger) cannot be named; RunLogger and
+    # write_launch_record never produce one.
+    return live and report_pid is not None, seed_pgid, report_pid
+
+
+def _proc_comm(pid: int) -> str:
+    try:
+        return Path(f"/proc/{pid}/comm").read_text().strip()
+    except OSError:
+        return ""
+
+
+def _cooker_provably_idle(build_dir: Path, pid: int, seed_pgid: int | None) -> bool:
+    """True only on positive evidence that ``pid`` is this build's idle cooker.
+
+    Requires the pid to be argv-matched to this build directory (under its
+    given or resolved path, since a symlinked workspace puts the resolved
+    path in bitbake-server's argv) and verified by
+    :func:`proc_tree._bitbake_server_pid_verified`, and the scan seeded with
+    the launch record's group to find nothing else: no worker, client or other
+    child. The one tolerated child is a fork of the cooker that never exec'd
+    (identical argv, parent is the cooker) and is not a ``Parser-N`` process:
+    that is the hashserv bitbake autostarts under ``BB_HASHSERVE=auto``, which
+    lives as long as a warm idle cooker does.
+    """
+    topdirs = {build_dir}
+    with contextlib.suppress(OSError, RuntimeError):
+        topdirs.add(build_dir.resolve())
+    cooker: set[int] = set()
+    others: set[int] = set()
+    for topdir in topdirs:
+        scan = proc_tree._collect_build_pids(topdir, seed_pgid)
+        if pid in scan.cooker and proc_tree._bitbake_server_pid_verified(pid, topdir):
+            cooker.add(pid)
+        others |= scan.all_pids
+    if pid not in cooker:
+        return False
+    cooker_argv = proc_tree._proc_cmdline(pid)
+    for other in others - {pid}:
+        forked_service = (
+            proc_tree._proc_ppid(other) == pid
+            and proc_tree._proc_cmdline(other) == cooker_argv
+            and not _proc_comm(other).startswith("Parser")
+        )
+        if not forked_service:
+            return False
+    return True
+
+
 def local_build_holder(cfg: BuildConfig) -> int | None:
     """Pid of a live local build holding ``bitbake.lock``, else None.
 
     Non-mutating probe for destructive callers:
     :func:`build_stop.lock_mutation_guard` never reports ``held-locally``, so
-    this layers the activity probe on top. Returns the recorded pid only when
-    it is a live bitbake process with worker/client activity; a bare idle
-    cooker (warm-daemon reconnect) returns None, as in
-    :func:`clear_stale_bitbake_locks`. Never removes or writes anything.
+    this layers an activity probe on top. It fails closed: a live bitbake pid
+    in the lock is a holder unless the build is provably idle (see
+    :func:`_cooker_provably_idle`) AND no live launch record (the newest run
+    under ``cfg.runs_dir``) names this build directory. A bitbake-server with
+    no child yet (task initialisation, sstate availability checks) or with only
+    an attached client therefore still counts.
+
+    A lock pid that is not a live bitbake on this host is a container-namespace
+    pid when a live container launch record exists, so the record decides. An
+    empty or unreadable lock is a server mid-startup when a live launch record
+    exists, or when the marker names this host and the newest run started
+    within :data:`_EMPTY_LOCK_RECENT_RUN_S`. An absent lock, a warm idle cooker
+    with no launch record, and a dead or reused pid with no record return None.
+    Never removes or writes anything.
     """
     build_dir = cfg.bsp_root / cfg.build_dir_name
-    pid = proc_tree.read_lock_pid(build_dir / "bitbake.lock")
-    if pid is None:
+    lock = build_dir / "bitbake.lock"
+    if not lock.exists():
         return None
-    if _lock_pid_is_live_bitbake(pid) and _lock_holder_has_activity(build_dir):
-        return pid
+    run_dir = _newest_run_dir(cfg)
+    record_live, seed_pgid, report_pid = _launch_record_state(run_dir)
+    pid = proc_tree.read_lock_pid(lock)
+
+    if pid is None:
+        if record_live:
+            return report_pid
+        if run_dir is None or build_stop.read_marker_owner(cfg) != socket.gethostname():
+            return None
+        started = observability.run_id_epoch(run_dir.name)
+        if started is None or time.time() - started > _EMPTY_LOCK_RECENT_RUN_S:
+            return None
+        return _run_id_pid(run_dir)
+
+    if _lock_pid_is_live_bitbake(pid):
+        if record_live or not _cooker_provably_idle(build_dir, pid, seed_pgid):
+            return pid
+        return None
+    if record_live:
+        return report_pid
     return None
 
 
