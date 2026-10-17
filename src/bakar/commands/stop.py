@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.markup import escape
 
 import bakar.commands._app as _state
 from bakar import build_stop, proc_tree, run_discovery
@@ -63,6 +64,28 @@ def _confirm_host_wide(candidate: run_discovery.RunCandidate) -> bool:
     return typer.confirm(f"Stop {candidate.run_dir.name}?", default=False)
 
 
+def _print_skipped_root(skipped_root: run_discovery.SkippedRoot) -> None:
+    """Print why a root was excluded from discovery by the lock-ownership gate.
+
+    When the refusal names a marker, the manual-clear sentence follows so the
+    user can act on the refusal instead of only learning which host holds it.
+    """
+    refusal = skipped_root.refusal
+    if refusal.reason == "peer-held":
+        host = refusal.host if refusal.host else "another host"
+        text = (
+            f"[yellow]{skipped_root.root.bsp_root} is owned by {host}; run `bakar stop` there to check for a live build"
+        )
+    else:
+        text = (
+            f"[yellow]cannot confirm ownership of {skipped_root.root.bsp_root} "
+            f"({refusal.reason}); it was not checked for a live build"
+        )
+    if refusal.marker is not None:
+        text += " " + escape(build_stop.manual_clear_hint(refusal.marker))
+    console.print(text + "[/]")
+
+
 def _stop_matched_run(
     run_id: str,
     *,
@@ -108,18 +131,7 @@ def _stop_matched_run(
         # "the id lives on a root we were never allowed to look at" - surface
         # that instead of letting it read identically to "no such id anywhere".
         for skipped_root in skipped:
-            refusal = skipped_root.refusal
-            if refusal.reason == "peer-held":
-                host = refusal.host if refusal.host else "another host"
-                console.print(
-                    f"[yellow]{skipped_root.root.bsp_root} is owned by {host}; "
-                    "run `bakar stop` there to check for a live build[/]"
-                )
-            else:
-                console.print(
-                    f"[yellow]cannot confirm ownership of {skipped_root.root.bsp_root} "
-                    f"({refusal.reason}); it was not checked for a live build[/]"
-                )
+            _print_skipped_root(skipped_root)
         console.print(f"[red]no run matching {run_id!r} found {scope_desc}[/].")
         raise typer.Exit(code=1)
     if match.run_dir not in live_run_dirs:
@@ -318,18 +330,7 @@ def stop(
     if _host_wide_fallback_applies(workspace, family, kas_yaml) and run_id is None:
         candidates, skipped = _host_wide_candidates()
         for skipped_root in skipped:
-            refusal = skipped_root.refusal
-            if refusal.reason == "peer-held":
-                host = refusal.host if refusal.host else "another host"
-                console.print(
-                    f"[yellow]{skipped_root.root.bsp_root} is owned by {host}; "
-                    "run `bakar stop` there to check for a live build[/]"
-                )
-            else:
-                console.print(
-                    f"[yellow]cannot confirm ownership of {skipped_root.root.bsp_root} "
-                    f"({refusal.reason}); it was not checked for a live build[/]"
-                )
+            _print_skipped_root(skipped_root)
         if len(candidates) == 0:
             console.print("no running build found")
             raise typer.Exit(code=1)
@@ -424,18 +425,7 @@ def stop(
     scan = run_discovery.enumerate_workspace_runs(ws, user_config=_state._USER_CONFIG)
     skipped = scan.skipped
     for skipped_root in skipped:
-        refusal = skipped_root.refusal
-        if refusal.reason == "peer-held":
-            host = refusal.host if refusal.host else "another host"
-            console.print(
-                f"[yellow]{skipped_root.root.bsp_root} is owned by {host}; "
-                "run `bakar stop` there to check for a live build[/]"
-            )
-        else:
-            console.print(
-                f"[yellow]cannot confirm ownership of {skipped_root.root.bsp_root} "
-                f"({refusal.reason}); it was not checked for a live build[/]"
-            )
+        _print_skipped_root(skipped_root)
     live = run_discovery.live_workspace_runs(ws, user_config=_state._USER_CONFIG)
     if len(live) == 1:
         only = live[0]

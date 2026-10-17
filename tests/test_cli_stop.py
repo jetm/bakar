@@ -1663,6 +1663,104 @@ def test_no_run_host_wide_fallback_surfaces_peer_held_root_on_zero_candidates(
     assert "no running build found" in flat_output
 
 
+def _squash(text: str) -> str:
+    """Drop all whitespace so Rich's line wrapping cannot split an assertion."""
+    return "".join(text.split())
+
+
+def _assert_names_marker_and_manual_clear(output: str, marker: Path) -> None:
+    flat = _squash(output)
+    assert _squash(str(marker)) in flat
+    assert "byhand" in flat
+
+
+@pytest.mark.parametrize("reason", ["peer-held", "unattributable"])
+def test_run_option_unmatched_id_peer_held_refusal_names_marker(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
+    reason: str,
+) -> None:
+    """The ``--run`` no-match path appends the marker path and manual-clear sentence."""
+    nfs_probe(False)
+    ti_root = run_discovery.RunRoot(
+        bsp_root=workspace / "ti", family="ti", resolve_workspace=workspace, resolve_family="ti"
+    )
+    marker = workspace / "ti" / "build" / ".bakar-build-owner"
+    refusal = stop_cmd.build_stop.LockRefusal(reason=reason, host="pc2", marker=marker)
+    skipped_root = run_discovery.SkippedRoot(root=ti_root, refusal=refusal)
+    monkeypatch.setattr(
+        run_discovery,
+        "enumerate_workspace_runs",
+        lambda _path, **_kw: run_discovery.RunScan(candidates=[], skipped=[skipped_root]),
+    )
+
+    result = runner.invoke(app, ["stop", "--run", "maybe-on-ti"])
+
+    assert result.exit_code != 0
+    _assert_names_marker_and_manual_clear(result.output, marker)
+
+
+def test_stop_no_args_peer_held_refusal_names_marker(
+    runner: _CliRunner,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
+) -> None:
+    """The workspace-scoped no-selector path appends the marker path and manual-clear sentence."""
+    nfs_probe(False)
+    ti_root = run_discovery.RunRoot(
+        bsp_root=workspace / "ti", family="ti", resolve_workspace=workspace, resolve_family="ti"
+    )
+    marker = workspace / "ti" / "build" / ".bakar-build-owner"
+    refusal = stop_cmd.build_stop.LockRefusal(reason="peer-held", host="pc2", marker=marker)
+    skipped_root = run_discovery.SkippedRoot(root=ti_root, refusal=refusal)
+    monkeypatch.setattr(
+        run_discovery,
+        "enumerate_workspace_runs",
+        lambda _path, **_kw: run_discovery.RunScan(candidates=[], skipped=[skipped_root]),
+    )
+    monkeypatch.setattr(run_discovery, "live_workspace_runs", lambda _path, **_kw: [])
+    monkeypatch.setattr(stop_cmd.build_stop, "stop_build", lambda *_a, **_k: True)
+
+    result = runner.invoke(app, ["stop"])
+
+    _assert_names_marker_and_manual_clear(result.output, marker)
+
+
+def test_no_run_host_wide_fallback_peer_held_refusal_names_marker(
+    runner: _CliRunner,
+    tmp_path: Path,
+    no_workspace_cwd: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    nfs_probe: Callable[[bool | None], None],
+) -> None:
+    """The host-wide no-selector path appends the marker path and manual-clear sentence."""
+    nfs_probe(False)
+    topdir = tmp_path / "peer-workspace" / "nxp"
+    (topdir / "build" / "runs").mkdir(parents=True)
+    monkeypatch.setattr(
+        stop_cmd.proc_tree,
+        "_discover_host_cookers",
+        lambda: {topdir / "build": frozenset({4242})},
+    )
+    root = run_discovery.RunRoot(bsp_root=topdir, family="nxp", resolve_workspace=topdir.parent, resolve_family="nxp")
+    marker = topdir / "build" / ".bakar-build-owner"
+    refusal = stop_cmd.build_stop.LockRefusal(reason="peer-held", host="pc2", marker=marker)
+    skipped_root = run_discovery.SkippedRoot(root=root, refusal=refusal)
+    monkeypatch.setattr(
+        run_discovery,
+        "enumerate_workspace_runs",
+        lambda _path, **_kw: run_discovery.RunScan(candidates=[], skipped=[skipped_root]),
+    )
+
+    result = runner.invoke(app, ["stop"])
+
+    assert result.exit_code == 1
+    _assert_names_marker_and_manual_clear(result.output, marker)
+
+
 # ---------------------------------------------------------------------------
 # stop -w/--workspace, explicit-workspace contract vs. host-wide discovery
 # ---------------------------------------------------------------------------
