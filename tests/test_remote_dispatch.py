@@ -270,32 +270,40 @@ def test_remote_script_emits_dispatch_start_marker() -> None:
         RemoteScriptSpec(remote_argv=["build"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True)
     )
     lines = script.splitlines()
-    assert lines[1] == 'echo "BAKAR_DISPATCH_START=$(date +%Y%m%d-%H%M%S)"'
+    assert lines[1] == 'echo "BAKAR_DISPATCH_START=$(date -u +%Y%m%d-%H%M%S)"'
 
 
 def test_dispatch_start_marker_uses_the_same_clock_as_run_ids() -> None:
     # The marker is string-compared against a run DIRECTORY NAME, and those are
-    # named by RunLog.run_id from `datetime.now()` - the remote's LOCAL clock,
-    # not UTC. So the marker has to read the same clock or the comparison spans
-    # two of them.
-    #
-    # It used to say `date -u`. West of UTC that makes every run dir the remote
-    # just created sort BELOW the marker, so a perfectly good build is discarded
-    # as stale and reported as "no remote run dir was created - the build failed
-    # before starting" while it is still running. Observed at UTC-6: run dir
-    # 20260827-081347 against marker 20260827-141347.
-    #
-    # East of UTC the same bug fails the other way and is quieter: a genuinely
-    # stale run dir sorts ABOVE the marker and gets surfaced as this build's.
+    # named by RunLog.run_id from `datetime.now(UTC)`. So the marker has to read
+    # UTC too, or the comparison spans two clocks: in a DST fall-back's repeated
+    # hour a local-time fence let a run created before the dispatch sort at or
+    # after it.
     script = build_remote_script(
         RemoteScriptSpec(remote_argv=["build"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True)
     )
-    assert "date -u" not in script
-    assert "$(date +%Y%m%d-%H%M%S)" in script
+    assert "$(date -u +%Y%m%d-%H%M%S)" in script
 
-    # Pin the other half of the invariant: if run ids ever move to UTC, this
+    # Pin the other half of the invariant: if run ids ever leave UTC, this
     # test should fail rather than let the two drift apart again.
-    assert "datetime.now()" in inspect.getsource(observability.RunLogger)
+    assert "datetime.now(UTC)" in inspect.getsource(observability.RunLogger)
+
+
+def test_fence_and_ids_compare_as_utc_in_the_repeated_hour(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 2026-11-01 is the US fall-back day: 01:00-02:00 America/New_York happens
+    # twice. Ids and the fence are both UTC, so the earlier run sorts below the
+    # fence whatever the host's TZ says.
+    monkeypatch.setenv("TZ", "America/New_York")
+    monkeypatch.setattr(
+        rd,
+        "_ssh_bash_capture",
+        lambda host, script, *, batch_mode=True: subprocess.run(
+            ["bash", "-s"], input=script, capture_output=True, text=True, check=False
+        ),
+    )
+    _run_dir(tmp_path, "build", "20261101-061500-1")
+    _run_dir(tmp_path, "build", "20261101-063500-2")
+    assert rd._discover_newest_run_id(HOST, tmp_path, "20261101-063000") == "20261101-063500-2"
 
 
 # ---------------------------------------------------------------------------

@@ -453,14 +453,12 @@ def build_remote_script(spec: RemoteScriptSpec, *, unit: str | None = None) -> s
     # BAKAR_DISPATCH_START fences run-id discovery: a discovered run dir older
     # than this remote-clock timestamp predates the dispatch and is discarded.
     #
-    # LOCAL time, deliberately - `date`, not `date -u`. The marker is only ever
-    # string-compared against a run DIRECTORY NAME, and those come from
-    # RunLog.run_id, which formats `datetime.now()` - the remote's local clock.
-    # Reading UTC here compared two different clocks: at UTC-6 every run dir the
-    # remote had just created sorted below the marker, so a running build was
-    # discarded as stale and reported as "no remote run dir was created - the
-    # build failed before starting". East of UTC it fails the other way and more
-    # quietly, surfacing a genuinely stale run as this build's.
+    # UTC, deliberately - `date -u`. The marker is only ever string-compared
+    # against a run DIRECTORY NAME, and those come from RunLog.run_id, which
+    # formats `datetime.now(UTC)`. Both sides read UTC, so the comparison holds
+    # in every timezone and across a DST fall-back, where a local-time fence
+    # let a run created before the dispatch sort at or after it in the
+    # repeated hour.
     #
     # `|| exit 1`: if the replicated cwd is missing on the remote, fail loudly
     # instead of silently running the build in $HOME (the wrong directory).
@@ -470,7 +468,7 @@ def build_remote_script(spec: RemoteScriptSpec, *, unit: str | None = None) -> s
     return "\n".join(
         [
             f"cd {shlex.quote(str(cwd))} || exit 1",
-            f'echo "BAKAR_DISPATCH_START=$(date +{RUN_ID_TS_FORMAT})"',
+            f'echo "BAKAR_DISPATCH_START=$(date -u +{RUN_ID_TS_FORMAT})"',
             'if command -v systemd-run >/dev/null 2>&1 && [ -n "${XDG_RUNTIME_DIR:-}" ] &&'
             " systemd-run --user --scope --quiet -- true >/dev/null 2>&1; then",
             # printf with a literal format, not `echo "...={unit}"`: inside double
@@ -1059,9 +1057,9 @@ def _discover_newest_run_id(host: str, ws_root: Path, not_before: str | None = N
     run directory names. Any build directory counts, not only ``build/``: qcom
     runs live under ``build-DISTRO/runs``.
 
-    The pick is by RUN ID, not mtime: ids are ``%Y%m%d-%H%M%S-<pid>`` and sort
-    chronologically, and ``not_before`` is the dispatch-start fence in the same
-    clock. Newest-by-mtime then fence would let a build started later in another
+    The pick is by RUN ID, not mtime: ids are ``%Y%m%d-%H%M%S-<pid>`` in UTC and
+    sort chronologically, and ``not_before`` is the dispatch-start fence in the
+    same clock. Newest-by-mtime then fence would let a build started later in another
     build dir win, and a touched older run dir (an mtime bump) shadow or evict
     the dir this dispatch created. With the fence the earliest id at or after it
     wins, because a build started later in the workspace sorts after this
