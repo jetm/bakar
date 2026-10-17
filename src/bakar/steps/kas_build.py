@@ -46,7 +46,7 @@ import sys
 import sysconfig
 import threading
 import time
-from contextlib import ExitStack, suppress
+from contextlib import ExitStack, nullcontext, suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1898,7 +1898,13 @@ def _finish_step(log: RunLogger, step: str, rc: int) -> None:
         log.step_ok(step, exit_code=rc)
 
 
-def run_shell(ctx: KasBuildContext, args: list[str], command: str | None = None) -> int:
+def run_shell(
+    ctx: KasBuildContext,
+    args: list[str],
+    command: str | None = None,
+    *,
+    take_lock_marker: bool = False,
+) -> int:
     """Drop into a kas-container shell, passing through extra args.
 
     When ``command`` is provided, kas-container runs it non-interactively
@@ -1909,19 +1915,37 @@ def run_shell(ctx: KasBuildContext, args: list[str], command: str | None = None)
     the host (no kas-container wrapper, no Docker). The host must have
     the bitbake build prereqs installed (zstd, git, ...) and a
     bitbake-supported Python on PATH.
+
+    ``take_lock_marker`` is an explicit opt-in from the caller: it runs the
+    stale-lock gate before the launch and holds the lock-owner marker around
+    the child. It is deliberately not derived from ``command``, because
+    ``bakar bitbake --task devshell`` passes a command and an interactive
+    session must not hold a marker for its unbounded lifetime.
     """
     cfg, log, kas_yaml, overlay_source = ctx.cfg, ctx.log, ctx.kas_yaml, ctx.overlay_source
     log.step_start("kas_shell", command=command, host_mode=cfg.host_mode)
+    if take_lock_marker:
+        lock_outcome = clear_stale_bitbake_locks(cfg)
+        for removed_path in lock_outcome.removed:
+            log.warn(f"removed stale bitbake lock: {removed_path} (owning process was gone)")
+        if lock_outcome.refusal is not None:
+            log.step_fail("kas_shell", reason=_lock_refusal_message(lock_outcome.refusal))
+            return 1
     kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source, ctx.extra_overlays)
     exe = "kas" if cfg.host_mode else "kas-container"
     cmd = [exe, *_ccache_args(cfg), "shell", kas_arg]
     if command is not None:
         cmd.extend(["-c", command])
     cmd.extend(args)
-    proc = subprocess.Popen(
-        cmd, cwd=cfg.bsp_root, env=_build_env(cfg, eventlog_path=_container_eventlog_path(cfg, log))
-    )
-    rc = proc.wait()
+    env = _build_env(cfg, eventlog_path=_container_eventlog_path(cfg, log))
+    marker = lock_owner_marker(cfg, log) if take_lock_marker else nullcontext()
+    try:
+        with marker:
+            proc = subprocess.Popen(cmd, cwd=cfg.bsp_root, env=env)
+            rc = proc.wait()
+    except LockHeldByPeerError as exc:
+        log.step_fail("kas_shell", reason=peer_lock_reason(exc))
+        return 1
     _finish_step(log, "kas_shell", rc)
     return rc
 

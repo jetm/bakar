@@ -6,6 +6,7 @@ run_shell_capture step_fail-on-nonzero-rc fix (tasks 2.3/2.4).
 from __future__ import annotations
 
 import json
+import socket
 import threading
 from io import StringIO
 from typing import TYPE_CHECKING
@@ -14,6 +15,7 @@ import pytest
 from rich.console import Console
 from rich.table import Table
 
+from bakar import build_stop
 from bakar.config import BuildConfig
 from bakar.observability import RunLogger
 from bakar.steps import kas_build
@@ -252,3 +254,101 @@ def test_run_build_hands_the_builds_overlays_to_graph_capture(tmp_path: Path, mo
     assert seen == [tuning]
     # The caller's context is left as it was: only the capture sees the overlays.
     assert ctx.extra_overlays == []
+
+
+# ---------------------------------------------------------------------------
+# task 5.1: run_shell takes the lock gate and marker only on an explicit opt-in
+# ---------------------------------------------------------------------------
+
+
+def _shell_lock_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[BuildConfig, Path, Path, Path]:
+    """Config with an existing build dir, a confirmed-local filesystem and host 'this-host'."""
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
+    monkeypatch.setattr("bakar.mounts.is_path_on_nfs", lambda _p: False)
+    cfg, kas_yaml, overlay = _prepare_workspace(tmp_path)
+    (cfg.bsp_root / cfg.build_dir_name).mkdir(parents=True, exist_ok=True)
+    return cfg, kas_yaml, overlay, build_stop.lock_marker_path(cfg)
+
+
+class _MarkerProbingPopen:
+    """Popen stand-in recording the marker content (None if absent) at each launch."""
+
+    def __init__(self, marker: Path, rc: int = 0) -> None:
+        self._marker = marker
+        self._rc = rc
+        self.launches: list[str | None] = []
+
+    def __call__(self, *_args: object, **_kwargs: object) -> _FakeProc:
+        self.launches.append(self._marker.read_text() if self._marker.exists() else None)
+        return _FakeProc(self._rc)
+
+
+@pytest.mark.unit
+def test_run_shell_without_the_opt_in_takes_no_gate_or_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg, kas_yaml, overlay, marker = _shell_lock_env(tmp_path, monkeypatch)
+    probe = _MarkerProbingPopen(marker)
+    monkeypatch.setattr(kas_build.subprocess, "Popen", probe)
+    gate_calls: list[object] = []
+    monkeypatch.setattr(kas_build, "clear_stale_bitbake_locks", gate_calls.append)
+
+    with RunLogger(runs_dir=tmp_path / "runs") as log:
+        ctx = KasBuildContext(cfg=cfg, log=log, kas_yaml=kas_yaml, overlay_source=overlay)
+        assert kas_build.run_shell(ctx, args=[], command="bitbake -e") == 0
+
+    assert gate_calls == []
+    assert probe.launches == [None]
+    assert not marker.exists()
+
+
+@pytest.mark.unit
+def test_run_shell_with_the_opt_in_writes_the_marker_around_the_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, kas_yaml, overlay, marker = _shell_lock_env(tmp_path, monkeypatch)
+    probe = _MarkerProbingPopen(marker)
+    monkeypatch.setattr(kas_build.subprocess, "Popen", probe)
+
+    with RunLogger(runs_dir=tmp_path / "runs") as log:
+        ctx = KasBuildContext(cfg=cfg, log=log, kas_yaml=kas_yaml, overlay_source=overlay)
+        assert kas_build.run_shell(ctx, args=[], command="bitbake -e", take_lock_marker=True) == 0
+
+    assert probe.launches == ["this-host"]
+
+
+@pytest.mark.unit
+def test_run_shell_with_the_opt_in_refuses_on_a_peer_held_lock_without_launching(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, kas_yaml, overlay, marker = _shell_lock_env(tmp_path, monkeypatch)
+    marker.write_text("peer-host")
+    probe = _MarkerProbingPopen(marker)
+    monkeypatch.setattr(kas_build.subprocess, "Popen", probe)
+
+    with RunLogger(runs_dir=tmp_path / "runs") as log:
+        ctx = KasBuildContext(cfg=cfg, log=log, kas_yaml=kas_yaml, overlay_source=overlay)
+        rc = kas_build.run_shell(ctx, args=[], command="bitbake -e", take_lock_marker=True)
+        events_path = log.events_path
+
+    assert rc == 1
+    assert probe.launches == []
+    assert marker.read_text() == "peer-host"
+    fails = [e for e in _step_events(events_path) if e["step"] == "kas_shell" and e["event"] == "step_fail"]
+    assert len(fails) == 1
+    assert "peer-host" in fails[0]["reason"]
+
+
+@pytest.mark.unit
+def test_run_shell_with_the_opt_in_removes_the_marker_when_the_lock_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, kas_yaml, overlay, marker = _shell_lock_env(tmp_path, monkeypatch)
+    probe = _MarkerProbingPopen(marker, rc=3)
+    monkeypatch.setattr(kas_build.subprocess, "Popen", probe)
+
+    with RunLogger(runs_dir=tmp_path / "runs") as log:
+        ctx = KasBuildContext(cfg=cfg, log=log, kas_yaml=kas_yaml, overlay_source=overlay)
+        rc = kas_build.run_shell(ctx, args=[], take_lock_marker=True)
+
+    assert rc == 3
+    assert probe.launches == ["this-host"]
+    assert not marker.exists()
