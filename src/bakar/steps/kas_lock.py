@@ -78,6 +78,25 @@ def _lock_holder_has_activity(build_dir: Path) -> bool:
     return len(procs.all_pids) > 1
 
 
+def local_build_holder(cfg: BuildConfig) -> int | None:
+    """Pid of a live local build holding ``bitbake.lock``, else None.
+
+    Non-mutating probe for destructive callers:
+    :func:`build_stop.lock_mutation_guard` never reports ``held-locally``, so
+    this layers the activity probe on top. Returns the recorded pid only when
+    it is a live bitbake process with worker/client activity; a bare idle
+    cooker (warm-daemon reconnect) returns None, as in
+    :func:`clear_stale_bitbake_locks`. Never removes or writes anything.
+    """
+    build_dir = cfg.bsp_root / cfg.build_dir_name
+    pid = build_stop.read_lock_pid(build_dir / "bitbake.lock")
+    if pid is None:
+        return None
+    if _lock_pid_is_live_bitbake(pid) and _lock_holder_has_activity(build_dir):
+        return pid
+    return None
+
+
 def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
     """Ownership-aware removal of stale bitbake lock and socket files.
 
