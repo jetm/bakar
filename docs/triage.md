@@ -171,7 +171,8 @@ Recognized patterns include:
 
 ## Notes
 
-- Run IDs come from the timestamps bakar assigns at build start (`YYYYMMDD-HHMMSS-PID`, where `PID` is the process id of the bakar run). Use `bakar log` to see what files are in a run directory.
+- Run IDs come from the timestamps bakar assigns at build start (`YYYYMMDD-HHMMSS-PID`, where `PID` is the process id of the bakar run). The timestamp is UTC on every host, whatever its time zone. Use `bakar log` to see what files are in a run directory.
+- Run directories created by earlier versions are named in the host's local time. They are neither renamed nor rewritten, and each still resolves by its own ID. On a host east of UTC, the pick of the newest run can return a run from before the upgrade for up to the host's offset from UTC after the upgrade, because the old local-time name reads as later than the new UTC name.
 - Suggestions are printed only when a pattern matches; a clean kas.log prints none.
 
 ## See also

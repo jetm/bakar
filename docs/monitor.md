@@ -15,6 +15,12 @@ Resolve the run the same way `bakar log` does: the latest run for the workspace,
 or a specific one with `--run`. The positional `KAS_YAML` selects a BYO build
 (runs are read next to the YAML); omit it for a manifest workspace.
 
+Run IDs carry a UTC timestamp on every host, whatever its time zone. Run
+directories created by earlier versions are named in the host's local time;
+they are neither renamed nor rewritten, and each still resolves by its own ID.
+On a host east of UTC, the latest-run pick can return a run from before the
+upgrade for up to the host's offset from UTC after the upgrade.
+
 > Run it from the build workspace (or pass `--workspace`). Like the other
 > run-scoped commands, `monitor` resolves the run dir relative to the workspace,
 > so invoking it from an unrelated directory reports "no runs yet".
