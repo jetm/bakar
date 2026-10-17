@@ -51,7 +51,11 @@ def _lock_pid_is_live_bitbake(pid: int) -> bool:
         return True
     cmdline_path = Path(f"/proc/{pid}/cmdline")
     if cmdline_path.exists():
-        cmdline = cmdline_path.read_bytes().replace(b"\x00", b" ").decode(errors="replace")
+        try:
+            raw = cmdline_path.read_bytes()
+        except OSError:
+            return True
+        cmdline = raw.replace(b"\x00", b" ").decode(errors="replace")
         return "bitbake" in cmdline.lower()
     return True
 

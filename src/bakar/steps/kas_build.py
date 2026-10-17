@@ -1930,7 +1930,7 @@ def run_shell(
         for removed_path in lock_outcome.removed:
             log.warn(f"removed stale bitbake lock: {removed_path} (owning process was gone)")
         if lock_outcome.refusal is not None:
-            log.step_fail("kas_shell", reason=_lock_refusal_message(lock_outcome.refusal))
+            log.step_fail("kas_shell", reason=_lock_refusal_message(lock_outcome.refusal), exit_code=1)
             return 1
     kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source, ctx.extra_overlays)
     exe = "kas" if cfg.host_mode else "kas-container"
@@ -1945,7 +1945,7 @@ def run_shell(
             proc = subprocess.Popen(cmd, cwd=cfg.bsp_root, env=env)
             rc = proc.wait()
     except LockHeldByPeerError as exc:
-        log.step_fail("kas_shell", reason=peer_lock_reason(exc))
+        log.step_fail("kas_shell", reason=peer_lock_reason(exc), exit_code=1)
         return 1
     _finish_step(log, "kas_shell", rc)
     return rc

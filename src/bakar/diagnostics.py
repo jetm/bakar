@@ -2713,14 +2713,22 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
 
     # (a) resolved TMPDIR on NFS -> fatal, bitbake's sanity check aborts.
     if tmp_fstype in _FS_NFS:
+        if ws_fstype in _FS_NFS:
+            tmp_hint = (
+                "The workspace itself is on NFS too: move it to a node-local ext4/btrfs/xfs path "
+                "(building through NFS is not supported). Setting [build] local_tmpdir_base alone "
+                "is not enough, then re-run."
+            )
+        else:
+            tmp_hint = (
+                "Set [build] local_tmpdir_base to a node-local ext4/btrfs/xfs path (host mode only) "
+                "so the build TMPDIR leaves NFS, then re-run."
+            )
         return _fail(
             name,
             Severity.BLOCK,
             f"resolved TMPDIR {tmpdir} is on {tmp_fstype} at {tmp_mount}: bitbake aborts on TMPDIR over NFS",
-            fix_hint=(
-                "Set [build] local_tmpdir_base to a node-local ext4/btrfs/xfs path (host mode only) "
-                "so the build TMPDIR leaves NFS, then re-run."
-            ),
+            fix_hint=tmp_hint,
         )
 
     # (a2) an active local_tmpdir_base override that lands on a non-NFS blocking

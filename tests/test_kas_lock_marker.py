@@ -824,3 +824,26 @@ def test_local_build_holder_never_mutates_the_build_directory(
     assert kas_lock.local_build_holder(cfg) is None
 
     assert _tree_snapshot(build) == before
+
+
+def test_lock_pid_liveness_treats_a_cmdline_read_race_as_live(
+    env: tuple[BuildConfig, Path, RunLogger],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The process exiting between ``os.kill`` and the cmdline read must not escape as a traceback."""
+    cfg, build, _log = env
+    pid = os.getpid()
+    cmdline_path = Path(f"/proc/{pid}/cmdline")
+    real_read_bytes = Path.read_bytes
+
+    def racing_read_bytes(self: Path) -> bytes:
+        if self == cmdline_path:
+            raise FileNotFoundError(str(self))
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", racing_read_bytes)
+    (build / "bitbake.lock").write_text(f"{pid}\n")
+    _report_activity(monkeypatch, False)
+
+    assert kas_lock._lock_pid_is_live_bitbake(pid) is True
+    assert kas_lock.local_build_holder(cfg) is None

@@ -1377,6 +1377,45 @@ def test_check_workspace_filesystem_nfs_tmpdir_blocks(monkeypatch: pytest.Monkey
     assert "local_tmpdir_base" in result.fix_hint
 
 
+def test_check_workspace_filesystem_nfs_tmpdir_and_nfs_workspace_hint_moves_workspace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """(a) workspace also on NFS: local_tmpdir_base alone cannot help, so the hint says to move the workspace."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    mounts = f"none / overlay rw 0 0\nserver:/export {workspace.resolve()} nfs4 rw 0 0\n"
+    _patch_proc_mounts(monkeypatch, mounts)
+    result = check_workspace_filesystem(_fs_cfg(workspace))
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert result.fix_hint is not None
+    assert "workspace" in result.fix_hint
+    assert "not enough" in result.fix_hint
+
+
+def test_check_workspace_filesystem_nfs_tmpdir_local_workspace_keeps_original_hint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """(a) with a local workspace and TMPDIR on NFS: the original local_tmpdir_base hint is unchanged."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    nfs_tmp = tmp_path / "nfs-tmp"
+    nfs_tmp.mkdir()
+    mounts = (
+        f"none / overlay rw 0 0\n"
+        f"none {workspace.resolve()} ext4 rw 0 0\n"
+        f"server:/export {nfs_tmp.resolve()} nfs4 rw 0 0\n"
+    )
+    _patch_proc_mounts(monkeypatch, mounts)
+    cfg = _fs_cfg(workspace, local_tmpdir_base=str(nfs_tmp), host_mode=True)
+    result = check_workspace_filesystem(cfg)
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert result.fix_hint is not None
+    assert "local_tmpdir_base" in result.fix_hint
+    assert "not enough" not in result.fix_hint
+
+
 def test_check_workspace_filesystem_workspace_on_nfs_is_blocked(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

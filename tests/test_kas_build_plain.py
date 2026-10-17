@@ -20,6 +20,7 @@ from bakar.config import BuildConfig
 from bakar.observability import RunLogger
 from bakar.steps import kas_build
 from bakar.steps.kas_build import BuildUIState, KasBuildContext, _PlainFrameController
+from bakar.steps.kas_lock import LockHeldByPeerError
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -335,6 +336,34 @@ def test_run_shell_with_the_opt_in_refuses_on_a_peer_held_lock_without_launching
     fails = [e for e in _step_events(events_path) if e["step"] == "kas_shell" and e["event"] == "step_fail"]
     assert len(fails) == 1
     assert "peer-host" in fails[0]["reason"]
+    assert fails[0]["exit_code"] == 1
+
+
+@pytest.mark.unit
+def test_run_shell_lock_marker_race_refusal_records_exit_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg, kas_yaml, overlay, _marker = _shell_lock_env(tmp_path, monkeypatch)
+
+    class _PeerWins:
+        def __init__(self, *_a: object, **_k: object) -> None:
+            pass
+
+        def __enter__(self) -> None:
+            raise LockHeldByPeerError("peer-host")
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(kas_build, "lock_owner_marker", _PeerWins)
+
+    with RunLogger(runs_dir=tmp_path / "runs") as log:
+        ctx = KasBuildContext(cfg=cfg, log=log, kas_yaml=kas_yaml, overlay_source=overlay)
+        rc = kas_build.run_shell(ctx, args=[], command="bitbake -e", take_lock_marker=True)
+        events_path = log.events_path
+
+    assert rc == 1
+    fails = [e for e in _step_events(events_path) if e["step"] == "kas_shell" and e["event"] == "step_fail"]
+    assert len(fails) == 1
+    assert fails[0]["exit_code"] == 1
 
 
 @pytest.mark.unit
