@@ -203,6 +203,25 @@ RELOCATED_STOP_SYMBOLS: list[tuple[str, str]] = [
         "_RUN_ID_LABEL_KEY",
         "_CONTAINER_GONE_MARKERS",
         "subprocess",
+        "read_lock_pid",
+        "_read_bitbake_server_pid",
+        "_pid_alive",
+        "_bitbake_server_alive",
+        "_pgid_alive",
+        "_ScopedProcs",
+        "_all_pids",
+        "_proc_cmdline",
+        "_proc_ppid",
+        "_ProcView",
+        "_LIVE_PROC_VIEW",
+        "_PROC_ROOT",
+        "_COOKER_ARGV_FILES",
+        "_collect_build_pids",
+        "_discover_host_cookers",
+        "_kill_pid",
+        "_killpg",
+        "_host_build_alive",
+        "_bitbake_server_pid_verified",
     )
 ]
 
@@ -246,6 +265,7 @@ DIAGNOSTICS_PUBLIC_NAMES: tuple[str, ...] = (
 EXTRACTED_MODULES: tuple[str, ...] = (
     "src/bakar/mounts.py",
     "src/bakar/stop_container.py",
+    "src/bakar/proc_tree.py",
     "src/bakar/buildtools.py",
     "src/bakar/probes.py",
     "src/bakar/elfscan.py",

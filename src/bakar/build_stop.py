@@ -43,28 +43,6 @@ from bakar.eventlog import (
 )
 from bakar.observability import iter_run_events
 
-# Transitional re-exports: files outside the process-tree move (lock step,
-# stop and ps commands, test_cli_ps's guard loop) still read these through
-# ``build_stop``. Each is dropped when its last reader migrates.
-from bakar.proc_tree import (
-    _collect_build_pids as _collect_build_pids,
-)
-from bakar.proc_tree import (
-    _discover_host_cookers as _discover_host_cookers,
-)
-from bakar.proc_tree import (
-    _kill_pid as _kill_pid,
-)
-from bakar.proc_tree import (
-    _killpg as _killpg,
-)
-from bakar.proc_tree import (
-    _ScopedProcs as _ScopedProcs,
-)
-from bakar.proc_tree import (
-    read_lock_pid as read_lock_pid,
-)
-
 # Permanent re-exports (pinned by STOP_RE_EXPORTED_NAMES in
 # tests/test_module_boundaries.py): the tri-state is read bare by the functions
 # that stayed here, and the last two are read bare by the discovery code until
@@ -1601,7 +1579,7 @@ def correlate_host_discoveries(
 ) -> list[RunCandidate]:
     """Correlate group 7's ``/proc``-walk discoveries to live run directories.
 
-    ``discovered`` is :func:`_discover_host_cookers`'s return value: a topdir
+    ``discovered`` is :func:`proc_tree._discover_host_cookers`'s return value: a topdir
     (the directory containing ``runs/``) mapped to the cooker PID(s) matched
     there. For each topdir, this scans ``topdir / "runs"`` via
     :func:`live_workspace_runs` - the same per-run enumeration/filter group 2
