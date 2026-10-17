@@ -232,7 +232,7 @@ def _normalize_flag_query(var: str, flag: str | None) -> tuple[str, str | None]:
     name, _, bracketed = var.partition("[")
     inline_flag = bracketed.removesuffix("]") if bracketed.endswith("]") else ""
     if not name or not inline_flag:
-        console.print(f"[red]malformed variable flag syntax:[/] {var} (expected VAR[FLAG])")
+        console.print(f"[red]malformed variable flag syntax:[/] {escape(var)} (expected VAR[FLAG])")
         raise typer.Exit(code=2)
 
     if flag is not None:
@@ -380,6 +380,6 @@ def _run_history(
     if not locations:
         typer.echo("no history recorded")
     else:
-        console.print(f"[bold]{var}[/] history (include-chain order):")
+        console.print(f"[bold]{escape(var)}[/] history (include-chain order):")
         for loc in locations:
             typer.echo(f"  {loc}")

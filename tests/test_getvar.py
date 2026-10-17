@@ -902,6 +902,25 @@ def test_getvar_flag_option_and_inline_bracket_build_identical_commands(
 
 
 @pytest.mark.unit
+def test_getvar_malformed_flag_quotes_input_verbatim(runner: _CliRunner) -> None:
+    """A closing-markup token in the argument must not raise MarkupError (exit 1)."""
+    result = runner.invoke(app, ["getvar", "X[/a]b"])
+
+    assert result.exit_code == 2, result.stderr
+    assert "malformed variable flag syntax:" in result.stderr
+    assert "X[/a]b" in result.stderr
+
+
+@pytest.mark.unit
+def test_getvar_flag_with_markup_text_quotes_input_verbatim(runner: _CliRunner) -> None:
+    """Bracketed text that looks like a Rich tag is reproduced, not consumed as markup."""
+    result = runner.invoke(app, ["getvar", "X[bold]y"])
+
+    assert result.exit_code == 2, result.stderr
+    assert "X[bold]y" in result.stderr
+
+
+@pytest.mark.unit
 def test_getvar_bare_name_of_flag_only_variable_exits_0(runner: _CliRunner, nxp_workspace: Path) -> None:
     """``UNINATIVE_CHECKSUM`` with no flag has no value, and that is not a failure."""
     calls: list[dict] = []
