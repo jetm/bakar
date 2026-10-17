@@ -483,3 +483,28 @@ def test_sync_skip_label_follows_family(monkeypatch: pytest.MonkeyPatch, family:
     assert expected in skipped
     if family == "qcom":
         assert "ti_layertool" not in skipped
+
+
+def test_sync_clean_refuses_when_a_peer_holds_the_marker(
+    runner: CliRunner,
+    fake_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``sync --clean`` reaches the live-build gate: no sync starts, the build dir survives."""
+    from bakar import build_stop
+
+    build_dir = fake_workspace / "nxp" / "build"
+    (build_dir / "tmp").mkdir(parents=True)
+    marker = build_dir / ".bakar-lock-marker"
+    refusal = build_stop.LockRefusal(reason="peer-held", host="pc2", marker=marker)
+    monkeypatch.setattr("bakar.build_stop.lock_mutation_guard", lambda c: refusal)
+    monkeypatch.chdir(fake_workspace)
+    monkeypatch.setattr("bakar.commands.sync.detect", lambda cfg: _state_needing_sync("nxp"))
+
+    with patch("bakar.steps.repo.subprocess.run", return_value=_fake_completed(0)) as mock_run:
+        result = runner.invoke(app, ["sync", "--manifest", "imx-6.6.52-2.2.2.xml", "--clean"])
+
+    assert result.exit_code == 1, result.output
+    assert "pc2" in result.output
+    assert mock_run.call_count == 0
+    assert (build_dir / "tmp").is_dir()

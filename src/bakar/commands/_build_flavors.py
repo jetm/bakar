@@ -30,6 +30,7 @@ from bakar.commands._helpers import (
     _dispatch_from_yaml,
     _overlay_for,
     _print_layer_hashes,
+    _refuse_if_build_live,
     _remove_tree_or_exit,
     _run_doctor_gate,
     _tuning_extra_overlays,
@@ -133,6 +134,9 @@ def _run_bbsetup_build(
     console.print(f"[bold]::[/] bakar build [bbsetup] {setup_dir}")
 
     if ctx.clean:
+        # This branch removes the TMPDIR itself and never reaches
+        # _clean_build_dir, so it takes the same live-build gate here.
+        _refuse_if_build_live(cfg)
         # resolved_tmpdir follows a host-mode local_tmpdir_base override off to
         # node-local disk; a hardcoded bsp_root/build/tmp would delete the empty
         # workspace path and strand the redirected (~200G) tmp.

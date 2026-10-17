@@ -194,3 +194,26 @@ def test_clean_with_undeletable_residue_fails_the_build_without_traceback(
     assert "could not fully remove" in output
     assert "denied" in output
     assert run_build.call_count == 0
+
+
+def test_bbsetup_clean_refuses_when_a_peer_holds_the_marker(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--clean`` on the bbsetup path takes the live-build gate before removing TMPDIR."""
+    from bakar import build_stop
+
+    tmp_dir = tmp_path / "ws" / "build" / "tmp"
+    (tmp_dir / "work").mkdir(parents=True)
+    marker = tmp_path / "ws" / "build" / ".bakar-lock-marker"
+    refusal = build_stop.LockRefusal(reason="peer-held", host="pc2", marker=marker)
+    monkeypatch.setattr("bakar.build_stop.lock_mutation_guard", lambda c: refusal)
+
+    exit_code, _print_layer_hashes, run_build, output = _invoke_bbsetup_build(
+        runner, tmp_path, show_layers=False, show_hashes=False, clean=True
+    )
+
+    assert exit_code == 1, output
+    assert "pc2" in output
+    assert tmp_dir.is_dir()
+    assert (tmp_dir / "work").is_dir()
+    assert run_build.call_count == 0
