@@ -202,7 +202,7 @@ def layers_inspect(
 
     if output_json:
         out: dict = {"layers": layer_records, "cross_validation_warnings": cross_validation_warnings}
-        console.print(json.dumps(out, indent=2))
+        typer.echo(json.dumps(out, indent=2))
         return
 
     if not layer_records:
@@ -297,7 +297,7 @@ def layers_status(
 
     if output_json:
         summary = _build_status_summary(var_values)
-        console.print(json.dumps(summary, indent=2))
+        typer.echo(json.dumps(summary, indent=2))
         return
 
     _print_status(var_values)

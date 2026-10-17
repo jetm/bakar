@@ -298,13 +298,39 @@ def test_layers_inspect_json_output(tmp_path: Path) -> None:
         result = runner.invoke(app, ["layers", "inspect", "--json"])
 
     assert result.exit_code == 0
-    parsed = json.loads(result.output)
+    assert "{" not in result.stderr
+    parsed = json.loads(result.stdout)
     assert isinstance(parsed, dict)
     assert "layers" in parsed
     assert "cross_validation_warnings" in parsed
     # The show-layers output adds "meta" entry
     names = {r["name"] for r in parsed["layers"]}
     assert "meta" in names
+
+
+def test_layers_inspect_json_payload_on_stdout_with_long_layer_path(tmp_path: Path) -> None:
+    """A 120+ character unbroken layer path survives on stdout as valid JSON."""
+    mock_cfg = _make_cfg_mock(tmp_path)
+    long_path = "/work/sources/" + "x" * 120 + "/meta-long"
+    show_layers_output = (
+        "layer                 path                                      priority\n"
+        "========================================================================\n"
+        f"meta-long             {long_path}                   5\n"
+    )
+
+    def fake_run_shell_capture(kas_ctx, command, capture):
+        capture_path = capture.stdout_path
+        capture_path.parent.mkdir(parents=True, exist_ok=True)
+        capture_path.write_text(show_layers_output)
+        return 0
+
+    with patched_layers_cli(mock_cfg, fake_run_shell_capture, bblayer_paths=[]):
+        result = runner.invoke(app, ["layers", "inspect", "--json"])
+
+    assert result.exit_code == 0
+    assert "{" not in result.stderr
+    parsed = json.loads(result.stdout)
+    assert long_path in {r["path"] for r in parsed["layers"]}
 
 
 def test_layers_inspect_local_layer_conf(tmp_path: Path) -> None:
@@ -407,13 +433,45 @@ def test_layers_status_json_output(tmp_path: Path) -> None:
         result = runner.invoke(app, ["layers", "status", "--json"])
 
     assert result.exit_code == 0
-    parsed = json.loads(result.output)
+    assert "{" not in result.stderr
+    parsed = json.loads(result.stdout)
     assert "machine" in parsed
     assert "distro" in parsed
     assert parsed["machine"] == "imx8mp-lpddr4-evk"
     assert parsed["distro"] == "fsl-imx-xwayland"
     assert parsed["sstate_mirrors_configured"] is True
     assert parsed["hashserv_url"] == "http://hashserv:8686"
+
+
+def test_layers_status_json_payload_on_stdout(tmp_path: Path) -> None:
+    """``layers status --json`` writes only the JSON document to stdout."""
+    mock_cfg = _make_cfg_mock(tmp_path)
+    env_dump = _env_dump(
+        {
+            "MACHINE": "m",
+            "DISTRO": "d",
+            "DISTRO_CODENAME": "",
+            "BB_NUMBER_THREADS": "",
+            "PARALLEL_MAKE": "",
+            "SOURCE_MIRROR_URL": "",
+            "SSTATE_MIRRORS": "",
+            "BB_HASHSERV": "",
+        }
+    )
+
+    def fake_run_shell_capture(kas_ctx, command, capture):
+        capture_path = capture.stdout_path
+        capture_path.parent.mkdir(parents=True, exist_ok=True)
+        capture_path.write_text(env_dump)
+        return 0
+
+    with patched_layers_cli(mock_cfg, fake_run_shell_capture):
+        result = runner.invoke(app, ["layers", "status", "--json"])
+
+    assert result.exit_code == 0
+    assert result.stdout.lstrip().startswith("{")
+    assert json.loads(result.stdout)["machine"] == "m"
+    assert "{" not in result.stderr
 
 
 def test_layers_status_omits_unset_optional_fields(tmp_path: Path) -> None:
