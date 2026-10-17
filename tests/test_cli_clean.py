@@ -105,3 +105,57 @@ def test_clean_all_does_not_stop_shared_daemon(
 
     assert result.exit_code == 0, result.output
     assert stop_calls == [], f"shared daemon must not be stopped, got {stop_calls!r}"
+
+
+def test_clean_refuses_before_stopping_hashserv_when_a_peer_holds_the_marker(
+    runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bakar import build_stop, hashserv
+
+    marker = workspace / "nxp" / "build" / ".bakar-lock-marker"
+    refusal = build_stop.LockRefusal(reason="peer-held", host="pc2", marker=marker)
+    monkeypatch.setattr("bakar.build_stop.lock_mutation_guard", lambda c: refusal)
+    stop_calls: list[str] = []
+    monkeypatch.setattr(hashserv, "stop", lambda root: stop_calls.append(str(root)) or True)
+
+    result = runner.invoke(app, ["clean", "--all", "--bsp", "nxp"])
+
+    assert result.exit_code == 1, result.output
+    assert stop_calls == [], f"hashserv must not be stopped on a refusal, got {stop_calls!r}"
+    assert (workspace / "nxp" / "build").is_dir()
+    assert "pc2" in result.output
+
+
+def test_clean_all_proceeds_when_the_gate_has_no_refusal(
+    runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bakar import hashserv
+
+    monkeypatch.setattr("bakar.build_stop.lock_mutation_guard", lambda c: None)
+    monkeypatch.setattr("bakar.steps.kas_lock.local_build_holder", lambda c: None)
+    stop_calls: list[str] = []
+    monkeypatch.setattr(hashserv, "stop", lambda root: stop_calls.append(str(root)) or True)
+
+    result = runner.invoke(app, ["clean", "--all", "--bsp", "nxp"])
+
+    assert result.exit_code == 0, result.output
+    assert len(stop_calls) == 1
+    assert not (workspace / "nxp" / "build").exists()
+
+
+def test_clean_refuses_when_a_local_build_is_live(
+    runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bakar import hashserv
+
+    monkeypatch.setattr("bakar.build_stop.lock_mutation_guard", lambda c: None)
+    monkeypatch.setattr("bakar.steps.kas_lock.local_build_holder", lambda c: 4242)
+    stop_calls: list[str] = []
+    monkeypatch.setattr(hashserv, "stop", lambda root: stop_calls.append(str(root)) or True)
+
+    result = runner.invoke(app, ["clean", "--all", "--bsp", "nxp"])
+
+    assert result.exit_code == 1, result.output
+    assert "4242" in result.output
+    assert stop_calls == []
+    assert (workspace / "nxp" / "build").is_dir()

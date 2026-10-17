@@ -15,6 +15,7 @@ from bakar.commands._helpers import (
     _clean_build_dir,
     _dispatch_bsp,
     _dispatch_from_yaml,
+    _refuse_if_build_live,
     _resolve_workspace,
     _workspace_from_cwd,
     resolve_global_config,
@@ -96,6 +97,9 @@ def clean(
         ws = workspace or _workspace_from_cwd()
         family = _resolve_family(bsp, manifest, ws)
         cfg = resolve_global_config(ResolveRequest(workspace=ws, bsp_family=family, user_config=_state._USER_CONFIG))
+    # Consult the gate before anything is stopped: hashserv.stop below would
+    # disrupt a peer's build before _clean_build_dir's own gate could refuse.
+    _refuse_if_build_live(cfg)
     if all and cfg.hashserv_state_key == cfg.bsp_root:
         # Stop the hashserv daemon before wiping, but only when it is keyed to
         # this workspace (the no-shared-sstate fallback). When the daemon is
