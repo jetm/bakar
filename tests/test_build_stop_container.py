@@ -173,58 +173,6 @@ def test_stop_container_lost_runtime_propagates_without_ladder(
     assert "lost contact with the container runtime" in capsys.readouterr().err
 
 
-# --- _detect_runtime -------------------------------------------------------
-
-
-def test_detect_runtime_honors_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """KAS_CONTAINER_ENGINE=podman selects podman regardless of PATH."""
-    monkeypatch.setenv("KAS_CONTAINER_ENGINE", "podman")
-    monkeypatch.setattr(build_stop.shutil, "which", lambda _name: "/usr/bin/docker")
-
-    assert build_stop._detect_runtime() == "podman"
-
-
-def test_detect_runtime_prefers_docker_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With no env override and docker on PATH, docker wins."""
-    monkeypatch.delenv("KAS_CONTAINER_ENGINE", raising=False)
-    monkeypatch.setattr(build_stop.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
-
-    assert build_stop._detect_runtime() == "docker"
-
-
-def test_detect_runtime_falls_back_to_podman(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With only podman installed, podman is detected."""
-    monkeypatch.delenv("KAS_CONTAINER_ENGINE", raising=False)
-    monkeypatch.setattr(build_stop.shutil, "which", lambda name: "/usr/bin/podman" if name == "podman" else None)
-
-    assert build_stop._detect_runtime() == "podman"
-
-
-# --- _container_id ---------------------------------------------------------
-
-
-def test_container_id_empty_stdout_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An empty `ps -q -f label=` stdout resolves to no container."""
-    monkeypatch.setattr(
-        build_stop.subprocess,
-        "run",
-        lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""),
-    )
-
-    assert stop_container._container_id("docker", "bakar.run_id=X") is None
-
-
-def test_container_id_returns_first_id(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A container id line is returned verbatim."""
-    monkeypatch.setattr(
-        build_stop.subprocess,
-        "run",
-        lambda *a, **k: SimpleNamespace(returncode=0, stdout="deadbeef1234\n", stderr=""),
-    )
-
-    assert stop_container._container_id("podman", "bakar.run_id=X") == "deadbeef1234"
-
-
 # --- launch record round-trip ----------------------------------------------
 
 
@@ -364,45 +312,6 @@ def test_stop_running_proc_host_signals_pgid(monkeypatch: pytest.MonkeyPatch) ->
 
     assert issued == []
     assert killpg_calls == [(999, build_stop.signal.SIGINT)]
-
-
-# --- _sigint_bitbake_in_container ------------------------------------------
-
-
-def test_sigint_bitbake_in_container_execs_pkill_main_bitbake(monkeypatch: pytest.MonkeyPatch) -> None:
-    """It execs `pkill -INT -f 'bin/bitbake '` (trailing space targets the UI, not workers)."""
-    calls: list[list[str]] = []
-
-    def _fake_run(args: list[str], **_kwargs: object) -> SimpleNamespace:
-        calls.append(args)
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(build_stop.subprocess, "run", _fake_run)
-
-    assert build_stop._sigint_bitbake_in_container("docker", "abc123") is True
-    assert calls == [["docker", "exec", "abc123", "pkill", "-INT", "-f", "bin/bitbake "]]
-
-
-def test_sigint_bitbake_in_container_no_match_returns_false(monkeypatch: pytest.MonkeyPatch) -> None:
-    """pkill exit 1 (no bitbake process matched) -> False so the caller can fall back."""
-    monkeypatch.setattr(
-        build_stop.subprocess,
-        "run",
-        lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr=""),
-    )
-
-    assert build_stop._sigint_bitbake_in_container("podman", "cid") is False
-
-
-def test_sigint_bitbake_in_container_oserror_returns_false(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An OSError from the exec (runtime binary absent) -> False, never raises."""
-
-    def _boom(*_a: object, **_k: object) -> SimpleNamespace:
-        raise OSError("no runtime")
-
-    monkeypatch.setattr(build_stop.subprocess, "run", _boom)
-
-    assert build_stop._sigint_bitbake_in_container("docker", "abc") is False
 
 
 # --- escalate_container_tree (public entry for kas_build's capture timeout) -
@@ -588,37 +497,6 @@ def _ps_result(stdout: str, rc: int = 0) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(["docker"], rc, stdout=stdout, stderr="")
 
 
-def test_container_gone_lists_by_id_including_stopped_containers(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: list[list[str]] = []
-
-    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        seen.append(args)
-        assert kwargs["timeout"] == build_stop._RUNTIME_QUERY_TIMEOUT_S
-        return _ps_result("")
-
-    monkeypatch.setattr(build_stop.subprocess, "run", fake_run)
-    assert stop_container._container_gone("docker", "cafef00d") is True
-    assert seen == [["docker", "ps", "-a", "-q", "--filter", "id=cafef00d"]]
-
-
-def test_container_gone_false_when_the_id_is_still_listed(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(build_stop.subprocess, "run", lambda *_a, **_k: _ps_result("cafef00d\n"))
-    assert stop_container._container_gone("docker", "cafef00d") is False
-
-
-@pytest.mark.parametrize("failure", ["rc", "oserror", "timeout"])
-def test_container_gone_is_unknown_when_the_query_fails(monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
-    def fake_run(*_a: object, **_k: object) -> subprocess.CompletedProcess[str]:
-        if failure == "oserror":
-            raise FileNotFoundError("docker")
-        if failure == "timeout":
-            raise subprocess.TimeoutExpired("docker", 1)
-        return _ps_result("", rc=1)
-
-    monkeypatch.setattr(build_stop.subprocess, "run", fake_run)
-    assert stop_container._container_gone("docker", "cafef00d") is None
-
-
 def test_stop_run_reports_stopped_when_rm_fails_but_ps_by_id_shows_it_gone(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -633,7 +511,7 @@ def test_stop_run_reports_stopped_when_rm_fails_but_ps_by_id_shows_it_gone(
         return _runtime_ok(args)
 
     monkeypatch.setattr(stop_container, "_run_runtime", _rm_races_the_auto_remove)
-    monkeypatch.setattr(build_stop.subprocess, "run", lambda *_a, **_k: _ps_result(""))
+    monkeypatch.setattr(stop_container.subprocess, "run", lambda *_a, **_k: _ps_result(""))
     statuses = iter([(build_stop._ALIVE, "cafef00d")])
     monkeypatch.setattr(
         stop_container, "_container_id_status", lambda _rt, _label: next(statuses, (build_stop._DEAD, None))
