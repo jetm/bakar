@@ -51,7 +51,8 @@ snapshot_untracked_cap_mb = 120
 worktree_build_dir = "build-{stem}-{worktree}"
 """,
     )
-    cfg = load_user_config(path)
+    with pytest.warns(UserWarning, match=r"unknown key 'unknown_key' in \[workspaces\]"):
+        cfg = load_user_config(path)
     assert cfg.workspaces_template == "/ws/{release}"
     assert cfg.workspaces_releases == {"wrynose": "/ws/custom-wrynose"}
     assert cfg.dispatch_worktree_root == "/wt"

@@ -107,7 +107,11 @@ def test_unknown_key_in_known_section_is_ignored(tmp_path: Path) -> None:
     config_file = tmp_path / "config.toml"
     config_file.write_text(toml_content)
 
-    cfg = load_user_config(config_file)
+    with (
+        pytest.warns(UserWarning, match=r"unknown key 'bogus_key' in \[defaults\.nxp\]"),
+        pytest.warns(UserWarning, match=r"unknown key 'unknown' in \[build\]"),
+    ):
+        cfg = load_user_config(config_file)
 
     assert cfg.nxp_machine == "imx93-var-som"
     assert cfg.show_doctor_report is False
@@ -528,7 +532,14 @@ def test_unknown_key_in_known_section_warns_and_loads(tmp_path: Path) -> None:
     assert len(msgs) == 1
     assert "bogus_key" in msgs[0]
     assert "[build]" in msgs[0]
-    assert load_user_config(path).rm_work is True
+    with pytest.warns(UserWarning, match=r"unknown key 'bogus_key' in \[build\]"):
+        assert load_user_config(path).rm_work is True
+
+
+def test_unknown_key_warning_is_an_error_by_default(user_config_file: Path) -> None:
+    user_config_file.write_text("config_version = 3\n[build]\nbogus_key = 1\n")
+    with pytest.raises(UserWarning, match="unknown key 'bogus_key'"):
+        load_user_config(user_config_file)
 
 
 def test_unknown_top_level_section_warns_naming_recognized(tmp_path: Path) -> None:

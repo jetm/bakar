@@ -85,6 +85,7 @@ exclude_lines = [
 
 [tool.pytest.ini_options]
 addopts = ["-v", "--tb=short", "--cov=bakar", "--cov-report=term-missing"]
+filterwarnings = ["error:.*unknown (key|top-level section):UserWarning"]
 markers = [
   "unit: fast hermetic tests with no external tools or services",
   "integration: tests requiring external tools or services",
