@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 import bakar.commands.stop as stop_cmd
+from bakar import run_discovery, stop_container
 from bakar.cli import app
 from tests.conftest import make_build_config
 
@@ -417,16 +418,16 @@ def test_run_option_unmatched_id_surfaces_peer_held_root(
     anywhere in this workspace"."""
     nfs_probe(False)
 
-    ti_root = stop_cmd.build_stop.RunRoot(
+    ti_root = run_discovery.RunRoot(
         bsp_root=workspace / "ti", family="ti", resolve_workspace=workspace, resolve_family="ti"
     )
     refusal = stop_cmd.build_stop.LockRefusal(reason="peer-held", host="pc2")
-    skipped_root = stop_cmd.build_stop.SkippedRoot(root=ti_root, refusal=refusal)
+    skipped_root = run_discovery.SkippedRoot(root=ti_root, refusal=refusal)
 
     monkeypatch.setattr(
-        stop_cmd.build_stop,
+        run_discovery,
         "enumerate_workspace_runs",
-        lambda _path, **_kw: stop_cmd.build_stop.RunScan(candidates=[], skipped=[skipped_root]),
+        lambda _path, **_kw: run_discovery.RunScan(candidates=[], skipped=[skipped_root]),
     )
 
     result = runner.invoke(app, ["stop", "--run", "maybe-on-ti"])
@@ -493,10 +494,8 @@ def test_run_option_errors_on_matched_container_run_whose_container_already_exit
         run_dir, pgid=0, mode="container", runtime="docker", container_label="bakar.run_id=20260617-140000-container"
     )
 
-    monkeypatch.setattr(stop_cmd.build_stop, "detect_runtime", lambda: "docker")
-    monkeypatch.setattr(
-        stop_cmd.build_stop, "_container_id_status", lambda _runtime, _label: (stop_cmd.build_stop._DEAD, None)
-    )
+    monkeypatch.setattr(stop_container, "detect_runtime", lambda: "docker")
+    monkeypatch.setattr(stop_container, "_container_id_status", lambda _runtime, _label: (stop_container._DEAD, None))
 
     calls: list[Path] = []
     monkeypatch.setattr(
@@ -579,10 +578,8 @@ def test_stop_no_args_stale_container_records_fall_through_to_zero_live(
         ti_dir, pgid=0, mode="container", runtime="docker", container_label="bakar.run_id=ti-dead"
     )
 
-    monkeypatch.setattr(stop_cmd.build_stop, "detect_runtime", lambda: "docker")
-    monkeypatch.setattr(
-        stop_cmd.build_stop, "_container_id_status", lambda _runtime, _label: (stop_cmd.build_stop._DEAD, None)
-    )
+    monkeypatch.setattr(stop_container, "detect_runtime", lambda: "docker")
+    monkeypatch.setattr(stop_container, "_container_id_status", lambda _runtime, _label: (stop_container._DEAD, None))
 
     calls: list[Path] = []
     monkeypatch.setattr(
@@ -623,10 +620,8 @@ def test_stop_no_args_container_query_failure_keeps_candidate_live(
         run_dir, pgid=0, mode="container", runtime="docker", container_label="bakar.run_id=unreachable"
     )
 
-    monkeypatch.setattr(stop_cmd.build_stop, "detect_runtime", lambda: "docker")
-    monkeypatch.setattr(
-        stop_cmd.build_stop, "_container_id_status", lambda _runtime, _label: (stop_cmd.build_stop._ERROR, None)
-    )
+    monkeypatch.setattr(stop_container, "detect_runtime", lambda: "docker")
+    monkeypatch.setattr(stop_container, "_container_id_status", lambda _runtime, _label: (stop_container._ERROR, None))
 
     calls: list[Path] = []
 
@@ -733,18 +728,18 @@ def test_stop_no_args_peer_held_root_surfaced_before_falling_through(
     genuinely nothing running."""
     nfs_probe(False)
 
-    ti_root = stop_cmd.build_stop.RunRoot(
+    ti_root = run_discovery.RunRoot(
         bsp_root=workspace / "ti", family="ti", resolve_workspace=workspace, resolve_family="ti"
     )
     refusal = stop_cmd.build_stop.LockRefusal(reason="peer-held", host="pc2")
-    skipped_root = stop_cmd.build_stop.SkippedRoot(root=ti_root, refusal=refusal)
+    skipped_root = run_discovery.SkippedRoot(root=ti_root, refusal=refusal)
 
     monkeypatch.setattr(
-        stop_cmd.build_stop,
+        run_discovery,
         "enumerate_workspace_runs",
-        lambda _path, **_kw: stop_cmd.build_stop.RunScan(candidates=[], skipped=[skipped_root]),
+        lambda _path, **_kw: run_discovery.RunScan(candidates=[], skipped=[skipped_root]),
     )
-    monkeypatch.setattr(stop_cmd.build_stop, "live_workspace_runs", lambda _path, **_kw: [])
+    monkeypatch.setattr(run_discovery, "live_workspace_runs", lambda _path, **_kw: [])
     monkeypatch.setattr(stop_cmd.build_stop, "stop_build", lambda *_a, **_k: True)
 
     result = runner.invoke(app, ["stop"])
@@ -942,14 +937,14 @@ def test_no_bulk_stop_and_isolation_between_concurrent_builds(
     assert after_c == before_c
 
 
-def _make_candidate(workspace: Path, run_dir: Path) -> stop_cmd.build_stop.RunCandidate:
+def _make_candidate(workspace: Path, run_dir: Path) -> run_discovery.RunCandidate:
     """A minimal ``RunCandidate`` for exercising ``_confirm_host_wide`` directly."""
     run_dir.mkdir(parents=True, exist_ok=True)
-    root = stop_cmd.build_stop.RunRoot(
+    root = run_discovery.RunRoot(
         bsp_root=workspace / "nxp", family="nxp", resolve_workspace=workspace, resolve_family="nxp"
     )
     cfg = make_build_config(workspace=workspace, machine="imx8mp-var-dart")
-    return stop_cmd.build_stop.RunCandidate(run_dir=run_dir, root=root, cfg=cfg)
+    return run_discovery.RunCandidate(run_dir=run_dir, root=root, cfg=cfg)
 
 
 def test_confirm_host_wide_no_tty_refuses_without_prompting(
@@ -1123,32 +1118,30 @@ def test_host_wide_candidates_combines_topdirs_and_filters_mode_and_liveness(
         lambda: {topdir_a: frozenset({111}), topdir_b: frozenset({222})},
     )
 
-    root_a = stop_cmd.build_stop.RunRoot(
+    root_a = run_discovery.RunRoot(
         bsp_root=topdir_a, family="generic", resolve_workspace=topdir_a, resolve_family="bbsetup"
     )
-    root_b = stop_cmd.build_stop.RunRoot(
+    root_b = run_discovery.RunRoot(
         bsp_root=topdir_b, family="generic", resolve_workspace=topdir_b, resolve_family="bbsetup"
     )
     cfg_a = make_build_config(workspace=topdir_a, machine="imx8mp-var-dart")
     cfg_b = make_build_config(workspace=topdir_b, machine="imx8mp-var-dart")
 
-    live_host = stop_cmd.build_stop.RunCandidate(run_dir=topdir_a / "runs" / "host-run", root=root_a, cfg=cfg_a)
-    dead_host = stop_cmd.build_stop.RunCandidate(run_dir=topdir_a / "runs" / "dead-run", root=root_a, cfg=cfg_a)
-    live_container = stop_cmd.build_stop.RunCandidate(
-        run_dir=topdir_b / "runs" / "container-run", root=root_b, cfg=cfg_b
-    )
-    skipped_root = stop_cmd.build_stop.SkippedRoot(
+    live_host = run_discovery.RunCandidate(run_dir=topdir_a / "runs" / "host-run", root=root_a, cfg=cfg_a)
+    dead_host = run_discovery.RunCandidate(run_dir=topdir_a / "runs" / "dead-run", root=root_a, cfg=cfg_a)
+    live_container = run_discovery.RunCandidate(run_dir=topdir_b / "runs" / "container-run", root=root_b, cfg=cfg_b)
+    skipped_root = run_discovery.SkippedRoot(
         root=root_b, refusal=stop_cmd.build_stop.LockRefusal(reason="peer-held", host="pc2")
     )
 
-    def _fake_enumerate(path: Path, **_kw: object) -> stop_cmd.build_stop.RunScan:
+    def _fake_enumerate(path: Path, **_kw: object) -> run_discovery.RunScan:
         if path == topdir_a / "runs":
-            return stop_cmd.build_stop.RunScan(candidates=[live_host, dead_host], skipped=[])
-        return stop_cmd.build_stop.RunScan(candidates=[live_container], skipped=[skipped_root])
+            return run_discovery.RunScan(candidates=[live_host, dead_host], skipped=[])
+        return run_discovery.RunScan(candidates=[live_container], skipped=[skipped_root])
 
-    monkeypatch.setattr(stop_cmd.build_stop, "enumerate_workspace_runs", _fake_enumerate)
+    monkeypatch.setattr(run_discovery, "enumerate_workspace_runs", _fake_enumerate)
     live_set = {live_host.run_dir, live_container.run_dir}
-    monkeypatch.setattr(stop_cmd.build_stop, "is_candidate_live", lambda c: c.run_dir in live_set)
+    monkeypatch.setattr(run_discovery, "is_candidate_live", lambda c: c.run_dir in live_set)
 
     records = {
         live_host.run_dir: stop_cmd.build_stop.LaunchRecord(pgid=0, mode="host"),
@@ -1303,15 +1296,13 @@ def test_run_option_host_wide_fallback_surfaces_peer_held_root(
         lambda: {topdir / "build": frozenset({4242})},
     )
 
-    root = stop_cmd.build_stop.RunRoot(
-        bsp_root=topdir, family="nxp", resolve_workspace=topdir.parent, resolve_family="nxp"
-    )
+    root = run_discovery.RunRoot(bsp_root=topdir, family="nxp", resolve_workspace=topdir.parent, resolve_family="nxp")
     refusal = stop_cmd.build_stop.LockRefusal(reason="peer-held", host="pc2")
-    skipped_root = stop_cmd.build_stop.SkippedRoot(root=root, refusal=refusal)
+    skipped_root = run_discovery.SkippedRoot(root=root, refusal=refusal)
     monkeypatch.setattr(
-        stop_cmd.build_stop,
+        run_discovery,
         "enumerate_workspace_runs",
-        lambda _path, **_kw: stop_cmd.build_stop.RunScan(candidates=[], skipped=[skipped_root]),
+        lambda _path, **_kw: run_discovery.RunScan(candidates=[], skipped=[skipped_root]),
     )
 
     result = runner.invoke(app, ["stop", "--force", "--run", "maybe-on-peer"])
@@ -1338,7 +1329,7 @@ def test_run_option_host_wide_fallback_never_calls_correlate_host_discoveries(
     def _boom(*a: object, **k: object) -> list[object]:
         raise AssertionError("correlate_host_discoveries must not be called")
 
-    monkeypatch.setattr(stop_cmd.build_stop, "correlate_host_discoveries", _boom)
+    monkeypatch.setattr(run_discovery, "correlate_host_discoveries", _boom)
 
     calls: list[Path] = []
     monkeypatch.setattr(
@@ -1425,15 +1416,15 @@ def test_no_run_host_wide_fallback_peer_held_root_is_diagnosed_not_dropped(
             lambda: real_discover_host_cookers(pids_reader=_pids, cmdline_reader=_cmdline),
         )
 
-        root = stop_cmd.build_stop.RunRoot(
+        root = run_discovery.RunRoot(
             bsp_root=bsp_root, family="nxp", resolve_workspace=bsp_root.parent, resolve_family="nxp"
         )
         refusal = stop_cmd.build_stop.LockRefusal(reason="peer-held", host="pc2")
-        skipped_root = stop_cmd.build_stop.SkippedRoot(root=root, refusal=refusal)
+        skipped_root = run_discovery.SkippedRoot(root=root, refusal=refusal)
         monkeypatch.setattr(
-            stop_cmd.build_stop,
+            run_discovery,
             "enumerate_workspace_runs",
-            lambda _path, **_kw: stop_cmd.build_stop.RunScan(candidates=[], skipped=[skipped_root]),
+            lambda _path, **_kw: run_discovery.RunScan(candidates=[], skipped=[skipped_root]),
         )
 
         kill_calls: list[tuple[int, int]] = []
@@ -1615,7 +1606,7 @@ def test_no_run_host_wide_fallback_multiple_candidates_interactive_confirms_pick
 
     confirm_calls: list[Path] = []
 
-    def _confirm(candidate: stop_cmd.build_stop.RunCandidate) -> bool:
+    def _confirm(candidate: run_discovery.RunCandidate) -> bool:
         confirm_calls.append(candidate.run_dir)
         return True
 
@@ -1655,15 +1646,13 @@ def test_no_run_host_wide_fallback_surfaces_peer_held_root_on_zero_candidates(
         lambda: {topdir / "build": frozenset({4242})},
     )
 
-    root = stop_cmd.build_stop.RunRoot(
-        bsp_root=topdir, family="nxp", resolve_workspace=topdir.parent, resolve_family="nxp"
-    )
+    root = run_discovery.RunRoot(bsp_root=topdir, family="nxp", resolve_workspace=topdir.parent, resolve_family="nxp")
     refusal = stop_cmd.build_stop.LockRefusal(reason="peer-held", host="pc2")
-    skipped_root = stop_cmd.build_stop.SkippedRoot(root=root, refusal=refusal)
+    skipped_root = run_discovery.SkippedRoot(root=root, refusal=refusal)
     monkeypatch.setattr(
-        stop_cmd.build_stop,
+        run_discovery,
         "enumerate_workspace_runs",
-        lambda _path, **_kw: stop_cmd.build_stop.RunScan(candidates=[], skipped=[skipped_root]),
+        lambda _path, **_kw: run_discovery.RunScan(candidates=[], skipped=[skipped_root]),
     )
 
     result = runner.invoke(app, ["stop"])

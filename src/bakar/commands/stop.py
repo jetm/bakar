@@ -11,7 +11,7 @@ from typing import Annotated
 import typer
 
 import bakar.commands._app as _state
-from bakar import build_stop, proc_tree
+from bakar import build_stop, proc_tree, run_discovery
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     WorkspaceOption,
@@ -40,7 +40,7 @@ def _is_tty() -> bool:
     return sys.stdin.isatty()
 
 
-def _confirm_host_wide(candidate: build_stop.RunCandidate) -> bool:
+def _confirm_host_wide(candidate: run_discovery.RunCandidate) -> bool:
     """Ask before stopping a run outside the caller's own workspace.
 
     Prints the same identifying row the multi-build listing uses (run id,
@@ -66,13 +66,13 @@ def _confirm_host_wide(candidate: build_stop.RunCandidate) -> bool:
 def _stop_matched_run(
     run_id: str,
     *,
-    candidates: list[build_stop.RunCandidate],
+    candidates: list[run_discovery.RunCandidate],
     live_run_dirs: set[Path],
-    skipped: list[build_stop.SkippedRoot],
+    skipped: list[run_discovery.SkippedRoot],
     force: bool,
     timeout: float | None,
     scope_desc: str = "in this workspace",
-    confirm: Callable[[build_stop.RunCandidate], bool] | None = None,
+    confirm: Callable[[run_discovery.RunCandidate], bool] | None = None,
 ) -> bool:
     """Resolve ``run_id`` against an already-scanned candidate set and stop it if live.
 
@@ -132,21 +132,21 @@ def _stop_matched_run(
     return build_stop.stop_run(match.run_dir, match.cfg, force=force, grace_seconds=grace_seconds)
 
 
-def _host_wide_candidates() -> tuple[list[build_stop.RunCandidate], list[build_stop.SkippedRoot]]:
+def _host_wide_candidates() -> tuple[list[run_discovery.RunCandidate], list[run_discovery.SkippedRoot]]:
     """Scan every live, host-mode build on this host, not just one workspace.
 
     Calls :func:`proc_tree._discover_host_cookers` to find every topdir
     carrying a running bitbake cooker anywhere on the host, then re-scans
     each topdir's own ``runs/`` directory directly via
-    :func:`build_stop.enumerate_workspace_runs` - never
-    :func:`build_stop.correlate_host_discoveries`, which internally discards
+    :func:`run_discovery.enumerate_workspace_runs` - never
+    :func:`run_discovery.correlate_host_discoveries`, which internally discards
     the skipped-root list this helper needs in order to surface a peer-held
     root's ownership warning.
 
-    Every topdir's :attr:`build_stop.RunScan.skipped` entries are combined
+    Every topdir's :attr:`run_discovery.RunScan.skipped` entries are combined
     into one ``skipped`` list, and every topdir's candidates that are both
     host-mode (``read_launch_record(...).mode == "host"``) and live
-    (:func:`build_stop.is_candidate_live`) are combined into one
+    (:func:`run_discovery.is_candidate_live`) are combined into one
     ``candidates`` list. The mode filter is required, not optional: a single
     topdir's ``runs/`` can hold both a host-mode and a live container-mode
     run, and ``enumerate_workspace_runs`` does not itself filter by mode.
@@ -156,15 +156,15 @@ def _host_wide_candidates() -> tuple[list[build_stop.RunCandidate], list[build_s
     never made for a candidate the mode filter would discard anyway.
     """
     discovered = proc_tree._discover_host_cookers()
-    candidates: list[build_stop.RunCandidate] = []
-    skipped: list[build_stop.SkippedRoot] = []
+    candidates: list[run_discovery.RunCandidate] = []
+    skipped: list[run_discovery.SkippedRoot] = []
     for topdir in discovered:
-        scan = build_stop.enumerate_workspace_runs(topdir / "runs", user_config=_state._USER_CONFIG)
+        scan = run_discovery.enumerate_workspace_runs(topdir / "runs", user_config=_state._USER_CONFIG)
         skipped.extend(scan.skipped)
         for candidate in scan.candidates:
             if build_stop.read_launch_record(candidate.run_dir).mode != "host":
                 continue
-            if not build_stop.is_candidate_live(candidate):
+            if not run_discovery.is_candidate_live(candidate):
                 continue
             candidates.append(candidate)
     return candidates, skipped
@@ -351,7 +351,7 @@ def stop(
                 raise typer.Exit(code=1)
             return
         now = time.time()
-        rows: list[tuple[build_stop.RunCandidate, str]] = []
+        rows: list[tuple[run_discovery.RunCandidate, str]] = []
         for candidate in candidates:
             start = _run_started_epoch(candidate.run_dir)
             elapsed = fmt_duration(max(0.0, now - start)) if start is not None else "unknown"
@@ -387,14 +387,14 @@ def stop(
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family, strict_routing=False)
 
     if run_id is not None:
-        scan = build_stop.enumerate_workspace_runs(ws, user_config=_state._USER_CONFIG)
+        scan = run_discovery.enumerate_workspace_runs(ws, user_config=_state._USER_CONFIG)
         skipped = scan.skipped
         # live_workspace_runs now verifies container-mode liveness against the
         # runtime itself (not just "a launch record with a label exists"), so a
         # single membership check in _stop_matched_run answers both host- and
         # container-mode targets correctly - no separate runtime query needed
         # at this call site.
-        live_run_dirs = {c.run_dir for c in build_stop.live_workspace_runs(ws, user_config=_state._USER_CONFIG)}
+        live_run_dirs = {c.run_dir for c in run_discovery.live_workspace_runs(ws, user_config=_state._USER_CONFIG)}
         stopped = _stop_matched_run(
             run_id,
             candidates=scan.candidates,
@@ -421,7 +421,7 @@ def stop(
     # entirely, so surface it explicitly here - otherwise a peer-held root
     # hiding a real build is indistinguishable from a root with genuinely
     # nothing running, in every branch below (zero, one, or two-or-more live).
-    scan = build_stop.enumerate_workspace_runs(ws, user_config=_state._USER_CONFIG)
+    scan = run_discovery.enumerate_workspace_runs(ws, user_config=_state._USER_CONFIG)
     skipped = scan.skipped
     for skipped_root in skipped:
         refusal = skipped_root.refusal
@@ -436,7 +436,7 @@ def stop(
                 f"[yellow]cannot confirm ownership of {skipped_root.root.bsp_root} "
                 f"({refusal.reason}); it was not checked for a live build[/]"
             )
-    live = build_stop.live_workspace_runs(ws, user_config=_state._USER_CONFIG)
+    live = run_discovery.live_workspace_runs(ws, user_config=_state._USER_CONFIG)
     if len(live) == 1:
         only = live[0]
         grace_seconds = timeout if timeout is not None else only.cfg.stop_grace_seconds
@@ -446,7 +446,7 @@ def stop(
         return
     if len(live) >= 2:
         now = time.time()
-        rows: list[tuple[build_stop.RunCandidate, str]] = []
+        rows: list[tuple[run_discovery.RunCandidate, str]] = []
         for candidate in live:
             start = _run_started_epoch(candidate.run_dir)
             elapsed = fmt_duration(max(0.0, now - start)) if start is not None else "unknown"

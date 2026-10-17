@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 import pytest
 from rich.console import Console
 
-from bakar import build_stop, observability, proc_tree, report, stop_container, triage
+from bakar import build_stop, observability, proc_tree, report, run_discovery, stop_container, triage
 from bakar.commands import stop as stop_cmd
 from bakar.commands import triage as commands_triage
 from tests.conftest import make_build_config
@@ -2231,7 +2231,7 @@ def test_host_wide_candidates_excludes_container_mode_run_sharing_topdir(
     parameters, so the topdir is found the same way a real ``/proc`` scan
     would find it, without a real bitbake process anywhere. The container
     leg's liveness is decided by monkeypatching
-    ``build_stop._container_id_status`` directly, so the assertion holds
+    ``stop_container._container_id_status`` directly, so the assertion holds
     whether or not a container runtime is installed on this host.
     """
     nfs_probe(False)
@@ -2274,14 +2274,14 @@ def test_host_wide_candidates_excludes_container_mode_run_sharing_topdir(
     # monkeypatched runtime query, independent of any real container runtime.
     monkeypatch.setattr(build_stop, "is_build_running", lambda _rd: (True, 4242, True))
     monkeypatch.setattr(
-        build_stop,
+        stop_container,
         "_container_id_status",
         lambda _runtime, _label: (build_stop._ALIVE, "fake-cid"),
     )
 
     # First, prove enumeration itself is not mode-scoped: both runs show up
     # in the unfiltered scan over this shared topdir's runs/ directory.
-    scan = build_stop.enumerate_workspace_runs(runs_dir, user_config=None)
+    scan = run_discovery.enumerate_workspace_runs(runs_dir, user_config=None)
     unfiltered_dirs = {c.run_dir for c in scan.candidates}
     assert host_run_dir in unfiltered_dirs
     assert container_run_dir in unfiltered_dirs
