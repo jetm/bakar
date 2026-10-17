@@ -110,7 +110,7 @@ def test_remove_tree_report_returns_false_and_prints_the_leftover_without_exitin
     target = tmp_path / "tree"
     stuck = target / "stuck"
     err = OSError("busy")
-    err.residue_count = 3  # type: ignore[attr-defined]
+    err.residue_count = 3  # ty: ignore[unresolved-attribute]
     monkeypatch.setattr("bakar.fsremove.parallel_rmtree", lambda root, description="": (stuck, err))
 
     with console.capture() as cap:

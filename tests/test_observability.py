@@ -580,8 +580,14 @@ def test_run_id_epoch_parses_prefix_as_utc_and_rejects_others(monkeypatch: pytes
     _set_tz(monkeypatch, tz)
     assert run_id_epoch("20260102-030405-77") == 1767323045
     assert run_id_epoch("20260102-030405") == 1767323045
-    for bad in ("", "latest", "2026010-2030405-1", "20261301-030405", "x0260102-030405", "20260102_030405"):
-        assert run_id_epoch(bad) is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "bad", ["", "latest", "2026010-2030405-1", "20261301-030405", "x0260102-030405", "20260102_030405"]
+)
+def test_run_id_epoch_rejects_malformed_names(bad: str) -> None:
+    assert run_id_epoch(bad) is None
 
 
 @pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.tzset")

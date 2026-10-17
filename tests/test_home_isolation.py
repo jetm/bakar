@@ -97,3 +97,32 @@ def test_real_home_marker_restores_the_real_home():
     assert Path.home() == REAL_HOME
     assert daemon_log.STATE_DIR == REAL_HOME / ".local" / "state" / "bakar"
     assert task_timings.TIMINGS_DIR == REAL_HOME / ".local/state/bakar/task-timings"
+
+
+@pytest.mark.real_home
+def test_real_home_is_not_a_session_home_even_in_a_worker():
+    # Under xdist the worker inherits HOME already pointing at the controller's
+    # session home; REAL_HOME must still be the developer's own.
+    assert "bakar-test-home-" not in str(REAL_HOME)
+    assert os.environ["BAKAR_TEST_REAL_HOME"] == str(REAL_HOME)
+    assert Path.home() == REAL_HOME
+
+
+def test_inherited_xdg_and_cache_variables_do_not_reach_a_test():
+    for name in ("XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "SSTATE_DIR", "DL_DIR"):
+        assert name not in os.environ, name
+    stray = [n for n in os.environ if n.startswith("BAKAR_") and n != "BAKAR_TEST_REAL_HOME"]
+    assert stray == []
+
+
+def test_shared_ccache_dir_lands_under_the_isolated_home_without_xdg():
+    from bakar.config import shared_ccache_dir
+
+    assert shared_ccache_dir(None, ccache_shared=True) == Path.home() / ".cache" / "bakar" / "ccache"
+
+
+def test_shared_ccache_dir_honours_xdg_set_before_the_call(monkeypatch, tmp_path):
+    from bakar.config import shared_ccache_dir
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    assert shared_ccache_dir(None, ccache_shared=True) == tmp_path / "xdg" / "bakar" / "ccache"

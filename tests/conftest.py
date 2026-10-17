@@ -42,7 +42,11 @@ from typer.testing import CliRunner
 # Record the developer's real home, then point HOME at a throwaway directory
 # BEFORE the first ``bakar`` import: several modules compute state locations
 # from ``Path.home()`` at import time, and those must land in the session home.
-REAL_HOME = Path.home()
+# The value lives in the environment, set once by whichever process imports this
+# first (the pytest controller), so xdist workers inherit the real home instead of
+# resolving ``Path.home()`` against the session home the controller already set.
+os.environ.setdefault("BAKAR_TEST_REAL_HOME", str(Path.home()))
+REAL_HOME = Path(os.environ["BAKAR_TEST_REAL_HOME"])
 _SESSION_HOME = Path(tempfile.mkdtemp(prefix="bakar-test-home-"))
 os.environ["HOME"] = str(_SESSION_HOME)
 atexit.register(shutil.rmtree, _SESSION_HOME, ignore_errors=True)
@@ -274,6 +278,12 @@ def _isolated_home(request, tmp_path_factory, monkeypatch):
     if request.node.get_closest_marker("real_home"):
         home = REAL_HOME
     else:
+        # Variables the developer's shell may export point at real paths; the code
+        # under test would create state there (sstate, dl, ccache) if left set.
+        for name in ("XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "SSTATE_DIR", "DL_DIR"):
+            monkeypatch.delenv(name, raising=False)
+        for name in [n for n in os.environ if n.startswith("BAKAR_") and n != "BAKAR_TEST_REAL_HOME"]:
+            monkeypatch.delenv(name)
         home = tmp_path_factory.mktemp("home")
         # git reads identity and commit signing from the developer's global config
         # (home and XDG); give fixtures that run ``git commit`` a neutral one.

@@ -298,7 +298,7 @@ def test_layers_inspect_json_output(tmp_path: Path) -> None:
         result = runner.invoke(app, ["layers", "inspect", "--json"])
 
     assert result.exit_code == 0
-    assert "{" not in result.stderr
+    assert result.stderr.strip() == ""
     parsed = json.loads(result.stdout)
     assert isinstance(parsed, dict)
     assert "layers" in parsed
@@ -328,7 +328,7 @@ def test_layers_inspect_json_payload_on_stdout_with_long_layer_path(tmp_path: Pa
         result = runner.invoke(app, ["layers", "inspect", "--json"])
 
     assert result.exit_code == 0
-    assert "{" not in result.stderr
+    assert result.stderr.strip() == ""
     parsed = json.loads(result.stdout)
     assert long_path in {r["path"] for r in parsed["layers"]}
 
@@ -433,7 +433,7 @@ def test_layers_status_json_output(tmp_path: Path) -> None:
         result = runner.invoke(app, ["layers", "status", "--json"])
 
     assert result.exit_code == 0
-    assert "{" not in result.stderr
+    assert result.stderr.strip() == ""
     parsed = json.loads(result.stdout)
     assert "machine" in parsed
     assert "distro" in parsed
@@ -471,7 +471,7 @@ def test_layers_status_json_payload_on_stdout(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert result.stdout.lstrip().startswith("{")
     assert json.loads(result.stdout)["machine"] == "m"
-    assert "{" not in result.stderr
+    assert result.stderr.strip() == ""
 
 
 def test_layers_status_omits_unset_optional_fields(tmp_path: Path) -> None:
