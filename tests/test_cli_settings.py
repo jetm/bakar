@@ -118,3 +118,47 @@ def test_unset_absent_key_exits_zero_and_leaves_well_formed_file(runner: _CliRun
     cfg = user_config.load_user_config(config_path)
     assert cfg.nxp_distro == "fsl-imx-wayland"
     assert cfg.nxp_machine is None
+
+
+def test_settings_get_value_payload_on_stdout(runner: _CliRunner, config_path: Path) -> None:
+    runner.invoke(app, ["settings", "set", "defaults.nxp.machine", "imx95-var-dart"])
+
+    result = runner.invoke(app, ["settings", "get", "defaults.nxp.machine"])
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "'imx95-var-dart'\n"
+    assert result.stderr == ""
+
+    unset = runner.invoke(app, ["settings", "get", "defaults.ti.machine"])
+    assert unset.exit_code == 0, unset.output
+    assert unset.stdout == "(unset)\n"
+
+
+def test_settings_list_payload_on_stdout(runner: _CliRunner, config_path: Path) -> None:
+    runner.invoke(app, ["settings", "set", "defaults.nxp.machine", "imx95-var-dart"])
+
+    result = runner.invoke(app, ["settings", "list"])
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert "defaults.nxp.machine = 'imx95-var-dart'" in lines
+    assert "defaults.ti.machine = (unset)" in lines
+    assert len(lines) == len(user_config.SETTINGS_SCHEMA)
+    assert result.stderr == ""
+
+
+def test_settings_get_value_with_markup_text_quotes_input_verbatim(runner: _CliRunner, config_path: Path) -> None:
+    for value in ("imx[bold]8mp", "imx[/x]8mp"):
+        set_result = runner.invoke(app, ["settings", "set", "defaults.nxp.machine", value])
+        assert set_result.exit_code == 0, set_result.output
+
+        result = runner.invoke(app, ["settings", "get", "defaults.nxp.machine"])
+        assert result.exit_code == 0, result.output
+        assert result.stdout == f"{value!r}\n"
+
+
+def test_settings_error_quotes_input_verbatim(runner: _CliRunner, config_path: Path) -> None:
+    key = "not.[/x]a.key"
+    for verb in (["get", key], ["set", key, "v"], ["unset", key]):
+        result = runner.invoke(app, ["settings", *verb])
+        assert result.exit_code == 2, result.output
+        assert key in result.stderr
+        assert result.stdout == ""

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Annotated
 
 import typer
+from rich.markup import escape
 
 from bakar.commands._app import app, console
 from bakar.user_config import (
@@ -24,9 +25,9 @@ def list() -> None:
     """Print every recognized setting key with its current value or an unset marker."""
     for key, value in list_settings().items():
         if value is None:
-            console.print(f"{key} = {_UNSET_MARKER}")
+            typer.echo(f"{key} = {_UNSET_MARKER}")
         else:
-            console.print(f"{key} = {value!r}")
+            typer.echo(f"{key} = {value!r}")
 
 
 @settings_app.command("get")
@@ -37,12 +38,12 @@ def get(
     try:
         value = get_setting(key)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/]")
+        console.print(f"[red]{escape(str(exc))}[/]")
         raise typer.Exit(code=2) from exc
     if value is None:
-        console.print(_UNSET_MARKER)
+        typer.echo(_UNSET_MARKER)
     else:
-        console.print(repr(value))
+        typer.echo(repr(value))
 
 
 @settings_app.command("set")
@@ -54,7 +55,7 @@ def set(
     try:
         set_setting(key, value)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/]")
+        console.print(f"[red]{escape(str(exc))}[/]")
         raise typer.Exit(code=2) from exc
 
 
@@ -66,7 +67,7 @@ def unset(
     try:
         unset_setting(key)
     except ValueError as exc:
-        console.print(f"[red]{exc}[/]")
+        console.print(f"[red]{escape(str(exc))}[/]")
         raise typer.Exit(code=2) from exc
 
 
