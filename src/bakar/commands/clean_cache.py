@@ -23,9 +23,10 @@ import typer
 
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
-from bakar.commands._helpers import _find_workspace_from_cwd, _remove_tree_or_exit
+from bakar.commands._helpers import _find_workspace_from_cwd, _remove_tree_report
 from bakar.config import shared_ccache_dir
-from bakar.fsremove import parallel_apply
+from bakar.fmt import neutralize
+from bakar.fsremove import parallel_apply, parallel_rmtree
 from bakar.mounts import _mount_entry_in
 from bakar.sccache_cluster import _parse_dist_status_servers as _parse_dist_status_servers  # re-exported for tests
 from bakar.sccache_cluster import (
@@ -336,23 +337,41 @@ def _resolve_build_dirs(override: Path | None) -> list[Path]:
     return sorted(p for p in ws.glob("build-*") if p.is_dir())
 
 
-def _empty_dir_in_place(path: Path) -> None:
+def _print_leftover(target: Path, path: Path, err: BaseException) -> None:
+    """Print one leftover in the wording ``bakar clean`` uses (see ``_remove_tree_report``)."""
+    total = getattr(err, "residue_count", 1)
+    more = f" (+{total - 1} more undeletable entries)" if total > 1 else ""
+    console.print(
+        f"[red]could not fully remove[/] {neutralize(target)}: {neutralize(path)}: {neutralize(err)}{more}",
+        highlight=False,
+    )
+
+
+def _empty_dir_in_place(path: Path) -> list[tuple[Path, BaseException]]:
     """Delete every child of *path* but keep *path* itself (NFS-safe).
 
     Removing and recreating an NFS-exported directory swaps its inode and breaks
     every client mount (the secondary sees ESTALE). Emptying its contents in place
     cools the shared cache for all nodes while preserving the export root. Creates
     *path* first when absent - bakar doctor needs it to exist.
+
+    Returns ``(path, error)`` for each child that could not be fully removed; an
+    empty list means *path* is now empty.
     """
     path.mkdir(parents=True, exist_ok=True)
+    leftover: list[tuple[Path, BaseException]] = []
     for child in path.iterdir():
         try:
             if child.is_symlink() or not child.is_dir():
                 child.unlink()
-            else:
-                shutil.rmtree(child, ignore_errors=True)
-        except OSError:
-            pass
+                continue
+        except OSError as exc:
+            leftover.append((child, exc))
+            continue
+        residue = parallel_rmtree(child, description=f"Removing {child.name}/")
+        if residue is not None:
+            leftover.append(residue)
+    return leftover
 
 
 def _run_full_reset(
@@ -394,56 +413,64 @@ def _run_full_reset(
     user_cfg = _state._USER_CONFIG
     bind_host = (user_cfg.cluster_bind_host if user_cfg is not None else None) or "localhost"
 
-    def _stop_daemons() -> None:
+    def _stop_daemons() -> int:
         # Lazy import to avoid any future import cycle if hashserv/prserv grow deps.
         from bakar import hashserv, prserv
 
         _log("stopping hashserv/prserv daemons (if running) ...")
         hashserv.stop(sstate)
         prserv.stop(sstate, binary_root=binary_root, bind_host=bind_host)
+        return 0
 
-    def _empty_sstate() -> None:
+    def _empty_sstate() -> int:
         _log("emptying shared sstate in place (can take a while on a large cache) ...")
-        _empty_dir_in_place(sstate)
-        _log("shared sstate emptied")
+        leftover = _empty_dir_in_place(sstate)
+        for path, err in leftover:
+            _print_leftover(sstate, path, err)
+        if not leftover:
+            _log("shared sstate emptied")
+        return len(leftover)
 
-    def _wipe_build_dir(b: Path) -> None:
+    def _wipe_build_dir(b: Path) -> int:
         _log(f"wiping local build dir {b} ...")
-        _remove_tree_or_exit(b, f"Removing {b.name}/")
+        return 0 if _remove_tree_report(b, f"Removing {b.name}/") else 1
 
-    def _wipe_cache_dir(c: Path) -> None:
+    def _wipe_cache_dir(c: Path) -> int:
         _log(f"wiping sccache client disk cache {c} ...")
-        shutil.rmtree(c, ignore_errors=True)
+        return 0 if _remove_tree_report(c, f"Removing {c.name}/") else 1
 
-    def _wipe_ccache_dir(c: Path) -> None:
+    def _wipe_ccache_dir(c: Path) -> int:
         # --full is a cold reset: age-based ccache eviction is not enough, the
         # local ccache dir is wiped whole so the next build starts empty.
         _log(f"wiping local ccache dir {c} ...")
-        shutil.rmtree(c, ignore_errors=True)
+        return 0 if _remove_tree_report(c, f"Removing {c.name}/") else 1
 
-    def _stop_client_daemon() -> None:
+    def _stop_client_daemon() -> int:
         _log("stopping the sccache client daemon (if running) ...")
         try:
             subprocess.run(["pkill", "-f", "^/usr/bin/sccache$"], check=False)
         except FileNotFoundError:
             pass
+        return 0
 
-    def _reset_pc1() -> None:
+    def _reset_pc1() -> int:
         _log("resetting sccache-dist server on PC1 (local) ...")
         subprocess.run(["bash", "-c", reset_cmd], check=False)
         _log("PC1 sccache-dist server reset + restarted")
+        return 0
 
-    def _reset_secondaries() -> None:
+    def _reset_secondaries() -> int:
         secondaries = _resolve_secondaries()
         if not secondaries:
             _log("no secondary build servers detected; reset PC1 only.")
-            return
+            return 0
         for node in secondaries:
             _log(f"resetting {node}: local build dir + sccache-dist server ...")
             subprocess.run(["ssh", "-t", node, _remote_reset_cmd(build_dirs, reset_cmd)], check=False)
             _log(f"{node} reset complete")
+        return 0
 
-    actions: list[tuple[str, Callable[[], None]]] = [
+    actions: list[tuple[str, Callable[[], int]]] = [
         ("stop hashserv/prserv daemons (if running)", _stop_daemons),
         (f"empty in place (keep root): {sstate}", _empty_sstate),
     ]
@@ -496,10 +523,14 @@ def _run_full_reset(
             console.print("Aborted.")
             raise typer.Exit
 
+    leftovers = 0
     for _desc, thunk in actions:
-        thunk()
+        leftovers += thunk()
 
     _verify_distribution()
+    if leftovers:
+        console.print(f"[red]cold-reset finished with {leftovers} leftover(s); see above[/]", highlight=False)
+        raise typer.Exit(code=1)
     _log("cold-reset complete")
 
 

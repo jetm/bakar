@@ -623,3 +623,180 @@ def test_clean_cache_ctx_boolean_flags_are_not_transposed(
     for name, want in expected.items():
         got = getattr(ctx, name)
         assert got == want, f"{flag} -> _CleanCacheCtx.{name}: expected {want!r}, got {got!r}"
+
+
+# ---------------------------------------------------------------------------
+# Leftovers: every step runs, every leftover is reported, exit 1 at the end
+# ---------------------------------------------------------------------------
+
+
+def _stuck_rmtree(stuck: set[Path]):
+    """Fake ``parallel_rmtree``: report residue for roots in *stuck*, else really remove.
+
+    Patching the residue (rather than chmod-ing a tree) keeps the tests valid when
+    the suite runs as root, where nothing is undeletable.
+    """
+    import shutil
+
+    def _fake(root: Path, description: str = "Removing"):
+        if root in stuck:
+            return (root / "stuck.o", OSError("Device or resource busy"))
+        shutil.rmtree(root, ignore_errors=True)
+        return None
+
+    return _fake
+
+
+def _full_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, list[list[str]]]:
+    """Common --full setup; returns (sstate, recorded subprocess calls)."""
+    sstate = tmp_path / "sstate"
+    sstate.mkdir()
+    monkeypatch.setenv("SSTATE_DIR", str(sstate))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _patch_no_secondaries(monkeypatch)
+    _patch_full_reset_gates(monkeypatch)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "bakar.commands.clean_cache.subprocess.run",
+        lambda cmd, **_k: calls.append(list(cmd)) or subprocess.CompletedProcess(cmd, 0),
+    )
+    return sstate, calls
+
+
+def _flat(output: str) -> str:
+    return "".join(output.split())
+
+
+def test_full_reset_runs_every_step_after_a_build_dir_leftover(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A build dir that cannot be fully removed does not stop the later steps."""
+    _sstate, calls = _full_env(tmp_path, monkeypatch)
+    build1 = tmp_path / "build-one"
+    build1.mkdir()
+    ccache = tmp_path / "ws" / "ccache"
+    ccache.mkdir(parents=True)
+    monkeypatch.setattr("bakar.fsremove.parallel_rmtree", _stuck_rmtree({build1}))
+
+    result = runner.invoke(
+        app, ["clean-cache", "--full", "--build-dir", str(build1), "--ccache-dir", str(ccache), "-y"]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert not ccache.exists(), "later ccache wipe must still run"
+    assert ["pkill", "-f", "^/usr/bin/sccache$"] in calls, calls
+    assert any(c[:2] == ["bash", "-c"] and "sccache-server" in c[2] for c in calls), calls
+    assert "could not fully remove" in result.output
+
+
+def test_full_reset_exits_one_with_leftover_after_all_steps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The summary line follows the verification and names the leftover count."""
+    _sstate, _calls = _full_env(tmp_path, monkeypatch)
+    build = tmp_path / "build-one"
+    build.mkdir()
+    verified: list[str] = []
+    monkeypatch.setattr("bakar.commands.clean_cache._verify_distribution", lambda: verified.append("v"))
+    monkeypatch.setattr("bakar.fsremove.parallel_rmtree", _stuck_rmtree({build}))
+
+    result = runner.invoke(app, ["clean-cache", "--full", "--build-dir", str(build), "-y"])
+
+    assert result.exit_code == 1, result.output
+    assert verified == ["v"], "distribution verification must still run"
+    flat = _flat(result.output)
+    assert "stuck.o" in flat
+    assert "cold-resetfinishedwith1leftover(s);seeabove" in flat
+    assert "cold-reset:cold-resetcomplete" not in flat
+
+
+def test_full_reset_reports_ccache_and_cache_leftover(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ccache and sccache client cache leftovers are printed and counted, not ignored."""
+    _sstate, _calls = _full_env(tmp_path, monkeypatch)
+    cache = tmp_path / ".cache" / "sccache"
+    cache.mkdir(parents=True)
+    ccache = tmp_path / "ws" / "ccache"
+    ccache.mkdir(parents=True)
+    monkeypatch.setattr("bakar.fsremove.parallel_rmtree", _stuck_rmtree({cache, ccache}))
+
+    result = runner.invoke(app, ["clean-cache", "--full", "--ccache-dir", str(ccache), "-y"])
+
+    assert result.exit_code == 1, result.output
+    flat = _flat(result.output)
+    assert flat.count("couldnotfullyremove") == 2, result.output
+    assert "cold-resetfinishedwith2leftover(s);seeabove" in flat
+    assert cache.exists()
+    assert ccache.exists()
+
+
+def test_full_reset_keeps_sstate_root_with_leftover(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A sstate child that cannot be removed is reported; the root survives; later steps run."""
+    sstate, calls = _full_env(tmp_path, monkeypatch)
+    root_inode = sstate.stat().st_ino
+    stuck_child = sstate / "ab"
+    stuck_child.mkdir()
+    (sstate / "loose.zst").write_bytes(b"x")
+    monkeypatch.setattr("bakar.commands.clean_cache.parallel_rmtree", _stuck_rmtree({stuck_child}))
+
+    result = runner.invoke(app, ["clean-cache", "--full", "-y"])
+
+    assert result.exit_code == 1, result.output
+    assert sstate.is_dir()
+    assert sstate.stat().st_ino == root_inode
+    assert not (sstate / "loose.zst").exists(), "removable children still go"
+    flat = _flat(result.output)
+    assert "couldnotfullyremove" in flat
+    assert "stuck.o" in flat
+    assert "sharedsstateemptied" not in flat
+    assert any(c[:2] == ["bash", "-c"] for c in calls), "later steps must still run"
+
+
+def test_full_reset_clean_run_reports_no_leftover_and_exits_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing left behind: no leftover line, verification runs, exit 0."""
+    sstate, _calls = _full_env(tmp_path, monkeypatch)
+    (sstate / "old.zst").write_bytes(b"x")
+    (sstate / "dir").mkdir()
+    build = tmp_path / "build-one"
+    build.mkdir()
+    verified: list[str] = []
+    monkeypatch.setattr("bakar.commands.clean_cache._verify_distribution", lambda: verified.append("v"))
+
+    result = runner.invoke(app, ["clean-cache", "--full", "--build-dir", str(build), "-y"])
+
+    assert result.exit_code == 0, result.output
+    assert "could not fully remove" not in result.output
+    assert "leftover" not in result.output
+    assert verified == ["v"]
+    assert list(sstate.iterdir()) == []
+    assert not build.exists()
+
+
+def test_full_reset_dry_run_plan_is_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The dry-run plan lists the same actions in the same order and removes nothing."""
+    sstate, calls = _full_env(tmp_path, monkeypatch)
+    (sstate / "keep.zst").write_bytes(b"x")
+    build = tmp_path / "build-one"
+    build.mkdir()
+    ccache = tmp_path / "ws" / "ccache"
+    ccache.mkdir(parents=True)
+
+    result = runner.invoke(app, ["clean-cache", "--full", "--build-dir", str(build), "--ccache-dir", str(ccache), "-n"])
+
+    assert result.exit_code == 0, result.output
+    plan = _flat(result.output.split("Plan:", 1)[1])
+    expected = [
+        "stophashserv/prservdaemons(ifrunning)",
+        f"emptyinplace(keeproot):{sstate}",
+        f"rm-rf(local):{build}",
+        f"rm-rf(local):{tmp_path / '.cache' / 'sccache'}",
+        f"rm-rf(localccache):{ccache}",
+        "pkill-f'^/usr/bin/sccache$'",
+    ]
+    pos = 0
+    for item in expected:
+        found = plan.find(_flat(item), pos)
+        assert found >= 0, f"{item!r} missing or out of order in plan: {plan}"
+        pos = found + len(_flat(item))
+    assert "resetsecondarybuildservers" in plan
+    assert calls == []
+    assert (sstate / "keep.zst").exists()
+    assert build.is_dir()
+    assert ccache.is_dir()
