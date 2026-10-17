@@ -1149,7 +1149,7 @@ def check_psi_support(cfg: BuildConfig) -> CheckResult:
         return _skip(
             name,
             Severity.INFO,
-            "PSI available; no thresholds configured (set [build] psi_autocalibrate = true to tune)",
+            "PSI available; no thresholds configured (set \\[build] psi_autocalibrate = true to tune)",
         )
     active = ", ".join(
         f"{k}={v}"
@@ -1176,7 +1176,7 @@ def check_systemd_scope(cfg: BuildConfig) -> CheckResult:
     """
     name = "systemd-scope"
     if not cfg.scope:
-        return _skip(name, Severity.INFO, "build scope disabled (--no-scope / [build] scope = false)")
+        return _skip(name, Severity.INFO, "build scope disabled (--no-scope / \\[build] scope = false)")
     if build_scope.systemd_run_available():
         return _ok(name, Severity.INFO, "systemd --user scope available; build will run scoped")
     missing = [k for k in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS") if not os.environ.get(k)]
@@ -1482,7 +1482,7 @@ def _uninative_gate(cfg: BuildConfig) -> str | None:
     would instead fire on every Debian host that never enables the feature.
     """
     if not cfg.uninative:
-        return "[build] uninative is off; no host uninative tarball is wired in"
+        return "\\[build] uninative is off; no host uninative tarball is wired in"
     if not cfg.host_mode:
         return "container build; the fragment's file:// mirror does not exist inside the image"
     if not _host_is_arch_like():
@@ -1551,7 +1551,7 @@ def check_uninative_fragment(cfg: BuildConfig) -> CheckResult:
         return _fail(
             name,
             Severity.BLOCK,
-            f"[build] uninative is on but {fragment.path} is absent, so the uninative overlay is "
+            f"\\[build] uninative is on but {fragment.path} is absent, so the uninative overlay is "
             "not selected and the wiring is silently skipped - the build would run against "
             "oe-core's own glibc cap with different sstate signatures",
             fix_hint="Install the yocto-uninative-tarball package, or set \\[build] uninative = false.",
@@ -2961,7 +2961,7 @@ def check_ccache_health(cfg: BuildConfig) -> CheckResult:
     """
     name = "ccache-health"
     if not cfg.ccache:
-        return _skip(name, Severity.WARN, "ccache disabled ([build] ccache = false)")
+        return _skip(name, Severity.WARN, "ccache disabled (\\[build] ccache = false)")
     ccache_dir = cfg.effective_ccache_dir
     if not ccache_dir.exists():
         return _skip(
@@ -3121,7 +3121,7 @@ def check_sccache_dist(cfg: BuildConfig) -> CheckResult:
     """
     name = "sccache-dist"
     if not cfg.use_sccache_dist:
-        return _skip(name, Severity.INFO, "distributed compile not configured ([build] sccache_dist = false)")
+        return _skip(name, Severity.INFO, "distributed compile not configured (\\[build] sccache_dist = false)")
 
     # The reachability probe below is host-side; it cannot speak for the
     # in-container client, which reaches the scheduler in its own network
@@ -3227,7 +3227,7 @@ def check_hashserv(cfg: BuildConfig) -> CheckResult:
 
     name = "hashserv"
     if not cfg.use_hashequiv:
-        return _skip(name, Severity.INFO, "hashserv daemon not configured ([build] hashserv = false)")
+        return _skip(name, Severity.INFO, "hashserv daemon not configured (\\[build] hashserv = false)")
 
     if not hashserv.is_running(cfg.hashserv_state_key):
         # The build auto-starts the daemon via _build_env, so a not-yet-running

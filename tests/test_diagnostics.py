@@ -2857,3 +2857,35 @@ def test_nfs_delegations_skips_when_locks_unreadable(tmp_path: Path, monkeypatch
 
     assert result.status == Status.SKIP
     assert "unreadable" in result.message
+
+
+def test_diagnostic_strings_do_not_carry_an_unescaped_build_section_token() -> None:
+    """Rich reads ``[build]`` in a printed message or hint as a style tag and drops it.
+
+    Every check message and fix hint is printed with markup on, so the section
+    name must be written ``\\[build]`` in the source. Docstrings and comments are
+    never printed and are exempt.
+    """
+    import ast
+    import re
+
+    import bakar.diagnostics as diagnostics_module
+
+    source = Path(diagnostics_module.__file__).read_text()
+    tree = ast.parse(source)
+    docstrings: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            first = node.body[0] if node.body else None
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                docstrings.add(id(first.value))
+    unescaped = re.compile(r"(?<!\\)\[build\]")
+    offenders = [
+        f"line {node.lineno}: {node.value[:60]!r}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstrings
+        and unescaped.search(node.value)
+    ]
+    assert not offenders, "unescaped [build] in printed text: " + "; ".join(offenders)
