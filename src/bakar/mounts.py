@@ -374,25 +374,6 @@ def _mount_entry_in(mounts_raw: str, path: Path) -> tuple[str, str, str, str] | 
     return _mount_entry_for_target(mounts_raw, target)
 
 
-# NFS mount options that bound negative-lookup (absence) caching. Without one
-# of these -- or a low attribute-cache timeout -- a client can report a file as
-# still-absent for the full attribute timeout after a peer created it.
-# Real kernels normalize "positive" -> "pos" when reporting mount options in
-# /proc/mounts (the source of truth this check reads -- NOT /etc/fstab or
-# whatever a user passed to `mount`), so "lookupcache=pos" MUST be present or
-# every correctly-configured "lookupcache=positive" mount false-WARNs. Keep
-# "lookupcache=positive" too, for synthetic option strings built in tests.
-_NFS_BOUNDED_LOOKUP_OPTS: frozenset[str] = frozenset({"lookupcache=positive", "lookupcache=pos", "lookupcache=none"})
-
-# An attribute-cache timeout at or below this many seconds counts as bounded.
-_NFS_LOW_ACTIMEO_SECONDS = 10
-
-# Attribute-cache timeout options that bound how long a stale absence view can
-# survive. ``acdirmax`` is included because directory-entry caching is what
-# actually governs negative lookups.
-_NFS_ACTIMEO_OPTS: tuple[str, ...] = ("actimeo", "acregmax", "acdirmax")
-
-
 def is_path_on_nfs(path: Path) -> bool | None:
     """Tri-state: is ``path`` backed by an nfs/nfs4 mount?
 
@@ -446,32 +427,6 @@ def is_path_on_nfs(path: Path) -> bool | None:
     if fstype == "autofs":
         return None
     return fstype in _FS_NFS
-
-
-def _nfs_lookup_cache_bounded(opts: str) -> bool:
-    """True when NFS mount ``opts`` bound how long a stale absence view lives.
-
-    Either an explicit ``lookupcache=positive``/``lookupcache=pos``/
-    ``lookupcache=none`` (the kernel reports the abbreviated ``pos`` form in
-    ``/proc/mounts``, while ``positive`` is what users type in fstab/mount
-    options), or an attribute-cache timeout of at most
-    :data:`_NFS_LOW_ACTIMEO_SECONDS` seconds. An unparseable timeout value
-    counts as unbounded.
-    """
-    entries = [opt.strip() for opt in opts.split(",")]
-    if any(opt in _NFS_BOUNDED_LOOKUP_OPTS for opt in entries):
-        return True
-    for opt in entries:
-        key, _, value = opt.partition("=")
-        if key not in _NFS_ACTIMEO_OPTS or not value:
-            continue
-        try:
-            seconds = int(value)
-        except ValueError:
-            continue
-        if seconds <= _NFS_LOW_ACTIMEO_SECONDS:
-            return True
-    return False
 
 
 # Active NFS delegations on the build device before a local build is judged

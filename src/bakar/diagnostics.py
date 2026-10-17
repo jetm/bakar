@@ -82,7 +82,6 @@ from bakar.mounts import (
     _NFS_DELEG_WARN_THRESHOLD,
     _deleg_counts,
     _mount_entry_in,
-    _nfs_lookup_cache_bounded,
     is_path_on_nfs,  # noqa: F401
 )
 
@@ -2700,7 +2699,7 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
             Severity.WARN,
             f"no mountpoint covers {workspace} in /proc/mounts",
         )
-    _ws_source, ws_mount, ws_fstype, ws_opts = ws_entry
+    _ws_source, ws_mount, ws_fstype, _ws_opts = ws_entry
 
     # Resolve symlinks (strict=False tolerates the not-yet-created machine leaf):
     # a local_tmpdir_base symlinked onto an NFS target would otherwise be
@@ -2762,39 +2761,6 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
             fix_hint=(
                 "Move the workspace to a local ext4/btrfs/xfs path, e.g. /var/cache/sstate or ~/yocto, then re-run."
             ),
-        )
-
-    # (b) workspace on NFS with a local TMPDIR - the new supported capability.
-    # If the tmp path resolves to no mount entry we cannot assert it is local, so
-    # skip rather than PASS a possibly-NFS tmp under a green verdict.
-    if ws_fstype in _FS_NFS:
-        if tmp_fstype is None:
-            return _skip(
-                name,
-                Severity.WARN,
-                f"workspace on {ws_fstype} at {ws_mount}; TMPDIR {tmpdir} resolves to no mount - verify it is local",
-            )
-        # The bitbake-lock ownership guard reasons about a lock file's absence
-        # across fleet nodes. Unbounded negative-lookup caching lets a stale
-        # "absent" view survive for the full attribute timeout, so that part of
-        # the safety argument must not stay silent.
-        if not _nfs_lookup_cache_bounded(ws_opts):
-            return _fail(
-                name,
-                Severity.WARN,
-                f"workspace on {ws_fstype} at {ws_mount} without bounded negative-lookup caching "
-                f"(mount options: {ws_opts}): a peer node's lock file can read as absent for the "
-                "full attribute timeout",
-                fix_hint=(
-                    "Remount the workspace with lookupcache=positive (reported as lookupcache=pos "
-                    "in /proc/mounts) (or a low actimeo, e.g. actimeo=10) "
-                    "so lock-file absence is judged on a fresh view, then re-run."
-                ),
-            )
-        return _ok(
-            name,
-            Severity.WARN,
-            f"workspace on {ws_fstype} at {ws_mount}; TMPDIR local ({tmp_fstype}) at {tmpdir}",
         )
 
     # (d) all-local or unrecognized fstype - unchanged.
