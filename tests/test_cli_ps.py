@@ -2,7 +2,7 @@
 
 ``bakar ps`` is directory-independent by design: it performs no workspace
 resolution of any kind, so every test here monkeypatches the host-wide
-discovery calls on ``bakar.commands.ps.build_stop`` directly rather than
+discovery calls on ``bakar.commands.ps.run_discovery`` directly rather than
 building a ``.bakar.toml``-marked workspace fixture the way every other
 CLI-command test suite does.
 """
@@ -16,8 +16,8 @@ from unittest.mock import MagicMock
 import pytest
 
 import bakar.commands.ps as ps_cmd
-from bakar.build_stop import RunCandidate, RunRoot
 from bakar.cli import app
+from bakar.run_discovery import RunCandidate, RunRoot
 from bakar.stop_container import ContainerCandidate
 from tests.conftest import make_build_config
 
@@ -39,7 +39,7 @@ def _no_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
     nothing on a developer machine that happens to have a build running.
     """
     monkeypatch.setattr(ps_cmd.proc_tree, "_discover_host_cookers", dict)
-    monkeypatch.setattr(ps_cmd.build_stop, "correlate_host_discoveries", lambda _discovered, **_kw: [])
+    monkeypatch.setattr(ps_cmd.run_discovery, "correlate_host_discoveries", lambda _discovered, **_kw: [])
     monkeypatch.setattr(ps_cmd.stop_container, "detect_runtime", lambda: "docker")
     monkeypatch.setattr(ps_cmd.stop_container, "discover_running_containers_or_warn", lambda _runtime: ([], None))
 
@@ -91,7 +91,7 @@ def test_ps_renders_host_mode_row(runner: _CliRunner, tmp_path: Path, monkeypatc
     candidate = RunCandidate(run_dir=run_dir, root=root, cfg=cfg)
 
     monkeypatch.setattr(ps_cmd.proc_tree, "_discover_host_cookers", lambda: {"fake": frozenset()})
-    monkeypatch.setattr(ps_cmd.build_stop, "correlate_host_discoveries", lambda _discovered, **_kw: [candidate])
+    monkeypatch.setattr(ps_cmd.run_discovery, "correlate_host_discoveries", lambda _discovered, **_kw: [candidate])
     monkeypatch.setattr(ps_cmd.stop_container, "detect_runtime", lambda: "docker")
     monkeypatch.setattr(ps_cmd.stop_container, "discover_running_containers_or_warn", lambda _runtime: ([], None))
 
@@ -112,7 +112,7 @@ def test_ps_container_row_falls_back_to_unknown_when_mount_unrecoverable(
     candidate = ContainerCandidate(run_id="20260618-130000-222", container_id="abc123")
 
     monkeypatch.setattr(ps_cmd.proc_tree, "_discover_host_cookers", dict)
-    monkeypatch.setattr(ps_cmd.build_stop, "correlate_host_discoveries", lambda _discovered, **_kw: [])
+    monkeypatch.setattr(ps_cmd.run_discovery, "correlate_host_discoveries", lambda _discovered, **_kw: [])
     monkeypatch.setattr(ps_cmd.stop_container, "detect_runtime", lambda: "docker")
     monkeypatch.setattr(
         ps_cmd.stop_container, "discover_running_containers_or_warn", lambda _runtime: ([candidate], None)
@@ -143,7 +143,7 @@ def test_ps_container_row_falls_back_to_unknown_when_run_record_unreadable(
     empty_mount_source.mkdir()
 
     monkeypatch.setattr(ps_cmd.proc_tree, "_discover_host_cookers", dict)
-    monkeypatch.setattr(ps_cmd.build_stop, "correlate_host_discoveries", lambda _discovered, **_kw: [])
+    monkeypatch.setattr(ps_cmd.run_discovery, "correlate_host_discoveries", lambda _discovered, **_kw: [])
     monkeypatch.setattr(ps_cmd.stop_container, "detect_runtime", lambda: "docker")
     monkeypatch.setattr(
         ps_cmd.stop_container, "discover_running_containers_or_warn", lambda _runtime: ([candidate], None)
@@ -184,7 +184,7 @@ def test_ps_container_row_resolves_nxp_family_through_real_mount_seam(
     candidate = ContainerCandidate(run_id=nxp_run_id, container_id="nxp-container")
 
     monkeypatch.setattr(ps_cmd.proc_tree, "_discover_host_cookers", dict)
-    monkeypatch.setattr(ps_cmd.build_stop, "correlate_host_discoveries", lambda _discovered, **_kw: [])
+    monkeypatch.setattr(ps_cmd.run_discovery, "correlate_host_discoveries", lambda _discovered, **_kw: [])
     monkeypatch.setattr(ps_cmd.stop_container, "detect_runtime", lambda: "docker")
     monkeypatch.setattr(
         ps_cmd.stop_container, "discover_running_containers_or_warn", lambda _runtime: ([candidate], None)
@@ -236,7 +236,7 @@ def test_ps_container_row_resolves_meta_avocado_build_star_root(
     candidate = ContainerCandidate(run_id=avocado_run_id, container_id="avocado-container")
 
     monkeypatch.setattr(ps_cmd.proc_tree, "_discover_host_cookers", dict)
-    monkeypatch.setattr(ps_cmd.build_stop, "correlate_host_discoveries", lambda _discovered, **_kw: [])
+    monkeypatch.setattr(ps_cmd.run_discovery, "correlate_host_discoveries", lambda _discovered, **_kw: [])
     monkeypatch.setattr(ps_cmd.stop_container, "detect_runtime", lambda: "docker")
     monkeypatch.setattr(
         ps_cmd.stop_container, "discover_running_containers_or_warn", lambda _runtime: ([candidate], None)
@@ -282,7 +282,7 @@ def test_ps_json_schema_has_no_omitted_fields(
     candidate = RunCandidate(run_dir=run_dir, root=root, cfg=cfg)
 
     monkeypatch.setattr(ps_cmd.proc_tree, "_discover_host_cookers", lambda: {"fake": frozenset()})
-    monkeypatch.setattr(ps_cmd.build_stop, "correlate_host_discoveries", lambda _discovered, **_kw: [candidate])
+    monkeypatch.setattr(ps_cmd.run_discovery, "correlate_host_discoveries", lambda _discovered, **_kw: [candidate])
     monkeypatch.setattr(ps_cmd.stop_container, "detect_runtime", lambda: "docker")
     monkeypatch.setattr(ps_cmd.stop_container, "discover_running_containers_or_warn", lambda _runtime: ([], None))
 
@@ -312,7 +312,7 @@ def test_ps_json_container_row_unknown_placeholder_is_a_string(
     candidate = ContainerCandidate(run_id="20260618-130000-222", container_id="abc123")
 
     monkeypatch.setattr(ps_cmd.proc_tree, "_discover_host_cookers", dict)
-    monkeypatch.setattr(ps_cmd.build_stop, "correlate_host_discoveries", lambda _discovered, **_kw: [])
+    monkeypatch.setattr(ps_cmd.run_discovery, "correlate_host_discoveries", lambda _discovered, **_kw: [])
     monkeypatch.setattr(ps_cmd.stop_container, "detect_runtime", lambda: "docker")
     monkeypatch.setattr(
         ps_cmd.stop_container, "discover_running_containers_or_warn", lambda _runtime: ([candidate], None)
@@ -351,7 +351,7 @@ def test_ps_end_to_end_fixture_scenarios(
     # accumulate across one test rather than reverting mid-test, so without
     # this restoration the "0 builds" stub stays active for every later
     # section too.
-    real_correlate_host_discoveries = ps_cmd.build_stop.correlate_host_discoveries
+    real_correlate_host_discoveries = ps_cmd.run_discovery.correlate_host_discoveries
 
     # --- 0 builds ----------------------------------------------------
     _no_discovery(monkeypatch)
@@ -365,7 +365,7 @@ def test_ps_end_to_end_fixture_scenarios(
     assert json.loads(result_json.output) == []
 
     # --- 1 build (host mode) ------------------------------------------
-    monkeypatch.setattr(ps_cmd.build_stop, "correlate_host_discoveries", real_correlate_host_discoveries)
+    monkeypatch.setattr(ps_cmd.run_discovery, "correlate_host_discoveries", real_correlate_host_discoveries)
     # Only `_discover_host_cookers` is mocked here (the real /proc walk) -
     # `correlate_host_discoveries` itself runs for real, exercising the same
     # enumerate_workspace_runs/live_workspace_runs/resolve() seam production
@@ -428,7 +428,7 @@ def test_ps_end_to_end_fixture_scenarios(
 
     monkeypatch.setattr(ps_cmd.proc_tree, "_discover_host_cookers", lambda: {"fake": frozenset()})
     monkeypatch.setattr(
-        ps_cmd.build_stop,
+        ps_cmd.run_discovery,
         "correlate_host_discoveries",
         lambda _discovered, **_kw: [host_candidate_a, host_candidate_b],
     )
@@ -491,7 +491,7 @@ def test_ps_end_to_end_fixture_scenarios(
     aux_container = ContainerCandidate(run_id="20260701-130000-dedup", container_id="cid-aux")
 
     monkeypatch.setattr(ps_cmd.proc_tree, "_discover_host_cookers", dict)
-    monkeypatch.setattr(ps_cmd.build_stop, "correlate_host_discoveries", lambda _discovered, **_kw: [])
+    monkeypatch.setattr(ps_cmd.run_discovery, "correlate_host_discoveries", lambda _discovered, **_kw: [])
     monkeypatch.setattr(ps_cmd.stop_container, "detect_runtime", lambda: "docker")
     monkeypatch.setattr(
         ps_cmd.stop_container,
@@ -575,15 +575,15 @@ def test_ps_never_modifies_discovered_build_state(
     discover_containers_mock = MagicMock(side_effect=lambda _runtime: ([container_candidate], None))
     mount_source_mock = MagicMock(side_effect=lambda _runtime, _cid: str(tmp_path / "container-mount"))
     enumerate_runs_mock = MagicMock(
-        side_effect=lambda _path, **_kw: ps_cmd.build_stop.RunScan(candidates=[container_scan_candidate], skipped=[])
+        side_effect=lambda _path, **_kw: ps_cmd.run_discovery.RunScan(candidates=[container_scan_candidate], skipped=[])
     )
 
     monkeypatch.setattr(ps_cmd.proc_tree, "_discover_host_cookers", discover_hosts_mock)
-    monkeypatch.setattr(ps_cmd.build_stop, "correlate_host_discoveries", correlate_mock)
+    monkeypatch.setattr(ps_cmd.run_discovery, "correlate_host_discoveries", correlate_mock)
     monkeypatch.setattr(ps_cmd.stop_container, "detect_runtime", detect_runtime_mock)
     monkeypatch.setattr(ps_cmd.stop_container, "discover_running_containers_or_warn", discover_containers_mock)
     monkeypatch.setattr(ps_cmd, "_container_mount_source", mount_source_mock)
-    monkeypatch.setattr(ps_cmd.build_stop, "enumerate_workspace_runs", enumerate_runs_mock)
+    monkeypatch.setattr(ps_cmd.run_discovery, "enumerate_workspace_runs", enumerate_runs_mock)
 
     def _forbid(name: str):
         def _raise(*_args: object, **_kwargs: object) -> None:

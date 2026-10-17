@@ -6,7 +6,7 @@ any kind: it never calls ``_workspace_from_cwd`` or resolves a
 correctly from anywhere on the host, including outside any bakar workspace.
 
 Aggregates group 13's deduplicated host-wide discovery from
-:mod:`bakar.build_stop`:
+:mod:`bakar.run_discovery` and :mod:`bakar.stop_container`:
 
 - host-mode builds, found by a ``/proc`` walk for bitbake cooker argv markers
   (``_discover_host_cookers``) and correlated to their live run directories
@@ -31,7 +31,7 @@ from typing import Annotated
 import typer
 
 import bakar.commands._app as _state
-from bakar import build_stop, proc_tree, stop_container
+from bakar import build_stop, proc_tree, run_discovery, stop_container
 from bakar.commands._app import app, console
 from bakar.commands._helpers import _run_started_epoch
 from bakar.fmt import fmt_duration
@@ -130,7 +130,7 @@ def _container_row_info(runtime: str, candidate: stop_container.ContainerCandida
     as generic/bbsetup - the same fix host-mode discovery's bare-runs-path
     branch already applies. Every other shape (a meta-avocado workspace, a
     plain bbsetup workspace, or any other bsp_root) is passed to
-    :func:`bakar.build_stop.enumerate_workspace_runs` UNCHANGED, so it takes
+    :func:`bakar.run_discovery.enumerate_workspace_runs` UNCHANGED, so it takes
     the workspace-scan branch, which already includes the passed root itself
     as a generic candidate and globs its ``build-*`` fanout roots - the same
     resolution this call used before the nxp/ti-only special case was added,
@@ -146,7 +146,7 @@ def _container_row_info(runtime: str, candidate: stop_container.ContainerCandida
     mount_path = Path(mount_source)
     scan_path = mount_path / "build" / "runs" if mount_path.name in ("nxp", "ti") else mount_path
     try:
-        scan = build_stop.enumerate_workspace_runs(scan_path, user_config=_state._USER_CONFIG)
+        scan = run_discovery.enumerate_workspace_runs(scan_path, user_config=_state._USER_CONFIG)
     except Exception:  # noqa: BLE001 - a broken/unreadable mount path must not fail the row
         return _UNKNOWN, _UNKNOWN, None
     for run_candidate in scan.candidates:
@@ -165,7 +165,7 @@ def _collect_rows() -> list[_Row]:
     now = time.time()
 
     discovered = proc_tree._discover_host_cookers()
-    host_candidates = build_stop.correlate_host_discoveries(discovered, user_config=_state._USER_CONFIG)
+    host_candidates = run_discovery.correlate_host_discoveries(discovered, user_config=_state._USER_CONFIG)
 
     runtime = stop_container.detect_runtime()
     container_candidates, warning = stop_container.discover_running_containers_or_warn(runtime)
@@ -173,7 +173,7 @@ def _collect_rows() -> list[_Row]:
         build_stop._say(warning)
     container_candidates = stop_container.dedup_container_candidates(container_candidates)
 
-    host_candidates, container_candidates = build_stop.dedup_across_sources(host_candidates, container_candidates)
+    host_candidates, container_candidates = run_discovery.dedup_across_sources(host_candidates, container_candidates)
 
     rows: list[_Row] = [
         _Row(
