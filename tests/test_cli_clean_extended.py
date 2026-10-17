@@ -168,7 +168,7 @@ def test_clean_all_branch_invokes_hashserv_stop_and_clean_build_dir(
     monkeypatch.setattr(
         clean_mod,
         "_clean_build_dir",
-        lambda cfg: recorded.append(f"clean:{cfg.bsp_root}"),
+        lambda cfg, **_kw: recorded.append(f"clean:{cfg.bsp_root}"),
     )
 
     result = runner.invoke(app, ["clean", "--all", "--bsp", "nxp"])
@@ -205,7 +205,7 @@ def test_clean_without_all_skips_hashserv_stop(
         "stop",
         lambda root: stop_called.append(str(root)) or True,
     )
-    monkeypatch.setattr(clean_mod, "_clean_build_dir", lambda cfg: None)
+    monkeypatch.setattr(clean_mod, "_clean_build_dir", lambda cfg, **_kw: None)
 
     result = runner.invoke(app, ["clean", "--bsp", "nxp"])
 
