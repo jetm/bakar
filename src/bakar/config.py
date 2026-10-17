@@ -439,9 +439,10 @@ class BuildConfig:
     # tell the two apart once the value is a bare string.
     sstate_mirrors_source: str | None = field(default=None)
     # Node-local base for the build TMPDIR. When set (and the build is host
-    # mode), the build tmp is redirected off the - possibly NFS - source
-    # workspace to ``<local_tmpdir_base>/<bsp_root.name>-<machine>`` on local
-    # disk. Absent (None) keeps the workspace-relative tmp; see resolved_tmpdir.
+    # mode), the build tmp is redirected off the workspace to
+    # ``<local_tmpdir_base>/<bsp_root.name>-<machine>`` on another local disk. A
+    # workspace on NFS is refused by the doctor, so this does not make one
+    # buildable. Absent (None) keeps the workspace-relative tmp; see resolved_tmpdir.
     local_tmpdir_base: str | None = field(default=None)
     # Build-directory name template for a kas file in a linked meta-avocado
     # worktree; None means the default ``build-{stem}-{worktree}``. See
@@ -678,8 +679,8 @@ class BuildConfig:
 
         When ``local_tmpdir_base`` is set AND the build is host mode, the tmp is
         redirected to ``<local_tmpdir_base>/<bsp_root.name>-<machine>-<digest>``
-        on node-local disk - keeping the - possibly NFS - source workspace off
-        the path bitbake's sanity check forbids on NFS. The leaf must be unique
+        on node-local disk, separate from the workspace (which the doctor
+        refuses on NFS). The leaf must be unique
         per build directory, but ``bsp_root.name`` alone is not: for nxp/ti it is
         the family literal (two checkouts share ``nxp``) and for meta-avocado
         ``machine`` degenerates to ``"generic"``. An 8-char digest of the

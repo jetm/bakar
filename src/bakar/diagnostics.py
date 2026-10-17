@@ -1186,7 +1186,7 @@ def check_systemd_scope(cfg: BuildConfig) -> CheckResult:
         f"scope enabled but 'systemd-run --user --scope' cannot reach a user manager{detail}; "
         "build will run UNSCOPED (no session-survival or oom protection)",
         fix_hint="ensure a systemd --user instance is running (loginctl enable-linger), "
-        "or set [build] scope = false to silence this",
+        "or set \\[build] scope = false to silence this",
     )
 
 
@@ -1218,7 +1218,7 @@ def check_cgroup_v2(cfg: BuildConfig) -> CheckResult:
         Severity.WARN,
         "scope resource controls (memory/cpu/io) are configured but this host is not on a "
         "cgroup v2 unified hierarchy; the controls will be silently ineffective",
-        fix_hint="boot with systemd.unified_cgroup_hierarchy=1, or clear the [build] scope_* resource controls",
+        fix_hint="boot with systemd.unified_cgroup_hierarchy=1, or clear the \\[build] scope_* resource controls",
     )
 
 
@@ -1250,7 +1250,7 @@ def check_scope_controller_weights(cfg: BuildConfig) -> CheckResult:
         Severity.WARN,
         f"scope sets {', '.join(active)}, forcing the cpu/io cgroup controllers across the whole "
         "user session; under heavy build I/O this can cause a session-wide priority-inversion stall",
-        fix_hint="set [build] scope_cpu_weight = 0 and scope_io_weight = 0 unless you have measured a need",
+        fix_hint="set \\[build] scope_cpu_weight = 0 and scope_io_weight = 0 unless you have measured a need",
     )
 
 
@@ -1553,7 +1553,7 @@ def check_uninative_fragment(cfg: BuildConfig) -> CheckResult:
             f"[build] uninative is on but {fragment.path} is absent, so the uninative overlay is "
             "not selected and the wiring is silently skipped - the build would run against "
             "oe-core's own glibc cap with different sstate signatures",
-            fix_hint="Install the yocto-uninative-tarball package, or set [build] uninative = false.",
+            fix_hint="Install the yocto-uninative-tarball package, or set \\[build] uninative = false.",
         )
     if fragment.error is not None:
         return _fail(
@@ -2110,7 +2110,7 @@ def check_uninative_cluster_consistency(cfg: BuildConfig) -> CheckResult:
             Severity.WARN,
             "cluster mode is on but neither SSTATE_DIR nor DL_DIR resolves to an existing directory, so "
             "this node cannot publish its uninative ceiling for the peers to compare against",
-            fix_hint="Set [build] sstate_dir (or SSTATE_DIR) to the shared NFS export; see shared-mounts.",
+            fix_hint="Set \\[build] sstate_dir (or SSTATE_DIR) to the shared NFS export; see shared-mounts.",
         )
 
     node = socket.gethostname()
@@ -2666,24 +2666,50 @@ def check_nfs_delegations(cfg: BuildConfig) -> CheckResult:
     )
 
 
+_NFS_BUILD_TREE_HINT = (
+    "Move the workspace and its build directory to a node-local ext4, btrfs or xfs path, then re-run. "
+    "The shared sstate, downloads and ccache directories may stay on NFS."
+)
+
+
+def _undetermined_fs_reason(entry: tuple[str, str, str, str] | None) -> str | None:
+    """Why a covering mount entry cannot name a real filesystem, or None when it can.
+
+    ``None`` from :func:`_mount_entry_in` is a bounded-resolve timeout (or, in
+    principle, no covering mount); an ``autofs`` entry is a trap the kernel
+    resolves through to whatever gets auto-mounted, frequently NFS here. Neither
+    confirms the path is local, so neither may PASS.
+    """
+    if entry is None:
+        return "the mount lookup timed out or found no covering mount"
+    if entry[2] == "autofs":
+        return f"only an autofs trap covers it at {entry[1]} (not mounted yet)"
+    return None
+
+
 def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
-    """Judge BOTH the workspace-root fstype AND the resolved-``TMPDIR`` fstype.
+    """Judge the workspace-root, TOPDIR and resolved-``TMPDIR`` fstypes.
 
-    Two axes break a Yocto build for different reasons:
-
-    - The resolved ``TMPDIR`` on nfs/nfs4 is fatal: bitbake's sanity check
-      aborts (``TMPDIR ... can't be located on nfs``) and pseudo's hardlink
-      tracking corrupts. This is a ``Severity.BLOCK`` FAIL.
+    - A workspace or TOPDIR (``bsp_root/build_dir_name``) on nfs/nfs4 is
+      refused: building through NFS is not supported. This is a
+      ``Severity.BLOCK`` FAIL, judged first so the default all-on-NFS layout
+      names the workspace rather than only its TMPDIR. Shared sstate, downloads
+      and ccache directories on NFS stay supported (the cache checks judge
+      those).
+    - The resolved ``TMPDIR`` on nfs/nfs4 under a local build tree is fatal:
+      bitbake's sanity check aborts (``TMPDIR ... can't be located on nfs``)
+      and pseudo's hardlink tracking corrupts. This is a ``Severity.BLOCK``
+      FAIL whose hint points at ``local_tmpdir_base``.
+    - A path covered only by an ``autofs`` trap, or whose bounded mount lookup
+      timed out, has an undetermined filesystem: a ``Severity.WARN`` FAIL,
+      never a PASS.
     - The source workspace on a non-network blocking fstype (vfat/exfat/ntfs/9p
       or cifs/smb\\*) breaks the build through the *source layers* - case
       folding, missing xattrs, no atomic rename - regardless of where
       ``TMPDIR`` lives, so a local ``TMPDIR`` override must NOT false-PASS it.
       This is a ``Severity.WARN`` FAIL.
 
-    A workspace on nfs/nfs4 is refused whatever ``TMPDIR`` is: building through
-    NFS is not supported, so this is a ``Severity.BLOCK`` FAIL. Shared sstate,
-    downloads and ccache directories on NFS stay supported (the cache checks
-    judge those). All-local or unrecognized fstypes PASS exactly as before.
+    All-local or unrecognized fstypes PASS exactly as before.
     """
     name = "workspace-filesystem"
     try:
@@ -2693,45 +2719,55 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
 
     workspace = cfg.workspace.resolve()
     ws_entry = _mount_entry_in(mounts_raw, workspace)
-    if ws_entry is None:
-        return _skip(
-            name,
-            Severity.WARN,
-            f"no mountpoint covers {workspace} in /proc/mounts",
-        )
-    _ws_source, ws_mount, ws_fstype, _ws_opts = ws_entry
+    ws_fstype = ws_entry[2] if ws_entry is not None else None
 
-    # Resolve symlinks (strict=False tolerates the not-yet-created machine leaf):
-    # a local_tmpdir_base symlinked onto an NFS target would otherwise be
+    # Resolve symlinks (strict=False tolerates not-yet-created leaves): a
+    # local_tmpdir_base or build/ symlinked onto an NFS target would otherwise be
     # classified by its lexical local path and wrongly PASS while bitbake follows
-    # the link to NFS and aborts. The workspace above is resolved for the same
-    # reason.
+    # the link to NFS. The workspace above is resolved for the same reason.
+    topdir = (cfg.bsp_root / cfg.build_dir_name).resolve(strict=False)
+    top_entry = _mount_entry_in(mounts_raw, topdir)
+    top_fstype = top_entry[2] if top_entry is not None else None
+
     tmpdir = cfg.resolved_tmpdir.resolve(strict=False)
     tmp_entry = _mount_entry_in(mounts_raw, tmpdir)
     tmp_fstype = tmp_entry[2] if tmp_entry is not None else None
     tmp_mount = tmp_entry[1] if tmp_entry is not None else None
 
-    # (a) resolved TMPDIR on NFS -> fatal, bitbake's sanity check aborts.
+    # (a) workspace on NFS is refused whatever TMPDIR is.
+    if ws_entry is not None and ws_fstype in _FS_NFS:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"workspace {workspace} is on {ws_fstype} at {ws_entry[1]}: building through NFS is not supported",
+            fix_hint=_NFS_BUILD_TREE_HINT,
+        )
+
+    # (a1) a local workspace whose build directory (TOPDIR) is an NFS mount is
+    # the same unsupported layout: bitbake.lock, the build config and the
+    # default TMPDIR all live there, and local_tmpdir_base moves only the last.
+    if top_entry is not None and top_fstype in _FS_NFS:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"build directory {topdir} is on {top_fstype} at {top_entry[1]}: building through NFS is not supported",
+            fix_hint=_NFS_BUILD_TREE_HINT,
+        )
+
+    # (a2) resolved TMPDIR on NFS under a local build tree -> fatal, bitbake's
+    # sanity check aborts.
     if tmp_fstype in _FS_NFS:
-        if ws_fstype in _FS_NFS:
-            tmp_hint = (
-                "The workspace itself is on NFS too: move it to a node-local ext4/btrfs/xfs path "
-                "(building through NFS is not supported). Setting [build] local_tmpdir_base alone "
-                "is not enough, then re-run."
-            )
-        else:
-            tmp_hint = (
-                "Set [build] local_tmpdir_base to a node-local ext4/btrfs/xfs path (host mode only) "
-                "so the build TMPDIR leaves NFS, then re-run."
-            )
         return _fail(
             name,
             Severity.BLOCK,
             f"resolved TMPDIR {tmpdir} is on {tmp_fstype} at {tmp_mount}: bitbake aborts on TMPDIR over NFS",
-            fix_hint=tmp_hint,
+            fix_hint=(
+                "Set \\[build] local_tmpdir_base to a node-local ext4/btrfs/xfs path (host mode only) "
+                "so the build TMPDIR leaves NFS, then re-run."
+            ),
         )
 
-    # (a2) an active local_tmpdir_base override that lands on a non-NFS blocking
+    # (a3) an active local_tmpdir_base override that lands on a non-NFS blocking
     # fstype (vfat/exfat/ntfs/9p) is a user misconfiguration: the redirected tmp
     # cannot hold pseudo's xattrs/hardlinks or case-sensitive paths. Gated on the
     # override so an un-overridden workspace on such an fs stays the (c) WARN
@@ -2742,26 +2778,33 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
             Severity.BLOCK,
             f"resolved TMPDIR {tmpdir} is on {tmp_fstype} at {tmp_mount}: the build TMPDIR needs "
             "xattrs/hardlinks/case-sensitivity this filesystem lacks",
-            fix_hint="Point [build] local_tmpdir_base at a node-local ext4/btrfs/xfs path, then re-run.",
+            fix_hint="Point \\[build] local_tmpdir_base at a node-local ext4/btrfs/xfs path, then re-run.",
         )
 
-    # (a3) workspace on NFS is refused whatever TMPDIR is: building through NFS
-    # is not supported. Shared sstate/downloads/ccache dirs on NFS stay allowed
-    # (the cache checks judge those), so only the workspace root is judged here.
-    if ws_fstype in _FS_NFS:
-        return _fail(
-            name,
-            Severity.BLOCK,
-            f"workspace {workspace} is on {ws_fstype} at {ws_mount}: building through NFS is not supported",
-            fix_hint=(
-                "Move the workspace to a node-local ext4, btrfs or xfs path, then re-run. "
-                "The shared sstate, downloads and ccache directories may stay on NFS."
-            ),
-        )
+    # (b) an autofs-only entry or a timed-out lookup cannot confirm locality.
+    for label, path, entry in (
+        ("workspace", workspace, ws_entry),
+        ("build directory", topdir, top_entry),
+        ("TMPDIR", tmpdir, tmp_entry),
+    ):
+        reason = _undetermined_fs_reason(entry)
+        if reason is not None:
+            return _fail(
+                name,
+                Severity.WARN,
+                f"the filesystem of the {label} {path} could not be determined: {reason}",
+                fix_hint=(
+                    f"Access {path} once so any automount completes (e.g. `ls {path}`), confirm it is a "
+                    "node-local ext4/btrfs/xfs path, then re-run."
+                ),
+            )
+
+    assert ws_entry is not None  # (b) returned for an undetermined workspace
+    ws_mount = ws_entry[1]
 
     # (c) workspace on a non-NFS blocking fstype breaks the source layers
     # regardless of TMPDIR locality - a local override must not mask it.
-    if ws_fstype in _FS_BLOCK and ws_fstype not in _FS_NFS:
+    if ws_fstype in _FS_BLOCK:
         return _fail(
             name,
             Severity.WARN,
@@ -3102,7 +3145,7 @@ def check_sccache_dist(cfg: BuildConfig) -> CheckResult:
             name,
             Severity.BLOCK,
             "sccache_dist is enabled but no scheduler URL is set",
-            fix_hint="Set [build] sccache_scheduler_url or pass --sccache-scheduler URL.",
+            fix_hint="Set \\[build] sccache_scheduler_url or pass --sccache-scheduler URL.",
         )
 
     parsed = urllib.parse.urlparse(url)
@@ -3252,7 +3295,9 @@ def check_daemon_state(cfg: BuildConfig) -> CheckResult:
             name,
             Severity.BLOCK,
             reason,
-            fix_hint=("set [build] bb_hashserve / prserv_host to the central tier, or point sstate_dir at local disk"),
+            fix_hint=(
+                "set \\[build] bb_hashserve / prserv_host to the central tier, or point sstate_dir at local disk"
+            ),
         )
     return _ok(name, Severity.BLOCK, "per-workspace daemon state is on local disk")
 
@@ -3400,7 +3445,7 @@ def _check_central_endpoint(
             name,
             Severity.WARN,
             f"cluster mode is on but no central {service} is configured - intentional?",
-            fix_hint=f"set [build] {config_key} to the shared {service} endpoint, or disable cluster mode",
+            fix_hint=f"set \\[build] {config_key} to the shared {service} endpoint, or disable cluster mode",
         )
     host, port = split_host_port(endpoint, default_port)
     if _is_loopback(host):
@@ -3416,7 +3461,7 @@ def _check_central_endpoint(
         name,
         Severity.BLOCK,
         f"central {service} unreachable at {host}:{port}",
-        fix_hint=f"start the central {service} service, or fix [build] {config_key}",
+        fix_hint=f"start the central {service} service, or fix \\[build] {config_key}",
     )
 
 
