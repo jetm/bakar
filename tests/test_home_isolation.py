@@ -38,6 +38,36 @@ def test_session_home_is_set_before_package_import():
     assert state.startswith(home)
 
 
+def test_constants_are_derived_from_home_in_a_fresh_interpreter(tmp_path):
+    # Independent of the autouse fixture: a clean `python -I` that never imports
+    # tests.conftest computes every constant from the HOME it was started with,
+    # and the result is compared with home_constants() for that same home.
+    fresh_home = tmp_path / "fresh-home"
+    fresh_home.mkdir()
+    expected = {(m, a): v for m, a, v in home_constants(fresh_home)}
+    code = (
+        "import importlib, sys; sys.path.insert(0, 'src');"
+        f"[print(m, a, getattr(importlib.import_module(m), a)) for m, a in {sorted(expected)!r}]"
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("XDG_", "BAKAR_"))}
+    env["HOME"] = str(fresh_home)
+    out_file = tmp_path / "constants.out"
+    with out_file.open("w") as out:
+        subprocess.run(
+            [sys.executable, "-I", "-c", code],
+            stdout=out,
+            env=env,
+            cwd=Path(__file__).resolve().parent.parent,
+            check=True,
+            timeout=120,
+        )
+    reported = {}
+    for line in out_file.read_text().splitlines():
+        module, attr, value = line.split(" ", 2)
+        reported[(module, attr)] = Path(value)
+    assert reported == expected
+
+
 def test_user_config_path_is_under_isolated_home():
     home = Path(os.environ["HOME"])
     assert home != REAL_HOME

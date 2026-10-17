@@ -615,6 +615,8 @@ def test_stress_parse_refuses_before_cache_wipe_on_peer_held(
 
     assert result.exit_code == 1, result.output
     assert "some-peer-host" in result.output
+    assert "refusing to wipe the parse caches" in " ".join(result.output.split())
+    assert "remove the build directory" not in result.output
     mock_run.assert_not_called()
     assert all(c.exists() for c in caches)
 
@@ -661,4 +663,7 @@ def test_stress_parse_proceeds_with_warning_when_unattributable(
 
     assert result.exit_code == 0, result.output
     assert "cannot attribute the build lock" in result.output
+    assert "wiping the parse caches anyway" in " ".join(result.output.split())
+    assert "remove the build directory" not in result.output
+    assert "removing the build directory" not in result.output
     assert mock_run.call_count == 1

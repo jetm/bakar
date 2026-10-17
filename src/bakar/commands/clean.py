@@ -110,7 +110,7 @@ def clean(
         from bakar import hashserv
 
         hashserv.stop(cfg.hashserv_state_key)
-    _clean_build_dir(cfg)
+    _clean_build_dir(cfg, gated=True)
     if all and cfg.kas_yaml.exists():
         cfg.kas_yaml.unlink()
         console.print(f"[green]removed[/] {cfg.kas_yaml}")

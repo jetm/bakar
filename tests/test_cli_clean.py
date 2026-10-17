@@ -159,3 +159,26 @@ def test_clean_refuses_when_a_local_build_is_live(
     assert "4242" in result.output
     assert stop_calls == []
     assert (workspace / "nxp" / "build").is_dir()
+
+
+def test_clean_consults_the_gate_once_and_warns_once_when_unattributable(
+    runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bakar import build_stop, hashserv
+
+    guard_calls: list[object] = []
+
+    def _guard(cfg: object) -> build_stop.LockRefusal:
+        guard_calls.append(cfg)
+        return build_stop.LockRefusal(reason="unattributable", marker=workspace / "nxp" / "build" / "marker")
+
+    monkeypatch.setattr("bakar.build_stop.lock_mutation_guard", _guard)
+    monkeypatch.setattr("bakar.steps.kas_lock.local_build_holder", lambda c: None)
+    monkeypatch.setattr(hashserv, "stop", lambda root: True)
+
+    result = runner.invoke(app, ["clean", "--bsp", "nxp"])
+
+    assert result.exit_code == 0, result.output
+    assert len(guard_calls) == 1
+    assert result.output.count("cannot attribute the build lock") == 1
+    assert not (workspace / "nxp" / "build").exists()

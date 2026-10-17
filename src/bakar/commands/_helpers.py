@@ -306,6 +306,20 @@ def resolve_global_config(request: ResolveRequest) -> BuildConfig:
 # ---------------------------------------------------------------------------
 
 
+def _print_leftover(target: Path, path: Path, err: BaseException) -> None:
+    """Print one undeletable leftover in the wording ``bakar clean`` uses."""
+    from bakar.commands import console
+
+    total = getattr(err, "residue_count", 1)
+    more = f" (+{total - 1} more undeletable entries)" if total > 1 else ""
+    # Build-tree filenames are untrusted: ``x[`` raises MarkupError, ``[id].js``
+    # loses its text, and an OSC escape reaches the terminal.
+    console.print(
+        f"[red]could not fully remove[/] {neutralize(target)}: {neutralize(path)}: {neutralize(err)}{more}",
+        highlight=False,
+    )
+
+
 def _remove_tree_report(target: Path, description: str) -> bool:
     """Remove ``target`` via ``parallel_rmtree``; return False naming the residue.
 
@@ -318,14 +332,7 @@ def _remove_tree_report(target: Path, description: str) -> bool:
     residue = parallel_rmtree(target, description=description)
     if residue is not None:
         path, err = residue
-        total = getattr(err, "residue_count", 1)
-        more = f" (+{total - 1} more undeletable entries)" if total > 1 else ""
-        # Build-tree filenames are untrusted: ``x[`` raises MarkupError, ``[id].js``
-        # loses its text, and an OSC escape reaches the terminal.
-        console.print(
-            f"[red]could not fully remove[/] {neutralize(target)}: {neutralize(path)}: {neutralize(err)}{more}",
-            highlight=False,
-        )
+        _print_leftover(target, path, err)
         return False
     console.print(f"[green]removed[/] {neutralize(target)}")
     return True
@@ -337,7 +344,12 @@ def _remove_tree_or_exit(target: Path, description: str) -> None:
         raise typer.Exit(1)
 
 
-def _refuse_if_build_live(cfg: BuildConfig) -> None:
+def _refuse_if_build_live(
+    cfg: BuildConfig,
+    *,
+    action: str = "remove the build directory",
+    doing: str = "removing the build directory",
+) -> None:
     """Exit 1 before any removal when a build still holds this build directory.
 
     A ``peer-held`` marker refuses outright. The guard never reports a build
@@ -355,7 +367,7 @@ def _refuse_if_build_live(cfg: BuildConfig) -> None:
         host = neutralize(refusal.host) if refusal.host else "another host"
         marker = refusal.marker if refusal.marker is not None else build_stop.lock_marker_path(cfg)
         console.print(
-            f"[red]refusing to remove the build directory: build owned by {host}[/] "
+            f"[red]refusing to {action}: build owned by {host}[/] "
             f"(marker {neutralize(marker)}). {neutralize(build_stop.manual_clear_hint(marker))}",
             highlight=False,
         )
@@ -365,7 +377,7 @@ def _refuse_if_build_live(cfg: BuildConfig) -> None:
     if pid is not None:
         marker = build_stop.lock_marker_path(cfg)
         console.print(
-            f"[red]refusing to remove the build directory: a local build is running (pid {pid})[/]. "
+            f"[red]refusing to {action}: a local build is running (pid {pid})[/]. "
             f"Run `bakar stop` first. {neutralize(build_stop.manual_clear_hint(marker))}",
             highlight=False,
         )
@@ -374,13 +386,12 @@ def _refuse_if_build_live(cfg: BuildConfig) -> None:
     if refusal is not None and refusal.reason == "unattributable":
         marker = refusal.marker if refusal.marker is not None else build_stop.lock_marker_path(cfg)
         console.print(
-            f"[yellow]warning: cannot attribute the build lock (marker {neutralize(marker)}); "
-            "removing the build directory anyway[/]",
+            f"[yellow]warning: cannot attribute the build lock (marker {neutralize(marker)}); {doing} anyway[/]",
             highlight=False,
         )
 
 
-def _clean_build_dir(cfg: BuildConfig) -> None:
+def _clean_build_dir(cfg: BuildConfig, *, gated: bool = False) -> None:
     """Remove the BSP-specific ``build/`` dir. Shared by ``bakar clean``
     and ``bakar build --clean``. No-op if the dir is already absent; exits 1
     when the removal leaves anything behind.
@@ -388,8 +399,13 @@ def _clean_build_dir(cfg: BuildConfig) -> None:
     Uses :func:`bakar.fsremove.parallel_rmtree` - the same pooled-removal path
     ``clean-cache`` uses for sstate GC - so wiping a multi-hundred-GB ``tmp/``
     parallelizes per-recipe subtree deletion instead of serializing one rmtree.
+
+    ``gated=True`` means the caller already ran :func:`_refuse_if_build_live`
+    and the check is not repeated (a second run would print the unattributable
+    warning twice).
     """
-    _refuse_if_build_live(cfg)
+    if not gated:
+        _refuse_if_build_live(cfg)
     build_dir = cfg.bsp_root / cfg.build_dir_name
     if build_dir.exists():
         _remove_tree_or_exit(build_dir, f"Removing {build_dir.name}/")

@@ -55,10 +55,6 @@ def detect_runtime() -> str:
     return "docker"
 
 
-# Old private name, still read by steps/kas_pty.py and tests/test_build_stop_container.py.
-_detect_runtime = detect_runtime
-
-
 def _container_id_status(runtime: str, container_label: str) -> tuple[str, str | None]:
     """Tri-state query backing :func:`_container_id` and :func:`escalate_container_tree`.
 

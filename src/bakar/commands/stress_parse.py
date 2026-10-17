@@ -233,7 +233,7 @@ def _stress_parse_impl(ctx: _StressParseCtx) -> None:
     # Each iteration wipes the parse caches (including bb_persist_data.sqlite3's
     # directory); a build holding this TOPDIR would lose them, so refuse once up
     # front, before the override, the YAML regeneration and the first iteration.
-    _refuse_if_build_live(cfg)
+    _refuse_if_build_live(cfg, action="wipe the parse caches", doing="wiping the parse caches")
 
     cfg.runs_dir.mkdir(parents=True, exist_ok=True)
     with RunLogger(runs_dir=cfg.runs_dir) as log:

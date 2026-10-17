@@ -23,9 +23,8 @@ import typer
 
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
-from bakar.commands._helpers import _find_workspace_from_cwd, _remove_tree_report
+from bakar.commands._helpers import _find_workspace_from_cwd, _print_leftover, _remove_tree_report
 from bakar.config import shared_ccache_dir
-from bakar.fmt import neutralize
 from bakar.fsremove import parallel_apply, parallel_rmtree
 from bakar.mounts import _mount_entry_in
 from bakar.sccache_cluster import _parse_dist_status_servers as _parse_dist_status_servers  # re-exported for tests
@@ -335,16 +334,6 @@ def _resolve_build_dirs(override: Path | None) -> list[Path]:
     if ws is None:
         return []
     return sorted(p for p in ws.glob("build-*") if p.is_dir())
-
-
-def _print_leftover(target: Path, path: Path, err: BaseException) -> None:
-    """Print one leftover in the wording ``bakar clean`` uses (see ``_remove_tree_report``)."""
-    total = getattr(err, "residue_count", 1)
-    more = f" (+{total - 1} more undeletable entries)" if total > 1 else ""
-    console.print(
-        f"[red]could not fully remove[/] {neutralize(target)}: {neutralize(path)}: {neutralize(err)}{more}",
-        highlight=False,
-    )
 
 
 def _empty_dir_in_place(path: Path) -> list[tuple[Path, BaseException]]:
