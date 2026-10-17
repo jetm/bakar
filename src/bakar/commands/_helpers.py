@@ -306,8 +306,8 @@ def resolve_global_config(request: ResolveRequest) -> BuildConfig:
 # ---------------------------------------------------------------------------
 
 
-def _remove_tree_or_exit(target: Path, description: str) -> None:
-    """Remove ``target`` via ``parallel_rmtree``; exit 1 naming the residue.
+def _remove_tree_report(target: Path, description: str) -> bool:
+    """Remove ``target`` via ``parallel_rmtree``; return False naming the residue.
 
     A partial removal must not read as success: the caller would go on to build
     on a half-deleted tree. Prints "removed" only when nothing was left behind.
@@ -326,8 +326,15 @@ def _remove_tree_or_exit(target: Path, description: str) -> None:
             f"[red]could not fully remove[/] {neutralize(target)}: {neutralize(path)}: {neutralize(err)}{more}",
             highlight=False,
         )
-        raise typer.Exit(1)
+        return False
     console.print(f"[green]removed[/] {neutralize(target)}")
+    return True
+
+
+def _remove_tree_or_exit(target: Path, description: str) -> None:
+    """Remove ``target`` via ``_remove_tree_report``; exit 1 on any residue."""
+    if not _remove_tree_report(target, description):
+        raise typer.Exit(1)
 
 
 def _refuse_if_build_live(cfg: BuildConfig) -> None:

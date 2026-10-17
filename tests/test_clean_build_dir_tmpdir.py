@@ -103,6 +103,48 @@ def test_clean_build_dir_residue_exits_1_without_removed(tmp_path: Path, monkeyp
 
 
 @pytest.mark.unit
+def test_remove_tree_report_returns_false_and_prints_the_leftover_without_exiting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reporting function returns False and names the residue; it never exits."""
+    from bakar.commands import console
+    from bakar.commands._helpers import _remove_tree_report
+
+    target = tmp_path / "tree"
+    stuck = target / "stuck"
+    err = OSError("busy")
+    err.residue_count = 3  # type: ignore[attr-defined]
+    monkeypatch.setattr("bakar.fsremove.parallel_rmtree", lambda root, description="": (stuck, err))
+
+    with console.capture() as cap:
+        result = _remove_tree_report(target, "tree")
+
+    out = cap.get()
+    assert result is False
+    assert "could not fully remove" in out
+    assert "stuck" in out
+    assert "busy" in out
+    assert "(+2 more undeletable entries)" in out
+    assert "removed" not in out.replace("could not fully remove", "")
+
+
+@pytest.mark.unit
+def test_remove_tree_or_exit_still_exits_one_on_a_leftover(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The exiting wrapper raises typer.Exit(1) when the report function says False."""
+    from bakar.commands._helpers import _remove_tree_or_exit
+
+    target = tmp_path / "tree"
+    monkeypatch.setattr(
+        "bakar.fsremove.parallel_rmtree", lambda root, description="": (target / "stuck", OSError("busy"))
+    )
+
+    with pytest.raises(typer.Exit) as excinfo:
+        _remove_tree_or_exit(target, "tree")
+
+    assert excinfo.value.exit_code == 1
+
+
+@pytest.mark.unit
 def test_clean_build_dir_absent_directory_does_not_fail(tmp_path: Path) -> None:
     """Nothing to remove is a no-op, not an error."""
     cfg = _cfg(tmp_path / "ws", local_tmpdir_base=None, host_mode=True)
