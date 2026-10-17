@@ -87,17 +87,20 @@ from bakar.mounts import (
 )
 
 # Only ``_parse_cluster_capacity`` and ``_query_cluster_capacity`` have readers
-# left in this module. The rest are re-exported because PRODUCTION code reaches
-# them through ``bakar.diagnostics``: ``cache_render`` and ``commands/monitor``
-# type-annotate the three report dataclasses and ``steps/kas_build`` imports the
-# three probes. tests/test_import_edges.py fails on any other production module
-# that imports a re-exported name from here instead of its defining module.
-# A name whose only caller is a test does NOT belong here. A stub aimed at this
-# path would reach no reader at all while reading as though it had taken, which
-# is the failure the elfscan block above exists to prevent - and one the
-# not-re-exported inventory cannot catch, because the name is present rather
-# than absent. ``ClusterCapacity``, ``_parse_cluster_status`` and
-# ``_build_daemon_report_from_stats`` were dropped for exactly that reason.
+# left in this module. No production module reaches the rest through
+# ``bakar.diagnostics``: ``cache_render``, ``commands/monitor``,
+# ``commands/cluster_info``, ``steps/kas_pty`` and ``steps/kas_overlay`` import
+# them from ``bakar.probes``, and tests/test_import_edges.py fails on any
+# production module that imports a re-exported name from here. They stay only
+# because tests still call or import them on this path (test_sccache_dist,
+# test_cli_cluster_info, test_cli_monitor, test_cache_render,
+# test_diagnostics_ccache, test_family_detection); none of those tests patches
+# them here. A stub aimed at this path would reach no reader at all while
+# reading as though it had taken, which is the failure the elfscan block above
+# exists to prevent - and one the not-re-exported inventory cannot catch,
+# because the name is present rather than absent. ``ClusterCapacity``,
+# ``_parse_cluster_status`` and ``_build_daemon_report_from_stats`` were dropped
+# for exactly that reason.
 from bakar.probes import (
     BuildDaemonReport,  # noqa: F401
     CcacheReport,  # noqa: F401

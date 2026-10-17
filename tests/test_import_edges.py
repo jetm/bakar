@@ -167,11 +167,6 @@ def test_type_checking_and_submodule_imports_count() -> None:
     assert any("src/bakar/triage.py" in v and "src/bakar/steps/kas_build.py" in v for v in violations)
 
 
-# commands/monitor.py is migrated off the diagnostics re-exports in this same
-# change by a separate edit, so the scan leaves that one module out.
-_REEXPORT_SCAN_SKIP = frozenset({"src/bakar/commands/monitor.py"})
-
-
 def _names_defined_in(source: str) -> set[str]:
     """Names a module binds itself (def, class, assignment), not by importing."""
     out: set[str] = set()
@@ -189,7 +184,7 @@ def _diagnostics_reexport_imports(files: dict[str, str], own: set[str]) -> list[
     """``module: name`` for each ``from bakar.diagnostics import name`` that is a re-export."""
     found: list[str] = []
     for rel, source in files.items():
-        if rel == "src/bakar/diagnostics.py" or rel in _REEXPORT_SCAN_SKIP:
+        if rel == "src/bakar/diagnostics.py":
             continue
         for node in ast.walk(ast.parse(source)):
             if isinstance(node, ast.ImportFrom) and node.module == "bakar.diagnostics":
