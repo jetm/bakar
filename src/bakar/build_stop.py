@@ -798,7 +798,7 @@ def _say_stop_refusal(refusal: LockRefusal) -> None:
             f"cannot confirm this node owns the build lock ({refusal.reason}); "
             "refusing to send any signal - resolve ownership manually"
         )
-    if refusal.marker is not None:
+    if refusal.marker is not None and refusal.reason in ("peer-held", "unattributable"):
         message = f"{message}. {manual_clear_hint(refusal.marker)}"
     _say(message)
 

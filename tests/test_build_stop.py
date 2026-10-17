@@ -1992,8 +1992,11 @@ def test_stop_build_sends_zero_signals_on_any_refusal(
     assert (run_dir / "build.pid").exists()
     assert (run_dir / "build.meta.json").exists()
     err = capsys.readouterr().err
-    assert str(marker) in err
-    assert "by hand" in err
+    if reason == "shared-inaction":
+        assert "by hand" not in err
+    else:
+        assert str(marker) in err
+        assert "by hand" in err
 
 
 def test_stop_refusal_names_marker_and_manual_clear(
@@ -2391,3 +2394,14 @@ def test_graceful_stop_verifies_the_lock_pid_against_this_builds_topdir(
     monkeypatch.setattr(build_stop.os, "kill", lambda p, s: pytest.fail("signalled an unverified pid"))
     build_stop.stop_run(run_dir)
     assert seen == [(777, run_dir.parent.parent)]
+
+
+def test_say_stop_refusal_shared_inaction_prints_no_manual_clear_hint(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A shared-inaction refusal carries no delete-the-marker hint."""
+    from bakar import build_stop as bs
+
+    bs._say_stop_refusal(bs.LockRefusal(reason="shared-inaction", marker=tmp_path / "m"))
+    captured = capsys.readouterr()
+    assert "by hand" not in captured.out + captured.err

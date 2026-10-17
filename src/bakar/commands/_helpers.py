@@ -404,6 +404,7 @@ def _refuse_if_build_live(
             f"[red]refusing to {action}: build owned by {host}[/] "
             f"(marker {neutralize(marker)}). {neutralize(build_stop.manual_clear_hint(marker))}",
             highlight=False,
+            soft_wrap=True,
         )
         raise typer.Exit(1)
 
@@ -414,6 +415,7 @@ def _refuse_if_build_live(
         console.print(
             f"[red]refusing to {action}: a local build is running (pid {pid})[/]. Run `bakar stop` first.{hint}",
             highlight=False,
+            soft_wrap=True,
         )
         raise typer.Exit(1)
 
@@ -422,6 +424,7 @@ def _refuse_if_build_live(
         console.print(
             f"[yellow]warning: cannot attribute the build lock (marker {neutralize(marker)}); {doing} anyway[/]",
             highlight=False,
+            soft_wrap=True,
         )
 
 

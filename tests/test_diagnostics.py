@@ -663,6 +663,7 @@ def test_check_bitbake_locks_peer_held_names_marker_and_manual_clear(
     assert result.severity == Severity.BLOCK
     assert result.fix_hint is not None
     assert str(marker) in result.fix_hint
+    assert str(marker) in result.message
     assert "by hand" in result.fix_hint
     assert "wait for the peer build" in result.fix_hint
 

@@ -1956,3 +1956,50 @@ def test_run_option_host_wide_fallback_refuses_ambiguous_match(
 
     assert result.exit_code != 0
     assert "matched more than one build" in result.output
+
+
+def _capture_console(monkeypatch: pytest.MonkeyPatch, width: int = 80):
+    import io
+
+    from rich.console import Console
+
+    buf = io.StringIO()
+    monkeypatch.setattr(stop_cmd, "console", Console(file=buf, width=width, force_terminal=False))
+    return buf
+
+
+def test_print_skipped_root_refusal_prints_bracketed_host_and_root_verbatim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A marker host of ``pc2[/]`` and a root of ``/ws/[wip]/nxp`` print without MarkupError."""
+    buf = _capture_console(monkeypatch, width=400)
+    root = run_discovery.RunRoot(
+        bsp_root=tmp_path / "[wip]" / "nxp", family="nxp", resolve_workspace=tmp_path, resolve_family="nxp"
+    )
+    refusal = stop_cmd.build_stop.LockRefusal(reason="peer-held", host="pc2[/]", marker=tmp_path / "m")
+    stop_cmd._print_skipped_root(run_discovery.SkippedRoot(root=root, refusal=refusal))
+    out = buf.getvalue()
+    assert f"{tmp_path}/[wip]/nxp" in out
+    assert "pc2[/]" in out
+
+
+def test_print_skipped_root_shared_inaction_prints_no_manual_clear_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A shared-inaction refusal must not suggest deleting the marker."""
+    buf = _capture_console(monkeypatch, width=400)
+    root = run_discovery.RunRoot(bsp_root=tmp_path, family="nxp", resolve_workspace=tmp_path, resolve_family="nxp")
+    refusal = stop_cmd.build_stop.LockRefusal(reason="shared-inaction", marker=tmp_path / "m")
+    stop_cmd._print_skipped_root(run_discovery.SkippedRoot(root=root, refusal=refusal))
+    assert "by hand" not in buf.getvalue()
+
+
+def test_print_skipped_root_long_marker_path_not_wrapped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 110-character marker path stays on one line at 80 columns on a non-TTY."""
+    buf = _capture_console(monkeypatch, width=80)
+    marker = tmp_path / ("d" * 100) / ".marker"
+    assert len(str(marker)) >= 108
+    root = run_discovery.RunRoot(bsp_root=tmp_path, family="nxp", resolve_workspace=tmp_path, resolve_family="nxp")
+    refusal = stop_cmd.build_stop.LockRefusal(reason="peer-held", host="pc2", marker=marker)
+    stop_cmd._print_skipped_root(run_discovery.SkippedRoot(root=root, refusal=refusal))
+    assert str(marker) in buf.getvalue()

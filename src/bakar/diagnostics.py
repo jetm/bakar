@@ -1015,7 +1015,8 @@ def check_bitbake_locks(cfg: BuildConfig) -> CheckResult:
             return _fail(
                 "bitbake-locks",
                 Severity.BLOCK,
-                f"bitbake.lock held by {escape(refusal.host or 'unknown host')} (peer node) - a build is running there",
+                f"bitbake.lock held by {escape(refusal.host or 'unknown host')} (peer node) - a build is running there"
+                + (f" (marker {escape(str(refusal.marker))})" if refusal.marker is not None else ""),
                 fix_hint=_with_manual_clear(
                     "wait for the peer build, or build a different machine/TOPDIR", refusal.marker
                 ),

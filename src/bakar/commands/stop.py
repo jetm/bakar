@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.markup import escape
 
 import bakar.commands._app as _state
 from bakar import build_stop, proc_tree, run_discovery
@@ -23,7 +22,7 @@ from bakar.commands._helpers import (
     split_kas_yaml_arg,
 )
 from bakar.config import BSPSpec, ResolveRequest, resolve
-from bakar.fmt import fmt_duration
+from bakar.fmt import fmt_duration, neutralize
 from bakar.steps import remote_dispatch
 
 # Matches config.py's stop_grace_seconds default. A remote stop resolves no
@@ -72,18 +71,19 @@ def _print_skipped_root(skipped_root: run_discovery.SkippedRoot) -> None:
     """
     refusal = skipped_root.refusal
     if refusal.reason == "peer-held":
-        host = refusal.host if refusal.host else "another host"
+        host = neutralize(refusal.host) if refusal.host else "another host"
         text = (
-            f"[yellow]{skipped_root.root.bsp_root} is owned by {host}; run `bakar stop` there to check for a live build"
+            f"[yellow]{neutralize(skipped_root.root.bsp_root)} is owned by {host}; "
+            "run `bakar stop` there to check for a live build"
         )
     else:
         text = (
             f"[yellow]cannot confirm ownership of {skipped_root.root.bsp_root} "
             f"({refusal.reason}); it was not checked for a live build"
         )
-    if refusal.marker is not None:
-        text += " " + escape(build_stop.manual_clear_hint(refusal.marker))
-    console.print(text + "[/]")
+    if refusal.marker is not None and refusal.reason in ("peer-held", "unattributable"):
+        text += ". " + neutralize(build_stop.manual_clear_hint(refusal.marker))
+    console.print(text + "[/]", soft_wrap=True, highlight=False)
 
 
 def _stop_matched_run(
