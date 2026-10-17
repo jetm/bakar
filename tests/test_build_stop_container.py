@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar import build_stop
+from bakar import build_stop, stop_container
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -28,15 +28,15 @@ pytestmark = pytest.mark.unit
 # --- _stop_container escalation order --------------------------------------
 
 
-def _runtime_ok(args: list[str]) -> build_stop._RuntimeResult:
+def _runtime_ok(args: list[str]) -> stop_container._RuntimeResult:
     """A runtime command that exited 0."""
-    return build_stop._RuntimeResult(args, 0, "")
+    return stop_container._RuntimeResult(args, 0, "")
 
 
-def _recording_runtime(issued: list[list[str]]) -> Callable[[list[str]], build_stop._RuntimeResult]:
+def _recording_runtime(issued: list[list[str]]) -> Callable[[list[str]], stop_container._RuntimeResult]:
     """A ``_run_runtime`` stand-in that records each argv and reports success."""
 
-    def _record(args: list[str]) -> build_stop._RuntimeResult:
+    def _record(args: list[str]) -> stop_container._RuntimeResult:
         issued.append(args)
         return _runtime_ok(args)
 
@@ -58,10 +58,10 @@ def _patch_runtime_seams(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         issued.append(["sigint-bitbake", runtime, cid])
         return True
 
-    monkeypatch.setattr(build_stop, "_run_runtime", _recording_runtime(issued))
+    monkeypatch.setattr(stop_container, "_run_runtime", _recording_runtime(issued))
     monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", _record_sigint)
     monkeypatch.setattr(build_stop, "_container_liveness", lambda runtime, cid: build_stop._DEAD)
-    monkeypatch.setattr(build_stop, "_container_gone", lambda runtime, cid: True)
+    monkeypatch.setattr(stop_container, "_container_gone", lambda runtime, cid: True)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
     return issued
 
@@ -109,7 +109,7 @@ def test_stop_container_force_skips_sigint(monkeypatch: pytest.MonkeyPatch) -> N
 def test_stop_container_falls_back_to_pid1_sigint_when_exec_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     """When the in-container SIGINT exec fails, fall back to a container-PID-1 SIGINT."""
     issued: list[list[str]] = []
-    monkeypatch.setattr(build_stop, "_run_runtime", _recording_runtime(issued))
+    monkeypatch.setattr(stop_container, "_run_runtime", _recording_runtime(issued))
     monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", lambda runtime, cid: False)
     monkeypatch.setattr(build_stop, "_container_liveness", lambda runtime, cid: build_stop._DEAD)
     monkeypatch.setattr(build_stop.time, "sleep", lambda _s: None)
@@ -130,14 +130,14 @@ def test_stop_container_ctrl_c_reaches_stop_kill_ladder(monkeypatch: pytest.Monk
     and fires the container escalate ladder.
     """
     issued: list[list[str]] = []
-    monkeypatch.setattr(build_stop, "_run_runtime", _recording_runtime(issued))
+    monkeypatch.setattr(stop_container, "_run_runtime", _recording_runtime(issued))
     monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", lambda runtime, cid: True)
 
     def _ctrl_c(_runtime: str, _cid: str) -> str:
         raise KeyboardInterrupt
 
     monkeypatch.setattr(build_stop, "_container_liveness", _ctrl_c)
-    monkeypatch.setattr(build_stop, "_container_gone", lambda runtime, cid: True)
+    monkeypatch.setattr(stop_container, "_container_gone", lambda runtime, cid: True)
 
     status = build_stop._stop_container("docker", "abc", build_stop._ContainerStopPlan(force=False, term_secs=5))
 
@@ -162,7 +162,7 @@ def test_stop_container_lost_runtime_propagates_without_ladder(
     the caller can map it to exit 1.
     """
     issued: list[list[str]] = []
-    monkeypatch.setattr(build_stop, "_run_runtime", _recording_runtime(issued))
+    monkeypatch.setattr(stop_container, "_run_runtime", _recording_runtime(issued))
     monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", lambda runtime, cid: True)
     monkeypatch.setattr(build_stop, "_graceful_wait", lambda **_kwargs: "lost_runtime")
 
@@ -211,7 +211,7 @@ def test_container_id_empty_stdout_returns_none(monkeypatch: pytest.MonkeyPatch)
         lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""),
     )
 
-    assert build_stop._container_id("docker", "bakar.run_id=X") is None
+    assert stop_container._container_id("docker", "bakar.run_id=X") is None
 
 
 def test_container_id_returns_first_id(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -222,7 +222,7 @@ def test_container_id_returns_first_id(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda *a, **k: SimpleNamespace(returncode=0, stdout="deadbeef1234\n", stderr=""),
     )
 
-    assert build_stop._container_id("podman", "bakar.run_id=X") == "deadbeef1234"
+    assert stop_container._container_id("podman", "bakar.run_id=X") == "deadbeef1234"
 
 
 # --- launch record round-trip ----------------------------------------------
@@ -297,7 +297,7 @@ def test_stop_running_proc_container_sends_single_sigint(monkeypatch: pytest.Mon
     stop_container_calls: list[object] = []
     killpg_calls: list[tuple[int, int]] = []
     monkeypatch.setattr(build_stop, "detect_runtime", lambda: "docker")
-    monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: "abc123")
+    monkeypatch.setattr(stop_container, "_container_id", lambda runtime, label: "abc123")
     monkeypatch.setattr(
         build_stop,
         "_sigint_bitbake_in_container",
@@ -320,7 +320,7 @@ def test_stop_running_proc_container_exec_fail_falls_back_to_pgid(monkeypatch: p
     """When the in-container SIGINT exec fails, fall back to os.killpg(SIGINT)."""
     killpg_calls: list[tuple[int, int]] = []
     monkeypatch.setattr(build_stop, "detect_runtime", lambda: "docker")
-    monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: "abc123")
+    monkeypatch.setattr(stop_container, "_container_id", lambda runtime, label: "abc123")
     monkeypatch.setattr(build_stop, "_sigint_bitbake_in_container", lambda runtime, cid: False)
     monkeypatch.setattr(build_stop.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
 
@@ -336,9 +336,9 @@ def test_stop_running_proc_container_falls_back_to_pgid(monkeypatch: pytest.Monk
     """When the container cannot be resolved, fall back to os.killpg(SIGINT)."""
     issued: list[list[str]] = []
     killpg_calls: list[tuple[int, int]] = []
-    monkeypatch.setattr(build_stop, "_run_runtime", _recording_runtime(issued))
+    monkeypatch.setattr(stop_container, "_run_runtime", _recording_runtime(issued))
     monkeypatch.setattr(build_stop, "detect_runtime", lambda: "docker")
-    monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: None)
+    monkeypatch.setattr(stop_container, "_container_id", lambda runtime, label: None)
     monkeypatch.setattr(build_stop.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
 
     proc = SimpleNamespace(pid=4242)
@@ -354,7 +354,7 @@ def test_stop_running_proc_host_signals_pgid(monkeypatch: pytest.MonkeyPatch) ->
     """Host mode signals the wrapper PGID with SIGINT and makes no runtime call."""
     issued: list[list[str]] = []
     killpg_calls: list[tuple[int, int]] = []
-    monkeypatch.setattr(build_stop, "_run_runtime", _recording_runtime(issued))
+    monkeypatch.setattr(stop_container, "_run_runtime", _recording_runtime(issued))
     monkeypatch.setattr(build_stop.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
 
     proc = SimpleNamespace(pid=999)
@@ -411,7 +411,7 @@ def test_sigint_bitbake_in_container_oserror_returns_false(monkeypatch: pytest.M
 def test_escalate_container_tree_returns_false_when_no_container_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
     """No container for this run's label -> False, so the caller falls back to the host ladder."""
     monkeypatch.setattr(build_stop, "detect_runtime", lambda: "docker")
-    monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: None)
+    monkeypatch.setattr(stop_container, "_container_id", lambda runtime, label: None)
     escalate_calls: list[object] = []
     monkeypatch.setattr(build_stop, "_escalate_container", lambda *a, **k: escalate_calls.append((a, k)))
 
@@ -429,7 +429,7 @@ def test_escalate_container_tree_returns_true_only_when_verified_gone(monkeypatc
     _DEAD is what "verified gone" actually means.
     """
     monkeypatch.setattr(build_stop, "detect_runtime", lambda: "docker")
-    monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: "abc123")
+    monkeypatch.setattr(stop_container, "_container_id", lambda runtime, label: "abc123")
     monkeypatch.setattr(build_stop, "_container_id_status", lambda runtime, label: (build_stop._DEAD, None))
     escalate_calls: list[tuple[str, str, int]] = []
     monkeypatch.setattr(
@@ -453,7 +453,7 @@ def test_escalate_container_tree_returns_false_when_container_survives_the_ladde
     (and the cooker holding bitbake.lock inside it) that never actually died.
     """
     monkeypatch.setattr(build_stop, "detect_runtime", lambda: "docker")
-    monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: "abc123")
+    monkeypatch.setattr(stop_container, "_container_id", lambda runtime, label: "abc123")
     monkeypatch.setattr(build_stop, "_container_id_status", lambda runtime, label: (build_stop._ALIVE, "abc123"))
     monkeypatch.setattr(build_stop, "_escalate_container", lambda *a, **k: None)
 
@@ -472,7 +472,7 @@ def test_escalate_container_tree_returns_false_when_verification_query_errors(
     empty-handed. Only a definitive _DEAD status counts.
     """
     monkeypatch.setattr(build_stop, "detect_runtime", lambda: "docker")
-    monkeypatch.setattr(build_stop, "_container_id", lambda runtime, label: "abc123")
+    monkeypatch.setattr(stop_container, "_container_id", lambda runtime, label: "abc123")
     monkeypatch.setattr(build_stop, "_container_id_status", lambda runtime, label: (build_stop._ERROR, None))
     monkeypatch.setattr(build_stop, "_escalate_container", lambda *a, **k: None)
 
@@ -509,11 +509,11 @@ def test_stop_run_names_the_runtime_error_when_stop_and_kill_are_refused(
     run_dir = _container_run(tmp_path, monkeypatch)
     denied = "permission denied while trying to connect to the docker daemon socket"
 
-    def _refuse(args: list[str]) -> build_stop._RuntimeResult:
-        return build_stop._RuntimeResult(args, 126, denied)
+    def _refuse(args: list[str]) -> stop_container._RuntimeResult:
+        return stop_container._RuntimeResult(args, 126, denied)
 
-    monkeypatch.setattr(build_stop, "_run_runtime", _refuse)
-    monkeypatch.setattr(build_stop, "_container_gone", lambda _rt, _cid: False)
+    monkeypatch.setattr(stop_container, "_run_runtime", _refuse)
+    monkeypatch.setattr(stop_container, "_container_gone", lambda _rt, _cid: False)
     monkeypatch.setattr(build_stop, "_container_id_status", lambda _rt, _label: (build_stop._ALIVE, "cafef00d"))
 
     assert build_stop.stop_run(run_dir, force=True) is False
@@ -536,7 +536,7 @@ def test_stop_run_prints_stopped_exactly_once_after_a_clean_graceful_stop(
     """The container dies on the first SIGINT: one "stopped" line, after verification."""
     run_dir = _container_run(tmp_path, monkeypatch)
     verified: list[str] = []
-    monkeypatch.setattr(build_stop, "_run_runtime", _recording_runtime([]))
+    monkeypatch.setattr(stop_container, "_run_runtime", _recording_runtime([]))
     monkeypatch.setattr(build_stop, "_container_liveness", lambda _rt, _cid: build_stop._DEAD)
     statuses = iter([(build_stop._ALIVE, "cafef00d")])
 
@@ -564,11 +564,11 @@ def test_stop_run_treats_an_already_gone_container_as_success(
     """Runtime "No such container" errors are the wanted outcome, not a failure."""
     run_dir = _container_run(tmp_path, monkeypatch)
 
-    def _gone(args: list[str]) -> build_stop._RuntimeResult:
-        return build_stop._RuntimeResult(args, 1, "Error response from daemon: No such container: cafef00d")
+    def _gone(args: list[str]) -> stop_container._RuntimeResult:
+        return stop_container._RuntimeResult(args, 1, "Error response from daemon: No such container: cafef00d")
 
-    monkeypatch.setattr(build_stop, "_run_runtime", _gone)
-    monkeypatch.setattr(build_stop, "_container_gone", lambda _rt, _cid: True)
+    monkeypatch.setattr(stop_container, "_run_runtime", _gone)
+    monkeypatch.setattr(stop_container, "_container_gone", lambda _rt, _cid: True)
     statuses = iter([(build_stop._ALIVE, "cafef00d")])
     monkeypatch.setattr(
         build_stop, "_container_id_status", lambda _rt, _label: next(statuses, (build_stop._DEAD, None))
@@ -597,13 +597,13 @@ def test_container_gone_lists_by_id_including_stopped_containers(monkeypatch: py
         return _ps_result("")
 
     monkeypatch.setattr(build_stop.subprocess, "run", fake_run)
-    assert build_stop._container_gone("docker", "cafef00d") is True
+    assert stop_container._container_gone("docker", "cafef00d") is True
     assert seen == [["docker", "ps", "-a", "-q", "--filter", "id=cafef00d"]]
 
 
 def test_container_gone_false_when_the_id_is_still_listed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(build_stop.subprocess, "run", lambda *_a, **_k: _ps_result("cafef00d\n"))
-    assert build_stop._container_gone("docker", "cafef00d") is False
+    assert stop_container._container_gone("docker", "cafef00d") is False
 
 
 @pytest.mark.parametrize("failure", ["rc", "oserror", "timeout"])
@@ -616,7 +616,7 @@ def test_container_gone_is_unknown_when_the_query_fails(monkeypatch: pytest.Monk
         return _ps_result("", rc=1)
 
     monkeypatch.setattr(build_stop.subprocess, "run", fake_run)
-    assert build_stop._container_gone("docker", "cafef00d") is None
+    assert stop_container._container_gone("docker", "cafef00d") is None
 
 
 def test_stop_run_reports_stopped_when_rm_fails_but_ps_by_id_shows_it_gone(
@@ -627,12 +627,12 @@ def test_stop_run_reports_stopped_when_rm_fails_but_ps_by_id_shows_it_gone(
     """kas-container runs with --rm: ``rm -f`` can lose the race with the runtime's own removal."""
     run_dir = _container_run(tmp_path, monkeypatch)
 
-    def _rm_races_the_auto_remove(args: list[str]) -> build_stop._RuntimeResult:
+    def _rm_races_the_auto_remove(args: list[str]) -> stop_container._RuntimeResult:
         if args[1] == "rm":
-            return build_stop._RuntimeResult(args, 1, "Error: removal of container cafef00d is already in progress")
+            return stop_container._RuntimeResult(args, 1, "Error: removal of container cafef00d is already in progress")
         return _runtime_ok(args)
 
-    monkeypatch.setattr(build_stop, "_run_runtime", _rm_races_the_auto_remove)
+    monkeypatch.setattr(stop_container, "_run_runtime", _rm_races_the_auto_remove)
     monkeypatch.setattr(build_stop.subprocess, "run", lambda *_a, **_k: _ps_result(""))
     statuses = iter([(build_stop._ALIVE, "cafef00d")])
     monkeypatch.setattr(
@@ -653,11 +653,11 @@ def test_stop_container_reports_unknown_flag_failures_when_the_container_survive
 ) -> None:
     """Runtime usage errors are ordinary failures: only goneness, not the text, decides."""
 
-    def _refuse(args: list[str]) -> build_stop._RuntimeResult:
-        return build_stop._RuntimeResult(args, 125, "unknown shorthand flag: 'x' in -x")
+    def _refuse(args: list[str]) -> stop_container._RuntimeResult:
+        return stop_container._RuntimeResult(args, 125, "unknown shorthand flag: 'x' in -x")
 
-    monkeypatch.setattr(build_stop, "_run_runtime", _refuse)
-    monkeypatch.setattr(build_stop, "_container_gone", lambda _rt, _cid: False)
+    monkeypatch.setattr(stop_container, "_run_runtime", _refuse)
+    monkeypatch.setattr(stop_container, "_container_gone", lambda _rt, _cid: False)
     plan = build_stop._ContainerStopPlan(force=True, term_secs=5)
 
     assert build_stop._stop_container("docker", "abc", plan) == "incomplete"
@@ -669,9 +669,9 @@ def test_stop_container_unknown_goneness_with_a_failed_command_is_incomplete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        build_stop, "_run_runtime", lambda args: build_stop._RuntimeResult(args, 1, "permission denied")
+        stop_container, "_run_runtime", lambda args: stop_container._RuntimeResult(args, 1, "permission denied")
     )
-    monkeypatch.setattr(build_stop, "_container_gone", lambda _rt, _cid: None)
+    monkeypatch.setattr(stop_container, "_container_gone", lambda _rt, _cid: None)
     plan = build_stop._ContainerStopPlan(force=True, term_secs=5)
     assert build_stop._stop_container("docker", "abc", plan) == "incomplete"
 
@@ -680,8 +680,8 @@ def test_stop_container_unknown_goneness_after_a_clean_ladder_is_incomplete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Every ladder command succeeded, but an unanswered goneness query proves nothing."""
-    monkeypatch.setattr(build_stop, "_run_runtime", _runtime_ok)
-    monkeypatch.setattr(build_stop, "_container_gone", lambda _rt, _cid: None)
+    monkeypatch.setattr(stop_container, "_run_runtime", _runtime_ok)
+    monkeypatch.setattr(stop_container, "_container_gone", lambda _rt, _cid: None)
     plan = build_stop._ContainerStopPlan(force=True, term_secs=5)
     assert build_stop._stop_container("docker", "abc", plan) == "incomplete"
     assert plan.failures == ["could not confirm container abc is gone after stop, kill and rm -f"]
@@ -695,8 +695,8 @@ def test_stop_run_unknown_goneness_after_a_clean_ladder_leaves_bitbake_lock(
     run_dir = _container_run(tmp_path, monkeypatch)
     topdir = run_dir.parent.parent
     (topdir / "bitbake.lock").write_text("1\n")
-    monkeypatch.setattr(build_stop, "_run_runtime", _runtime_ok)
-    monkeypatch.setattr(build_stop, "_container_gone", lambda _rt, _cid: None)
+    monkeypatch.setattr(stop_container, "_run_runtime", _runtime_ok)
+    monkeypatch.setattr(stop_container, "_container_gone", lambda _rt, _cid: None)
     monkeypatch.setattr(build_stop, "_container_id_status", lambda _rt, _label: (build_stop._ALIVE, "cafef00d"))
     cleanups: list[object] = []
     monkeypatch.setattr(build_stop, "_report_stale_cleanup", lambda *a, **_k: cleanups.append(a) or [])
@@ -720,8 +720,8 @@ def test_incomplete_container_stop_leaves_bitbake_lock_and_socket_in_place(
     topdir = run_dir.parent.parent
     (topdir / "bitbake.lock").write_text("1\n")
     (topdir / "bitbake.sock").write_text("")
-    monkeypatch.setattr(build_stop, "_run_runtime", lambda args: build_stop._RuntimeResult(args, 126, "denied"))
-    monkeypatch.setattr(build_stop, "_container_gone", lambda _rt, _cid: False)
+    monkeypatch.setattr(stop_container, "_run_runtime", lambda args: stop_container._RuntimeResult(args, 126, "denied"))
+    monkeypatch.setattr(stop_container, "_container_gone", lambda _rt, _cid: False)
     monkeypatch.setattr(build_stop, "_container_id_status", lambda _rt, _label: (build_stop._ALIVE, "cafef00d"))
     cleanups: list[object] = []
     real_cleanup = build_stop._report_stale_cleanup
