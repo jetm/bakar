@@ -642,6 +642,54 @@ def test_check_bitbake_locks_unattributable(tmp_path: Path, monkeypatch: pytest.
     assert "manually" in result.fix_hint
 
 
+def test_check_bitbake_locks_peer_held_names_marker_and_manual_clear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The peer-held hint carries the marker path and the by-hand clear sentence."""
+    cfg = _make_ti_cfg(tmp_path)
+    marker = tmp_path / "ti" / "build" / ".bakar-lock-owner"
+
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.clear_stale_bitbake_locks",
+        lambda _cfg: build_stop.LockClearOutcome(
+            removed=[], refusal=build_stop.LockRefusal(reason="peer-held", host="pc2", marker=marker)
+        ),
+    )
+
+    result = check_bitbake_locks(cfg)
+
+    assert result.status == Status.FAIL
+    assert result.severity == Severity.BLOCK
+    assert result.fix_hint is not None
+    assert str(marker) in result.fix_hint
+    assert "by hand" in result.fix_hint
+    assert "wait for the peer build" in result.fix_hint
+
+
+def test_check_bitbake_locks_unattributable_names_marker_and_manual_clear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The unattributable hint carries the marker path and the by-hand clear sentence."""
+    cfg = _make_ti_cfg(tmp_path)
+    marker = tmp_path / "ti" / "build" / ".bakar-lock-owner"
+
+    monkeypatch.setattr(
+        "bakar.steps.kas_build.clear_stale_bitbake_locks",
+        lambda _cfg: build_stop.LockClearOutcome(
+            removed=[], refusal=build_stop.LockRefusal(reason="unattributable", marker=marker)
+        ),
+    )
+
+    result = check_bitbake_locks(cfg)
+
+    assert result.status == Status.FAIL
+    assert result.severity == Severity.BLOCK
+    assert result.fix_hint is not None
+    assert str(marker) in result.fix_hint
+    assert "by hand" in result.fix_hint
+    assert "manually" in result.fix_hint
+
+
 def test_check_bitbake_locks_no_local_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """check_bitbake_locks must not run its own liveness probe or unlink sockets.
 

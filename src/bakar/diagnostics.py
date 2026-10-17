@@ -980,6 +980,15 @@ def check_nproc(cfg: BuildConfig) -> CheckResult:
     return _ok("nproc", Severity.INFO, f"NPROC={nproc} ({source}) -> {threads}")
 
 
+def _with_manual_clear(hint: str, marker: Path | None) -> str:
+    """Append the Rich-escaped marker path and manual-clear sentence to ``hint``."""
+    if marker is None:
+        return hint
+    from bakar.build_stop import manual_clear_hint
+
+    return f"{hint}. {escape(manual_clear_hint(marker))}"
+
+
 def check_bitbake_locks(cfg: BuildConfig) -> CheckResult:
     """Remove stale bitbake lock and socket files and report the result.
 
@@ -1008,7 +1017,9 @@ def check_bitbake_locks(cfg: BuildConfig) -> CheckResult:
                 "bitbake-locks",
                 Severity.BLOCK,
                 f"bitbake.lock held by {escape(refusal.host or 'unknown host')} (peer node) - a build is running there",
-                fix_hint="wait for the peer build, or build a different machine/TOPDIR",
+                fix_hint=_with_manual_clear(
+                    "wait for the peer build, or build a different machine/TOPDIR", refusal.marker
+                ),
             )
         # unattributable (shared-inaction routes through the _ok path above,
         # not this BLOCK branch)
@@ -1016,9 +1027,10 @@ def check_bitbake_locks(cfg: BuildConfig) -> CheckResult:
             "bitbake-locks",
             Severity.BLOCK,
             "bitbake.lock ownership could not be confirmed on a shared filesystem",
-            fix_hint=(
+            fix_hint=_with_manual_clear(
                 "verify no fleet node is building this TOPDIR, "
-                "then remove bitbake.lock/bitbake.sock/hashserve.sock manually"
+                "then remove bitbake.lock/bitbake.sock/hashserve.sock manually",
+                refusal.marker,
             ),
         )
 
