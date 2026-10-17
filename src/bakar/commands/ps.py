@@ -31,7 +31,7 @@ from typing import Annotated
 import typer
 
 import bakar.commands._app as _state
-from bakar import build_stop, stop_container
+from bakar import build_stop, proc_tree, stop_container
 from bakar.commands._app import app, console
 from bakar.commands._helpers import _run_started_epoch
 from bakar.fmt import fmt_duration
@@ -164,7 +164,7 @@ def _collect_rows() -> list[_Row]:
     """
     now = time.time()
 
-    discovered = build_stop._discover_host_cookers()
+    discovered = proc_tree._discover_host_cookers()
     host_candidates = build_stop.correlate_host_discoveries(discovered, user_config=_state._USER_CONFIG)
 
     runtime = stop_container.detect_runtime()
