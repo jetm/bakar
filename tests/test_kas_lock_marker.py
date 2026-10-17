@@ -1235,3 +1235,71 @@ def test_clear_does_not_refuse_a_fresh_build_whose_own_run_has_no_record_yet(
 
     assert outcome.refusal is None
     assert not (build / "bitbake.sock").exists()
+
+
+def _older_container_record(
+    cfg: BuildConfig,
+    tmp_path: Path,
+    wrapper_pid: int,
+    *,
+    alive: bool,
+    age_minutes: int,
+) -> None:
+    started = datetime.now(UTC) - timedelta(minutes=age_minutes)
+    build_stop.write_launch_record(
+        _run_dir(cfg, started=started, pid=wrapper_pid),
+        pgid=wrapper_pid,
+        mode="container",
+        runtime=str(_fake_runtime(tmp_path, container_alive=alive)),
+        container_label="bakar.run_id=x",
+    )
+
+
+def test_local_build_holder_finds_a_live_record_behind_the_callers_own_empty_run_dir(
+    env: tuple[BuildConfig, Path, RunLogger],
+    tmp_path: Path,
+    bitbake_server: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    """``clean --build-dir`` opens its own RunLogger first: the newest dir holds no record."""
+    cfg, build, _log = env
+    container_pid = _dead_pid(live_child)
+    wrapper_pid = _dead_pid(live_child)
+    _older_container_record(cfg, tmp_path, wrapper_pid, alive=True, age_minutes=5)
+    _run_dir(cfg, pid=4242)  # the caller's own, empty
+    with bitbake_server("/work/build", children="worker"):
+        (build / "bitbake.lock").write_text(f"{container_pid}\n")
+        assert kas_lock.local_build_holder(cfg) == wrapper_pid
+
+
+def test_local_build_holder_ignores_a_live_record_older_than_the_scan_window(
+    env: tuple[BuildConfig, Path, RunLogger],
+    tmp_path: Path,
+    bitbake_server: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    cfg, build, _log = env
+    container_pid = _dead_pid(live_child)
+    wrapper_pid = _dead_pid(live_child)
+    _older_container_record(cfg, tmp_path, wrapper_pid, alive=True, age_minutes=60)
+    for i in range(kas_lock._LAUNCH_RECORD_SCAN_RUNS):
+        _run_dir(cfg, started=datetime.now(UTC) - timedelta(minutes=i), pid=5000 + i)
+    with bitbake_server("/work/build", children="worker"):
+        (build / "bitbake.lock").write_text(f"{container_pid}\n")
+        assert kas_lock.local_build_holder(cfg) is None
+
+
+def test_local_build_holder_ignores_a_finished_record_in_an_older_run_dir(
+    env: tuple[BuildConfig, Path, RunLogger],
+    tmp_path: Path,
+    bitbake_server: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    cfg, build, _log = env
+    container_pid = _dead_pid(live_child)
+    wrapper_pid = _dead_pid(live_child)
+    _older_container_record(cfg, tmp_path, wrapper_pid, alive=False, age_minutes=5)
+    _run_dir(cfg, pid=4242)
+    with bitbake_server("/work/build", children="worker"):
+        (build / "bitbake.lock").write_text(f"{container_pid}\n")
+        assert kas_lock.local_build_holder(cfg) is None

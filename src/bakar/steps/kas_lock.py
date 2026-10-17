@@ -177,6 +177,30 @@ def _cooker_provably_idle(build_dir: Path, pid: int, seed_pgid: int | None) -> b
     return True
 
 
+# How many of the newest run directories the lock gates consult for a live
+# launch record. The caller's own RunLogger directory is already the newest by
+# the time the gate runs and holds no record, so looking at the newest alone
+# would hide the live build the gate exists to find.
+_LAUNCH_RECORD_SCAN_RUNS = 8
+
+
+def _live_launch_record(cfg: BuildConfig) -> tuple[Path, tuple[bool, int | None, int | None]] | None:
+    """``(run_dir, state)`` of the newest live launch record among the newest runs, else None.
+
+    Reads at most :data:`_LAUNCH_RECORD_SCAN_RUNS` directories, newest first, and
+    never writes. ``state`` is :func:`_launch_record_state`'s triple.
+    """
+    try:
+        run_dirs = sorted((d for d in cfg.runs_dir.iterdir() if d.is_dir()), reverse=True)
+    except OSError:
+        return None
+    for run_dir in run_dirs[:_LAUNCH_RECORD_SCAN_RUNS]:
+        state = _launch_record_state(run_dir)
+        if state[0]:
+            return run_dir, state
+    return None
+
+
 def local_build_holder(cfg: BuildConfig) -> int | None:
     """Pid of a live local build holding ``bitbake.lock``, else None.
 
@@ -184,8 +208,8 @@ def local_build_holder(cfg: BuildConfig) -> int | None:
     :func:`build_stop.lock_mutation_guard` never reports ``held-locally``, so
     this layers an activity probe on top. It fails closed: a live bitbake pid
     in the lock is a holder unless the build is provably idle (see
-    :func:`_cooker_provably_idle`) AND no live launch record (the newest run
-    under ``cfg.runs_dir``) names this build directory. A bitbake-server with
+    :func:`_cooker_provably_idle`) AND no live launch record (among the newest
+    :data:`_LAUNCH_RECORD_SCAN_RUNS` runs under ``cfg.runs_dir``) names this build directory. A bitbake-server with
     no child yet (task initialisation, sstate availability checks) or with only
     an attached client therefore still counts.
 
@@ -202,7 +226,8 @@ def local_build_holder(cfg: BuildConfig) -> int | None:
     if not lock.exists():
         return None
     run_dir = _newest_run_dir(cfg)
-    record_live, seed_pgid, report_pid = _launch_record_state(run_dir)
+    found = _live_launch_record(cfg)
+    record_live, seed_pgid, report_pid = found[1] if found else _launch_record_state(run_dir)
     pid = proc_tree.read_lock_pid(lock)
 
     if pid is None:
@@ -224,13 +249,6 @@ def local_build_holder(cfg: BuildConfig) -> int | None:
     return None
 
 
-# How many of the newest run directories the stale-lock gate consults for a live
-# launch record. The caller's own RunLogger directory is already the newest by
-# the time the gate runs and holds no record, so looking at the newest alone
-# would hide the live build the gate exists to find.
-_LAUNCH_RECORD_SCAN_RUNS = 8
-
-
 def _live_launch_refusal(cfg: BuildConfig) -> build_stop.LockRefusal | None:
     """A ``held-locally`` refusal naming the live build recorded under ``cfg.runs_dir``, else None.
 
@@ -239,18 +257,13 @@ def _live_launch_refusal(cfg: BuildConfig) -> build_stop.LockRefusal | None:
     does not exist yet (the kas checkout phase). A crashed build leaves a
     record that is not live, so it never blocks recovery.
     """
-    try:
-        run_dirs = sorted((d for d in cfg.runs_dir.iterdir() if d.is_dir()), reverse=True)
-    except OSError:
+    found = _live_launch_record(cfg)
+    if found is None:
         return None
-    for run_dir in run_dirs[:_LAUNCH_RECORD_SCAN_RUNS]:
-        live, _seed, report_pid = _launch_record_state(run_dir)
-        if not live:
-            continue
-        label = build_stop.read_launch_record(run_dir).container_label
-        detail = f"container {label}" if label is not None else ""
-        return build_stop.LockRefusal(reason="held-locally", pid=report_pid, detail=detail)
-    return None
+    run_dir, (_live, _seed, report_pid) = found
+    label = build_stop.read_launch_record(run_dir).container_label
+    detail = f"container {label}" if label is not None else ""
+    return build_stop.LockRefusal(reason="held-locally", pid=report_pid, detail=detail)
 
 
 def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
