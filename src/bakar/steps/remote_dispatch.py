@@ -522,7 +522,9 @@ def assert_safe_workspace(ws_root: Path) -> None:
 
 
 _RUN_ID_RE = re.compile(r"bakar triage (\S+)")
-_RUN_DIR_NAME_RE = re.compile(r"^\d{8}-\d{6}")
+# Whole-name match: a leftover such as ``<id>.bak`` sorts after the real id of
+# the same second and would otherwise be surfaced as the run.
+_RUN_DIR_NAME_RE = re.compile(r"\d{8}-\d{6}-\d+")
 # Anchored at line start, and deliberately not re.MULTILINE - the scanned stream
 # IS the build's own output, so an unanchored `.search` let any build that
 # happens to print `BAKAR_DISPATCH_RC=0` (a bitbake environment dump, a recipe
@@ -1085,7 +1087,7 @@ def _discover_newest_run_id(host: str, ws_root: Path, not_before: str | None = N
     ids = [
         name
         for line in result.stdout.splitlines()
-        if line.strip() and _RUN_DIR_NAME_RE.match(name := Path(line.split(maxsplit=1)[-1]).name)
+        if line.strip() and _RUN_DIR_NAME_RE.fullmatch(name := Path(line.split(maxsplit=1)[-1]).name)
     ]
     if not_before is not None:
         ids = [name for name in ids if name >= not_before]

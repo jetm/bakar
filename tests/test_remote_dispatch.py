@@ -697,7 +697,9 @@ def test_dispatch_unreachable_aborts_before_rsync(fake_sp: FakeSubprocess) -> No
 
 def test_dispatch_strict_ordering(fake_sp: FakeSubprocess) -> None:
     fake_sp.popen_rc = 0
-    fake_sp.find_stdout = "1699999999.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-235959\n"
+    fake_sp.find_stdout = (
+        "1699999999.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-235959-4242\n"
+    )
     rd.dispatch_remote_build(
         HOST,
         rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
@@ -728,7 +730,7 @@ def test_dispatch_rsync_failure_skips_remote_build(fake_sp: FakeSubprocess) -> N
 @pytest.mark.parametrize("remote_rc", [0, 1, 2, 42])
 def test_dispatch_propagates_remote_exit(fake_sp: FakeSubprocess, remote_rc: int) -> None:
     fake_sp.popen_rc = remote_rc
-    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000\n"
+    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000-4242\n"
     fake_sp.popen_lines = ["Run `bakar triage 20260716-000000` for details.\n"] if remote_rc else []
     rc = rd.dispatch_remote_build(
         HOST,
@@ -739,7 +741,7 @@ def test_dispatch_propagates_remote_exit(fake_sp: FakeSubprocess, remote_rc: int
 
 
 def test_dispatch_script_strips_on_and_sets_sccache_off(fake_sp: FakeSubprocess) -> None:
-    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-010101\n"
+    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-010101-4242\n"
     rd.dispatch_remote_build(
         HOST,
         rd.MirrorRequest(ws_root=WS, cwd=Path("/home/tiamarin/ws"), local_args=["build", "my.yml", "--on", HOST]),
@@ -756,7 +758,7 @@ def test_dispatch_script_strips_on_and_sets_sccache_off(fake_sp: FakeSubprocess)
 
 
 def test_dispatch_sccache_dist_opt_in_omits_env_token(fake_sp: FakeSubprocess) -> None:
-    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-020202\n"
+    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-020202-4242\n"
     rd.dispatch_remote_build(
         HOST,
         rd.MirrorRequest(ws_root=WS, cwd=Path("/home/tiamarin/ws"), local_args=["build", "my.yml", "--on", HOST]),
@@ -791,7 +793,9 @@ def test_dispatch_run_id_from_failure_stream(fake_sp: FakeSubprocess, capsys: py
 def test_dispatch_run_id_from_success_discovery(fake_sp: FakeSubprocess, capsys: pytest.CaptureFixture[str]) -> None:
     fake_sp.popen_rc = 0
     fake_sp.popen_lines = ["build succeeded\n"]
-    fake_sp.find_stdout = "1699999999.5 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-235959\n"
+    fake_sp.find_stdout = (
+        "1699999999.5 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-235959-4242\n"
+    )
     rc = rd.dispatch_remote_build(
         HOST,
         rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
@@ -813,7 +817,9 @@ def test_dispatch_failure_without_triage_falls_back_to_discovery(
     # Rich's non-TTY line-wrap), the run-id is recovered via newest-run-dir discovery.
     fake_sp.popen_rc = 1
     fake_sp.popen_lines = ["some build output with no triage hint\n"]
-    fake_sp.find_stdout = "1699999999.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-333333\n"
+    fake_sp.find_stdout = (
+        "1699999999.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-333333-4242\n"
+    )
     rc = rd.dispatch_remote_build(
         HOST,
         rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
@@ -850,7 +856,7 @@ def test_dispatch_discards_stale_run_id_before_dispatch_start(
     # must be discarded rather than surfaced as a misleading stale id.
     fake_sp.popen_rc = 1
     fake_sp.popen_lines = ["BAKAR_DISPATCH_START=20260716-120000\n", "config error, no run dir\n"]
-    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000\n"
+    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000-4242\n"
     rc = rd.dispatch_remote_build(
         HOST,
         rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
@@ -870,7 +876,7 @@ def test_dispatch_keeps_run_id_after_dispatch_start(
     # A discovered id NEWER than the dispatch-start marker is this build's run.
     fake_sp.popen_rc = 0
     fake_sp.popen_lines = ["BAKAR_DISPATCH_START=20260716-120000\n", "build succeeded\n"]
-    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-235959\n"
+    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-235959-4242\n"
     rc = rd.dispatch_remote_build(
         HOST,
         rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
@@ -889,7 +895,7 @@ def test_dispatch_forwards_bakar_kas_env(fake_sp: FakeSubprocess, monkeypatch: p
     monkeypatch.setenv("BAKAR_MACHINE", "imx8mp")
     monkeypatch.setenv("KAS_CONTAINER_IMAGE", "img")
     monkeypatch.setenv("UNRELATED_VAR", "x")
-    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000\n"
+    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000-4242\n"
     rd.dispatch_remote_build(
         HOST,
         rd.MirrorRequest(ws_root=WS, cwd=Path("/home/tiamarin/ws"), local_args=["build", "my.yml", "--on", HOST]),
@@ -908,7 +914,7 @@ def test_dispatch_forwards_bakar_kas_env(fake_sp: FakeSubprocess, monkeypatch: p
 
 
 def test_dispatch_popen_uses_replace_decode(fake_sp: FakeSubprocess) -> None:
-    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000\n"
+    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000-4242\n"
     rd.dispatch_remote_build(
         HOST,
         rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
@@ -1049,15 +1055,15 @@ def test_lookup_that_hangs_is_a_lookup_failure(fake_sp: FakeSubprocess, capsys: 
 
 
 def test_lookup_runs_under_batch_mode(fake_sp: FakeSubprocess) -> None:
-    fake_sp.find_stdout = "1.0 /x/build/runs/20260716-000000\n"
-    assert rd._discover_newest_run_id(HOST, WS) == "20260716-000000"
+    fake_sp.find_stdout = "1.0 /x/build/runs/20260716-000000-4242\n"
+    assert rd._discover_newest_run_id(HOST, WS) == "20260716-000000-4242"
     ((argv, _),) = _ssh_runs(fake_sp)
     assert "BatchMode=yes" in argv
 
 
 def test_lookup_matches_a_qcom_build_directory_not_only_build(monkeypatch: pytest.MonkeyPatch) -> None:
-    scripts = _lookup_returning(monkeypatch, 0, stdout="1.0 /ws/build-qcom-wayland/runs/20260716-000000\n")
-    assert rd._discover_newest_run_id(HOST, WS) == "20260716-000000"
+    scripts = _lookup_returning(monkeypatch, 0, stdout="1.0 /ws/build-qcom-wayland/runs/20260716-000000-4242\n")
+    assert rd._discover_newest_run_id(HOST, WS) == "20260716-000000-4242"
     assert "'*/runs/20*'" in scripts[0]
     assert "build/runs" not in scripts[0]
 
@@ -1065,9 +1071,9 @@ def test_lookup_matches_a_qcom_build_directory_not_only_build(monkeypatch: pytes
 def test_lookup_find_pattern_finds_a_qcom_run_dir_on_a_real_tree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run = tmp_path / "build-qcom-wayland" / "runs" / "20260716-120000"
+    run = tmp_path / "build-qcom-wayland" / "runs" / "20260716-120000-4242"
     run.mkdir(parents=True)
-    (tmp_path / "build" / "tmp" / "runs" / "20990101-000000").mkdir(parents=True)
+    (tmp_path / "build" / "tmp" / "runs" / "20990101-000000-1").mkdir(parents=True)
     scripts: list[str] = []
 
     def capture(host: str, script: str, *, batch_mode: bool = True) -> subprocess.CompletedProcess[str]:
@@ -1075,7 +1081,7 @@ def test_lookup_find_pattern_finds_a_qcom_run_dir_on_a_real_tree(
         return subprocess.run(["bash", "-s"], input=script, capture_output=True, text=True, check=False)
 
     monkeypatch.setattr(rd, "_ssh_bash_capture", capture)
-    assert rd._discover_newest_run_id(HOST, tmp_path) == "20260716-120000"
+    assert rd._discover_newest_run_id(HOST, tmp_path) == "20260716-120000-4242"
 
 
 # --- C10: broken pipe on stdin.write ----------------------------------------
@@ -1156,7 +1162,7 @@ def test_dispatch_proceeds_on_mismatch_with_yes(fake_sp: FakeSubprocess, capsys:
     fake_sp.reachable_rc = 0
     fake_sp.remote_version = "bakar 2.0.0"
     fake_sp.local_version = "bakar 1.0.0"
-    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000\n"
+    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000-4242\n"
     rc = rd.dispatch_remote_build(
         HOST,
         rd.MirrorRequest(ws_root=WS, cwd=Path("/home/tiamarin/ws"), local_args=["build", "my.yml", "--on", HOST]),
@@ -1268,7 +1274,7 @@ def test_dispatch_detached_launch_tails_the_remote_log(fake_sp: FakeSubprocess) 
     # costs the stream and nothing else - which is the whole point of detaching.
     fake_sp.popen_lines = _DETACHED_LAUNCH
     fake_sp.follow_lines = ["compiling\n", "BAKAR_DISPATCH_RC=0\n"]
-    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-235959\n"
+    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-235959-4242\n"
     rc = rd.dispatch_remote_build(
         HOST,
         rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
@@ -1576,7 +1582,7 @@ def test_dispatch_detached_keeps_the_dispatch_start_fence(
     # stale-run-id bug the fence exists to prevent.
     fake_sp.popen_lines = _DETACHED_LAUNCH
     fake_sp.follow_lines = [*[f"line {i}\n" for i in range(500)], "BAKAR_DISPATCH_RC=0\n"]
-    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000\n"
+    fake_sp.find_stdout = "1.0 /home/tiamarin/repos/work/peridio-scarthgap-build/build/runs/20260716-000000-4242\n"
     rd.dispatch_remote_build(
         HOST,
         rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "--on", HOST]),
@@ -1852,7 +1858,7 @@ def test_every_dispatch_plan_has_no_deletes(segments: list[str], host: str, assu
             built.append(self)
 
     fake = FakeSubprocess()
-    fake.find_stdout = "1.0 /x/build/runs/20260716-000000\n"
+    fake.find_stdout = "1.0 /x/build/runs/20260716-000000-4242\n"
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(rd, "subprocess", fake)
         mp.setattr(rd, "DispatchPlan", _Recording)
@@ -1886,7 +1892,7 @@ def test_dispatch_prints_the_plan_and_never_prompts(
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(typer, "confirm", _boom)
         mp.setattr("builtins.input", _boom)
-        fake_sp.find_stdout = "1.0 /x/build/runs/20260716-000000\n"
+        fake_sp.find_stdout = "1.0 /x/build/runs/20260716-000000-4242\n"
         rc = rd.dispatch_remote_build(
             HOST,
             rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "my.yml", "--on", HOST]),
@@ -2160,6 +2166,18 @@ def test_lookup_fence_accepts_a_run_id_in_the_fence_second(tmp_path: Path, monke
     _real_find(monkeypatch)
     _run_dir(tmp_path, "build", "20260716-120000-77")
     assert rd._discover_newest_run_id(HOST, tmp_path, "20260716-120000") == "20260716-120000-77"
+
+
+def test_lookup_ignores_leftover_dirs_named_after_a_run_in_the_same_second(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _real_find(monkeypatch)
+    _run_dir(tmp_path, "build", "20260716-120500-1")
+    # Both sort after the real id as strings.
+    _run_dir(tmp_path, "build", "20260716-120500-1.bak")
+    _run_dir(tmp_path, "build", "20260716-120500-x-old")
+    assert rd._discover_newest_run_id(HOST, tmp_path, "20260716-120000") == "20260716-120500-1"
+    assert rd._discover_newest_run_id(HOST, tmp_path) == "20260716-120500-1"
 
 
 def test_lookup_does_not_walk_a_tmp_glibc_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
