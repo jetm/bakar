@@ -31,7 +31,7 @@ from typing import Annotated
 import typer
 
 import bakar.commands._app as _state
-from bakar import build_stop
+from bakar import build_stop, stop_container
 from bakar.commands._app import app, console
 from bakar.commands._helpers import _run_started_epoch
 from bakar.fmt import fmt_duration
@@ -115,7 +115,7 @@ def _container_mount_source(runtime: str, container_id: str) -> str | None:
     return None
 
 
-def _container_row_info(runtime: str, candidate: build_stop.ContainerCandidate) -> tuple[str, str, Path | None]:
+def _container_row_info(runtime: str, candidate: stop_container.ContainerCandidate) -> tuple[str, str, Path | None]:
     """Resolve ``(family, machine, run_dir)`` for a container-mode candidate.
 
     Recovers the container's own build-directory bind-mount host-side source
@@ -167,11 +167,11 @@ def _collect_rows() -> list[_Row]:
     discovered = build_stop._discover_host_cookers()
     host_candidates = build_stop.correlate_host_discoveries(discovered, user_config=_state._USER_CONFIG)
 
-    runtime = build_stop.detect_runtime()
-    container_candidates, warning = build_stop.discover_running_containers_or_warn(runtime)
+    runtime = stop_container.detect_runtime()
+    container_candidates, warning = stop_container.discover_running_containers_or_warn(runtime)
     if warning is not None:
         build_stop._say(warning)
-    container_candidates = build_stop.dedup_container_candidates(container_candidates)
+    container_candidates = stop_container.dedup_container_candidates(container_candidates)
 
     host_candidates, container_candidates = build_stop.dedup_across_sources(host_candidates, container_candidates)
 
