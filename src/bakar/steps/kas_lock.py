@@ -11,6 +11,7 @@ one patch of ``bakar.mounts.is_path_on_nfs`` reaches every NFS decision.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import os
 import socket
@@ -259,8 +260,21 @@ class LockMarkerUnsupportedError(LockUnattributableError):
             self.args = (
                 f"cannot publish bitbake lock ownership marker {marker}: link failed ({text}) and the marker does "
                 f"not name this host; the marker is published by hard link, so retry or build on a filesystem "
-                f"that supports hard links",
+                f"that supports hard links; if a stale directory view caused this and no build runs on any node, "
+                f"delete the marker {marker} by hand",
             )
+
+
+class LockMarkerOutcomeUnknownError(LockUnattributableError):
+    """Publishing the ownership marker failed and whether it landed could not be determined."""
+
+    def __init__(self, marker: Path) -> None:
+        super().__init__(marker)
+        self.args = (
+            f"the outcome of publishing bitbake lock ownership marker {marker} could not be determined; it may "
+            f"name this host, and re-running bakar here clears it; if no build runs on any node, delete the "
+            f"marker {marker} by hand",
+        )
 
 
 _MARKER_REREAD_DELAY_S = 0.2
@@ -291,6 +305,29 @@ def _marker_names_host(marker: Path, local_host: str) -> bool:
         return False
 
 
+def _link_landed(tmp: Path, marker: Path, local_host: str) -> bool | None:
+    """After a failed ``os.link``, report whether the link landed: True, False, or None when unprovable.
+
+    True when the marker names this host, the temp file gained a second name,
+    or both paths are the same inode. False when the temp file is readable and
+    the marker is absent or another inode. None on any other OSError, so the
+    caller refuses with the marker named instead of guessing.
+    """
+    if _marker_names_host(marker, local_host):
+        return True
+    try:
+        tmp_stat = os.stat(tmp)
+        if tmp_stat.st_nlink >= 2:
+            return True
+        try:
+            marker_stat = os.stat(marker)
+        except FileNotFoundError:
+            return False
+        return os.path.samestat(tmp_stat, marker_stat)
+    except OSError:
+        return None
+
+
 def _create_marker_exclusive(marker: Path, local_host: str) -> bool:
     """Create ``marker`` holding ``local_host`` in one step; False when it already exists.
 
@@ -314,12 +351,16 @@ def _create_marker_exclusive(marker: Path, local_host: str) -> bool:
         except FileExistsError:
             return False
         except OSError as exc:
-            if _marker_names_host(marker, local_host):
+            landed = _link_landed(tmp, marker, local_host)
+            if landed:
                 return True
+            if landed is None:
+                raise LockMarkerOutcomeUnknownError(marker) from exc
             raise LockMarkerUnsupportedError(marker, exc) from exc
         return True
     finally:
-        tmp.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
 
 
 def _replace_marker(marker: Path, local_host: str) -> None:
@@ -330,9 +371,13 @@ def _replace_marker(marker: Path, local_host: str) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(local_host)
         _chmod_to_umask_default(tmp)
-        os.replace(tmp, marker)
+        try:
+            os.replace(tmp, marker)
+        except OSError as exc:
+            raise LockMarkerOutcomeUnknownError(marker) from exc
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
         raise
 
 
@@ -411,7 +456,10 @@ def lock_owner_marker(cfg: BuildConfig, log: RunLogger) -> Iterator[None]:
     finally:
         lock = cfg.bsp_root / cfg.build_dir_name / "bitbake.lock"
         if not lock.exists() and _marker_names_host(marker, local_host):
-            marker.unlink(missing_ok=True)
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError as exc:
+                log.warn(f"could not remove bitbake lock ownership marker {marker}: {exc}")
 
 
 def _lock_refusal_message(refusal: build_stop.LockRefusal) -> str:

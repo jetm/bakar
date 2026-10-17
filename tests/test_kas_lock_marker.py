@@ -531,3 +531,130 @@ def test_marker_unsupported_error_is_printed_without_traceback_reason() -> None:
     reason = _peer_lock_reason(LockMarkerUnsupportedError(marker, OSError(errno.EPERM, "x")))
     assert "\x1b" not in reason
     assert "hard links" in reason
+
+
+def _lost_reply_link(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_link = os.link
+
+    def lost_reply(src: os.PathLike[str], dst: os.PathLike[str]) -> None:
+        real_link(src, dst)
+        raise OSError(errno.EIO, "reply lost")
+
+    monkeypatch.setattr(os, "link", lost_reply)
+
+
+def _failing_unlink_of(monkeypatch: pytest.MonkeyPatch, prefix: str) -> None:
+    real = Path.unlink
+
+    def fake(self: Path, *a: object, **k: object) -> None:
+        if self.name.startswith(prefix):
+            raise OSError(errno.EIO, "unlink failed")
+        real(self, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "unlink", fake)
+
+
+def test_link_lost_reply_with_unreadable_marker_counts_as_created(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, _build, log = env
+    marker = build_stop.lock_marker_path(cfg)
+    _lost_reply_link(monkeypatch)
+    _break_read(monkeypatch, marker)
+    entered = False
+    with lock_owner_marker(cfg, log):
+        entered = True
+    assert entered
+
+
+def test_link_lost_reply_outcome_unprovable_is_refused_with_marker_named(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, _build, log = env
+    marker = build_stop.lock_marker_path(cfg)
+    _lost_reply_link(monkeypatch)
+    _break_read(monkeypatch, marker)
+    real_stat = os.stat
+
+    def stat(path: object, *a: object, **k: object) -> os.stat_result:
+        if Path(str(path)).name.startswith(f".{marker.name}."):
+            raise OSError(errno.EIO, "stat failed")
+        return real_stat(path, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "stat", stat)
+    entered = False
+    with pytest.raises(LockHeldByPeerError) as ei, lock_owner_marker(cfg, log):
+        entered = True
+    assert not entered
+    assert isinstance(ei.value, kas_lock.LockMarkerOutcomeUnknownError)
+    assert str(marker) in str(ei.value)
+    assert "by hand" in str(ei.value)
+    assert "does not name this host" not in str(ei.value)
+
+
+def test_temp_unlink_failure_never_replaces_the_result(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, _build, _log = env
+    marker = build_stop.lock_marker_path(cfg)
+    _failing_unlink_of(monkeypatch, f".{marker.name}.")
+    assert kas_lock._create_marker_exclusive(marker, "this-host") is True
+
+    marker.unlink()
+    monkeypatch.undo()
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
+    _failing_unlink_of(monkeypatch, f".{marker.name}.")
+
+    def no_link(_src: object, _dst: object) -> None:
+        raise OSError(errno.EPERM, "no links")
+
+    monkeypatch.setattr(os, "link", no_link)
+    with pytest.raises(LockMarkerUnsupportedError):
+        kas_lock._create_marker_exclusive(marker, "this-host")
+
+
+def test_replace_lost_reply_is_refused_as_unknown_outcome(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, _build, _log = env
+    marker = build_stop.lock_marker_path(cfg)
+    marker.write_text("this-host")
+
+    def fail(_src: object, _dst: object) -> None:
+        raise OSError(errno.EIO, "reply lost")
+
+    monkeypatch.setattr(os, "replace", fail)
+    _failing_unlink_of(monkeypatch, f".{marker.name}.")
+    with pytest.raises(kas_lock.LockMarkerOutcomeUnknownError) as ei:
+        kas_lock._replace_marker(marker, "this-host")
+    assert str(marker) in str(ei.value)
+    assert isinstance(ei.value, LockHeldByPeerError)
+
+
+def test_exit_unlink_failure_is_logged_and_swallowed(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, _build, log = env
+    marker = build_stop.lock_marker_path(cfg)
+    warnings: list[str] = []
+    monkeypatch.setattr(log, "warn", lambda msg, **_f: warnings.append(msg))
+    with lock_owner_marker(cfg, log):
+        _failing_unlink_of(monkeypatch, marker.name)
+    assert len(warnings) == 1
+    assert str(marker) in warnings[0]
+
+
+def test_link_failure_proven_not_landed_names_marker_and_manual_clear(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, _build, _log = env
+    marker = build_stop.lock_marker_path(cfg)
+
+    def fail(_src: object, _dst: object) -> None:
+        raise OSError(errno.EIO, "reply lost")
+
+    monkeypatch.setattr(os, "link", fail)
+    with pytest.raises(LockMarkerUnsupportedError) as ei:
+        kas_lock._create_marker_exclusive(marker, "this-host")
+    assert str(marker) in str(ei.value)
+    assert "by hand" in str(ei.value)
