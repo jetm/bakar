@@ -14,21 +14,20 @@ so the real ``~/.cache/sccache`` is never touched.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+import bakar.commands.clean_cache as clean_cache_mod
 from bakar.cli import app
 from bakar.commands.clean_cache import (
     _empty_dir_in_place,
     _parse_dist_status_servers,
     _resolve_secondaries,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 pytestmark = pytest.mark.unit
 
@@ -732,7 +731,11 @@ def test_full_reset_keeps_sstate_root_with_leftover(tmp_path: Path, monkeypatch:
     stuck_child = sstate / "ab"
     stuck_child.mkdir()
     (sstate / "loose.zst").write_bytes(b"x")
-    monkeypatch.setattr("bakar.commands.clean_cache.parallel_rmtree", _stuck_rmtree({stuck_child}))
+    real_remove = clean_cache_mod._remove_child
+    monkeypatch.setattr(
+        "bakar.commands.clean_cache._remove_child",
+        lambda c: (c / "stuck.o", OSError("Device or resource busy")) if c == stuck_child else real_remove(c),
+    )
 
     result = runner.invoke(app, ["clean-cache", "--full", "-y"])
 
@@ -800,3 +803,191 @@ def test_full_reset_dry_run_plan_is_unchanged(tmp_path: Path, monkeypatch: pytes
     assert (sstate / "keep.zst").exists()
     assert build.is_dir()
     assert ccache.is_dir()
+
+
+# ---------------------------------------------------------------------------
+# K9: unlistable root, concurrent removal, symlink swap, symlinked cache roots,
+# untrusted entry names
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can list a mode-000 directory")
+def test_full_reset_unlistable_sstate_root_runs_later_steps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mode-000 sstate root is one leftover; every later step still runs and the exit is 1."""
+    sstate, calls = _full_env(tmp_path, monkeypatch)
+    (sstate / "obj.zst").write_bytes(b"x")
+    build = tmp_path / "build-one"
+    build.mkdir()
+    sstate.chmod(0)
+    try:
+        result = runner.invoke(app, ["clean-cache", "--full", "--build-dir", str(build), "-y"])
+    finally:
+        sstate.chmod(0o755)
+
+    assert result.exit_code == 1, result.output
+    assert not build.exists(), "build-dir wipe after the sstate step must still run"
+    assert ["pkill", "-f", "^/usr/bin/sccache$"] in calls, calls
+    assert any(c[:2] == ["bash", "-c"] for c in calls), calls
+    flat = _flat(result.output)
+    assert "couldnotfullyremove" in flat
+    assert "cold-resetfinishedwith1leftover(s);seeabove" in flat
+
+
+def test_full_reset_step_raising_oserror_is_counted_and_loop_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unexpected OSError inside a step is printed, counted, and the loop goes on."""
+    _sstate, calls = _full_env(tmp_path, monkeypatch)
+
+    def _boom(_p: Path):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr("bakar.commands.clean_cache._empty_dir_in_place", _boom)
+
+    result = runner.invoke(app, ["clean-cache", "--full", "-y"])
+
+    assert result.exit_code == 1, result.output
+    assert any(c[:2] == ["bash", "-c"] for c in calls), calls
+    flat = _flat(result.output)
+    assert "cold-resetstepfailed" in flat
+    assert "cold-resetfinishedwith1leftover(s);seeabove" in flat
+
+
+def test_empty_dir_in_place_concurrently_removed_child_is_not_leftover(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Entries another node removed between listing and deletion are already gone, not residue."""
+    root = tmp_path / "sstate"
+    root.mkdir()
+    (root / "gone").write_text("x")
+    (root / "d").mkdir()
+    (root / "d" / "obj").write_text("x")
+    real_iterdir = Path.iterdir
+
+    def _racing_iterdir(self: Path):
+        items = list(real_iterdir(self))
+        if self == root:
+            (root / "gone").unlink()
+            (root / "d" / "obj").unlink()
+            (root / "d").rmdir()
+        return iter(items)
+
+    monkeypatch.setattr(Path, "iterdir", _racing_iterdir)
+
+    assert _empty_dir_in_place(root) == []
+
+
+@pytest.mark.parametrize("swapped", ["aa", "aa/bb"], ids=["top-level", "nested"])
+def test_empty_dir_in_place_swapped_symlink_deletes_nothing_outside(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, swapped: str
+) -> None:
+    """A dir swapped for a symlink after listing never redirects the delete outside the tree.
+
+    The top-level swap is seen by the child's lstat; the nested one is met by the
+    descriptor walk, which unlinks the link without following it.
+    """
+    root = tmp_path / "sstate"
+    (root / "aa" / "bb").mkdir(parents=True)
+    (root / "aa" / "bb" / "obj").write_text("x")
+    victim = tmp_path / "fakehome"
+    (victim / "bb").mkdir(parents=True)
+    (victim / "precious").write_text("keep me")
+    (victim / "bb" / "precious").write_text("keep me")
+    real_apply = clean_cache_mod.parallel_apply
+    target = root / swapped
+
+    def _racing_apply(items, fn, description, **kw):
+        target.rename(tmp_path / "moved")
+        target.symlink_to(victim)
+        return real_apply(items, fn, description, **kw)
+
+    monkeypatch.setattr("bakar.commands.clean_cache.parallel_apply", _racing_apply)
+
+    assert _empty_dir_in_place(root) == []
+
+    assert (victim / "precious").read_text() == "keep me"
+    assert (victim / "bb" / "precious").read_text() == "keep me"
+    assert list(root.iterdir()) == []
+
+
+def test_full_reset_symlinked_ccache_root_keeps_link_and_empties_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A symlinked ccache root is emptied through the link, which survives."""
+    _full_env(tmp_path, monkeypatch)
+    target = tmp_path / "real-ccache"
+    (target / "a").mkdir(parents=True)
+    (target / "a" / "obj").write_bytes(b"x")
+    (target / "stats").write_bytes(b"y")
+    link = tmp_path / "ccache-link"
+    link.symlink_to(target)
+
+    result = runner.invoke(app, ["clean-cache", "--full", "--ccache-dir", str(link), "-y"])
+
+    assert result.exit_code == 0, result.output
+    assert link.is_symlink()
+    assert target.is_dir()
+    assert list(target.iterdir()) == [], "the cache behind the link must be cold"
+
+
+def test_wipe_local_dir_symlinked_sccache_cache_root_empties_target(tmp_path: Path) -> None:
+    """The sccache client cache step takes the same symlink-resolving path."""
+    target = tmp_path / "real-sccache"
+    target.mkdir()
+    (target / "obj").write_bytes(b"x")
+    link = tmp_path / "sccache-link"
+    link.symlink_to(target)
+
+    assert clean_cache_mod._wipe_local_dir(link) == 0
+    assert link.is_symlink()
+    assert list(target.iterdir()) == []
+
+
+def test_full_reset_escape_in_entry_name_reaches_no_terminal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An ESC in a directory name never reaches the progress description or the leftover line."""
+    _full_env(tmp_path, monkeypatch)
+    sstate = tmp_path / "sstate"
+    evil = "evil\x1b]0;x"
+    stuck = sstate / evil
+    stuck.mkdir()
+    descriptions: list[str] = []
+    real_apply = clean_cache_mod.parallel_apply
+
+    def _recording_apply(items, fn, description, **kw):
+        descriptions.append(description)
+        return real_apply(items, fn, description, **kw)
+
+    monkeypatch.setattr("bakar.commands.clean_cache.parallel_apply", _recording_apply)
+    real_remove = clean_cache_mod._remove_child
+    monkeypatch.setattr(
+        "bakar.commands.clean_cache._remove_child",
+        lambda c: (c / evil, OSError("busy")) if c == stuck else real_remove(c),
+    )
+
+    result = runner.invoke(app, ["clean-cache", "--full", "-y"])
+
+    assert result.exit_code == 1, result.output
+    assert descriptions, "the sstate step must go through the pool"
+    assert all("\x1b" not in d for d in descriptions), descriptions
+    assert "\x1b" not in result.output
+    assert "couldnotfullyremove" in _flat(result.output)
+
+
+def test_empty_dir_in_place_escape_in_root_name_stays_out_of_description(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Rich progress description carries the root name neutralized."""
+    root = tmp_path / "evil\x1b]0;x"
+    root.mkdir()
+    (root / "obj").write_bytes(b"x")
+    descriptions: list[str] = []
+    real_apply = clean_cache_mod.parallel_apply
+
+    def _recording_apply(items, fn, description, **kw):
+        descriptions.append(description)
+        return real_apply(items, fn, description, **kw)
+
+    monkeypatch.setattr("bakar.commands.clean_cache.parallel_apply", _recording_apply)
+
+    assert _empty_dir_in_place(root) == []
+    assert descriptions == ["Emptying evil]0;x/"], descriptions

@@ -11,8 +11,10 @@ is passed, and verifies distribution is back before returning.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
+import stat
 import subprocess
 import time
 from dataclasses import dataclass
@@ -25,7 +27,8 @@ import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import _find_workspace_from_cwd, _print_leftover, _remove_tree_report
 from bakar.config import shared_ccache_dir
-from bakar.fsremove import parallel_apply, parallel_rmtree
+from bakar.fmt import neutralize
+from bakar.fsremove import parallel_apply
 from bakar.mounts import _mount_entry_in
 from bakar.sccache_cluster import _parse_dist_status_servers as _parse_dist_status_servers  # re-exported for tests
 from bakar.sccache_cluster import (
@@ -336,6 +339,43 @@ def _resolve_build_dirs(override: Path | None) -> list[Path]:
     return sorted(p for p in ws.glob("build-*") if p.is_dir())
 
 
+def _remove_child(child: Path) -> tuple[Path, BaseException] | None:
+    """Remove one direct child of an emptied root; return ``(path, error)`` on residue.
+
+    A directory goes through ``shutil.rmtree``, which walks by descriptor and
+    refuses a symlink, so a symlink a peer swaps into a peer-writable sstate tree
+    after listing cannot redirect the delete outside it. The path-based
+    :func:`bakar.fsremove.parallel_rmtree` re-resolves names and would follow it.
+    An entry already gone (another node emptied it first) is not residue.
+    """
+    try:
+        st = child.lstat()
+        if not stat.S_ISDIR(st.st_mode):
+            child.unlink()
+            return None
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return (child, exc)
+
+    errors: list[tuple[Path, OSError]] = []
+
+    def _onexc(func: object, p: str, exc: BaseException) -> None:
+        if isinstance(exc, FileNotFoundError):
+            return
+        if isinstance(exc, OSError):
+            errors.append((Path(p), exc.with_traceback(None)))
+
+    shutil.rmtree(child, onexc=_onexc)
+    if not errors:
+        return None
+    # A directory refused as non-empty only repeats the residue below it.
+    causes = [e for e in errors if e[1].errno not in (errno.ENOTEMPTY, errno.EEXIST)] or errors
+    first_path, first_err = causes[0]
+    first_err.residue_count = len(causes)  # ty: ignore[unresolved-attribute]
+    return (first_path, first_err)
+
+
 def _empty_dir_in_place(path: Path) -> list[tuple[Path, BaseException]]:
     """Delete every child of *path* but keep *path* itself (NFS-safe).
 
@@ -344,23 +384,39 @@ def _empty_dir_in_place(path: Path) -> list[tuple[Path, BaseException]]:
     cools the shared cache for all nodes while preserving the export root. Creates
     *path* first when absent - bakar doctor needs it to exist.
 
-    Returns ``(path, error)`` for each child that could not be fully removed; an
-    empty list means *path* is now empty.
+    Returns ``(path, error)`` for each child that could not be fully removed, or
+    the root itself when it cannot be created or listed; an empty list means
+    *path* is now empty. Children are removed across the shared pool, each by
+    :func:`_remove_child`.
     """
-    path.mkdir(parents=True, exist_ok=True)
-    leftover: list[tuple[Path, BaseException]] = []
-    for child in path.iterdir():
-        try:
-            if child.is_symlink() or not child.is_dir():
-                child.unlink()
-                continue
-        except OSError as exc:
-            leftover.append((child, exc))
-            continue
-        residue = parallel_rmtree(child, description=f"Removing {child.name}/")
-        if residue is not None:
-            leftover.append(residue)
-    return leftover
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        children = list(path.iterdir())
+    except OSError as exc:
+        return [(path, exc)]
+    results = parallel_apply(children, _remove_child, f"Emptying {neutralize(path.name)}/", show_eta=False)
+    return [r for r in results if r is not None]
+
+
+def _wipe_local_dir(c: Path) -> int:
+    """Wipe a local cache dir; return the leftover count.
+
+    A symlinked root is resolved and its target emptied in place, keeping the
+    link: removing only the link would report the cache removed while every
+    cached object in the target stays warm.
+    """
+    if not c.is_symlink():
+        return 0 if _remove_tree_report(c, f"Removing {neutralize(c.name)}/") else 1
+    target = c.resolve()
+    if not target.is_dir():
+        _log(f"{neutralize(c)} is a symlink that does not reach a directory; nothing to wipe")
+        return 0
+    leftover = _empty_dir_in_place(target)
+    for path, err in leftover:
+        _print_leftover(target, path, err)
+    if not leftover:
+        console.print(f"[green]emptied[/] {neutralize(target)} (via symlink {neutralize(c)})", highlight=False)
+    return len(leftover)
 
 
 def _run_full_reset(
@@ -425,14 +481,14 @@ def _run_full_reset(
         return 0 if _remove_tree_report(b, f"Removing {b.name}/") else 1
 
     def _wipe_cache_dir(c: Path) -> int:
-        _log(f"wiping sccache client disk cache {c} ...")
-        return 0 if _remove_tree_report(c, f"Removing {c.name}/") else 1
+        _log(f"wiping sccache client disk cache {neutralize(c)} ...")
+        return _wipe_local_dir(c)
 
     def _wipe_ccache_dir(c: Path) -> int:
         # --full is a cold reset: age-based ccache eviction is not enough, the
         # local ccache dir is wiped whole so the next build starts empty.
-        _log(f"wiping local ccache dir {c} ...")
-        return 0 if _remove_tree_report(c, f"Removing {c.name}/") else 1
+        _log(f"wiping local ccache dir {neutralize(c)} ...")
+        return _wipe_local_dir(c)
 
     def _stop_client_daemon() -> int:
         _log("stopping the sccache client daemon (if running) ...")
@@ -513,8 +569,13 @@ def _run_full_reset(
             raise typer.Exit
 
     leftovers = 0
-    for _desc, thunk in actions:
-        leftovers += thunk()
+    for desc, thunk in actions:
+        # One failing step must not skip the rest of the reset.
+        try:
+            leftovers += thunk()
+        except OSError as exc:
+            console.print(f"[red]cold-reset step failed[/] ({neutralize(desc)}): {neutralize(exc)}", highlight=False)
+            leftovers += 1
 
     _verify_distribution()
     if leftovers:
