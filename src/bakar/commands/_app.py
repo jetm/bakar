@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Annotated
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 from bakar import __version__, package_identity
 from bakar.preset_config import PresetEntry, load_presets
@@ -51,7 +52,7 @@ def _get_vendors() -> list:
         try:
             _VENDORS = load_vendors()
         except ValueError as exc:
-            console.print(f"[red]Invalid vendors config:[/] {exc}")
+            console.print(f"[red]Invalid vendors config:[/] {escape(str(exc))}")
             raise typer.Exit(code=2) from exc
     return _VENDORS
 
@@ -60,7 +61,7 @@ def _load_user_config_safe() -> UserConfig:
     try:
         return load_user_config()
     except ValueError as exc:
-        console.print(f"[red]Invalid bakar config:[/] {exc}")
+        console.print(f"[red]Invalid bakar config:[/] {escape(str(exc))}")
         raise typer.Exit(code=2) from exc
 
 
@@ -70,7 +71,7 @@ def _load_presets_safe() -> None:
         try:
             _PRESETS = load_presets()
         except (ValueError, OSError) as exc:
-            console.print(f"[red]Invalid presets config:[/] {exc}")
+            console.print(f"[red]Invalid presets config:[/] {escape(str(exc))}")
             raise typer.Exit(code=2) from exc
 
 

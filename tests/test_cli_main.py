@@ -292,3 +292,50 @@ class TestGlobalCallbackPublishesModuleState:
         assert state._PRESETS is not None
         assert state._VENDORS is not None
         assert state._USER_CONFIG is not None
+
+
+def test_invalid_user_config_error_quotes_input_verbatim(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    user_config_file,
+) -> None:
+    """Rich markup in the diagnostic must not swallow the quoted ``[build]``."""
+    import bakar.commands._app as app_state
+
+    monkeypatch.setattr(app_state, "_VENDORS", None)
+    monkeypatch.setattr(app_state, "_PRESETS", None)
+    user_config_file.write_text('build = "x"\n')
+    monkeypatch.setattr(sys, "argv", ["bakar", "settings", "get", "no.such.key"])
+    rc = main()
+    captured = capsys.readouterr()
+    assert rc == 2, captured.err
+    # Rich wraps long lines at the terminal width; compare on unwrapped text.
+    assert "section '[build]'" in " ".join((captured.err + captured.out).split())
+
+
+@pytest.mark.parametrize(
+    ("loader", "message"),
+    [
+        ("load_vendors", "vendors.toml: section '[vendor]' must be a table"),
+        ("load_presets", "config.toml: preset '[foo]' is [/bad] markup-like"),
+    ],
+)
+def test_invalid_vendors_and_presets_error_keep_brackets(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    loader: str,
+    message: str,
+) -> None:
+    import bakar.commands._app as app_state
+
+    def boom(*_args: object, **_kwargs: object) -> list:
+        raise ValueError(message)
+
+    monkeypatch.setattr(app_state, "_VENDORS", None)
+    monkeypatch.setattr(app_state, "_PRESETS", None)
+    monkeypatch.setattr(app_state, loader, boom)
+    monkeypatch.setattr(sys, "argv", ["bakar", "settings", "get", "no.such.key"])
+    rc = main()
+    captured = capsys.readouterr()
+    assert rc == 2, captured.err
+    assert message in " ".join((captured.err + captured.out).split())
