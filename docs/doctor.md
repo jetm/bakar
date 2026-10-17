@@ -51,6 +51,15 @@ Checks cover:
 - Uninative wiring (when `[build] uninative = true` - the host tarball's fragment, its glibc ceiling, its payload integrity, its `DL_DIR` cache state, and its consistency across a cluster)
 - Cluster shared-mount options (`shared-mounts`, cluster mode only - see [Cluster shared-mount options](#cluster-shared-mount-options) below)
 
+## Stale bitbake locks
+
+`bitbake-locks` removes stale `bitbake.lock` and socket files, but only after
+checking who owns them. It blocks when a local build holds the lock, when a
+peer node holds it, or when ownership on a shared filesystem cannot be
+confirmed. A peer-held or unattributable result names the lock marker file
+in its fix hint. When no build runs on any node, delete that marker and the
+`bitbake.lock` beside it by hand, then re-run `bakar doctor`.
+
 ## NFS cache-mount readiness
 
 `cache-mounts` is the first check in every doctor run, in every mode - it is

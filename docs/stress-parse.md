@@ -4,6 +4,11 @@ Stress-test the bitbake parser fork race with configurable parallelism and itera
 
 Used to reproduce and measure the parser race condition described in the bakar roadmap. Runs `bitbake -p <target>` N times and collects the failure rate.
 
+Each iteration wipes the parse caches, so the command refuses before its first
+iteration, wiping nothing, while a peer node or a local build holds the build
+directory's lock. The refusal names the lock marker; if no build runs on any
+node, delete that marker and the `bitbake.lock` beside it by hand and re-run.
+
 ## Synopsis
 
 ```text

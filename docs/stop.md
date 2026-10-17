@@ -154,6 +154,10 @@ holds the root, `bakar stop` names it (`<bsp_root> is owned by <host>; run
 confirmed at all, it says so and names the reason instead of pretending the
 root was never there.
 
+When `bakar stop` refuses because a peer node holds the lock or the owner cannot
+be determined, the refusal names the lock marker file. If no build runs on any
+node, delete that marker and the `bitbake.lock` beside it by hand.
+
 ## Stopping a remote build (`--on <host>`)
 
 A build dispatched with `bakar build --on <host>` runs on the remote under a
