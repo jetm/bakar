@@ -1377,8 +1377,10 @@ def test_check_workspace_filesystem_nfs_tmpdir_blocks(monkeypatch: pytest.Monkey
     assert "local_tmpdir_base" in result.fix_hint
 
 
-def test_check_workspace_filesystem_nfs_local_tmpdir_passes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """(b) Workspace on nfs WITH a local TMPDIR override -> PASS (the new capability)."""
+def test_check_workspace_filesystem_workspace_on_nfs_is_blocked(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A workspace on nfs is refused even with a local TMPDIR override."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     local_base = tmp_path / "local-tmp"
@@ -1391,10 +1393,54 @@ def test_check_workspace_filesystem_nfs_local_tmpdir_passes(monkeypatch: pytest.
     _patch_proc_mounts(monkeypatch, mounts)
     cfg = _fs_cfg(workspace, local_tmpdir_base=str(local_base), host_mode=True)
     result = check_workspace_filesystem(cfg)
-    assert result.status is Status.PASS
-    assert result.severity is Severity.WARN
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert str(workspace.resolve()) in result.message
     assert "nfs" in result.message
-    assert "local" in result.message.lower()
+    assert result.fix_hint is not None
+    assert "ext4" in result.fix_hint
+    assert "sstate" in result.fix_hint
+
+
+def test_check_workspace_filesystem_workspace_on_nfs_is_blocked_with_bounded_lookupcache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An nfs4 workspace mounted with lookupcache=positive is blocked too."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    local_base = tmp_path / "local-tmp"
+    local_base.mkdir()
+    mounts = (
+        f"none / overlay rw 0 0\n"
+        f"server:/export {workspace.resolve()} nfs4 rw,hard,lookupcache=positive 0 0\n"
+        f"none {local_base.resolve()} ext4 rw 0 0\n"
+    )
+    _patch_proc_mounts(monkeypatch, mounts)
+    cfg = _fs_cfg(workspace, local_tmpdir_base=str(local_base), host_mode=True)
+    result = check_workspace_filesystem(cfg)
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert "nfs4" in result.message
+    assert str(workspace.resolve()) in result.message
+
+
+def test_check_workspace_filesystem_local_workspace_with_nfs_caches_passes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A local ext4 workspace passes even when the sstate dir sits on nfs4."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    sstate = tmp_path / "sstate"
+    sstate.mkdir()
+    mounts = (
+        f"none / overlay rw 0 0\n"
+        f"none {workspace.resolve()} ext4 rw 0 0\n"
+        f"server:/export {sstate.resolve()} nfs4 rw,hard 0 0\n"
+    )
+    _patch_proc_mounts(monkeypatch, mounts)
+    result = check_workspace_filesystem(_fs_cfg(workspace, sstate_dir=str(sstate)))
+    assert result.status is Status.PASS
+    assert "ext4" in result.message
 
 
 def test_check_workspace_filesystem_vfat_local_tmpdir_still_fails(
@@ -1511,11 +1557,10 @@ def test_check_workspace_filesystem_nfs_unbounded_lookupcache_warns(
     _patch_proc_mounts(monkeypatch, mounts)
     cfg = _fs_cfg(workspace, local_tmpdir_base=str(local_base), host_mode=True)
     result = check_workspace_filesystem(cfg)
+    # The unbounded-lookupcache WARN branch is now unreachable: the workspace
+    # on NFS blocks first (22.2 deletes this test).
     assert result.status is Status.FAIL
-    assert result.severity is Severity.WARN
-    assert "negative-lookup caching" in result.message
-    assert result.fix_hint is not None
-    assert "lookupcache=positive" in result.fix_hint
+    assert result.severity is Severity.BLOCK
 
 
 def test_check_workspace_filesystem_nfs_lookupcache_positive_no_warning(
@@ -1534,8 +1579,9 @@ def test_check_workspace_filesystem_nfs_lookupcache_positive_no_warning(
     _patch_proc_mounts(monkeypatch, mounts)
     cfg = _fs_cfg(workspace, local_tmpdir_base=str(local_base), host_mode=True)
     result = check_workspace_filesystem(cfg)
-    assert result.status is Status.PASS
-    assert "negative-lookup caching" not in result.message
+    # The NFS-workspace pass branch is gone: this mount now blocks (22.2 deletes this test).
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
 
 
 def test_nfs_lookup_cache_bounded_low_actimeo() -> None:

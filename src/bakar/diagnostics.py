@@ -2681,11 +2681,10 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
       ``TMPDIR`` lives, so a local ``TMPDIR`` override must NOT false-PASS it.
       This is a ``Severity.WARN`` FAIL.
 
-    A workspace on nfs/nfs4 with a local resolved ``TMPDIR`` is the new
-    supported capability and PASSes - unless the NFS mount leaves
-    negative-lookup caching unbounded, which is a ``Severity.WARN`` FAIL
-    because the bitbake-lock ownership guard judges a peer's lock by its
-    absence. All-local or unrecognized fstypes PASS exactly as before.
+    A workspace on nfs/nfs4 is refused whatever ``TMPDIR`` is: building through
+    NFS is not supported, so this is a ``Severity.BLOCK`` FAIL. Shared sstate,
+    downloads and ccache directories on NFS stay supported (the cache checks
+    judge those). All-local or unrecognized fstypes PASS exactly as before.
     """
     name = "workspace-filesystem"
     try:
@@ -2737,6 +2736,20 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
             f"resolved TMPDIR {tmpdir} is on {tmp_fstype} at {tmp_mount}: the build TMPDIR needs "
             "xattrs/hardlinks/case-sensitivity this filesystem lacks",
             fix_hint="Point [build] local_tmpdir_base at a node-local ext4/btrfs/xfs path, then re-run.",
+        )
+
+    # (a3) workspace on NFS is refused whatever TMPDIR is: building through NFS
+    # is not supported. Shared sstate/downloads/ccache dirs on NFS stay allowed
+    # (the cache checks judge those), so only the workspace root is judged here.
+    if ws_fstype in _FS_NFS:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"workspace {workspace} is on {ws_fstype} at {ws_mount}: building through NFS is not supported",
+            fix_hint=(
+                "Move the workspace to a node-local ext4, btrfs or xfs path, then re-run. "
+                "The shared sstate, downloads and ccache directories may stay on NFS."
+            ),
         )
 
     # (c) workspace on a non-NFS blocking fstype breaks the source layers
