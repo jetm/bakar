@@ -32,8 +32,6 @@ def test_clean_byo_meta_avocado_yaml_wipes_build_stem_dir(
     The BSP-only ``--bsp nxp|ti`` ladder cannot express this, so the positional
     YAML form is the only path that reaches the machine build dir.
     """
-    import shutil
-
     (tmp_path / ".bakar.toml").write_text("")
     yaml = tmp_path / "meta-avocado" / "kas" / "machine" / "qtest.yml"
     yaml.parent.mkdir(parents=True)
@@ -43,14 +41,18 @@ def test_clean_byo_meta_avocado_yaml_wipes_build_stem_dir(
     monkeypatch.delenv("SSTATE_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
 
+    # The descriptor-based removal walks entries relative to a held directory
+    # fd, so only the tree root is removed by absolute path (os.rmdir). Record
+    # those root removals.
     removed: list[str] = []
-    real_rmtree = shutil.rmtree
+    real_rmdir = os.rmdir
 
-    def _recording_rmtree(path, *a, **kw):
-        removed.append(str(path))
-        real_rmtree(path, *a, **kw)
+    def _recording_rmdir(path, *a, **kw):
+        if kw.get("dir_fd") is None:
+            removed.append(str(path))
+        real_rmdir(path, *a, **kw)
 
-    monkeypatch.setattr(shutil, "rmtree", _recording_rmtree)
+    monkeypatch.setattr(os, "rmdir", _recording_rmdir)
 
     result = runner.invoke(app, ["clean", "meta-avocado/kas/machine/qtest.yml"])
 

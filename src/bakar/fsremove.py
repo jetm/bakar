@@ -18,6 +18,7 @@ from __future__ import annotations
 import errno
 import os
 import shutil
+import stat
 import threading
 from pathlib import Path
 
@@ -150,6 +151,27 @@ RESIDUE_SAMPLE_LIMIT = 64
 _NOT_EMPTY_ERRNOS = frozenset({errno.ENOTEMPTY, errno.EEXIST})
 
 
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _remove_entry(parent_fd: int, name: str, onexc) -> None:
+    """Remove the entry *name* under the held descriptor *parent_fd*.
+
+    A directory is removed by descriptor, so no component is re-resolved by
+    path. Anything else, a symlink included, is unlinked and never followed.
+    Errors on a directory's contents go to *onexc* with paths relative to
+    *parent_fd*.
+    """
+    try:
+        st = os.lstat(name, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(st.st_mode):
+        shutil.rmtree(name, dir_fd=parent_fd, onexc=onexc)
+    else:
+        os.unlink(name, dir_fd=parent_fd)
+
+
 def parallel_rmtree(root: Path, description: str = "Removing") -> tuple[Path, OSError] | None:
     """Remove *root* and everything under it, parallelizing across subtrees.
 
@@ -199,13 +221,13 @@ def parallel_rmtree(root: Path, description: str = "Removing") -> tuple[Path, OS
                 break
             node = node.parent
 
-    def _unit_on_error(unit: Path):
+    def _unit_on_error(unit: Path, base: Path):
         def _on_error(func, path, exc, **_kwargs) -> None:
             # Already-gone entries (a concurrent unit removed them) are not residue.
             if isinstance(exc, FileNotFoundError):
                 return
             with lock:
-                _record(Path(path), exc, func, unit)
+                _record(base / path, exc, func, unit)
 
         return _on_error
 
@@ -218,22 +240,79 @@ def parallel_rmtree(root: Path, description: str = "Removing") -> tuple[Path, OS
                 return
             _record(entry, exc, func, None)
 
-    def _rm(path: Path) -> None:
+    def _skeleton_rel_error(func, path, exc, **_kwargs) -> None:
+        _skeleton_on_error(func, root / path, exc)
+
+    def _open_parent(rel_parts: tuple[str, ...]) -> int:
+        """Descriptor of a unit's parent, opened one component at a time.
+
+        Every step is ``O_NOFOLLOW`` relative to the previous descriptor, so a
+        parent swapped for a symlink after the target list was built fails here
+        instead of being followed out of the tree.
+        """
+        cur = os.dup(root_fd)
         try:
-            if path.is_symlink() or not path.is_dir():
-                path.unlink()
-            else:
-                shutil.rmtree(path, onexc=_unit_on_error(path))
+            for part in rel_parts:
+                nxt = os.open(part, _DIR_FLAGS, dir_fd=cur)
+                os.close(cur)
+                cur = nxt
+        except BaseException:
+            os.close(cur)
+            raise
+        return cur
+
+    def _rm(path: Path) -> None:
+        rel = path.relative_to(root).parts
+        try:
+            parent_fd = _open_parent(rel[:-1])
+        except OSError as exc:
+            if not isinstance(exc, FileNotFoundError):
+                with lock:
+                    _record(path, exc, None, path)
+            return
+        try:
+            _remove_entry(parent_fd, rel[-1], _unit_on_error(path, path.parent))
         except OSError as exc:
             with lock:
                 _record(path, exc, None, path)
+        finally:
+            os.close(parent_fd)
 
-    # No ETA: deletion units are subtrees of wildly different size, so an
-    # item-count time-remaining estimate is always wrong.
-    parallel_apply(targets, _rm, description, show_eta=False)
-    # Drop the skeleton (the now-empty parent dirs left behind by expansion).
-    # A failure on a skeleton directory itself is new residue and is counted.
-    shutil.rmtree(root, onexc=_skeleton_on_error)
+    if root.is_symlink() or not root.is_dir():
+        # Never followed: a symlink or plain file at the root is one entry.
+        try:
+            root.unlink()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            return root, _with_residue(exc.with_traceback(None), 1, [(root, exc)])
+        return None
+    try:
+        root_fd = os.open(root, _DIR_FLAGS)
+    except OSError as exc:
+        return root, _with_residue(exc.with_traceback(None), 1, [(root, exc)])
+    try:
+        # No ETA: deletion units are subtrees of wildly different size, so an
+        # item-count time-remaining estimate is always wrong.
+        parallel_apply([t for t in targets if t != root], _rm, description, show_eta=False)
+        # Drop the skeleton (the now-empty parent dirs left behind by expansion).
+        # A failure on a skeleton entry itself is new residue and is counted.
+        try:
+            names = os.listdir(root_fd)
+        except OSError as exc:
+            _skeleton_on_error(os.listdir, root, exc)
+            names = []
+        for name in names:
+            try:
+                _remove_entry(root_fd, name, _skeleton_rel_error)
+            except OSError as exc:
+                _skeleton_on_error(None, root / name, exc)
+    finally:
+        os.close(root_fd)
+    try:
+        os.rmdir(root)
+    except OSError as exc:
+        _skeleton_on_error(os.rmdir, root, exc)
 
     if not root.exists() and not root.is_symlink():
         return None

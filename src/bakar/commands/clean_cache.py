@@ -33,7 +33,7 @@ from bakar.commands._helpers import (
 )
 from bakar.config import shared_ccache_dir
 from bakar.fmt import neutralize
-from bakar.fsremove import parallel_apply
+from bakar.fsremove import _with_residue, parallel_apply
 from bakar.mounts import _mount_entry_in
 from bakar.sccache_cluster import _parse_dist_status_servers as _parse_dist_status_servers  # re-exported for tests
 from bakar.sccache_cluster import (
@@ -377,8 +377,7 @@ def _remove_child(child: Path) -> tuple[Path, BaseException] | None:
     # A directory refused as non-empty only repeats the residue below it.
     causes = [e for e in errors if e[1].errno not in (errno.ENOTEMPTY, errno.EEXIST)] or errors
     first_path, first_err = causes[0]
-    first_err.residue_count = len(causes)  # ty: ignore[unresolved-attribute]
-    return (first_path, first_err)
+    return (first_path, _with_residue(first_err, len(causes), errors))
 
 
 def _empty_dir_in_place(path: Path) -> list[tuple[Path, BaseException]]:
@@ -403,12 +402,42 @@ def _empty_dir_in_place(path: Path) -> list[tuple[Path, BaseException]]:
     return [r for r in results if r is not None]
 
 
-def _wipe_local_dir(c: Path) -> int:
+def _link_desc(c: Path) -> str:
+    """``<path>``, or ``<link> -> <resolved target>`` when *c* is a symlink."""
+    if c.is_symlink():
+        return f"{c} -> {c.resolve()}"
+    return str(c)
+
+
+def _refused_wipe_target(target: Path, protected: list[Path]) -> str | None:
+    """Why emptying *target* is refused, or None when it is a legitimate cache root.
+
+    Refused: ``/``, the home directory, and any directory that equals or contains
+    a protected path (the workspace root, a build dir). A target nested inside
+    the workspace is not an ancestor and stays allowed.
+    """
+    if target == Path("/"):
+        return "the filesystem root"
+    try:
+        home = Path.home().resolve()
+    except RuntimeError, OSError:
+        home = None
+    if home is not None and target == home:
+        return "the home directory"
+    for p in protected:
+        if target == p or target in p.parents:
+            return f"an ancestor of {p}"
+    return None
+
+
+def _wipe_local_dir(c: Path, extra_protected: list[Path] | None = None) -> int:
     """Wipe a local cache dir; return the leftover count.
 
     A symlinked root is resolved and its target emptied in place, keeping the
     link: removing only the link would report the cache removed while every
-    cached object in the target stays warm.
+    cached object in the target stays warm. A target that is ``/``, the home
+    directory, or an ancestor of the workspace or a build dir is refused and
+    counted as a leftover, so a cache link cannot be pointed at the workspace.
     """
     if not c.is_symlink():
         return 0 if _remove_tree_report(c, f"Removing {neutralize(c.name)}/") else 1
@@ -416,6 +445,18 @@ def _wipe_local_dir(c: Path) -> int:
     if not target.is_dir():
         _log(f"{neutralize(c)} is a symlink that does not reach a directory; nothing to wipe")
         return 0
+    protected = [p.resolve() for p in (extra_protected or [])]
+    ws = _find_workspace_from_cwd()
+    if ws is not None:
+        protected.append(ws.resolve())
+        protected.extend(b.resolve() for b in ws.glob("build-*") if b.is_dir())
+    reason = _refused_wipe_target(target, protected)
+    if reason is not None:
+        console.print(
+            f"[red]refusing to empty[/] {neutralize(c)} -> {neutralize(target)}: the target is {neutralize(reason)}",
+            highlight=False,
+        )
+        return 1
     leftover = _empty_dir_in_place(target)
     for path, err in leftover:
         _print_leftover(target, path, err)
@@ -488,13 +529,13 @@ def _run_full_reset(
 
     def _wipe_cache_dir(c: Path) -> int:
         _log(f"wiping sccache client disk cache {neutralize(c)} ...")
-        return _wipe_local_dir(c)
+        return _wipe_local_dir(c, [*build_dirs, binary_root])
 
     def _wipe_ccache_dir(c: Path) -> int:
         # --full is a cold reset: age-based ccache eviction is not enough, the
         # local ccache dir is wiped whole so the next build starts empty.
         _log(f"wiping local ccache dir {neutralize(c)} ...")
-        return _wipe_local_dir(c)
+        return _wipe_local_dir(c, [*build_dirs, binary_root])
 
     def _stop_client_daemon() -> int:
         _log("stopping the sccache client daemon (if running) ...")
@@ -526,9 +567,9 @@ def _run_full_reset(
         (f"empty in place (keep root): {sstate}", _empty_sstate),
     ]
     actions.extend((f"rm -rf (local): {b}", lambda b=b: _wipe_build_dir(b)) for b in build_dirs)
-    actions.extend((f"rm -rf (local): {c}", lambda c=c: _wipe_cache_dir(c)) for c in cache_dirs)
+    actions.extend((f"rm -rf (local): {_link_desc(c)}", lambda c=c: _wipe_cache_dir(c)) for c in cache_dirs)
     if ccache is not None:
-        actions.append((f"rm -rf (local ccache): {ccache}", lambda c=ccache: _wipe_ccache_dir(c)))
+        actions.append((f"rm -rf (local ccache): {_link_desc(ccache)}", lambda c=ccache: _wipe_ccache_dir(c)))
     actions.append(("pkill -f '^/usr/bin/sccache$'", _stop_client_daemon))
     actions.append((f"PC1 (local): {reset_cmd}", _reset_pc1))
     actions.append(
@@ -565,10 +606,15 @@ def _run_full_reset(
             raise typer.Exit(code=1)
 
     if not yes:
+        link_notes = "".join(
+            f"\n  rm -rf (local cache): {_link_desc(c)}"
+            for c in [*cache_dirs, *([ccache] if ccache is not None else [])]
+            if c.is_symlink()
+        )
         confirmed = typer.confirm(
             f"Cold-reset: empty {sstate}, wipe {len(build_dirs)} build dir(s) + the sccache "
             f"client cache + the local ccache dir, stop the client daemon, and reset the "
-            f"sccache-dist server on PC1 and any secondary build servers. Proceed?"
+            f"sccache-dist server on PC1 and any secondary build servers.{link_notes}\nProceed?"
         )
         if not confirmed:
             console.print("Aborted.")

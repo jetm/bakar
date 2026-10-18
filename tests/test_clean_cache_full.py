@@ -930,6 +930,54 @@ def test_full_reset_symlinked_ccache_root_keeps_link_and_empties_target(
     assert list(target.iterdir()) == [], "the cache behind the link must be cold"
 
 
+def test_full_reset_ccache_link_to_build_dir_ancestor_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """K12a: ``ccache -> ..`` must not empty the directory holding the build dir."""
+    _full_env(tmp_path, monkeypatch)
+    ws = tmp_path / "ws"
+    build = ws / "build-x"
+    build.mkdir(parents=True)
+    (ws / "sources.txt").write_text("keep")
+    link = ws / "ccache"
+    link.symlink_to("..")  # resolves to tmp_path, an ancestor of the build dir
+
+    result = runner.invoke(app, ["clean-cache", "--full", "--build-dir", str(build), "--ccache-dir", str(link), "-y"])
+
+    assert result.exit_code == 1, result.output
+    assert (ws / "sources.txt").read_text() == "keep"
+    assert _flat(str(tmp_path)) in _flat(result.output)
+
+
+def test_full_reset_ccache_link_to_home_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ccache link resolving to the home directory leaves its contents alone."""
+    _full_env(tmp_path, monkeypatch)  # HOME is tmp_path
+    (tmp_path / "dotfile").write_text("keep")
+    link = tmp_path / "elsewhere" / "ccache"
+    link.parent.mkdir()
+    link.symlink_to(tmp_path)
+
+    result = runner.invoke(app, ["clean-cache", "--full", "--ccache-dir", str(link), "-y"])
+
+    assert result.exit_code == 1, result.output
+    assert (tmp_path / "dotfile").read_text() == "keep"
+    assert "homedirectory" in _flat(result.output)
+
+
+def test_full_reset_dry_run_plan_names_the_symlink_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The plan line shows where a symlinked ccache root really points."""
+    _full_env(tmp_path, monkeypatch)
+    target = tmp_path / "real-ccache"
+    target.mkdir()
+    link = tmp_path / "ccache-link"
+    link.symlink_to(target)
+
+    result = runner.invoke(app, ["clean-cache", "--full", "--ccache-dir", str(link), "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert _flat(f"rm -rf (local ccache): {link} -> {target}") in _flat(result.output)
+
+
 def test_wipe_local_dir_symlinked_sccache_cache_root_empties_target(tmp_path: Path) -> None:
     """The sccache client cache step takes the same symlink-resolving path."""
     target = tmp_path / "real-sccache"

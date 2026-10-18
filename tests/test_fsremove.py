@@ -184,7 +184,7 @@ def test_parallel_rmtree_residue_memory_is_bounded(tmp_path: Path, monkeypatch: 
     _populate(root, dirs=6, files_per_dir=1)
     emitted = 0
     re_emitted = 0
-    units: list[str] = []
+    units: set[str] = set()
 
     def _emit(onexc, path: str) -> None:
         try:
@@ -192,16 +192,15 @@ def test_parallel_rmtree_residue_memory_is_bounded(tmp_path: Path, monkeypatch: 
         except PermissionError as exc:
             onexc(os.unlink, path, exc)
 
-    def fake_rmtree(path, onexc=None, **_kw):
+    def fake_rmtree(path, dir_fd=None, onexc=None, **_kw):
         nonlocal emitted, re_emitted
-        if str(path) == str(root):
+        if path in units:
             # The skeleton pass re-walks every unit and hits the same entries.
-            for unit in units:
-                for i in range(500):
-                    re_emitted += 1
-                    _emit(onexc, f"{unit}/entry{i}")
+            for i in range(500):
+                re_emitted += 1
+                _emit(onexc, f"{path}/entry{i}")
             return
-        units.append(str(path))
+        units.add(path)
         for i in range(500):
             emitted += 1
             _emit(onexc, f"{path}/entry{i}")
@@ -220,36 +219,20 @@ def test_parallel_rmtree_residue_memory_is_bounded(tmp_path: Path, monkeypatch: 
     assert exc.residue_count == emitted  # ty: ignore[unresolved-attribute]
 
 
-def _rmtree_leaving_root(root: Path, real_rmtree):
-    """Stand-in for ``shutil.rmtree`` whose rmdir of *root* itself fails (EBUSY-like)."""
-
-    def fake(path, onexc=None, **kw):
-        if str(path) == str(root):
-            real_rmtree_children(root, real_rmtree)
-            onexc(os.rmdir, str(path), OSError(16, "Device or resource busy"))
-            return
-        return real_rmtree(path, onexc=onexc, **kw)
-
-    return fake
-
-
-def real_rmtree_children(root: Path, real_rmtree) -> None:
-    for child in list(root.iterdir()):
-        if child.is_dir() and not child.is_symlink():
-            real_rmtree(child)
-        else:
-            child.unlink()
-
-
 def test_parallel_rmtree_empty_root_that_cannot_be_removed_is_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A mount-point root: contents gone, only its own rmdir fails -> success, not residue."""
-    import bakar.fsremove as fsremove
-
     root = tmp_path / "build"
     _populate(root, dirs=3, files_per_dir=2)
-    monkeypatch.setattr(fsremove.shutil, "rmtree", _rmtree_leaving_root(root, fsremove.shutil.rmtree))
+    real_rmdir = os.rmdir
+
+    def busy_rmdir(path, *a, **kw):
+        if str(path) == str(root) and not kw:
+            raise OSError(16, "Device or resource busy")
+        return real_rmdir(path, *a, **kw)
+
+    monkeypatch.setattr(os, "rmdir", busy_rmdir)
 
     assert parallel_rmtree(root) is None
     assert root.is_dir()
@@ -259,30 +242,63 @@ def test_parallel_rmtree_empty_root_that_cannot_be_removed_is_success(
 def test_parallel_rmtree_root_failure_with_entries_left_is_residue(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import bakar.fsremove as fsremove
-
     root = tmp_path / "build"
     _populate(root, dirs=2, files_per_dir=1)
     (root / "stuck").write_text("x")
-    real = fsremove.shutil.rmtree
-    real_unlink = type(root).unlink
+    real_unlink = os.unlink
 
-    def fake(path, onexc=None, **kw):
-        if str(path) == str(root):
-            onexc(os.rmdir, str(path), OSError(16, "busy"))
-            return
-        return real(path, onexc=onexc, **kw)
-
-    def stuck_unlink(self, *a, **kw):
-        if self.name == "stuck":
+    def stuck_unlink(path, *a, **kw):
+        if str(path) == "stuck":
             raise PermissionError(13, "denied")
-        return real_unlink(self, *a, **kw)
+        return real_unlink(path, *a, **kw)
 
-    monkeypatch.setattr(fsremove.shutil, "rmtree", fake)
-    monkeypatch.setattr(type(root), "unlink", stuck_unlink)
+    monkeypatch.setattr(os, "unlink", stuck_unlink)
     result = parallel_rmtree(root)
     assert result is not None, "root still holds an entry, so it is residue"
     assert result[0].name == "stuck"
+
+
+def test_parallel_rmtree_parent_swapped_for_symlink_deletes_nothing_outside(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """K12b: a directory swapped for a symlink after the target list was built is not followed."""
+    import shutil
+
+    import bakar.fsremove as fsremove
+
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    root = tmp_path / "build"
+    for i in range(40):
+        (root / "outer" / f"unit{i}").mkdir(parents=True)
+        (root / "outer" / f"unit{i}" / "f").write_text("x")
+    (root / "other").mkdir()
+    swapped = {"done": False}
+    real_gather = fsremove._gather_remove_targets
+
+    def gather_then_swap(r, fan):
+        targets = real_gather(r, fan)
+        deep = next(t for t in targets if len(t.relative_to(r).parts) >= 2)
+        # The victim holds an entry with the unit's own name, so a followed
+        # parent would delete it.
+        if deep.is_dir():
+            (victim / deep.name).mkdir()
+            (victim / deep.name / "precious").write_text("keep")
+        else:
+            (victim / deep.name).write_text("keep")
+        shutil.rmtree(deep.parent)
+        deep.parent.symlink_to(victim, target_is_directory=True)
+        swapped["done"] = True
+        return targets
+
+    monkeypatch.setattr(fsremove, "_gather_remove_targets", gather_then_swap)
+    parallel_rmtree(root)
+
+    assert swapped["done"]
+    names = {p.name for p in victim.iterdir()}
+    assert len(names) == 1, "nothing outside the tree may be deleted"
+    survivor = victim / names.pop()
+    assert survivor.is_file() or (survivor / "precious").read_text() == "keep"
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")

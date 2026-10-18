@@ -10,6 +10,7 @@ removed.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import pytest
@@ -55,8 +56,6 @@ def test_clean_all_calls_hashserv_stop_before_wipe(
     ``rmtree`` afterwards. An unordered membership check would let a
     regression that stops the daemon AFTER the wipe pass silently.
     """
-    import shutil
-
     from bakar import hashserv
 
     recorded: list[tuple[str, str]] = []
@@ -66,13 +65,16 @@ def test_clean_all_calls_hashserv_stop_before_wipe(
         "stop",
         lambda root: recorded.append(("stop", str(root))) or True,
     )
-    real_rmtree = shutil.rmtree
+    # Removal is descriptor-based, so only the tree root is removed by absolute
+    # path (os.rmdir without dir_fd); record those as the removal events.
+    real_rmdir = os.rmdir
 
-    def _recording_rmtree(path, *a, **kw):
-        recorded.append(("rmtree", str(path)))
-        real_rmtree(path, *a, **kw)
+    def _recording_rmdir(path, *a, **kw):
+        if kw.get("dir_fd") is None:
+            recorded.append(("rmtree", str(path)))
+        real_rmdir(path, *a, **kw)
 
-    monkeypatch.setattr(shutil, "rmtree", _recording_rmtree)
+    monkeypatch.setattr(os, "rmdir", _recording_rmdir)
 
     result = runner.invoke(app, ["clean", "--all", "--bsp", "nxp"])
 
