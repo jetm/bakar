@@ -16,7 +16,7 @@ import typer
 
 from bakar import cve_report, feed_ops, feed_preflight, sbom_publish
 from bakar.commands._app import console
-from bakar.diagnostics import Status
+from bakar.diagnostics import Status, markup_safe
 from bakar.steps import kas_build as step_kas
 
 # Runtime, not TYPE_CHECKING-guarded. ``_CveRequest.kas_ctx`` is annotated with
@@ -291,9 +291,9 @@ def _resolve_feed_request(
         for result in results:
             if result.status is Status.PASS:
                 continue
-            console.print(f"FAIL {result.name}: {result.message}")
+            console.print(f"FAIL {result.name}: {markup_safe(result.message)}")
             if result.fix_hint:
-                console.print(f"     -> {result.fix_hint}")
+                console.print(f"     -> {markup_safe(result.fix_hint)}")
         console.print("Fix the above, or drop --feed to build without touching the feed.")
         raise typer.Exit(code=2)
 

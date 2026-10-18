@@ -1458,11 +1458,11 @@ def test_check_workspace_filesystem_autofs_only_workspace_is_not_pass(
 def test_check_workspace_filesystem_mount_resolve_timeout_is_not_pass(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A bounded-resolve timeout (``_mount_entry_in`` -> None) -> WARN FAIL, never PASS or SKIP."""
+    """A bounded-resolve timeout (``_resolve_bounded`` -> None) -> WARN FAIL, never PASS or SKIP."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     _patch_proc_mounts(monkeypatch, f"none / overlay rw 0 0\nnone {workspace.resolve()} ext4 rw 0 0\n")
-    monkeypatch.setattr("bakar.diagnostics._mount_entry_in", lambda _raw, _path: None)
+    monkeypatch.setattr("bakar.diagnostics._resolve_bounded", lambda paths, **_k: dict.fromkeys(paths))
     result = check_workspace_filesystem(_fs_cfg(workspace))
     assert result.status is Status.FAIL
     assert result.severity is Severity.WARN
@@ -2859,33 +2859,62 @@ def test_nfs_delegations_skips_when_locks_unreadable(tmp_path: Path, monkeypatch
     assert "unreadable" in result.message
 
 
-def test_diagnostic_strings_do_not_carry_an_unescaped_build_section_token() -> None:
-    """Rich reads ``[build]`` in a printed message or hint as a style tag and drops it.
-
-    Every check message and fix hint is printed with markup on, so the section
-    name must be written ``\\[build]`` in the source. Docstrings and comments are
-    never printed and are exempt.
-    """
+def _diagnostic_literals_with_build_token() -> list[str]:
+    """Every non-docstring string constant in diagnostics.py that names ``[build]``."""
     import ast
-    import re
 
-    import bakar.diagnostics as diagnostics_module
-
-    source = Path(diagnostics_module.__file__).read_text()
-    tree = ast.parse(source)
+    tree = ast.parse(Path(diagnostics.__file__).read_text())
     docstrings: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             first = node.body[0] if node.body else None
             if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
                 docstrings.add(id(first.value))
-    unescaped = re.compile(r"(?<!\\)\[build\]")
-    offenders = [
-        f"line {node.lineno}: {node.value[:60]!r}"
+    return [
+        node.value
         for node in ast.walk(tree)
         if isinstance(node, ast.Constant)
         and isinstance(node.value, str)
         and id(node) not in docstrings
-        and unescaped.search(node.value)
+        and "[build]" in node.value
     ]
-    assert not offenders, "unescaped [build] in printed text: " + "; ".join(offenders)
+
+
+def test_build_section_token_is_stored_plain_and_rendered_through_the_sink() -> None:
+    """Stored diagnostic text is plain; the Rich sink shows ``[build]`` instead of eating it.
+
+    This replaces a source-text guard that demanded ``\\[build]`` in every literal:
+    that design leaked a backslash into ``doctor --json`` and ``diagnosis.txt``.
+    Escaping now happens once, in :func:`bakar.diagnostics.markup_safe`, at each
+    print site.
+    """
+    from rich.console import Console
+
+    literals = _diagnostic_literals_with_build_token()
+    assert literals
+    for text in literals:
+        assert "\\[" not in text, f"stored text carries a backslash escape: {text[:60]!r}"
+        buffer = io.StringIO()
+        Console(file=buffer, width=2000, force_terminal=False).print(diagnostics.markup_safe(text))
+        assert "[build]" in buffer.getvalue(), f"[build] lost when printed: {text[:60]!r}"
+        assert "\\" not in buffer.getvalue()
+
+
+def test_markup_safe_does_not_double_escape_neutralized_text() -> None:
+    from bakar.fmt import neutralize
+
+    assert diagnostics.markup_safe(neutralize("a[b]c")) == neutralize("a[b]c")
+    assert diagnostics.markup_safe("see [build] x") == "see \\[build] x"
+
+
+def test_doctor_json_and_diagnosis_txt_carry_no_backslash(tmp_path: Path) -> None:
+    from bakar.commands.doctor import _print_json
+
+    result = check_systemd_scope(_scope_cfg(scope=False))
+    assert "[build]" in result.message
+    assert "\\" not in result.message
+    buffer = io.StringIO()
+    with patch("bakar.commands.doctor.typer.echo", buffer.write):
+        _print_json([result])
+    assert "\\\\" not in buffer.getvalue()
+    assert "[build] scope = false" in json.loads(buffer.getvalue())["findings"][0]["message"]

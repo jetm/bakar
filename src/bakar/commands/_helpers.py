@@ -48,7 +48,16 @@ from bakar.commands._workspace import (
     logical_path,
     split_kas_yaml_arg,
 )
-from bakar.diagnostics import CheckEvent, CheckResult, Severity, Status, any_blocking_failure, group_results, run_all
+from bakar.diagnostics import (
+    CheckEvent,
+    CheckResult,
+    Severity,
+    Status,
+    any_blocking_failure,
+    group_results,
+    markup_safe,
+    run_all,
+)
 from bakar.fmt import neutralize
 from bakar.layers import collect_layer_hashes
 from bakar.observability import run_id_epoch
@@ -551,10 +560,10 @@ def _print_diagnosis(results: list[CheckResult]) -> None:
         # uninative-leak scan's artifact count and its per-class tally of the
         # dependencies it chose not to report, whose whole safety argument is
         # that nothing is hidden. Rendered with markup enabled, exactly as the
-        # table below renders it, because the message arrives pre-neutralized.
+        # table below renders it, because the sink escapes the plain stored message.
         for r in results:
             if len(r.message) > _PASS_NOTE_MIN_CHARS:
-                console.print(f"  [bold]{r.name}[/]: {r.message}")
+                console.print(f"  [bold]{r.name}[/]: {markup_safe(r.message)}")
         return
     table = Table(title="Pre-flight diagnosis", show_edge=False)
     table.add_column("Check", no_wrap=True)
@@ -579,14 +588,14 @@ def _print_diagnosis(results: list[CheckResult]) -> None:
                 f"  {r.name}",
                 r.severity.value,
                 f"[{status_colour}]{r.status.value}[/]",
-                r.message,
+                markup_safe(r.message),
             )
     console.print(table)
     hints = [r for r in results if r.status is Status.FAIL and r.fix_hint]
     if hints:
         console.print()
         for r in hints:
-            console.print(f"[yellow]fix[/] [bold]{r.name}[/]: {r.fix_hint}")
+            console.print(f"[yellow]fix[/] [bold]{r.name}[/]: {markup_safe(r.fix_hint)}")
 
 
 def _run_doctor_gate(cfg: BuildConfig, log, bsp: BspModel | None) -> None:

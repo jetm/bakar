@@ -35,8 +35,6 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rich.markup import escape
-
 # ``is_path_on_nfs`` has no reader in this module. build_stop calls it as
 # ``mounts.is_path_on_nfs`` through the module, so there is no import cycle and
 # no patch string aimed at this path; the name stays reachable here only for
@@ -81,7 +79,9 @@ from bakar.mounts import (
     _FS_NFS,
     _NFS_DELEG_WARN_THRESHOLD,
     _deleg_counts,
+    _mount_entry_for_target,
     _mount_entry_in,
+    _resolve_bounded,
     is_path_on_nfs,  # noqa: F401
 )
 
@@ -979,13 +979,28 @@ def check_nproc(cfg: BuildConfig) -> CheckResult:
     return _ok("nproc", Severity.INFO, f"NPROC={nproc} ({source}) -> {threads}")
 
 
+_UNESCAPED_TAG_RE = re.compile(r"(?<!\\)(\[[a-z#/@][^\[]*?\])")
+
+
+def markup_safe(text: str) -> str:
+    """Escape ``text`` for a markup-enabled Rich console, once, at the print site.
+
+    ``CheckResult.message`` and ``fix_hint`` hold plain text so JSON and
+    ``diagnosis.txt`` carry no backslashes; every Rich sink calls this instead.
+    Idempotent over text a caller already neutralized (``bakar.fmt.neutralize``
+    escapes untrusted names in place): a tag-like token already preceded by a
+    backslash is left alone rather than escaped twice into a visible backslash.
+    """
+    return _UNESCAPED_TAG_RE.sub(r"\\\1", text)
+
+
 def _with_manual_clear(hint: str, marker: Path | None) -> str:
-    """Append the Rich-escaped marker path and manual-clear sentence to ``hint``."""
+    """Append the marker path and manual-clear sentence to ``hint``."""
     if marker is None:
         return hint
     from bakar.build_stop import manual_clear_hint
 
-    return f"{hint}. {escape(manual_clear_hint(marker))}"
+    return f"{hint}. {manual_clear_hint(marker)}"
 
 
 def check_bitbake_locks(cfg: BuildConfig) -> CheckResult:
@@ -1015,8 +1030,8 @@ def check_bitbake_locks(cfg: BuildConfig) -> CheckResult:
             return _fail(
                 "bitbake-locks",
                 Severity.BLOCK,
-                f"bitbake.lock held by {escape(refusal.host or 'unknown host')} (peer node) - a build is running there"
-                + (f" (marker {escape(str(refusal.marker))})" if refusal.marker is not None else ""),
+                f"bitbake.lock held by {refusal.host or 'unknown host'} (peer node) - a build is running there"
+                + (f" (marker {refusal.marker})" if refusal.marker is not None else ""),
                 fix_hint=_with_manual_clear(
                     "wait for the peer build, or build a different machine/TOPDIR", refusal.marker
                 ),
@@ -1149,7 +1164,7 @@ def check_psi_support(cfg: BuildConfig) -> CheckResult:
         return _skip(
             name,
             Severity.INFO,
-            "PSI available; no thresholds configured (set \\[build] psi_autocalibrate = true to tune)",
+            "PSI available; no thresholds configured (set [build] psi_autocalibrate = true to tune)",
         )
     active = ", ".join(
         f"{k}={v}"
@@ -1176,7 +1191,7 @@ def check_systemd_scope(cfg: BuildConfig) -> CheckResult:
     """
     name = "systemd-scope"
     if not cfg.scope:
-        return _skip(name, Severity.INFO, "build scope disabled (--no-scope / \\[build] scope = false)")
+        return _skip(name, Severity.INFO, "build scope disabled (--no-scope / [build] scope = false)")
     if build_scope.systemd_run_available():
         return _ok(name, Severity.INFO, "systemd --user scope available; build will run scoped")
     missing = [k for k in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS") if not os.environ.get(k)]
@@ -1187,7 +1202,7 @@ def check_systemd_scope(cfg: BuildConfig) -> CheckResult:
         f"scope enabled but 'systemd-run --user --scope' cannot reach a user manager{detail}; "
         "build will run UNSCOPED (no session-survival or oom protection)",
         fix_hint="ensure a systemd --user instance is running (loginctl enable-linger), "
-        "or set \\[build] scope = false to silence this",
+        "or set [build] scope = false to silence this",
     )
 
 
@@ -1219,7 +1234,7 @@ def check_cgroup_v2(cfg: BuildConfig) -> CheckResult:
         Severity.WARN,
         "scope resource controls (memory/cpu/io) are configured but this host is not on a "
         "cgroup v2 unified hierarchy; the controls will be silently ineffective",
-        fix_hint="boot with systemd.unified_cgroup_hierarchy=1, or clear the \\[build] scope_* resource controls",
+        fix_hint="boot with systemd.unified_cgroup_hierarchy=1, or clear the [build] scope_* resource controls",
     )
 
 
@@ -1251,7 +1266,7 @@ def check_scope_controller_weights(cfg: BuildConfig) -> CheckResult:
         Severity.WARN,
         f"scope sets {', '.join(active)}, forcing the cpu/io cgroup controllers across the whole "
         "user session; under heavy build I/O this can cause a session-wide priority-inversion stall",
-        fix_hint="set \\[build] scope_cpu_weight = 0 and scope_io_weight = 0 unless you have measured a need",
+        fix_hint="set [build] scope_cpu_weight = 0 and scope_io_weight = 0 unless you have measured a need",
     )
 
 
@@ -1482,7 +1497,7 @@ def _uninative_gate(cfg: BuildConfig) -> str | None:
     would instead fire on every Debian host that never enables the feature.
     """
     if not cfg.uninative:
-        return "\\[build] uninative is off; no host uninative tarball is wired in"
+        return "[build] uninative is off; no host uninative tarball is wired in"
     if not cfg.host_mode:
         return "container build; the fragment's file:// mirror does not exist inside the image"
     if not _host_is_arch_like():
@@ -1551,10 +1566,10 @@ def check_uninative_fragment(cfg: BuildConfig) -> CheckResult:
         return _fail(
             name,
             Severity.BLOCK,
-            f"\\[build] uninative is on but {fragment.path} is absent, so the uninative overlay is "
+            f"[build] uninative is on but {fragment.path} is absent, so the uninative overlay is "
             "not selected and the wiring is silently skipped - the build would run against "
             "oe-core's own glibc cap with different sstate signatures",
-            fix_hint="Install the yocto-uninative-tarball package, or set \\[build] uninative = false.",
+            fix_hint="Install the yocto-uninative-tarball package, or set [build] uninative = false.",
         )
     if fragment.error is not None:
         return _fail(
@@ -2111,7 +2126,7 @@ def check_uninative_cluster_consistency(cfg: BuildConfig) -> CheckResult:
             Severity.WARN,
             "cluster mode is on but neither SSTATE_DIR nor DL_DIR resolves to an existing directory, so "
             "this node cannot publish its uninative ceiling for the peers to compare against",
-            fix_hint="Set \\[build] sstate_dir (or SSTATE_DIR) to the shared NFS export; see shared-mounts.",
+            fix_hint="Set [build] sstate_dir (or SSTATE_DIR) to the shared NFS export; see shared-mounts.",
         )
 
     node = socket.gethostname()
@@ -2718,42 +2733,37 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
     except OSError as exc:
         return _skip(name, Severity.WARN, f"/proc/mounts unreadable: {exc}")
 
-    workspace = cfg.workspace.resolve()
-    ws_entry = _mount_entry_in(mounts_raw, workspace)
-    ws_fstype = ws_entry[2] if ws_entry is not None else None
-
-    # Resolve symlinks (strict=False tolerates not-yet-created leaves): a
+    # Resolve symlinks (strict=False semantics tolerate not-yet-created leaves): a
     # local_tmpdir_base or build/ symlinked onto an NFS target would otherwise be
     # classified by its lexical local path and wrongly PASS while bitbake follows
-    # the link to NFS. The workspace above is resolved for the same reason.
-    topdir = (cfg.bsp_root / cfg.build_dir_name).resolve(strict=False)
-    top_entry = _mount_entry_in(mounts_raw, topdir)
-    top_fstype = top_entry[2] if top_entry is not None else None
-
-    tmpdir = cfg.resolved_tmpdir.resolve(strict=False)
-    tmp_entry = _mount_entry_in(mounts_raw, tmpdir)
+    # the link to NFS. All three targets share ONE bounded deadline, so a wedged
+    # mount costs 20 s in total rather than 20 s per target; a timed-out target
+    # resolves to None and falls through to the undetermined WARN below.
+    ws_raw = cfg.workspace
+    top_raw = cfg.bsp_root / cfg.build_dir_name
+    tmp_raw = cfg.resolved_tmpdir
+    resolved = _resolve_bounded([ws_raw, top_raw, tmp_raw])
+    workspace = resolved[ws_raw] or ws_raw
+    topdir = resolved[top_raw] or top_raw
+    tmpdir = resolved[tmp_raw] or tmp_raw
+    ws_entry = _mount_entry_for_target(mounts_raw, workspace) if resolved[ws_raw] is not None else None
+    top_entry = _mount_entry_for_target(mounts_raw, topdir) if resolved[top_raw] is not None else None
+    tmp_entry = _mount_entry_for_target(mounts_raw, tmpdir) if resolved[tmp_raw] is not None else None
+    ws_fstype = ws_entry[2] if ws_entry is not None else None
     tmp_fstype = tmp_entry[2] if tmp_entry is not None else None
     tmp_mount = tmp_entry[1] if tmp_entry is not None else None
 
-    # (a) workspace on NFS is refused whatever TMPDIR is.
-    if ws_entry is not None and ws_fstype in _FS_NFS:
-        return _fail(
-            name,
-            Severity.BLOCK,
-            f"workspace {workspace} is on {ws_fstype} at {ws_entry[1]}: building through NFS is not supported",
-            fix_hint=_NFS_BUILD_TREE_HINT,
-        )
-
-    # (a1) a local workspace whose build directory (TOPDIR) is an NFS mount is
-    # the same unsupported layout: bitbake.lock, the build config and the
-    # default TMPDIR all live there, and local_tmpdir_base moves only the last.
-    if top_entry is not None and top_fstype in _FS_NFS:
-        return _fail(
-            name,
-            Severity.BLOCK,
-            f"build directory {topdir} is on {top_fstype} at {top_entry[1]}: building through NFS is not supported",
-            fix_hint=_NFS_BUILD_TREE_HINT,
-        )
+    # (a) the workspace, then its build directory (TOPDIR), on NFS is refused
+    # whatever TMPDIR is. TOPDIR holds bitbake.lock, the build config and the
+    # default TMPDIR, and local_tmpdir_base moves only the last.
+    for label, path, entry in (("workspace", workspace, ws_entry), ("build directory", topdir, top_entry)):
+        if entry is not None and entry[2] in _FS_NFS:
+            return _fail(
+                name,
+                Severity.BLOCK,
+                f"{label} {path} is on {entry[2]} at {entry[1]}: building through NFS is not supported",
+                fix_hint=_NFS_BUILD_TREE_HINT,
+            )
 
     # (a2) resolved TMPDIR on NFS under a local build tree -> fatal, bitbake's
     # sanity check aborts.
@@ -2763,7 +2773,7 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
             Severity.BLOCK,
             f"resolved TMPDIR {tmpdir} is on {tmp_fstype} at {tmp_mount}: bitbake aborts on TMPDIR over NFS",
             fix_hint=(
-                "Set \\[build] local_tmpdir_base to a node-local ext4/btrfs/xfs path (host mode only) "
+                "Set [build] local_tmpdir_base to a node-local ext4/btrfs/xfs path (host mode only) "
                 "so the build TMPDIR leaves NFS, then re-run."
             ),
         )
@@ -2779,7 +2789,7 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
             Severity.BLOCK,
             f"resolved TMPDIR {tmpdir} is on {tmp_fstype} at {tmp_mount}: the build TMPDIR needs "
             "xattrs/hardlinks/case-sensitivity this filesystem lacks",
-            fix_hint="Point \\[build] local_tmpdir_base at a node-local ext4/btrfs/xfs path, then re-run.",
+            fix_hint="Point [build] local_tmpdir_base at a node-local ext4/btrfs/xfs path, then re-run.",
         )
 
     # (b) an autofs-only entry or a timed-out lookup cannot confirm locality.
@@ -2961,7 +2971,7 @@ def check_ccache_health(cfg: BuildConfig) -> CheckResult:
     """
     name = "ccache-health"
     if not cfg.ccache:
-        return _skip(name, Severity.WARN, "ccache disabled (\\[build] ccache = false)")
+        return _skip(name, Severity.WARN, "ccache disabled ([build] ccache = false)")
     ccache_dir = cfg.effective_ccache_dir
     if not ccache_dir.exists():
         return _skip(
@@ -3121,7 +3131,7 @@ def check_sccache_dist(cfg: BuildConfig) -> CheckResult:
     """
     name = "sccache-dist"
     if not cfg.use_sccache_dist:
-        return _skip(name, Severity.INFO, "distributed compile not configured (\\[build] sccache_dist = false)")
+        return _skip(name, Severity.INFO, "distributed compile not configured ([build] sccache_dist = false)")
 
     # The reachability probe below is host-side; it cannot speak for the
     # in-container client, which reaches the scheduler in its own network
@@ -3146,7 +3156,7 @@ def check_sccache_dist(cfg: BuildConfig) -> CheckResult:
             name,
             Severity.BLOCK,
             "sccache_dist is enabled but no scheduler URL is set",
-            fix_hint="Set \\[build] sccache_scheduler_url or pass --sccache-scheduler URL.",
+            fix_hint="Set [build] sccache_scheduler_url or pass --sccache-scheduler URL.",
         )
 
     parsed = urllib.parse.urlparse(url)
@@ -3227,7 +3237,7 @@ def check_hashserv(cfg: BuildConfig) -> CheckResult:
 
     name = "hashserv"
     if not cfg.use_hashequiv:
-        return _skip(name, Severity.INFO, "hashserv daemon not configured (\\[build] hashserv = false)")
+        return _skip(name, Severity.INFO, "hashserv daemon not configured ([build] hashserv = false)")
 
     if not hashserv.is_running(cfg.hashserv_state_key):
         # The build auto-starts the daemon via _build_env, so a not-yet-running
@@ -3296,9 +3306,7 @@ def check_daemon_state(cfg: BuildConfig) -> CheckResult:
             name,
             Severity.BLOCK,
             reason,
-            fix_hint=(
-                "set \\[build] bb_hashserve / prserv_host to the central tier, or point sstate_dir at local disk"
-            ),
+            fix_hint=("set [build] bb_hashserve / prserv_host to the central tier, or point sstate_dir at local disk"),
         )
     return _ok(name, Severity.BLOCK, "per-workspace daemon state is on local disk")
 
@@ -3446,7 +3454,7 @@ def _check_central_endpoint(
             name,
             Severity.WARN,
             f"cluster mode is on but no central {service} is configured - intentional?",
-            fix_hint=f"set \\[build] {config_key} to the shared {service} endpoint, or disable cluster mode",
+            fix_hint=f"set [build] {config_key} to the shared {service} endpoint, or disable cluster mode",
         )
     host, port = split_host_port(endpoint, default_port)
     if _is_loopback(host):
@@ -3462,7 +3470,7 @@ def _check_central_endpoint(
         name,
         Severity.BLOCK,
         f"central {service} unreachable at {host}:{port}",
-        fix_hint=f"start the central {service} service, or fix \\[build] {config_key}",
+        fix_hint=f"start the central {service} service, or fix [build] {config_key}",
     )
 
 

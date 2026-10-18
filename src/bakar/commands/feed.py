@@ -35,7 +35,7 @@ from bakar import feed_index, feed_mirror, feed_ops, feed_preflight, feed_retent
 from bakar.commands._app import app, console
 from bakar.commands._helpers import WorkspaceOption
 from bakar.commands._workspace import _resolve_daemon_cfg
-from bakar.diagnostics import Status
+from bakar.diagnostics import Status, markup_safe
 from bakar.fmt import fmt_bytes_iec
 
 feed_app = typer.Typer(
@@ -85,9 +85,9 @@ def _report_preflight(results: list) -> bool:
     failures = [r for r in results if r.status is Status.FAIL]
 
     for result in failures:
-        console.print(f"[{result.severity}] {result.name}: {result.message}")
+        console.print(f"[{result.severity}] {result.name}: {markup_safe(result.message)}")
         if result.fix_hint:
-            console.print(f"    -> {result.fix_hint}")
+            console.print(f"    -> {markup_safe(result.fix_hint)}")
 
     if blockers:
         console.print(
@@ -123,9 +123,9 @@ def doctor(
 
     for result in results:
         mark = "ok  " if result.status is Status.PASS else "FAIL"
-        console.print(f"{mark} {result.name}: {result.message}")
+        console.print(f"{mark} {result.name}: {markup_safe(result.message)}")
         if result.fix_hint:
-            console.print(f"     -> {result.fix_hint}")
+            console.print(f"     -> {markup_safe(result.fix_hint)}")
 
     if feed_preflight.blocking(results):
         raise typer.Exit(code=1)
