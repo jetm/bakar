@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import os
 import subprocess
 import sys
@@ -11,7 +12,13 @@ import pytest
 
 from bakar import daemon_log, task_timings
 from bakar.user_config import _config_path
-from tests.conftest import REAL_HOME, home_constants
+from tests.conftest import (
+    PASSTHROUGH_ENV_ALLOWLIST,
+    REAL_HOME,
+    SCRUBBED_ENV_NAMES,
+    SCRUBBED_ENV_PREFIXES,
+    home_constants,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -109,10 +116,65 @@ def test_real_home_is_not_a_session_home_even_in_a_worker():
 
 
 def test_inherited_xdg_and_cache_variables_do_not_reach_a_test():
-    for name in ("XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "SSTATE_DIR", "DL_DIR"):
+    for name in sorted(SCRUBBED_ENV_NAMES):
         assert name not in os.environ, name
-    stray = [n for n in os.environ if n.startswith("BAKAR_") and n != "BAKAR_TEST_REAL_HOME"]
+    assert "BUILD_DIR" in SCRUBBED_ENV_NAMES  # clean-cache --full deletes the directory it names
+    stray = [n for n in os.environ if n.startswith(SCRUBBED_ENV_PREFIXES) and n != "BAKAR_TEST_REAL_HOME"]
     assert stray == []
+
+
+def _environment_reads() -> dict[str, str]:
+    """Literal names src/bakar reads from the environment, each with one ``file:line``.
+
+    Covers ``os.environ.get/pop/setdefault("X")``, ``os.getenv("X")`` and
+    ``os.environ["X"]``. A name built at runtime (f-string, variable) is
+    invisible to an AST walk, so it cannot be classified here.
+    """
+    src = Path(__file__).resolve().parent.parent / "src" / "bakar"
+    found: dict[str, str] = {}
+
+    def literal(node: ast.AST) -> str | None:
+        return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+    def is_environ(node: ast.AST) -> bool:
+        return isinstance(node, ast.Attribute) and node.attr == "environ"
+
+    for path in sorted(src.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            name = None
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.args:
+                func = node.func
+                environ_call = func.attr in ("get", "pop", "setdefault") and is_environ(func.value)
+                getenv_call = func.attr == "getenv" and isinstance(func.value, ast.Name) and func.value.id == "os"
+                if environ_call or getenv_call:
+                    name = literal(node.args[0])
+            elif isinstance(node, ast.Subscript) and is_environ(node.value):
+                name = literal(node.slice)
+            if name:
+                found.setdefault(name, f"{path.relative_to(src.parent.parent)}:{node.lineno}")
+    return found
+
+
+def test_every_environment_variable_src_reads_is_scrubbed_or_allowlisted():
+    unclassified = [
+        f"{name} (read at {where})"
+        for name, where in sorted(_environment_reads().items())
+        if name not in SCRUBBED_ENV_NAMES
+        and not name.startswith(SCRUBBED_ENV_PREFIXES)
+        and name not in PASSTHROUGH_ENV_ALLOWLIST
+    ]
+    assert not unclassified, (
+        "src/bakar reads environment variables that tests/conftest.py neither scrubs "
+        "(SCRUBBED_ENV_NAMES) nor allowlists with a reason (PASSTHROUGH_ENV_ALLOWLIST): " + "; ".join(unclassified)
+    )
+
+
+def test_environment_allowlist_entries_have_reasons_and_are_still_read():
+    reads = _environment_reads()
+    assert all(reason.strip() for reason in PASSTHROUGH_ENV_ALLOWLIST.values())
+    assert not set(PASSTHROUGH_ENV_ALLOWLIST) & SCRUBBED_ENV_NAMES
+    stale = sorted(set(PASSTHROUGH_ENV_ALLOWLIST) - set(reads))
+    assert not stale, f"allowlisted but no longer read by src/bakar: {stale}"
 
 
 def test_shared_ccache_dir_lands_under_the_isolated_home_without_xdg():

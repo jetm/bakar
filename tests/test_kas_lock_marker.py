@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import os
+import shutil
 import socket
 import subprocess
 from datetime import UTC, datetime, timedelta
@@ -771,8 +772,12 @@ def test_unattributable_clear_refusal_carries_the_marker(
 # ---------------------------------------------------------------------------
 
 
-def _tree_snapshot(root: Path) -> dict[str, tuple[int, int]]:
-    return {str(p): (p.stat().st_mtime_ns, p.stat().st_size) for p in sorted(root.rglob("*"))}
+def _tree_snapshot(root: Path) -> dict[str, tuple[int, int, bytes | None]]:
+    """Every path under ``root`` with its mtime, size and (for files) contents."""
+    return {
+        str(p): (p.stat().st_mtime_ns, p.stat().st_size, p.read_bytes() if p.is_file() else None)
+        for p in sorted(root.rglob("*"))
+    }
 
 
 def _run_dir(cfg: BuildConfig, *, started: datetime | None = None, pid: int = 4242) -> Path:
@@ -1036,6 +1041,20 @@ def test_local_build_holder_never_mutates_the_build_directory(
         before_record = _tree_snapshot(build)
         assert kas_lock.local_build_holder(cfg) == wrapper.pid
         assert _tree_snapshot(build) == before_record
+
+    # The None verdicts are held to the same no-mutation rule. The container
+    # record above stays live while its fake runtime answers, so drop it first.
+    shutil.rmtree(run_dir)
+    lock = build / "bitbake.lock"
+    for write_lock in (
+        lambda: lock.write_text(""),  # empty lock, the starter is gone
+        lambda: lock.write_text(f"{_dead_pid(live_child)}\n"),  # dead pid
+        lambda: lock.unlink(missing_ok=True),  # no lock at all
+    ):
+        write_lock()
+        before_none = _tree_snapshot(build)
+        assert kas_lock.local_build_holder(cfg) is None
+        assert _tree_snapshot(build) == before_none
 
 
 def test_lock_pid_liveness_treats_a_cmdline_read_race_as_live(

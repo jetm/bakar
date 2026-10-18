@@ -50,6 +50,45 @@ REAL_HOME = Path(os.environ["BAKAR_TEST_REAL_HOME"])
 _SESSION_HOME = Path(tempfile.mkdtemp(prefix="bakar-test-home-"))
 os.environ["HOME"] = str(_SESSION_HOME)
 atexit.register(shutil.rmtree, _SESSION_HOME, ignore_errors=True)
+# One root per process (each xdist worker imports this module itself); the
+# per-test homes are plain ``mkdtemp`` children of it, so the cost of making one
+# does not grow with how many tests already ran, unlike ``mktemp("home")``'s
+# numbered-directory scan.
+_HOMES_ROOT = Path(tempfile.mkdtemp(prefix="bakar-test-homes-"))
+atexit.register(shutil.rmtree, _HOMES_ROOT, ignore_errors=True)
+
+# Environment variables ``_isolated_home`` removes before every test: ones a
+# developer's shell may export that point at real paths or change behavior.
+# ``BAKAR_``-prefixed names are scrubbed by prefix (see SCRUBBED_ENV_PREFIXES).
+SCRUBBED_ENV_NAMES: frozenset[str] = frozenset(
+    {
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+        "SSTATE_DIR",
+        "DL_DIR",
+        "BUILD_DIR",
+        "KAS_CONTAINER_ENGINE",
+        "SCCACHE_SERVER_PORT",
+        "SCCACHE_ERROR_LOG",
+        "SECONDARY_NODES",
+    }
+)
+SCRUBBED_ENV_PREFIXES: tuple[str, ...] = ("BAKAR_",)
+
+# Variables src/bakar reads that the fixture deliberately leaves alone, each with why.
+PASSTHROUGH_ENV_ALLOWLIST: dict[str, str] = {
+    "HOME": "the fixture sets it to the per-test home",
+    "PATH": "tests need the host toolchain on PATH; fakes prepend to it",
+    "PWD": "the shell's cwd mirror; tests that care chdir or monkeypatch it",
+    "CI": "a CI runner exports it and the suite is meant to behave the same there",
+    "NPROC": "a diagnostics hint with a safe fallback; tests that read it set it",
+    "PYTHONMALLOC": "read to forward the interpreter's own setting to a child process",
+    "OECORE_NATIVE_SYSROOT": "host-mode build tests locate the pinned buildtools through it; scrubbing it fails them",
+    "RSYNC_RSH": "read to forward to rsync; tests that depend on it set it",
+    "XDG_RUNTIME_DIR": "points at the session's runtime dir for systemd-run probes, which are stubbed",
+}
 
 import bakar.cli  # noqa: E402, F401 - registers all subcommands on the shared app
 from bakar import cache_render  # noqa: E402
@@ -268,7 +307,7 @@ def home_constants(home: Path) -> list[tuple[str, str, Path]]:
 
 
 @pytest.fixture(autouse=True)
-def _isolated_home(request, tmp_path_factory, monkeypatch):
+def _isolated_home(request, monkeypatch):
     """Give every test a fresh empty home, or the real one under ``real_home``.
 
     The import-time constants were computed under the session home, so they are
@@ -280,11 +319,11 @@ def _isolated_home(request, tmp_path_factory, monkeypatch):
     else:
         # Variables the developer's shell may export point at real paths; the code
         # under test would create state there (sstate, dl, ccache) if left set.
-        for name in ("XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "SSTATE_DIR", "DL_DIR"):
+        for name in SCRUBBED_ENV_NAMES:
             monkeypatch.delenv(name, raising=False)
-        for name in [n for n in os.environ if n.startswith("BAKAR_") and n != "BAKAR_TEST_REAL_HOME"]:
+        for name in [n for n in os.environ if n.startswith(SCRUBBED_ENV_PREFIXES) and n != "BAKAR_TEST_REAL_HOME"]:
             monkeypatch.delenv(name)
-        home = tmp_path_factory.mktemp("home")
+        home = Path(tempfile.mkdtemp(dir=_HOMES_ROOT))
         # git reads identity and commit signing from the developer's global config
         # (home and XDG); give fixtures that run ``git commit`` a neutral one.
         monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)

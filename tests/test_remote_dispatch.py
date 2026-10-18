@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -283,6 +284,14 @@ def test_dispatch_start_marker_uses_the_same_clock_as_run_ids() -> None:
         RemoteScriptSpec(remote_argv=["build"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True)
     )
     assert "$(date -u +%Y%m%d-%H%M%S)" in script
+
+    # No second, local-time stamp may sit beside the fence.
+    fence = 'echo "BAKAR_DISPATCH_START=$(date -u +%Y%m%d-%H%M%S)"'
+    for line in script.splitlines():
+        if line == fence:
+            continue
+        assert not re.search(r"\bdate\s+\+", line), line
+        assert "$(date " not in line or "date -u" in line, line
 
     # Pin the other half of the invariant: if run ids ever leave UTC, this
     # test should fail rather than let the two drift apart again.
