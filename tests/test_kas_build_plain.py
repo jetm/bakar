@@ -422,3 +422,36 @@ def test_run_shell_capture_marker_refusal_from_the_stale_gate_records_step_fail(
     fails = [e for e in _step_events(events_path) if e["step"] == "getvar" and e["event"] == "step_fail"]
     assert len(fails) == 1
     assert fails[0]["exit_code"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("entry", ["live", "build"])
+def test_marker_refusal_from_the_stale_gate_closes_the_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str
+) -> None:
+    """run_shell_live and run_build turn a lock-removal refusal into rc 1 and a terminal step_fail."""
+    from bakar.steps.kas_lock import LockMarkerFileError
+
+    cfg, kas_yaml, overlay, _marker = _shell_lock_env(tmp_path, monkeypatch)
+    sock = cfg.bsp_root / cfg.build_dir_name / "bitbake.sock"
+
+    def gate(_cfg: object) -> None:
+        raise LockMarkerFileError(
+            sock, PermissionError(13, "denied"), "remove the stale bitbake socket", subject="socket"
+        )
+
+    monkeypatch.setattr(kas_build, "clear_stale_bitbake_locks", gate)
+    step = "kas_shell_live" if entry == "live" else "kas_build"
+    with RunLogger(runs_dir=tmp_path / "runs") as log:
+        ctx = KasBuildContext(cfg=cfg, log=log, kas_yaml=kas_yaml, overlay_source=overlay)
+        rc = kas_build.run_shell_live(ctx, "bitbake x") if entry == "live" else kas_build.run_build(ctx)
+        events_path = log.events_path
+    assert rc == 1
+    events = _step_events(events_path)
+    fails = [e for e in events if e["step"] == step and e["event"] == "step_fail"]
+    assert len(fails) == 1
+    assert fails[0]["exit_code"] == 1
+    assert str(sock) in fails[0]["reason"]
+    opened = {e["step"] for e in events if e["event"] == "step_start"}
+    closed = {e["step"] for e in events if e["event"] in {"step_ok", "step_fail", "step_skip"}}
+    assert opened <= closed

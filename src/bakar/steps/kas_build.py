@@ -942,7 +942,11 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         log.step_fail(step, reason=refusal)
         return 1
 
-    lock_outcome = clear_stale_bitbake_locks(cfg)
+    try:
+        lock_outcome = clear_stale_bitbake_locks(cfg)
+    except LockHeldByPeerError as exc:
+        log.step_fail(step, reason=peer_lock_reason(exc), exit_code=1)
+        return 1
     for removed_path in lock_outcome.removed:
         log.warn(f"removed stale bitbake lock: {removed_path} (owning process was gone)")
     if lock_outcome.refusal is not None:
@@ -1217,7 +1221,11 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
         log.step_fail("kas_shell_live", reason=refusal)
         return 1
 
-    lock_outcome = clear_stale_bitbake_locks(cfg)
+    try:
+        lock_outcome = clear_stale_bitbake_locks(cfg)
+    except LockHeldByPeerError as exc:
+        log.step_fail("kas_shell_live", reason=peer_lock_reason(exc), exit_code=1)
+        return 1
     for removed_path in lock_outcome.removed:
         log.warn(f"removed stale bitbake lock: {removed_path} (owning process was gone)")
     if lock_outcome.refusal is not None:

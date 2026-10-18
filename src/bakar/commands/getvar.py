@@ -39,10 +39,12 @@ from bakar.kas_errors import classify
 from bakar.observability import RunLogger
 from bakar.steps.kas_build import (
     KasBuildContext,
+    LockHeldByPeerError,
     ShellCapture,
     _lock_refusal_message,
     cache_mount_refusal,
     clear_stale_bitbake_locks,
+    peer_lock_reason,
     run_shell_capture,
 )
 
@@ -202,7 +204,11 @@ def _getvar_impl(ctx: _GetvarCtx) -> None:
         console.print(f"[red]{escape(refusal)}[/]")
         raise typer.Exit(1)
 
-    lock_outcome = clear_stale_bitbake_locks(cfg)
+    try:
+        lock_outcome = clear_stale_bitbake_locks(cfg)
+    except LockHeldByPeerError as exc:
+        console.print(f"[red]{peer_lock_reason(exc)}[/]")
+        raise typer.Exit(1) from exc
     if lock_outcome.refusal is not None:
         console.print(f"[red]{_lock_refusal_message(lock_outcome.refusal)}[/]")
         raise typer.Exit(1)

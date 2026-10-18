@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import os
 import socket
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -17,6 +18,7 @@ from bakar.observability import RunLogger
 from bakar.steps import kas_lock
 from bakar.steps.kas_lock import (
     LockHeldByPeerError,
+    LockMarkerFileError,
     LockMarkerUnsupportedError,
     LockUnattributableError,
     lock_owner_marker,
@@ -24,7 +26,6 @@ from bakar.steps.kas_lock import (
 )
 
 if TYPE_CHECKING:
-    import subprocess
     from collections.abc import Callable
     from contextlib import AbstractContextManager
 
@@ -1560,3 +1561,30 @@ def test_a_recorded_runtime_that_is_not_docker_or_podman_is_never_run(
 
     assert not any("/tmp/x" in str(a) for a in argvs)
     assert str(meta) in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("victim", ["bitbake.lock", "bitbake.sock", "hashserve.sock"])
+def test_undeletable_lock_or_socket_is_a_refusal_naming_path_and_errno(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch, victim: str
+) -> None:
+    cfg, build, _log = env
+    _on_nfs(monkeypatch, False)
+    # A reaped child's pid is dead, so the stale branch reaches the removal.
+    child = subprocess.Popen(["true"])
+    child.wait()
+    (build / "bitbake.lock").write_text(f"{child.pid}\n")
+    (build / "bitbake.sock").write_text("")
+    (build / "hashserve.sock").write_text("")
+    real_unlink = Path.unlink
+
+    def deny(self: Path, missing_ok: bool = False) -> None:
+        if self.name == victim:
+            raise PermissionError(errno.EACCES, "denied")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", deny)
+    with pytest.raises(LockMarkerFileError) as excinfo:
+        kas_lock.clear_stale_bitbake_locks(cfg)
+    text = peer_lock_reason(excinfo.value)
+    assert str(build / victim) in text
+    assert os.strerror(errno.EACCES) in text

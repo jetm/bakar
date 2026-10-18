@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import shlex
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -34,8 +35,6 @@ from bakar.cli import app
 from tests._fakes import make_fake_run_shell_capture as _make_fake_capture
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from typer.testing import CliRunner as _CliRunner
 
 pytestmark = pytest.mark.unit
@@ -1375,3 +1374,34 @@ def test_getvar_ctx_sets_only_the_flag_passed(
         assert getattr(ctx, name) is want, (
             f"passing {flag} should set only {field}: _GetvarCtx.{name} is {getattr(ctx, name)!r}"
         )
+
+
+@pytest.mark.unit
+def test_getvar_undeletable_socket_prints_refusal_and_exits_1(
+    runner: _CliRunner, nxp_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale socket that cannot be removed is a refusal naming the path and errno, not a traceback."""
+    build = nxp_workspace / "nxp" / "build"
+    build.mkdir(parents=True, exist_ok=True)
+    sock = build / "bitbake.sock"
+    sock.write_text("")
+    monkeypatch.setattr("bakar.mounts.is_path_on_nfs", lambda _p: False)
+    real_unlink = Path.unlink
+
+    def deny(self: Path, missing_ok: bool = False) -> None:
+        if self.name == "bitbake.sock":
+            raise PermissionError(13, "Permission denied")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", deny)
+    calls: list[dict] = []
+    fake = _make_fake_capture([(_GETVAR_OUTPUT, 0)], calls)
+    with patch("bakar.commands.getvar.run_shell_capture", fake):
+        result = runner.invoke(app, ["getvar", _VAR, "--manifest", _MANIFEST, "--workspace", str(nxp_workspace)])
+
+    assert result.exit_code == 1
+    flat = result.output.replace("\n", "")
+    assert str(build / "bitbake.sock") in flat
+    assert "Permission denied" in flat
+    assert "Traceback" not in result.output
+    assert calls == []

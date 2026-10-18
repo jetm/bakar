@@ -384,9 +384,13 @@ def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
     def _remove_all() -> list[Path]:
         removed = []
         for p in [lock, *sockets]:
-            if p.exists() or p.is_socket():
-                p.unlink(missing_ok=True)
-                removed.append(p)
+            try:
+                if p.exists() or p.is_socket():
+                    p.unlink(missing_ok=True)
+                    removed.append(p)
+            except OSError as exc:
+                kind = "lock file" if p == lock else "socket"
+                raise LockMarkerFileError(p, exc, f"remove the stale bitbake {kind}", subject=kind) from exc
         return removed
 
     def _remove_own_marker() -> None:
@@ -567,8 +571,17 @@ class LockMarkerFileError(LockUnattributableError):
     ``OSError`` escapes :func:`lock_owner_marker` or the stale-lock clear.
     """
 
-    def __init__(self, marker: Path, cause: OSError, action: str = "publish the marker") -> None:
+    def __init__(
+        self, marker: Path, cause: OSError, action: str = "publish the marker", *, subject: str | None = None
+    ) -> None:
         super().__init__(marker)
+        if subject is not None:
+            # A stale lock or socket, not the marker: name that file and say it was left in place.
+            self.args = (
+                f"cannot {action} {marker}: {_errno_text(cause)}; the {subject} was left as it was. "
+                f"If no build runs on any node, delete {marker} by hand and retry.",
+            )
+            return
         published = "nothing was published" if action == "publish the marker" else "the marker was left as it was"
         self.args = (
             f"cannot {action} for bitbake lock ownership marker {marker}: {_errno_text(cause)}; {published}. "
