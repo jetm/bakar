@@ -7,6 +7,7 @@ the redirected (potentially ~200G) tmp.
 
 from __future__ import annotations
 
+import os
 import socket
 from typing import TYPE_CHECKING
 
@@ -499,10 +500,148 @@ def test_second_removal_gets_its_own_trash_when_the_first_leaves_residue(
     monkeypatch.setattr("bakar.fsremove.parallel_rmtree", remover)
 
     with pytest.raises(typer.Exit):
-        _remove_tree_or_exit(first, "first", via_trash=True)
-    _remove_tree_or_exit(second, "second", via_trash=True)
+        _remove_tree_or_exit(first, "first")
+    _remove_tree_or_exit(second, "second")
 
     assert [p.name.rsplit("-", 1)[-1] for p in seen] == ["first", "second"]
     assert len({p.name for p in seen}) == 2
     assert not second.exists()
     assert not seen[1].exists()
+
+
+def _override_cfg(tmp_path: Path) -> tuple[BuildConfig, Path, Path]:
+    cfg = _cfg(tmp_path / "ws", local_tmpdir_base=str(tmp_path / "local-tmp"), host_mode=True)
+    build_dir = cfg.bsp_root / cfg.build_dir_name
+    (build_dir / "conf").mkdir(parents=True)
+    tmpdir = cfg.resolved_tmpdir
+    (tmpdir / "work").mkdir(parents=True)
+    return cfg, build_dir, tmpdir
+
+
+def _no_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("bakar.build_stop.lock_mutation_guard", lambda c: None)
+    monkeypatch.setattr("bakar.steps.kas_lock.local_build_holder", lambda c: None)
+
+
+@pytest.mark.unit
+def test_residue_renames_the_tree_back_and_the_rerun_exits_one_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, build_dir, tmpdir = _override_cfg(tmp_path)
+    _no_gate(monkeypatch)
+    monkeypatch.setattr(
+        "bakar.fsremove.parallel_rmtree", lambda root, description="": (root / "stuck", OSError("busy"))
+    )
+
+    for _ in range(2):
+        with pytest.raises(typer.Exit) as excinfo:
+            _clean_build_dir(cfg)
+        assert excinfo.value.exit_code == 1
+        # Both trees are back under their original names; nothing is stranded.
+        assert (build_dir / "conf").is_dir()
+        assert (tmpdir / "work").is_dir()
+        assert not list(build_dir.parent.glob(".bakar-trash-*"))
+        assert not list(tmpdir.parent.glob(".bakar-trash-*"))
+
+
+@pytest.mark.unit
+def test_both_trees_are_moved_aside_before_either_is_deleted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from bakar.fsremove import parallel_rmtree
+
+    cfg, build_dir, tmpdir = _override_cfg(tmp_path)
+    _no_gate(monkeypatch)
+    seen: list[tuple[bool, bool]] = []
+
+    def remover(root: Path, description: str = "") -> object:
+        seen.append((build_dir.exists(), tmpdir.exists()))
+        return parallel_rmtree(root, description)
+
+    monkeypatch.setattr("bakar.fsremove.parallel_rmtree", remover)
+
+    _clean_build_dir(cfg)
+
+    assert seen == [(False, False), (False, False)]
+
+
+@pytest.mark.unit
+def test_marker_published_during_the_tmpdir_delete_survives(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from bakar.fsremove import parallel_rmtree
+
+    cfg, build_dir, tmpdir = _override_cfg(tmp_path)
+    _no_gate(monkeypatch)
+
+    def racing(root: Path, description: str = "") -> object:
+        if root.name.endswith(tmpdir.name):
+            # A build starts after the gate, while the TMPDIR delete runs.
+            build_dir.mkdir(exist_ok=True)
+            (build_dir / ".bakar-lock-host").write_text("peer-node")
+            tmpdir.mkdir()
+            (tmpdir / "fresh").write_text("x")
+        return parallel_rmtree(root, description)
+
+    monkeypatch.setattr("bakar.fsremove.parallel_rmtree", racing)
+
+    _clean_build_dir(cfg)
+
+    assert (build_dir / ".bakar-lock-host").read_text() == "peer-node"
+    assert (tmpdir / "fresh").exists()
+
+
+@pytest.mark.unit
+def test_interrupt_mid_delete_restores_the_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg, build_dir, tmpdir = _override_cfg(tmp_path)
+    _no_gate(monkeypatch)
+
+    def interrupted(root: Path, description: str = "") -> object:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("bakar.fsremove.parallel_rmtree", interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        _clean_build_dir(cfg)
+
+    assert (build_dir / "conf").is_dir()
+    assert (tmpdir / "work").is_dir()
+    assert not list(build_dir.parent.glob(".bakar-trash-*"))
+
+
+@pytest.mark.unit
+def test_residue_with_the_name_retaken_leaves_the_trash_and_prints_its_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bakar.commands import console
+
+    cfg, build_dir, _tmpdir = _override_cfg(tmp_path)
+    _no_gate(monkeypatch)
+
+    def residue(root: Path, description: str = "") -> object:
+        build_dir.mkdir(exist_ok=True)  # a build started meanwhile
+        return (root / "stuck", OSError("busy"))
+
+    monkeypatch.setattr("bakar.fsremove.parallel_rmtree", residue)
+
+    with console.capture() as cap, pytest.raises(typer.Exit):
+        _clean_build_dir(cfg)
+
+    trash = build_dir.with_name(f".bakar-trash-{os.getpid()}-{build_dir.name}")
+    assert trash.is_dir()
+    assert str(trash) in "".join(cap.get().split("\n"))
+
+
+@pytest.mark.unit
+def test_dead_pid_trash_is_swept_and_live_pid_trash_is_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess as sp
+
+    cfg, build_dir, _tmpdir = _override_cfg(tmp_path)
+    _no_gate(monkeypatch)
+    proc = sp.Popen(["true"])
+    proc.wait()
+    dead = build_dir.with_name(f".bakar-trash-{proc.pid}-build")
+    live = build_dir.with_name(f".bakar-trash-{os.getppid()}-build")
+    for d in (dead, live):
+        (d / "x").mkdir(parents=True)
+
+    _clean_build_dir(cfg)
+
+    assert not dead.exists()
+    assert live.exists()

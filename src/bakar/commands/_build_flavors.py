@@ -33,6 +33,7 @@ from bakar.commands._helpers import (
     _refuse_if_build_live,
     _remove_tree_or_exit,
     _run_doctor_gate,
+    _sweep_dead_trash,
     _tuning_extra_overlays,
     resolve_global_config,
     split_kas_yaml_arg,
@@ -141,10 +142,11 @@ def _run_bbsetup_build(
         # node-local disk; a hardcoded bsp_root/build/tmp would delete the empty
         # workspace path and strand the redirected (~200G) tmp.
         tmp_dir = cfg.resolved_tmpdir
+        _sweep_dead_trash(tmp_dir.parent)
         if tmp_dir.exists():
             # Shared helper: a partial removal is reported and exits 1 instead
             # of leaking a PermissionError traceback from the first stuck entry.
-            _remove_tree_or_exit(tmp_dir, f"Removing {tmp_dir.name}/", via_trash=True)
+            _remove_tree_or_exit(tmp_dir, f"Removing {tmp_dir.name}/")
 
     effective_show_layers = ctx.show_layers or (_state._USER_CONFIG is not None and _state._USER_CONFIG.show_hashes)
 

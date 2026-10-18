@@ -12,6 +12,7 @@ that ``commands/*.py`` modules import from here are re-exported below.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -344,19 +345,52 @@ def _remove_tree_report(target: Path, description: str, *, label: Path | None = 
     return True
 
 
-def _remove_tree_or_exit(target: Path, description: str, *, via_trash: bool = False) -> None:
-    """Remove ``target`` via ``_remove_tree_report``; exit 1 on any residue.
+_TRASH_PREFIX = ".bakar-trash-"
+_TRASH_RE = re.compile(r"^\.bakar-trash-(\d+)-")
 
-    ``via_trash`` renames ``target`` to a sibling ``.bakar-trash-<pid>-<name>`` first
-    and deletes that, so a build that starts while the delete runs creates a
-    fresh ``target`` the removal never touches (the live-build gate ran before
-    the delete started and cannot see it). A failed rename falls back to the
-    in-place delete and says so.
+
+def _restore_trash(target: Path, trash: Path) -> None:
+    """Put an undeleted ``trash`` back under ``target`` so a rerun retries as before.
+
+    When ``target`` is occupied (a build started meanwhile) the trash stays and
+    its path is printed; the next run's sweep handles it once this pid is dead.
     """
-    if via_trash:
-        from bakar.commands import console
+    from bakar.commands import console
 
-        trash = target.with_name(f".bakar-trash-{os.getpid()}-{target.name}")
+    if os.path.lexists(target):
+        console.print(
+            f"[yellow]left the undeleted remainder at {neutralize(trash)} "
+            f"({neutralize(target)} was recreated meanwhile)[/]",
+            highlight=False,
+        )
+        return
+    try:
+        trash.rename(target)
+    except OSError as exc:
+        console.print(
+            f"[yellow]could not restore {neutralize(target)} ({neutralize(exc)}); "
+            f"the remainder is at {neutralize(trash)}[/]",
+            highlight=False,
+        )
+
+
+def _remove_trees_or_exit(items: list[tuple[Path, str]]) -> None:
+    """Remove every ``(target, description)``; exit 1 on any residue.
+
+    Every target is first renamed to a sibling ``.bakar-trash-<pid>-<name>`` and
+    only then are the trashes deleted, so a build that starts while any delete
+    runs creates fresh directories the removal never touches (the live-build
+    gate ran before the delete and cannot see it). A residue or an interrupt
+    renames the undeleted trashes back (:func:`_restore_trash`) so a rerun sees
+    exactly what it saw before. A failed rename falls back to an in-place delete
+    and says so.
+    """
+    from bakar.commands import console
+
+    moved: list[tuple[Path, Path, str]] = []
+    in_place: list[tuple[Path, str]] = []
+    for target, description in items:
+        trash = target.with_name(f"{_TRASH_PREFIX}{os.getpid()}-{target.name}")
         try:
             target.rename(trash)
         except OSError as exc:
@@ -365,12 +399,58 @@ def _remove_tree_or_exit(target: Path, description: str, *, via_trash: bool = Fa
                 "removing it in place[/]",
                 highlight=False,
             )
+            in_place.append((target, description))
         else:
+            moved.append((target, trash, description))
+
+    pending = list(moved)
+    try:
+        while pending:
+            target, trash, description = pending[0]
             if not _remove_tree_report(trash, description, label=target):
-                raise typer.Exit(1)
-            return
-    if not _remove_tree_report(target, description):
+                break
+            pending.pop(0)
+    except BaseException:
+        # KeyboardInterrupt included: a half-deleted tree under a name nothing
+        # looks at would let the rerun report success over leftovers.
+        for target, trash, _ in pending:
+            _restore_trash(target, trash)
+        raise
+    if pending:
+        for target, trash, _ in pending:
+            _restore_trash(target, trash)
         raise typer.Exit(1)
+    for target, description in in_place:
+        if not _remove_tree_report(target, description):
+            raise typer.Exit(1)
+
+
+def _remove_tree_or_exit(target: Path, description: str) -> None:
+    """Remove ``target`` via :func:`_remove_trees_or_exit`; exit 1 on any residue."""
+    _remove_trees_or_exit([(target, description)])
+
+
+def _sweep_dead_trash(*parents: Path) -> None:
+    """Delete ``.bakar-trash-<pid>-*`` siblings under ``parents`` whose pid is dead.
+
+    A run killed between the rename and the delete strands its trash under a
+    name nothing else looks at. Trash of a live pid is never touched (that run
+    may still be deleting it). Leftovers are reported, not fatal.
+    """
+    from bakar.commands import console
+    from bakar.proc_tree import _pid_alive
+
+    for parent in dict.fromkeys(parents):
+        try:
+            entries = sorted(parent.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            m = _TRASH_RE.match(entry.name)
+            if m is None or _pid_alive(int(m.group(1))):
+                continue
+            if not _remove_tree_report(entry, f"Sweeping {entry.name}/"):
+                console.print(f"[yellow]stale trash remains at {neutralize(entry)}[/]", highlight=False)
 
 
 def _refuse_if_build_live(
@@ -430,16 +510,21 @@ def _clean_build_dir(cfg: BuildConfig, *, gated: bool = False) -> None:
     if not gated:
         _refuse_if_build_live(cfg)
     build_dir = cfg.bsp_root / cfg.build_dir_name
-    if build_dir.exists():
-        _remove_tree_or_exit(build_dir, f"Removing {build_dir.name}/", via_trash=True)
-
     # A host-mode local_tmpdir_base override relocates the build TMPDIR to
     # node-local disk, outside build_dir; wiping build_dir alone would strand
     # it. is_relative_to is False exactly when the override is active (the
-    # unset default resolves under build_dir and was already removed above).
+    # unset default resolves under build_dir and goes with it).
     tmpdir = cfg.resolved_tmpdir
+    _sweep_dead_trash(build_dir.parent, tmpdir.parent)
+    items: list[tuple[Path, str]] = []
+    if build_dir.exists():
+        items.append((build_dir, f"Removing {build_dir.name}/"))
     if not tmpdir.is_relative_to(build_dir) and tmpdir.exists():
-        _remove_tree_or_exit(tmpdir, f"Removing {tmpdir.name}/ (local TMPDIR)", via_trash=True)
+        items.append((tmpdir, f"Removing {tmpdir.name}/ (local TMPDIR)"))
+    # Both trees move aside before either is deleted, so a build published
+    # during either delete finds neither of the old trees.
+    if items:
+        _remove_trees_or_exit(items)
 
 
 # ---------------------------------------------------------------------------

@@ -25,7 +25,12 @@ import typer
 
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
-from bakar.commands._helpers import _find_workspace_from_cwd, _print_leftover, _remove_tree_report
+from bakar.commands._helpers import (
+    _find_workspace_from_cwd,
+    _print_leftover,
+    _remove_tree_report,
+    _sweep_dead_trash,
+)
 from bakar.config import shared_ccache_dir
 from bakar.fmt import neutralize
 from bakar.fsremove import parallel_apply
@@ -477,6 +482,7 @@ def _run_full_reset(
         return len(leftover)
 
     def _wipe_build_dir(b: Path) -> int:
+        _sweep_dead_trash(b.parent)
         _log(f"wiping local build dir {b} ...")
         return 0 if _remove_tree_report(b, f"Removing {b.name}/") else 1
 
