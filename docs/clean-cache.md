@@ -50,7 +50,7 @@ starting point. It:
 - empties the shared `SSTATE_DIR` in place (the export root is preserved so NFS
   clients do not see an ESTALE),
 - wipes each per-node build dir (`--build-dir`, the `BUILD_DIR` env var, or every
-  `build-*` under the workspace),
+  `build-*` under the workspace), renaming each build directory and its relocated TMPDIR to `.bakar-trash-*` first and restoring the names if the delete leaves residue,
 - wipes the sccache client disk cache under `~/.cache`,
 - wipes the local ccache dir **whole** (the same directory `--ccache-dir` /
   `ccache_shared` / `<workspace>/ccache` resolves to) - not an age-based evict,
@@ -67,6 +67,8 @@ Every step runs even when an earlier one leaves something behind. Each leftover
 (cache, ccache and sstate wipes included) is printed as it happens, and the
 command exits 1 after the last step when any leftover remains. It exits 0 only
 when nothing was left.
+
+A ccache or sccache root that is a symlink is shown as `<link> -> <target>` in the plan line and in the `--full` prompt. `--full` refuses it, naming the target and exiting 1, when the target is `/`, the home directory, or equal to or an ancestor of the workspace root or a build directory. A target nested inside the workspace, or elsewhere, is emptied in place and the link is kept.
 
 Use `--dry-run` to print the ordered plan without touching anything (the
 running-build guard does not apply to a dry run).

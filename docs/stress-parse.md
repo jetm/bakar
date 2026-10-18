@@ -6,7 +6,7 @@ Used to reproduce and measure the parser race condition described in the bakar r
 
 Each iteration wipes the parse caches, so the command checks the build
 directory's lock before every wipe, not only before the first iteration, and
-refuses, wiping nothing further, while a peer node or a local build holds it.
+refuses, wiping nothing further, while a peer node or a local build holds it. A live launch record in any run directory counts as a local holder, with or without a lock file.
 A build that starts between two iterations therefore stops the run at the next
 check. A peer-held refusal names the lock marker; if no build runs on any node,
 delete that marker and the `bitbake.lock` beside it by hand and re-run. A lock
