@@ -818,3 +818,79 @@ def _lock_refusal_message(refusal: build_stop.LockRefusal) -> str:
         )
     detail = escape(refusal.detail) if refusal.detail else refusal.reason
     return f"bitbake lock refusal ({escape(refusal.reason)}): {detail}"
+
+
+@dataclass(frozen=True)
+class GateVerdict:
+    """Outcome of the removal gate: whether a build still holds a build directory.
+
+    ``kind`` is ``clear`` (nothing holds it), ``warn`` (the lock cannot be
+    attributed and no local build was found, so a caller may proceed after
+    saying so), ``peer-held`` or ``held-locally`` (both refuse). The text
+    pieces are already :func:`bakar.fmt.neutralize`d: ``label`` is the plain
+    one-line cause, ``refusal`` the text that follows it in a refusal message,
+    ``warning`` the whole warning line. ``reason`` and ``detail`` carry the
+    guard's own refusal for logs.
+    """
+
+    kind: str
+    pid: int | None = None
+    label: str = ""
+    refusal: str = ""
+    warning: str = ""
+    reason: str = ""
+    detail: str = ""
+
+    @property
+    def refuses(self) -> bool:
+        return self.kind in ("peer-held", "held-locally")
+
+
+def removal_gate_verdict(cfg: BuildConfig) -> GateVerdict:
+    """Decide whether anything may be removed from ``cfg``'s build directory.
+
+    The single non-exiting core shared by the command layer's removal gate and
+    stress-parse's per-iteration gate. :func:`build_stop.lock_mutation_guard`
+    never reports a build running on THIS node, so every non-peer verdict also
+    consults :func:`local_build_holder`. An ``unattributable`` or
+    ``shared-inaction`` verdict is re-read once after ``_MARKER_REREAD_DELAY_S``
+    so a single failed or torn marker read cannot pass for "no owner".
+    """
+    refusal = build_stop.lock_mutation_guard(cfg)
+    if refusal is not None and refusal.reason in ("unattributable", "shared-inaction"):
+        time.sleep(_MARKER_REREAD_DELAY_S)
+        refusal = build_stop.lock_mutation_guard(cfg)
+    reason = refusal.reason if refusal is not None else ""
+    detail = refusal.detail if refusal is not None and refusal.detail else ""
+    if refusal is not None and refusal.reason == "peer-held":
+        host = neutralize(refusal.host) if refusal.host else "another host"
+        marker = refusal.marker if refusal.marker is not None else build_stop.lock_marker_path(cfg)
+        return GateVerdict(
+            kind="peer-held",
+            label=f"build owned by {host}",
+            refusal=f" (marker {neutralize(marker)}). {neutralize(build_stop.manual_clear_hint(marker))}",
+            reason=reason,
+            detail=detail,
+        )
+    pid = local_build_holder(cfg)
+    if pid is not None:
+        marker = build_stop.lock_marker_path(cfg)
+        hint = f" {neutralize(build_stop.manual_clear_hint(marker))}" if marker.exists() else ""
+        return GateVerdict(
+            kind="held-locally",
+            pid=pid,
+            label=f"a local build is running (pid {pid})",
+            refusal=f". Run `bakar stop` first.{hint}",
+            reason=reason,
+            detail=detail,
+        )
+    if refusal is not None and refusal.reason in ("unattributable", "shared-inaction"):
+        marker = refusal.marker if refusal.marker is not None else build_stop.lock_marker_path(cfg)
+        return GateVerdict(
+            kind="warn",
+            label="cannot attribute the build lock",
+            warning=f"cannot attribute the build lock (marker {neutralize(marker)})",
+            reason=reason,
+            detail=detail,
+        )
+    return GateVerdict(kind="clear", reason=reason, detail=detail)

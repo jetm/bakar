@@ -33,7 +33,6 @@ from pathlib import Path  # noqa: TC003
 
 from rich.markup import escape
 
-from bakar import build_stop
 from bakar.config import BuildConfig  # noqa: TC001
 from bakar.fork_race_signatures import scan
 from bakar.observability import RunLogger  # noqa: TC001
@@ -89,23 +88,30 @@ def _clear_parse_cache(cfg: BuildConfig, log: RunLogger, iteration: int) -> bool
 
 
 class BuildLiveError(Exception):
-    """A peer or a live local build holds this build directory; no wipe may run."""
+    """A peer or a live local build holds this build directory; no wipe may run.
+
+    ``verdict`` is the refusing :class:`kas_lock.GateVerdict` so the command can
+    print it without running the gate again; it is None only for a hand-built
+    error.
+    """
+
+    def __init__(self, message: str, verdict: kas_lock.GateVerdict | None = None) -> None:
+        super().__init__(message)
+        self.verdict = verdict
 
 
 def _refuse_if_build_live(cfg: BuildConfig) -> None:
     """Raise :class:`BuildLiveError` when a peer marker or a local build holds ``cfg``.
 
-    The non-exiting core of the command layer's removal gate, run before every
-    iteration's wipes so a build that starts between iterations is not
-    destroyed. Only the refusing verdicts raise; the unattributable case is
-    the command's up-front warning and does not stop a run.
+    Runs :func:`kas_lock.removal_gate_verdict` - the same gate, marker re-read
+    included, as the command layer - before every iteration's wipes so a build
+    that starts between iterations is not destroyed. Only the refusing verdicts
+    raise; the unattributable case is the command's up-front warning and does
+    not stop a run.
     """
-    refusal = build_stop.lock_mutation_guard(cfg)
-    if refusal is not None and refusal.reason == "peer-held":
-        raise BuildLiveError(f"build owned by {refusal.host or 'another host'}")
-    pid = kas_lock.local_build_holder(cfg)
-    if pid is not None:
-        raise BuildLiveError(f"a local build is running (pid {pid})")
+    verdict = kas_lock.removal_gate_verdict(cfg)
+    if verdict.refuses:
+        raise BuildLiveError(verdict.label, verdict)
 
 
 def _clear_bitbake_runtime(cfg: BuildConfig, log: RunLogger, iteration: int) -> bool:
@@ -144,16 +150,16 @@ def _clear_bitbake_runtime(cfg: BuildConfig, log: RunLogger, iteration: int) -> 
     """
     cleared_any = False
 
-    refusal = build_stop.lock_mutation_guard(cfg)
-    holder = kas_lock.local_build_holder(cfg) if refusal is None else None
-    if refusal is not None:
+    verdict = kas_lock.removal_gate_verdict(cfg)
+    if verdict.kind == "held-locally":
         log.info(
             f"stress-parse[{iteration:02d}]: skipping bitbake.lock/sock removal "
-            f"({escape(refusal.reason)}): {escape(refusal.detail)}"
+            f"(local build running, pid {verdict.pid})"
         )
-    elif holder is not None:
+    elif verdict.kind != "clear" or verdict.reason:
         log.info(
-            f"stress-parse[{iteration:02d}]: skipping bitbake.lock/sock removal (local build running, pid {holder})"
+            f"stress-parse[{iteration:02d}]: skipping bitbake.lock/sock removal "
+            f"({escape(verdict.reason)}): {escape(verdict.detail)}"
         )
     else:
         build_dir = cfg.bsp_root / cfg.build_dir_name

@@ -697,3 +697,36 @@ def test_stress_parse_mid_run_refusal_exits_one_with_the_gate_wording(
     assert "some-peer-host" in result.output
     assert "refusing to wipe the parse caches" in " ".join(result.output.split())
     assert all(c.exists() for c in caches)
+
+
+def test_stress_parse_mid_run_refusal_prints_the_exceptions_own_verdict_without_rerunning_the_gate(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The command prints the verdict the step carried and never runs the gate a second time."""
+    from bakar.steps.kas_lock import GateVerdict
+    from bakar.steps.stress_parse import BuildLiveError
+
+    workspace = _make_workspace(tmp_path)
+    monkeypatch.chdir(workspace)
+    _seed_build_dir(workspace)
+    override_p, kas_p, _stress_p = _patch_steps(summary=_clean_summary(2))
+    label = "a local build is running (pid 4242)"
+    verdict = GateVerdict(kind="held-locally", pid=4242, label=label, refusal=". Run `bakar stop` first.")
+    gate_calls: list[object] = []
+
+    def clear_gate(cfg: object) -> GateVerdict:
+        gate_calls.append(cfg)
+        return GateVerdict(kind="clear")
+
+    monkeypatch.setattr("bakar.steps.kas_lock.removal_gate_verdict", clear_gate)
+
+    with (
+        override_p,
+        kas_p,
+        patch("bakar.commands.stress_parse.step_stress_parse.run", side_effect=BuildLiveError(label, verdict)),
+    ):
+        result = runner.invoke(app, ["stress-parse", "--manifest", "imx-6.6.52-2.2.2.xml", "--runs", "2"])
+
+    assert result.exit_code == 1, result.output
+    assert f"refusing to wipe the parse caches: {label}" in " ".join(result.output.split())
+    assert len(gate_calls) == 1  # the up-front gate only

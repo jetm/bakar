@@ -19,6 +19,7 @@ from bakar.commands._helpers import (
     _dispatch_bsp,
     _dispatch_from_yaml,
     _overlay_for,
+    _print_gate_refusal,
     _refuse_if_build_live,
     _resolve_workspace,
     global_host_mode,
@@ -26,6 +27,7 @@ from bakar.commands._helpers import (
     split_kas_yaml_arg,
 )
 from bakar.config import BSPSpec, ResolveRequest
+from bakar.fmt import neutralize
 from bakar.observability import RunLogger
 from bakar.steps import bitbake_override as step_override
 from bakar.steps import kas_build as step_kas
@@ -257,12 +259,14 @@ def _stress_parse_impl(ctx: _StressParseCtx) -> None:
                     python_executable=python_executable,
                 )
             )
-    except step_stress_parse.BuildLiveError:
-        # A build appeared between iterations. Re-running the exiting gate
-        # prints the one refusal wording and exits 1; the logger has already
-        # recorded run_error on the way out of the with block.
-        _refuse_if_build_live(cfg, action="wipe the parse caches", doing="wiping the parse caches")
-        console.print("[red]refusing to wipe the parse caches: a build holds this build directory[/]")
+    except step_stress_parse.BuildLiveError as exc:
+        # A build appeared between iterations. The step already ran the gate
+        # (marker re-read included); print its verdict, not a second run's.
+        # The logger has already recorded run_error on the way out of the with block.
+        if exc.verdict is not None:
+            _print_gate_refusal(exc.verdict, "wipe the parse caches")
+        else:
+            console.print(f"[red]refusing to wipe the parse caches: {neutralize(exc)}[/]")
         raise typer.Exit(code=1) from None
 
     table = Table(title=f"stress-parse summary ({family})", show_edge=False)

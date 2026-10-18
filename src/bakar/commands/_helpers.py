@@ -12,7 +12,6 @@ that ``commands/*.py`` modules import from here are re-exported below.
 from __future__ import annotations
 
 import os
-import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -60,6 +59,7 @@ if TYPE_CHECKING:
     from bakar.config import BuildConfig, ResolveRequest
     from bakar.layers import LayerHash
     from bakar.output_mode import OutputMode
+    from bakar.steps.kas_lock import GateVerdict
 
 __all__ = [
     "GLOBAL_MODE_EXCLUSIONS",
@@ -86,6 +86,7 @@ __all__ = [
     "_normalize_dispatch",
     "_overlay_for",
     "_print_diagnosis",
+    "_print_gate_refusal",
     "_print_layer_hashes",
     "_print_sstate_summary",
     "_refuse_if_build_live",
@@ -387,45 +388,30 @@ def _refuse_if_build_live(
     (``clean`` is the recovery path from an unreadable lock), after one
     re-read of the marker so a single failed read cannot pass for "no owner".
     """
-    from bakar import build_stop
     from bakar.commands import console
     from bakar.steps import kas_lock
 
-    refusal = build_stop.lock_mutation_guard(cfg)
-    if refusal is not None and refusal.reason in ("unattributable", "shared-inaction"):
-        # One failed or torn marker read (a peer mid-write, a transient
-        # OSError) must not stand in for "no owner": look once more.
-        time.sleep(kas_lock._MARKER_REREAD_DELAY_S)
-        refusal = build_stop.lock_mutation_guard(cfg)
-    if refusal is not None and refusal.reason == "peer-held":
-        host = neutralize(refusal.host) if refusal.host else "another host"
-        marker = refusal.marker if refusal.marker is not None else build_stop.lock_marker_path(cfg)
-        console.print(
-            f"[red]refusing to {action}: build owned by {host}[/] "
-            f"(marker {neutralize(marker)}). {neutralize(build_stop.manual_clear_hint(marker))}",
-            highlight=False,
-            soft_wrap=True,
-        )
+    verdict = kas_lock.removal_gate_verdict(cfg)
+    if verdict.refuses:
+        _print_gate_refusal(verdict, action)
         raise typer.Exit(1)
-
-    pid = kas_lock.local_build_holder(cfg)
-    if pid is not None:
-        marker = build_stop.lock_marker_path(cfg)
-        hint = f" {neutralize(build_stop.manual_clear_hint(marker))}" if marker.exists() else ""
+    if verdict.kind == "warn":
         console.print(
-            f"[red]refusing to {action}: a local build is running (pid {pid})[/]. Run `bakar stop` first.{hint}",
+            f"[yellow]warning: {verdict.warning}; {doing} anyway[/]",
             highlight=False,
             soft_wrap=True,
         )
-        raise typer.Exit(1)
 
-    if refusal is not None and refusal.reason in ("unattributable", "shared-inaction"):
-        marker = refusal.marker if refusal.marker is not None else build_stop.lock_marker_path(cfg)
-        console.print(
-            f"[yellow]warning: cannot attribute the build lock (marker {neutralize(marker)}); {doing} anyway[/]",
-            highlight=False,
-            soft_wrap=True,
-        )
+
+def _print_gate_refusal(verdict: GateVerdict, action: str) -> None:
+    """Print the one refusal wording for a refusing :class:`GateVerdict`."""
+    from bakar.commands import console
+
+    console.print(
+        f"[red]refusing to {action}: {verdict.label}[/]{verdict.refusal}",
+        highlight=False,
+        soft_wrap=True,
+    )
 
 
 def _clean_build_dir(cfg: BuildConfig, *, gated: bool = False) -> None:

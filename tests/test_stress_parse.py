@@ -667,7 +667,7 @@ def test_peer_owned_lock_skips_unlink_but_cache_wipe_still_runs(
     (cache_dir / "bb_codeparser.dat").write_text("stale-marker")
 
     refusal = build_stop.LockRefusal(reason="peer-held", host="peer-host", detail="lock marker names peer-host")
-    monkeypatch.setattr(stress_parse.build_stop, "lock_mutation_guard", lambda _cfg: refusal)
+    monkeypatch.setattr(build_stop, "lock_mutation_guard", lambda _cfg: refusal)
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         runtime_cleared = stress_parse._clear_bitbake_runtime(cfg, log, 1)
@@ -691,7 +691,7 @@ def test_local_marker_lock_unlink_proceeds_as_before(tmp_path: Path, monkeypatch
     lock_path.write_text("12345\n")
     sock_path.write_text("")
 
-    monkeypatch.setattr(stress_parse.build_stop, "lock_mutation_guard", lambda _cfg: None)
+    monkeypatch.setattr(build_stop, "lock_mutation_guard", lambda _cfg: None)
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         runtime_cleared = stress_parse._clear_bitbake_runtime(cfg, log, 1)
@@ -727,7 +727,7 @@ def test_lock_removal_uses_build_dir_name_not_hardcoded_build(tmp_path: Path, mo
     wrong_build_dir.mkdir(parents=True, exist_ok=True)
     (wrong_build_dir / "bitbake.lock").write_text("99999\n")
 
-    monkeypatch.setattr(stress_parse.build_stop, "lock_mutation_guard", lambda _cfg: None)
+    monkeypatch.setattr(build_stop, "lock_mutation_guard", lambda _cfg: None)
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
         runtime_cleared = stress_parse._clear_bitbake_runtime(cfg, log, 1)
@@ -864,7 +864,7 @@ def test_clear_bitbake_runtime_keeps_lock_while_local_build_holds_it(
     build_dir.mkdir(parents=True, exist_ok=True)
     (build_dir / "bitbake.lock").write_text("12345\n")
     (build_dir / "bitbake.sock").write_text("")
-    monkeypatch.setattr(stress_parse.build_stop, "lock_mutation_guard", lambda _cfg: None)
+    monkeypatch.setattr(build_stop, "lock_mutation_guard", lambda _cfg: None)
     monkeypatch.setattr(stress_parse.kas_lock, "local_build_holder", lambda _cfg: 4242)
 
     with RunLogger(runs_dir=cfg.runs_dir) as log:
@@ -872,3 +872,84 @@ def test_clear_bitbake_runtime_keeps_lock_while_local_build_holds_it(
 
     assert (build_dir / "bitbake.lock").exists()
     assert (build_dir / "bitbake.sock").exists()
+
+
+def test_one_shot_marker_read_error_between_iterations_is_reread_and_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A single failed marker read before iteration 2 must not pass for "no owner"."""
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr("bakar.build_stop.socket.gethostname", lambda: "this-host")
+    monkeypatch.setattr("bakar.mounts.is_path_on_nfs", lambda _p: True)
+    monkeypatch.setattr("bakar.steps.kas_lock._MARKER_REREAD_DELAY_S", 0)
+    marker = build_stop.lock_marker_path(cfg)
+    armed = {"fail_once": False}
+    path_cls = type(marker)
+    real_read_bytes = path_cls.read_bytes
+
+    def flaky_read_bytes(self: Path) -> bytes:
+        if self == marker and armed["fail_once"]:
+            armed["fail_once"] = False
+            raise OSError("transient")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(path_cls, "read_bytes", flaky_read_bytes)
+
+    def peer_appears() -> None:
+        marker.write_text("peer-host\n")
+        armed["fail_once"] = True
+
+    kept, calls = _seed_between_iteration_state(cfg, monkeypatch, peer_appears)
+
+    with pytest.raises(stress_parse.BuildLiveError, match="peer-host"):
+        _run_two_iterations(cfg, tmp_path)
+
+    assert armed["fail_once"] is False  # the failing read really happened
+    assert len(calls) == 1
+    assert all(p.read_text() == "rebuilt-by-iteration-1" for p in kept)
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["peer-held", "unattributable", "shared-inaction", "live-record", "none"],
+)
+def test_command_gate_and_step_gate_return_equal_verdicts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """Both gates are thin wrappers over ``kas_lock.removal_gate_verdict``."""
+    import typer
+
+    from bakar.commands import _helpers
+    from bakar.steps import kas_lock
+
+    cfg = _cfg(tmp_path)
+    marker = build_stop.lock_marker_path(cfg)
+    refusals = {
+        "peer-held": build_stop.LockRefusal(reason="peer-held", host="pc2", marker=marker),
+        "unattributable": build_stop.LockRefusal(reason="unattributable", marker=marker),
+        "shared-inaction": build_stop.LockRefusal(reason="shared-inaction", marker=marker),
+    }
+    refusal = refusals.get(case)
+    monkeypatch.setattr(build_stop, "lock_mutation_guard", lambda _cfg: refusal)
+    monkeypatch.setattr(kas_lock, "local_build_holder", lambda _cfg: 4242 if case == "live-record" else None)
+    monkeypatch.setattr(kas_lock, "_MARKER_REREAD_DELAY_S", 0)
+    expected = kas_lock.removal_gate_verdict(cfg)
+
+    refuses = case in ("peer-held", "live-record")
+    assert expected.refuses is refuses
+    try:
+        stress_parse._refuse_if_build_live(cfg)
+    except stress_parse.BuildLiveError as exc:
+        assert exc.verdict == expected
+        assert str(exc) == expected.label
+        step_refused = True
+    else:
+        step_refused = False
+    try:
+        _helpers._refuse_if_build_live(cfg)
+    except typer.Exit as exc:
+        assert exc.exit_code == 1
+        command_refused = True
+    else:
+        command_refused = False
+    assert step_refused is command_refused is refuses
