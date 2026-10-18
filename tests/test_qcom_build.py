@@ -511,3 +511,20 @@ def test_qcom_build_unexpected_oserror_records_step_fail(tmp_path: Path, monkeyp
     assert len(fails) == 1
     assert fails[0][2]["exit_code"] == 1
     assert not build_stop.lock_marker_path(cfg).exists()
+
+
+def test_qcom_build_unexpected_oserror_text_is_escaped_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from rich.text import Text
+
+    _no_buildtools(monkeypatch)
+    cfg = _qcom_cfg(tmp_path)
+    log = _FakeLogger(tmp_path)
+
+    def boom(_cfg: object) -> None:
+        raise OSError("bad [/x]")
+
+    monkeypatch.setattr(qcom_build_step, "clear_stale_bitbake_locks", boom)
+    with pytest.raises(OSError, match="bad"):
+        qcom_build_step.run(cfg, log, target="qcom-multimedia-image")
+    reason = next(ev for ev in log.events if ev[0] == "step_fail")[2]["reason"]
+    assert Text.from_markup(reason).plain == "unexpected OSError: bad [/x]"

@@ -31,9 +31,8 @@ from dataclasses import dataclass
 # because ``TC001``/``TC003`` are ignored for that package.
 from pathlib import Path  # noqa: TC003
 
-from rich.markup import escape
-
 from bakar.config import BuildConfig  # noqa: TC001
+from bakar.fmt import neutralize
 from bakar.fork_race_signatures import scan
 from bakar.observability import RunLogger  # noqa: TC001
 from bakar.steps import bitbake_override as step_override
@@ -159,7 +158,7 @@ def _clear_bitbake_runtime(cfg: BuildConfig, log: RunLogger, iteration: int) -> 
     elif verdict.kind != "clear" or verdict.reason:
         log.info(
             f"stress-parse[{iteration:02d}]: skipping bitbake.lock/sock removal "
-            f"({escape(verdict.reason)}): {escape(verdict.detail)}"
+            f"({neutralize(verdict.reason)}): {neutralize(verdict.detail)}"
         )
     else:
         build_dir = cfg.bsp_root / cfg.build_dir_name

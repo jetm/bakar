@@ -812,7 +812,7 @@ def lock_owner_marker(cfg: BuildConfig, log: RunLogger) -> Iterator[None]:
             try:
                 marker.unlink(missing_ok=True)
             except OSError as exc:
-                log.warn(f"could not remove bitbake lock ownership marker {marker}: {exc}")
+                log.warn(f"could not remove bitbake lock ownership marker {neutralize(marker)}: {neutralize(exc)}")
 
 
 def _lock_refusal_message(refusal: build_stop.LockRefusal) -> str:

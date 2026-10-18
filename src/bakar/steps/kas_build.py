@@ -948,7 +948,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         log.step_fail(step, reason=peer_lock_reason(exc), exit_code=1)
         return 1
     for removed_path in lock_outcome.removed:
-        log.warn(f"removed stale bitbake lock: {removed_path} (owning process was gone)")
+        log.warn(f"removed stale bitbake lock: {neutralize(removed_path)} (owning process was gone)")
     if lock_outcome.refusal is not None:
         log.step_fail(step, reason=_lock_refusal_message(lock_outcome.refusal))
         return 1
@@ -1227,7 +1227,7 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
         log.step_fail("kas_shell_live", reason=peer_lock_reason(exc), exit_code=1)
         return 1
     for removed_path in lock_outcome.removed:
-        log.warn(f"removed stale bitbake lock: {removed_path} (owning process was gone)")
+        log.warn(f"removed stale bitbake lock: {neutralize(removed_path)} (owning process was gone)")
     if lock_outcome.refusal is not None:
         log.step_fail("kas_shell_live", reason=_lock_refusal_message(lock_outcome.refusal))
         return 1
@@ -1941,7 +1941,7 @@ def run_shell(
                 return 1
             lock_outcome = clear_stale_bitbake_locks(cfg)
             for removed_path in lock_outcome.removed:
-                log.warn(f"removed stale bitbake lock: {removed_path} (owning process was gone)")
+                log.warn(f"removed stale bitbake lock: {neutralize(removed_path)} (owning process was gone)")
             if lock_outcome.refusal is not None:
                 log.step_fail("kas_shell", reason=_lock_refusal_message(lock_outcome.refusal), exit_code=1)
                 return 1
@@ -1960,7 +1960,7 @@ def run_shell(
         log.step_fail("kas_shell", reason=peer_lock_reason(exc), exit_code=1)
         return 1
     except OSError as exc:
-        log.step_fail("kas_shell", reason=f"unexpected {type(exc).__name__}: {exc}", exit_code=1)
+        log.step_fail("kas_shell", reason=f"unexpected {type(exc).__name__}: {neutralize(exc)}", exit_code=1)
         raise
     _finish_step(log, "kas_shell", rc)
     return rc
@@ -2035,7 +2035,7 @@ def run_shell_capture(ctx: KasBuildContext, command: str, capture: ShellCapture)
         log.step_fail(step, reason=peer_lock_reason(exc), exit_code=1)
         return 1
     for removed_path in lock_outcome.removed:
-        log.warn(f"removed stale bitbake lock: {removed_path} (owning process was gone)")
+        log.warn(f"removed stale bitbake lock: {neutralize(removed_path)} (owning process was gone)")
     if lock_outcome.refusal is not None:
         log.step_fail(step, reason=_lock_refusal_message(lock_outcome.refusal), exit_code=1)
         return 1
@@ -2118,7 +2118,7 @@ def run_shell_capture(ctx: KasBuildContext, command: str, capture: ShellCapture)
         )
         return 1
     except OSError as exc:
-        log.step_fail(step, reason=f"unexpected {type(exc).__name__}: {exc}", exit_code=1)
+        log.step_fail(step, reason=f"unexpected {type(exc).__name__}: {neutralize(exc)}", exit_code=1)
         raise
     _finish_step(log, step, rc)
     return rc

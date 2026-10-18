@@ -78,8 +78,8 @@ def _print_skipped_root(skipped_root: run_discovery.SkippedRoot) -> None:
         )
     else:
         text = (
-            f"[yellow]cannot confirm ownership of {skipped_root.root.bsp_root} "
-            f"({refusal.reason}); it was not checked for a live build"
+            f"[yellow]cannot confirm ownership of {neutralize(skipped_root.root.bsp_root)} "
+            f"({neutralize(refusal.reason)}); it was not checked for a live build"
         )
     if refusal.marker is not None and refusal.reason in ("peer-held", "unattributable"):
         text += ". " + neutralize(build_stop.manual_clear_hint(refusal.marker))

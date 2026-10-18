@@ -455,3 +455,22 @@ def test_marker_refusal_from_the_stale_gate_closes_the_step(
     opened = {e["step"] for e in events if e["event"] == "step_start"}
     closed = {e["step"] for e in events if e["event"] in {"step_ok", "step_fail", "step_skip"}}
     assert opened <= closed
+
+
+@pytest.mark.unit
+def test_run_shell_unexpected_oserror_text_is_escaped_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from rich.text import Text
+
+    cfg, kas_yaml, overlay, _marker = _shell_lock_env(tmp_path, monkeypatch)
+
+    def gate(_cfg: object) -> None:
+        raise OSError("bad [/x]")
+
+    monkeypatch.setattr(kas_build, "clear_stale_bitbake_locks", gate)
+    with RunLogger(runs_dir=tmp_path / "runs") as log:
+        ctx = KasBuildContext(cfg=cfg, log=log, kas_yaml=kas_yaml, overlay_source=overlay)
+        with pytest.raises(OSError, match="bad"):
+            kas_build.run_shell(ctx, ["x"], "bitbake x", take_lock_marker=True)
+        events_path = log.events_path
+    fails = [e for e in _step_events(events_path) if e["step"] == "kas_shell" and e["event"] == "step_fail"]
+    assert Text.from_markup(fails[0]["reason"]).plain == "unexpected OSError: bad [/x]"

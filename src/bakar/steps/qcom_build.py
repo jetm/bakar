@@ -17,6 +17,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from bakar import build_scope
+from bakar.fmt import neutralize
 from bakar.steps.kas_lock import (
     LockHeldByPeerError,
     _lock_refusal_message,
@@ -105,7 +106,7 @@ def run(
     try:
         lock_outcome = clear_stale_bitbake_locks(cfg)
         for removed_path in lock_outcome.removed:
-            log.warn(f"removed stale bitbake lock: {removed_path} (owning process was gone)")
+            log.warn(f"removed stale bitbake lock: {neutralize(removed_path)} (owning process was gone)")
         if lock_outcome.refusal is not None:
             log.step_fail("qcom_build", reason=_lock_refusal_message(lock_outcome.refusal), target=target)
             return 1
@@ -115,7 +116,9 @@ def run(
         log.step_fail("qcom_build", reason=peer_lock_reason(exc), exit_code=1, target=target)
         return 1
     except OSError as exc:
-        log.step_fail("qcom_build", reason=f"unexpected {type(exc).__name__}: {exc}", exit_code=1, target=target)
+        log.step_fail(
+            "qcom_build", reason=f"unexpected {type(exc).__name__}: {neutralize(exc)}", exit_code=1, target=target
+        )
         raise
     if rc != 0:
         log.step_fail("qcom_build", reason=f"bitbake exited {rc}", target=target)

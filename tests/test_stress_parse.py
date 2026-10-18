@@ -953,3 +953,20 @@ def test_command_gate_and_step_gate_return_equal_verdicts(
     else:
         command_refused = False
     assert step_refused is command_refused is refuses
+
+
+def test_clear_bitbake_runtime_skip_message_escapes_detail_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rich.text import Text
+
+    cfg = _cfg(tmp_path)
+    cfg.runs_dir.mkdir(parents=True, exist_ok=True)
+    verdict = stress_parse.kas_lock.GateVerdict(kind="warn", reason="pc[/x]", detail="bad [/x]")
+    monkeypatch.setattr(stress_parse.kas_lock, "removal_gate_verdict", lambda _cfg: verdict)
+    msgs: list[str] = []
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        monkeypatch.setattr(log, "info", lambda msg, **_f: msgs.append(msg))
+        stress_parse._clear_bitbake_runtime(cfg, log, 1)
+    assert len(msgs) == 1
+    assert Text.from_markup(msgs[0]).plain.endswith("(pc[/x]): bad [/x]")

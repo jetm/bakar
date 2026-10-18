@@ -1588,3 +1588,27 @@ def test_undeletable_lock_or_socket_is_a_refusal_naming_path_and_errno(
     text = peer_lock_reason(excinfo.value)
     assert str(build / victim) in text
     assert os.strerror(errno.EACCES) in text
+
+
+def test_exit_unlink_failure_text_is_escaped_once(
+    env: tuple[BuildConfig, Path, RunLogger], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rich.text import Text
+
+    cfg, _build, log = env
+    marker = build_stop.lock_marker_path(cfg)
+    warnings: list[str] = []
+    monkeypatch.setattr(log, "warn", lambda msg, **_f: warnings.append(msg))
+    real = Path.unlink
+
+    def fake(self: Path, *a: object, **k: object) -> None:
+        if self.name == marker.name:
+            raise OSError("bad [/x]")
+        real(self, *a, **k)  # type: ignore[arg-type]
+
+    with lock_owner_marker(cfg, log):
+        monkeypatch.setattr(Path, "unlink", fake)
+    assert len(warnings) == 1
+    plain = Text.from_markup(warnings[0]).plain
+    assert plain.endswith(": bad [/x]")
+    assert "\\" not in plain

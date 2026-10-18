@@ -2003,3 +2003,28 @@ def test_print_skipped_root_long_marker_path_not_wrapped(tmp_path: Path, monkeyp
     refusal = stop_cmd.build_stop.LockRefusal(reason="peer-held", host="pc2", marker=marker)
     stop_cmd._print_skipped_root(run_discovery.SkippedRoot(root=root, refusal=refusal))
     assert str(marker) in buf.getvalue()
+
+
+@pytest.mark.parametrize("reason", ["peer-held", "unattributable"])
+def test_print_skipped_root_prints_bracketed_names_verbatim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reason: str
+) -> None:
+    import io
+
+    from rich.console import Console
+
+    buf = io.StringIO()
+    monkeypatch.setattr(stop_cmd, "console", Console(file=buf, width=200, force_terminal=False))
+    root = run_discovery.RunRoot(
+        bsp_root=__import__("pathlib").Path("/ws/[/x]/bsp"),
+        family="ti",
+        resolve_workspace=tmp_path,
+        resolve_family="ti",
+    )
+    refusal = stop_cmd.build_stop.LockRefusal(reason=reason, host="pc[/x]")
+    stop_cmd._print_skipped_root(run_discovery.SkippedRoot(root=root, refusal=refusal))
+    out = buf.getvalue()
+    assert "/ws/[/x]/bsp" in out.replace("\n", "")
+    assert "\\" not in out
+    if reason == "peer-held":
+        assert "pc[/x]" in out
