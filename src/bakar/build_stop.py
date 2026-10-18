@@ -114,6 +114,10 @@ def remove_pid(run_dir: Path) -> None:
     (run_dir / _META_FILENAME).unlink(missing_ok=True)
 
 
+_VALID_RUNTIMES = frozenset({"docker", "podman"})
+_PID_MAX = 2**31 - 1
+
+
 @dataclass(frozen=True)
 class LaunchRecord:
     """Describes how a build was launched, for ``bakar stop`` to target it.
@@ -169,31 +173,13 @@ def read_launch_record(run_dir: Path) -> LaunchRecord:
     Never raises on a missing or malformed run: an unparseable sidecar or
     pidfile degrades to the legacy/missing path rather than propagating.
     """
-    meta_path = run_dir / _META_FILENAME
-    try:
-        raw = meta_path.read_text()
-    except OSError:
-        raw = None
-    if raw is not None:
-        try:
-            obj = json.loads(raw)
-        except ValueError:
-            obj = None
-        if isinstance(obj, dict):
-            pgid = obj.get("pgid")
-            mode = obj.get("mode")
-            runtime = obj.get("runtime")
-            container_label = obj.get("container_label")
-            return LaunchRecord(
-                pgid=pgid if isinstance(pgid, int) else None,
-                mode=mode if isinstance(mode, str) else "container",
-                runtime=runtime if isinstance(runtime, str) else None,
-                container_label=container_label if isinstance(container_label, str) else None,
-            )
+    meta = _parse_meta(run_dir)
+    if meta is not None:
+        return meta
 
     pid_file = run_dir / _PID_FILENAME
     try:
-        pid_raw = pid_file.read_text()
+        pid_raw = _read_lenient(pid_file)
     except OSError:
         return LaunchRecord(pgid=None, mode="container", container_label=None)
     try:
@@ -201,6 +187,65 @@ def read_launch_record(run_dir: Path) -> LaunchRecord:
     except ValueError:
         legacy_pgid = None
     return LaunchRecord(pgid=legacy_pgid, mode="container", container_label=None)
+
+
+def _read_lenient(path: Path) -> str:
+    """Text of ``path`` decoded with ``errors="replace"``: a stray byte is never a decode error."""
+    return path.read_bytes().decode(errors="replace")
+
+
+def _parse_meta(run_dir: Path) -> LaunchRecord | None:
+    """The sidecar's record, or ``None`` when it is missing, unparseable or names an unacceptable runtime."""
+    try:
+        raw = _read_lenient(run_dir / _META_FILENAME)
+        obj = json.loads(raw)
+    except OSError, ValueError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    runtime = obj.get("runtime")
+    if runtime is not None and runtime not in _VALID_RUNTIMES:
+        # stop_container runs the recorded runtime as argv[0]; only the two
+        # known names may be executed, never a recorded path.
+        return None
+    pgid = obj.get("pgid")
+    mode = obj.get("mode")
+    container_label = obj.get("container_label")
+    return LaunchRecord(
+        pgid=pgid if isinstance(pgid, int) and not isinstance(pgid, bool) else None,
+        mode=mode if isinstance(mode, str) else "container",
+        runtime=runtime,
+        container_label=container_label if isinstance(container_label, str) else None,
+    )
+
+
+def unreadable_launch_files(run_dir: Path) -> list[Path]:
+    """Launch-record files in ``run_dir`` that exist but cannot be used as a record.
+
+    A missing file is not listed. A pidfile that is not a positive int within
+    ``pid_t`` range, a sidecar that is not a JSON object, or a sidecar naming a
+    runtime other than docker/podman is. Never raises.
+    """
+    bad: list[Path] = []
+    meta_path = run_dir / _META_FILENAME
+    if meta_path.exists() and _parse_meta(run_dir) is None:
+        bad.append(meta_path)
+    pid_path = run_dir / _PID_FILENAME
+    try:
+        raw = _read_lenient(pid_path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        bad.append(pid_path)
+    else:
+        try:
+            value = int(raw.strip())
+        except ValueError:
+            bad.append(pid_path)
+        else:
+            if not 0 < value <= _PID_MAX:
+                bad.append(pid_path)
+    return bad
 
 
 def _wait_sigint_handler(_signum: int, _frame: object) -> None:  # pragma: no cover - real signal path
@@ -516,7 +561,7 @@ def is_build_running(run_dir: Path) -> tuple[bool, int | None, bool]:
     """
     pid_file = run_dir / _PID_FILENAME
     try:
-        raw = pid_file.read_text()
+        raw = _read_lenient(pid_file)
     except OSError:
         return (False, None, False)
     try:
@@ -527,6 +572,10 @@ def is_build_running(run_dir: Path) -> tuple[bool, int | None, bool]:
         # A non-positive pgid would make os.killpg signal our own group (0)
         # or be invalid; treat a corrupted pidfile as not-running.
         return (False, pgid, False)
+
+    if pgid > _PID_MAX:
+        # Beyond pid_t: os.killpg would raise OverflowError, and no such group exists.
+        return (False, None, False)
 
     try:
         os.killpg(pgid, 0)

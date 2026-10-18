@@ -185,7 +185,7 @@ def _launch_record_state(run_dir: Path, containers: _ContainerListing) -> _Recor
 
 def _proc_comm(pid: int) -> str:
     try:
-        return Path(f"/proc/{pid}/comm").read_text().strip()
+        return Path(f"/proc/{pid}/comm").read_bytes().decode(errors="replace").strip()
     except OSError:
         return ""
 
@@ -241,6 +241,8 @@ def _scan_launch_records(run_dirs: list[Path]) -> tuple[Path | None, _RecordStat
     for run_dir in run_dirs:
         if not _has_launch_record(run_dir):
             continue
+        for bad in build_stop.unreadable_launch_files(run_dir):
+            build_stop._say(f"warning: ignoring unreadable launch record {bad}")
         state = _launch_record_state(run_dir, containers)
         if state.live:
             return run_dir, state

@@ -8,6 +8,7 @@ the real ``~/.config/bakar/config.toml`` is never read.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -163,9 +164,10 @@ def test_shell_command_keeps_the_state_of_a_live_container_build(
         return real_popen(cmd, *a, **k)
 
     monkeypatch.setattr(kas_build.subprocess, "Popen", fake_popen)
-    runtime = tmp_path / "fake-runtime"
-    runtime.write_text("#!/bin/sh\necho cid0123\n")
+    runtime = tmp_path / "docker"
+    runtime.write_text("#!/bin/sh\nprintf 'cid0123\\tx\\n'\n")
     runtime.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
     real_gate = kas_build.clear_stale_bitbake_locks
     seen: dict[str, Path] = {}
 
@@ -184,7 +186,7 @@ def test_shell_command_keeps_the_state_of_a_live_container_build(
         run_dir = cfg.runs_dir / f"{stamp}-4242"
         run_dir.mkdir(parents=True)
         build_stop.write_launch_record(
-            run_dir, pgid=4194001, mode="container", runtime=str(runtime), container_label="bakar.run_id=x"
+            run_dir, pgid=4194001, mode="container", runtime="docker", container_label="bakar.run_id=x"
         )
         return real_gate(cfg)
 

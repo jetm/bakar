@@ -50,6 +50,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[BuildConfig, P
     cfg = _cfg(tmp_path)
     build = cfg.bsp_root / cfg.build_dir_name
     build.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
     monkeypatch.setattr(kas_lock.time, "sleep", lambda _s: None)
     return cfg, build, RunLogger(runs_dir=cfg.runs_dir)
@@ -792,19 +793,19 @@ def _fake_runtime(tmp_path: Path, *, container_alive: bool) -> Path:
     The output is ``discover_running_containers``' ``ID<TAB>run id`` format;
     each call appends one line to ``calls.log`` beside the script.
     """
-    script = tmp_path / "fake-runtime"
+    script = tmp_path / "docker"
     calls = tmp_path / "calls.log"
     listing = "printf 'cid0123\\tx\\n'\n" if container_alive else ""
     script.write_text(f"#!/bin/sh\necho \"$*\" >> '{calls}'\n{listing}exit 0\n")
     script.chmod(0o755)
-    return script
+    return Path("docker")  # recorded by name; the env fixture puts tmp_path on PATH
 
 
 def _failing_runtime(tmp_path: Path) -> Path:
-    script = tmp_path / "down-runtime"
+    script = tmp_path / "docker"
     script.write_text("#!/bin/sh\necho 'Cannot connect to the daemon' >&2\nexit 1\n")
     script.chmod(0o755)
-    return script
+    return Path("docker")
 
 
 def test_local_build_holder_reports_a_live_pid_with_activity(
@@ -1500,3 +1501,62 @@ def test_local_build_holder_ignores_a_finished_record_in_an_older_run_dir(
     with bitbake_server("/work/build", children="worker"):
         (build / "bitbake.lock").write_text(f"{container_pid}\n")
         assert kas_lock.local_build_holder(cfg) is None
+
+
+@pytest.mark.parametrize(
+    ("filename", "content"),
+    [
+        ("build.pid", b"99999999999\n"),
+        ("build.pid", b"\xff\xfe\n"),
+        ("build.meta.json", b'\xff{"pgid": 1, "mode": "container"}'),
+    ],
+)
+def test_local_build_holder_warns_and_proceeds_on_an_unreadable_launch_record(
+    env: tuple[BuildConfig, Path, RunLogger],
+    capsys: pytest.CaptureFixture[str],
+    filename: str,
+    content: bytes,
+) -> None:
+    cfg, _build, _log = env
+    run_dir = _run_dir(cfg, pid=4242)
+    (run_dir / filename).write_bytes(content)
+
+    assert kas_lock.local_build_holder(cfg) is None
+
+    err = capsys.readouterr().err
+    assert str(run_dir / filename) in err
+
+
+def test_proc_comm_of_invalid_utf8_does_not_raise(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    comm = tmp_path / "comm"
+    comm.write_bytes(b"Pars\xffer-1\n")
+    real_path = kas_lock.Path
+    monkeypatch.setattr(kas_lock, "Path", lambda _p: real_path(comm))
+
+    assert kas_lock._proc_comm(1).startswith("Pars")
+
+
+def test_a_recorded_runtime_that_is_not_docker_or_podman_is_never_run(
+    env: tuple[BuildConfig, Path, RunLogger],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg, _build, _log = env
+    run_dir = _run_dir(cfg, pid=4242)
+    meta = run_dir / "build.meta.json"
+    meta.write_text('{"pgid": 1, "mode": "container", "runtime": "/tmp/x", "container_label": "bakar.run_id=x"}')
+    argvs: list[object] = []
+
+    def spy(args: object, *_a: object, **_k: object) -> None:
+        argvs.append(args)
+        raise OSError("not run")
+
+    monkeypatch.setattr("bakar.stop_container.subprocess.run", spy)
+    monkeypatch.setattr("bakar.stop_container.detect_runtime", lambda: "docker")
+
+    assert build_stop.read_launch_record(run_dir).runtime is None
+    assert build_stop.unreadable_launch_files(run_dir) == [meta]
+    kas_lock.local_build_holder(cfg)
+
+    assert not any("/tmp/x" in str(a) for a in argvs)
+    assert str(meta) in capsys.readouterr().err
