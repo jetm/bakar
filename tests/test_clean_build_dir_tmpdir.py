@@ -260,6 +260,30 @@ def test_clean_build_dir_refuses_while_a_childless_server_has_a_live_launch_reco
 
 
 @pytest.mark.unit
+def test_clean_build_dir_refuses_a_build_in_its_checkout_phase(
+    tmp_path: Path,
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    """kas has launched and written its record, but bitbake has not created the lock yet."""
+    from bakar import build_stop
+    from bakar.commands import console
+
+    cfg, build_dir = _live_cfg(tmp_path)
+    assert not (build_dir / "bitbake.lock").exists()
+    run_dir = cfg.runs_dir / "20261017-120000-4242"
+    run_dir.mkdir(parents=True)
+    with live_child("kas-container") as wrapper:
+        build_stop.write_launch_record(run_dir, pgid=wrapper.pid, mode="host")
+
+        with console.capture() as cap, pytest.raises(typer.Exit) as excinfo:
+            _clean_build_dir(cfg)
+
+    assert excinfo.value.exit_code == 1
+    assert (build_dir / "tmp").exists()
+    assert str(wrapper.pid) in "".join(cap.get().split())
+
+
+@pytest.mark.unit
 def test_clean_build_dir_ignores_an_idle_local_cooker(
     tmp_path: Path, bitbake_server: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]]
 ) -> None:

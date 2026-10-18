@@ -787,8 +787,22 @@ def _dead_pid(live_child: Callable[..., AbstractContextManager[subprocess.Popen[
 
 
 def _fake_runtime(tmp_path: Path, *, container_alive: bool) -> Path:
+    """A runtime whose ``ps`` lists the ``bakar.run_id=x`` container while it is alive.
+
+    The output is ``discover_running_containers``' ``ID<TAB>run id`` format;
+    each call appends one line to ``calls.log`` beside the script.
+    """
     script = tmp_path / "fake-runtime"
-    script.write_text("#!/bin/sh\n" + ("echo cid0123\n" if container_alive else "") + "exit 0\n")
+    calls = tmp_path / "calls.log"
+    listing = "printf 'cid0123\\tx\\n'\n" if container_alive else ""
+    script.write_text(f"#!/bin/sh\necho \"$*\" >> '{calls}'\n{listing}exit 0\n")
+    script.chmod(0o755)
+    return script
+
+
+def _failing_runtime(tmp_path: Path) -> Path:
+    script = tmp_path / "down-runtime"
+    script.write_text("#!/bin/sh\necho 'Cannot connect to the daemon' >&2\nexit 1\n")
     script.chmod(0o755)
     return script
 
@@ -877,13 +891,43 @@ def test_local_build_holder_reports_an_empty_lock_with_a_live_launch_record(
 
 def test_local_build_holder_reads_an_empty_lock_from_a_recent_run_on_this_host_as_a_holder(
     env: tuple[BuildConfig, Path, RunLogger],
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
 ) -> None:
     cfg, build, _log = env
     (build / "bitbake.lock").write_text("")
     build_stop.lock_marker_path(cfg).write_text("this-host\n")
-    _run_dir(cfg, pid=4242)
+    with live_child() as starter:
+        _run_dir(cfg, pid=starter.pid)
+        assert kas_lock.local_build_holder(cfg) == starter.pid
 
-    assert kas_lock.local_build_holder(cfg) == 4242
+
+def test_holder_empty_lock_dead_pid_is_none(
+    env: tuple[BuildConfig, Path, RunLogger],
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    """A recent run whose pid has exited is not a server still writing the lock."""
+    cfg, build, _log = env
+    (build / "bitbake.lock").write_text("")
+    build_stop.lock_marker_path(cfg).write_text("this-host\n")
+    _run_dir(cfg, pid=_dead_pid(live_child))
+
+    assert kas_lock.local_build_holder(cfg) is None
+
+
+def test_holder_empty_lock_skips_own_run(
+    env: tuple[BuildConfig, Path, RunLogger],
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    """stress-parse's own run directory is the newest: it must not name the caller's own pid."""
+    cfg, build, _log = env
+    (build / "bitbake.lock").write_text("")
+    build_stop.lock_marker_path(cfg).write_text("this-host\n")
+    _run_dir(cfg, pid=os.getpid())
+    assert kas_lock.local_build_holder(cfg) is None
+
+    with live_child() as other:
+        _run_dir(cfg, started=datetime.now(UTC) - timedelta(seconds=30), pid=other.pid)
+        assert kas_lock.local_build_holder(cfg) == other.pid
 
 
 def test_local_build_holder_ignores_an_empty_lock_without_a_recent_run_or_own_marker(
@@ -1272,21 +1316,174 @@ def test_local_build_holder_finds_a_live_record_behind_the_callers_own_empty_run
         assert kas_lock.local_build_holder(cfg) == wrapper_pid
 
 
-def test_local_build_holder_ignores_a_live_record_older_than_the_scan_window(
+def test_local_build_holder_keeps_a_live_record_behind_eight_newer_run_dirs(
     env: tuple[BuildConfig, Path, RunLogger],
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     bitbake_server: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
     live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
 ) -> None:
+    """Eight newer runs used to push a live container build out of an 8-directory window.
+
+    This inverts the earlier window-drop assertion: the requirement is now that
+    no count of newer runs hides a live build, so the lock is kept.
+    """
     cfg, build, _log = env
+    _on_nfs(monkeypatch, False)
     container_pid = _dead_pid(live_child)
     wrapper_pid = _dead_pid(live_child)
     _older_container_record(cfg, tmp_path, wrapper_pid, alive=True, age_minutes=60)
-    for i in range(kas_lock._LAUNCH_RECORD_SCAN_RUNS):
+    for i in range(8):
         _run_dir(cfg, started=datetime.now(UTC) - timedelta(minutes=i), pid=5000 + i)
     with bitbake_server("/work/build", children="worker"):
         (build / "bitbake.lock").write_text(f"{container_pid}\n")
+        assert kas_lock.local_build_holder(cfg) == wrapper_pid
+
+        outcome = kas_lock.clear_stale_bitbake_locks(cfg)
+        assert outcome.refusal is not None
+        assert outcome.refusal.reason == "held-locally"
+        assert outcome.removed == []
+        assert (build / "bitbake.lock").exists()
+
+
+@pytest.mark.parametrize("depth", [9, 40])
+def test_holder_scans_every_run_dir(
+    env: tuple[BuildConfig, Path, RunLogger],
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+    depth: int,
+) -> None:
+    """A live record under the ``depth``-th newest run directory is still a holder."""
+    cfg, build, _log = env
+    now = datetime.now(UTC)
+    (build / "bitbake.lock").write_text(f"{_dead_pid(live_child)}\n")
+    with live_child("kas-container") as wrapper:
+        live_dir = _run_dir(cfg, started=now - timedelta(minutes=depth), pid=6000)
+        build_stop.write_launch_record(live_dir, pgid=wrapper.pid, mode="host")
+        for i in range(depth - 1):
+            newer = _run_dir(cfg, started=now - timedelta(minutes=i), pid=5000 + i)
+            if i % 2:  # finished runs leave a dead record behind; others never wrote one
+                build_stop.write_launch_record(newer, pgid=_dead_pid(live_child), mode="host")
+        names = sorted((d.name for d in cfg.runs_dir.iterdir()), reverse=True)
+        assert names.index(live_dir.name) == depth - 1
+        assert kas_lock.local_build_holder(cfg) == wrapper.pid
+
+
+def test_holder_lock_absent_live_record(
+    env: tuple[BuildConfig, Path, RunLogger],
+    tmp_path: Path,
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    """kas writes the record before bitbake creates the lock: no lock yet is still a build."""
+    cfg, build, _log = env
+    assert not (build / "bitbake.lock").exists()
+    with live_child("kas-container") as wrapper:
+        build_stop.write_launch_record(_run_dir(cfg), pgid=wrapper.pid, mode="host")
+        assert kas_lock.local_build_holder(cfg) == wrapper.pid
+
+    container_dir = _run_dir(cfg, started=datetime.now(UTC) + timedelta(minutes=1), pid=4343)
+    wrapper_pid = _dead_pid(live_child)
+    build_stop.write_launch_record(
+        container_dir,
+        pgid=wrapper_pid,
+        mode="container",
+        runtime=str(_fake_runtime(tmp_path, container_alive=True)),
+        container_label="bakar.run_id=x",
+    )
+    assert kas_lock.local_build_holder(cfg) == wrapper_pid
+
+    _fake_runtime(tmp_path, container_alive=False)
+    assert kas_lock.local_build_holder(cfg) is None  # every record dead and no lock: no holder
+
+
+def test_holder_idle_cooker_without_record_is_not_a_holder_behind_dead_records(
+    env: tuple[BuildConfig, Path, RunLogger],
+    bitbake_server: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    """Scanning every run must not turn a warm idle cooker into a holder."""
+    cfg, build, _log = env
+    for i in range(12):
+        run_dir = _run_dir(cfg, started=datetime.now(UTC) - timedelta(minutes=i), pid=5000 + i)
+        build_stop.write_launch_record(run_dir, pgid=_dead_pid(live_child), mode="host")
+    with bitbake_server(build) as server:
+        (build / "bitbake.lock").write_text(f"{server.pid}\n")
         assert kas_lock.local_build_holder(cfg) is None
+
+
+def test_holder_container_listing_queried_once(
+    env: tuple[BuildConfig, Path, RunLogger],
+    tmp_path: Path,
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    """Two stale container records under one runtime cost one runtime call, not one each."""
+    cfg, build, _log = env
+    runtime = str(_fake_runtime(tmp_path, container_alive=False))
+    for i, label in enumerate(("bakar.run_id=a", "bakar.run_id=b")):
+        build_stop.write_launch_record(
+            _run_dir(cfg, started=datetime.now(UTC) - timedelta(minutes=i), pid=5000 + i),
+            pgid=_dead_pid(live_child),
+            mode="container",
+            runtime=runtime,
+            container_label=label,
+        )
+    (build / "bitbake.lock").write_text(f"{_dead_pid(live_child)}\n")
+
+    assert kas_lock.local_build_holder(cfg) is None
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+    assert len(calls) == 1
+    assert "label=bakar.run_id" in calls[0]
+
+
+def test_live_refusal_names_an_unanswering_runtime(
+    env: tuple[BuildConfig, Path, RunLogger],
+    tmp_path: Path,
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    """A runtime that cannot answer keeps the record live, and the refusal says what to do."""
+    cfg, build, _log = env
+    runtime = str(_failing_runtime(tmp_path))
+    wrapper_pid = _dead_pid(live_child)
+    build_stop.write_launch_record(
+        _run_dir(cfg), pgid=wrapper_pid, mode="container", runtime=runtime, container_label="bakar.run_id=x"
+    )
+    build_stop.lock_marker_path(cfg).write_text("this-host\n")
+    (build / "bitbake.lock").write_text("4194000\n")
+
+    assert kas_lock.local_build_holder(cfg) == wrapper_pid
+    outcome = kas_lock.clear_stale_bitbake_locks(cfg)
+    assert outcome.refusal is not None
+    assert outcome.refusal.pid == wrapper_pid
+    message = kas_lock._lock_refusal_message(outcome.refusal)
+    assert runtime in message
+    assert f"start {runtime}" in message
+    assert "bakar stop" in message
+    assert (build / "bitbake.lock").exists()
+
+
+def test_clear_stale_row5_keeps_lock_with_live_record(
+    env: tuple[BuildConfig, Path, RunLogger],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    live_child: Callable[..., AbstractContextManager[subprocess.Popen[bytes]]],
+) -> None:
+    """No marker, local filesystem, container-ns pid in the lock: the live record keeps the lock."""
+    cfg, build, _log = env
+    _on_nfs(monkeypatch, False)
+    marker, wrapper_pid = _container_build(cfg, build, tmp_path, live_child, container_alive=True)
+    marker.unlink()
+
+    outcome = kas_lock.clear_stale_bitbake_locks(cfg)
+
+    assert outcome.removed == []
+    assert outcome.refusal is not None
+    assert outcome.refusal.reason == "held-locally"
+    assert outcome.refusal.pid == wrapper_pid
+    assert {p.name for p in build.iterdir()} >= {"bitbake.lock", "bitbake.sock", "hashserve.sock"}
+
+    _fake_runtime(tmp_path, container_alive=False)  # the container exited: row 5 recovers as before
+    outcome = kas_lock.clear_stale_bitbake_locks(cfg)
+    assert outcome.refusal is None
+    assert not (build / "bitbake.lock").exists()
 
 
 def test_local_build_holder_ignores_a_finished_record_in_an_older_run_dir(

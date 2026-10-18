@@ -18,6 +18,7 @@ import socket
 import tempfile
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -88,13 +89,16 @@ def _lock_holder_has_activity(build_dir: Path) -> bool:
 # later step) only while the newest run is younger than this.
 _EMPTY_LOCK_RECENT_RUN_S = 300.0
 
+# The two files a launch record is made of. A run directory holding neither has
+# no record, so the scan passes over it without reading or querying anything.
+_LAUNCH_RECORD_FILES = (build_stop._META_FILENAME, build_stop._PID_FILENAME)
 
-def _newest_run_dir(cfg: BuildConfig) -> Path | None:
+
+def _run_dirs_newest_first(cfg: BuildConfig) -> list[Path]:
     try:
-        run_dirs = sorted(d for d in cfg.runs_dir.iterdir() if d.is_dir())
+        return sorted((d for d in cfg.runs_dir.iterdir() if d.is_dir()), reverse=True)
     except OSError:
-        return None
-    return run_dirs[-1] if run_dirs else None
+        return []
 
 
 def _run_id_pid(run_dir: Path) -> int | None:
@@ -106,31 +110,77 @@ def _run_id_pid(run_dir: Path) -> int | None:
     return pid if pid > 0 else None
 
 
-def _launch_record_state(run_dir: Path | None) -> tuple[bool, int | None, int | None]:
-    """``(live, seed_pgid, report_pid)`` for the launch record in ``run_dir``.
+def _has_launch_record(run_dir: Path) -> bool:
+    """True when either record file exists, or cannot be ruled out (a stat this process may not make)."""
+    for name in _LAUNCH_RECORD_FILES:
+        try:
+            (run_dir / name).stat()
+        except FileNotFoundError, NotADirectoryError:
+            continue
+        except OSError:
+            pass
+        return True
+    return False
+
+
+@dataclass(frozen=True)
+class _RecordState:
+    """A launch record's verdict.
 
     ``live``: a host record whose process group is alive and cmdline-verified,
     or a container record whose label the runtime does not confirm dead (an
     unanswerable query is not proof the container is gone). ``seed_pgid`` is
     the recorded group whenever it is alive, verified or not, so the argv scan
     counts its members (an attached client in its own session). ``report_pid``
-    is the host pid to name in a refusal.
+    is the host pid to name in a refusal. ``unanswered_runtime`` names the
+    runtime whose query failed when that failure is what made the record live.
     """
-    if run_dir is None:
-        return False, None, None
+
+    live: bool
+    seed_pgid: int | None
+    report_pid: int | None
+    unanswered_runtime: str | None = None
+
+
+class _ContainerListing:
+    """Running ``bakar.run_id`` labels per runtime, queried at most once per runtime per scan."""
+
+    def __init__(self) -> None:
+        self._labels: dict[str, frozenset[str] | None] = {}
+
+    def status(self, runtime: str, container_label: str) -> str:
+        if runtime not in self._labels:
+            try:
+                running = stop_container.discover_running_containers(runtime)
+            except RuntimeError:
+                self._labels[runtime] = None
+            else:
+                self._labels[runtime] = frozenset(stop_container.run_id_label(c.run_id) for c in running)
+        labels = self._labels[runtime]
+        if labels is None:
+            return stop_container._ERROR
+        return stop_container._ALIVE if container_label in labels else stop_container._DEAD
+
+
+def _launch_record_state(run_dir: Path, containers: _ContainerListing) -> _RecordState:
+    """:class:`_RecordState` for the launch record in ``run_dir``."""
     alive, pgid, cmdline_ok = build_stop.is_build_running(run_dir)
     seed_pgid = pgid if alive and pgid is not None and pgid > 0 else None
     record = build_stop.read_launch_record(run_dir)
     report_pid = seed_pgid or record.pgid or _run_id_pid(run_dir)
     live = alive and cmdline_ok
+    unanswered = None
     if not live and record.mode == "container" and record.container_label is not None:
         runtime = record.runtime or stop_container.detect_runtime()
-        status, _cid = stop_container._container_id_status(runtime, record.container_label)
+        status = containers.status(runtime, record.container_label)
         live = status != stop_container._DEAD
+        if status == stop_container._ERROR:
+            unanswered = runtime
     # A live record with no pid anywhere (a sidecar without pgid, a run
     # directory not named by RunLogger) cannot be named; RunLogger and
     # write_launch_record never produce one.
-    return live and report_pid is not None, seed_pgid, report_pid
+    live = live and report_pid is not None
+    return _RecordState(live, seed_pgid, report_pid, unanswered if live else None)
 
 
 def _proc_comm(pid: int) -> str:
@@ -177,75 +227,89 @@ def _cooker_provably_idle(build_dir: Path, pid: int, seed_pgid: int | None) -> b
     return True
 
 
-# How many of the newest run directories the lock gates consult for a live
-# launch record. The caller's own RunLogger directory is already the newest by
-# the time the gate runs and holds no record, so looking at the newest alone
-# would hide the live build the gate exists to find.
-_LAUNCH_RECORD_SCAN_RUNS = 8
+def _scan_launch_records(run_dirs: list[Path]) -> tuple[Path | None, _RecordState]:
+    """``(run_dir, state)`` of the newest live launch record in ``run_dirs``, else ``(None, not-live state)``.
 
-
-def _live_launch_record(cfg: BuildConfig) -> tuple[Path, tuple[bool, int | None, int | None]] | None:
-    """``(run_dir, state)`` of the newest live launch record among the newest runs, else None.
-
-    Reads at most :data:`_LAUNCH_RECORD_SCAN_RUNS` directories, newest first, and
-    never writes. ``state`` is :func:`_launch_record_state`'s triple.
+    ``run_dirs`` is newest first. Every directory holding a record is read,
+    with no age or count window (a live build can sit behind any number of
+    newer runs), and the scan stops at the first live one. Container records
+    share one runtime listing per runtime. With no live record the returned
+    state carries the newest record's ``seed_pgid``. Never writes.
     """
-    try:
-        run_dirs = sorted((d for d in cfg.runs_dir.iterdir() if d.is_dir()), reverse=True)
-    except OSError:
-        return None
-    for run_dir in run_dirs[:_LAUNCH_RECORD_SCAN_RUNS]:
-        state = _launch_record_state(run_dir)
-        if state[0]:
+    containers = _ContainerListing()
+    newest: _RecordState | None = None
+    for run_dir in run_dirs:
+        if not _has_launch_record(run_dir):
+            continue
+        state = _launch_record_state(run_dir, containers)
+        if state.live:
             return run_dir, state
-    return None
+        if newest is None:
+            newest = state
+    return None, _RecordState(live=False, seed_pgid=newest.seed_pgid if newest else None, report_pid=None)
+
+
+def _empty_lock_starter_pid(cfg: BuildConfig, run_dirs: list[Path]) -> int | None:
+    """Pid of the run that is plausibly still creating an empty ``bitbake.lock``, else None.
+
+    Only when the marker names this host and the newest run that is not the
+    caller's own (its id does not carry ``os.getpid()``) started within
+    :data:`_EMPTY_LOCK_RECENT_RUN_S` and its pid is still alive.
+    """
+    if build_stop.read_marker_owner(cfg) != socket.gethostname():
+        return None
+    own = os.getpid()
+    run_dir = next((d for d in run_dirs if _run_id_pid(d) != own), None)
+    if run_dir is None:
+        return None
+    started = observability.run_id_epoch(run_dir.name)
+    if started is None or time.time() - started > _EMPTY_LOCK_RECENT_RUN_S:
+        return None
+    starter = _run_id_pid(run_dir)
+    if starter is None or not proc_tree._pid_alive(starter):
+        return None
+    return starter
 
 
 def local_build_holder(cfg: BuildConfig) -> int | None:
-    """Pid of a live local build holding ``bitbake.lock``, else None.
+    """Pid of a live local build holding this build directory, else None.
 
     Non-mutating probe for destructive callers:
     :func:`build_stop.lock_mutation_guard` never reports ``held-locally``, so
-    this layers an activity probe on top. It fails closed: a live bitbake pid
-    in the lock is a holder unless the build is provably idle (see
-    :func:`_cooker_provably_idle`) AND no live launch record (among the newest
-    :data:`_LAUNCH_RECORD_SCAN_RUNS` runs under ``cfg.runs_dir``) names this build directory. A bitbake-server with
-    no child yet (task initialisation, sstate availability checks) or with only
-    an attached client therefore still counts.
+    this layers an activity probe on top. It fails closed: a live launch
+    record under ``cfg.runs_dir`` is a holder whether or not ``bitbake.lock``
+    exists yet (kas writes the record before bitbake creates the lock), and a
+    live bitbake pid in the lock is a holder unless the build is provably idle
+    (see :func:`_cooker_provably_idle`). A bitbake-server with no child yet
+    (task initialisation, sstate availability checks) or with only an attached
+    client therefore still counts.
 
     A lock pid that is not a live bitbake on this host is a container-namespace
     pid when a live container launch record exists, so the record decides. An
-    empty or unreadable lock is a server mid-startup when a live launch record
-    exists, or when the marker names this host and the newest run started
-    within :data:`_EMPTY_LOCK_RECENT_RUN_S`. An absent lock, a warm idle cooker
-    with no launch record, and a dead or reused pid with no record return None.
-    Never removes or writes anything.
+    empty or unreadable lock with no live record is a server mid-startup only
+    per :func:`_empty_lock_starter_pid`. An absent lock with no live record, a
+    warm idle cooker with no launch record, and a dead or reused pid with no
+    record return None. Never removes or writes anything.
     """
     build_dir = cfg.bsp_root / cfg.build_dir_name
     lock = build_dir / "bitbake.lock"
+    run_dirs = _run_dirs_newest_first(cfg)
+    _found, record = _scan_launch_records(run_dirs)
     if not lock.exists():
-        return None
-    run_dir = _newest_run_dir(cfg)
-    found = _live_launch_record(cfg)
-    record_live, seed_pgid, report_pid = found[1] if found else _launch_record_state(run_dir)
+        return record.report_pid if record.live else None
     pid = proc_tree.read_lock_pid(lock)
 
     if pid is None:
-        if record_live:
-            return report_pid
-        if run_dir is None or build_stop.read_marker_owner(cfg) != socket.gethostname():
-            return None
-        started = observability.run_id_epoch(run_dir.name)
-        if started is None or time.time() - started > _EMPTY_LOCK_RECENT_RUN_S:
-            return None
-        return _run_id_pid(run_dir)
+        if record.live:
+            return record.report_pid
+        return _empty_lock_starter_pid(cfg, run_dirs)
 
     if _lock_pid_is_live_bitbake(pid):
-        if record_live or not _cooker_provably_idle(build_dir, pid, seed_pgid):
+        if record.live or not _cooker_provably_idle(build_dir, pid, record.seed_pgid):
             return pid
         return None
-    if record_live:
-        return report_pid
+    if record.live:
+        return record.report_pid
     return None
 
 
@@ -255,15 +319,22 @@ def _live_launch_refusal(cfg: BuildConfig) -> build_stop.LockRefusal | None:
     A live launch record means a build of this workspace is running even when
     its lock pid reads as dead (a container pid is not a host pid) or its lock
     does not exist yet (the kas checkout phase). A crashed build leaves a
-    record that is not live, so it never blocks recovery.
+    record that is not live, so it never blocks recovery. A container record
+    counted live only because its runtime did not answer says so, and names
+    that runtime.
     """
-    found = _live_launch_record(cfg)
-    if found is None:
+    run_dir, state = _scan_launch_records(_run_dirs_newest_first(cfg))
+    if run_dir is None:
         return None
-    run_dir, (_live, _seed, report_pid) = found
     label = build_stop.read_launch_record(run_dir).container_label
     detail = f"container {label}" if label is not None else ""
-    return build_stop.LockRefusal(reason="held-locally", pid=report_pid, detail=detail)
+    runtime = state.unanswered_runtime
+    if runtime is not None:
+        detail = (
+            f"{detail}; {runtime} did not answer whether it is still running: "
+            f"start {runtime}, or run `bakar stop` to clear the build"
+        )
+    return build_stop.LockRefusal(reason="held-locally", pid=state.report_pid, detail=detail)
 
 
 def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
@@ -295,7 +366,8 @@ def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
        activity now also refuses (``held-locally``) instead of silently
        doing nothing; a live but IDLE bitbake PID (bare cookerdaemon, no
        activity) is left alone so bitbake's warm-daemon reconnect keeps
-       working (see :func:`_lock_holder_has_activity`).
+       working (see :func:`_lock_holder_has_activity`). A dead lock pid with
+       a live launch record refuses (``held-locally``), as in row 3.
     6. The marker is absent/garbled, the lock is ABSENT, and the TOPDIR is
        CONFIRMED local -> today's unconditional orphan-socket removal.
     7. The marker is absent/garbled, the lock is ABSENT, and the TOPDIR is
@@ -395,6 +467,9 @@ def clear_stale_bitbake_locks(cfg: BuildConfig) -> build_stop.LockClearOutcome:
             # Live but idle (bare cookerdaemon, no worker/client activity) - the
             # server still owns this lock; leave it for bitbake's reconnect.
             return build_stop.LockClearOutcome(removed=[])
+        live_refusal = _live_launch_refusal(cfg)
+        if live_refusal is not None:
+            return build_stop.LockClearOutcome(removed=[], refusal=live_refusal)
         removed = _remove_all()
         return build_stop.LockClearOutcome(removed=removed)
 
