@@ -22,6 +22,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
@@ -31,7 +32,6 @@ from bakar import detach_records, eventlog
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
-    from pathlib import Path
 
 # stderr for the same reason ``commands/_app.py`` uses it, and that module
 # carries the full rationale: stdout is reserved for machine-readable payloads,
@@ -86,6 +86,15 @@ def _exit_code_for(exc: BaseException) -> int:
     if isinstance(exc, KeyboardInterrupt):
         return 130
     return 1
+
+
+def _absolute_or_none(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    try:
+        return str(Path(path).absolute())
+    except OSError, TypeError, ValueError:
+        return None
 
 
 @dataclass
@@ -289,6 +298,16 @@ class RunLogger:
         self._logger.error(f"[red]✗[/] {step}: {reason}")
         self._emit("step_fail", step=step, reason=reason, **fields)
 
+    def build_paths(self, tmpdir: Path | None, sstate_dir: Path | None) -> None:
+        """Record the build's TMPDIR and SSTATE_DIR as one ``build_paths`` event.
+
+        ``bakar status --detail`` reads this back to measure free space on the
+        filesystems the build actually writes. Never raises: the write goes
+        through the best-effort :meth:`_emit`, and a path that cannot be made
+        absolute (a deleted cwd) is recorded as null rather than raising.
+        """
+        self._emit("build_paths", tmpdir=_absolute_or_none(tmpdir), sstate_dir=_absolute_or_none(sstate_dir))
+
     def check_start(self, check: str) -> None:
         """Emit a ``check_start`` event only - no console output.
 
@@ -491,3 +510,23 @@ def last_run_event(
         if predicate(rec):
             last = rec
     return last
+
+
+def _recorded_path(value: object) -> Path | None:
+    if not isinstance(value, str) or not value:
+        return None
+    path = Path(value)
+    return path if path.is_absolute() else None
+
+
+def last_build_paths(run_dir: Path) -> tuple[Path | None, Path | None]:
+    """Return ``(tmpdir, sstate_dir)`` from the run's last ``build_paths`` event.
+
+    A value that is not a non-empty absolute path string reads back as None, and
+    a missing ``events.jsonl`` or a run that never recorded the event gives
+    ``(None, None)``.
+    """
+    rec = last_run_event(run_dir / "events.jsonl", lambda r: r.get("event") == "build_paths")
+    if rec is None:
+        return None, None
+    return _recorded_path(rec.get("tmpdir")), _recorded_path(rec.get("sstate_dir"))
