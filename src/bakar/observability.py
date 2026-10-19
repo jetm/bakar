@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 from rich.console import Console
 from rich.logging import RichHandler
 
-from bakar import eventlog
+from bakar import detach_records, eventlog
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -197,6 +197,13 @@ class RunLogger:
         self._logger.addHandler(file_h)
         self._snapshot_env()
         self._emit("run_start", run_id=self.run_id)
+        try:
+            registered = detach_records.register_current_run(self.run_id, self.run_dir, os.getpid())
+        except Exception as exc:  # noqa: BLE001 - registration must never break a build
+            self.warn(f"detach registration failed: {exc}")
+        else:
+            if not registered and detach_records.current_unit() is not None:
+                self.warn("detach registration could not be written")
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:

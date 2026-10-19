@@ -12,7 +12,7 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 
-from bakar import __version__, package_identity
+from bakar import __version__, detach_records, package_identity
 from bakar.preset_config import PresetEntry, load_presets
 from bakar.user_config import load_user_config
 from bakar.vendor_config import load_vendors
@@ -161,6 +161,8 @@ def _main_impl(opts: _GlobalOptions) -> None:
     """
     global _USER_CONFIG
     global _GLOBAL_OPTIONS
+    # First, so no later step (or a validation exit) lets children inherit it.
+    detach_records.consume_registration_env()
     _install_warning_format()
     if opts.plain and opts.rich_output:
         console.print("[red]choose either --plain/--ci or --rich, not both[/]")
