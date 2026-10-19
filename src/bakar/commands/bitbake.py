@@ -20,12 +20,14 @@ reporting success.
 from __future__ import annotations
 
 import shlex
+import sys
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
 import bakar.commands._app as _state
+from bakar.commands import _detach_cmd, _hints
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     WorkspaceOption,
@@ -34,6 +36,7 @@ from bakar.commands._helpers import (
     _normalize_dispatch,
     _overlay_for,
     _resolve_workspace,
+    invoking_cwd,
     resolve_global_config,
     split_kas_yaml_arg,
 )
@@ -96,6 +99,7 @@ def _run_task(
     kas_yaml: str | None,
     step: str,
     command_override: str | None = None,
+    detach: bool | None = None,
 ) -> None:
     """Dispatch and run a bitbake task for ``target`` inside kas-container.
 
@@ -111,7 +115,19 @@ def _run_task(
     ``target``/``task`` with a prebuilt shell string (e.g. ``rebuild``'s
     ``cleansstate && build`` chain). Only valid on the live path - callers that
     pass it leave ``task`` None so the devshell/listtasks branches are skipped.
+
+    ``detach`` is None for commands that do not offer ``--detach``. Otherwise
+    True hands the invocation to a transient unit before anything is resolved,
+    and False lets agent callers see a nudge toward it on the live path.
     """
+    if detach:
+        if task == "devshell":
+            console.print("[red]--detach cannot be combined with --task devshell (interactive).[/]")
+            raise typer.Exit(code=2)
+        _detach_cmd.detach_and_exit(sys.argv[1:], invoking_cwd())
+    if detach is False and _hints.agent_mode() and task not in ("listtasks", "devshell"):
+        _hints.emit(_hints.foreground_nudge())
+
     main_yaml, user_extras = split_kas_yaml_arg(kas_yaml)
     family, bsp, main_yaml, manifest = _normalize_dispatch(main_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
@@ -172,7 +188,9 @@ def _run_task(
         rc = run_shell_live(kas_ctx, command)
         persist_run_artifacts(cfg, log)
         if rc != 0:
-            console.print(f"[red]{command} failed (exit {rc}).[/]")
+            console.print(f"[red]{command} failed (exit {rc}, run {log.run_id}).[/]")
+        if _hints.agent_mode():
+            _hints.emit(_hints.after_finish(log.run_id, rc))
         raise typer.Exit(code=rc)
 
 
@@ -205,6 +223,10 @@ def bitbake(
         typer.Option("--machine", "-m", help="Override the target machine"),
     ] = None,
     workspace: WorkspaceOption = None,
+    detach: Annotated[
+        bool,
+        typer.Option("--detach", help="Run in a transient systemd unit and print a JSON handle."),
+    ] = False,
 ) -> None:
     """Run ``bitbake <target>`` inside kas-container, logged to the run dir.
 
@@ -229,6 +251,7 @@ def bitbake(
         workspace=workspace,
         kas_yaml=kas_yaml,
         step="bitbake",
+        detach=detach,
     )
 
 
@@ -297,6 +320,10 @@ def rebuild(
         typer.Option("--machine", "-m", help="Override the target machine"),
     ] = None,
     workspace: WorkspaceOption = None,
+    detach: Annotated[
+        bool,
+        typer.Option("--detach", help="Run in a transient systemd unit and print a JSON handle."),
+    ] = False,
 ) -> None:
     """Rebuild a recipe from scratch: ``bitbake -c cleansstate <recipe> && bitbake <recipe>``.
 
@@ -318,4 +345,5 @@ def rebuild(
         kas_yaml=kas_yaml,
         step="rebuild",
         command_override=f"{clean} && {build}",
+        detach=detach,
     )
