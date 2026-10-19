@@ -56,6 +56,9 @@ paths = [
   "src/bakar/manifest_diff.py",
   "src/bakar/hashserv.py",
   "src/bakar/psi.py",
+  # Memory, pressure and bounded free-space measurement for `bakar status
+  # --detail`; imports only stdlib, psi and mounts.
+  "src/bakar/host_snapshot.py",
   "src/bakar/output_mode.py",
   # Long-running service managers. hashserv.py (already above) imports
   # central_service, which imports daemon_log; prserv and sccache_server sit on
