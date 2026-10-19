@@ -73,6 +73,7 @@ SCRUBBED_ENV_NAMES: frozenset[str] = frozenset(
         "SCCACHE_SERVER_PORT",
         "SCCACHE_ERROR_LOG",
         "SECONDARY_NODES",
+        "CLAUDECODE",
     }
 )
 SCRUBBED_ENV_PREFIXES: tuple[str, ...] = ("BAKAR_",)
