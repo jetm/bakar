@@ -52,10 +52,12 @@ import bakar.commands.setup
 import bakar.commands.shell
 import bakar.commands.show
 import bakar.commands.sstate_seed
+import bakar.commands.status
 import bakar.commands.stop
 import bakar.commands.stress_parse
 import bakar.commands.sync
-import bakar.commands.triage  # noqa: F401
+import bakar.commands.triage
+import bakar.commands.wait  # noqa: F401
 from bakar.commands import app
 from bakar.commands._app import console
 from bakar.hashserv import NetworkStateDirError

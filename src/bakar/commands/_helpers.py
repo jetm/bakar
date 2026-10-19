@@ -276,8 +276,10 @@ GLOBAL_MODE_EXCLUSIONS: dict[str, str] = {
     "settings": "reads and writes ~/.config/bakar/config.toml; resolves no build config",
     "setup": "installs host prerequisites; resolves no build config",
     "sstate-seed": "copies sstate objects between directories; launches no kas",
+    "status": "reads run records and unit state; launches no kas",
     "stop": "signals a running build found through its run directory; launches no kas",
     "triage": "analyses a failed run's logs; launches no kas",
+    "wait": "polls run records and unit state; launches no kas",
 }
 
 
