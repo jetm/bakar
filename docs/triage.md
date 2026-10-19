@@ -19,6 +19,7 @@ bakar triage [RUN_ID] [OPTIONS]
 | `--kas-yaml` | `-k` | kas YAML for a BYO build (runs live next to it) |
 | `--workspace` | `-w` | Workspace root override |
 | `--json` | `-j` | Output the triage result as JSON instead of formatted text |
+| `--on` | | Triage the run on this host over ssh instead of locally. Cannot be combined with `--workspace` |
 
 ## Examples
 
@@ -39,6 +40,9 @@ bakar triage --kas-yaml my-project.yml
 
 # Triage a BYO build from a specific run
 bakar triage 20260601-143022-48213 --kas-yaml my-project.yml
+
+# Triage a run dispatched with --on pc2 --detach, from any directory
+bakar triage 20260601-143022-48213 --on pc2 --json
 ```
 
 ## Output
@@ -155,6 +159,25 @@ typical case under a multi-release preset fan-out - the default is the
 most-recent run dir that recorded a failure. Override the default with `--run`
 (or the positional run ID) for an exact run, or with `--preset`/`--release` to
 restrict selection to the matching preset build subdir.
+
+### Registered runs resolve from anywhere
+
+A run started by `bakar build --detach` (or `--on HOST --detach`) is registered
+with its run directory. When `RUN_ID` is given and the workspace lookup finds
+nothing, triage uses the registered run directory directly, so it works from any
+directory and does not need a BSP workspace. The workspace lookup still wins
+when it finds the run. Without a `RUN_ID`, or with an id that is neither found
+nor registered, behaviour is unchanged, including the `Not inside a BSP
+workspace` error outside a workspace.
+
+### Triage on a remote host
+
+`--on HOST` runs `bakar triage RUN_ID [--json]` on the host over ssh and mirrors
+its stdout and exit status; remote stderr is printed locally. A host beginning
+with `-` and `--workspace` together with `--on` are refused with exit 2 before
+any ssh call. A bakar that is missing or differs from the local version is a
+refusal (exit 2), and an unreachable host (ssh exit status 255) also exits 2.
+The run id is quoted, so it reaches the remote shell as a single word.
 
 ## Suggestions
 

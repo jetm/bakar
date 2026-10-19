@@ -353,12 +353,15 @@ def run_on_host(
     *,
     capture_timeout: float | None,
     transport_exit: int,
+    subcommand: str = "status",
 ) -> int:
     """Run ``bakar <argv>`` on ``host`` and mirror its stdout and exit status.
 
     The command goes over stdin to ``bash -s`` (never as an ssh argument) with
     every word shlex-quoted. A failed transport (ssh exit 255, which includes a
     timed-out capture) returns ``transport_exit`` and names the ssh status.
+    ``subcommand`` names the remote command: only the status-record commands
+    (status, wait) have a ``host`` field to fill from ``--on``.
     """
     from bakar.steps import remote_dispatch as rd
 
@@ -371,7 +374,8 @@ def run_on_host(
         _report_transport(host, proc)
         return transport_exit
     if proc.stdout:
-        print(_fill_host(proc.stdout, host) if "--json" in argv else proc.stdout, end="")
+        fill = subcommand in ("status", "wait") and "--json" in argv
+        print(_fill_host(proc.stdout, host) if fill else proc.stdout, end="")
     if proc.stderr:
         print(proc.stderr, end="", file=sys.stderr)
     return proc.returncode

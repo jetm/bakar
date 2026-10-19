@@ -7,7 +7,7 @@ A bakar build outlives a single tool call, so launch it detached and follow it b
 1. Launch: `bakar build <kas.yml> -t <target> --detach`. Add `--on HOST` to build on another node. Keep the handle the command prints.
 2. Wait: `bakar wait <handle> [--on HOST] --timeout 540`. Repeat the call while it exits 124.
 3. Progress: `bakar status <handle> --json`. `tasks_total` gives the task total once bitbake has reported it.
-4. Conclude: `bakar triage <run_id> --json` for a failure, `bakar report <run_id> --json` for a finished run.
+4. Conclude: `bakar triage <run_id> --json` for a failure, `bakar report <run_id> --json` for a finished run. For an `--on` build the form is `bakar triage <run_id> --on <host> --json`. A registered run id resolves from any directory, so no workspace is needed.
 5. Stop: `bakar stop <kas.yml> --run <run_id>`. With `--on HOST`, `bakar stop` ignores `--run`, so use `bakar stop --on HOST`. For meta-avocado builds `bakar stop` needs the same kas YAML used to start the build, the way `bakar build` does, to resolve the BSP family.
 
 The handle is either the detached unit name or the run id. The run id is registered a moment after launch, so a status read right after `--detach` may report `starting` with `run_id` null.

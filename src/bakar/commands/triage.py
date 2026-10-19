@@ -9,6 +9,7 @@ from typing import Annotated
 
 import typer
 
+from bakar import detach_records
 from bakar.bsp_detect import is_meta_avocado_yaml
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
@@ -16,6 +17,7 @@ from bakar.commands._helpers import (
     WorkspaceOption,
     _bbsetup_workspace,
     _find_run,
+    _find_workspace_from_cwd,
     _resolve_workspace,
     _workspace_from_cwd,
     candidate_runs_dirs,
@@ -218,6 +220,26 @@ def _select_run(
     return candidates[0]
 
 
+def _registered_run_dir(run_id: str | None) -> Path | None:
+    """The recorded run directory of a detached run registered under ``run_id``."""
+    if run_id is None:
+        return None
+    unit = detach_records.find_unit_for_run(run_id)
+    if unit is None:
+        return None
+    for rec in reversed(detach_records.read_registrations(unit)):
+        raw_dir = rec.get("run_dir")
+        if rec.get("run_id") == run_id and isinstance(raw_dir, str) and raw_dir:
+            return Path(raw_dir)
+    return None
+
+
+def _registered_root(run_dir: Path) -> Path:
+    """The build root of a run dir laid out ``<root>/build/runs/<id>``; its parent otherwise."""
+    parts = run_dir.parents
+    return parts[2] if len(parts) > 2 else run_dir.parent
+
+
 def _emit_triage_json(
     run_id: str,
     failing_step: str | None,
@@ -267,6 +289,10 @@ def triage(
         bool,
         typer.Option("--json", "-j", help="Output triage result as JSON instead of formatted text."),
     ] = False,
+    on: Annotated[
+        str | None,
+        typer.Option("--on", help="Triage the run on this host over ssh instead of locally."),
+    ] = None,
 ) -> None:
     """Surface the last failed step of the named run (or the most recent).
 
@@ -287,8 +313,35 @@ def triage(
     to its ``kas.log`` analysis.
     """
     effective_run_id = run if run is not None else run_id
-    runs_dirs, report_root, not_found_label, translation_workspace = _resolve_triage_dirs(kas_yaml, workspace)
+    if on is not None:
+        if workspace is not None:
+            print("bakar triage: -w/--workspace cannot be combined with --on", file=sys.stderr)
+            raise typer.Exit(code=2)
+        from bakar.commands.status import REMOTE_STATUS_TIMEOUT, run_on_host
+
+        argv = ["triage"]
+        if effective_run_id is not None:
+            argv.append(effective_run_id)
+        if output_json:
+            argv.append("--json")
+        raise typer.Exit(
+            code=run_on_host(on, argv, capture_timeout=REMOTE_STATUS_TIMEOUT, transport_exit=2, subcommand="triage")
+        )
+
+    registered = _registered_run_dir(effective_run_id)
+    if registered is not None and kas_yaml is None and workspace is None and _find_workspace_from_cwd() is None:
+        # Outside any workspace the registry is the only source; skip workspace
+        # discovery, which would end with "Not inside a BSP workspace".
+        runs_dirs: list[tuple[Path, RunFamily]] = []
+        report_root = translation_workspace = _registered_root(registered)
+        not_found_label = ""
+    else:
+        runs_dirs, report_root, not_found_label, translation_workspace = _resolve_triage_dirs(kas_yaml, workspace)
     found = _select_run(runs_dirs, run_id=effective_run_id, preset=preset, release=release)
+    if found is None and registered is not None:
+        # The workspace lookup keeps precedence; the registry is the fallback.
+        found = (registered, "generic")
+        report_root = translation_workspace = _registered_root(registered)
     if found is None:
         if effective_run_id:
             console.print(f"[red]Run {effective_run_id} not found under {not_found_label}[/]")
