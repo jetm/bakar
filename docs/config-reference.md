@@ -397,6 +397,12 @@ tier decides. `BAKAR_CONTAINER` is parsed the same way.
 | `BAKAR_BITBAKE_OVERRIDE_REPO` | Path to a local bitbake repo to swap in. |
 | `BAKAR_BITBAKE_OVERRIDE_BRANCH` | Branch to check out in the override repo. |
 
+### Internal
+
+| Variable | Description |
+|----------|-------------|
+| `BAKAR_DETACH_UNIT` | Internal; not for users to set. `bakar build --detach` and remote dispatch set it on the transient unit that runs the front-end. The front-end reads it once at startup and removes it from its environment. It names the `bakar-detach-*` or `bakar-dispatch-*` unit, so each run id is registered against that unit. |
+
 ---
 
 ## Built-in BSP defaults
