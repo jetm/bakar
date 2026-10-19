@@ -245,7 +245,10 @@ def _build_progress(run_dir: Path) -> dict[str, Any]:
         "tasks_running": len(running),
         "tasks_failed": failed,
         "tasks_setscene_rerun": setscene_rerun,
-        "running": [{"recipe": r.recipe, "task": r.task, "cache_backend": r.cache_backend} for r in running],
+        "running": [
+            {"recipe": r.recipe, "task": r.task, "cache_backend": r.cache_backend, "started": r.started_epoch}
+            for r in running
+        ],
         "failures": artifact["failures"][-_FAILURE_TAIL:],
     }
 

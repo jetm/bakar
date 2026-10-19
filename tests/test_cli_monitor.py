@@ -157,7 +157,11 @@ def test_json_once_emits_cluster_and_build(
     assert build["tasks_failed"] == 1
     assert build["tasks_setscene_rerun"] == 1
     assert build["tasks_running"] == 1
-    assert build["running"] == [{"recipe": "zlib-1.3-r0", "task": "do_configure", "cache_backend": None}]
+    assert build["running"] == [
+        {"recipe": "zlib-1.3-r0", "task": "do_configure", "cache_backend": None, "started": 2.0}
+    ]
+    # The running entry's start time is the fixture zlib task's TaskStarted time.
+    assert build["running"][0]["started"] == 2.0
     assert build["live"] is False
     # Elapsed is derived from the run-dir name (BuildStarted carries no time),
     # so it is populated even though build.started is None.
@@ -313,7 +317,9 @@ def test_json_once_includes_cache_backend_for_classified_task(
 
     assert result.exit_code == 0, result.stderr
     build = json.loads(result.stdout)["build"]
-    assert build["running"] == [{"recipe": "zlib-1.3-r0", "task": "do_configure", "cache_backend": "sccache"}]
+    assert build["running"] == [
+        {"recipe": "zlib-1.3-r0", "task": "do_configure", "cache_backend": "sccache", "started": 2.0}
+    ]
 
 
 def test_watch_ndjson_lines_include_cache_backend_for_classified_task(
@@ -344,7 +350,9 @@ def test_watch_ndjson_lines_include_cache_backend_for_classified_task(
     lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
     assert len(lines) == 1
     doc = json.loads(lines[0])
-    assert doc["build"]["running"] == [{"recipe": "zlib-1.3-r0", "task": "do_configure", "cache_backend": "sccache"}]
+    assert doc["build"]["running"] == [
+        {"recipe": "zlib-1.3-r0", "task": "do_configure", "cache_backend": "sccache", "started": 2.0}
+    ]
 
 
 def test_plain_render_unclassified_task_has_no_badge_and_no_error(
