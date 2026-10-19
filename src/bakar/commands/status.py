@@ -19,7 +19,7 @@ from typing import Annotated, Any
 import typer
 from click.exceptions import Exit as ClickExit
 
-from bakar import detach_records
+from bakar import detach_records, observability
 from bakar.build_stop import is_build_running
 from bakar.commands._app import app, console
 from bakar.commands._helpers import WorkspaceOption, _find_run
@@ -111,6 +111,8 @@ def _failure(run_dir: Path | None) -> dict[str, str | None] | None:
     if failures:
         first = failures[0]
         return {"recipe": first.get("recipe"), "task": first.get("task"), "step": None, "error": None}
+    if observability.read_stop_request(run_dir) is not None:
+        return {"recipe": None, "task": None, "step": observability.STOPPED_STEP, "error": observability.STOPPED_ERROR}
     return _event_failure(run_dir)
 
 
@@ -133,7 +135,7 @@ def _event_failure(run_dir: Path) -> dict[str, str | None] | None:
                 "recipe": None,
                 "task": None,
                 "step": step,
-                "error": _text(rec.get("error")) or _text(rec.get("reason")),
+                "error": observability.step_fail_text(rec),
             }
         if event == "run_error":
             run_error = rec
