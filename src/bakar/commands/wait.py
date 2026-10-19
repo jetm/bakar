@@ -16,7 +16,7 @@ import typer
 
 from bakar.commands._app import app
 from bakar.commands._helpers import WorkspaceOption
-from bakar.commands.status import StatusRecord, compute_status
+from bakar.commands.status import OnOption, StatusRecord, compute_status, run_on_host
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 DEFAULT_INTERVAL = 30.0
 MIN_INTERVAL = 1.0
+REMOTE_WAIT_SLACK = 60.0
 
 EXIT_SUCCEEDED = 0
 EXIT_FAILED = 1
@@ -96,12 +97,24 @@ def wait(
         typer.Option("--json", help="Print the final status object as the only stdout."),
     ] = False,
     workspace: WorkspaceOption = None,
+    on: OnOption = None,
 ) -> None:
     """Wait for a run to finish and exit with its outcome.
 
     Exit 0 succeeded, 1 failed, 3 unknown, 124 timeout while starting or
     running, 2 when the handle does not resolve. Progress goes to stderr.
     """
+    if on is not None:
+        argv = ["wait"]
+        if handle is not None:
+            argv.append(handle)
+        if timeout is not None:
+            argv += ["--timeout", str(timeout)]
+        argv += ["--interval", str(interval)]
+        if json_out:
+            argv.append("--json")
+        capture = None if timeout is None else timeout + REMOTE_WAIT_SLACK
+        raise typer.Exit(code=run_on_host(on, argv, capture_timeout=capture, transport_exit=EXIT_UNKNOWN))
     code, rec = run_wait(handle, timeout=timeout, interval=interval, workspace=workspace)
     if json_out and rec is not None:
         print(json.dumps(rec.to_dict()))

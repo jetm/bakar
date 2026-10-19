@@ -8,7 +8,9 @@ then the run's terminal event). Liveness separates ``running`` from
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
@@ -241,6 +243,47 @@ def render_summary(rec: StatusRecord) -> str:
     return " ".join(parts)
 
 
+SSH_TRANSPORT_FAILURE = 255
+REMOTE_STATUS_TIMEOUT = 30.0
+
+
+def run_on_host(
+    host: str,
+    argv: list[str],
+    *,
+    capture_timeout: float | None,
+    transport_exit: int,
+) -> int:
+    """Run ``bakar <argv>`` on ``host`` and mirror its stdout and exit status.
+
+    The command goes over stdin to ``bash -s`` (never as an ssh argument) with
+    every word shlex-quoted. A failed transport (ssh exit 255, which includes a
+    timed-out capture) returns ``transport_exit`` and names the ssh status.
+    """
+    from bakar.steps import remote_dispatch as rd
+
+    if not rd.preflight_or_report(host, assume_yes=False):
+        return 2
+    script = shlex.join(["bakar", *argv]) + "\n"
+    proc = rd._ssh_bash_capture(host, script, timeout=capture_timeout)  # type: ignore[arg-type]
+    if proc.returncode == SSH_TRANSPORT_FAILURE:
+        if proc.stderr:
+            print(proc.stderr, end="", file=sys.stderr)
+        print(f"ssh to {host} failed (ssh exit status {proc.returncode})", file=sys.stderr)
+        return transport_exit
+    if proc.stdout:
+        print(proc.stdout, end="")
+    if proc.stderr:
+        print(proc.stderr, end="", file=sys.stderr)
+    return proc.returncode
+
+
+OnOption = Annotated[
+    str | None,
+    typer.Option("--on", help="Query the run on this host over ssh instead of locally."),
+]
+
+
 @app.command("status")
 def status(
     handle: Annotated[
@@ -252,6 +295,7 @@ def status(
         typer.Option("--json", help="Emit one JSON object on stdout."),
     ] = False,
     workspace: WorkspaceOption = None,
+    on: OnOption = None,
 ) -> None:
     """Report a run's state: starting, running, succeeded, failed or unknown.
 
@@ -259,6 +303,13 @@ def status(
     process vanished without one is unknown. Exits 0 whenever a state is
     reported and 2 when the handle does not resolve.
     """
+    if on is not None:
+        argv = ["status"]
+        if handle is not None:
+            argv.append(handle)
+        if json_out:
+            argv.append("--json")
+        raise typer.Exit(code=run_on_host(on, argv, capture_timeout=REMOTE_STATUS_TIMEOUT, transport_exit=2))
     rec = compute_status(handle, workspace=workspace)
     if rec is None:
         console.print(f"No run found for {handle or 'the current workspace'}", markup=False, highlight=False)
