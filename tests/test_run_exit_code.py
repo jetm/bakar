@@ -19,12 +19,13 @@ pytestmark = pytest.mark.unit
 
 def _run(tmp_path: Path, exc: BaseException | None) -> list[dict]:
     log = RunLogger(tmp_path)
-    try:
+    if exc is None:
         with log:
-            if exc is not None:
-                raise exc
-    except BaseException:  # noqa: BLE001, S110 - the test drives KeyboardInterrupt/SystemExit too
-        pass
+            pass
+    else:
+        # __exit__ must not swallow: a True return would make pytest.raises fail.
+        with pytest.raises(type(exc)), log:
+            raise exc
     return [json.loads(line) for line in log.events_path.read_text().splitlines()]
 
 

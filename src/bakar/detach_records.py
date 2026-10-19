@@ -76,6 +76,11 @@ def runtime_dir() -> Path:
     path = Path(raw)
     if not path.is_dir():
         raise DetachUnavailable(f"XDG_RUNTIME_DIR is not a directory: {raw}")
+    st = path.stat()
+    if st.st_uid != os.getuid():
+        raise DetachUnavailable(f"XDG_RUNTIME_DIR is owned by another user: {raw}")
+    if st.st_mode & 0o022:
+        raise DetachUnavailable(f"XDG_RUNTIME_DIR is group- or world-writable (shared directory): {raw}")
     return path
 
 

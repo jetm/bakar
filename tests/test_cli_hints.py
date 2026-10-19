@@ -18,6 +18,12 @@ def streams(monkeypatch: pytest.MonkeyPatch) -> tuple[io.StringIO, io.StringIO]:
     return out, err
 
 
+def test_hints_share_the_app_console() -> None:
+    from bakar.commands import _app
+
+    assert _hints.console is _app.console
+
+
 def test_hints_never_reach_stdout(streams: tuple[io.StringIO, io.StringIO]) -> None:
     out, err = streams
     _hints.emit(_hints.foreground_nudge() + _hints.after_finish("r1", 1) + _hints.after_detach("h", "r1"))

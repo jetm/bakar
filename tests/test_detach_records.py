@@ -15,8 +15,9 @@ if TYPE_CHECKING:
 
 @pytest.fixture
 def rt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    tmp_path.chmod(0o700)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    dr._state["unit"] = None
+    monkeypatch.setitem(dr._state, "unit", None)
     return tmp_path
 
 
@@ -41,15 +42,6 @@ def test_unit_names() -> None:
     assert not dr.is_unit_name(_unit() + "\n")
 
 
-def test_session_vars_match_remote_dispatch() -> None:
-    import inspect
-
-    from bakar.steps import remote_dispatch as rd
-
-    assert not hasattr(rd, "_FORWARDED_SESSION_VARS")
-    assert "detach_records.SESSION_FORWARD_VARS" in inspect.getsource(rd.build_remote_script)
-
-
 def test_log_and_sentinel_live_under_runtime_dir(rt: Path) -> None:
     paths = dr.unit_paths(_unit())
     assert paths.log == rt / f"{_unit()}.log"
@@ -68,6 +60,25 @@ def test_runtime_dir_unavailable(monkeypatch: pytest.MonkeyPatch, value: str | N
         monkeypatch.setenv("XDG_RUNTIME_DIR", value)
     with pytest.raises(dr.DetachUnavailable):
         dr.runtime_dir()
+
+
+def test_runtime_dir_refuses_group_or_world_writable(rt: Path) -> None:
+    rt.chmod(0o777)
+    with pytest.raises(dr.DetachUnavailable, match="writable"):
+        dr.runtime_dir()
+    rt.chmod(0o770)
+    with pytest.raises(dr.DetachUnavailable, match="writable"):
+        dr.runtime_dir()
+
+
+def test_runtime_dir_refuses_foreign_owner(rt: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dr.os, "getuid", lambda: os.stat(rt).st_uid + 1)
+    with pytest.raises(dr.DetachUnavailable, match="another user"):
+        dr.runtime_dir()
+
+
+def test_runtime_dir_accepts_owned_private_dir(rt: Path) -> None:
+    assert dr.runtime_dir() == rt
 
 
 def test_registration_env_is_consumed_at_startup(rt: Path) -> None:

@@ -1190,47 +1190,79 @@ def preflight_or_report(host: str, *, assume_yes: bool) -> bool:
 
 _DETACH_POLL_SECONDS = 2.0
 _DETACH_POLL_BUDGET_SECONDS = 60.0
+_DETACH_CAPTURE_TIMEOUT_SECONDS = 15.0
+_DETACH_UNCONFIRMED_EXIT = 3
 
 
-def _poll_detached_status(host: str, unit: str) -> dict:
+def _poll_detached_status(
+    host: str,
+    unit: str,
+    *,
+    clock: Callable[[], float] | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> dict:
     """Ask the host for ``unit``'s status until a run id is set or the state is terminal.
 
-    Polls every two seconds for at most sixty. Returns the last parsed status
-    record, or an empty dict when the host never answered with JSON.
+    Polls every two seconds against one monotonic deadline of sixty, so a
+    stalled host cannot hold the caller longer: each ssh gets at most fifteen
+    seconds or what is left of the deadline. A failed ssh or an unparsable
+    answer counts as "no record yet". Returns the last parsed status record,
+    or an empty dict when the host never answered with JSON.
     """
+    clock = clock or time.monotonic
+    sleep = sleep or time.sleep
     script = f"bakar status {shlex.quote(unit)} --json\n"
     record: dict = {}
-    waited = 0.0
+    deadline = clock() + _DETACH_POLL_BUDGET_SECONDS
     while True:
-        proc = _ssh_bash_capture(host, script)
+        remaining = deadline - clock()
+        timeout = max(min(_DETACH_CAPTURE_TIMEOUT_SECONDS, remaining), 1.0)
+        parsed = None
         try:
-            parsed = json.loads(proc.stdout)
-        except ValueError:
-            parsed = None
+            proc = _ssh_bash_capture(host, script, timeout=timeout)
+        except OSError, subprocess.SubprocessError:
+            proc = None
+        if proc is not None and proc.returncode == 0:
+            try:
+                parsed = json.loads(proc.stdout)
+            except ValueError:
+                parsed = None
         if isinstance(parsed, dict):
             record = parsed
             if record.get("run_id") or record.get("state") in ("succeeded", "failed"):
                 return record
-        if waited >= _DETACH_POLL_BUDGET_SECONDS:
+        if clock() >= deadline:
             return record
-        time.sleep(_DETACH_POLL_SECONDS)
-        waited += _DETACH_POLL_SECONDS
+        sleep(_DETACH_POLL_SECONDS)
 
 
 def _report_detached(
     host: str, launch: list[str], hint_lines: Callable[[str, str | None, str], Iterable[str]] | None
 ) -> int:
-    """Print the handle for a detached dispatch and return its exit code."""
+    """Print the handle for a detached dispatch and return its exit code.
+
+    Returns 3 when the host never produced a status record or reported
+    ``unknown``: the handle is still printed, but the start is unconfirmed.
+    """
     unit = _first_match(_DISPATCH_UNIT_RE, launch) or ""
     log = _first_match(_DISPATCH_LOG_RE, launch)
     record = _poll_detached_status(host, unit)
     state = record.get("state") or "starting"
     run_id = record.get("run_id") or None
+    unconfirmed = not record or state == "unknown"
+    if state == "unknown":
+        state = "starting"
     handle = {"run_id": run_id, "unit": unit, "host": host, "log": record.get("log") or log, "state": state}
     print(json.dumps(handle))
     if hint_lines is not None:
         for line in hint_lines(unit, run_id, host):
             console.print(line, markup=False, highlight=False, soft_wrap=True)
+    if unconfirmed:
+        print(
+            f"could not confirm the remote build started; check with bakar status {unit} --on {host}",
+            file=sys.stderr,
+        )
+        return _DETACH_UNCONFIRMED_EXIT
     if state == "failed":
         code = record.get("exit_code")
         return code if isinstance(code, int) and not isinstance(code, bool) and code != 0 else 1

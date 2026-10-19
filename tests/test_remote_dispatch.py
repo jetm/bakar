@@ -2441,3 +2441,50 @@ def test_detached_dispatch_without_markers_says_the_host_could_not_detach(
     cap = capsys.readouterr()
     assert cap.out == ""
     assert "could not detach" in cap.err
+
+
+def _report(monkeypatch, record):
+    monkeypatch.setattr(rd, "_poll_detached_status", lambda host, unit: record)
+    return rd._report_detached(
+        HOST,
+        [f"BAKAR_DISPATCH_UNIT={_DETACH_UNIT}\n", f"BAKAR_DISPATCH_LOG=/run/user/1000/{_DETACH_UNIT}.log\n"],
+        None,
+    )
+
+
+@pytest.mark.parametrize("record", [{}, {"state": "unknown"}])
+def test_report_detached_unconfirmed_start_exits_3(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], record: dict
+) -> None:
+    import json
+
+    assert _report(monkeypatch, record) == 3
+    cap = capsys.readouterr()
+    assert json.loads(cap.out)["state"] == "starting"
+    assert "could not confirm the remote build started" in cap.err
+    assert f"bakar status {_DETACH_UNIT} --on {HOST}" in cap.err
+
+
+def test_report_detached_running_exits_0(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    assert _report(monkeypatch, {"state": "running", "run_id": "r1"}) == 0
+    assert "could not confirm" not in capsys.readouterr().err
+
+
+def test_poll_detached_status_stops_at_the_deadline_when_every_capture_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [0.0]
+    timeouts: list[float] = []
+
+    def capture(host, script, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        now[0] += kwargs["timeout"]
+        return subprocess.CompletedProcess(["ssh"], 255, stdout='{"state": "succeeded"}', stderr="down")
+
+    monkeypatch.setattr(rd, "_ssh_bash_capture", capture)
+    record = rd._poll_detached_status(
+        HOST, _DETACH_UNIT, clock=lambda: now[0], sleep=lambda s: now.__setitem__(0, now[0] + s)
+    )
+    assert record == {}
+    assert max(timeouts) <= 15.0
+    assert now[0] <= 60.0 + 1.0

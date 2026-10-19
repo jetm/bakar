@@ -103,7 +103,9 @@ def build_unit_argv(unit: str, request: LaunchRequest, paths: UnitPaths) -> list
     value is shlex-quoted: the log path sits under ``$XDG_RUNTIME_DIR`` and the
     argv is user input.
     """
-    front_end = shlex.join([sys.executable, "-m", "bakar", *request.argv])
+    # -P keeps the unit's working directory off sys.path, so a stray yaml.py or
+    # typer.py in the user's cwd cannot shadow the real modules under ``-m``.
+    front_end = shlex.join([sys.executable, "-P", "-m", "bakar", *request.argv])
     log = shlex.quote(str(paths.log))
     sentinel = shlex.quote(str(paths.sentinel))
     wrapped = f"{front_end} >{log} 2>&1; rc=$?; printf '%s\\n' \"$rc\" >{sentinel}; exit $rc"

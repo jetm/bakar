@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,7 +16,7 @@ from bakar import build_scope, detach, detach_records
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
     rt = tmp_path / "run"
-    rt.mkdir()
+    rt.mkdir(mode=0o700)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(rt))
     monkeypatch.setattr(detach.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(build_scope, "systemd_run_available", lambda: True)
@@ -203,3 +204,36 @@ def test_launch_prunes_old_finished_record(runtime, tmp_path):
     clock = FakeClock()
     detach.launch(_request(tmp_path), runner=_ok_runner([]), clock=clock, sleep=clock.sleep, bound=0.0)
     assert not Path(paths.log).exists()
+
+
+def test_build_unit_argv_runs_python_without_cwd_on_path(tmp_path):
+    paths = detach_records.UnitPaths(
+        log=tmp_path / "u.log", sentinel=tmp_path / "u.log.rc", registry=tmp_path / "u.runs"
+    )
+    argv = detach.build_unit_argv("bakar-detach-20260101-000000-abcdef", _request(tmp_path), paths)
+    tokens = shlex.split(argv[-1])
+    assert tokens[0] == sys.executable
+    assert tokens[1:4] == ["-P", "-m", "bakar"]
+    assert tokens.index("-P") < tokens.index("-m")
+
+
+def test_launch_sentinel_and_registration_use_registered_run_id(runtime, tmp_path):
+    clock = FakeClock()
+
+    def runner(argv, **kwargs):
+        unit = next(a for a in argv if a.startswith("--unit=")).split("=", 1)[1]
+        detach_records.append_registration(unit, "20260101-000000-9", tmp_path, 1)
+        detach_records.unit_paths(unit).sentinel.write_text("4\n")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    h = detach.launch(_request(tmp_path), runner=runner, clock=clock, sleep=clock.sleep)
+    assert (h.state, h.exit_code, h.run_id) == ("failed", 4, "20260101-000000-9")
+
+
+@pytest.mark.parametrize("exc", [OSError("no exec"), subprocess.TimeoutExpired(["systemd-run"], 30)])
+def test_launch_runner_failure_is_unavailable(runtime, tmp_path, exc):
+    def runner(argv, **kwargs):
+        raise exc
+
+    with pytest.raises(detach.DetachUnavailable, match="failed to start the unit"):
+        detach.launch(_request(tmp_path), runner=runner)
