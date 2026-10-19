@@ -530,3 +530,53 @@ def last_build_paths(run_dir: Path) -> tuple[Path | None, Path | None]:
     if rec is None:
         return None, None
     return _recorded_path(rec.get("tmpdir")), _recorded_path(rec.get("sstate_dir"))
+
+
+STOP_REQUEST_FILENAME = "stop-request.json"
+STOP_REQUEST_BY = "bakar stop"
+STOPPED_STEP = "stopped"
+STOPPED_ERROR = "stopped by bakar stop"
+
+
+def write_stop_request(run_dir: Path, *, force: bool = False) -> bool:
+    """Record that ``bakar stop`` is about to signal this run's build.
+
+    The record goes into its own file, never ``events.jsonl``, which only the
+    running ``RunLogger`` appends to. The write is a temp file plus
+    ``os.replace`` so a reader never sees a partial record. Returns False
+    without raising when ``run_dir`` is not a directory or any OSError occurs.
+    """
+    if not run_dir.is_dir():
+        return False
+    record = {"requested_at": _utc_now_iso(), "by": STOP_REQUEST_BY, "force": force}
+    tmp = run_dir / f".stop-request.{os.getpid()}.tmp"
+    try:
+        tmp.write_text(json.dumps(record) + "\n")
+        os.replace(tmp, run_dir / STOP_REQUEST_FILENAME)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        return False
+    return True
+
+
+def read_stop_request(run_dir: Path) -> dict | None:
+    """Return the run's stop-request record, or None when absent or unusable."""
+    try:
+        data = json.loads((run_dir / STOP_REQUEST_FILENAME).read_text())
+    except OSError, ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def run_has_ended(run_dir: Path) -> bool:
+    """True when the run's event log already holds a ``run_end`` or ``run_error`` event."""
+    return last_run_event(run_dir / "events.jsonl", lambda r: r.get("event") in ("run_end", "run_error")) is not None
+
+
+def step_fail_text(rec: dict) -> str | None:
+    """Return the failure text of a ``step_fail`` record, preferring ``error``."""
+    for key in ("error", "reason"):
+        value = rec.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
