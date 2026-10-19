@@ -1,0 +1,141 @@
+"""Assembly for ``bakar status --detail``.
+
+Pure functions that turn the already-computed task progress, the run directory
+and the host measurement into the six ``detail`` keys, and render them as
+human lines. Nothing here decides a state, exit code or failure: ``last_line``
+is informational text only.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+from bakar import host_snapshot, observability
+
+_MAX_RUNNING = 16
+_SHOWN_RUNNING = 5
+_TAIL_BYTES = 64 * 1024
+_LAST_LINE_CHARS = 200
+
+_ANSI_CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_ANSI_OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def last_line(path: Path) -> str | None:
+    """Return the last visible line of ``path``, reading only its final 64 KiB."""
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - _TAIL_BYTES))
+            data = fh.read(_TAIL_BYTES)
+    except OSError:
+        return None
+    text = data.decode("utf-8", errors="replace")
+    line = next((ln for ln in reversed(text.split("\n")) if ln.strip()), None)
+    if line is None:
+        return None
+    line = line.rstrip("\r").rsplit("\r", 1)[-1]
+    line = _ANSI_OSC.sub("", _ANSI_CSI.sub("", line))
+    line = _CONTROL.sub("", line.replace("\t", " "))
+    line = line.strip()[:_LAST_LINE_CHARS]
+    return line or None
+
+
+def _longest_running(progress: dict, now: float) -> list[dict]:
+    rows: list[dict] = []
+    for entry in progress.get("running") or []:
+        started = entry.get("started")
+        if isinstance(started, bool) or not isinstance(started, (int, float)):
+            seconds = None
+        else:
+            seconds = max(0, int(now - started))
+        rows.append({"recipe": entry.get("recipe"), "task": entry.get("task"), "seconds": seconds})
+    rows.sort(key=lambda r: (r["seconds"] is None, -(r["seconds"] or 0)))
+    return rows[:_MAX_RUNNING]
+
+
+def build_detail(
+    *,
+    state: str,
+    run_dir: Path | None,
+    progress: dict | None,
+    has_eventlog: bool,
+    unit_log: Path | None,
+    now: float,
+    measure: Callable[..., dict] = host_snapshot.measure,
+) -> dict:
+    """Return the six ``detail`` keys for one run."""
+    running = None
+    if state == "running" and has_eventlog and progress is not None:
+        running = _longest_running(progress, now)
+
+    failed = None
+    if has_eventlog and progress is not None:
+        failed = {
+            "count": progress.get("tasks_failed"),
+            "names": [f"{f.get('recipe', '?')}:{f.get('task', '?')}" for f in progress.get("failures") or []],
+        }
+
+    line = None
+    if run_dir is not None and (run_dir / "kas.log").exists():
+        line = last_line(run_dir / "kas.log")
+    elif unit_log is not None:
+        line = last_line(unit_log)
+
+    if run_dir is None:
+        host = measure(None, None)
+    else:
+        tmpdir, sstate = observability.last_build_paths(run_dir)
+        host = measure(tmpdir if tmpdir is not None else run_dir.parent.parent, sstate)
+
+    return {
+        "running_tasks": running,
+        "failed_tasks": failed,
+        "last_line": line,
+        "disk_free_gb": host.get("disk_free_gb"),
+        "mem_available_mb": host.get("mem_available_mb"),
+        "pressure": host.get("pressure"),
+    }
+
+
+def _q(value: Any) -> str:
+    return "?" if value is None else str(value)
+
+
+def _age(seconds: int | None) -> str:
+    if seconds is None:
+        return "?"
+    return f"{seconds // 60}m{seconds % 60:02d}s"
+
+
+def detail_lines(summary: str, detail: dict) -> list[str]:
+    """Render the summary line plus the detail lines for human output."""
+    lines = [summary]
+
+    running = detail.get("running_tasks")
+    if running:
+        shown = ", ".join(
+            f"{_q(r.get('recipe'))}:{_q(r.get('task'))} {_age(r.get('seconds'))}" for r in running[:_SHOWN_RUNNING]
+        )
+        if len(running) > _SHOWN_RUNNING:
+            shown += f" (+{len(running) - _SHOWN_RUNNING} more)"
+        lines.append(f"running: {shown}")
+
+    failed = detail.get("failed_tasks")
+    if failed and (failed.get("count") or 0) > 0:
+        lines.append(f"failed: {failed['count']} ({', '.join(failed.get('names') or [])})")
+
+    disk = detail.get("disk_free_gb") or {}
+    pressure = detail.get("pressure") or {}
+    lines.append(
+        f"host: disk build {_q(disk.get('build'))}G sstate {_q(disk.get('sstate'))}G free, "
+        f"mem {_q(detail.get('mem_available_mb'))}M available, "
+        f"pressure cpu {_q(pressure.get('cpu'))} io {_q(pressure.get('io'))} mem {_q(pressure.get('memory'))}"
+    )
+    lines.append(f"last: {_q(detail.get('last_line'))}")
+    return lines
