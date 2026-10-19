@@ -65,6 +65,16 @@ and names the ssh exit status (255 for an unreachable host), so it reads as
 `unknown` rather than as a failed build. With `--json`, a null `host` in the
 final object is filled with the `--on` host.
 
+The remote always runs with `--json`, and the outcome is believed only when it
+returns a parseable status record with a `state`. A crashed remote (a
+traceback, empty output, non-JSON output) exits 3 with the reason on stderr,
+and a remote exit 1 is accepted only alongside a record whose state is
+`failed`. A remote exit 2 (the handle did not resolve) passes through. Without
+`--json` the record is checked and then discarded, so stdout stays empty. A
+build of the same version with a different content hash prints a warning on
+stderr and continues; a different version exits 2. The handle is sent after
+`--`, so a handle beginning with `-` is never read as a flag.
+
 ## Examples
 
 ```bash

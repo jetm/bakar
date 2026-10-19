@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bakar build --on HOST --detach` exits 3 when the remote start cannot be confirmed within the 60 second poll (a remote build can also return 3 itself, so check `bakar status <unit> --on HOST` before dispatching again), and exits 2 with "cannot create a user unit" when the host cannot detach, instead of running the build in the foreground there.
 - Runs recorded before this release have no `exit_code` on their terminal events, so `bakar status` reports them as `unknown` and `bakar wait` exits 3 until a new run exists.
 
+### Fixed
+
+- `bakar triage --on HOST` now forwards `--preset` and `--release`, and refuses `--kas-yaml` (a local path) with exit 2.
+- `bakar status`, `wait` and `triage` with `--on HOST` send the handle after `--`, so a handle beginning with `-` cannot become a flag on the remote.
+- `bakar wait --on HOST` no longer reports a crashed or non-JSON remote (a traceback exits 1) as a failed build. Without a parseable status record it exits 3 (unknown) with the reason on stderr.
+- `bakar status`, `wait` and `triage` with `--on HOST` continue with a warning when the remote is the same bakar version with a different content hash, and no longer suggest a `--yes` flag they do not have. A different version still refuses.
+- `bakar triage` accepts a detached unit name and resolves it to the unit's latest registered run, naming the pick on stderr.
+- Builds launched inside a `systemd-run --scope` no longer have `${VAR}` and `$$` in their command rewritten by systemd.
+
 ### Changed
 
 - Foreground `bakar build` (including `--on HOST` without `--detach`) under an agent now warns that a long build can outlive the tool call and points at `--detach`.

@@ -172,12 +172,23 @@ workspace` error outside a workspace.
 
 ### Triage on a remote host
 
-`--on HOST` runs `bakar triage RUN_ID [--json]` on the host over ssh and mirrors
-its stdout and exit status; remote stderr is printed locally. A host beginning
-with `-` and `--workspace` together with `--on` are refused with exit 2 before
-any ssh call. A bakar that is missing or differs from the local version is a
-refusal (exit 2), and an unreachable host (ssh exit status 255) also exits 2.
-The run id is quoted, so it reaches the remote shell as a single word.
+`--on HOST` runs `bakar triage [--json] [--preset P] [--release R] -- RUN_ID` on
+the host over ssh and mirrors its stdout and exit status; remote stderr is
+printed locally. `--preset` and `--release` are forwarded. A host beginning with
+`-`, `--workspace` with `--on`, and `--kas-yaml` with `--on` (it names a local
+path) are refused with exit 2 before any ssh call. A bakar that is missing or
+whose version differs from the local one is a refusal (exit 2), and an
+unreachable host (ssh exit status 255) also exits 2. A build of the same version
+with a different content hash prints a warning on stderr and continues. The run
+id is quoted and follows `--`, so it reaches the remote shell as a single word
+that cannot be read as a flag.
+
+### Unit handles
+
+`RUN_ID` may also be a detached unit name (`bakar-detach-...`). Triage resolves
+it to the unit's latest registered run, the same lookup `bakar status` uses, and
+prints `bakar triage: unit <unit> -> latest registered run <run id>` on stderr so
+the pick is visible. A unit with no registered run yet exits 1.
 
 ## Suggestions
 

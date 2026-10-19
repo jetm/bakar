@@ -559,7 +559,10 @@ def wrap_build_command(
     for prop in properties:
         prefix += ["--property", prop]
 
-    inner = cmd
+    # --scope rewrites ${VAR} and $$ in its argv just as a unit's ExecStart
+    # does, so every user token is $-escaped. The shim below is bakar's own text
+    # and carries no ${...} or $$, so it stays literal.
+    inner = [escape_for_systemd_run(tok) for tok in cmd]
     if cfg.scope_oom_score_adjust > 0:
         # OOMScoreAdjust is an exec-context property a scope unit cannot set, so
         # write oom_score_adj before exec; every descendant inherits it.
@@ -568,6 +571,18 @@ def wrap_build_command(
 
     log.info(f"systemd scope: {unit} (journal: journalctl --user -u {unit})")
     return [*prefix, "--", *inner]
+
+
+def escape_for_systemd_run(command: str) -> str:
+    """Double every ``$`` so systemd hands ``command`` to the program unchanged.
+
+    systemd expands ``${VAR}`` and collapses ``$$`` in a unit's command line,
+    even inside shell quotes, so a user argv token or path carrying either would
+    be silently rewritten. ``$$`` is the escape on every systemd version, unlike
+    ``--expand-environment=no`` (254+). ``systemd-run --scope`` rewrites its argv
+    the same way, so the scope wrapper uses this too.
+    """
+    return command.replace("$", "$$")
 
 
 # The user-manager bus vars systemd-run --user needs to reach the transient-unit

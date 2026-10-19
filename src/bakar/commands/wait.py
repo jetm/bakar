@@ -112,19 +112,24 @@ def wait(
             print(f"bakar wait: {name} must be a finite number, got {value}", file=sys.stderr)
             raise typer.Exit(code=EXIT_UNRESOLVED)
     if on is not None:
-        if workspace is not None:
-            print("bakar wait: -w/--workspace cannot be combined with --on", file=sys.stderr)
-            raise typer.Exit(code=EXIT_UNRESOLVED)
-        argv = ["wait"]
-        if handle is not None:
-            argv.append(handle)
-        if timeout is not None:
-            argv += ["--timeout", str(timeout)]
-        argv += ["--interval", str(interval)]
-        if json_out:
-            argv.append("--json")
+        # The remote always prints its record so a crash cannot pass for an
+        # outcome; --json only decides whether it reaches this stdout.
+        options = ["--timeout", str(timeout)] if timeout is not None else []
+        options += ["--interval", str(interval), "--json"]
         capture = None if timeout is None else timeout + REMOTE_WAIT_SLACK
-        raise typer.Exit(code=run_on_host(on, argv, capture_timeout=capture, transport_exit=EXIT_UNKNOWN))
+        raise typer.Exit(
+            code=run_on_host(
+                on,
+                "wait",
+                options,
+                handle,
+                workspace=workspace,
+                capture_timeout=capture,
+                transport_exit=EXIT_UNKNOWN,
+                status_record=True,
+                show_stdout=json_out,
+            )
+        )
     code, rec = run_wait(handle, timeout=timeout, interval=interval, workspace=workspace)
     if json_out and rec is not None:
         print(json.dumps(rec.to_dict()))

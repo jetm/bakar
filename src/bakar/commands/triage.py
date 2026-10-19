@@ -314,19 +314,38 @@ def triage(
     """
     effective_run_id = run if run is not None else run_id
     if on is not None:
-        if workspace is not None:
-            print("bakar triage: -w/--workspace cannot be combined with --on", file=sys.stderr)
+        if kas_yaml is not None:
+            print("bakar triage: -k/--kas-yaml names a local path and cannot be combined with --on", file=sys.stderr)
             raise typer.Exit(code=2)
         from bakar.commands.status import REMOTE_STATUS_TIMEOUT, run_on_host
 
-        argv = ["triage"]
-        if effective_run_id is not None:
-            argv.append(effective_run_id)
-        if output_json:
-            argv.append("--json")
+        options = ["--json"] if output_json else []
+        if preset is not None:
+            options += ["--preset", preset]
+        if release is not None:
+            options += ["--release", release]
         raise typer.Exit(
-            code=run_on_host(on, argv, capture_timeout=REMOTE_STATUS_TIMEOUT, transport_exit=2, subcommand="triage")
+            code=run_on_host(
+                on,
+                "triage",
+                options,
+                effective_run_id,
+                workspace=workspace,
+                capture_timeout=REMOTE_STATUS_TIMEOUT,
+                transport_exit=2,
+            )
         )
+
+    if effective_run_id is not None and detach_records.is_unit_name(effective_run_id):
+        from bakar.commands.status import _unit_run
+
+        unit = effective_run_id
+        unit_run_id, _unit_dir = _unit_run(unit)
+        if unit_run_id is None:
+            console.print(f"[red]Unit {unit} has no registered run yet[/]")
+            raise typer.Exit(code=1)
+        print(f"bakar triage: unit {unit} -> latest registered run {unit_run_id}", file=sys.stderr)
+        effective_run_id = unit_run_id
 
     registered = _registered_run_dir(effective_run_id)
     if registered is not None and kas_yaml is None and workspace is None and _find_workspace_from_cwd() is None:

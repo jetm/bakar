@@ -122,10 +122,14 @@ exit status. Use it for a run started with `bakar build --on HOST --detach`.
 An unreachable host or failed ssh transport exits 2 and names the ssh exit
 status (255 for an unreachable host); [`bakar wait`](wait.md) exits 3 for the
 same failure. A host starting with `-`, `-w` with `--on`, a missing bakar on
-the host, and a bakar version that differs from the local one exit 2 for both
+the host, and a bakar whose version differs from the local one exit 2 for both
 commands, because the caller must fix the invocation or install bakar there.
-With `--json`, a remote object whose `host` is null gets `HOST` filled in and
-is re-emitted as one JSON line; output that is not one JSON object is mirrored
+A build of the same version with a different content hash (the parenthesised id
+in `bakar --version`) prints a warning on stderr and continues, since these
+queries only read run records. The handle is sent after `--`, so a handle
+beginning with `-` is never read as a flag. With `--json`, a remote object
+whose `host` is null gets `HOST` filled in and is re-emitted as one JSON line;
+output that is not one JSON object is mirrored
 unchanged. The remote call is bounded to 30 seconds.
 
 ## Examples

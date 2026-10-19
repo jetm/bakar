@@ -289,6 +289,17 @@ def test_wrap_sets_oom_via_exec_shim(tmp_path: Path) -> None:
     assert inner[-3:] == _CMD
 
 
+def test_wrap_escapes_dollar_in_user_tokens(tmp_path: Path) -> None:
+    # systemd-run --scope rewrites ${VAR} and $$ in its argv, so a user token
+    # carrying either must reach systemd doubled; the oom shim stays literal.
+    cmd = ["bash", "-c", "echo '${HOME} $$ $x'"]
+    cfg = _cfg(tmp_path, scope_oom_score_adjust=750)
+    out = build_scope.wrap_build_command(cmd, cfg, _FakeLog(), unit_suffix="build")
+    inner = out[out.index("--") + 1 :]
+    assert inner[-3:] == ["bash", "-c", "echo '$${HOME} $$$$ $$x'"]
+    assert 'exec "$@"' in inner[2]
+
+
 def test_wrap_no_shim_when_oom_zero(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path, scope_oom_score_adjust=0)
     out = build_scope.wrap_build_command(_CMD, cfg, _FakeLog(), unit_suffix="build")

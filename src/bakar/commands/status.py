@@ -11,7 +11,7 @@ import json
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -47,20 +47,7 @@ class StatusRecord:
     failure: dict[str, str | None] | None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "run_id": self.run_id,
-            "unit": self.unit,
-            "host": self.host,
-            "state": self.state,
-            "exit_code": self.exit_code,
-            "run_dir": self.run_dir,
-            "log": self.log,
-            "tasks_done": self.tasks_done,
-            "tasks_total": self.tasks_total,
-            "tasks_running": self.tasks_running,
-            "elapsed_seconds": self.elapsed_seconds,
-            "failure": self.failure,
-        }
+        return asdict(self)
 
 
 def _unit_active(unit: str) -> bool:
@@ -372,9 +359,36 @@ def _preflight(host: str, *, transport_exit: int) -> int | None:
             print(proc.stderr.strip(), file=sys.stderr)
         return EXIT_REFUSED
     version = proc.stdout.strip() or proc.stderr.strip() or None
-    if not rd.check_versions(version, assume_yes=False):
-        return EXIT_REFUSED
-    return None
+    return _check_remote_version(host, version, local=rd._local_bakar_version())
+
+
+def _version_base(version: str) -> str:
+    """``bakar 0.39.0`` from ``bakar 0.39.0 (8c25fbd4a655)``: the version without its content hash."""
+    return version.split(" (", 1)[0].strip()
+
+
+def _check_remote_version(host: str, remote: str | None, *, local: str | None) -> int | None:
+    """None when the remote bakar can answer a read-only query, else the exit status.
+
+    These commands only read run records, so a content-hash difference between
+    two builds of the same version warns and continues. A different version
+    refuses: the record layout may differ.
+    """
+    if not local or not remote or remote == local:
+        return None
+    if _version_base(remote) == _version_base(local):
+        print(
+            f"bakar: {host} runs {remote!r} but this bakar is {local!r}: same version, different build; "
+            "continuing because this query only reads run records",
+            file=sys.stderr,
+        )
+        return None
+    print(
+        f"remote preflight failed for {host}: bakar version mismatch (local {local!r}, remote {remote!r}); "
+        "install a matching bakar there",
+        file=sys.stderr,
+    )
+    return EXIT_REFUSED
 
 
 def _fill_host(stdout: str, host: str) -> str:
@@ -389,34 +403,77 @@ def _fill_host(stdout: str, host: str) -> str:
     return json.dumps(obj) + "\n"
 
 
+def _status_record(stdout: str) -> dict[str, Any] | None:
+    """The one-object JSON status record ``stdout`` holds, or None when it is anything else."""
+    try:
+        obj = json.loads(stdout)
+    except ValueError:
+        return None
+    return obj if isinstance(obj, dict) and isinstance(obj.get("state"), str) else None
+
+
+def _unusable_record(host: str, proc: subprocess.CompletedProcess[str]) -> None:
+    print(
+        f"bakar wait: {host} returned no parseable status record (remote exit status {proc.returncode}); "
+        "the outcome is unknown",
+        file=sys.stderr,
+    )
+    if proc.stderr:
+        print(proc.stderr, end="", file=sys.stderr)
+
+
 def run_on_host(
     host: str,
-    argv: list[str],
+    command: str,
+    options: list[str],
+    handle: str | None = None,
     *,
+    workspace: Path | None = None,
     capture_timeout: float | None,
     transport_exit: int,
-    subcommand: str = "status",
+    status_record: bool = False,
+    show_stdout: bool = True,
 ) -> int:
-    """Run ``bakar <argv>`` on ``host`` and mirror its stdout and exit status.
+    """Run ``bakar <command> <options> [-- <handle>]`` on ``host`` and mirror its exit status.
 
     The command goes over stdin to ``bash -s`` (never as an ssh argument) with
-    every word shlex-quoted. A failed transport (ssh exit 255, which includes a
+    every word shlex-quoted, and ``--`` precedes ``handle`` so a handle starting
+    with ``-`` cannot become a flag. ``workspace`` is refused here because it
+    names a local path. A failed transport (ssh exit 255, which includes a
     timed-out capture) returns ``transport_exit`` and names the ssh status.
-    ``subcommand`` names the remote command: only the status-record commands
-    (status, wait) have a ``host`` field to fill from ``--on``.
+    Only the status-record commands (status, wait) have a ``host`` field to
+    fill from ``--on``.
+
+    ``status_record`` is for ``wait``: its outcome rides on the remote exit
+    status, which a crashed remote (a traceback exits 1) would otherwise forge
+    into ``failed``. The remote must print a JSON record with a ``state``;
+    without one the result is ``transport_exit`` (unknown), except that remote
+    status 2 (handle not resolved) carries no record and passes through, and
+    remote status 1 is only believed when the record says ``failed``.
+    ``show_stdout`` False keeps that record off the local stdout.
     """
     from bakar.steps import remote_dispatch as rd
 
+    if workspace is not None:
+        print(f"bakar {command}: -w/--workspace cannot be combined with --on", file=sys.stderr)
+        return EXIT_REFUSED
     refused = _preflight(host, transport_exit=transport_exit)
     if refused is not None:
         return refused
-    script = shlex.join(["bakar", *argv]) + "\n"
-    proc = rd._ssh_bash_capture(host, script, timeout=capture_timeout)  # type: ignore[arg-type]
+    words = ["bakar", command, *options]
+    if handle is not None:
+        words += ["--", handle]
+    proc = rd._ssh_bash_capture(host, shlex.join(words) + "\n", timeout=capture_timeout)  # type: ignore[arg-type]
     if proc.returncode == SSH_TRANSPORT_FAILURE:
         _report_transport(host, proc)
         return transport_exit
-    if proc.stdout:
-        fill = subcommand in ("status", "wait") and "--json" in argv
+    if status_record and proc.returncode != EXIT_REFUSED:
+        record = _status_record(proc.stdout)
+        if record is None or (proc.returncode == 1 and record["state"] != "failed"):
+            _unusable_record(host, proc)
+            return transport_exit
+    if proc.stdout and show_stdout:
+        fill = command in ("status", "wait") and "--json" in options
         print(_fill_host(proc.stdout, host) if fill else proc.stdout, end="")
     if proc.stderr:
         print(proc.stderr, end="", file=sys.stderr)
@@ -449,15 +506,17 @@ def status(
     reported and 2 when the handle does not resolve.
     """
     if on is not None:
-        if workspace is not None:
-            print("bakar status: -w/--workspace cannot be combined with --on", file=sys.stderr)
-            raise typer.Exit(code=2)
-        argv = ["status"]
-        if handle is not None:
-            argv.append(handle)
-        if json_out:
-            argv.append("--json")
-        raise typer.Exit(code=run_on_host(on, argv, capture_timeout=REMOTE_STATUS_TIMEOUT, transport_exit=2))
+        raise typer.Exit(
+            code=run_on_host(
+                on,
+                "status",
+                ["--json"] if json_out else [],
+                handle,
+                workspace=workspace,
+                capture_timeout=REMOTE_STATUS_TIMEOUT,
+                transport_exit=2,
+            )
+        )
     rec = compute_status(handle, workspace=workspace)
     if rec is None:
         console.print(f"No run found for {handle or 'the current workspace'}", markup=False, highlight=False)

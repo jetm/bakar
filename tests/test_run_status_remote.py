@@ -38,7 +38,7 @@ def test_status_mirrors_stdout_and_exit(capture: MagicMock) -> None:
     assert result.stdout == '{"state": "x"}\n'
     host, script = capture.call_args.args
     assert host == "pc2"
-    assert script == "bakar status run1 --json\n"
+    assert script == "bakar status --json -- run1\n"
     assert capture.call_args.kwargs["timeout"] == 30.0
 
 
@@ -47,7 +47,7 @@ def test_wait_mirrors_exit_and_bounds_capture(capture: MagicMock) -> None:
     result = runner.invoke(app, ["wait", "u1", "--timeout", "540", "--interval", "5", "--json", "--on", "pc2"])
     assert result.exit_code == 124
     assert result.stdout == '{"state": "running"}\n'
-    assert capture.call_args.args[1] == "bakar wait u1 --timeout 540.0 --interval 5.0 --json\n"
+    assert capture.call_args.args[1] == "bakar wait --timeout 540.0 --interval 5.0 --json -- u1\n"
     assert capture.call_args.kwargs["timeout"] == 600.0
 
 
@@ -70,7 +70,13 @@ def test_handle_arrives_quoted(capture: MagicMock) -> None:
     handle = "$(touch /tmp/pwned)"
     runner.invoke(app, ["status", handle, "--on", "pc2"])
     script = capture.call_args.args[1]
-    assert script == "bakar status '$(touch /tmp/pwned)'\n"
+    assert script == "bakar status -- '$(touch /tmp/pwned)'\n"
+
+
+@pytest.mark.parametrize("cmd", ["status", "wait"])
+def test_dash_handle_cannot_become_a_remote_flag(capture: MagicMock, cmd: str) -> None:
+    runner.invoke(app, [cmd, "--on", "pc2", "--", "--json"])
+    assert capture.call_args.args[1].endswith(" -- --json\n")
 
 
 def test_hyphen_host_refused(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -129,11 +135,75 @@ def test_missing_bakar_is_a_refusal_for_both_commands(
 
 
 def test_version_mismatch_is_a_refusal_for_both_commands(monkeypatch: pytest.MonkeyPatch) -> None:
-    mock = _probe_then(monkeypatch, _proc(0, "bakar 9.9.9\n"))
-    monkeypatch.setattr(rd, "check_versions", lambda version, *, assume_yes: False)
+    mock = _probe_then(monkeypatch, _proc(0, "bakar 9.9.9 (aaaaaaaaaaaa)\n"))
+    monkeypatch.setattr(rd, "_local_bakar_version", lambda: "bakar 0.39.0 (bbbbbbbbbbbb)")
     for cmd in ("status", "wait"):
-        assert runner.invoke(app, [cmd, "run1", "--on", "pc2"]).exit_code == 2
+        result = runner.invoke(app, [cmd, "run1", "--on", "pc2"])
+        assert result.exit_code == 2
+        assert "version mismatch" in result.output
+        assert "--yes" not in result.output
     assert mock.call_count == 2
+
+
+@pytest.mark.parametrize("cmd", ["status", "wait"])
+def test_hash_only_mismatch_warns_and_continues(monkeypatch: pytest.MonkeyPatch, cmd: str) -> None:
+    probe = _proc(0, "bakar 0.39.0 (aaaaaaaaaaaa)\n")
+    query = _proc(0, '{"state": "succeeded"}\n')
+    mock = MagicMock(side_effect=[probe, query])
+    monkeypatch.setattr(rd, "_ssh_bash_capture", mock)
+    monkeypatch.setattr(rd, "_local_bakar_version", lambda: "bakar 0.39.0 (bbbbbbbbbbbb)")
+    result = runner.invoke(app, [cmd, "run1", "--json", "--on", "pc2"])
+    assert result.exit_code == 0
+    assert "same version, different build" in result.output
+    assert "--yes" not in result.output
+    assert mock.call_count == 2
+
+
+def _wait_with(capture: MagicMock, proc: subprocess.CompletedProcess[str], *args: str):
+    capture.return_value = proc
+    return runner.invoke(app, ["wait", "r", "--on", "pc2", *args])
+
+
+@pytest.mark.parametrize(
+    "proc",
+    [
+        _proc(1, "", "Traceback (most recent call last):\nValueError: boom\n"),
+        _proc(1, "Traceback (most recent call last):\n", ""),
+        _proc(0, "", ""),
+        _proc(1, "[1, 2]\n", ""),
+        _proc(1, '{"no_state": 1}\n', ""),
+        _proc(1, '{"state": "running"}\n', ""),
+    ],
+)
+def test_wait_unusable_remote_is_unknown_not_failed(capture: MagicMock, proc: subprocess.CompletedProcess[str]) -> None:
+    result = _wait_with(capture, proc, "--json")
+    assert result.exit_code == 3
+    assert "no parseable status record" in result.output
+    assert result.stdout == ""
+
+
+def test_wait_traceback_reason_reaches_stderr(capture: MagicMock) -> None:
+    result = _wait_with(capture, _proc(1, "", "Traceback boom\n"))
+    assert result.exit_code == 3
+    assert "Traceback boom" in result.output
+
+
+def test_wait_valid_failed_record_still_exits_1(capture: MagicMock) -> None:
+    result = _wait_with(capture, _proc(1, '{"state": "failed", "exit_code": 2}\n'), "--json")
+    assert result.exit_code == 1
+    assert result.stdout == '{"state": "failed", "exit_code": 2}\n'
+
+
+def test_wait_without_json_asks_remote_for_a_record_but_keeps_stdout_quiet(capture: MagicMock) -> None:
+    result = _wait_with(capture, _proc(0, '{"state": "succeeded"}\n'))
+    assert result.exit_code == 0
+    assert result.stdout == ""
+    assert "--json" in capture.call_args.args[1]
+
+
+def test_wait_unresolved_handle_passes_through(capture: MagicMock) -> None:
+    result = _wait_with(capture, _proc(2, "", "No run found for r\n"))
+    assert result.exit_code == 2
 
 
 def test_null_host_is_filled_from_on(capture: MagicMock) -> None:

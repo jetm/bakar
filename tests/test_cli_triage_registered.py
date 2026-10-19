@@ -120,7 +120,7 @@ def test_on_mirrors_stdout_and_exit_status(capture: MagicMock) -> None:
     assert result.stdout == '{"run_id": "r", "host": null}\n'
     host, script = capture.call_args.args
     assert host == "pc2"
-    assert script == "bakar triage r --json\n"
+    assert script == "bakar triage --json -- r\n"
 
 
 def test_on_without_run_id_or_json(capture: MagicMock) -> None:
@@ -130,7 +130,45 @@ def test_on_without_run_id_or_json(capture: MagicMock) -> None:
 
 def test_on_quotes_the_run_id(capture: MagicMock) -> None:
     runner.invoke(app, ["triage", "$(touch /tmp/pwned)", "--on", "pc2"])
-    assert capture.call_args.args[1] == "bakar triage '$(touch /tmp/pwned)'\n"
+    assert capture.call_args.args[1] == "bakar triage -- '$(touch /tmp/pwned)'\n"
+
+
+def test_on_forwards_preset_and_release(capture: MagicMock) -> None:
+    runner.invoke(app, ["triage", "--preset", "imx93", "--release", "scarthgap", "--json", "--on", "pc2"])
+    assert capture.call_args.args[1] == "bakar triage --json --preset imx93 --release scarthgap\n"
+
+
+def test_on_refuses_kas_yaml_before_ssh(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    mock = MagicMock()
+    monkeypatch.setattr(rd, "_ssh_bash_capture", mock)
+    monkeypatch.setattr(rd, "preflight_remote", mock)
+    result = runner.invoke(app, ["triage", "--kas-yaml", str(tmp_path / "x.yml"), "--on", "pc2"])
+    assert result.exit_code == 2
+    assert "--kas-yaml" in result.output
+    assert "--on" in result.output
+    mock.assert_not_called()
+
+
+def test_dash_run_id_cannot_become_a_remote_flag(capture: MagicMock) -> None:
+    runner.invoke(app, ["triage", "--on", "pc2", "--", "--json"])
+    assert capture.call_args.args[1] == "bakar triage -- --json\n"
+
+
+def test_unit_handle_resolves_to_its_latest_run(_env: Path) -> None:
+    older = "20261019-110000-1"
+    _registered_run(_env, older)
+    _registered_run(_env, RUN_ID)
+    result = runner.invoke(app, ["triage", UNIT, "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["run_id"] == RUN_ID
+    assert RUN_ID in result.stderr
+    assert UNIT in result.stderr
+
+
+def test_unit_handle_without_a_registered_run_is_not_found(_env: Path) -> None:
+    result = runner.invoke(app, ["triage", UNIT])
+    assert result.exit_code == 1
+    assert "no registered run" in result.output
 
 
 def test_on_refuses_a_dash_host_before_ssh(monkeypatch: pytest.MonkeyPatch) -> None:

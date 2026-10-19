@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from bakar import build_scope, detach_records
+from bakar.build_scope import escape_for_systemd_run
 from bakar.detach_records import REGISTRATION_ENV, SESSION_FORWARD_VARS, DetachUnavailable, UnitPaths
 
 if TYPE_CHECKING:
@@ -94,17 +95,6 @@ def forwarded_env(environ: Mapping[str, str]) -> dict[str, str]:
         if name.startswith(_FORWARDED_PREFIXES) or name in _FORWARDED_EXACT:
             out[name] = value
     return out
-
-
-def escape_for_systemd_run(command: str) -> str:
-    """Double every ``$`` so systemd hands ``command`` to the shell unchanged.
-
-    systemd expands ``${VAR}`` and collapses ``$$`` in a unit's command line,
-    even inside shell quotes, so a user argv token or path carrying either would
-    be silently rewritten. ``$$`` is the escape on every systemd version, unlike
-    ``--expand-environment=no`` (254+).
-    """
-    return command.replace("$", "$$")
 
 
 def build_unit_argv(unit: str, request: LaunchRequest, paths: UnitPaths) -> list[str]:
