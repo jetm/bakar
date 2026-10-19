@@ -897,6 +897,17 @@ def generate_dry_run_script(
     return "\n".join(lines)
 
 
+def _record_build_paths(cfg: BuildConfig, log: RunLogger) -> None:
+    """Record the build's TMPDIR and SSTATE_DIR so ``bakar status --detail`` can probe their disks.
+
+    Never stops the build: any failure becomes one warn line.
+    """
+    try:
+        log.build_paths(cfg.resolved_tmpdir, native_ledger.effective_sstate_dir(cfg.sstate_dir))
+    except Exception as exc:  # noqa: BLE001 - a diagnostic event must never stop the build
+        log.warn(f"could not record build paths: {neutralize(str(exc))}")
+
+
 def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None, show_layers: bool = False) -> int:
     """Run `kas build <kas_yaml>:<overlay>` with the measurement harness.
 
@@ -971,6 +982,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         overlay=str(overlay_source),
         extra_overlays=[str(p) for p in (extra_overlays or [])],
     )
+    _record_build_paths(cfg, log)
     cfg.measurements_dir.mkdir(parents=True, exist_ok=True)
     kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source, extra_overlays)
     if cfg.is_meta_avocado:
@@ -1232,6 +1244,7 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
         log.step_fail("kas_shell_live", reason=_lock_refusal_message(lock_outcome.refusal))
         return 1
 
+    _record_build_paths(cfg, log)
     kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source, ctx.extra_overlays)
     exe = "kas" if cfg.host_mode else "kas-container"
     cmd = [exe, *_ccache_args(cfg, eventlog_path=_container_eventlog_path(cfg, log)), "shell", kas_arg, "-c", command]
