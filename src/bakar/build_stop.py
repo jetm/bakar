@@ -39,7 +39,7 @@ from bakar.eventlog import (
     IncrementalEventLog,
     RunningTask,
 )
-from bakar.observability import iter_run_events
+from bakar.observability import iter_run_events, run_has_ended, write_stop_request
 
 # Permanent re-exports (pinned by STOP_RE_EXPORTED_NAMES in
 # tests/test_module_boundaries.py): the tri-state is read bare by the functions
@@ -1226,6 +1226,14 @@ def stop_run(run_dir: Path, cfg: BuildConfig | None = None, *, force: bool = Fal
                     _say("no running build" + ("; cleaned stale lock/socket" if removed else ""))
                     return True
                 _say("wrapper process gone; a detached cooker is still running - escalating")
+            # A signal follows on both the graceful and forced paths: mark the
+            # run as user-stopped first. Only while the front-end that records
+            # the outcome is still alive: with the wrapper gone the run already
+            # recorded how it ended, and a lingering cooker being cleaned up
+            # must not relabel that failure as a stop. The result is ignored; a
+            # failed write leaves the run reading as an ordinary failure.
+            if wrapper_live:
+                write_stop_request(run_dir, force=force)
             if not force:
                 if pgid is not None and pgid > 0:
                     _say(f"Sent SIGINT to build PGID {pgid}...")
@@ -1302,6 +1310,15 @@ def stop_run(run_dir: Path, cfg: BuildConfig | None = None, *, force: bool = Fal
         remove_pid(run_dir)
         return True
 
+    # A live container follows: mark the run as user-stopped first, unless the
+    # run already recorded how it ended. A container mode stop never probes the
+    # wrapper PGID (the wrapper may be dead while the container lives), so the
+    # event log's terminal event stands in for "the front-end is still
+    # recording": a container left running after that belongs to a run that
+    # must keep the failure it recorded. The result is ignored; a failed write
+    # leaves the run reading as an ordinary failure.
+    if not run_has_ended(run_dir):
+        write_stop_request(run_dir, force=force)
     stop_plan = _ContainerStopPlan(
         force=force,
         term_secs=_STOP_TERM_SECONDS,
