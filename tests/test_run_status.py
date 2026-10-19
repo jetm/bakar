@@ -1,0 +1,264 @@
+"""Tests for ``bakar status``: state precedence, resolution and the JSON contract."""
+
+from __future__ import annotations
+
+import json
+from typing import TYPE_CHECKING
+
+import pytest
+from typer.testing import CliRunner
+
+import bakar.commands.status as status_cmd
+from bakar.commands._app import app
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+pytestmark = pytest.mark.unit
+
+UNIT = "bakar-detach-20261019-120000-abc123"
+RUN_ID = "20261019-120001-4242"
+JSON_KEYS = {
+    "run_id",
+    "unit",
+    "host",
+    "state",
+    "exit_code",
+    "run_dir",
+    "log",
+    "tasks_done",
+    "tasks_total",
+    "tasks_running",
+    "elapsed_seconds",
+    "failure",
+}
+
+
+@pytest.fixture
+def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Runtime dir for unit records, one runs dir for foreground discovery, probes off."""
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    runs = tmp_path / "ws" / "build" / "runs"
+    runs.mkdir(parents=True)
+    monkeypatch.setattr(
+        status_cmd, "_resolve_triage_dirs", lambda _kas, _ws: ([(runs, "generic")], tmp_path, "label", tmp_path)
+    )
+    monkeypatch.setattr(status_cmd, "_unit_active", lambda _u: False)
+    monkeypatch.setattr(status_cmd, "is_build_running", lambda _rd: (False, None, False))
+    return tmp_path
+
+
+def _run_dir(env: Path, run_id: str = RUN_ID) -> Path:
+    run = env / "ws" / "build" / "runs" / run_id
+    run.mkdir(parents=True)
+    return run
+
+
+def _terminal(run: Path, code: int | None, event: str = "run_end") -> None:
+    rec: dict[str, object] = {"event": event}
+    if code is not None:
+        rec["exit_code"] = code
+    (run / "events.jsonl").write_text(json.dumps(rec) + "\n")
+
+
+def _register(env: Path, run: Path, unit: str = UNIT) -> None:
+    (env / "runtime" / f"{unit}.runs").write_text(
+        json.dumps({"run_id": run.name, "run_dir": str(run), "pid": 1}) + "\n"
+    )
+
+
+def _sentinel(env: Path, code: int, unit: str = UNIT) -> None:
+    (env / "runtime" / f"{unit}.log.rc").write_text(f"{code}\n")
+
+
+def test_success_requires_a_recorded_zero_exit(env: Path) -> None:
+    run = _run_dir(env)
+    rec = status_cmd.compute_status(run.name)
+    assert rec is not None
+    assert rec.state == "unknown"
+    assert rec.exit_code is None
+
+    _terminal(run, 0)
+    rec = status_cmd.compute_status(run.name)
+    assert rec is not None
+    assert (rec.state, rec.exit_code) == ("succeeded", 0)
+
+
+def test_terminal_event_without_exit_code_is_unknown(env: Path) -> None:
+    run = _run_dir(env)
+    _terminal(run, None, event="run_error")
+    rec = status_cmd.compute_status(run.name)
+    assert rec is not None
+    assert rec.state == "unknown"
+
+
+def test_foreground_nonzero_terminal_event_fails(env: Path) -> None:
+    run = _run_dir(env)
+    _terminal(run, 1, event="run_error")
+    rec = status_cmd.compute_status(run.name)
+    assert rec is not None
+    assert (rec.state, rec.exit_code) == ("failed", 1)
+
+
+def test_sentinel_two_is_failed(env: Path) -> None:
+    run = _run_dir(env)
+    _register(env, run)
+    _sentinel(env, 2)
+    rec = status_cmd.compute_status(UNIT)
+    assert rec is not None
+    assert (rec.state, rec.exit_code, rec.run_id, rec.unit) == ("failed", 2, run.name, UNIT)
+
+
+def test_sentinel_zero_is_succeeded(env: Path) -> None:
+    run = _run_dir(env)
+    _register(env, run)
+    _sentinel(env, 0)
+    rec = status_cmd.compute_status(UNIT)
+    assert rec is not None
+    assert (rec.state, rec.exit_code) == ("succeeded", 0)
+
+
+def test_sentinel_beats_terminal_event(env: Path) -> None:
+    run = _run_dir(env)
+    _register(env, run)
+    _terminal(run, 0)
+    _sentinel(env, 3)
+    rec = status_cmd.compute_status(UNIT)
+    assert rec is not None
+    assert (rec.state, rec.exit_code) == ("failed", 3)
+
+
+def test_detached_run_id_resolves_through_registry(env: Path) -> None:
+    run = _run_dir(env)
+    _register(env, run)
+    _sentinel(env, 0)
+    rec = status_cmd.compute_status(run.name)
+    assert rec is not None
+    assert (rec.unit, rec.run_id) == (UNIT, run.name)
+
+
+def test_starting_when_unit_active_without_a_run_id(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(status_cmd, "_unit_active", lambda _u: True)
+    rec = status_cmd.compute_status(UNIT)
+    assert rec is not None
+    assert (rec.state, rec.run_id, rec.run_dir) == ("starting", None, None)
+    assert rec.tasks_done is None
+    assert rec.tasks_total is None
+
+
+def test_running_when_unit_active_with_a_run(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run = _run_dir(env)
+    _register(env, run)
+    monkeypatch.setattr(status_cmd, "_unit_active", lambda _u: True)
+    rec = status_cmd.compute_status(UNIT)
+    assert rec is not None
+    assert rec.state == "running"
+
+
+def test_running_when_foreground_build_process_is_live(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run = _run_dir(env)
+    monkeypatch.setattr(status_cmd, "is_build_running", lambda _rd: (True, 99, True))
+    rec = status_cmd.compute_status(run.name)
+    assert rec is not None
+    assert rec.state == "running"
+
+
+def test_liveness_never_overrides_a_recorded_exit(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run = _run_dir(env)
+    _terminal(run, 1)
+    monkeypatch.setattr(status_cmd, "is_build_running", lambda _rd: (True, 99, True))
+    rec = status_cmd.compute_status(run.name)
+    assert rec is not None
+    assert rec.state == "failed"
+
+
+def test_no_handle_picks_the_newest_run_not_the_newest_failure(env: Path) -> None:
+    old = _run_dir(env, "20261019-100000-1")
+    _terminal(old, 1)
+    new = _run_dir(env, "20261019-110000-2")
+    _terminal(new, 0)
+    rec = status_cmd.compute_status(None)
+    assert rec is not None
+    assert (rec.run_id, rec.state) == (new.name, "succeeded")
+
+
+def test_unknown_handle_resolves_to_nothing(env: Path) -> None:
+    assert status_cmd.compute_status("no-such-run") is None
+
+
+def test_unknown_handle_exits_two_and_names_it(env: Path) -> None:
+    result = CliRunner().invoke(app, ["status", "no-such-run"])
+    assert result.exit_code == 2
+    assert "no-such-run" in result.output
+
+
+def test_unregistered_unit_name_that_is_gone_exits_two(env: Path) -> None:
+    result = CliRunner().invoke(app, ["status", UNIT])
+    assert result.exit_code == 2
+
+
+def test_null_totals_are_null_not_zero(env: Path) -> None:
+    run = _run_dir(env)
+    rec = status_cmd.compute_status(run.name)
+    assert rec is not None
+    assert rec.tasks_total is None
+    assert rec.tasks_done is None
+    assert rec.tasks_running is None
+    assert rec.host is None
+
+
+def test_failed_run_names_recipe_and_task(env: Path) -> None:
+    run = _run_dir(env)
+    _terminal(run, 1)
+    artifact = {
+        "schema_version": 1,
+        "build": {"outcome": "failed"},
+        "tasks": [],
+        "setscene": {},
+        "failures": [{"recipe": "openssl", "task": "do_compile"}],
+    }
+    (run / "bitbake-events.json").write_text(json.dumps(artifact))
+    rec = status_cmd.compute_status(run.name)
+    assert rec is not None
+    assert rec.failure == {"recipe": "openssl", "task": "do_compile"}
+
+
+def test_failure_is_absent_unless_failed(env: Path) -> None:
+    run = _run_dir(env)
+    _terminal(run, 0)
+    artifact = {
+        "schema_version": 1,
+        "build": {},
+        "tasks": [],
+        "setscene": {},
+        "failures": [{"recipe": "x", "task": "y"}],
+    }
+    (run / "bitbake-events.json").write_text(json.dumps(artifact))
+    rec = status_cmd.compute_status(run.name)
+    assert rec is not None
+    assert rec.failure is None
+
+
+def test_json_stdout_carries_only_the_payload(env: Path) -> None:
+    run = _run_dir(env)
+    _terminal(run, 1)
+    result = CliRunner().invoke(app, ["status", run.name, "--json"])
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    lines = result.stdout.splitlines()
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert set(payload) == JSON_KEYS
+    assert len(payload) == 12
+    assert payload["state"] == "failed"
+
+
+def test_summary_goes_to_stderr_without_json(env: Path) -> None:
+    run = _run_dir(env)
+    _terminal(run, 0)
+    result = CliRunner().invoke(app, ["status", run.name])
+    assert result.exit_code == 0
+    assert result.stdout == ""
+    assert "succeeded" in result.stderr
