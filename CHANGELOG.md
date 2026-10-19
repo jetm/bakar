@@ -164,7 +164,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.36.2] - 2026-10-07
 
 ### Changed
-- The bundled `mold-native` recipe now builds the released mold 3.0.0, pinned to the commit the `v3.0.0` tag points at (`8de38c35a2df16a25f7ff87ac3ad07156a925beb`), in a new `mold_3.0.0.bb`. It is selected by default on both scarthgap and wrynose. The previous `mold_git.bb`, which tracked an unreleased upstream commit, stays beside it as a reference for building an unreleased commit and is never selected by default (`DEFAULT_PREFERENCE = "-1"`); its crate list moved to `mold-git-crates.inc`, so `bitbake -c update_crates` now maintains the 3.0.0 list in `mold-crates.inc` only. mold 3.0.0 requires rustc 1.95, which neither release's toolchain provides (scarthgap has 1.92.0, wrynose 1.94.1), so below 1.95.0 the recipe passes `--ignore-rust-version` and opts in to the not-yet-stable `cold_path` feature, plus `debug_closure_helpers` below 1.94.0, through `RUSTC_BOOTSTRAP` for this one native tool.
+- The bundled `mold-native` recipe now builds the released mold 3.0.0, pinned to the commit the `v3.0.0` tag points at (`8de38c35a2df16a25f7ff87ac3ad07156a925beb`), in a new `mold_3.0.0.bb`. It is selected by default on both scarthgap and wrynose. The previous `mold_git.bb`, which tracked an unreleased upstream commit, stays beside it as a reference for building an unreleased commit and is never selected by default (`DEFAULT_PREFERENCE = "-1"`); its crate list moved to `mold-git-crates.inc`, so `bitbake -c update_crates` now maintains the 3.0.0 list in `mold-crates.inc` only. mold 3.0.0 requires rustc 1.95, which neither release's toolchain provides (scarthgap has 1.92.0, wrynose 1.94.1), so below 1.95.0 the recipe passes `--ignore-rust-version` and opts in to the not-yet-stable cold_path feature, plus debug_closure_helpers below 1.94.0, through RUSTC_BOOTSTRAP for this one native tool.
 - The `mold-native` recipe now installs what mold's own `install-mold.sh` installs: `mold-wrapper.so` (so `mold -run` works), the man pages and the `libexec/mold/ld` link. It also depends on `zstd` and inherits `pkgconfig`, which newer OE-Core needs because its cargo class makes `zstd-sys` link the system library. The recipe now follows the one proposed to meta-openembedded, differing only for scarthgap and wrynose.
 
 ### Fixed
@@ -173,7 +173,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.36.1] - 2026-10-01
 
 ### Fixed
-- Fixed the bundled `mold-native` recipe failing `do_populate_lic` on scarthgap with `LIC_FILES_CHKSUM points to an invalid file: .../mold-2.42.1+git/LICENSE`. Scarthgap's git fetcher unpacks to `git/` by default while the recipe's `S` is `${WORKDIR}/${BP}`, so `LICENSE` was never at the checksummed path; wrynose's `BB_GIT_DEFAULT_DESTSUFFIX = "${BP}"` hid it. The mold checkout now sets `subdir=${BP}` and lands in `S` on both releases. The failure only showed on a cold workspace, because a mold-native already in sstate never reruns the task. With that fixed, `do_compile` then failed on scarthgap's rustc 1.92.0 with `E0658 ... debug_closure_helpers` (`fmt::from_fn` is stable only from 1.94.0), so the recipe's `RUSTC_BOOTSTRAP` feature list now adds `debug_closure_helpers` below 1.94.0 and leaves the 1.94.1 and 1.95+ command lines unchanged.
+- Fixed the bundled `mold-native` recipe failing `do_populate_lic` on scarthgap with `LIC_FILES_CHKSUM points to an invalid file: .../mold-2.42.1+git/LICENSE`. Scarthgap's git fetcher unpacks to `git/` by default while the recipe's `S` is `${WORKDIR}/${BP}`, so `LICENSE` was never at the checksummed path; wrynose's `BB_GIT_DEFAULT_DESTSUFFIX = "${BP}"` hid it. The mold checkout now sets `subdir=${BP}` and lands in `S` on both releases. The failure only showed on a cold workspace, because a mold-native already in sstate never reruns the task. With that fixed, `do_compile` then failed on scarthgap's rustc 1.92.0 with `E0658 ... debug_closure_helpers` (`fmt::from_fn` is stable only from 1.94.0), so the recipe's RUSTC_BOOTSTRAP feature list now adds debug_closure_helpers below 1.94.0 and leaves the 1.94.1 and 1.95+ command lines unchanged.
 
 ## [0.36.0] - 2026-09-30
 
@@ -188,7 +188,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.35.3] - 2026-09-30
 
 ### Changed
-- The bundled `mold` recipe now builds only the Rust rewrite, pinned to upstream commit `a9c709b8a437c1e1627b065b771e32ce331ba363`. The C++ 2.42.1 recipe is gone. That commit needs rustc 1.95.0 or newer (checked: stock 1.95.0 compiles it, stock 1.94.1 fails on two unstable std APIs). Below 1.95.0 the recipe still opts in to them with `RUSTC_BOOTSTRAP` for this one native tool; from 1.95.0 on it builds with the stock compiler, decided from the tree's `RUSTVERSION`.
+- The bundled `mold` recipe now builds only the Rust rewrite, pinned to upstream commit `a9c709b8a437c1e1627b065b771e32ce331ba363`. The C++ 2.42.1 recipe is gone. That commit needs rustc 1.95.0 or newer (checked: stock 1.95.0 compiles it, stock 1.94.1 fails on two unstable std APIs). Below 1.95.0 the recipe still opts in to them with RUSTC_BOOTSTRAP for this one native tool; from 1.95.0 on it builds with the stock compiler, decided from the tree's `RUSTVERSION`.
 
 ### Removed
 - Removed the `mold-compiler` doctor check. It probed the build compiler for C++20, which only the C++ mold build needed.
@@ -196,7 +196,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.35.2] - 2026-09-30
 
 ### Changed
-- Added a `mold` recipe that builds the Rust rewrite of mold from upstream `main` (pinned commit), which wins over the C++ 2.42.1 recipe by version. The Rust build uses mimalloc only as Rust's global allocator and leaves libc's `malloc` alone, so it no longer crashes under bitbake's pseudo; the C++ recipe stays in the layer for reference. The tree's rustc 1.94.1 still gates two std APIs the Rust mold uses, so the recipe opts in with `RUSTC_BOOTSTRAP` for this one native tool.
+- Added a `mold` recipe that builds the Rust rewrite of mold from upstream `main` (pinned commit), which wins over the C++ 2.42.1 recipe by version. The Rust build uses mimalloc only as Rust's global allocator and leaves libc's `malloc` alone, so it no longer crashes under bitbake's pseudo; the C++ recipe stays in the layer for reference. The tree's rustc 1.94.1 still gates two std APIs the Rust mold uses, so the recipe opts in with RUSTC_BOOTSTRAP for this one native tool.
 
 ### Fixed
 - Fixed `bakar build` raising a `UnicodeDecodeError` traceback when the kas YAML argument names a file that is not valid UTF-8; it now takes the same "cannot classify this YAML" exit as any other unparseable file.
@@ -217,10 +217,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upgraded the bundled `mold` recipe from 2.41.0 to 2.42.1, configuring it to use the system allocator instead of mimalloc to prevent startup crashes when running alongside bitbake's pseudo emulation.
 
 ### Fixed
-- Fixed `mold.bbclass`'s native/nativesdk/cross/crosssdk/cross-canadian/allarch exclusion gate returning before clearing `MOLD_LDFLAGS`, which left those classes carrying the unconditional `TARGET_LDFLAGS:append`'s default `-fuse-ld=mold -B<wrapper>` with no wrapper ever staged for them - `collect2: cannot find 'ld'` on the first such recipe to actually link (observed on `zstd-native`). Never exercised before a real `--mold`/`--mold-baseline` build ran to completion.
+- Fixed `mold.bbclass`'s native/nativesdk/cross/crosssdk/cross-canadian/allarch exclusion gate returning before clearing MOLD_LDFLAGS, which left those classes carrying the unconditional `TARGET_LDFLAGS:append`'s default `-fuse-ld=mold -B<wrapper>` with no wrapper ever staged for them - `collect2: cannot find 'ld'` on the first such recipe to actually link (observed on `zstd-native`). Never exercised before a real `--mold`/`--mold-baseline` build ran to completion.
 - Removed the deprecated `S = "${WORKDIR}/git"` assignment from the bundled `mold-native` recipe; this oe-core release now fails `do_unpack` fatally on it since bitbake.conf's own default already resolves `S` to this path for a `gitsm` fetcher with no subdir override. Only reachable via the mold arm's `DEPENDS` (the baseline arm never builds `mold-native`), so never exercised before now either.
 - Fixed builds failing during bitbake recipe parsing when invoked from a workspace repository beside `meta-avocado` by declaring empty layers for the entry repository in the generated wrapper configuration.
-- Fixed `mold.bbclass` failing to invalidate `do_prepare_recipe_sysroot` cached signatures when the wrapper script was edited by tracking the script in the task's `file-checksums`.
+- Fixed `mold.bbclass` failing to invalidate do_prepare_recipe_sysroot cached signatures when the wrapper script was edited by tracking the script in the task's `file-checksums`.
 
 ## [0.34.0] - 2026-09-26
 
@@ -436,7 +436,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Fixed a hard system freeze: a stale transient build scope left by a SIGKILL, OOM, or reaper no longer blocks the next same-config build with a cryptic exit 1; `reset-failed` is run before scope creation to flush the dead unit.
 - Fixed `is_meta_avocado` mis-classifying generated build YAMLs as non-meta-avocado builds, which caused `KAS_WORK_DIR` to point at the build subdirectory and prevented kas from resolving root-level layer checkouts.
-- Fixed the `_remote_only_dirs` helper crashing with `FileNotFoundError` when the local workspace path does not exist on the current host (e.g., in CI), falling back to no extra excludes instead of aborting the dispatch.
+- Fixed the _remote_only_dirs helper crashing with `FileNotFoundError` when the local workspace path does not exist on the current host (e.g., in CI), falling back to no extra excludes instead of aborting the dispatch.
 - Fixed `stress-parse` lock and socket removal using the hardcoded path `build/` instead of the configured `build_dir_name`, which caused it to miss the correct directory for BSP families such as `qcom-wayland`.
 - Fixed a duplicate terminal event emitted when a lock-ownership refusal (`LockHeldByPeerError`) occurred during build launch; the outcome is now reported exactly once with the correct reason instead of also emitting a spurious `wrapper-crash` event.
 - Fixed `bakar stop` hardcoding the run-directory path to `"build"`, causing it to scan the wrong directory for BSP families that produce a `build-<distro>` directory.
@@ -590,7 +590,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bakar stop` now removes the stale `bitbake.lock` and `bitbake.sock` files from the build TOPDIR after the build process is confirmed no longer running, so the next build is not blocked by a leftover lock; the `bitbake-cookerdaemon.log` is preserved for post-mortem analysis.
 - Host-mode `bakar monitor`, `bakar report`, and the build-end stats now read the host client's sccache daemon over its unix socket, so the common (containerless) build path surfaces per-language and per-node distribution data instead of reporting the daemon absent.
 - `bakar getvar`, `bakar dump`, and `bakar shell` now print a clean `Error:` line naming the missing host toolchain (and the fix) instead of a raw traceback when `buildtools-extended` is absent.
-- Fixed BSP (NXP/TI) family detection being lost when `-w`/`--workspace` chdir'd to the workspace root from inside a BSP subdirectory; the invoking directory is now captured before the chdir so `bsp_from_cwd` still resolves `ti`/`nxp`.
+- Fixed BSP (NXP/TI) family detection being lost when `-w`/`--workspace` chdir'd to the workspace root from inside a BSP subdirectory; the invoking directory is now captured before the chdir so bsp_from_cwd still resolves `ti`/`nxp`.
 - `BAKAR_SCCACHE_DIST=0` now correctly disables the sccache-dist overlay even when `config.toml` has it enabled, restoring the documented `BAKAR_*` env-override contract and a clean no-sccache baseline.
 - `bakar setup`'s git-identity remediation now writes the identity where the check reads it (via `git -C <probe_dir> config`, not `git config --global`), so it no longer aborts the setup plan when launched outside a git repo and no longer targets a location the check never inspects.
 - Clean/from-scratch builds no longer abort at parse in OE's connectivity sanity check; bakar's generic tuning overlay now sets `CONNECTIVITY_CHECK_URIS = ""` (surviving `bakar clean`), since all sources come from the shared `DL_DIR` and the reachability probe is redundant here.
@@ -663,7 +663,7 @@ reported with actionable fix hints before the build starts.
 
 - Added `bakar stop`, a command that gracefully halts a running `bakar build` without corrupting in-flight recipe workdirs. It dispatches on execution mode: container builds are resolved by a `bakar.run_id` label injected at launch and signalled inside the container so bitbake runs its own graceful shutdown, while host builds receive a process-group SIGINT, then a 60-second grace period, then SIGTERM and SIGKILL. `--force` skips the SIGINT grace wait; a positional kas YAML targets BYO/generic workspaces (mirroring `bakar build`/`bakar log`), and `--manifest`/`--workspace` resolve NXP/TI workspaces. The persistent `bitbake-hashserv` daemon and other workspaces are never touched. See [docs/stop.md](docs/stop.md).
 - Added unclean-stop detection: when a prior build was killed without `bakar stop` (a raw `kill -9`, power loss, or OOM kill), the next `bakar build` detects the stale launch record at startup and prints an advisory warning naming the interrupted step and the run's `kas.log`. The warning never blocks or auto-repairs the build.
-- Added a `check_override_syntax` pre-flight check to `bakar doctor` that flags deprecated Yocto override syntax (`VAR_append`, `VAR_prepend`, `VAR_remove`, including function-definition and `${PN}` forms) in active layers. Recipe files (`.bb`, `.bbappend`, `.inc`) produce a BLOCK finding and `.conf` files a WARN. The check gates on the local bitbake version (the underscore form was dropped in bitbake 2.8 / scarthgap) and skips gracefully when bitbake is absent or older.
+- Added a `check_override_syntax` pre-flight check to `bakar doctor` that flags deprecated Yocto override syntax (`VAR_append`, VAR_prepend, VAR_remove, including function-definition and `${PN}` forms) in active layers. Recipe files (`.bb`, `.bbappend`, `.inc`) produce a BLOCK finding and `.conf` files a WARN. The check gates on the local bitbake version (the underscore form was dropped in bitbake 2.8 / scarthgap) and skips gracefully when bitbake is absent or older.
 - Added cross-validation checks to `bakar layers inspect` that surface `LAYERSERIES_COMPAT` mismatches against the distro codename, duplicate `BBFILE_PRIORITY` values, and orphaned `.bbappend` files whose base recipe is not provided by any active layer.
 - Added a `--json` flag to `bakar doctor` and `bakar triage` for machine-readable output.
 - Added support for colon-separated kas overlay syntax (`machine.yml:overlay.yml`) in `bakar getvar`, matching the overlay handling already in `bakar build`, `bakar bitbake`, and `bakar dump`.
@@ -701,14 +701,14 @@ reported with actionable fix hints before the build starts.
 
 ### Changed
 
-- Container pre-flight probes (`check_container_os`, `check_container_bitbake`) now retry once on a cold-start timeout so a single slow docker daemon startup no longer silently disarms the BLOCK gate for broken Python 3.13/3.14 containers.
+- Container pre-flight probes (check_container_os, `check_container_bitbake`) now retry once on a cold-start timeout so a single slow docker daemon startup no longer silently disarms the BLOCK gate for broken Python 3.13/3.14 containers.
 - `bakar report` no longer reports `peak build/tmp` size; the background `du -sb` sampler that collected it has been removed. The `du.tsv` artifact is no longer written to run directories.
 - The live build UI now correctly resets its progress bar and phase between chained bitbake invocations (e.g. `bakar rebuild`'s `cleansstate && build`), so the second run displays its own parse → setscene → tasks cycle rather than showing a stale "full" bar during parse.
 - Installation instructions updated: `bakar` can now be installed from PyPI with `uv tool install bakar` or `pip install bakar`.
 
 ### Removed
 
-- Removed `peak_tmp_bytes` field from `bakar report` output and `--json` output; the `du.tsv` artifact is no longer produced in run directories.
+- Removed peak_tmp_bytes field from `bakar report` output and `--json` output; the `du.tsv` artifact is no longer produced in run directories.
 - Removed the `time.log` artifact (`/usr/bin/time -v` wrapper) from run directories; nothing in bakar read it.
 
 ## [0.15.1] - 2026-06-05
@@ -809,7 +809,7 @@ reported with actionable fix hints before the build starts.
 ### Changed
 
 - Loading `.bakar.toml` now emits a warning for any unrecognised key, naming both the unknown key and the valid keys for that section. Config loading still succeeds; the warning is never a hard failure.
-- Fixed two errors in `docs/configuration.md`: the `vendors.toml` example used `[[vendor]]` instead of the correct `[[vendors]]`, and `manifest_pattern` instead of the correct `manifest_regex`.
+- Fixed two errors in `docs/configuration.md`: the `vendors.toml` example used `[[vendor]]` instead of the correct `[[vendors]]`, and manifest_pattern instead of the correct `manifest_regex`.
 
 ## [0.11.0] - 2026-06-03
 
@@ -951,7 +951,7 @@ reported with actionable fix hints before the build starts.
 - `for-all` now catches `OSError` from subprocess invocation so a removed or inaccessible repo directory counts as a failure and the loop continues to remaining repos.
 
 ### Fixed
-- Fixed `bakar report` crashing with `UnboundLocalError` on NXP/TI workspaces due to the `family` variable being read before assignment.
+- Fixed `bakar report` crashing with UnboundLocalError on NXP/TI workspaces due to the `family` variable being read before assignment.
 - Fixed `bakar diff` silently treating BYO kas configs as empty NXP manifests; dispatch now keys on file type (`.xml` → structural diff, everything else → `kas diff`).
 - Fixed `bakar doctor` kas-yaml-syntax check incorrectly returning FAIL for a valid YAML when the remote branch was rebased; the check now returns SKIP so the subsequent sync step can repair git state.
 - Fixed `bakar doctor` kas-yaml-syntax error message showing an irrelevant INFO log line instead of the actual ERROR message.

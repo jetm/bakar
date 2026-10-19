@@ -11,7 +11,7 @@ reached only through an explicit opt-in (``--container``, ``BAKAR_CONTAINER``,
 or a ``[build] container`` toggle). The mode is carried on
 ``BuildConfig.host_mode`` and selects only the executable name plus the
 container-specific extras noted below - path translation into ``/work``, the
-runtime label used by ``bakar stop``, and the ``KAS_RUNTIME_ARGS`` handling.
+runtime label used by ``bakar stop``, and the KAS_RUNTIME_ARGS handling.
 Everything else - overlays, parallelism, PTY, UI parsing, telemetry - is
 mode-independent.
 
@@ -486,7 +486,7 @@ def _ccache_args(
 ) -> list[str]:
     """Return ``['--runtime-args', '<concatenated string>']`` for container builds.
 
-    ``kas-container`` unconditionally resets ``KAS_RUNTIME_ARGS`` to its own
+    ``kas-container`` unconditionally resets KAS_RUNTIME_ARGS to its own
     defaults before its option-parsing loop, so injecting the flag via an env
     var is silently discarded.  The ``--runtime-args`` CLI flag (processed
     after the reset) is the only reliable injection point.  Returns an empty
@@ -1533,7 +1533,7 @@ def _build_env(
 
     The ccache bind-mount (``/work/ccache``) is injected at the call
     site via ``_ccache_args()`` as a ``--runtime-args`` CLI flag, not
-    here.  ``kas-container`` unconditionally overwrites ``KAS_RUNTIME_ARGS``
+    here.  ``kas-container`` unconditionally overwrites KAS_RUNTIME_ARGS
     before its option-parsing loop, making env-var injection unreliable.
 
     ``python_executable`` overrides the host-mode BB_PYTHON3 and PATH
