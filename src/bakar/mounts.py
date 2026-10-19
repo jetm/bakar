@@ -682,6 +682,40 @@ def probe_statfs(paths: Sequence[Path], *, deadline_s: float) -> dict[Path, tupl
     return {path: results[path] for path in paths}
 
 
+def probe_free_bytes(paths: Sequence[Path], *, deadline_s: float) -> dict[Path, int | None]:
+    """Bounded, concurrent free-space probe for ``paths``.
+
+    Runs ``stat -f -c '%a %S'`` (available blocks, fundamental block size)
+    through :func:`_run_bounded`, one child per unique path, all sharing one
+    ``deadline_s``, so a wedged NFS share costs the deadline once rather than
+    hanging the caller the way an in-process ``statvfs`` would.
+
+    Returns a dict keyed by the input paths. The value is the byte product of
+    the two integers, or ``None`` when the child was killed at the deadline,
+    exited non-zero, or printed anything other than two non-negative integers.
+    Never raises.
+    """
+    unique_paths = list(dict.fromkeys(paths))
+    deadline = time.monotonic() + deadline_s
+    try:
+        batch = _run_bounded({path: ["stat", "-f", "-c", "%a %S", "--", str(path)] for path in unique_paths}, deadline)
+    except OSError:  # the stat binary is missing or cannot be spawned
+        return dict.fromkeys(paths)
+
+    results: dict[Path, int | None] = {}
+    for path, (rc, stdout, _stderr) in batch.items():
+        results[path] = _parse_free_bytes(stdout) if rc == 0 else None
+    return {path: results.get(path) for path in paths}
+
+
+def _parse_free_bytes(stdout: str) -> int | None:
+    """Multiply the two non-negative integers ``stat -f -c '%a %S'`` prints."""
+    fields = stdout.split()
+    if len(fields) != 2 or not all(f.isascii() and f.isdigit() for f in fields):
+        return None
+    return int(fields[0]) * int(fields[1])
+
+
 def assess_cache_mounts(
     targets: Sequence[tuple[str, Path, bool]],
     *,
