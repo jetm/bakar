@@ -262,3 +262,57 @@ def test_summary_goes_to_stderr_without_json(env: Path) -> None:
     assert result.exit_code == 0
     assert result.stdout == ""
     assert "succeeded" in result.stderr
+
+
+def test_sentinel_written_between_read_and_liveness_probe_is_seen(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run = _run_dir(env)
+    _register(env, run)
+
+    def probe(_u: str) -> bool:
+        _sentinel(env, 2)
+        return False
+
+    monkeypatch.setattr(status_cmd, "_unit_active", probe)
+    rec = status_cmd.compute_status(UNIT)
+    assert rec is not None
+    assert (rec.state, rec.exit_code) == ("failed", 2)
+
+
+def test_unregistered_unit_finishing_during_the_probe_is_not_dropped(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def probe(_u: str) -> bool:
+        _sentinel(env, 2)
+        return False
+
+    monkeypatch.setattr(status_cmd, "_unit_active", probe)
+    rec = status_cmd.compute_status(UNIT)
+    assert rec is not None
+    assert (rec.state, rec.exit_code) == ("failed", 2)
+
+
+def test_no_handle_uses_the_registered_unit_liveness(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run = _run_dir(env)
+    _register(env, run)
+    monkeypatch.setattr(status_cmd, "_unit_active", lambda _u: True)
+    rec = status_cmd.compute_status(None)
+    assert rec is not None
+    assert (rec.state, rec.unit) == ("running", UNIT)
+
+
+def test_per_run_terminal_event_does_not_end_an_active_unit(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    first = _run_dir(env, "20261019-120001-1")
+    second = _run_dir(env, "20261019-120002-2")
+    _terminal(first, 0)
+    (env / "runtime" / f"{UNIT}.runs").write_text(
+        "".join(json.dumps({"run_id": r.name, "run_dir": str(r), "pid": 1}) + "\n" for r in (first, second))
+    )
+    monkeypatch.setattr(status_cmd, "_unit_active", lambda _u: True)
+    for handle in (first.name, second.name, UNIT):
+        rec = status_cmd.compute_status(handle)
+        assert rec is not None
+        assert rec.state == "running"
+    _sentinel(env, 0)
+    rec = status_cmd.compute_status(first.name)
+    assert rec is not None
+    assert rec.state == "succeeded"

@@ -163,3 +163,13 @@ def test_unresolved_with_json_prints_nothing_on_stdout(monkeypatch: pytest.Monke
     assert result.exit_code == 2
     assert result.stdout == ""
     assert "nope" in result.stderr
+
+
+@pytest.mark.parametrize("option", ["--interval", "--timeout"])
+@pytest.mark.parametrize("value", ["nan", "inf"])
+def test_non_finite_interval_and_timeout_are_refused(monkeypatch: pytest.MonkeyPatch, option: str, value: str) -> None:
+    calls = _script(monkeypatch, [_rec("running")])
+    result = CliRunner().invoke(app, ["wait", "R1", option, value])
+    assert result.exit_code == 2
+    assert option in result.output
+    assert calls == []

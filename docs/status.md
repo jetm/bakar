@@ -53,6 +53,11 @@ in order:
 3. Liveness, which separates `running` (or `starting`) from `unknown` and never
    produces `succeeded` or `failed`.
 
+While a detached unit is still active and has no sentinel, every run it
+registered reports `running`, even one whose own terminal event is recorded.
+For a multi-release preset run the unit's recorded exit status decides each
+run's final state.
+
 A run that died from SIGKILL, a reboot or an out-of-memory kill leaves no exit
 status behind, so it reports `unknown` rather than a guessed failure.
 

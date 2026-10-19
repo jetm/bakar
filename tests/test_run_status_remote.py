@@ -80,3 +80,15 @@ def test_hyphen_host_refused(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
         result = runner.invoke(app, [cmd, "run1", "--on", "-oProxyCommand=x"])
         assert result.exit_code == 2
     mock.assert_not_called()
+
+
+def test_workspace_with_on_is_refused_before_ssh(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    mock = MagicMock()
+    monkeypatch.setattr(rd, "_ssh_bash_capture", mock)
+    monkeypatch.setattr(rd, "preflight_remote", mock)
+    for cmd in ("status", "wait"):
+        result = runner.invoke(app, [cmd, "run1", "--on", "pc2", "-w", str(tmp_path)])
+        assert result.exit_code == 2
+        assert "--workspace" in result.output
+        assert "--on" in result.output
+    mock.assert_not_called()

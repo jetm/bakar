@@ -117,24 +117,7 @@ def _failure(run_dir: Path | None) -> dict[str, str | None] | None:
     return {"recipe": first.get("recipe"), "task": first.get("task")}
 
 
-def _newest_run(workspace: Path | None) -> Path | None:
-    try:
-        runs_dirs, _root, _label, _tw = _resolve_triage_dirs(None, workspace)
-    except ClickExit:
-        return None
-    newest: Path | None = None
-    for runs_dir, _family in runs_dirs:
-        if not runs_dir.is_dir():
-            continue
-        for entry in runs_dir.iterdir():
-            if entry.is_dir() and (newest is None or entry.name > newest.name):
-                newest = entry
-    return newest
-
-
 def _find_foreground(handle: str | None, workspace: Path | None) -> Path | None:
-    if handle is None:
-        return _newest_run(workspace)
     try:
         runs_dirs, _root, _label, _tw = _resolve_triage_dirs(None, workspace)
     except ClickExit:
@@ -161,24 +144,41 @@ def _unit_log(unit: str) -> str | None:
         return None
 
 
+def _recorded(unit: str | None, run_dir: Path | None, *, terminal: bool) -> tuple[str, int | None] | None:
+    """The outcome a recorded exit status gives: sentinel first, then (optionally) the terminal event."""
+    sentinel = detach_records.read_sentinel(unit) if unit else None
+    if sentinel is not None:
+        return ("succeeded" if sentinel == 0 else "failed"), sentinel
+    if terminal and run_dir is not None:
+        code = _terminal_exit_code(run_dir)
+        if code is not None:
+            return ("succeeded" if code == 0 else "failed"), code
+    return None
+
+
 def _state_for(
     *,
     unit: str | None,
     run_id: str | None,
     run_dir: Path | None,
 ) -> tuple[str, int | None]:
-    """Apply the precedence: sentinel, terminal event, then liveness."""
-    sentinel = detach_records.read_sentinel(unit) if unit else None
-    if sentinel is not None:
-        return ("succeeded" if sentinel == 0 else "failed"), sentinel
-    if run_dir is not None:
-        code = _terminal_exit_code(run_dir)
-        if code is not None:
-            return ("succeeded" if code == 0 else "failed"), code
-    unit_alive = _unit_active(unit) if unit else False
-    if unit_alive and run_id is None:
-        return "starting", None
-    if unit_alive or (run_dir is not None and is_build_running(run_dir)[0]):
+    """Apply the precedence: sentinel, then unit liveness, then the terminal event.
+
+    A unit can carry several runs (one per release), so a run's own terminal
+    event does not end the unit while the unit is still active.
+    """
+    done = _recorded(unit, run_dir, terminal=unit is None)
+    if done is not None:
+        return done
+    if unit:
+        if _unit_active(unit):
+            return ("starting" if run_id is None else "running"), None
+        # The unit can write its sentinel and be collected between the first
+        # read and the liveness probe; look again before concluding.
+        done = _recorded(unit, run_dir, terminal=True)
+        if done is not None:
+            return done
+    if run_dir is not None and is_build_running(run_dir)[0]:
         return "running", None
     return "unknown", None
 
@@ -189,12 +189,17 @@ def compute_status(handle: str | None, *, workspace: Path | None = None) -> Stat
     run_id: str | None = None
     run_dir: Path | None = None
 
-    if handle is not None and detach_records.UNIT_RE.fullmatch(handle):
+    if handle is not None and detach_records.is_unit_name(handle):
         unit = handle
         run_id, run_dir = _unit_run(unit)
         # An unregistered unit is only real while systemd still knows it or a
         # sentinel exists; otherwise the handle resolves to nothing.
-        if run_id is None and detach_records.read_sentinel(unit) is None and not _unit_active(unit):
+        if (
+            run_id is None
+            and detach_records.read_sentinel(unit) is None
+            and not _unit_active(unit)
+            and detach_records.read_sentinel(unit) is None
+        ):
             return None
     elif handle is not None and (found_unit := detach_records.find_unit_for_run(handle)) is not None:
         unit = found_unit
@@ -209,6 +214,7 @@ def compute_status(handle: str | None, *, workspace: Path | None = None) -> Stat
         if run_dir is None:
             return None
         run_id = run_dir.name
+        unit = detach_records.find_unit_for_run(run_id)
 
     state, exit_code = _state_for(unit=unit, run_id=run_id, run_dir=run_dir)
     done, total, running, elapsed = _progress(run_dir)
@@ -233,11 +239,15 @@ def _fmt(value: object) -> str:
     return "?" if value is None else str(value)
 
 
+def tasks_fragment(rec: StatusRecord) -> str:
+    return f"tasks={_fmt(rec.tasks_done)}/{_fmt(rec.tasks_total)} running={_fmt(rec.tasks_running)}"
+
+
 def render_summary(rec: StatusRecord) -> str:
     parts = [f"{rec.run_id or rec.unit} {rec.state}"]
     if rec.exit_code is not None:
         parts.append(f"exit={rec.exit_code}")
-    parts.append(f"tasks={_fmt(rec.tasks_done)}/{_fmt(rec.tasks_total)} running={_fmt(rec.tasks_running)}")
+    parts.append(tasks_fragment(rec))
     if rec.failure:
         parts.append(f"failed={_fmt(rec.failure.get('recipe'))}:{_fmt(rec.failure.get('task'))}")
     return " ".join(parts)
@@ -304,6 +314,9 @@ def status(
     reported and 2 when the handle does not resolve.
     """
     if on is not None:
+        if workspace is not None:
+            print("bakar status: -w/--workspace cannot be combined with --on", file=sys.stderr)
+            raise typer.Exit(code=2)
         argv = ["status"]
         if handle is not None:
             argv.append(handle)

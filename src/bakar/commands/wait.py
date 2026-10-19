@@ -7,6 +7,7 @@ polling loop, the progress lines and the exit-status mapping.
 from __future__ import annotations
 
 import json
+import math
 import sys
 import time
 from datetime import UTC, datetime
@@ -16,7 +17,7 @@ import typer
 
 from bakar.commands._app import app
 from bakar.commands._helpers import WorkspaceOption
-from bakar.commands.status import OnOption, StatusRecord, compute_status, run_on_host
+from bakar.commands.status import OnOption, StatusRecord, compute_status, run_on_host, tasks_fragment
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -35,16 +36,9 @@ EXIT_TIMEOUT = 124
 _TERMINAL_EXIT = {"succeeded": EXIT_SUCCEEDED, "failed": EXIT_FAILED, "unknown": EXIT_UNKNOWN}
 
 
-def _fmt(value: object) -> str:
-    return "?" if value is None else str(value)
-
-
 def progress_line(rec: StatusRecord, handle: str, now: datetime) -> str:
     label = rec.run_id or rec.unit or handle
-    return (
-        f"{now.strftime('%H:%M:%S')} {label} {rec.state} "
-        f"tasks={_fmt(rec.tasks_done)}/{_fmt(rec.tasks_total)} running={_fmt(rec.tasks_running)}"
-    )
+    return f"{now.strftime('%H:%M:%S')} {label} {rec.state} {tasks_fragment(rec)}"
 
 
 def run_wait(
@@ -104,7 +98,14 @@ def wait(
     Exit 0 succeeded, 1 failed, 3 unknown, 124 timeout while starting or
     running, 2 when the handle does not resolve. Progress goes to stderr.
     """
+    for name, value in (("--interval", interval), ("--timeout", timeout)):
+        if value is not None and not math.isfinite(value):
+            print(f"bakar wait: {name} must be a finite number, got {value}", file=sys.stderr)
+            raise typer.Exit(code=EXIT_UNRESOLVED)
     if on is not None:
+        if workspace is not None:
+            print("bakar wait: -w/--workspace cannot be combined with --on", file=sys.stderr)
+            raise typer.Exit(code=EXIT_UNRESOLVED)
         argv = ["wait"]
         if handle is not None:
             argv.append(handle)
