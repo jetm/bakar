@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from bakar import task_timings
+from bakar import log_text, task_timings
 from bakar.eventlog import (
     _CACHE_BACKEND_EVENT_TYPE,
     _METADATA_EVENT,
@@ -199,6 +199,9 @@ class BuildUIState:
         self._pending_log: str | None = None
         self.warn_count: int = 0
         self.error_count: int = 0
+        # First bitbake/kas error line of the build, cleaned and bounded;
+        # recorded on the failing step event as its reason.
+        self.first_error: str | None = None
         # Continuation-block state: opened when an ERROR/FATAL severity line
         # is forwarded, so the indented detail lines under it (e.g. bitbake's
         # sanity-checker reasons) reach the console too. See process_line's
@@ -278,6 +281,11 @@ class BuildUIState:
         forward it to ``live.console.print()``. Returns ``None`` for all
         other lines.
         """
+        # First statement on purpose: kas's own error lines carry no colon after
+        # the level so the severity matcher never sees them, and the
+        # event-driven short circuit below must not hide them either.
+        if self.first_error is None:
+            self.first_error = log_text.error_line(line)
         # 0. Continuation block: an open block (from a prior ERROR/FATAL head
         # line) claims every following indented, non-blank line up to
         # CONTINUATION_MAX_LINES, then one marker line, then drops the rest
