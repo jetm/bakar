@@ -27,8 +27,8 @@ UNIT_RE = re.compile(r"^bakar-(detach|dispatch)-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
 
 REGISTRATION_ENV = "BAKAR_DETACH_UNIT"
 
-# Mirrors _FORWARDED_SESSION_VARS in steps/remote_dispatch.py; a leaf cannot
-# import it, so the two lists are kept equal by a test.
+# The one list of session variables forwarded into a detached unit; both
+# bakar.detach and steps/remote_dispatch.py read it from here.
 SESSION_FORWARD_VARS: tuple[str, ...] = (
     "SSH_AUTH_SOCK",
     "http_proxy",

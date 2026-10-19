@@ -42,9 +42,12 @@ def test_unit_names() -> None:
 
 
 def test_session_vars_match_remote_dispatch() -> None:
-    from bakar.steps.remote_dispatch import _FORWARDED_SESSION_VARS
+    import inspect
 
-    assert dr.SESSION_FORWARD_VARS == _FORWARDED_SESSION_VARS
+    from bakar.steps import remote_dispatch as rd
+
+    assert not hasattr(rd, "_FORWARDED_SESSION_VARS")
+    assert "detach_records.SESSION_FORWARD_VARS" in inspect.getsource(rd.build_remote_script)
 
 
 def test_log_and_sentinel_live_under_runtime_dir(rt: Path) -> None:

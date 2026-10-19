@@ -2283,3 +2283,161 @@ def test_interrupt_message_after_a_unit_marker_does_not_claim_it_is_running(
     assert "a unit was requested" in out
     assert f"`bakar ps` / `bakar stop` on {HOST}" in out
     assert "if it started" in out
+
+
+# ---------------------------------------------------------------------------
+# --detach: dispatch-only flag, run registration, handle, no follow
+# ---------------------------------------------------------------------------
+
+
+_DETACH_UNIT = "bakar-dispatch-20260716-120000-aabbcc"
+
+
+def test_detach_is_not_forwarded_to_the_remote() -> None:
+    args = ["build", "my.yml", "--on", "pc2", "--detach"]
+    assert strip_dispatch_options(args) == ["build", "my.yml"]
+    assert "--detach" not in strip_dispatch_options(["build", "--detach", "--on=pc2", "my.yml"])
+
+
+def test_remote_script_registers_runs_under_the_dispatch_unit() -> None:
+    from bakar import detach_records
+
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True),
+        unit=_DETACH_UNIT,
+    )
+    lines = script.splitlines()
+    setenv = f"--setenv={detach_records.REGISTRATION_ENV}={_DETACH_UNIT}"
+    detached = next(line for line in lines if "systemd-run --user --unit" in line)
+    assert setenv in detached
+    # The coupled `exec` fallback has no unit to register under.
+    exec_line = next(line for line in lines if line.startswith("exec ") and "systemd-run" not in line)
+    assert detach_records.REGISTRATION_ENV not in exec_line
+
+
+def test_remote_script_quotes_the_registration_setenv() -> None:
+    hostile = "u; touch /tmp/pwned"
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True),
+        unit=hostile,
+    )
+    assert shlex.quote(f"--setenv=BAKAR_DETACH_UNIT={hostile}") in script
+
+
+def test_session_loop_names_exactly_the_shared_session_vars() -> None:
+    from bakar import detach_records
+
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True),
+        unit=_DETACH_UNIT,
+    )
+    loop = next(line for line in script.splitlines() if line.strip().startswith("for v in "))
+    names = loop.strip().removeprefix("for v in ").removesuffix("; do").split()
+    assert tuple(names) == detach_records.SESSION_FORWARD_VARS
+    assert not hasattr(rd, "_FORWARDED_SESSION_VARS")
+
+
+def test_dispatch_does_not_forward_a_local_detach_unit(
+    fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BAKAR_DETACH_UNIT", "bakar-detach-20260101-000000-ffffff")
+    monkeypatch.setenv("BAKAR_OTHER", "1")
+    fake_sp.popen_lines = []
+    rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "--on", HOST]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True),
+    )
+    script = fake_sp.last_proc.stdin.buffer
+    assert "BAKAR_OTHER=1" in script
+    assert "bakar-detach-20260101" not in script
+
+
+def _detach_dispatch(fake_sp: FakeSubprocess, monkeypatch, statuses, hints=None):
+    fake_sp.popen_lines = [
+        "BAKAR_DISPATCH_START=20260716-120000\n",
+        f"BAKAR_DISPATCH_UNIT={_DETACH_UNIT}\n",
+        f"BAKAR_DISPATCH_LOG=/run/user/1000/{_DETACH_UNIT}.log\n",
+    ]
+    queue = list(statuses)
+    asked: list[str] = []
+
+    def capture(host, script, **kwargs):
+        asked.append(script)
+        out = queue.pop(0) if len(queue) > 1 else queue[0]
+        return subprocess.CompletedProcess(["ssh"], 0, stdout=out, stderr="")
+
+    def follow(*args, **kwargs):  # pragma: no cover - failing is the assertion
+        raise AssertionError("a detached dispatch must not follow the remote log")
+
+    monkeypatch.setattr(rd, "_ssh_bash_capture", capture)
+    monkeypatch.setattr(rd, "_follow_remote_log", follow)
+    monkeypatch.setattr(rd.time, "sleep", lambda _s: None)
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "--on", HOST, "--detach"]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True, detach=True, hint_lines=hints),
+    )
+    return rc, asked
+
+
+def test_detached_dispatch_prints_one_handle_and_never_follows(
+    fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    statuses = [
+        json.dumps({"run_id": None, "state": "starting"}),
+        json.dumps({"run_id": "20260716-120005", "state": "running", "log": "/l"}),
+    ]
+    hint_calls: list[tuple] = []
+
+    def hints(handle, run_id, host):
+        hint_calls.append((handle, run_id, host))
+        return ["hint: wait: x"]
+
+    rc, asked = _detach_dispatch(fake_sp, monkeypatch, statuses, hints)
+    assert rc == 0
+    cap = capsys.readouterr()
+    out_lines = [line for line in cap.out.splitlines() if line.strip()]
+    assert len(out_lines) == 1
+    handle = json.loads(out_lines[0])
+    assert handle == {
+        "run_id": "20260716-120005",
+        "unit": _DETACH_UNIT,
+        "host": HOST,
+        "log": "/l",
+        "state": "running",
+    }
+    assert "hint: wait: x" in cap.err
+    assert hint_calls == [(_DETACH_UNIT, "20260716-120005", HOST)]
+    assert len(asked) == 2
+    assert all(f"bakar status {_DETACH_UNIT} --json" in script for script in asked)
+    assert len([a for k, a in fake_sp.calls if k == "Popen"]) == 1
+
+
+def test_detached_dispatch_returns_the_remote_exit_when_status_says_failed(
+    fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    rc, _ = _detach_dispatch(fake_sp, monkeypatch, [json.dumps({"run_id": None, "state": "failed", "exit_code": 2})])
+    assert rc == 2
+    assert json.loads(capsys.readouterr().out)["state"] == "failed"
+
+
+def test_detached_dispatch_without_markers_says_the_host_could_not_detach(
+    fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_sp.popen_lines = ["BAKAR_DISPATCH_START=20260716-120000\n", "NOTE: built in the foreground\n"]
+    fake_sp.popen_rc = 4
+    monkeypatch.setattr(rd, "_ssh_bash_capture", lambda *a, **k: pytest.fail("no status poll without a unit"))
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "--on", HOST, "--detach"]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True, detach=True),
+    )
+    assert rc == 4
+    cap = capsys.readouterr()
+    assert cap.out == ""
+    assert "could not detach" in cap.err

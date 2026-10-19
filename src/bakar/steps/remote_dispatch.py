@@ -25,12 +25,14 @@ an assignment, a loop or a redirect must use the stdin form.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import secrets
 import shlex
 import subprocess
 import sys
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -39,12 +41,13 @@ from typing import TYPE_CHECKING
 
 from rich.console import Console
 
+from bakar import detach_records
 from bakar.buildtools import parse_layerseries_corenames
 from bakar.config import WORKSPACE_FEED_DIRNAME, WORKSPACE_FEED_STAGE_DIRNAME
 from bakar.observability import RUN_ID_TS_FORMAT
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Iterable, Mapping
 
 # stderr so `bakar build --on <host> > log` keeps chrome (plan, run-id) out of
 # the piped build log, matching the project convention in commands/_app.py.
@@ -169,7 +172,7 @@ def build_rsync_argv(ws_root: Path, host: str) -> list[str]:
 # Version-mismatch override flags that exist only to drive `--on` dispatch and
 # must never reach the remote build (an older remote bakar rejects `--yes`, and
 # it is a no-op there in any case).
-_DISPATCH_ONLY_FLAGS = frozenset({"--yes", "-y"})
+_DISPATCH_ONLY_FLAGS = frozenset({"--yes", "-y", "--detach"})
 
 # `bakar build`'s single-dash options, split by whether they take a value. Click
 # reads a short-option token letter by letter: a flag lets the next letter be
@@ -327,19 +330,9 @@ def remote_log_expr(unit: str) -> str:
 # outlives the session, and dragging that session's whole environment into a
 # long-lived unit is how a stale DISPLAY or SSH_CONNECTION ends up confusing a
 # build hours after the session that set them is gone.
-_FORWARDED_SESSION_VARS: tuple[str, ...] = (
-    "SSH_AUTH_SOCK",
-    "http_proxy",
-    "https_proxy",
-    "no_proxy",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "LANG",
-    "LC_ALL",
-)
+#
+# The list itself is `detach_records.SESSION_FORWARD_VARS`, shared with the
+# local detach path so the two cannot drift apart.
 
 
 def dispatch_unit_name(now: datetime | None = None) -> str:
@@ -421,7 +414,7 @@ def build_remote_script(spec: RemoteScriptSpec, *, unit: str | None = None) -> s
     # string so a value containing a space stays one argv element.
     setenv_lines = [
         "  setenv=()",
-        f"  for v in {' '.join(shlex.quote(name) for name in _FORWARDED_SESSION_VARS)}; do",
+        f"  for v in {' '.join(shlex.quote(name) for name in detach_records.SESSION_FORWARD_VARS)}; do",
         '    if [ -n "${!v:-}" ]; then setenv+=("--setenv=$v=${!v}"); fi',
         "  done",
     ]
@@ -429,6 +422,10 @@ def build_remote_script(spec: RemoteScriptSpec, *, unit: str | None = None) -> s
         [
             "exec systemd-run --user",
             f"--unit={shlex.quote(unit)}",
+            # Makes the unit's front-end record its run ids in this unit's run
+            # registry, so `bakar status <unit>` resolves them. Detached branch
+            # only: the exec fallback has no unit to register under.
+            shlex.quote(f"--setenv={detach_records.REGISTRATION_ENV}={unit}"),
             "--collect",
             "--same-dir",
             "--quiet",
@@ -946,7 +943,7 @@ class _StreamState:
 _stream_state = _StreamState()
 
 
-def _stream_remote_build(host: str, script: str) -> tuple[int, list[str], bool]:
+def _stream_remote_build(host: str, script: str, *, follow: bool = True) -> tuple[int, list[str], bool]:
     """Run the dispatch script on ``host`` and stream the build's output back.
 
     Which of the script's two forms the remote took decides what happens here,
@@ -966,6 +963,9 @@ def _stream_remote_build(host: str, script: str) -> tuple[int, list[str], bool]:
     bounded tail would evict it on any build long enough to matter. Only the
     launch PHASE feeds that list, so the fallback path - where this stream is the
     build's own, unbounded output - cannot grow it without limit.
+
+    With ``follow=False`` (a detached dispatch) a successful launch returns right
+    after the markers, ``(0, launch, True)``, and the log is never followed.
     """
     proc = _ssh_bash_popen(host)
     assert proc.stdin is not None and proc.stdout is not None  # PIPE is set above
@@ -1017,13 +1017,18 @@ def _stream_remote_build(host: str, script: str) -> tuple[int, list[str], bool]:
         console.print(f"[red]the remote build did not start on {host}[/] (launch exit {rc}).")
         return rc, [*launch, *captured], True
 
-    console.print(f"remote build detached as [bold]{unit}[/] on {host}; following {log}")
+    if not follow:
+        console.print(f"remote build detached as [bold]{unit}[/] on {host}")
+    else:
+        console.print(f"remote build detached as [bold]{unit}[/] on {host}; following {log}")
     if _first_match(_DISPATCH_WARN_RE, launch) == "linger-disabled":
         console.print(
             f"[yellow]{host} has no linger enabled[/] - its user manager, and this build with it, "
             f"may be stopped when your last ssh session there closes.\n"
             f"fix it once:  ssh {host} loginctl enable-linger"
         )
+    if not follow:
+        return rc, launch, True
     follow_rc, follow_lines, finished = _follow_remote_log(host, unit, log)
     if not finished:
         console.print(
@@ -1183,15 +1188,78 @@ def preflight_or_report(host: str, *, assume_yes: bool) -> bool:
     return check_versions(detail, assume_yes=assume_yes)
 
 
-def run_remote_build(host: str, script: str, run_root: Path) -> int:
+_DETACH_POLL_SECONDS = 2.0
+_DETACH_POLL_BUDGET_SECONDS = 60.0
+
+
+def _poll_detached_status(host: str, unit: str) -> dict:
+    """Ask the host for ``unit``'s status until a run id is set or the state is terminal.
+
+    Polls every two seconds for at most sixty. Returns the last parsed status
+    record, or an empty dict when the host never answered with JSON.
+    """
+    script = f"bakar status {shlex.quote(unit)} --json\n"
+    record: dict = {}
+    waited = 0.0
+    while True:
+        proc = _ssh_bash_capture(host, script)
+        try:
+            parsed = json.loads(proc.stdout)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            record = parsed
+            if record.get("run_id") or record.get("state") in ("succeeded", "failed"):
+                return record
+        if waited >= _DETACH_POLL_BUDGET_SECONDS:
+            return record
+        time.sleep(_DETACH_POLL_SECONDS)
+        waited += _DETACH_POLL_SECONDS
+
+
+def _report_detached(
+    host: str, launch: list[str], hint_lines: Callable[[str, str | None, str], Iterable[str]] | None
+) -> int:
+    """Print the handle for a detached dispatch and return its exit code."""
+    unit = _first_match(_DISPATCH_UNIT_RE, launch) or ""
+    log = _first_match(_DISPATCH_LOG_RE, launch)
+    record = _poll_detached_status(host, unit)
+    state = record.get("state") or "starting"
+    run_id = record.get("run_id") or None
+    handle = {"run_id": run_id, "unit": unit, "host": host, "log": record.get("log") or log, "state": state}
+    print(json.dumps(handle))
+    if hint_lines is not None:
+        for line in hint_lines(unit, run_id, host):
+            console.print(line, markup=False, highlight=False, soft_wrap=True)
+    if state == "failed":
+        code = record.get("exit_code")
+        return code if isinstance(code, int) and not isinstance(code, bool) and code != 0 else 1
+    return 0
+
+
+def run_remote_build(
+    host: str,
+    script: str,
+    run_root: Path,
+    *,
+    detach: bool = False,
+    hint_lines: Callable[[str, str | None, str], Iterable[str]] | None = None,
+) -> int:
     """Stream ``script`` on ``host`` and report the run id found under ``run_root``.
 
     Returns the remote exit code, 130 on Ctrl-C, or ``_DISPATCH_LOST_EXIT`` when
-    the log stream is lost while the build keeps running.
+    the log stream is lost while the build keeps running. With ``detach`` the log
+    is never followed: once the unit is launched this prints one JSON handle line
+    on stdout and returns 0, or the remote front-end's non-zero status when it
+    failed before returning. A host without a detachable unit has already run the
+    build in the foreground by then, so that is said and its code returned.
     """
     _stream_state.unit_seen = False
     try:
-        rc, captured, finished = _stream_remote_build(host, script)
+        if detach:
+            rc, captured, finished = _stream_remote_build(host, script, follow=False)
+        else:
+            rc, captured, finished = _stream_remote_build(host, script)
     except KeyboardInterrupt:
         if _stream_state.unit_seen:
             # The unit marker is printed before systemd-run runs (the script ends in
@@ -1210,6 +1278,17 @@ def run_remote_build(host: str, script: str, run_root: Path) -> int:
                 f"`bakar ps` / `bakar stop` on {host}."
             )
         return 130
+    if detach:
+        if not _stream_state.unit_seen:
+            console.print(
+                f"[yellow]{host} could not detach the build[/] (no usable systemd user unit there); "
+                f"it ran in the foreground and has already finished with exit {rc}."
+            )
+            return rc
+        if rc != 0:
+            # The launch failure was already reported by _stream_remote_build.
+            return rc
+        return _report_detached(host, captured, hint_lines)
     if not finished:
         # A lost log stream is a transport failure, not a build result: the build
         # is still running under its unit and its exit status is unknown.
@@ -1234,10 +1313,17 @@ class MirrorRequest:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class DispatchFlags:
-    """The user's ``--sccache-dist`` and ``--yes`` choices for one dispatch."""
+    """The user's ``--sccache-dist``, ``--yes`` and ``--detach`` choices for one dispatch.
+
+    ``hint_lines`` builds the next-step hints for a detached dispatch from
+    ``(handle, run_id, host)``. It is injected because the hint builder lives in
+    the commands layer, which this module may not import.
+    """
 
     sccache_dist: bool
     assume_yes: bool
+    detach: bool = False
+    hint_lines: Callable[[str, str | None, str], Iterable[str]] | None = None
 
 
 def dispatch_remote_build(host: str, request: MirrorRequest, flags: DispatchFlags) -> int:
@@ -1283,13 +1369,19 @@ def dispatch_remote_build(host: str, request: MirrorRequest, flags: DispatchFlag
         console.print(f"[red]rsync failed (exit {rsync_rc})[/]; remote build not started.")
         return rsync_rc
 
-    env_vars = {k: v for k, v in os.environ.items() if k.startswith(("BAKAR_", "KAS_"))}
+    # BAKAR_DETACH_UNIT is the dispatch unit's own registration setting, set by
+    # the script's detached branch; a local value forwarded here would register
+    # the remote run under a unit that is not the one being dispatched, and would
+    # leak into the coupled `exec` fallback where no unit exists.
+    env_vars = {
+        k: v for k, v in os.environ.items() if k.startswith(("BAKAR_", "KAS_")) and k != detach_records.REGISTRATION_ENV
+    }
     script = build_remote_script(
         RemoteScriptSpec(
             remote_argv=strip_dispatch_options(local_args), cwd=cwd, env_vars=env_vars, sccache_off=not sccache_dist
         )
     )
-    return run_remote_build(host, script, ws_root)
+    return run_remote_build(host, script, ws_root, detach=flags.detach, hint_lines=flags.hint_lines)
 
 
 def _running_dispatch_units(host: str) -> list[str] | None:
