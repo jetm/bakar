@@ -183,6 +183,11 @@ def _same_path(a: Path, b: Path) -> bool:
     return bool(spellings & {os.path.normpath(b.expanduser()), os.path.realpath(b.expanduser())})
 
 
+def _detach_hint_lines(handle: str, run_id: str | None, host: str) -> list[str]:
+    """Hint builder injected into DispatchFlags: steps/ may not import commands/_hints."""
+    return _hints.after_detach(handle, run_id, on=host)
+
+
 def _dispatch_meta_avocado(
     host: str,
     *,
@@ -192,6 +197,7 @@ def _dispatch_meta_avocado(
     workspace: Path | None,
     sccache_dist: bool,
     assume_yes: bool,
+    detach: bool = False,
 ) -> int:
     """Route a meta-avocado ``--on`` build to its release workspace and dispatch it.
 
@@ -256,7 +262,12 @@ def _dispatch_meta_avocado(
             cap_mb=user_config.dispatch_snapshot_untracked_cap_mb,
             invoking_cwd=invoking_cwd,
         ),
-        DispatchFlags(sccache_dist=sccache_dist, assume_yes=assume_yes),
+        DispatchFlags(
+            sccache_dist=sccache_dist,
+            assume_yes=assume_yes,
+            detach=detach,
+            hint_lines=_detach_hint_lines,
+        ),
     )
 
 
@@ -394,6 +405,7 @@ def build(
                     workspace=workspace,
                     sccache_dist=sccache_dist,
                     assume_yes=yes,
+                    detach=detach,
                 )
                 raise typer.Exit(code=rc)
             # Mirror the workspace the local build would resolve, so a generic BYO
@@ -415,7 +427,7 @@ def build(
         rc = dispatch_remote_build(
             on,
             MirrorRequest(ws_root=logical_path(ws_root), cwd=logical_path(invoking_cwd), local_args=sys.argv[1:]),
-            DispatchFlags(sccache_dist=sccache_dist, assume_yes=yes),
+            DispatchFlags(sccache_dist=sccache_dist, assume_yes=yes, detach=detach, hint_lines=_detach_hint_lines),
         )
         raise typer.Exit(code=rc)
     # --detach: hand the whole command to a transient unit. Nothing is resolved

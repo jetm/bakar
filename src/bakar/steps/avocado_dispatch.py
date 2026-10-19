@@ -350,4 +350,6 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
     # Run ids are looked up under this dispatch's build directory: the release
     # workspace holds the runs of every worktree, and a concurrent one would
     # otherwise be named.
-    return rd.run_remote_build(host, remote_script, workspace / build_dir)
+    return rd.run_remote_build(
+        host, remote_script, workspace / build_dir, detach=flags.detach, hint_lines=flags.hint_lines
+    )
