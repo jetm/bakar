@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/agents.md` describes the lifecycle for agents and scripts.
 - `bakar build --on HOST --detach` exits 3 when the remote start cannot be confirmed within the 60 second poll (a remote build can also return 3 itself, so check `bakar status <unit> --on HOST` before dispatching again), and exits 2 with "cannot create a user unit" when the host cannot detach, instead of running the build in the foreground there.
 - Runs recorded before this release have no `exit_code` on their terminal events, so `bakar status` reports them as `unknown` and `bakar wait` exits 3 until a new run exists.
+- `bakar status --detail` (with `--json` it adds a `detail` key, also with `--on HOST`) reports running and failed tasks, the last log line, free disk for the build and sstate paths, available memory and pressure in one call. Host values are measured at query time on the host running `bakar status`. A remote of a different bakar version is refused.
+- A `build_paths` run event records the build TMPDIR and sstate path, so `--detail` can measure the right filesystems. Runs from before this version have no sstate path and report it as null.
 
 ### Fixed
 

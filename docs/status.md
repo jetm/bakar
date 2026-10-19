@@ -19,6 +19,7 @@ reports the newest run of the current workspace.
 | Flag | Description |
 |------|-------------|
 | `--json` | Emit one JSON object on stdout instead of a one-line summary |
+| `--detail` | Add the [detail snapshot](#detail-snapshot): running and failed tasks, the last log line, disk, memory and pressure |
 | `-w`, `--workspace PATH` | Workspace to search for a foreground run (default: resolved from the current directory) |
 | `--on HOST` | Query the run on `HOST` over ssh instead of locally |
 
@@ -108,6 +109,43 @@ $ bakar status bakar-detach-20260701-090000-a1b2c3 --json
 {"run_id": "20260701-090002-48213", "unit": "bakar-detach-20260701-090000-a1b2c3", "host": null, "state": "running", "exit_code": null, "run_dir": "/ws/build/runs/20260701-090002-48213", "log": "/path/to/runtime/bakar-detach-20260701-090000-a1b2c3.log", "tasks_done": 1204, "tasks_total": 7312, "tasks_running": 24, "elapsed_seconds": 815.2, "failure": null}
 ```
 
+## Detail snapshot
+
+`--detail` answers "how is it going" in one call. With `--json` it adds a
+thirteenth key, `detail`, to the object above; the twelve keys are unchanged.
+`detail` holds exactly these six keys.
+
+```bash
+$ bakar status 20260701-090002-48213 --detail --json
+{"run_id": "20260701-090002-48213", "unit": null, "host": null, "state": "running", "exit_code": null, "run_dir": "/ws/build/runs/20260701-090002-48213", "log": "/ws/build/runs/20260701-090002-48213/kas.log", "tasks_done": 1204, "tasks_total": 7312, "tasks_running": 24, "elapsed_seconds": 815.2, "failure": null, "detail": {"running_tasks": [{"recipe": "zlib-1.3-r0", "task": "do_compile", "seconds": 212}], "failed_tasks": {"count": 0, "names": []}, "last_line": "NOTE: Running task 1204 of 7312 (zlib-1.3-r0:do_compile)", "disk_free_gb": {"build": 412.3, "sstate": 1830.7}, "mem_available_mb": 48210, "pressure": {"cpu": 12.4, "io": 0.8, "memory": 0.0}}}
+```
+
+| Key | Type | Source and when null |
+|-----|------|----------------------|
+| `running_tasks` | array or null | Only while `state` is `running`, from the bitbake event log: `{recipe, task, seconds}` for the 16 longest-running tasks, longest first. Recipe names are as bitbake records them (package-version-revision, for example `zlib-1.3-r0`). Null in every other state and when the run has no event log |
+| `failed_tasks` | object or null | `{count, names}` from the event log. Setscene recoveries are excluded. `names` holds the five most recent failures, oldest first, as `<recipe>:<task>` with the same recipe naming. Null when the run has no event log |
+| `last_line` | string or null | The last non-empty line of `kas.log`, else of the unit log, with escape and control characters removed and cut to 200 characters. Null when neither log exists or has a visible line. It is informational: it never decides the state, the exit code or a failure |
+| `disk_free_gb` | object | `{build, sstate}` in GiB with one decimal. `build` is measured at the recorded `TMPDIR`, else the run's build directory. `sstate` is null when no sstate path was recorded, which is every run from before this version. Each value is null when its filesystem does not answer within 2 seconds |
+| `mem_available_mb` | integer or null | `MemAvailable` from `/proc/meminfo`; null when unreadable |
+| `pressure` | object or null | `{cpu, io, memory}` ten-second averages from `/proc/pressure`. Null, or null per resource, where the host has no PSI |
+
+The task fields describe the run; the host fields do not. `disk_free_gb`,
+`mem_available_mb` and `pressure` are measured at query time on the host
+running `bakar status`, which under `--on HOST` is the remote. They show the
+host now, not the host as it was during the run.
+
+Without `--json`, `--detail` prints the usual summary line and then up to four
+lines on stderr, `running:` and `failed:` only when there is something to show.
+`?` marks an unknown value. The `running:` line lists the five longest and ends
+with `(+N more)` when there are others.
+
+```text
+20260701-090002-48213 running tasks=1204/7312 running=2
+running: zlib-1.3-r0:do_compile 3m32s, openssl-3.2.1-r0:do_compile 2m10s
+host: disk build 412.3G sstate 1830.7G free, mem 48210M available, pressure cpu 12.4 io 0.8 mem 0.0
+last: NOTE: Running task 1204 of 7312 (zlib-1.3-r0:do_compile)
+```
+
 ## Exit status
 
 `status` exits 0 whenever it reports a state, including `failed` and
@@ -131,6 +169,11 @@ beginning with `-` is never read as a flag. With `--json`, a remote object
 whose `host` is null gets `HOST` filled in and is re-emitted as one JSON line;
 output that is not one JSON object is mirrored
 unchanged. The remote call is bounded to 30 seconds.
+
+`--detail --on HOST` against a remote of a different bakar version is refused
+with the same version-mismatch message and exit 2, so a mismatched remote never
+sees the flag. A same-version remote that lacks `--detail` exits 2 with its own
+usage error. Host values in the snapshot are measured on `HOST` in that case.
 
 ## Examples
 

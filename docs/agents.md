@@ -8,7 +8,7 @@ A bakar build outlives a single tool call, so launch it detached and follow it b
    - With `--on HOST`, exit 3 means the dispatcher could not confirm within 60 seconds that the remote build started. The handle is still printed. A remote build can also return 3 itself, so run `bakar status <unit> --on HOST` before dispatching again.
    - With `--on HOST`, exit 2 with "cannot create a user unit" means that host cannot detach and nothing was built; run without `--detach` or enable the user manager there.
 2. Wait: `bakar wait <handle> [--on HOST] --timeout 540`. Repeat the call while it exits 124.
-3. Progress: `bakar status <handle> --json`. `tasks_total` gives the task total once bitbake has reported it.
+3. Progress: `bakar status <handle> --detail --json`. One call answers state, task counts, running and failed tasks, the last log line, disk, memory and pressure. `tasks_total` gives the task total once bitbake has reported it. With `--on HOST` the host values are measured on the remote host.
 4. Conclude: `bakar triage <run_id> --json` for a failure, `bakar report <run_id> --json` for a finished run. For an `--on` build the form is `bakar triage <run_id> --on <host> --json`. A registered run id resolves from any directory, so no workspace is needed.
 5. Stop: `bakar stop <kas.yml> --run <run_id>`. With `--on HOST`, `bakar stop` ignores `--run`, so use `bakar stop --on HOST`. For meta-avocado builds `bakar stop` needs the same kas YAML used to start the build, the way `bakar build` does, to resolve the BSP family.
 
@@ -54,6 +54,21 @@ Progress lines go to stderr, one per poll (`--interval`, default 30 seconds, min
 - `host` is the ssh target for a run queried with `--on`; a local query leaves it null.
 - `bakar status` exits 0 whenever it reports a state and 2 when the handle does not resolve. It never reflects the build outcome in its exit status; read `state`.
 
+`bakar status <handle> --detail --json` prints the same object plus a `detail` key. Host values (`disk_free_gb`, `mem_available_mb`, `pressure`) are measured when you ask, on the host running `bakar status`, which is the remote under `--on HOST`. `last_line` is informational; read `state` for the outcome. See [status.md](status.md#detail-snapshot) for each key and when it is null.
+
+```json
+{
+  "detail": {
+    "running_tasks": [{"recipe": "zlib-1.3-r0", "task": "do_compile", "seconds": 212}],
+    "failed_tasks": {"count": 0, "names": []},
+    "last_line": "NOTE: Running task 812 of 4310 (zlib-1.3-r0:do_compile)",
+    "disk_free_gb": {"build": 412.3, "sstate": 1830.7},
+    "mem_available_mb": 48210,
+    "pressure": {"cpu": 12.4, "io": 0.8, "memory": 0.0}
+  }
+}
+```
+
 Without `--json` the same record prints as one line: `<id> <state> [exit=N] tasks=<done>/<total> running=<n> [failed=<recipe>:<task> or failed=<step>]`, with `?` for unknown values.
 
 ## Where to build
@@ -70,6 +85,10 @@ Run from the meta-avocado checkout or worktree and pass the kas YAML as a path r
 | `pgrep` or `ps \| grep` for a build | `bakar ps --json`, `bakar status <handle> --json` |
 | `kill` or `pkill` on bitbake or kas | `bakar stop <kas.yml> --run <run_id>` |
 | reading `log.do_*` files | `bakar triage <run_id> --json` |
+| `tail` or `grep` on a build log | `bakar status <handle> --detail [--on HOST]` |
+| `grep -c FAILED` over a build log | `bakar status <handle> --detail [--on HOST]` |
+| `df` or `free` on the build host | `bakar status <handle> --detail [--on HOST]` |
+| `ssh HOST` probes for build progress | `bakar status <handle> --detail --on HOST` |
 | `ssh HOST 'bakar build ...'` | `bakar build <kas.yml> --on HOST --detach` |
 | `kas build` or `kas-container build` | `bakar build <kas.yml>` |
 | `tee` on build output | `bakar log` or `bakar monitor` |
