@@ -15,6 +15,8 @@
 | `shell` | [shell.md](shell.md) | Interactive kas shell or one-shot command |
 | `run` | [run.md](run.md) | Boot avocado-os image in QEMU (meta-avocado only) |
 | `ps` | [ps.md](ps.md) | List every live `bakar` build on this host (host + container mode), plain text or `--json` |
+| `status` | [status.md](status.md) | Report a run's lifecycle state (starting, running, succeeded, failed, unknown) from a recorded exit status; `--json` for scripting |
+| `wait` | [wait.md](wait.md) | Block until a run finishes and exit with its outcome (0, 1, 2, 3, 124 on timeout) |
 | `stop` | [stop.md](stop.md) | Gracefully halt a running build (SIGINT, then escalate) |
 | `clean` | [clean.md](clean.md) | Remove the build directory |
 | `clean-cache` | [clean-cache.md](clean-cache.md) | Prune stale sstate and ccache entries by age |
@@ -61,6 +63,7 @@
 - First time on this machine, prepare the host: [setup.md](setup.md)
 - First time with a manifest: [build.md](build.md)
 - Already synced, just want to rebuild: `bakar build --skip-sync`
+- Run a build that outlives your terminal or tool call: `bakar build --detach` ([build.md](build.md)), then follow it with [status.md](status.md) and [wait.md](wait.md); driving bakar from an agent or a script: [agents.md](agents.md)
 - Only want to sync sources: [sync.md](sync.md)
 - Only want to regenerate the kas YAML: [gen-kas.md](gen-kas.md)
 
@@ -170,6 +173,8 @@ Related: [bitbake.md](bitbake.md), [graph.md](graph.md)
 
 ```text
 bakar ps        - list every live build on this host, host + container mode (--json for scripting)
+bakar status    - one lifecycle state for a run: starting, running, succeeded, failed, unknown (--json)
+bakar wait      - block until a run finishes and exit with its outcome (0, 1, 2, 3, 124 on --timeout)
 bakar log       - tail a live build log
 bakar monitor   - one-view live watch: cluster load, dist stats, task progress
 bakar triage    - surface the failing recipe/task from bitbake-events.json (--run/--preset/--release select the run dir)
@@ -180,7 +185,7 @@ bakar cluster-info  - live sccache-dist scheduler capacity: servers, CPUs, jobs 
 bakar sched-triage  - post-hoc cluster-utilisation report from the scheduler journal and client error log
 ```
 
-Related: [ps.md](ps.md), [log.md](log.md), [monitor.md](monitor.md), [triage.md](triage.md), [report.md](report.md), [insights.md](insights.md), [layers.md](layers.md), [cluster-info.md](cluster-info.md), [sched-triage.md](sched-triage.md)
+Related: [ps.md](ps.md), [status.md](status.md), [wait.md](wait.md), [agents.md](agents.md), [log.md](log.md), [monitor.md](monitor.md), [triage.md](triage.md), [report.md](report.md), [insights.md](insights.md), [layers.md](layers.md), [cluster-info.md](cluster-info.md), [sched-triage.md](sched-triage.md)
 
 ### Reproducibility
 
