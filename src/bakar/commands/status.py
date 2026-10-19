@@ -11,6 +11,7 @@ import json
 import shlex
 import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Annotated, Any
@@ -22,6 +23,7 @@ from bakar import detach_records
 from bakar.build_stop import is_build_running
 from bakar.commands._app import app, console
 from bakar.commands._helpers import WorkspaceOption, _find_run
+from bakar.commands._status_detail import build_detail, detail_lines
 from bakar.commands.monitor import _build_progress
 from bakar.commands.triage import _read_structured_failures, _resolve_triage_dirs
 from bakar.observability import iter_run_events, last_run_event
@@ -76,14 +78,22 @@ def _terminal_exit_code(run_dir: Path) -> int | None:
     return None
 
 
-def _progress(run_dir: Path | None) -> tuple[int | None, int | None, int | None, float | None]:
+def _read_progress(run_dir: Path | None) -> tuple[dict[str, Any] | None, bool]:
+    """The one ``_build_progress`` result for ``run_dir`` and whether its event log exists."""
     if run_dir is None or not run_dir.is_dir():
-        return None, None, None, None
+        return None, False
     try:
         prog = _build_progress(run_dir)
     except OSError, ValueError:
+        return None, False
+    return prog, (run_dir / "bitbake_eventlog.json").is_file()
+
+
+def _progress_counts(
+    prog: dict[str, Any] | None, has_log: bool
+) -> tuple[int | None, int | None, int | None, float | None]:
+    if prog is None:
         return None, None, None, None
-    has_log = (run_dir / "bitbake_eventlog.json").is_file()
     total = prog.get("tasks_total")
     done = prog.get("tasks_done")
     running = prog.get("tasks_running")
@@ -234,8 +244,28 @@ def _state_for(
     return ("running" if _run_live(run_dir) else "unknown"), None
 
 
+@dataclass(frozen=True)
+class _Resolved:
+    """One resolution of a handle: the record plus what ``--detail`` reuses.
+
+    ``progress`` is the single ``_build_progress`` result, so the detail path
+    never reads the event log a second time.
+    """
+
+    record: StatusRecord
+    progress: dict[str, Any] | None
+    has_eventlog: bool
+    run_dir: Path | None
+    unit_log: Path | None
+
+
 def compute_status(handle: str | None, *, workspace: Path | None = None) -> StatusRecord | None:
     """Resolve ``handle`` and report its state; None when it resolves to nothing."""
+    resolved = _resolve(handle, workspace)
+    return resolved.record if resolved is not None else None
+
+
+def _resolve(handle: str | None, workspace: Path | None) -> _Resolved | None:
     unit: str | None = None
     run_id: str | None = None
     run_dir: Path | None = None
@@ -274,9 +304,11 @@ def compute_status(handle: str | None, *, workspace: Path | None = None) -> Stat
         unit = detach_records.find_unit_for_run(run_id)
 
     state, exit_code = _state_for(unit=unit, run_id=run_id, run_dir=run_dir, by_unit=by_unit)
-    done, total, running, elapsed = _progress(run_dir)
-    log = _unit_log(unit) if unit else (str(run_dir / "kas.log") if run_dir else None)
-    return StatusRecord(
+    prog, has_eventlog = _read_progress(run_dir)
+    done, total, running, elapsed = _progress_counts(prog, has_eventlog)
+    unit_log = _unit_log(unit) if unit else None
+    log = unit_log if unit else (str(run_dir / "kas.log") if run_dir else None)
+    record = StatusRecord(
         run_id=run_id,
         unit=unit,
         host=None,
@@ -289,6 +321,13 @@ def compute_status(handle: str | None, *, workspace: Path | None = None) -> Stat
         tasks_running=running,
         elapsed_seconds=elapsed,
         failure=_failure(run_dir) if state == "failed" else None,
+    )
+    return _Resolved(
+        record=record,
+        progress=prog,
+        has_eventlog=has_eventlog,
+        run_dir=run_dir,
+        unit_log=Path(unit_log) if unit_log else None,
     )
 
 
@@ -496,6 +535,10 @@ def status(
         bool,
         typer.Option("--json", help="Emit one JSON object on stdout."),
     ] = False,
+    detail: Annotated[
+        bool,
+        typer.Option("--detail", help="Add running and failed tasks, the last log line, disk, memory and pressure."),
+    ] = False,
     workspace: WorkspaceOption = None,
     on: OnOption = None,
 ) -> None:
@@ -506,22 +549,41 @@ def status(
     reported and 2 when the handle does not resolve.
     """
     if on is not None:
+        options = ["--json"] if json_out else []
+        if detail:
+            options.append("--detail")
         raise typer.Exit(
             code=run_on_host(
                 on,
                 "status",
-                ["--json"] if json_out else [],
+                options,
                 handle,
                 workspace=workspace,
                 capture_timeout=REMOTE_STATUS_TIMEOUT,
                 transport_exit=2,
             )
         )
-    rec = compute_status(handle, workspace=workspace)
-    if rec is None:
+    resolved = _resolve(handle, workspace)
+    if resolved is None:
         console.print(f"No run found for {handle or 'the current workspace'}", markup=False, highlight=False)
         raise typer.Exit(code=2)
-    if json_out:
-        print(json.dumps(rec.to_dict()))
+    rec = resolved.record
+    if not detail:
+        if json_out:
+            print(json.dumps(rec.to_dict()))
+            return
+        console.print(render_summary(rec), markup=False, highlight=False)
         return
-    console.print(render_summary(rec), markup=False, highlight=False)
+    snapshot = build_detail(
+        state=rec.state,
+        run_dir=resolved.run_dir,
+        progress=resolved.progress,
+        has_eventlog=resolved.has_eventlog,
+        unit_log=resolved.unit_log,
+        now=time.time(),
+    )
+    if json_out:
+        print(json.dumps({**rec.to_dict(), "detail": snapshot}))
+        return
+    for line in detail_lines(render_summary(rec), snapshot):
+        console.print(line, markup=False, highlight=False, soft_wrap=True)
