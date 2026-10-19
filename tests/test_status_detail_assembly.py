@@ -51,6 +51,16 @@ def test_running_tasks_ordered_by_seconds_descending(tmp_path):
 def test_running_tasks_capped_at_16(tmp_path):
     d = _detail(tmp_path, progress=_running(*[NOW - i for i in range(20)]))
     assert len(d["running_tasks"]) == 16
+    # The 16 kept are the 16 longest-running (ages 19 down to 4), not the first 16 seen.
+    assert [r["seconds"] for r in d["running_tasks"]] == list(range(19, 3, -1))
+
+
+def test_capping_detail_leaves_progress_running_count_untouched(tmp_path):
+    progress = _running(*[NOW - i for i in range(20)])
+    progress["tasks_running"] = 20
+    _detail(tmp_path, progress=progress)
+    assert progress["tasks_running"] == 20
+    assert len(progress["running"]) == 20
 
 
 def test_running_tasks_none_for_succeeded(tmp_path):
@@ -141,13 +151,30 @@ def test_last_line_cut_to_200_characters(tmp_path):
 def test_last_line_does_not_read_whole_file(tmp_path, monkeypatch):
     p = tmp_path / "big.log"
     p.write_bytes(b"a" * (1024 * 1024) + b"\nshort\n")
+    total_read = []
+    real_open = Path.open
 
-    def boom(*_a, **_k):
-        raise AssertionError("whole-file read")
+    class Spy:
+        def __init__(self, fh):
+            self._fh = fh
 
-    monkeypatch.setattr(Path, "read_text", boom)
-    monkeypatch.setattr(Path, "read_bytes", boom)
+        def read(self, *args):
+            data = self._fh.read(*args)
+            total_read.append(len(data))
+            return data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._fh.close()
+
+        def __getattr__(self, name):
+            return getattr(self._fh, name)
+
+    monkeypatch.setattr(Path, "open", lambda self, *a, **k: Spy(real_open(self, *a, **k)))
     assert sd.last_line(p) == "short"
+    assert sum(total_read) <= 65536
 
 
 def test_host_fallback_uses_runs_parent(tmp_path):
@@ -207,3 +234,85 @@ def test_detail_lines_prints_question_mark_for_none():
     lines = sd.detail_lines("s", d)
     assert "None" not in "\n".join(lines)
     assert lines[1] == "host: disk build ?G sstate ?G free, mem ?M available, pressure cpu ? io ? mem ?"
+
+
+def test_last_line_falls_back_when_last_line_cleans_to_empty(tmp_path):
+    p = tmp_path / "l.log"
+    p.write_bytes(b"real line\nfoo\r\x1b[K\n\x1b[0m\n")
+    assert sd.last_line(p) == "real line"
+
+
+def test_last_line_strips_bidi_and_separator_characters(tmp_path):
+    p = tmp_path / "l.log"
+    hostile = "".join(chr(c) for c in (0x200E, 0x200F, 0x202A, 0x202E, 0x2066, 0x2069, 0x2028, 0x2029, 0x061C))
+    p.write_text(f"a{hostile}b\n", encoding="utf-8")
+    assert sd.last_line(p) == "ab"
+
+
+def test_last_line_only_invisible_characters_is_none(tmp_path):
+    p = tmp_path / "l.log"
+    p.write_text(chr(0x202E) + chr(0x2028) + "\n", encoding="utf-8")
+    assert sd.last_line(p) is None
+
+
+def test_running_names_are_sanitised_in_json_and_lines(tmp_path):
+    p = {
+        "tasks_failed": 0,
+        "failures": [],
+        "running": [
+            {"recipe": "evil\x1b[2J" + chr(0x202E) + "-1-r0", "task": "do_\x1b]0;x\x07compile", "started": NOW - 9}
+        ],
+    }
+    d = _detail(tmp_path, progress=p)
+    assert d["running_tasks"][0]["recipe"] == "evil-1-r0"
+    assert d["running_tasks"][0]["task"] == "do_compile"
+    assert "\x1b" not in "\n".join(sd.detail_lines("s", d))
+
+
+def test_failed_names_are_sanitised(tmp_path):
+    p = {"tasks_failed": 1, "failures": [{"recipe": "bad\x1b[2Jrecipe", "task": "do_\x07x"}]}
+    f = _detail(tmp_path, progress=p)["failed_tasks"]
+    assert f["names"] == ["badrecipe:do_x"]
+    assert "\x1b" not in "\n".join(sd.detail_lines("s", {**_detail(tmp_path, progress=p)}))
+
+
+def test_detail_lines_more_counts_real_running_total(tmp_path):
+    d = _detail(tmp_path, progress=_running(*[NOW - i for i in range(30)]))
+    assert len(d["running_tasks"]) == 16
+    assert set(d) == {"running_tasks", "failed_tasks", "last_line", "disk_free_gb", "mem_available_mb", "pressure"}
+    lines = sd.detail_lines("s", d, running_total=30)
+    assert lines[1].endswith("(+25 more)")
+
+
+def test_failed_none_recipe_or_task_renders_question_mark(tmp_path):
+    p = {"tasks_failed": 2, "failures": [{"recipe": None, "task": "do_x"}, {"recipe": "r", "task": None}]}
+    d = _detail(tmp_path, progress=p)
+    assert d["failed_tasks"]["names"] == ["?:do_x", "r:?"]
+    assert "None" not in "\n".join(sd.detail_lines("s", d))
+
+
+def test_detail_lines_failed_says_how_many_more(tmp_path):
+    p = {"tasks_failed": 8, "failures": [{"recipe": f"r{i}", "task": "t"} for i in range(5)]}
+    lines = sd.detail_lines("s", _detail(tmp_path, state="succeeded", progress=p))
+    failed = next(ln for ln in lines if ln.startswith("failed:"))
+    assert failed.startswith("failed: 8 (")
+    assert failed.endswith("+3 more)")
+
+
+def test_host_build_falls_back_to_build_dir_when_recorded_tmpdir_missing(tmp_path, monkeypatch):
+    missing = tmp_path / "not-yet" / "tmp"
+    monkeypatch.setattr(sd.observability, "last_build_paths", lambda rd: (missing, None))
+    calls = []
+
+    def measure(build, sstate, **_kw):
+        calls.append(build)
+        free = 7.5 if build == tmp_path / "build" else None
+        return {"disk_free_gb": {"build": free, "sstate": None}, "mem_available_mb": 1, "pressure": {}}
+
+    rd = tmp_path / "build" / "runs" / "r1"
+    rd.mkdir(parents=True)
+    d = sd.build_detail(
+        state="running", run_dir=rd, progress=None, has_eventlog=False, unit_log=None, now=NOW, measure=measure
+    )
+    assert calls == [missing, tmp_path / "build"]
+    assert d["disk_free_gb"]["build"] == 7.5

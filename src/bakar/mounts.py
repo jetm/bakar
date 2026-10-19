@@ -117,16 +117,28 @@ def _run_bounded(specs: dict[Path, list[str]], deadline: float) -> dict[Path, tu
     A killed or abandoned child reports ``(None, "", "")``.
     """
     env = {**os.environ, "LC_ALL": "C", "LANGUAGE": "C"}
-    procs: dict[Path, subprocess.Popen[bytes]] = {
-        path: subprocess.Popen(
-            argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            env=env,
-        )
-        for path, argv in specs.items()
-    }
+    procs: dict[Path, subprocess.Popen[bytes]] = {}
+    try:
+        for path, argv in specs.items():
+            procs[path] = subprocess.Popen(
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                env=env,
+            )
+    except BaseException:
+        for started in procs.values():
+            started.kill()
+            try:
+                started.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                pass
+            if started.stdout is not None:
+                started.stdout.close()
+            if started.stderr is not None:
+                started.stderr.close()
+        raise
 
     exit_codes: dict[Path, int] = {}
     pending = set(procs)
@@ -695,11 +707,13 @@ def probe_free_bytes(paths: Sequence[Path], *, deadline_s: float) -> dict[Path, 
     exited non-zero, or printed anything other than two non-negative integers.
     Never raises.
     """
-    unique_paths = list(dict.fromkeys(paths))
+    # A path with an embedded NUL cannot be an argv element; it measures as None
+    # without taking the other paths down with it.
+    unique_paths = [p for p in dict.fromkeys(paths) if "\x00" not in str(p)]
     deadline = time.monotonic() + deadline_s
     try:
         batch = _run_bounded({path: ["stat", "-f", "-c", "%a %S", "--", str(path)] for path in unique_paths}, deadline)
-    except OSError:  # the stat binary is missing or cannot be spawned
+    except OSError, ValueError:  # the stat binary is missing or cannot be spawned
         return dict.fromkeys(paths)
 
     results: dict[Path, int | None] = {}

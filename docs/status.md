@@ -122,10 +122,10 @@ $ bakar status 20260701-090002-48213 --detail --json
 
 | Key | Type | Source and when null |
 |-----|------|----------------------|
-| `running_tasks` | array or null | Only while `state` is `running`, from the bitbake event log: `{recipe, task, seconds}` for the 16 longest-running tasks, longest first. Recipe names are as bitbake records them (package-version-revision, for example `zlib-1.3-r0`). Null in every other state and when the run has no event log |
-| `failed_tasks` | object or null | `{count, names}` from the event log. Setscene recoveries are excluded. `names` holds the five most recent failures, oldest first, as `<recipe>:<task>` with the same recipe naming. Null when the run has no event log |
-| `last_line` | string or null | The last non-empty line of `kas.log`, else of the unit log, with escape and control characters removed and cut to 200 characters. Null when neither log exists or has a visible line. It is informational: it never decides the state, the exit code or a failure |
-| `disk_free_gb` | object | `{build, sstate}` in GiB with one decimal. `build` is measured at the recorded `TMPDIR`, else the run's build directory. `sstate` is null when no sstate path was recorded, which is every run from before this version. Each value is null when its filesystem does not answer within 2 seconds |
+| `running_tasks` | array or null | Only while `state` is `running`, from the bitbake event log: `{recipe, task, seconds}` for the 16 longest-running tasks, longest first. Recipe names are as bitbake records them (package-version-revision, for example `zlib-1.3-r0`), with the same character cleaning as `last_line`. Null in every other state and when the run has no event log |
+| `failed_tasks` | object or null | `{count, names}` from the event log. Setscene recoveries are excluded. `names` holds the five most recent failures, oldest first, as `<recipe>:<task>` with the same recipe naming; a missing recipe or task is written `?`. Names pass through the same character cleaning as `last_line`. Null when the run has no event log |
+| `last_line` | string or null | The last line of `kas.log`, else of the unit log, that is not empty once cleaned. Escape sequences, control characters, bidirectional controls and line or paragraph separators are removed, and the line is cut to 200 characters. Null when neither log exists or has a visible line. It is informational: it never decides the state, the exit code or a failure |
+| `disk_free_gb` | object | `{build, sstate}` in GiB with one decimal. `build` is measured at the recorded `TMPDIR`, else the run's build directory; when the recorded `TMPDIR` does not exist yet (early in a first build) the run's build directory is measured instead. `sstate` is null when no sstate path was recorded, which is every run from before this version. Each value is null when its filesystem does not answer within 2 seconds |
 | `mem_available_mb` | integer or null | `MemAvailable` from `/proc/meminfo`; null when unreadable |
 | `pressure` | object or null | `{cpu, io, memory}` ten-second averages from `/proc/pressure`. Null, or null per resource, where the host has no PSI |
 
@@ -137,7 +137,9 @@ host now, not the host as it was during the run.
 Without `--json`, `--detail` prints the usual summary line and then up to four
 lines on stderr, `running:` and `failed:` only when there is something to show.
 `?` marks an unknown value. The `running:` line lists the five longest and ends
-with `(+N more)` when there are others.
+with `(+N more)`, where N is the real number of running tasks minus the five
+shown. The `failed:` line ends with `+K more` when the failure count exceeds the
+names kept.
 
 ```text
 20260701-090002-48213 running tasks=1204/7312 running=2

@@ -22,7 +22,20 @@ _LAST_LINE_CHARS = 200
 
 _ANSI_CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _ANSI_OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?")
-_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# C0, DEL, C1, plus bidi marks/embeddings/isolates and the line/paragraph separators.
+_INVISIBLE = (0x061C, 0x200E, 0x200F, 0x2028, 0x2029, *range(0x202A, 0x202F), *range(0x2066, 0x206A))
+_CONTROL = re.compile("[\x00-\x1f\x7f-\x9f" + "".join(map(chr, _INVISIBLE)) + "]")
+
+
+def clean_text(text: str) -> str:
+    """Strip escape sequences, control, bidi and line-separator characters."""
+    text = _ANSI_OSC.sub("", _ANSI_CSI.sub("", text))
+    return _CONTROL.sub("", text.replace("\t", " "))
+
+
+def _clean_line(line: str) -> str:
+    line = line.rstrip("\r").rsplit("\r", 1)[-1]
+    return clean_text(line).strip()[:_LAST_LINE_CHARS]
 
 
 def last_line(path: Path) -> str | None:
@@ -36,14 +49,11 @@ def last_line(path: Path) -> str | None:
     except OSError:
         return None
     text = data.decode("utf-8", errors="replace")
-    line = next((ln for ln in reversed(text.split("\n")) if ln.strip()), None)
-    if line is None:
-        return None
-    line = line.rstrip("\r").rsplit("\r", 1)[-1]
-    line = _ANSI_OSC.sub("", _ANSI_CSI.sub("", line))
-    line = _CONTROL.sub("", line.replace("\t", " "))
-    line = line.strip()[:_LAST_LINE_CHARS]
-    return line or None
+    for raw in reversed(text.split("\n")):
+        line = _clean_line(raw)
+        if line:
+            return line
+    return None
 
 
 def _longest_running(progress: dict, now: float) -> list[dict]:
@@ -54,7 +64,13 @@ def _longest_running(progress: dict, now: float) -> list[dict]:
             seconds = None
         else:
             seconds = max(0, int(now - started))
-        rows.append({"recipe": entry.get("recipe"), "task": entry.get("task"), "seconds": seconds})
+        rows.append(
+            {
+                "recipe": _clean_name(entry.get("recipe")),
+                "task": _clean_name(entry.get("task")),
+                "seconds": seconds,
+            }
+        )
     rows.sort(key=lambda r: (r["seconds"] is None, -(r["seconds"] or 0)))
     return rows[:_MAX_RUNNING]
 
@@ -78,7 +94,10 @@ def build_detail(
     if has_eventlog and progress is not None:
         failed = {
             "count": progress.get("tasks_failed"),
-            "names": [f"{f.get('recipe', '?')}:{f.get('task', '?')}" for f in progress.get("failures") or []],
+            "names": [
+                f"{_clean_name(f.get('recipe')) or '?'}:{_clean_name(f.get('task')) or '?'}"
+                for f in progress.get("failures") or []
+            ],
         }
 
     line = None
@@ -91,7 +110,13 @@ def build_detail(
         host = measure(None, None)
     else:
         tmpdir, sstate = observability.last_build_paths(run_dir)
-        host = measure(tmpdir if tmpdir is not None else run_dir.parent.parent, sstate)
+        build_dir = run_dir.parent.parent
+        host = measure(tmpdir if tmpdir is not None else build_dir, sstate)
+        # The recorded TMPDIR may not exist yet early in a first build; the run's
+        # own build directory is then the next best answer for "build" free space.
+        if tmpdir is not None and (host.get("disk_free_gb") or {}).get("build") is None and build_dir.exists():
+            fallback = measure(build_dir, None).get("disk_free_gb") or {}
+            host = {**host, "disk_free_gb": {**(host.get("disk_free_gb") or {}), "build": fallback.get("build")}}
 
     return {
         "running_tasks": running,
@@ -107,28 +132,43 @@ def _q(value: Any) -> str:
     return "?" if value is None else str(value)
 
 
+def _clean_name(value: Any) -> str | None:
+    return None if value is None else clean_text(str(value))
+
+
 def _age(seconds: int | None) -> str:
     if seconds is None:
         return "?"
     return f"{seconds // 60}m{seconds % 60:02d}s"
 
 
-def detail_lines(summary: str, detail: dict) -> list[str]:
-    """Render the summary line plus the detail lines for human output."""
+def detail_lines(summary: str, detail: dict, *, running_total: int | None = None) -> list[str]:
+    """Render the summary line plus the detail lines for human output.
+
+    ``running_total`` is the real number of running tasks; ``detail`` carries
+    at most 16 of them, so the ``(+N more)`` count comes from the total.
+    """
     lines = [summary]
 
     running = detail.get("running_tasks")
     if running:
+        total = max(running_total or 0, len(running))
         shown = ", ".join(
-            f"{_q(r.get('recipe'))}:{_q(r.get('task'))} {_age(r.get('seconds'))}" for r in running[:_SHOWN_RUNNING]
+            f"{_q(_clean_name(r.get('recipe')))}:{_q(_clean_name(r.get('task')))} {_age(r.get('seconds'))}"
+            for r in running[:_SHOWN_RUNNING]
         )
-        if len(running) > _SHOWN_RUNNING:
-            shown += f" (+{len(running) - _SHOWN_RUNNING} more)"
+        if total > _SHOWN_RUNNING:
+            shown += f" (+{total - _SHOWN_RUNNING} more)"
         lines.append(f"running: {shown}")
 
     failed = detail.get("failed_tasks")
     if failed and (failed.get("count") or 0) > 0:
-        lines.append(f"failed: {failed['count']} ({', '.join(failed.get('names') or [])})")
+        names = [clean_text(str(n)) for n in failed.get("names") or []]
+        count = failed["count"]
+        listed = ", ".join(names)
+        if isinstance(count, int) and count > len(names):
+            listed += f"{', ' if names else ''}+{count - len(names)} more"
+        lines.append(f"failed: {count} ({listed})")
 
     disk = detail.get("disk_free_gb") or {}
     pressure = detail.get("pressure") or {}

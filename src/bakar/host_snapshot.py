@@ -26,11 +26,8 @@ def _free_gb(build_path: Path | None, sstate_path: Path | None, deadline_s: floa
     except Exception:  # noqa: BLE001 - measure() must never raise
         return out
     for key, path in wanted.items():
-        try:
-            value = free.get(path)
-            out[key] = None if value is None else round(value / _GIB, 1)
-        except Exception:  # noqa: BLE001 - measure() must never raise
-            out[key] = None
+        value = free.get(path)
+        out[key] = None if value is None else round(value / _GIB, 1)
     return out
 
 

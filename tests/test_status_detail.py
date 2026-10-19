@@ -132,3 +132,25 @@ def test_same_version_remote_warns_and_receives_the_command(monkeypatch: pytest.
     assert "same version, different build" in result.stderr
     assert mock.call_count == 2
     assert mock.call_args.args[1] == "bakar status --json --detail -- run1\n"
+
+
+def test_running_build_with_error_last_line_stays_running(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run = env / "ws" / "build" / "runs" / RUN_ID
+    run.mkdir(parents=True)
+    (run / "events.jsonl").write_text(json.dumps({"event": "step_start", "step": "kas_build"}) + "\n")
+    (run / "kas.log").write_text("NOTE: x\nERROR: Task do_compile failed\n")
+    monkeypatch.setattr(status_cmd, "_frontend_alive", lambda _rd: True)
+    result = CliRunner().invoke(app, ["status", run.name, "--detail", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "running"
+    assert payload["exit_code"] is None
+    assert payload["failure"] is None
+    assert payload["detail"]["last_line"] == "ERROR: Task do_compile failed"
+
+
+def test_unresolved_handle_with_detail_names_the_handle_on_stderr(env: Path) -> None:
+    result = CliRunner().invoke(app, ["status", "nope", "--detail"])
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert "nope" in result.stderr

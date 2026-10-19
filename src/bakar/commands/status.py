@@ -585,5 +585,5 @@ def status(
     if json_out:
         print(json.dumps({**rec.to_dict(), "detail": snapshot}))
         return
-    for line in detail_lines(render_summary(rec), snapshot):
+    for line in detail_lines(render_summary(rec), snapshot, running_total=rec.tasks_running):
         console.print(line, markup=False, highlight=False, soft_wrap=True)

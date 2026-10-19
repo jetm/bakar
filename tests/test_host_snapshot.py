@@ -8,6 +8,8 @@ import pytest
 
 from bakar import host_snapshot
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def meminfo(tmp_path, monkeypatch):
