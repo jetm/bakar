@@ -482,19 +482,25 @@ def test_capture_aborts_the_copy_loop_when_an_artifact_is_missing(monkeypatch, t
     read as a partial, unexplained graph capture: the file is present with no
     marker to say whether it belongs to this run.
     """
+    import os
+
     from bakar.steps import kas_build
 
     ctx, log = _capture_ctx(tmp_path)
     topdir = ctx.cfg.resolved_tmpdir.parent
     topdir.mkdir(parents=True)
+    start_time = 2_000_000.0
 
     def _fake_capture(_ctx, _cmd, _capture):
         # Only the first artifact is produced; the second is missing.
-        (topdir / kas_build.GRAPH_ARTIFACTS[0]).write_text("present")
+        artifact = topdir / kas_build.GRAPH_ARTIFACTS[0]
+        artifact.write_text("present")
+        os.utime(artifact, (start_time + 60, start_time + 60))
         return 0
 
     monkeypatch.setattr(kas_graph_capture, "_wait_for_cooker_idle", lambda *_a, **_k: True)
     monkeypatch.setattr(kas_build, "run_shell_capture", _fake_capture)
+    monkeypatch.setattr(kas_build.time, "time", lambda: start_time)
 
     assert kas_build._capture_dependency_graph(ctx, log) is None
     assert any("not produced" in w for w in log.warnings), log.warnings
