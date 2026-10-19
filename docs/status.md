@@ -102,12 +102,31 @@ One JSON object with exactly these twelve keys. A value that does not apply is
 | `tasks_total` | integer or null | Tasks planned |
 | `tasks_running` | integer or null | Tasks executing now; null without a bitbake event log |
 | `elapsed_seconds` | number or null | Seconds since the run started |
-| `failure` | object or null | Set only when `state` is `failed`: `{"recipe", "task", "step", "error"}`. A task failure fills `recipe` and `task` (`step` and `error` null). A run that failed before any task ran has `recipe` and `task` null, `step` the first failing step (else the terminal error type) and `error` the recorded error text, null when none was recorded. Null when the run recorded neither |
+| `failure` | object or null | Set only when `state` is `failed`: `{"recipe", "task", "step", "error"}`. A task failure fills `recipe` and `task` (`step` and `error` null). Otherwise `step` and `error` say why: `step` is the first failing step (else the terminal error type) and `error` is the first error line the build printed (bitbake's `ERROR:` line or kas's own, as `ERROR: <message>`, at most 200 characters), captured while the build ran and never read from the log at query time. `error` is `exit_code=N` when the build printed none. When `bakar stop` ended the run, `step` is `stopped` and `error` is `stopped by bakar stop`, with `state` still `failed` (see [Stopped runs](#stopped-runs)). Null when the run recorded none of these |
 
 ```bash
 $ bakar status bakar-detach-20260701-090000-a1b2c3 --json
 {"run_id": "20260701-090002-48213", "unit": "bakar-detach-20260701-090000-a1b2c3", "host": null, "state": "running", "exit_code": null, "run_dir": "/ws/build/runs/20260701-090002-48213", "log": "/path/to/runtime/bakar-detach-20260701-090000-a1b2c3.log", "tasks_done": 1204, "tasks_total": 7312, "tasks_running": 24, "elapsed_seconds": 815.2, "failure": null}
 ```
+
+## Stopped runs
+
+`bakar stop` records its request in a `stop-request.json` file in the run directory, written before the first signal (on the host for `--on`). `status` reads it only to explain a failure: it never changes `state` or `exit_code`, so a stopped run is `failed` with `failure.step` `stopped`.
+
+```json
+"failure": {"recipe": null, "task": null, "step": "stopped", "error": "stopped by bakar stop"}
+```
+
+A structured task failure wins over the request: when the run recorded a failing task, `failure` names that task and not `stopped`.
+
+Limits, each of which reads as an ordinary failure:
+
+- A run from before this version, which has no request record.
+- A stop by `kill` or `systemctl stop`, which writes no request.
+- A dispatched unit stopped before it registered its run.
+- A stop issued while the host's bakar is older than this version.
+
+A forced `bakar stop --on HOST --force` hard-kills the unit, including the wrapper that writes the exit sentinel. The run can then read `unknown` and `bakar wait` exits 3, because a stop request never decides the state.
 
 ## Detail snapshot
 

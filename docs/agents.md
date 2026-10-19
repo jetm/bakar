@@ -9,8 +9,8 @@ A bakar build outlives a single tool call, so launch it detached and follow it b
    - With `--on HOST`, exit 2 with "cannot create a user unit" means that host cannot detach and nothing was built; run without `--detach` or enable the user manager there.
 2. Wait: `bakar wait <handle> [--on HOST] --timeout 540`. Repeat the call while it exits 124.
 3. Progress: `bakar status <handle> --detail --json`. One call answers state, task counts, running and failed tasks, the last log line, disk, memory and pressure. `tasks_total` gives the task total once bitbake has reported it. With `--on HOST` the host values are measured on the remote host.
-4. Conclude: `bakar triage <run_id> --json` for a failure, `bakar report <run_id> --json` for a finished run. For an `--on` build the form is `bakar triage <run_id> --on <host> --json`. A registered run id resolves from any directory, so no workspace is needed.
-5. Stop: `bakar stop <kas.yml> --run <run_id>`. With `--on HOST`, `bakar stop` ignores `--run`, so use `bakar stop --on HOST`. For meta-avocado builds `bakar stop` needs the same kas YAML used to start the build, the way `bakar build` does, to resolve the BSP family.
+4. Conclude: read `failure.step` first; `stopped` means the build was cancelled on purpose (see [Reading a failure](#reading-a-failure)). Otherwise `bakar triage <run_id> --json` for a failure, `bakar report <run_id> --json` for a finished run. For an `--on` build the form is `bakar triage <run_id> --on <host> --json`. A registered run id resolves from any directory, so no workspace is needed.
+5. Stop: `bakar stop <kas.yml> --run <run_id>`. With `--on HOST`, `bakar stop` ignores `--run`, so use `bakar stop --on HOST`. For meta-avocado builds `bakar stop` needs the same kas YAML used to start the build, the way `bakar build` does, to resolve the BSP family. A stopped run reads `failed` with `failure.step` `stopped`; a `kill` or `systemctl stop` records nothing and looks like an ordinary failure.
 
 The handle is either the detached unit name or the run id. The run id is registered a moment after launch, so a status read right after `--detach` may report `starting` with `run_id` null.
 
@@ -19,7 +19,7 @@ The handle is either the detached unit name or the run id. The run id is registe
 | Exit | Meaning | Next step |
 |------|---------|-----------|
 | 0 | build succeeded | `bakar report <run_id> --json` |
-| 1 | build failed | `bakar triage <run_id> --json` |
+| 1 | build failed, or was stopped with `bakar stop` (read `failure.step`) | `bakar triage <run_id> --json` unless `failure.step` is `stopped` |
 | 3 | unknown: no recorded outcome and nothing alive (also an ssh transport failure under `--on`) | `bakar status <handle> --json` |
 | 124 | still starting or running when `--timeout` elapsed | call `bakar wait` again |
 | 2 | handle does not resolve, or usage error | fix the handle or arguments |
@@ -50,9 +50,21 @@ Progress lines go to stderr, one per poll (`--interval`, default 30 seconds, min
 - `state` is one of `starting`, `running`, `succeeded`, `failed`, `unknown`.
 - `succeeded` and `failed` come only from a recorded exit status, which is `exit_code`. Liveness only separates `running` from `unknown`.
 - `unit` is null for a run that was not detached. `run_id`, `run_dir` and the task counts are null until they exist.
-- `failure` is null unless `state` is `failed`; then it is `{"recipe": ..., "task": ..., "step": ..., "error": ...}`. A task failure sets `recipe` and `task`. A run that failed before any task ran (a bad `--target`, a missing kas file) sets `step` to the failing step and `error` to the recorded error text (null when none was recorded), with `recipe` and `task` null. It is null when the run recorded neither.
+- `failure` is null unless `state` is `failed`; then it is `{"recipe": ..., "task": ..., "step": ..., "error": ...}`. A task failure sets `recipe` and `task`. Otherwise `step` is the failing step and `error` is the first error line the build printed (or `exit_code=N` when it printed none), with `recipe` and `task` null. When `bakar stop` ended the run, `step` is `stopped`. It is null when the run recorded none of these.
 - `host` is the ssh target for a run queried with `--on`; a local query leaves it null.
 - `bakar status` exits 0 whenever it reports a state and 2 when the handle does not resolve. It never reflects the build outcome in its exit status; read `state`.
+
+A failed run whose build printed an error line:
+
+```json
+"failure": {"recipe": null, "task": null, "step": "kas_build", "error": "ERROR: Nothing PROVIDES 'no-such-recipe'"}
+```
+
+A run ended by `bakar stop`:
+
+```json
+"failure": {"recipe": null, "task": null, "step": "stopped", "error": "stopped by bakar stop"}
+```
 
 `bakar status <handle> --detail --json` prints the same object plus a `detail` key. Host values (`disk_free_gb`, `mem_available_mb`, `pressure`) are measured when you ask, on the host running `bakar status`, which is the remote under `--on HOST`. `last_line` is informational; read `state` for the outcome. See [status.md](status.md#detail-snapshot) for each key and when it is null.
 
@@ -70,6 +82,14 @@ Progress lines go to stderr, one per poll (`--interval`, default 30 seconds, min
 ```
 
 Without `--json` the same record prints as one line: `<id> <state> [exit=N] tasks=<done>/<total> running=<n> [failed=<recipe>:<task> or failed=<step>]`, with `?` for unknown values.
+
+## Reading a failure
+
+When `failure.step` is `stopped`, the build was cancelled on purpose. Report it; do not diagnose, fix or relaunch unless asked.
+
+For any other failure, `failure.error` carries the cause, and `bakar triage <run_id> --json` gives a `fail_reason` equal to it.
+
+A run recorded before this version, or one ended by `kill` or `systemctl stop`, cannot be told from an ordinary failure: its `failure.error` is `exit_code=N` and `failure.step` is never `stopped`.
 
 ## Where to build
 

@@ -34,6 +34,8 @@ bakar wait [HANDLE] [OPTIONS]
 | 3 | The run is `unknown`: no recorded exit status and no sign of life (with `--on`, an unreachable host or ssh transport failure also exits 3) |
 | 124 | The timeout elapsed while the run was still `starting` or `running` |
 
+Exit 1 includes a run ended by `bakar stop`; read `failure.step` in the `--json` object (`stopped` for a stop) to tell the two apart.
+
 Exit 124 means keep waiting, not failure. A caller whose tool calls have a
 time cap repeats `bakar wait <handle> --timeout 540` for as long as it exits
 124, and acts on the first other status.
