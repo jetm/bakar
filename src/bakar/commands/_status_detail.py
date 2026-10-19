@@ -8,34 +8,15 @@ is informational text only.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from bakar import host_snapshot, observability
+from bakar import host_snapshot, log_text, observability
 
 _MAX_RUNNING = 16
 _SHOWN_RUNNING = 5
 _TAIL_BYTES = 64 * 1024
-_LAST_LINE_CHARS = 200
-
-_ANSI_CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-_ANSI_OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?")
-# C0, DEL, C1, plus bidi marks/embeddings/isolates and the line/paragraph separators.
-_INVISIBLE = (0x061C, 0x200E, 0x200F, 0x2028, 0x2029, *range(0x202A, 0x202F), *range(0x2066, 0x206A))
-_CONTROL = re.compile("[\x00-\x1f\x7f-\x9f" + "".join(map(chr, _INVISIBLE)) + "]")
-
-
-def clean_text(text: str) -> str:
-    """Strip escape sequences, control, bidi and line-separator characters."""
-    text = _ANSI_OSC.sub("", _ANSI_CSI.sub("", text))
-    return _CONTROL.sub("", text.replace("\t", " "))
-
-
-def _clean_line(line: str) -> str:
-    line = line.rstrip("\r").rsplit("\r", 1)[-1]
-    return clean_text(line).strip()[:_LAST_LINE_CHARS]
 
 
 def last_line(path: Path) -> str | None:
@@ -50,7 +31,7 @@ def last_line(path: Path) -> str | None:
         return None
     text = data.decode("utf-8", errors="replace")
     for raw in reversed(text.split("\n")):
-        line = _clean_line(raw)
+        line = log_text.clean_line(raw)
         if line:
             return line
     return None
@@ -133,7 +114,7 @@ def _q(value: Any) -> str:
 
 
 def _clean_name(value: Any) -> str | None:
-    return None if value is None else clean_text(str(value))
+    return None if value is None else log_text.clean_text(str(value))
 
 
 def _age(seconds: int | None) -> str:
@@ -163,7 +144,7 @@ def detail_lines(summary: str, detail: dict, *, running_total: int | None = None
 
     failed = detail.get("failed_tasks")
     if failed and (failed.get("count") or 0) > 0:
-        names = [clean_text(str(n)) for n in failed.get("names") or []]
+        names = [log_text.clean_text(str(n)) for n in failed.get("names") or []]
         count = failed["count"]
         listed = ", ".join(names)
         if isinstance(count, int) and count > len(names):
