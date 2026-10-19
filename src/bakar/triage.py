@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from bakar.fork_race_signatures import FORK_RACE_SUGGESTION, scan
-from bakar.observability import last_run_event
+from bakar.observability import STOPPED_ERROR, STOPPED_STEP, last_run_event, read_stop_request, step_fail_text
 
 _ERROR_REPORT_FILENAME = "error-report.json"
 
@@ -337,6 +337,31 @@ def _prepend_recipe_headers(suggestions: list[str], recipe_errors: list[RecipeEr
     return [header, *lines, *suggestions]
 
 
+def _terminal_exit_nonzero(events_path: Path) -> bool:
+    """True when the run's last ``run_end``/``run_error`` event has a non-zero exit code."""
+    term = last_run_event(events_path, lambda r: r.get("event") in ("run_end", "run_error"))
+    if term is None:
+        return False
+    code = term.get("exit_code")
+    return isinstance(code, int) and not isinstance(code, bool) and code != 0
+
+
+def _apply_stop_rule(
+    run_dir: Path, fail: dict | None, failing_step: str | None, fail_reason: str | None
+) -> tuple[str | None, str | None]:
+    """Report a run ended by ``bakar stop`` as stopped, not as a failed step.
+
+    Applies only when the run is recorded as failed: a failing step event, or a
+    non-zero terminal event (a forced stop can kill the front-end before it
+    writes a step event). Otherwise the arguments pass through unchanged.
+    """
+    if read_stop_request(run_dir) is None:
+        return failing_step, fail_reason
+    if fail is not None or _terminal_exit_nonzero(run_dir / "events.jsonl"):
+        return STOPPED_STEP, STOPPED_ERROR
+    return failing_step, fail_reason
+
+
 def analyse(run_dir: Path, workspace: Path) -> TriageReport:
     events_path = run_dir / "events.jsonl"
 
@@ -362,7 +387,8 @@ def analyse(run_dir: Path, workspace: Path) -> TriageReport:
             # does so the two paths produce equivalent output.
             kas_log = run_dir / "kas.log"
             fail = last_run_event(events_path, is_build_failure_event)
-            fail_reason: str | None = fail.get("reason") if fail else None
+            fail_reason: str | None = step_fail_text(fail) if fail else None
+            failing_step, fail_reason = _apply_stop_rule(run_dir, fail, failing_step, fail_reason)
             recipe_log = _find_recipe_log(kas_log, workspace)
             recipe_log_tail = tail_lines(recipe_log, 60) if recipe_log else []
             # Recompute suggestions over combined text (table order) so the fast
@@ -395,7 +421,8 @@ def analyse(run_dir: Path, workspace: Path) -> TriageReport:
 
     fail = last_run_event(events_path, is_build_failure_event)
     failing_step = fail.get("step") if fail else None
-    fail_reason = fail.get("reason") if fail else None
+    fail_reason = step_fail_text(fail) if fail else None
+    failing_step, fail_reason = _apply_stop_rule(run_dir, fail, failing_step, fail_reason)
 
     kas_log_tail = tail_lines(kas_log, 60, text=kas_text)
     recipe_log = _find_recipe_log(kas_log, workspace, text=kas_text)

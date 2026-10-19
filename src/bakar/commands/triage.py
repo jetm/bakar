@@ -23,7 +23,7 @@ from bakar.commands._helpers import (
     candidate_runs_dirs,
 )
 from bakar.config import meta_avocado_build_dir_name, worktree_build_template
-from bakar.observability import last_run_event
+from bakar.observability import STOPPED_STEP, last_run_event
 from bakar.release_workspace import ReleaseRoutingError
 from bakar.triage import analyse, is_build_failure_event, tail_lines, translate_container_path
 from bakar.user_config import load_user_config
@@ -399,7 +399,9 @@ def triage(
         )
         return
 
-    if report.failing_step:
+    if report.failing_step == STOPPED_STEP:
+        console.print("[yellow]■[/] run was stopped by bakar stop - cancelled on purpose, not a failure to diagnose")
+    elif report.failing_step:
         console.print(f"[red]✗[/] step [bold]{report.failing_step}[/] failed: {report.fail_reason}")
     elif report.excluded_post_build_failure:
         # The build itself succeeded - this step_fail is correctly excluded
