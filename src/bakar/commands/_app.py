@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import sys
+import warnings
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 import typer
@@ -120,6 +123,35 @@ _GLOBAL_OPTIONS: _GlobalOptions = _GlobalOptions(
 )
 
 
+_PACKAGE_DIR = Path(__file__).resolve().parent.parent
+_ORIGINAL_SHOWWARNING = warnings.showwarning
+
+
+def _bakar_showwarning(message, category, filename, lineno, file=None, line=None):
+    """Render a warning raised from inside bakar as one ``bakar: warning:`` line.
+
+    Warnings attributed to other code keep the stock rendering, so a
+    third-party deprecation still shows its source location.
+    """
+    try:
+        inside = Path(filename).resolve().is_relative_to(_PACKAGE_DIR)
+    except OSError, ValueError:
+        inside = False
+    if not inside:
+        _ORIGINAL_SHOWWARNING(message, category, filename, lineno, file, line)
+        return
+    stream = file if file is not None else sys.stderr
+    try:
+        stream.write(f"bakar: warning: {message}\n")
+    except OSError:
+        pass
+
+
+def _install_warning_format() -> None:
+    if warnings.showwarning is not _bakar_showwarning:
+        warnings.showwarning = _bakar_showwarning
+
+
 def _main_impl(opts: _GlobalOptions) -> None:
     """Validate the global flags and publish them as ``_GLOBAL_OPTIONS``.
 
@@ -129,6 +161,7 @@ def _main_impl(opts: _GlobalOptions) -> None:
     """
     global _USER_CONFIG
     global _GLOBAL_OPTIONS
+    _install_warning_format()
     if opts.plain and opts.rich_output:
         console.print("[red]choose either --plain/--ci or --rich, not both[/]")
         raise typer.Exit(code=2)
