@@ -68,6 +68,24 @@ def _utc_now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _exit_code_for(exc: BaseException) -> int:
+    """Map the exception that ended a run to the process exit code the front end returns.
+
+    typer's ``Exit`` is click's ``Exit`` and carries ``exit_code``; read it with
+    ``getattr`` so this module imports neither framework.
+    """
+    code = getattr(exc, "exit_code", None)
+    if isinstance(code, int):
+        return code
+    if isinstance(exc, SystemExit):
+        if exc.code is None:
+            return 0
+        return exc.code if isinstance(exc.code, int) else 1
+    if isinstance(exc, KeyboardInterrupt):
+        return 130
+    return 1
+
+
 @dataclass
 class RunLogger:
     """Writes both structured JSONL and a human log for one `bakar` run.
@@ -183,9 +201,9 @@ class RunLogger:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         if exc is not None:
-            self._emit("run_error", error=str(exc), error_type=exc_type.__name__)
+            self._emit("run_error", error=str(exc), error_type=exc_type.__name__, exit_code=_exit_code_for(exc))
         else:
-            self._emit("run_end")
+            self._emit("run_end", exit_code=0)
         if self._events_fh is not None:
             self._events_fh.close()
         for h in list(self._logger.handlers):
