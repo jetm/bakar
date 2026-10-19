@@ -8,7 +8,7 @@ A bakar build outlives a single tool call, so launch it detached and follow it b
 2. Wait: `bakar wait <handle> [--on HOST] --timeout 540`. Repeat the call while it exits 124.
 3. Progress: `bakar status <handle> --json`. `tasks_total` gives the task total once bitbake has reported it.
 4. Conclude: `bakar triage <run_id> --json` for a failure, `bakar report <run_id> --json` for a finished run.
-5. Stop: `bakar stop --run <run_id>`. With `--on HOST`, `bakar stop` ignores `--run`, so use `bakar stop --on HOST`.
+5. Stop: `bakar stop <kas.yml> --run <run_id>`. With `--on HOST`, `bakar stop` ignores `--run`, so use `bakar stop --on HOST`. For meta-avocado builds `bakar stop` needs the same kas YAML used to start the build, the way `bakar build` does, to resolve the BSP family.
 
 The handle is either the detached unit name or the run id. The run id is registered a moment after launch, so a status read right after `--detach` may report `starting` with `run_id` null.
 
@@ -65,7 +65,7 @@ Run from the meta-avocado checkout or worktree and pass the kas YAML as a path r
 |------------|-----|
 | `nohup`, `setsid`, a trailing `&` or `timeout` around a build | `--detach` |
 | `pgrep` or `ps \| grep` for a build | `bakar ps --json`, `bakar status <handle> --json` |
-| `kill` or `pkill` on bitbake or kas | `bakar stop --run <run_id>` |
+| `kill` or `pkill` on bitbake or kas | `bakar stop <kas.yml> --run <run_id>` |
 | reading `log.do_*` files | `bakar triage <run_id> --json` |
 | `ssh HOST 'bakar build ...'` | `bakar build <kas.yml> --on HOST --detach` |
 | `kas build` or `kas-container build` | `bakar build <kas.yml>` |

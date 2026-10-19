@@ -60,7 +60,7 @@ def test_after_detach_with_run_id() -> None:
     text = "\n".join(_hints.after_detach("h", "r1"))
     assert "bakar wait h --timeout 540" in text
     assert "bakar status h --json" in text
-    assert "bakar stop --run r1" in text
+    assert "bakar stop <kas.yml> --run r1" in text
     assert "--on" not in text
 
 

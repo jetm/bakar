@@ -45,7 +45,8 @@ def after_detach(handle: str, run_id: str | None, on: str | None = None) -> list
         # `bakar stop` ignores --run when --on is given.
         lines.append(f"hint: stop: `bakar stop --on {on}`")
     elif run_id:
-        lines.append(f"hint: stop: `bakar stop --run {run_id}`")
+        # `bakar stop` needs the kas YAML positional to resolve the BSP family.
+        lines.append(f"hint: stop: `bakar stop <kas.yml> --run {run_id}`")
     else:
         lines.append(f"hint: `bakar status {handle} --json` names the run id once it is registered")
     return lines

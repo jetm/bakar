@@ -409,7 +409,7 @@ everything else (warnings, a log tail, lifecycle hints) goes to stderr:
 ```
 
 Pass `run_id` or `unit` to `bakar status`, `bakar wait`, `bakar triage` and
-`bakar stop --run`. `host` is null for a local run and the ssh target for
+`bakar stop <kas.yml> --run`. `host` is null for a local run and the ssh target for
 `--on`.
 
 **Run-id bound.** The launcher waits up to 60 seconds for the front-end to
