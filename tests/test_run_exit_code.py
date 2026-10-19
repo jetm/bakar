@@ -43,6 +43,8 @@ def test_clean_exit_records_run_end_zero(tmp_path: Path) -> None:
         (SystemExit(2), 2),
         (SystemExit(None), 0),
         (SystemExit("boom"), 1),
+        (SystemExit(True), 1),
+        (SystemExit(False), 0),
         (KeyboardInterrupt(), 130),
         (ValueError("x"), 1),
     ],

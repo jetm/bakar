@@ -41,11 +41,15 @@ time cap repeats `bakar wait <handle> --timeout 540` for as long as it exits
 ## Output
 
 Each poll prints one progress line to stderr, so stdout stays clean for
-`--json`:
+`--json`. The leading time is UTC, marked with a trailing `Z`:
 
 ```text
-09:15:42 20260701-090002-48213 running tasks=1204/7312 running=24
+09:15:42Z 20260701-090002-48213 running tasks=1204/7312 running=24
 ```
+
+With no handle, `wait` resolves the newest run once, on the first poll, and
+keeps polling that run (or its detached unit when it has one); a newer run
+started during the wait does not take over.
 
 With `--json`, the final status object (the twelve keys documented in
 [status.md](status.md#json-field-schema)) is printed to stdout once, after

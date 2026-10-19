@@ -5,6 +5,8 @@ A bakar build outlives a single tool call, so launch it detached and follow it b
 ## Lifecycle
 
 1. Launch: `bakar build <kas.yml> -t <target> --detach`. Add `--on HOST` to build on another node. Keep the handle the command prints.
+   - With `--on HOST`, exit 3 means the dispatcher could not confirm within 60 seconds that the remote build started. The handle is still printed. A remote build can also return 3 itself, so run `bakar status <unit> --on HOST` before dispatching again.
+   - With `--on HOST`, exit 2 with "cannot create a user unit" means that host cannot detach and nothing was built; run without `--detach` or enable the user manager there.
 2. Wait: `bakar wait <handle> [--on HOST] --timeout 540`. Repeat the call while it exits 124.
 3. Progress: `bakar status <handle> --json`. `tasks_total` gives the task total once bitbake has reported it.
 4. Conclude: `bakar triage <run_id> --json` for a failure, `bakar report <run_id> --json` for a finished run. For an `--on` build the form is `bakar triage <run_id> --on <host> --json`. A registered run id resolves from any directory, so no workspace is needed.
@@ -31,12 +33,12 @@ Progress lines go to stderr, one per poll (`--interval`, default 30 seconds, min
 ```json
 {
   "run_id": "20261019-150000-4242",
-  "unit": "bakar-detach-20261019-150000-4242",
+  "unit": "bakar-detach-20261019-150000-a1b2c3",
   "host": null,
   "state": "running",
   "exit_code": null,
   "run_dir": "/path/to/build/runs/20261019-150000-4242",
-  "log": "/path/to/runtime/dir/bakar-detach-20261019-150000-4242.log",
+  "log": "/path/to/runtime/dir/bakar-detach-20261019-150000-a1b2c3.log",
   "tasks_done": 812,
   "tasks_total": 4310,
   "tasks_running": 6,
@@ -74,10 +76,10 @@ Run from the meta-avocado checkout or worktree and pass the kas YAML as a path r
 
 ## Hints under Claude Code
 
-When `CLAUDECODE=1` is set, bakar writes next-step hints to stderr. Nothing else reads the variable, and stdout stays machine-readable.
+Bakar writes next-step hints to stderr, and stdout stays machine-readable. `CLAUDECODE=1` is the only variable it reads for them, and it gates two of the three kinds:
 
 Each hint line starts with `hint:` and wraps its command in backticks.
 
-- A foreground `bakar build` is nudged to use `--detach` and then `bakar wait <run_id> --timeout 540` to avoid tool timeouts.
-- A detached launch prints the wait, status and stop commands for the handle. Under `--on HOST` each carries `--on HOST` and the stop line is `bakar stop --on HOST`. Before the run id is registered, a line saying that `bakar status <handle> --json` names the run id replaces the stop line.
-- A finished run prints `hint: next:` followed by `bakar triage <run_id> --json` on failure or `bakar report <run_id> --json` on success.
+- Needs `CLAUDECODE=1`: a foreground `bakar build` (with or without `--on HOST`), `bakar bitbake` or `bakar rebuild` is nudged to use `--detach` and then `bakar wait <run_id> --timeout 540` to avoid tool timeouts.
+- Printed whether or not `CLAUDECODE` is set: a detached launch prints the wait, status and stop commands for the handle. Under `--on HOST` each carries `--on HOST` and the stop line is `bakar stop --on HOST`. Before the run id is registered, a line saying that `bakar status <handle> --json` names the run id replaces the stop line.
+- Needs `CLAUDECODE=1`: a finished run prints `hint: next:` followed by `bakar triage <run_id> --json` on failure or `bakar report <run_id> --json` on success.

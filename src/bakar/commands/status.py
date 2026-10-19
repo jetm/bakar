@@ -172,15 +172,44 @@ def _unit_log(unit: str) -> str | None:
         return None
 
 
-def _recorded(unit: str | None, run_dir: Path | None, *, terminal: bool) -> tuple[str, int | None] | None:
-    """The outcome a recorded exit status gives: sentinel first, then (optionally) the terminal event."""
-    sentinel = detach_records.read_sentinel(unit) if unit else None
-    if sentinel is not None:
-        return ("succeeded" if sentinel == 0 else "failed"), sentinel
-    if terminal and run_dir is not None:
-        code = _terminal_exit_code(run_dir)
-        if code is not None:
-            return ("succeeded" if code == 0 else "failed"), code
+def _outcome(code: int) -> tuple[str, int]:
+    return ("succeeded" if code == 0 else "failed"), code
+
+
+def _frontend_pid(run_id: str) -> int | None:
+    """The front-end pid a run id embeds: the integer after its last hyphen."""
+    tail = run_id.rsplit("-", 1)[-1]
+    return int(tail) if tail.isdecimal() and "-" in run_id else None
+
+
+def _frontend_alive(run_dir: Path) -> bool:
+    """True while the run's front-end process is alive and is a bakar process.
+
+    The cmdline check guards against the pid having been reused by something
+    unrelated after the front end died.
+    """
+    pid = _frontend_pid(run_dir.name)
+    if pid is None or pid <= 0:
+        return False
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return False
+    return b"bakar" in cmdline
+
+
+def _run_live(run_dir: Path | None) -> bool:
+    """Liveness only selects running over unknown; it never yields an outcome."""
+    if run_dir is None:
+        return False
+    build_running, _pid, cmdline_ok = is_build_running(run_dir)
+    return (build_running and cmdline_ok) or _frontend_alive(run_dir)
+
+
+def _unit_state(unit: str, run_id: str | None) -> tuple[str, int | None] | None:
+    """running/starting while ``unit`` is active with no sentinel; None once it has ended."""
+    if detach_records.read_sentinel(unit) is None and _unit_active(unit):
+        return ("starting" if run_id is None else "running"), None
     return None
 
 
@@ -189,26 +218,33 @@ def _state_for(
     unit: str | None,
     run_id: str | None,
     run_dir: Path | None,
+    by_unit: bool = False,
 ) -> tuple[str, int | None]:
-    """Apply the precedence: sentinel, then unit liveness, then the terminal event.
+    """Resolve the state of a unit handle (``by_unit``) or of one run.
 
-    A unit can carry several runs (one per release), so a run's own terminal
-    event does not end the unit while the unit is still active.
+    A unit can carry several runs (one per release). Its sentinel is the
+    unit-level outcome, so a unit handle reads it and never a per-run event; an
+    inactive unit with no sentinel is ``unknown``. A run handle reports
+    ``running`` while the unit is active, then its own terminal event, then the
+    sentinel only when the run recorded none.
     """
-    done = _recorded(unit, run_dir, terminal=unit is None)
-    if done is not None:
-        return done
-    if unit:
-        if _unit_active(unit):
-            return ("starting" if run_id is None else "running"), None
-        # The unit can write its sentinel and be collected between the first
-        # read and the liveness probe; look again before concluding.
-        done = _recorded(unit, run_dir, terminal=True)
-        if done is not None:
-            return done
-    if run_dir is not None and is_build_running(run_dir)[0]:
-        return "running", None
-    return "unknown", None
+    if unit is None:
+        if run_dir is not None and (code := _terminal_exit_code(run_dir)) is not None:
+            return _outcome(code)
+        return ("running" if _run_live(run_dir) else "unknown"), None
+    live = _unit_state(unit, run_id)
+    if live is not None:
+        return live
+    # The unit can write its sentinel and be collected between the first
+    # read and the liveness probe; read the sentinel again before concluding.
+    sentinel = detach_records.read_sentinel(unit)
+    if by_unit:
+        return _outcome(sentinel) if sentinel is not None else ("unknown", None)
+    if run_dir is not None and (code := _terminal_exit_code(run_dir)) is not None:
+        return _outcome(code)
+    if sentinel is not None:
+        return _outcome(sentinel)
+    return ("running" if _run_live(run_dir) else "unknown"), None
 
 
 def compute_status(handle: str | None, *, workspace: Path | None = None) -> StatusRecord | None:
@@ -216,9 +252,11 @@ def compute_status(handle: str | None, *, workspace: Path | None = None) -> Stat
     unit: str | None = None
     run_id: str | None = None
     run_dir: Path | None = None
+    by_unit = False
 
     if handle is not None and detach_records.is_unit_name(handle):
         unit = handle
+        by_unit = True
         run_id, run_dir = _unit_run(unit)
         # An unregistered unit is only real while systemd still knows it or a
         # sentinel exists; otherwise the handle resolves to nothing.
@@ -228,6 +266,10 @@ def compute_status(handle: str | None, *, workspace: Path | None = None) -> Stat
             and not _unit_active(unit)
             and detach_records.read_sentinel(unit) is None
         ):
+            try:
+                detach_records.runtime_dir()
+            except detach_records.DetachUnavailable as exc:
+                print(f"bakar status: detached records unavailable: {exc}", file=sys.stderr)
             return None
     elif handle is not None and (found_unit := detach_records.find_unit_for_run(handle)) is not None:
         unit = found_unit
@@ -244,7 +286,7 @@ def compute_status(handle: str | None, *, workspace: Path | None = None) -> Stat
         run_id = run_dir.name
         unit = detach_records.find_unit_for_run(run_id)
 
-    state, exit_code = _state_for(unit=unit, run_id=run_id, run_dir=run_dir)
+    state, exit_code = _state_for(unit=unit, run_id=run_id, run_dir=run_dir, by_unit=by_unit)
     done, total, running, elapsed = _progress(run_dir)
     log = _unit_log(unit) if unit else (str(run_dir / "kas.log") if run_dir else None)
     return StatusRecord(

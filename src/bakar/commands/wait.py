@@ -38,7 +38,7 @@ _TERMINAL_EXIT = {"succeeded": EXIT_SUCCEEDED, "failed": EXIT_FAILED, "unknown":
 
 def progress_line(rec: StatusRecord, handle: str, now: datetime) -> str:
     label = rec.run_id or rec.unit or handle
-    return f"{now.strftime('%H:%M:%S')} {label} {rec.state} {tasks_fragment(rec)}"
+    return f"{now.astimezone(UTC).strftime('%H:%M:%SZ')} {label} {rec.state} {tasks_fragment(rec)}"
 
 
 def run_wait(
@@ -51,15 +51,24 @@ def run_wait(
     sleep: Callable[[float], None] = time.sleep,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     emit: Callable[[str], None] = lambda line: print(line, file=sys.stderr, flush=True),
+    status_fn: Callable[..., StatusRecord | None] | None = None,
 ) -> tuple[int, StatusRecord | None]:
-    """Poll until a terminal state or the timeout; return (exit code, last record)."""
+    """Poll until a terminal state or the timeout; return (exit code, last record).
+
+    Without a handle the target is resolved once, on the first poll, and pinned
+    (its unit when it has one, else its run id), so a newer run started during
+    the wait never takes over.
+    """
     interval = max(interval, MIN_INTERVAL)
     start = clock()
+    target = handle
     while True:
-        rec = compute_status(handle, workspace=workspace)
+        rec = (status_fn or compute_status)(target, workspace=workspace)
         if rec is None:
             emit(f"No run found for {handle or 'the current workspace'}")
             return EXIT_UNRESOLVED, None
+        if target is None:
+            target = rec.unit or rec.run_id
         emit(progress_line(rec, handle or "", now()))
         if rec.state in _TERMINAL_EXIT:
             return _TERMINAL_EXIT[rec.state], rec

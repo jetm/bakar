@@ -405,12 +405,14 @@ command line minus `--detach` and does that itself. `bakar bitbake` and
 everything else (warnings, a log tail, lifecycle hints) goes to stderr:
 
 ```json
-{"run_id": "20261019-101500", "unit": "bakar-detach-20261019-101458-a1b2c3", "host": null, "log": "/run/user/1000/bakar-detach-20261019-101458-a1b2c3.log", "state": "running"}
+{"run_id": "20261019-101500-4242", "unit": "bakar-detach-20261019-101458-a1b2c3", "host": null, "log": "/run/user/1000/bakar-detach-20261019-101458-a1b2c3.log", "state": "running"}
 ```
 
-Pass `run_id` or `unit` to `bakar status`, `bakar wait`, `bakar triage` and
-`bakar stop <kas.yml> --run`. `host` is null for a local run and the ssh target for
-`--on`.
+Pass `run_id` or `unit` to `bakar status`, `bakar wait` and `bakar triage`;
+`bakar stop <kas.yml> --run` takes the run id only. A run id ends in the pid of
+the bakar run (`20261019-101500-4242`); a unit name is
+`bakar-detach-YYYYMMDD-HHMMSS-<6 hex>`. `host` is null for a local run and the ssh
+target for `--on`.
 
 **Run-id bound.** The launcher waits up to 60 seconds for the front-end to
 register its first run id. It returns `running` with the id when one appears,
@@ -432,7 +434,10 @@ nothing runs.
   detach.
 - With no usable systemd user manager (`systemd-run` missing, `XDG_RUNTIME_DIR`
   unset or unusable, or `systemd-run --user` failing) it prints
-  `bakar: cannot detach: <reason>` to stderr and exits 2.
+  `bakar: cannot detach: <reason>` to stderr and exits 2. The unit is started
+  with `Type=exec`, so a unit that cannot start at all (a missing working
+  directory, say) is refused the same way, with systemd-run's own message in
+  `<reason>`, instead of returning a handle for a log that never appears.
 
 **Lingering.** A user unit stops when the user's last session ends unless the
 account lingers. When `loginctl` reports `Linger=no`, bakar prints a warning on
@@ -794,8 +799,20 @@ remote unit is launched it polls `bakar status <unit> --json` on the host every
 2 seconds for up to 60 seconds, until a run id is registered or the state is
 terminal, then prints one JSON handle line on stdout (with `host` set) and
 exits 0, or with the remote front-end's non-zero status when it failed before
-returning. If the host has no usable systemd user unit, the build already ran
-in the foreground there; the dispatcher says so and returns its exit code. See
+returning.
+
+When the poll ends with no record, or with state `unknown`, the start is
+unconfirmed: the handle is still printed (state `starting`) and the command
+exits 3 with `could not confirm the remote build started` on stderr. Exit 3 is
+also a code a remote build can return itself, so before re-dispatching, run
+`bakar status <unit> --on <host>`: dispatching again would start a second build.
+
+If the host cannot create a user unit, nothing is built. The remote script does
+not fall back to the foreground build for `--detach`; the dispatcher prints
+`<host> cannot create a user unit; run without --detach or enable the user
+manager there` and exits 2 before any build output. Ctrl-C during the status
+poll exits 130 and prints the unit with the `bakar status` and `bakar stop`
+commands, because the remote build keeps running. See
 [Detached builds](#detached-builds---detach).
 
 A meta-avocado dispatch opens about seven ssh connections (preflight, workspace

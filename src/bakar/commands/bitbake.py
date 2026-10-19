@@ -22,7 +22,7 @@ from __future__ import annotations
 import shlex
 import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 
@@ -53,6 +53,10 @@ from bakar.steps.kas_build import (
     run_shell_capture,
     run_shell_live,
 )
+
+# unsupported: the command has no --detach; offered: it has one the caller did not
+# pass (agent callers get a nudge); requested: --detach was passed.
+type DetachMode = Literal["unsupported", "offered", "requested"]
 
 
 def _build_command(target: str, task: str | None, *, keep_going: bool) -> str:
@@ -99,7 +103,7 @@ def _run_task(
     kas_yaml: str | None,
     step: str,
     command_override: str | None = None,
-    detach: bool | None = None,
+    detach_mode: DetachMode = "unsupported",
 ) -> None:
     """Dispatch and run a bitbake task for ``target`` inside kas-container.
 
@@ -116,16 +120,17 @@ def _run_task(
     ``cleansstate && build`` chain). Only valid on the live path - callers that
     pass it leave ``task`` None so the devshell/listtasks branches are skipped.
 
-    ``detach`` is None for commands that do not offer ``--detach``. Otherwise
-    True hands the invocation to a transient unit before anything is resolved,
-    and False lets agent callers see a nudge toward it on the live path.
+    ``detach_mode`` is ``"unsupported"`` for commands that do not offer
+    ``--detach``. ``"requested"`` hands the invocation to a transient unit before
+    anything is resolved, and ``"offered"`` lets agent callers see a nudge toward
+    it on the live path.
     """
-    if detach:
+    if detach_mode == "requested":
         if task == "devshell":
             console.print("[red]--detach cannot be combined with --task devshell (interactive).[/]")
             raise typer.Exit(code=2)
         _detach_cmd.detach_and_exit(sys.argv[1:], invoking_cwd())
-    if detach is False and _hints.agent_mode() and task not in ("listtasks", "devshell"):
+    if detach_mode == "offered" and _hints.agent_mode() and task not in ("listtasks", "devshell"):
         _hints.emit(_hints.foreground_nudge())
 
     main_yaml, user_extras = split_kas_yaml_arg(kas_yaml)
@@ -251,7 +256,7 @@ def bitbake(
         workspace=workspace,
         kas_yaml=kas_yaml,
         step="bitbake",
-        detach=detach,
+        detach_mode="requested" if detach else "offered",
     )
 
 
@@ -345,5 +350,5 @@ def rebuild(
         kas_yaml=kas_yaml,
         step="rebuild",
         command_override=f"{clean} && {build}",
-        detach=detach,
+        detach_mode="requested" if detach else "offered",
     )

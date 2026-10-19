@@ -179,3 +179,53 @@ def test_generic_dispatch_flags_carry_detach(  # noqa: PLR0913
     assert flags.detach is expected
     assert next(iter(flags.hint_lines("u", None, ON))) == "hint: wait: `bakar wait u --timeout 540 --on pc2`"
     assert no_local_unit == []
+
+
+@pytest.mark.parametrize(
+    ("claudecode", "extra", "nudged"),
+    [("1", [], True), ("1", ["--detach"], False), (None, [], False)],
+)
+def test_foreground_on_build_gets_the_nudge_only_in_agent_mode_without_detach(  # noqa: PLR0913
+    runner: _CliRunner,
+    no_local_unit: list[Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    claudecode: str | None,
+    extra: list[str],
+    nudged: bool,
+) -> None:
+    if claudecode is None:
+        monkeypatch.delenv("CLAUDECODE", raising=False)
+    else:
+        monkeypatch.setenv("CLAUDECODE", claudecode)
+    (tmp_path / ".bakar.toml").write_text("")
+    (tmp_path / "nxp").mkdir()
+    monkeypatch.chdir(tmp_path)
+    yml = tmp_path / "my.yml"
+    yml.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
+    _record(monkeypatch, rd, "dispatch_remote_build")
+    emitted: list[list[str]] = []
+    monkeypatch.setattr(build_cmd._hints, "emit", lambda lines: emitted.append(list(lines)))
+
+    result = _invoke(runner, monkeypatch, str(yml), *extra)
+
+    assert result.exit_code == 0, result.output
+    nudge = [line for lines in emitted for line in lines if "run with --detach" in line]
+    assert len(nudge) == (1 if nudged else 0)
+    assert no_local_unit == []
+
+
+def test_on_dry_run_gets_no_nudge(
+    runner: _CliRunner, no_local_unit: list[Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.chdir(tmp_path)
+    emitted: list[list[str]] = []
+    monkeypatch.setattr(build_cmd._hints, "emit", lambda lines: emitted.append(list(lines)))
+    argv = ["build", "my.yml", "--dry-run", "--on", ON, "--yes"]
+    monkeypatch.setattr(sys, "argv", ["bakar", *argv])
+
+    result = runner.invoke(app, argv)
+
+    assert result.exit_code == 2
+    assert emitted == []

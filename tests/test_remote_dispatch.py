@@ -8,6 +8,7 @@ later task; nothing here touches a live host.
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import os
 import re
@@ -21,6 +22,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from bakar import build_scope, observability
+from bakar.detach import escape_for_systemd_run
 from bakar.steps.remote_dispatch import (
     RSYNC_EXCLUDES,
     RemoteScriptSpec,
@@ -374,7 +376,8 @@ def test_remote_script_records_the_build_exit_code_in_a_sentinel() -> None:
         unit="bakar-dispatch-u3",
     )
     log = remote_log_expr("bakar-dispatch-u3")
-    assert f"{log}.rc" in script
+    # The payload reaches systemd-run, which collapses `$$`, so it is `$`-doubled.
+    assert f"{escape_for_systemd_run(log)}.rc" in script
 
 
 def test_dispatch_log_lives_under_the_per_user_runtime_dir_not_tmp() -> None:
@@ -2426,9 +2429,10 @@ def test_detached_dispatch_returns_the_remote_exit_when_status_says_failed(
     assert json.loads(capsys.readouterr().out)["state"] == "failed"
 
 
-def test_detached_dispatch_without_markers_says_the_host_could_not_detach(
+def test_detached_dispatch_without_markers_never_prints_a_handle(
     fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # A script that predates the refusal marker: the stream is the build's own.
     fake_sp.popen_lines = ["BAKAR_DISPATCH_START=20260716-120000\n", "NOTE: built in the foreground\n"]
     fake_sp.popen_rc = 4
     monkeypatch.setattr(rd, "_ssh_bash_capture", lambda *a, **k: pytest.fail("no status poll without a unit"))
@@ -2488,3 +2492,70 @@ def test_poll_detached_status_stops_at_the_deadline_when_every_capture_fails(
     assert record == {}
     assert max(timeouts) <= 15.0
     assert now[0] <= 60.0 + 1.0
+
+
+def test_report_detached_ctrl_c_during_the_poll_exits_130(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def interrupted(host, unit):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(rd, "_poll_detached_status", interrupted)
+    rc = rd._report_detached(HOST, [f"BAKAR_DISPATCH_UNIT={_DETACH_UNIT}\n"], None)
+    cap = capsys.readouterr()
+    assert rc == 130
+    assert cap.out == ""
+    assert "Ctrl-C does not stop the remote build" in cap.err
+    assert f"bakar status {_DETACH_UNIT} --on {HOST}" in cap.err
+    assert f"bakar stop --on {HOST}" in cap.err
+
+
+def test_detach_script_refuses_instead_of_running_the_build_in_the_foreground() -> None:
+    spec = RemoteScriptSpec(remote_argv=["build", "k.yml"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True)
+    detached = build_remote_script(dataclasses.replace(spec, detach=True), unit=_DETACH_UNIT)
+    assert detached.splitlines()[-2:] == ["echo BAKAR_DISPATCH_NO_UNIT=1", "exit 97"]
+    assert not any(line.startswith("exec env ") for line in detached.splitlines())
+    # The non-detached script keeps its coupled fallback.
+    assert build_remote_script(spec, unit=_DETACH_UNIT).splitlines()[-1].startswith("exec env ")
+
+
+def test_remote_script_asks_systemd_run_for_type_exec() -> None:
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True),
+        unit=_DETACH_UNIT,
+    )
+    assert "--property=Type=exec" in next(line for line in script.splitlines() if "systemd-run --user --unit" in line)
+
+
+def test_remote_script_escapes_dollars_in_the_systemd_payload() -> None:
+    script = build_remote_script(
+        RemoteScriptSpec(remote_argv=["build", "${X}$$"], cwd=Path("/tmp/ws"), env_vars={}, sccache_off=True),
+        unit=_DETACH_UNIT,
+    )
+    detached = next(line for line in script.splitlines() if "systemd-run --user --unit" in line)
+    payload = shlex.split(detached.split(" -- ", 1)[1])[2]
+    assert "build '$${X}$$$$'" in payload
+    assert "$$rc" in payload
+    assert "$$XDG_RUNTIME_DIR" in payload
+    # What the unit's bash sees once systemd has collapsed `$$`.
+    assert shlex.split(payload.replace("$$", "$").split(" >", 1)[0])[-2:] == ["build", "${X}$$"]
+
+
+def test_detached_dispatch_refuses_a_host_without_user_units(
+    fake_sp: FakeSubprocess, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_sp.popen_lines = ["BAKAR_DISPATCH_START=20260716-120000\n", "BAKAR_DISPATCH_NO_UNIT=1\n"]
+    fake_sp.popen_rc = 97
+    monkeypatch.setattr(rd, "_ssh_bash_capture", lambda *a, **k: pytest.fail("no status poll without a unit"))
+    rc = rd.dispatch_remote_build(
+        HOST,
+        rd.MirrorRequest(ws_root=WS, cwd=WS, local_args=["build", "--on", HOST, "--detach"]),
+        rd.DispatchFlags(sccache_dist=False, assume_yes=True, detach=True),
+    )
+    cap = capsys.readouterr()
+    assert rc == 2
+    assert cap.out == ""
+    assert f"{HOST} cannot create a user unit" in cap.err
+    assert "run without --detach" in cap.err
+    assert "BAKAR_DISPATCH_NO_UNIT" not in cap.err
+    assert fake_sp.last_proc.stdin.buffer.endswith("exit 97")

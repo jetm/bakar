@@ -38,6 +38,11 @@ def _request(tmp_path, argv=("build", "k.yml"), environ=None):
     return detach.LaunchRequest(argv=list(argv), cwd=tmp_path, environ=environ or {})
 
 
+def _systemd_unescape(payload):
+    """Simulate systemd collapsing ``$$`` before the shell sees the payload."""
+    return payload.replace("$$", "$")
+
+
 def _ok_runner(calls):
     def runner(argv, **kwargs):
         calls.append((argv, kwargs))
@@ -99,19 +104,20 @@ def test_build_unit_argv_uses_cwd_and_quotes_log(tmp_path):
     unit = "bakar-detach-20260101-000000-abcdef"
     req = _request(tmp_path / "cwd", argv=("build", "it's here.yml"), environ={"SSH_AUTH_SOCK": "/s", "DISPLAY": ":0"})
     argv = detach.build_unit_argv(unit, req, paths)
-    assert argv[:6] == [
+    assert argv[:7] == [
         "systemd-run",
         "--user",
         f"--unit={unit}",
         "--collect",
         "--quiet",
+        "--property=Type=exec",
         f"--working-directory={tmp_path / 'cwd'}",
     ]
     assert "--setenv=SSH_AUTH_SOCK=/s" in argv
     assert f"--setenv=BAKAR_DETACH_UNIT={unit}" in argv
     assert not any("DISPLAY" in a for a in argv)
-    script = argv[-1]
     assert argv[-3:-1] == ["bash", "-c"]
+    script = _systemd_unescape(argv[-1])
     subprocess.run(["bash", "-n", "-c", script], check=True)
     tokens = shlex.split(script)
     assert ">" + str(nasty / "u.log") in tokens
@@ -211,7 +217,7 @@ def test_build_unit_argv_runs_python_without_cwd_on_path(tmp_path):
         log=tmp_path / "u.log", sentinel=tmp_path / "u.log.rc", registry=tmp_path / "u.runs"
     )
     argv = detach.build_unit_argv("bakar-detach-20260101-000000-abcdef", _request(tmp_path), paths)
-    tokens = shlex.split(argv[-1])
+    tokens = shlex.split(_systemd_unescape(argv[-1]))
     assert tokens[0] == sys.executable
     assert tokens[1:4] == ["-P", "-m", "bakar"]
     assert tokens.index("-P") < tokens.index("-m")
@@ -237,3 +243,51 @@ def test_launch_runner_failure_is_unavailable(runtime, tmp_path, exc):
 
     with pytest.raises(detach.DetachUnavailable, match="failed to start the unit"):
         detach.launch(_request(tmp_path), runner=runner)
+
+
+def test_build_unit_argv_escapes_dollars_for_systemd(tmp_path):
+    paths = detach_records.UnitPaths(
+        log=tmp_path / "u.log", sentinel=tmp_path / "u.log.rc", registry=tmp_path / "u.runs"
+    )
+    tokens_in = ["build", "${X}$$", "k.yml"]
+    argv = detach.build_unit_argv("bakar-detach-20260101-000000-abcdef", _request(tmp_path, argv=tokens_in), paths)
+    payload = argv[-1]
+    # systemd rewrites `${VAR}` and `$$` unless every `$` is doubled.
+    assert "$${X}$$$$" in payload
+    assert "$$rc" in payload
+    unescaped = _systemd_unescape(payload)
+    subprocess.run(["bash", "-n", "-c", unescaped], check=True)
+    front_end = unescaped.split(" >", 1)[0]
+    assert shlex.split(front_end) == [sys.executable, "-P", "-m", "bakar", *tokens_in]
+
+
+def test_build_unit_argv_requests_type_exec(tmp_path):
+    paths = detach_records.UnitPaths(
+        log=tmp_path / "u.log", sentinel=tmp_path / "u.log.rc", registry=tmp_path / "u.runs"
+    )
+    argv = detach.build_unit_argv("bakar-detach-20260101-000000-abcdef", _request(tmp_path), paths)
+    assert "--property=Type=exec" in argv
+    assert argv.index("--property=Type=exec") < argv.index("--")
+
+
+def test_launch_systemd_run_failure_carries_its_stderr(runtime, tmp_path):
+    def runner(argv, **kwargs):
+        return SimpleNamespace(returncode=1, stdout="", stderr="Failed to chdir to /nonexistent\n")
+
+    with pytest.raises(detach.DetachUnavailable, match="Failed to chdir to /nonexistent"):
+        detach.launch(_request(tmp_path), runner=runner)
+
+
+@pytest.mark.parametrize("registrations", [[{}], [{"run_id": 123}], [{"run_id": ""}], [{"run_id": None}]])
+def test_launch_ignores_registrations_without_a_string_run_id(runtime, tmp_path, monkeypatch, registrations):
+    monkeypatch.setattr(detach_records, "read_registrations", lambda unit: registrations)
+    clock = FakeClock()
+    h = detach.launch(_request(tmp_path), runner=_ok_runner([]), clock=clock, sleep=clock.sleep, bound=2.0)
+    assert (h.state, h.run_id) == ("starting", None)
+
+
+def test_launch_takes_the_first_valid_run_id(runtime, tmp_path, monkeypatch):
+    regs = [{}, {"run_id": 5}, {"run_id": "20260101-000000-7"}, {"run_id": "later"}]
+    monkeypatch.setattr(detach_records, "read_registrations", lambda unit: regs)
+    h = detach.launch(_request(tmp_path), runner=_ok_runner([]), clock=FakeClock(), sleep=lambda s: None)
+    assert (h.state, h.run_id) == ("running", "20260101-000000-7")

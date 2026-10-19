@@ -34,6 +34,7 @@ __all__ = [
     "LaunchRequest",
     "build_unit_argv",
     "check_available",
+    "escape_for_systemd_run",
     "forwarded_env",
     "launch",
     "linger_enabled",
@@ -95,13 +96,24 @@ def forwarded_env(environ: Mapping[str, str]) -> dict[str, str]:
     return out
 
 
+def escape_for_systemd_run(command: str) -> str:
+    """Double every ``$`` so systemd hands ``command`` to the shell unchanged.
+
+    systemd expands ``${VAR}`` and collapses ``$$`` in a unit's command line,
+    even inside shell quotes, so a user argv token or path carrying either would
+    be silently rewritten. ``$$`` is the escape on every systemd version, unlike
+    ``--expand-environment=no`` (254+).
+    """
+    return command.replace("$", "$$")
+
+
 def build_unit_argv(unit: str, request: LaunchRequest, paths: UnitPaths) -> list[str]:
     """Return the ``systemd-run`` argv that runs ``request`` as ``unit``.
 
     The wrapper writes the sentinel last, after the log redirection has closed,
     so the sentinel's presence means the log is complete. Every interpolated
     value is shlex-quoted: the log path sits under ``$XDG_RUNTIME_DIR`` and the
-    argv is user input.
+    argv is user input. The payload is then ``$``-escaped for systemd itself.
     """
     # -P keeps the unit's working directory off sys.path, so a stray yaml.py or
     # typer.py in the user's cwd cannot shadow the real modules under ``-m``.
@@ -118,12 +130,16 @@ def build_unit_argv(unit: str, request: LaunchRequest, paths: UnitPaths) -> list
         f"--unit={unit}",
         "--collect",
         "--quiet",
+        # Type=exec makes systemd-run exit non-zero when the unit cannot exec
+        # (a missing working directory, say); the default Type=simple reports
+        # success and --collect then removes the unit without a trace.
+        "--property=Type=exec",
         f"--working-directory={request.cwd}",
         *setenv,
         "--",
         "bash",
         "-c",
-        wrapped,
+        escape_for_systemd_run(wrapped),
     ]
 
 
@@ -154,6 +170,15 @@ def linger_enabled() -> bool | None:
     if result.returncode != 0:
         return None
     return result.stdout.strip() == "yes"
+
+
+def _first_run_id(registrations: Sequence[Mapping[str, object]]) -> str | None:
+    """Return the first registered ``run_id`` that is a non-empty string."""
+    for reg in registrations:
+        run_id = reg.get("run_id")
+        if isinstance(run_id, str) and run_id:
+            return run_id
+    return None
 
 
 def launch(
@@ -191,11 +216,10 @@ def launch(
         if code is not None:
             state = "succeeded" if code == 0 else "failed"
             regs = detach_records.read_registrations(unit)
-            run_id = regs[0].get("run_id") if regs else None
-            return Handle(run_id, unit, None, log, state, code)
-        regs = detach_records.read_registrations(unit)
-        if regs:
-            return Handle(regs[0].get("run_id"), unit, None, log, "running")
+            return Handle(_first_run_id(regs), unit, None, log, state, code)
+        run_id = _first_run_id(detach_records.read_registrations(unit))
+        if run_id is not None:
+            return Handle(run_id, unit, None, log, "running")
         if clock() >= deadline:
             return Handle(None, unit, None, log, "starting")
         sleep(_POLL_INTERVAL_SECS)

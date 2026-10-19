@@ -377,6 +377,9 @@ def build(
         if dry_run or dry_run_script is not None:
             console.print("[red]--on cannot be combined with --dry-run/--dry-run-script[/]; run the dry run locally.")
             raise typer.Exit(code=2)
+        # A foreground --on build is the case a tool-call timeout actually hits.
+        if not detach and _hints.agent_mode():
+            _hints.emit(_hints.foreground_nudge())
         from bakar.commands._helpers import invoking_cwd as _invoking_cwd
 
         # The invoking cwd is captured before _enter_workspace's eager -w chdir

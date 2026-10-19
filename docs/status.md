@@ -45,21 +45,32 @@ so run `status` from inside it or pass `--workspace`.
 | `failed` | A recorded exit status other than 0 |
 | `unknown` | No recorded exit status and no sign of life: the process vanished without saying how it ended |
 
-Only a recorded exit status decides `succeeded` or `failed`. `status` checks,
-in order:
+Only a recorded exit status decides `succeeded` or `failed`. For a run id,
+`status` checks, in order:
 
-1. The detached unit's sentinel file (its exit status).
-2. The run's terminal event (`run_end` or `run_error`) in `events.jsonl`.
-3. Liveness, which separates `running` (or `starting`) from `unknown` and never
-   produces `succeeded` or `failed`.
+1. While the run's detached unit is active and has no sentinel: `running`.
+2. The run's own terminal event (`run_end` or `run_error`) in `events.jsonl`.
+3. The detached unit's sentinel file (its exit status), only when the run
+   recorded no terminal event.
+4. Liveness, which separates `running` from `unknown` and never produces
+   `succeeded` or `failed`. A run is live while its build process is alive
+   (`build.pid` names a process group whose command line is a kas process) or
+   while its front-end process, the pid after the last hyphen of the run id, is
+   a live `bakar` process.
 
-While a detached unit is still active and has no sentinel, every run it
-registered reports `running`, even one whose own terminal event is recorded.
-For a multi-release preset run the unit's recorded exit status decides each
-run's final state.
+A unit name reads the unit's sentinel and never a per-run event. An inactive
+unit with no sentinel (stopped with `systemctl stop`, killed by the OOM killer,
+or its session ended without linger) reports `unknown`.
+
+While a detached unit is active, every run it registered reports `running`.
+Afterwards, for a multi-release preset run, each run reports its own recorded
+exit status and the unit's sentinel only when the run recorded none.
 
 A run that died from SIGKILL, a reboot or an out-of-memory kill leaves no exit
 status behind, so it reports `unknown` rather than a guessed failure.
+
+When `XDG_RUNTIME_DIR` is unset, relative or unsafe, a unit name that nothing
+else resolves exits 2 and stderr names the reason.
 
 ## Output
 

@@ -112,9 +112,10 @@ def _finish_build(
     """
     if rc != 0:
         exe = "kas" if cfg.host_mode else "kas-container"
-        console.print(
-            f"[red]{exe} build failed (exit {rc}, run {log.run_id}).[/] Run `bakar triage {log.run_id}` for details."
-        )
+        # The wording is load-bearing: remote_dispatch._RUN_ID_RE reads the run id
+        # off `bakar triage <id>` on ONE line, and a non-TTY remote console wraps at
+        # 80 columns. Do not put the run id earlier in the line.
+        console.print(f"[red]{exe} build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details.")
         if _hints.agent_mode():
             _hints.emit(_hints.after_finish(log.run_id, rc))
         raise typer.Exit(code=rc)

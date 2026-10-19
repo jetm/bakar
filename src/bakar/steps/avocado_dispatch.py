@@ -345,6 +345,7 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
             env_vars=remote_env(build_dir_template),
             sccache_off=not sccache_dist,
             guard=layer_delivery_remote.build_guard(worktree_root=str(root), name=name, commit=commit),
+            detach=flags.detach,
         )
     )
     # Run ids are looked up under this dispatch's build directory: the release

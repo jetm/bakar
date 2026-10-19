@@ -12,13 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bakar build --detach` (also with `--on HOST`) starts the build in a user systemd unit and returns a handle, so a build survives the calling shell or tool call.
 - `bakar status [HANDLE] [--json] [--on HOST]` reports one lifecycle state (`starting`, `running`, `succeeded`, `failed`, `unknown`) with task progress and the first failed recipe. Outcomes come only from a recorded exit status.
 - `bakar wait [HANDLE] [--timeout S] [--interval S] [--json] [--on HOST]` polls a run until it ends and exits 0 (succeeded), 1 (failed), 3 (unknown), 124 (timeout) or 2 (handle does not resolve).
-- With `CLAUDECODE=1`, bakar prints next-step hints on stderr: a `--detach` nudge for foreground builds, wait, status and stop commands after a detached launch, and triage or report after a finished run.
+- Next-step hints on stderr: wait, status and stop commands after a detached launch (always), and, with `CLAUDECODE=1`, a `--detach` nudge for foreground builds and triage or report after a finished run.
 - New terminal exit status 124 from `bakar wait` when `--timeout` elapses while the run is still starting or running.
 - `docs/agents.md` describes the lifecycle for agents and scripts.
+- `bakar build --on HOST --detach` exits 3 when the remote start cannot be confirmed within the 60 second poll (a remote build can also return 3 itself, so check `bakar status <unit> --on HOST` before dispatching again), and exits 2 with "cannot create a user unit" when the host cannot detach, instead of running the build in the foreground there.
+- Runs recorded before this release have no `exit_code` on their terminal events, so `bakar status` reports them as `unknown` and `bakar wait` exits 3 until a new run exists.
 
 ### Changed
 
-- Foreground `bakar build` under an agent now warns that a long build can outlive the tool call and points at `--detach`.
+- Foreground `bakar build` (including `--on HOST` without `--detach`) under an agent now warns that a long build can outlive the tool call and points at `--detach`.
 
 ## [0.39.0] - 2026-10-19
 

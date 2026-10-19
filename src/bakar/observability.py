@@ -75,12 +75,14 @@ def _exit_code_for(exc: BaseException) -> int:
     ``getattr`` so this module imports neither framework.
     """
     code = getattr(exc, "exit_code", None)
+    # bool is an int subclass and json.dumps would store True as ``true``, which
+    # the status reader rejects; normalise to a plain int.
     if isinstance(code, int):
-        return code
+        return int(code)
     if isinstance(exc, SystemExit):
         if exc.code is None:
             return 0
-        return exc.code if isinstance(exc.code, int) else 1
+        return int(exc.code) if isinstance(exc.code, int) else 1
     if isinstance(exc, KeyboardInterrupt):
         return 130
     return 1

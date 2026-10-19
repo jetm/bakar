@@ -18,10 +18,15 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 UNIT_RE = re.compile(r"^bakar-(detach|dispatch)-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
 
@@ -74,6 +79,8 @@ def runtime_dir() -> Path:
     if not raw:
         raise DetachUnavailable("XDG_RUNTIME_DIR is not set")
     path = Path(raw)
+    if not path.is_absolute():
+        raise DetachUnavailable(f"XDG_RUNTIME_DIR is not an absolute path: {raw}")
     if not path.is_dir():
         raise DetachUnavailable(f"XDG_RUNTIME_DIR is not a directory: {raw}")
     st = path.stat()
@@ -97,7 +104,7 @@ def read_sentinel(unit: str) -> int | None:
     """Return the unit's recorded exit status, or None when unfinished/unreadable."""
     try:
         return int(unit_paths(unit).sentinel.read_text().strip())
-    except OSError, ValueError:
+    except OSError, ValueError, DetachUnavailable:
         return None
 
 
@@ -112,10 +119,22 @@ def append_registration(unit: str, run_id: str, run_dir: str | Path, pid: int) -
     return True
 
 
+def _valid_registration(rec: object) -> bool:
+    if not isinstance(rec, dict):
+        return False
+    pid = rec.get("pid")
+    return (
+        isinstance(rec.get("run_id"), str)
+        and isinstance(rec.get("run_dir"), str)
+        and isinstance(pid, int)
+        and not isinstance(pid, bool)
+    )
+
+
 def _read_registry(path: Path) -> list[dict]:
     out: list[dict] = []
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return out
     for raw in text.splitlines():
@@ -123,14 +142,18 @@ def _read_registry(path: Path) -> list[dict]:
             rec = json.loads(raw)
         except ValueError:
             continue
-        if isinstance(rec, dict):
+        if _valid_registration(rec):
             out.append(rec)
     return out
 
 
 def read_registrations(unit: str) -> list[dict]:
-    """Return the unit's registrations, skipping malformed lines."""
-    return _read_registry(unit_paths(unit).registry)
+    """Return the unit's registrations, skipping malformed lines and wrong-typed fields."""
+    try:
+        registry = unit_paths(unit).registry
+    except DetachUnavailable:
+        return []
+    return _read_registry(registry)
 
 
 def find_unit_for_run(run_id: str) -> str | None:
@@ -171,16 +194,60 @@ def register_current_run(run_id: str, run_dir: str | Path, pid: int) -> bool:
     return append_registration(unit, run_id, run_dir, pid)
 
 
-def prune(now: float | None = None, max_age_days: int = 7) -> list[str]:
-    """Delete records of finished ``bakar-detach-`` units older than the age.
+def systemctl_unit_active(unit: str) -> bool:
+    """True when ``systemctl --user is-active`` reports ``unit`` active."""
+    try:
+        proc = subprocess.run(
+            ["systemctl", "--user", "is-active", unit],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError, subprocess.SubprocessError:
+        return False
+    return proc.returncode == 0 and proc.stdout.strip() == "active"
 
-    A unit without a sentinel is still running (or its fate is unknown) and is
-    kept; ``bakar-dispatch-`` units are never touched. Returns pruned units.
+
+def _newest_mtime(paths: tuple[Path, ...]) -> float | None:
+    newest: float | None = None
+    for p in paths:
+        try:
+            m = p.stat().st_mtime
+        except OSError:
+            continue
+        newest = m if newest is None else max(newest, m)
+    return newest
+
+
+def _remove_unit_files(unit: str) -> None:
+    paths = unit_paths(unit)
+    for p in (paths.log, paths.sentinel, paths.registry):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
+def prune(
+    now: float | None = None,
+    max_age_days: int = 7,
+    is_active: Callable[[str], bool] | None = None,
+) -> list[str]:
+    """Delete records of ``bakar-detach-`` units older than the age.
+
+    A unit with a sentinel is pruned once the sentinel is old enough. A unit
+    without one (killed before its wrapper could write it) is pruned only when
+    its newest file is old enough AND ``is_active`` reports it inactive; an
+    active unit is always kept. ``bakar-dispatch-`` units are never touched.
+    Returns pruned units.
     """
     try:
         base = runtime_dir()
     except DetachUnavailable:
         return []
+    probe = systemctl_unit_active if is_active is None else is_active
     cutoff = (time.time() if now is None else now) - max_age_days * 86400
     pruned: list[str] = []
     for sentinel in sorted(base.glob(f"{_DETACH_PREFIX}*.log.rc")):
@@ -192,11 +259,20 @@ def prune(now: float | None = None, max_age_days: int = 7) -> list[str]:
                 continue
         except OSError:
             continue
+        _remove_unit_files(unit)
+        pruned.append(unit)
+    candidates = {
+        p.name.removesuffix(suffix) for suffix in (".log", ".runs") for p in base.glob(f"{_DETACH_PREFIX}*{suffix}")
+    }
+    for unit in sorted(candidates - set(pruned)):
+        if not is_unit_name(unit) or not unit.startswith(_DETACH_PREFIX):
+            continue
         paths = unit_paths(unit)
-        for p in (paths.log, paths.sentinel, paths.registry):
-            try:
-                p.unlink()
-            except OSError:
-                pass
+        if paths.sentinel.exists():
+            continue
+        newest = _newest_mtime((paths.log, paths.registry))
+        if newest is None or newest >= cutoff or probe(unit):
+            continue
+        _remove_unit_files(unit)
         pruned.append(unit)
     return pruned

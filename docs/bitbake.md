@@ -147,7 +147,9 @@ to open the log to find it. Once 20 continuation lines have been shown, a
 stdout (`run_id`, `unit`, `host`, `log`, `state`), then exits. Follow it with
 `bakar status <handle>` and `bakar wait <handle>`. `--detach` with
 `--task devshell` exits 2, because a devshell needs your terminal.
-`clean-recipe` has no `--detach`. The handle, the 60 s run-id bound, record
+`clean-recipe` has no `--detach`. A unit that cannot start at all (a missing
+working directory, say) is refused with exit 2 and systemd-run's message. The
+handle, the 60 s run-id bound, record
 pruning and the lingering warning are described in
 [build.md](build.md#detached-builds---detach).
 

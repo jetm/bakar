@@ -50,7 +50,7 @@ def test_host_mode_failure_names_kas(monkeypatch) -> None:
     """A host-mode build must attribute the failure to ``kas``, not ``kas-container``."""
     out = _failure_output(host_mode=True, monkeypatch=monkeypatch)
 
-    assert "kas build failed (exit 2, run 20260805-125352)." in out
+    assert "kas build failed (exit 2)." in out
     assert "kas-container" not in out
 
 
@@ -58,7 +58,7 @@ def test_container_mode_failure_names_kas_container(monkeypatch) -> None:
     """A container build must still attribute the failure to ``kas-container``."""
     out = _failure_output(host_mode=False, monkeypatch=monkeypatch)
 
-    assert "kas-container build failed (exit 2, run 20260805-125352)." in out
+    assert "kas-container build failed (exit 2)." in out
 
 
 def test_failure_keeps_the_triage_hint(monkeypatch) -> None:
@@ -66,6 +66,27 @@ def test_failure_keeps_the_triage_hint(monkeypatch) -> None:
     out = _failure_output(host_mode=True, monkeypatch=monkeypatch)
 
     assert "bakar triage 20260805-125352" in out
+
+
+@pytest.mark.parametrize("host_mode", [True, False])
+def test_failure_line_keeps_the_triage_id_on_one_line_at_80_columns(host_mode: bool, monkeypatch) -> None:
+    """``remote_dispatch._RUN_ID_RE`` reads the id off one line of an 80-column non-TTY console."""
+    import re
+
+    buf = StringIO()
+    monkeypatch.setattr(build_common, "console", Console(width=80, file=buf, force_terminal=False))
+    cfg = MagicMock()
+    cfg.host_mode = host_mode
+    log = MagicMock()
+    log.run_id = "20261019-150000-42424"
+    assert len(log.run_id) == 21
+
+    with pytest.raises(typer.Exit):
+        build._finish_build(cfg, log, 2, "qemuarm64")
+
+    run_id_re = re.compile(r"bakar triage (\S+)")
+    found = [m.group(1).strip("`") for line in buf.getvalue().splitlines() if (m := run_id_re.search(line))]
+    assert found == [log.run_id]
 
 
 def _finish(*, rc: int, monkeypatch) -> tuple[str, str]:

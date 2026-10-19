@@ -140,3 +140,61 @@ def test_prune_skips_live_and_dispatch_entries(rt: Path) -> None:
         assert (rt / f"{u}.runs").exists()
     assert (rt / f"{disp}.log.rc").exists()
     assert (rt / f"{fresh}.log.rc").exists()
+
+
+def test_readers_tolerate_an_unusable_runtime_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    assert dr.read_sentinel(_unit()) is None
+    assert dr.read_registrations(_unit()) == []
+
+
+def test_runtime_dir_refuses_a_relative_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "run/user")
+    with pytest.raises(dr.DetachUnavailable, match="absolute"):
+        dr.runtime_dir()
+
+
+def test_non_utf8_registry_does_not_break_lookups(rt: Path) -> None:
+    (rt / f"{_unit('aaaaaa')}.runs").write_bytes(b"\xff\xfe garbage\n")
+    assert dr.append_registration(_unit("bbbbbb"), "r9", rt / "run9", 9)
+    assert dr.find_unit_for_run("r9") == _unit("bbbbbb")
+    assert dr.read_registrations(_unit("aaaaaa")) == []
+
+
+def test_registrations_with_wrong_types_are_skipped(rt: Path) -> None:
+    unit = _unit()
+    lines = [
+        '{"run_id": "ok", "run_dir": "/x", "pid": 1}',
+        '"a string"',
+        "42",
+        "null",
+        '{"run_id": "bad1", "run_dir": 5, "pid": 1}',
+        '{"run_id": "bad2", "run_dir": "/x", "pid": "1"}',
+        '{"run_id": "bad3", "run_dir": "/x", "pid": true}',
+        '{"run_id": 7, "run_dir": "/x", "pid": 1}',
+    ]
+    (rt / f"{unit}.runs").write_text("\n".join(lines) + "\n")
+    assert [r["run_id"] for r in dr.read_registrations(unit)] == ["ok"]
+
+
+def test_prune_removes_old_inactive_units_without_a_sentinel(rt: Path) -> None:
+    now = 1_000_000_000
+    stale = _unit("aaaaaa")
+    active = _unit("bbbbbb")
+    young = _unit("cccccc")
+    disp = _unit("dddddd", kind="dispatch")
+    for unit, age in ((stale, 8), (active, 8), (young, 1), (disp, 8)):
+        for suffix in (".log", ".runs"):
+            p = rt / f"{unit}{suffix}"
+            p.write_text("x")
+            t = now - age * 86400
+            os.utime(p, (t, t))
+
+    pruned = dr.prune(now=now, is_active=lambda u: u == active)
+
+    assert pruned == [stale]
+    assert not (rt / f"{stale}.log").exists()
+    assert not (rt / f"{stale}.runs").exists()
+    for u in (active, young, disp):
+        assert (rt / f"{u}.log").exists()
+        assert (rt / f"{u}.runs").exists()

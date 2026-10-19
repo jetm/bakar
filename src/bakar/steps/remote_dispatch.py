@@ -44,6 +44,7 @@ from rich.console import Console
 from bakar import detach_records
 from bakar.buildtools import parse_layerseries_corenames
 from bakar.config import WORKSPACE_FEED_DIRNAME, WORKSPACE_FEED_STAGE_DIRNAME
+from bakar.detach import escape_for_systemd_run
 from bakar.observability import RUN_ID_TS_FORMAT
 
 if TYPE_CHECKING:
@@ -169,9 +170,11 @@ def build_rsync_argv(ws_root: Path, host: str) -> list[str]:
     return argv
 
 
-# Version-mismatch override flags that exist only to drive `--on` dispatch and
-# must never reach the remote build (an older remote bakar rejects `--yes`, and
-# it is a no-op there in any case).
+# Flags that exist only to drive `--on` dispatch and must never reach the remote
+# build: `--yes`/`-y` (the version-mismatch override; an older remote bakar
+# rejects it and it is a no-op there) and `--detach` (the dispatcher detaches the
+# remote build itself, so the remote front-end must run in the foreground of its
+# unit).
 _DISPATCH_ONLY_FLAGS = frozenset({"--yes", "-y", "--detach"})
 
 # `bakar build`'s single-dash options, split by whether they take a value. Click
@@ -216,9 +219,10 @@ def strip_short_option(token: str, letter: str) -> tuple[str | None, bool]:
 def strip_dispatch_options(local_args: list[str]) -> list[str]:
     """Return ``local_args`` with the dispatch-only options removed.
 
-    Strips ``--on <host>`` / ``--on=<host>`` (else the remote re-enters dispatch)
-    and the version-mismatch override ``--yes`` / ``-y``; every other token is
-    left intact so the remote build sees the same flag surface as the local one.
+    Strips ``--on <host>`` / ``--on=<host>`` (else the remote re-enters dispatch),
+    the version-mismatch override ``--yes`` / ``-y`` and ``--detach`` (the
+    dispatcher detaches the remote build itself); every other token is left
+    intact so the remote build sees the same flag surface as the local one.
 
     Short-option clusters are handled too: ``-nky`` becomes ``-nk`` so the
     override never rides to the remote inside a cluster, while ``-tmyimage``
@@ -350,13 +354,18 @@ def dispatch_unit_name(now: datetime | None = None) -> str:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class RemoteScriptSpec:
-    """The remote build command a dispatch script runs: argv, cwd, environment and guard."""
+    """The remote build command a dispatch script runs: argv, cwd, environment and guard.
+
+    ``detach`` marks a ``--detach`` dispatch: the script then refuses, rather than
+    running the build in the foreground, when the host cannot create a user unit.
+    """
 
     remote_argv: list[str]
     cwd: Path
     env_vars: dict[str, str]
     sccache_off: bool
     guard: str | None = None
+    detach: bool = False
 
 
 def build_remote_script(spec: RemoteScriptSpec, *, unit: str | None = None) -> str:
@@ -429,6 +438,11 @@ def build_remote_script(spec: RemoteScriptSpec, *, unit: str | None = None) -> s
             "--collect",
             "--same-dir",
             "--quiet",
+            # Without Type=exec a unit that cannot exec (a vanished cwd) is
+            # reported as started and then collected; with it systemd-run exits
+            # non-zero, which `exec` hands back as the launch exit the dispatcher
+            # already reports as "did not start".
+            "--property=Type=exec",
             # A transient unit inherits the USER MANAGER's environment, not this
             # ssh session's, and bakar is a uv tool on ~/.local/bin - absent from
             # the manager's PATH on a normal box. Hand over the session PATH,
@@ -444,9 +458,14 @@ def build_remote_script(spec: RemoteScriptSpec, *, unit: str | None = None) -> s
             "--",
             "bash",
             "-c",
-            shlex.quote(wrapped),
+            # systemd expands `${VAR}` and collapses `$$` inside the payload even
+            # within shell quotes; build_cmd carries user argv and paths.
+            shlex.quote(escape_for_systemd_run(wrapped)),
         ]
     )
+    # A detached dispatch never falls back to the coupled build: it would stream
+    # for hours with no handle. The marker lets the dispatcher refuse up front.
+    fallback = [f"echo {_NO_UNIT_MARKER}", f"exit {_NO_UNIT_EXIT}"] if spec.detach else [exec_line]
     # BAKAR_DISPATCH_START fences run-id discovery: a discovered run dir older
     # than this remote-clock timestamp predates the dispatch and is discarded.
     #
@@ -490,7 +509,7 @@ def build_remote_script(spec: RemoteScriptSpec, *, unit: str | None = None) -> s
             *setenv_lines,
             f"  {detached}",
             "fi",
-            exec_line,
+            *fallback,
         ]
     )
 
@@ -531,6 +550,13 @@ _DISPATCH_UNIT_RE = re.compile(r"^BAKAR_DISPATCH_UNIT=(\S+)")
 _DISPATCH_LOG_RE = re.compile(r"^BAKAR_DISPATCH_LOG=(\S+)")
 _DISPATCH_RC_RE = re.compile(r"^BAKAR_DISPATCH_RC=(\d+)")
 _DISPATCH_WARN_RE = re.compile(r"^BAKAR_DISPATCH_WARN=(\S+)")
+# A detached dispatch on a host that cannot create a user unit: the script prints
+# this and exits _NO_UNIT_EXIT instead of running the build in the foreground.
+_NO_UNIT_MARKER = "BAKAR_DISPATCH_NO_UNIT=1"
+_NO_UNIT_EXIT = 97
+# bakar's own exit for that refusal: a usage-level error, before any build output.
+_NO_UNIT_REFUSED_EXIT = 2
+_DISPATCH_NO_UNIT_RE = re.compile(rf"^{re.escape(_NO_UNIT_MARKER)}")
 # The follower could not read a usable exit status: no sentinel, an empty one, or
 # one holding something that is not an integer. All three mean the same thing -
 # the build's exit status is unknown - and none of them means the build failed.
@@ -991,7 +1017,10 @@ def _stream_remote_build(host: str, script: str, *, follow: bool = True) -> tupl
     in_launch_phase = True
     for line in proc.stdout:
         if in_launch_phase:
-            if _DISPATCH_UNIT_RE.search(line) or _DISPATCH_LOG_RE.search(line) or _DISPATCH_WARN_RE.search(line):
+            if any(
+                pattern.search(line)
+                for pattern in (_DISPATCH_UNIT_RE, _DISPATCH_LOG_RE, _DISPATCH_WARN_RE, _DISPATCH_NO_UNIT_RE)
+            ):
                 # Transport, not build output.
                 if _DISPATCH_UNIT_RE.search(line):
                     _stream_state.unit_seen = True
@@ -1246,7 +1275,16 @@ def _report_detached(
     """
     unit = _first_match(_DISPATCH_UNIT_RE, launch) or ""
     log = _first_match(_DISPATCH_LOG_RE, launch)
-    record = _poll_detached_status(host, unit)
+    try:
+        record = _poll_detached_status(host, unit)
+    except KeyboardInterrupt:
+        console.print(
+            f"[yellow]Ctrl-C does not stop the remote build[/] - it keeps running as {unit} on {host}.",
+            highlight=False,
+        )
+        console.print(f"check it:   bakar status {unit} --on {host}", highlight=False)
+        console.print(f"stop it:    bakar stop --on {host}", highlight=False)
+        return 130
     state = record.get("state") or "starting"
     run_id = record.get("run_id") or None
     unconfirmed = not record or state == "unknown"
@@ -1283,8 +1321,9 @@ def run_remote_build(
     the log stream is lost while the build keeps running. With ``detach`` the log
     is never followed: once the unit is launched this prints one JSON handle line
     on stdout and returns 0, or the remote front-end's non-zero status when it
-    failed before returning. A host without a detachable unit has already run the
-    build in the foreground by then, so that is said and its code returned.
+    failed before returning. A host that cannot create a unit is refused with exit
+    2 before any build output (the script, built with ``RemoteScriptSpec.detach``,
+    never runs the coupled fallback then).
     """
     _stream_state.unit_seen = False
     try:
@@ -1311,6 +1350,12 @@ def run_remote_build(
             )
         return 130
     if detach:
+        if any(_DISPATCH_NO_UNIT_RE.search(line) for line in captured):
+            console.print(
+                f"[red]{host} cannot create a user unit[/]; run without --detach or enable the user manager there.",
+                highlight=False,
+            )
+            return _NO_UNIT_REFUSED_EXIT
         if not _stream_state.unit_seen:
             console.print(
                 f"[yellow]{host} could not detach the build[/] (no usable systemd user unit there); "
@@ -1410,7 +1455,11 @@ def dispatch_remote_build(host: str, request: MirrorRequest, flags: DispatchFlag
     }
     script = build_remote_script(
         RemoteScriptSpec(
-            remote_argv=strip_dispatch_options(local_args), cwd=cwd, env_vars=env_vars, sccache_off=not sccache_dist
+            remote_argv=strip_dispatch_options(local_args),
+            cwd=cwd,
+            env_vars=env_vars,
+            sccache_off=not sccache_dist,
+            detach=flags.detach,
         )
     )
     return run_remote_build(host, script, ws_root, detach=flags.detach, hint_lines=flags.hint_lines)

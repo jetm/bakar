@@ -47,6 +47,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
     monkeypatch.setattr(status_cmd, "_unit_active", lambda _u: False)
     monkeypatch.setattr(status_cmd, "is_build_running", lambda _rd: (False, None, False))
+    monkeypatch.setattr(status_cmd, "_frontend_alive", lambda _rd: False)
     return tmp_path
 
 
@@ -371,3 +372,105 @@ def test_per_run_terminal_event_does_not_end_an_active_unit(env: Path, monkeypat
     rec = status_cmd.compute_status(first.name)
     assert rec is not None
     assert rec.state == "succeeded"
+
+
+def _register_two(env: Path) -> tuple[Path, Path]:
+    first = _run_dir(env, "20261019-120001-1")
+    second = _run_dir(env, "20261019-120002-2")
+    (env / "runtime" / f"{UNIT}.runs").write_text(
+        "".join(json.dumps({"run_id": r.name, "run_dir": str(r), "pid": 1}) + "\n" for r in (first, second))
+    )
+    return first, second
+
+
+def test_inactive_unit_without_sentinel_is_unknown_not_a_run_outcome(env: Path) -> None:
+    first, _second = _register_two(env)
+    _terminal(first, 0)
+    rec = status_cmd.compute_status(UNIT)
+    assert rec is not None
+    assert (rec.state, rec.exit_code) == ("unknown", None)
+
+
+def test_ended_unit_run_handles_report_their_own_exit(env: Path) -> None:
+    first, second = _register_two(env)
+    _terminal(first, 0)
+    _terminal(second, 1)
+    _sentinel(env, 1)
+    a = status_cmd.compute_status(first.name)
+    b = status_cmd.compute_status(second.name)
+    u = status_cmd.compute_status(UNIT)
+    assert a is not None
+    assert b is not None
+    assert u is not None
+    assert (a.state, a.exit_code) == ("succeeded", 0)
+    assert (b.state, b.exit_code) == ("failed", 1)
+    assert (u.state, u.exit_code) == ("failed", 1)
+
+
+def test_ended_unit_run_without_terminal_event_falls_back_to_the_sentinel(env: Path) -> None:
+    first, second = _register_two(env)
+    _terminal(second, 0)
+    _sentinel(env, 1)
+    rec = status_cmd.compute_status(first.name)
+    assert rec is not None
+    assert (rec.state, rec.exit_code) == ("failed", 1)
+
+
+def test_stale_build_pid_without_matching_cmdline_is_not_running(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run = _run_dir(env)
+    monkeypatch.setattr(status_cmd, "is_build_running", lambda _rd: (True, 99, False))
+    rec = status_cmd.compute_status(run.name)
+    assert rec is not None
+    assert rec.state == "unknown"
+
+
+def test_live_frontend_keeps_a_run_running_between_build_steps(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run = _run_dir(env)
+    monkeypatch.setattr(status_cmd, "_frontend_alive", lambda _rd: True)
+    rec = status_cmd.compute_status(run.name)
+    assert rec is not None
+    assert rec.state == "running"
+
+
+def test_live_frontend_never_overrides_a_recorded_exit(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run = _run_dir(env)
+    _terminal(run, 0)
+    monkeypatch.setattr(status_cmd, "_frontend_alive", lambda _rd: True)
+    rec = status_cmd.compute_status(run.name)
+    assert rec is not None
+    assert rec.state == "succeeded"
+
+
+def test_frontend_pid_comes_from_the_last_hyphen_segment() -> None:
+    assert status_cmd._frontend_pid("20261019-120001-4242") == 4242
+    assert status_cmd._frontend_pid("nohyphens") is None
+    assert status_cmd._frontend_pid("20261019-120001-x") is None
+
+
+def test_frontend_alive_requires_a_bakar_cmdline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    real_read = status_cmd.Path.read_bytes
+    cmdlines = {os.getpid(): b"/usr/bin/python\x00bakar\x00build\x00"}
+
+    def fake_read(self: Path) -> bytes:
+        parts = self.parts
+        if len(parts) == 4 and parts[1] == "proc":
+            try:
+                return cmdlines[int(parts[2])]
+            except KeyError:
+                raise FileNotFoundError from None
+        return real_read(self)
+
+    monkeypatch.setattr(status_cmd.Path, "read_bytes", fake_read)
+    assert status_cmd._frontend_alive(tmp_path / f"20261019-120001-{os.getpid()}") is True
+    cmdlines[os.getpid()] = b"/usr/bin/sleep\x00 1\x00"
+    assert status_cmd._frontend_alive(tmp_path / f"20261019-120001-{os.getpid()}") is False
+    assert status_cmd._frontend_alive(tmp_path / "20261019-120001-999999999") is False
+
+
+def test_unusable_runtime_dir_reports_unresolved_with_a_reason(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "relative/dir")
+    result = CliRunner().invoke(app, ["status", UNIT])
+    assert result.exit_code == 2
+    assert "XDG_RUNTIME_DIR" in result.stderr

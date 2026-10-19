@@ -132,7 +132,53 @@ def test_progress_line_format(monkeypatch: pytest.MonkeyPatch) -> None:
     _script(monkeypatch, [_rec("running", tasks_done=3, tasks_total=10, tasks_running=2), _rec("failed")])
     lines: list[str] = []
     _run(Clock(), lines)
-    assert lines == ["12:34:56 R1 running tasks=3/10 running=2", "12:34:56 R1 failed tasks=?/? running=?"]
+    assert lines == ["12:34:56Z R1 running tasks=3/10 running=2", "12:34:56Z R1 failed tasks=?/? running=?"]
+
+
+def test_no_handle_pins_the_target_after_the_first_poll() -> None:
+    seen: list[str | None] = []
+    answers = [_rec("running", run_id="X"), _rec("running", run_id="X"), _rec("succeeded", run_id="X")]
+
+    def resolver(handle: str | None, *, workspace: object = None) -> StatusRecord | None:
+        seen.append(handle)
+        return answers[len(seen) - 1]
+
+    clock = Clock()
+    got, rec = wait_cmd.run_wait(
+        None,
+        timeout=None,
+        interval=30,
+        clock=clock,
+        sleep=clock.sleep,
+        now=lambda: datetime(2026, 10, 19, 12, 34, 56, tzinfo=UTC),
+        emit=lambda _l: None,
+        status_fn=resolver,
+    )
+    assert got == 0
+    assert rec is not None
+    assert seen == [None, "X", "X"]
+
+
+def test_no_handle_pins_the_unit_when_the_run_is_registered() -> None:
+    seen: list[str | None] = []
+    unit = "bakar-detach-20261019-120000-abc123"
+    answers = [_rec("running", unit=unit), _rec("failed", unit=unit)]
+
+    def resolver(handle: str | None, *, workspace: object = None) -> StatusRecord | None:
+        seen.append(handle)
+        return answers[len(seen) - 1]
+
+    clock = Clock()
+    wait_cmd.run_wait(
+        None,
+        timeout=None,
+        interval=30,
+        clock=clock,
+        sleep=clock.sleep,
+        emit=lambda _l: None,
+        status_fn=resolver,
+    )
+    assert seen == [None, unit]
 
 
 def test_default_interval_is_30() -> None:
