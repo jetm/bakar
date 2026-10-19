@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runs recorded before this release have no `exit_code` on their terminal events, so `bakar status` reports them as `unknown` and `bakar wait` exits 3 until a new run exists.
 - `bakar status --detail` (with `--json` it adds a `detail` key, also with `--on HOST`) reports running and failed tasks, the last log line, free disk for the build and sstate paths, available memory and pressure in one call. Host values are measured at query time on the host running `bakar status`. A remote of a different bakar version is refused.
 - A `build_paths` run event records the build TMPDIR and sstate path, so `--detail` can measure the right filesystems. Runs from before this version have no sstate path and report it as null.
+- `bakar stop` records a stop request before it signals a live build, so a stopped run reads `failed` with failure step `stopped` instead of looking like an ordinary failure.
+- The failing step event records the first error line the build printed, so `bakar status` and `bakar triage` can report why a run failed when no task is named.
+
+### Changed
+
+- `bakar triage` reports the same failure reason as `bakar status`, including `stopped by bakar stop` for a stopped run.
 
 ### Fixed
 

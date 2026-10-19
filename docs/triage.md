@@ -86,6 +86,16 @@ When no failure is recorded on the fallback path:
 no step_fail events found
 ```
 
+With `--json`, triage prints one document with these keys: `version`,
+`run_id`, `failing_step`, `fail_reason`, `recipe_log` and `suggestions`.
+`fail_reason` is the same text as the `failure.error` of `bakar status` for the
+run: the captured error line, else `exit_code=N`. For a run ended by
+`bakar stop` it is `stopped by bakar stop` and `failing_step` is `stopped`. For
+a structured task failure it is null, because the failing recipe and task
+already name the cause. A run that carries a stop request but recorded neither
+a failing step nor a non-zero terminal event reports no failure here, although
+`bakar status` can still derive `failed` for it from the unit's exit sentinel.
+
 ## How triage sources failure data
 
 Triage is structured-failure-first. Every `bakar build`, `bakar bitbake`, and
@@ -95,6 +105,10 @@ its `failures[]` is non-empty, triage names the failing recipe/task directly
 from it and prints a tail of the `logfile` each failure records - no `kas.log`
 scraping. The recorded `logfile` is a container path (`/work/...`); triage
 resolves it to a host path before reading it.
+
+The failing step event also carries the first error line the build printed.
+Triage reports it as the reason, falling back to `exit_code=N` when the build
+printed none.
 
 If `bitbake-events.json` is absent (run directories predating the event-log
 capture, or a build interrupted before the artifact could be written), triage

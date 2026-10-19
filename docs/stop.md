@@ -188,6 +188,11 @@ bakar stop --on pc2
 bakar stop --on pc2 --all
 ```
 
+The stop request is written on the host, from the unit's run registry, by the
+stop script that runs there. That makes it work against a remote of any bakar
+version. A unit that has not registered its run yet is stopped without a
+request.
+
 ## What it does
 
 `bakar build` records the run's execution mode the moment the build starts:
@@ -196,6 +201,15 @@ bakar stop --on pc2 --all
 runtime, and the `bakar.run_id=<run_id>` label injected into the container.
 `bakar stop` reads that record for the latest run
 (`<bsp_root>/build/runs/<run_id>/`) and dispatches on mode.
+
+Before it signals a live build, `bakar stop` records a stop request in the run
+directory. The record is best effort and never prevents or delays the stop: if
+it cannot be written, the stop goes ahead anyway. Nothing is recorded when no
+live build is found, or when only a cooker is left and the run's front-end has
+already exited: that run recorded how it ended, and clearing the cooker does
+not turn it into a stop. The request is how `bakar status` and `bakar triage` tell
+a run stopped on purpose from one that failed: the run reads `failed` with
+failure step `stopped`.
 
 **Container builds** (the default - kas-container under docker/podman): bitbake
 runs under the runtime daemon in a process tree separate from the wrapper, so
