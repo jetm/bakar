@@ -290,6 +290,23 @@ def _reset_routing_env(monkeypatch):
     monkeypatch.delenv("BAKAR_WORKTREE_BUILD_DIR", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _restore_global_options():
+    """Restore the root callback's published module globals after every test.
+
+    ``_main_impl`` publishes the parsed global flags as ``_GLOBAL_OPTIONS`` and
+    ``_USER_CONFIG`` module globals, so every ``CliRunner().invoke(app, ...)``
+    overwrites them for good. Without a restore the last invoking test's flags
+    (``--sccache-scheduler``, ``--no-scope``, ``--mold``, ``--host``) leak into
+    later tests that read the defaults, depending on ``pytest-randomly`` order.
+    """
+    import bakar.commands._app as _state
+
+    saved = (_state._GLOBAL_OPTIONS, _state._USER_CONFIG)
+    yield
+    _state._GLOBAL_OPTIONS, _state._USER_CONFIG = saved
+
+
 def home_constants(home: Path) -> list[tuple[str, str, Path]]:
     """Every module-level constant derived from the home, as ``(module, attr, value)``."""
     state = home / ".local" / "state" / "bakar"
