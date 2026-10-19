@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-10-19
+
+### Added
+
+- `bakar clean`, `bakar clean --all`, `bakar build --clean` (including the bbsetup flow) and `bakar sync --clean` now refuse to delete anything while a build is live on a peer node or on this host. An unattributable or unreadable lock only warns, because clean is the recovery path from that state.
+- `bakar clean --all` now checks for a live build before stopping the hashserv daemon, so a refused clean no longer takes down the running build's hash equivalence server.
+- `bakar stress-parse` now refuses to start while a live build holds the TOPDIR. It rechecks before every iteration so a build that starts mid-run does not have its parse caches wiped.
+- `bakar prefetch` and `bakar shell -c CMD` now take the bitbake lock marker and refuse to run when another node or a local build holds the build directory. Interactive shells and the devshell task are deliberately not gated.
+- The qcom build step now checks bitbake lock ownership before starting. It clears locks whose owner is gone, refuses when a live peer holds the directory, and records an ownership marker while bitbake runs.
+- Lock refusals in `bakar stop`, `bakar doctor`, builds, shell and prefetch now name the ownership marker file and tell the user how to clear it by hand when no build is running on any node.
+- Lock checks now treat a live launch record in any run directory as a build holder, including container builds whose lock pid is not visible on the host. When the container runtime does not answer, the refusal names the runtime.
+- `bakar clean` now moves the build directory aside before deleting it. If the delete leaves residue or is interrupted, the trees are restored so a rerun sees the same state. Trash left by dead processes is swept at the start of each clean.
+- `bakar clean-cache --full` plans and confirmations now show the resolved target of symlinked ccache and sccache roots.
+- `bakar doctor` now reports a warning instead of a pass when a path's filesystem cannot be determined, for example under an autofs trap or after a mount lookup timeout.
+
+### Changed
+
+- Run ID timestamps are now in UTC on every host, and the remote dispatch start fence uses the UTC clock. Existing run directories keep their local-time names and still resolve by ID.
+- Remote dispatch now picks the earliest run directory created at or after the dispatch start, so a later build in the same workspace is no longer reported as the dispatched one.
+- `bakar doctor` now blocks any workspace or build directory on NFS, regardless of where TMPDIR points. Shared sstate, downloads and ccache directories on NFS remain supported. The fix hint now tells users to move the workspace to a node-local filesystem rather than suggesting `local_tmpdir_base`.
+- `bakar clean-cache --full` now runs every reset step even when one fails, reports each leftover, and exits with code 1 if anything remains. A clean run still exits 0.
+- `layers inspect --json`, `layers status --json` and `drift --json` now write the JSON document verbatim to stdout, with no line wrapping or markup, and keep stderr clean.
+- `bakar hashserv start/stop/status` and `bakar prserv start/stop/status` now print their answers on stdout. `bakar settings get/list` now prints its values on stdout. Errors and diagnostics stay on stderr.
+- Lock refusal messages no longer suggest deleting the marker by hand when the marker is not the cause (shared-inaction case).
+- Lock refusal lines in `bakar stop` are no longer hard-wrapped, so long marker paths can be copied intact.
+
+### Fixed
+
+- Fixed bracketed text (such as `[bold]` or `[/x]`) in user input being dropped or raising `MarkupError`. This affected `bakar getvar` variable names, vendors, presets and user config error messages, `bakar settings` values and invalid keys, `bakar stop` hosts and paths, and lock diagnostics. The text is now shown verbatim and the intended exit codes are preserved.
+- Fixed the `[build]` section name disappearing from `bakar doctor` messages and hints. `doctor --json` and `diagnosis.txt` no longer contain a stray backslash.
+- Fixed crashes in the lock gate when the lock marker or `bitbake.lock` contains non-UTF-8 bytes, or when a pid is larger than the kernel supports. The lock is now reported as unattributable instead of raising a traceback.
+- Fixed a network filesystem reply lost while publishing the lock marker being reported as missing hard link support. The tool now checks whether the link landed, and otherwise names the marker and explains manual cleanup. Failures while removing the marker or temp file on exit no longer mask the build result.
+- Fixed lock marker write, replace or remove failures and stale lock removal failures, such as permission errors, producing raw tracebacks. They are now reported as refusals naming the file and the errno, and the step is recorded as failed with exit code 1.
+- Fixed `bakar shell` lock refusals being recorded in the run log without an exit code.
+- Fixed the local build check missing running builds, such as a bitbake server that is still initialising, a client outside the server's process tree, or a container build. It now fails closed unless the cooker is provably idle.
+- Fixed the stale-lock cleanup deleting locks, sockets and the marker out from under a live container build, or one still in the kas checkout phase.
+- Fixed `bakar clean` and `bakar stress-parse` warning twice about an unattributable lock, and `stress-parse` refusal messages wrongly referring to removing the build directory.
+- Fixed `bakar clean-cache --full` following symlinks swapped in by peer nodes while emptying shared caches. It also no longer reports entries already removed by a peer as leftovers, no longer aborts the remaining reset steps when one root cannot be listed, and no longer prints terminal escape sequences from cache entry names.
+- Fixed `bakar clean-cache --full` leaving a symlinked ccache or sccache cache populated. It now empties the link's target and refuses targets such as `/`, the home directory, or an ancestor of the workspace or build directory.
+- Fixed malformed, truncated or tampered launch records crashing the lock scan or causing an arbitrary recorded runtime path to be executed. Only `docker` and `podman` are accepted, and unusable records produce a warning.
+- Fixed `bakar prefetch` and `bakar shell -c` starting bitbake on a wedged cache mount instead of refusing like other launchers.
+
 ## [0.38.0] - 2026-10-16
 
 ### Added
@@ -976,7 +1018,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.38.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.39.0...HEAD
+[0.39.0]: https://github.com/jetm/bakar/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/jetm/bakar/compare/v0.37.1...v0.38.0
 [0.37.1]: https://github.com/jetm/bakar/compare/v0.37.0...v0.37.1
 [0.37.0]: https://github.com/jetm/bakar/compare/v0.36.3...v0.37.0
