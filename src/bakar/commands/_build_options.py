@@ -138,6 +138,14 @@ DryRunScriptOption = Annotated[
     ),
 ]
 
+DetachOption = Annotated[
+    bool,
+    typer.Option(
+        "--detach",
+        help="Run the whole pipeline in a transient user unit; print a JSON handle and return.",
+    ),
+]
+
 OnOption = Annotated[
     str | None,
     typer.Option(

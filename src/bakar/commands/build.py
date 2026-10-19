@@ -16,6 +16,7 @@ from rich.table import Table
 import bakar.commands._app as _state
 from bakar import feed as feed_mod
 from bakar.bsp_detect import is_meta_avocado_yaml, machine_from_yaml, meta_avocado_checkout, meta_avocado_worktree
+from bakar.commands import _detach_cmd, _helpers, _hints
 from bakar.commands._app import app, console
 
 # Re-exported, not merely imported. ``build()`` below calls every one of these
@@ -44,6 +45,7 @@ from bakar.commands._build_options import (
     BranchOption,
     CleanOption,
     CveOption,
+    DetachOption,
     DistroOption,
     DryRunOption,
     DryRunScriptOption,
@@ -288,6 +290,7 @@ def build(
         ),
     ] = None,
     on: OnOption = None,
+    detach: DetachOption = False,
     yes: YesOption = False,
     feed: FeedOption = False,
     feed_release: FeedReleaseOption = feed_mod.DEFAULT_RELEASE,
@@ -415,6 +418,17 @@ def build(
             DispatchFlags(sccache_dist=sccache_dist, assume_yes=yes),
         )
         raise typer.Exit(code=rc)
+    # --detach: hand the whole command to a transient unit. Nothing is resolved
+    # here (no workspace, no config); the unit re-runs the command and does that.
+    if detach:
+        if dry_run or dry_run_script is not None:
+            console.print(
+                "[red]--detach cannot be combined with --dry-run/--dry-run-script[/]; run it in the foreground."
+            )
+            raise typer.Exit(code=2)
+        _detach_cmd.detach_and_exit(sys.argv[1:], _helpers.invoking_cwd())
+    if _hints.agent_mode() and not (dry_run or dry_run_script is not None):
+        _hints.emit(_hints.foreground_nudge())
     # Resolve the active preset (if any) before dispatch.
     # PresetEntry is used only as a local variable type annotation.
     from bakar.preset_config import PresetEntry
