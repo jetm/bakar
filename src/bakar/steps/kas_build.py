@@ -115,6 +115,7 @@ from bakar.steps.kas_overlay import (
     materialize_sccache_layer,
 )
 from bakar.steps.kas_pty import (
+    _build_fail_error,
     _build_fail_reason,
     _PlainFrameController,  # noqa: F401 - re-exported for external/test imports
     _print_cache_summary,
@@ -1096,11 +1097,13 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
             log.step_ok(step, deploy_dir=str(deploy), exit_code=rc)
             _autocalibrate_psi(cfg, psi_peaks, log)
         else:
+            build_error = _build_fail_error(rc, stall_tasks, ui.first_error)
             log.step_fail(
                 step,
                 reason=_build_fail_reason(rc, stall_tasks),
                 exit_code=rc,
                 kas_log=str(log.kas_log_path),
+                **({"error": build_error} if build_error else {}),
             )
             if main_build:
                 write_error_report(log.run_dir, cfg, rc)
@@ -1157,11 +1160,13 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
                 log.step_ok(step, deploy_dir=str(deploy), exit_code=rc)
             else:
                 _report_opaque_failure(log, ui)
+                crash_error = _build_fail_error(rc, stall_tasks, ui.first_error)
                 log.step_fail(
                     step,
                     reason=_build_fail_reason(rc, stall_tasks),
                     exit_code=rc if rc is not None else -1,
                     kas_log=str(log.kas_log_path),
+                    **({"error": crash_error} if crash_error else {}),
                 )
                 if main_build:
                     write_error_report(log.run_dir, cfg, rc if rc is not None else -1)
@@ -1309,11 +1314,17 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
                 log.step_ok("kas_shell_live", exit_code=actual_rc)
             else:
                 _report_opaque_failure(log, ui)
+                fail_error = _build_fail_error(
+                    rc if completed else None,
+                    outcome.stall_tasks if outcome is not None else None,
+                    ui.first_error,
+                )
                 log.step_fail(
                     "kas_shell_live",
                     reason=f"exit_code={actual_rc}" if completed else "wrapper-crash",
                     exit_code=actual_rc,
                     kas_log=str(log.kas_log_path),
+                    **({"error": fail_error} if fail_error else {}),
                 )
     return actual_rc
 

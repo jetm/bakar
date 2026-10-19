@@ -173,6 +173,19 @@ def _build_fail_reason(rc: int | None, stall_tasks: list[str] | None) -> str:
     return "wrapper-crash"
 
 
+def _build_fail_error(rc: int | None, stall_tasks: list[str] | None, first_error: str | None) -> str | None:
+    """Return the captured error line for a plain nonzero exit, else None.
+
+    A stall abort or a wrapper crash keeps its own reason; attaching an
+    unrelated earlier error line to it would misattribute the failure.
+    """
+    # A negative status is death by signal (an OOM kill is -9); the exit status
+    # is then the better reason, and an earlier unrelated error line would hide it.
+    if stall_tasks or rc is None or rc < 0:
+        return None
+    return first_error or None
+
+
 def _print_cache_summary(log: RunLogger, backend: str | None, doc: dict | None, output_mode: OutputMode) -> None:
     """Print the build-end cache-usage summary at the post-block summary site.
 
