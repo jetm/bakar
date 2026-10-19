@@ -43,6 +43,7 @@ name = "foundation"
 paths = [
   "src/bakar/config.py",
   "src/bakar/observability.py",
+  "src/bakar/detach_records.py",
   "src/bakar/fork_race_signatures.py",
   "src/bakar/kas_errors.py",
   "src/bakar/user_config.py",
