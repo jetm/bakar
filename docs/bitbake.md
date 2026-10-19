@@ -116,6 +116,7 @@ to open the log to find it. Once 20 continuation lines have been shown, a
 | `--manifest` | `-f` | Manifest filename for BSP family dispatch (NXP `.xml` or TI `.txt`) |
 | `--machine` | `-m` | Override the target machine |
 | `--workspace` | `-w` | Workspace root override |
+| `--detach` | | Run in a transient systemd unit and print a JSON handle. Refused with `--task devshell` |
 
 ### `bakar clean-recipe`
 
@@ -134,9 +135,21 @@ to open the log to find it. Once 20 continuation lines have been shown, a
 | `--keep-going` | `-k` | Pass `-k` to the build half (keep building after failures); does not affect cleansstate |
 | `--manifest` | `-f` | Manifest filename for BSP family dispatch (NXP `.xml` or TI `.txt`) |
 | `--machine` | `-m` | Override the target machine |
+| `--detach` | | Run in a transient systemd unit and print a JSON handle |
 | `--workspace` | `-w` | Workspace root override |
 
 `rebuild` has no `--task`; it always runs `cleansstate` then the default build.
+
+### `--detach` (`bitbake` and `rebuild`)
+
+`bakar bitbake` and `bakar rebuild` accept `--detach`: the invocation runs in a
+`bakar-detach-*` systemd user unit and bakar prints one JSON handle line on
+stdout (`run_id`, `unit`, `host`, `log`, `state`), then exits. Follow it with
+`bakar status <handle>` and `bakar wait <handle>`. `--detach` with
+`--task devshell` exits 2, because a devshell needs your terminal.
+`clean-recipe` has no `--detach`. The handle, the 60 s run-id bound, record
+pruning and the lingering warning are described in
+[build.md](build.md#detached-builds---detach).
 
 ## Exit codes
 

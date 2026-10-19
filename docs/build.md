@@ -61,6 +61,7 @@ bakar build -m imx8mp-var-dart    # machine override in bbsetup workspace
 | `--preset` | | Named preset from `config.toml`; additive with explicit flags (explicit flags win) |
 | `--workspace` | `-w` | Workspace root override |
 | `--on` | | Dispatch the build to a remote host (ssh alias or `user@ip`) instead of building locally. See [Remote dispatch](#remote-dispatch---on-host). |
+| `--detach` | | Run the whole pipeline in a `bakar-detach-*` systemd user unit and print a JSON handle on stdout. Refused with `--dry-run`/`--dry-run-script` and without a systemd user manager. With `--on` it detaches the remote build. See [Detached builds](#detached-builds---detach). |
 | `--yes` | `-y` | Proceed despite a local/remote bakar version mismatch for `--on` dispatch. Dispatch has no other prompt or override: it prints its plan and never deletes anything on the remote |
 | `--feed` | | On build success, stage the RPMs into the local package feed and rewrite its index. A failed build never syncs, and neither does `--dry-run`. See [feed.md](feed.md) |
 | `--feed-release` | | Feed release directory for `--feed` (default `2024`; see `bakar feed sync`) |
@@ -230,8 +231,11 @@ kas/kas-container invocation inside a transient
 
 - **Survives session teardown.** The scope is a unit under
   `user@<uid>.service` / `app.slice` - a sibling of the interactive session's
-  cgroup, not a child - so closing the terminal, an SSH disconnect, or a
-  reaped background shell no longer SIGHUPs the build to death. The scope
+  cgroup, not a child - so closing the terminal or an SSH disconnect no
+  longer SIGHUPs kas and bitbake to death. The scope keeps kas and bitbake
+  running; the bakar front-end, which writes `kas.log` and the run record, is
+  still a child of your shell and survives a reaped background shell only under
+  [`--detach`](#detached-builds---detach). The scope
   inherits the caller's TTY, environment, and CWD, so the live UI, `kas`,
   `docker`, `sccache`, and every `BAKAR_*`/`KAS_*` env var behave exactly as
   before.
@@ -382,6 +386,63 @@ This hardening addresses build **session-survival** (plus host responsiveness,
 and opt-in memory containment). It does not prevent filesystem/kernel faults
 (e.g. an XFS root-fs corruption panic), which are tracked separately - no cgroup control changes
 that class of failure.
+
+## Detached builds (`--detach`)
+
+`bakar build --detach` runs the whole pipeline (doctor, sync, gen-kas, kas) in
+a transient `bakar-detach-<timestamp>-<hex>` systemd user unit and returns once the
+run is registered. The unit, not your shell, owns the bakar front-end, so the
+live UI's log capture (`kas.log`) and the run record outlive a closed terminal,
+an SSH disconnect and a reaped background shell. Without `--detach` the
+transient scope keeps kas and bitbake running, but the front-end is still a
+child of your shell (see [Transient systemd scope](#transient-systemd-scope)).
+
+The parent resolves no workspace and no config: the unit re-runs the same
+command line minus `--detach` and does that itself. `bakar bitbake` and
+`bakar rebuild` take the same flag ([bitbake.md](bitbake.md)).
+
+**Handle.** stdout carries exactly one line of JSON with five keys, and
+everything else (warnings, a log tail, lifecycle hints) goes to stderr:
+
+```json
+{"run_id": "20261019-101500", "unit": "bakar-detach-20261019-101458-a1b2c3", "host": null, "log": "/run/user/1000/bakar-detach-20261019-101458-a1b2c3.log", "state": "running"}
+```
+
+Pass `run_id` or `unit` to `bakar status`, `bakar wait`, `bakar triage` and
+`bakar stop --run`. `host` is null for a local run and the ssh target for
+`--on`.
+
+**Run-id bound.** The launcher waits up to 60 seconds for the front-end to
+register its first run id. It returns `running` with the id when one appears,
+`succeeded` or `failed` when the unit already finished, and `starting` with a
+null `run_id` when the 60 seconds pass first. Hold on to `unit` in that case;
+`bakar status <unit>` resolves it once the run registers. A `failed` handle
+prints the last 20 log lines to stderr and exits with the build's status;
+every other state exits 0.
+
+**Records.** The log, the exit-status sentinel and the run registry live in the
+user runtime directory (`$XDG_RUNTIME_DIR`). Each launch prunes records older
+than 7 days, so a handle older than a week no longer resolves.
+
+**Refusals.** There is no foreground fallback; when no unit can be created
+nothing runs.
+
+- `--detach` with `--dry-run` or `--dry-run-script` exits 2 ("`--detach` cannot
+  be combined with `--dry-run`/`--dry-run-script`"): a preview has nothing to
+  detach.
+- With no usable systemd user manager (`systemd-run` missing, `XDG_RUNTIME_DIR`
+  unset or unusable, or `systemd-run --user` failing) it prints
+  `bakar: cannot detach: <reason>` to stderr and exits 2.
+
+**Lingering.** A user unit stops when the user's last session ends unless the
+account lingers. When `loginctl` reports `Linger=no`, bakar prints a warning on
+stderr and still launches. Run `loginctl enable-linger` once to keep detached
+runs alive across logout; bakar does not change it for you. When linger cannot
+be read, no warning is printed.
+
+**Remote.** `bakar build --on <host> --detach` dispatches as usual but does not
+follow the log; it prints the same handle with `host` set. See the end of
+[Remote build, streaming and exit codes](#remote-build-streaming-and-exit-codes).
 
 ## Remote dispatch (`--on <host>`)
 
@@ -727,6 +788,15 @@ Both transfers bound the ssh they start with keepalive and connect timeouts so a
 Stop a detached build with `bakar stop --on <host>` - see [stop.md](stop.md).
 Ctrl-C on the dispatching terminal does not reach it: the local command exits
 130 and prints the stop and triage commands.
+
+With `--on <host> --detach` the dispatcher does not follow the log. Once the
+remote unit is launched it polls `bakar status <unit> --json` on the host every
+2 seconds for up to 60 seconds, until a run id is registered or the state is
+terminal, then prints one JSON handle line on stdout (with `host` set) and
+exits 0, or with the remote front-end's non-zero status when it failed before
+returning. If the host has no usable systemd user unit, the build already ran
+in the foreground there; the dispatcher says so and returns its exit code. See
+[Detached builds](#detached-builds---detach).
 
 A meta-avocado dispatch opens about seven ssh connections (preflight, workspace
 check, the push, the worktree script, the launch, the log follower and the
