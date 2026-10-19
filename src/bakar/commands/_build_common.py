@@ -15,6 +15,7 @@ import typer
 from rich.console import Console
 
 import bakar.commands._app as _state
+import bakar.commands._hints as _hints
 from bakar.commands._app import console
 from bakar.commands._helpers import _print_sstate_summary, global_output_mode_override
 from bakar.commands._post_build import (
@@ -111,7 +112,11 @@ def _finish_build(
     """
     if rc != 0:
         exe = "kas" if cfg.host_mode else "kas-container"
-        console.print(f"[red]{exe} build failed (exit {rc}).[/] Run `bakar triage {log.run_id}` for details.")
+        console.print(
+            f"[red]{exe} build failed (exit {rc}, run {log.run_id}).[/] Run `bakar triage {log.run_id}` for details."
+        )
+        if _hints.agent_mode():
+            _hints.emit(_hints.after_finish(log.run_id, rc))
         raise typer.Exit(code=rc)
     # resolved_tmpdir is the single source of truth for the build TMPDIR: it
     # honors a local_tmpdir_base override (so the banner points at the real
@@ -120,7 +125,11 @@ def _finish_build(
     deploy = cfg.resolved_tmpdir / "deploy" / "images" / machine
     if _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary:
         _print_sstate_summary(log.run_dir / "kas.log")
-    console.print(f"[bold green]build succeeded[/] in {fmt_duration(time.monotonic() - log.start_monotonic)}")
+    console.print(
+        f"[bold green]build succeeded[/] in {fmt_duration(time.monotonic() - log.start_monotonic)} (run {log.run_id})"
+    )
+    if _hints.agent_mode():
+        _hints.emit(_hints.after_finish(log.run_id, rc))
     console.print(f"artifacts: {deploy}")
 
     # Before the feed sync: this reads the build tree and writes one JSON beside
