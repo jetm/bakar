@@ -93,22 +93,28 @@ def _lexical_normalize(path: Path) -> Path:
     return Path(os.path.normpath(absolute))
 
 
-def _run_realpath_bounded(specs: dict[Path, list[str]], deadline: float) -> dict[Path, tuple[int, bytes, bytes] | None]:
-    """Fork one ``realpath`` child per entry in ``specs``, bounded by ``deadline``.
+def _run_bounded(specs: dict[Path, list[str]], deadline: float) -> dict[Path, tuple[int | None, str, str]]:
+    """Fork one child per entry in ``specs``, all bounded by one ``deadline``.
 
-    ``specs`` maps each target path to the full ``realpath`` argv, so a
-    caller can run the plain (no-flags) form and, for a subset of paths, a
-    second ``-m`` (``--canonicalize-missing``) pass without duplicating the
-    fork/poll/kill mechanics. ``deadline`` is an absolute ``time.monotonic()``
-    value shared across every call a single :func:`_resolve_bounded`
-    invocation makes - a retry batch spends only what remains of the
-    ORIGINAL ``deadline_s`` budget, never a fresh one, so the two batches
-    together can never block the caller past ``deadline_s`` in total.
+    The single fork/poll/kill loop behind every bounded probe in this module
+    (``realpath`` for :func:`_resolve_bounded`, ``stat -f`` for
+    :func:`probe_statfs`). ``specs`` maps each target path to the child's full
+    argv; callers dedupe paths before building it, so one path gets exactly
+    one child. ``deadline`` is an absolute ``time.monotonic()`` value, so a
+    caller that runs a second batch (the ``realpath -m`` retry) spends only
+    what remains of the original budget, never a fresh one.
 
-    Returns, per path, ``None`` for a child still running at ``deadline``
-    (killed and abandoned - a wedge that does not even respond to SIGKILL
-    within the trailing ``wait(timeout=0.5)`` is abandoned rather than waited
-    on further), or the child's ``(returncode, stdout, stderr)`` bytes.
+    Every child runs with ``LC_ALL=C``/``LANGUAGE=C`` (so stderr text such as
+    the ENOENT message is locale-independent) and stdin from ``/dev/null``.
+    The loop uses ``poll()``, never ``communicate()`` (which would wait on a
+    child stuck in an uninterruptible NFS sleep), until every child exits or
+    the deadline passes. A child still running then gets SIGKILL and exactly
+    one bounded ``wait(timeout=0.5)``; one that does not exit even then is
+    abandoned rather than waited on further. Every pipe is closed on return.
+
+    Returns, per path, ``(returncode, stdout, stderr)`` with both streams
+    decoded as UTF-8 with replacement and read only after the child exited.
+    A killed or abandoned child reports ``(None, "", "")``.
     """
     env = {**os.environ, "LC_ALL": "C", "LANGUAGE": "C"}
     procs: dict[Path, subprocess.Popen[bytes]] = {
@@ -134,7 +140,7 @@ def _run_realpath_bounded(specs: dict[Path, list[str]], deadline: float) -> dict
             break
         time.sleep(0.05)
 
-    results: dict[Path, tuple[int, bytes, bytes] | None] = {}
+    results: dict[Path, tuple[int | None, str, str]] = {}
     for path in pending:
         proc = procs[path]
         proc.kill()
@@ -142,13 +148,17 @@ def _run_realpath_bounded(specs: dict[Path, list[str]], deadline: float) -> dict
             proc.wait(timeout=0.5)
         except subprocess.TimeoutExpired:
             pass
-        results[path] = None
+        results[path] = (None, "", "")
 
     for path, rc in exit_codes.items():
         proc = procs[path]
         stdout_bytes = proc.stdout.read() if proc.stdout is not None else b""
         stderr_bytes = proc.stderr.read() if proc.stderr is not None else b""
-        results[path] = (rc, stdout_bytes, stderr_bytes)
+        results[path] = (
+            rc,
+            (stdout_bytes or b"").decode("utf-8", errors="replace"),
+            (stderr_bytes or b"").decode("utf-8", errors="replace"),
+        )
 
     for proc in procs.values():
         if proc.stdout is not None:
@@ -254,21 +264,19 @@ def _resolve_bounded(paths: Sequence[Path], *, deadline_s: float = CACHE_PROBE_D
     unique_paths = list(dict.fromkeys(paths))
     deadline = time.monotonic() + deadline_s
 
-    plain_batch = _run_realpath_bounded({path: ["realpath", "--", str(path)] for path in unique_paths}, deadline)
+    plain_batch = _run_bounded({path: ["realpath", "--", str(path)] for path in unique_paths}, deadline)
 
     results: dict[Path, Path | None] = {}
     enoent_retry: list[Path] = []
     for path in unique_paths:
-        outcome = plain_batch[path]
-        if outcome is None:
+        rc, stdout, stderr = plain_batch[path]
+        if rc is None:
             results[path] = None
             continue
-        rc, stdout_bytes, stderr_bytes = outcome
         if rc == 0:
-            text = stdout_bytes.decode("utf-8", errors="replace").strip()
+            text = stdout.strip()
             results[path] = Path(text) if text else _lexical_normalize(path)
             continue
-        stderr = (stderr_bytes or b"").decode("utf-8", errors="replace").strip()
         if _ENOENT_TEXT in stderr:
             # Missing component - could be the leaf, or a component past an
             # unresolved symlink prefix. Retry with -m below rather than
@@ -284,18 +292,15 @@ def _resolve_bounded(paths: Sequence[Path], *, deadline_s: float = CACHE_PROBE_D
             results[path] = None
 
     if enoent_retry:
-        retry_batch = _run_realpath_bounded(
-            {path: ["realpath", "-m", "--", str(path)] for path in enoent_retry}, deadline
-        )
+        retry_batch = _run_bounded({path: ["realpath", "-m", "--", str(path)] for path in enoent_retry}, deadline)
         for path in enoent_retry:
-            outcome = retry_batch[path]
-            if outcome is None:
+            rc, stdout, _stderr = retry_batch[path]
+            if rc is None:
                 # Still wedged past the (shared) deadline - fail closed.
                 results[path] = None
                 continue
-            rc, stdout_bytes, _stderr_bytes = outcome
             if rc == 0:
-                text = stdout_bytes.decode("utf-8", errors="replace").strip()
+                text = stdout.strip()
                 results[path] = Path(text) if text else _lexical_normalize(path)
             else:
                 # -m is not expected to fail for a merely-missing component -
@@ -643,13 +648,13 @@ def probe_statfs(paths: Sequence[Path], *, deadline_s: float) -> dict[Path, tupl
     generic error rather than a missing path, and a missing-but-not-declared-
     NFS directory must NOT block (see :meth:`CacheMountStatus.blocking`).
 
-    Polls with ``poll()`` (never ``communicate()``, which would wait on a
-    child stuck in an uninterruptible NFS sleep) until every child exits or the
-    shared deadline passes. Any child still running past the deadline is sent
-    SIGKILL and given exactly one bounded ``wait(timeout=0.5)`` to be reaped;
-    a child that does not even respond to SIGKILL within that half-second
-    (truly wedged in uninterruptible sleep) is abandoned rather than waited on
-    further, and is reported ``unresponsive`` regardless.
+    The children run through :func:`_run_bounded`: polled until every child
+    exits or the shared deadline passes, and any child still running past the
+    deadline is sent SIGKILL and given exactly one bounded
+    ``wait(timeout=0.5)`` to be reaped; a child that does not even respond to
+    SIGKILL within that half-second (truly wedged in uninterruptible sleep) is
+    abandoned rather than waited on further, and is reported ``unresponsive``
+    regardless.
 
     Returns a dict mapping each input path to ``(state, detail)``: ``ready``
     with an empty detail, ``unresponsive`` with an empty detail, ``missing``
@@ -659,57 +664,20 @@ def probe_statfs(paths: Sequence[Path], *, deadline_s: float) -> dict[Path, tupl
     # Dedupe before spawning - see the matching comment in
     # :func:`_resolve_bounded`, which shares this exact leak shape.
     unique_paths = list(dict.fromkeys(paths))
-    env = {**os.environ, "LC_ALL": "C", "LANGUAGE": "C"}
-    procs: dict[Path, subprocess.Popen[bytes]] = {
-        path: subprocess.Popen(
-            ["stat", "-f", "-c", "%T", "--", str(path)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            env=env,
-        )
-        for path in unique_paths
-    }
-
     deadline = time.monotonic() + deadline_s
-    exit_codes: dict[Path, int] = {}
-    pending = set(procs)
-    while pending:
-        for path in list(pending):
-            rc = procs[path].poll()
-            if rc is not None:
-                exit_codes[path] = rc
-                pending.discard(path)
-        if not pending or time.monotonic() >= deadline:
-            break
-        time.sleep(0.05)
+    batch = _run_bounded({path: ["stat", "-f", "-c", "%T", "--", str(path)] for path in unique_paths}, deadline)
 
     results: dict[Path, tuple[CacheMountState, str]] = {}
-    for path in pending:
-        proc = procs[path]
-        proc.kill()
-        try:
-            proc.wait(timeout=0.5)
-        except subprocess.TimeoutExpired:
-            pass
-        results[path] = ("unresponsive", "")
-
-    for path, rc in exit_codes.items():
-        proc = procs[path]
-        stderr_bytes = proc.stderr.read() if proc.stderr is not None else b""
-        stderr = (stderr_bytes or b"").decode("utf-8", errors="replace").strip()
-        if rc == 0:
+    for path, (rc, _stdout, stderr_text) in batch.items():
+        stderr = stderr_text.strip()
+        if rc is None:
+            results[path] = ("unresponsive", "")
+        elif rc == 0:
             results[path] = ("ready", "")
         elif _ENOENT_TEXT in stderr:
             results[path] = ("missing", stderr)
         else:
             results[path] = ("error", stderr)
-
-    for proc in procs.values():
-        if proc.stdout is not None:
-            proc.stdout.close()
-        if proc.stderr is not None:
-            proc.stderr.close()
 
     return {path: results[path] for path in paths}
 
