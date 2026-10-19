@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING
 
 from rich.console import Console
 
-from bakar import detach_records
+from bakar import detach_records, observability
 from bakar.buildtools import parse_layerseries_corenames
 from bakar.config import WORKSPACE_FEED_DIRNAME, WORKSPACE_FEED_STAGE_DIRNAME
 from bakar.detach import escape_for_systemd_run
@@ -1505,6 +1505,35 @@ def _running_dispatch_units(host: str) -> list[str] | None:
     return units
 
 
+def _stop_request_lines(*, force: bool) -> list[str]:
+    """Bash lines that write the stop request into every run the unit registered.
+
+    Runs on the host without bakar: the unit's run registry (``<unit>.runs``)
+    names each run directory, and the record shape mirrors
+    ``observability.write_stop_request``. The ``run_dir`` pattern excludes quote
+    and backslash, so an escaped or hostile registry value never matches, and
+    every expansion is quoted. Nothing here aborts the loop or changes the exit
+    status: a unit with no registry or no registered run is stopped as before.
+    """
+    filename = shlex.quote(observability.STOP_REQUEST_FILENAME)
+    by = shlex.quote(observability.STOP_REQUEST_BY)
+    force_word = "true" if force else "false"
+    return [
+        '  reg="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/${unit%.service}.runs"',
+        "  stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+        r"""  sed -n 's/.*"run_dir": "\([^"\\]*\)".*/\1/p' "$reg" 2>/dev/null | while IFS= read -r run_dir; do""",
+        '    [ -n "$run_dir" ] && [ -d "$run_dir" ] || continue',
+        # A run that already ended recorded how: marking it would relabel a
+        # real failure from an earlier run of the same unit as a stop.
+        r"""    grep -qE '"event": "run_(end|error)"' "$run_dir/events.jsonl" 2>/dev/null && continue""",
+        '    tmp="$run_dir/.stop-request.$$.tmp"',
+        f"""    printf '{{"requested_at": "%s", "by": "%s", "force": %s}}\\n' "$stamp" {by} {force_word} \\""",
+        '      > "$tmp" 2>/dev/null \\',
+        f'      && mv -f "$tmp" "$run_dir/"{filename} 2>/dev/null || true',
+        "  done",
+    ]
+
+
 def build_stop_units_script(units: list[str], *, force: bool, grace_seconds: float) -> str:
     """Generate the bash script that stops detached dispatch ``units``.
 
@@ -1532,6 +1561,7 @@ def build_stop_units_script(units: list[str], *, force: bool, grace_seconds: flo
     it, so the common 30s case keeps its original cadence and fork count.
     """
     lines = [f"for unit in {' '.join(shlex.quote(u) for u in units)}; do"]
+    lines += _stop_request_lines(force=force)
     if not force:
         lines += ['  systemctl --user kill --signal=SIGINT "$unit" 2>/dev/null']
         if grace_seconds > 0:
